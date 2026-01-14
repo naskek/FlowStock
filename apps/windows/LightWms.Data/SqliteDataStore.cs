@@ -10,7 +10,7 @@ public sealed class SqliteDataStore : IDataStore
     private readonly string _connectionString;
     private readonly SqliteConnection? _connection;
     private readonly SqliteTransaction? _transaction;
-    private const string DocSelectBase = "SELECT d.id, d.doc_ref, d.type, d.status, d.created_at, d.closed_at, d.partner_id, d.order_ref, d.shipping_ref, p.name, p.code FROM docs d LEFT JOIN partners p ON p.id = d.partner_id";
+    private const string DocSelectBase = "SELECT d.id, d.doc_ref, d.type, d.status, d.created_at, d.closed_at, d.partner_id, d.order_ref, d.shipping_ref, d.comment, p.name, p.code FROM docs d LEFT JOIN partners p ON p.id = d.partner_id";
 
     public SqliteDataStore(string dbPath)
     {
@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS docs (
     partner_id INTEGER,
     order_ref TEXT,
     shipping_ref TEXT,
+    comment TEXT,
     FOREIGN KEY (partner_id) REFERENCES partners(id)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ix_docs_ref_type ON docs(doc_ref, type);
@@ -112,6 +113,7 @@ CREATE TABLE IF NOT EXISTS import_errors (
         EnsureColumn(connection, "docs", "partner_id", "INTEGER");
         EnsureColumn(connection, "docs", "order_ref", "TEXT");
         EnsureColumn(connection, "docs", "shipping_ref", "TEXT");
+        EnsureColumn(connection, "docs", "comment", "TEXT");
     }
 
     public void ExecuteInTransaction(Action<IDataStore> work)
@@ -357,8 +359,8 @@ SELECT last_insert_rowid();
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO docs(doc_ref, type, status, created_at, closed_at, partner_id, order_ref, shipping_ref)
-VALUES(@doc_ref, @type, @status, @created_at, @closed_at, @partner_id, @order_ref, @shipping_ref);
+INSERT INTO docs(doc_ref, type, status, created_at, closed_at, partner_id, order_ref, shipping_ref, comment)
+VALUES(@doc_ref, @type, @status, @created_at, @closed_at, @partner_id, @order_ref, @shipping_ref, @comment);
 SELECT last_insert_rowid();
 ");
             command.Parameters.AddWithValue("@doc_ref", doc.DocRef);
@@ -369,6 +371,7 @@ SELECT last_insert_rowid();
             command.Parameters.AddWithValue("@partner_id", doc.PartnerId.HasValue ? doc.PartnerId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@order_ref", string.IsNullOrWhiteSpace(doc.OrderRef) ? DBNull.Value : doc.OrderRef);
             command.Parameters.AddWithValue("@shipping_ref", string.IsNullOrWhiteSpace(doc.ShippingRef) ? DBNull.Value : doc.ShippingRef);
+            command.Parameters.AddWithValue("@comment", string.IsNullOrWhiteSpace(doc.Comment) ? DBNull.Value : doc.Comment);
             return (long)(command.ExecuteScalar() ?? 0L);
         });
     }
@@ -715,6 +718,7 @@ SELECT last_insert_rowid();
         long? partnerId = null;
         string? orderRef = null;
         string? shippingRef = null;
+        string? comment = null;
         string? partnerName = null;
         string? partnerCode = null;
 
@@ -735,12 +739,17 @@ SELECT last_insert_rowid();
 
         if (reader.FieldCount > 9 && !reader.IsDBNull(9))
         {
-            partnerName = reader.GetString(9);
+            comment = reader.GetString(9);
         }
 
         if (reader.FieldCount > 10 && !reader.IsDBNull(10))
         {
-            partnerCode = reader.GetString(10);
+            partnerName = reader.GetString(10);
+        }
+
+        if (reader.FieldCount > 11 && !reader.IsDBNull(11))
+        {
+            partnerCode = reader.GetString(11);
         }
 
         return new Doc
@@ -754,6 +763,7 @@ SELECT last_insert_rowid();
             PartnerId = partnerId,
             OrderRef = orderRef,
             ShippingRef = shippingRef,
+            Comment = comment,
             PartnerName = partnerName,
             PartnerCode = partnerCode
         };

@@ -18,6 +18,49 @@ public sealed class DocumentService
         return _data.GetDocs();
     }
 
+    public long CreateDoc(DocType type, string docRef, string? comment, long? partnerId, string? orderRef, string? shippingRef)
+    {
+        if (string.IsNullOrWhiteSpace(docRef))
+        {
+            throw new ArgumentException("Номер документа обязателен.", nameof(docRef));
+        }
+
+        var trimmedRef = docRef.Trim();
+        if (_data.FindDocByRef(trimmedRef, type) != null)
+        {
+            throw new ArgumentException("Документ с таким номером уже существует.", nameof(docRef));
+        }
+
+        if (partnerId.HasValue && _data.GetPartner(partnerId.Value) == null)
+        {
+            throw new ArgumentException("Контрагент не найден.", nameof(partnerId));
+        }
+
+        if (type == DocType.Outbound && !partnerId.HasValue)
+        {
+            throw new ArgumentException("Для отгрузки требуется контрагент.", nameof(partnerId));
+        }
+
+        var cleanedOrderRef = string.IsNullOrWhiteSpace(orderRef) ? null : orderRef.Trim();
+        var cleanedShippingRef = string.IsNullOrWhiteSpace(shippingRef) ? null : shippingRef.Trim();
+        var cleanedComment = string.IsNullOrWhiteSpace(comment) ? null : comment.Trim();
+
+        var doc = new Doc
+        {
+            DocRef = trimmedRef,
+            Type = type,
+            Status = DocStatus.Draft,
+            CreatedAt = DateTime.Now,
+            ClosedAt = null,
+            PartnerId = partnerId,
+            OrderRef = cleanedOrderRef,
+            ShippingRef = cleanedShippingRef,
+            Comment = cleanedComment
+        };
+
+        return _data.AddDoc(doc);
+    }
+
     public Doc? GetDoc(long docId)
     {
         return _data.GetDoc(docId);
@@ -270,29 +313,29 @@ public sealed class DocumentService
                 case DocType.Inbound:
                     if (!line.ToLocationId.HasValue)
                     {
-                        check.Errors.Add($"{rowLabel}: требуется локация получателя (to).");
+                        check.Errors.Add($"{rowLabel}: требуется локация получателя.");
                     }
                     break;
                 case DocType.WriteOff:
                     if (!line.FromLocationId.HasValue)
                     {
-                        check.Errors.Add($"{rowLabel}: требуется локация списания (from).");
+                        check.Errors.Add($"{rowLabel}: требуется локация списания.");
                     }
                     break;
                 case DocType.Outbound:
                     if (!line.FromLocationId.HasValue)
                     {
-                        check.Errors.Add($"{rowLabel}: требуется локация отгрузки (from).");
+                        check.Errors.Add($"{rowLabel}: требуется локация отгрузки.");
                     }
                     break;
                 case DocType.Move:
                     if (!line.FromLocationId.HasValue || !line.ToLocationId.HasValue)
                     {
-                        check.Errors.Add($"{rowLabel}: требуются обе локации (from/to).");
+                        check.Errors.Add($"{rowLabel}: требуются обе локации (откуда/куда).");
                     }
                     else if (line.FromLocationId.Value == line.ToLocationId.Value)
                     {
-                        check.Errors.Add($"{rowLabel}: локации from/to должны быть разными.");
+                        check.Errors.Add($"{rowLabel}: локации откуда/куда должны быть разными.");
                     }
                     break;
             }
@@ -348,29 +391,29 @@ public sealed class DocumentService
             case DocType.Inbound:
                 if (!toLocationId.HasValue)
                 {
-                    throw new ArgumentException("Для приемки требуется локация получателя (to).");
+                    throw new ArgumentException("Для приемки требуется локация получателя.");
                 }
                 break;
             case DocType.WriteOff:
                 if (!fromLocationId.HasValue)
                 {
-                    throw new ArgumentException("Для списания требуется локация источника (from).");
+                    throw new ArgumentException("Для списания требуется локация источника.");
                 }
                 break;
             case DocType.Outbound:
                 if (!fromLocationId.HasValue)
                 {
-                    throw new ArgumentException("Для отгрузки требуется локация источника (from).");
+                    throw new ArgumentException("Для отгрузки требуется локация источника.");
                 }
                 break;
             case DocType.Move:
                 if (!fromLocationId.HasValue || !toLocationId.HasValue)
                 {
-                    throw new ArgumentException("Для перемещения требуются обе локации (from/to).");
+                    throw new ArgumentException("Для перемещения требуются обе локации (откуда/куда).");
                 }
                 if (fromLocationId.Value == toLocationId.Value)
                 {
-                    throw new ArgumentException("Локации from/to должны быть разными.");
+                    throw new ArgumentException("Локации откуда/куда должны быть разными.");
                 }
                 break;
         }
