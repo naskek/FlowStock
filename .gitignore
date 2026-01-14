@@ -1,0 +1,35 @@
+# secrets
+.env
+*.secret
+*.secrets.*
+
+# Windows / IDE
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# Node
+node_modules/
+dist/
+
+# Databases / local data
+*.db
+*.sqlite
+data/
+logs/
+
+# Android / Gradle
+.gradle/
+**/build/
+*.iml
+
+# .NET
+bin/
+obj/
