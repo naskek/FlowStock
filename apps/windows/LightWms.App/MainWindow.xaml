@@ -61,6 +61,8 @@
                             <DataGridTextColumn Header="Ref" Binding="{Binding DocRef}" Width="*" />
                             <DataGridTextColumn Header="Тип" Binding="{Binding Type}" Width="140" />
                             <DataGridTextColumn Header="Статус" Binding="{Binding Status}" Width="120" />
+                            <DataGridTextColumn Header="Контрагент" Binding="{Binding PartnerDisplay}" Width="200" />
+                            <DataGridTextColumn Header="Заказ" Binding="{Binding OrderRef}" Width="160" />
                             <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt}" Width="160" />
                             <DataGridTextColumn Header="Закрыт" Binding="{Binding ClosedAt}" Width="160" />
                         </DataGrid.Columns>
