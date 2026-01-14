@@ -191,7 +191,7 @@ public partial class MainWindow : Window
     {
         if (DocsGrid.SelectedItem is not Doc doc)
         {
-            MessageBox.Show("Выберите документ.", "Документы", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Выберите документ.", "Операции", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -320,7 +320,7 @@ public partial class MainWindow : Window
     {
         if (string.IsNullOrWhiteSpace(LocationCodeBox.Text) || string.IsNullOrWhiteSpace(LocationNameBox.Text))
         {
-            MessageBox.Show("Введите код и наименование локации.", "Локации", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("Введите код и наименование места хранения.", "Места хранения", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -333,11 +333,11 @@ public partial class MainWindow : Window
         }
         catch (ArgumentException ex)
         {
-            MessageBox.Show(ex.Message, "Локации", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(ex.Message, "Места хранения", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         catch (Exception ex)
         {
-            MessageBox.Show(ex.Message, "Локации", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(ex.Message, "Места хранения", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -796,33 +796,33 @@ public partial class MainWindow : Window
             case DocType.Inbound:
                 if (toLocation == null)
                 {
-                    MessageBox.Show("Для приемки выберите локацию получателя.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    MessageBox.Show("Для приемки выберите место хранения получателя.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return false;
                 }
                 return true;
             case DocType.WriteOff:
                 if (fromLocation == null)
                 {
-                    MessageBox.Show("Для списания выберите локацию источника.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    MessageBox.Show("Для списания выберите место хранения источника.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return false;
                 }
                 return true;
             case DocType.Outbound:
                 if (fromLocation == null)
                 {
-                    MessageBox.Show("Для отгрузки выберите локацию источника.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    MessageBox.Show("Для отгрузки выберите место хранения источника.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return false;
                 }
                 return true;
             case DocType.Move:
                 if (fromLocation == null || toLocation == null)
                 {
-                    MessageBox.Show("Для перемещения выберите локации откуда/куда.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    MessageBox.Show("Для перемещения выберите места хранения откуда/куда.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return false;
                 }
                 if (fromLocation.Id == toLocation.Id)
                 {
-                    MessageBox.Show("Для перемещения локации откуда/куда должны быть разными.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    MessageBox.Show("Для перемещения места хранения откуда/куда должны быть разными.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return false;
                 }
                 return true;

@@ -9,7 +9,7 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
         <Menu Grid.Row="0">
-            <MenuItem Header="Документы">
+            <MenuItem Header="Операции">
                 <MenuItem Header="Новый документ..." InputGestureText="Ctrl+N" Click="NewDocMenu_Click" />
                 <MenuItem Header="Открыть выбранный" InputGestureText="Ctrl+O" Click="DocsOpen_Click" />
                 <MenuItem Header="Закрыть текущий документ" InputGestureText="Ctrl+Enter" Click="DocClose_Click" />
@@ -20,17 +20,17 @@
             </MenuItem>
             <MenuItem Header="Справочники">
                 <MenuItem Header="Товары" Click="ViewItems_Click" />
-                <MenuItem Header="Локации" Click="ViewLocations_Click" />
+                <MenuItem Header="Места хранения" Click="ViewLocations_Click" />
                 <MenuItem Header="Контрагенты" Click="ViewPartners_Click" />
                 <Separator />
                 <MenuItem Header="Ед. измерения..." Click="UomMenu_Click" />
             </MenuItem>
             <MenuItem Header="Вид">
-                <MenuItem Header="Состояние" Click="ViewStatus_Click" />
-                <MenuItem Header="Документы" Click="ViewDocs_Click" />
+                <MenuItem Header="Остатки" Click="ViewStatus_Click" />
+                <MenuItem Header="Операции" Click="ViewDocs_Click" />
                 <MenuItem Header="Документ" Click="ViewDoc_Click" />
                 <MenuItem Header="Товары" Click="ViewItems_Click" />
-                <MenuItem Header="Локации" Click="ViewLocations_Click" />
+                <MenuItem Header="Места хранения" Click="ViewLocations_Click" />
                 <MenuItem Header="Контрагенты" Click="ViewPartners_Click" />
             </MenuItem>
             <MenuItem Header="Сервис">
@@ -39,7 +39,7 @@
             </MenuItem>
         </Menu>
         <TabControl x:Name="MainTabs" Grid.Row="1">
-            <TabItem Header="Состояние">
+            <TabItem Header="Остатки">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
@@ -54,7 +54,7 @@
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
                             <DataGridTextColumn Header="Штрихкод" Binding="{Binding Barcode}" Width="160" />
-                            <DataGridTextColumn Header="Локация" Binding="{Binding LocationCode}" Width="140" />
+                            <DataGridTextColumn Header="Место хранения" Binding="{Binding LocationCode}" Width="140" />
                             <DataGridTextColumn Header="Кол-во" Binding="{Binding Qty}" Width="100" />
                         </DataGrid.Columns>
                     </DataGrid>
@@ -70,7 +70,7 @@
                                Visibility="Collapsed" />
                 </Grid>
             </TabItem>
-            <TabItem Header="Документы">
+            <TabItem Header="Операции">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
@@ -81,7 +81,7 @@
                         <TextBlock Margin="8,4,8,8" TextWrapping="Wrap">
                             1) Создай товары
                             <LineBreak />
-                            2) Создай локации
+                            2) Создай места хранения
                             <LineBreak />
                             3) Импортируй JSONL
                             <LineBreak />
@@ -144,7 +144,7 @@
                     </DataGrid>
                     <TextBlock x:Name="DocEmptyText"
                                Grid.Row="1"
-                               Text="Откройте документ на вкладке 'Документы'"
+                               Text="Откройте документ на вкладке 'Операции'"
                                FontSize="18"
                                FontWeight="SemiBold"
                                Foreground="Gray"
@@ -208,7 +208,7 @@
                     </StackPanel>
                 </Grid>
             </TabItem>
-            <TabItem Header="Локации">
+            <TabItem Header="Места хранения">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="*" />
@@ -222,7 +222,7 @@
                         </DataGrid.Columns>
                     </DataGrid>
                     <TextBlock Grid.Row="1" Margin="0,6,0,0" Foreground="Gray"
-                               Text="Подсказка: JSONL использует код локации." />
+                               Text="Подсказка: JSONL использует код места хранения." />
                     <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,8,0,0">
                         <TextBlock Text="Код" VerticalAlignment="Center" />
                         <TextBox x:Name="LocationCodeBox" Width="140" Margin="6,0,12,0" />
