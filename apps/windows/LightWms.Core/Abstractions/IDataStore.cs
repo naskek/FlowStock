@@ -24,10 +24,13 @@ public interface IDataStore
     IReadOnlyList<DocLine> GetDocLines(long docId);
     IReadOnlyList<DocLineView> GetDocLineViews(long docId);
     long AddDocLine(DocLine line);
+    void UpdateDocLineQty(long docLineId, double qty);
+    void DeleteDocLine(long docLineId);
     void UpdateDocStatus(long docId, DocStatus status, DateTime? closedAt);
 
     void AddLedgerEntry(LedgerEntry entry);
     IReadOnlyList<StockRow> GetStock(string? search);
+    double GetLedgerBalance(long itemId, long locationId);
 
     bool IsEventImported(string eventId);
     void AddImportedEvent(ImportedEvent ev);

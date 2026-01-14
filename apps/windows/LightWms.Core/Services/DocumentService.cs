@@ -1,3 +1,4 @@
+using System.Globalization;
 using LightWms.Core.Abstractions;
 using LightWms.Core.Models;
 
@@ -27,8 +28,27 @@ public sealed class DocumentService
         return _data.GetStock(search);
     }
 
-    public void CloseDoc(long docId)
+    public CloseDocResult TryCloseDoc(long docId, bool allowNegative)
     {
+        var check = BuildCloseDocCheck(docId);
+        if (check.Errors.Count > 0)
+        {
+            return new CloseDocResult
+            {
+                Success = false,
+                Errors = check.Errors
+            };
+        }
+
+        if (check.Warnings.Count > 0 && !allowNegative)
+        {
+            return new CloseDocResult
+            {
+                Success = false,
+                Warnings = check.Warnings
+            };
+        }
+
         var closedAt = DateTime.Now;
 
         _data.ExecuteInTransaction(store =>
@@ -102,5 +122,211 @@ public sealed class DocumentService
 
             store.UpdateDocStatus(docId, DocStatus.Closed, closedAt);
         });
+
+        return new CloseDocResult { Success = true };
+    }
+
+    public void AddDocLine(long docId, long itemId, double qty, long? fromLocationId, long? toLocationId)
+    {
+        if (qty <= 0)
+        {
+            throw new ArgumentException("Количество должно быть больше 0.", nameof(qty));
+        }
+
+        var doc = _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
+        if (doc.Status != DocStatus.Draft)
+        {
+            throw new InvalidOperationException("Документ уже закрыт.");
+        }
+
+        if (_data.FindItemById(itemId) == null)
+        {
+            throw new InvalidOperationException("Товар не найден.");
+        }
+
+        ValidateLineLocations(doc.Type, fromLocationId, toLocationId);
+
+        _data.AddDocLine(new DocLine
+        {
+            DocId = docId,
+            ItemId = itemId,
+            Qty = qty,
+            FromLocationId = fromLocationId,
+            ToLocationId = toLocationId
+        });
+    }
+
+    public void UpdateDocLineQty(long docId, long docLineId, double qty)
+    {
+        if (qty <= 0)
+        {
+            throw new ArgumentException("Количество должно быть больше 0.", nameof(qty));
+        }
+
+        var doc = _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
+        if (doc.Status != DocStatus.Draft)
+        {
+            throw new InvalidOperationException("Документ уже закрыт.");
+        }
+
+        var line = _data.GetDocLines(docId).FirstOrDefault(l => l.Id == docLineId);
+        if (line == null)
+        {
+            throw new InvalidOperationException("Строка не найдена.");
+        }
+
+        _data.UpdateDocLineQty(docLineId, qty);
+    }
+
+    public void DeleteDocLine(long docId, long docLineId)
+    {
+        var doc = _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
+        if (doc.Status != DocStatus.Draft)
+        {
+            throw new InvalidOperationException("Документ уже закрыт.");
+        }
+
+        var line = _data.GetDocLines(docId).FirstOrDefault(l => l.Id == docLineId);
+        if (line == null)
+        {
+            throw new InvalidOperationException("Строка не найдена.");
+        }
+
+        _data.DeleteDocLine(docLineId);
+    }
+
+    private CloseDocCheck BuildCloseDocCheck(long docId)
+    {
+        var check = new CloseDocCheck();
+        var doc = _data.GetDoc(docId);
+        if (doc == null)
+        {
+            check.Errors.Add("Документ не найден.");
+            return check;
+        }
+
+        if (doc.Status == DocStatus.Closed)
+        {
+            check.Errors.Add("Документ уже закрыт.");
+            return check;
+        }
+
+        var lines = _data.GetDocLines(docId);
+        var itemsById = _data.GetItems(null).ToDictionary(item => item.Id, item => item.Name);
+        var locationsById = _data.GetLocations().ToDictionary(location => location.Id, location => location.Code);
+
+        var outgoing = new Dictionary<(long itemId, long locationId), double>();
+
+        for (var index = 0; index < lines.Count; index++)
+        {
+            var line = lines[index];
+            var itemLabel = itemsById.TryGetValue(line.ItemId, out var name) ? name : $"ID {line.ItemId}";
+            var rowLabel = $"Строка {index + 1} ({itemLabel})";
+
+            if (line.Qty <= 0)
+            {
+                check.Errors.Add($"{rowLabel}: количество должно быть > 0.");
+            }
+
+            switch (doc.Type)
+            {
+                case DocType.Inbound:
+                    if (!line.ToLocationId.HasValue)
+                    {
+                        check.Errors.Add($"{rowLabel}: требуется локация получателя (to).");
+                    }
+                    break;
+                case DocType.WriteOff:
+                    if (!line.FromLocationId.HasValue)
+                    {
+                        check.Errors.Add($"{rowLabel}: требуется локация списания (from).");
+                    }
+                    break;
+                case DocType.Move:
+                    if (!line.FromLocationId.HasValue || !line.ToLocationId.HasValue)
+                    {
+                        check.Errors.Add($"{rowLabel}: требуются обе локации (from/to).");
+                    }
+                    else if (line.FromLocationId.Value == line.ToLocationId.Value)
+                    {
+                        check.Errors.Add($"{rowLabel}: локации from/to должны быть разными.");
+                    }
+                    break;
+            }
+
+            if (doc.Type is DocType.WriteOff or DocType.Move)
+            {
+                if (line.Qty > 0 && line.FromLocationId.HasValue)
+                {
+                    if (doc.Type == DocType.WriteOff || line.ToLocationId.HasValue)
+                    {
+                        if (doc.Type != DocType.Move || line.FromLocationId != line.ToLocationId)
+                        {
+                            var key = (line.ItemId, line.FromLocationId.Value);
+                            outgoing[key] = outgoing.TryGetValue(key, out var current) ? current + line.Qty : line.Qty;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (doc.Type is DocType.WriteOff or DocType.Move)
+        {
+            foreach (var entry in outgoing)
+            {
+                var current = _data.GetLedgerBalance(entry.Key.itemId, entry.Key.locationId);
+                var future = current - entry.Value;
+                if (future < 0)
+                {
+                    var itemLabel = itemsById.TryGetValue(entry.Key.itemId, out var name) ? name : $"ID {entry.Key.itemId}";
+                    var locationLabel = locationsById.TryGetValue(entry.Key.locationId, out var code) ? code : $"ID {entry.Key.locationId}";
+                    check.Warnings.Add($"{itemLabel} @ {locationLabel}: {FormatQty(current)} -> {FormatQty(future)} (дельта -{FormatQty(entry.Value)})");
+                }
+            }
+        }
+
+        check.Doc = doc;
+        return check;
+    }
+
+    private static string FormatQty(double value)
+    {
+        return value.ToString("0.###", CultureInfo.CurrentCulture);
+    }
+
+    private static void ValidateLineLocations(DocType type, long? fromLocationId, long? toLocationId)
+    {
+        switch (type)
+        {
+            case DocType.Inbound:
+                if (!toLocationId.HasValue)
+                {
+                    throw new ArgumentException("Для приемки требуется локация получателя (to).");
+                }
+                break;
+            case DocType.WriteOff:
+                if (!fromLocationId.HasValue)
+                {
+                    throw new ArgumentException("Для списания требуется локация источника (from).");
+                }
+                break;
+            case DocType.Move:
+                if (!fromLocationId.HasValue || !toLocationId.HasValue)
+                {
+                    throw new ArgumentException("Для перемещения требуются обе локации (from/to).");
+                }
+                if (fromLocationId.Value == toLocationId.Value)
+                {
+                    throw new ArgumentException("Локации from/to должны быть разными.");
+                }
+                break;
+        }
+    }
+
+    private sealed class CloseDocCheck
+    {
+        public Doc? Doc { get; set; }
+        public List<string> Errors { get; } = new();
+        public List<string> Warnings { get; } = new();
     }
 }

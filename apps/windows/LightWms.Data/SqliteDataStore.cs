@@ -344,6 +344,29 @@ SELECT last_insert_rowid();
         });
     }
 
+    public void UpdateDocLineQty(long docLineId, double qty)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "UPDATE doc_lines SET qty = @qty WHERE id = @id");
+            command.Parameters.AddWithValue("@qty", qty);
+            command.Parameters.AddWithValue("@id", docLineId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void DeleteDocLine(long docLineId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "DELETE FROM doc_lines WHERE id = @id");
+            command.Parameters.AddWithValue("@id", docLineId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
     public void UpdateDocStatus(long docId, DocStatus status, DateTime? closedAt)
     {
         WithConnection(connection =>
@@ -399,6 +422,18 @@ VALUES(@ts, @doc_id, @item_id, @location_id, @qty_delta);
             }
 
             return rows;
+        });
+    }
+
+    public double GetLedgerBalance(long itemId, long locationId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "SELECT COALESCE(SUM(qty_delta), 0) FROM ledger WHERE item_id = @item_id AND location_id = @location_id");
+            command.Parameters.AddWithValue("@item_id", itemId);
+            command.Parameters.AddWithValue("@location_id", locationId);
+            var result = command.ExecuteScalar();
+            return result == null || result == DBNull.Value ? 0 : Convert.ToDouble(result, CultureInfo.InvariantCulture);
         });
     }
 
