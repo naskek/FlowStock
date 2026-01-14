@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Windows;
@@ -16,6 +17,7 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<DocLineView> _docLines = new();
     private readonly ObservableCollection<StockRow> _stock = new();
     private Doc? _selectedDoc;
+    private DocLineView? _selectedDocLine;
 
     public MainWindow(AppServices services)
     {
@@ -27,6 +29,9 @@ public partial class MainWindow : Window
         DocsGrid.ItemsSource = _docs;
         DocLinesGrid.ItemsSource = _docLines;
         StockGrid.ItemsSource = _stock;
+        DocItemCombo.ItemsSource = _items;
+        DocFromCombo.ItemsSource = _locations;
+        DocToCombo.ItemsSource = _locations;
 
         LoadAll();
         UpdateDocView();
@@ -74,6 +79,9 @@ public partial class MainWindow : Window
         {
             _docLines.Add(line);
         }
+
+        _selectedDocLine = null;
+        DocLineQtyBox.Text = string.Empty;
     }
 
     private void LoadStock(string? search)
@@ -141,7 +149,38 @@ public partial class MainWindow : Window
             return;
         }
 
-        _services.Documents.CloseDoc(_selectedDoc.Id);
+        var result = _services.Documents.TryCloseDoc(_selectedDoc.Id, allowNegative: false);
+        if (result.Errors.Count > 0)
+        {
+            MessageBox.Show(string.Join("\n", result.Errors), "Проверка документа", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (result.Warnings.Count > 0)
+        {
+            var warningText = "Остаток уйдет в минус:\n" + string.Join("\n", result.Warnings) + "\n\nЗакрыть документ?";
+            var confirm = MessageBox.Show(warningText, "Предупреждение", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+            if (confirm != MessageBoxResult.Yes)
+            {
+                return;
+            }
+
+            result = _services.Documents.TryCloseDoc(_selectedDoc.Id, allowNegative: true);
+            if (!result.Success)
+            {
+                if (result.Errors.Count > 0)
+                {
+                    MessageBox.Show(string.Join("\n", result.Errors), "Проверка документа", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+                return;
+            }
+        }
+
+        if (!result.Success)
+        {
+            return;
+        }
+
         LoadDocs();
         LoadStock(StatusSearchBox.Text);
 
@@ -250,6 +289,119 @@ public partial class MainWindow : Window
         window.ShowDialog();
     }
 
+    private void DocLines_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        _selectedDocLine = DocLinesGrid.SelectedItem as DocLineView;
+        if (_selectedDocLine == null)
+        {
+            DocLineQtyBox.Text = string.Empty;
+            return;
+        }
+
+        DocLineQtyBox.Text = _selectedDocLine.Qty.ToString("0.###", CultureInfo.CurrentCulture);
+    }
+
+    private void DocAddLine_Click(object sender, RoutedEventArgs e)
+    {
+        if (!EnsureDraftDocSelected())
+        {
+            return;
+        }
+
+        if (DocItemCombo.SelectedItem is not Item item)
+        {
+            MessageBox.Show("Выберите товар.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (!TryParseQty(DocItemQtyBox.Text, out var qty))
+        {
+            MessageBox.Show("Количество должно быть больше 0.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var fromLocation = DocFromCombo.SelectedItem as Location;
+        var toLocation = DocToCombo.SelectedItem as Location;
+        if (_selectedDoc!.Type == DocType.Inbound)
+        {
+            fromLocation = null;
+        }
+        else if (_selectedDoc.Type == DocType.WriteOff)
+        {
+            toLocation = null;
+        }
+
+        if (!ValidateLineLocations(_selectedDoc!, fromLocation, toLocation))
+        {
+            return;
+        }
+
+        try
+        {
+            _services.Documents.AddDocLine(_selectedDoc!.Id, item.Id, qty, fromLocation?.Id, toLocation?.Id);
+            DocItemQtyBox.Text = string.Empty;
+            LoadDocLines(_selectedDoc.Id);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Документ", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void DocUpdateLine_Click(object sender, RoutedEventArgs e)
+    {
+        if (!EnsureDraftDocSelected())
+        {
+            return;
+        }
+
+        if (_selectedDocLine == null)
+        {
+            MessageBox.Show("Выберите строку.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (!TryParseQty(DocLineQtyBox.Text, out var qty))
+        {
+            MessageBox.Show("Количество должно быть больше 0.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        try
+        {
+            _services.Documents.UpdateDocLineQty(_selectedDoc!.Id, _selectedDocLine.Id, qty);
+            LoadDocLines(_selectedDoc.Id);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Документ", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void DocDeleteLine_Click(object sender, RoutedEventArgs e)
+    {
+        if (!EnsureDraftDocSelected())
+        {
+            return;
+        }
+
+        if (_selectedDocLine == null)
+        {
+            MessageBox.Show("Выберите строку.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        try
+        {
+            _services.Documents.DeleteDocLine(_selectedDoc!.Id, _selectedDocLine.Id);
+            LoadDocLines(_selectedDoc.Id);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Документ", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
     private void UpdateDocView()
     {
         if (_selectedDoc == null)
@@ -258,6 +410,7 @@ public partial class MainWindow : Window
             DocCloseButton.IsEnabled = false;
             DocLinesGrid.Visibility = Visibility.Collapsed;
             DocEmptyText.Visibility = Visibility.Visible;
+            DocEditGroup.Visibility = Visibility.Collapsed;
             return;
         }
 
@@ -265,6 +418,24 @@ public partial class MainWindow : Window
         DocCloseButton.IsEnabled = _selectedDoc.Status != DocStatus.Closed;
         DocLinesGrid.Visibility = Visibility.Visible;
         DocEmptyText.Visibility = Visibility.Collapsed;
+        DocEditGroup.Visibility = _selectedDoc.Status == DocStatus.Draft ? Visibility.Visible : Visibility.Collapsed;
+
+        var showFrom = _selectedDoc.Type != DocType.Inbound;
+        var showTo = _selectedDoc.Type != DocType.WriteOff;
+        DocFromLabel.Visibility = showFrom ? Visibility.Visible : Visibility.Collapsed;
+        DocFromCombo.Visibility = showFrom ? Visibility.Visible : Visibility.Collapsed;
+        DocToLabel.Visibility = showTo ? Visibility.Visible : Visibility.Collapsed;
+        DocToCombo.Visibility = showTo ? Visibility.Visible : Visibility.Collapsed;
+
+        if (!showFrom)
+        {
+            DocFromCombo.SelectedItem = null;
+        }
+
+        if (!showTo)
+        {
+            DocToCombo.SelectedItem = null;
+        }
     }
 
     private static string FormatDocHeader(Doc doc)
@@ -272,5 +443,62 @@ public partial class MainWindow : Window
         var createdAt = doc.CreatedAt.ToString("g");
         var closedAt = doc.ClosedAt.HasValue ? doc.ClosedAt.Value.ToString("g") : "—";
         return $"Ref: {doc.DocRef} | Type: {DocTypeMapper.ToOpString(doc.Type)} | Status: {DocTypeMapper.StatusToString(doc.Status)} | CreatedAt: {createdAt} | ClosedAt: {closedAt}";
+    }
+
+    private static bool TryParseQty(string input, out double qty)
+    {
+        return double.TryParse(input, NumberStyles.Float, CultureInfo.CurrentCulture, out qty) && qty > 0;
+    }
+
+    private bool EnsureDraftDocSelected()
+    {
+        if (_selectedDoc == null)
+        {
+            MessageBox.Show("Документ не выбран.", "Документ", MessageBoxButton.OK, MessageBoxImage.Information);
+            return false;
+        }
+
+        if (_selectedDoc.Status != DocStatus.Draft)
+        {
+            MessageBox.Show("Документ уже закрыт.", "Документ", MessageBoxButton.OK, MessageBoxImage.Information);
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool ValidateLineLocations(Doc doc, Location? fromLocation, Location? toLocation)
+    {
+        switch (doc.Type)
+        {
+            case DocType.Inbound:
+                if (toLocation == null)
+                {
+                    MessageBox.Show("Для приемки выберите локацию получателя (to).", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return false;
+                }
+                return true;
+            case DocType.WriteOff:
+                if (fromLocation == null)
+                {
+                    MessageBox.Show("Для списания выберите локацию источника (from).", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return false;
+                }
+                return true;
+            case DocType.Move:
+                if (fromLocation == null || toLocation == null)
+                {
+                    MessageBox.Show("Для перемещения выберите обе локации.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return false;
+                }
+                if (fromLocation.Id == toLocation.Id)
+                {
+                    MessageBox.Show("Для перемещения локации должны быть разными.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return false;
+                }
+                return true;
+            default:
+                return true;
+        }
     }
 }
