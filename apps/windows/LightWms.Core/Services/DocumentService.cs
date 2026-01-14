@@ -95,6 +95,19 @@ public sealed class DocumentService
                             });
                         }
                         break;
+                    case DocType.Outbound:
+                        if (line.FromLocationId.HasValue)
+                        {
+                            store.AddLedgerEntry(new LedgerEntry
+                            {
+                                Timestamp = closedAt,
+                                DocId = docId,
+                                ItemId = line.ItemId,
+                                LocationId = line.FromLocationId.Value,
+                                QtyDelta = -line.Qty
+                            });
+                        }
+                        break;
                     case DocType.Move:
                         if (line.FromLocationId.HasValue)
                         {
@@ -266,6 +279,12 @@ public sealed class DocumentService
                         check.Errors.Add($"{rowLabel}: требуется локация списания (from).");
                     }
                     break;
+                case DocType.Outbound:
+                    if (!line.FromLocationId.HasValue)
+                    {
+                        check.Errors.Add($"{rowLabel}: требуется локация отгрузки (from).");
+                    }
+                    break;
                 case DocType.Move:
                     if (!line.FromLocationId.HasValue || !line.ToLocationId.HasValue)
                     {
@@ -278,11 +297,11 @@ public sealed class DocumentService
                     break;
             }
 
-            if (doc.Type is DocType.WriteOff or DocType.Move)
+            if (doc.Type is DocType.WriteOff or DocType.Move or DocType.Outbound)
             {
                 if (line.Qty > 0 && line.FromLocationId.HasValue)
                 {
-                    if (doc.Type == DocType.WriteOff || line.ToLocationId.HasValue)
+                    if (doc.Type is DocType.WriteOff or DocType.Outbound || line.ToLocationId.HasValue)
                     {
                         if (doc.Type != DocType.Move || line.FromLocationId != line.ToLocationId)
                         {
@@ -294,7 +313,7 @@ public sealed class DocumentService
             }
         }
 
-        if (doc.Type is DocType.WriteOff or DocType.Move)
+        if (doc.Type is DocType.WriteOff or DocType.Move or DocType.Outbound)
         {
             foreach (var entry in outgoing)
             {
@@ -310,6 +329,10 @@ public sealed class DocumentService
         }
 
         check.Doc = doc;
+        if (doc.Type == DocType.Outbound && !doc.PartnerId.HasValue)
+        {
+            check.Errors.Add("Для отгрузки требуется контрагент.");
+        }
         return check;
     }
 
@@ -332,6 +355,12 @@ public sealed class DocumentService
                 if (!fromLocationId.HasValue)
                 {
                     throw new ArgumentException("Для списания требуется локация источника (from).");
+                }
+                break;
+            case DocType.Outbound:
+                if (!fromLocationId.HasValue)
+                {
+                    throw new ArgumentException("Для отгрузки требуется локация источника (from).");
                 }
                 break;
             case DocType.Move:

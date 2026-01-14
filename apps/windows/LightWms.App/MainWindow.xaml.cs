@@ -364,7 +364,7 @@ public partial class MainWindow : Window
         {
             fromLocation = null;
         }
-        else if (_selectedDoc.Type == DocType.WriteOff)
+        else if (_selectedDoc.Type == DocType.WriteOff || _selectedDoc.Type == DocType.Outbound)
         {
             toLocation = null;
         }
@@ -494,7 +494,7 @@ public partial class MainWindow : Window
         DocHeaderPanel.Visibility = Visibility.Visible;
 
         var showFrom = _selectedDoc.Type != DocType.Inbound;
-        var showTo = _selectedDoc.Type != DocType.WriteOff;
+        var showTo = _selectedDoc.Type != DocType.WriteOff && _selectedDoc.Type != DocType.Outbound;
         DocFromLabel.Visibility = showFrom ? Visibility.Visible : Visibility.Collapsed;
         DocFromCombo.Visibility = showFrom ? Visibility.Visible : Visibility.Collapsed;
         DocToLabel.Visibility = showTo ? Visibility.Visible : Visibility.Collapsed;
@@ -560,6 +560,13 @@ public partial class MainWindow : Window
                 if (fromLocation == null)
                 {
                     MessageBox.Show("Для списания выберите локацию источника (from).", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return false;
+                }
+                return true;
+            case DocType.Outbound:
+                if (fromLocation == null)
+                {
+                    MessageBox.Show("Для отгрузки выберите локацию источника (from).", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return false;
                 }
                 return true;
