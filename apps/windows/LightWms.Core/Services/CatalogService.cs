@@ -22,6 +22,11 @@ public sealed class CatalogService
         return _data.GetLocations();
     }
 
+    public IReadOnlyList<Partner> GetPartners()
+    {
+        return _data.GetPartners();
+    }
+
     public long CreateItem(string name, string? barcode, string? gtin, string? uom)
     {
         if (string.IsNullOrWhiteSpace(name))
@@ -59,6 +64,23 @@ public sealed class CatalogService
         };
 
         return _data.AddLocation(location);
+    }
+
+    public long CreatePartner(string name, string? code)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new ArgumentException("Name is required.", nameof(name));
+        }
+
+        var partner = new Partner
+        {
+            Name = name.Trim(),
+            Code = string.IsNullOrWhiteSpace(code) ? null : code.Trim(),
+            CreatedAt = DateTime.Now
+        };
+
+        return _data.AddPartner(partner);
     }
 
     public void AssignBarcode(long itemId, string barcode)

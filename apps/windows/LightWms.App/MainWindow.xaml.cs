@@ -13,6 +13,7 @@ public partial class MainWindow : Window
     private readonly AppServices _services;
     private readonly ObservableCollection<Item> _items = new();
     private readonly ObservableCollection<Location> _locations = new();
+    private readonly ObservableCollection<Partner> _partners = new();
     private readonly ObservableCollection<Doc> _docs = new();
     private readonly ObservableCollection<DocLineView> _docLines = new();
     private readonly ObservableCollection<StockRow> _stock = new();
@@ -26,12 +27,14 @@ public partial class MainWindow : Window
 
         ItemsGrid.ItemsSource = _items;
         LocationsGrid.ItemsSource = _locations;
+        PartnersGrid.ItemsSource = _partners;
         DocsGrid.ItemsSource = _docs;
         DocLinesGrid.ItemsSource = _docLines;
         StockGrid.ItemsSource = _stock;
         DocItemCombo.ItemsSource = _items;
         DocFromCombo.ItemsSource = _locations;
         DocToCombo.ItemsSource = _locations;
+        DocPartnerCombo.ItemsSource = _partners;
 
         LoadAll();
         UpdateDocView();
@@ -41,6 +44,7 @@ public partial class MainWindow : Window
     {
         LoadItems();
         LoadLocations();
+        LoadPartners();
         LoadDocs();
         LoadStock(null);
     }
@@ -60,6 +64,15 @@ public partial class MainWindow : Window
         foreach (var location in _services.Catalog.GetLocations())
         {
             _locations.Add(location);
+        }
+    }
+
+    private void LoadPartners()
+    {
+        _partners.Clear();
+        foreach (var partner in _services.Catalog.GetPartners())
+        {
+            _partners.Add(partner);
         }
     }
 
@@ -250,6 +263,31 @@ public partial class MainWindow : Window
         }
     }
 
+    private void AddPartner_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(PartnerNameBox.Text))
+        {
+            MessageBox.Show("Введите имя контрагента.", "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        try
+        {
+            _services.Catalog.CreatePartner(PartnerNameBox.Text, PartnerCodeBox.Text);
+            PartnerNameBox.Text = string.Empty;
+            PartnerCodeBox.Text = string.Empty;
+            LoadPartners();
+        }
+        catch (ArgumentException ex)
+        {
+            MessageBox.Show(ex.Message, "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
     private void ImportBrowse_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog
@@ -402,6 +440,35 @@ public partial class MainWindow : Window
         }
     }
 
+    private void DocHeaderSave_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedDoc == null)
+        {
+            MessageBox.Show("Документ не выбран.", "Документ", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (_selectedDoc.Status != DocStatus.Draft)
+        {
+            MessageBox.Show("Документ уже закрыт.", "Документ", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var partnerId = (DocPartnerCombo.SelectedItem as Partner)?.Id;
+        try
+        {
+            _services.Documents.UpdateDocHeader(_selectedDoc.Id, partnerId, DocOrderRefBox.Text, DocShippingRefBox.Text);
+            LoadDocs();
+            var refreshed = _services.Documents.GetDoc(_selectedDoc.Id);
+            _selectedDoc = refreshed ?? _selectedDoc;
+            UpdateDocView();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Документ", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
     private void UpdateDocView()
     {
         if (_selectedDoc == null)
@@ -411,6 +478,11 @@ public partial class MainWindow : Window
             DocLinesGrid.Visibility = Visibility.Collapsed;
             DocEmptyText.Visibility = Visibility.Visible;
             DocEditGroup.Visibility = Visibility.Collapsed;
+            DocHeaderPanel.IsEnabled = false;
+            DocHeaderPanel.Visibility = Visibility.Collapsed;
+            DocPartnerCombo.SelectedItem = null;
+            DocOrderRefBox.Text = string.Empty;
+            DocShippingRefBox.Text = string.Empty;
             return;
         }
 
@@ -419,6 +491,7 @@ public partial class MainWindow : Window
         DocLinesGrid.Visibility = Visibility.Visible;
         DocEmptyText.Visibility = Visibility.Collapsed;
         DocEditGroup.Visibility = _selectedDoc.Status == DocStatus.Draft ? Visibility.Visible : Visibility.Collapsed;
+        DocHeaderPanel.Visibility = Visibility.Visible;
 
         var showFrom = _selectedDoc.Type != DocType.Inbound;
         var showTo = _selectedDoc.Type != DocType.WriteOff;
@@ -436,6 +509,11 @@ public partial class MainWindow : Window
         {
             DocToCombo.SelectedItem = null;
         }
+
+        DocHeaderPanel.IsEnabled = _selectedDoc.Status == DocStatus.Draft;
+        DocPartnerCombo.SelectedItem = _partners.FirstOrDefault(p => p.Id == _selectedDoc.PartnerId);
+        DocOrderRefBox.Text = _selectedDoc.OrderRef ?? string.Empty;
+        DocShippingRefBox.Text = _selectedDoc.ShippingRef ?? string.Empty;
     }
 
     private static string FormatDocHeader(Doc doc)

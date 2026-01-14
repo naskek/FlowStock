@@ -10,6 +10,7 @@ public sealed class SqliteDataStore : IDataStore
     private readonly string _connectionString;
     private readonly SqliteConnection? _connection;
     private readonly SqliteTransaction? _transaction;
+    private const string DocSelectBase = "SELECT d.id, d.doc_ref, d.type, d.status, d.created_at, d.closed_at, d.partner_id, d.order_ref, d.shipping_ref, p.name, p.code FROM docs d LEFT JOIN partners p ON p.id = d.partner_id";
 
     public SqliteDataStore(string dbPath)
     {
@@ -49,13 +50,24 @@ CREATE TABLE IF NOT EXISTS locations (
     code TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS partners (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    code TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_partners_code ON partners(code);
 CREATE TABLE IF NOT EXISTS docs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     doc_ref TEXT NOT NULL,
     type TEXT NOT NULL,
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    closed_at TEXT
+    closed_at TEXT,
+    partner_id INTEGER,
+    order_ref TEXT,
+    shipping_ref TEXT,
+    FOREIGN KEY (partner_id) REFERENCES partners(id)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ix_docs_ref_type ON docs(doc_ref, type);
 CREATE TABLE IF NOT EXISTS doc_lines (
@@ -91,6 +103,10 @@ CREATE TABLE IF NOT EXISTS import_errors (
 );
 ";
         command.ExecuteNonQuery();
+
+        EnsureColumn(connection, "docs", "partner_id", "INTEGER");
+        EnsureColumn(connection, "docs", "order_ref", "TEXT");
+        EnsureColumn(connection, "docs", "shipping_ref", "TEXT");
     }
 
     public void ExecuteInTransaction(Action<IDataStore> work)
@@ -219,11 +235,54 @@ SELECT last_insert_rowid();
         });
     }
 
+    public Partner? GetPartner(long id)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "SELECT id, name, code, created_at FROM partners WHERE id = @id");
+            command.Parameters.AddWithValue("@id", id);
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadPartner(reader) : null;
+        });
+    }
+
+    public IReadOnlyList<Partner> GetPartners()
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "SELECT id, name, code, created_at FROM partners ORDER BY name");
+            using var reader = command.ExecuteReader();
+            var partners = new List<Partner>();
+            while (reader.Read())
+            {
+                partners.Add(ReadPartner(reader));
+            }
+
+            return partners;
+        });
+    }
+
+    public long AddPartner(Partner partner)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO partners(name, code, created_at)
+VALUES(@name, @code, @created_at);
+SELECT last_insert_rowid();
+");
+            command.Parameters.AddWithValue("@name", partner.Name);
+            command.Parameters.AddWithValue("@code", (object?)partner.Code ?? DBNull.Value);
+            command.Parameters.AddWithValue("@created_at", ToDbDate(partner.CreatedAt));
+            return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
     public Doc? FindDocByRef(string docRef, DocType type)
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT id, doc_ref, type, status, created_at, closed_at FROM docs WHERE doc_ref = @doc_ref AND type = @type");
+            using var command = CreateCommand(connection, $"{DocSelectBase} WHERE d.doc_ref = @doc_ref AND d.type = @type");
             command.Parameters.AddWithValue("@doc_ref", docRef);
             command.Parameters.AddWithValue("@type", DocTypeMapper.ToOpString(type));
             using var reader = command.ExecuteReader();
@@ -235,7 +294,7 @@ SELECT last_insert_rowid();
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT id, doc_ref, type, status, created_at, closed_at FROM docs WHERE id = @id");
+            using var command = CreateCommand(connection, $"{DocSelectBase} WHERE d.id = @id");
             command.Parameters.AddWithValue("@id", id);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadDoc(reader) : null;
@@ -246,7 +305,7 @@ SELECT last_insert_rowid();
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT id, doc_ref, type, status, created_at, closed_at FROM docs ORDER BY created_at DESC");
+            using var command = CreateCommand(connection, $"{DocSelectBase} ORDER BY d.created_at DESC");
             using var reader = command.ExecuteReader();
             var docs = new List<Doc>();
             while (reader.Read())
@@ -263,8 +322,8 @@ SELECT last_insert_rowid();
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO docs(doc_ref, type, status, created_at, closed_at)
-VALUES(@doc_ref, @type, @status, @created_at, @closed_at);
+INSERT INTO docs(doc_ref, type, status, created_at, closed_at, partner_id, order_ref, shipping_ref)
+VALUES(@doc_ref, @type, @status, @created_at, @closed_at, @partner_id, @order_ref, @shipping_ref);
 SELECT last_insert_rowid();
 ");
             command.Parameters.AddWithValue("@doc_ref", doc.DocRef);
@@ -272,6 +331,9 @@ SELECT last_insert_rowid();
             command.Parameters.AddWithValue("@status", DocTypeMapper.StatusToString(doc.Status));
             command.Parameters.AddWithValue("@created_at", ToDbDate(doc.CreatedAt));
             command.Parameters.AddWithValue("@closed_at", doc.ClosedAt.HasValue ? ToDbDate(doc.ClosedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@partner_id", doc.PartnerId.HasValue ? doc.PartnerId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@order_ref", string.IsNullOrWhiteSpace(doc.OrderRef) ? DBNull.Value : doc.OrderRef);
+            command.Parameters.AddWithValue("@shipping_ref", string.IsNullOrWhiteSpace(doc.ShippingRef) ? DBNull.Value : doc.ShippingRef);
             return (long)(command.ExecuteScalar() ?? 0L);
         });
     }
@@ -362,6 +424,26 @@ SELECT last_insert_rowid();
         {
             using var command = CreateCommand(connection, "DELETE FROM doc_lines WHERE id = @id");
             command.Parameters.AddWithValue("@id", docLineId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void UpdateDocHeader(long docId, long? partnerId, string? orderRef, string? shippingRef)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE docs
+SET partner_id = @partner_id,
+    order_ref = @order_ref,
+    shipping_ref = @shipping_ref
+WHERE id = @id
+");
+            command.Parameters.AddWithValue("@partner_id", partnerId.HasValue ? partnerId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@order_ref", string.IsNullOrWhiteSpace(orderRef) ? DBNull.Value : orderRef);
+            command.Parameters.AddWithValue("@shipping_ref", string.IsNullOrWhiteSpace(shippingRef) ? DBNull.Value : shippingRef);
+            command.Parameters.AddWithValue("@id", docId);
             command.ExecuteNonQuery();
             return 0;
         });
@@ -570,10 +652,52 @@ SELECT last_insert_rowid();
         };
     }
 
+    private static Partner ReadPartner(SqliteDataReader reader)
+    {
+        return new Partner
+        {
+            Id = reader.GetInt64(0),
+            Name = reader.GetString(1),
+            Code = reader.IsDBNull(2) ? null : reader.GetString(2),
+            CreatedAt = FromDbDate(reader.GetString(3)) ?? DateTime.MinValue
+        };
+    }
+
     private static Doc ReadDoc(SqliteDataReader reader)
     {
         var type = DocTypeMapper.FromOpString(reader.GetString(2)) ?? DocType.Inbound;
         var status = DocTypeMapper.StatusFromString(reader.GetString(3)) ?? DocStatus.Draft;
+
+        long? partnerId = null;
+        string? orderRef = null;
+        string? shippingRef = null;
+        string? partnerName = null;
+        string? partnerCode = null;
+
+        if (reader.FieldCount > 6 && !reader.IsDBNull(6))
+        {
+            partnerId = reader.GetInt64(6);
+        }
+
+        if (reader.FieldCount > 7 && !reader.IsDBNull(7))
+        {
+            orderRef = reader.GetString(7);
+        }
+
+        if (reader.FieldCount > 8 && !reader.IsDBNull(8))
+        {
+            shippingRef = reader.GetString(8);
+        }
+
+        if (reader.FieldCount > 9 && !reader.IsDBNull(9))
+        {
+            partnerName = reader.GetString(9);
+        }
+
+        if (reader.FieldCount > 10 && !reader.IsDBNull(10))
+        {
+            partnerCode = reader.GetString(10);
+        }
 
         return new Doc
         {
@@ -582,7 +706,12 @@ SELECT last_insert_rowid();
             Type = type,
             Status = status,
             CreatedAt = FromDbDate(reader.GetString(4)) ?? DateTime.MinValue,
-            ClosedAt = reader.IsDBNull(5) ? null : FromDbDate(reader.GetString(5))
+            ClosedAt = reader.IsDBNull(5) ? null : FromDbDate(reader.GetString(5)),
+            PartnerId = partnerId,
+            OrderRef = orderRef,
+            ShippingRef = shippingRef,
+            PartnerName = partnerName,
+            PartnerCode = partnerCode
         };
     }
 
@@ -609,6 +738,35 @@ SELECT last_insert_rowid();
             RawJson = reader.GetString(3),
             CreatedAt = FromDbDate(reader.GetString(4)) ?? DateTime.MinValue
         };
+    }
+
+    private static void EnsureColumn(SqliteConnection connection, string tableName, string columnName, string definition)
+    {
+        if (ColumnExists(connection, tableName, columnName))
+        {
+            return;
+        }
+
+        using var command = connection.CreateCommand();
+        command.CommandText = $"ALTER TABLE {tableName} ADD COLUMN {columnName} {definition};";
+        command.ExecuteNonQuery();
+    }
+
+    private static bool ColumnExists(SqliteConnection connection, string tableName, string columnName)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA table_info({tableName});";
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var name = reader.GetString(1);
+            if (string.Equals(name, columnName, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static string BuildItemsQuery(string? search)

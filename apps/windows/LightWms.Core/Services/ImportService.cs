@@ -239,6 +239,8 @@ public sealed class ImportService
                 return to != null ? (null, to, true) : (null, null, false);
             case DocType.WriteOff:
                 return from != null ? (from, null, true) : (null, null, false);
+            case DocType.Outbound:
+                return from != null ? (from, null, true) : (null, null, false);
             case DocType.Move:
                 return from != null && to != null ? (from, to, true) : (null, null, false);
             case DocType.Inventory:

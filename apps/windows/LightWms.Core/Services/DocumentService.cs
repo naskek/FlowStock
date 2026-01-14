@@ -18,6 +18,11 @@ public sealed class DocumentService
         return _data.GetDocs();
     }
 
+    public Doc? GetDoc(long docId)
+    {
+        return _data.GetDoc(docId);
+    }
+
     public IReadOnlyList<DocLineView> GetDocLines(long docId)
     {
         return _data.GetDocLineViews(docId);
@@ -124,6 +129,25 @@ public sealed class DocumentService
         });
 
         return new CloseDocResult { Success = true };
+    }
+
+    public void UpdateDocHeader(long docId, long? partnerId, string? orderRef, string? shippingRef)
+    {
+        var doc = _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
+        if (doc.Status != DocStatus.Draft)
+        {
+            throw new InvalidOperationException("Документ уже закрыт.");
+        }
+
+        if (partnerId.HasValue && _data.GetPartner(partnerId.Value) == null)
+        {
+            throw new InvalidOperationException("Контрагент не найден.");
+        }
+
+        var cleanedOrderRef = string.IsNullOrWhiteSpace(orderRef) ? null : orderRef.Trim();
+        var cleanedShippingRef = string.IsNullOrWhiteSpace(shippingRef) ? null : shippingRef.Trim();
+
+        _data.UpdateDocHeader(docId, partnerId, cleanedOrderRef, cleanedShippingRef);
     }
 
     public void AddDocLine(long docId, long itemId, double qty, long? fromLocationId, long? toLocationId)

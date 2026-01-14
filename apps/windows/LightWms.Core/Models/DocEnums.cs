@@ -5,7 +5,8 @@ public enum DocType
     Inbound,
     WriteOff,
     Move,
-    Inventory
+    Inventory,
+    Outbound
 }
 
 public enum DocStatus
@@ -24,6 +25,7 @@ public static class DocTypeMapper
             "WRITE_OFF" => DocType.WriteOff,
             "MOVE" => DocType.Move,
             "INVENTORY" => DocType.Inventory,
+            "OUTBOUND" => DocType.Outbound,
             _ => null
         };
     }
@@ -36,6 +38,7 @@ public static class DocTypeMapper
             DocType.WriteOff => "WRITE_OFF",
             DocType.Move => "MOVE",
             DocType.Inventory => "INVENTORY",
+            DocType.Outbound => "OUTBOUND",
             _ => "UNKNOWN"
         };
     }

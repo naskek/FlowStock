@@ -17,6 +17,10 @@ public interface IDataStore
     IReadOnlyList<Location> GetLocations();
     long AddLocation(Location location);
 
+    Partner? GetPartner(long id);
+    IReadOnlyList<Partner> GetPartners();
+    long AddPartner(Partner partner);
+
     Doc? FindDocByRef(string docRef, DocType type);
     Doc? GetDoc(long id);
     IReadOnlyList<Doc> GetDocs();
@@ -26,6 +30,7 @@ public interface IDataStore
     long AddDocLine(DocLine line);
     void UpdateDocLineQty(long docLineId, double qty);
     void DeleteDocLine(long docLineId);
+    void UpdateDocHeader(long docId, long? partnerId, string? orderRef, string? shippingRef);
     void UpdateDocStatus(long docId, DocStatus status, DateTime? closedAt);
 
     void AddLedgerEntry(LedgerEntry entry);
