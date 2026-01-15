@@ -189,7 +189,7 @@ public partial class OperationDetailsWindow : Window
 
         try
         {
-            var existing = _services.Documents.GetDocLines(_doc!.Id)
+            var existing = _services.DataStore.GetDocLines(_doc!.Id)
                 .FirstOrDefault(line => line.ItemId == item.Id
                                         && line.FromLocationId == fromLocation?.Id
                                         && line.ToLocationId == toLocation?.Id);
@@ -312,8 +312,7 @@ public partial class OperationDetailsWindow : Window
 
         if (_doc.Status == DocStatus.Draft)
         {
-            DocBarcodeBox.Focus();
-            DocBarcodeBox.SelectAll();
+            AddItemButton.Focus();
         }
     }
 
