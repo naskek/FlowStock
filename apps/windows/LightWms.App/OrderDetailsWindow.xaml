@@ -29,7 +29,8 @@
                 <ComboBox x:Name="PartnerCombo" Grid.Row="0" Grid.Column="3" DisplayMemberPath="DisplayName" Margin="0,0,0,6" TabIndex="2" />
 
                 <TextBlock Text="Плановая отгрузка" Grid.Row="1" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,0" />
-                <DatePicker x:Name="DueDatePicker" Grid.Row="1" Grid.Column="1" Margin="0,0,16,6" TabIndex="3" />
+                <DatePicker x:Name="DueDatePicker" Grid.Row="1" Grid.Column="1" Margin="0,0,16,6"
+                            TabIndex="3" Language="en-GB" SelectedDateFormat="Short" />
                 <TextBlock Text="Статус" Grid.Row="1" Grid.Column="2" VerticalAlignment="Center" Margin="0,0,8,0" />
                 <ComboBox x:Name="StatusCombo" Grid.Row="1" Grid.Column="3" DisplayMemberPath="Name" Margin="0,0,0,6" TabIndex="4" />
 
@@ -52,7 +53,7 @@
                           SelectionChanged="OrderLinesGrid_SelectionChanged" TabIndex="8">
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
-                        <DataGridTextColumn Header="Заказано" Binding="{Binding QtyOrdered}" Width="120" />
+                        <DataGridTextColumn Header="Заказано (база)" Binding="{Binding QtyOrdered}" Width="140" />
                         <DataGridTextColumn Header="Отгружено" Binding="{Binding QtyShipped}" Width="120" />
                         <DataGridTextColumn Header="Осталось" Binding="{Binding QtyRemaining}" Width="120" />
                         <DataGridTextColumn Header="В наличии" Binding="{Binding QtyAvailable}" Width="120" />

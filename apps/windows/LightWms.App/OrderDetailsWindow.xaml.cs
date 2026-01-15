@@ -159,7 +159,9 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        var qtyDialog = new QuantityDialog(1)
+        var packagings = _services.Packagings.GetPackagings(item.Id);
+        var defaultUomCode = ResolveDefaultUomCode(item, packagings);
+        var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, 1, defaultUomCode)
         {
             Owner = this
         };
@@ -168,11 +170,11 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        var qty = qtyDialog.Qty;
+        var qtyBase = qtyDialog.QtyBase;
         var existing = _lines.FirstOrDefault(l => l.ItemId == item.Id);
         if (existing != null)
         {
-            existing.QtyOrdered += qty;
+            existing.QtyOrdered += qtyBase;
         }
         else
         {
@@ -180,7 +182,7 @@ public partial class OrderDetailsWindow : Window
             {
                 ItemId = item.Id,
                 ItemName = item.Name,
-                QtyOrdered = qty
+                QtyOrdered = qtyBase
             });
         }
 
@@ -303,6 +305,20 @@ public partial class OrderDetailsWindow : Window
         }
 
         return true;
+    }
+
+    private static string ResolveDefaultUomCode(Item item, IReadOnlyList<ItemPackaging> packagings)
+    {
+        if (item.DefaultPackagingId.HasValue)
+        {
+            var packaging = packagings.FirstOrDefault(p => p.Id == item.DefaultPackagingId.Value);
+            if (packaging != null)
+            {
+                return packaging.Code;
+            }
+        }
+
+        return "BASE";
     }
 
     private sealed class OrderStatusOption
