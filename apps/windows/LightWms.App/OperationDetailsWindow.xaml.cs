@@ -233,6 +233,39 @@ public partial class OperationDetailsWindow : Window
         }
     }
 
+    private void DocEditLine_Click(object sender, RoutedEventArgs e)
+    {
+        if (!EnsureDraftDocSelected())
+        {
+            return;
+        }
+
+        if (_selectedDocLine == null)
+        {
+            MessageBox.Show("Выберите строку.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var qtyDialog = new QuantityDialog(_selectedDocLine.Qty)
+        {
+            Owner = this
+        };
+        if (qtyDialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        try
+        {
+            _services.Documents.UpdateDocLineQty(_doc!.Id, _selectedDocLine.Id, qtyDialog.Qty);
+            LoadDocLines();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
     private void DocHeaderSave_Click(object sender, RoutedEventArgs e)
     {
         if (_doc == null)
@@ -371,6 +404,7 @@ public partial class OperationDetailsWindow : Window
     {
         var isDraft = _doc?.Status == DocStatus.Draft;
         AddItemButton.IsEnabled = isDraft;
+        EditLineButton.IsEnabled = isDraft && _selectedDocLine != null;
         DeleteLineButton.IsEnabled = isDraft && _selectedDocLine != null;
     }
 
