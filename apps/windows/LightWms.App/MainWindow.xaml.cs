@@ -763,7 +763,7 @@ public partial class MainWindow : Window
 
     private void OpenDataFolder_Click(object sender, RoutedEventArgs e)
     {
-        var dataDir = Path.GetDirectoryName(_services.DatabasePath);
+        var dataDir = _services.BaseDir;
         if (string.IsNullOrWhiteSpace(dataDir) || !Directory.Exists(dataDir))
         {
             MessageBox.Show("Папка данных не найдена.", "Сервис", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -779,8 +779,7 @@ public partial class MainWindow : Window
 
     private void OpenLogsFolder_Click(object sender, RoutedEventArgs e)
     {
-        var dataDir = Path.GetDirectoryName(_services.DatabasePath);
-        var logsDir = string.IsNullOrWhiteSpace(dataDir) ? null : Path.Combine(dataDir, "logs");
+        var logsDir = _services.LogsDir;
         if (string.IsNullOrWhiteSpace(logsDir) || !Directory.Exists(logsDir))
         {
             MessageBox.Show("Папка логов не найдена.", "Сервис", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -792,6 +791,49 @@ public partial class MainWindow : Window
             FileName = logsDir,
             UseShellExecute = true
         });
+    }
+
+    private void OpenBackupManager_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new BackupManagerWindow(_services);
+        window.Owner = this;
+        window.ShowDialog();
+    }
+
+    private void OpenAdmin_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_services.AdminAuth.EnsureAdminPasswordExists())
+        {
+            var setWindow = new SetAdminPasswordWindow(_services.AdminAuth);
+            setWindow.Owner = this;
+            if (setWindow.ShowDialog() != true)
+            {
+                return;
+            }
+        }
+
+        var prompt = new PasswordPromptWindow(_services.AdminAuth);
+        prompt.Owner = this;
+        if (prompt.ShowDialog() != true)
+        {
+            return;
+        }
+
+        var window = new AdminWindow(_services, () =>
+        {
+            LoadDocs();
+            LoadOrders();
+            LoadStock(StatusSearchBox.Text);
+            LoadItems();
+            LoadLocations();
+            LoadPartners();
+            LoadUoms();
+            ClearItemForm();
+            ClearLocationForm();
+            ClearPartnerForm();
+        });
+        window.Owner = this;
+        window.ShowDialog();
     }
 
     private void SelectTab(int index)
