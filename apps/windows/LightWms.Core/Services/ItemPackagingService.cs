@@ -41,7 +41,7 @@ public sealed class ItemPackagingService
         return _data.AddItemPackaging(packaging);
     }
 
-    public void UpdatePackaging(long packagingId, string code, string name, double factorToBase, int sortOrder, bool isActive)
+    public void UpdatePackaging(long packagingId, long itemId, string code, string name, double factorToBase, int sortOrder, bool isActive)
     {
         ValidatePackagingInput(code, name, factorToBase);
 
@@ -51,7 +51,9 @@ public sealed class ItemPackagingService
             throw new InvalidOperationException("Упаковка не найдена.");
         }
 
-        var duplicate = _data.FindItemPackagingByCode(existing.ItemId, code.Trim());
+        EnsureItemExists(itemId);
+
+        var duplicate = _data.FindItemPackagingByCode(itemId, code.Trim());
         if (duplicate != null && duplicate.Id != packagingId)
         {
             throw new ArgumentException("Код упаковки уже используется.", nameof(code));
@@ -60,7 +62,7 @@ public sealed class ItemPackagingService
         var updated = new ItemPackaging
         {
             Id = packagingId,
-            ItemId = existing.ItemId,
+            ItemId = itemId,
             Code = code.Trim(),
             Name = name.Trim(),
             FactorToBase = factorToBase,
@@ -69,6 +71,24 @@ public sealed class ItemPackagingService
         };
 
         _data.UpdateItemPackaging(updated);
+
+        if (existing.ItemId != itemId)
+        {
+            var oldItem = _data.FindItemById(existing.ItemId);
+            if (oldItem?.DefaultPackagingId == packagingId)
+            {
+                _data.UpdateItemDefaultPackaging(existing.ItemId, null);
+            }
+        }
+
+        if (!isActive)
+        {
+            var item = _data.FindItemById(itemId);
+            if (item?.DefaultPackagingId == packagingId)
+            {
+                _data.UpdateItemDefaultPackaging(itemId, null);
+            }
+        }
     }
 
     public void DeactivatePackaging(long packagingId)

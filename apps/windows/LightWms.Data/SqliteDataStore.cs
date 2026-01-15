@@ -408,13 +408,15 @@ SELECT last_insert_rowid();
         {
             using var command = CreateCommand(connection, @"
 UPDATE item_packaging
-SET code = @code,
+SET item_id = @item_id,
+    code = @code,
     name = @name,
     factor_to_base = @factor_to_base,
     is_active = @is_active,
     sort_order = @sort_order
 WHERE id = @id;
 ");
+            command.Parameters.AddWithValue("@item_id", packaging.ItemId);
             command.Parameters.AddWithValue("@code", packaging.Code);
             command.Parameters.AddWithValue("@name", packaging.Name);
             command.Parameters.AddWithValue("@factor_to_base", packaging.FactorToBase);

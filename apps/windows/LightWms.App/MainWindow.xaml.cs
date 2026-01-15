@@ -945,6 +945,18 @@ public partial class MainWindow : Window
         LoadUoms();
     }
 
+    private void PackagingManager_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new PackagingManagerWindow(_services)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+
+        LoadItems();
+        LoadStock(StatusSearchBox.Text);
+    }
+
     private void ImportErrors_Click(object sender, RoutedEventArgs e)
     {
         SelectTab(TabDocsIndex);

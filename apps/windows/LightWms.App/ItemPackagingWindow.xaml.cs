@@ -29,6 +29,9 @@ public partial class ItemPackagingWindow : Window
         _item = _services.DataStore.FindItemById(_itemId);
         var title = _item == null ? "Товар не найден" : $"Товар: {_item.Name} (база: {_item.BaseUom})";
         ItemTitleText.Text = title;
+        PackagingFactorLabel.Text = _item == null
+            ? "Количество в упаковке (база)"
+            : $"Количество в упаковке ({_item.BaseUom})";
     }
 
     private void LoadPackagings()
@@ -96,7 +99,7 @@ public partial class ItemPackagingWindow : Window
         try
         {
             var isActive = PackagingActiveCheck.IsChecked == true;
-            _services.Packagings.UpdatePackaging(_selectedPackaging.Id, code, name, factor, sortOrder, isActive);
+            _services.Packagings.UpdatePackaging(_selectedPackaging.Id, _itemId, code, name, factor, sortOrder, isActive);
             LoadPackagings();
         }
         catch (Exception ex)

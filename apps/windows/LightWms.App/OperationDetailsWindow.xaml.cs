@@ -446,7 +446,7 @@ public partial class OperationDetailsWindow : Window
         if (line.QtyInput.HasValue && !string.IsNullOrWhiteSpace(line.UomCode) && !IsBaseUomCode(line.UomCode))
         {
             var packaging = _services.Packagings
-                .GetPackagings(line.ItemId)
+                .GetPackagings(line.ItemId, includeInactive: true)
                 .FirstOrDefault(p => string.Equals(p.Code, line.UomCode, StringComparison.OrdinalIgnoreCase));
             if (packaging != null)
             {

@@ -20,6 +20,7 @@
                 <MenuItem Header="Контрагенты" Click="ViewPartners_Click" />
                 <Separator />
                 <MenuItem Header="Ед. измерения..." Click="UomMenu_Click" />
+                <MenuItem Header="Упаковки..." Click="PackagingManager_Click" />
             </MenuItem>
             <MenuItem Header="Вид">
                 <MenuItem Header="Остатки" Click="ViewStatus_Click" />
