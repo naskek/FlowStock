@@ -42,35 +42,18 @@
                 </StackPanel>
             </WrapPanel>
         </StackPanel>
-        <Border x:Name="DocEditGroup" Grid.Row="1" Margin="0,0,0,8">
-            <StackPanel Margin="8">
-                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
-                    <TextBlock Text="Штрихкод" VerticalAlignment="Center" />
-                    <TextBox x:Name="DocBarcodeBox" Width="160" Margin="6,0,12,0"
-                             KeyDown="DocBarcodeBox_KeyDown" />
-                    <TextBlock Text="Товар" VerticalAlignment="Center" />
-                    <ComboBox x:Name="DocItemCombo" Width="200" Margin="6,0,12,0" DisplayMemberPath="Name" />
-                    <TextBlock Text="Кол-во" VerticalAlignment="Center" />
-                    <TextBox x:Name="DocItemQtyBox" Width="90" Margin="6,0,12,0" />
-                    <Button Content="Добавить" Click="DocAddLine_Click" />
-                </StackPanel>
-                <StackPanel Orientation="Horizontal">
-                    <TextBlock Text="Кол-во (выделенная строка)" VerticalAlignment="Center" />
-                    <TextBox x:Name="DocLineQtyBox" Width="100" Margin="6,0,12,0" />
-                    <Button Content="Сохранить" Click="DocUpdateLine_Click" />
-                    <Button Content="Удалить" Click="DocDeleteLine_Click" Margin="8,0,0,0" />
-                </StackPanel>
-            </StackPanel>
-        </Border>
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
+            <Button x:Name="AddItemButton" Content="+ Товар" Click="DocAddLine_Click" />
+            <Button x:Name="DeleteLineButton" Content="Удалить строку" Click="DocDeleteLine_Click" Margin="8,0,0,0" />
+        </StackPanel>
         <DataGrid x:Name="DocLinesGrid" Grid.Row="2" AutoGenerateColumns="False" IsReadOnly="True"
                   SelectionChanged="DocLines_SelectionChanged"
                   KeyDown="DocLinesGrid_KeyDown">
             <DataGrid.Columns>
                 <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
-                <DataGridTextColumn Header="Штрихкод" Binding="{Binding Barcode}" Width="160" />
                 <DataGridTextColumn Header="Кол-во" Binding="{Binding Qty}" Width="100" />
-                <DataGridTextColumn Header="Откуда" Binding="{Binding FromLocation}" Width="140" />
-                <DataGridTextColumn Header="Куда" Binding="{Binding ToLocation}" Width="140" />
+                <DataGridTextColumn x:Name="DocFromColumn" Header="Откуда" Binding="{Binding FromLocation}" Width="140" />
+                <DataGridTextColumn x:Name="DocToColumn" Header="Куда" Binding="{Binding ToLocation}" Width="140" />
             </DataGrid.Columns>
         </DataGrid>
     </Grid>

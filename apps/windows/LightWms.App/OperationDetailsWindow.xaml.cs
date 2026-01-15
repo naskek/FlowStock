@@ -10,7 +10,6 @@ namespace LightWms.App;
 public partial class OperationDetailsWindow : Window
 {
     private readonly AppServices _services;
-    private readonly ObservableCollection<Item> _items = new();
     private readonly ObservableCollection<Location> _locations = new();
     private readonly ObservableCollection<Partner> _partners = new();
     private readonly ObservableCollection<DocLineView> _docLines = new();
@@ -25,7 +24,6 @@ public partial class OperationDetailsWindow : Window
         InitializeComponent();
 
         DocLinesGrid.ItemsSource = _docLines;
-        DocItemCombo.ItemsSource = _items;
         DocFromCombo.ItemsSource = _locations;
         DocToCombo.ItemsSource = _locations;
         DocPartnerCombo.ItemsSource = _partners;
@@ -45,12 +43,6 @@ public partial class OperationDetailsWindow : Window
 
     private void LoadCatalog()
     {
-        _items.Clear();
-        foreach (var item in _services.Catalog.GetItems(null))
-        {
-            _items.Add(item);
-        }
-
         _locations.Clear();
         foreach (var location in _services.Catalog.GetLocations())
         {
@@ -88,19 +80,13 @@ public partial class OperationDetailsWindow : Window
         }
 
         _selectedDocLine = null;
-        DocLineQtyBox.Text = string.Empty;
+        UpdateLineButtons();
     }
 
     private void DocLines_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
         _selectedDocLine = DocLinesGrid.SelectedItem as DocLineView;
-        if (_selectedDocLine == null)
-        {
-            DocLineQtyBox.Text = string.Empty;
-            return;
-        }
-
-        DocLineQtyBox.Text = _selectedDocLine.Qty.ToString("0.###", CultureInfo.CurrentCulture);
+        UpdateLineButtons();
     }
 
     private void DocLinesGrid_KeyDown(object sender, KeyEventArgs e)
@@ -108,16 +94,11 @@ public partial class OperationDetailsWindow : Window
         if (e.Key == Key.Delete)
         {
             e.Handled = true;
+            if (_doc?.Status != DocStatus.Draft)
+            {
+                return;
+            }
             DocDeleteLine_Click(sender, new RoutedEventArgs());
-        }
-    }
-
-    private void DocBarcodeBox_KeyDown(object sender, KeyEventArgs e)
-    {
-        if (e.Key == Key.Enter)
-        {
-            e.Handled = true;
-            DocAddLine_Click(sender, new RoutedEventArgs());
         }
     }
 
@@ -182,69 +163,44 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        if (!TryResolveDocItem(out var item))
+        var picker = new ItemPickerWindow(_services)
+        {
+            Owner = this
+        };
+        if (picker.ShowDialog() != true || picker.SelectedItem is not Item item)
         {
             return;
         }
 
-        if (!TryParseQty(DocItemQtyBox.Text, out var qty))
+        var qtyDialog = new QuantityDialog(1)
         {
-            MessageBox.Show("Количество должно быть больше 0.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        var fromLocation = DocFromCombo.SelectedItem as Location;
-        var toLocation = DocToCombo.SelectedItem as Location;
-        if (_doc!.Type == DocType.Inbound)
-        {
-            fromLocation = null;
-        }
-        else if (_doc.Type == DocType.WriteOff || _doc.Type == DocType.Outbound)
-        {
-            toLocation = null;
-        }
-
-        if (!ValidateLineLocations(_doc!, fromLocation, toLocation))
+            Owner = this
+        };
+        if (qtyDialog.ShowDialog() != true)
         {
             return;
         }
 
-        try
+        var qty = qtyDialog.Qty;
+        if (!TryGetLineLocations(out var fromLocation, out var toLocation))
         {
-            _services.Documents.AddDocLine(_doc!.Id, item!.Id, qty, fromLocation?.Id, toLocation?.Id);
-            DocItemQtyBox.Text = string.Empty;
-            DocBarcodeBox.Text = string.Empty;
-            LoadDocLines();
-            DocBarcodeBox.Focus();
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void DocUpdateLine_Click(object sender, RoutedEventArgs e)
-    {
-        if (!EnsureDraftDocSelected())
-        {
-            return;
-        }
-
-        if (_selectedDocLine == null)
-        {
-            MessageBox.Show("Выберите строку.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        if (!TryParseQty(DocLineQtyBox.Text, out var qty))
-        {
-            MessageBox.Show("Количество должно быть больше 0.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
         try
         {
-            _services.Documents.UpdateDocLineQty(_doc!.Id, _selectedDocLine.Id, qty);
+            var existing = _services.Documents.GetDocLines(_doc!.Id)
+                .FirstOrDefault(line => line.ItemId == item.Id
+                                        && line.FromLocationId == fromLocation?.Id
+                                        && line.ToLocationId == toLocation?.Id);
+            if (existing != null)
+            {
+                _services.Documents.UpdateDocLineQty(_doc!.Id, existing.Id, existing.Qty + qty);
+            }
+            else
+            {
+                _services.Documents.AddDocLine(_doc!.Id, item!.Id, qty, fromLocation?.Id, toLocation?.Id);
+            }
             LoadDocLines();
         }
         catch (Exception ex)
@@ -313,13 +269,13 @@ public partial class OperationDetailsWindow : Window
         DocInfoText.Text = FormatDocHeader(_doc);
         var isDraft = _doc.Status == DocStatus.Draft;
         DocCloseButton.IsEnabled = isDraft;
-        DocEditGroup.Visibility = isDraft ? Visibility.Visible : Visibility.Collapsed;
         DocHeaderPanel.IsEnabled = isDraft;
 
         ConfigureHeaderFields(_doc, isDraft);
         DocPartnerCombo.SelectedItem = _partners.FirstOrDefault(p => p.Id == _doc.PartnerId);
         DocOrderRefBox.Text = _doc.OrderRef ?? string.Empty;
         DocShippingRefBox.Text = _doc.ShippingRef ?? string.Empty;
+        UpdateLineButtons();
 
         if (_doc.Status == DocStatus.Draft)
         {
@@ -395,6 +351,11 @@ public partial class OperationDetailsWindow : Window
             ? Visibility.Visible
             : Visibility.Collapsed;
         DocHeaderSaveButton.IsEnabled = isDraft;
+
+        DocFromColumn.Visibility = showFrom ? Visibility.Visible : Visibility.Collapsed;
+        DocToColumn.Visibility = showTo ? Visibility.Visible : Visibility.Collapsed;
+        DocFromColumn.Header = fromLabel;
+        DocToColumn.Header = toLabel;
     }
 
     private static string FormatDocHeader(Doc doc)
@@ -406,37 +367,33 @@ public partial class OperationDetailsWindow : Window
         return $"Номер: {doc.DocRef} | Тип: {DocTypeMapper.ToDisplayName(doc.Type)} | Статус: {DocTypeMapper.StatusToDisplayName(doc.Status)} | Создан: {createdAt} | Проведена: {closedAt}";
     }
 
-    private static bool TryParseQty(string input, out double qty)
+    private void UpdateLineButtons()
     {
-        return double.TryParse(input, NumberStyles.Float, CultureInfo.CurrentCulture, out qty) && qty > 0;
+        var isDraft = _doc?.Status == DocStatus.Draft;
+        AddItemButton.IsEnabled = isDraft;
+        DeleteLineButton.IsEnabled = isDraft && _selectedDocLine != null;
     }
 
-    private bool TryResolveDocItem(out Item? item)
+    private bool TryGetLineLocations(out Location? fromLocation, out Location? toLocation)
     {
-        item = null;
-        var barcode = DocBarcodeBox.Text?.Trim();
-        if (!string.IsNullOrWhiteSpace(barcode))
-        {
-            item = _items.FirstOrDefault(i => string.Equals(i.Barcode, barcode, StringComparison.OrdinalIgnoreCase))
-                   ?? _items.FirstOrDefault(i => string.Equals(i.Gtin, barcode, StringComparison.OrdinalIgnoreCase));
-            if (item == null)
-            {
-                MessageBox.Show("Товар со штрихкодом/GTIN не найден.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return false;
-            }
+        fromLocation = DocFromCombo.SelectedItem as Location;
+        toLocation = DocToCombo.SelectedItem as Location;
 
-            DocItemCombo.SelectedItem = item;
-            return true;
+        if (_doc == null)
+        {
+            return false;
         }
 
-        if (DocItemCombo.SelectedItem is Item selected)
+        if (_doc.Type == DocType.Inbound || _doc.Type == DocType.Inventory)
         {
-            item = selected;
-            return true;
+            fromLocation = null;
+        }
+        else if (_doc.Type == DocType.WriteOff || _doc.Type == DocType.Outbound)
+        {
+            toLocation = null;
         }
 
-        MessageBox.Show("Выберите товар или укажите штрихкод.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
-        return false;
+        return ValidateLineLocations(_doc, fromLocation, toLocation);
     }
 
     private bool EnsureDraftDocSelected()
