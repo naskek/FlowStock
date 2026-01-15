@@ -1,0 +1,67 @@
+<Window x:Class="LightWms.App.OrderDetailsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Заказ"
+        Height="700" Width="1100"
+        WindowStartupLocation="CenterOwner">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <GroupBox Header="Заказ" Grid.Row="0" Margin="0,0,0,8">
+            <Grid Margin="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <TextBlock Text="Номер" Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,0" />
+                <TextBox x:Name="OrderRefBox" Grid.Row="0" Grid.Column="1" Margin="0,0,16,6" />
+                <TextBlock Text="Контрагент" Grid.Row="0" Grid.Column="2" VerticalAlignment="Center" Margin="0,0,8,0" />
+                <ComboBox x:Name="PartnerCombo" Grid.Row="0" Grid.Column="3" DisplayMemberPath="DisplayName" Margin="0,0,0,6" />
+
+                <TextBlock Text="Плановая отгрузка" Grid.Row="1" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,0" />
+                <DatePicker x:Name="DueDatePicker" Grid.Row="1" Grid.Column="1" Margin="0,0,16,6" />
+                <TextBlock Text="Статус" Grid.Row="1" Grid.Column="2" VerticalAlignment="Center" Margin="0,0,8,0" />
+                <ComboBox x:Name="StatusCombo" Grid.Row="1" Grid.Column="3" DisplayMemberPath="Name" Margin="0,0,0,6" />
+
+                <TextBlock Text="Комментарий" Grid.Row="2" Grid.Column="0" VerticalAlignment="Top" Margin="0,0,8,0" />
+                <TextBox x:Name="CommentBox" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="3"
+                         Height="60" AcceptsReturn="True" TextWrapping="Wrap" />
+            </Grid>
+        </GroupBox>
+        <DataGrid x:Name="OrderLinesGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
+                  SelectionChanged="OrderLinesGrid_SelectionChanged">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
+                <DataGridTextColumn Header="Заказано" Binding="{Binding QtyOrdered}" Width="120" />
+                <DataGridTextColumn Header="Отгружено" Binding="{Binding QtyShipped}" Width="120" />
+                <DataGridTextColumn Header="Осталось" Binding="{Binding QtyRemaining}" Width="120" />
+                <DataGridTextColumn Header="В наличии" Binding="{Binding QtyAvailable}" Width="120" />
+                <DataGridTextColumn Header="Можно отгрузить" Binding="{Binding CanShipNow}" Width="140" />
+                <DataGridTextColumn Header="Не хватает" Binding="{Binding Shortage}" Width="120" />
+            </DataGrid.Columns>
+        </DataGrid>
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,8,0,8">
+            <TextBlock Text="Товар" VerticalAlignment="Center" />
+            <ComboBox x:Name="LineItemCombo" Width="260" Margin="6,0,12,0" DisplayMemberPath="Name" />
+            <TextBlock Text="Кол-во" VerticalAlignment="Center" />
+            <TextBox x:Name="LineQtyBox" Width="100" Margin="6,0,12,0" />
+            <Button Content="Добавить" Click="AddLine_Click" />
+            <Button x:Name="DeleteLineButton" Content="Удалить строку" Click="DeleteLine_Click" Margin="8,0,0,0" />
+        </StackPanel>
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="SaveButton" Content="Сохранить" Width="120" Click="Save_Click" />
+            <Button Content="Закрыть" Width="120" IsCancel="True" Margin="8,0,0,0" />
+        </StackPanel>
+    </Grid>
+</Window>
