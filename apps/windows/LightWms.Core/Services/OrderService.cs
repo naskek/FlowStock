@@ -6,6 +6,7 @@ namespace LightWms.Core.Services;
 
 public sealed class OrderService
 {
+    private const double QtyTolerance = 0.000001;
     private readonly IDataStore _data;
 
     public OrderService(IDataStore data)
@@ -15,12 +16,20 @@ public sealed class OrderService
 
     public IReadOnlyList<Order> GetOrders()
     {
-        return _data.GetOrders();
+        var orders = _data.GetOrders();
+        var result = new List<Order>(orders.Count);
+        foreach (var order in orders)
+        {
+            result.Add(ApplyAutoStatus(order));
+        }
+
+        return result;
     }
 
     public Order? GetOrder(long id)
     {
-        return _data.GetOrder(id);
+        var order = _data.GetOrder(id);
+        return order == null ? null : ApplyAutoStatus(order);
     }
 
     public IReadOnlyList<OrderLineView> GetOrderLineViews(long orderId)
@@ -145,6 +154,68 @@ public sealed class OrderService
         });
     }
 
+    public long CreateOutboundFromStock(long orderId)
+    {
+        var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+        var lines = GetOrderLineViews(orderId);
+        var linesToShip = lines.Where(line => line.CanShipNow > QtyTolerance).ToList();
+        if (linesToShip.Count == 0)
+        {
+            throw new InvalidOperationException("Нет доступных позиций для отгрузки.");
+        }
+
+        var location = _data.FindLocationByCode("01") ?? _data.GetLocations().FirstOrDefault();
+        if (location == null)
+        {
+            throw new InvalidOperationException("Не задано место хранения для отгрузки.");
+        }
+
+        var docRef = BuildOutboundRef(order.OrderRef);
+        long docId = 0;
+
+        _data.ExecuteInTransaction(store =>
+        {
+            var uniqueRef = EnsureUniqueDocRef(store, docRef);
+            docId = store.AddDoc(new Doc
+            {
+                DocRef = uniqueRef,
+                Type = DocType.Outbound,
+                Status = DocStatus.Draft,
+                CreatedAt = DateTime.Now,
+                ClosedAt = null,
+                PartnerId = order.PartnerId,
+                OrderId = order.Id,
+                OrderRef = order.OrderRef
+            });
+
+            foreach (var line in linesToShip)
+            {
+                store.AddDocLine(new DocLine
+                {
+                    DocId = docId,
+                    ItemId = line.ItemId,
+                    Qty = line.CanShipNow,
+                    FromLocationId = location.Id,
+                    ToLocationId = null
+                });
+            }
+
+            if (order.Status == OrderStatus.Accepted)
+            {
+                store.UpdateOrderStatus(order.Id, OrderStatus.InProgress);
+            }
+        });
+
+        return docId;
+    }
+
+    public IReadOnlyList<Doc> GetOutboundDocs(long orderId)
+    {
+        return _data.GetDocsByOrder(orderId)
+            .Where(doc => doc.Type == DocType.Outbound)
+            .ToList();
+    }
+
     private void ApplyLineMetrics(long orderId, IReadOnlyList<OrderLineView> lines)
     {
         var availableByItem = _data.GetLedgerTotalsByItem();
@@ -194,4 +265,65 @@ public sealed class OrderService
         return grouped.Values.ToList();
     }
 
+    private Order ApplyAutoStatus(Order order)
+    {
+        var hasOutbound = _data.HasOutboundDocs(order.Id);
+        var lines = _data.GetOrderLines(order.Id);
+        var shippedTotals = _data.GetShippedTotalsByOrder(order.Id);
+
+        var fullyShipped = lines.Count > 0 && lines.All(line =>
+        {
+            var shipped = shippedTotals.TryGetValue(line.ItemId, out var qty) ? qty : 0;
+            return shipped + QtyTolerance >= line.QtyOrdered;
+        });
+
+        var nextStatus = order.Status;
+        if (fullyShipped)
+        {
+            nextStatus = OrderStatus.Shipped;
+        }
+        else if (hasOutbound && order.Status == OrderStatus.Accepted)
+        {
+            nextStatus = OrderStatus.InProgress;
+        }
+
+        if (nextStatus != order.Status)
+        {
+            _data.UpdateOrderStatus(order.Id, nextStatus);
+        }
+
+        var shippedAt = fullyShipped ? _data.GetOrderShippedAt(order.Id) : null;
+        return new Order
+        {
+            Id = order.Id,
+            OrderRef = order.OrderRef,
+            PartnerId = order.PartnerId,
+            DueDate = order.DueDate,
+            Status = nextStatus,
+            Comment = order.Comment,
+            CreatedAt = order.CreatedAt,
+            ShippedAt = shippedAt,
+            PartnerName = order.PartnerName,
+            PartnerCode = order.PartnerCode
+        };
+    }
+
+    private string BuildOutboundRef(string orderRef)
+    {
+        var safeRef = string.IsNullOrWhiteSpace(orderRef) ? "ORDER" : orderRef.Trim();
+        return $"OUT-{safeRef}-{DateTime.Now:yyyyMMdd-HHmm}";
+    }
+
+    private string EnsureUniqueDocRef(IDataStore store, string docRef)
+    {
+        var candidate = docRef;
+        var suffix = 1;
+        while (store.FindDocByRef(candidate, DocType.Outbound) != null)
+        {
+            candidate = $"{docRef}-{suffix}";
+            suffix++;
+        }
+
+        return candidate;
+    }
 }

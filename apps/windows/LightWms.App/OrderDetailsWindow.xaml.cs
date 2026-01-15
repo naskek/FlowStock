@@ -213,6 +213,65 @@ public partial class OrderDetailsWindow : Window
         DeleteLineButton.IsEnabled = _selectedLine != null && EnsureEditable(false);
     }
 
+    private void CreateOutbound_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_orderId.HasValue)
+        {
+            MessageBox.Show("Сначала сохраните заказ.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!EnsureEditable())
+        {
+            return;
+        }
+
+        try
+        {
+            var docId = _services.Orders.CreateOutboundFromStock(_orderId.Value);
+            var window = new OperationDetailsWindow(_services, docId)
+            {
+                Owner = this
+            };
+            window.ShowDialog();
+            LoadOrder();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Заказы", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void ShowShipments_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_orderId.HasValue)
+        {
+            MessageBox.Show("Заказ не сохранен.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var docs = _services.Orders.GetOutboundDocs(_orderId.Value);
+        if (docs.Count == 0)
+        {
+            MessageBox.Show("Отгрузок не найдено.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (docs.Count == 1)
+        {
+            var window = new OperationDetailsWindow(_services, docs[0].Id)
+            {
+                Owner = this
+            };
+            window.ShowDialog();
+            LoadOrder();
+            return;
+        }
+
+        var list = string.Join("\n", docs.Select(d => $"{d.DocRef} ({d.StatusDisplay})"));
+        MessageBox.Show(list, "Отгрузки", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
     private void RefreshLineMetrics()
     {
         var availableByItem = _services.Orders.GetItemAvailability();
@@ -236,7 +295,17 @@ public partial class OrderDetailsWindow : Window
             line.Shortage = shortage;
         }
 
+        UpdateOutboundButtons();
         OrderLinesGrid.Items.Refresh();
+    }
+
+    private void UpdateOutboundButtons()
+    {
+        var canShip = _lines.Any(line => line.CanShipNow > 0);
+        var orderSaved = _orderId.HasValue;
+        var shipped = _order?.Status == OrderStatus.Shipped;
+        CreateOutboundButton.IsEnabled = orderSaved && !shipped && canShip;
+        ShowShipmentsButton.IsEnabled = orderSaved;
     }
 
     private bool EnsureEditable(bool showMessage = true)
@@ -264,6 +333,7 @@ public partial class OrderDetailsWindow : Window
         LineQtyBox.IsEnabled = enabled;
         DeleteLineButton.IsEnabled = enabled && _selectedLine != null;
         SaveButton.IsEnabled = enabled;
+        UpdateOutboundButtons();
     }
 
     private bool TryGetHeaderValues(out string orderRef, out long partnerId, out DateTime? dueDate, out OrderStatus status, out string? comment)
