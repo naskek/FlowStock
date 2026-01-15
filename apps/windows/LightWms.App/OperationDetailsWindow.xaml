@@ -11,22 +11,38 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
         <StackPanel Grid.Row="0" Margin="0,0,0,8">
-            <StackPanel Orientation="Horizontal">
-                <TextBlock Text="Операция:" FontWeight="Bold" VerticalAlignment="Center" />
-                <TextBlock x:Name="DocInfoText" Margin="8,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" />
-                <Button x:Name="DocCloseButton" Content="Закрыть операцию" Click="DocClose_Click" Margin="16,0,0,0" />
-            </StackPanel>
-            <StackPanel x:Name="DocHeaderPanel" Orientation="Horizontal" Margin="0,6,0,0">
-                <TextBlock Text="Контрагент" VerticalAlignment="Center" />
-                <ComboBox x:Name="DocPartnerCombo" Width="220" Margin="6,0,12,0" DisplayMemberPath="DisplayName" />
-                <TextBlock Text="Заказ" VerticalAlignment="Center" />
-                <TextBox x:Name="DocOrderRefBox" Width="160" Margin="6,0,12,0" />
-                <TextBlock Text="Отгрузка" VerticalAlignment="Center" />
-                <TextBox x:Name="DocShippingRefBox" Width="160" Margin="6,0,12,0" />
-                <Button x:Name="DocHeaderSaveButton" Content="Сохранить" Click="DocHeaderSave_Click" Margin="8,0,0,0" />
-            </StackPanel>
+            <DockPanel LastChildFill="True">
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                    <Button x:Name="DocCloseButton" Content="Закрыть операцию" Click="DocClose_Click" />
+                    <Button x:Name="DocHeaderSaveButton" Content="Сохранить" Click="DocHeaderSave_Click" Margin="8,0,0,0" />
+                    <Button Content="Закрыть окно" IsCancel="True" Margin="8,0,0,0" />
+                </StackPanel>
+                <TextBlock x:Name="DocInfoText" VerticalAlignment="Center" TextWrapping="Wrap" />
+            </DockPanel>
+            <WrapPanel x:Name="DocHeaderPanel" Margin="0,6,0,0">
+                <StackPanel x:Name="DocPartnerPanel" Margin="0,0,12,0">
+                    <TextBlock x:Name="DocPartnerLabel" Text="Контрагент" />
+                    <ComboBox x:Name="DocPartnerCombo" Width="220" Margin="0,4,0,0" DisplayMemberPath="DisplayName" />
+                </StackPanel>
+                <StackPanel x:Name="DocOrderPanel" Margin="0,0,12,0">
+                    <TextBlock Text="Заказ" />
+                    <TextBox x:Name="DocOrderRefBox" Width="160" Margin="0,4,0,0" />
+                </StackPanel>
+                <StackPanel x:Name="DocShippingPanel" Margin="0,0,12,0">
+                    <TextBlock Text="Накладная/ТТН" />
+                    <TextBox x:Name="DocShippingRefBox" Width="160" Margin="0,4,0,0" />
+                </StackPanel>
+                <StackPanel x:Name="DocFromPanel" Margin="0,0,12,0">
+                    <TextBlock x:Name="DocFromLabel" Text="Откуда" />
+                    <ComboBox x:Name="DocFromCombo" Width="140" Margin="0,4,0,0" DisplayMemberPath="Code" />
+                </StackPanel>
+                <StackPanel x:Name="DocToPanel" Margin="0,0,12,0">
+                    <TextBlock x:Name="DocToLabel" Text="Куда" />
+                    <ComboBox x:Name="DocToCombo" Width="140" Margin="0,4,0,0" DisplayMemberPath="Code" />
+                </StackPanel>
+            </WrapPanel>
         </StackPanel>
-        <GroupBox x:Name="DocEditGroup" Grid.Row="1" Header="Редактирование (DRAFT)" Margin="0,0,0,8">
+        <Border x:Name="DocEditGroup" Grid.Row="1" Margin="0,0,0,8">
             <StackPanel Margin="8">
                 <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
                     <TextBlock Text="Штрихкод" VerticalAlignment="Center" />
@@ -36,10 +52,6 @@
                     <ComboBox x:Name="DocItemCombo" Width="200" Margin="6,0,12,0" DisplayMemberPath="Name" />
                     <TextBlock Text="Кол-во" VerticalAlignment="Center" />
                     <TextBox x:Name="DocItemQtyBox" Width="90" Margin="6,0,12,0" />
-                    <TextBlock x:Name="DocFromLabel" Text="Откуда" VerticalAlignment="Center" />
-                    <ComboBox x:Name="DocFromCombo" Width="120" Margin="6,0,12,0" DisplayMemberPath="Code" />
-                    <TextBlock x:Name="DocToLabel" Text="Куда" VerticalAlignment="Center" />
-                    <ComboBox x:Name="DocToCombo" Width="120" Margin="6,0,12,0" DisplayMemberPath="Code" />
                     <Button Content="Добавить" Click="DocAddLine_Click" />
                 </StackPanel>
                 <StackPanel Orientation="Horizontal">
@@ -49,7 +61,7 @@
                     <Button Content="Удалить" Click="DocDeleteLine_Click" Margin="8,0,0,0" />
                 </StackPanel>
             </StackPanel>
-        </GroupBox>
+        </Border>
         <DataGrid x:Name="DocLinesGrid" Grid.Row="2" AutoGenerateColumns="False" IsReadOnly="True"
                   SelectionChanged="DocLines_SelectionChanged"
                   KeyDown="DocLinesGrid_KeyDown">

@@ -311,27 +311,12 @@ public partial class OperationDetailsWindow : Window
         }
 
         DocInfoText.Text = FormatDocHeader(_doc);
-        DocCloseButton.IsEnabled = _doc.Status != DocStatus.Closed;
-        DocEditGroup.Visibility = _doc.Status == DocStatus.Draft ? Visibility.Visible : Visibility.Collapsed;
+        var isDraft = _doc.Status == DocStatus.Draft;
+        DocCloseButton.IsEnabled = isDraft;
+        DocEditGroup.Visibility = isDraft ? Visibility.Visible : Visibility.Collapsed;
+        DocHeaderPanel.IsEnabled = isDraft;
 
-        var showFrom = _doc.Type != DocType.Inbound;
-        var showTo = _doc.Type != DocType.WriteOff && _doc.Type != DocType.Outbound;
-        DocFromLabel.Visibility = showFrom ? Visibility.Visible : Visibility.Collapsed;
-        DocFromCombo.Visibility = showFrom ? Visibility.Visible : Visibility.Collapsed;
-        DocToLabel.Visibility = showTo ? Visibility.Visible : Visibility.Collapsed;
-        DocToCombo.Visibility = showTo ? Visibility.Visible : Visibility.Collapsed;
-
-        if (!showFrom)
-        {
-            DocFromCombo.SelectedItem = null;
-        }
-
-        if (!showTo)
-        {
-            DocToCombo.SelectedItem = null;
-        }
-
-        DocHeaderPanel.IsEnabled = _doc.Status == DocStatus.Draft;
+        ConfigureHeaderFields(_doc, isDraft);
         DocPartnerCombo.SelectedItem = _partners.FirstOrDefault(p => p.Id == _doc.PartnerId);
         DocOrderRefBox.Text = _doc.OrderRef ?? string.Empty;
         DocShippingRefBox.Text = _doc.ShippingRef ?? string.Empty;
@@ -343,11 +328,82 @@ public partial class OperationDetailsWindow : Window
         }
     }
 
+    private void ConfigureHeaderFields(Doc doc, bool isDraft)
+    {
+        var showPartner = false;
+        var showOrder = false;
+        var showShipping = false;
+        var showFrom = false;
+        var showTo = false;
+        var partnerLabel = "Контрагент";
+        var fromLabel = "Откуда";
+        var toLabel = "Куда";
+
+        switch (doc.Type)
+        {
+            case DocType.Inbound:
+                showPartner = true;
+                partnerLabel = "Поставщик";
+                showTo = true;
+                toLabel = "Место хранения";
+                break;
+            case DocType.Outbound:
+                showPartner = true;
+                partnerLabel = "Покупатель";
+                showOrder = true;
+                showShipping = true;
+                showFrom = true;
+                fromLabel = "Место хранения";
+                break;
+            case DocType.Move:
+                showFrom = true;
+                showTo = true;
+                fromLabel = "Откуда";
+                toLabel = "Куда";
+                break;
+            case DocType.WriteOff:
+                showFrom = true;
+                fromLabel = "Место хранения";
+                break;
+            case DocType.Inventory:
+                showTo = true;
+                toLabel = "Место хранения";
+                break;
+        }
+
+        DocPartnerPanel.Visibility = showPartner ? Visibility.Visible : Visibility.Collapsed;
+        DocOrderPanel.Visibility = showOrder ? Visibility.Visible : Visibility.Collapsed;
+        DocShippingPanel.Visibility = showShipping ? Visibility.Visible : Visibility.Collapsed;
+        DocFromPanel.Visibility = showFrom ? Visibility.Visible : Visibility.Collapsed;
+        DocToPanel.Visibility = showTo ? Visibility.Visible : Visibility.Collapsed;
+
+        DocPartnerLabel.Text = partnerLabel;
+        DocFromLabel.Text = fromLabel;
+        DocToLabel.Text = toLabel;
+
+        if (!showFrom)
+        {
+            DocFromCombo.SelectedItem = null;
+        }
+
+        if (!showTo)
+        {
+            DocToCombo.SelectedItem = null;
+        }
+
+        DocHeaderSaveButton.Visibility = showPartner || showOrder || showShipping
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        DocHeaderSaveButton.IsEnabled = isDraft;
+    }
+
     private static string FormatDocHeader(Doc doc)
     {
-        var createdAt = doc.CreatedAt.ToString("g");
-        var closedAt = doc.ClosedAt.HasValue ? doc.ClosedAt.Value.ToString("g") : "-";
-        return $"Номер: {doc.DocRef} | Тип: {DocTypeMapper.ToDisplayName(doc.Type)} | Статус: {DocTypeMapper.StatusToDisplayName(doc.Status)} | Создан: {createdAt} | Закрыт: {closedAt}";
+        var createdAt = doc.CreatedAt.ToString("dd'/'MM'/'yyyy HH':'mm", CultureInfo.InvariantCulture);
+        var closedAt = doc.ClosedAt.HasValue
+            ? doc.ClosedAt.Value.ToString("dd'/'MM'/'yyyy HH':'mm", CultureInfo.InvariantCulture)
+            : "-";
+        return $"Номер: {doc.DocRef} | Тип: {DocTypeMapper.ToDisplayName(doc.Type)} | Статус: {DocTypeMapper.StatusToDisplayName(doc.Status)} | Создан: {createdAt} | Проведена: {closedAt}";
     }
 
     private static bool TryParseQty(string input, out double qty)
