@@ -19,6 +19,21 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<Doc> _docs = new();
     private readonly ObservableCollection<Order> _orders = new();
     private readonly ObservableCollection<StockRow> _stock = new();
+    private readonly List<DocTypeFilterOption> _docTypeFilters = new()
+    {
+        new DocTypeFilterOption(null, "Все"),
+        new DocTypeFilterOption(DocType.Inbound, "Приемка"),
+        new DocTypeFilterOption(DocType.Outbound, "Отгрузка"),
+        new DocTypeFilterOption(DocType.Move, "Перемещение"),
+        new DocTypeFilterOption(DocType.WriteOff, "Списание"),
+        new DocTypeFilterOption(DocType.Inventory, "Инвентаризация")
+    };
+    private readonly List<DocStatusFilterOption> _docStatusFilters = new()
+    {
+        new DocStatusFilterOption(null, "Все"),
+        new DocStatusFilterOption(DocStatus.Draft, "Черновик"),
+        new DocStatusFilterOption(DocStatus.Closed, "Проведена")
+    };
     private Item? _selectedItem;
     private Location? _selectedLocation;
     private Partner? _selectedPartner;
@@ -41,6 +56,10 @@ public partial class MainWindow : Window
         DocsGrid.ItemsSource = _docs;
         OrdersGrid.ItemsSource = _orders;
         StockGrid.ItemsSource = _stock;
+        DocsTypeFilter.ItemsSource = _docTypeFilters;
+        DocsTypeFilter.SelectedIndex = 0;
+        DocsStatusFilter.ItemsSource = _docStatusFilters;
+        DocsStatusFilter.SelectedIndex = 0;
 
         LoadAll();
         ClearItemForm();
@@ -126,10 +145,50 @@ public partial class MainWindow : Window
     private void LoadDocs()
     {
         _docs.Clear();
-        foreach (var doc in _services.Documents.GetDocs())
+        foreach (var doc in ApplyDocFilters(_services.Documents.GetDocs()))
         {
             _docs.Add(doc);
         }
+    }
+
+    private IEnumerable<Doc> ApplyDocFilters(IReadOnlyList<Doc> docs)
+    {
+        var query = DocsSearchBox.Text?.Trim() ?? string.Empty;
+        var typeFilter = (DocsTypeFilter.SelectedItem as DocTypeFilterOption)?.Type;
+        var statusFilter = (DocsStatusFilter.SelectedItem as DocStatusFilterOption)?.Status;
+
+        IEnumerable<Doc> filtered = docs;
+        if (typeFilter.HasValue)
+        {
+            filtered = filtered.Where(doc => doc.Type == typeFilter.Value);
+        }
+
+        if (statusFilter.HasValue)
+        {
+            filtered = filtered.Where(doc => doc.Status == statusFilter.Value);
+        }
+
+        if (!string.IsNullOrWhiteSpace(query))
+        {
+            filtered = filtered.Where(doc => DocMatchesQuery(doc, query));
+        }
+
+        return filtered;
+    }
+
+    private static bool DocMatchesQuery(Doc doc, string query)
+    {
+        return Contains(doc.DocRef, query)
+               || Contains(doc.PartnerName, query)
+               || Contains(doc.PartnerCode, query)
+               || Contains(doc.OrderRef, query)
+               || Contains(doc.TypeDisplay, query);
+    }
+
+    private static bool Contains(string? source, string query)
+    {
+        return !string.IsNullOrWhiteSpace(source)
+               && source.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     private void LoadOrders()
@@ -176,6 +235,28 @@ public partial class MainWindow : Window
     private void DocsRefresh_Click(object sender, RoutedEventArgs e)
     {
         LoadDocs();
+    }
+
+    private void DocsApplyFilters_Click(object sender, RoutedEventArgs e)
+    {
+        LoadDocs();
+    }
+
+    private void DocsResetFilters_Click(object sender, RoutedEventArgs e)
+    {
+        DocsSearchBox.Text = string.Empty;
+        DocsTypeFilter.SelectedIndex = 0;
+        DocsStatusFilter.SelectedIndex = 0;
+        LoadDocs();
+    }
+
+    private void DocsSearchBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            e.Handled = true;
+            LoadDocs();
+        }
     }
 
     private void DocsOpen_Click(object sender, RoutedEventArgs e)
@@ -773,4 +854,8 @@ public partial class MainWindow : Window
         PartnerDeleteButton.IsEnabled = false;
         PartnersGrid.SelectedItem = null;
     }
+
+    private sealed record DocTypeFilterOption(DocType? Type, string Name);
+
+    private sealed record DocStatusFilterOption(DocStatus? Status, string Name);
 }

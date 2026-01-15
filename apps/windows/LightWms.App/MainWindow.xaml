@@ -71,6 +71,7 @@
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
@@ -84,10 +85,21 @@
                             <LineBreak />
                             4) Открой документ
                             <LineBreak />
-                            5) Нажми "Закрыть" — появятся остатки
+                            5) Нажми "Закрыть" - появятся остатки
                         </TextBlock>
                     </GroupBox>
-                    <DataGrid x:Name="DocsGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="Поиск" VerticalAlignment="Center" />
+                        <TextBox x:Name="DocsSearchBox" Width="240" Margin="6,0,12,0"
+                                 KeyDown="DocsSearchBox_KeyDown" />
+                        <TextBlock Text="Тип" VerticalAlignment="Center" />
+                        <ComboBox x:Name="DocsTypeFilter" Width="160" Margin="6,0,12,0" DisplayMemberPath="Name" />
+                        <TextBlock Text="Статус" VerticalAlignment="Center" />
+                        <ComboBox x:Name="DocsStatusFilter" Width="140" Margin="6,0,12,0" DisplayMemberPath="Name" />
+                        <Button Content="Применить" Click="DocsApplyFilters_Click" />
+                        <Button Content="Сброс" Click="DocsResetFilters_Click" Margin="8,0,0,0" />
+                    </StackPanel>
+                    <DataGrid x:Name="DocsGrid" Grid.Row="2" AutoGenerateColumns="False" IsReadOnly="True"
                               MouseDoubleClick="DocsGrid_MouseDoubleClick"
                               KeyDown="DocsGrid_KeyDown">
                         <DataGrid.Columns>
@@ -96,11 +108,11 @@
                             <DataGridTextColumn Header="Статус" Binding="{Binding StatusDisplay}" Width="120" />
                         <DataGridTextColumn Header="Контрагент" Binding="{Binding PartnerDisplay}" Width="220" />
                             <DataGridTextColumn Header="Заказ" Binding="{Binding OrderRef}" Width="160" />
-                            <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt}" Width="160" />
-                            <DataGridTextColumn Header="Закрыт" Binding="{Binding ClosedAt}" Width="160" />
+                            <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="160" />
+                            <DataGridTextColumn Header="Закрыт" Binding="{Binding ClosedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="160" />
                         </DataGrid.Columns>
                     </DataGrid>
-                    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,8,0,8">
+                    <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,8,0,8">
                         <Button Content="Обновить" Click="DocsRefresh_Click" />
                     </StackPanel>
                 </Grid>
@@ -117,10 +129,10 @@
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Номер" Binding="{Binding OrderRef}" Width="*" />
                             <DataGridTextColumn Header="Контрагент" Binding="{Binding PartnerDisplay}" Width="220" />
-                            <DataGridTextColumn Header="Плановая отгрузка" Binding="{Binding DueDate, StringFormat=d}" Width="160" />
+                            <DataGridTextColumn Header="Плановая отгрузка" Binding="{Binding DueDate, StringFormat={}{0:dd'/'MM'/'yyyy}}" Width="160" />
                             <DataGridTextColumn Header="Статус" Binding="{Binding StatusDisplay}" Width="140" />
-                            <DataGridTextColumn Header="Факт отгрузки" Binding="{Binding ShippedAt, StringFormat=g}" Width="160" />
-                            <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt, StringFormat=g}" Width="160" />
+                            <DataGridTextColumn Header="Факт отгрузки" Binding="{Binding ShippedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="160" />
+                            <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="160" />
                         </DataGrid.Columns>
                     </DataGrid>
                     <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,8,0,8">
@@ -225,7 +237,7 @@
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="ИНН" Binding="{Binding Code}" Width="160" />
                             <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="*" />
-                            <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt}" Width="160" />
+                            <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="160" />
                         </DataGrid.Columns>
                     </DataGrid>
                 </Grid>
