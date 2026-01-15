@@ -37,6 +37,7 @@ public interface IDataStore
     Doc? FindDocByRef(string docRef, DocType type);
     Doc? GetDoc(long id);
     IReadOnlyList<Doc> GetDocs();
+    IReadOnlyList<Doc> GetDocsByOrder(long orderId);
     long AddDoc(Doc doc);
     IReadOnlyList<DocLine> GetDocLines(long docId);
     IReadOnlyList<DocLineView> GetDocLineViews(long docId);
@@ -45,6 +46,20 @@ public interface IDataStore
     void DeleteDocLine(long docLineId);
     void UpdateDocHeader(long docId, long? partnerId, string? orderRef, string? shippingRef);
     void UpdateDocStatus(long docId, DocStatus status, DateTime? closedAt);
+
+    Order? GetOrder(long id);
+    IReadOnlyList<Order> GetOrders();
+    long AddOrder(Order order);
+    void UpdateOrder(Order order);
+    void UpdateOrderStatus(long orderId, OrderStatus status);
+    IReadOnlyList<OrderLine> GetOrderLines(long orderId);
+    IReadOnlyList<OrderLineView> GetOrderLineViews(long orderId);
+    long AddOrderLine(OrderLine line);
+    void DeleteOrderLines(long orderId);
+    IReadOnlyDictionary<long, double> GetLedgerTotalsByItem();
+    IReadOnlyDictionary<long, double> GetShippedTotalsByOrder(long orderId);
+    DateTime? GetOrderShippedAt(long orderId);
+    bool HasOutboundDocs(long orderId);
 
     void AddLedgerEntry(LedgerEntry entry);
     IReadOnlyList<StockRow> GetStock(string? search);

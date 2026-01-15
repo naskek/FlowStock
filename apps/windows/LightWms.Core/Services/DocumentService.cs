@@ -18,7 +18,12 @@ public sealed class DocumentService
         return _data.GetDocs();
     }
 
-    public long CreateDoc(DocType type, string docRef, string? comment, long? partnerId, string? orderRef, string? shippingRef)
+    public IReadOnlyList<Doc> GetDocsByOrder(long orderId)
+    {
+        return _data.GetDocsByOrder(orderId);
+    }
+
+    public long CreateDoc(DocType type, string docRef, string? comment, long? partnerId, string? orderRef, string? shippingRef, long? orderId = null)
     {
         if (string.IsNullOrWhiteSpace(docRef))
         {
@@ -41,6 +46,11 @@ public sealed class DocumentService
             throw new ArgumentException("Для отгрузки требуется контрагент.", nameof(partnerId));
         }
 
+        if (orderId.HasValue && _data.GetOrder(orderId.Value) == null)
+        {
+            throw new ArgumentException("Заказ не найден.", nameof(orderId));
+        }
+
         var cleanedOrderRef = string.IsNullOrWhiteSpace(orderRef) ? null : orderRef.Trim();
         var cleanedShippingRef = string.IsNullOrWhiteSpace(shippingRef) ? null : shippingRef.Trim();
         var cleanedComment = string.IsNullOrWhiteSpace(comment) ? null : comment.Trim();
@@ -53,6 +63,7 @@ public sealed class DocumentService
             CreatedAt = DateTime.Now,
             ClosedAt = null,
             PartnerId = partnerId,
+            OrderId = orderId,
             OrderRef = cleanedOrderRef,
             ShippingRef = cleanedShippingRef,
             Comment = cleanedComment

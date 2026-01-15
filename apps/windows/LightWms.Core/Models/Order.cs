@@ -1,24 +1,19 @@
 namespace LightWms.Core.Models;
 
-public sealed class Doc
+public sealed class Order
 {
     public long Id { get; init; }
-    public string DocRef { get; init; } = string.Empty;
-    public DocType Type { get; init; }
-    public DocStatus Status { get; init; }
-    public DateTime CreatedAt { get; init; }
-    public DateTime? ClosedAt { get; init; }
-    public long? PartnerId { get; init; }
-    public long? OrderId { get; init; }
-    public string? OrderRef { get; init; }
-    public string? ShippingRef { get; init; }
+    public string OrderRef { get; init; } = string.Empty;
+    public long PartnerId { get; init; }
+    public DateTime? DueDate { get; init; }
+    public OrderStatus Status { get; init; }
     public string? Comment { get; init; }
+    public DateTime CreatedAt { get; init; }
+    public DateTime? ShippedAt { get; init; }
     public string? PartnerName { get; init; }
     public string? PartnerCode { get; init; }
 
-    public string TypeDisplay => DocTypeMapper.ToDisplayName(Type);
-
-    public string StatusDisplay => DocTypeMapper.StatusToDisplayName(Status);
+    public string StatusDisplay => OrderStatusMapper.StatusToDisplayName(Status);
 
     public string PartnerDisplay
     {

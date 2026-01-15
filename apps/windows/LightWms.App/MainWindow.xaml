@@ -24,6 +24,7 @@
             <MenuItem Header="Вид">
                 <MenuItem Header="Остатки" Click="ViewStatus_Click" />
                 <MenuItem Header="Операции" Click="ViewDocs_Click" />
+                <MenuItem Header="Заказы" Click="ViewOrders_Click" />
                 <MenuItem Header="Товары" Click="ViewItems_Click" />
                 <MenuItem Header="Места хранения" Click="ViewLocations_Click" />
                 <MenuItem Header="Контрагенты" Click="ViewPartners_Click" />
@@ -101,6 +102,30 @@
                     </DataGrid>
                     <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,8,0,8">
                         <Button Content="Обновить" Click="DocsRefresh_Click" />
+                    </StackPanel>
+                </Grid>
+            </TabItem>
+            <TabItem Header="Заказы">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <DataGrid x:Name="OrdersGrid" Grid.Row="0" AutoGenerateColumns="False" IsReadOnly="True"
+                              MouseDoubleClick="OrdersGrid_MouseDoubleClick"
+                              KeyDown="OrdersGrid_KeyDown">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Номер" Binding="{Binding OrderRef}" Width="*" />
+                            <DataGridTextColumn Header="Контрагент" Binding="{Binding PartnerDisplay}" Width="220" />
+                            <DataGridTextColumn Header="Плановая отгрузка" Binding="{Binding DueDate, StringFormat=d}" Width="160" />
+                            <DataGridTextColumn Header="Статус" Binding="{Binding StatusDisplay}" Width="140" />
+                            <DataGridTextColumn Header="Факт отгрузки" Binding="{Binding ShippedAt, StringFormat=g}" Width="160" />
+                            <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt, StringFormat=g}" Width="160" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,8,0,8">
+                        <Button Content="Новый" Click="OrdersNew_Click" />
+                        <Button Content="Обновить" Click="OrdersRefresh_Click" Margin="8,0,0,0" />
                     </StackPanel>
                 </Grid>
             </TabItem>

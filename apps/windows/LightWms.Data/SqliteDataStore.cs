@@ -10,7 +10,8 @@ public sealed class SqliteDataStore : IDataStore
     private readonly string _connectionString;
     private readonly SqliteConnection? _connection;
     private readonly SqliteTransaction? _transaction;
-    private const string DocSelectBase = "SELECT d.id, d.doc_ref, d.type, d.status, d.created_at, d.closed_at, d.partner_id, d.order_ref, d.shipping_ref, d.comment, p.name, p.code FROM docs d LEFT JOIN partners p ON p.id = d.partner_id";
+    private const string DocSelectBase = "SELECT d.id, d.doc_ref, d.type, d.status, d.created_at, d.closed_at, d.partner_id, d.order_id, d.order_ref, d.shipping_ref, d.comment, p.name, p.code FROM docs d LEFT JOIN partners p ON p.id = d.partner_id";
+    private const string OrderSelectBase = "SELECT o.id, o.order_ref, o.partner_id, o.due_date, o.status, o.comment, o.created_at, p.name, p.code FROM orders o LEFT JOIN partners p ON p.id = o.partner_id";
 
     public SqliteDataStore(string dbPath)
     {
@@ -62,6 +63,27 @@ CREATE TABLE IF NOT EXISTS partners (
     created_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ix_partners_code ON partners(code);
+CREATE TABLE IF NOT EXISTS orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_ref TEXT NOT NULL,
+    partner_id INTEGER NOT NULL,
+    due_date TEXT,
+    status TEXT NOT NULL DEFAULT 'ACCEPTED',
+    comment TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (partner_id) REFERENCES partners(id)
+);
+CREATE INDEX IF NOT EXISTS ix_orders_ref ON orders(order_ref);
+CREATE INDEX IF NOT EXISTS ix_orders_partner ON orders(partner_id);
+CREATE TABLE IF NOT EXISTS order_lines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL,
+    item_id INTEGER NOT NULL,
+    qty_ordered REAL NOT NULL,
+    FOREIGN KEY (order_id) REFERENCES orders(id),
+    FOREIGN KEY (item_id) REFERENCES items(id)
+);
+CREATE INDEX IF NOT EXISTS ix_order_lines_order ON order_lines(order_id);
 CREATE TABLE IF NOT EXISTS docs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     doc_ref TEXT NOT NULL,
@@ -70,12 +92,15 @@ CREATE TABLE IF NOT EXISTS docs (
     created_at TEXT NOT NULL,
     closed_at TEXT,
     partner_id INTEGER,
+    order_id INTEGER,
     order_ref TEXT,
     shipping_ref TEXT,
     comment TEXT,
-    FOREIGN KEY (partner_id) REFERENCES partners(id)
+    FOREIGN KEY (partner_id) REFERENCES partners(id),
+    FOREIGN KEY (order_id) REFERENCES orders(id)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ix_docs_ref_type ON docs(doc_ref, type);
+CREATE INDEX IF NOT EXISTS ix_docs_order ON docs(order_id);
 CREATE TABLE IF NOT EXISTS doc_lines (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     doc_id INTEGER NOT NULL,
@@ -111,6 +136,7 @@ CREATE TABLE IF NOT EXISTS import_errors (
         command.ExecuteNonQuery();
 
         EnsureColumn(connection, "docs", "partner_id", "INTEGER");
+        EnsureColumn(connection, "docs", "order_id", "INTEGER");
         EnsureColumn(connection, "docs", "order_ref", "TEXT");
         EnsureColumn(connection, "docs", "shipping_ref", "TEXT");
         EnsureColumn(connection, "docs", "comment", "TEXT");
@@ -240,6 +266,13 @@ WHERE id = @id;
             using var command = CreateCommand(connection, "SELECT 1 FROM doc_lines WHERE item_id = @id LIMIT 1");
             command.Parameters.AddWithValue("@id", itemId);
             if (command.ExecuteScalar() != null)
+            {
+                return true;
+            }
+
+            using var orderCommand = CreateCommand(connection, "SELECT 1 FROM order_lines WHERE item_id = @id LIMIT 1");
+            orderCommand.Parameters.AddWithValue("@id", itemId);
+            if (orderCommand.ExecuteScalar() != null)
             {
                 return true;
             }
@@ -462,7 +495,14 @@ WHERE id = @id;
         {
             using var command = CreateCommand(connection, "SELECT 1 FROM docs WHERE partner_id = @id LIMIT 1");
             command.Parameters.AddWithValue("@id", partnerId);
-            return command.ExecuteScalar() != null;
+            if (command.ExecuteScalar() != null)
+            {
+                return true;
+            }
+
+            using var orderCommand = CreateCommand(connection, "SELECT 1 FROM orders WHERE partner_id = @id LIMIT 1");
+            orderCommand.Parameters.AddWithValue("@id", partnerId);
+            return orderCommand.ExecuteScalar() != null;
         });
     }
 
@@ -505,13 +545,30 @@ WHERE id = @id;
         });
     }
 
+    public IReadOnlyList<Doc> GetDocsByOrder(long orderId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, $"{DocSelectBase} WHERE d.order_id = @order_id ORDER BY d.created_at DESC");
+            command.Parameters.AddWithValue("@order_id", orderId);
+            using var reader = command.ExecuteReader();
+            var docs = new List<Doc>();
+            while (reader.Read())
+            {
+                docs.Add(ReadDoc(reader));
+            }
+
+            return docs;
+        });
+    }
+
     public long AddDoc(Doc doc)
     {
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO docs(doc_ref, type, status, created_at, closed_at, partner_id, order_ref, shipping_ref, comment)
-VALUES(@doc_ref, @type, @status, @created_at, @closed_at, @partner_id, @order_ref, @shipping_ref, @comment);
+INSERT INTO docs(doc_ref, type, status, created_at, closed_at, partner_id, order_id, order_ref, shipping_ref, comment)
+VALUES(@doc_ref, @type, @status, @created_at, @closed_at, @partner_id, @order_id, @order_ref, @shipping_ref, @comment);
 SELECT last_insert_rowid();
 ");
             command.Parameters.AddWithValue("@doc_ref", doc.DocRef);
@@ -520,6 +577,7 @@ SELECT last_insert_rowid();
             command.Parameters.AddWithValue("@created_at", ToDbDate(doc.CreatedAt));
             command.Parameters.AddWithValue("@closed_at", doc.ClosedAt.HasValue ? ToDbDate(doc.ClosedAt.Value) : DBNull.Value);
             command.Parameters.AddWithValue("@partner_id", doc.PartnerId.HasValue ? doc.PartnerId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@order_id", doc.OrderId.HasValue ? doc.OrderId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@order_ref", string.IsNullOrWhiteSpace(doc.OrderRef) ? DBNull.Value : doc.OrderRef);
             command.Parameters.AddWithValue("@shipping_ref", string.IsNullOrWhiteSpace(doc.ShippingRef) ? DBNull.Value : doc.ShippingRef);
             command.Parameters.AddWithValue("@comment", string.IsNullOrWhiteSpace(doc.Comment) ? DBNull.Value : doc.Comment);
@@ -648,6 +706,236 @@ WHERE id = @id
             command.Parameters.AddWithValue("@id", docId);
             command.ExecuteNonQuery();
             return 0;
+        });
+    }
+
+    public Order? GetOrder(long id)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, $"{OrderSelectBase} WHERE o.id = @id");
+            command.Parameters.AddWithValue("@id", id);
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadOrder(reader) : null;
+        });
+    }
+
+    public IReadOnlyList<Order> GetOrders()
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, $"{OrderSelectBase} ORDER BY o.created_at DESC");
+            using var reader = command.ExecuteReader();
+            var orders = new List<Order>();
+            while (reader.Read())
+            {
+                orders.Add(ReadOrder(reader));
+            }
+
+            return orders;
+        });
+    }
+
+    public long AddOrder(Order order)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO orders(order_ref, partner_id, due_date, status, comment, created_at)
+VALUES(@order_ref, @partner_id, @due_date, @status, @comment, @created_at);
+SELECT last_insert_rowid();
+");
+            command.Parameters.AddWithValue("@order_ref", order.OrderRef);
+            command.Parameters.AddWithValue("@partner_id", order.PartnerId);
+            command.Parameters.AddWithValue("@due_date", order.DueDate.HasValue ? ToDbDateOnly(order.DueDate.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@status", OrderStatusMapper.StatusToString(order.Status));
+            command.Parameters.AddWithValue("@comment", string.IsNullOrWhiteSpace(order.Comment) ? DBNull.Value : order.Comment);
+            command.Parameters.AddWithValue("@created_at", ToDbDate(order.CreatedAt));
+            return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public void UpdateOrder(Order order)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE orders
+SET order_ref = @order_ref,
+    partner_id = @partner_id,
+    due_date = @due_date,
+    status = @status,
+    comment = @comment
+WHERE id = @id;
+");
+            command.Parameters.AddWithValue("@order_ref", order.OrderRef);
+            command.Parameters.AddWithValue("@partner_id", order.PartnerId);
+            command.Parameters.AddWithValue("@due_date", order.DueDate.HasValue ? ToDbDateOnly(order.DueDate.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@status", OrderStatusMapper.StatusToString(order.Status));
+            command.Parameters.AddWithValue("@comment", string.IsNullOrWhiteSpace(order.Comment) ? DBNull.Value : order.Comment);
+            command.Parameters.AddWithValue("@id", order.Id);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void UpdateOrderStatus(long orderId, OrderStatus status)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "UPDATE orders SET status = @status WHERE id = @id");
+            command.Parameters.AddWithValue("@status", OrderStatusMapper.StatusToString(status));
+            command.Parameters.AddWithValue("@id", orderId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public IReadOnlyList<OrderLine> GetOrderLines(long orderId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "SELECT id, order_id, item_id, qty_ordered FROM order_lines WHERE order_id = @order_id ORDER BY id");
+            command.Parameters.AddWithValue("@order_id", orderId);
+            using var reader = command.ExecuteReader();
+            var lines = new List<OrderLine>();
+            while (reader.Read())
+            {
+                lines.Add(ReadOrderLine(reader));
+            }
+
+            return lines;
+        });
+    }
+
+    public IReadOnlyList<OrderLineView> GetOrderLineViews(long orderId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT ol.id, ol.order_id, ol.item_id, i.name, ol.qty_ordered
+FROM order_lines ol
+INNER JOIN items i ON i.id = ol.item_id
+WHERE ol.order_id = @order_id
+ORDER BY i.name;
+");
+            command.Parameters.AddWithValue("@order_id", orderId);
+            using var reader = command.ExecuteReader();
+            var lines = new List<OrderLineView>();
+            while (reader.Read())
+            {
+                lines.Add(new OrderLineView
+                {
+                    Id = reader.GetInt64(0),
+                    OrderId = reader.GetInt64(1),
+                    ItemId = reader.GetInt64(2),
+                    ItemName = reader.GetString(3),
+                    QtyOrdered = reader.GetDouble(4)
+                });
+            }
+
+            return lines;
+        });
+    }
+
+    public long AddOrderLine(OrderLine line)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO order_lines(order_id, item_id, qty_ordered)
+VALUES(@order_id, @item_id, @qty_ordered);
+SELECT last_insert_rowid();
+");
+            command.Parameters.AddWithValue("@order_id", line.OrderId);
+            command.Parameters.AddWithValue("@item_id", line.ItemId);
+            command.Parameters.AddWithValue("@qty_ordered", line.QtyOrdered);
+            return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public void DeleteOrderLines(long orderId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "DELETE FROM order_lines WHERE order_id = @order_id");
+            command.Parameters.AddWithValue("@order_id", orderId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public IReadOnlyDictionary<long, double> GetLedgerTotalsByItem()
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "SELECT item_id, COALESCE(SUM(qty_delta), 0) FROM ledger GROUP BY item_id");
+            using var reader = command.ExecuteReader();
+            var totals = new Dictionary<long, double>();
+            while (reader.Read())
+            {
+                totals[reader.GetInt64(0)] = reader.GetDouble(1);
+            }
+
+            return totals;
+        });
+    }
+
+    public IReadOnlyDictionary<long, double> GetShippedTotalsByOrder(long orderId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT dl.item_id, COALESCE(SUM(dl.qty), 0)
+FROM docs d
+INNER JOIN doc_lines dl ON dl.doc_id = d.id
+WHERE d.type = @type AND d.status = @status AND d.order_id = @order_id
+GROUP BY dl.item_id;
+");
+            command.Parameters.AddWithValue("@type", DocTypeMapper.ToOpString(DocType.Outbound));
+            command.Parameters.AddWithValue("@status", DocTypeMapper.StatusToString(DocStatus.Closed));
+            command.Parameters.AddWithValue("@order_id", orderId);
+            using var reader = command.ExecuteReader();
+            var totals = new Dictionary<long, double>();
+            while (reader.Read())
+            {
+                totals[reader.GetInt64(0)] = reader.GetDouble(1);
+            }
+
+            return totals;
+        });
+    }
+
+    public DateTime? GetOrderShippedAt(long orderId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT MAX(closed_at)
+FROM docs
+WHERE type = @type AND status = @status AND order_id = @order_id;
+");
+            command.Parameters.AddWithValue("@type", DocTypeMapper.ToOpString(DocType.Outbound));
+            command.Parameters.AddWithValue("@status", DocTypeMapper.StatusToString(DocStatus.Closed));
+            command.Parameters.AddWithValue("@order_id", orderId);
+            var result = command.ExecuteScalar() as string;
+            return FromDbDate(result);
+        });
+    }
+
+    public bool HasOutboundDocs(long orderId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT 1
+FROM docs
+WHERE type = @type AND order_id = @order_id
+LIMIT 1;
+");
+            command.Parameters.AddWithValue("@type", DocTypeMapper.ToOpString(DocType.Outbound));
+            command.Parameters.AddWithValue("@order_id", orderId);
+            return command.ExecuteScalar() != null;
         });
     }
 
@@ -867,6 +1155,7 @@ SELECT last_insert_rowid();
         var status = DocTypeMapper.StatusFromString(reader.GetString(3)) ?? DocStatus.Draft;
 
         long? partnerId = null;
+        long? orderId = null;
         string? orderRef = null;
         string? shippingRef = null;
         string? comment = null;
@@ -880,27 +1169,32 @@ SELECT last_insert_rowid();
 
         if (reader.FieldCount > 7 && !reader.IsDBNull(7))
         {
-            orderRef = reader.GetString(7);
+            orderId = reader.GetInt64(7);
         }
 
         if (reader.FieldCount > 8 && !reader.IsDBNull(8))
         {
-            shippingRef = reader.GetString(8);
+            orderRef = reader.GetString(8);
         }
 
         if (reader.FieldCount > 9 && !reader.IsDBNull(9))
         {
-            comment = reader.GetString(9);
+            shippingRef = reader.GetString(9);
         }
 
         if (reader.FieldCount > 10 && !reader.IsDBNull(10))
         {
-            partnerName = reader.GetString(10);
+            comment = reader.GetString(10);
         }
 
         if (reader.FieldCount > 11 && !reader.IsDBNull(11))
         {
-            partnerCode = reader.GetString(11);
+            partnerName = reader.GetString(11);
+        }
+
+        if (reader.FieldCount > 12 && !reader.IsDBNull(12))
+        {
+            partnerCode = reader.GetString(12);
         }
 
         return new Doc
@@ -912,6 +1206,7 @@ SELECT last_insert_rowid();
             CreatedAt = FromDbDate(reader.GetString(4)) ?? DateTime.MinValue,
             ClosedAt = reader.IsDBNull(5) ? null : FromDbDate(reader.GetString(5)),
             PartnerId = partnerId,
+            OrderId = orderId,
             OrderRef = orderRef,
             ShippingRef = shippingRef,
             Comment = comment,
@@ -930,6 +1225,40 @@ SELECT last_insert_rowid();
             Qty = reader.GetDouble(3),
             FromLocationId = reader.IsDBNull(4) ? null : reader.GetInt64(4),
             ToLocationId = reader.IsDBNull(5) ? null : reader.GetInt64(5)
+        };
+    }
+
+    private static Order ReadOrder(SqliteDataReader reader)
+    {
+        var status = OrderStatusMapper.StatusFromString(reader.GetString(4)) ?? OrderStatus.Accepted;
+
+        var dueDate = reader.IsDBNull(3) ? null : FromDbDate(reader.GetString(3));
+        var comment = reader.IsDBNull(5) ? null : reader.GetString(5);
+        var partnerName = reader.IsDBNull(7) ? null : reader.GetString(7);
+        var partnerCode = reader.IsDBNull(8) ? null : reader.GetString(8);
+
+        return new Order
+        {
+            Id = reader.GetInt64(0),
+            OrderRef = reader.GetString(1),
+            PartnerId = reader.GetInt64(2),
+            DueDate = dueDate,
+            Status = status,
+            Comment = comment,
+            CreatedAt = FromDbDate(reader.GetString(6)) ?? DateTime.MinValue,
+            PartnerName = partnerName,
+            PartnerCode = partnerCode
+        };
+    }
+
+    private static OrderLine ReadOrderLine(SqliteDataReader reader)
+    {
+        return new OrderLine
+        {
+            Id = reader.GetInt64(0),
+            OrderId = reader.GetInt64(1),
+            ItemId = reader.GetInt64(2),
+            QtyOrdered = reader.GetDouble(3)
         };
     }
 
@@ -1015,6 +1344,11 @@ INNER JOIN locations l ON l.id = led.location_id
     private static string ToDbDate(DateTime value)
     {
         return value.ToString("s", CultureInfo.InvariantCulture);
+    }
+
+    private static string ToDbDateOnly(DateTime value)
+    {
+        return value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
     }
 
     private static DateTime? FromDbDate(string? value)

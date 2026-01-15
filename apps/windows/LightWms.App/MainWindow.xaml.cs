@@ -17,15 +17,17 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<Uom> _uoms = new();
     private readonly ObservableCollection<Partner> _partners = new();
     private readonly ObservableCollection<Doc> _docs = new();
+    private readonly ObservableCollection<Order> _orders = new();
     private readonly ObservableCollection<StockRow> _stock = new();
     private Item? _selectedItem;
     private Location? _selectedLocation;
     private Partner? _selectedPartner;
     private const int TabStatusIndex = 0;
     private const int TabDocsIndex = 1;
-    private const int TabItemsIndex = 2;
-    private const int TabLocationsIndex = 3;
-    private const int TabPartnersIndex = 4;
+    private const int TabOrdersIndex = 2;
+    private const int TabItemsIndex = 3;
+    private const int TabLocationsIndex = 4;
+    private const int TabPartnersIndex = 5;
 
     public MainWindow(AppServices services)
     {
@@ -37,6 +39,7 @@ public partial class MainWindow : Window
         ItemUomCombo.ItemsSource = _uoms;
         PartnersGrid.ItemsSource = _partners;
         DocsGrid.ItemsSource = _docs;
+        OrdersGrid.ItemsSource = _orders;
         StockGrid.ItemsSource = _stock;
 
         LoadAll();
@@ -52,6 +55,7 @@ public partial class MainWindow : Window
         LoadLocations();
         LoadPartners();
         LoadDocs();
+        LoadOrders();
         LoadStock(null);
     }
 
@@ -125,6 +129,15 @@ public partial class MainWindow : Window
         foreach (var doc in _services.Documents.GetDocs())
         {
             _docs.Add(doc);
+        }
+    }
+
+    private void LoadOrders()
+    {
+        _orders.Clear();
+        foreach (var order in _services.Orders.GetOrders())
+        {
+            _orders.Add(order);
         }
     }
 
@@ -210,6 +223,49 @@ public partial class MainWindow : Window
             e.Handled = true;
             OpenSelectedDoc();
         }
+    }
+
+    private void OrdersRefresh_Click(object sender, RoutedEventArgs e)
+    {
+        LoadOrders();
+    }
+
+    private void OrdersNew_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new OrderDetailsWindow(_services);
+        window.Owner = this;
+        window.ShowDialog();
+        LoadOrders();
+    }
+
+    private void OrdersGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        OpenSelectedOrder();
+    }
+
+    private void OrdersGrid_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            e.Handled = true;
+            OpenSelectedOrder();
+        }
+    }
+
+    private void OpenSelectedOrder()
+    {
+        if (OrdersGrid.SelectedItem is not Order order)
+        {
+            MessageBox.Show("Выберите заказ.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var window = new OrderDetailsWindow(_services, order.Id);
+        window.Owner = this;
+        window.ShowDialog();
+
+        LoadOrders();
+        LoadStock(StatusSearchBox.Text);
     }
 
     private void DocClose_Click(object sender, RoutedEventArgs e)
@@ -602,6 +658,11 @@ public partial class MainWindow : Window
     private void ViewDocs_Click(object sender, RoutedEventArgs e)
     {
         SelectTab(TabDocsIndex);
+    }
+
+    private void ViewOrders_Click(object sender, RoutedEventArgs e)
+    {
+        SelectTab(TabOrdersIndex);
     }
 
     private void ViewItems_Click(object sender, RoutedEventArgs e)
