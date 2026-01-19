@@ -401,6 +401,26 @@ body {
   background: #f8fbfc;
 }
 
+.qty-mode-toggle {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.qty-mode-btn {
+  flex: 1;
+  font-size: 16px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 2px solid transparent;
+  background: #e0ecf1;
+}
+
+.qty-mode-btn.is-active {
+  background: var(--primary);
+  color: #fff;
+}
+
 .scan-input {
   font-size: 22px;
 }
@@ -592,6 +612,41 @@ body {
   font-size: 16px;
   color: #486581;
   padding: 8px 0;
+}
+
+.qty-overlay .overlay-card {
+  max-width: 400px;
+}
+
+.qty-overlay-body {
+  display: grid;
+  gap: 10px;
+}
+
+.qty-overlay-barcode {
+  font-size: 16px;
+  color: #486581;
+}
+
+.qty-overlay-quick {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+}
+
+.qty-overlay-quick-btn {
+  padding: 10px 6px;
+  font-size: 16px;
+}
+
+.qty-overlay-input {
+  font-size: 20px;
+}
+
+.qty-overlay-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
 }
 
 @media (min-width: 520px) {

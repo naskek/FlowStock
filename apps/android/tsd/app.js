@@ -851,9 +851,18 @@
   }
 
   function renderScanBlock(doc, isDraft) {
+    var qtyMode = doc.header && doc.header.qtyMode === "ASK" ? "ASK" : "INC1";
     return (
       '<div class="scan-card">' +
       '  <label class="form-label" for="barcodeInput">Штрихкод</label>' +
+      '  <div class="qty-mode-toggle">' +
+      '    <button class="btn qty-mode-btn' +
+      (qtyMode === "INC1" ? " is-active" : "") +
+      '" data-mode="INC1" type="button">+1</button>' +
+      '    <button class="btn qty-mode-btn' +
+      (qtyMode === "ASK" ? " is-active" : "") +
+      '" data-mode="ASK" type="button">Кол-во...</button>' +
+      "  </div>" +
       '  <input class="form-input scan-input" id="barcodeInput" type="text" ' +
       (isDraft ? "" : "disabled") +
       " />" +
@@ -1292,6 +1301,9 @@
     var scanItemInfo = document.getElementById("scanItemInfo");
     var dataStatus = null;
     var lookupToken = 0;
+    var qtyModeButtons = document.querySelectorAll(".qty-mode-btn");
+    var qtyOverlay = null;
+    var qtyOverlayKeyListener = null;
 
     function updateQtyIndicator() {
       if (qtyIndicator) {
@@ -1333,6 +1345,181 @@
       }
       if (locationPickBtn) {
         locationPickBtn.disabled = !hasLocations || doc.status !== "DRAFT";
+      }
+    }
+
+    function closeQuantityOverlay() {
+      if (!qtyOverlay) {
+        return;
+      }
+      document.body.removeChild(qtyOverlay);
+      qtyOverlay = null;
+      if (qtyOverlayKeyListener) {
+        document.removeEventListener("keydown", qtyOverlayKeyListener);
+        qtyOverlayKeyListener = null;
+      }
+    }
+
+    function openQuantityOverlay(barcode, onSelect) {
+      if (!doc.status || doc.status !== "DRAFT") {
+        return;
+      }
+      closeQuantityOverlay();
+      qtyOverlay = document.createElement("div");
+      qtyOverlay.className = "overlay qty-overlay";
+      var quickQty = [1, 2, 3, 5, 10];
+      var quickButtons = quickQty
+        .map(function (value) {
+          return '<button type="button" class="btn qty-overlay-quick-btn" data-qty="' + value + '">' + value + " шт</button>";
+        })
+        .join("");
+      qtyOverlay.innerHTML =
+        '<div class="overlay-card">' +
+        '  <div class="overlay-header">' +
+        '    <div class="overlay-title">Количество</div>' +
+        '    <button class="btn btn-ghost overlay-close" type="button">✕</button>' +
+        "  </div>" +
+        '  <div class="qty-overlay-body">' +
+        '    <div class="qty-overlay-barcode">' +
+        escapeHtml(barcode) +
+        "</div>" +
+        '    <div class="qty-overlay-quick">' +
+        quickButtons +
+        "    </div>" +
+        '    <input class="form-input qty-overlay-input" type="number" min="1" value="1" />' +
+        '    <div class="qty-overlay-actions">' +
+        '      <button class="btn btn-outline" type="button" id="qtyCancel">Отмена</button>' +
+        '      <button class="btn primary-btn" type="button" id="qtyOk">OK</button>' +
+        "    </div>" +
+        "  </div>" +
+        "</div>";
+      document.body.appendChild(qtyOverlay);
+      var quantityInput = qtyOverlay.querySelector(".qty-overlay-input");
+      var okBtn = qtyOverlay.querySelector("#qtyOk");
+      var cancelBtn = qtyOverlay.querySelector("#qtyCancel");
+      var closeBtn = qtyOverlay.querySelector(".overlay-close");
+      var quickButtonsEls = qtyOverlay.querySelectorAll(".qty-overlay-quick-btn");
+
+      function tryApplyQuantity() {
+        if (!quantityInput) {
+          return;
+        }
+        var value = parseInt(quantityInput.value, 10);
+        if (!value || value <= 0) {
+          quantityInput.focus();
+          quantityInput.select();
+          return;
+        }
+        closeQuantityOverlay();
+        if (typeof onSelect === "function") {
+          onSelect(value);
+        }
+        focusBarcode();
+      }
+
+      quickButtonsEls.forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var value = parseInt(btn.getAttribute("data-qty"), 10);
+          if (!value || value <= 0) {
+            return;
+          }
+          if (quantityInput) {
+            quantityInput.value = value;
+          }
+          tryApplyQuantity();
+        });
+      });
+
+      okBtn &&
+        okBtn.addEventListener("click", function () {
+          tryApplyQuantity();
+        });
+      cancelBtn &&
+        cancelBtn.addEventListener("click", function () {
+          closeQuantityOverlay();
+          focusBarcode();
+        });
+      closeBtn &&
+        closeBtn.addEventListener("click", function () {
+          closeQuantityOverlay();
+          focusBarcode();
+        });
+
+      qtyOverlay.addEventListener("click", function (event) {
+        if (event.target === qtyOverlay) {
+          closeQuantityOverlay();
+          focusBarcode();
+        }
+      });
+
+      qtyOverlayKeyListener = function (event) {
+        if (event.key === "Escape") {
+          closeQuantityOverlay();
+          focusBarcode();
+        }
+        if (event.key === "Enter") {
+          event.preventDefault();
+          tryApplyQuantity();
+        }
+      };
+      document.addEventListener("keydown", qtyOverlayKeyListener);
+
+      if (quantityInput) {
+        quantityInput.focus();
+        quantityInput.select();
+      }
+    }
+
+    function addLineWithQuantity(barcode, quantity) {
+      var qtyValue = Number(quantity) || 0;
+      if (!qtyValue || qtyValue <= 0) {
+        focusBarcode();
+        return;
+      }
+      var lineData = buildLineData(doc.op, doc.header);
+      TsdStorage.findItemByCode(barcode)
+        .then(function (item) {
+          finalizeLine(item);
+        })
+        .catch(function () {
+          finalizeLine(null);
+        });
+
+      function finalizeLine(item) {
+        var itemId = item ? item.itemId : null;
+        var itemName = item ? item.name : null;
+        var lineIndex = findLineIndex(doc.op, doc.lines, barcode, lineData);
+        if (lineIndex >= 0) {
+          doc.lines[lineIndex].qty += qtyValue;
+          if (itemName && !doc.lines[lineIndex].itemName) {
+            doc.lines[lineIndex].itemName = itemName;
+            doc.lines[lineIndex].itemId = itemId;
+          }
+        } else {
+          doc.lines.push({
+            barcode: barcode,
+            qty: qtyValue,
+            from: lineData.from,
+            to: lineData.to,
+            reason_code: lineData.reason_code,
+            itemId: itemId,
+            itemName: itemName,
+          });
+        }
+
+        doc.undoStack.push({
+          barcode: barcode,
+          qtyDelta: qtyValue,
+          from: lineData.from,
+          to: lineData.to,
+          reason_code: lineData.reason_code,
+        });
+
+        if (barcodeInput) {
+          barcodeInput.value = "";
+        }
+        setScanInfo("", false);
+        saveDocState().then(refreshDocView);
       }
     }
 
@@ -1495,53 +1682,14 @@
         focusBarcode();
         return;
       }
-
-      var lineData = buildLineData(doc.op, doc.header);
-      function addLineWithItem(item) {
-        var itemId = item ? item.itemId : null;
-        var itemName = item ? item.name : null;
-        var lineIndex = findLineIndex(doc.op, doc.lines, barcode, lineData);
-        if (lineIndex >= 0) {
-          doc.lines[lineIndex].qty += qtyStep;
-          if (itemName && !doc.lines[lineIndex].itemName) {
-            doc.lines[lineIndex].itemName = itemName;
-            doc.lines[lineIndex].itemId = itemId;
-          }
-        } else {
-          doc.lines.push({
-            barcode: barcode,
-            qty: qtyStep,
-            from: lineData.from,
-            to: lineData.to,
-            reason_code: lineData.reason_code,
-            itemId: itemId,
-            itemName: itemName,
-          });
-        }
-
-        doc.undoStack.push({
-          barcode: barcode,
-          qtyDelta: qtyStep,
-          from: lineData.from,
-          to: lineData.to,
-          reason_code: lineData.reason_code,
+      var qtyMode = doc.header.qtyMode === "ASK" ? "ASK" : "INC1";
+      if (qtyMode === "ASK") {
+        openQuantityOverlay(barcode, function (quantity) {
+          addLineWithQuantity(barcode, quantity);
         });
-
-        if (barcodeInput) {
-          barcodeInput.value = "";
-        }
-        setScanInfo("", false);
-
-        saveDocState().then(refreshDocView);
+        return;
       }
-
-      TsdStorage.findItemByCode(barcode)
-        .then(function (item) {
-          addLineWithItem(item);
-        })
-        .catch(function () {
-          addLineWithItem(null);
-        });
+      addLineWithQuantity(barcode, qtyStep);
     }
 
     updateQtyIndicator();
@@ -1584,6 +1732,20 @@
         handleAddLine();
       });
     }
+
+    qtyModeButtons.forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        if (doc.status !== "DRAFT") {
+          return;
+        }
+        var mode = btn.getAttribute("data-mode");
+        if (!mode || doc.header.qtyMode === mode) {
+          return;
+        }
+        doc.header.qtyMode = mode;
+        saveDocState().then(refreshDocView);
+      });
+    });
 
     qtyButtons.forEach(function (btn) {
       btn.addEventListener("click", function () {
@@ -1950,7 +2112,14 @@
 
   function getDefaultHeader(op) {
     if (op === "INBOUND") {
-      return { partner: "", partner_id: null, to: "", to_name: null, to_id: null };
+      return {
+        partner: "",
+        partner_id: null,
+        to: "",
+        to_name: null,
+        to_id: null,
+        qtyMode: "INC1",
+      };
     }
     if (op === "OUTBOUND") {
       return {
@@ -1960,6 +2129,7 @@
         from: "",
         from_name: null,
         from_id: null,
+        qtyMode: "INC1",
       };
     }
     if (op === "MOVE") {
@@ -1970,6 +2140,7 @@
         to: "",
         to_name: null,
         to_id: null,
+        qtyMode: "INC1",
       };
     }
     if (op === "WRITE_OFF") {
@@ -1978,10 +2149,16 @@
         from_name: null,
         from_id: null,
         reason_code: REASON_CODES[0],
+        qtyMode: "INC1",
       };
     }
     if (op === "INVENTORY") {
-      return { location: "", location_name: null, location_id: null };
+      return {
+        location: "",
+        location_name: null,
+        location_id: null,
+        qtyMode: "INC1",
+      };
     }
     return {};
   }
