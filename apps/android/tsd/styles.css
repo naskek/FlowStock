@@ -102,6 +102,10 @@ body {
   pointer-events: none;
 }
 
+.file-input {
+  display: none;
+}
+
 .screen {
   width: min(720px, 100%);
 }
@@ -166,6 +170,30 @@ body {
   padding: 14px 16px;
   font-size: 20px;
   margin-bottom: 16px;
+}
+
+.picker-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.picker-value {
+  flex: 1;
+  border: 2px solid #bfd7e3;
+  border-radius: 14px;
+  padding: 12px 14px;
+  font-size: 18px;
+  background: #fff;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+}
+
+.picker-btn {
+  padding: 12px 16px;
+  font-size: 16px;
 }
 
 .form-grid {
@@ -275,6 +303,17 @@ body {
   margin-bottom: 12px;
 }
 
+.scan-info {
+  font-size: 16px;
+  color: #486581;
+  min-height: 20px;
+  margin-bottom: 12px;
+}
+
+.scan-info-unknown {
+  color: #b23a2b;
+}
+
 .qty-indicator {
   font-size: 18px;
   font-weight: 600;
@@ -315,6 +354,16 @@ body {
   border-bottom: 1px solid #e2ecf1;
 }
 
+.line-name {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.line-barcode {
+  font-size: 14px;
+  color: #486581;
+}
+
 .actions-bar {
   display: grid;
   gap: 12px;
@@ -344,10 +393,97 @@ body {
   min-height: 20px;
 }
 
+.status-muted {
+  color: #486581;
+}
+
 .version {
   margin-top: 18px;
   font-size: 16px;
   color: #486581;
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(16, 42, 67, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 999;
+}
+
+.overlay-card {
+  width: min(520px, 100%);
+  background: #fff;
+  border-radius: 20px;
+  padding: 16px;
+  box-shadow: var(--shadow);
+  max-height: 90vh;
+  overflow: auto;
+}
+
+.overlay-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.overlay-title {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.overlay-search {
+  margin-bottom: 12px;
+}
+
+.overlay-section {
+  margin-bottom: 12px;
+}
+
+.overlay-section-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #486581;
+  margin-bottom: 8px;
+}
+
+.overlay-list {
+  display: grid;
+  gap: 8px;
+}
+
+.overlay-item {
+  border: 2px solid #d9e7ee;
+  border-radius: 14px;
+  padding: 12px;
+  text-align: left;
+  background: #fff;
+  cursor: pointer;
+}
+
+.overlay-item:active {
+  transform: translateY(2px);
+}
+
+.overlay-item-title {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.overlay-item-sub {
+  font-size: 14px;
+  color: #486581;
+  margin-top: 4px;
+}
+
+.overlay-empty {
+  font-size: 16px;
+  color: #486581;
+  padding: 8px 0;
 }
 
 @media (min-width: 520px) {

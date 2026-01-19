@@ -77,6 +77,43 @@
     });
   }
 
+  function formatPartnerLabel(partner) {
+    if (!partner) {
+      return "Не выбран";
+    }
+    var name = partner.name || "";
+    var code = partner.code ? " (" + partner.code + ")" : "";
+    return name + code;
+  }
+
+  function formatLocationLabel(code, name) {
+    var safeCode = String(code || "").trim();
+    var safeName = String(name || "").trim();
+    if (!safeCode && !safeName) {
+      return "Не выбрана";
+    }
+    if (safeCode && safeName) {
+      return safeCode + " — " + safeName;
+    }
+    return safeCode || safeName;
+  }
+
+  function updateRecentSetting(key, value) {
+    return TsdStorage.getSetting(key)
+      .then(function (list) {
+        var current = Array.isArray(list) ? list.slice() : [];
+        var cleanValue = value;
+        current = current.filter(function (item) {
+          return item !== cleanValue;
+        });
+        current.unshift(cleanValue);
+        return TsdStorage.setSetting(key, current.slice(0, 5));
+      })
+      .catch(function () {
+        return TsdStorage.setSetting(key, [value]);
+      });
+  }
+
   function getRoute() {
     var hash = window.location.hash || "";
     var path = hash.replace("#", "");
@@ -340,10 +377,20 @@
     var header = doc.header || {};
     var isDraft = doc.status === "DRAFT";
     if (doc.op === "INBOUND") {
+      var inboundPartnerValue = header.partner || "Не выбран";
+      var inboundToValue = formatLocationLabel(header.to, header.to_name);
       return (
         '<div class="form-field">' +
         '  <label class="form-label" for="partnerInput">Поставщик</label>' +
-        '  <input class="form-input" id="partnerInput" data-header="partner" type="text" value="' +
+        '  <div class="picker-row" id="partnerPickerRow">' +
+        '    <div class="picker-value" id="partnerValue">' +
+        escapeHtml(inboundPartnerValue) +
+        "</div>" +
+        '    <button class="btn btn-outline picker-btn" id="partnerPickBtn" type="button" ' +
+        (isDraft ? "" : "disabled") +
+        ">Выбрать...</button>" +
+        "  </div>" +
+        '  <input class="form-input picker-fallback" id="partnerInput" data-header="partner" type="text" value="' +
         escapeHtml(header.partner || "") +
         "" +
         '" ' +
@@ -352,7 +399,15 @@
         "</div>" +
         '<div class="form-field">' +
         '  <label class="form-label" for="toInput">Куда</label>' +
-        '  <input class="form-input" id="toInput" data-header="to" type="text" value="' +
+        '  <div class="picker-row" id="toPickerRow">' +
+        '    <div class="picker-value" id="toValue">' +
+        escapeHtml(inboundToValue) +
+        "</div>" +
+        '    <button class="btn btn-outline picker-btn" id="toPickBtn" type="button" ' +
+        (isDraft ? "" : "disabled") +
+        ">Выбрать...</button>" +
+        "  </div>" +
+        '  <input class="form-input picker-fallback" id="toInput" data-header="to" type="text" value="' +
         escapeHtml(header.to || "") +
         "" +
         '" ' +
@@ -363,10 +418,20 @@
     }
 
     if (doc.op === "OUTBOUND") {
+      var outboundPartnerValue = header.partner || "Не выбран";
+      var outboundFromValue = formatLocationLabel(header.from, header.from_name);
       return (
         '<div class="form-field">' +
         '  <label class="form-label" for="partnerInput">Покупатель</label>' +
-        '  <input class="form-input" id="partnerInput" data-header="partner" type="text" value="' +
+        '  <div class="picker-row" id="partnerPickerRow">' +
+        '    <div class="picker-value" id="partnerValue">' +
+        escapeHtml(outboundPartnerValue) +
+        "</div>" +
+        '    <button class="btn btn-outline picker-btn" id="partnerPickBtn" type="button" ' +
+        (isDraft ? "" : "disabled") +
+        ">Выбрать...</button>" +
+        "  </div>" +
+        '  <input class="form-input picker-fallback" id="partnerInput" data-header="partner" type="text" value="' +
         escapeHtml(header.partner || "") +
         "" +
         '" ' +
@@ -384,7 +449,15 @@
         "</div>" +
         '<div class="form-field">' +
         '  <label class="form-label" for="fromInput">Откуда</label>' +
-        '  <input class="form-input" id="fromInput" data-header="from" type="text" value="' +
+        '  <div class="picker-row" id="fromPickerRow">' +
+        '    <div class="picker-value" id="fromValue">' +
+        escapeHtml(outboundFromValue) +
+        "</div>" +
+        '    <button class="btn btn-outline picker-btn" id="fromPickBtn" type="button" ' +
+        (isDraft ? "" : "disabled") +
+        ">Выбрать...</button>" +
+        "  </div>" +
+        '  <input class="form-input picker-fallback" id="fromInput" data-header="from" type="text" value="' +
         escapeHtml(header.from || "") +
         "" +
         '" ' +
@@ -395,10 +468,20 @@
     }
 
     if (doc.op === "MOVE") {
+      var moveFromValue = formatLocationLabel(header.from, header.from_name);
+      var moveToValue = formatLocationLabel(header.to, header.to_name);
       return (
         '<div class="form-field">' +
         '  <label class="form-label" for="fromInput">Откуда</label>' +
-        '  <input class="form-input" id="fromInput" data-header="from" type="text" value="' +
+        '  <div class="picker-row" id="fromPickerRow">' +
+        '    <div class="picker-value" id="fromValue">' +
+        escapeHtml(moveFromValue) +
+        "</div>" +
+        '    <button class="btn btn-outline picker-btn" id="fromPickBtn" type="button" ' +
+        (isDraft ? "" : "disabled") +
+        ">Выбрать...</button>" +
+        "  </div>" +
+        '  <input class="form-input picker-fallback" id="fromInput" data-header="from" type="text" value="' +
         escapeHtml(header.from || "") +
         "" +
         '" ' +
@@ -407,7 +490,15 @@
         "</div>" +
         '<div class="form-field">' +
         '  <label class="form-label" for="toInput">Куда</label>' +
-        '  <input class="form-input" id="toInput" data-header="to" type="text" value="' +
+        '  <div class="picker-row" id="toPickerRow">' +
+        '    <div class="picker-value" id="toValue">' +
+        escapeHtml(moveToValue) +
+        "</div>" +
+        '    <button class="btn btn-outline picker-btn" id="toPickBtn" type="button" ' +
+        (isDraft ? "" : "disabled") +
+        ">Выбрать...</button>" +
+        "  </div>" +
+        '  <input class="form-input picker-fallback" id="toInput" data-header="to" type="text" value="' +
         escapeHtml(header.to || "") +
         "" +
         '" ' +
@@ -421,10 +512,19 @@
         var selected = header.reason_code === code ? "selected" : "";
         return '<option value="' + code + '" ' + selected + ">" + code + "</option>";
       }).join("");
+      var writeoffFromValue = formatLocationLabel(header.from, header.from_name);
       return (
         '<div class="form-field">' +
         '  <label class="form-label" for="fromInput">Откуда</label>' +
-        '  <input class="form-input" id="fromInput" data-header="from" type="text" value="' +
+        '  <div class="picker-row" id="fromPickerRow">' +
+        '    <div class="picker-value" id="fromValue">' +
+        escapeHtml(writeoffFromValue) +
+        "</div>" +
+        '    <button class="btn btn-outline picker-btn" id="fromPickBtn" type="button" ' +
+        (isDraft ? "" : "disabled") +
+        ">Выбрать...</button>" +
+        "  </div>" +
+        '  <input class="form-input picker-fallback" id="fromInput" data-header="from" type="text" value="' +
         escapeHtml(header.from || "") +
         "" +
         '" ' +
@@ -443,10 +543,19 @@
     }
 
     if (doc.op === "INVENTORY") {
+      var inventoryValue = formatLocationLabel(header.location, header.location_name);
       return (
         '<div class="form-field">' +
         '  <label class="form-label" for="locationInput">Локация</label>' +
-        '  <input class="form-input" id="locationInput" data-header="location" type="text" value="' +
+        '  <div class="picker-row" id="locationPickerRow">' +
+        '    <div class="picker-value" id="locationValue">' +
+        escapeHtml(inventoryValue) +
+        "</div>" +
+        '    <button class="btn btn-outline picker-btn" id="locationPickBtn" type="button" ' +
+        (isDraft ? "" : "disabled") +
+        ">Выбрать...</button>" +
+        "  </div>" +
+        '  <input class="form-input picker-fallback" id="locationInput" data-header="location" type="text" value="' +
         escapeHtml(header.location || "") +
         "" +
         '" ' +
@@ -466,6 +575,7 @@
       '  <input class="form-input scan-input" id="barcodeInput" type="text" ' +
       (isDraft ? "" : "disabled") +
       " />" +
+      '  <div id="scanItemInfo" class="scan-info"></div>' +
       '  <div class="scan-actions">' +
       '    <div class="qty-indicator">Шаг: <span id="qtyStepValue">1</span> шт</div>' +
       '    <div class="qty-buttons">' +
@@ -491,10 +601,16 @@
 
     var rows = lines
       .map(function (line, index) {
+        var nameText = line.itemName ? line.itemName : "Неизвестный код";
         return (
           '<div class="lines-row">' +
           '  <div class="lines-cell">' +
+          '    <div class="line-name">' +
+          escapeHtml(nameText) +
+          "</div>" +
+          '    <div class="line-barcode">' +
           escapeHtml(line.barcode) +
+          "</div>" +
           "</div>" +
           '  <div class="lines-cell">' +
           escapeHtml(line.qty) +
@@ -512,7 +628,7 @@
     return (
       '<div class="lines-table">' +
       '  <div class="lines-header">' +
-      '    <div class="lines-cell">Штрихкод</div>' +
+      '    <div class="lines-cell">Товар</div>' +
       '    <div class="lines-cell">Кол-во</div>' +
       '    <div class="lines-cell"></div>' +
       "  </div>" +
@@ -533,6 +649,12 @@
       "      Сохранить" +
       "    </button>" +
       '    <div id="saveStatus" class="status"></div>' +
+      '    <button id="importDataBtn" class="btn btn-outline" type="button">' +
+      "      Загрузить данные с ПК..." +
+      "    </button>" +
+      '    <input id="dataFileInput" class="file-input" type="file" accept=".json,application/json" />' +
+      '    <div id="dataStatus" class="status"></div>' +
+      '    <div id="dataCounts" class="status status-muted"></div>' +
       '    <button id="exportFromSettingsBtn" class="btn btn-outline" type="button">' +
       "      Экспорт JSONL" +
       "    </button>" +
@@ -587,10 +709,272 @@
     });
   }
 
+  function buildOverlay(title) {
+    var overlay = document.createElement("div");
+    overlay.className = "overlay";
+    overlay.innerHTML =
+      '<div class="overlay-card">' +
+      '  <div class="overlay-header">' +
+      '    <div class="overlay-title"></div>' +
+      '    <button class="btn btn-ghost overlay-close" type="button">Закрыть</button>' +
+      "  </div>" +
+      '  <input class="form-input overlay-search" type="text" placeholder="Поиск..." />' +
+      '  <div class="overlay-section">' +
+      '    <div class="overlay-section-title">Последние</div>' +
+      '    <div class="overlay-list overlay-recents"></div>' +
+      "  </div>" +
+      '  <div class="overlay-section">' +
+      '    <div class="overlay-section-title">Результаты</div>' +
+      '    <div class="overlay-list overlay-results"></div>' +
+      "  </div>" +
+      "</div>";
+    overlay.querySelector(".overlay-title").textContent = title;
+    return overlay;
+  }
+
+  function renderOverlayList(listEl, items, renderLabel, onSelect) {
+    listEl.innerHTML = "";
+    if (!items.length) {
+      var empty = document.createElement("div");
+      empty.className = "overlay-empty";
+      empty.textContent = "Нет данных";
+      listEl.appendChild(empty);
+      return;
+    }
+    items.forEach(function (item) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "overlay-item";
+      var label = document.createElement("div");
+      label.className = "overlay-item-title";
+      label.textContent = renderLabel(item);
+      button.appendChild(label);
+      if (item.subLabel) {
+        var sub = document.createElement("div");
+        sub.className = "overlay-item-sub";
+        sub.textContent = item.subLabel;
+        button.appendChild(sub);
+      }
+      button.addEventListener("click", function () {
+        onSelect(item);
+      });
+      listEl.appendChild(button);
+    });
+  }
+
+  function openPartnerPicker(onSelect) {
+    var overlay = buildOverlay("Контрагенты");
+    var input = overlay.querySelector(".overlay-search");
+    var recentsEl = overlay.querySelector(".overlay-recents");
+    var resultsEl = overlay.querySelector(".overlay-results");
+    var closeBtn = overlay.querySelector(".overlay-close");
+
+    function close() {
+      document.body.removeChild(overlay);
+      document.removeEventListener("keydown", onKeyDown);
+    }
+
+    function onKeyDown(event) {
+      if (event.key === "Escape") {
+        close();
+      }
+    }
+
+    function loadRecents() {
+      TsdStorage.getSetting("recentPartnerIds")
+        .then(function (ids) {
+          var list = Array.isArray(ids) ? ids.slice(0, 5) : [];
+          return Promise.all(
+            list.map(function (id) {
+              return TsdStorage.getPartnerById(id).catch(function () {
+                return null;
+              });
+            })
+          );
+        })
+        .then(function (partners) {
+          var filtered = partners.filter(function (partner) {
+            return !!partner;
+          });
+          renderOverlayList(
+            recentsEl,
+            filtered,
+            function (partner) {
+              return formatPartnerLabel(partner);
+            },
+            function (partner) {
+              onSelect(partner);
+              updateRecentSetting("recentPartnerIds", partner.partnerId);
+              close();
+            }
+          );
+        })
+        .catch(function () {
+          renderOverlayList(recentsEl, [], function () {
+            return "";
+          });
+        });
+    }
+
+    function runSearch(query) {
+      TsdStorage.searchPartners(query)
+        .then(function (partners) {
+          var list = partners.map(function (partner) {
+            var sub = [];
+            if (partner.code) {
+              sub.push("Код: " + partner.code);
+            }
+            if (partner.inn) {
+              sub.push("ИНН: " + partner.inn);
+            }
+            partner.subLabel = sub.join(" · ");
+            return partner;
+          });
+          renderOverlayList(
+            resultsEl,
+            list,
+            function (partner) {
+              return formatPartnerLabel(partner);
+            },
+            function (partner) {
+              onSelect(partner);
+              updateRecentSetting("recentPartnerIds", partner.partnerId);
+              close();
+            }
+          );
+        })
+        .catch(function () {
+          renderOverlayList(resultsEl, [], function () {
+            return "";
+          });
+        });
+    }
+
+    document.body.appendChild(overlay);
+    document.addEventListener("keydown", onKeyDown);
+
+    overlay.addEventListener("click", function (event) {
+      if (event.target === overlay) {
+        close();
+      }
+    });
+
+    closeBtn.addEventListener("click", close);
+    input.addEventListener("input", function () {
+      runSearch(input.value);
+    });
+
+    loadRecents();
+    runSearch("");
+    input.focus();
+  }
+
+  function openLocationPicker(onSelect) {
+    var overlay = buildOverlay("Локации");
+    var input = overlay.querySelector(".overlay-search");
+    var recentsEl = overlay.querySelector(".overlay-recents");
+    var resultsEl = overlay.querySelector(".overlay-results");
+    var closeBtn = overlay.querySelector(".overlay-close");
+
+    function close() {
+      document.body.removeChild(overlay);
+      document.removeEventListener("keydown", onKeyDown);
+    }
+
+    function onKeyDown(event) {
+      if (event.key === "Escape") {
+        close();
+      }
+    }
+
+    function loadRecents() {
+      TsdStorage.getSetting("recentLocationIds")
+        .then(function (ids) {
+          var list = Array.isArray(ids) ? ids.slice(0, 5) : [];
+          return Promise.all(
+            list.map(function (id) {
+              return TsdStorage.getLocationById(id).catch(function () {
+                return null;
+              });
+            })
+          );
+        })
+        .then(function (locations) {
+          var filtered = locations.filter(function (location) {
+            return !!location;
+          });
+          renderOverlayList(
+            recentsEl,
+            filtered,
+            function (location) {
+              return formatLocationLabel(location.code, location.name);
+            },
+            function (location) {
+              onSelect(location);
+              updateRecentSetting("recentLocationIds", location.locationId);
+              close();
+            }
+          );
+        })
+        .catch(function () {
+          renderOverlayList(recentsEl, [], function () {
+            return "";
+          });
+        });
+    }
+
+    function runSearch(query) {
+      TsdStorage.searchLocations(query)
+        .then(function (locations) {
+          renderOverlayList(
+            resultsEl,
+            locations,
+            function (location) {
+              return formatLocationLabel(location.code, location.name);
+            },
+            function (location) {
+              onSelect(location);
+              updateRecentSetting("recentLocationIds", location.locationId);
+              close();
+            }
+          );
+        })
+        .catch(function () {
+          renderOverlayList(resultsEl, [], function () {
+            return "";
+          });
+        });
+    }
+
+    document.body.appendChild(overlay);
+    document.addEventListener("keydown", onKeyDown);
+
+    overlay.addEventListener("click", function (event) {
+      if (event.target === overlay) {
+        close();
+      }
+    });
+
+    closeBtn.addEventListener("click", close);
+    input.addEventListener("input", function () {
+      runSearch(input.value);
+    });
+
+    loadRecents();
+    runSearch("");
+    input.focus();
+  }
+
   function wireDoc(doc) {
     doc.lines = doc.lines || [];
     doc.undoStack = doc.undoStack || [];
     doc.header = doc.header || getDefaultHeader(doc.op);
+    var headerDefaults = getDefaultHeader(doc.op);
+    Object.keys(headerDefaults).forEach(function (key) {
+      if (doc.header[key] === undefined) {
+        doc.header[key] = headerDefaults[key];
+      }
+    });
 
     var qtyStep = 1;
     var qtyIndicator = document.getElementById("qtyStepValue");
@@ -604,6 +988,21 @@
     var headerInputs = document.querySelectorAll("[data-header]");
     var qtyButtons = document.querySelectorAll(".qty-btn");
     var deleteButtons = document.querySelectorAll(".line-delete");
+    var partnerPickBtn = document.getElementById("partnerPickBtn");
+    var toPickBtn = document.getElementById("toPickBtn");
+    var fromPickBtn = document.getElementById("fromPickBtn");
+    var locationPickBtn = document.getElementById("locationPickBtn");
+    var partnerPickerRow = document.getElementById("partnerPickerRow");
+    var toPickerRow = document.getElementById("toPickerRow");
+    var fromPickerRow = document.getElementById("fromPickerRow");
+    var locationPickerRow = document.getElementById("locationPickerRow");
+    var partnerInput = document.getElementById("partnerInput");
+    var toInput = document.getElementById("toInput");
+    var fromInput = document.getElementById("fromInput");
+    var locationInput = document.getElementById("locationInput");
+    var scanItemInfo = document.getElementById("scanItemInfo");
+    var dataStatus = null;
+    var lookupToken = 0;
 
     function updateQtyIndicator() {
       if (qtyIndicator) {
@@ -611,10 +1010,119 @@
       }
     }
 
+    function setScanInfo(text, isUnknown) {
+      if (!scanItemInfo) {
+        return;
+      }
+      scanItemInfo.textContent = text || "";
+      scanItemInfo.classList.toggle("scan-info-unknown", !!isUnknown);
+    }
+
     function focusBarcode() {
       if (barcodeInput && !barcodeInput.disabled) {
         barcodeInput.focus();
       }
+    }
+
+    function applyCatalogState(status) {
+      var hasPartners = status && status.counts && status.counts.partners > 0;
+      var hasLocations = status && status.counts && status.counts.locations > 0;
+
+      if (partnerPickerRow && partnerInput) {
+        partnerPickerRow.classList.toggle("is-hidden", !hasPartners);
+        partnerInput.classList.toggle("is-hidden", hasPartners);
+      }
+      if (toPickerRow && toInput) {
+        toPickerRow.classList.toggle("is-hidden", !hasLocations);
+        toInput.classList.toggle("is-hidden", hasLocations);
+      }
+      if (fromPickerRow && fromInput) {
+        fromPickerRow.classList.toggle("is-hidden", !hasLocations);
+        fromInput.classList.toggle("is-hidden", hasLocations);
+      }
+      if (locationPickerRow && locationInput) {
+        locationPickerRow.classList.toggle("is-hidden", !hasLocations);
+        locationInput.classList.toggle("is-hidden", hasLocations);
+      }
+
+      if (partnerPickBtn) {
+        partnerPickBtn.disabled = !hasPartners || doc.status !== "DRAFT";
+      }
+      if (toPickBtn) {
+        toPickBtn.disabled = !hasLocations || doc.status !== "DRAFT";
+      }
+      if (fromPickBtn) {
+        fromPickBtn.disabled = !hasLocations || doc.status !== "DRAFT";
+      }
+      if (locationPickBtn) {
+        locationPickBtn.disabled = !hasLocations || doc.status !== "DRAFT";
+      }
+    }
+
+    function hydrateHeaderFromCatalog() {
+      var updates = [];
+      var changed = false;
+
+      if (doc.header.partner_id && !doc.header.partner) {
+        updates.push(
+          TsdStorage.getPartnerById(doc.header.partner_id).then(function (partner) {
+            if (partner) {
+              doc.header.partner = partner.name || "";
+              changed = true;
+            }
+          })
+        );
+      }
+
+      if (doc.header.from_id && !doc.header.from_name) {
+        updates.push(
+          TsdStorage.getLocationById(doc.header.from_id).then(function (location) {
+            if (location) {
+              doc.header.from = location.code || doc.header.from;
+              doc.header.from_name = location.name || null;
+              changed = true;
+            }
+          })
+        );
+      }
+
+      if (doc.header.to_id && !doc.header.to_name) {
+        updates.push(
+          TsdStorage.getLocationById(doc.header.to_id).then(function (location) {
+            if (location) {
+              doc.header.to = location.code || doc.header.to;
+              doc.header.to_name = location.name || null;
+              changed = true;
+            }
+          })
+        );
+      }
+
+      if (doc.header.location_id && !doc.header.location_name) {
+        updates.push(
+          TsdStorage.getLocationById(doc.header.location_id).then(function (location) {
+            if (location) {
+              doc.header.location = location.code || doc.header.location;
+              doc.header.location_name = location.name || null;
+              changed = true;
+            }
+          })
+        );
+      }
+
+      if (!updates.length) {
+        return;
+      }
+
+      Promise.all(updates)
+        .then(function () {
+          if (changed) {
+            saveDocState().then(refreshDocView);
+          }
+        })
+        .catch(function () {
+          return false;
+        });
     }
 
     function saveDocState() {
@@ -640,37 +1148,80 @@
       }
 
       var lineData = buildLineData(doc.op, doc.header);
-      var lineIndex = findLineIndex(doc.op, doc.lines, barcode, lineData);
-      if (lineIndex >= 0) {
-        doc.lines[lineIndex].qty += qtyStep;
-      } else {
-        doc.lines.push({
+      function addLineWithItem(item) {
+        var itemId = item ? item.itemId : null;
+        var itemName = item ? item.name : null;
+        var lineIndex = findLineIndex(doc.op, doc.lines, barcode, lineData);
+        if (lineIndex >= 0) {
+          doc.lines[lineIndex].qty += qtyStep;
+          if (itemName && !doc.lines[lineIndex].itemName) {
+            doc.lines[lineIndex].itemName = itemName;
+            doc.lines[lineIndex].itemId = itemId;
+          }
+        } else {
+          doc.lines.push({
+            barcode: barcode,
+            qty: qtyStep,
+            from: lineData.from,
+            to: lineData.to,
+            reason_code: lineData.reason_code,
+            itemId: itemId,
+            itemName: itemName,
+          });
+        }
+
+        doc.undoStack.push({
           barcode: barcode,
-          qty: qtyStep,
+          qtyDelta: qtyStep,
           from: lineData.from,
           to: lineData.to,
           reason_code: lineData.reason_code,
         });
+
+        if (barcodeInput) {
+          barcodeInput.value = "";
+        }
+        setScanInfo("", false);
+
+        saveDocState().then(refreshDocView);
       }
 
-      doc.undoStack.push({
-        barcode: barcode,
-        qtyDelta: qtyStep,
-        from: lineData.from,
-        to: lineData.to,
-        reason_code: lineData.reason_code,
-      });
-
-      if (barcodeInput) {
-        barcodeInput.value = "";
-      }
-
-      saveDocState().then(refreshDocView);
+      TsdStorage.findItemByCode(barcode)
+        .then(function (item) {
+          addLineWithItem(item);
+        })
+        .catch(function () {
+          addLineWithItem(null);
+        });
     }
 
     updateQtyIndicator();
 
     if (barcodeInput) {
+      barcodeInput.addEventListener("input", function () {
+        var value = barcodeInput.value.trim();
+        if (!value) {
+          setScanInfo("", false);
+          return;
+        }
+        var token = (lookupToken += 1);
+        TsdStorage.findItemByCode(value)
+          .then(function (item) {
+            if (token !== lookupToken) {
+              return;
+            }
+            if (item && item.name) {
+              setScanInfo(item.name, false);
+            } else {
+              setScanInfo("Неизвестный код", true);
+            }
+          })
+          .catch(function () {
+            if (token === lookupToken) {
+              setScanInfo("", false);
+            }
+          });
+      });
       barcodeInput.addEventListener("keydown", function (event) {
         if (event.key === "Enter") {
           event.preventDefault();
@@ -726,6 +1277,61 @@
         saveDocState().then(refreshDocView);
       });
     });
+
+    function applyPartnerSelection(partner) {
+      doc.header.partner_id = partner.partnerId;
+      doc.header.partner = partner.name || "";
+      saveDocState().then(refreshDocView);
+    }
+
+    function applyLocationSelection(field, location) {
+      doc.header[field] = location.code || "";
+      doc.header[field + "_name"] = location.name || null;
+      doc.header[field + "_id"] = location.locationId;
+      saveDocState().then(refreshDocView);
+    }
+
+    if (partnerPickBtn) {
+      partnerPickBtn.addEventListener("click", function () {
+        if (doc.status !== "DRAFT") {
+          return;
+        }
+        openPartnerPicker(applyPartnerSelection);
+      });
+    }
+
+    if (toPickBtn) {
+      toPickBtn.addEventListener("click", function () {
+        if (doc.status !== "DRAFT") {
+          return;
+        }
+        openLocationPicker(function (location) {
+          applyLocationSelection("to", location);
+        });
+      });
+    }
+
+    if (fromPickBtn) {
+      fromPickBtn.addEventListener("click", function () {
+        if (doc.status !== "DRAFT") {
+          return;
+        }
+        openLocationPicker(function (location) {
+          applyLocationSelection("from", location);
+        });
+      });
+    }
+
+    if (locationPickBtn) {
+      locationPickBtn.addEventListener("click", function () {
+        if (doc.status !== "DRAFT") {
+          return;
+        }
+        openLocationPicker(function (location) {
+          applyLocationSelection("location", location);
+        });
+      });
+    }
     if (finishBtn) {
       finishBtn.addEventListener("click", function () {
         if (doc.status !== "DRAFT") {
@@ -770,6 +1376,21 @@
           return;
         }
         doc.header[field] = input.value;
+        if (field === "partner") {
+          doc.header.partner_id = null;
+        }
+        if (field === "from") {
+          doc.header.from_name = null;
+          doc.header.from_id = null;
+        }
+        if (field === "to") {
+          doc.header.to_name = null;
+          doc.header.to_id = null;
+        }
+        if (field === "location") {
+          doc.header.location_name = null;
+          doc.header.location_id = null;
+        }
         saveDocState();
       };
 
@@ -780,6 +1401,16 @@
       }
     });
 
+    TsdStorage.getDataStatus()
+      .then(function (status) {
+        dataStatus = status;
+        applyCatalogState(status);
+        hydrateHeaderFromCatalog();
+      })
+      .catch(function () {
+        applyCatalogState(null);
+      });
+
     focusBarcode();
   }
 
@@ -788,6 +1419,10 @@
     var status = document.getElementById("saveStatus");
     var saveBtn = document.getElementById("saveSettingsBtn");
     var exportBtn = document.getElementById("exportFromSettingsBtn");
+    var importBtn = document.getElementById("importDataBtn");
+    var fileInput = document.getElementById("dataFileInput");
+    var dataStatusText = document.getElementById("dataStatus");
+    var dataCountsText = document.getElementById("dataCounts");
 
     TsdStorage.getSetting("device_id")
       .then(function (value) {
@@ -799,6 +1434,33 @@
         if (input) {
           input.value = "CT48-01";
         }
+      });
+
+    function renderDataStatus(statusInfo) {
+      if (!dataStatusText || !dataCountsText) {
+        return;
+      }
+      if (!statusInfo || !statusInfo.exportedAt) {
+        dataStatusText.textContent = "Данные не загружены";
+        dataCountsText.textContent = "";
+        return;
+      }
+      dataStatusText.textContent = "Данные обновлены: " + statusInfo.exportedAt;
+      dataCountsText.textContent =
+        "Товары: " +
+        statusInfo.counts.items +
+        " · Контрагенты: " +
+        statusInfo.counts.partners +
+        " · Локации: " +
+        statusInfo.counts.locations +
+        " · Остатки: " +
+        statusInfo.counts.stock;
+    }
+
+    TsdStorage.getDataStatus()
+      .then(renderDataStatus)
+      .catch(function () {
+        renderDataStatus(null);
       });
 
     if (saveBtn) {
@@ -816,6 +1478,59 @@
             }, 1500);
           }
         });
+      });
+    }
+
+    if (importBtn && fileInput) {
+      importBtn.addEventListener("click", function () {
+        fileInput.click();
+      });
+
+      fileInput.addEventListener("change", function () {
+        var file = fileInput.files && fileInput.files[0];
+        if (!file) {
+          return;
+        }
+        if (dataStatusText) {
+          dataStatusText.textContent = "Загрузка данных...";
+        }
+        var reader = new FileReader();
+        reader.onload = function () {
+          try {
+            var data = JSON.parse(reader.result);
+            if (!data.meta || data.meta.schemaVersion !== 1) {
+              if (dataStatusText) {
+                dataStatusText.textContent = "Неверная версия схемы данных";
+              }
+              return;
+            }
+            TsdStorage.importTsdData(data)
+              .then(function () {
+                return TsdStorage.getDataStatus();
+              })
+              .then(function (statusInfo) {
+                renderDataStatus(statusInfo);
+              })
+              .catch(function () {
+                if (dataStatusText) {
+                  dataStatusText.textContent = "Ошибка импорта данных";
+                }
+              });
+          } catch (error) {
+            if (dataStatusText) {
+              dataStatusText.textContent = "Некорректный JSON";
+            }
+          } finally {
+            fileInput.value = "";
+          }
+        };
+        reader.onerror = function () {
+          if (dataStatusText) {
+            dataStatusText.textContent = "Ошибка чтения файла";
+          }
+          fileInput.value = "";
+        };
+        reader.readAsText(file);
       });
     }
 
@@ -868,19 +1583,38 @@
 
   function getDefaultHeader(op) {
     if (op === "INBOUND") {
-      return { partner: "", to: "" };
+      return { partner: "", partner_id: null, to: "", to_name: null, to_id: null };
     }
     if (op === "OUTBOUND") {
-      return { partner: "", order_ref: "", from: "" };
+      return {
+        partner: "",
+        partner_id: null,
+        order_ref: "",
+        from: "",
+        from_name: null,
+        from_id: null,
+      };
     }
     if (op === "MOVE") {
-      return { from: "", to: "" };
+      return {
+        from: "",
+        from_name: null,
+        from_id: null,
+        to: "",
+        to_name: null,
+        to_id: null,
+      };
     }
     if (op === "WRITE_OFF") {
-      return { from: "", reason_code: REASON_CODES[0] };
+      return {
+        from: "",
+        from_name: null,
+        from_id: null,
+        reason_code: REASON_CODES[0],
+      };
     }
     if (op === "INVENTORY") {
-      return { location: "" };
+      return { location: "", location_name: null, location_id: null };
     }
     return {};
   }
@@ -994,7 +1728,7 @@
               qty: line.qty,
               from: line.from || null,
               to: line.to || null,
-              partner_id: null,
+              partner_id: doc.header && doc.header.partner_id ? doc.header.partner_id : null,
               order_ref: doc.header && doc.header.order_ref ? doc.header.order_ref : null,
               reason_code: line.reason_code || null,
             };
