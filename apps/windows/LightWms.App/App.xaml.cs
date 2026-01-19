@@ -1,6 +1,7 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Threading;
+using Application = System.Windows.Application;
 
 namespace LightWms.App;
 

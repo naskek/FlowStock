@@ -17,6 +17,7 @@
     READY: "Готово",
     EXPORTED: "Экспортировано",
   };
+  var preserveScanFocus = false;
 
   var OPS = {
     INBOUND: { label: "Приемка", prefix: "IN" },
@@ -26,7 +27,13 @@
     INVENTORY: { label: "Инвентаризация", prefix: "INV" },
   };
 
-  var REASON_CODES = ["DAMAGE", "EXPIRED", "DEFECT", "LOSS", "OTHER"];
+  var WRITE_OFF_REASONS = [
+    { code: "DAMAGED", label: "Повреждено" },
+    { code: "EXPIRED", label: "Просрочено" },
+    { code: "DEFECT", label: "Брак" },
+    { code: "SAMPLE", label: "Проба" },
+    { code: "OTHER", label: "Прочее" },
+  ];
 
   var REQUIRED_FIELDS = {
     INBOUND: ["to"],
@@ -43,6 +50,16 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
+  }
+
+  function getReasonLabel(code) {
+    if (!code) {
+      return "";
+    }
+    var match = WRITE_OFF_REASONS.find(function (item) {
+      return item.code === code;
+    });
+    return match ? match.label : code;
   }
 
   function padNumber(value, size) {
@@ -586,9 +603,32 @@
     updateDataStatus();
   }
 
+  function getDocTotals(lines) {
+    var totals = { count: 0, qty: 0 };
+    if (!Array.isArray(lines)) {
+      return totals;
+    }
+    totals.count = lines.length;
+    for (var i = 0; i < lines.length; i += 1) {
+      var qty = Number(lines[i].qty) || 0;
+      totals.qty += qty;
+    }
+    return totals;
+  }
+
   function renderDoc(doc) {
     var headerFields = renderHeaderFields(doc);
     var linesHtml = renderLines(doc);
+    var totals = getDocTotals(doc.lines);
+    var totalsHtml =
+      '    <div class="doc-totals">' +
+      '      <div class="doc-totals-item">Позиций: <span id="docTotalCount">' +
+      totals.count +
+      "</span></div>" +
+      '      <div class="doc-totals-item">Всего: <span id="docTotalQty">' +
+      totals.qty +
+      "</span> шт</div>" +
+      "    </div>";
     var statusLabel = STATUS_LABELS[doc.status] || doc.status;
     var isDraft = doc.status === "DRAFT";
     var isReady = doc.status === "READY";
@@ -631,7 +671,10 @@
       '    <div class="section-subtitle">Сканирование</div>' +
       renderScanBlock(doc, isDraft) +
       '    <div class="section-subtitle">Строки</div>' +
+      '    <div class="lines-section">' +
       linesHtml +
+      totalsHtml +
+      "    </div>" +
       '    <div class="actions-bar">' +
       '      <button class="btn btn-outline" id="undoBtn" ' +
       (doc.undoStack && doc.undoStack.length && isDraft ? "" : "disabled") +
@@ -788,11 +831,8 @@
       );
     }
     if (doc.op === "WRITE_OFF") {
-      var reasonOptions = REASON_CODES.map(function (code) {
-        var selected = header.reason_code === code ? "selected" : "";
-        return '<option value="' + code + '" ' + selected + ">" + code + "</option>";
-      }).join("");
       var writeoffFromValue = formatLocationLabel(header.from, header.from_name);
+      var currentReasonLabel = getReasonLabel(header.reason_code) || "Не выбрана";
       return (
         '<div class="form-field">' +
         '  <label class="form-label" for="fromInput">Откуда</label>' +
@@ -812,13 +852,17 @@
         " />" +
         '<div class="field-error" id="fromError"></div>' +
         "</div>" +
-        '<div class="form-field">' +
-        '  <label class="form-label" for="reasonSelect">Причина</label>' +
-        '  <select class="form-input" id="reasonSelect" data-header="reason_code" ' +
+        '<div class="form-field reason-field">' +
+        '  <label class="form-label">Причина</label>' +
+        '  <div class="reason-picker-row">' +
+        '    <div class="reason-value" id="reasonValue">' +
+        escapeHtml(currentReasonLabel) +
+        "</div>" +
+        '    <button class="btn btn-outline picker-btn" id="reasonPickBtn" type="button" ' +
         (isDraft ? "" : "disabled") +
-        ">" +
-        reasonOptions +
-        "</select>" +
+        ">Выбрать...</button>" +
+        "  </div>" +
+        '<div class="field-error" id="reasonError"></div>' +
         "</div>"
       );
     }
@@ -887,14 +931,19 @@
   function renderLines(doc) {
     var lines = doc.lines || [];
     if (!lines.length) {
-      return '<div class="empty-state">Строк пока нет.</div>';
+      return '<div class="empty-state">Добавьте товары сканированием.</div>';
     }
 
     var rows = lines
       .map(function (line, index) {
         var nameText = line.itemName ? line.itemName : "Неизвестный код";
+        var qtyValue = Number(line.qty) || 0;
+        var minusDisabledAttr = qtyValue <= 1 ? ' disabled' : "";
+        var minusClassDisabled = qtyValue <= 1 ? " is-disabled" : "";
         return (
-          '<div class="lines-row">' +
+          '<div class="lines-row" data-line-index="' +
+          index +
+          '">' +
           '  <div class="lines-cell">' +
           '    <div class="line-name">' +
           escapeHtml(nameText) +
@@ -903,30 +952,46 @@
           escapeHtml(line.barcode) +
           "</div>" +
           "</div>" +
-          '  <div class="lines-cell">' +
+          '  <div class="lines-cell line-actions">' +
+          '    <div class="line-qty">' +
           escapeHtml(line.qty) +
           " шт</div>" +
-          '  <div class="lines-cell">' +
-          '    <button class="btn btn-danger line-delete" data-index="' +
+          '    <div class="line-control-buttons">' +
+          '      <button class="btn btn-ghost line-control-btn' +
+          minusClassDisabled +
+          '" data-action="minus" data-index="' +
           index +
-          '">Удалить</button>' +
+          '"' +
+          minusDisabledAttr +
+          '>−</button>' +
+          '      <button class="btn btn-ghost line-control-btn" data-action="plus" data-index="' +
+          index +
+          '">+</button>' +
+          '      <button class="btn btn-icon line-delete" data-index="' +
+          index +
+          '" aria-label="Удалить строку">' +
+          '        <svg viewBox="0 0 24 24" aria-hidden="true">' +
+          "          <path d=\"M3 6h18l-1.5 14h-15z\"></path>" +
+          "          <path d=\"M9 4V2h6v2h5v2H4V4z\"></path>" +
+          "        </svg>" +
+          "      </button>" +
+          "    </div>" +
           "  </div>" +
           "</div>"
         );
       })
       .join("");
 
-    return (
-      '<div class="lines-table">' +
-      '  <div class="lines-header">' +
-      '    <div class="lines-cell">Товар</div>' +
-      '    <div class="lines-cell">Кол-во</div>' +
-      '    <div class="lines-cell"></div>' +
-      "  </div>" +
-      rows +
-      "</div>"
-    );
-  }
+      return (
+        '<div class="lines-table">' +
+        '  <div class="lines-header">' +
+        '    <div class="lines-cell">Товар</div>' +
+        '    <div class="lines-cell qty-column">Кол-во</div>' +
+        "  </div>" +
+        rows +
+        "</div>"
+      );
+    }
 
   function renderSettings() {
     return (
@@ -1263,6 +1328,130 @@
     input.focus();
   }
 
+  function openReasonPicker(onSelect) {
+    var overlay = buildOverlay("Причина списания");
+    var searchInput = overlay.querySelector(".overlay-search");
+    var recentsEl = overlay.querySelector(".overlay-recents");
+    var resultsEl = overlay.querySelector(".overlay-results");
+    var closeBtn = overlay.querySelector(".overlay-close");
+
+    var recentsSection = recentsEl ? recentsEl.parentElement : null;
+    if (recentsSection) {
+      recentsSection.parentElement.removeChild(recentsSection);
+      recentsEl = null;
+    }
+
+    function close() {
+      document.body.removeChild(overlay);
+      document.removeEventListener("keydown", onKeyDown);
+    }
+
+    function onKeyDown(event) {
+      if (event.key === "Escape") {
+        close();
+      }
+    }
+
+    function runSearch(query) {
+      var normalized = String(query || "").trim().toLowerCase();
+      var filtered = WRITE_OFF_REASONS.filter(function (reason) {
+        if (!normalized) {
+          return true;
+        }
+        var label = reason.label.toLowerCase();
+        var code = reason.code.toLowerCase();
+        return label.indexOf(normalized) !== -1 || code.indexOf(normalized) !== -1;
+      });
+      resultEntries(resultsEl, filtered);
+    }
+
+    function resultEntries(target, list) {
+      renderOverlayList(
+        target,
+        list,
+        function (item) {
+          return item.label;
+        },
+        function (item) {
+          if (!item) {
+            return;
+          }
+          onSelect(item);
+          close();
+        }
+      );
+    }
+
+    document.body.appendChild(overlay);
+    document.addEventListener("keydown", onKeyDown);
+
+    overlay.addEventListener("click", function (event) {
+      if (event.target === overlay) {
+        close();
+      }
+    });
+
+    closeBtn.addEventListener("click", close);
+    if (searchInput) {
+      searchInput.addEventListener("input", function () {
+        runSearch(searchInput.value);
+      });
+    }
+
+    runSearch("");
+    if (searchInput) {
+      searchInput.focus();
+    }
+  }
+
+  function openConfirmOverlay(title, message, confirmLabel, onConfirm) {
+    var overlay = document.createElement("div");
+    overlay.className = "overlay";
+    overlay.innerHTML =
+      '<div class="overlay-card confirm-card">' +
+      '  <div class="overlay-header">' +
+      '    <div class="overlay-title"></div>' +
+      '  </div>' +
+      '  <div class="confirm-message"></div>' +
+      '  <div class="confirm-actions">' +
+      '    <button class="btn btn-outline overlay-cancel" type="button">Отмена</button>' +
+      '    <button class="btn btn-danger overlay-confirm" type="button"></button>' +
+      "  </div>" +
+      "</div>";
+    overlay.querySelector(".overlay-title").textContent = title;
+    overlay.querySelector(".confirm-message").textContent = message;
+    var confirmBtn = overlay.querySelector(".overlay-confirm");
+    confirmBtn.textContent = confirmLabel;
+
+    function close() {
+      document.body.removeChild(overlay);
+      document.removeEventListener("keydown", onKeyDown);
+    }
+
+    function onKeyDown(event) {
+      if (event.key === "Escape") {
+        close();
+      }
+    }
+
+    document.body.appendChild(overlay);
+    document.addEventListener("keydown", onKeyDown);
+
+    overlay.addEventListener("click", function (event) {
+      if (event.target === overlay) {
+        close();
+      }
+    });
+
+    overlay.querySelector(".overlay-cancel").addEventListener("click", close);
+    confirmBtn.addEventListener("click", function () {
+      close();
+      if (typeof onConfirm === "function") {
+        onConfirm();
+      }
+    });
+  }
+
   function wireDoc(doc) {
     doc.lines = doc.lines || [];
     doc.undoStack = doc.undoStack || [];
@@ -1299,11 +1488,14 @@
     var fromInput = document.getElementById("fromInput");
     var locationInput = document.getElementById("locationInput");
     var scanItemInfo = document.getElementById("scanItemInfo");
+    var reasonPickBtn = document.getElementById("reasonPickBtn");
+    var reasonErrorEl = document.getElementById("reasonError");
     var dataStatus = null;
     var lookupToken = 0;
     var qtyModeButtons = document.querySelectorAll(".qty-mode-btn");
     var qtyOverlay = null;
     var qtyOverlayKeyListener = null;
+    var isDraftDoc = doc.status === "DRAFT";
 
     function updateQtyIndicator() {
       if (qtyIndicator) {
@@ -1524,6 +1716,7 @@
     }
 
     var locationErrorTimers = {};
+    var reasonErrorTimer = null;
     var locationFieldInputs = document.querySelectorAll("[data-location-field]");
 
     function setLocationError(field, message) {
@@ -1546,7 +1739,71 @@
       }
     }
 
+    function setReasonError(message) {
+      if (reasonErrorEl) {
+        reasonErrorEl.textContent = message || "";
+      }
+      if (reasonErrorTimer) {
+        clearTimeout(reasonErrorTimer);
+        reasonErrorTimer = null;
+      }
+      if (message) {
+        reasonErrorTimer = window.setTimeout(function () {
+          if (reasonErrorEl) {
+            reasonErrorEl.textContent = "";
+          }
+          reasonErrorTimer = null;
+        }, 2500);
+      }
+    }
+
+    function adjustLineAt(index, delta) {
+      if (!isDraftDoc) {
+        return;
+      }
+      if (typeof index !== "number") {
+        return;
+      }
+      if (index < 0 || index >= doc.lines.length) {
+        return;
+      }
+      var line = doc.lines[index];
+      if (!line) {
+        return;
+      }
+      var nextQty = (Number(line.qty) || 0) + delta;
+      if (delta < 0 && nextQty < 1) {
+        nextQty = 1;
+      }
+      line.qty = nextQty;
+      doc.updatedAt = new Date().toISOString();
+      preserveScanFocus = true;
+      saveDocState().then(function () {
+        refreshDocView();
+      });
+    }
+
+    function deleteLineAt(index) {
+      if (!isDraftDoc) {
+        return;
+      }
+      if (isNaN(index) || index < 0 || index >= doc.lines.length) {
+        return;
+      }
+      doc.lines.splice(index, 1);
+      doc.updatedAt = new Date().toISOString();
+      preserveScanFocus = true;
+      saveDocState().then(function () {
+        refreshDocView();
+      });
+    }
+
     function focusFirstLocationOrBarcode() {
+      if (preserveScanFocus) {
+        preserveScanFocus = false;
+        focusBarcode();
+        return;
+      }
       var candidateFields = [];
       if (doc.op === "INBOUND") {
         candidateFields = ["to"];
@@ -1773,7 +2030,10 @@
     }
 
     deleteButtons.forEach(function (btn) {
-      btn.addEventListener("click", function () {
+      btn.addEventListener("click", function (event) {
+        if (event) {
+          event.preventDefault();
+        }
         if (doc.status !== "DRAFT") {
           return;
         }
@@ -1781,11 +2041,9 @@
         if (isNaN(index)) {
           return;
         }
-        if (!confirm("Удалить строку?")) {
-          return;
-        }
-        doc.lines.splice(index, 1);
-        saveDocState().then(refreshDocView);
+        openConfirmOverlay("Удалить строку?", "Удалить строку?", "Удалить", function () {
+          deleteLineAt(index);
+        });
       });
     });
 
@@ -1801,6 +2059,16 @@
       doc.header[field + "_name"] = location.name || null;
       doc.header[field + "_id"] = location.locationId;
       updateRecentSetting("recentLocationIds", location.locationId);
+      saveDocState().then(refreshDocView);
+    }
+
+    function applyReasonSelection(reason) {
+      if (!reason || !reason.code) {
+        return;
+      }
+      setReasonError("");
+      doc.header.reason_code = reason.code;
+      doc.header.reason_label = reason.label || reason.code;
       saveDocState().then(refreshDocView);
     }
 
@@ -1845,12 +2113,28 @@
         });
       });
     }
+    if (reasonPickBtn) {
+      reasonPickBtn.addEventListener("click", function () {
+        if (doc.status !== "DRAFT") {
+          return;
+        }
+        openReasonPicker(applyReasonSelection);
+      });
+    }
     if (finishBtn) {
       finishBtn.addEventListener("click", function () {
         if (doc.status !== "DRAFT") {
           return;
         }
+        if (!doc.lines.length) {
+          alert("Добавьте хотя бы одну строку перед завершением.");
+          return;
+        }
         if (!isHeaderComplete(doc.op, doc.header)) {
+          if (doc.op === "WRITE_OFF" && !normalizeValue(doc.header.reason_code)) {
+            setReasonError("Выберите причину списания");
+            return;
+          }
           alert("Заполните обязательные поля шапки.");
           return;
         }
@@ -1926,6 +2210,29 @@
         if (event.key === "Enter") {
           event.preventDefault();
           handleLocationEntry(field);
+        }
+      });
+    });
+
+    var lineControlButtons = document.querySelectorAll(".line-control-btn");
+    Array.prototype.forEach.call(lineControlButtons, function (btn) {
+      btn.addEventListener("click", function (event) {
+        if (event) {
+          event.preventDefault();
+        }
+        if (!isDraftDoc) {
+          return;
+        }
+        var action = btn.getAttribute("data-action");
+        var index = parseInt(btn.getAttribute("data-index"), 10);
+        if (isNaN(index)) {
+          return;
+        }
+        if (action === "minus") {
+          adjustLineAt(index, -1);
+        }
+        if (action === "plus") {
+          adjustLineAt(index, 1);
         }
       });
     });
@@ -2148,7 +2455,8 @@
         from: "",
         from_name: null,
         from_id: null,
-        reason_code: REASON_CODES[0],
+        reason_code: null,
+        reason_label: null,
         qtyMode: "INC1",
       };
     }

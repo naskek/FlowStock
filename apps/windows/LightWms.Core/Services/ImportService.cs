@@ -50,11 +50,16 @@ public sealed class ImportService
                 continue;
             }
 
-            var outcome = ProcessEvent(importEvent!, line, filePath, allowErrorInsert: true);
+            var outcome = ProcessEvent(importEvent!, line, filePath, allowErrorInsert: true, out var docCreated);
             switch (outcome)
             {
                 case ImportOutcome.Imported:
                     result.Imported++;
+                    result.LinesImported++;
+                    if (docCreated)
+                    {
+                        result.DocumentsCreated++;
+                    }
                     break;
                 case ImportOutcome.Duplicate:
                     result.Duplicates++;
@@ -106,7 +111,7 @@ public sealed class ImportService
             return false;
         }
 
-        var outcome = ProcessEvent(importEvent, error.RawJson, "reapply", allowErrorInsert: false);
+        var outcome = ProcessEvent(importEvent, error.RawJson, "reapply", allowErrorInsert: false, out _);
         if (outcome == ImportOutcome.Imported || outcome == ImportOutcome.Duplicate)
         {
             _data.DeleteImportError(errorId);
@@ -116,9 +121,10 @@ public sealed class ImportService
         return false;
     }
 
-    private ImportOutcome ProcessEvent(ImportEvent importEvent, string rawJson, string sourceFile, bool allowErrorInsert)
+    private ImportOutcome ProcessEvent(ImportEvent importEvent, string rawJson, string sourceFile, bool allowErrorInsert, out bool docCreated)
     {
         var outcome = ImportOutcome.Error;
+        var created = false;
 
         _data.ExecuteInTransaction(store =>
         {
@@ -171,15 +177,23 @@ public sealed class ImportService
             var doc = store.FindDocByRef(docRef, importEvent.Type);
             if (doc == null)
             {
+                var partnerId = ResolvePartnerId(store, importEvent);
                 var docId = store.AddDoc(new Doc
                 {
                     DocRef = docRef,
                     Type = importEvent.Type,
                     Status = DocStatus.Draft,
                     CreatedAt = importEvent.Timestamp,
-                    ClosedAt = null
+                    ClosedAt = null,
+                    PartnerId = partnerId,
+                    OrderRef = NormalizeOrderRef(importEvent.OrderRef)
                 });
                 doc = store.GetDoc(docId);
+                created = true;
+            }
+            else
+            {
+                TryUpdateDocHeader(store, doc, importEvent);
             }
 
             if (doc == null)
@@ -208,7 +222,54 @@ public sealed class ImportService
             outcome = ImportOutcome.Imported;
         });
 
+        docCreated = created;
         return outcome;
+    }
+
+    private static long? ResolvePartnerId(IDataStore store, ImportEvent importEvent)
+    {
+        if (importEvent.PartnerId.HasValue)
+        {
+            var partner = store.GetPartner(importEvent.PartnerId.Value);
+            if (partner != null)
+            {
+                return partner.Id;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(importEvent.PartnerCode))
+        {
+            var partner = store.FindPartnerByCode(importEvent.PartnerCode.Trim());
+            if (partner != null)
+            {
+                return partner.Id;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? NormalizeOrderRef(string? orderRef)
+    {
+        return string.IsNullOrWhiteSpace(orderRef) ? null : orderRef.Trim();
+    }
+
+    private static void TryUpdateDocHeader(IDataStore store, Doc doc, ImportEvent importEvent)
+    {
+        if (doc.Status != DocStatus.Draft)
+        {
+            return;
+        }
+
+        var partnerId = doc.PartnerId ?? ResolvePartnerId(store, importEvent);
+        var orderRef = doc.OrderRef ?? NormalizeOrderRef(importEvent.OrderRef);
+
+        if (partnerId == doc.PartnerId && string.Equals(orderRef, doc.OrderRef, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        store.UpdateDocHeader(doc.Id, partnerId, orderRef, doc.ShippingRef);
     }
 
     private (Location? from, Location? to, bool valid) ResolveLocations(IDataStore store, ImportEvent importEvent)
@@ -298,6 +359,8 @@ public sealed class ImportService
 
         var timestamp = ParseTimestamp(dto.Ts) ?? DateTime.Now;
 
+        var partnerCode = NormalizePartnerCode(dto.PartnerCode, dto.PartnerInn);
+
         importEvent = new ImportEvent
         {
             EventId = dto.EventId.Trim(),
@@ -308,7 +371,11 @@ public sealed class ImportService
             Barcode = dto.Barcode.Trim(),
             Qty = dto.Qty.Value,
             FromLocation = NormalizeLocationCode(dto.From),
-            ToLocation = NormalizeLocationCode(dto.To)
+            ToLocation = NormalizeLocationCode(dto.To),
+            PartnerId = dto.PartnerId,
+            PartnerCode = partnerCode,
+            OrderRef = dto.OrderRef?.Trim(),
+            ReasonCode = dto.ReasonCode?.Trim()
         };
 
         return true;
@@ -337,6 +404,21 @@ public sealed class ImportService
         }
 
         return code.Trim();
+    }
+
+    private static string? NormalizePartnerCode(string? partnerCode, string? partnerInn)
+    {
+        if (!string.IsNullOrWhiteSpace(partnerCode))
+        {
+            return partnerCode.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(partnerInn))
+        {
+            return partnerInn.Trim();
+        }
+
+        return null;
     }
 
     private static string? ExtractBarcode(string? rawJson)
@@ -397,5 +479,20 @@ public sealed class ImportService
 
         [JsonPropertyName("to")]
         public string? To { get; set; }
+
+        [JsonPropertyName("partner_id")]
+        public long? PartnerId { get; set; }
+
+        [JsonPropertyName("partner_code")]
+        public string? PartnerCode { get; set; }
+
+        [JsonPropertyName("partner_inn")]
+        public string? PartnerInn { get; set; }
+
+        [JsonPropertyName("order_ref")]
+        public string? OrderRef { get; set; }
+
+        [JsonPropertyName("reason_code")]
+        public string? ReasonCode { get; set; }
     }
 }

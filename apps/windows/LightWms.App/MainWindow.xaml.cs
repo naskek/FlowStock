@@ -5,8 +5,10 @@ using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Threading;
 using LightWms.Core.Models;
 using Microsoft.Win32;
+using KeyEventArgs = System.Windows.Input.KeyEventArgs;
 
 namespace LightWms.App;
 
@@ -40,6 +42,11 @@ public partial class MainWindow : Window
     private Location? _selectedLocation;
     private Partner? _selectedPartner;
     private bool _suppressPackagingSelection;
+    private readonly DispatcherTimer _tsdTimer;
+    private string? _lastTsdPath;
+    private bool _lastTsdAvailable;
+    private bool _tsdPromptVisible;
+    private TsSyncWindow? _tsdWindow;
     private const int TabStatusIndex = 0;
     private const int TabDocsIndex = 1;
     private const int TabOrdersIndex = 2;
@@ -69,6 +76,9 @@ public partial class MainWindow : Window
         ClearItemForm();
         ClearLocationForm();
         ClearPartnerForm();
+        _tsdTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
+        _tsdTimer.Tick += TsdTimer_Tick;
+        _tsdTimer.Start();
     }
 
     private void LoadAll()
@@ -891,6 +901,33 @@ public partial class MainWindow : Window
         window.ShowDialog();
     }
 
+    private void OpenTsdSync_Click(object sender, RoutedEventArgs e)
+    {
+        OpenTsdSyncWindow();
+    }
+
+    private void OpenTsdSyncWindow()
+    {
+        if (_tsdWindow != null)
+        {
+            _tsdWindow.Activate();
+            return;
+        }
+
+        var window = new TsSyncWindow(_services, () =>
+        {
+            LoadDocs();
+            LoadStock(StatusSearchBox.Text);
+        })
+        {
+            Owner = this
+        };
+
+        _tsdWindow = window;
+        window.Closed += (_, _) => _tsdWindow = null;
+        window.ShowDialog();
+    }
+
     private void OpenAdmin_Click(object sender, RoutedEventArgs e)
     {
         if (!_services.AdminAuth.EnsureAdminPasswordExists())
@@ -925,6 +962,58 @@ public partial class MainWindow : Window
         });
         window.Owner = this;
         window.ShowDialog();
+    }
+
+    private void TsdTimer_Tick(object? sender, EventArgs e)
+    {
+        var settings = _services.Settings.Load();
+        var path = settings.TsdFolderPath;
+
+        if (!settings.TsdAutoPromptEnabled || string.IsNullOrWhiteSpace(path))
+        {
+            _lastTsdAvailable = false;
+            _lastTsdPath = path;
+            return;
+        }
+
+        path = path.Trim();
+        if (!string.Equals(path, _lastTsdPath, StringComparison.OrdinalIgnoreCase))
+        {
+            _lastTsdPath = path;
+            _lastTsdAvailable = false;
+        }
+
+        var available = Directory.Exists(path);
+        if (available && !_lastTsdAvailable && _tsdWindow == null && !_tsdPromptVisible)
+        {
+            ShowTsdPrompt();
+        }
+
+        _lastTsdAvailable = available;
+    }
+
+    private void ShowTsdPrompt()
+    {
+        _tsdPromptVisible = true;
+        var prompt = new TsdPromptWindow
+        {
+            Owner = this
+        };
+        prompt.ShowDialog();
+        _tsdPromptVisible = false;
+
+        if (prompt.Choice == TsdPromptChoice.Open)
+        {
+            OpenTsdSyncWindow();
+            return;
+        }
+
+        if (prompt.Choice == TsdPromptChoice.Disable)
+        {
+            var settings = _services.Settings.Load();
+            settings.TsdAutoPromptEnabled = false;
+            _services.Settings.Save(settings);
+        }
     }
 
     private void SelectTab(int index)

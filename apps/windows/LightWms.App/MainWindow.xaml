@@ -31,6 +31,8 @@
                 <MenuItem Header="Контрагенты" Click="ViewPartners_Click" />
             </MenuItem>
             <MenuItem Header="Сервис">
+                <MenuItem Header="Синхронизация с ТСД..." Click="OpenTsdSync_Click" />
+                <Separator />
                 <MenuItem Header="Резервные копии..." Click="OpenBackupManager_Click" />
                 <MenuItem Header="Администрирование..." Click="OpenAdmin_Click" />
                 <Separator />

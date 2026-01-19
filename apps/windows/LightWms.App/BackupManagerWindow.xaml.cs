@@ -133,7 +133,7 @@ public partial class BackupManagerWindow : Window
 
     private bool TryParseSettings(out BackupSettings settings)
     {
-        settings = BackupSettings.Default();
+        settings = _services.Settings.Load();
         settings.BackupsEnabled = BackupsEnabledCheck.IsChecked == true;
         settings.BackupMode = ModeEveryStartRadio.IsChecked == true
             ? BackupMode.OnEveryStart

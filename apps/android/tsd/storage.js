@@ -206,22 +206,22 @@
           return true;
         });
       })
-      .then(function () {
-        return getSetting("recentPartnerIds").then(function (value) {
-          if (!Array.isArray(value)) {
-            return setSetting("recentPartnerIds", []);
-          }
-          return true;
-        });
-      })
-      .then(function () {
-        return getSetting("recentLocationIds").then(function (value) {
-          if (!Array.isArray(value)) {
-            return setSetting("recentLocationIds", []);
-          }
-          return true;
-        });
+    .then(function () {
+      return getSetting("recentPartnerIds").then(function (value) {
+        if (!Array.isArray(value)) {
+          return setSetting("recentPartnerIds", []);
+        }
+        return true;
       });
+    })
+    .then(function () {
+      return getSetting("recentLocationIds").then(function (value) {
+        if (!Array.isArray(value)) {
+          return setSetting("recentLocationIds", []);
+        }
+        return true;
+      });
+    });
   }
 
   function getDoc(id) {

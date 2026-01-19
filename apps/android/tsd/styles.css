@@ -274,6 +274,26 @@ body {
   margin-bottom: 16px;
 }
 
+.reason-picker-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.reason-value {
+  flex: 1;
+  border: 2px solid #bfd7e3;
+  border-radius: 14px;
+  padding: 12px 14px;
+  font-size: 18px;
+  background: #fff;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  font-weight: 600;
+}
+
 .picker-value {
   flex: 1;
   border: 2px solid #bfd7e3;
@@ -466,7 +486,7 @@ body {
 .lines-header,
 .lines-row {
   display: grid;
-  grid-template-columns: 1.4fr 0.6fr 0.8fr;
+  grid-template-columns: 1.6fr 1fr;
   gap: 8px;
   align-items: center;
 }
@@ -480,6 +500,15 @@ body {
 .lines-row {
   padding: 10px 0;
   border-bottom: 1px solid #e2ecf1;
+  cursor: pointer;
+}
+.lines-row.is-selected {
+  background: #e6f0ff;
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+.lines-header .lines-cell.qty-column {
+  text-align: right;
 }
 
 .line-name {
@@ -503,6 +532,83 @@ body {
   color: #486581;
   text-align: center;
   padding: 12px 0;
+}
+
+.lines-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.line-qty {
+  text-align: right;
+  font-size: 20px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.doc-totals {
+  display: flex;
+  justify-content: space-between;
+  font-size: 18px;
+  color: #1b3a57;
+  font-weight: 600;
+}
+
+.line-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+.line-control-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.line-control-btn {
+  padding: 6px 12px;
+  font-size: 20px;
+  font-weight: 600;
+}
+.line-control-btn.is-disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+.btn-icon {
+  width: 40px;
+  height: 40px;
+  padding: 6px;
+  border-radius: 12px;
+  border: 2px solid transparent;
+  background: transparent;
+}
+.btn-icon svg {
+  width: 20px;
+  height: 20px;
+  fill: #1b3a57;
+}
+.btn-icon:hover,
+.btn-icon:focus {
+  border-color: #1b3a57;
+}
+
+.confirm-card {
+  max-width: 320px;
+  text-align: center;
+}
+.confirm-message {
+  margin: 16px 0;
+  font-size: 18px;
+  color: #1b3a57;
+}
+.confirm-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
 }
 
 .notice {

@@ -4,6 +4,7 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Input;
 using LightWms.Core.Models;
+using KeyEventArgs = System.Windows.Input.KeyEventArgs;
 
 namespace LightWms.App;
 

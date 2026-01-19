@@ -36,6 +36,7 @@ public interface IDataStore
     long AddUom(Uom uom);
 
     Partner? GetPartner(long id);
+    Partner? FindPartnerByCode(string code);
     IReadOnlyList<Partner> GetPartners();
     long AddPartner(Partner partner);
     void UpdatePartner(Partner partner);

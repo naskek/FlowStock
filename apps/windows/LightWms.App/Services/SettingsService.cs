@@ -64,6 +64,8 @@ public sealed class BackupSettings
     public BackupMode BackupMode { get; set; } = BackupMode.OnStartIfOlderThanHours;
     public int BackupIfOlderThanHours { get; set; } = 24;
     public int KeepLastNBackups { get; set; } = 30;
+    public string? TsdFolderPath { get; set; }
+    public bool TsdAutoPromptEnabled { get; set; } = true;
 
     public static BackupSettings Default()
     {
@@ -80,6 +82,11 @@ public sealed class BackupSettings
         if (KeepLastNBackups < 1)
         {
             KeepLastNBackups = 1;
+        }
+
+        if (string.IsNullOrWhiteSpace(TsdFolderPath))
+        {
+            TsdFolderPath = null;
         }
 
         return this;

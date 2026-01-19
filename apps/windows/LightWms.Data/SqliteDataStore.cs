@@ -187,7 +187,7 @@ CREATE TABLE IF NOT EXISTS import_errors (
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT id, name, barcode, gtin, base_uom, default_packaging_id FROM items WHERE barcode = @barcode");
+            using var command = CreateCommand(connection, "SELECT id, name, barcode, gtin, base_uom, default_packaging_id FROM items WHERE barcode = @barcode OR gtin = @barcode");
             command.Parameters.AddWithValue("@barcode", barcode);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
@@ -579,6 +579,22 @@ SELECT last_insert_rowid();
         {
             using var command = CreateCommand(connection, "SELECT id, name, code, created_at FROM partners WHERE id = @id");
             command.Parameters.AddWithValue("@id", id);
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadPartner(reader) : null;
+        });
+    }
+
+    public Partner? FindPartnerByCode(string code)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            return null;
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "SELECT id, name, code, created_at FROM partners WHERE code = @code LIMIT 1");
+            command.Parameters.AddWithValue("@code", code.Trim());
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadPartner(reader) : null;
         });
