@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+    />
+    <title>TSD MVP</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="root" class="app-shell">
+      <header class="app-header">
+        <button id="backBtn" class="btn btn-ghost" type="button" aria-label="Назад">
+          Назад
+        </button>
+        <div class="app-title">TSD</div>
+        <button id="settingsBtn" class="btn btn-ghost btn-gear" type="button">
+          ⚙ Настройки
+        </button>
+      </header>
+      <main id="app" class="app-content" role="main"></main>
+    </div>
+    <script src="storage.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
