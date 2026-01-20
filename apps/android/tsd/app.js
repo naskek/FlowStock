@@ -369,7 +369,7 @@
 
     return (
       '<section class="screen">' +
-      '  <div class="screen-card">' +
+      '  <div class="screen-card doc-screen-card">' +
       '    <div class="section-title">История операций</div>' +
       '    <div class="actions-row">' +
       '      <button class="btn primary-btn" id="newDocBtn">Новая операция</button>' +
@@ -732,7 +732,7 @@
       "</div>" +
       "      </div>" +
       "    </div>" +
-      '    <div class="form-grid">' +
+      '    <div class="form-grid doc-form-grid">' +
       headerFields +
       "    </div>" +
       (isExported
@@ -781,7 +781,7 @@
         "</div>" +
         '    <button class="btn btn-outline field-pick" id="partnerPickBtn" type="button" ' +
         (isDraft ? "" : "disabled") +
-        ">Выбрать...</button>" +
+        ">+</button>" +
         "  </div>" +
         '  <div class="field-error" id="partnerError"></div>' +
         '  <div class="field-row">' +
@@ -791,7 +791,7 @@
         "</div>" +
         '    <button class="btn btn-outline field-pick" id="toPickBtn" type="button" ' +
         (isDraft ? "" : "disabled") +
-        ">Выбрать...</button>" +
+        ">+</button>" +
         "  </div>" +
         '  <div class="field-error" id="toError"></div>' +
         "</div>"

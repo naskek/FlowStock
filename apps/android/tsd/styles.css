@@ -35,14 +35,15 @@ body {
 }
 
 .app-header {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  display: flex;
+  justify-content: space-between;
   align-items: center;
   gap: 6px;
   padding: 6px 8px 4px;
 }
 
 .app-title {
+  flex: 1;
   text-align: center;
   font-size: 18px;
   font-weight: 700;
@@ -50,11 +51,11 @@ body {
 }
 
 .icon-btn {
-  min-width: 44px;
-  height: 44px;
+  width: 48px;
+  height: 48px;
   padding: 0;
   border: 2px solid var(--primary);
-  border-radius: 12px;
+  border-radius: 14px;
   background: rgba(255, 255, 255, 0.9);
   color: var(--primary-dark);
   display: flex;
@@ -63,15 +64,12 @@ body {
   font-size: 20px;
   line-height: 1;
   cursor: pointer;
+  flex: 0 0 auto;
 }
 
 .icon-btn:active {
   transform: scale(0.98);
   opacity: 0.9;
-}
-
-.settings-btn {
-  justify-self: end;
 }
 
 .settings-btn.is-active {
@@ -198,6 +196,10 @@ body {
   padding: 14px;
   box-shadow: var(--shadow);
   width: 100%;
+}
+
+.doc-screen-card {
+  padding: 12px;
 }
 
 .section-title {
@@ -421,23 +423,27 @@ body {
   margin-bottom: 8px;
 }
 
+.doc-form-grid {
+  gap: 6px;
+}
+
 .header-fields {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
 .field-row {
   display: grid;
-  grid-template-columns: 86px 1fr auto;
+  grid-template-columns: 82px 1fr 44px;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 
 .field-label {
   font-size: 13px;
   color: #486581;
-  width: 86px;
+  width: 82px;
 }
 
 .field-value {
@@ -456,10 +462,22 @@ body {
 }
 
 .field-pick {
-  height: 32px;
-  padding: 6px 10px;
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  padding: 0;
   border-radius: 12px;
-  font-size: 13px;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.header-fields .field-error {
+  margin: 2px 0 0;
+  min-height: 0;
+}
+
+.header-fields .field-error:empty {
+  display: none;
 }
 
 .hint-compact {
@@ -522,7 +540,7 @@ body {
 }
 
 .doc-header {
-  margin-bottom: 10px;
+  margin-bottom: 6px;
   max-width: 100%;
 }
 
