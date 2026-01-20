@@ -765,7 +765,7 @@
       var inboundToValue = formatLocationLabel(header.to, header.to_name);
       return (
         '<div class="form-field">' +
-        '  <label class="form-label" for="partnerInput">Поставщик</label>' +
+        '  <label class="form-label">Поставщик</label>' +
         '  <div class="picker-row" id="partnerPickerRow">' +
         '    <div class="picker-value" id="partnerValue">' +
         escapeHtml(inboundPartnerValue) +
@@ -774,12 +774,7 @@
         (isDraft ? "" : "disabled") +
         ">Выбрать...</button>" +
         "  </div>" +
-        '  <input class="form-input picker-fallback" id="partnerInput" data-header="partner" type="text" value="' +
-        escapeHtml(header.partner || "") +
-        "" +
-        '" ' +
-        (isDraft ? "" : "disabled") +
-        " />" +
+        '  <div class="field-hint is-hidden" id="partnerHint">Импортируйте данные с ПК (Настройки \u2192 Импорт).</div>' +
         "</div>" +
         '<div class="form-field">' +
         '  <label class="form-label" for="toInput">Куда</label>' +
@@ -811,7 +806,7 @@
       var outboundFromValue = formatLocationLabel(header.from, header.from_name);
       return (
         '<div class="form-field">' +
-        '  <label class="form-label" for="partnerInput">Покупатель</label>' +
+        '  <label class="form-label">Покупатель</label>' +
         '  <div class="picker-row" id="partnerPickerRow">' +
         '    <div class="picker-value" id="partnerValue">' +
         escapeHtml(outboundPartnerValue) +
@@ -820,12 +815,7 @@
         (isDraft ? "" : "disabled") +
         ">Выбрать...</button>" +
         "  </div>" +
-        '  <input class="form-input picker-fallback" id="partnerInput" data-header="partner" type="text" value="' +
-        escapeHtml(header.partner || "") +
-        "" +
-        '" ' +
-        (isDraft ? "" : "disabled") +
-        " />" +
+        '  <div class="field-hint is-hidden" id="partnerHint">Импортируйте данные с ПК (Настройки \u2192 Импорт).</div>' +
         "</div>" +
         '<div class="form-field">' +
         '  <label class="form-label" for="orderRefInput">Заказ</label>' +
@@ -1661,13 +1651,13 @@
     var toPickerRow = document.getElementById("toPickerRow");
     var fromPickerRow = document.getElementById("fromPickerRow");
     var locationPickerRow = document.getElementById("locationPickerRow");
-    var partnerInput = document.getElementById("partnerInput");
     var toInput = document.getElementById("toInput");
     var fromInput = document.getElementById("fromInput");
     var locationInput = document.getElementById("locationInput");
     var scanItemInfo = document.getElementById("scanItemInfo");
     var reasonPickBtn = document.getElementById("reasonPickBtn");
     var reasonErrorEl = document.getElementById("reasonError");
+    var partnerHint = document.getElementById("partnerHint");
     var dataStatus = null;
     var lookupToken = 0;
     var qtyModeButtons = document.querySelectorAll(".qty-mode-btn");
@@ -1739,9 +1729,11 @@
       var hasPartners = status && status.counts && status.counts.partners > 0;
       var hasLocations = status && status.counts && status.counts.locations > 0;
 
-      if (partnerPickerRow && partnerInput) {
-        partnerPickerRow.classList.toggle("is-hidden", !hasPartners);
-        partnerInput.classList.toggle("is-hidden", hasPartners);
+      if (partnerPickerRow) {
+        partnerPickerRow.classList.remove("is-hidden");
+      }
+      if (partnerHint) {
+        partnerHint.classList.toggle("is-hidden", hasPartners);
       }
 
       if (partnerPickBtn) {
