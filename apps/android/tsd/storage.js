@@ -696,6 +696,74 @@
     });
   }
 
+  function listLocalItemsForExport() {
+    return init().then(function () {
+      return new Promise(function (resolve, reject) {
+        var items = [];
+        var tx = db.transaction(STORE_ITEMS, "readonly");
+        var store = tx.objectStore(STORE_ITEMS);
+        var request = store.openCursor();
+        request.onsuccess = function (event) {
+          var cursor = event.target.result;
+          if (!cursor) {
+            resolve(items);
+            return;
+          }
+          var item = cursor.value || {};
+          if (item.created_on_device && !item.exported_at) {
+            items.push(item);
+          }
+          cursor.continue();
+        };
+        request.onerror = function () {
+          reject(request.error);
+        };
+      });
+    });
+  }
+
+  function markLocalItemsExported(itemIds, exportedAt) {
+    return init().then(function () {
+      return new Promise(function (resolve, reject) {
+        var ids = Array.isArray(itemIds) ? itemIds : [];
+        if (!ids.length) {
+          resolve(true);
+          return;
+        }
+        var tx = db.transaction(STORE_ITEMS, "readwrite");
+        var store = tx.objectStore(STORE_ITEMS);
+        var pending = ids.length;
+        var done = false;
+        tx.oncomplete = function () {
+          if (!done) {
+            resolve(true);
+          }
+        };
+        tx.onerror = function () {
+          reject(tx.error);
+        };
+        ids.forEach(function (id) {
+          var request = store.get(id);
+          request.onsuccess = function () {
+            var item = request.result;
+            if (item) {
+              item.exported_at = exportedAt;
+              store.put(item);
+            }
+            pending -= 1;
+            if (pending === 0 && !done) {
+              done = true;
+              resolve(true);
+            }
+          };
+          request.onerror = function () {
+            reject(request.error);
+          };
+        });
+      });
+    });
+  }
+
   function findItemByCode(code) {
     return init().then(function () {
       return new Promise(function (resolve, reject) {
@@ -890,5 +958,7 @@
     findLocationByCode: findLocationByCode,
     getStockByItemId: getStockByItemId,
     getTotalStockByItemId: getTotalStockByItemId,
+    listLocalItemsForExport: listLocalItemsForExport,
+    markLocalItemsExported: markLocalItemsExported,
   };
 })(window);

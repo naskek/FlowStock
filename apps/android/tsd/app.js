@@ -1080,6 +1080,10 @@
       "      Экспорт JSONL" +
       "    </button>" +
       '    <div id="exportStatus" class="status"></div>' +
+      '    <button id="exportItemsBtn" class="btn btn-outline" type="button">' +
+      "      Экспорт новых товаров (JSONL)" +
+      "    </button>" +
+      '    <div id="itemsExportStatus" class="status"></div>' +
       '    <div class="version">Версия приложения: 0.1</div>' +
       "  </div>" +
       "</section>"
@@ -2969,6 +2973,7 @@
     var status = document.getElementById("saveStatus");
     var saveBtn = document.getElementById("saveSettingsBtn");
     var exportBtn = document.getElementById("exportFromSettingsBtn");
+    var exportItemsBtn = document.getElementById("exportItemsBtn");
     var importBtn = document.getElementById("importDataBtn");
     var fileInput = document.getElementById("dataFileInput");
     var dataStatusText = document.getElementById("dataStatus");
@@ -3087,6 +3092,12 @@
     if (exportBtn) {
       exportBtn.addEventListener("click", function () {
         exportReadyDocs("exportStatus");
+      });
+    }
+
+    if (exportItemsBtn) {
+      exportItemsBtn.addEventListener("click", function () {
+        exportLocalItems("itemsExportStatus");
       });
     }
   }
@@ -3346,6 +3357,81 @@
         if (statusEl) {
           statusEl.textContent = "Ошибка экспорта";
         }
+      });
+  }
+
+  function exportLocalItems(statusElementId) {
+    var statusEl = statusElementId ? document.getElementById(statusElementId) : null;
+
+    function setStatus(text) {
+      if (statusEl) {
+        statusEl.textContent = text;
+      }
+    }
+
+    Promise.all([TsdStorage.listLocalItemsForExport(), TsdStorage.getSetting("device_id")])
+      .then(function (results) {
+        var items = results[0] || [];
+        var deviceId = results[1] || "CT48-01";
+        if (!items.length) {
+          setStatus("Нет новых товаров для экспорта");
+          return;
+        }
+
+        var now = new Date();
+        var nowIso = now.toISOString();
+        var dateKey = getDateKey(now);
+        var timeKey = getTimeKey(now);
+        var filename = "ITEMS_" + dateKey + "_" + timeKey + "_" + deviceId + ".jsonl";
+        var lines = items.map(function (item) {
+          var barcode =
+            item.barcode ||
+            (Array.isArray(item.barcodes) && item.barcodes[0]) ||
+            "";
+          var record = {
+            event: "ITEM_UPSERT",
+            ts: nowIso,
+            device_id: deviceId,
+            item: {
+              item_id: item.itemId,
+              name: item.name || "",
+              barcode: barcode || "",
+              gtin: item.gtin || "",
+              base_uom: item.base_uom || "",
+            },
+          };
+          return JSON.stringify(record);
+        });
+
+        try {
+          var blob = new Blob([lines.join("\n")], { type: "application/jsonl" });
+          var url = URL.createObjectURL(blob);
+          var link = document.createElement("a");
+          link.href = url;
+          link.download = filename;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+        } catch (error) {
+          setStatus("Ошибка экспорта товаров");
+          return;
+        }
+
+        var exportedAt = new Date().toISOString();
+        var ids = items.map(function (item) {
+          return item.itemId;
+        });
+        TsdStorage.markLocalItemsExported(ids, exportedAt)
+          .then(function () {
+            setStatus("Экспортировано товаров: " + items.length);
+          })
+          .catch(function () {
+            setStatus("Ошибка сохранения статусов товаров");
+          });
+      })
+      .catch(function () {
+        setStatus("Ошибка экспорта товаров");
       });
   }
 
