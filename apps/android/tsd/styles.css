@@ -49,6 +49,37 @@ body {
   letter-spacing: 0.5px;
 }
 
+.icon-btn {
+  min-width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 2px solid var(--primary);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--primary-dark);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.icon-btn:active {
+  transform: scale(0.98);
+  opacity: 0.9;
+}
+
+.settings-btn {
+  justify-self: end;
+}
+
+.settings-btn.is-active {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+
 .app-content {
   flex: 1;
   display: flex;
@@ -393,7 +424,7 @@ body {
 .header-fields {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 .field-row {

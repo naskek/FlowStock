@@ -224,15 +224,13 @@
     }
 
     if (route.name === "home") {
-      backBtn.textContent = "История операций";
       backBtn.classList.remove("is-hidden");
     } else {
-      backBtn.textContent = "Назад";
       backBtn.classList.remove("is-hidden");
     }
 
     if (settingsBtn) {
-      settingsBtn.disabled = route.name === "settings";
+      settingsBtn.classList.toggle("is-active", route.name === "settings");
     }
   }
 
@@ -796,7 +794,6 @@
         ">Выбрать...</button>" +
         "  </div>" +
         '  <div class="field-error" id="toError"></div>' +
-        '  <div class="hint-compact is-hidden" id="inboundHint">Импортируйте данные с ПК (Настройки \u2192 Импорт).</div>' +
         "</div>"
       );
     }
@@ -815,7 +812,6 @@
         (isDraft ? "" : "disabled") +
         ">Выбрать...</button>" +
         "  </div>" +
-        '  <div class="field-hint is-hidden" id="partnerHint">Импортируйте данные с ПК (Настройки \u2192 Импорт).</div>' +
         '  <div class="field-error" id="partnerError"></div>' +
         "</div>" +
         '<div class="form-field">' +
@@ -888,7 +884,6 @@
         (isDraft ? "" : "disabled") +
         ">Выбрать...</button>" +
         "  </div>" +
-        '  <div class="field-hint is-hidden" id="toHint">Импортируйте данные с ПК.</div>' +
         '<div class="field-error" id="toError"></div>' +
         "</div>"
       );
@@ -1645,7 +1640,6 @@
       '  <div class="field-hint" id="itemGtinHint"></div>' +
       '  <label class="form-label" for="itemUomSelect">Базовая единица*</label>' +
       '  <select class="form-input" id="itemUomSelect"></select>' +
-      '  <div class="field-hint is-hidden" id="itemUomHint">Импортируйте данные с ПК.</div>' +
       '  <div class="field-error" id="itemUomError"></div>' +
       '  <div class="overlay-actions">' +
       '    <button class="btn btn-outline overlay-cancel" type="button">Отмена</button>' +
@@ -1660,7 +1654,6 @@
     var nameError = overlay.querySelector("#itemNameError");
     var barcodeError = overlay.querySelector("#itemBarcodeError");
     var uomError = overlay.querySelector("#itemUomError");
-    var uomHint = overlay.querySelector("#itemUomHint");
     var gtinHint = overlay.querySelector("#itemGtinHint");
     var gtinCopyBtn = overlay.querySelector(".gtin-copy-btn");
     var closeBtn = overlay.querySelector(".overlay-close");
@@ -1812,9 +1805,6 @@
       TsdStorage.listUoms()
         .then(function (uoms) {
           if (!uoms.length) {
-            if (uomHint) {
-              uomHint.classList.remove("is-hidden");
-            }
             uomSelect.disabled = true;
             confirmBtn.disabled = true;
             return;
@@ -1829,9 +1819,6 @@
           confirmBtn.disabled = false;
         })
         .catch(function () {
-          if (uomHint) {
-            uomHint.classList.remove("is-hidden");
-          }
           uomSelect.disabled = true;
           confirmBtn.disabled = true;
         });
@@ -1879,10 +1866,7 @@
     var scanItemInfo = document.getElementById("scanItemInfo");
     var reasonPickBtn = document.getElementById("reasonPickBtn");
     var reasonErrorEl = document.getElementById("reasonError");
-    var partnerHint = document.getElementById("partnerHint");
     var partnerErrorEl = document.getElementById("partnerError");
-    var toHint = document.getElementById("toHint");
-    var inboundHint = document.getElementById("inboundHint");
     var dataStatus = null;
     var lookupToken = 0;
     var qtyModeButtons = document.querySelectorAll(".qty-mode-btn");
@@ -1954,16 +1938,6 @@
       if (partnerPickerRow) {
         partnerPickerRow.classList.remove("is-hidden");
       }
-      if (partnerHint) {
-        partnerHint.classList.toggle("is-hidden", hasPartners);
-      }
-      if (toHint) {
-        toHint.classList.toggle("is-hidden", hasLocations);
-      }
-      if (inboundHint) {
-        inboundHint.classList.toggle("is-hidden", hasPartners && hasLocations);
-      }
-
       if (partnerPickBtn) {
         partnerPickBtn.disabled = !hasPartners || doc.status !== "DRAFT";
       }
