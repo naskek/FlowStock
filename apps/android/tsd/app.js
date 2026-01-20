@@ -662,7 +662,7 @@
 
     if (backBtn) {
       backBtn.addEventListener("click", function () {
-        navigate("/docs");
+        navigate("/home");
       });
     }
 
@@ -775,31 +775,28 @@
       var inboundPartnerValue = header.partner || "Не выбран";
       var inboundToValue = formatLocationLabel(header.to, header.to_name);
       return (
-        '<div class="form-field">' +
-        '  <label class="form-label">Поставщик</label>' +
-        '  <div class="picker-row" id="partnerPickerRow">' +
-        '    <div class="picker-value" id="partnerValue">' +
+        '<div class="header-fields">' +
+        '  <div class="field-row">' +
+        '    <div class="field-label">Поставщик</div>' +
+        '    <div class="field-value" id="partnerValue">' +
         escapeHtml(inboundPartnerValue) +
         "</div>" +
-        '    <button class="btn btn-outline picker-btn" id="partnerPickBtn" type="button" ' +
+        '    <button class="btn btn-outline field-pick" id="partnerPickBtn" type="button" ' +
         (isDraft ? "" : "disabled") +
         ">Выбрать...</button>" +
         "  </div>" +
-        '  <div class="field-hint is-hidden" id="partnerHint">Импортируйте данные с ПК (Настройки \u2192 Импорт).</div>' +
         '  <div class="field-error" id="partnerError"></div>' +
-        "</div>" +
-        '<div class="form-field">' +
-        '  <label class="form-label" for="toInput">Куда</label>' +
-        '  <div class="picker-row" id="toPickerRow">' +
-        '    <div class="picker-value" id="toValue">' +
+        '  <div class="field-row">' +
+        '    <div class="field-label">Куда</div>' +
+        '    <div class="field-value" id="toValue">' +
         escapeHtml(inboundToValue) +
         "</div>" +
-        '    <button class="btn btn-outline picker-btn" id="toPickBtn" type="button" ' +
+        '    <button class="btn btn-outline field-pick" id="toPickBtn" type="button" ' +
         (isDraft ? "" : "disabled") +
         ">Выбрать...</button>" +
         "  </div>" +
-        '  <div class="field-hint is-hidden" id="toHint">Импортируйте данные с ПК.</div>' +
-        '<div class="field-error" id="toError"></div>' +
+        '  <div class="field-error" id="toError"></div>' +
+        '  <div class="hint-compact is-hidden" id="inboundHint">Импортируйте данные с ПК (Настройки \u2192 Импорт).</div>' +
         "</div>"
       );
     }
@@ -1885,6 +1882,7 @@
     var partnerHint = document.getElementById("partnerHint");
     var partnerErrorEl = document.getElementById("partnerError");
     var toHint = document.getElementById("toHint");
+    var inboundHint = document.getElementById("inboundHint");
     var dataStatus = null;
     var lookupToken = 0;
     var qtyModeButtons = document.querySelectorAll(".qty-mode-btn");
@@ -1961,6 +1959,9 @@
       }
       if (toHint) {
         toHint.classList.toggle("is-hidden", hasLocations);
+      }
+      if (inboundHint) {
+        inboundHint.classList.toggle("is-hidden", hasPartners && hasLocations);
       }
 
       if (partnerPickBtn) {

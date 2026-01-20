@@ -374,6 +374,52 @@ body {
   margin-bottom: 8px;
 }
 
+.header-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: 90px 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.field-label {
+  font-size: 13px;
+  color: #486581;
+}
+
+.field-value {
+  height: 36px;
+  padding: 6px 10px;
+  border-radius: 12px;
+  border: 2px solid #bfd7e3;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.field-pick {
+  height: 36px;
+  padding: 6px 10px;
+  border-radius: 12px;
+  font-size: 13px;
+}
+
+.hint-compact {
+  margin-top: 4px;
+  font-size: 12px;
+  opacity: 0.75;
+  line-height: 1.2;
+}
+
 .form-grid {
   display: grid;
   gap: 10px;
