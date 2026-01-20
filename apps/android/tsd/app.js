@@ -77,8 +77,9 @@
 
   var STATUS_LABELS = {
     DRAFT: "Черновик",
-    READY: "Готово",
-    EXPORTED: "Экспортировано",
+    READY: "Наполнен",
+    CLOSED: "Закрыт",
+    EXPORTED: "Передан",
   };
   var preserveScanFocus = false;
 
@@ -699,36 +700,37 @@
       "</span> шт</div>" +
       "    </div>";
     var statusLabel = STATUS_LABELS[doc.status] || doc.status;
+    var statusClass = "status-" + String(doc.status || "").toLowerCase();
     var isDraft = doc.status === "DRAFT";
     var isReady = doc.status === "READY";
     var isExported = doc.status === "EXPORTED";
+    var opLabel = OPS[doc.op] ? OPS[doc.op].label : doc.op;
+    var docRefValue = doc.doc_ref || "";
+    var docRefDisplay = docRefValue ? escapeHtml(docRefValue) : "—";
+    var docRefInputHtml =
+      isDraft
+        ? '<input class="doc-ref-input" id="docRefInput" type="text" value="' +
+          escapeHtml(docRefValue) +
+          '" placeholder="—" />'
+        : '<span class="doc-ref-text">' + docRefDisplay + "</span>";
 
     return (
       '<section class="screen">' +
       '  <div class="screen-card">' +
-      '    <div class="section-title">Операция</div>' +
-      '    <div class="doc-meta">' +
-      '      <div class="doc-meta-row">' +
-      '        <span class="meta-label">Тип</span>' +
-      '        <span class="meta-value">' +
-      escapeHtml(OPS[doc.op] ? OPS[doc.op].label : doc.op) +
-      "</span>" +
+      '    <div class="doc-header">' +
+      '      <div class="doc-header-main">' +
+      '        <div class="doc-header-title">' +
+      escapeHtml(opLabel) +
+      "</div>" +
+      '        <div class="doc-ref-line">№ ' +
+      docRefInputHtml +
+      "</div>" +
       "      </div>" +
-      '      <div class="doc-meta-row">' +
-      '        <label class="meta-label" for="docRefInput">Номер</label>' +
-      '        <input class="form-input" id="docRefInput" type="text" value="' +
-      escapeHtml(doc.doc_ref || "") +
-      "" +
-      '" ' +
-      (isDraft ? "" : "disabled") +
-      " />" +
-      "      </div>" +
-      '      <div class="doc-meta-row">' +
-      '        <span class="meta-label">Статус</span>' +
-      '        <span class="status-pill">' +
+      '      <div class="status-pill ' +
+      escapeHtml(statusClass) +
+      '">' +
       escapeHtml(statusLabel) +
-      "</span>" +
-      "      </div>" +
+      "</div>" +
       "    </div>" +
       '    <div class="form-grid">' +
       headerFields +
@@ -1632,7 +1634,16 @@
       '  <input class="form-input" id="itemBarcodeInput" type="text" autocomplete="off" />' +
       '  <div class="field-error" id="itemBarcodeError"></div>' +
       '  <label class="form-label" for="itemGtinInput">GTIN</label>' +
-      '  <input class="form-input" id="itemGtinInput" type="text" autocomplete="off" />' +
+      '  <div class="input-row gtin-row">' +
+      '    <input class="form-input" id="itemGtinInput" type="text" autocomplete="off" />' +
+      '    <button class="btn btn-outline btn-icon gtin-copy-btn" type="button" aria-label="Копировать штрихкод в GTIN">' +
+      '      <svg viewBox="0 0 24 24" aria-hidden="true">' +
+      '        <path d="M8 8h11v11H8z"></path>' +
+      '        <path d="M5 5h11v2H7v9H5z"></path>' +
+      "      </svg>" +
+      "    </button>" +
+      "  </div>" +
+      '  <div class="field-hint" id="itemGtinHint"></div>' +
       '  <label class="form-label" for="itemUomSelect">Базовая единица*</label>' +
       '  <select class="form-input" id="itemUomSelect"></select>' +
       '  <div class="field-hint is-hidden" id="itemUomHint">Импортируйте данные с ПК.</div>' +
@@ -1651,9 +1662,12 @@
     var barcodeError = overlay.querySelector("#itemBarcodeError");
     var uomError = overlay.querySelector("#itemUomError");
     var uomHint = overlay.querySelector("#itemUomHint");
+    var gtinHint = overlay.querySelector("#itemGtinHint");
+    var gtinCopyBtn = overlay.querySelector(".gtin-copy-btn");
     var closeBtn = overlay.querySelector(".overlay-close");
     var cancelBtn = overlay.querySelector(".overlay-cancel");
     var confirmBtn = overlay.querySelector(".overlay-confirm");
+    var gtinHintTimer = null;
 
     function setError(el, message) {
       if (el) {
@@ -1664,6 +1678,10 @@
     function close() {
       document.body.removeChild(overlay);
       document.removeEventListener("keydown", onKeyDown);
+      if (gtinHintTimer) {
+        clearTimeout(gtinHintTimer);
+        gtinHintTimer = null;
+      }
       enterScanMode();
     }
 
@@ -1758,6 +1776,33 @@
     closeBtn.addEventListener("click", close);
     cancelBtn.addEventListener("click", close);
     confirmBtn.addEventListener("click", submit);
+
+    if (gtinCopyBtn) {
+      gtinCopyBtn.addEventListener("click", function () {
+        var barcodeValue = barcodeInput ? barcodeInput.value.trim() : "";
+        if (!barcodeValue) {
+          if (gtinHint) {
+            gtinHint.textContent = "Сначала заполните штрихкод";
+          }
+          return;
+        }
+        if (gtinInput) {
+          gtinInput.value = barcodeValue;
+        }
+        if (gtinHint) {
+          gtinHint.textContent = "GTIN заполнен";
+          if (gtinHintTimer) {
+            clearTimeout(gtinHintTimer);
+          }
+          gtinHintTimer = window.setTimeout(function () {
+            if (gtinHint) {
+              gtinHint.textContent = "";
+            }
+            gtinHintTimer = null;
+          }, 1500);
+        }
+      });
+    }
 
     if (barcodeInput) {
       barcodeInput.value = scannedBarcode || "";

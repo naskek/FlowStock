@@ -426,6 +426,46 @@ body {
   color: #486581;
 }
 
+.doc-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.doc-header-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.doc-header-title {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.doc-ref-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #486581;
+}
+
+.doc-ref-input {
+  border: 2px solid #bfd7e3;
+  border-radius: 10px;
+  padding: 4px 8px;
+  font-size: 13px;
+  min-width: 140px;
+}
+
+.doc-ref-text {
+  font-weight: 600;
+  color: #1b3a57;
+}
+
 .doc-status {
   font-size: 12px;
   color: var(--primary-dark);
@@ -462,6 +502,26 @@ body {
   border-radius: 999px;
   background: #e0ecf1;
   font-size: 12px;
+}
+
+.status-pill.status-draft {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.status-pill.status-ready {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.status-pill.status-closed {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.status-pill.status-exported {
+  background: #bbf7d0;
+  color: #166534;
 }
 
 .scan-card {
@@ -647,6 +707,12 @@ body {
   border-radius: 12px;
   border: 2px solid transparent;
   background: transparent;
+}
+
+.gtin-row .btn-icon {
+  width: 36px;
+  height: 36px;
+  padding: 4px;
 }
 .btn-icon svg {
   width: 20px;
