@@ -7,6 +7,7 @@ using System.Windows;
 using LightWms.Core.Models;
 using Microsoft.Win32;
 using System.Globalization;
+using Forms = System.Windows.Forms;
 
 namespace LightWms.App;
 
@@ -46,6 +47,10 @@ public partial class TsSyncWindow : Window
         TsdFolderTextImport.Text = text;
         ImportFromFolderButton.IsEnabled = !string.IsNullOrWhiteSpace(_settings.TsdFolderPath)
                                            && Directory.Exists(_settings.TsdFolderPath);
+        if (SelectedFilesText != null)
+        {
+            SelectedFilesText.Text = string.Empty;
+        }
     }
 
     private void SelectFolder_Click(object sender, RoutedEventArgs e)
@@ -100,6 +105,7 @@ public partial class TsSyncWindow : Window
 
         if (dialog.ShowDialog() == true)
         {
+            UpdateSelectedFilesText(dialog.FileNames);
             ImportFiles(dialog.FileNames);
         }
     }
@@ -207,6 +213,27 @@ public partial class TsSyncWindow : Window
         MessageBox.Show("Импорт завершен.", "Синхронизация с ТСД", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
+    private void UpdateSelectedFilesText(IEnumerable<string> files)
+    {
+        if (SelectedFilesText == null)
+        {
+            return;
+        }
+
+        var fileList = files.Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(Path.GetFileName)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .ToList();
+
+        if (fileList.Count == 0)
+        {
+            SelectedFilesText.Text = string.Empty;
+            return;
+        }
+
+        SelectedFilesText.Text = "Выбрано файлов: " + fileList.Count + " (" + string.Join(", ", fileList) + ")";
+    }
+
     private bool ConfirmBackupBeforeImport()
     {
         var result = MessageBox.Show(
@@ -268,37 +295,21 @@ public partial class TsSyncWindow : Window
 
     private static string? PickFolder(string? initialPath)
     {
-        var dialog = new OpenFileDialog
+        using var dialog = new Forms.FolderBrowserDialog
         {
-            Title = "Выберите папку ТСД",
-            CheckFileExists = false,
-            CheckPathExists = true,
-            ValidateNames = false,
-            FileName = "Выберите папку"
+            Description = "Выберите папку ТСД",
+            UseDescriptionForTitle = true
         };
-
         if (!string.IsNullOrWhiteSpace(initialPath) && Directory.Exists(initialPath))
         {
-            dialog.InitialDirectory = initialPath;
+            dialog.SelectedPath = initialPath;
         }
-
-        if (dialog.ShowDialog() != true)
+        var result = dialog.ShowDialog();
+        if (result != Forms.DialogResult.OK)
         {
             return null;
         }
-
-        var folder = Path.GetDirectoryName(dialog.FileName);
-        if (!string.IsNullOrWhiteSpace(folder) && Directory.Exists(folder))
-        {
-            return folder;
-        }
-
-        if (Directory.Exists(dialog.FileName))
-        {
-            return dialog.FileName;
-        }
-
-        return null;
+        return string.IsNullOrWhiteSpace(dialog.SelectedPath) ? null : dialog.SelectedPath;
     }
 
     internal static TsdExportSummary ExportTsdData(AppServices services, string targetPath, string? deviceId = null)
@@ -409,10 +420,8 @@ public partial class TsSyncWindow : Window
         {
             Meta = new TsdMeta
             {
-                SchemaVersion = 1,
+                SchemaVersion = "v1",
                 ExportedAt = exportedAtText,
-                Source = "LightWMS Local",
-                DbId = null,
                 DeviceId = deviceId
             },
             Catalog = new TsdCatalog
@@ -486,16 +495,10 @@ public partial class TsSyncWindow : Window
     private sealed class TsdMeta
     {
         [JsonPropertyName("schema_version")]
-        public int SchemaVersion { get; init; }
+        public string SchemaVersion { get; init; } = "v1";
 
         [JsonPropertyName("exported_at")]
         public string ExportedAt { get; init; } = string.Empty;
-
-        [JsonPropertyName("source")]
-        public string Source { get; init; } = string.Empty;
-
-        [JsonPropertyName("db_id")]
-        public string? DbId { get; init; }
 
         [JsonPropertyName("device_id")]
         public string? DeviceId { get; init; }

@@ -24,6 +24,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
@@ -38,7 +39,8 @@
                         <Button x:Name="ImportFromFolderButton" Content="Импортировать из папки ТСД"
                                 Click="ImportFromFolder_Click" Width="240" Margin="8,0,0,0" />
                     </StackPanel>
-                    <DataGrid x:Name="ImportLogGrid" Grid.Row="2" AutoGenerateColumns="False" IsReadOnly="True">
+                    <TextBlock x:Name="SelectedFilesText" Grid.Row="2" Foreground="Gray" TextWrapping="Wrap" />
+                    <DataGrid x:Name="ImportLogGrid" Grid.Row="3" AutoGenerateColumns="False" IsReadOnly="True">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Файл" Binding="{Binding FileName}" Width="*" />
                             <DataGridTextColumn Header="Документы" Binding="{Binding Documents}" Width="120" />
@@ -48,7 +50,7 @@
                             <DataGridTextColumn Header="Ошибки" Binding="{Binding Errors}" Width="120" />
                         </DataGrid.Columns>
                     </DataGrid>
-                    <StackPanel Orientation="Horizontal" Grid.Row="3" HorizontalAlignment="Right" Margin="0,8,0,0">
+                    <StackPanel Orientation="Horizontal" Grid.Row="4" HorizontalAlignment="Right" Margin="0,8,0,0">
                         <Button Content="Сохранить отчет" Click="SaveReport_Click" Width="160" />
                     </StackPanel>
                 </Grid>

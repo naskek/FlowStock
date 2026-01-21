@@ -396,12 +396,21 @@
     if (!isObject(json.meta)) {
       throw buildImportError("Отсутствует секция meta.");
     }
-    if (typeof json.meta.schema_version !== "number" || isNaN(json.meta.schema_version)) {
-      throw buildImportError("meta.schema_version должен быть числом.");
+    var schemaVersionRaw = json.meta.schema_version;
+    var schemaNormalized = null;
+    if (typeof schemaVersionRaw === "number") {
+      schemaNormalized = schemaVersionRaw === 1 ? "v1" : null;
+    } else if (typeof schemaVersionRaw === "string") {
+      var schemaTrimmed = schemaVersionRaw.trim().toLowerCase();
+      if (schemaTrimmed === "1") {
+        schemaNormalized = "v1";
+      } else if (schemaTrimmed === "v1") {
+        schemaNormalized = "v1";
+      }
     }
-    if (json.meta.schema_version !== 1) {
+    if (!schemaNormalized) {
       throw buildImportError(
-        "Неподдерживаемая версия схемы: " + String(json.meta.schema_version)
+        "Неподдерживаемая версия схемы: " + String(schemaVersionRaw)
       );
     }
     if (!isNonEmptyString(json.meta.exported_at)) {
@@ -618,8 +627,8 @@
     });
 
     return {
-      schemaVersion: json.meta.schema_version,
-      exportedAt: json.stock.exported_at,
+      schemaVersion: schemaNormalized,
+      exportedAt: json.meta.exported_at,
       uoms: uoms,
       items: items,
       itemCodes: itemCodes,
