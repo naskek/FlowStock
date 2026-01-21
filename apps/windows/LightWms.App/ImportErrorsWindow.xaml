@@ -16,7 +16,7 @@
                 <DataGridTextColumn Header="Событие" Binding="{Binding EventId}" Width="200" />
                 <DataGridTextColumn Header="Штрихкод" Binding="{Binding Barcode}" Width="160" />
                 <DataGridTextColumn Header="Причина" Binding="{Binding Reason}" Width="140" />
-                <DataGridTextColumn Header="Создано" Binding="{Binding CreatedAt}" Width="160" />
+                <DataGridTextColumn Header="Создано" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="160" />
             </DataGrid.Columns>
         </DataGrid>
         <StackPanel Grid.Column="1" Margin="12,0,0,0">
@@ -32,7 +32,7 @@
             <TextBox x:Name="NewItemNameBox" Width="240" />
             <TextBlock Text="GTIN" Margin="0,6,0,0" />
             <TextBox x:Name="NewItemGtinBox" Width="240" />
-            <TextBlock Text="Ед. измерения" Margin="0,6,0,0" />
+            <TextBlock Text="Базовая единица" Margin="0,6,0,0" />
             <ComboBox x:Name="NewItemUomCombo" Width="160" DisplayMemberPath="Name" />
             <Button Content="Создать" Click="CreateItem_Click" Margin="0,6,0,12" Width="120" />
 

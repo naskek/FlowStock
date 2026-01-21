@@ -18,7 +18,17 @@ public sealed class DocumentService
         return _data.GetDocs();
     }
 
-    public long CreateDoc(DocType type, string docRef, string? comment, long? partnerId, string? orderRef, string? shippingRef)
+    public IReadOnlyList<Doc> GetDocsByOrder(long orderId)
+    {
+        return _data.GetDocsByOrder(orderId);
+    }
+
+    public string GenerateDocRef(DocType type, DateTime date)
+    {
+        return DocRefGenerator.Generate(_data, type, date.Date);
+    }
+
+    public long CreateDoc(DocType type, string docRef, string? comment, long? partnerId, string? orderRef, string? shippingRef, long? orderId = null)
     {
         if (string.IsNullOrWhiteSpace(docRef))
         {
@@ -41,6 +51,11 @@ public sealed class DocumentService
             throw new ArgumentException("Для отгрузки требуется контрагент.", nameof(partnerId));
         }
 
+        if (orderId.HasValue && _data.GetOrder(orderId.Value) == null)
+        {
+            throw new ArgumentException("Заказ не найден.", nameof(orderId));
+        }
+
         var cleanedOrderRef = string.IsNullOrWhiteSpace(orderRef) ? null : orderRef.Trim();
         var cleanedShippingRef = string.IsNullOrWhiteSpace(shippingRef) ? null : shippingRef.Trim();
         var cleanedComment = string.IsNullOrWhiteSpace(comment) ? null : comment.Trim();
@@ -53,6 +68,7 @@ public sealed class DocumentService
             CreatedAt = DateTime.Now,
             ClosedAt = null,
             PartnerId = partnerId,
+            OrderId = orderId,
             OrderRef = cleanedOrderRef,
             ShippingRef = cleanedShippingRef,
             Comment = cleanedComment
@@ -206,7 +222,7 @@ public sealed class DocumentService
         _data.UpdateDocHeader(docId, partnerId, cleanedOrderRef, cleanedShippingRef);
     }
 
-    public void AddDocLine(long docId, long itemId, double qty, long? fromLocationId, long? toLocationId)
+    public void AddDocLine(long docId, long itemId, double qty, long? fromLocationId, long? toLocationId, double? qtyInput = null, string? uomCode = null)
     {
         if (qty <= 0)
         {
@@ -231,12 +247,14 @@ public sealed class DocumentService
             DocId = docId,
             ItemId = itemId,
             Qty = qty,
+            QtyInput = qtyInput,
+            UomCode = uomCode,
             FromLocationId = fromLocationId,
             ToLocationId = toLocationId
         });
     }
 
-    public void UpdateDocLineQty(long docId, long docLineId, double qty)
+    public void UpdateDocLineQty(long docId, long docLineId, double qty, double? qtyInput = null, string? uomCode = null)
     {
         if (qty <= 0)
         {
@@ -255,7 +273,7 @@ public sealed class DocumentService
             throw new InvalidOperationException("Строка не найдена.");
         }
 
-        _data.UpdateDocLineQty(docLineId, qty);
+        _data.UpdateDocLineQty(docLineId, qty, qtyInput, uomCode);
     }
 
     public void DeleteDocLine(long docId, long docLineId)

@@ -1,0 +1,94 @@
+using System.IO;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+namespace LightWms.App;
+
+public sealed class SettingsService
+{
+    private readonly string _settingsPath;
+    private readonly JsonSerializerOptions _jsonOptions;
+
+    public SettingsService(string settingsPath)
+    {
+        _settingsPath = settingsPath;
+        _jsonOptions = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            WriteIndented = true,
+            Converters = { new JsonStringEnumConverter() }
+        };
+    }
+
+    public BackupSettings Load()
+    {
+        if (!File.Exists(_settingsPath))
+        {
+            return BackupSettings.Default();
+        }
+
+        try
+        {
+            var json = File.ReadAllText(_settingsPath);
+            var settings = JsonSerializer.Deserialize<BackupSettings>(json, _jsonOptions);
+            return settings?.Normalize() ?? BackupSettings.Default();
+        }
+        catch
+        {
+            return BackupSettings.Default();
+        }
+    }
+
+    public void Save(BackupSettings settings)
+    {
+        var dir = Path.GetDirectoryName(_settingsPath);
+        if (!string.IsNullOrWhiteSpace(dir))
+        {
+            Directory.CreateDirectory(dir);
+        }
+
+        var json = JsonSerializer.Serialize(settings.Normalize(), _jsonOptions);
+        File.WriteAllText(_settingsPath, json);
+    }
+}
+
+public enum BackupMode
+{
+    OnStartIfOlderThanHours,
+    OnEveryStart
+}
+
+public sealed class BackupSettings
+{
+    public bool BackupsEnabled { get; set; } = true;
+    public BackupMode BackupMode { get; set; } = BackupMode.OnStartIfOlderThanHours;
+    public int BackupIfOlderThanHours { get; set; } = 24;
+    public int KeepLastNBackups { get; set; } = 30;
+    public string? TsdFolderPath { get; set; }
+    public bool TsdAutoPromptEnabled { get; set; } = true;
+
+    public static BackupSettings Default()
+    {
+        return new BackupSettings();
+    }
+
+    public BackupSettings Normalize()
+    {
+        if (BackupIfOlderThanHours < 1)
+        {
+            BackupIfOlderThanHours = 1;
+        }
+
+        if (KeepLastNBackups < 1)
+        {
+            KeepLastNBackups = 1;
+        }
+
+        if (string.IsNullOrWhiteSpace(TsdFolderPath))
+        {
+            TsdFolderPath = null;
+        }
+
+        return this;
+    }
+}

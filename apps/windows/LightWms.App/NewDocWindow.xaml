@@ -12,7 +12,8 @@
             </StackPanel>
             <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                 <TextBlock Text="Номер" Width="120" VerticalAlignment="Center" />
-                <TextBox x:Name="DocRefBox" Width="320" />
+                <TextBox x:Name="DocRefBox" Width="200" />
+                <Button Content="Сгенерировать" Width="110" Margin="8,0,0,0" Click="GenerateRef_Click" />
             </StackPanel>
             <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                 <TextBlock Text="Комментарий" Width="120" VerticalAlignment="Top" />

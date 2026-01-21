@@ -5,8 +5,10 @@ using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Threading;
 using LightWms.Core.Models;
 using Microsoft.Win32;
+using KeyEventArgs = System.Windows.Input.KeyEventArgs;
 
 namespace LightWms.App;
 
@@ -18,16 +20,36 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<Uom> _uoms = new();
     private readonly ObservableCollection<Partner> _partners = new();
     private readonly ObservableCollection<Doc> _docs = new();
-    private readonly ObservableCollection<DocLineView> _docLines = new();
-    private readonly ObservableCollection<StockRow> _stock = new();
-    private Doc? _selectedDoc;
-    private DocLineView? _selectedDocLine;
+    private readonly ObservableCollection<Order> _orders = new();
+    private readonly ObservableCollection<StockDisplayRow> _stock = new();
+    private readonly ObservableCollection<PackagingOption> _itemPackagingOptions = new();
+    private readonly List<DocTypeFilterOption> _docTypeFilters = new()
+    {
+        new DocTypeFilterOption(null, "Все"),
+        new DocTypeFilterOption(DocType.Inbound, "Приемка"),
+        new DocTypeFilterOption(DocType.Outbound, "Отгрузка"),
+        new DocTypeFilterOption(DocType.Move, "Перемещение"),
+        new DocTypeFilterOption(DocType.WriteOff, "Списание"),
+        new DocTypeFilterOption(DocType.Inventory, "Инвентаризация")
+    };
+    private readonly List<DocStatusFilterOption> _docStatusFilters = new()
+    {
+        new DocStatusFilterOption(null, "Все"),
+        new DocStatusFilterOption(DocStatus.Draft, "Черновик"),
+        new DocStatusFilterOption(DocStatus.Closed, "Проведена")
+    };
     private Item? _selectedItem;
     private Location? _selectedLocation;
     private Partner? _selectedPartner;
+    private bool _suppressPackagingSelection;
+    private readonly DispatcherTimer _tsdTimer;
+    private string? _lastTsdPath;
+    private bool _lastTsdAvailable;
+    private bool _tsdPromptVisible;
+    private TsSyncWindow? _tsdWindow;
     private const int TabStatusIndex = 0;
     private const int TabDocsIndex = 1;
-    private const int TabDocIndex = 2;
+    private const int TabOrdersIndex = 2;
     private const int TabItemsIndex = 3;
     private const int TabLocationsIndex = 4;
     private const int TabPartnersIndex = 5;
@@ -40,20 +62,23 @@ public partial class MainWindow : Window
         ItemsGrid.ItemsSource = _items;
         LocationsGrid.ItemsSource = _locations;
         ItemUomCombo.ItemsSource = _uoms;
+        ItemDisplayUomCombo.ItemsSource = _itemPackagingOptions;
         PartnersGrid.ItemsSource = _partners;
         DocsGrid.ItemsSource = _docs;
-        DocLinesGrid.ItemsSource = _docLines;
+        OrdersGrid.ItemsSource = _orders;
         StockGrid.ItemsSource = _stock;
-        DocItemCombo.ItemsSource = _items;
-        DocFromCombo.ItemsSource = _locations;
-        DocToCombo.ItemsSource = _locations;
-        DocPartnerCombo.ItemsSource = _partners;
+        DocsTypeFilter.ItemsSource = _docTypeFilters;
+        DocsTypeFilter.SelectedIndex = 0;
+        DocsStatusFilter.ItemsSource = _docStatusFilters;
+        DocsStatusFilter.SelectedIndex = 0;
 
         LoadAll();
         ClearItemForm();
         ClearLocationForm();
         ClearPartnerForm();
-        UpdateDocView();
+        _tsdTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
+        _tsdTimer.Tick += TsdTimer_Tick;
+        _tsdTimer.Start();
     }
 
     private void LoadAll()
@@ -63,6 +88,7 @@ public partial class MainWindow : Window
         LoadLocations();
         LoadPartners();
         LoadDocs();
+        LoadOrders();
         LoadStock(null);
     }
 
@@ -89,7 +115,7 @@ public partial class MainWindow : Window
                 break;
             case Key.Enter:
                 e.Handled = true;
-                TryCloseCurrentDoc();
+                TryCloseSelectedDoc();
                 break;
         }
     }
@@ -110,6 +136,43 @@ public partial class MainWindow : Window
         {
             _uoms.Add(uom);
         }
+    }
+
+    private void LoadItemPackagingOptions(Item? item)
+    {
+        _itemPackagingOptions.Clear();
+        ItemDisplayUomCombo.IsEnabled = item != null;
+        ItemPackagingButton.IsEnabled = item != null;
+
+        if (item == null)
+        {
+            ItemDisplayUomCombo.SelectedItem = null;
+            return;
+        }
+
+        _itemPackagingOptions.Add(new PackagingOption(null, $"В базе ({item.BaseUom})"));
+        foreach (var packaging in _services.Packagings.GetPackagings(item.Id))
+        {
+            _itemPackagingOptions.Add(new PackagingOption(packaging.Id, $"{packaging.Name} ({packaging.Code})"));
+        }
+
+        _suppressPackagingSelection = true;
+        ItemDisplayUomCombo.SelectedItem = _itemPackagingOptions.FirstOrDefault(option => option.PackagingId == item.DefaultPackagingId)
+                                           ?? _itemPackagingOptions.FirstOrDefault();
+        _suppressPackagingSelection = false;
+    }
+
+    private void ReloadItemsAndSelect(long itemId)
+    {
+        LoadItems();
+        var item = _items.FirstOrDefault(i => i.Id == itemId);
+        if (item == null)
+        {
+            return;
+        }
+
+        ItemsGrid.SelectedItem = item;
+        ItemsGrid.ScrollIntoView(item);
     }
 
     private void LoadLocations()
@@ -133,22 +196,59 @@ public partial class MainWindow : Window
     private void LoadDocs()
     {
         _docs.Clear();
-        foreach (var doc in _services.Documents.GetDocs())
+        foreach (var doc in ApplyDocFilters(_services.Documents.GetDocs()))
         {
             _docs.Add(doc);
         }
     }
 
-    private void LoadDocLines(long docId)
+    private IEnumerable<Doc> ApplyDocFilters(IReadOnlyList<Doc> docs)
     {
-        _docLines.Clear();
-        foreach (var line in _services.Documents.GetDocLines(docId))
+        var query = DocsSearchBox.Text?.Trim() ?? string.Empty;
+        var typeFilter = (DocsTypeFilter.SelectedItem as DocTypeFilterOption)?.Type;
+        var statusFilter = (DocsStatusFilter.SelectedItem as DocStatusFilterOption)?.Status;
+
+        IEnumerable<Doc> filtered = docs;
+        if (typeFilter.HasValue)
         {
-            _docLines.Add(line);
+            filtered = filtered.Where(doc => doc.Type == typeFilter.Value);
         }
 
-        _selectedDocLine = null;
-        DocLineQtyBox.Text = string.Empty;
+        if (statusFilter.HasValue)
+        {
+            filtered = filtered.Where(doc => doc.Status == statusFilter.Value);
+        }
+
+        if (!string.IsNullOrWhiteSpace(query))
+        {
+            filtered = filtered.Where(doc => DocMatchesQuery(doc, query));
+        }
+
+        return filtered;
+    }
+
+    private static bool DocMatchesQuery(Doc doc, string query)
+    {
+        return Contains(doc.DocRef, query)
+               || Contains(doc.PartnerName, query)
+               || Contains(doc.PartnerCode, query)
+               || Contains(doc.OrderRef, query)
+               || Contains(doc.TypeDisplay, query);
+    }
+
+    private static bool Contains(string? source, string query)
+    {
+        return !string.IsNullOrWhiteSpace(source)
+               && source.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private void LoadOrders()
+    {
+        _orders.Clear();
+        foreach (var order in _services.Orders.GetOrders())
+        {
+            _orders.Add(order);
+        }
     }
 
     private void LoadStock(string? search)
@@ -156,7 +256,16 @@ public partial class MainWindow : Window
         _stock.Clear();
         foreach (var row in _services.Documents.GetStock(search))
         {
-            _stock.Add(row);
+            var packaging = _services.Packagings.FormatAsPackaging(row.ItemId, row.Qty);
+            var baseDisplay = $"{FormatQty(row.Qty)} {row.BaseUom}";
+            _stock.Add(new StockDisplayRow
+            {
+                ItemName = row.ItemName,
+                Barcode = row.Barcode,
+                LocationCode = row.LocationCode,
+                PackagingDisplay = packaging,
+                BaseDisplay = baseDisplay
+            });
         }
 
         UpdateStockEmptyState(search);
@@ -188,6 +297,28 @@ public partial class MainWindow : Window
         LoadDocs();
     }
 
+    private void DocsApplyFilters_Click(object sender, RoutedEventArgs e)
+    {
+        LoadDocs();
+    }
+
+    private void DocsResetFilters_Click(object sender, RoutedEventArgs e)
+    {
+        DocsSearchBox.Text = string.Empty;
+        DocsTypeFilter.SelectedIndex = 0;
+        DocsStatusFilter.SelectedIndex = 0;
+        LoadDocs();
+    }
+
+    private void DocsSearchBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            e.Handled = true;
+            LoadDocs();
+        }
+    }
+
     private void DocsOpen_Click(object sender, RoutedEventArgs e)
     {
         OpenSelectedDoc();
@@ -197,19 +328,28 @@ public partial class MainWindow : Window
     {
         if (DocsGrid.SelectedItem is not Doc doc)
         {
-            MessageBox.Show("Выберите документ.", "Операции", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Выберите операцию.", "Операции", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        OpenDoc(doc);
+        OpenDocDetails(doc);
     }
 
-    private void OpenDoc(Doc doc)
+    private void OpenDocDetails(Doc doc)
     {
-        _selectedDoc = doc;
-        UpdateDocView();
-        LoadDocLines(doc.Id);
-        MainTabs.SelectedIndex = TabDocIndex;
+        var wasClosed = doc.Status == DocStatus.Closed;
+        var window = new OperationDetailsWindow(_services, doc.Id)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+
+        LoadDocs();
+        var refreshed = _services.Documents.GetDoc(doc.Id);
+        if (!wasClosed && refreshed?.Status == DocStatus.Closed)
+        {
+            LoadStock(StatusSearchBox.Text);
+        }
     }
 
     private void DocsGrid_MouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
@@ -226,47 +366,90 @@ public partial class MainWindow : Window
         }
     }
 
-    private void DocClose_Click(object sender, RoutedEventArgs e)
+    private void OrdersRefresh_Click(object sender, RoutedEventArgs e)
     {
-        TryCloseCurrentDoc();
+        LoadOrders();
     }
 
-    private void TryCloseCurrentDoc()
+    private void OrdersNew_Click(object sender, RoutedEventArgs e)
     {
-        if (_selectedDoc == null)
+        var window = new OrderDetailsWindow(_services);
+        window.Owner = this;
+        window.ShowDialog();
+        LoadOrders();
+    }
+
+    private void OrdersGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        OpenSelectedOrder();
+    }
+
+    private void OrdersGrid_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
         {
-            MessageBox.Show("Документ не выбран.", "Документ", MessageBoxButton.OK, MessageBoxImage.Information);
+            e.Handled = true;
+            OpenSelectedOrder();
+        }
+    }
+
+    private void OpenSelectedOrder()
+    {
+        if (OrdersGrid.SelectedItem is not Order order)
+        {
+            MessageBox.Show("Выберите заказ.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        if (_selectedDoc.Status == DocStatus.Closed)
+        var window = new OrderDetailsWindow(_services, order.Id);
+        window.Owner = this;
+        window.ShowDialog();
+
+        LoadOrders();
+        LoadStock(StatusSearchBox.Text);
+    }
+
+    private void DocClose_Click(object sender, RoutedEventArgs e)
+    {
+        TryCloseSelectedDoc();
+    }
+
+    private void TryCloseSelectedDoc()
+    {
+        if (DocsGrid.SelectedItem is not Doc doc)
         {
-            MessageBox.Show("Документ уже закрыт.", "Документ", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Операция не выбрана.", "Операции", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        var result = _services.Documents.TryCloseDoc(_selectedDoc.Id, allowNegative: false);
+        if (doc.Status == DocStatus.Closed)
+        {
+            MessageBox.Show("Операция уже закрыта.", "Операции", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var result = _services.Documents.TryCloseDoc(doc.Id, allowNegative: false);
         if (result.Errors.Count > 0)
         {
-            MessageBox.Show(string.Join("\n", result.Errors), "Проверка документа", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(string.Join("\n", result.Errors), "Проверка операции", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
         if (result.Warnings.Count > 0)
         {
-            var warningText = "Остаток уйдет в минус:\n" + string.Join("\n", result.Warnings) + "\n\nЗакрыть документ?";
+            var warningText = "Остаток уйдет в минус:\n" + string.Join("\n", result.Warnings) + "\n\nЗакрыть операцию?";
             var confirm = MessageBox.Show(warningText, "Предупреждение", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
             if (confirm != MessageBoxResult.Yes)
             {
                 return;
             }
 
-            result = _services.Documents.TryCloseDoc(_selectedDoc.Id, allowNegative: true);
+            result = _services.Documents.TryCloseDoc(doc.Id, allowNegative: true);
             if (!result.Success)
             {
                 if (result.Errors.Count > 0)
                 {
-                    MessageBox.Show(string.Join("\n", result.Errors), "Проверка документа", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    MessageBox.Show(string.Join("\n", result.Errors), "Проверка операции", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
                 return;
             }
@@ -279,19 +462,6 @@ public partial class MainWindow : Window
 
         LoadDocs();
         LoadStock(StatusSearchBox.Text);
-
-        var refreshed = _docs.FirstOrDefault(d => d.Id == _selectedDoc.Id);
-        _selectedDoc = refreshed;
-        UpdateDocView();
-
-        if (_selectedDoc != null)
-        {
-            LoadDocLines(_selectedDoc.Id);
-        }
-        else
-        {
-            _docLines.Clear();
-        }
     }
 
     private void AddItem_Click(object sender, RoutedEventArgs e)
@@ -304,8 +474,8 @@ public partial class MainWindow : Window
 
         try
         {
-            var uom = (ItemUomCombo.SelectedItem as Uom)?.Name;
-            _services.Catalog.CreateItem(ItemNameBox.Text, ItemBarcodeBox.Text, ItemGtinBox.Text, uom);
+            var baseUom = (ItemUomCombo.SelectedItem as Uom)?.Name;
+            _services.Catalog.CreateItem(ItemNameBox.Text, ItemBarcodeBox.Text, ItemGtinBox.Text, baseUom);
             LoadItems();
             ClearItemForm();
         }
@@ -316,6 +486,46 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             MessageBox.Show(ex.Message, "Товары", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void ItemPackaging_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedItem == null)
+        {
+            MessageBox.Show("Выберите товар.", "Товары", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var window = new ItemPackagingWindow(_services, _selectedItem.Id)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+        ReloadItemsAndSelect(_selectedItem.Id);
+    }
+
+    private void ItemDisplayUomCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (_suppressPackagingSelection || _selectedItem == null)
+        {
+            return;
+        }
+
+        if (ItemDisplayUomCombo.SelectedItem is not PackagingOption option)
+        {
+            return;
+        }
+
+        try
+        {
+            _services.Packagings.SetDefaultPackaging(_selectedItem.Id, option.PackagingId);
+            ReloadItemsAndSelect(_selectedItem.Id);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Товары", MessageBoxButton.OK, MessageBoxImage.Error);
+            LoadItemPackagingOptions(_selectedItem);
         }
     }
 
@@ -374,13 +584,15 @@ public partial class MainWindow : Window
         ItemDeleteButton.IsEnabled = _selectedItem != null;
         if (_selectedItem == null)
         {
+            LoadItemPackagingOptions(null);
             return;
         }
 
         ItemNameBox.Text = _selectedItem.Name;
         ItemBarcodeBox.Text = _selectedItem.Barcode ?? string.Empty;
         ItemGtinBox.Text = _selectedItem.Gtin ?? string.Empty;
-        ItemUomCombo.SelectedItem = _uoms.FirstOrDefault(u => string.Equals(u.Name, _selectedItem.Uom, StringComparison.OrdinalIgnoreCase));
+        ItemUomCombo.SelectedItem = _uoms.FirstOrDefault(u => string.Equals(u.Name, _selectedItem.BaseUom, StringComparison.OrdinalIgnoreCase));
+        LoadItemPackagingOptions(_selectedItem);
     }
 
     private void UpdateItem_Click(object sender, RoutedEventArgs e)
@@ -393,10 +605,9 @@ public partial class MainWindow : Window
 
         try
         {
-            var uom = (ItemUomCombo.SelectedItem as Uom)?.Name;
-            _services.Catalog.UpdateItem(_selectedItem.Id, ItemNameBox.Text, ItemBarcodeBox.Text, ItemGtinBox.Text, uom);
-            LoadItems();
-            ClearItemForm();
+            var baseUom = (ItemUomCombo.SelectedItem as Uom)?.Name;
+            _services.Catalog.UpdateItem(_selectedItem.Id, ItemNameBox.Text, ItemBarcodeBox.Text, ItemGtinBox.Text, baseUom);
+            ReloadItemsAndSelect(_selectedItem.Id);
         }
         catch (ArgumentException ex)
         {
@@ -581,7 +792,7 @@ public partial class MainWindow : Window
                       ?? _services.Documents.GetDoc(window.CreatedDocId.Value);
         if (created != null)
         {
-            OpenDoc(created);
+            OpenDocDetails(created);
         }
     }
 
@@ -631,9 +842,9 @@ public partial class MainWindow : Window
         SelectTab(TabDocsIndex);
     }
 
-    private void ViewDoc_Click(object sender, RoutedEventArgs e)
+    private void ViewOrders_Click(object sender, RoutedEventArgs e)
     {
-        SelectTab(TabDocIndex);
+        SelectTab(TabOrdersIndex);
     }
 
     private void ViewItems_Click(object sender, RoutedEventArgs e)
@@ -653,7 +864,7 @@ public partial class MainWindow : Window
 
     private void OpenDataFolder_Click(object sender, RoutedEventArgs e)
     {
-        var dataDir = Path.GetDirectoryName(_services.DatabasePath);
+        var dataDir = _services.BaseDir;
         if (string.IsNullOrWhiteSpace(dataDir) || !Directory.Exists(dataDir))
         {
             MessageBox.Show("Папка данных не найдена.", "Сервис", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -669,8 +880,7 @@ public partial class MainWindow : Window
 
     private void OpenLogsFolder_Click(object sender, RoutedEventArgs e)
     {
-        var dataDir = Path.GetDirectoryName(_services.DatabasePath);
-        var logsDir = string.IsNullOrWhiteSpace(dataDir) ? null : Path.Combine(dataDir, "logs");
+        var logsDir = _services.LogsDir;
         if (string.IsNullOrWhiteSpace(logsDir) || !Directory.Exists(logsDir))
         {
             MessageBox.Show("Папка логов не найдена.", "Сервис", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -682,6 +892,128 @@ public partial class MainWindow : Window
             FileName = logsDir,
             UseShellExecute = true
         });
+    }
+
+    private void OpenBackupManager_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new BackupManagerWindow(_services);
+        window.Owner = this;
+        window.ShowDialog();
+    }
+
+    private void OpenTsdSync_Click(object sender, RoutedEventArgs e)
+    {
+        OpenTsdSyncWindow();
+    }
+
+    private void OpenTsdSyncWindow()
+    {
+        if (_tsdWindow != null)
+        {
+            _tsdWindow.Activate();
+            return;
+        }
+
+        var window = new TsSyncWindow(_services, () =>
+        {
+            LoadDocs();
+            LoadStock(StatusSearchBox.Text);
+        })
+        {
+            Owner = this
+        };
+
+        _tsdWindow = window;
+        window.Closed += (_, _) => _tsdWindow = null;
+        window.ShowDialog();
+    }
+
+    private void OpenAdmin_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_services.AdminAuth.EnsureAdminPasswordExists())
+        {
+            var setWindow = new SetAdminPasswordWindow(_services.AdminAuth);
+            setWindow.Owner = this;
+            if (setWindow.ShowDialog() != true)
+            {
+                return;
+            }
+        }
+
+        var prompt = new PasswordPromptWindow(_services.AdminAuth);
+        prompt.Owner = this;
+        if (prompt.ShowDialog() != true)
+        {
+            return;
+        }
+
+        var window = new AdminWindow(_services, () =>
+        {
+            LoadDocs();
+            LoadOrders();
+            LoadStock(StatusSearchBox.Text);
+            LoadItems();
+            LoadLocations();
+            LoadPartners();
+            LoadUoms();
+            ClearItemForm();
+            ClearLocationForm();
+            ClearPartnerForm();
+        });
+        window.Owner = this;
+        window.ShowDialog();
+    }
+
+    private void TsdTimer_Tick(object? sender, EventArgs e)
+    {
+        var settings = _services.Settings.Load();
+        var path = settings.TsdFolderPath;
+
+        if (!settings.TsdAutoPromptEnabled || string.IsNullOrWhiteSpace(path))
+        {
+            _lastTsdAvailable = false;
+            _lastTsdPath = path;
+            return;
+        }
+
+        path = path.Trim();
+        if (!string.Equals(path, _lastTsdPath, StringComparison.OrdinalIgnoreCase))
+        {
+            _lastTsdPath = path;
+            _lastTsdAvailable = false;
+        }
+
+        var available = Directory.Exists(path);
+        if (available && !_lastTsdAvailable && _tsdWindow == null && !_tsdPromptVisible)
+        {
+            ShowTsdPrompt();
+        }
+
+        _lastTsdAvailable = available;
+    }
+
+    private void ShowTsdPrompt()
+    {
+        _tsdPromptVisible = true;
+        var prompt = new TsdPromptWindow
+        {
+            Owner = this
+        };
+        prompt.ShowDialog();
+        _tsdPromptVisible = false;
+
+        if (prompt.Choice == TsdPromptChoice.Open)
+        {
+            OpenTsdSyncWindow();
+            return;
+        }
+
+        if (prompt.Choice == TsdPromptChoice.Disable)
+        {
+            var settings = _services.Settings.Load();
+            settings.TsdAutoPromptEnabled = false;
+            _services.Settings.Save(settings);
+        }
     }
 
     private void SelectTab(int index)
@@ -702,6 +1034,18 @@ public partial class MainWindow : Window
         LoadUoms();
     }
 
+    private void PackagingManager_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new PackagingManagerWindow(_services)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+
+        LoadItems();
+        LoadStock(StatusSearchBox.Text);
+    }
+
     private void ImportErrors_Click(object sender, RoutedEventArgs e)
     {
         SelectTab(TabDocsIndex);
@@ -713,271 +1057,17 @@ public partial class MainWindow : Window
         window.Owner = this;
         window.ShowDialog();
     }
-
-    private void DocLines_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
-    {
-        _selectedDocLine = DocLinesGrid.SelectedItem as DocLineView;
-        if (_selectedDocLine == null)
-        {
-            DocLineQtyBox.Text = string.Empty;
-            return;
-        }
-
-        DocLineQtyBox.Text = _selectedDocLine.Qty.ToString("0.###", CultureInfo.CurrentCulture);
-    }
-
-    private void DocLinesGrid_KeyDown(object sender, KeyEventArgs e)
-    {
-        if (e.Key == Key.Delete)
-        {
-            e.Handled = true;
-            DocDeleteLine_Click(sender, new RoutedEventArgs());
-        }
-    }
-
-    private void DocBarcodeBox_KeyDown(object sender, KeyEventArgs e)
-    {
-        if (e.Key == Key.Enter)
-        {
-            e.Handled = true;
-            DocAddLine_Click(sender, new RoutedEventArgs());
-        }
-    }
-
-    private void DocAddLine_Click(object sender, RoutedEventArgs e)
-    {
-        if (!EnsureDraftDocSelected())
-        {
-            return;
-        }
-
-        if (!TryResolveDocItem(out var item))
-        {
-            return;
-        }
-
-        if (!TryParseQty(DocItemQtyBox.Text, out var qty))
-        {
-            MessageBox.Show("Количество должно быть больше 0.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        var fromLocation = DocFromCombo.SelectedItem as Location;
-        var toLocation = DocToCombo.SelectedItem as Location;
-        if (_selectedDoc!.Type == DocType.Inbound)
-        {
-            fromLocation = null;
-        }
-        else if (_selectedDoc.Type == DocType.WriteOff || _selectedDoc.Type == DocType.Outbound)
-        {
-            toLocation = null;
-        }
-
-        if (!ValidateLineLocations(_selectedDoc!, fromLocation, toLocation))
-        {
-            return;
-        }
-
-        try
-        {
-            _services.Documents.AddDocLine(_selectedDoc!.Id, item!.Id, qty, fromLocation?.Id, toLocation?.Id);
-            DocItemQtyBox.Text = string.Empty;
-            DocBarcodeBox.Text = string.Empty;
-            LoadDocLines(_selectedDoc.Id);
-            DocBarcodeBox.Focus();
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Документ", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void DocUpdateLine_Click(object sender, RoutedEventArgs e)
-    {
-        if (!EnsureDraftDocSelected())
-        {
-            return;
-        }
-
-        if (_selectedDocLine == null)
-        {
-            MessageBox.Show("Выберите строку.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        if (!TryParseQty(DocLineQtyBox.Text, out var qty))
-        {
-            MessageBox.Show("Количество должно быть больше 0.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        try
-        {
-            _services.Documents.UpdateDocLineQty(_selectedDoc!.Id, _selectedDocLine.Id, qty);
-            LoadDocLines(_selectedDoc.Id);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Документ", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void DocDeleteLine_Click(object sender, RoutedEventArgs e)
-    {
-        if (!EnsureDraftDocSelected())
-        {
-            return;
-        }
-
-        if (_selectedDocLine == null)
-        {
-            MessageBox.Show("Выберите строку.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        try
-        {
-            _services.Documents.DeleteDocLine(_selectedDoc!.Id, _selectedDocLine.Id);
-            LoadDocLines(_selectedDoc.Id);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Документ", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void DocHeaderSave_Click(object sender, RoutedEventArgs e)
-    {
-        if (_selectedDoc == null)
-        {
-            MessageBox.Show("Документ не выбран.", "Документ", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        if (_selectedDoc.Status != DocStatus.Draft)
-        {
-            MessageBox.Show("Документ уже закрыт.", "Документ", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        var partnerId = (DocPartnerCombo.SelectedItem as Partner)?.Id;
-        try
-        {
-            _services.Documents.UpdateDocHeader(_selectedDoc.Id, partnerId, DocOrderRefBox.Text, DocShippingRefBox.Text);
-            LoadDocs();
-            var refreshed = _services.Documents.GetDoc(_selectedDoc.Id);
-            _selectedDoc = refreshed ?? _selectedDoc;
-            UpdateDocView();
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Документ", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void UpdateDocView()
-    {
-        if (_selectedDoc == null)
-        {
-            DocInfoText.Text = string.Empty;
-            DocCloseButton.IsEnabled = false;
-            DocLinesGrid.Visibility = Visibility.Collapsed;
-            DocEmptyText.Visibility = Visibility.Visible;
-            DocEditGroup.Visibility = Visibility.Collapsed;
-            DocHeaderPanel.IsEnabled = false;
-            DocHeaderPanel.Visibility = Visibility.Collapsed;
-            DocPartnerCombo.SelectedItem = null;
-            DocOrderRefBox.Text = string.Empty;
-            DocShippingRefBox.Text = string.Empty;
-            return;
-        }
-
-        DocInfoText.Text = FormatDocHeader(_selectedDoc);
-        DocCloseButton.IsEnabled = _selectedDoc.Status != DocStatus.Closed;
-        DocLinesGrid.Visibility = Visibility.Visible;
-        DocEmptyText.Visibility = Visibility.Collapsed;
-        DocEditGroup.Visibility = _selectedDoc.Status == DocStatus.Draft ? Visibility.Visible : Visibility.Collapsed;
-        DocHeaderPanel.Visibility = Visibility.Visible;
-
-        var showFrom = _selectedDoc.Type != DocType.Inbound;
-        var showTo = _selectedDoc.Type != DocType.WriteOff && _selectedDoc.Type != DocType.Outbound;
-        DocFromLabel.Visibility = showFrom ? Visibility.Visible : Visibility.Collapsed;
-        DocFromCombo.Visibility = showFrom ? Visibility.Visible : Visibility.Collapsed;
-        DocToLabel.Visibility = showTo ? Visibility.Visible : Visibility.Collapsed;
-        DocToCombo.Visibility = showTo ? Visibility.Visible : Visibility.Collapsed;
-
-        if (!showFrom)
-        {
-            DocFromCombo.SelectedItem = null;
-        }
-
-        if (!showTo)
-        {
-            DocToCombo.SelectedItem = null;
-        }
-
-        DocHeaderPanel.IsEnabled = _selectedDoc.Status == DocStatus.Draft;
-        DocPartnerCombo.SelectedItem = _partners.FirstOrDefault(p => p.Id == _selectedDoc.PartnerId);
-        DocOrderRefBox.Text = _selectedDoc.OrderRef ?? string.Empty;
-        DocShippingRefBox.Text = _selectedDoc.ShippingRef ?? string.Empty;
-
-        if (_selectedDoc.Status == DocStatus.Draft)
-        {
-            DocBarcodeBox.Focus();
-            DocBarcodeBox.SelectAll();
-        }
-    }
-
-    private static string FormatDocHeader(Doc doc)
-    {
-        var createdAt = doc.CreatedAt.ToString("g");
-        var closedAt = doc.ClosedAt.HasValue ? doc.ClosedAt.Value.ToString("g") : "—";
-        return $"Номер: {doc.DocRef} | Тип: {DocTypeMapper.ToDisplayName(doc.Type)} | Статус: {DocTypeMapper.StatusToDisplayName(doc.Status)} | Создан: {createdAt} | Закрыт: {closedAt}";
-    }
-
-    private static bool TryParseQty(string input, out double qty)
-    {
-        return double.TryParse(input, NumberStyles.Float, CultureInfo.CurrentCulture, out qty) && qty > 0;
-    }
-
-    private bool TryResolveDocItem(out Item? item)
-    {
-        item = null;
-        var barcode = DocBarcodeBox.Text?.Trim();
-        if (!string.IsNullOrWhiteSpace(barcode))
-        {
-            item = _items.FirstOrDefault(i => string.Equals(i.Barcode, barcode, StringComparison.OrdinalIgnoreCase))
-                   ?? _items.FirstOrDefault(i => string.Equals(i.Gtin, barcode, StringComparison.OrdinalIgnoreCase));
-            if (item == null)
-            {
-                MessageBox.Show("Товар со штрихкодом/GTIN не найден.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return false;
-            }
-
-            DocItemCombo.SelectedItem = item;
-            return true;
-        }
-
-        if (DocItemCombo.SelectedItem is Item selected)
-        {
-            item = selected;
-            return true;
-        }
-
-        MessageBox.Show("Выберите товар или укажите штрихкод.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
-        return false;
-    }
-
     private void ClearItemForm()
     {
         _selectedItem = null;
         ItemNameBox.Text = string.Empty;
         ItemBarcodeBox.Text = string.Empty;
         ItemGtinBox.Text = string.Empty;
-        ItemUomCombo.SelectedItem = null;
+        ItemUomCombo.SelectedItem = _uoms.FirstOrDefault(u => string.Equals(u.Name, "шт", StringComparison.OrdinalIgnoreCase));
         ItemSaveButton.IsEnabled = false;
         ItemDeleteButton.IsEnabled = false;
         ItemsGrid.SelectedItem = null;
+        LoadItemPackagingOptions(null);
     }
 
     private void ClearLocationForm()
@@ -1000,62 +1090,23 @@ public partial class MainWindow : Window
         PartnersGrid.SelectedItem = null;
     }
 
-    private bool EnsureDraftDocSelected()
+    private static string FormatQty(double value)
     {
-        if (_selectedDoc == null)
-        {
-            MessageBox.Show("Документ не выбран.", "Документ", MessageBoxButton.OK, MessageBoxImage.Information);
-            return false;
-        }
-
-        if (_selectedDoc.Status != DocStatus.Draft)
-        {
-            MessageBox.Show("Документ уже закрыт.", "Документ", MessageBoxButton.OK, MessageBoxImage.Information);
-            return false;
-        }
-
-        return true;
+        return value.ToString("0.###", CultureInfo.CurrentCulture);
     }
 
-    private bool ValidateLineLocations(Doc doc, Location? fromLocation, Location? toLocation)
+    private sealed record DocTypeFilterOption(DocType? Type, string Name);
+
+    private sealed record DocStatusFilterOption(DocStatus? Status, string Name);
+
+    private sealed record StockDisplayRow
     {
-        switch (doc.Type)
-        {
-            case DocType.Inbound:
-                if (toLocation == null)
-                {
-                    MessageBox.Show("Для приемки выберите место хранения получателя.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return false;
-                }
-                return true;
-            case DocType.WriteOff:
-                if (fromLocation == null)
-                {
-                    MessageBox.Show("Для списания выберите место хранения источника.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return false;
-                }
-                return true;
-            case DocType.Outbound:
-                if (fromLocation == null)
-                {
-                    MessageBox.Show("Для отгрузки выберите место хранения источника.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return false;
-                }
-                return true;
-            case DocType.Move:
-                if (fromLocation == null || toLocation == null)
-                {
-                    MessageBox.Show("Для перемещения выберите места хранения откуда/куда.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return false;
-                }
-                if (fromLocation.Id == toLocation.Id)
-                {
-                    MessageBox.Show("Для перемещения места хранения откуда/куда должны быть разными.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return false;
-                }
-                return true;
-            default:
-                return true;
-        }
+        public string ItemName { get; init; } = string.Empty;
+        public string? Barcode { get; init; }
+        public string LocationCode { get; init; } = string.Empty;
+        public string PackagingDisplay { get; init; } = string.Empty;
+        public string BaseDisplay { get; init; } = string.Empty;
     }
+
+    private sealed record PackagingOption(long? PackagingId, string Name);
 }

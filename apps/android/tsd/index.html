@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+    />
+    <title>LightWMS MVP</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="root" class="app-shell">
+      <header class="app-header">
+        <button id="backBtn" class="icon-btn back-btn" type="button" aria-label="Назад">
+          &larr;
+        </button>
+        <div class="app-title"></div>
+        <button
+          id="settingsBtn"
+          class="icon-btn settings-btn"
+          type="button"
+          aria-label="Настройки"
+        >
+          &#9881;
+        </button>
+      </header>
+      <main id="app" class="app-content" role="main"></main>
+    </div>
+    <input
+      id="scanSink"
+      class="scan-sink"
+      type="text"
+      inputmode="none"
+      autocomplete="off"
+      autocapitalize="off"
+      autocorrect="off"
+      spellcheck="false"
+    />
+    <script src="storage.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
+
+
+

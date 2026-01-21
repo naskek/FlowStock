@@ -15,6 +15,14 @@ public interface IDataStore
     void UpdateItem(Item item);
     void DeleteItem(long itemId);
     bool IsItemUsed(long itemId);
+    void UpdateItemDefaultPackaging(long itemId, long? packagingId);
+
+    IReadOnlyList<ItemPackaging> GetItemPackagings(long itemId, bool includeInactive);
+    ItemPackaging? GetItemPackaging(long packagingId);
+    ItemPackaging? FindItemPackagingByCode(long itemId, string code);
+    long AddItemPackaging(ItemPackaging packaging);
+    void UpdateItemPackaging(ItemPackaging packaging);
+    void DeactivateItemPackaging(long packagingId);
 
     Location? FindLocationByCode(string code);
     Location? FindLocationById(long id);
@@ -28,6 +36,7 @@ public interface IDataStore
     long AddUom(Uom uom);
 
     Partner? GetPartner(long id);
+    Partner? FindPartnerByCode(string code);
     IReadOnlyList<Partner> GetPartners();
     long AddPartner(Partner partner);
     void UpdatePartner(Partner partner);
@@ -37,14 +46,30 @@ public interface IDataStore
     Doc? FindDocByRef(string docRef, DocType type);
     Doc? GetDoc(long id);
     IReadOnlyList<Doc> GetDocs();
+    IReadOnlyList<Doc> GetDocsByOrder(long orderId);
+    int GetMaxDocRefSequence(DocType type, string prefix);
     long AddDoc(Doc doc);
     IReadOnlyList<DocLine> GetDocLines(long docId);
     IReadOnlyList<DocLineView> GetDocLineViews(long docId);
     long AddDocLine(DocLine line);
-    void UpdateDocLineQty(long docLineId, double qty);
+    void UpdateDocLineQty(long docLineId, double qty, double? qtyInput, string? uomCode);
     void DeleteDocLine(long docLineId);
     void UpdateDocHeader(long docId, long? partnerId, string? orderRef, string? shippingRef);
     void UpdateDocStatus(long docId, DocStatus status, DateTime? closedAt);
+
+    Order? GetOrder(long id);
+    IReadOnlyList<Order> GetOrders();
+    long AddOrder(Order order);
+    void UpdateOrder(Order order);
+    void UpdateOrderStatus(long orderId, OrderStatus status);
+    IReadOnlyList<OrderLine> GetOrderLines(long orderId);
+    IReadOnlyList<OrderLineView> GetOrderLineViews(long orderId);
+    long AddOrderLine(OrderLine line);
+    void DeleteOrderLines(long orderId);
+    IReadOnlyDictionary<long, double> GetLedgerTotalsByItem();
+    IReadOnlyDictionary<long, double> GetShippedTotalsByOrder(long orderId);
+    DateTime? GetOrderShippedAt(long orderId);
+    bool HasOutboundDocs(long orderId);
 
     void AddLedgerEntry(LedgerEntry entry);
     IReadOnlyList<StockRow> GetStock(string? search);

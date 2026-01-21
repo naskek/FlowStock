@@ -81,7 +81,7 @@ public static class DocTypeMapper
         return status switch
         {
             DocStatus.Draft => "Черновик",
-            DocStatus.Closed => "Закрыт",
+            DocStatus.Closed => "Проведена",
             _ => "Неизвестно"
         };
     }

@@ -32,19 +32,20 @@ public sealed class CatalogService
         return _data.GetPartners();
     }
 
-    public long CreateItem(string name, string? barcode, string? gtin, string? uom)
+    public long CreateItem(string name, string? barcode, string? gtin, string? baseUom)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
             throw new ArgumentException("Наименование обязательно.", nameof(name));
         }
 
+        var normalizedUom = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom.Trim();
         var item = new Item
         {
             Name = name.Trim(),
             Barcode = string.IsNullOrWhiteSpace(barcode) ? null : barcode.Trim(),
             Gtin = string.IsNullOrWhiteSpace(gtin) ? null : gtin.Trim(),
-            Uom = string.IsNullOrWhiteSpace(uom) ? null : uom.Trim()
+            BaseUom = normalizedUom
         };
 
         return _data.AddItem(item);
@@ -113,7 +114,7 @@ public sealed class CatalogService
         _data.UpdateItemBarcode(itemId, barcode.Trim());
     }
 
-    public void UpdateItem(long itemId, string name, string? barcode, string? gtin, string? uom)
+    public void UpdateItem(long itemId, string name, string? barcode, string? gtin, string? baseUom)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -126,13 +127,15 @@ public sealed class CatalogService
             throw new InvalidOperationException("Товар не найден.");
         }
 
+        var normalizedUom = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom.Trim();
         var item = new Item
         {
             Id = itemId,
             Name = name.Trim(),
             Barcode = string.IsNullOrWhiteSpace(barcode) ? null : barcode.Trim(),
             Gtin = string.IsNullOrWhiteSpace(gtin) ? null : gtin.Trim(),
-            Uom = string.IsNullOrWhiteSpace(uom) ? null : uom.Trim()
+            BaseUom = normalizedUom,
+            DefaultPackagingId = existing.DefaultPackagingId
         };
 
         _data.UpdateItem(item);

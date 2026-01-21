@@ -1,0 +1,61 @@
+<Window x:Class="LightWms.App.OperationDetailsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Операция"
+        Height="640" Width="1050"
+        PreviewKeyDown="OperationDetailsWindow_PreviewKeyDown">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <StackPanel Grid.Row="0" Margin="0,0,0,8">
+            <DockPanel LastChildFill="True">
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                    <Button x:Name="DocCloseButton" Content="Провести" Click="DocClose_Click" />
+                    <Button x:Name="DocHeaderSaveButton" Content="Сохранить" Click="DocHeaderSave_Click" Margin="8,0,0,0" />
+                    <Button Content="Закрыть окно" IsCancel="True" Margin="8,0,0,0" />
+                </StackPanel>
+                <TextBlock x:Name="DocInfoText" VerticalAlignment="Center" TextWrapping="Wrap" />
+            </DockPanel>
+            <WrapPanel x:Name="DocHeaderPanel" Margin="0,6,0,0">
+                <StackPanel x:Name="DocPartnerPanel" Margin="0,0,12,0">
+                    <TextBlock x:Name="DocPartnerLabel" Text="Контрагент" />
+                    <ComboBox x:Name="DocPartnerCombo" Width="220" Margin="0,4,0,0" DisplayMemberPath="DisplayName" />
+                </StackPanel>
+                <StackPanel x:Name="DocOrderPanel" Margin="0,0,12,0">
+                    <TextBlock Text="Заказ" />
+                    <TextBox x:Name="DocOrderRefBox" Width="160" Margin="0,4,0,0" />
+                </StackPanel>
+                <StackPanel x:Name="DocShippingPanel" Margin="0,0,12,0">
+                    <TextBlock Text="Накладная/ТТН" />
+                    <TextBox x:Name="DocShippingRefBox" Width="160" Margin="0,4,0,0" />
+                </StackPanel>
+                <StackPanel x:Name="DocFromPanel" Margin="0,0,12,0">
+                    <TextBlock x:Name="DocFromLabel" Text="Откуда" />
+                    <ComboBox x:Name="DocFromCombo" Width="140" Margin="0,4,0,0" DisplayMemberPath="Code" />
+                </StackPanel>
+                <StackPanel x:Name="DocToPanel" Margin="0,0,12,0">
+                    <TextBlock x:Name="DocToLabel" Text="Куда" />
+                    <ComboBox x:Name="DocToCombo" Width="140" Margin="0,4,0,0" DisplayMemberPath="Code" />
+                </StackPanel>
+            </WrapPanel>
+        </StackPanel>
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
+            <Button x:Name="AddItemButton" Content="+ Товар" Click="DocAddLine_Click" />
+            <Button x:Name="EditLineButton" Content="Изменить количество..." Click="DocEditLine_Click" Margin="8,0,0,0" />
+            <Button x:Name="DeleteLineButton" Content="Удалить строку" Click="DocDeleteLine_Click" Margin="8,0,0,0" />
+        </StackPanel>
+        <DataGrid x:Name="DocLinesGrid" Grid.Row="2" AutoGenerateColumns="False" IsReadOnly="True"
+                  SelectionChanged="DocLines_SelectionChanged"
+                  KeyDown="DocLinesGrid_KeyDown">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
+                <DataGridTextColumn Header="Кол-во" Binding="{Binding QtyDisplay}" Width="180" />
+                <DataGridTextColumn x:Name="DocFromColumn" Header="Откуда" Binding="{Binding FromLocation}" Width="140" />
+                <DataGridTextColumn x:Name="DocToColumn" Header="Куда" Binding="{Binding ToLocation}" Width="140" />
+            </DataGrid.Columns>
+        </DataGrid>
+    </Grid>
+</Window>

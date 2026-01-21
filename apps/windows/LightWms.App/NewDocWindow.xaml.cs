@@ -28,12 +28,14 @@ public partial class NewDocWindow : Window
         PartnerCombo.ItemsSource = _services.Catalog.GetPartners();
 
         UpdateOutboundVisibility();
+        UpdateDocRef();
         DocRefBox.Focus();
     }
 
     private void TypeCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
         UpdateOutboundVisibility();
+        UpdateDocRef();
     }
 
     private void UpdateOutboundVisibility()
@@ -46,6 +48,21 @@ public partial class NewDocWindow : Window
             PartnerCombo.SelectedItem = null;
             OrderRefBox.Text = string.Empty;
         }
+    }
+
+    private void GenerateRef_Click(object sender, RoutedEventArgs e)
+    {
+        UpdateDocRef();
+    }
+
+    private void UpdateDocRef()
+    {
+        if (TypeCombo.SelectedItem is not DocTypeOption option)
+        {
+            return;
+        }
+
+        DocRefBox.Text = _services.Documents.GenerateDocRef(option.Type, DateTime.Now);
     }
 
     private void Create_Click(object sender, RoutedEventArgs e)
