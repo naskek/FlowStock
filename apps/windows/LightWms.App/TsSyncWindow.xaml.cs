@@ -400,7 +400,7 @@ public partial class TsSyncWindow : Window
                 PlannedShipDate = FormatDate(order.DueDate),
                 Status = OrderStatusMapper.StatusToString(order.Status),
                 ShippedAt = FormatDateTime(order.ShippedAt),
-                CreatedAt = FormatDateTime(order.CreatedAt)
+                CreatedAt = FormatDateTime(order.CreatedAt) ?? string.Empty
             });
 
             foreach (var line in services.Orders.GetOrderLineViews(order.Id))
