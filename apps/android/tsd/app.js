@@ -328,10 +328,10 @@
       '    <button class="btn menu-btn" data-op="INBOUND">Приемка</button>' +
       '    <button class="btn menu-btn" data-op="OUTBOUND">Отгрузка</button>' +
       '    <button class="btn menu-btn" data-op="MOVE">Перемещение</button>' +
-    '    <button class="btn menu-btn" data-op="WRITE_OFF">Списание</button>' +
-    '    <button class="btn menu-btn" data-op="INVENTORY">Инвентаризация</button>' +
-    '    <button class="btn menu-btn" data-route="docs">История операций</button>' +
-    '    <button class="btn menu-btn" data-route="stock">Остатки</button>' +
+      '    <button class="btn menu-btn" data-op="WRITE_OFF">Списание</button>' +
+      '    <button class="btn menu-btn" data-route="stock">Остатки</button>' +
+      '    <button class="btn menu-btn" data-op="INVENTORY">Инвентаризация</button>' +
+      '    <button class="btn menu-btn" data-route="docs">История операций</button>' +
       "  </div>" +
       "</section>"
     );
