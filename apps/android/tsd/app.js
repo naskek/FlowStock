@@ -2,6 +2,8 @@
   "use strict";
 
   var app = document.getElementById("app");
+  var appHeader = document.querySelector(".app-header");
+  var appTitle = document.querySelector(".app-title");
   var backBtn = document.getElementById("backBtn");
   var settingsBtn = document.getElementById("settingsBtn");
   var scanSink = document.getElementById("scanSink");
@@ -224,14 +226,16 @@
   }
 
   function updateHeader(route) {
-    if (!backBtn) {
+    if (!appHeader || !backBtn) {
       return;
     }
 
     if (route.name === "home") {
-      backBtn.classList.remove("is-hidden");
-    } else {
-      backBtn.classList.remove("is-hidden");
+      if (backBtn.parentNode) {
+        backBtn.parentNode.removeChild(backBtn);
+      }
+    } else if (!backBtn.parentNode) {
+      appHeader.insertBefore(backBtn, appTitle || appHeader.firstChild);
     }
 
     if (settingsBtn) {
@@ -764,7 +768,6 @@
       (isReady
         ? '      <button class="btn btn-outline" id="revertBtn">Вернуть в черновик</button>'
         : "") +
-      '      <button class="btn btn-outline" id="backToDocsBtn">Назад</button>' +
       "    </div>" +
       "  </div>" +
       "</section>"
@@ -1866,7 +1869,6 @@
     var undoBtn = document.getElementById("undoBtn");
     var finishBtn = document.getElementById("finishBtn");
     var revertBtn = document.getElementById("revertBtn");
-    var backToDocsBtn = document.getElementById("backToDocsBtn");
     var docRefInput = document.getElementById("docRefInput");
     var headerInputs = document.querySelectorAll("[data-header]");
     var deleteButtons = document.querySelectorAll(".line-delete");
@@ -2910,11 +2912,6 @@
       });
     }
 
-    if (backToDocsBtn) {
-      backToDocsBtn.addEventListener("click", function () {
-        navigate("/docs");
-      });
-    }
 
     if (docRefInput) {
       docRefInput.addEventListener("input", function () {
