@@ -109,10 +109,6 @@ public partial class MainWindow : Window
                 e.Handled = true;
                 OpenSelectedDoc();
                 break;
-            case Key.I:
-                e.Handled = true;
-                RunImportDialog();
-                break;
             case Key.Enter:
                 e.Handled = true;
                 TryCloseSelectedDoc();

@@ -9,10 +9,6 @@
                 <MenuItem Header="Открыть выбранный" InputGestureText="Ctrl+O" Click="DocsOpen_Click" />
                 <MenuItem Header="Закрыть текущий документ" InputGestureText="Ctrl+Enter" Click="DocClose_Click" />
             </MenuItem>
-            <MenuItem Header="Импорт">
-                <MenuItem Header="Импорт JSONL..." InputGestureText="Ctrl+I" Click="ImportMenu_Click" />
-                <MenuItem Header="Ошибки импорта" Click="ImportErrors_Click" />
-            </MenuItem>
             <MenuItem Header="Справочники">
                 <MenuItem Header="Товары" Click="ViewItems_Click" />
                 <MenuItem Header="Места хранения" Click="ViewLocations_Click" />
@@ -21,16 +17,7 @@
                 <MenuItem Header="Ед. измерения..." Click="UomMenu_Click" />
                 <MenuItem Header="Упаковки..." Click="PackagingManager_Click" />
             </MenuItem>
-            <MenuItem Header="Вид">
-                <MenuItem Header="Остатки" Click="ViewStatus_Click" />
-                <MenuItem Header="Операции" Click="ViewDocs_Click" />
-                <MenuItem Header="Заказы" Click="ViewOrders_Click" />
-                <MenuItem Header="Товары" Click="ViewItems_Click" />
-                <MenuItem Header="Места хранения" Click="ViewLocations_Click" />
-                <MenuItem Header="Контрагенты" Click="ViewPartners_Click" />
-            </MenuItem>
             <MenuItem Header="Сервис">
-                <MenuItem Header="Выгрузить данные на ТСД..." Click="ExportTsdData_Click" />
                 <MenuItem Header="Синхронизация с ТСД..." Click="OpenTsdSync_Click" />
                 <Separator />
                 <MenuItem Header="Резервные копии..." Click="OpenBackupManager_Click" />
