@@ -23,7 +23,9 @@ public partial class OperationDetailsWindow : Window
     private DocLineDisplay? _selectedDocLine;
     private bool _suppressOrderSync;
     private bool _suppressPartialSync;
+    private bool _suppressDirtyTracking;
     private bool _isPartialShipment;
+    private bool _hasUnsavedChanges;
 
     public OperationDetailsWindow(AppServices services, long docId)
     {
@@ -190,6 +192,11 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
+        if (_hasUnsavedChanges && !TrySaveHeader())
+        {
+            return;
+        }
+
         if (doc.Type == DocType.Outbound && !TryValidateOutboundStock(doc.Id))
         {
             return;
@@ -233,7 +240,7 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        LoadDoc();
+        Close();
     }
 
     private void DocAddLine_Click(object sender, RoutedEventArgs e)
@@ -404,50 +411,7 @@ public partial class OperationDetailsWindow : Window
 
     private void DocHeaderSave_Click(object sender, RoutedEventArgs e)
     {
-        if (_doc == null)
-        {
-            MessageBox.Show("Операция не выбрана.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        if (_doc.Status != DocStatus.Draft)
-        {
-            MessageBox.Show("Операция уже закрыта.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        var partnerId = (DocPartnerCombo.SelectedItem as Partner)?.Id;
-        try
-        {
-            if (!TryResolveOrder(out var orderOption))
-            {
-                return;
-            }
-
-            if (orderOption != null)
-            {
-                if (!_isPartialShipment || _doc.OrderId != orderOption.Id)
-                {
-                    var added = _services.Documents.ApplyOrderToDoc(_doc.Id, orderOption.Id);
-                    LoadOrderQuantities(orderOption.Id);
-                    ResetPartialMode();
-                    if (added == 0)
-                    {
-                        MessageBox.Show("По заказу нет остатка к отгрузке.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
-                    }
-                }
-            }
-            else
-            {
-                _services.Documents.ClearDocOrder(_doc.Id, partnerId);
-                ResetPartialMode();
-            }
-            LoadDoc();
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        TrySaveHeader();
     }
 
     private void UpdateDocView()
@@ -462,13 +426,17 @@ public partial class OperationDetailsWindow : Window
         DocCloseButton.IsEnabled = isDraft;
         DocHeaderPanel.IsEnabled = isDraft;
 
+        MarkHeaderSaved();
+        _suppressDirtyTracking = true;
         ConfigureHeaderFields(_doc, isDraft);
         UpdatePartialUi();
         ApplyPartnerFilter();
         DocPartnerCombo.SelectedItem = _partners.FirstOrDefault(p => p.Id == _doc.PartnerId);
         SelectOrderFromDoc(_doc);
+        _suppressDirtyTracking = false;
         UpdateLineButtons();
         UpdatePartnerLock();
+        UpdateActionButtons();
 
         if (_doc.Status == DocStatus.Draft)
         {
@@ -510,6 +478,11 @@ public partial class OperationDetailsWindow : Window
         {
             DocOrderCombo.SelectedItem = null;
             DocOrderCombo.Text = string.Empty;
+        }
+
+        if (!_suppressDirtyTracking && _doc?.Status == DocStatus.Draft && DocOrderCombo.SelectedItem == null)
+        {
+            MarkHeaderDirty();
         }
     }
 
@@ -555,6 +528,11 @@ public partial class OperationDetailsWindow : Window
             ResetPartialMode();
             UpdatePartnerLock();
             UpdateLineButtons();
+            UpdateActionButtons();
+        }
+        else if (!_suppressDirtyTracking && _doc?.Status == DocStatus.Draft && DocOrderCombo.SelectedItem == null)
+        {
+            MarkHeaderDirty();
         }
     }
 
@@ -568,6 +546,7 @@ public partial class OperationDetailsWindow : Window
         ResetPartialMode();
         UpdatePartnerLock();
         UpdateLineButtons();
+        UpdateActionButtons();
     }
 
     private void DocPartialCheck_Changed(object sender, RoutedEventArgs e)
@@ -590,6 +569,7 @@ public partial class OperationDetailsWindow : Window
         }
 
         UpdateLineButtons();
+        UpdateActionButtons();
     }
 
     private void UpdatePartnerLock()
@@ -687,6 +667,14 @@ public partial class OperationDetailsWindow : Window
         DocPartialCheck.IsEnabled = isDraft && hasOrder;
     }
 
+    private void UpdateActionButtons()
+    {
+        var isDraft = _doc?.Status == DocStatus.Draft;
+        var hasId = _doc?.Id > 0;
+        DocCloseButton.IsEnabled = isDraft && hasId && !_hasUnsavedChanges;
+        DocHeaderSaveButton.IsEnabled = isDraft;
+    }
+
     private bool HasOrderBinding()
     {
         return _doc?.OrderId.HasValue == true || DocOrderCombo.SelectedItem != null;
@@ -732,6 +720,58 @@ public partial class OperationDetailsWindow : Window
         catch (Exception ex)
         {
             MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private bool TrySaveHeader()
+    {
+        if (_doc == null)
+        {
+            MessageBox.Show("Операция не выбрана.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+            return false;
+        }
+
+        if (_doc.Status != DocStatus.Draft)
+        {
+            MessageBox.Show("Операция уже закрыта.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+            return false;
+        }
+
+        var partnerId = (DocPartnerCombo.SelectedItem as Partner)?.Id;
+        try
+        {
+            if (!TryResolveOrder(out var orderOption))
+            {
+                return false;
+            }
+
+            if (orderOption != null)
+            {
+                if (!_isPartialShipment || _doc.OrderId != orderOption.Id)
+                {
+                    var added = _services.Documents.ApplyOrderToDoc(_doc.Id, orderOption.Id);
+                    LoadOrderQuantities(orderOption.Id);
+                    ResetPartialMode();
+                    if (added == 0)
+                    {
+                        MessageBox.Show("По заказу нет остатка к отгрузке.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+                    }
+                }
+            }
+            else
+            {
+                _services.Documents.ClearDocOrder(_doc.Id, partnerId);
+                ResetPartialMode();
+            }
+
+            LoadDoc();
+            MarkHeaderSaved();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
+            return false;
         }
     }
 
@@ -801,6 +841,18 @@ public partial class OperationDetailsWindow : Window
         _suppressPartialSync = true;
         DocPartialCheck.IsChecked = _isPartialShipment;
         _suppressPartialSync = false;
+    }
+
+    private void MarkHeaderDirty()
+    {
+        _hasUnsavedChanges = true;
+        UpdateActionButtons();
+    }
+
+    private void MarkHeaderSaved()
+    {
+        _hasUnsavedChanges = false;
+        UpdateActionButtons();
     }
 
     private void ResetPartialMode()
