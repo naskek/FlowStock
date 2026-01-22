@@ -34,11 +34,11 @@
                 </StackPanel>
                 <StackPanel x:Name="DocFromPanel" Margin="0,0,12,0">
                     <TextBlock x:Name="DocFromLabel" Text="Откуда" />
-                    <ComboBox x:Name="DocFromCombo" Width="140" Margin="0,4,0,0" DisplayMemberPath="Code" />
+                    <ComboBox x:Name="DocFromCombo" Width="220" Margin="0,4,0,0" DisplayMemberPath="DisplayName" />
                 </StackPanel>
                 <StackPanel x:Name="DocToPanel" Margin="0,0,12,0">
                     <TextBlock x:Name="DocToLabel" Text="Куда" />
-                    <ComboBox x:Name="DocToCombo" Width="140" Margin="0,4,0,0" DisplayMemberPath="Code" />
+                    <ComboBox x:Name="DocToCombo" Width="220" Margin="0,4,0,0" DisplayMemberPath="DisplayName" />
                 </StackPanel>
             </WrapPanel>
         </StackPanel>
@@ -53,8 +53,8 @@
             <DataGrid.Columns>
                 <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
                 <DataGridTextColumn Header="Кол-во" Binding="{Binding QtyDisplay}" Width="180" />
-                <DataGridTextColumn x:Name="DocFromColumn" Header="Откуда" Binding="{Binding FromLocation}" Width="140" />
-                <DataGridTextColumn x:Name="DocToColumn" Header="Куда" Binding="{Binding ToLocation}" Width="140" />
+                <DataGridTextColumn x:Name="DocFromColumn" Header="Откуда" Binding="{Binding FromLocation}" Width="220" />
+                <DataGridTextColumn x:Name="DocToColumn" Header="Куда" Binding="{Binding ToLocation}" Width="220" />
             </DataGrid.Columns>
         </DataGrid>
     </Grid>

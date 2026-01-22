@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Linq;
@@ -74,6 +75,10 @@ public partial class OperationDetailsWindow : Window
     private void LoadDocLines()
     {
         _docLines.Clear();
+        var locationLookup = _locations
+            .GroupBy(location => location.Code)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+
         foreach (var line in _services.Documents.GetDocLines(_docId))
         {
             _docLines.Add(new DocLineDisplay
@@ -86,13 +91,23 @@ public partial class OperationDetailsWindow : Window
                 UomCode = line.UomCode,
                 BaseUom = line.BaseUom,
                 QtyDisplay = FormatDocLineQty(line),
-                FromLocation = line.FromLocation,
-                ToLocation = line.ToLocation
+                FromLocation = FormatLocationDisplay(line.FromLocation, locationLookup),
+                ToLocation = FormatLocationDisplay(line.ToLocation, locationLookup)
             });
         }
 
         _selectedDocLine = null;
         UpdateLineButtons();
+    }
+
+    private static string? FormatLocationDisplay(string? code, IReadOnlyDictionary<string, Location> lookup)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            return null;
+        }
+
+        return lookup.TryGetValue(code, out var location) ? location.DisplayName : code;
     }
 
     private void DocLines_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
