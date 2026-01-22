@@ -238,7 +238,9 @@
                                 <TextBlock Text="Наименование" />
                                 <TextBox x:Name="PartnerNameBox" Margin="0,2,0,8" TabIndex="1" />
                                 <TextBlock Text="ИНН" />
-                                <TextBox x:Name="PartnerCodeBox" Margin="0,2,0,0" TabIndex="2" />
+                                <TextBox x:Name="PartnerCodeBox" Margin="0,2,0,0" TabIndex="2"
+                                         PreviewTextInput="PartnerCodeBox_PreviewTextInput"
+                                         DataObject.Pasting="PartnerCodeBox_OnPaste" />
                             </StackPanel>
                         </GroupBox>
                         <StackPanel Orientation="Horizontal" Margin="0,8,0,0">

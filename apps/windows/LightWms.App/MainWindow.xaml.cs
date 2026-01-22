@@ -7,6 +7,7 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Threading;
 using LightWms.Core.Models;
+using Microsoft.Data.Sqlite;
 using Microsoft.Win32;
 
 namespace LightWms.App;
@@ -560,15 +561,30 @@ public partial class MainWindow : Window
             return;
         }
 
+        var partnerCode = NormalizeIdentifier(PartnerCodeBox.Text);
+        if (!TryValidatePartnerInn(partnerCode, null))
+        {
+            return;
+        }
+
         try
         {
-            _services.Catalog.CreatePartner(PartnerNameBox.Text, PartnerCodeBox.Text);
+            _services.Catalog.CreatePartner(PartnerNameBox.Text, partnerCode);
             LoadPartners();
             ClearPartnerForm();
         }
         catch (ArgumentException ex)
         {
             MessageBox.Show(ex.Message, "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (SqliteException ex) when (IsSqliteConstraint(ex))
+        {
+            if (TryShowPartnerDuplicate(partnerCode, null))
+            {
+                return;
+            }
+
+            MessageBox.Show("Не удалось сохранить контрагента. Нарушено ограничение базы данных.", "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         catch (Exception ex)
         {
@@ -730,15 +746,30 @@ public partial class MainWindow : Window
             return;
         }
 
+        var partnerCode = NormalizeIdentifier(PartnerCodeBox.Text);
+        if (!TryValidatePartnerInn(partnerCode, _selectedPartner.Id))
+        {
+            return;
+        }
+
         try
         {
-            _services.Catalog.UpdatePartner(_selectedPartner.Id, PartnerNameBox.Text, PartnerCodeBox.Text);
+            _services.Catalog.UpdatePartner(_selectedPartner.Id, PartnerNameBox.Text, partnerCode);
             LoadPartners();
             ClearPartnerForm();
         }
         catch (ArgumentException ex)
         {
             MessageBox.Show(ex.Message, "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (SqliteException ex) when (IsSqliteConstraint(ex))
+        {
+            if (TryShowPartnerDuplicate(partnerCode, _selectedPartner.Id))
+            {
+                return;
+            }
+
+            MessageBox.Show("Не удалось сохранить контрагента. Нарушено ограничение базы данных.", "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         catch (Exception ex)
         {
@@ -1116,6 +1147,99 @@ public partial class MainWindow : Window
         PartnerSaveButton.IsEnabled = false;
         PartnerDeleteButton.IsEnabled = false;
         PartnersGrid.SelectedItem = null;
+    }
+
+    private void PartnerCodeBox_PreviewTextInput(object sender, TextCompositionEventArgs e)
+    {
+        e.Handled = !IsDigitsOnly(e.Text);
+    }
+
+    private void PartnerCodeBox_OnPaste(object sender, DataObjectPastingEventArgs e)
+    {
+        if (!e.DataObject.GetDataPresent(DataFormats.Text))
+        {
+            e.CancelCommand();
+            return;
+        }
+
+        var text = e.DataObject.GetData(DataFormats.Text) as string;
+        if (!IsDigitsOnly(text))
+        {
+            e.CancelCommand();
+        }
+    }
+
+    private bool TryValidatePartnerInn(string? inn, long? currentPartnerId)
+    {
+        if (!string.IsNullOrWhiteSpace(inn) && !IsDigitsOnly(inn))
+        {
+            MessageBox.Show("ИНН должен содержать только цифры.", "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        return !TryShowPartnerDuplicate(inn, currentPartnerId);
+    }
+
+    private bool TryShowPartnerDuplicate(string? inn, long? currentPartnerId)
+    {
+        var duplicate = FindPartnerByInn(inn, currentPartnerId);
+        if (duplicate == null)
+        {
+            return false;
+        }
+
+        MessageBox.Show($"Контрагент с таким ИНН уже существует: {duplicate.Name}. Продолжить нельзя.",
+            "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
+        return true;
+    }
+
+    private Partner? FindPartnerByInn(string? inn, long? currentPartnerId)
+    {
+        if (string.IsNullOrWhiteSpace(inn))
+        {
+            return null;
+        }
+
+        var partner = _services.DataStore.FindPartnerByCode(inn);
+        if (partner == null)
+        {
+            return null;
+        }
+
+        if (currentPartnerId.HasValue && partner.Id == currentPartnerId.Value)
+        {
+            return null;
+        }
+
+        return partner;
+    }
+
+    private static string? NormalizeIdentifier(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static bool IsDigitsOnly(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return false;
+        }
+
+        foreach (var ch in value)
+        {
+            if (!char.IsDigit(ch))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsSqliteConstraint(SqliteException ex)
+    {
+        return ex.SqliteErrorCode == (int)SqliteErrorCode.Constraint;
     }
 
     private static string FormatQty(double value)
