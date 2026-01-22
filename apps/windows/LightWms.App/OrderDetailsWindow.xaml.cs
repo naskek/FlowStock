@@ -314,7 +314,7 @@ public partial class OrderDetailsWindow : Window
         UpdateDeleteButtonState();
     }
 
-    private void OrderHeaderChanged(object sender, RoutedEventArgs e)
+    private void OrderHeaderChanged(object? sender, RoutedEventArgs e)
     {
         MarkDirty();
     }

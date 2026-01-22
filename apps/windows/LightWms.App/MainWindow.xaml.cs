@@ -1184,13 +1184,13 @@ public partial class MainWindow : Window
 
     private void PartnerCodeBox_OnPaste(object sender, DataObjectPastingEventArgs e)
     {
-        if (!e.DataObject.GetDataPresent(DataFormats.Text))
+        if (!e.DataObject.GetDataPresent(System.Windows.DataFormats.Text))
         {
             e.CancelCommand();
             return;
         }
 
-        var text = e.DataObject.GetData(DataFormats.Text) as string;
+        var text = e.DataObject.GetData(System.Windows.DataFormats.Text) as string;
         if (!IsDigitsOnly(text))
         {
             e.CancelCommand();
@@ -1321,7 +1321,7 @@ public partial class MainWindow : Window
 
     private static bool IsSqliteConstraint(SqliteException ex)
     {
-        return ex.SqliteErrorCode == (int)SqliteErrorCode.Constraint;
+        return ex.SqliteErrorCode == 19;
     }
 
     private static string FormatQty(double value)
