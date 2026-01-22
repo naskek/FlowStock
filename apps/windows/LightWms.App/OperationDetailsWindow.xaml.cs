@@ -17,10 +17,13 @@ public partial class OperationDetailsWindow : Window
     private readonly ObservableCollection<DocLineDisplay> _docLines = new();
     private readonly ObservableCollection<OrderOption> _orders = new();
     private readonly List<OrderOption> _ordersAll = new();
+    private readonly Dictionary<long, double> _orderedQtyByItem = new();
     private readonly long _docId;
     private Doc? _doc;
     private DocLineDisplay? _selectedDocLine;
     private bool _suppressOrderSync;
+    private bool _suppressPartialSync;
+    private bool _isPartialShipment;
 
     public OperationDetailsWindow(AppServices services, long docId)
     {
@@ -187,6 +190,11 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
+        if (doc.Type == DocType.Outbound && !TryValidateOutboundStock(doc.Id))
+        {
+            return;
+        }
+
         var result = _services.Documents.TryCloseDoc(doc.Id, allowNegative: false);
         if (result.Errors.Count > 0)
         {
@@ -332,9 +340,21 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
+        if (HasOrderBinding() && !_isPartialShipment)
+        {
+            return;
+        }
+
         if (_selectedDocLine == null)
         {
             MessageBox.Show("Выберите строку.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var orderedQty = 0.0;
+        if (HasOrderBinding() && !TryGetOrderedQty(_selectedDocLine.ItemId, out orderedQty))
+        {
+            MessageBox.Show("Не удалось найти количество из заказа.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -355,6 +375,20 @@ public partial class OperationDetailsWindow : Window
         if (qtyDialog.ShowDialog() != true)
         {
             return;
+        }
+
+        if (HasOrderBinding() && _isPartialShipment)
+        {
+            var newQty = qtyDialog.QtyBase;
+            if (newQty < 1 || newQty > orderedQty)
+            {
+                MessageBox.Show(
+                    $"Количество должно быть от 1 до {FormatQty(orderedQty)}.",
+                    "Операция",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
         }
 
         try
@@ -392,11 +426,17 @@ public partial class OperationDetailsWindow : Window
 
             if (orderOption != null)
             {
-                _services.Documents.ApplyOrderToDoc(_doc.Id, orderOption.Id);
+                if (!_isPartialShipment || _doc.OrderId != orderOption.Id)
+                {
+                    _services.Documents.ApplyOrderToDoc(_doc.Id, orderOption.Id);
+                    LoadOrderQuantities(orderOption.Id);
+                    ResetPartialMode();
+                }
             }
             else
             {
                 _services.Documents.ClearDocOrder(_doc.Id, partnerId);
+                ResetPartialMode();
             }
             LoadDoc();
         }
@@ -419,6 +459,7 @@ public partial class OperationDetailsWindow : Window
         DocHeaderPanel.IsEnabled = isDraft;
 
         ConfigureHeaderFields(_doc, isDraft);
+        UpdatePartialUi();
         ApplyPartnerFilter();
         DocPartnerCombo.SelectedItem = _partners.FirstOrDefault(p => p.Id == _doc.PartnerId);
         SelectOrderFromDoc(_doc);
@@ -491,6 +532,7 @@ public partial class OperationDetailsWindow : Window
         DocPartnerCombo.SelectedItem = partner;
         _suppressOrderSync = false;
         UpdatePartnerLock();
+        ResetPartialMode();
         TryApplyOrderSelection(selected);
         UpdateLineButtons();
     }
@@ -506,6 +548,7 @@ public partial class OperationDetailsWindow : Window
         {
             DocOrderCombo.SelectedItem = null;
             ClearDocOrderBinding();
+            ResetPartialMode();
             UpdatePartnerLock();
             UpdateLineButtons();
         }
@@ -518,7 +561,30 @@ public partial class OperationDetailsWindow : Window
         DocOrderCombo.Text = string.Empty;
         _suppressOrderSync = false;
         ClearDocOrderBinding();
+        ResetPartialMode();
         UpdatePartnerLock();
+        UpdateLineButtons();
+    }
+
+    private void DocPartialCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressPartialSync)
+        {
+            return;
+        }
+
+        if (!HasOrderBinding())
+        {
+            ResetPartialMode();
+            return;
+        }
+
+        _isPartialShipment = DocPartialCheck.IsChecked == true;
+        if (!_isPartialShipment && _doc?.OrderId.HasValue == true)
+        {
+            TryApplyOrderSelection(new OrderOption(_doc.OrderId.Value, _doc.OrderRef ?? string.Empty, _doc.PartnerId ?? 0, string.Empty));
+        }
+
         UpdateLineButtons();
     }
 
@@ -574,6 +640,7 @@ public partial class OperationDetailsWindow : Window
         DocPartnerLabel.Text = partnerLabel;
         DocFromLabel.Text = fromLabel;
         DocToLabel.Text = toLabel;
+        DocPartialCheck.Visibility = showOrder ? Visibility.Visible : Visibility.Collapsed;
 
         if (!showFrom)
         {
@@ -609,9 +676,11 @@ public partial class OperationDetailsWindow : Window
     {
         var isDraft = _doc?.Status == DocStatus.Draft;
         var hasOrder = HasOrderBinding();
+        var allowPartialEdit = hasOrder && _isPartialShipment;
         AddItemButton.IsEnabled = isDraft && !hasOrder;
-        EditLineButton.IsEnabled = isDraft && _selectedDocLine != null && !hasOrder;
+        EditLineButton.IsEnabled = isDraft && _selectedDocLine != null && (!hasOrder || allowPartialEdit);
         DeleteLineButton.IsEnabled = isDraft && _selectedDocLine != null && !hasOrder;
+        DocPartialCheck.IsEnabled = isDraft && hasOrder;
     }
 
     private bool HasOrderBinding()
@@ -629,6 +698,7 @@ public partial class OperationDetailsWindow : Window
         try
         {
             _services.Documents.ApplyOrderToDoc(_doc.Id, selected.Id);
+            LoadOrderQuantities(selected.Id);
             LoadDoc();
         }
         catch (Exception ex)
@@ -648,6 +718,7 @@ public partial class OperationDetailsWindow : Window
         try
         {
             _services.Documents.ClearDocOrder(_doc.Id, partnerId);
+            _orderedQtyByItem.Clear();
             LoadDoc();
         }
         catch (Exception ex)
@@ -675,6 +746,98 @@ public partial class OperationDetailsWindow : Window
 
             _partners.Add(partner);
         }
+    }
+
+    private void LoadOrderQuantities(long orderId)
+    {
+        _orderedQtyByItem.Clear();
+        foreach (var line in _services.Orders.GetOrderLineViews(orderId))
+        {
+            if (line.QtyOrdered <= 0)
+            {
+                continue;
+            }
+
+            if (_orderedQtyByItem.TryGetValue(line.ItemId, out var current))
+            {
+                _orderedQtyByItem[line.ItemId] = current + line.QtyOrdered;
+            }
+            else
+            {
+                _orderedQtyByItem[line.ItemId] = line.QtyOrdered;
+            }
+        }
+    }
+
+    private void UpdatePartialUi()
+    {
+        if (_doc?.OrderId.HasValue == true)
+        {
+            LoadOrderQuantities(_doc.OrderId.Value);
+        }
+        else
+        {
+            _orderedQtyByItem.Clear();
+            _isPartialShipment = false;
+        }
+
+        _suppressPartialSync = true;
+        DocPartialCheck.IsChecked = _isPartialShipment;
+        _suppressPartialSync = false;
+    }
+
+    private void ResetPartialMode()
+    {
+        _isPartialShipment = false;
+        _suppressPartialSync = true;
+        DocPartialCheck.IsChecked = false;
+        _suppressPartialSync = false;
+    }
+
+    private bool TryGetOrderedQty(long itemId, out double orderedQty)
+    {
+        return _orderedQtyByItem.TryGetValue(itemId, out orderedQty);
+    }
+
+    private bool TryValidateOutboundStock(long docId)
+    {
+        var lines = _services.Documents.GetDocLines(docId);
+        var requiredByItem = lines
+            .Where(line => line.Qty > 0)
+            .GroupBy(line => line.ItemId)
+            .ToDictionary(group => group.Key, group => group.Sum(line => line.Qty));
+        if (requiredByItem.Count == 0)
+        {
+            return true;
+        }
+
+        var availableByItem = _services.Orders.GetItemAvailability();
+        var namesByItem = lines
+            .GroupBy(line => line.ItemId)
+            .ToDictionary(group => group.Key, group => group.First().ItemName);
+        var shortages = new List<string>();
+        foreach (var entry in requiredByItem)
+        {
+            var available = availableByItem.TryGetValue(entry.Key, out var qty) ? qty : 0;
+            available = Math.Max(0, available);
+            if (available + 0.0001 < entry.Value)
+            {
+                var name = namesByItem.TryGetValue(entry.Key, out var itemName) ? itemName : $"ID {entry.Key}";
+                shortages.Add($"- {name}: нужно {FormatQty(entry.Value)}, доступно {FormatQty(available)}");
+            }
+        }
+
+        if (shortages.Count == 0)
+        {
+            return true;
+        }
+
+        MessageBox.Show(
+            "Недостаточно остатков для проведения отгрузки:\n" + string.Join("\n", shortages),
+            "Операция",
+            MessageBoxButton.OK,
+            MessageBoxImage.Warning);
+        return false;
     }
 
     private string FormatDocLineQty(DocLineView line)

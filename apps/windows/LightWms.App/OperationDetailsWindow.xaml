@@ -32,6 +32,11 @@
                         <Button x:Name="DocOrderClearButton" Content="Сброс" Width="60" Margin="8,0,0,0"
                                 Click="DocOrderClear_Click" />
                     </StackPanel>
+                    <CheckBox x:Name="DocPartialCheck"
+                              Content="Частичная отгрузка"
+                              Margin="0,6,0,0"
+                              Checked="DocPartialCheck_Changed"
+                              Unchecked="DocPartialCheck_Changed" />
                 </StackPanel>
                 <StackPanel x:Name="DocFromPanel" Margin="0,0,12,0">
                     <TextBlock x:Name="DocFromLabel" Text="Откуда" />
