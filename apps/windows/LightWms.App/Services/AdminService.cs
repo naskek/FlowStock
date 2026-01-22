@@ -6,6 +6,20 @@ namespace LightWms.App;
 
 public sealed class AdminService
 {
+    private static readonly HashSet<string> TrackedTables = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "docs",
+        "doc_lines",
+        "ledger",
+        "orders",
+        "order_lines",
+        "items",
+        "locations",
+        "partners",
+        "imported_events",
+        "import_errors"
+    };
+
     private readonly string _dbPath;
     private readonly string _backupsDir;
     private readonly FileLogger _adminLogger;
@@ -34,6 +48,29 @@ public sealed class AdminService
         }
 
         return result;
+    }
+
+    public void DeleteTables(IReadOnlyList<string> tables)
+    {
+        using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        connection.Open();
+        using var transaction = connection.BeginTransaction();
+
+        foreach (var table in tables)
+        {
+            if (!TrackedTables.Contains(table))
+            {
+                throw new InvalidOperationException($"Недопустимая таблица: {table}.");
+            }
+
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = $"DELETE FROM {table};";
+            command.ExecuteNonQuery();
+        }
+
+        transaction.Commit();
+        _adminLogger.Info($"selective_reset tables={string.Join(",", tables)}");
     }
 
     public void ResetMovements()
@@ -81,19 +118,7 @@ DELETE FROM import_errors;
 
     private static IEnumerable<string> GetTrackedTables()
     {
-        return new[]
-        {
-            "docs",
-            "doc_lines",
-            "ledger",
-            "orders",
-            "order_lines",
-            "items",
-            "locations",
-            "partners",
-            "imported_events",
-            "import_errors"
-        };
+        return TrackedTables;
     }
 
     private static void MoveIfExists(string sourcePath, string targetPath)
