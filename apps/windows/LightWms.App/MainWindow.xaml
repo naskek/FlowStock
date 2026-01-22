@@ -57,7 +57,7 @@
                     <DataGrid x:Name="StockGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
-                            <DataGridTextColumn Header="Штрихкод" Binding="{Binding Barcode}" Width="160" />
+                            <DataGridTextColumn Header="SKU / штрихкод" Binding="{Binding Barcode}" Width="160" />
                             <DataGridTextColumn Header="Место хранения" Binding="{Binding LocationCode}" Width="140" />
                             <DataGridTextColumn Header="Упаковки" Binding="{Binding PackagingDisplay}" Width="220" />
                             <DataGridTextColumn Header="В базе" Binding="{Binding BaseDisplay}" Width="140" />
@@ -160,7 +160,7 @@
                             <StackPanel Margin="8">
                                 <TextBlock Text="Наименование" />
                                 <TextBox x:Name="ItemNameBox" Margin="0,2,0,8" TabIndex="1" />
-                                <TextBlock Text="Штрихкод" />
+                                <TextBlock Text="SKU / штрихкод" />
                                 <TextBox x:Name="ItemBarcodeBox" Margin="0,2,0,8" TabIndex="2" />
                                 <TextBlock Text="GTIN" />
                                 <TextBox x:Name="ItemGtinBox" Margin="0,2,0,8" TabIndex="3" />
@@ -180,14 +180,12 @@
                             <Button x:Name="ItemSaveButton" Content="Сохранить" Click="UpdateItem_Click" Margin="8,0,0,0" TabIndex="8" />
                             <Button x:Name="ItemDeleteButton" Content="Удалить" Click="DeleteItem_Click" Margin="8,0,0,0" TabIndex="9" />
                         </StackPanel>
-                        <TextBlock Margin="0,8,0,0" Foreground="Gray"
-                                   Text="Подсказка: JSONL использует Штрихкод/GTIN." />
                     </StackPanel>
                     <DataGrid x:Name="ItemsGrid" Grid.Column="1" AutoGenerateColumns="False" IsReadOnly="True"
                               SelectionChanged="ItemsGrid_SelectionChanged" TabIndex="20">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="*" />
-                            <DataGridTextColumn Header="Штрихкод" Binding="{Binding Barcode}" Width="180" />
+                            <DataGridTextColumn Header="SKU / штрихкод" Binding="{Binding Barcode}" Width="180" />
                             <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="140" />
                             <DataGridTextColumn Header="Базовая единица" Binding="{Binding BaseUom}" Width="160" />
                         </DataGrid.Columns>
@@ -214,8 +212,6 @@
                             <Button x:Name="LocationSaveButton" Content="Сохранить" Click="UpdateLocation_Click" Margin="8,0,0,0" TabIndex="4" />
                             <Button x:Name="LocationDeleteButton" Content="Удалить" Click="DeleteLocation_Click" Margin="8,0,0,0" TabIndex="5" />
                         </StackPanel>
-                        <TextBlock Margin="0,8,0,0" Foreground="Gray"
-                                   Text="Подсказка: JSONL использует код места хранения." />
                     </StackPanel>
                     <DataGrid x:Name="LocationsGrid" Grid.Column="1" AutoGenerateColumns="False" IsReadOnly="True"
                               SelectionChanged="LocationsGrid_SelectionChanged" TabIndex="20">

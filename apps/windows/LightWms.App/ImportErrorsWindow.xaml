@@ -14,13 +14,13 @@
         <DataGrid x:Name="ErrorsGrid" AutoGenerateColumns="False" IsReadOnly="True" SelectionChanged="ErrorsGrid_SelectionChanged">
             <DataGrid.Columns>
                 <DataGridTextColumn Header="Событие" Binding="{Binding EventId}" Width="200" />
-                <DataGridTextColumn Header="Штрихкод" Binding="{Binding Barcode}" Width="160" />
+                <DataGridTextColumn Header="SKU / штрихкод" Binding="{Binding Barcode}" Width="160" />
                 <DataGridTextColumn Header="Причина" Binding="{Binding Reason}" Width="140" />
                 <DataGridTextColumn Header="Создано" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="160" />
             </DataGrid.Columns>
         </DataGrid>
         <StackPanel Grid.Column="1" Margin="12,0,0,0">
-            <TextBlock Text="Штрихкод" FontWeight="Bold" />
+            <TextBlock Text="SKU / штрихкод" FontWeight="Bold" />
             <TextBlock x:Name="SelectedBarcodeText" Margin="0,0,0,8" />
 
             <TextBlock Text="Привязать к товару" FontWeight="Bold" />

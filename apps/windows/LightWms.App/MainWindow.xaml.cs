@@ -472,16 +472,32 @@ public partial class MainWindow : Window
             return;
         }
 
+        var barcode = NormalizeIdentifier(ItemBarcodeBox.Text);
+        var gtin = NormalizeIdentifier(ItemGtinBox.Text);
+        if (!TryValidateItemIdentifiers(barcode, gtin, null))
+        {
+            return;
+        }
+
         try
         {
             var baseUom = (ItemUomCombo.SelectedItem as Uom)?.Name;
-            _services.Catalog.CreateItem(ItemNameBox.Text, ItemBarcodeBox.Text, ItemGtinBox.Text, baseUom);
+            _services.Catalog.CreateItem(ItemNameBox.Text, barcode, gtin, baseUom);
             LoadItems();
             ClearItemForm();
         }
         catch (ArgumentException ex)
         {
             MessageBox.Show(ex.Message, "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (SqliteException ex) when (IsSqliteConstraint(ex))
+        {
+            if (TryShowItemBarcodeDuplicate(barcode, null))
+            {
+                return;
+            }
+
+            MessageBox.Show("Не удалось сохранить товар. Нарушено ограничение базы данных.", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         catch (Exception ex)
         {
@@ -618,15 +634,31 @@ public partial class MainWindow : Window
             return;
         }
 
+        var barcode = NormalizeIdentifier(ItemBarcodeBox.Text);
+        var gtin = NormalizeIdentifier(ItemGtinBox.Text);
+        if (!TryValidateItemIdentifiers(barcode, gtin, _selectedItem.Id))
+        {
+            return;
+        }
+
         try
         {
             var baseUom = (ItemUomCombo.SelectedItem as Uom)?.Name;
-            _services.Catalog.UpdateItem(_selectedItem.Id, ItemNameBox.Text, ItemBarcodeBox.Text, ItemGtinBox.Text, baseUom);
+            _services.Catalog.UpdateItem(_selectedItem.Id, ItemNameBox.Text, barcode, gtin, baseUom);
             ReloadItemsAndSelect(_selectedItem.Id);
         }
         catch (ArgumentException ex)
         {
             MessageBox.Show(ex.Message, "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (SqliteException ex) when (IsSqliteConstraint(ex))
+        {
+            if (TryShowItemBarcodeDuplicate(barcode, _selectedItem.Id))
+            {
+                return;
+            }
+
+            MessageBox.Show("Не удалось сохранить товар. Нарушено ограничение базы данных.", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         catch (Exception ex)
         {
@@ -1212,6 +1244,60 @@ public partial class MainWindow : Window
         }
 
         return partner;
+    }
+
+    private bool TryValidateItemIdentifiers(string? barcode, string? gtin, long? currentItemId)
+    {
+        var items = _services.Catalog.GetItems(null);
+
+        if (!string.IsNullOrWhiteSpace(barcode))
+        {
+            var duplicate = items.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.Barcode)
+                                                         && string.Equals(item.Barcode, barcode, StringComparison.OrdinalIgnoreCase)
+                                                         && (!currentItemId.HasValue || item.Id != currentItemId.Value));
+            if (duplicate != null)
+            {
+                MessageBox.Show($"Товар с таким SKU / штрихкодом уже существует: {duplicate.Name}. Продолжить нельзя.",
+                    "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return false;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(gtin))
+        {
+            var duplicate = items.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.Gtin)
+                                                         && string.Equals(item.Gtin, gtin, StringComparison.OrdinalIgnoreCase)
+                                                         && (!currentItemId.HasValue || item.Id != currentItemId.Value));
+            if (duplicate != null)
+            {
+                MessageBox.Show($"Товар с таким GTIN уже существует: {duplicate.Name}. Продолжить нельзя.",
+                    "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private bool TryShowItemBarcodeDuplicate(string? barcode, long? currentItemId)
+    {
+        if (string.IsNullOrWhiteSpace(barcode))
+        {
+            return false;
+        }
+
+        var duplicate = _services.Catalog.GetItems(null)
+            .FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.Barcode)
+                                    && string.Equals(item.Barcode, barcode, StringComparison.OrdinalIgnoreCase)
+                                    && (!currentItemId.HasValue || item.Id != currentItemId.Value));
+        if (duplicate == null)
+        {
+            return false;
+        }
+
+        MessageBox.Show($"Товар с таким SKU / штрихкодом уже существует: {duplicate.Name}. Продолжить нельзя.",
+            "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
+        return true;
     }
 
     private static string? NormalizeIdentifier(string? value)
