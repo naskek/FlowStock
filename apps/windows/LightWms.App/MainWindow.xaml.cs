@@ -5,7 +5,6 @@ using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Input;
-using System.Windows.Threading;
 using LightWms.Core.Models;
 using Microsoft.Data.Sqlite;
 using Microsoft.Win32;
@@ -23,6 +22,12 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<Order> _orders = new();
     private readonly ObservableCollection<StockDisplayRow> _stock = new();
     private readonly ObservableCollection<PackagingOption> _itemPackagingOptions = new();
+    private readonly List<PartnerStatusOption> _partnerStatusOptions = new()
+    {
+        new PartnerStatusOption(PartnerStatus.Supplier, "Поставщик"),
+        new PartnerStatusOption(PartnerStatus.Client, "Клиент"),
+        new PartnerStatusOption(PartnerStatus.Both, "Клиент и поставщик")
+    };
     private readonly List<DocTypeFilterOption> _docTypeFilters = new()
     {
         new DocTypeFilterOption(null, "Все"),
@@ -42,10 +47,6 @@ public partial class MainWindow : Window
     private Location? _selectedLocation;
     private Partner? _selectedPartner;
     private bool _suppressPackagingSelection;
-    private readonly DispatcherTimer _tsdTimer;
-    private string? _lastTsdPath;
-    private bool _lastTsdAvailable;
-    private bool _tsdPromptVisible;
     private TsSyncWindow? _tsdWindow;
     private const int TabStatusIndex = 0;
     private const int TabDocsIndex = 1;
@@ -64,6 +65,7 @@ public partial class MainWindow : Window
         ItemUomCombo.ItemsSource = _uoms;
         ItemDisplayUomCombo.ItemsSource = _itemPackagingOptions;
         PartnersGrid.ItemsSource = _partners;
+        PartnerStatusCombo.ItemsSource = _partnerStatusOptions;
         DocsGrid.ItemsSource = _docs;
         OrdersGrid.ItemsSource = _orders;
         StockGrid.ItemsSource = _stock;
@@ -71,14 +73,12 @@ public partial class MainWindow : Window
         DocsTypeFilter.SelectedIndex = 0;
         DocsStatusFilter.ItemsSource = _docStatusFilters;
         DocsStatusFilter.SelectedIndex = 0;
+        SetPartnerStatusSelection(PartnerStatus.Both);
 
         LoadAll();
         ClearItemForm();
         ClearLocationForm();
         ClearPartnerForm();
-        _tsdTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
-        _tsdTimer.Tick += TsdTimer_Tick;
-        _tsdTimer.Start();
     }
 
     private void LoadAll()
@@ -345,6 +345,10 @@ public partial class MainWindow : Window
         if (!wasClosed && refreshed?.Status == DocStatus.Closed)
         {
             LoadStock(StatusSearchBox.Text);
+            if (refreshed.Type == DocType.Outbound)
+            {
+                LoadOrders();
+            }
         }
     }
 
@@ -373,6 +377,36 @@ public partial class MainWindow : Window
         window.Owner = this;
         window.ShowDialog();
         LoadOrders();
+    }
+
+    private void OrdersDelete_Click(object sender, RoutedEventArgs e)
+    {
+        if (OrdersGrid.SelectedItem is not Order order)
+        {
+            MessageBox.Show("Выберите заказ.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var confirm = MessageBox.Show("Удалить выбранный заказ?", "Заказы", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+        if (confirm != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        try
+        {
+            _services.Orders.DeleteOrder(order.Id);
+            LoadOrders();
+            LoadStock(StatusSearchBox.Text);
+        }
+        catch (InvalidOperationException ex)
+        {
+            MessageBox.Show(ex.Message, "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Заказы", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private void OrdersGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
@@ -458,6 +492,10 @@ public partial class MainWindow : Window
 
         LoadDocs();
         LoadStock(StatusSearchBox.Text);
+        if (doc.Type == DocType.Outbound)
+        {
+            LoadOrders();
+        }
     }
 
     private void AddItem_Click(object sender, RoutedEventArgs e)
@@ -581,7 +619,8 @@ public partial class MainWindow : Window
 
         try
         {
-            _services.Catalog.CreatePartner(PartnerNameBox.Text, partnerCode);
+            var partnerId = _services.Catalog.CreatePartner(PartnerNameBox.Text, partnerCode);
+            _services.PartnerStatuses.SetStatus(partnerId, GetSelectedPartnerStatus());
             LoadPartners();
             ClearPartnerForm();
         }
@@ -764,6 +803,7 @@ public partial class MainWindow : Window
 
         PartnerNameBox.Text = _selectedPartner.Name;
         PartnerCodeBox.Text = _selectedPartner.Code ?? string.Empty;
+        SetPartnerStatusSelection(_services.PartnerStatuses.GetStatus(_selectedPartner.Id));
     }
 
     private void UpdatePartner_Click(object sender, RoutedEventArgs e)
@@ -783,6 +823,7 @@ public partial class MainWindow : Window
         try
         {
             _services.Catalog.UpdatePartner(_selectedPartner.Id, PartnerNameBox.Text, partnerCode);
+            _services.PartnerStatuses.SetStatus(_selectedPartner.Id, GetSelectedPartnerStatus());
             LoadPartners();
             ClearPartnerForm();
         }
@@ -822,6 +863,7 @@ public partial class MainWindow : Window
         try
         {
             _services.Catalog.DeletePartner(_selectedPartner.Id);
+            _services.PartnerStatuses.RemoveStatus(_selectedPartner.Id);
             LoadPartners();
             ClearPartnerForm();
         }
@@ -1051,58 +1093,6 @@ public partial class MainWindow : Window
         window.ShowDialog();
     }
 
-    private void TsdTimer_Tick(object? sender, EventArgs e)
-    {
-        var settings = _services.Settings.Load();
-        var path = settings.TsdFolderPath;
-
-        if (!settings.TsdAutoPromptEnabled || string.IsNullOrWhiteSpace(path))
-        {
-            _lastTsdAvailable = false;
-            _lastTsdPath = path;
-            return;
-        }
-
-        path = path.Trim();
-        if (!string.Equals(path, _lastTsdPath, StringComparison.OrdinalIgnoreCase))
-        {
-            _lastTsdPath = path;
-            _lastTsdAvailable = false;
-        }
-
-        var available = Directory.Exists(path);
-        if (available && !_lastTsdAvailable && _tsdWindow == null && !_tsdPromptVisible)
-        {
-            ShowTsdPrompt();
-        }
-
-        _lastTsdAvailable = available;
-    }
-
-    private void ShowTsdPrompt()
-    {
-        _tsdPromptVisible = true;
-        var prompt = new TsdPromptWindow
-        {
-            Owner = this
-        };
-        prompt.ShowDialog();
-        _tsdPromptVisible = false;
-
-        if (prompt.Choice == TsdPromptChoice.Open)
-        {
-            OpenTsdSyncWindow();
-            return;
-        }
-
-        if (prompt.Choice == TsdPromptChoice.Disable)
-        {
-            var settings = _services.Settings.Load();
-            settings.TsdAutoPromptEnabled = false;
-            _services.Settings.Save(settings);
-        }
-    }
-
     private void SelectTab(int index)
     {
         if (index < 0 || index >= MainTabs.Items.Count)
@@ -1172,9 +1162,21 @@ public partial class MainWindow : Window
         _selectedPartner = null;
         PartnerNameBox.Text = string.Empty;
         PartnerCodeBox.Text = string.Empty;
+        SetPartnerStatusSelection(PartnerStatus.Both);
         PartnerSaveButton.IsEnabled = false;
         PartnerDeleteButton.IsEnabled = false;
         PartnersGrid.SelectedItem = null;
+    }
+
+    private PartnerStatus GetSelectedPartnerStatus()
+    {
+        return (PartnerStatusCombo.SelectedItem as PartnerStatusOption)?.Status ?? PartnerStatus.Both;
+    }
+
+    private void SetPartnerStatusSelection(PartnerStatus status)
+    {
+        PartnerStatusCombo.SelectedItem = _partnerStatusOptions.FirstOrDefault(option => option.Status == status)
+                                          ?? _partnerStatusOptions.LastOrDefault();
     }
 
     private void PartnerCodeBox_PreviewTextInput(object sender, TextCompositionEventArgs e)
@@ -1332,6 +1334,8 @@ public partial class MainWindow : Window
     private sealed record DocTypeFilterOption(DocType? Type, string Name);
 
     private sealed record DocStatusFilterOption(DocStatus? Status, string Name);
+
+    private sealed record PartnerStatusOption(PartnerStatus Status, string Name);
 
     private sealed record StockDisplayRow
     {
