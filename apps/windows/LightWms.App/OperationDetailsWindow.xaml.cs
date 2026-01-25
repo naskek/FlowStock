@@ -227,6 +227,23 @@ public partial class OperationDetailsWindow : Window
 
     private void TryCloseCurrentDoc()
     {
+        if (_doc == null)
+        {
+            MessageBox.Show("Операция не выбрана.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (_doc.Status == DocStatus.Closed)
+        {
+            MessageBox.Show("Операция уже закрыта.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!TrySaveHeader())
+        {
+            return;
+        }
+
         var doc = _doc;
         if (doc == null)
         {
@@ -234,18 +251,7 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        if (doc.Status == DocStatus.Closed)
-        {
-            MessageBox.Show("Операция уже закрыта.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        if (_hasUnsavedChanges && !TrySaveHeader())
-        {
-            return;
-        }
-
-        if (IsPartnerRequired() && _doc?.PartnerId == null)
+        if (IsPartnerRequired() && doc.PartnerId == null)
         {
             MessageBox.Show("Выберите контрагента.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
@@ -256,7 +262,21 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        var result = _services.Documents.TryCloseDoc(doc.Id, allowNegative: false);
+        CloseDocResult result;
+        try
+        {
+            result = _services.Documents.TryCloseDoc(doc.Id, allowNegative: false);
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error("Doc close failed", ex);
+            MessageBox.Show(
+                "Не удалось провести операцию. Проверьте доступ к базе данных и повторите.",
+                "Операция",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+            return;
+        }
         if (result.Errors.Count > 0)
         {
             MessageBox.Show(string.Join("\n", result.Errors), "Проверка операции", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -278,7 +298,20 @@ public partial class OperationDetailsWindow : Window
                 return;
             }
 
-            result = _services.Documents.TryCloseDoc(doc.Id, allowNegative: true);
+            try
+            {
+                result = _services.Documents.TryCloseDoc(doc.Id, allowNegative: true);
+            }
+            catch (Exception ex)
+            {
+                _services.AppLogger.Error("Doc close failed (allow negative)", ex);
+                MessageBox.Show(
+                    "Не удалось провести операцию. Проверьте доступ к базе данных и повторите.",
+                    "Операция",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+                return;
+            }
             if (!result.Success)
             {
                 if (result.Errors.Count > 0)
@@ -729,7 +762,7 @@ public partial class OperationDetailsWindow : Window
         var hasId = _doc?.Id > 0;
         var hasPartner = !IsPartnerRequired() || _doc?.PartnerId != null || DocPartnerCombo.SelectedItem != null;
         var hasShortage = _doc?.Type == DocType.Outbound && _hasOutboundShortage;
-        DocCloseButton.IsEnabled = isDraft && hasId && !_hasUnsavedChanges && hasPartner && !hasShortage;
+        DocCloseButton.IsEnabled = isDraft && hasId && hasPartner && !hasShortage;
         DocHeaderSaveButton.IsEnabled = isDraft;
     }
 
