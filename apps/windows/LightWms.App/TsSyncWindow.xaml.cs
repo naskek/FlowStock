@@ -159,6 +159,15 @@ public partial class TsSyncWindow : Window
         MessageBox.Show("Отчет сохранен.", "Синхронизация с ТСД", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
+    private void OpenImportErrors_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new ImportErrorsWindow(_services, _onImportCompleted)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+    }
+
     private void ImportFiles(IEnumerable<string> files)
     {
         var fileList = files.Where(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path))
@@ -210,6 +219,20 @@ public partial class TsSyncWindow : Window
         }
 
         _onImportCompleted?.Invoke();
+        var totalErrors = 0;
+        foreach (var log in _importLogs)
+        {
+            totalErrors += log.Errors;
+        }
+        if (totalErrors > 0)
+        {
+            MessageBox.Show($"Импорт завершен с ошибками: {totalErrors}. Откройте \"Ошибки импорта\".",
+                "Синхронизация с ТСД",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
         MessageBox.Show("Импорт завершен.", "Синхронизация с ТСД", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 

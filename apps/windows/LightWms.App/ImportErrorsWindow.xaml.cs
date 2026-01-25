@@ -32,7 +32,7 @@ public partial class ImportErrorsWindow : Window
     private void LoadErrors()
     {
         _errors.Clear();
-        foreach (var error in _services.Import.GetImportErrors("UNKNOWN_BARCODE"))
+        foreach (var error in _services.Import.GetImportErrors(null))
         {
             _errors.Add(error);
         }
