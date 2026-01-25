@@ -137,6 +137,17 @@ public sealed class ImportService
             var item = store.FindItemByBarcode(importEvent.Barcode);
             if (item == null)
             {
+                foreach (var variant in GetBarcodeVariants(importEvent.Barcode))
+                {
+                    item = store.FindItemByBarcode(variant);
+                    if (item != null)
+                    {
+                        break;
+                    }
+                }
+            }
+            if (item == null)
+            {
                 if (allowErrorInsert)
                 {
                     store.AddImportError(new ImportError
@@ -442,6 +453,26 @@ public sealed class ImportService
         }
 
         return null;
+    }
+
+    private static IEnumerable<string> GetBarcodeVariants(string? barcode)
+    {
+        if (string.IsNullOrWhiteSpace(barcode))
+        {
+            yield break;
+        }
+
+        var value = barcode.Trim();
+        if (value.Length == 13)
+        {
+            yield return "0" + value;
+            yield break;
+        }
+
+        if (value.Length == 14 && value.StartsWith("0", StringComparison.Ordinal))
+        {
+            yield return value.Substring(1);
+        }
     }
 
     private enum ImportOutcome
