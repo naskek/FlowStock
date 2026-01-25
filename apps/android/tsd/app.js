@@ -3747,6 +3747,14 @@
         var lines = [];
 
         readyDocs.forEach(function (doc) {
+          var header = doc.header || {};
+          var fallbackFrom = normalizeValue(header.from) || null;
+          var fallbackTo = normalizeValue(header.to) || null;
+          var fallbackReason = normalizeValue(header.reason_code) || null;
+          if (doc.op === "INVENTORY") {
+            fallbackTo = normalizeValue(header.location) || null;
+          }
+
           (doc.lines || []).forEach(function (line) {
             var record = {
               event_id: createUuid(),
@@ -3756,12 +3764,12 @@
               doc_ref: doc.doc_ref,
               barcode: line.barcode,
               qty: line.qty,
-              from: line.from || null,
-              to: line.to || null,
-              partner_id: doc.header && doc.header.partner_id ? doc.header.partner_id : null,
-              order_id: doc.header && doc.header.order_id ? doc.header.order_id : null,
-              order_ref: doc.header && doc.header.order_ref ? doc.header.order_ref : null,
-              reason_code: line.reason_code || null,
+              from: line.from || fallbackFrom,
+              to: line.to || fallbackTo,
+              partner_id: header.partner_id ? header.partner_id : null,
+              order_id: header.order_id ? header.order_id : null,
+              order_ref: header.order_ref ? header.order_ref : null,
+              reason_code: line.reason_code || fallbackReason,
             };
             lines.push(JSON.stringify(record));
           });

@@ -132,13 +132,20 @@ public partial class AdminWindow : Window
     private void UpdateSelectionMode()
     {
         var selective = SelectiveResetRadio.IsChecked == true;
+        if (!selective)
+        {
+            if (CountsGrid.SelectionMode != System.Windows.Controls.DataGridSelectionMode.Single)
+            {
+                CountsGrid.SelectedItems.Clear();
+            }
+            else
+            {
+                CountsGrid.SelectedItem = null;
+            }
+        }
         CountsGrid.SelectionMode = selective
             ? System.Windows.Controls.DataGridSelectionMode.Extended
             : System.Windows.Controls.DataGridSelectionMode.Single;
-        if (!selective)
-        {
-            CountsGrid.SelectedItems.Clear();
-        }
     }
 
     private void ExecuteReset_Click(object sender, RoutedEventArgs e)

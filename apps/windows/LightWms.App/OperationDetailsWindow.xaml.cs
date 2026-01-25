@@ -77,6 +77,11 @@ public partial class OperationDetailsWindow : Window
         _ordersAll.Clear();
         foreach (var order in _services.Orders.GetOrders())
         {
+            if (order.Status == OrderStatus.Shipped)
+            {
+                continue;
+            }
+
             _ordersAll.Add(new OrderOption(order.Id, order.OrderRef, order.PartnerId, order.PartnerDisplay));
         }
 

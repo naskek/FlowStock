@@ -39,6 +39,9 @@
                         <TextBox x:Name="StatusSearchBox" Width="240" Margin="0,0,8,0" />
                         <Button Content="Поиск" Click="StatusSearch_Click" Margin="0,0,8,0" />
                         <Button Content="Обновить" Click="StatusRefresh_Click" />
+                        <TextBlock Text="Место хранения" VerticalAlignment="Center" Margin="12,0,6,0" />
+                        <ComboBox x:Name="StockLocationFilter" Width="220" DisplayMemberPath="Name"
+                                  SelectionChanged="StockLocationFilter_SelectionChanged" />
                     </StackPanel>
                     <DataGrid x:Name="StockGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True">
                         <DataGrid.Columns>
@@ -131,6 +134,7 @@
                     </DataGrid>
                     <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,8,0,8">
                         <Button Content="Новый" Click="OrdersNew_Click" />
+                        <Button Content="Удалить" Click="OrdersDelete_Click" Margin="8,0,0,0" />
                         <Button Content="Обновить" Click="OrdersRefresh_Click" Margin="8,0,0,0" />
                     </StackPanel>
                 </Grid>
@@ -223,12 +227,14 @@
                                 <TextBox x:Name="PartnerCodeBox" Margin="0,2,0,0" TabIndex="2"
                                          PreviewTextInput="PartnerCodeBox_PreviewTextInput"
                                          DataObject.Pasting="PartnerCodeBox_OnPaste" />
+                                <TextBlock Text="Статус" Margin="0,8,0,0" />
+                                <ComboBox x:Name="PartnerStatusCombo" Margin="0,2,0,0" TabIndex="3" DisplayMemberPath="Name" />
                             </StackPanel>
                         </GroupBox>
                         <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                            <Button Content="Добавить" Click="AddPartner_Click" TabIndex="3" />
-                            <Button x:Name="PartnerSaveButton" Content="Сохранить" Click="UpdatePartner_Click" Margin="8,0,0,0" TabIndex="4" />
-                            <Button x:Name="PartnerDeleteButton" Content="Удалить" Click="DeletePartner_Click" Margin="8,0,0,0" TabIndex="5" />
+                            <Button Content="Добавить" Click="AddPartner_Click" TabIndex="4" />
+                            <Button x:Name="PartnerSaveButton" Content="Сохранить" Click="UpdatePartner_Click" Margin="8,0,0,0" TabIndex="5" />
+                            <Button x:Name="PartnerDeleteButton" Content="Удалить" Click="DeletePartner_Click" Margin="8,0,0,0" TabIndex="6" />
                         </StackPanel>
                     </StackPanel>
                     <DataGrid x:Name="PartnersGrid" Grid.Column="1" AutoGenerateColumns="False" IsReadOnly="True"

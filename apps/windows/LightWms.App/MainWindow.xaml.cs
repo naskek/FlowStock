@@ -21,6 +21,7 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<Doc> _docs = new();
     private readonly ObservableCollection<Order> _orders = new();
     private readonly ObservableCollection<StockDisplayRow> _stock = new();
+    private readonly ObservableCollection<StockLocationFilterOption> _stockLocationFilters = new();
     private readonly ObservableCollection<PackagingOption> _itemPackagingOptions = new();
     private readonly List<PartnerStatusOption> _partnerStatusOptions = new()
     {
@@ -69,6 +70,7 @@ public partial class MainWindow : Window
         DocsGrid.ItemsSource = _docs;
         OrdersGrid.ItemsSource = _orders;
         StockGrid.ItemsSource = _stock;
+        StockLocationFilter.ItemsSource = _stockLocationFilters;
         DocsTypeFilter.ItemsSource = _docTypeFilters;
         DocsTypeFilter.SelectedIndex = 0;
         DocsStatusFilter.ItemsSource = _docStatusFilters;
@@ -178,6 +180,23 @@ public partial class MainWindow : Window
         {
             _locations.Add(location);
         }
+
+        LoadStockLocationFilters();
+    }
+
+    private void LoadStockLocationFilters()
+    {
+        var selectedCode = GetSelectedStockLocationCode();
+        _stockLocationFilters.Clear();
+        _stockLocationFilters.Add(new StockLocationFilterOption(null, "Все места"));
+        foreach (var location in _services.Catalog.GetLocations())
+        {
+            _stockLocationFilters.Add(new StockLocationFilterOption(location.Code, location.DisplayName));
+        }
+
+        var selected = _stockLocationFilters.FirstOrDefault(option => string.Equals(option.Code, selectedCode, StringComparison.OrdinalIgnoreCase))
+                       ?? _stockLocationFilters.FirstOrDefault();
+        StockLocationFilter.SelectedItem = selected;
     }
 
     private void LoadPartners()
@@ -250,8 +269,15 @@ public partial class MainWindow : Window
     private void LoadStock(string? search)
     {
         _stock.Clear();
+        var locationCode = GetSelectedStockLocationCode();
         foreach (var row in _services.Documents.GetStock(search))
         {
+            if (!string.IsNullOrWhiteSpace(locationCode)
+                && !string.Equals(row.LocationCode, locationCode, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             var packaging = _services.Packagings.FormatAsPackaging(row.ItemId, row.Qty);
             var baseDisplay = $"{FormatQty(row.Qty)} {row.BaseUom}";
             _stock.Add(new StockDisplayRow
@@ -269,7 +295,7 @@ public partial class MainWindow : Window
 
     private void UpdateStockEmptyState(string? search)
     {
-        if (string.IsNullOrWhiteSpace(search) && _stock.Count == 0)
+        if (string.IsNullOrWhiteSpace(search) && _stock.Count == 0 && string.IsNullOrWhiteSpace(GetSelectedStockLocationCode()))
         {
             StockEmptyText.Visibility = Visibility.Visible;
             return;
@@ -286,6 +312,16 @@ public partial class MainWindow : Window
     private void StatusRefresh_Click(object sender, RoutedEventArgs e)
     {
         LoadStock(StatusSearchBox.Text);
+    }
+
+    private void StockLocationFilter_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        LoadStock(StatusSearchBox.Text);
+    }
+
+    private string? GetSelectedStockLocationCode()
+    {
+        return (StockLocationFilter.SelectedItem as StockLocationFilterOption)?.Code;
     }
 
     private void DocsRefresh_Click(object sender, RoutedEventArgs e)
@@ -1345,6 +1381,8 @@ public partial class MainWindow : Window
         public string PackagingDisplay { get; init; } = string.Empty;
         public string BaseDisplay { get; init; } = string.Empty;
     }
+
+    private sealed record StockLocationFilterOption(string? Code, string Name);
 
     private sealed record PackagingOption(long? PackagingId, string Name);
 }

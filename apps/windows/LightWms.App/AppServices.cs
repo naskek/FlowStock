@@ -17,6 +17,7 @@ public sealed class AppServices
     public BackupService Backups { get; }
     public AdminAuthService AdminAuth { get; }
     public AdminService Admin { get; }
+    public PartnerStatusService PartnerStatuses { get; }
     public FileLogger AppLogger { get; }
     public FileLogger AdminLogger { get; }
     public string DatabasePath { get; }
@@ -36,6 +37,7 @@ public sealed class AppServices
         string logsDir,
         string settingsPath,
         string adminPath,
+        string partnerStatusPath,
         FileLogger appLogger,
         FileLogger adminLogger)
     {
@@ -49,6 +51,7 @@ public sealed class AppServices
         Backups = new BackupService(databasePath, backupsDir, appLogger);
         AdminAuth = new AdminAuthService(adminPath, adminLogger);
         Admin = new AdminService(databasePath, backupsDir, dataStore, adminLogger);
+        PartnerStatuses = new PartnerStatusService(partnerStatusPath);
         DatabasePath = databasePath;
         BaseDir = baseDir;
         BackupsDir = backupsDir;
@@ -68,6 +71,7 @@ public sealed class AppServices
         var logsDir = AppPaths.LogsDir;
         var settingsPath = AppPaths.SettingsPath;
         var adminPath = AppPaths.AdminPath;
+        var partnerStatusPath = AppPaths.PartnerStatusPath;
         var dbPath = AppPaths.DatabasePath;
 
         Directory.CreateDirectory(baseDir);
@@ -89,6 +93,7 @@ public sealed class AppServices
             logsDir,
             settingsPath,
             adminPath,
+            partnerStatusPath,
             appLogger,
             adminLogger);
     }
