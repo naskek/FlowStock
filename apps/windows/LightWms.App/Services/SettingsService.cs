@@ -66,6 +66,7 @@ public sealed class BackupSettings
     public int KeepLastNBackups { get; set; } = 30;
     public string? TsdFolderPath { get; set; }
     public bool TsdAutoPromptEnabled { get; set; } = true;
+    public int HuNextSequence { get; set; } = 1;
 
     public static BackupSettings Default()
     {
@@ -87,6 +88,11 @@ public sealed class BackupSettings
         if (string.IsNullOrWhiteSpace(TsdFolderPath))
         {
             TsdFolderPath = null;
+        }
+
+        if (HuNextSequence < 1)
+        {
+            HuNextSequence = 1;
         }
 
         return this;
