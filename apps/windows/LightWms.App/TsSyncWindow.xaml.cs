@@ -250,6 +250,11 @@ public partial class TsSyncWindow : Window
             try
             {
                 var result = _services.Import.ImportJsonl(file);
+                var huSyncOk = _services.HuRegistry.TrySyncFromLedger(_services.DataStore, out _, out var huSyncError);
+                if (!huSyncOk)
+                {
+                    _services.AppLogger.Warn($"HU registry sync failed file={file} error={huSyncError}");
+                }
                 var deviceInfo = BuildDeviceInfo(result.DeviceIds);
                 _importLogs.Add(new ImportFileLog
                 {
@@ -264,10 +269,10 @@ public partial class TsSyncWindow : Window
                     Imported = result.Imported,
                     Duplicates = result.Duplicates,
                     Errors = result.Errors,
-                    HuRegistryErrors = result.HuRegistryErrors
+                    HuRegistryErrors = result.HuRegistryErrors + (huSyncOk ? 0 : 1)
                 });
 
-                _services.AppLogger.Info($"TSD import file={file} imported={result.Imported} duplicates={result.Duplicates} errors={result.Errors} docs={result.DocumentsCreated} hu_errors={result.HuRegistryErrors}");
+                _services.AppLogger.Info($"TSD import file={file} imported={result.Imported} duplicates={result.Duplicates} errors={result.Errors} docs={result.DocumentsCreated} hu_errors={result.HuRegistryErrors} hu_sync={(huSyncOk ? "ok" : "failed")}");
             }
             catch (Exception ex)
             {
@@ -489,7 +494,8 @@ public partial class TsSyncWindow : Window
             {
                 ItemId = row.ItemId,
                 LocationId = locationId,
-                Qty = row.Qty
+                Qty = row.Qty,
+                Hu = string.IsNullOrWhiteSpace(row.Hu) ? null : row.Hu
             });
         }
 
@@ -730,6 +736,10 @@ public partial class TsSyncWindow : Window
 
         [JsonPropertyName("qty")]
         public double Qty { get; init; }
+
+        [JsonPropertyName("hu")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? Hu { get; init; }
     }
 
     private sealed class TsdOrders

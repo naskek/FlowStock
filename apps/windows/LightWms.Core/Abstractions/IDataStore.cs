@@ -77,6 +77,11 @@ public interface IDataStore
     void AddLedgerEntry(LedgerEntry entry);
     IReadOnlyList<StockRow> GetStock(string? search);
     double GetLedgerBalance(long itemId, long locationId);
+    IReadOnlyList<string?> GetHuCodesByLocation(long locationId);
+    IReadOnlyList<string> GetAllHuCodes();
+    IReadOnlyList<Item> GetItemsByLocationAndHu(long locationId, string? huCode);
+    double GetAvailableQty(long itemId, long locationId, string? huCode);
+    IReadOnlyDictionary<string, double> GetLedgerTotalsByHu();
 
     bool IsEventImported(string eventId);
     void AddImportedEvent(ImportedEvent ev);

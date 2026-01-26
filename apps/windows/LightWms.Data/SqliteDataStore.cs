@@ -1263,6 +1263,146 @@ VALUES(@ts, @doc_id, @item_id, @location_id, @qty_delta, @hu);
         });
     }
 
+    public IReadOnlyList<string?> GetHuCodesByLocation(long locationId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT hu
+FROM ledger
+WHERE location_id = @location_id
+GROUP BY hu
+HAVING COALESCE(SUM(qty_delta), 0) > 0
+ORDER BY hu;
+");
+            command.Parameters.AddWithValue("@location_id", locationId);
+            using var reader = command.ExecuteReader();
+            var list = new List<string?>();
+            while (reader.Read())
+            {
+                list.Add(reader.IsDBNull(0) ? null : reader.GetString(0));
+            }
+
+            return list;
+        });
+    }
+
+    public IReadOnlyList<string> GetAllHuCodes()
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT hu
+FROM ledger
+WHERE hu IS NOT NULL
+GROUP BY hu
+ORDER BY hu;
+");
+            using var reader = command.ExecuteReader();
+            var list = new List<string>();
+            while (reader.Read())
+            {
+                if (!reader.IsDBNull(0))
+                {
+                    list.Add(reader.GetString(0));
+                }
+            }
+
+            return list;
+        });
+    }
+
+    public IReadOnlyList<Item> GetItemsByLocationAndHu(long locationId, string? huCode)
+    {
+        return WithConnection(connection =>
+        {
+            var sql = @"
+SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id
+FROM ledger l
+INNER JOIN items i ON i.id = l.item_id
+WHERE l.location_id = @location_id";
+            if (string.IsNullOrWhiteSpace(huCode))
+            {
+                sql += " AND l.hu IS NULL";
+            }
+            else
+            {
+                sql += " AND l.hu = @hu";
+            }
+            sql += "\nGROUP BY i.id HAVING COALESCE(SUM(l.qty_delta), 0) > 0 ORDER BY i.name;";
+
+            using var command = CreateCommand(connection, sql);
+            command.Parameters.AddWithValue("@location_id", locationId);
+            if (!string.IsNullOrWhiteSpace(huCode))
+            {
+                command.Parameters.AddWithValue("@hu", huCode);
+            }
+            using var reader = command.ExecuteReader();
+            var items = new List<Item>();
+            while (reader.Read())
+            {
+                items.Add(ReadItem(reader));
+            }
+
+            return items;
+        });
+    }
+
+    public double GetAvailableQty(long itemId, long locationId, string? huCode)
+    {
+        return WithConnection(connection =>
+        {
+            var sql = @"
+SELECT COALESCE(SUM(qty_delta), 0)
+FROM ledger
+WHERE item_id = @item_id AND location_id = @location_id";
+            if (string.IsNullOrWhiteSpace(huCode))
+            {
+                sql += " AND hu IS NULL";
+            }
+            else
+            {
+                sql += " AND hu = @hu";
+            }
+
+            using var command = CreateCommand(connection, sql);
+            command.Parameters.AddWithValue("@item_id", itemId);
+            command.Parameters.AddWithValue("@location_id", locationId);
+            if (!string.IsNullOrWhiteSpace(huCode))
+            {
+                command.Parameters.AddWithValue("@hu", huCode);
+            }
+            var result = command.ExecuteScalar();
+            return result == null || result == DBNull.Value ? 0 : Convert.ToDouble(result, CultureInfo.InvariantCulture);
+        });
+    }
+
+    public IReadOnlyDictionary<string, double> GetLedgerTotalsByHu()
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT hu, COALESCE(SUM(qty_delta), 0)
+FROM ledger
+WHERE hu IS NOT NULL
+GROUP BY hu;
+");
+            using var reader = command.ExecuteReader();
+            var totals = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+            while (reader.Read())
+            {
+                if (reader.IsDBNull(0))
+                {
+                    continue;
+                }
+
+                totals[reader.GetString(0)] = reader.GetDouble(1);
+            }
+
+            return totals;
+        });
+    }
+
     public bool IsEventImported(string eventId)
     {
         return WithConnection(connection =>
