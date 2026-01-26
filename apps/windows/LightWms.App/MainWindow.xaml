@@ -104,6 +104,7 @@
                             <DataGridTextColumn Header="Статус" Binding="{Binding StatusDisplay}" Width="120" />
                         <DataGridTextColumn Header="Контрагент" Binding="{Binding PartnerDisplay}" Width="220" />
                             <DataGridTextColumn Header="Заказ" Binding="{Binding OrderRef}" Width="160" />
+                            <DataGridTextColumn Header="HU" Binding="{Binding HuDisplay}" Width="160" />
                             <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="160" />
                             <DataGridTextColumn Header="Закрыт" Binding="{Binding ClosedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="160" />
                         </DataGrid.Columns>

@@ -28,6 +28,7 @@ public partial class OperationDetailsWindow : Window
     private bool _hasUnsavedChanges;
     private bool _hasOutboundShortage;
     private int _outboundShortageCount;
+    private string? _lastValidHu;
 
     public OperationDetailsWindow(AppServices services, long docId)
     {
@@ -522,6 +523,7 @@ public partial class OperationDetailsWindow : Window
         ApplyPartnerFilter();
         DocPartnerCombo.SelectedItem = _partners.FirstOrDefault(p => p.Id == _doc.PartnerId);
         SelectOrderFromDoc(_doc);
+        SetHuFromDoc(_doc);
         _suppressDirtyTracking = false;
         UpdateLineButtons();
         UpdatePartnerLock();
@@ -573,6 +575,26 @@ public partial class OperationDetailsWindow : Window
         {
             MarkHeaderDirty();
         }
+    }
+
+    private void DocHuBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    {
+        if (_suppressDirtyTracking || _doc?.Status != DocStatus.Draft)
+        {
+            return;
+        }
+
+        MarkHeaderDirty();
+    }
+
+    private void DocHuBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (_doc?.Status != DocStatus.Draft)
+        {
+            return;
+        }
+
+        TryNormalizeHu(showMessage: true);
     }
 
     private void DocOrderCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
@@ -672,6 +694,7 @@ public partial class OperationDetailsWindow : Window
         var showOrder = false;
         var showFrom = false;
         var showTo = false;
+        var showHu = true;
         var partnerLabel = "Контрагент";
         var fromLabel = "Откуда";
         var toLabel = "Куда";
@@ -709,11 +732,13 @@ public partial class OperationDetailsWindow : Window
         DocOrderPanel.Visibility = showOrder ? Visibility.Visible : Visibility.Collapsed;
         DocFromPanel.Visibility = showFrom ? Visibility.Visible : Visibility.Collapsed;
         DocToPanel.Visibility = showTo ? Visibility.Visible : Visibility.Collapsed;
+        DocHuPanel.Visibility = showHu ? Visibility.Visible : Visibility.Collapsed;
 
         DocPartnerLabel.Text = partnerLabel;
         DocFromLabel.Text = fromLabel;
         DocToLabel.Text = toLabel;
         DocPartialCheck.Visibility = showOrder ? Visibility.Visible : Visibility.Collapsed;
+        DocHuBox.IsEnabled = isDraft;
 
         if (!showFrom)
         {
@@ -725,7 +750,7 @@ public partial class OperationDetailsWindow : Window
             DocToCombo.SelectedItem = null;
         }
 
-        DocHeaderSaveButton.Visibility = showPartner || showOrder
+        DocHeaderSaveButton.Visibility = showPartner || showOrder || showHu
             ? Visibility.Visible
             : Visibility.Collapsed;
         DocHeaderSaveButton.IsEnabled = isDraft;
@@ -846,7 +871,13 @@ public partial class OperationDetailsWindow : Window
             return false;
         }
 
+        if (!TryNormalizeHu(showMessage: true))
+        {
+            return false;
+        }
+
         var partnerId = (DocPartnerCombo.SelectedItem as Partner)?.Id;
+        var huCode = NormalizeHuCode(DocHuBox.Text);
         try
         {
             if (!TryResolveOrder(out var orderOption))
@@ -856,6 +887,7 @@ public partial class OperationDetailsWindow : Window
 
             if (orderOption != null)
             {
+                _services.Documents.UpdateDocHeader(_doc.Id, orderOption.PartnerId, orderOption.OrderRef, huCode);
                 if (!_isPartialShipment || _doc.OrderId != orderOption.Id)
                 {
                     var added = _services.Documents.ApplyOrderToDoc(_doc.Id, orderOption.Id);
@@ -870,6 +902,7 @@ public partial class OperationDetailsWindow : Window
             else
             {
                 _services.Documents.ClearDocOrder(_doc.Id, partnerId);
+                _services.Documents.UpdateDocHeader(_doc.Id, partnerId, null, huCode);
                 ResetPartialMode();
             }
 
@@ -1130,6 +1163,63 @@ public partial class OperationDetailsWindow : Window
     private static string FormatQty(double value)
     {
         return value.ToString("0.###", CultureInfo.CurrentCulture);
+    }
+
+    private void SetHuFromDoc(Doc doc)
+    {
+        var normalized = NormalizeHuCode(doc.ShippingRef);
+        _suppressDirtyTracking = true;
+        DocHuBox.Text = normalized ?? string.Empty;
+        _lastValidHu = normalized;
+        _suppressDirtyTracking = false;
+    }
+
+    private bool TryNormalizeHu(bool showMessage)
+    {
+        var current = DocHuBox.Text;
+        var normalized = NormalizeHuCode(current);
+        if (normalized == null)
+        {
+            if (!string.IsNullOrWhiteSpace(current))
+            {
+                if (showMessage)
+                {
+                    MessageBox.Show("Это не HU-код. HU должен начинаться с HU-.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+                _suppressDirtyTracking = true;
+                DocHuBox.Text = _lastValidHu ?? string.Empty;
+                _suppressDirtyTracking = false;
+                return false;
+            }
+
+            _suppressDirtyTracking = true;
+            DocHuBox.Text = string.Empty;
+            _suppressDirtyTracking = false;
+            _lastValidHu = null;
+            return true;
+        }
+
+        _suppressDirtyTracking = true;
+        DocHuBox.Text = normalized;
+        _suppressDirtyTracking = false;
+        _lastValidHu = normalized;
+        return true;
+    }
+
+    private static string? NormalizeHuCode(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim();
+        if (!trimmed.StartsWith("HU-", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return trimmed.ToUpperInvariant();
     }
 
     private bool TryGetLineLocations(out Location? fromLocation, out Location? toLocation)
