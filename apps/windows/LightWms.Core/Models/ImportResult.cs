@@ -7,4 +7,5 @@ public sealed class ImportResult
     public int Errors { get; set; }
     public int DocumentsCreated { get; set; }
     public int LinesImported { get; set; }
+    public int HuRegistryErrors { get; set; }
 }

@@ -959,11 +959,15 @@ public partial class MainWindow : Window
         }
 
         var result = _services.Import.ImportJsonl(path);
-        MessageBox.Show(
-            $"Импорт завершен.\nИмпортировано: {result.Imported}\nДубли: {result.Duplicates}\nОшибки: {result.Errors}",
-            "Импорт",
-            MessageBoxButton.OK,
-            MessageBoxImage.Information);
+        var message = $"Импорт завершен.\nИмпортировано: {result.Imported}\nДубли: {result.Duplicates}\nОшибки: {result.Errors}";
+        var icon = MessageBoxImage.Information;
+        if (result.HuRegistryErrors > 0)
+        {
+            message += $"\nРеестр HU не обновлен для {result.HuRegistryErrors} строк.";
+            icon = MessageBoxImage.Warning;
+        }
+
+        MessageBox.Show(message, "Импорт", MessageBoxButton.OK, icon);
 
         LoadDocs();
     }

@@ -152,7 +152,7 @@ public partial class TsSyncWindow : Window
         builder.AppendLine();
         foreach (var log in _importLogs)
         {
-            builder.AppendLine($"{log.FileName} | Документы: {log.Documents} | Строки: {log.Lines} | Импортировано: {log.Imported} | Дубли: {log.Duplicates} | Ошибки: {log.Errors}");
+            builder.AppendLine($"{log.FileName} | Документы: {log.Documents} | Строки: {log.Lines} | Импортировано: {log.Imported} | Дубли: {log.Duplicates} | Ошибки: {log.Errors} | HU: {log.HuRegistryErrors}");
         }
 
         File.WriteAllText(dialog.FileName, builder.ToString(), Encoding.UTF8);
@@ -198,10 +198,11 @@ public partial class TsSyncWindow : Window
                     Lines = result.LinesImported,
                     Imported = result.Imported,
                     Duplicates = result.Duplicates,
-                    Errors = result.Errors
+                    Errors = result.Errors,
+                    HuRegistryErrors = result.HuRegistryErrors
                 });
 
-                _services.AppLogger.Info($"TSD import file={file} imported={result.Imported} duplicates={result.Duplicates} errors={result.Errors} docs={result.DocumentsCreated}");
+                _services.AppLogger.Info($"TSD import file={file} imported={result.Imported} duplicates={result.Duplicates} errors={result.Errors} docs={result.DocumentsCreated} hu_errors={result.HuRegistryErrors}");
             }
             catch (Exception ex)
             {
@@ -213,16 +214,19 @@ public partial class TsSyncWindow : Window
                     Lines = 0,
                     Imported = 0,
                     Duplicates = 0,
-                    Errors = 1
+                    Errors = 1,
+                    HuRegistryErrors = 0
                 });
             }
         }
 
         _onImportCompleted?.Invoke();
         var totalErrors = 0;
+        var huErrors = 0;
         foreach (var log in _importLogs)
         {
             totalErrors += log.Errors;
+            huErrors += log.HuRegistryErrors;
         }
         if (totalErrors > 0)
         {
@@ -230,6 +234,13 @@ public partial class TsSyncWindow : Window
                 "Синхронизация с ТСД",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
+            return;
+        }
+
+        if (huErrors > 0)
+        {
+            MessageBox.Show($"Импорт завершен, но реестр HU не обновлен для {huErrors} строк.", "Синхронизация с ТСД",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -498,6 +509,7 @@ public partial class TsSyncWindow : Window
         public int Imported { get; init; }
         public int Duplicates { get; init; }
         public int Errors { get; init; }
+        public int HuRegistryErrors { get; init; }
     }
 
     private sealed class TsdExportPayload

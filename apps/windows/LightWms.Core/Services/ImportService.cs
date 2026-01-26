@@ -16,11 +16,13 @@ public sealed class ImportService
     private const string ReasonHuMismatch = "HU_MISMATCH";
 
     private readonly IDataStore _data;
+    private readonly IHuRegistryUpdater? _huRegistry;
     private readonly JsonSerializerOptions _jsonOptions;
 
-    public ImportService(IDataStore data)
+    public ImportService(IDataStore data, IHuRegistryUpdater? huRegistry = null)
     {
         _data = data;
+        _huRegistry = huRegistry;
         _jsonOptions = new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = true
@@ -51,7 +53,7 @@ public sealed class ImportService
                 continue;
             }
 
-            var outcome = ProcessEvent(importEvent!, line, filePath, allowErrorInsert: true, out var docCreated);
+            var outcome = ProcessEvent(importEvent!, line, filePath, allowErrorInsert: true, out var docCreated, out var huRegistryError);
             switch (outcome)
             {
                 case ImportOutcome.Imported:
@@ -68,6 +70,11 @@ public sealed class ImportService
                 case ImportOutcome.Error:
                     result.Errors++;
                     break;
+            }
+
+            if (huRegistryError)
+            {
+                result.HuRegistryErrors++;
             }
         }
 
@@ -112,7 +119,7 @@ public sealed class ImportService
             return false;
         }
 
-        var outcome = ProcessEvent(importEvent, error.RawJson, "reapply", allowErrorInsert: false, out _);
+        var outcome = ProcessEvent(importEvent, error.RawJson, "reapply", allowErrorInsert: false, out _, out _);
         if (outcome == ImportOutcome.Imported || outcome == ImportOutcome.Duplicate)
         {
             _data.DeleteImportError(errorId);
@@ -122,10 +129,17 @@ public sealed class ImportService
         return false;
     }
 
-    private ImportOutcome ProcessEvent(ImportEvent importEvent, string rawJson, string sourceFile, bool allowErrorInsert, out bool docCreated)
+    private ImportOutcome ProcessEvent(ImportEvent importEvent, string rawJson, string sourceFile, bool allowErrorInsert, out bool docCreated, out bool huRegistryError)
     {
         var outcome = ImportOutcome.Error;
         var created = false;
+        var shouldUpdateHuRegistry = false;
+        var itemResolved = false;
+        Item? itemForRegistry = null;
+        Doc? docForRegistry = null;
+        Location? fromForRegistry = null;
+        Location? toForRegistry = null;
+        var huCode = NormalizeHuCode(importEvent.HuCode);
 
         _data.ExecuteInTransaction(store =>
         {
@@ -160,9 +174,23 @@ public sealed class ImportService
                     });
                 }
 
+                shouldUpdateHuRegistry = !string.IsNullOrWhiteSpace(huCode);
+                if (shouldUpdateHuRegistry)
+                {
+                    var (fromCandidate, toCandidate, locationOk) = ResolveLocations(store, importEvent);
+                    if (locationOk)
+                    {
+                        fromForRegistry = fromCandidate;
+                        toForRegistry = toCandidate;
+                    }
+                }
+
                 outcome = ImportOutcome.Error;
                 return;
             }
+
+            itemResolved = true;
+            itemForRegistry = item;
 
             var (fromLocation, toLocation, locationValid) = ResolveLocations(store, importEvent);
             if (!locationValid)
@@ -182,7 +210,6 @@ public sealed class ImportService
                 return;
             }
 
-            var huCode = NormalizeHuCode(importEvent.HuCode);
             var docRef = string.IsNullOrWhiteSpace(importEvent.DocRef)
                 ? DocRefGenerator.Generate(store, importEvent.Type, importEvent.Timestamp.Date)
                 : importEvent.DocRef;
@@ -250,10 +277,23 @@ public sealed class ImportService
                 DeviceId = importEvent.DeviceId
             });
 
+            shouldUpdateHuRegistry = !string.IsNullOrWhiteSpace(huCode);
+            docForRegistry = doc;
+            fromForRegistry = fromLocation;
+            toForRegistry = toLocation;
+
             outcome = ImportOutcome.Imported;
         });
 
         docCreated = created;
+        huRegistryError = false;
+        if (shouldUpdateHuRegistry && _huRegistry != null)
+        {
+            if (!_huRegistry.TryApplyImportEvent(importEvent, docForRegistry, itemForRegistry, fromForRegistry, toForRegistry, itemResolved, out _))
+            {
+                huRegistryError = true;
+            }
+        }
         return outcome;
     }
 
@@ -414,7 +454,7 @@ public sealed class ImportService
             PartnerCode = partnerCode,
             OrderRef = dto.OrderRef?.Trim(),
             ReasonCode = dto.ReasonCode?.Trim(),
-            HuCode = NormalizeHuCode(dto.HuCode)
+            HuCode = NormalizeHuCode(dto.HuCode ?? dto.HandlingUnit)
         };
 
         return true;
@@ -587,5 +627,8 @@ public sealed class ImportService
 
         [JsonPropertyName("hu_code")]
         public string? HuCode { get; set; }
+
+        [JsonPropertyName("handling_unit")]
+        public string? HandlingUnit { get; set; }
     }
 }
