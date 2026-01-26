@@ -47,13 +47,20 @@
                     <TextBlock x:Name="DocToLabel" Text="Куда" />
                     <ComboBox x:Name="DocToCombo" Width="220" Margin="0,4,0,0" DisplayMemberPath="DisplayName" />
                 </StackPanel>
+                <StackPanel x:Name="DocHuFromPanel" Margin="0,0,12,0">
+                    <TextBlock Text="HU (откуда)" />
+                    <ComboBox x:Name="DocHuFromCombo"
+                              Width="220"
+                              Margin="0,4,0,0"
+                              DisplayMemberPath="DisplayName" />
+                </StackPanel>
                 <StackPanel x:Name="DocHuPanel" Margin="0,0,12,0">
-                    <TextBlock Text="HU" />
-                    <TextBox x:Name="DocHuBox"
-                             Width="220"
-                             Margin="0,4,0,0"
-                             TextChanged="DocHuBox_TextChanged"
-                             LostFocus="DocHuBox_LostFocus" />
+                    <TextBlock x:Name="DocHuLabel" Text="HU" />
+                    <ComboBox x:Name="DocHuCombo"
+                              Width="220"
+                              Margin="0,4,0,0"
+                              DisplayMemberPath="DisplayName"
+                              SelectionChanged="DocHuCombo_SelectionChanged" />
                 </StackPanel>
             </WrapPanel>
         </StackPanel>

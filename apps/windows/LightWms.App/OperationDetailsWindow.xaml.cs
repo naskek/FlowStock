@@ -43,6 +43,7 @@ public partial class OperationDetailsWindow : Window
         DocPartnerCombo.SelectionChanged += DocPartnerCombo_SelectionChanged;
         DocOrderCombo.ItemsSource = _orders;
         DocHuCombo.ItemsSource = _huOptions;
+        DocHuFromCombo.ItemsSource = _huOptions;
 
         LoadCatalog();
         LoadOrders();
@@ -732,12 +733,15 @@ public partial class OperationDetailsWindow : Window
         DocFromPanel.Visibility = showFrom ? Visibility.Visible : Visibility.Collapsed;
         DocToPanel.Visibility = showTo ? Visibility.Visible : Visibility.Collapsed;
         DocHuPanel.Visibility = showHu ? Visibility.Visible : Visibility.Collapsed;
+        DocHuFromPanel.Visibility = doc.Type == DocType.Move ? Visibility.Visible : Visibility.Collapsed;
 
         DocPartnerLabel.Text = partnerLabel;
         DocFromLabel.Text = fromLabel;
         DocToLabel.Text = toLabel;
+        DocHuLabel.Text = doc.Type == DocType.Move ? "HU (куда)" : "HU";
         DocPartialCheck.Visibility = showOrder ? Visibility.Visible : Visibility.Collapsed;
         DocHuCombo.IsEnabled = isDraft;
+        DocHuFromCombo.IsEnabled = isDraft;
 
         if (!showFrom)
         {
@@ -1208,6 +1212,8 @@ public partial class OperationDetailsWindow : Window
             DocHuCombo.SelectedItem = _huOptions.FirstOrDefault(option => option.Code == null)
                                       ?? _huOptions.FirstOrDefault();
         }
+        DocHuFromCombo.SelectedItem = _huOptions.FirstOrDefault(option => option.Code == null)
+                                      ?? _huOptions.FirstOrDefault();
         _suppressDirtyTracking = false;
     }
 
@@ -1260,7 +1266,15 @@ public partial class OperationDetailsWindow : Window
             toLocation = null;
         }
 
-        ApplyLineHu(_doc.Type, (DocHuCombo.SelectedItem as HuOption)?.Code, ref fromHu, ref toHu);
+        if (_doc.Type == DocType.Move)
+        {
+            fromHu = (DocHuFromCombo.SelectedItem as HuOption)?.Code;
+            toHu = (DocHuCombo.SelectedItem as HuOption)?.Code;
+        }
+        else
+        {
+            ApplyLineHu(_doc.Type, (DocHuCombo.SelectedItem as HuOption)?.Code, ref fromHu, ref toHu);
+        }
         return ValidateLineLocations(_doc, fromLocation, toLocation, fromHu, toHu);
     }
 
