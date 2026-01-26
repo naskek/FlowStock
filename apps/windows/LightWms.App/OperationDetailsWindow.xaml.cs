@@ -17,6 +17,7 @@ public partial class OperationDetailsWindow : Window
     private readonly ObservableCollection<DocLineDisplay> _docLines = new();
     private readonly ObservableCollection<OrderOption> _orders = new();
     private readonly List<OrderOption> _ordersAll = new();
+    private readonly ObservableCollection<HuOption> _huOptions = new();
     private readonly Dictionary<long, double> _orderedQtyByItem = new();
     private readonly long _docId;
     private Doc? _doc;
@@ -28,7 +29,6 @@ public partial class OperationDetailsWindow : Window
     private bool _hasUnsavedChanges;
     private bool _hasOutboundShortage;
     private int _outboundShortageCount;
-    private string? _lastValidHu;
 
     public OperationDetailsWindow(AppServices services, long docId)
     {
@@ -42,6 +42,7 @@ public partial class OperationDetailsWindow : Window
         DocPartnerCombo.ItemsSource = _partners;
         DocPartnerCombo.SelectionChanged += DocPartnerCombo_SelectionChanged;
         DocOrderCombo.ItemsSource = _orders;
+        DocHuCombo.ItemsSource = _huOptions;
 
         LoadCatalog();
         LoadOrders();
@@ -240,7 +241,7 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        if (!TrySaveHeader())
+        if (_hasUnsavedChanges && !TrySaveHeader())
         {
             return;
         }
@@ -334,6 +335,11 @@ public partial class OperationDetailsWindow : Window
     private void DocAddLine_Click(object sender, RoutedEventArgs e)
     {
         if (!EnsureDraftDocSelected())
+        {
+            return;
+        }
+
+        if (_hasUnsavedChanges && !TrySaveHeader())
         {
             return;
         }
@@ -523,7 +529,8 @@ public partial class OperationDetailsWindow : Window
         ApplyPartnerFilter();
         DocPartnerCombo.SelectedItem = _partners.FirstOrDefault(p => p.Id == _doc.PartnerId);
         SelectOrderFromDoc(_doc);
-        SetHuFromDoc(_doc);
+        LoadHuOptions();
+        SetHuSelection(_doc);
         _suppressDirtyTracking = false;
         UpdateLineButtons();
         UpdatePartnerLock();
@@ -577,7 +584,7 @@ public partial class OperationDetailsWindow : Window
         }
     }
 
-    private void DocHuBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    private void DocHuCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
         if (_suppressDirtyTracking || _doc?.Status != DocStatus.Draft)
         {
@@ -585,16 +592,6 @@ public partial class OperationDetailsWindow : Window
         }
 
         MarkHeaderDirty();
-    }
-
-    private void DocHuBox_LostFocus(object sender, RoutedEventArgs e)
-    {
-        if (_doc?.Status != DocStatus.Draft)
-        {
-            return;
-        }
-
-        TryNormalizeHu(showMessage: true);
     }
 
     private void DocOrderCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
@@ -738,7 +735,7 @@ public partial class OperationDetailsWindow : Window
         DocFromLabel.Text = fromLabel;
         DocToLabel.Text = toLabel;
         DocPartialCheck.Visibility = showOrder ? Visibility.Visible : Visibility.Collapsed;
-        DocHuBox.IsEnabled = isDraft;
+        DocHuCombo.IsEnabled = isDraft;
 
         if (!showFrom)
         {
@@ -788,7 +785,7 @@ public partial class OperationDetailsWindow : Window
         var hasPartner = !IsPartnerRequired() || _doc?.PartnerId != null || DocPartnerCombo.SelectedItem != null;
         var hasShortage = _doc?.Type == DocType.Outbound && _hasOutboundShortage;
         DocCloseButton.IsEnabled = isDraft && hasId && hasPartner && !hasShortage;
-        DocHeaderSaveButton.IsEnabled = isDraft;
+        DocHeaderSaveButton.IsEnabled = isDraft && _hasUnsavedChanges;
     }
 
     private bool IsPartnerRequired()
@@ -871,13 +868,8 @@ public partial class OperationDetailsWindow : Window
             return false;
         }
 
-        if (!TryNormalizeHu(showMessage: true))
-        {
-            return false;
-        }
-
         var partnerId = (DocPartnerCombo.SelectedItem as Partner)?.Id;
-        var huCode = NormalizeHuCode(DocHuBox.Text);
+        var huCode = (DocHuCombo.SelectedItem as HuOption)?.Code;
         try
         {
             if (!TryResolveOrder(out var orderOption))
@@ -1165,45 +1157,56 @@ public partial class OperationDetailsWindow : Window
         return value.ToString("0.###", CultureInfo.CurrentCulture);
     }
 
-    private void SetHuFromDoc(Doc doc)
+    private void LoadHuOptions()
+    {
+        _huOptions.Clear();
+        _huOptions.Add(new HuOption(null, "—"));
+
+        if (!_services.HuRegistry.TryGetItems(out var items, out var error))
+        {
+            MessageBox.Show(error ?? "Не удалось прочитать реестр HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        foreach (var item in items
+                     .Where(entry => string.Equals(entry.State, HuRegistryStates.Issued, StringComparison.OrdinalIgnoreCase))
+                     .OrderBy(entry => entry.Code, StringComparer.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(item.Code))
+            {
+                continue;
+            }
+
+            _huOptions.Add(new HuOption(item.Code, item.Code));
+        }
+
+        if (_doc == null)
+        {
+            return;
+        }
+
+        var current = NormalizeHuCode(_doc.ShippingRef);
+        if (!string.IsNullOrWhiteSpace(current) && _huOptions.All(option => !string.Equals(option.Code, current, StringComparison.OrdinalIgnoreCase)))
+        {
+            _huOptions.Add(new HuOption(current, $"{current} (занят)"));
+        }
+    }
+
+    private void SetHuSelection(Doc doc)
     {
         var normalized = NormalizeHuCode(doc.ShippingRef);
         _suppressDirtyTracking = true;
-        DocHuBox.Text = normalized ?? string.Empty;
-        _lastValidHu = normalized;
-        _suppressDirtyTracking = false;
-    }
-
-    private bool TryNormalizeHu(bool showMessage)
-    {
-        var current = DocHuBox.Text;
-        var normalized = NormalizeHuCode(current);
-        if (normalized == null)
+        if (!string.IsNullOrWhiteSpace(normalized))
         {
-            if (!string.IsNullOrWhiteSpace(current))
-            {
-                if (showMessage)
-                {
-                    MessageBox.Show("Это не HU-код. HU должен начинаться с HU-.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
-                }
-                _suppressDirtyTracking = true;
-                DocHuBox.Text = _lastValidHu ?? string.Empty;
-                _suppressDirtyTracking = false;
-                return false;
-            }
-
-            _suppressDirtyTracking = true;
-            DocHuBox.Text = string.Empty;
-            _suppressDirtyTracking = false;
-            _lastValidHu = null;
-            return true;
+            DocHuCombo.SelectedItem = _huOptions.FirstOrDefault(option =>
+                string.Equals(option.Code, normalized, StringComparison.OrdinalIgnoreCase));
         }
-
-        _suppressDirtyTracking = true;
-        DocHuBox.Text = normalized;
+        else
+        {
+            DocHuCombo.SelectedItem = _huOptions.FirstOrDefault(option => option.Code == null)
+                                      ?? _huOptions.FirstOrDefault();
+        }
         _suppressDirtyTracking = false;
-        _lastValidHu = normalized;
-        return true;
     }
 
     private static string? NormalizeHuCode(string? value)
@@ -1220,6 +1223,18 @@ public partial class OperationDetailsWindow : Window
         }
 
         return trimmed.ToUpperInvariant();
+    }
+
+    private sealed class HuOption
+    {
+        public HuOption(string? code, string displayName)
+        {
+            Code = code;
+            DisplayName = displayName;
+        }
+
+        public string? Code { get; }
+        public string DisplayName { get; }
     }
 
     private bool TryGetLineLocations(out Location? fromLocation, out Location? toLocation)
