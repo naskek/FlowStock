@@ -374,7 +374,7 @@ public partial class OperationDetailsWindow : Window
         var qtyBase = qtyDialog.QtyBase;
         var qtyInput = qtyDialog.QtyInput;
         var uomCode = qtyDialog.UomCode;
-        if (!TryGetLineLocations(out var fromLocation, out var toLocation))
+        if (!TryGetLineLocations(out var fromLocation, out var toLocation, out var fromHu, out var toHu))
         {
             return;
         }
@@ -384,7 +384,9 @@ public partial class OperationDetailsWindow : Window
             var existing = _services.DataStore.GetDocLines(_doc!.Id)
                 .FirstOrDefault(line => line.ItemId == item.Id
                                         && line.FromLocationId == fromLocation?.Id
-                                        && line.ToLocationId == toLocation?.Id);
+                                        && line.ToLocationId == toLocation?.Id
+                                        && string.Equals(NormalizeHuValue(line.FromHu), NormalizeHuValue(fromHu), StringComparison.OrdinalIgnoreCase)
+                                        && string.Equals(NormalizeHuValue(line.ToHu), NormalizeHuValue(toHu), StringComparison.OrdinalIgnoreCase));
             if (existing != null)
             {
                 var sameUom = IsSameUom(existing.UomCode, uomCode);
@@ -396,7 +398,7 @@ public partial class OperationDetailsWindow : Window
             }
             else
             {
-                _services.Documents.AddDocLine(_doc!.Id, item!.Id, qtyBase, fromLocation?.Id, toLocation?.Id, qtyInput, uomCode);
+                _services.Documents.AddDocLine(_doc!.Id, item!.Id, qtyBase, fromLocation?.Id, toLocation?.Id, qtyInput, uomCode, fromHu, toHu);
             }
             LoadDocLines();
         }
@@ -1237,10 +1239,12 @@ public partial class OperationDetailsWindow : Window
         public string DisplayName { get; }
     }
 
-    private bool TryGetLineLocations(out Location? fromLocation, out Location? toLocation)
+    private bool TryGetLineLocations(out Location? fromLocation, out Location? toLocation, out string? fromHu, out string? toHu)
     {
         fromLocation = DocFromCombo.SelectedItem as Location;
         toLocation = DocToCombo.SelectedItem as Location;
+        fromHu = null;
+        toHu = null;
 
         if (_doc == null)
         {
@@ -1256,7 +1260,8 @@ public partial class OperationDetailsWindow : Window
             toLocation = null;
         }
 
-        return ValidateLineLocations(_doc, fromLocation, toLocation);
+        ApplyLineHu(_doc.Type, (DocHuCombo.SelectedItem as HuOption)?.Code, ref fromHu, ref toHu);
+        return ValidateLineLocations(_doc, fromLocation, toLocation, fromHu, toHu);
     }
 
     private bool EnsureDraftDocSelected()
@@ -1303,7 +1308,7 @@ public partial class OperationDetailsWindow : Window
         return true;
     }
 
-    private bool ValidateLineLocations(Doc doc, Location? fromLocation, Location? toLocation)
+    private bool ValidateLineLocations(Doc doc, Location? fromLocation, Location? toLocation, string? fromHu, string? toHu)
     {
         switch (doc.Type)
         {
@@ -1331,9 +1336,9 @@ public partial class OperationDetailsWindow : Window
                 }
                 if (fromLocation.Id == toLocation.Id)
                 {
-                    if (string.IsNullOrWhiteSpace(doc.ShippingRef))
+                    if (string.Equals(NormalizeHuValue(fromHu), NormalizeHuValue(toHu), StringComparison.OrdinalIgnoreCase))
                     {
-                        MessageBox.Show("Для перемещения места хранения должны быть разными. Если вы хотите упаковать в HU в том же месте — заполните HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        MessageBox.Show("Для перемещения места хранения должны быть разными. Если вы хотите упаковать в HU в том же месте - заполните HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
                         return false;
                     }
                     return true;
@@ -1342,6 +1347,33 @@ public partial class OperationDetailsWindow : Window
             default:
                 return true;
         }
+    }
+
+    private static void ApplyLineHu(DocType docType, string? selectedHu, ref string? fromHu, ref string? toHu)
+    {
+        var normalized = NormalizeHuValue(selectedHu);
+        switch (docType)
+        {
+            case DocType.Inbound:
+            case DocType.Inventory:
+                toHu = normalized;
+                fromHu = null;
+                break;
+            case DocType.Outbound:
+            case DocType.WriteOff:
+                fromHu = normalized;
+                toHu = null;
+                break;
+            case DocType.Move:
+                fromHu = null;
+                toHu = normalized;
+                break;
+        }
+    }
+
+    private static string? NormalizeHuValue(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
     private sealed class DocLineDisplay
