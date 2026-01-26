@@ -80,6 +80,7 @@ public sealed class DocumentService
         _data.ExecuteInTransaction(store =>
         {
             docId = store.AddDoc(doc);
+            var (fromHu, toHu) = ResolveHeaderHu(doc.Type, doc.ShippingRef);
             foreach (var line in store.GetOrderLines(orderId.Value))
             {
                 if (line.QtyOrdered <= 0)
@@ -95,7 +96,9 @@ public sealed class DocumentService
                     QtyInput = null,
                     UomCode = null,
                     FromLocationId = null,
-                    ToLocationId = null
+                    ToLocationId = null,
+                    FromHu = fromHu,
+                    ToHu = toHu
                 });
             }
         });
@@ -163,7 +166,8 @@ public sealed class DocumentService
                                 DocId = docId,
                                 ItemId = line.ItemId,
                                 LocationId = line.ToLocationId.Value,
-                                QtyDelta = line.Qty
+                                QtyDelta = line.Qty,
+                                Hu = NormalizeHuValue(line.ToHu)
                             });
                         }
                         break;
@@ -176,7 +180,8 @@ public sealed class DocumentService
                                 DocId = docId,
                                 ItemId = line.ItemId,
                                 LocationId = line.FromLocationId.Value,
-                                QtyDelta = -line.Qty
+                                QtyDelta = -line.Qty,
+                                Hu = NormalizeHuValue(line.FromHu)
                             });
                         }
                         break;
@@ -189,7 +194,8 @@ public sealed class DocumentService
                                 DocId = docId,
                                 ItemId = line.ItemId,
                                 LocationId = line.FromLocationId.Value,
-                                QtyDelta = -line.Qty
+                                QtyDelta = -line.Qty,
+                                Hu = NormalizeHuValue(line.FromHu)
                             });
                         }
                         else
@@ -234,7 +240,8 @@ public sealed class DocumentService
                                 DocId = docId,
                                 ItemId = line.ItemId,
                                 LocationId = line.FromLocationId.Value,
-                                QtyDelta = -line.Qty
+                                QtyDelta = -line.Qty,
+                                Hu = NormalizeHuValue(line.FromHu)
                             });
                         }
                         if (line.ToLocationId.HasValue)
@@ -245,7 +252,8 @@ public sealed class DocumentService
                                 DocId = docId,
                                 ItemId = line.ItemId,
                                 LocationId = line.ToLocationId.Value,
-                                QtyDelta = line.Qty
+                                QtyDelta = line.Qty,
+                                Hu = NormalizeHuValue(line.ToHu)
                             });
                         }
                         break;
@@ -297,6 +305,7 @@ public sealed class DocumentService
             store.UpdateDocHeader(docId, order.PartnerId, cleanedOrderRef, doc.ShippingRef);
             store.UpdateDocOrder(docId, order.Id, cleanedOrderRef);
             store.DeleteDocLines(docId);
+            var (fromHu, toHu) = ResolveHeaderHu(doc.Type, doc.ShippingRef);
 
             var orderedByItem = new Dictionary<long, double>();
             foreach (var line in store.GetOrderLines(orderId))
@@ -329,7 +338,9 @@ public sealed class DocumentService
                     QtyInput = null,
                     UomCode = null,
                     FromLocationId = null,
-                    ToLocationId = null
+                    ToLocationId = null,
+                    FromHu = fromHu,
+                    ToHu = toHu
                 });
                 addedLines++;
             }
@@ -353,7 +364,7 @@ public sealed class DocumentService
         });
     }
 
-    public void AddDocLine(long docId, long itemId, double qty, long? fromLocationId, long? toLocationId, double? qtyInput = null, string? uomCode = null)
+    public void AddDocLine(long docId, long itemId, double qty, long? fromLocationId, long? toLocationId, double? qtyInput = null, string? uomCode = null, string? fromHu = null, string? toHu = null)
     {
         if (qty <= 0)
         {
@@ -371,7 +382,7 @@ public sealed class DocumentService
             throw new InvalidOperationException("Товар не найден.");
         }
 
-        ValidateLineLocations(doc.Type, fromLocationId, toLocationId, doc.ShippingRef);
+        ValidateLineLocations(doc.Type, fromLocationId, toLocationId, NormalizeHuValue(fromHu), NormalizeHuValue(toHu));
 
         _data.AddDocLine(new DocLine
         {
@@ -381,7 +392,9 @@ public sealed class DocumentService
             QtyInput = qtyInput,
             UomCode = uomCode,
             FromLocationId = fromLocationId,
-            ToLocationId = toLocationId
+            ToLocationId = toLocationId,
+            FromHu = NormalizeHuValue(fromHu),
+            ToHu = NormalizeHuValue(toHu)
         });
     }
 
@@ -481,10 +494,10 @@ public sealed class DocumentService
                         check.Errors.Add($"{rowLabel}: требуются оба места хранения (откуда/куда).");
                     }
                     else if (line.FromLocationId.Value == line.ToLocationId.Value
-                             && string.IsNullOrWhiteSpace(doc.ShippingRef))
+                             && string.Equals(NormalizeHuValue(line.FromHu), NormalizeHuValue(line.ToHu), StringComparison.OrdinalIgnoreCase))
                     {
                         check.Errors.Add(
-                            $"{rowLabel}: места хранения откуда/куда должны быть разными. Если вы хотите упаковать в HU в том же месте — заполните HU.");
+                            $"{rowLabel}: места хранения откуда/куда должны быть разными. Если вы хотите упаковать в HU в том же месте - заполните HU.");
                     }
                     break;
             }
@@ -555,7 +568,7 @@ public sealed class DocumentService
         return value.ToString("0.###", CultureInfo.CurrentCulture);
     }
 
-    private static void ValidateLineLocations(DocType type, long? fromLocationId, long? toLocationId, string? shippingRef)
+    private static void ValidateLineLocations(DocType type, long? fromLocationId, long? toLocationId, string? fromHu, string? toHu)
     {
         switch (type)
         {
@@ -578,13 +591,33 @@ public sealed class DocumentService
                 {
                     throw new ArgumentException("Для перемещения требуются оба места хранения (откуда/куда).");
                 }
-                if (fromLocationId.Value == toLocationId.Value && string.IsNullOrWhiteSpace(shippingRef))
+                if (fromLocationId.Value == toLocationId.Value
+                    && string.Equals(NormalizeHuValue(fromHu), NormalizeHuValue(toHu), StringComparison.OrdinalIgnoreCase))
                 {
                     throw new ArgumentException(
-                        "Для перемещения места хранения должны быть разными. Если вы хотите упаковать в HU в том же месте — заполните HU.");
+                        "Для перемещения места хранения должны быть разными. Если вы хотите упаковать в HU в том же месте - заполните HU.");
                 }
                 break;
         }
+    }
+
+    private static string? NormalizeHuValue(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static (string? fromHu, string? toHu) ResolveHeaderHu(DocType type, string? huCode)
+    {
+        var normalized = NormalizeHuValue(huCode);
+        return type switch
+        {
+            DocType.Inbound => (null, normalized),
+            DocType.Inventory => (null, normalized),
+            DocType.Outbound => (normalized, null),
+            DocType.WriteOff => (normalized, null),
+            DocType.Move => (null, normalized),
+            _ => (null, null)
+        };
     }
 
     private sealed class CloseDocCheck

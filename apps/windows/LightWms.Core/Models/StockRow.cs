@@ -6,6 +6,7 @@ public sealed class StockRow
     public string ItemName { get; init; } = string.Empty;
     public string? Barcode { get; init; }
     public string LocationCode { get; init; } = string.Empty;
+    public string? Hu { get; init; }
     public double Qty { get; init; }
     public string BaseUom { get; init; } = "шт";
 }

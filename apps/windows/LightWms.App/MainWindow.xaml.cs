@@ -285,6 +285,7 @@ public partial class MainWindow : Window
                 ItemName = row.ItemName,
                 Barcode = row.Barcode,
                 LocationCode = row.LocationCode,
+                HuDisplay = row.Hu ?? string.Empty,
                 PackagingDisplay = packaging,
                 BaseDisplay = baseDisplay
             });
@@ -1400,6 +1401,7 @@ public partial class MainWindow : Window
         public string ItemName { get; init; } = string.Empty;
         public string? Barcode { get; init; }
         public string LocationCode { get; init; } = string.Empty;
+        public string HuDisplay { get; init; } = string.Empty;
         public string PackagingDisplay { get; init; } = string.Empty;
         public string BaseDisplay { get; init; } = string.Empty;
     }

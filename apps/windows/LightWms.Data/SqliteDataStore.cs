@@ -122,7 +122,9 @@ CREATE TABLE IF NOT EXISTS doc_lines (
     qty_input REAL,
     uom_code TEXT,
     from_location_id INTEGER,
-    to_location_id INTEGER
+    to_location_id INTEGER,
+    from_hu TEXT,
+    to_hu TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_doc_lines_doc ON doc_lines(doc_id);
 CREATE TABLE IF NOT EXISTS ledger (
@@ -131,7 +133,8 @@ CREATE TABLE IF NOT EXISTS ledger (
     doc_id INTEGER NOT NULL,
     item_id INTEGER NOT NULL,
     location_id INTEGER NOT NULL,
-    qty_delta REAL NOT NULL
+    qty_delta REAL NOT NULL,
+    hu TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_ledger_item_location ON ledger(item_id, location_id);
 CREATE TABLE IF NOT EXISTS imported_events (
@@ -162,10 +165,14 @@ CREATE TABLE IF NOT EXISTS import_errors (
         EnsureColumn(connection, "docs", "comment", "TEXT");
         EnsureColumn(connection, "doc_lines", "qty_input", "REAL");
         EnsureColumn(connection, "doc_lines", "uom_code", "TEXT");
+        EnsureColumn(connection, "doc_lines", "from_hu", "TEXT");
+        EnsureColumn(connection, "doc_lines", "to_hu", "TEXT");
+        EnsureColumn(connection, "ledger", "hu", "TEXT");
 
         EnsureIndex(connection, "ix_docs_order", "docs(order_id)");
         EnsureIndex(connection, "ix_item_packaging_item_code", "item_packaging(item_id, code)");
         EnsureIndex(connection, "ix_item_packaging_item", "item_packaging(item_id)");
+        EnsureIndex(connection, "ix_ledger_item_loc_hu", "ledger(item_id, location_id, hu)");
 
         BackfillBaseUom(connection);
         BackfillPartnerCreatedAt(connection);
@@ -795,7 +802,7 @@ SELECT last_insert_rowid();
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT id, doc_id, item_id, qty, qty_input, uom_code, from_location_id, to_location_id FROM doc_lines WHERE doc_id = @doc_id ORDER BY id");
+            using var command = CreateCommand(connection, "SELECT id, doc_id, item_id, qty, qty_input, uom_code, from_location_id, to_location_id, from_hu, to_hu FROM doc_lines WHERE doc_id = @doc_id ORDER BY id");
             command.Parameters.AddWithValue("@doc_id", docId);
             using var reader = command.ExecuteReader();
             var lines = new List<DocLine>();
@@ -850,8 +857,8 @@ ORDER BY dl.id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO doc_lines(doc_id, item_id, qty, qty_input, uom_code, from_location_id, to_location_id)
-VALUES(@doc_id, @item_id, @qty, @qty_input, @uom_code, @from_location_id, @to_location_id);
+INSERT INTO doc_lines(doc_id, item_id, qty, qty_input, uom_code, from_location_id, to_location_id, from_hu, to_hu)
+VALUES(@doc_id, @item_id, @qty, @qty_input, @uom_code, @from_location_id, @to_location_id, @from_hu, @to_hu);
 SELECT last_insert_rowid();
 ");
             command.Parameters.AddWithValue("@doc_id", line.DocId);
@@ -861,6 +868,8 @@ SELECT last_insert_rowid();
             command.Parameters.AddWithValue("@uom_code", string.IsNullOrWhiteSpace(line.UomCode) ? DBNull.Value : line.UomCode);
             command.Parameters.AddWithValue("@from_location_id", (object?)line.FromLocationId ?? DBNull.Value);
             command.Parameters.AddWithValue("@to_location_id", (object?)line.ToLocationId ?? DBNull.Value);
+            command.Parameters.AddWithValue("@from_hu", string.IsNullOrWhiteSpace(line.FromHu) ? DBNull.Value : line.FromHu);
+            command.Parameters.AddWithValue("@to_hu", string.IsNullOrWhiteSpace(line.ToHu) ? DBNull.Value : line.ToHu);
             return (long)(command.ExecuteScalar() ?? 0L);
         });
     }
@@ -1198,14 +1207,15 @@ LIMIT 1;
         WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO ledger(ts, doc_id, item_id, location_id, qty_delta)
-VALUES(@ts, @doc_id, @item_id, @location_id, @qty_delta);
+INSERT INTO ledger(ts, doc_id, item_id, location_id, qty_delta, hu)
+VALUES(@ts, @doc_id, @item_id, @location_id, @qty_delta, @hu);
 ");
             command.Parameters.AddWithValue("@ts", ToDbDate(entry.Timestamp));
             command.Parameters.AddWithValue("@doc_id", entry.DocId);
             command.Parameters.AddWithValue("@item_id", entry.ItemId);
             command.Parameters.AddWithValue("@location_id", entry.LocationId);
             command.Parameters.AddWithValue("@qty_delta", entry.QtyDelta);
+            command.Parameters.AddWithValue("@hu", string.IsNullOrWhiteSpace(entry.Hu) ? DBNull.Value : entry.Hu);
             command.ExecuteNonQuery();
             return 0;
         });
@@ -1231,8 +1241,9 @@ VALUES(@ts, @doc_id, @item_id, @location_id, @qty_delta);
                     ItemName = reader.GetString(1),
                     Barcode = reader.IsDBNull(2) ? null : reader.GetString(2),
                     LocationCode = reader.GetString(3),
-                    Qty = reader.GetDouble(4),
-                    BaseUom = reader.IsDBNull(5) ? "шт" : reader.GetString(5)
+                    Hu = reader.IsDBNull(4) ? null : reader.GetString(4),
+                    Qty = reader.GetDouble(5),
+                    BaseUom = reader.IsDBNull(6) ? "шт" : reader.GetString(6)
                 });
             }
 
@@ -1498,7 +1509,9 @@ SELECT last_insert_rowid();
             QtyInput = reader.IsDBNull(4) ? null : reader.GetDouble(4),
             UomCode = reader.IsDBNull(5) ? null : reader.GetString(5),
             FromLocationId = reader.IsDBNull(6) ? null : reader.GetInt64(6),
-            ToLocationId = reader.IsDBNull(7) ? null : reader.GetInt64(7)
+            ToLocationId = reader.IsDBNull(7) ? null : reader.GetInt64(7),
+            FromHu = reader.FieldCount > 8 && !reader.IsDBNull(8) ? reader.GetString(8) : null,
+            ToHu = reader.FieldCount > 9 && !reader.IsDBNull(9) ? reader.GetString(9) : null
         };
     }
 
@@ -1612,7 +1625,7 @@ SELECT last_insert_rowid();
     private static string BuildStockQuery(string? search)
     {
         var baseQuery = @"
-SELECT i.id, i.name, i.barcode, l.code, SUM(led.qty_delta) AS qty, i.base_uom
+SELECT i.id, i.name, i.barcode, l.code, led.hu, SUM(led.qty_delta) AS qty, i.base_uom
 FROM ledger led
 INNER JOIN items i ON i.id = led.item_id
 INNER JOIN locations l ON l.id = led.location_id
@@ -1623,7 +1636,7 @@ INNER JOIN locations l ON l.id = led.location_id
             baseQuery += "WHERE i.name LIKE @search OR i.barcode LIKE @search OR l.code LIKE @search\n";
         }
 
-        baseQuery += "GROUP BY i.id, i.name, i.barcode, i.base_uom, l.id HAVING qty != 0 ORDER BY i.name, l.code";
+        baseQuery += "GROUP BY i.id, i.name, i.barcode, i.base_uom, l.id, led.hu HAVING qty != 0 ORDER BY i.name, l.code, led.hu";
         return baseQuery;
     }
 
