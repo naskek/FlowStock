@@ -26,25 +26,16 @@ public partial class HuGeneratorWindow : Window
             return;
         }
 
-        var settings = _services.Settings.Load();
-        var nextSeq = settings.HuNextSequence < 1 ? 1 : settings.HuNextSequence;
+        if (!_services.HuRegistry.TryIssueCodes(count, out var codes, out var error))
+        {
+            MessageBox.Show(error ?? "Не удалось сгенерировать HU-коды.", "Генератор HU", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
 
         _codes.Clear();
-        for (var i = 0; i < count; i++)
+        foreach (var code in codes)
         {
-            _codes.Add(FormatHu(nextSeq + i));
-        }
-
-        settings.HuNextSequence = nextSeq + count;
-        try
-        {
-            _services.Settings.Save(settings);
-        }
-        catch (Exception ex)
-        {
-            _services.AppLogger.Error("Save HU sequence failed", ex);
-            MessageBox.Show("Не удалось сохранить счетчик HU. Проверьте доступ к файлу настроек и повторите.", "Генератор HU",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            _codes.Add(code);
         }
     }
 
@@ -57,7 +48,7 @@ public partial class HuGeneratorWindow : Window
         }
 
         var text = string.Join(Environment.NewLine, _codes);
-        Clipboard.SetText(text);
+        System.Windows.Clipboard.SetText(text);
         MessageBox.Show("Список HU скопирован в буфер обмена.", "Генератор HU", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
@@ -72,8 +63,4 @@ public partial class HuGeneratorWindow : Window
         return count > 0;
     }
 
-    private static string FormatHu(int seq)
-    {
-        return $"HU-{seq:000000}";
-    }
 }

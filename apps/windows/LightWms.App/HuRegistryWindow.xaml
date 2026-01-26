@@ -1,0 +1,47 @@
+<Window x:Class="LightWms.App.HuRegistryWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="HU Реестр" Height="600" Width="900">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+            <TextBlock Text="Поиск" VerticalAlignment="Center" />
+            <TextBox x:Name="SearchBox" Width="220" Margin="6,0,12,0"
+                     TextChanged="SearchBox_TextChanged" />
+            <TextBlock Text="Статус" VerticalAlignment="Center" />
+            <ComboBox x:Name="StateFilter" Width="160" Margin="6,0,12,0"
+                      DisplayMemberPath="Name"
+                      SelectionChanged="StateFilter_SelectionChanged" />
+            <Button Content="Обновить" Click="Refresh_Click" />
+        </StackPanel>
+
+        <DataGrid x:Name="RegistryGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="HU" Binding="{Binding Code}" Width="160" />
+                <DataGridTextColumn Header="Статус" Binding="{Binding State}" Width="120" />
+                <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
+                <DataGridTextColumn Header="Кол-во" Binding="{Binding QtyDisplay}" Width="140" />
+                <DataGridTextColumn Header="Место" Binding="{Binding LocationCode}" Width="140" />
+                <DataGridTextColumn Header="Документ" Binding="{Binding LastDocRef}" Width="160" />
+                <DataGridTextColumn Header="Обновлено" Binding="{Binding UpdatedAtDisplay}" Width="160" />
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <GroupBox Grid.Row="2" Header="Генерация HU" Margin="0,8,0,0">
+            <DockPanel Margin="8">
+                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+                    <TextBlock Text="Количество" VerticalAlignment="Center" />
+                    <TextBox x:Name="GenerateCountBox" Width="80" Margin="6,0,12,0" />
+                    <Button Content="Сгенерировать" Click="Generate_Click" />
+                    <Button Content="Скопировать" Click="Copy_Click" Margin="8,0,0,0" />
+                </StackPanel>
+                <ListBox x:Name="GeneratedList" Height="120" />
+            </DockPanel>
+        </GroupBox>
+    </Grid>
+</Window>

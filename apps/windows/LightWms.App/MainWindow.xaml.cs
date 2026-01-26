@@ -1050,6 +1050,15 @@ public partial class MainWindow : Window
         window.ShowDialog();
     }
 
+    private void OpenHuRegistry_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new HuRegistryWindow(_services)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+    }
+
     private void ExportTsdData_Click(object sender, RoutedEventArgs e)
     {
         var exportDir = Path.Combine(_services.BaseDir, "Exports");

@@ -22,6 +22,7 @@
                 <Separator />
                 <MenuItem Header="Резервные копии..." Click="OpenBackupManager_Click" />
                 <MenuItem Header="Администрирование..." Click="OpenAdmin_Click" />
+                <MenuItem Header="HU Реестр..." Click="OpenHuRegistry_Click" />
                 <MenuItem Header="Генератор HU..." Click="OpenHuGenerator_Click" />
                 <Separator />
                 <MenuItem Header="Открыть папку данных" Click="OpenDataFolder_Click" />
