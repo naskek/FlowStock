@@ -458,7 +458,7 @@ public sealed class DocumentService
         var locations = _data.GetLocations();
         var locationsById = locations.ToDictionary(location => location.Id, location => location.Code);
 
-        var outgoing = new Dictionary<(long itemId, long locationId), double>();
+        var outgoingBySource = new Dictionary<StockKey, double>();
         var outboundByItem = new Dictionary<long, double>();
 
         for (var index = 0; index < lines.Count; index++)
@@ -502,40 +502,34 @@ public sealed class DocumentService
                     break;
             }
 
-            if (doc.Type is DocType.WriteOff or DocType.Move)
+            if (doc.Type is DocType.WriteOff or DocType.Move or DocType.Outbound)
             {
                 if (line.Qty > 0 && line.FromLocationId.HasValue)
                 {
-                    if (doc.Type is DocType.WriteOff or DocType.Outbound || line.ToLocationId.HasValue)
-                    {
-                        if (doc.Type != DocType.Move || line.FromLocationId != line.ToLocationId)
-                        {
-                            var key = (line.ItemId, line.FromLocationId.Value);
-                            outgoing[key] = outgoing.TryGetValue(key, out var current) ? current + line.Qty : line.Qty;
-                        }
-                    }
+                    var key = new StockKey(line.ItemId, line.FromLocationId.Value, NormalizeHuValue(line.FromHu));
+                    outgoingBySource[key] = outgoingBySource.TryGetValue(key, out var current) ? current + line.Qty : line.Qty;
                 }
-            }
-
-            if (doc.Type == DocType.Outbound)
-            {
-                outboundByItem[line.ItemId] = outboundByItem.TryGetValue(line.ItemId, out var current)
-                    ? current + line.Qty
-                    : line.Qty;
+                else if (doc.Type == DocType.Outbound)
+                {
+                    outboundByItem[line.ItemId] = outboundByItem.TryGetValue(line.ItemId, out var current)
+                        ? current + line.Qty
+                        : line.Qty;
+                }
             }
         }
 
-        if (doc.Type is DocType.WriteOff or DocType.Move)
+        if (outgoingBySource.Count > 0)
         {
-            foreach (var entry in outgoing)
+            foreach (var entry in outgoingBySource)
             {
-                var current = _data.GetLedgerBalance(entry.Key.itemId, entry.Key.locationId);
+                var current = _data.GetAvailableQty(entry.Key.ItemId, entry.Key.LocationId, entry.Key.Hu);
                 var future = current - entry.Value;
                 if (future < 0)
                 {
-                    var itemLabel = itemsById.TryGetValue(entry.Key.itemId, out var name) ? name : $"ID {entry.Key.itemId}";
-                    var locationLabel = locationsById.TryGetValue(entry.Key.locationId, out var code) ? code : $"ID {entry.Key.locationId}";
-                    check.Warnings.Add($"{itemLabel} @ {locationLabel}: {FormatQty(current)} -> {FormatQty(future)} (дельта -{FormatQty(entry.Value)})");
+                    var itemLabel = itemsById.TryGetValue(entry.Key.ItemId, out var name) ? name : $"ID {entry.Key.ItemId}";
+                    var locationLabel = locationsById.TryGetValue(entry.Key.LocationId, out var code) ? code : $"ID {entry.Key.LocationId}";
+                    var huLabel = string.IsNullOrWhiteSpace(entry.Key.Hu) ? string.Empty : $" (HU {entry.Key.Hu})";
+                    check.Errors.Add($"{itemLabel} @ {locationLabel}{huLabel}: на складе {FormatQty(current)}, требуется {FormatQty(entry.Value)}.");
                 }
             }
         }
@@ -619,6 +613,8 @@ public sealed class DocumentService
             _ => (null, null)
         };
     }
+
+    private readonly record struct StockKey(long ItemId, long LocationId, string? Hu);
 
     private sealed class CloseDocCheck
     {
