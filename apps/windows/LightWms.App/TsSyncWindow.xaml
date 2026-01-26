@@ -14,6 +14,11 @@
                                    VerticalAlignment="Center" TextWrapping="Wrap" Width="600" />
                         <Button Content="Выбрать..." Click="SelectFolder_Click" Width="120" />
                     </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="Устройство:" VerticalAlignment="Center" />
+                        <ComboBox x:Name="TsdDeviceCombo" Width="260" Margin="8,0,0,0"
+                                  DisplayMemberPath="DisplayName" />
+                    </StackPanel>
                     <TextBlock Text="Файл данных: LightWMS_TSD_DATA.json" Foreground="Gray" Margin="0,0,0,12" />
                     <Button Content="Выгрузить данные..." Width="180" Click="ExportData_Click" />
                     <TextBlock x:Name="ExportSummaryText" Margin="0,12,0,0" TextWrapping="Wrap" />

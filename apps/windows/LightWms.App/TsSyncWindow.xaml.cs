@@ -21,6 +21,7 @@ public partial class TsSyncWindow : Window
     };
     private readonly AppServices _services;
     private readonly ObservableCollection<ImportFileLog> _importLogs = new();
+    private readonly ObservableCollection<TsdDeviceOption> _devices = new();
     private readonly Action? _onImportCompleted;
     private BackupSettings _settings = BackupSettings.Default();
 
@@ -31,13 +32,43 @@ public partial class TsSyncWindow : Window
 
         InitializeComponent();
         ImportLogGrid.ItemsSource = _importLogs;
+        TsdDeviceCombo.ItemsSource = _devices;
         LoadSettings();
         UpdateFolderText();
+        LoadDevices();
     }
 
     private void LoadSettings()
     {
         _settings = _services.Settings.Load();
+    }
+
+    private void LoadDevices()
+    {
+        _devices.Clear();
+        var devices = _settings.Tsd?.Devices ?? new List<TsdDevice>();
+        foreach (var device in devices)
+        {
+            if (string.IsNullOrWhiteSpace(device.Id))
+            {
+                continue;
+            }
+
+            var name = string.IsNullOrWhiteSpace(device.Name) ? device.Id : device.Name;
+            _devices.Add(new TsdDeviceOption(device.Id, name));
+        }
+
+        if (_devices.Count == 0)
+        {
+            TsdDeviceCombo.SelectedItem = null;
+            return;
+        }
+
+        var lastId = _settings.Tsd?.LastDeviceId;
+        var selected = !string.IsNullOrWhiteSpace(lastId)
+            ? _devices.FirstOrDefault(device => string.Equals(device.Id, lastId, StringComparison.OrdinalIgnoreCase))
+            : null;
+        TsdDeviceCombo.SelectedItem = selected ?? _devices.FirstOrDefault();
     }
 
     private void UpdateFolderText()
@@ -74,18 +105,31 @@ public partial class TsSyncWindow : Window
             return;
         }
 
+        var device = TsdDeviceCombo.SelectedItem as TsdDeviceOption;
+        if (device == null || string.IsNullOrWhiteSpace(device.Id))
+        {
+            MessageBox.Show("Сначала добавьте устройство (Сервис → Устройства ТСД)", "Синхронизация с ТСД",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
         var targetPath = Path.Combine(folder, TsdDataFileName);
         try
         {
             _services.AppLogger.Info($"TSD export start path={targetPath}");
 
-            var summary = ExportTsdData(_services, targetPath);
+            var summary = ExportTsdData(_services, targetPath, device.Id);
             ExportSummaryText.Text = $"Выгружено: ед. изм. {summary.Uoms}, товары {summary.Items}, контрагенты {summary.Partners}, " +
                                      $"места хранения {summary.Locations}, остатки {summary.StockRows}, заказы {summary.Orders}, строки заказов {summary.OrderLines}.";
             _services.AppLogger.Info(
                 $"TSD export finish path={targetPath} uoms={summary.Uoms} items={summary.Items} partners={summary.Partners} " +
                 $"locations={summary.Locations} stock={summary.StockRows} orders={summary.Orders} order_lines={summary.OrderLines}");
 
+            if (_settings.Tsd != null)
+            {
+                _settings.Tsd.LastDeviceId = device.Id;
+                _services.Settings.Save(_settings);
+            }
             MessageBox.Show("Выгрузка завершена.", "Синхронизация с ТСД", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex)
@@ -510,6 +554,11 @@ public partial class TsSyncWindow : Window
         public int Duplicates { get; init; }
         public int Errors { get; init; }
         public int HuRegistryErrors { get; init; }
+    }
+
+    private sealed record TsdDeviceOption(string Id, string Name)
+    {
+        public string DisplayName => string.IsNullOrWhiteSpace(Name) ? Id : $"{Name} ({Id})";
     }
 
     private sealed class TsdExportPayload
