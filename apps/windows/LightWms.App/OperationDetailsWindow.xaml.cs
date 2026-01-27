@@ -373,14 +373,14 @@ public partial class OperationDetailsWindow : Window
         IEnumerable<Item>? filteredItems = null;
         if (_doc?.Type == DocType.Move)
         {
-            if (DocFromCombo.SelectedItem is not Location fromLocation)
+            if (DocFromCombo.SelectedItem is not Location selectedFromLocation)
             {
                 MessageBox.Show("Выберите место хранения (откуда).", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
-            var fromHu = (DocHuFromCombo.SelectedItem as HuOption)?.Code;
-            filteredItems = _services.DataStore.GetItemsByLocationAndHu(fromLocation.Id, NormalizeHuValue(fromHu));
+            var selectedFromHu = (DocHuFromCombo.SelectedItem as HuOption)?.Code;
+            filteredItems = _services.DataStore.GetItemsByLocationAndHu(selectedFromLocation.Id, NormalizeHuValue(selectedFromHu));
             if (!filteredItems.Any())
             {
                 MessageBox.Show("Нет доступных товаров для выбранного места хранения и HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -634,7 +634,7 @@ public partial class OperationDetailsWindow : Window
         MarkHeaderDirty();
     }
 
-    private void DocHuCombo_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    private void DocHuCombo_KeyUp(object sender, KeyEventArgs e)
     {
         if (_suppressDirtyTracking || _doc?.Status != DocStatus.Draft)
         {
@@ -1264,9 +1264,12 @@ public partial class OperationDetailsWindow : Window
 
     private void RefreshHuOptions()
     {
+        var selectedToHu = GetSelectedHuCode(DocHuCombo);
+        var selectedFromHu = (DocHuFromCombo.SelectedItem as HuOption)?.Code;
+
         _huToOptions.Clear();
         _huFromOptions.Clear();
-        _huToOptions.Add(new HuOption(null, "—"));
+        _huToOptions.Add(new HuOption(null, "-"));
 
         if (_doc == null)
         {
@@ -1293,18 +1296,18 @@ public partial class OperationDetailsWindow : Window
                 _huFromOptions.Add(new HuOption(null, "—"));
             }
 
-            foreach (var code in _services.DataStore.GetAllHuCodes())
-            {
-                _huToOptions.Add(new HuOption(code, code));
-            }
+            var totalsByHu = _services.DataStore.GetLedgerTotalsByHu();
+            var issuedCodes = GetIssuedHuCodes();
+            AddHuOptions(BuildHuOptions(totalsByHu, issuedCodes), _huToOptions);
         }
         else
         {
-            foreach (var code in _services.DataStore.GetAllHuCodes())
-            {
-                _huToOptions.Add(new HuOption(code, code));
-            }
-            _huFromOptions.Add(new HuOption(null, "—"));
+            var totalsByHu = _services.DataStore.GetLedgerTotalsByHu();
+            var issuedCodes = _doc.Type == DocType.Inbound || _doc.Type == DocType.Inventory
+                ? GetIssuedHuCodes()
+                : Enumerable.Empty<string>();
+            AddHuOptions(BuildHuOptions(totalsByHu, issuedCodes), _huToOptions);
+            _huFromOptions.Add(new HuOption(null, "-"));
         }
 
         var current = NormalizeHuCode(_doc.ShippingRef);
@@ -1313,11 +1316,80 @@ public partial class OperationDetailsWindow : Window
         {
             _huToOptions.Add(new HuOption(current, $"{current} (занят)"));
         }
+
+        var previousSuppress = _suppressDirtyTracking;
+        _suppressDirtyTracking = true;
+        RestoreHuSelection(DocHuCombo, _huToOptions, selectedToHu);
+        RestoreHuSelection(DocHuFromCombo, _huFromOptions, selectedFromHu);
+        _suppressDirtyTracking = previousSuppress;
+    }
+
+    private IEnumerable<string> GetIssuedHuCodes()
+    {
+        if (!_services.HuRegistry.TryGetItems(out var items, out _))
+        {
+            return Enumerable.Empty<string>();
+        }
+
+        return items
+            .Where(item => string.Equals(item.State, HuRegistryStates.Issued, StringComparison.OrdinalIgnoreCase))
+            .Select(item => item.Code)
+            .Where(code => !string.IsNullOrWhiteSpace(code));
+    }
+
+    private static IEnumerable<string> BuildHuOptions(
+        IReadOnlyDictionary<string, double> totalsByHu,
+        IEnumerable<string> issuedCodes)
+    {
+        var allCodes = totalsByHu.Keys
+            .Concat(issuedCodes)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        foreach (var code in allCodes)
+        {
+            if (!totalsByHu.TryGetValue(code, out var qty) || qty <= 0.000001)
+            {
+                yield return $"{code} (свободен)";
+            }
+            else
+            {
+                yield return code;
+            }
+        }
+    }
+
+    private static void AddHuOptions(IEnumerable<string> codes, ICollection<HuOption> target, string? suffix = null)
+    {
+        foreach (var code in codes)
+        {
+            if (string.IsNullOrWhiteSpace(code))
+            {
+                continue;
+            }
+
+            var normalized = code;
+            var suffixIndex = normalized.IndexOf(" (", StringComparison.Ordinal);
+            if (suffixIndex > 0)
+            {
+                normalized = normalized.Substring(0, suffixIndex);
+            }
+
+            if (target.Any(option => string.Equals(option.Code, normalized, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            var display = suffix == null ? code : $"{code}{suffix}";
+            target.Add(new HuOption(normalized, display));
+        }
     }
 
     private void SetHuSelection(Doc doc)
     {
         var normalized = NormalizeHuCode(doc.ShippingRef);
+        var currentFromHu = (DocHuFromCombo.SelectedItem as HuOption)?.Code;
         _suppressDirtyTracking = true;
         if (!string.IsNullOrWhiteSpace(normalized))
         {
@@ -1329,8 +1401,18 @@ public partial class OperationDetailsWindow : Window
             DocHuCombo.SelectedItem = _huToOptions.FirstOrDefault(option => option.Code == null)
                                       ?? _huToOptions.FirstOrDefault();
         }
-        DocHuFromCombo.SelectedItem = _huFromOptions.FirstOrDefault(option => option.Code == null)
-                                      ?? _huFromOptions.FirstOrDefault();
+        if (doc.Type == DocType.Move && !string.IsNullOrWhiteSpace(currentFromHu))
+        {
+            DocHuFromCombo.SelectedItem = _huFromOptions.FirstOrDefault(option =>
+                string.Equals(option.Code, currentFromHu, StringComparison.OrdinalIgnoreCase))
+                                          ?? _huFromOptions.FirstOrDefault(option => option.Code == null)
+                                          ?? _huFromOptions.FirstOrDefault();
+        }
+        else
+        {
+            DocHuFromCombo.SelectedItem = _huFromOptions.FirstOrDefault(option => option.Code == null)
+                                          ?? _huFromOptions.FirstOrDefault();
+        }
         _suppressDirtyTracking = false;
     }
 
@@ -1358,7 +1440,33 @@ public partial class OperationDetailsWindow : Window
         }
 
         var text = combo.Text?.Trim();
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            var suffixIndex = text.IndexOf(" (", StringComparison.Ordinal);
+            if (suffixIndex > 0)
+            {
+                text = text.Substring(0, suffixIndex);
+            }
+        }
         return string.IsNullOrWhiteSpace(text) ? null : NormalizeHuCode(text);
+    }
+
+    private static void RestoreHuSelection(
+        System.Windows.Controls.ComboBox combo,
+        IEnumerable<HuOption> options,
+        string? code)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            combo.SelectedItem = options.FirstOrDefault(option => option.Code == null)
+                                 ?? options.FirstOrDefault();
+            return;
+        }
+
+        combo.SelectedItem = options.FirstOrDefault(option =>
+                                 string.Equals(option.Code, code, StringComparison.OrdinalIgnoreCase))
+                             ?? options.FirstOrDefault(option => option.Code == null)
+                             ?? options.FirstOrDefault();
     }
 
     private sealed class HuOption

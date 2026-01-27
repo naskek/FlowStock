@@ -69,7 +69,7 @@
                               Margin="0,4,0,0"
                               DisplayMemberPath="DisplayName"
                               SelectionChanged="DocHuCombo_SelectionChanged"
-                              TextChanged="DocHuCombo_TextChanged" />
+                              KeyUp="DocHuCombo_KeyUp" />
                 </StackPanel>
             </WrapPanel>
         </StackPanel>
