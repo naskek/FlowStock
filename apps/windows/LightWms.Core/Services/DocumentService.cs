@@ -152,9 +152,11 @@ public sealed class DocumentService
                 return;
             }
 
+            var docHu = NormalizeHuValue(doc.ShippingRef);
             var lines = store.GetDocLines(docId);
             foreach (var line in lines)
             {
+                var (fromHu, toHu) = ResolveLedgerHu(doc, line, docHu);
                 switch (doc.Type)
                 {
                     case DocType.Inbound:
@@ -167,7 +169,7 @@ public sealed class DocumentService
                                 ItemId = line.ItemId,
                                 LocationId = line.ToLocationId.Value,
                                 QtyDelta = line.Qty,
-                                Hu = NormalizeHuValue(line.ToHu)
+                                HuCode = toHu
                             });
                         }
                         break;
@@ -181,7 +183,7 @@ public sealed class DocumentService
                                 ItemId = line.ItemId,
                                 LocationId = line.FromLocationId.Value,
                                 QtyDelta = -line.Qty,
-                                Hu = NormalizeHuValue(line.FromHu)
+                                HuCode = fromHu
                             });
                         }
                         break;
@@ -195,7 +197,7 @@ public sealed class DocumentService
                                 ItemId = line.ItemId,
                                 LocationId = line.FromLocationId.Value,
                                 QtyDelta = -line.Qty,
-                                Hu = NormalizeHuValue(line.FromHu)
+                                HuCode = fromHu
                             });
                         }
                         else
@@ -212,7 +214,7 @@ public sealed class DocumentService
                                     break;
                                 }
 
-                                var available = store.GetLedgerBalance(line.ItemId, location.Id);
+                                var available = store.GetLedgerBalance(line.ItemId, location.Id, fromHu);
                                 if (available <= 0)
                                 {
                                     continue;
@@ -225,15 +227,14 @@ public sealed class DocumentService
                                     DocId = docId,
                                     ItemId = line.ItemId,
                                     LocationId = location.Id,
-                                    QtyDelta = -take
+                                    QtyDelta = -take,
+                                    HuCode = fromHu
                                 });
                                 remaining -= take;
                             }
                         }
                         break;
                     case DocType.Move:
-                        var moveFromHu = NormalizeHuValue(line.FromHu);
-                        var moveToHu = NormalizeHuValue(line.ToHu);
                         if (line.FromLocationId.HasValue)
                         {
                             store.AddLedgerEntry(new LedgerEntry
@@ -243,7 +244,7 @@ public sealed class DocumentService
                                 ItemId = line.ItemId,
                                 LocationId = line.FromLocationId.Value,
                                 QtyDelta = -line.Qty,
-                                Hu = moveFromHu
+                                HuCode = fromHu
                             });
                         }
                         if (line.ToLocationId.HasValue)
@@ -255,7 +256,7 @@ public sealed class DocumentService
                                 ItemId = line.ItemId,
                                 LocationId = line.ToLocationId.Value,
                                 QtyDelta = line.Qty,
-                                Hu = moveToHu
+                                HuCode = toHu
                             });
                         }
                         break;
@@ -455,6 +456,7 @@ public sealed class DocumentService
             return check;
         }
 
+        var docHu = NormalizeHuValue(doc.ShippingRef);
         var lines = _data.GetDocLines(docId);
         var itemsById = _data.GetItems(null).ToDictionary(item => item.Id, item => item.Name);
         var locations = _data.GetLocations();
@@ -468,6 +470,7 @@ public sealed class DocumentService
             var line = lines[index];
             var itemLabel = itemsById.TryGetValue(line.ItemId, out var name) ? name : $"ID {line.ItemId}";
             var rowLabel = $"Строка {index + 1} ({itemLabel})";
+            var (fromHu, toHu) = ResolveLedgerHu(doc, line, docHu);
 
             if (line.Qty <= 0)
             {
@@ -495,8 +498,12 @@ public sealed class DocumentService
                     {
                         check.Errors.Add($"{rowLabel}: требуются оба места хранения (откуда/куда).");
                     }
+                    else if (!string.IsNullOrWhiteSpace(docHu) && line.FromLocationId.Value != line.ToLocationId.Value)
+                    {
+                        check.Errors.Add($"{rowLabel}: HU используется только для упаковки в рамках одного места. Очистите HU.");
+                    }
                     else if (line.FromLocationId.Value == line.ToLocationId.Value
-                             && string.Equals(NormalizeHuValue(line.FromHu), NormalizeHuValue(line.ToHu), StringComparison.OrdinalIgnoreCase))
+                             && string.Equals(NormalizeHuValue(fromHu), NormalizeHuValue(toHu), StringComparison.OrdinalIgnoreCase))
                     {
                         check.Errors.Add(
                             $"{rowLabel}: места хранения откуда/куда должны быть разными. Если вы хотите упаковать в HU в том же месте - заполните HU.");
@@ -508,7 +515,7 @@ public sealed class DocumentService
             {
                 if (line.Qty > 0 && line.FromLocationId.HasValue)
                 {
-                    var key = new StockKey(line.ItemId, line.FromLocationId.Value, NormalizeHuValue(line.FromHu));
+                    var key = new StockKey(line.ItemId, line.FromLocationId.Value, NormalizeHuValue(fromHu));
                     outgoingBySource[key] = outgoingBySource.TryGetValue(key, out var current) ? current + line.Qty : line.Qty;
                 }
                 else if (doc.Type == DocType.Outbound)
@@ -538,10 +545,9 @@ public sealed class DocumentService
 
         if (doc.Type == DocType.Outbound)
         {
-            var totals = _data.GetLedgerTotalsByItem();
             foreach (var entry in outboundByItem)
             {
-                var current = totals.TryGetValue(entry.Key, out var qty) ? qty : 0;
+                var current = GetTotalAvailableQty(entry.Key, docHu, locations);
                 var future = current - entry.Value;
                 if (future < 0)
                 {
@@ -562,6 +568,17 @@ public sealed class DocumentService
     private static string FormatQty(double value)
     {
         return value.ToString("0.###", CultureInfo.CurrentCulture);
+    }
+
+    private double GetTotalAvailableQty(long itemId, string? huCode, IReadOnlyList<Location> locations)
+    {
+        var total = 0d;
+        foreach (var location in locations)
+        {
+            total += _data.GetAvailableQty(itemId, location.Id, huCode);
+        }
+
+        return total;
     }
 
     private static void ValidateLineLocations(DocType type, long? fromLocationId, long? toLocationId, string? fromHu, string? toHu)
@@ -600,6 +617,41 @@ public sealed class DocumentService
     private static string? NormalizeHuValue(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static (string? fromHu, string? toHu) ResolveLedgerHu(Doc doc, DocLine line, string? docHu)
+    {
+        var lineFrom = NormalizeHuValue(line.FromHu);
+        var lineTo = NormalizeHuValue(line.ToHu);
+
+        if (doc.Type == DocType.Move)
+        {
+            if (!string.IsNullOrWhiteSpace(lineFrom) || !string.IsNullOrWhiteSpace(lineTo))
+            {
+                return (lineFrom, lineTo);
+            }
+
+            if (!string.IsNullOrWhiteSpace(docHu))
+            {
+                return (null, docHu);
+            }
+
+            return (lineFrom, lineTo);
+        }
+
+        if (!string.IsNullOrWhiteSpace(docHu))
+        {
+            return doc.Type switch
+            {
+                DocType.Inbound => (null, docHu),
+                DocType.Inventory => (null, docHu),
+                DocType.Outbound => (docHu, null),
+                DocType.WriteOff => (docHu, null),
+                _ => (lineFrom, lineTo)
+            };
+        }
+
+        return (lineFrom, lineTo);
     }
 
     private static (string? fromHu, string? toHu) ResolveHeaderHu(DocType type, string? huCode)

@@ -24,10 +24,6 @@
             <DataGrid.Columns>
                 <DataGridTextColumn Header="HU" Binding="{Binding Code}" Width="160" />
                 <DataGridTextColumn Header="Статус" Binding="{Binding State}" Width="120" />
-                <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
-                <DataGridTextColumn Header="Кол-во" Binding="{Binding QtyDisplay}" Width="140" />
-                <DataGridTextColumn Header="Место" Binding="{Binding LocationCode}" Width="140" />
-                <DataGridTextColumn Header="Документ" Binding="{Binding LastDocRef}" Width="160" />
                 <DataGridTextColumn Header="Обновлено" Binding="{Binding UpdatedAtDisplay}" Width="160" />
             </DataGrid.Columns>
         </DataGrid>

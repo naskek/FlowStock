@@ -44,6 +44,9 @@
                         <TextBlock Text="Место хранения" VerticalAlignment="Center" Margin="12,0,6,0" />
                         <ComboBox x:Name="StockLocationFilter" Width="220" DisplayMemberPath="Name"
                                   SelectionChanged="StockLocationFilter_SelectionChanged" />
+                        <TextBlock Text="HU" VerticalAlignment="Center" Margin="12,0,6,0" />
+                        <ComboBox x:Name="StockHuFilter" Width="200" DisplayMemberPath="Name"
+                                  SelectionChanged="StockHuFilter_SelectionChanged" />
                     </StackPanel>
                     <DataGrid x:Name="StockGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True">
                         <DataGrid.Columns>

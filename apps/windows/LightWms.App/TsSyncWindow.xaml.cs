@@ -446,6 +446,7 @@ public partial class TsSyncWindow : Window
         var locations = services.Catalog.GetLocations();
         var uoms = services.Catalog.GetUoms();
         var stock = services.Documents.GetStock(null);
+        var huStock = services.DataStore.GetHuStockRows();
         var orders = services.Orders.GetOrders();
 
         var locationByCode = locations.ToDictionary(l => l.Code, l => l.Id, StringComparer.OrdinalIgnoreCase);
@@ -499,6 +500,23 @@ public partial class TsSyncWindow : Window
             });
         }
 
+        var huStockDtos = new List<TsdHuStockRow>(huStock.Count);
+        foreach (var row in huStock)
+        {
+            if (string.IsNullOrWhiteSpace(row.HuCode))
+            {
+                continue;
+            }
+
+            huStockDtos.Add(new TsdHuStockRow
+            {
+                Hu = row.HuCode,
+                ItemId = row.ItemId,
+                LocationId = row.LocationId,
+                Qty = row.Qty
+            });
+        }
+
         var orderDtos = new List<TsdOrder>(orders.Count);
         var orderLineDtos = new List<TsdOrderLine>();
         foreach (var order in orders)
@@ -546,6 +564,11 @@ public partial class TsSyncWindow : Window
             {
                 ExportedAt = exportedAtText,
                 Rows = stockDtos
+            },
+            HuStock = new TsdHuStock
+            {
+                ExportedAt = exportedAtText,
+                Rows = huStockDtos
             },
             Orders = new TsdOrders
             {
@@ -628,6 +651,9 @@ public partial class TsSyncWindow : Window
 
         [JsonPropertyName("stock")]
         public TsdStock Stock { get; init; } = new();
+
+        [JsonPropertyName("hu_stock")]
+        public TsdHuStock HuStock { get; init; } = new();
 
         [JsonPropertyName("orders")]
         public TsdOrders Orders { get; init; } = new();
@@ -740,6 +766,30 @@ public partial class TsSyncWindow : Window
         [JsonPropertyName("hu")]
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public string? Hu { get; init; }
+    }
+
+    private sealed class TsdHuStock
+    {
+        [JsonPropertyName("exported_at")]
+        public string ExportedAt { get; init; } = string.Empty;
+
+        [JsonPropertyName("rows")]
+        public List<TsdHuStockRow> Rows { get; init; } = new();
+    }
+
+    private sealed class TsdHuStockRow
+    {
+        [JsonPropertyName("hu")]
+        public string Hu { get; init; } = string.Empty;
+
+        [JsonPropertyName("item_id")]
+        public long ItemId { get; init; }
+
+        [JsonPropertyName("location_id")]
+        public long LocationId { get; init; }
+
+        [JsonPropertyName("qty")]
+        public double Qty { get; init; }
     }
 
     private sealed class TsdOrders

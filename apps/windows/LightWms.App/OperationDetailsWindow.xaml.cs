@@ -1607,6 +1607,13 @@ public partial class OperationDetailsWindow : Window
                     return true;
                 }
 
+                if (fromLocation.Id != toLocation.Id
+                    && (!string.IsNullOrWhiteSpace(fromHu) || !string.IsNullOrWhiteSpace(toHu)))
+                {
+                    MessageBox.Show("HU используется только для упаковки в рамках одного места. Очистите HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return false;
+                }
+
                 if (fromLocation.Id == toLocation.Id
                     && string.Equals(NormalizeHuValue(fromHu), NormalizeHuValue(toHu), StringComparison.OrdinalIgnoreCase))
                 {

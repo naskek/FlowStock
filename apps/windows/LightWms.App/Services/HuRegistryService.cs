@@ -329,17 +329,27 @@ public sealed class HuRegistryService : IHuRegistryUpdater
             {
                 if (!totals.TryGetValue(entry.Code!, out var qty) || qty <= 0.000001)
                 {
-                    var nextState = string.Equals(entry.State, HuRegistryStates.Issued, StringComparison.OrdinalIgnoreCase)
-                        ? HuRegistryStates.Issued
-                        : HuRegistryStates.Unknown;
-                    if (!string.Equals(entry.State, nextState, StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(entry.State, HuRegistryStates.Issued, StringComparison.OrdinalIgnoreCase))
                     {
-                        entry.State = nextState;
+                        entry.State = HuRegistryStates.Issued;
                         updated++;
                     }
                     if (entry.QtyBase != 0)
                     {
                         entry.QtyBase = 0;
+                        updated++;
+                    }
+                    if (entry.ItemId != null)
+                    {
+                        entry.ItemId = null;
+                        entry.ItemName = null;
+                        entry.BaseUom = null;
+                        updated++;
+                    }
+                    if (entry.LocationId != null || !string.IsNullOrWhiteSpace(entry.LocationCode))
+                    {
+                        entry.LocationId = null;
+                        entry.LocationCode = null;
                         updated++;
                     }
                     continue;

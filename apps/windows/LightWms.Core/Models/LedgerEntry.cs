@@ -8,5 +8,5 @@ public sealed class LedgerEntry
     public long ItemId { get; init; }
     public long LocationId { get; init; }
     public double QtyDelta { get; init; }
-    public string? Hu { get; init; }
+    public string? HuCode { get; init; }
 }

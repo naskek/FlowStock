@@ -134,6 +134,7 @@ CREATE TABLE IF NOT EXISTS ledger (
     item_id INTEGER NOT NULL,
     location_id INTEGER NOT NULL,
     qty_delta REAL NOT NULL,
+    hu_code TEXT,
     hu TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_ledger_item_location ON ledger(item_id, location_id);
@@ -168,14 +169,17 @@ CREATE TABLE IF NOT EXISTS import_errors (
         EnsureColumn(connection, "doc_lines", "from_hu", "TEXT");
         EnsureColumn(connection, "doc_lines", "to_hu", "TEXT");
         EnsureColumn(connection, "ledger", "hu", "TEXT");
+        EnsureColumn(connection, "ledger", "hu_code", "TEXT");
 
         EnsureIndex(connection, "ix_docs_order", "docs(order_id)");
         EnsureIndex(connection, "ix_item_packaging_item_code", "item_packaging(item_id, code)");
         EnsureIndex(connection, "ix_item_packaging_item", "item_packaging(item_id)");
         EnsureIndex(connection, "ix_ledger_item_loc_hu", "ledger(item_id, location_id, hu)");
+        EnsureIndex(connection, "ix_ledger_item_loc_hu_code", "ledger(item_id, location_id, hu_code)");
 
         BackfillBaseUom(connection);
         BackfillPartnerCreatedAt(connection);
+        BackfillLedgerHuCode(connection);
     }
 
     public void ExecuteInTransaction(Action<IDataStore> work)
@@ -1207,15 +1211,16 @@ LIMIT 1;
         WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO ledger(ts, doc_id, item_id, location_id, qty_delta, hu)
-VALUES(@ts, @doc_id, @item_id, @location_id, @qty_delta, @hu);
+INSERT INTO ledger(ts, doc_id, item_id, location_id, qty_delta, hu_code, hu)
+VALUES(@ts, @doc_id, @item_id, @location_id, @qty_delta, @hu_code, @hu);
 ");
             command.Parameters.AddWithValue("@ts", ToDbDate(entry.Timestamp));
             command.Parameters.AddWithValue("@doc_id", entry.DocId);
             command.Parameters.AddWithValue("@item_id", entry.ItemId);
             command.Parameters.AddWithValue("@location_id", entry.LocationId);
             command.Parameters.AddWithValue("@qty_delta", entry.QtyDelta);
-            command.Parameters.AddWithValue("@hu", string.IsNullOrWhiteSpace(entry.Hu) ? DBNull.Value : entry.Hu);
+            command.Parameters.AddWithValue("@hu_code", string.IsNullOrWhiteSpace(entry.HuCode) ? DBNull.Value : entry.HuCode);
+            command.Parameters.AddWithValue("@hu", string.IsNullOrWhiteSpace(entry.HuCode) ? DBNull.Value : entry.HuCode);
             command.ExecuteNonQuery();
             return 0;
         });
@@ -1253,11 +1258,33 @@ VALUES(@ts, @doc_id, @item_id, @location_id, @qty_delta, @hu);
 
     public double GetLedgerBalance(long itemId, long locationId)
     {
+        return GetLedgerBalance(itemId, locationId, null);
+    }
+
+    public double GetLedgerBalance(long itemId, long locationId, string? huCode)
+    {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT COALESCE(SUM(qty_delta), 0) FROM ledger WHERE item_id = @item_id AND location_id = @location_id");
+            var sql = @"
+SELECT COALESCE(SUM(qty_delta), 0)
+FROM ledger
+WHERE item_id = @item_id AND location_id = @location_id";
+            if (string.IsNullOrWhiteSpace(huCode))
+            {
+                sql += " AND hu_code IS NULL AND hu IS NULL";
+            }
+            else
+            {
+                sql += " AND (hu_code = @hu OR (hu_code IS NULL AND hu = @hu))";
+            }
+
+            using var command = CreateCommand(connection, sql);
             command.Parameters.AddWithValue("@item_id", itemId);
             command.Parameters.AddWithValue("@location_id", locationId);
+            if (!string.IsNullOrWhiteSpace(huCode))
+            {
+                command.Parameters.AddWithValue("@hu", huCode);
+            }
             var result = command.ExecuteScalar();
             return result == null || result == DBNull.Value ? 0 : Convert.ToDouble(result, CultureInfo.InvariantCulture);
         });
@@ -1268,12 +1295,12 @@ VALUES(@ts, @doc_id, @item_id, @location_id, @qty_delta, @hu);
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT hu
+SELECT COALESCE(hu_code, hu)
 FROM ledger
 WHERE location_id = @location_id
-GROUP BY hu
+GROUP BY COALESCE(hu_code, hu)
 HAVING COALESCE(SUM(qty_delta), 0) > 0
-ORDER BY hu;
+ORDER BY COALESCE(hu_code, hu);
 ");
             command.Parameters.AddWithValue("@location_id", locationId);
             using var reader = command.ExecuteReader();
@@ -1292,11 +1319,11 @@ ORDER BY hu;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT hu
+SELECT COALESCE(hu_code, hu)
 FROM ledger
-WHERE hu IS NOT NULL
-GROUP BY hu
-ORDER BY hu;
+WHERE hu_code IS NOT NULL OR hu IS NOT NULL
+GROUP BY COALESCE(hu_code, hu)
+ORDER BY COALESCE(hu_code, hu);
 ");
             using var reader = command.ExecuteReader();
             var list = new List<string>();
@@ -1323,11 +1350,11 @@ INNER JOIN items i ON i.id = l.item_id
 WHERE l.location_id = @location_id";
             if (string.IsNullOrWhiteSpace(huCode))
             {
-                sql += " AND l.hu IS NULL";
+                sql += " AND l.hu_code IS NULL AND l.hu IS NULL";
             }
             else
             {
-                sql += " AND l.hu = @hu";
+                sql += " AND (l.hu_code = @hu OR (l.hu_code IS NULL AND l.hu = @hu))";
             }
             sql += "\nGROUP BY i.id HAVING COALESCE(SUM(l.qty_delta), 0) > 0 ORDER BY i.name;";
 
@@ -1350,31 +1377,7 @@ WHERE l.location_id = @location_id";
 
     public double GetAvailableQty(long itemId, long locationId, string? huCode)
     {
-        return WithConnection(connection =>
-        {
-            var sql = @"
-SELECT COALESCE(SUM(qty_delta), 0)
-FROM ledger
-WHERE item_id = @item_id AND location_id = @location_id";
-            if (string.IsNullOrWhiteSpace(huCode))
-            {
-                sql += " AND hu IS NULL";
-            }
-            else
-            {
-                sql += " AND hu = @hu";
-            }
-
-            using var command = CreateCommand(connection, sql);
-            command.Parameters.AddWithValue("@item_id", itemId);
-            command.Parameters.AddWithValue("@location_id", locationId);
-            if (!string.IsNullOrWhiteSpace(huCode))
-            {
-                command.Parameters.AddWithValue("@hu", huCode);
-            }
-            var result = command.ExecuteScalar();
-            return result == null || result == DBNull.Value ? 0 : Convert.ToDouble(result, CultureInfo.InvariantCulture);
-        });
+        return GetLedgerBalance(itemId, locationId, huCode);
     }
 
     public IReadOnlyDictionary<string, double> GetLedgerTotalsByHu()
@@ -1382,10 +1385,10 @@ WHERE item_id = @item_id AND location_id = @location_id";
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT hu, COALESCE(SUM(qty_delta), 0)
+SELECT COALESCE(hu_code, hu), COALESCE(SUM(qty_delta), 0)
 FROM ledger
-WHERE hu IS NOT NULL
-GROUP BY hu;
+WHERE hu_code IS NOT NULL OR hu IS NOT NULL
+GROUP BY COALESCE(hu_code, hu);
 ");
             using var reader = command.ExecuteReader();
             var totals = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
@@ -1400,6 +1403,39 @@ GROUP BY hu;
             }
 
             return totals;
+        });
+    }
+
+    public IReadOnlyList<HuStockRow> GetHuStockRows()
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT COALESCE(hu_code, hu), item_id, location_id, COALESCE(SUM(qty_delta), 0) AS qty
+FROM ledger
+WHERE hu_code IS NOT NULL OR hu IS NOT NULL
+GROUP BY COALESCE(hu_code, hu), item_id, location_id
+HAVING COALESCE(SUM(qty_delta), 0) != 0;
+");
+            using var reader = command.ExecuteReader();
+            var rows = new List<HuStockRow>();
+            while (reader.Read())
+            {
+                if (reader.IsDBNull(0))
+                {
+                    continue;
+                }
+
+                rows.Add(new HuStockRow
+                {
+                    HuCode = reader.GetString(0),
+                    ItemId = reader.GetInt64(1),
+                    LocationId = reader.GetInt64(2),
+                    Qty = reader.GetDouble(3)
+                });
+            }
+
+            return rows;
         });
     }
 
@@ -1752,6 +1788,13 @@ SELECT last_insert_rowid();
         command.ExecuteNonQuery();
     }
 
+    private static void BackfillLedgerHuCode(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE ledger SET hu_code = hu WHERE hu_code IS NULL AND hu IS NOT NULL;";
+        command.ExecuteNonQuery();
+    }
+
     private static string BuildItemsQuery(string? search)
     {
         if (string.IsNullOrWhiteSpace(search))
@@ -1765,7 +1808,7 @@ SELECT last_insert_rowid();
     private static string BuildStockQuery(string? search)
     {
         var baseQuery = @"
-SELECT i.id, i.name, i.barcode, l.code, led.hu, SUM(led.qty_delta) AS qty, i.base_uom
+SELECT i.id, i.name, i.barcode, l.code, COALESCE(led.hu_code, led.hu), SUM(led.qty_delta) AS qty, i.base_uom
 FROM ledger led
 INNER JOIN items i ON i.id = led.item_id
 INNER JOIN locations l ON l.id = led.location_id
@@ -1776,7 +1819,7 @@ INNER JOIN locations l ON l.id = led.location_id
             baseQuery += "WHERE i.name LIKE @search OR i.barcode LIKE @search OR l.code LIKE @search\n";
         }
 
-        baseQuery += "GROUP BY i.id, i.name, i.barcode, i.base_uom, l.id, led.hu HAVING qty != 0 ORDER BY i.name, l.code, led.hu";
+        baseQuery += "GROUP BY i.id, i.name, i.barcode, i.base_uom, l.id, COALESCE(led.hu_code, led.hu) HAVING qty != 0 ORDER BY i.name, l.code, COALESCE(led.hu_code, led.hu)";
         return baseQuery;
     }
 
