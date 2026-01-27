@@ -770,10 +770,14 @@
       return rows
         .map(function (row) {
           var qtyText = String(row.qtyBase != null ? row.qtyBase : 0);
+          var locationLabel = formatLocationLabel(row.code, row.name);
+          if (row.hu) {
+            locationLabel += " — " + row.hu;
+          }
           return (
             '<div class="stock-location-row">' +
             '  <div class="stock-location-label">' +
-            escapeHtml(formatLocationLabel(row.code, row.name)) +
+            escapeHtml(locationLabel) +
             "</div>" +
             '  <div class="stock-location-qty">' +
             escapeHtml(qtyText) +
@@ -1080,6 +1084,7 @@
     var lookupError = null;
     var lookupConfirm = null;
     var lookupValue = null;
+    var lastHuRawInput = "";
     var scanBuffer = "";
     var scanBufferTimer = null;
     var overlayKeyListener = null;
@@ -1147,12 +1152,24 @@
 
     function loadHuDetails(huCode) {
       setMessage("");
-      if (!huCode) {
-        setMessage("Неверный формат HU.");
+      var normalized = extractHuCode(huCode);
+      if (!normalized) {
+        var rawValue = normalizeValue(huCode).toUpperCase();
+        if (!rawValue) {
+          rawValue = lastHuRawInput;
+        }
+        setMessage(
+          rawValue
+            ? "Неверный формат HU: " + rawValue
+            : "Неверный формат HU."
+        );
+        if (window.console) {
+          console.log("[hu] invalid code", { raw: rawValue, input: huCode });
+        }
         return;
       }
 
-      TsdStorage.getHuStockByCode(huCode)
+      TsdStorage.getHuStockByCode(normalized)
         .then(function (entry) {
           if (!entry) {
             setStatus("Данные по ПК: отсутствуют");
@@ -1171,10 +1188,10 @@
           });
           TsdStorage.getItemsByIds(itemIds)
             .then(function (itemsMap) {
-              renderDetails(huCode, entry, itemsMap || {});
+              renderDetails(normalized, entry, itemsMap || {});
             })
             .catch(function () {
-              renderDetails(huCode, entry, {});
+              renderDetails(normalized, entry, {});
             });
         })
         .catch(function () {
@@ -1182,24 +1199,57 @@
         });
     }
 
+    function extractHuCode(value) {
+      var normalized = normalizeValue(value).toUpperCase();
+      if (!normalized) {
+        return "";
+      }
+      normalized = normalized
+        .replace(/\u041D/g, "H") // Cyrillic Н -> Latin H
+        .replace(/\u0423/g, "U"); // Cyrillic У -> Latin U
+      var cleaned = normalized.replace(/[^A-Z0-9-]/g, "");
+      if (!cleaned) {
+        return "";
+      }
+      var match = cleaned.match(/HU-?\d{6}/);
+      if (!match) {
+        if (window.console) {
+          console.log("[hu] no match", { normalized: normalized, cleaned: cleaned });
+        }
+        return "";
+      }
+      var digits = match[0].replace(/[^0-9]/g, "");
+      if (digits.length !== 6) {
+        return "";
+      }
+      return "HU-" + digits;
+    }
+
     function isValidHuFormat(value) {
-      return /^HU-\d{6}$/.test(value);
+      return !!extractHuCode(value);
     }
 
     function setLookupValue(rawValue, showError) {
       if (!lookupInput) {
         return;
       }
-      var trimmed = normalizeValue(rawValue).toUpperCase();
-      if (!trimmed || !isValidHuFormat(trimmed)) {
+      var rawNormalized = normalizeValue(rawValue).toUpperCase();
+      lastHuRawInput = rawNormalized;
+      var trimmed = extractHuCode(rawValue);
+      if (!trimmed) {
         lookupValue = null;
-        lookupInput.value = trimmed;
+        lookupInput.value = rawNormalized;
         if (lookupError) {
           lookupError.textContent =
-            showError && trimmed ? "Неверный формат HU." : "";
+            showError && rawNormalized
+              ? "Неверный формат HU: " + rawNormalized
+              : "";
         }
         if (lookupConfirm) {
           lookupConfirm.disabled = true;
+        }
+        if (showError && window.console) {
+          console.log("[hu] scan raw", rawNormalized);
         }
         return;
       }
@@ -1222,26 +1272,31 @@
       }
     }
 
+    function finalizeScanBuffer(showError) {
+      if (!scanBuffer) {
+        return;
+      }
+      var value = scanBuffer;
+      clearScanBuffer();
+      setLookupValue(value, showError);
+    }
+
     function scheduleScanBufferReset() {
       if (scanBufferTimer) {
         clearTimeout(scanBufferTimer);
       }
       scanBufferTimer = window.setTimeout(function () {
-        clearScanBuffer();
-      }, 400);
+        finalizeScanBuffer(true);
+      }, 300);
     }
 
     function handleScanKeydown(event) {
       if (!lookupOverlay) {
         return;
       }
-      if (event.key === "Enter") {
-        if (scanBuffer) {
-          var value = scanBuffer;
-          clearScanBuffer();
-          setLookupValue(value, true);
-          event.preventDefault();
-        }
+      if (event.key === "Enter" || event.key === "Tab") {
+        finalizeScanBuffer(true);
+        event.preventDefault();
         return;
       }
       if (
@@ -1315,8 +1370,9 @@
         if (!lookupValue) {
           return;
         }
+        var confirmedValue = lookupValue;
         closeOverlay();
-        loadHuDetails(lookupValue);
+        loadHuDetails(confirmedValue);
       }
 
       if (lookupInput) {
@@ -4299,7 +4355,11 @@
         dataCountsText.textContent = "";
         return;
       }
-      dataStatusText.textContent = "Данные обновлены: " + statusInfo.exportedAt;
+      var huStatus = statusInfo.huExportedAt
+        ? "HU: " + statusInfo.huExportedAt
+        : "HU: отсутствует";
+      dataStatusText.textContent =
+        "Данные обновлены: " + statusInfo.exportedAt + " (" + huStatus + ")";
       dataCountsText.textContent =
         "Товары: " +
         statusInfo.counts.items +
@@ -4308,7 +4368,9 @@
         " · Локации: " +
         statusInfo.counts.locations +
         " · Остатки: " +
-        statusInfo.counts.stock;
+        statusInfo.counts.stock +
+        " · HU: " +
+        (statusInfo.counts.huStock || 0);
     }
 
     TsdStorage.getDataStatus()
@@ -4350,6 +4412,9 @@
               })
               .then(function (statusInfo) {
                 renderDataStatus(statusInfo);
+                if (statusInfo && window.console) {
+                  console.log("[import] data status:", statusInfo);
+                }
               })
               .catch(function (error) {
                 if (dataStatusText) {

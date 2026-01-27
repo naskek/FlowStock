@@ -1,6 +1,10 @@
  (function (global) {
   "use strict";
 
+  var FORCE_ONLINE = true;
+  var ONLINE_ERROR_MESSAGE = "Нет связи с сервером LightWMS. Проверьте Wi-Fi.";
+  var PING_TIMEOUT_MS = 4000;
+
   var DB_NAME = "tsd_app";
   var DB_VERSION = 8;
   var STORE_SETTINGS = "settings";
@@ -17,6 +21,63 @@
   var STORE_ORDER_LINES = "orderLines";
   var db = null;
   var locationCache = null;
+
+  function ensureOnline() {
+    if (!navigator.onLine) {
+      return Promise.reject(new Error(ONLINE_ERROR_MESSAGE));
+    }
+    var controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    var timer = controller
+      ? window.setTimeout(function () {
+          controller.abort();
+        }, PING_TIMEOUT_MS)
+      : null;
+
+    return fetch("/api/ping", {
+      method: "GET",
+      cache: "no-store",
+      signal: controller ? controller.signal : undefined,
+    })
+      .then(function (response) {
+        if (!response.ok) {
+          throw new Error(ONLINE_ERROR_MESSAGE);
+        }
+        return true;
+      })
+      .catch(function () {
+        throw new Error(ONLINE_ERROR_MESSAGE);
+      })
+      .finally(function () {
+        if (timer) {
+          clearTimeout(timer);
+        }
+      });
+  }
+
+  function wrapOnline(storage) {
+    var wrapped = {};
+    Object.keys(storage).forEach(function (key) {
+      var value = storage[key];
+      if (typeof value === "function") {
+        wrapped[key] = function () {
+          var args = arguments;
+          return ensureOnline()
+            .then(function () {
+              return value.apply(storage, args);
+            })
+            .catch(function (error) {
+              if (error && error.message === ONLINE_ERROR_MESSAGE) {
+                alert(ONLINE_ERROR_MESSAGE);
+              }
+              return Promise.reject(error);
+            });
+        };
+        return;
+      }
+      wrapped[key] = value;
+    });
+    return wrapped;
+  }
 
   function invalidateLocationCache() {
     locationCache = null;
@@ -757,6 +818,10 @@
           .then(function () {
             metaStore.put({ key: "dataExportedAt", value: normalized.exportedAt });
             metaStore.put({ key: "schemaVersion", value: normalized.schemaVersion });
+            metaStore.put({
+              key: "huStockExportedAt",
+              value: normalized.huStock ? normalized.huStock.exportedAt : "",
+            });
 
             normalized.uoms.forEach(function (uom) {
               uomsStore.put(uom);
@@ -849,10 +914,13 @@
       countStore(STORE_LOCATIONS),
       countStore(STORE_ORDERS),
       countStore(STORE_STOCK),
+      countStore(STORE_HU_STOCK),
+      getMetaValue("huStockExportedAt"),
     ]).then(function (results) {
       return {
         exportedAt: results[0] || null,
         schemaVersion: results[1] || null,
+        huExportedAt: results[9] || null,
         counts: {
           uoms: results[2] || 0,
           items: results[3] || 0,
@@ -860,6 +928,7 @@
           locations: results[5] || 0,
           orders: results[6] || 0,
           stock: results[7] || 0,
+          huStock: results[8] || 0,
         },
       };
     });
@@ -1577,7 +1646,7 @@
     });
   }
 
-  global.TsdStorage = {
+  var offlineStorage = {
     init: init,
     getSetting: getSetting,
     setSetting: setSetting,
@@ -1611,4 +1680,6 @@
     listLocalItemsForExport: listLocalItemsForExport,
     markLocalItemsExported: markLocalItemsExported,
   };
+
+  global.TsdStorage = FORCE_ONLINE ? wrapOnline(offlineStorage) : offlineStorage;
 })(window);

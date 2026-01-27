@@ -151,6 +151,30 @@ CREATE TABLE IF NOT EXISTS import_errors (
     raw_json TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS api_docs (
+    doc_uid TEXT PRIMARY KEY,
+    doc_id INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_api_docs_doc ON api_docs(doc_id);
+CREATE TABLE IF NOT EXISTS api_events (
+    event_id TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    doc_uid TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_api_events_doc ON api_events(doc_uid);
+CREATE TABLE IF NOT EXISTS stock_reservation_lines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    doc_uid TEXT NOT NULL,
+    item_id INTEGER NOT NULL,
+    location_id INTEGER NOT NULL,
+    qty REAL NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_stock_reservation_doc ON stock_reservation_lines(doc_uid);
+CREATE INDEX IF NOT EXISTS ix_stock_reservation_item_loc ON stock_reservation_lines(item_id, location_id);
 ";
         command.ExecuteNonQuery();
 

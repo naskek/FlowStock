@@ -1,4 +1,4 @@
-const CACHE_NAME = "tsd-shell-v1";
+const CACHE_NAME = "tsd-shell-v6";
 const ASSETS = [
   "./",
   "./index.html",
