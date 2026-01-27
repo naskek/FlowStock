@@ -505,13 +505,6 @@ static Location? ResolveLocation(SqliteDataStore store, string? code)
     return store.FindLocationByCode(code.Trim());
 }
 
-private sealed class LocationResolution
-{
-    public Location? Location { get; init; }
-    public string? Error { get; init; }
-    public IReadOnlyList<Location>? Matches { get; init; }
-}
-
 static LocationResolution ResolveLocationForEvent(SqliteDataStore store, string? code, int? id)
 {
     if (id.HasValue)
@@ -607,4 +600,11 @@ static Item? FindItemByBarcodeVariant(SqliteDataStore store, string barcode)
     }
 
     return null;
+}
+
+sealed class LocationResolution
+{
+    public Location? Location { get; init; }
+    public string? Error { get; init; }
+    public IReadOnlyList<Location>? Matches { get; init; }
 }
