@@ -12,6 +12,14 @@
 
 > Важно: для установки и Service Worker нужен HTTPS (или localhost).
 
+## Запуск сервера (LightWms.Server)
+1. На ПК запустите:
+   `dotnet run --project apps/windows/LightWms.Server --launch-profile https`
+2. Откройте в браузере:
+   `https://<ip-вашего-пк>:7153/index.html`
+3. Для dev-сертификата (если браузер ругается):
+   `dotnet dev-certs https --trust`
+
 ## Запуск на Urovo CT48
 1. Скопируйте папку `tsd` на устройство.
 2. В файловом менеджере откройте `tsd/index.html`.

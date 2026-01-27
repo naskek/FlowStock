@@ -1,20 +1,24 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using LightWms.Core.Models;
 using LightWms.Core.Services;
 using LightWms.Data;
 using LightWms.Server;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.Extensions.FileProviders;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddSingleton(sp =>
+builder.Services.AddSingleton<SqliteDataStore>(sp =>
 {
     Directory.CreateDirectory(ServerPaths.BaseDir);
     var store = new SqliteDataStore(ServerPaths.DatabasePath);
     store.Initialize();
     return store;
 });
+builder.Services.AddSingleton<LightWms.Core.Abstractions.IDataStore>(sp => sp.GetRequiredService<SqliteDataStore>());
 builder.Services.AddSingleton<DocumentService>();
 builder.Services.AddSingleton(new ApiDocStore(ServerPaths.DatabasePath));
 
@@ -22,17 +26,43 @@ var app = builder.Build();
 
 app.UseHttpsRedirection();
 
+app.Use(async (context, next) =>
+{
+    var sw = Stopwatch.StartNew();
+    await next();
+    sw.Stop();
+
+    var path = context.Request.Path.Value ?? "/";
+    if (!string.IsNullOrWhiteSpace(context.Request.QueryString.Value))
+    {
+        path += context.Request.QueryString.Value;
+    }
+
+    app.Logger.LogInformation(
+        "{Method} {Path} => {StatusCode} in {Elapsed}ms",
+        context.Request.Method,
+        path,
+        context.Response.StatusCode,
+        sw.ElapsedMilliseconds);
+});
+
 var tsdRoot = ServerPaths.TsdRoot;
+var tsdIndexPath = Path.Combine(tsdRoot, "index.html");
 if (Directory.Exists(tsdRoot))
 {
     var fileProvider = new PhysicalFileProvider(tsdRoot);
+    var contentTypeProvider = new FileExtensionContentTypeProvider();
+    contentTypeProvider.Mappings[".jsonl"] = "application/x-ndjson";
+    contentTypeProvider.Mappings[".webmanifest"] = "application/manifest+json";
+
     app.UseDefaultFiles(new DefaultFilesOptions
     {
         FileProvider = fileProvider
     });
     app.UseStaticFiles(new StaticFileOptions
     {
-        FileProvider = fileProvider
+        FileProvider = fileProvider,
+        ContentTypeProvider = contentTypeProvider
     });
 }
 
@@ -41,7 +71,8 @@ app.MapGet("/api/ping", () =>
     return Results.Ok(new
     {
         ok = true,
-        server_time = DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture)
+        server_time = DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture),
+        version = typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown"
     });
 });
 
@@ -163,6 +194,21 @@ app.MapPost("/api/docs/{docUid}/close", (string docUid, CloseDocRequest request,
 
     return Results.Ok(new ApiResult(true));
 });
+
+if (Directory.Exists(tsdRoot) && File.Exists(tsdIndexPath))
+{
+    app.MapFallback(async context =>
+    {
+        if (context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase))
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+
+        context.Response.ContentType = "text/html; charset=utf-8";
+        await context.Response.SendFileAsync(tsdIndexPath);
+    });
+}
 
 app.Run();
 
