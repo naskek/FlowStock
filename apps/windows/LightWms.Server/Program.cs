@@ -223,11 +223,6 @@ app.MapPost("/api/ops", async (HttpRequest request, SqliteDataStore store, Docum
         return Results.BadRequest(new ApiResult(false, "INVALID_QTY"));
     }
 
-    if (string.IsNullOrWhiteSpace(opEvent.FromLoc) || string.IsNullOrWhiteSpace(opEvent.ToLoc))
-    {
-        return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
-    }
-
     var barcode = opEvent.Barcode.Trim();
     var item = store.FindItemByBarcode(barcode) ?? FindItemByBarcodeVariant(store, barcode);
     if (item == null)
@@ -235,12 +230,20 @@ app.MapPost("/api/ops", async (HttpRequest request, SqliteDataStore store, Docum
         return Results.BadRequest(new ApiResult(false, "UNKNOWN_BARCODE"));
     }
 
-    var fromLocation = ResolveLocation(store, opEvent.FromLoc);
-    var toLocation = ResolveLocation(store, opEvent.ToLoc);
-    if (fromLocation == null || toLocation == null)
+    var fromResult = ResolveLocationForEvent(store, opEvent.FromLoc, opEvent.FromLocationId);
+    if (fromResult.Error != null)
     {
-        return Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION"));
+        return Results.BadRequest(BuildLocationErrorResult(fromResult, opEvent, store));
     }
+
+    var toResult = ResolveLocationForEvent(store, opEvent.ToLoc, opEvent.ToLocationId);
+    if (toResult.Error != null)
+    {
+        return Results.BadRequest(BuildLocationErrorResult(toResult, opEvent, store));
+    }
+
+    var fromLocation = fromResult.Location!;
+    var toLocation = toResult.Location!;
 
     var docRef = opEvent.DocRef.Trim();
     var existingDoc = store.FindDocByRef(docRef, DocType.Move);
@@ -262,6 +265,13 @@ app.MapPost("/api/ops", async (HttpRequest request, SqliteDataStore store, Docum
 
     try
     {
+        var fromHu = NormalizeHu(opEvent.FromHu);
+        var toHu = NormalizeHu(opEvent.ToHu);
+        if (string.IsNullOrWhiteSpace(toHu) && !string.IsNullOrWhiteSpace(opEvent.HuCode))
+        {
+            toHu = NormalizeHu(opEvent.HuCode);
+        }
+
         docs.AddDocLine(
             docId,
             item.Id,
@@ -270,8 +280,8 @@ app.MapPost("/api/ops", async (HttpRequest request, SqliteDataStore store, Docum
             toLocation.Id,
             null,
             null,
-            NormalizeHu(opEvent.FromHu),
-            NormalizeHu(opEvent.ToHu));
+            fromHu,
+            toHu);
     }
     catch (Exception ex)
     {
@@ -438,13 +448,19 @@ static string ResolveDbPath(IConfiguration configuration)
 
 static void LogDbInfo(ILogger logger, string dbPath)
 {
-    var info = BuildDbInfo(dbPath);
+    var fileInfo = new FileInfo(dbPath);
+    var exists = fileInfo.Exists;
+    var sizeBytes = exists ? fileInfo.Length : 0;
+    var lastWriteUtc = exists
+        ? fileInfo.LastWriteTimeUtc.ToString("O", CultureInfo.InvariantCulture)
+        : null;
+
     logger.LogInformation(
         "DB: {Path} exists={Exists} size={Size} lastWriteUtc={LastWriteUtc}",
-        info.dbPath,
-        info.exists,
-        info.sizeBytes,
-        info.lastWriteUtc);
+        dbPath,
+        exists,
+        sizeBytes,
+        lastWriteUtc);
 }
 
 static object BuildDbInfo(string dbPath)
@@ -487,6 +503,95 @@ static Location? ResolveLocation(SqliteDataStore store, string? code)
     }
 
     return store.FindLocationByCode(code.Trim());
+}
+
+private sealed class LocationResolution
+{
+    public Location? Location { get; init; }
+    public string? Error { get; init; }
+    public IReadOnlyList<Location>? Matches { get; init; }
+}
+
+static LocationResolution ResolveLocationForEvent(SqliteDataStore store, string? code, int? id)
+{
+    if (id.HasValue)
+    {
+        var byId = store.FindLocationById(id.Value);
+        return byId != null
+            ? new LocationResolution { Location = byId }
+            : new LocationResolution { Error = "UNKNOWN_LOCATION" };
+    }
+
+    var trimmed = string.IsNullOrWhiteSpace(code) ? null : code.Trim();
+    if (string.IsNullOrWhiteSpace(trimmed))
+    {
+        return new LocationResolution { Error = "MISSING_LOCATION" };
+    }
+
+    var locations = store.GetLocations();
+    var byCode = locations
+        .Where(location => string.Equals(location.Code, trimmed, StringComparison.OrdinalIgnoreCase))
+        .ToList();
+    if (byCode.Count == 1)
+    {
+        return new LocationResolution { Location = byCode[0] };
+    }
+
+    if (byCode.Count > 1)
+    {
+        return new LocationResolution { Error = "AMBIGUOUS_LOCATION", Matches = byCode };
+    }
+
+    var byName = locations
+        .Where(location => string.Equals(location.Name, trimmed, StringComparison.OrdinalIgnoreCase))
+        .ToList();
+    if (byName.Count == 1)
+    {
+        return new LocationResolution { Location = byName[0] };
+    }
+
+    if (byName.Count > 1)
+    {
+        return new LocationResolution { Error = "AMBIGUOUS_LOCATION", Matches = byName };
+    }
+
+    return new LocationResolution { Error = "UNKNOWN_LOCATION" };
+}
+
+static object BuildLocationErrorResult(LocationResolution resolution, OperationEventRequest request, SqliteDataStore store)
+{
+    var sampleCodes = store.GetLocations()
+        .Select(location => location.Code)
+        .Where(code => !string.IsNullOrWhiteSpace(code))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .Take(5)
+        .ToList();
+
+    object? matches = null;
+    if (resolution.Matches != null && resolution.Matches.Count > 0)
+    {
+        matches = resolution.Matches
+            .Select(location => new { id = location.Id, code = location.Code, name = location.Name })
+            .ToList();
+    }
+
+    return new
+    {
+        ok = false,
+        error = resolution.Error,
+        details = new
+        {
+            parsed = new
+            {
+                from_loc = request.FromLoc,
+                to_loc = request.ToLoc,
+                from_location_id = request.FromLocationId,
+                to_location_id = request.ToLocationId
+            },
+            matches,
+            sample_codes = sampleCodes
+        }
+    };
 }
 
 static Item? FindItemByBarcodeVariant(SqliteDataStore store, string barcode)

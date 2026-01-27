@@ -80,6 +80,15 @@ public sealed class OperationEventRequest
     [JsonPropertyName("to_hu")]
     public string? ToHu { get; set; }
 
+    [JsonPropertyName("hu_code")]
+    public string? HuCode { get; set; }
+
+    [JsonPropertyName("from_location_id")]
+    public int? FromLocationId { get; set; }
+
+    [JsonPropertyName("to_location_id")]
+    public int? ToLocationId { get; set; }
+
     [JsonPropertyName("partner_code")]
     public string? PartnerCode { get; set; }
 
