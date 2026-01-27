@@ -4,6 +4,11 @@
   var FORCE_ONLINE = true;
   var ONLINE_ERROR_MESSAGE = "Нет связи с сервером LightWMS. Проверьте Wi-Fi.";
   var PING_TIMEOUT_MS = 4000;
+  var BASE_URL_SETTING = "base_url";
+  var baseUrlCache = null;
+  var lastPingAt = 0;
+  var lastPingOk = false;
+  var PING_CACHE_MS = 10000;
 
   var DB_NAME = "tsd_app";
   var DB_VERSION = 8;
@@ -22,10 +27,48 @@
   var db = null;
   var locationCache = null;
 
+  function normalizeBaseUrl(value) {
+    var url = String(value || "").trim();
+    if (!url) {
+      return "";
+    }
+    return url.replace(/\/+$/, "");
+  }
+
+  function getDefaultBaseUrl() {
+    if (window.location && String(window.location.origin || "").indexOf("http") === 0) {
+      return normalizeBaseUrl(window.location.origin);
+    }
+    return "https://localhost:7153";
+  }
+
+  function getBaseUrl() {
+    if (baseUrlCache) {
+      return Promise.resolve(baseUrlCache);
+    }
+    return getSetting(BASE_URL_SETTING)
+      .then(function (value) {
+        var normalized = normalizeBaseUrl(value) || getDefaultBaseUrl();
+        baseUrlCache = normalized;
+        return normalized;
+      })
+      .catch(function () {
+        baseUrlCache = getDefaultBaseUrl();
+        return baseUrlCache;
+      });
+  }
+
   function ensureOnline() {
+    var now = Date.now();
+    if (lastPingAt && now - lastPingAt < PING_CACHE_MS) {
+      return lastPingOk ? Promise.resolve(true) : Promise.reject(new Error(ONLINE_ERROR_MESSAGE));
+    }
     if (!navigator.onLine) {
+      lastPingAt = now;
+      lastPingOk = false;
       return Promise.reject(new Error(ONLINE_ERROR_MESSAGE));
     }
+
     var controller = typeof AbortController !== "undefined" ? new AbortController() : null;
     var timer = controller
       ? window.setTimeout(function () {
@@ -33,18 +76,25 @@
         }, PING_TIMEOUT_MS)
       : null;
 
-    return fetch("/api/ping", {
-      method: "GET",
-      cache: "no-store",
-      signal: controller ? controller.signal : undefined,
-    })
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetch(baseUrl + "/api/ping", {
+          method: "GET",
+          cache: "no-store",
+          signal: controller ? controller.signal : undefined,
+        });
+      })
       .then(function (response) {
+        lastPingAt = Date.now();
+        lastPingOk = response.ok;
         if (!response.ok) {
           throw new Error(ONLINE_ERROR_MESSAGE);
         }
         return true;
       })
       .catch(function () {
+        lastPingAt = Date.now();
+        lastPingOk = false;
         throw new Error(ONLINE_ERROR_MESSAGE);
       })
       .finally(function () {
@@ -54,11 +104,23 @@
       });
   }
 
+  var ONLINE_SKIP = {
+    getSetting: true,
+    setSetting: true,
+    getBaseUrl: true,
+    init: true,
+    ensureDefaults: true,
+  };
+
   function wrapOnline(storage) {
     var wrapped = {};
     Object.keys(storage).forEach(function (key) {
       var value = storage[key];
       if (typeof value === "function") {
+        if (ONLINE_SKIP[key]) {
+          wrapped[key] = value.bind(storage);
+          return;
+        }
         wrapped[key] = function () {
           var args = arguments;
           return ensureOnline()
@@ -289,6 +351,9 @@
         var request = getSettingsStore("readwrite").put({ key: key, value: value });
 
         request.onsuccess = function () {
+          if (key === BASE_URL_SETTING) {
+            baseUrlCache = normalizeBaseUrl(value) || getDefaultBaseUrl();
+          }
           resolve(true);
         };
 
@@ -326,30 +391,41 @@
           return true;
         });
       })
-    .then(function () {
-      return getSetting("recentPartnerIds").then(function (value) {
-        if (!Array.isArray(value)) {
-          return setSetting("recentPartnerIds", []);
-        }
-        return true;
+      .then(function () {
+        return getSetting(BASE_URL_SETTING).then(function (value) {
+          if (!value || typeof value !== "string") {
+            var nextBase = getDefaultBaseUrl();
+            baseUrlCache = nextBase;
+            return setSetting(BASE_URL_SETTING, nextBase);
+          }
+          baseUrlCache = normalizeBaseUrl(value) || getDefaultBaseUrl();
+          return true;
+        });
+      })
+      .then(function () {
+        return getSetting("recentPartnerIds").then(function (value) {
+          if (!Array.isArray(value)) {
+            return setSetting("recentPartnerIds", []);
+          }
+          return true;
+        });
+      })
+      .then(function () {
+        return getSetting("recentLocationIds").then(function (value) {
+          if (!Array.isArray(value)) {
+            return setSetting("recentLocationIds", []);
+          }
+          return true;
+        });
+      })
+      .then(function () {
+        return getSetting("qtyStep").then(function (value) {
+          if (!value || isNaN(Number(value)) || Number(value) < 1) {
+            return setSetting("qtyStep", 1);
+          }
+          return true;
+        });
       });
-    })
-    .then(function () {
-      return getSetting("recentLocationIds").then(function (value) {
-        if (!Array.isArray(value)) {
-          return setSetting("recentLocationIds", []);
-        }
-        return true;
-      });
-    })
-    .then(function () {
-      return getSetting("qtyStep").then(function (value) {
-        if (!value || isNaN(Number(value)) || Number(value) < 1) {
-          return setSetting("qtyStep", 1);
-        }
-        return true;
-      });
-    });
   }
 
   function getDoc(id) {
@@ -1679,6 +1755,7 @@
     getTotalStockByItemId: getTotalStockByItemId,
     listLocalItemsForExport: listLocalItemsForExport,
     markLocalItemsExported: markLocalItemsExported,
+    getBaseUrl: getBaseUrl,
   };
 
   global.TsdStorage = FORCE_ONLINE ? wrapOnline(offlineStorage) : offlineStorage;

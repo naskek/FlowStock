@@ -11,6 +11,8 @@
   var scanSink = document.getElementById("scanSink");
   var currentRoute = null;
   var scanKeydownHandler = null;
+  var SERVER_PING_INTERVAL = 15000;
+  var serverStatus = { ok: null, checkedAt: 0 };
 
   var STATUS_ORDER = {
     DRAFT: 0,
@@ -25,9 +27,78 @@
       return;
     }
 
-    var online = navigator.onLine;
-    networkStatus.textContent = online ? "Онлайн" : "Оффлайн";
+    var online = serverStatus.ok;
+    networkStatus.textContent = online ? "Server: OK" : "Server: OFF";
     networkStatus.classList.toggle("is-offline", !online);
+  }
+
+  function normalizeBaseUrl(value) {
+    var url = String(value || "").trim();
+    if (!url) {
+      return "";
+    }
+    return url.replace(/\/+$/, "");
+  }
+
+  function getServerBaseUrl() {
+    return TsdStorage.getBaseUrl()
+      .then(function (value) {
+        var normalized = normalizeBaseUrl(value);
+        if (normalized) {
+          return normalized;
+        }
+        if (window.location && String(window.location.origin || "").indexOf("http") === 0) {
+          return normalizeBaseUrl(window.location.origin);
+        }
+        return "https://localhost:7153";
+      })
+      .catch(function () {
+        if (window.location && String(window.location.origin || "").indexOf("http") === 0) {
+          return normalizeBaseUrl(window.location.origin);
+        }
+        return "https://localhost:7153";
+      });
+  }
+
+  function pingServer(force) {
+    var now = Date.now();
+    if (!force && serverStatus.checkedAt && now - serverStatus.checkedAt < SERVER_PING_INTERVAL) {
+      updateNetworkStatus();
+      return Promise.resolve(!!serverStatus.ok);
+    }
+
+    return getServerBaseUrl()
+      .then(function (baseUrl) {
+        return fetch(baseUrl + "/api/ping", { method: "GET", cache: "no-store" })
+          .then(function (response) {
+            serverStatus.ok = response.ok;
+            serverStatus.checkedAt = Date.now();
+            updateNetworkStatus();
+            return response.ok;
+          })
+          .catch(function () {
+            serverStatus.ok = false;
+            serverStatus.checkedAt = Date.now();
+            updateNetworkStatus();
+            return false;
+          });
+      })
+      .catch(function () {
+        serverStatus.ok = false;
+        serverStatus.checkedAt = Date.now();
+        updateNetworkStatus();
+        return false;
+      });
+  }
+
+  function ensureServerAvailable() {
+    return pingServer(true).then(function (ok) {
+      if (!ok) {
+        alert("Нет связи с сервером LightWMS. Проверьте Wi-Fi.");
+        throw new Error("server_unavailable");
+      }
+      return true;
+    });
   }
 
   function setNavOrigin(value) {
@@ -4090,8 +4161,24 @@
           }
           return;
         }
-        doc.status = "READY";
-        saveDocState().then(refreshDocView);
+
+        finishBtn.disabled = true;
+        setDocStatus("Отправка на сервер...");
+        submitDocToServer(doc)
+          .then(function () {
+            setDocStatus("Отправлено на сервер");
+            return TsdStorage.deleteDoc(doc.id).catch(function () {
+              return true;
+            });
+          })
+          .then(function () {
+            navigate("/docs");
+          })
+          .catch(function (error) {
+            var message = error && error.message ? error.message : "Ошибка отправки на сервер";
+            setDocStatus(message);
+            finishBtn.disabled = false;
+          });
       });
     }
 
@@ -4622,6 +4709,75 @@
         missing: missingFields,
       });
     }
+  }
+
+  function submitDocToServer(doc) {
+    if (!doc || !doc.lines || !doc.lines.length) {
+      return Promise.reject(new Error("Нет строк для отправки"));
+    }
+
+    return ensureServerAvailable()
+      .then(function () {
+        return Promise.all([getServerBaseUrl(), TsdStorage.getSetting("device_id")]);
+      })
+      .then(function (result) {
+        var baseUrl = result[0];
+        var deviceId = result[1] || null;
+
+        var ops = doc.lines.map(function (line) {
+          return {
+            schema_version: 1,
+            event_id: createUuid(),
+            ts: new Date().toISOString(),
+            device_id: deviceId,
+            op: doc.op,
+            doc_ref: doc.doc_ref || "",
+            barcode: line.barcode,
+            qty: Number(line.qty) || 0,
+            from_loc: line.from || null,
+            to_loc: line.to || null,
+            from_hu: normalizeHuCode(line.from_hu) || null,
+            to_hu: normalizeHuCode(line.to_hu) || null,
+            partner_code: (doc.header && doc.header.partner_code) || null,
+            order_ref: (doc.header && doc.header.order_ref) || null,
+            reason_code: line.reason_code || (doc.header && doc.header.reason_code) || null,
+          };
+        });
+
+        return ops.reduce(function (chain, op) {
+          return chain.then(function () {
+            return fetch(baseUrl + "/api/ops", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(op),
+            })
+              .then(function (response) {
+                return response
+                  .json()
+                  .catch(function () {
+                    return null;
+                  })
+                  .then(function (payload) {
+                    if (!response.ok) {
+                      var errorText = (payload && payload.error) || "SERVER_ERROR";
+                      if (errorText === "UNSUPPORTED_OP") {
+                        errorText = "Сервер пока принимает только MOVE.";
+                      }
+                      throw new Error(errorText);
+                    }
+                    if (payload && payload.ok === false) {
+                      var apiError = payload.error || "SERVER_ERROR";
+                      if (apiError === "UNSUPPORTED_OP") {
+                        apiError = "Сервер пока принимает только MOVE.";
+                      }
+                      throw new Error(apiError);
+                    }
+                    return true;
+                  });
+              });
+          });
+        }, Promise.resolve(true));
+      });
   }
 
   function buildLineData(op, header) {
@@ -5216,9 +5372,18 @@
         return TsdStorage.ensureDefaults();
       })
       .then(function () {
-        updateNetworkStatus();
-        window.addEventListener("online", updateNetworkStatus);
-        window.addEventListener("offline", updateNetworkStatus);
+        pingServer(true);
+        window.setInterval(function () {
+          pingServer(false);
+        }, SERVER_PING_INTERVAL);
+        window.addEventListener("online", function () {
+          pingServer(true);
+        });
+        window.addEventListener("offline", function () {
+          serverStatus.ok = false;
+          serverStatus.checkedAt = Date.now();
+          updateNetworkStatus();
+        });
 
         if (backBtn) {
           backBtn.addEventListener("click", function () {
@@ -5226,28 +5391,28 @@
               navigate("/docs");
               return;
             }
-        var origin = getNavOrigin();
-        if (currentRoute.name === "home") {
-          navigate("/docs");
-        } else if (currentRoute.name === "docs") {
-          navigate("/home");
-        } else if (currentRoute.name === "doc" || currentRoute.name === "new") {
-          if (origin === "history") {
-            navigate("/docs");
-          } else {
-            navigate("/home");
-          }
-        } else if (currentRoute.name === "orders") {
-          navigate("/home");
-        } else if (currentRoute.name === "order") {
-          navigate("/orders");
-        } else if (currentRoute.name === "stock" || currentRoute.name === "settings") {
-          navigate("/home");
-        } else {
-          navigate("/home");
+            var origin = getNavOrigin();
+            if (currentRoute.name === "home") {
+              navigate("/docs");
+            } else if (currentRoute.name === "docs") {
+              navigate("/home");
+            } else if (currentRoute.name === "doc" || currentRoute.name === "new") {
+              if (origin === "history") {
+                navigate("/docs");
+              } else {
+                navigate("/home");
+              }
+            } else if (currentRoute.name === "orders") {
+              navigate("/home");
+            } else if (currentRoute.name === "order") {
+              navigate("/orders");
+            } else if (currentRoute.name === "stock" || currentRoute.name === "settings") {
+              navigate("/home");
+            } else {
+              navigate("/home");
+            }
+          });
         }
-      });
-    }
 
         if (settingsBtn) {
           settingsBtn.addEventListener("click", function () {
