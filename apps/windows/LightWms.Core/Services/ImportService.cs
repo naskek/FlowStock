@@ -16,6 +16,7 @@ public sealed class ImportService
     private const string ReasonMissingField = "MISSING_FIELD";
     private const string ReasonUnknownLocation = "UNKNOWN_LOCATION";
     private const string ReasonHuMismatch = "HU_MISMATCH";
+    private const string ReasonMoveHuRequired = "MOVE внутри склада требует from_hu/to_hu. Обновите ТСД или пересоздайте документ.";
 
     private readonly IDataStore _data;
     private readonly IHuRegistryUpdater? _huRegistry;
@@ -329,7 +330,7 @@ public sealed class ImportService
                 return;
             }
 
-            var (fromHu, toHu) = ResolveLineHu(importEvent.Type, huCode);
+            var (fromHu, toHu) = ResolveLineHu(importEvent, huCode);
             store.AddDocLine(new DocLine
             {
                 DocId = doc.Id,
@@ -686,6 +687,25 @@ public sealed class ImportService
 
         var timestamp = ParseTimestamp(dto.Ts) ?? DateTime.Now;
         var partnerCode = NormalizePartnerCode(dto.PartnerCode, dto.PartnerInn);
+        var fromLocation = NormalizeLocationCode(dto.FromLoc ?? dto.From);
+        var toLocation = NormalizeLocationCode(dto.ToLoc ?? dto.To);
+        var fromHu = NormalizeHuCode(dto.FromHu);
+        var toHu = NormalizeHuCode(dto.ToHu);
+        var huCode = NormalizeHuCode(dto.HuCode ?? dto.HandlingUnit);
+
+        if (docType == DocType.Move
+            && !string.IsNullOrWhiteSpace(fromLocation)
+            && !string.IsNullOrWhiteSpace(toLocation)
+            && string.Equals(fromLocation, toLocation, StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(fromHu)
+                || string.IsNullOrWhiteSpace(toHu)
+                || string.Equals(fromHu, toHu, StringComparison.OrdinalIgnoreCase))
+            {
+                errorReason = ReasonMoveHuRequired;
+                return false;
+            }
+        }
 
         importEvent = new ImportEvent
         {
@@ -696,13 +716,15 @@ public sealed class ImportService
             DocRef = dto.DocRef?.Trim() ?? string.Empty,
             Barcode = dto.Barcode.Trim(),
             Qty = dto.Qty.Value,
-            FromLocation = NormalizeLocationCode(dto.From),
-            ToLocation = NormalizeLocationCode(dto.To),
+            FromLocation = fromLocation,
+            ToLocation = toLocation,
+            FromHu = fromHu,
+            ToHu = toHu,
             PartnerId = dto.PartnerId,
             PartnerCode = partnerCode,
             OrderRef = dto.OrderRef?.Trim(),
             ReasonCode = dto.ReasonCode?.Trim(),
-            HuCode = NormalizeHuCode(dto.HuCode ?? dto.HandlingUnit)
+            HuCode = huCode
         };
 
         return true;
@@ -848,16 +870,20 @@ public sealed class ImportService
         return !string.Equals(existingHu.Trim(), incomingHu.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
-    private static (string? fromHu, string? toHu) ResolveLineHu(DocType type, string? huCode)
+    private static (string? fromHu, string? toHu) ResolveLineHu(ImportEvent importEvent, string? huCode)
     {
+        if (importEvent.Type == DocType.Move)
+        {
+            return (NormalizeHuCode(importEvent.FromHu), NormalizeHuCode(importEvent.ToHu));
+        }
+
         var normalized = NormalizeHuCode(huCode);
-        return type switch
+        return importEvent.Type switch
         {
             DocType.Inbound => (null, normalized),
             DocType.Inventory => (null, normalized),
             DocType.Outbound => (normalized, null),
             DocType.WriteOff => (normalized, null),
-            DocType.Move => (null, normalized),
             _ => (null, null)
         };
     }
@@ -934,11 +960,23 @@ public sealed class ImportService
         [JsonPropertyName("qty")]
         public double? Qty { get; set; }
 
+        [JsonPropertyName("from_loc")]
+        public string? FromLoc { get; set; }
+
+        [JsonPropertyName("to_loc")]
+        public string? ToLoc { get; set; }
+
         [JsonPropertyName("from")]
         public string? From { get; set; }
 
         [JsonPropertyName("to")]
         public string? To { get; set; }
+
+        [JsonPropertyName("from_hu")]
+        public string? FromHu { get; set; }
+
+        [JsonPropertyName("to_hu")]
+        public string? ToHu { get; set; }
 
         [JsonPropertyName("partner_id")]
         public long? PartnerId { get; set; }

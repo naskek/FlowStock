@@ -11,6 +11,8 @@ public sealed class ImportEvent
     public double Qty { get; init; }
     public string? FromLocation { get; init; }
     public string? ToLocation { get; init; }
+    public string? FromHu { get; init; }
+    public string? ToHu { get; init; }
     public long? PartnerId { get; init; }
     public string? PartnerCode { get; init; }
     public string? OrderRef { get; init; }
