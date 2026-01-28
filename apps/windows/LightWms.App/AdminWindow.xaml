@@ -7,7 +7,6 @@
     <Grid Margin="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
@@ -20,14 +19,7 @@
                 </StackPanel>
             </StackPanel>
         </GroupBox>
-        <GroupBox Header="Handling Unit" Grid.Row="1" Margin="0,12,0,0">
-            <StackPanel Margin="8">
-                <TextBlock Text="Удаление сгенерированных HU (статус ISSUED)." />
-                <Button Content="Удалить сгенерированные HU" Width="220" Margin="0,8,0,0"
-                        Click="DeleteIssuedHu_Click" />
-            </StackPanel>
-        </GroupBox>
-        <GroupBox Header="Опасная зона" Grid.Row="2" Margin="0,12,0,0">
+        <GroupBox Header="Опасная зона" Grid.Row="1" Margin="0,12,0,0">
             <StackPanel Margin="8">
                 <TextBlock Text="Выберите вариант сброса" FontWeight="SemiBold" />
                 <RadioButton x:Name="ResetMovementsRadio"
@@ -66,7 +58,7 @@
                 </StackPanel>
             </StackPanel>
         </GroupBox>
-        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
             <Button Content="Закрыть" Width="120" IsCancel="True" />
         </StackPanel>
     </Grid>

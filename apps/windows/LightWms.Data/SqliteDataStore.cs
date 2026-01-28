@@ -1567,6 +1567,108 @@ LIMIT 1;
         });
     }
 
+    public IReadOnlyList<HuRecord> GetHus(string? search, int take)
+    {
+        return WithConnection(connection =>
+        {
+            var normalizedTake = take < 1 ? 1 : take;
+            if (normalizedTake > 1000)
+            {
+                normalizedTake = 1000;
+            }
+
+            var sql = @"
+SELECT id, hu_code, status, created_at, created_by, closed_at, note
+FROM hus";
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                sql += " WHERE hu_code LIKE @search COLLATE NOCASE";
+            }
+
+            sql += "\nORDER BY id DESC LIMIT @take;";
+
+            using var command = CreateCommand(connection, sql);
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                command.Parameters.AddWithValue("@search", $"%{search.Trim()}%");
+            }
+            command.Parameters.AddWithValue("@take", normalizedTake);
+            using var reader = command.ExecuteReader();
+            var list = new List<HuRecord>();
+            while (reader.Read())
+            {
+                list.Add(ReadHuRecord(reader));
+            }
+
+            return list;
+        });
+    }
+
+    public void CloseHu(string code, string? closedBy, string? note)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            return;
+        }
+
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE hus
+SET status = @status,
+    closed_at = @closed_at,
+    note = @note
+WHERE hu_code = @code;
+");
+            command.Parameters.AddWithValue("@status", "CLOSED");
+            command.Parameters.AddWithValue("@closed_at", ToDbDate(DateTime.Now));
+            command.Parameters.AddWithValue("@note", string.IsNullOrWhiteSpace(note) ? DBNull.Value : note.Trim());
+            command.Parameters.AddWithValue("@code", code.Trim());
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public IReadOnlyList<HuLedgerRow> GetHuLedgerRows(string code)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            return Array.Empty<HuLedgerRow>();
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT i.id, i.name, i.base_uom, l.id, l.code, COALESCE(SUM(led.qty_delta), 0) AS qty
+FROM ledger led
+INNER JOIN items i ON i.id = led.item_id
+INNER JOIN locations l ON l.id = led.location_id
+WHERE (led.hu_code = @hu OR (led.hu_code IS NULL AND led.hu = @hu))
+GROUP BY i.id, i.name, i.base_uom, l.id, l.code
+HAVING qty != 0
+ORDER BY i.name, l.code;
+");
+            command.Parameters.AddWithValue("@hu", code.Trim());
+            using var reader = command.ExecuteReader();
+            var rows = new List<HuLedgerRow>();
+            while (reader.Read())
+            {
+                rows.Add(new HuLedgerRow
+                {
+                    HuCode = code.Trim(),
+                    ItemId = reader.GetInt64(0),
+                    ItemName = reader.GetString(1),
+                    BaseUom = reader.IsDBNull(2) ? "шт" : reader.GetString(2),
+                    LocationId = reader.GetInt64(3),
+                    LocationCode = reader.GetString(4),
+                    Qty = reader.GetDouble(5)
+                });
+            }
+
+            return rows;
+        });
+    }
+
     public bool IsEventImported(string eventId)
     {
         return WithConnection(connection =>

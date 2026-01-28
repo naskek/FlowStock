@@ -87,6 +87,9 @@ public interface IDataStore
 
     HuRecord CreateHuRecord(string? createdBy);
     HuRecord? GetHuByCode(string code);
+    IReadOnlyList<HuRecord> GetHus(string? search, int take);
+    void CloseHu(string code, string? closedBy, string? note);
+    IReadOnlyList<HuLedgerRow> GetHuLedgerRows(string code);
 
     bool IsEventImported(string eventId);
     void AddImportedEvent(ImportedEvent ev);

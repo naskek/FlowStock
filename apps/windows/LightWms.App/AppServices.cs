@@ -14,7 +14,6 @@ public sealed class AppServices
     public OrderService Orders { get; }
     public ImportService Import { get; }
     public SettingsService Settings { get; }
-    public HuRegistryService HuRegistry { get; }
     public HuService Hus { get; }
     public BackupService Backups { get; }
     public AdminAuthService AdminAuth { get; }
@@ -40,7 +39,6 @@ public sealed class AppServices
         string settingsPath,
         string adminPath,
         string partnerStatusPath,
-        string huRegistryPath,
         FileLogger appLogger,
         FileLogger adminLogger)
     {
@@ -50,9 +48,8 @@ public sealed class AppServices
         Documents = new DocumentService(dataStore);
         Orders = new OrderService(dataStore);
         Settings = new SettingsService(settingsPath);
-        HuRegistry = new HuRegistryService(Settings, appLogger, huRegistryPath);
         Hus = new HuService(dataStore);
-        Import = new ImportService(dataStore, HuRegistry);
+        Import = new ImportService(dataStore);
         Backups = new BackupService(databasePath, backupsDir, appLogger);
         AdminAuth = new AdminAuthService(adminPath, adminLogger);
         Admin = new AdminService(databasePath, backupsDir, dataStore, adminLogger);
@@ -77,7 +74,6 @@ public sealed class AppServices
         var settingsPath = AppPaths.SettingsPath;
         var adminPath = AppPaths.AdminPath;
         var partnerStatusPath = AppPaths.PartnerStatusPath;
-        var huRegistryPath = AppPaths.HuRegistryPath;
         var dbPath = AppPaths.DatabasePath;
 
         Directory.CreateDirectory(baseDir);
@@ -100,7 +96,6 @@ public sealed class AppServices
             settingsPath,
             adminPath,
             partnerStatusPath,
-            huRegistryPath,
             appLogger,
             adminLogger);
     }

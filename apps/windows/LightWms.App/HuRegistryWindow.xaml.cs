@@ -4,21 +4,27 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Linq;
 using System.Windows;
+using LightWms.Core.Models;
 
 namespace LightWms.App;
 
 public partial class HuRegistryWindow : Window
 {
+    private const int MaxLoad = 2000;
+    private const string DefaultCreatedBy = "WINDOWS";
+
     private readonly AppServices _services;
-    private readonly ObservableCollection<HuRegistryRow> _rows = new();
+    private readonly ObservableCollection<HuRow> _rows = new();
+    private readonly ObservableCollection<HuLedgerRowDisplay> _composition = new();
     private readonly ObservableCollection<string> _generated = new();
-    private List<HuRegistryItem> _items = new();
+    private List<HuRecord> _items = new();
 
     public HuRegistryWindow(AppServices services)
     {
         _services = services;
         InitializeComponent();
         RegistryGrid.ItemsSource = _rows;
+        CompositionGrid.ItemsSource = _composition;
         GeneratedList.ItemsSource = _generated;
         StateFilter.ItemsSource = StateOptions;
         StateFilter.SelectedIndex = 0;
@@ -28,13 +34,17 @@ public partial class HuRegistryWindow : Window
 
     private void LoadItems()
     {
-        if (!_services.HuRegistry.TryGetItems(out var items, out var error))
+        try
         {
-            MessageBox.Show(error ?? "Не удалось прочитать реестр HU.", "HU Реестр", MessageBoxButton.OK, MessageBoxImage.Warning);
+            _items = _services.Hus.GetHus(null, MaxLoad).ToList();
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error("HU registry load failed", ex);
+            MessageBox.Show("Не удалось прочитать реестр HU.", "HU Реестр", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        _items = items.ToList();
         ApplyFilter();
     }
 
@@ -43,25 +53,21 @@ public partial class HuRegistryWindow : Window
         var search = SearchBox.Text?.Trim();
         var state = (StateFilter.SelectedItem as StateOption)?.Value;
 
-        IEnumerable<HuRegistryItem> filtered = _items;
+        IEnumerable<HuRecord> filtered = _items;
         if (!string.IsNullOrWhiteSpace(state))
         {
-            filtered = filtered.Where(item => string.Equals(item.State, state, StringComparison.OrdinalIgnoreCase));
+            filtered = filtered.Where(item => string.Equals(item.Status, state, StringComparison.OrdinalIgnoreCase));
         }
 
         if (!string.IsNullOrWhiteSpace(search))
         {
-            filtered = filtered.Where(item =>
-                Contains(item.Code, search) ||
-                Contains(item.ItemName, search) ||
-                Contains(item.LocationCode, search) ||
-                Contains(item.LastDocRef, search));
+            filtered = filtered.Where(item => Contains(item.Code, search));
         }
 
         _rows.Clear();
         foreach (var item in filtered.OrderBy(item => item.Code, StringComparer.OrdinalIgnoreCase))
         {
-            _rows.Add(new HuRegistryRow(item));
+            _rows.Add(new HuRow(item));
         }
     }
 
@@ -80,6 +86,54 @@ public partial class HuRegistryWindow : Window
         ApplyFilter();
     }
 
+    private void RegistryGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        LoadCompositionForSelection();
+    }
+
+    private void ShowComposition_Click(object sender, RoutedEventArgs e)
+    {
+        LoadCompositionForSelection();
+    }
+
+    private void LoadCompositionForSelection()
+    {
+        _composition.Clear();
+        if (RegistryGrid.SelectedItem is not HuRow row)
+        {
+            return;
+        }
+
+        var rows = _services.Hus.GetHuLedgerRows(row.Code);
+        foreach (var entry in rows)
+        {
+            _composition.Add(new HuLedgerRowDisplay(entry));
+        }
+    }
+
+    private void CloseHu_Click(object sender, RoutedEventArgs e)
+    {
+        if (RegistryGrid.SelectedItem is not HuRow row)
+        {
+            MessageBox.Show("Выберите HU для закрытия.", "HU Реестр", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var note = CloseNoteBox.Text?.Trim();
+        try
+        {
+            _services.Hus.CloseHu(row.Code, string.IsNullOrWhiteSpace(note) ? null : note, DefaultCreatedBy);
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error("HU close failed", ex);
+            MessageBox.Show("Не удалось закрыть HU.", "HU Реестр", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        LoadItems();
+    }
+
     private void Generate_Click(object sender, RoutedEventArgs e)
     {
         if (!TryParseCount(out var count))
@@ -88,9 +142,15 @@ public partial class HuRegistryWindow : Window
             return;
         }
 
-        if (!_services.HuRegistry.TryIssueCodes(count, out var codes, out var error))
+        IReadOnlyList<string> codes;
+        try
         {
-            MessageBox.Show(error ?? "Не удалось сгенерировать HU-коды.", "HU Реестр", MessageBoxButton.OK, MessageBoxImage.Warning);
+            codes = _services.Hus.Generate(count, DefaultCreatedBy);
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error("HU generate failed", ex);
+            MessageBox.Show("Не удалось сгенерировать HU-коды.", "HU Реестр", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -140,10 +200,10 @@ public partial class HuRegistryWindow : Window
     private static readonly IReadOnlyList<StateOption> StateOptions = new List<StateOption>
     {
         new("Все", null),
-        new("В наличии", HuRegistryStates.InStock),
-        new("Выдан", HuRegistryStates.Issued),
-        new("Израсходован", HuRegistryStates.Consumed),
-        new("Неизвестно", HuRegistryStates.Unknown)
+        new("OPEN", "OPEN"),
+        new("ACTIVE", "ACTIVE"),
+        new("CLOSED", "CLOSED"),
+        new("VOID", "VOID")
     };
 
     private sealed class StateOption
@@ -158,51 +218,42 @@ public partial class HuRegistryWindow : Window
         public string? Value { get; }
     }
 
-    private sealed class HuRegistryRow
+    private sealed class HuRow
     {
-        public HuRegistryRow(HuRegistryItem item)
+        public HuRow(HuRecord item)
         {
             Code = item.Code;
-            State = item.State;
-            ItemName = item.ItemName ?? string.Empty;
-            QtyDisplay = FormatQty(item);
-            LocationCode = item.LocationCode ?? string.Empty;
-            LastDocRef = item.LastDocRef ?? string.Empty;
-            UpdatedAtDisplay = FormatUpdatedAt(item.UpdatedAt);
+            Status = item.Status;
+            CreatedAtDisplay = FormatDate(item.CreatedAt);
+            CreatedBy = item.CreatedBy ?? string.Empty;
+            ClosedAtDisplay = item.ClosedAt.HasValue ? FormatDate(item.ClosedAt.Value) : string.Empty;
+            Note = item.Note ?? string.Empty;
         }
 
         public string Code { get; }
-        public string State { get; }
+        public string Status { get; }
+        public string CreatedAtDisplay { get; }
+        public string CreatedBy { get; }
+        public string ClosedAtDisplay { get; }
+        public string Note { get; }
+
+        private static string FormatDate(DateTime value)
+        {
+            return value.ToString("dd'/'MM'/'yyyy HH':'mm", CultureInfo.InvariantCulture);
+        }
+    }
+
+    private sealed class HuLedgerRowDisplay
+    {
+        public HuLedgerRowDisplay(HuLedgerRow row)
+        {
+            ItemName = row.ItemName;
+            LocationCode = row.LocationCode;
+            QtyDisplay = $"{row.Qty.ToString("0.###", CultureInfo.InvariantCulture)} {row.BaseUom}";
+        }
+
         public string ItemName { get; }
-        public string QtyDisplay { get; }
         public string LocationCode { get; }
-        public string LastDocRef { get; }
-        public string UpdatedAtDisplay { get; }
-
-        private static string FormatQty(HuRegistryItem item)
-        {
-            var qty = item.QtyBase.ToString("0.###", CultureInfo.InvariantCulture);
-            if (string.IsNullOrWhiteSpace(item.BaseUom))
-            {
-                return qty;
-            }
-
-            return $"{qty} {item.BaseUom}";
-        }
-
-        private static string FormatUpdatedAt(string? value)
-        {
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return string.Empty;
-            }
-
-            if (DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var parsed))
-            {
-                return parsed.LocalDateTime.ToString("dd'/'MM'/'yyyy HH':'mm", CultureInfo.InvariantCulture);
-            }
-
-            return value;
-        }
+        public string QtyDisplay { get; }
     }
 }

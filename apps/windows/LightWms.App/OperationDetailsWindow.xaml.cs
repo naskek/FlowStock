@@ -332,24 +332,7 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        TrySyncHuRegistry();
         Close();
-    }
-
-    private void TrySyncHuRegistry()
-    {
-        try
-        {
-            if (!_services.HuRegistry.TrySyncFromLedger(_services.DataStore, out _, out var error))
-            {
-                MessageBox.Show(error ?? "Не удалось обновить реестр HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
-            }
-        }
-        catch (Exception ex)
-        {
-            _services.AppLogger.Error("HU registry sync failed", ex);
-            MessageBox.Show("Не удалось обновить реестр HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
     }
 
     private void DocAddLine_Click(object sender, RoutedEventArgs e)
@@ -1293,20 +1276,20 @@ public partial class OperationDetailsWindow : Window
             }
             else
             {
-                _huFromOptions.Add(new HuOption(null, "—"));
+                _huFromOptions.Add(new HuOption(null, "-"));
             }
 
             var totalsByHu = _services.DataStore.GetLedgerTotalsByHu();
-            var issuedCodes = GetIssuedHuCodes();
-            AddHuOptions(BuildHuOptions(totalsByHu, issuedCodes), _huToOptions);
+            var availableCodes = GetAvailableHuCodes();
+            AddHuOptions(BuildHuOptions(totalsByHu, availableCodes), _huToOptions);
         }
         else
         {
             var totalsByHu = _services.DataStore.GetLedgerTotalsByHu();
-            var issuedCodes = _doc.Type == DocType.Inbound || _doc.Type == DocType.Inventory
-                ? GetIssuedHuCodes()
+            var availableCodes = _doc.Type == DocType.Inbound || _doc.Type == DocType.Inventory
+                ? GetAvailableHuCodes()
                 : Enumerable.Empty<string>();
-            AddHuOptions(BuildHuOptions(totalsByHu, issuedCodes), _huToOptions);
+            AddHuOptions(BuildHuOptions(totalsByHu, availableCodes), _huToOptions);
             _huFromOptions.Add(new HuOption(null, "-"));
         }
 
@@ -1324,17 +1307,26 @@ public partial class OperationDetailsWindow : Window
         _suppressDirtyTracking = previousSuppress;
     }
 
-    private IEnumerable<string> GetIssuedHuCodes()
+    private IEnumerable<string> GetAvailableHuCodes()
     {
-        if (!_services.HuRegistry.TryGetItems(out var items, out _))
+        try
+        {
+            var hus = _services.Hus.GetHus(null, 2000);
+            return hus
+                .Where(IsSelectableHu)
+                .Select(hu => hu.Code)
+                .Where(code => !string.IsNullOrWhiteSpace(code));
+        }
+        catch
         {
             return Enumerable.Empty<string>();
         }
+    }
 
-        return items
-            .Where(item => string.Equals(item.State, HuRegistryStates.Issued, StringComparison.OrdinalIgnoreCase))
-            .Select(item => item.Code)
-            .Where(code => !string.IsNullOrWhiteSpace(code));
+    private static bool IsSelectableHu(HuRecord record)
+    {
+        return !string.Equals(record.Status, "CLOSED", StringComparison.OrdinalIgnoreCase)
+               && !string.Equals(record.Status, "VOID", StringComparison.OrdinalIgnoreCase);
     }
 
     private static IEnumerable<string> BuildHuOptions(

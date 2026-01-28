@@ -19,13 +19,11 @@ public sealed class ImportService
     private const string ReasonMoveHuRequired = "MOVE внутри склада требует from_hu/to_hu. Обновите ТСД или пересоздайте документ.";
 
     private readonly IDataStore _data;
-    private readonly IHuRegistryUpdater? _huRegistry;
     private readonly JsonSerializerOptions _jsonOptions;
 
-    public ImportService(IDataStore data, IHuRegistryUpdater? huRegistry = null)
+    public ImportService(IDataStore data)
     {
         _data = data;
-        _huRegistry = huRegistry;
         _jsonOptions = new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = true
@@ -105,7 +103,7 @@ public sealed class ImportService
 
             try
             {
-                var outcome = ProcessEvent(importEvent!, line, filePath, allowErrorInsert: true, out var docCreated, out var huRegistryError);
+                var outcome = ProcessEvent(importEvent!, line, filePath, allowErrorInsert: true, out var docCreated);
                 switch (outcome)
                 {
                     case ImportOutcome.Imported:
@@ -123,11 +121,6 @@ public sealed class ImportService
                     case ImportOutcome.Error:
                         result.Errors++;
                         break;
-                }
-
-                if (huRegistryError)
-                {
-                    result.HuRegistryErrors++;
                 }
             }
             catch
@@ -185,7 +178,7 @@ public sealed class ImportService
             return false;
         }
 
-        var outcome = ProcessEvent(importEvent, error.RawJson, "reapply", allowErrorInsert: false, out _, out _);
+        var outcome = ProcessEvent(importEvent, error.RawJson, "reapply", allowErrorInsert: false, out _);
         if (outcome == ImportOutcome.Imported || outcome == ImportOutcome.Duplicate)
         {
             _data.DeleteImportError(errorId);
@@ -195,16 +188,10 @@ public sealed class ImportService
         return false;
     }
 
-    private ImportOutcome ProcessEvent(ImportEvent importEvent, string rawJson, string sourceFile, bool allowErrorInsert, out bool docCreated, out bool huRegistryError)
+    private ImportOutcome ProcessEvent(ImportEvent importEvent, string rawJson, string sourceFile, bool allowErrorInsert, out bool docCreated)
     {
         var outcome = ImportOutcome.Error;
         var created = false;
-        var shouldUpdateHuRegistry = false;
-        var itemResolved = false;
-        Item? itemForRegistry = null;
-        Doc? docForRegistry = null;
-        Location? fromForRegistry = null;
-        Location? toForRegistry = null;
         var huCode = NormalizeHuCode(importEvent.HuCode);
 
         _data.ExecuteInTransaction(store =>
@@ -244,23 +231,9 @@ public sealed class ImportService
                     });
                 }
 
-                shouldUpdateHuRegistry = !string.IsNullOrWhiteSpace(huCode);
-                if (shouldUpdateHuRegistry)
-                {
-                    var (fromCandidate, toCandidate, locationOk) = ResolveLocations(store, importEvent);
-                    if (locationOk)
-                    {
-                        fromForRegistry = fromCandidate;
-                        toForRegistry = toCandidate;
-                    }
-                }
-
                 outcome = ImportOutcome.Error;
                 return;
             }
-
-            itemResolved = true;
-            itemForRegistry = item;
 
             var (fromLocation, toLocation, locationValid) = ResolveLocations(store, importEvent);
             if (!locationValid)
@@ -350,23 +323,10 @@ public sealed class ImportService
                 DeviceId = importEvent.DeviceId
             });
 
-            shouldUpdateHuRegistry = !string.IsNullOrWhiteSpace(huCode);
-            docForRegistry = doc;
-            fromForRegistry = fromLocation;
-            toForRegistry = toLocation;
-
             outcome = ImportOutcome.Imported;
         });
 
         docCreated = created;
-        huRegistryError = false;
-        if (shouldUpdateHuRegistry && _huRegistry != null)
-        {
-            if (!_huRegistry.TryApplyImportEvent(importEvent, docForRegistry, itemForRegistry, fromForRegistry, toForRegistry, itemResolved, out _))
-            {
-                huRegistryError = true;
-            }
-        }
         return outcome;
     }
 

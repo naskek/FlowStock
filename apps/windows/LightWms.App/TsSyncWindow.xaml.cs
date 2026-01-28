@@ -211,7 +211,7 @@ public partial class TsSyncWindow : Window
         builder.AppendLine();
         foreach (var log in _importLogs)
         {
-            builder.AppendLine($"{log.FileName} | Устройство: {log.DeviceSummary} | Товары: {log.ItemsUpserted} | Операции: {log.OperationsImported} | Документы: {log.Documents} | Строки: {log.Lines} | Импортировано: {log.Imported} | Дубли: {log.Duplicates} | Ошибки: {log.Errors} | HU: {log.HuRegistryErrors}");
+            builder.AppendLine($"{log.FileName} | Устройство: {log.DeviceSummary} | Товары: {log.ItemsUpserted} | Операции: {log.OperationsImported} | Документы: {log.Documents} | Строки: {log.Lines} | Импортировано: {log.Imported} | Дубли: {log.Duplicates} | Ошибки: {log.Errors}");
         }
 
         File.WriteAllText(dialog.FileName, builder.ToString(), Encoding.UTF8);
@@ -250,11 +250,6 @@ public partial class TsSyncWindow : Window
             try
             {
                 var result = _services.Import.ImportJsonl(file);
-                var huSyncOk = _services.HuRegistry.TrySyncFromLedger(_services.DataStore, out _, out var huSyncError);
-                if (!huSyncOk)
-                {
-                    _services.AppLogger.Warn($"HU registry sync failed file={file} error={huSyncError}");
-                }
                 var deviceInfo = BuildDeviceInfo(result.DeviceIds);
                 _importLogs.Add(new ImportFileLog
                 {
@@ -268,11 +263,10 @@ public partial class TsSyncWindow : Window
                     Lines = result.LinesImported,
                     Imported = result.Imported,
                     Duplicates = result.Duplicates,
-                    Errors = result.Errors,
-                    HuRegistryErrors = result.HuRegistryErrors + (huSyncOk ? 0 : 1)
+                    Errors = result.Errors
                 });
 
-                _services.AppLogger.Info($"TSD import file={file} imported={result.Imported} duplicates={result.Duplicates} errors={result.Errors} docs={result.DocumentsCreated} hu_errors={result.HuRegistryErrors} hu_sync={(huSyncOk ? "ok" : "failed")}");
+                _services.AppLogger.Info($"TSD import file={file} imported={result.Imported} duplicates={result.Duplicates} errors={result.Errors} docs={result.DocumentsCreated}");
             }
             catch (Exception ex)
             {
@@ -290,19 +284,16 @@ public partial class TsSyncWindow : Window
                     Lines = 0,
                     Imported = 0,
                     Duplicates = 0,
-                    Errors = 1,
-                    HuRegistryErrors = 0
+                    Errors = 1
                 });
             }
         }
 
         _onImportCompleted?.Invoke();
         var totalErrors = 0;
-        var huErrors = 0;
         foreach (var log in _importLogs)
         {
             totalErrors += log.Errors;
-            huErrors += log.HuRegistryErrors;
         }
         if (totalErrors > 0)
         {
@@ -310,13 +301,6 @@ public partial class TsSyncWindow : Window
                 "Синхронизация с ТСД",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
-            return;
-        }
-
-        if (huErrors > 0)
-        {
-            MessageBox.Show($"Импорт завершен, но реестр HU не обновлен для {huErrors} строк.", "Синхронизация с ТСД",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -631,7 +615,6 @@ public partial class TsSyncWindow : Window
         public int Imported { get; init; }
         public int Duplicates { get; init; }
         public int Errors { get; init; }
-        public int HuRegistryErrors { get; init; }
     }
 
     private sealed record DeviceInfo(string Display, string? Tooltip, string Summary);

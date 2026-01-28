@@ -9,24 +9,53 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
-            <TextBlock Text="Поиск" VerticalAlignment="Center" />
-            <TextBox x:Name="SearchBox" Width="220" Margin="6,0,12,0"
-                     TextChanged="SearchBox_TextChanged" />
-            <TextBlock Text="Статус" VerticalAlignment="Center" />
-            <ComboBox x:Name="StateFilter" Width="160" Margin="6,0,12,0"
-                      DisplayMemberPath="Name"
-                      SelectionChanged="StateFilter_SelectionChanged" />
-            <Button Content="Обновить" Click="Refresh_Click" />
+        <StackPanel Grid.Row="0" Margin="0,0,0,8">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Text="Поиск" VerticalAlignment="Center" />
+                <TextBox x:Name="SearchBox" Width="220" Margin="6,0,12,0"
+                         TextChanged="SearchBox_TextChanged" />
+                <TextBlock Text="Статус" VerticalAlignment="Center" />
+                <ComboBox x:Name="StateFilter" Width="140" Margin="6,0,12,0"
+                          DisplayMemberPath="Name"
+                          SelectionChanged="StateFilter_SelectionChanged" />
+                <Button Content="Обновить" Click="Refresh_Click" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                <TextBlock Text="Комментарий" VerticalAlignment="Center" />
+                <TextBox x:Name="CloseNoteBox" Width="240" Margin="6,0,12,0" />
+                <Button Content="Закрыть HU" Click="CloseHu_Click" />
+                <Button Content="Показать состав" Click="ShowComposition_Click" Margin="8,0,0,0" />
+            </StackPanel>
         </StackPanel>
 
-        <DataGrid x:Name="RegistryGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True">
-            <DataGrid.Columns>
-                <DataGridTextColumn Header="HU" Binding="{Binding Code}" Width="160" />
-                <DataGridTextColumn Header="Статус" Binding="{Binding State}" Width="120" />
-                <DataGridTextColumn Header="Обновлено" Binding="{Binding UpdatedAtDisplay}" Width="160" />
-            </DataGrid.Columns>
-        </DataGrid>
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="2*" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <DataGrid x:Name="RegistryGrid" AutoGenerateColumns="False" IsReadOnly="True"
+                      SelectionChanged="RegistryGrid_SelectionChanged">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="HU" Binding="{Binding Code}" Width="140" />
+                    <DataGridTextColumn Header="Статус" Binding="{Binding Status}" Width="100" />
+                    <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAtDisplay}" Width="140" />
+                    <DataGridTextColumn Header="Автор" Binding="{Binding CreatedBy}" Width="120" />
+                    <DataGridTextColumn Header="Закрыт" Binding="{Binding ClosedAtDisplay}" Width="140" />
+                    <DataGridTextColumn Header="Комментарий" Binding="{Binding Note}" Width="*" />
+                </DataGrid.Columns>
+            </DataGrid>
+
+            <GroupBox Grid.Column="1" Header="Состав HU" Margin="8,0,0,0">
+                <DataGrid x:Name="CompositionGrid" AutoGenerateColumns="False" IsReadOnly="True">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
+                        <DataGridTextColumn Header="Место" Binding="{Binding LocationCode}" Width="120" />
+                        <DataGridTextColumn Header="Кол-во" Binding="{Binding QtyDisplay}" Width="100" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </GroupBox>
+        </Grid>
 
         <GroupBox Grid.Row="2" Header="Генерация HU" Margin="0,8,0,0">
             <DockPanel Margin="8">
