@@ -15,6 +15,7 @@ public sealed class AppServices
     public ImportService Import { get; }
     public SettingsService Settings { get; }
     public HuRegistryService HuRegistry { get; }
+    public HuService Hus { get; }
     public BackupService Backups { get; }
     public AdminAuthService AdminAuth { get; }
     public AdminService Admin { get; }
@@ -50,6 +51,7 @@ public sealed class AppServices
         Orders = new OrderService(dataStore);
         Settings = new SettingsService(settingsPath);
         HuRegistry = new HuRegistryService(Settings, appLogger, huRegistryPath);
+        Hus = new HuService(dataStore);
         Import = new ImportService(dataStore, HuRegistry);
         Backups = new BackupService(databasePath, backupsDir, appLogger);
         AdminAuth = new AdminAuthService(adminPath, adminLogger);

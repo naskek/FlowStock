@@ -499,7 +499,10 @@ public sealed class DocumentService
                     {
                         check.Errors.Add($"{rowLabel}: требуются оба места хранения (откуда/куда).");
                     }
-                    else if (!string.IsNullOrWhiteSpace(docHu) && line.FromLocationId.Value != line.ToLocationId.Value)
+                    else if (!string.IsNullOrWhiteSpace(docHu)
+                             && line.FromLocationId.Value != line.ToLocationId.Value
+                             && string.IsNullOrWhiteSpace(NormalizeHuValue(line.FromHu))
+                             && string.IsNullOrWhiteSpace(NormalizeHuValue(line.ToHu)))
                     {
                         check.Errors.Add($"{rowLabel}: HU используется только для упаковки в рамках одного места. Очистите HU.");
                     }
@@ -632,6 +635,15 @@ public sealed class DocumentService
         {
             if (!string.IsNullOrWhiteSpace(lineFrom) || !string.IsNullOrWhiteSpace(lineTo))
             {
+                if (!string.IsNullOrWhiteSpace(lineFrom)
+                    && string.IsNullOrWhiteSpace(lineTo)
+                    && line.FromLocationId.HasValue
+                    && line.ToLocationId.HasValue
+                    && line.FromLocationId.Value != line.ToLocationId.Value)
+                {
+                    return (lineFrom, lineFrom);
+                }
+
                 return (lineFrom, lineTo);
             }
 

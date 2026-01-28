@@ -85,6 +85,9 @@ public interface IDataStore
     IReadOnlyDictionary<string, double> GetLedgerTotalsByHu();
     IReadOnlyList<HuStockRow> GetHuStockRows();
 
+    HuRecord CreateHuRecord(string? createdBy);
+    HuRecord? GetHuByCode(string code);
+
     bool IsEventImported(string eventId);
     void AddImportedEvent(ImportedEvent ev);
     long AddImportError(ImportError err);

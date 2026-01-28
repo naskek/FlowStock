@@ -178,6 +178,17 @@ CREATE TABLE IF NOT EXISTS stock_reservation_lines (
 );
 CREATE INDEX IF NOT EXISTS ix_stock_reservation_doc ON stock_reservation_lines(doc_uid);
 CREATE INDEX IF NOT EXISTS ix_stock_reservation_item_loc ON stock_reservation_lines(item_id, location_id);
+CREATE TABLE IF NOT EXISTS hus (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    hu_code TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    created_at TEXT NOT NULL,
+    created_by TEXT,
+    closed_at TEXT,
+    note TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_hus_status ON hus(status);
+CREATE INDEX IF NOT EXISTS idx_hus_created_at ON hus(created_at);
 ";
         command.ExecuteNonQuery();
 
@@ -206,6 +217,8 @@ CREATE INDEX IF NOT EXISTS ix_stock_reservation_item_loc ON stock_reservation_li
         EnsureIndex(connection, "ix_item_packaging_item", "item_packaging(item_id)");
         EnsureIndex(connection, "ix_ledger_item_loc_hu", "ledger(item_id, location_id, hu)");
         EnsureIndex(connection, "ix_ledger_item_loc_hu_code", "ledger(item_id, location_id, hu_code)");
+        EnsureIndex(connection, "idx_hus_status", "hus(status)");
+        EnsureIndex(connection, "idx_hus_created_at", "hus(created_at)");
 
         BackfillBaseUom(connection);
         BackfillPartnerCreatedAt(connection);
@@ -1471,6 +1484,87 @@ HAVING COALESCE(SUM(qty_delta), 0) != 0;
         });
     }
 
+    public HuRecord CreateHuRecord(string? createdBy)
+    {
+        return WithConnection(connection =>
+        {
+            var createdAt = DateTime.Now;
+            var ownsTransaction = _transaction == null;
+            if (ownsTransaction)
+            {
+                using var begin = connection.CreateCommand();
+                begin.CommandText = "BEGIN IMMEDIATE;";
+                begin.ExecuteNonQuery();
+            }
+
+            try
+            {
+                using var insert = CreateCommand(connection, @"
+INSERT INTO hus(hu_code, status, created_at, created_by)
+VALUES('', 'ACTIVE', @created_at, @created_by);
+SELECT last_insert_rowid();
+");
+                insert.Parameters.AddWithValue("@created_at", ToDbDate(createdAt));
+                insert.Parameters.AddWithValue("@created_by", string.IsNullOrWhiteSpace(createdBy) ? DBNull.Value : createdBy.Trim());
+                var id = (long)(insert.ExecuteScalar() ?? 0L);
+                var code = $"HU-{id:000000}";
+
+                using var update = CreateCommand(connection, "UPDATE hus SET hu_code = @hu_code WHERE id = @id");
+                update.Parameters.AddWithValue("@hu_code", code);
+                update.Parameters.AddWithValue("@id", id);
+                update.ExecuteNonQuery();
+
+                if (ownsTransaction)
+                {
+                    using var commit = connection.CreateCommand();
+                    commit.CommandText = "COMMIT;";
+                    commit.ExecuteNonQuery();
+                }
+
+                return new HuRecord
+                {
+                    Id = id,
+                    Code = code,
+                    Status = "ACTIVE",
+                    CreatedAt = createdAt,
+                    CreatedBy = string.IsNullOrWhiteSpace(createdBy) ? null : createdBy.Trim()
+                };
+            }
+            catch
+            {
+                if (ownsTransaction)
+                {
+                    using var rollback = connection.CreateCommand();
+                    rollback.CommandText = "ROLLBACK;";
+                    rollback.ExecuteNonQuery();
+                }
+
+                throw;
+            }
+        });
+    }
+
+    public HuRecord? GetHuByCode(string code)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            return null;
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT id, hu_code, status, created_at, created_by, closed_at, note
+FROM hus
+WHERE hu_code = @code
+LIMIT 1;
+");
+            command.Parameters.AddWithValue("@code", code.Trim());
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadHuRecord(reader) : null;
+        });
+    }
+
     public bool IsEventImported(string eventId)
     {
         return WithConnection(connection =>
@@ -1766,6 +1860,20 @@ SELECT last_insert_rowid();
             Reason = reader.GetString(2),
             RawJson = reader.GetString(3),
             CreatedAt = FromDbDate(reader.GetString(4)) ?? DateTime.MinValue
+        };
+    }
+
+    private static HuRecord ReadHuRecord(SqliteDataReader reader)
+    {
+        return new HuRecord
+        {
+            Id = reader.GetInt64(0),
+            Code = reader.GetString(1),
+            Status = reader.GetString(2),
+            CreatedAt = FromDbDate(reader.GetString(3)) ?? DateTime.MinValue,
+            CreatedBy = reader.IsDBNull(4) ? null : reader.GetString(4),
+            ClosedAt = FromDbDate(reader.IsDBNull(5) ? null : reader.GetString(5)),
+            Note = reader.IsDBNull(6) ? null : reader.GetString(6)
         };
     }
 
