@@ -505,6 +505,9 @@ SELECT last_insert_rowid();
     return Results.Ok(new { ok = true, hus = codes });
 });
 
+// Example (RECEIVE):
+// curl.exe -k -X POST "https://localhost:7153/api/ops" -H "Content-Type: application/json" ^
+//   -d "{\"schema_version\":1,\"event_id\":\"...\",\"ts\":\"2026-01-27T18:45:00Z\",\"device_id\":\"CT48-01\",\"op\":\"RECEIVE\",\"doc_ref\":\"IN-ONLINE-0001\",\"barcode\":\"4660011933641\",\"qty\":10,\"to_loc\":\"A1\"}"
 app.MapPost("/api/ops", async (HttpRequest request, IDataStore store, DocumentService docs, IApiDocStore apiStore) =>
 {
     string rawJson;
@@ -545,7 +548,14 @@ app.MapPost("/api/ops", async (HttpRequest request, IDataStore store, DocumentSe
         return Results.Ok(new ApiResult(true));
     }
 
-    if (!string.Equals(opEvent.Op, "MOVE", StringComparison.OrdinalIgnoreCase))
+    var opNormalized = opEvent.Op?.Trim().ToUpperInvariant();
+    var isMove = string.Equals(opNormalized, "MOVE", StringComparison.Ordinal);
+    var isReceive = string.Equals(opNormalized, "RECEIVE", StringComparison.Ordinal)
+                    || string.Equals(opNormalized, "IN", StringComparison.Ordinal)
+                    || string.Equals(opNormalized, "INBOUND", StringComparison.Ordinal);
+    var isAdjustPlus = string.Equals(opNormalized, "ADJUST_PLUS", StringComparison.Ordinal);
+
+    if (!isMove && !isReceive && !isAdjustPlus)
     {
         return Results.BadRequest(new ApiResult(false, "UNSUPPORTED_OP"));
     }
@@ -572,10 +582,16 @@ app.MapPost("/api/ops", async (HttpRequest request, IDataStore store, DocumentSe
         return Results.BadRequest(new ApiResult(false, "UNKNOWN_BARCODE"));
     }
 
-    var fromResult = ResolveLocationForEvent(store, opEvent.FromLoc, opEvent.FromLocationId);
-    if (fromResult.Error != null)
+    Location? fromLocation = null;
+    if (isMove)
     {
-        return Results.BadRequest(BuildLocationErrorResult(fromResult, opEvent, store));
+        var fromResult = ResolveLocationForEvent(store, opEvent.FromLoc, opEvent.FromLocationId);
+        if (fromResult.Error != null)
+        {
+            return Results.BadRequest(BuildLocationErrorResult(fromResult, opEvent, store));
+        }
+
+        fromLocation = fromResult.Location!;
     }
 
     var toResult = ResolveLocationForEvent(store, opEvent.ToLoc, opEvent.ToLocationId);
@@ -584,11 +600,11 @@ app.MapPost("/api/ops", async (HttpRequest request, IDataStore store, DocumentSe
         return Results.BadRequest(BuildLocationErrorResult(toResult, opEvent, store));
     }
 
-    var fromLocation = fromResult.Location!;
     var toLocation = toResult.Location!;
 
     var docRef = opEvent.DocRef.Trim();
-    var existingDoc = store.FindDocByRef(docRef, DocType.Move);
+    var docType = isMove ? DocType.Move : DocType.Inbound;
+    var existingDoc = store.FindDocByRef(docRef, docType);
     long docId;
 
     if (existingDoc != null)
@@ -602,10 +618,10 @@ app.MapPost("/api/ops", async (HttpRequest request, IDataStore store, DocumentSe
     }
     else
     {
-        docId = docs.CreateDoc(DocType.Move, docRef, null, null, null, null);
+        docId = docs.CreateDoc(docType, docRef, null, null, null, null);
     }
 
-    var fromHu = NormalizeHu(opEvent.FromHu);
+    var fromHu = isMove ? NormalizeHu(opEvent.FromHu) : null;
     var toHu = NormalizeHu(opEvent.ToHu);
     if (string.IsNullOrWhiteSpace(toHu) && !string.IsNullOrWhiteSpace(opEvent.HuCode))
     {
@@ -613,7 +629,7 @@ app.MapPost("/api/ops", async (HttpRequest request, IDataStore store, DocumentSe
     }
 
     var missingHu = new List<string>();
-    if (!string.IsNullOrWhiteSpace(fromHu) && store.GetHuByCode(fromHu) == null)
+    if (isMove && !string.IsNullOrWhiteSpace(fromHu) && store.GetHuByCode(fromHu) == null)
     {
         missingHu.Add("from_hu");
     }
@@ -638,7 +654,7 @@ app.MapPost("/api/ops", async (HttpRequest request, IDataStore store, DocumentSe
             docId,
             item.Id,
             opEvent.Qty,
-            fromLocation.Id,
+            fromLocation?.Id,
             toLocation.Id,
             null,
             null,
