@@ -521,19 +521,9 @@ app.MapPost("/api/ops", async (HttpRequest request, IDataStore store, DocumentSe
         return Results.BadRequest(new ApiResult(false, "EMPTY_BODY"));
     }
 
-    OperationEventRequest? opEvent;
-    try
+    if (!OperationEventParser.TryParse(rawJson, out var opEvent, out var parseError))
     {
-        opEvent = JsonSerializer.Deserialize<OperationEventRequest>(rawJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true, IncludeFields = true });
-    }
-    catch (JsonException)
-    {
-        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
-    }
-
-    if (opEvent == null)
-    {
-        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+        return Results.BadRequest(new ApiResult(false, parseError ?? "INVALID_JSON"));
     }
 
     if (string.IsNullOrWhiteSpace(opEvent.EventId))
@@ -1402,7 +1392,7 @@ static LocationResolution ResolveLocationForEvent(IDataStore store, string? code
     return new LocationResolution { Error = "UNKNOWN_LOCATION" };
 }
 
-static object BuildLocationErrorResult(LocationResolution resolution, OperationEventRequest request, IDataStore store)
+static object BuildLocationErrorResult(LocationResolution resolution, OperationEventParser.OperationEventData request, IDataStore store)
 {
     var sampleCodes = store.GetLocations()
         .Select(location => location.Code)

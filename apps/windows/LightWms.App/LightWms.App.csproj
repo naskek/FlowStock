@@ -12,4 +12,10 @@
     <ProjectReference Include="..\LightWms.Core\LightWms.Core.csproj" />
     <ProjectReference Include="..\LightWms.Data\LightWms.Data.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
 </Project>
