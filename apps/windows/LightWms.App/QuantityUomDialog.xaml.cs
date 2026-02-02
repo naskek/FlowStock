@@ -9,19 +9,23 @@ public partial class QuantityUomDialog : Window
 {
     private const string BaseUomCode = "BASE";
     private readonly string _baseUom;
+    private readonly double? _availableQty;
+    private readonly bool _showAvailableLabel;
     private readonly ObservableCollection<UomOption> _options = new();
 
     public double QtyInput { get; private set; }
     public string UomCode { get; private set; } = BaseUomCode;
     public double QtyBase { get; private set; }
 
-    public QuantityUomDialog(string baseUom, IReadOnlyList<ItemPackaging> packagings, double defaultQty, string? defaultUomCode)
+    public QuantityUomDialog(string baseUom, IReadOnlyList<ItemPackaging> packagings, double defaultQty, string? defaultUomCode, double? availableQty = null, bool showAvailableLabel = false)
     {
         _baseUom = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom;
+        _availableQty = availableQty;
+        _showAvailableLabel = showAvailableLabel;
         InitializeComponent();
 
         UomCombo.ItemsSource = _options;
-        _options.Add(new UomOption(BaseUomCode, $"{_baseUom} (база)", 1));
+        _options.Add(new UomOption(BaseUomCode, $"BASE — {_baseUom} (×1)", 1));
         foreach (var packaging in packagings)
         {
             if (!packaging.IsActive)
@@ -29,7 +33,9 @@ public partial class QuantityUomDialog : Window
                 continue;
             }
 
-            _options.Add(new UomOption(packaging.Code, packaging.Name, packaging.FactorToBase));
+            var factor = packaging.FactorToBase.ToString("0.###", CultureInfo.CurrentCulture);
+            var label = $"{packaging.Code} — {packaging.Name} (×{factor})";
+            _options.Add(new UomOption(packaging.Code, label, packaging.FactorToBase));
         }
 
         QtyInput = defaultQty > 0 ? defaultQty : 1;
@@ -73,6 +79,19 @@ public partial class QuantityUomDialog : Window
 
     private void UpdateTotal()
     {
+        if (_availableQty.HasValue || _showAvailableLabel)
+        {
+            if (_availableQty.HasValue)
+            {
+                TotalText.Text = $"Доступно: {_availableQty.Value.ToString("0.###", CultureInfo.CurrentCulture)} {_baseUom}";
+            }
+            else
+            {
+                TotalText.Text = "Доступно: -";
+            }
+            return;
+        }
+
         if (!TryGetQty(out var qty))
         {
             TotalText.Text = "Итого: -";

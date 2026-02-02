@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Windows;
 using LightWms.Core.Models;
 
@@ -17,7 +16,15 @@ public partial class NewDocWindow : Window
         _services = services;
         InitializeComponent();
 
-        foreach (var type in Enum.GetValues<DocType>())
+        var typeOrder = new[]
+        {
+            DocType.Inbound,
+            DocType.Outbound,
+            DocType.Move,
+            DocType.WriteOff,
+            DocType.Inventory
+        };
+        foreach (var type in typeOrder)
         {
             _types.Add(new DocTypeOption(type, DocTypeMapper.ToDisplayName(type)));
         }
@@ -25,29 +32,13 @@ public partial class NewDocWindow : Window
         TypeCombo.ItemsSource = _types;
         TypeCombo.SelectedIndex = 0;
 
-        PartnerCombo.ItemsSource = _services.Catalog.GetPartners();
-
-        UpdateOutboundVisibility();
         UpdateDocRef();
         DocRefBox.Focus();
     }
 
     private void TypeCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
-        UpdateOutboundVisibility();
         UpdateDocRef();
-    }
-
-    private void UpdateOutboundVisibility()
-    {
-        var option = TypeCombo.SelectedItem as DocTypeOption;
-        var isOutbound = option != null && option.Type == DocType.Outbound;
-        OutboundPanel.Visibility = isOutbound ? Visibility.Visible : Visibility.Collapsed;
-        if (!isOutbound)
-        {
-            PartnerCombo.SelectedItem = null;
-            OrderRefBox.Text = string.Empty;
-        }
     }
 
     private void GenerateRef_Click(object sender, RoutedEventArgs e)
@@ -73,21 +64,14 @@ public partial class NewDocWindow : Window
             return;
         }
 
-        var partnerId = (PartnerCombo.SelectedItem as Partner)?.Id;
-        if (option.Type == DocType.Outbound && !partnerId.HasValue)
-        {
-            MessageBox.Show("Для отгрузки требуется контрагент.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
         try
         {
             CreatedDocId = _services.Documents.CreateDoc(
                 option.Type,
                 DocRefBox.Text,
                 CommentBox.Text,
-                partnerId,
-                OrderRefBox.Text,
+                null,
+                null,
                 null);
 
             DialogResult = true;

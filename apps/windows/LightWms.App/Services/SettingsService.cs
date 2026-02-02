@@ -66,6 +66,9 @@ public sealed class BackupSettings
     public int KeepLastNBackups { get; set; } = 30;
     public string? TsdFolderPath { get; set; }
     public bool TsdAutoPromptEnabled { get; set; } = true;
+    public int HuNextSequence { get; set; } = 1;
+    [JsonPropertyName("tsd")]
+    public TsdSettings Tsd { get; set; } = new();
 
     public static BackupSettings Default()
     {
@@ -89,6 +92,57 @@ public sealed class BackupSettings
             TsdFolderPath = null;
         }
 
+        if (HuNextSequence < 1)
+        {
+            HuNextSequence = 1;
+        }
+
+        Tsd = (Tsd ?? new TsdSettings()).Normalize();
+
         return this;
     }
+}
+
+public sealed class TsdSettings
+{
+    [JsonPropertyName("devices")]
+    public List<TsdDevice> Devices { get; set; } = new();
+
+    [JsonPropertyName("last_device_id")]
+    public string? LastDeviceId { get; set; }
+
+    public TsdSettings Normalize()
+    {
+        Devices = Devices ?? new List<TsdDevice>();
+        Devices = Devices
+            .Where(device => device != null && !string.IsNullOrWhiteSpace(device.Id))
+            .Select(device => new TsdDevice
+            {
+                Id = device.Id.Trim(),
+                Name = string.IsNullOrWhiteSpace(device.Name) ? device.Id.Trim() : device.Name.Trim()
+            })
+            .GroupBy(device => device.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToList();
+
+        if (string.IsNullOrWhiteSpace(LastDeviceId))
+        {
+            LastDeviceId = null;
+        }
+        else
+        {
+            LastDeviceId = LastDeviceId.Trim();
+        }
+
+        return this;
+    }
+}
+
+public sealed class TsdDevice
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = string.Empty;
+
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
 }

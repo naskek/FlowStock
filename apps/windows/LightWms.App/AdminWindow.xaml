@@ -7,6 +7,7 @@
     <Grid Margin="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
@@ -19,7 +20,14 @@
                 </StackPanel>
             </StackPanel>
         </GroupBox>
-        <GroupBox Header="Опасная зона" Grid.Row="1" Margin="0,12,0,0">
+        <GroupBox Header="Handling Unit" Grid.Row="1" Margin="0,12,0,0">
+            <StackPanel Margin="8">
+                <TextBlock Text="Удаление сгенерированных HU (статус ISSUED)." />
+                <Button Content="Удалить сгенерированные HU" Width="220" Margin="0,8,0,0"
+                        Click="DeleteIssuedHu_Click" />
+            </StackPanel>
+        </GroupBox>
+        <GroupBox Header="Опасная зона" Grid.Row="2" Margin="0,12,0,0">
             <StackPanel Margin="8">
                 <TextBlock Text="Выберите вариант сброса" FontWeight="SemiBold" />
                 <RadioButton x:Name="ResetMovementsRadio"
@@ -30,11 +38,16 @@
                              Content="Полный сброс (удалить все данные и создать новую БД)"
                              Margin="0,4,0,0"
                              Checked="ResetModeChanged" />
+                <RadioButton x:Name="SelectiveResetRadio"
+                             Content="Точечный сброс (выбор таблиц)"
+                             Margin="0,4,0,0"
+                             Checked="ResetModeChanged" />
                 <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
                     <TextBlock Text="Статистика" VerticalAlignment="Center" />
                     <Button Content="Обновить" Margin="8,0,0,0" Click="RefreshCounts_Click" />
                 </StackPanel>
-                <DataGrid x:Name="CountsGrid" AutoGenerateColumns="False" IsReadOnly="True" Height="220" Margin="0,6,0,0">
+                <DataGrid x:Name="CountsGrid" AutoGenerateColumns="False" IsReadOnly="True" Height="220" Margin="0,6,0,0"
+                          SelectionMode="Extended" SelectionUnit="FullRow" SelectionChanged="CountsGrid_SelectionChanged">
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="Таблица" Binding="{Binding Table}" Width="*" />
                         <DataGridTextColumn Header="Записей" Binding="{Binding Count}" Width="140" />
@@ -53,7 +66,7 @@
                 </StackPanel>
             </StackPanel>
         </GroupBox>
-        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
             <Button Content="Закрыть" Width="120" IsCancel="True" />
         </StackPanel>
     </Grid>

@@ -2,8 +2,12 @@
   "use strict";
 
   var app = document.getElementById("app");
+  var appHeader = document.querySelector(".app-header");
+  var appTitle = document.querySelector(".app-title");
+  var appTitleWrap = document.querySelector(".app-title-wrap");
   var backBtn = document.getElementById("backBtn");
   var settingsBtn = document.getElementById("settingsBtn");
+  var networkStatus = document.getElementById("networkStatus");
   var scanSink = document.getElementById("scanSink");
   var currentRoute = null;
   var scanKeydownHandler = null;
@@ -15,6 +19,16 @@
   };
 
   var NAV_ORIGIN_KEY = "tsdNavOrigin";
+
+  function updateNetworkStatus() {
+    if (!networkStatus) {
+      return;
+    }
+
+    var online = navigator.onLine;
+    networkStatus.textContent = online ? "Онлайн" : "Оффлайн";
+    networkStatus.classList.toggle("is-offline", !online);
+  }
 
   function setNavOrigin(value) {
     if (!window.sessionStorage) {
@@ -86,7 +100,7 @@
   var OPS = {
     INBOUND: { label: "Приемка", prefix: "IN" },
     OUTBOUND: { label: "Отгрузка", prefix: "OUT" },
-    MOVE: { label: "Перемещение", prefix: "MOV" },
+    MOVE: { label: "Перемещение", prefix: "MOVE" },
     WRITE_OFF: { label: "Списание", prefix: "WO" },
     INVENTORY: { label: "Инвентаризация", prefix: "INV" },
   };
@@ -132,6 +146,88 @@
       str = "0" + str;
     }
     return str;
+  }
+
+  function formatDocCreatedAt(doc) {
+    if (!doc) {
+      return "—";
+    }
+    var raw = doc.createdAt || doc.created_at;
+    if (!raw) {
+      return "—";
+    }
+    var date = new Date(raw);
+    if (isNaN(date.getTime())) {
+      return "—";
+    }
+    var day = padNumber(date.getDate(), 2);
+    var month = padNumber(date.getMonth() + 1, 2);
+    var year = date.getFullYear();
+    var hours = padNumber(date.getHours(), 2);
+    var minutes = padNumber(date.getMinutes(), 2);
+    return day + "." + month + "." + year + " " + hours + ":" + minutes;
+  }
+
+  function formatDate(value) {
+    if (!value) {
+      return "—";
+    }
+    var date = new Date(value);
+    if (isNaN(date.getTime())) {
+      return "—";
+    }
+    var day = padNumber(date.getDate(), 2);
+    var month = padNumber(date.getMonth() + 1, 2);
+    var year = date.getFullYear();
+    return day + "." + month + "." + year;
+  }
+
+  function formatDateTime(value) {
+    if (!value) {
+      return "—";
+    }
+    var date = new Date(value);
+    if (isNaN(date.getTime())) {
+      return "—";
+    }
+    var day = padNumber(date.getDate(), 2);
+    var month = padNumber(date.getMonth() + 1, 2);
+    var year = date.getFullYear();
+    var hours = padNumber(date.getHours(), 2);
+    var minutes = padNumber(date.getMinutes(), 2);
+    return day + "." + month + "." + year + " " + hours + ":" + minutes;
+  }
+
+  function getOrderStatusInfo(status) {
+    var raw = String(status || "").trim();
+    if (!raw) {
+      return { label: "—", className: "order-status-pill order-status-neutral" };
+    }
+    var normalized = raw.toLowerCase();
+    if (
+      normalized.indexOf("принят") !== -1 ||
+      normalized.indexOf("accepted") !== -1 ||
+      normalized.indexOf("new") !== -1
+    ) {
+      return { label: raw, className: "order-status-pill order-status-accepted" };
+    }
+    if (
+      normalized.indexOf("процесс") !== -1 ||
+      normalized.indexOf("в работе") !== -1 ||
+      normalized.indexOf("processing") !== -1 ||
+      normalized.indexOf("picking") !== -1
+    ) {
+      return { label: raw, className: "order-status-pill order-status-progress" };
+    }
+    if (
+      normalized.indexOf("отгруж") !== -1 ||
+      normalized.indexOf("shipped") !== -1 ||
+      normalized.indexOf("done") !== -1 ||
+      normalized.indexOf("closed") !== -1
+    ) {
+      return { label: raw, className: "order-status-pill order-status-shipped" };
+    }
+    return { label: raw, className: "order-status-pill order-status-neutral" };
   }
 
   function getDateKey(date) {
@@ -211,8 +307,14 @@
     }
 
     var parts = path.split("/");
+    if (parts[0] === "docs" && parts[1]) {
+      return { name: "docs", op: decodeURIComponent(parts[1]) };
+    }
     if (parts[0] === "doc" && parts[1]) {
       return { name: "doc", id: decodeURIComponent(parts[1]) };
+    }
+    if (parts[0] === "order" && parts[1]) {
+      return { name: "order", id: decodeURIComponent(parts[1]) };
     }
     return { name: parts[0] };
   }
@@ -224,14 +326,21 @@
   }
 
   function updateHeader(route) {
-    if (!backBtn) {
+    if (!appHeader || !backBtn) {
       return;
     }
 
     if (route.name === "home") {
-      backBtn.classList.remove("is-hidden");
-    } else {
-      backBtn.classList.remove("is-hidden");
+      if (backBtn.parentNode) {
+        backBtn.parentNode.removeChild(backBtn);
+      }
+    } else if (!backBtn.parentNode) {
+      var anchor = appTitleWrap || appTitle;
+      if (anchor && anchor.parentNode === appHeader) {
+        appHeader.insertBefore(backBtn, anchor);
+      } else {
+        appHeader.insertBefore(backBtn, appHeader.firstChild);
+      }
     }
 
     if (settingsBtn) {
@@ -257,7 +366,7 @@
       app.innerHTML = renderLoading();
       TsdStorage.listDocs()
         .then(function (docs) {
-          app.innerHTML = renderDocsList(docs);
+          app.innerHTML = renderDocsList(docs, route.op);
           wireDocsList();
         })
         .catch(function () {
@@ -295,9 +404,53 @@
       return;
     }
 
+    if (route.name === "orders") {
+      app.innerHTML = renderOrders();
+      wireOrders();
+      return;
+    }
+
+    if (route.name === "order") {
+      app.innerHTML = renderLoading();
+      TsdStorage.getOrderById(route.id)
+        .then(function (order) {
+          if (!order) {
+            app.innerHTML = renderError("Заказ не найден");
+            return;
+          }
+          return Promise.all([
+            TsdStorage.listOrderLines(route.id),
+            order.partnerId ? TsdStorage.getPartnerById(order.partnerId) : Promise.resolve(null),
+          ])
+            .then(function (results) {
+              var lines = results[0] || [];
+              var partner = results[1];
+              if (partner) {
+                order.partnerName = partner.name || "";
+                order.partnerInn = partner.inn || "";
+              }
+              app.innerHTML = renderOrderDetails(order, lines);
+              wireOrderDetails();
+            })
+            .catch(function () {
+              app.innerHTML = renderError("Ошибка загрузки строк заказа");
+            });
+        })
+        .catch(function () {
+          app.innerHTML = renderError("Ошибка загрузки заказа");
+        });
+      return;
+    }
+
     if (route.name === "stock") {
       app.innerHTML = renderStock();
       wireStock();
+      return;
+    }
+
+    if (route.name === "hu") {
+      app.innerHTML = renderHuLookup();
+      wireHuLookup();
       return;
     }
 
@@ -319,21 +472,29 @@
 
   function renderHome() {
     return (
-      '<section class="screen screen-center">' +
+      '<section class="screen home-screen">' +
       '  <div class="menu-grid">' +
       '    <button class="btn menu-btn" data-op="INBOUND">Приемка</button>' +
       '    <button class="btn menu-btn" data-op="OUTBOUND">Отгрузка</button>' +
       '    <button class="btn menu-btn" data-op="MOVE">Перемещение</button>' +
-    '    <button class="btn menu-btn" data-op="WRITE_OFF">Списание</button>' +
-    '    <button class="btn menu-btn" data-op="INVENTORY">Инвентаризация</button>' +
-    '    <button class="btn menu-btn" data-route="docs">История операций</button>' +
-    '    <button class="btn menu-btn" data-route="stock">Остатки</button>' +
+      '    <button class="btn menu-btn" data-op="WRITE_OFF">Списание</button>' +
+      '    <button class="btn menu-btn" data-route="stock">Остатки</button>' +
+      '    <button class="btn menu-btn" data-route="hu">HU / Паллеты</button>' +
+      '    <button class="btn menu-btn" data-op="INVENTORY">Инвентаризация</button>' +
+      '    <button class="btn menu-btn" data-route="orders">Заказы</button>' +
+      '    <button class="btn menu-btn" data-route="docs">История операций</button>' +
       "  </div>" +
       "</section>"
     );
   }
-  function renderDocsList(docs) {
+  function renderDocsList(docs, opFilter) {
     var list = docs || [];
+    var listOp = opFilter && OPS[opFilter] ? opFilter : null;
+    if (listOp) {
+      list = list.filter(function (doc) {
+        return doc.op === listOp;
+      });
+    }
     list.sort(function (a, b) {
       var statusDiff = (STATUS_ORDER[a.status] || 0) - (STATUS_ORDER[b.status] || 0);
       if (statusDiff !== 0) {
@@ -348,6 +509,7 @@
       .map(function (doc) {
         var opLabel = OPS[doc.op] ? OPS[doc.op].label : doc.op;
         var statusLabel = STATUS_LABELS[doc.status] || doc.status;
+        var createdLabel = formatDocCreatedAt(doc);
         return (
           '<button class="doc-item" data-doc="' +
           escapeHtml(doc.id) +
@@ -358,6 +520,9 @@
           "</div>" +
           '    <div class="doc-ref">' +
           escapeHtml(doc.doc_ref || "") +
+          "</div>" +
+          '    <div class="doc-created">Создан: ' +
+          escapeHtml(createdLabel) +
           "</div>" +
           "  </div>" +
           '  <div class="doc-status">' +
@@ -372,16 +537,143 @@
       rows = '<div class="empty-state">Операций пока нет.</div>';
     }
 
+    var title = listOp && OPS[listOp] ? OPS[listOp].label : "История операций";
+    var actionsHtml = "";
+    if (listOp) {
+      actionsHtml =
+        '<div class="actions-row doc-actions">' +
+        '  <button class="btn primary-btn" id="newDocBtn" data-op="' +
+        escapeHtml(listOp) +
+        '">+ Новый</button>' +
+        "</div>";
+    }
+
     return (
       '<section class="screen">' +
       '  <div class="screen-card doc-screen-card">' +
-      '    <div class="section-title">История операций</div>' +
-      '    <div class="actions-row">' +
-      '      <button class="btn primary-btn" id="newDocBtn">Новая операция</button>' +
-      '      <button class="btn btn-outline" id="exportBtn">Экспорт JSONL</button>' +
-      "    </div>" +
-      '    <div id="exportStatus" class="status"></div>' +
+      '    <div class="section-title">' +
+      escapeHtml(title) +
+      "</div>" +
+      actionsHtml +
       '    <div class="doc-list">' +
+      rows +
+      "    </div>" +
+      "  </div>" +
+      "</section>"
+    );
+  }
+
+  function renderOrders() {
+    return (
+      '<section class="screen">' +
+      '  <div class="screen-card doc-screen-card">' +
+      '    <div class="section-title">Заказы</div>' +
+      '    <input class="form-input" id="ordersSearchInput" type="text" autocomplete="off" placeholder="Поиск по номеру или контрагенту" />' +
+      '    <div id="ordersStatus" class="status"></div>' +
+      '    <div id="ordersList" class="doc-list order-list"></div>' +
+      "  </div>" +
+      "</section>"
+    );
+  }
+
+  function renderOrderDetails(order, lines) {
+    var statusInfo = getOrderStatusInfo(order.status);
+    var orderNumber =
+      order.number || order.orderNumber || order.order_ref || order.orderRef || "—";
+    var partnerLabel = order.partnerName || "—";
+    if (order.partnerInn) {
+      partnerLabel += " · ИНН: " + order.partnerInn;
+    }
+    var plannedDate = formatDate(order.plannedDate || order.planned_date);
+    var shippedDate = formatDate(order.shippedAt || order.shipped_at);
+    var createdAt = formatDateTime(order.createdAt || order.created_at);
+
+    var rows = (lines || [])
+      .map(function (line) {
+        var ordered = Number(line.orderedQty) || 0;
+        var shipped = Number(line.shippedQty) || 0;
+        var left = Number(line.leftQty);
+        if (isNaN(left)) {
+          left = Math.max(ordered - shipped, 0);
+        }
+        return (
+          '<div class="order-line-row">' +
+          '  <div class="order-line-item">' +
+          '    <div class="order-line-name">' +
+          escapeHtml(line.itemName || "-") +
+          "</div>" +
+          (line.barcode
+            ? '    <div class="order-line-barcode">' + escapeHtml(line.barcode) + "</div>"
+            : "") +
+          "  </div>" +
+          '  <div class="order-line-qty">' +
+          escapeHtml(String(ordered)) +
+          "</div>" +
+          '  <div class="order-line-qty">' +
+          escapeHtml(String(shipped)) +
+          "</div>" +
+          '  <div class="order-line-qty">' +
+          escapeHtml(String(left)) +
+          "</div>" +
+          "</div>"
+        );
+      })
+      .join("");
+
+    if (!rows) {
+      rows = '<div class="empty-state">Строк заказа нет.</div>';
+    } else {
+      rows =
+        '<div class="order-line-header">' +
+        '  <div class="order-line-head">Товар</div>' +
+        '  <div class="order-line-head">Заказано</div>' +
+        '  <div class="order-line-head">Отгружено</div>' +
+        '  <div class="order-line-head">Осталось</div>' +
+        "</div>" +
+        rows;
+    }
+
+    return (
+      '<section class="screen">' +
+      '  <div class="screen-card doc-screen-card">' +
+      '    <div class="order-head">' +
+      '      <div class="order-title">Заказ № ' +
+      escapeHtml(String(orderNumber || "—")) +
+      "</div>" +
+      '      <div class="' +
+      escapeHtml(statusInfo.className) +
+      '">' +
+      escapeHtml(statusInfo.label) +
+      "</div>" +
+      "    </div>" +
+      '    <div class="order-fields">' +
+      '      <div class="order-field-row">' +
+      '        <div class="order-field-label">Контрагент</div>' +
+      '        <div class="order-field-value">' +
+      escapeHtml(partnerLabel) +
+      "</div>" +
+      "      </div>" +
+      '      <div class="order-field-row">' +
+      '        <div class="order-field-label">Плановая отгрузка</div>' +
+      '        <div class="order-field-value">' +
+      escapeHtml(plannedDate) +
+      "</div>" +
+      "      </div>" +
+      '      <div class="order-field-row">' +
+      '        <div class="order-field-label">Факт отгрузки</div>' +
+      '        <div class="order-field-value">' +
+      escapeHtml(shippedDate) +
+      "</div>" +
+      "      </div>" +
+      '      <div class="order-field-row">' +
+      '        <div class="order-field-label">Создан</div>' +
+      '        <div class="order-field-value">' +
+      escapeHtml(createdAt) +
+      "</div>" +
+      "      </div>" +
+      "    </div>" +
+      '    <div class="section-subtitle">Строки заказа</div>' +
+      '    <div class="order-lines">' +
       rows +
       "    </div>" +
       "  </div>" +
@@ -419,8 +711,23 @@
       '    <div id="stockDetails" class="stock-details"></div>' +
       '    <div class="actions-bar">' +
       '      <button class="btn btn-outline" id="stockClearBtn" type="button">Очистить</button>' +
-      '      <button class="btn btn-outline" id="stockBackBtn" type="button">Назад</button>' +
       "    </div>" +
+      "  </div>" +
+      "</section>"
+    );
+  }
+
+  function renderHuLookup() {
+    return (
+      '<section class="screen">' +
+      '  <div class="screen-card">' +
+      '    <div class="section-title">HU / Паллеты</div>' +
+      '    <div class="hu-actions">' +
+      '      <button class="btn btn-outline" id="huLookupScanBtn" type="button">Сканировать HU</button>' +
+      "    </div>" +
+      '    <div id="huLookupStatus" class="stock-status">Данные по ПК: отсутствуют</div>' +
+      '    <div id="huLookupMessage" class="stock-message"></div>' +
+      '    <div id="huLookupDetails" class="hu-details"></div>' +
       "  </div>" +
       "</section>"
     );
@@ -433,7 +740,6 @@
     var messageEl = document.getElementById("stockMessage");
     var detailsEl = document.getElementById("stockDetails");
     var clearBtn = document.getElementById("stockClearBtn");
-    var backBtn = document.getElementById("stockBackBtn");
     var dataReady = false;
 
     function setStatusText(text) {
@@ -663,12 +969,6 @@
     });
   }
 
-    if (backBtn) {
-      backBtn.addEventListener("click", function () {
-        navigate("/home");
-      });
-    }
-
     if (searchInput) {
       searchInput.focus();
     }
@@ -764,11 +1064,299 @@
       (isReady
         ? '      <button class="btn btn-outline" id="revertBtn">Вернуть в черновик</button>'
         : "") +
-      '      <button class="btn btn-outline" id="backToDocsBtn">Назад</button>' +
       "    </div>" +
       "  </div>" +
       "</section>"
     );
+  }
+
+  function wireHuLookup() {
+    var scanBtn = document.getElementById("huLookupScanBtn");
+    var statusEl = document.getElementById("huLookupStatus");
+    var messageEl = document.getElementById("huLookupMessage");
+    var detailsEl = document.getElementById("huLookupDetails");
+    var lookupOverlay = null;
+    var lookupInput = null;
+    var lookupError = null;
+    var lookupConfirm = null;
+    var lookupValue = null;
+    var scanBuffer = "";
+    var scanBufferTimer = null;
+    var overlayKeyListener = null;
+
+    function setStatus(text) {
+      if (statusEl) {
+        statusEl.textContent = text || "";
+      }
+    }
+
+    function setMessage(text) {
+      if (!messageEl) {
+        return;
+      }
+      messageEl.textContent = text || "";
+    }
+
+    function formatQty(value) {
+      var num = Number(value);
+      if (isNaN(num)) {
+        return "0";
+      }
+      return String(num);
+    }
+
+    function renderDetails(huCode, entry, itemsMap) {
+      if (!detailsEl) {
+        return;
+      }
+      if (!entry || !Array.isArray(entry.rows) || !entry.rows.length) {
+        detailsEl.innerHTML = "";
+        return;
+      }
+      var linesHtml = entry.rows.map(function (row) {
+        var item = itemsMap[row.itemId] || {};
+        var itemName = item.name || ("ID " + row.itemId);
+        var baseUom = item.base_uom || "";
+        var qtyLabel = formatQty(row.qtyBase);
+        var uomLabel = baseUom ? " " + baseUom : "";
+        return (
+          '<div class="hu-line">' +
+          "<div>" +
+          escapeHtml(itemName) +
+          "</div>" +
+          "<div>" +
+          escapeHtml(qtyLabel + uomLabel) +
+          "</div>" +
+          "</div>"
+        );
+      }).join("");
+
+      detailsEl.innerHTML =
+        '<div class="hu-card">' +
+        '  <div class="hu-card-title">' +
+        escapeHtml(huCode) +
+        "</div>" +
+        '  <div class="hu-card-meta">Данные по ПК на момент экспорта: ' +
+        escapeHtml(entry.exportedAt || "-") +
+        "</div>" +
+        '  <div class="hu-lines">' +
+        linesHtml +
+        "</div>" +
+        "</div>";
+    }
+
+    function loadHuDetails(huCode) {
+      setMessage("");
+      if (!huCode) {
+        setMessage("Неверный формат HU.");
+        return;
+      }
+
+      TsdStorage.getHuStockByCode(huCode)
+        .then(function (entry) {
+          if (!entry) {
+            setStatus("Данные по ПК: отсутствуют");
+            detailsEl.innerHTML = "";
+            setMessage("HU не найден в снимке.");
+            return;
+          }
+          setStatus(
+            "Данные по ПК на момент экспорта: " + (entry.exportedAt || "-")
+          );
+          var itemIds = [];
+          entry.rows.forEach(function (row) {
+            if (row.itemId != null && itemIds.indexOf(row.itemId) === -1) {
+              itemIds.push(row.itemId);
+            }
+          });
+          TsdStorage.getItemsByIds(itemIds)
+            .then(function (itemsMap) {
+              renderDetails(huCode, entry, itemsMap || {});
+            })
+            .catch(function () {
+              renderDetails(huCode, entry, {});
+            });
+        })
+        .catch(function () {
+          setMessage("Ошибка чтения данных HU.");
+        });
+    }
+
+    function isValidHuFormat(value) {
+      return /^HU-\d{6}$/.test(value);
+    }
+
+    function setLookupValue(rawValue, showError) {
+      if (!lookupInput) {
+        return;
+      }
+      var trimmed = normalizeValue(rawValue).toUpperCase();
+      if (!trimmed || !isValidHuFormat(trimmed)) {
+        lookupValue = null;
+        lookupInput.value = trimmed;
+        if (lookupError) {
+          lookupError.textContent =
+            showError && trimmed ? "Неверный формат HU." : "";
+        }
+        if (lookupConfirm) {
+          lookupConfirm.disabled = true;
+        }
+        return;
+      }
+
+      lookupValue = trimmed;
+      lookupInput.value = trimmed;
+      if (lookupError) {
+        lookupError.textContent = "Найден HU: " + trimmed;
+      }
+      if (lookupConfirm) {
+        lookupConfirm.disabled = false;
+      }
+    }
+
+    function clearScanBuffer() {
+      scanBuffer = "";
+      if (scanBufferTimer) {
+        clearTimeout(scanBufferTimer);
+        scanBufferTimer = null;
+      }
+    }
+
+    function scheduleScanBufferReset() {
+      if (scanBufferTimer) {
+        clearTimeout(scanBufferTimer);
+      }
+      scanBufferTimer = window.setTimeout(function () {
+        clearScanBuffer();
+      }, 400);
+    }
+
+    function handleScanKeydown(event) {
+      if (!lookupOverlay) {
+        return;
+      }
+      if (event.key === "Enter") {
+        if (scanBuffer) {
+          var value = scanBuffer;
+          clearScanBuffer();
+          setLookupValue(value, true);
+          event.preventDefault();
+        }
+        return;
+      }
+      if (
+        event.key &&
+        event.key.length === 1 &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey
+      ) {
+        scanBuffer += event.key;
+        scheduleScanBufferReset();
+        if (lookupInput) {
+          lookupInput.value = scanBuffer;
+        }
+      }
+    }
+
+    handleScanKeydown.cleanup = function () {
+      clearScanBuffer();
+    };
+
+    function openLookupOverlay() {
+      if (lookupOverlay) {
+        return;
+      }
+      lookupOverlay = document.createElement("div");
+      lookupOverlay.className = "overlay hu-lookup-overlay";
+      lookupOverlay.setAttribute("tabindex", "-1");
+      lookupOverlay.innerHTML =
+        '<div class="overlay-card">' +
+        '  <div class="overlay-header">' +
+        '    <div class="overlay-title">Сканировать HU</div>' +
+        '    <button class="btn btn-ghost overlay-close" type="button">Закрыть</button>' +
+        "  </div>" +
+        '  <div class="overlay-body">' +
+        '    <div class="form-label">Отсканируйте HU-код</div>' +
+        '    <input class="form-input" id="huLookupInput" type="text" placeholder="HU-000001" inputmode="none" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />' +
+        '    <div class="field-error" id="huLookupError"></div>' +
+        '    <div class="overlay-actions">' +
+        '      <button class="btn btn-outline" type="button" id="huLookupCancel">Отмена</button>' +
+        '      <button class="btn primary-btn" type="button" id="huLookupConfirm" disabled>Показать</button>' +
+        "    </div>" +
+        "  </div>" +
+        "</div>";
+
+      document.body.appendChild(lookupOverlay);
+      lockOverlayScroll();
+      focusOverlay(lookupOverlay);
+
+      lookupInput = lookupOverlay.querySelector("#huLookupInput");
+      lookupError = lookupOverlay.querySelector("#huLookupError");
+      lookupConfirm = lookupOverlay.querySelector("#huLookupConfirm");
+      var cancelBtn = lookupOverlay.querySelector("#huLookupCancel");
+      var closeBtn = lookupOverlay.querySelector(".overlay-close");
+
+      function closeOverlay() {
+        unlockOverlayScroll();
+        document.body.removeChild(lookupOverlay);
+        lookupOverlay = null;
+        lookupInput = null;
+        lookupError = null;
+        lookupConfirm = null;
+        lookupValue = null;
+        if (overlayKeyListener) {
+          document.removeEventListener("keydown", overlayKeyListener);
+          overlayKeyListener = null;
+        }
+      }
+
+      function confirmLookup() {
+        if (!lookupValue) {
+          return;
+        }
+        closeOverlay();
+        loadHuDetails(lookupValue);
+      }
+
+      if (lookupInput) {
+        lookupInput.addEventListener("input", function () {
+          setLookupValue(lookupInput.value, true);
+        });
+      }
+      if (cancelBtn) {
+        cancelBtn.addEventListener("click", closeOverlay);
+      }
+      if (closeBtn) {
+        closeBtn.addEventListener("click", closeOverlay);
+      }
+      if (lookupConfirm) {
+        lookupConfirm.addEventListener("click", confirmLookup);
+      }
+
+      overlayKeyListener = function (event) {
+        if (event.key === "Escape") {
+          closeOverlay();
+        }
+        if (event.key === "Enter" && lookupConfirm && !lookupConfirm.disabled) {
+          event.preventDefault();
+          confirmLookup();
+        }
+      };
+      document.addEventListener("keydown", overlayKeyListener);
+
+      setLookupValue("", false);
+      clearScanBuffer();
+      enterScanMode();
+    }
+
+    setScanHandler(handleScanKeydown);
+
+    if (scanBtn) {
+      scanBtn.addEventListener("click", function () {
+        openLookupOverlay();
+      });
+    }
   }
 
   function renderHeaderFields(doc) {
@@ -795,6 +1383,7 @@
           disabled: !isDraft,
         }) +
         '  <div class="field-error" id="toError"></div>' +
+        renderHuField(header, isDraft) +
         "</div>"
       );
     }
@@ -803,6 +1392,7 @@
       var outboundPartnerValue = header.partner || "Не выбран";
       var outboundFromValue = formatLocationLabel(header.from, header.from_name);
       var outboundOrderValue = formatOrderLabel(header.order_ref);
+      var outboundOrderId = header.order_id || null;
       return (
         '<div class="header-fields">' +
         renderPickerRow({
@@ -821,14 +1411,20 @@
           disabled: !isDraft,
         }) +
         '  <div class="field-error" id="fromError"></div>' +
-        renderPickerRow({
-          label: "Заказ",
-          value: outboundOrderValue,
-          valueId: "orderValue",
-          pickId: "orderPickBtn",
-          disabled: !isDraft,
-        }) +
-        '  <div class="field-hint is-hidden" id="orderHint">Нет списка заказов — импортируйте с ПК</div>' +
+        '  <div class="field-row field-row-4">' +
+        '    <div class="field-label">Заказ</div>' +
+        '    <div class="field-value" id="orderValue">' +
+        escapeHtml(outboundOrderValue) +
+        "</div>" +
+        '    <button class="btn btn-outline field-info-btn" id="orderInfoBtn" type="button" ' +
+        (outboundOrderId ? "" : "disabled") +
+        '>i</button>' +
+        '    <button class="btn btn-outline field-pick" id="orderPickBtn" type="button" ' +
+        (isDraft ? "" : "disabled") +
+        ">+</button>" +
+        "  </div>" +
+        '  <div class="field-hint is-hidden" id="orderHint">Нет списка заказов - импортируйте с ПК</div>' +
+        renderHuField(header, isDraft) +
         "</div>"
       );
     }
@@ -854,6 +1450,9 @@
           disabled: !isDraft,
         }) +
         '  <div class="field-error" id="toError"></div>' +
+        renderMoveInternalRow(header, isDraft) +
+        renderMoveHuField("С HU", "huFromValue", "huFromScanBtn", "huFromError", header.from_hu, isDraft) +
+        renderMoveHuField("На HU", "huToValue", "huToScanBtn", "huToError", header.to_hu, isDraft) +
         "</div>"
       );
     }
@@ -878,6 +1477,7 @@
           disabled: !isDraft,
         }) +
         '  <div class="field-error" id="reasonError"></div>' +
+        renderHuField(header, isDraft) +
         "</div>"
       );
     }
@@ -894,6 +1494,7 @@
           disabled: !isDraft,
         }) +
         '  <div class="field-error" id="locationError"></div>' +
+        renderHuField(header, isDraft) +
         "</div>"
       );
     }
@@ -902,7 +1503,7 @@
   }
 
   function renderScanBlock(doc, isDraft) {
-    var qtyMode = doc.header && doc.header.qtyMode === "ASK" ? "ASK" : "INC1";
+    var qtyMode = doc.header && doc.header.qtyMode === "INC1" ? "INC1" : "ASK";
     return (
       '<div class="scan-card">' +
       '  <label class="form-label" for="barcodeInput">Штрихкод</label>' +
@@ -912,7 +1513,7 @@
       '" data-mode="INC1" type="button">+1</button>' +
       '    <button class="btn qty-mode-btn' +
       (qtyMode === "ASK" ? " is-active" : "") +
-      '" data-mode="ASK" type="button">Кол-во...</button>' +
+      '" data-mode="ASK" type="button">Кол-во</button>' +
       "  </div>" +
       '  <div class="scan-input-row">' +
       '    <input class="form-input scan-input" id="barcodeInput" type="text" inputmode="none" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" readonly ' +
@@ -1000,13 +1601,9 @@
       '<section class="screen">' +
       '  <div class="screen-card">' +
       '    <h1 class="screen-title">Настройки</h1>' +
-      '    <label class="form-label" for="deviceIdInput">ID устройства</label>' +
-      '    <input class="form-input" id="deviceIdInput" type="text" ' +
-      '      inputmode="text" autocomplete="off" autocapitalize="off" />' +
-      '    <button id="saveSettingsBtn" class="btn primary-btn" type="button">' +
-      "      Сохранить" +
-      "    </button>" +
-      '    <div id="saveStatus" class="status"></div>' +
+      '    <label class="form-label">ID устройства</label>' +
+      '    <div class="field-value" id="deviceIdValue"></div>' +
+      '    <div class="field-hint is-hidden" id="deviceIdHint">Назначается при импорте с ПК</div>' +
       '    <button id="importDataBtn" class="btn btn-outline" type="button">' +
       "      Загрузить данные с ПК..." +
       "    </button>" +
@@ -1014,13 +1611,9 @@
       '    <div id="dataStatus" class="status"></div>' +
       '    <div id="dataCounts" class="status status-muted"></div>' +
       '    <button id="exportFromSettingsBtn" class="btn btn-outline" type="button">' +
-      "      Экспорт JSONL" +
+      "      Экспорт смены (SHIFT)" +
       "    </button>" +
       '    <div id="exportStatus" class="status"></div>' +
-      '    <button id="exportItemsBtn" class="btn btn-outline" type="button">' +
-      "      Экспорт новых товаров (JSONL)" +
-      "    </button>" +
-      '    <div id="itemsExportStatus" class="status"></div>' +
       '    <div class="version">Версия приложения: 0.1</div>' +
       "  </div>" +
       "</section>"
@@ -1031,7 +1624,9 @@
     buttons.forEach(function (btn) {
       btn.addEventListener("click", function () {
         var op = btn.getAttribute("data-op");
-        createDocAndOpen(op, "home");
+        if (op) {
+          navigate("/docs/" + encodeURIComponent(op));
+        }
       });
     });
     var routes = document.querySelectorAll("[data-route]");
@@ -1045,29 +1640,141 @@
 
   function wireDocsList() {
     var newBtn = document.getElementById("newDocBtn");
-    var exportBtn = document.getElementById("exportBtn");
     var docs = document.querySelectorAll("[data-doc]");
+    var listOp = currentRoute && currentRoute.op ? currentRoute.op : null;
+    var listOrigin = listOp ? "home" : "history";
 
     if (newBtn) {
       newBtn.addEventListener("click", function () {
-        setNavOrigin("history");
-        navigate("/new");
-      });
-    }
-
-    if (exportBtn) {
-      exportBtn.addEventListener("click", function () {
-        exportReadyDocs("exportStatus");
+        var op = newBtn.getAttribute("data-op") || listOp;
+        if (!op) {
+          return;
+        }
+        createDocAndOpen(op, listOrigin);
       });
     }
 
     docs.forEach(function (item) {
       item.addEventListener("click", function () {
         var docId = item.getAttribute("data-doc");
-        setNavOrigin("history");
+        setNavOrigin(listOrigin);
         navigate("/doc/" + encodeURIComponent(docId));
       });
     });
+  }
+
+  function wireOrders() {
+    var searchInput = document.getElementById("ordersSearchInput");
+    var listEl = document.getElementById("ordersList");
+    var statusEl = document.getElementById("ordersStatus");
+
+    function updateOrdersStatus() {
+      if (!statusEl) {
+        return;
+      }
+      TsdStorage.getDataStatus()
+        .then(function (status) {
+          if (status && status.exportedAt) {
+            statusEl.textContent = "По состоянию на: " + status.exportedAt;
+            return;
+          }
+          statusEl.textContent = "Данные не загружены";
+        })
+        .catch(function () {
+          statusEl.textContent = "Данные не загружены";
+        });
+    }
+
+    function renderList(orders) {
+      if (!listEl) {
+        return;
+      }
+      var rows = (orders || [])
+        .map(function (order) {
+          var statusInfo = getOrderStatusInfo(order.status);
+          var orderNumber =
+            order.number || order.orderNumber || order.order_ref || order.orderRef || "—";
+          var partnerLabel = order.partnerName || "—";
+          if (order.partnerInn) {
+            partnerLabel += " · ИНН: " + order.partnerInn;
+          }
+          var plannedDate = formatDate(order.plannedDate || order.planned_date);
+          var shippedDate = formatDate(order.shippedAt || order.shipped_at);
+          var createdAt = formatDateTime(order.createdAt || order.created_at);
+          return (
+            '<button class="doc-item order-item" data-order="' +
+            escapeHtml(order.orderId) +
+            '">' +
+            '  <div class="doc-main">' +
+            '    <div class="doc-title">' +
+            escapeHtml(String(orderNumber)) +
+            "</div>" +
+            '    <div class="order-meta">' +
+            '      <div class="order-meta-row">' +
+            escapeHtml(partnerLabel) +
+            "</div>" +
+            '      <div class="order-meta-row">План: ' +
+            escapeHtml(plannedDate) +
+            "</div>" +
+            '      <div class="order-meta-row">Факт: ' +
+            escapeHtml(shippedDate) +
+            "</div>" +
+            '      <div class="order-meta-row">Создан: ' +
+            escapeHtml(createdAt) +
+            "</div>" +
+            "    </div>" +
+            "  </div>" +
+            '  <div class="' +
+            escapeHtml(statusInfo.className) +
+            '">' +
+            escapeHtml(statusInfo.label) +
+            "</div>" +
+            "</button>"
+          );
+        })
+        .join("");
+
+      if (!rows) {
+        rows = '<div class="empty-state">Заказов пока нет.</div>';
+      }
+      listEl.innerHTML = rows;
+      var items = listEl.querySelectorAll("[data-order]");
+      items.forEach(function (item) {
+        item.addEventListener("click", function () {
+          var orderId = item.getAttribute("data-order");
+          navigate("/order/" + encodeURIComponent(orderId));
+        });
+      });
+    }
+
+    function loadOrders(query) {
+      if (statusEl) {
+        statusEl.textContent = "Загрузка...";
+      }
+      TsdStorage.listOrders({ q: query })
+        .then(function (orders) {
+          renderList(orders);
+          updateOrdersStatus();
+        })
+        .catch(function () {
+          if (statusEl) {
+            statusEl.textContent = "Ошибка загрузки заказов";
+          }
+          renderList([]);
+        });
+    }
+
+    if (searchInput) {
+      searchInput.addEventListener("input", function () {
+        loadOrders(searchInput.value);
+      });
+    }
+
+    loadOrders("");
+  }
+
+  function wireOrderDetails() {
+    // Read-only screen; no actions to wire.
   }
 
   function wireNewOp() {
@@ -1083,6 +1790,7 @@
   function buildOverlay(title) {
     var overlay = document.createElement("div");
     overlay.className = "overlay";
+    overlay.setAttribute("tabindex", "-1");
     overlay.innerHTML =
       '<div class="overlay-card">' +
       '  <div class="overlay-header">' +
@@ -1101,6 +1809,46 @@
       "</div>";
     overlay.querySelector(".overlay-title").textContent = title;
     return overlay;
+  }
+
+  var overlayOpenCount = 0;
+
+  function overlayTouchBlocker(event) {
+    if (!event.target.closest(".overlay-card")) {
+      event.preventDefault();
+    }
+  }
+
+  function lockOverlayScroll() {
+    overlayOpenCount += 1;
+    if (overlayOpenCount !== 1) {
+      return;
+    }
+
+    document.body.classList.add("modal-open");
+    document.addEventListener("touchmove", overlayTouchBlocker, { passive: false });
+  }
+
+  function unlockOverlayScroll() {
+    if (overlayOpenCount > 0) {
+      overlayOpenCount -= 1;
+    }
+
+    if (overlayOpenCount !== 0) {
+      return;
+    }
+
+    document.body.classList.remove("modal-open");
+    document.removeEventListener("touchmove", overlayTouchBlocker);
+  }
+
+  function focusOverlay(overlay) {
+    var closeBtn = overlay.querySelector(".overlay-close");
+    if (closeBtn) {
+      closeBtn.focus();
+    } else {
+      overlay.focus();
+    }
   }
 
   function renderOverlayList(listEl, items, renderLabel, onSelect) {
@@ -1142,6 +1890,7 @@
     var closeBtn = overlay.querySelector(".overlay-close");
 
     function close() {
+      unlockOverlayScroll();
       document.body.removeChild(overlay);
       document.removeEventListener("keydown", onKeyDown);
       enterScanMode();
@@ -1224,6 +1973,7 @@
     }
 
     document.body.appendChild(overlay);
+    lockOverlayScroll();
     document.addEventListener("keydown", onKeyDown);
 
     overlay.addEventListener("click", function (event) {
@@ -1239,7 +1989,7 @@
 
     loadRecents();
     runSearch("");
-    input.focus();
+    focusOverlay(overlay);
   }
 
   function openLocationPicker(onSelect) {
@@ -1251,6 +2001,7 @@
     var closeBtn = overlay.querySelector(".overlay-close");
 
     function close() {
+      unlockOverlayScroll();
       document.body.removeChild(overlay);
       document.removeEventListener("keydown", onKeyDown);
       enterScanMode();
@@ -1337,7 +2088,7 @@
 
     loadRecents();
     runSearch("");
-    input.focus();
+    focusOverlay(overlay);
   }
 
   function openOrderPicker(onSelect) {
@@ -1355,6 +2106,7 @@
     }
 
     function close() {
+      unlockOverlayScroll();
       document.body.removeChild(overlay);
       document.removeEventListener("keydown", onKeyDown);
       enterScanMode();
@@ -1402,6 +2154,7 @@
     }
 
     document.body.appendChild(overlay);
+    lockOverlayScroll();
     document.addEventListener("keydown", onKeyDown);
 
     overlay.addEventListener("click", function (event) {
@@ -1416,7 +2169,7 @@
     });
 
     runSearch("");
-    input.focus();
+    focusOverlay(overlay);
   }
 
   function openReasonPicker(onSelect) {
@@ -1434,6 +2187,7 @@
     }
 
     function close() {
+      unlockOverlayScroll();
       document.body.removeChild(overlay);
       document.removeEventListener("keydown", onKeyDown);
       enterScanMode();
@@ -1492,9 +2246,7 @@
     }
 
     runSearch("");
-    if (searchInput) {
-      searchInput.focus();
-    }
+    focusOverlay(overlay);
   }
 
   function openConfirmOverlay(title, message, confirmLabel, onConfirm) {
@@ -1613,6 +2365,7 @@
     }
 
     document.body.appendChild(overlay);
+    lockOverlayScroll();
     document.addEventListener("keydown", onKeyDown);
 
     overlay.addEventListener("click", function (event) {
@@ -1777,6 +2530,7 @@
     }
 
     document.body.appendChild(overlay);
+    lockOverlayScroll();
     document.addEventListener("keydown", onKeyDown);
 
     overlay.addEventListener("click", function (event) {
@@ -1866,7 +2620,6 @@
     var undoBtn = document.getElementById("undoBtn");
     var finishBtn = document.getElementById("finishBtn");
     var revertBtn = document.getElementById("revertBtn");
-    var backToDocsBtn = document.getElementById("backToDocsBtn");
     var docRefInput = document.getElementById("docRefInput");
     var headerInputs = document.querySelectorAll("[data-header]");
     var deleteButtons = document.querySelectorAll(".line-delete");
@@ -1876,6 +2629,7 @@
     var toPickBtn = document.getElementById("toPickBtn");
     var fromPickBtn = document.getElementById("fromPickBtn");
     var orderPickBtn = document.getElementById("orderPickBtn");
+    var orderInfoBtn = document.getElementById("orderInfoBtn");
     var locationPickBtn = document.getElementById("locationPickBtn");
     var partnerPickerRow = document.getElementById("partnerPickerRow");
     var toPickerRow = document.getElementById("toPickerRow");
@@ -1888,6 +2642,16 @@
     var reasonPickBtn = document.getElementById("reasonPickBtn");
     var reasonErrorEl = document.getElementById("reasonError");
     var partnerErrorEl = document.getElementById("partnerError");
+    var moveInternalToggle = document.getElementById("moveInternalToggle");
+    var huValueEl = document.getElementById("huValue");
+    var huScanBtn = document.getElementById("huScanBtn");
+    var huErrorEl = document.getElementById("huError");
+    var huFromValueEl = document.getElementById("huFromValue");
+    var huFromScanBtn = document.getElementById("huFromScanBtn");
+    var huFromErrorEl = document.getElementById("huFromError");
+    var huToValueEl = document.getElementById("huToValue");
+    var huToScanBtn = document.getElementById("huToScanBtn");
+    var huToErrorEl = document.getElementById("huToError");
     var orderHint = document.getElementById("orderHint");
     var dataStatus = null;
     var lookupToken = 0;
@@ -1902,6 +2666,13 @@
     var incBtn = null;
     var incHoldTimer = null;
     var incHoldTriggered = false;
+    var huOverlay = null;
+    var huModalInput = null;
+    var huModalError = null;
+    var huModalConfirm = null;
+    var huModalValue = null;
+    var huModalTarget = "hu";
+    var huModalKeyListener = null;
 
     function setDocStatus(text) {
       if (!docActionStatus) {
@@ -1964,17 +2735,22 @@
       if (partnerPickBtn) {
         partnerPickBtn.disabled = !hasPartners || doc.status !== "DRAFT";
       }
+      var isDraft = doc.status === "DRAFT";
       if (toPickBtn) {
-        toPickBtn.disabled = !hasLocations || doc.status !== "DRAFT";
+        var toDisabled = !hasLocations || !isDraft;
+        if (doc.op === "MOVE" && doc.header.move_internal) {
+          toDisabled = true;
+        }
+        toPickBtn.disabled = toDisabled;
       }
       if (fromPickBtn) {
-        fromPickBtn.disabled = !hasLocations || doc.status !== "DRAFT";
+        fromPickBtn.disabled = !hasLocations || !isDraft;
       }
       if (orderPickBtn) {
-        orderPickBtn.disabled = !hasOrders || doc.status !== "DRAFT";
+        orderPickBtn.disabled = !hasOrders || !isDraft;
       }
       if (locationPickBtn) {
-        locationPickBtn.disabled = !hasLocations || doc.status !== "DRAFT";
+        locationPickBtn.disabled = !hasLocations || !isDraft;
       }
 
       if (orderHint) {
@@ -1994,7 +2770,7 @@
       }
     }
 
-    function openQuantityOverlay(barcode, onSelect) {
+    function openQuantityOverlay(barcode, item, onSelect) {
       if (!doc.status || doc.status !== "DRAFT") {
         return;
       }
@@ -2008,6 +2784,7 @@
           return '<button type="button" class="btn qty-overlay-quick-btn" data-qty="' + value + '">' + value + " шт</button>";
         })
         .join("");
+      var itemLabel = item && item.name ? String(item.name) : "";
       qtyOverlay.innerHTML =
         '<div class="overlay-card">' +
         '  <div class="overlay-header">' +
@@ -2015,6 +2792,9 @@
         '    <button class="btn btn-ghost overlay-close" type="button">✕</button>' +
         "  </div>" +
         '  <div class="qty-overlay-body">' +
+        (itemLabel
+          ? '    <div class="qty-overlay-item">' + escapeHtml(itemLabel) + "</div>"
+          : "") +
         '    <div class="qty-overlay-barcode">' +
         escapeHtml(barcode) +
         "</div>" +
@@ -2022,6 +2802,7 @@
         quickButtons +
         "    </div>" +
         '    <input class="form-input qty-overlay-input" type="number" min="1" value="1" />' +
+        '    <div class="field-error qty-overlay-error"></div>' +
         '    <div class="qty-overlay-actions">' +
         '      <button class="btn btn-outline" type="button" id="qtyCancel">Отмена</button>' +
         '      <button class="btn primary-btn" type="button" id="qtyOk">OK</button>' +
@@ -2035,16 +2816,26 @@
       var closeBtn = qtyOverlay.querySelector(".overlay-close");
       var quickButtonsEls = qtyOverlay.querySelectorAll(".qty-overlay-quick-btn");
 
+      function setQtyError(message) {
+        var errorEl = qtyOverlay.querySelector(".qty-overlay-error");
+        if (errorEl) {
+          errorEl.textContent = message || "";
+        }
+        if (quantityInput) {
+          quantityInput.classList.toggle("input-error", !!message);
+        }
+      }
+
       function tryApplyQuantity() {
         if (!quantityInput) {
           return;
         }
-        var value = parseInt(quantityInput.value, 10);
+        var value = parseFloat(quantityInput.value);
         if (!value || value <= 0) {
-          quantityInput.focus();
-          quantityInput.select();
+          setQtyError("Введите количество больше 0");
           return;
         }
+        setQtyError("");
         closeQuantityOverlay();
         if (typeof onSelect === "function") {
           onSelect(value);
@@ -2100,18 +2891,23 @@
       document.addEventListener("keydown", qtyOverlayKeyListener);
 
       if (quantityInput) {
-        quantityInput.focus();
-        quantityInput.select();
+        quantityInput.addEventListener("input", function () {
+          setQtyError("");
+        });
       }
     }
 
-    function addLineWithQuantity(barcode, quantity) {
+    function addLineWithQuantity(barcode, quantity, itemOverride) {
       var qtyValue = Number(quantity) || 0;
       if (!qtyValue || qtyValue <= 0) {
         focusBarcode();
         return;
       }
       var lineData = buildLineData(doc.op, doc.header);
+      if (itemOverride) {
+        finalizeLine(itemOverride);
+        return;
+      }
       TsdStorage.findItemByCode(barcode)
         .then(function (item) {
           if (item) {
@@ -2129,6 +2925,54 @@
           setScanInfo("Товар не найден", true);
         });
 
+      function maybeValidateMoveQty(itemId, nextQty) {
+        if (doc.op !== "MOVE" || !doc.header.move_internal) {
+          return Promise.resolve(true);
+        }
+        if (!doc.header.from_id) {
+          return Promise.resolve(true);
+        }
+        var fromHu = normalizeHuCode(lineData.from_hu);
+        return TsdStorage.getStockByItemId(itemId)
+          .then(function (rows) {
+            var locationRows = rows.filter(function (row) {
+              return row.locationId === doc.header.from_id;
+            });
+            if (!locationRows.length) {
+              return true;
+            }
+
+            var hasHuInfo = locationRows.some(function (row) {
+              return row.hu !== undefined;
+            });
+            if (!hasHuInfo) {
+              return true;
+            }
+
+            var available = 0;
+            locationRows.forEach(function (row) {
+              var rowHu = normalizeHuCode(row.hu);
+              if (fromHu) {
+                if (rowHu === fromHu) {
+                  available += Number(row.qtyBase) || 0;
+                }
+              } else if (!rowHu) {
+                available += Number(row.qtyBase) || 0;
+              }
+            });
+
+            if (nextQty > available) {
+              alert("Недостаточно остатка на выбранном HU.");
+              return false;
+            }
+
+            return true;
+          })
+          .catch(function () {
+            return true;
+          });
+      }
+
       function finalizeLine(item) {
         var itemId = item ? item.itemId : null;
         var itemName = item ? item.name : null;
@@ -2136,37 +2980,53 @@
           return;
         }
         var lineIndex = findLineIndex(doc.op, doc.lines, barcode, lineData);
+        var nextQty = qtyValue;
         if (lineIndex >= 0) {
-          doc.lines[lineIndex].qty += qtyValue;
-          if (itemName && !doc.lines[lineIndex].itemName) {
-            doc.lines[lineIndex].itemName = itemName;
-            doc.lines[lineIndex].itemId = itemId;
+          nextQty = (Number(doc.lines[lineIndex].qty) || 0) + qtyValue;
+        }
+
+        maybeValidateMoveQty(itemId, nextQty).then(function (ok) {
+          if (!ok) {
+            focusBarcode();
+            return;
           }
-        } else {
-          doc.lines.push({
+
+          if (lineIndex >= 0) {
+            doc.lines[lineIndex].qty = nextQty;
+            if (itemName && !doc.lines[lineIndex].itemName) {
+              doc.lines[lineIndex].itemName = itemName;
+              doc.lines[lineIndex].itemId = itemId;
+            }
+          } else {
+            doc.lines.push({
+              barcode: barcode,
+              qty: qtyValue,
+              from: lineData.from,
+              to: lineData.to,
+              from_hu: lineData.from_hu,
+              to_hu: lineData.to_hu,
+              reason_code: lineData.reason_code,
+              itemId: itemId,
+              itemName: itemName,
+            });
+          }
+
+          doc.undoStack.push({
             barcode: barcode,
-            qty: qtyValue,
+            qtyDelta: qtyValue,
             from: lineData.from,
             to: lineData.to,
+            from_hu: lineData.from_hu,
+            to_hu: lineData.to_hu,
             reason_code: lineData.reason_code,
-            itemId: itemId,
-            itemName: itemName,
           });
-        }
 
-        doc.undoStack.push({
-          barcode: barcode,
-          qtyDelta: qtyValue,
-          from: lineData.from,
-          to: lineData.to,
-          reason_code: lineData.reason_code,
+          if (barcodeInput) {
+            barcodeInput.value = "";
+          }
+          setScanInfo("", false);
+          saveDocState().then(refreshDocView);
         });
-
-        if (barcodeInput) {
-          barcodeInput.value = "";
-        }
-        setScanInfo("", false);
-        saveDocState().then(refreshDocView);
       }
     }
 
@@ -2388,11 +3248,21 @@
         focusBarcode();
         return;
       }
-      var qtyMode = doc.header.qtyMode === "ASK" ? "ASK" : "INC1";
+      var qtyMode = doc.header.qtyMode === "INC1" ? "INC1" : "ASK";
       if (qtyMode === "ASK") {
-        openQuantityOverlay(barcode, function (quantity) {
-          addLineWithQuantity(barcode, quantity);
-        });
+        TsdStorage.findItemByCode(barcode)
+          .then(function (item) {
+            if (item) {
+              openQuantityOverlay(barcode, item, function (quantity) {
+                addLineWithQuantity(barcode, quantity, item);
+              });
+              return;
+            }
+            addLineWithQuantity(barcode, qtyStep);
+          })
+          .catch(function () {
+            addLineWithQuantity(barcode, qtyStep);
+          });
         return;
       }
       addLineWithQuantity(barcode, qtyStep);
@@ -2401,16 +3271,31 @@
     function validateBeforeFinish() {
       var valid = true;
       setPartnerError("");
+      setHuError("", "hu");
+      setHuError("", "from_hu");
+      setHuError("", "to_hu");
       setLocationError("from", "");
       setLocationError("to", "");
       setLocationError("location", "");
+      if (doc.op !== "MOVE") {
+        if (!validateHuHeader(true)) {
+          valid = false;
+        }
+      } else {
+        if (!validateHuField("from_hu", true)) {
+          valid = false;
+        }
+        if (!validateHuField("to_hu", true)) {
+          valid = false;
+        }
+      }
       if (doc.op === "INBOUND") {
         if (!doc.header.partner_id) {
           setPartnerError("Выберите поставщика");
           valid = false;
         }
         if (!normalizeValue(doc.header.to) && !doc.header.to_id) {
-          setLocationError("to", "Укажите место хранения");
+          setLocationError("to", "Для приемки выберите место хранения (Куда).");
           valid = false;
         }
       } else if (doc.op === "OUTBOUND") {
@@ -2429,6 +3314,35 @@
         }
         if (!normalizeValue(doc.header.to) && !doc.header.to_id) {
           setLocationError("to", "Укажите место хранения");
+          valid = false;
+        }
+        if (doc.header.move_internal) {
+          if (doc.header.from_id && doc.header.to_id && doc.header.from_id !== doc.header.to_id) {
+            setLocationError("to", "Для внутреннего перемещения выберите то же место хранения.");
+            valid = false;
+          }
+
+          if (!normalizeValue(doc.header.from_hu)) {
+            setHuError("Выберите HU-источник.", "from_hu");
+            valid = false;
+          }
+          if (!normalizeValue(doc.header.to_hu)) {
+            setHuError("Выберите HU-назначение.", "to_hu");
+            valid = false;
+          }
+
+          var fromHu = normalizeHuCode(doc.header.from_hu);
+          var toHu = normalizeHuCode(doc.header.to_hu);
+          if (fromHu && toHu && fromHu === toHu) {
+            setHuError("HU-источник и HU-назначение должны быть разными.", "to_hu");
+            valid = false;
+          }
+        } else if (
+          doc.header.from_id &&
+          doc.header.to_id &&
+          doc.header.from_id === doc.header.to_id
+        ) {
+          setLocationError("to", "Для перемещения внутри склада включите режим и задайте HU.");
           valid = false;
         }
       } else if (doc.op === "WRITE_OFF") {
@@ -2540,12 +3454,28 @@
         }
       }
 
+      function setQuickActive(value) {
+        quickBtns.forEach(function (btn) {
+          var step = parseInt(btn.getAttribute("data-step"), 10) || 1;
+          btn.classList.toggle("is-active", step === value);
+        });
+      }
+
       quickBtns.forEach(function (btn) {
         btn.addEventListener("click", function () {
           var value = parseInt(btn.getAttribute("data-step"), 10) || 1;
-          submit(value);
+          if (input) {
+            input.value = value;
+          }
+          setQuickActive(value);
         });
       });
+
+      if (input) {
+        input.addEventListener("input", function () {
+          setQuickActive(normalizeQtyStep(input.value));
+        });
+      }
 
       overlay.addEventListener("click", function (event) {
         if (event.target === overlay) {
@@ -2560,16 +3490,227 @@
       });
 
       document.addEventListener("keydown", onKeyDown);
-      if (input) {
-        input.focus();
-        input.select();
-      }
+      setQuickActive(normalizeQtyStep(qtyStep));
     }
 
     function setPartnerError(message) {
       if (partnerErrorEl) {
         partnerErrorEl.textContent = message || "";
       }
+    }
+
+    function getHuFieldElements(field) {
+      if (field === "from_hu") {
+        return { valueEl: huFromValueEl, errorEl: huFromErrorEl };
+      }
+      if (field === "to_hu") {
+        return { valueEl: huToValueEl, errorEl: huToErrorEl };
+      }
+      return { valueEl: huValueEl, errorEl: huErrorEl };
+    }
+
+    function setHuError(message, field) {
+      var target = field || "hu";
+      var nodes = getHuFieldElements(target);
+      if (nodes.errorEl) {
+        nodes.errorEl.textContent = message || "";
+      }
+    }
+
+    function setHuDisplay(value, field) {
+      var target = field || "hu";
+      var nodes = getHuFieldElements(target);
+      if (!nodes.valueEl) {
+        return;
+      }
+      var current = normalizeValue(value != null ? value : doc.header[target]);
+      var normalized = normalizeHuCode(current);
+      var labelValue = normalized || current;
+      var label = labelValue ? "HU: " + labelValue : "HU: не задан";
+      nodes.valueEl.textContent = label;
+    }
+
+    function validateHuField(field, showAlert) {
+      var target = field || "hu";
+      var current = normalizeValue(doc.header[target]);
+      if (!current) {
+        setHuError("", target);
+        setHuDisplay("", target);
+        return true;
+      }
+
+      var normalized = normalizeHuCode(current);
+      if (normalized === null) {
+        var message = "Это не HU-код. HU должен начинаться с HU-.";
+        setHuError(message, target);
+        if (showAlert) {
+          alert(message);
+        }
+        return false;
+      }
+
+      setHuError("", target);
+      if (normalized !== doc.header[target]) {
+        doc.header[target] = normalized;
+        saveDocState();
+      }
+      setHuDisplay(normalized, target);
+      return true;
+    }
+
+    function validateHuHeader(showAlert) {
+      return validateHuField("hu", showAlert);
+    }
+
+    function refreshHuHeaderDisplay() {
+      if (doc.op === "MOVE") {
+        setHuDisplay(doc.header.from_hu, "from_hu");
+        setHuDisplay(doc.header.to_hu, "to_hu");
+        return;
+      }
+      setHuDisplay(doc.header.hu, "hu");
+    }
+
+    function setHuModalValue(rawValue, showError) {
+      if (!huModalInput) {
+        return;
+      }
+      var trimmed = normalizeValue(rawValue);
+      var normalized = normalizeHuCode(trimmed);
+      if (normalized === null) {
+        huModalValue = null;
+        if (huModalError) {
+          huModalError.textContent =
+            showError && trimmed ? "Это не HU-код. HU должен начинаться с HU-." : "";
+        }
+        if (huModalConfirm) {
+          huModalConfirm.disabled = true;
+        }
+        return;
+      }
+
+      huModalValue = normalized;
+      huModalInput.value = normalized;
+      if (huModalError) {
+        huModalError.textContent = "Найден HU: " + normalized;
+      }
+      if (huModalConfirm) {
+        huModalConfirm.disabled = false;
+      }
+    }
+
+    function openHuOverlay(targetField) {
+      if (!isDraftDoc || huOverlay) {
+        return;
+      }
+
+      huModalTarget = targetField || "hu";
+      setScanHighlight(false);
+      var huTitle = "Сканировать HU";
+      if (huModalTarget === "from_hu") {
+        huTitle = "Сканировать HU-источник";
+      } else if (huModalTarget === "to_hu") {
+        huTitle = "Сканировать HU-назначение";
+      }
+      huOverlay = document.createElement("div");
+      huOverlay.className = "overlay hu-overlay";
+      huOverlay.setAttribute("tabindex", "-1");
+      huOverlay.innerHTML =
+        '<div class="overlay-card">' +
+        '  <div class="overlay-header">' +
+        '    <div class="overlay-title">' +
+        escapeHtml(huTitle) +
+        "</div>" +
+        '    <button class="btn btn-ghost overlay-close" type="button">Закрыть</button>' +
+        "  </div>" +
+        '  <div class="overlay-body">' +
+        '    <div class="form-label">Отсканируйте HU-код</div>' +
+        '    <input class="form-input" id="huModalInput" type="text" placeholder="HU-..." inputmode="none" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" readonly />' +
+        '    <div class="field-error" id="huModalError"></div>' +
+        '    <div class="overlay-actions">' +
+        '      <button class="btn btn-outline" type="button" id="huModalCancel">Отмена</button>' +
+        '      <button class="btn primary-btn" type="button" id="huModalConfirm" disabled>Подтвердить</button>' +
+        "    </div>" +
+        "  </div>" +
+        "</div>";
+
+      document.body.appendChild(huOverlay);
+      lockOverlayScroll();
+      focusOverlay(huOverlay);
+
+      huModalInput = huOverlay.querySelector("#huModalInput");
+      huModalError = huOverlay.querySelector("#huModalError");
+      huModalConfirm = huOverlay.querySelector("#huModalConfirm");
+      var cancelBtn = huOverlay.querySelector("#huModalCancel");
+      var closeBtn = huOverlay.querySelector(".overlay-close");
+
+      function closeOverlay() {
+        unlockOverlayScroll();
+        document.body.removeChild(huOverlay);
+        huOverlay = null;
+        huModalInput = null;
+        huModalError = null;
+        huModalConfirm = null;
+        huModalValue = null;
+        if (huModalKeyListener) {
+          document.removeEventListener("keydown", huModalKeyListener);
+          huModalKeyListener = null;
+        }
+        setDocStatus("");
+        huModalTarget = "hu";
+        setScanTarget("barcode");
+        enterScanMode();
+      }
+
+      function confirmHu() {
+        if (!huModalValue) {
+          return;
+        }
+        doc.header[huModalTarget] = huModalValue;
+        setHuError("", huModalTarget);
+        setHuDisplay(huModalValue, huModalTarget);
+        saveDocState();
+        closeOverlay();
+      }
+
+      huOverlay.addEventListener("click", function (event) {
+        if (event.target === huOverlay) {
+          closeOverlay();
+        }
+      });
+
+      if (cancelBtn) {
+        cancelBtn.addEventListener("click", closeOverlay);
+      }
+      if (closeBtn) {
+        closeBtn.addEventListener("click", closeOverlay);
+      }
+      if (huModalConfirm) {
+        huModalConfirm.addEventListener("click", confirmHu);
+      }
+
+      huModalKeyListener = function (event) {
+        if (event.key === "Escape") {
+          closeOverlay();
+        }
+        if (event.key === "Enter" && huModalConfirm && !huModalConfirm.disabled) {
+          event.preventDefault();
+          confirmHu();
+        }
+      };
+      document.addEventListener("keydown", huModalKeyListener);
+
+      var statusLabel = "Сканируйте HU";
+      if (huModalTarget === "from_hu") {
+        statusLabel = "Сканируйте HU-источник";
+      } else if (huModalTarget === "to_hu") {
+        statusLabel = "Сканируйте HU-назначение";
+      }
+      setHuModalValue(doc.header[huModalTarget], false);
+      setScanTarget("hu", huModalTarget);
+      setDocStatus(statusLabel);
+      clearScanBuffer();
+      enterScanMode();
     }
 
     function clearScanBuffer() {
@@ -2598,11 +3739,15 @@
       if (!trimmed) {
         return;
       }
+      if (scanTarget.type === "hu") {
+        setHuModalValue(trimmed, true);
+        return;
+      }
       handleAddLine(trimmed);
     }
 
     function handleScanKeydown(event) {
-      if (isManualOverlayOpen()) {
+      if (isManualOverlayOpen() && scanTarget.type !== "hu") {
         return;
       }
       if (!isDraftDoc) {
@@ -2629,6 +3774,8 @@
         if (barcodeInput && scanTarget.type === "barcode") {
           barcodeInput.value = scanBuffer;
           updateScanInfoByBarcode(scanBuffer);
+        } else if (huModalInput && scanTarget.type === "hu") {
+          huModalInput.value = scanBuffer;
         }
       }
     }
@@ -2785,6 +3932,11 @@
       doc.header[field] = location.code || "";
       doc.header[field + "_name"] = location.name || null;
       doc.header[field + "_id"] = location.locationId;
+      if (doc.op === "MOVE" && doc.header.move_internal && field === "from") {
+        doc.header.to = location.code || "";
+        doc.header.to_name = location.name || null;
+        doc.header.to_id = location.locationId;
+      }
       updateRecentSetting("recentLocationIds", location.locationId);
       saveDocState().then(refreshDocView);
     }
@@ -2839,6 +3991,15 @@
       });
     }
 
+    if (orderInfoBtn) {
+      orderInfoBtn.addEventListener("click", function () {
+        if (!doc.header.order_id) {
+          return;
+        }
+        navigate("/order/" + encodeURIComponent(doc.header.order_id));
+      });
+    }
+
     if (locationPickBtn) {
       locationPickBtn.addEventListener("click", function () {
         if (doc.status !== "DRAFT") {
@@ -2867,6 +4028,10 @@
           return;
         }
         if (!validateBeforeFinish()) {
+          var missingFields = getMissingLocationFields(doc);
+          if (doc.op === "INBOUND" && missingFields.indexOf("to") >= 0) {
+            alert("Для приемки выберите место хранения (Куда).");
+          }
           return;
         }
         doc.status = "READY";
@@ -2910,11 +4075,6 @@
       });
     }
 
-    if (backToDocsBtn) {
-      backToDocsBtn.addEventListener("click", function () {
-        navigate("/docs");
-      });
-    }
 
     if (docRefInput) {
       docRefInput.addEventListener("input", function () {
@@ -2927,6 +4087,9 @@
       var handler = function () {
         var field = input.getAttribute("data-header");
         if (!field) {
+          return;
+        }
+        if (field === "hu") {
           return;
         }
         doc.header[field] = input.value;
@@ -2954,6 +4117,54 @@
         input.addEventListener("input", handler);
       }
     });
+
+    if (moveInternalToggle) {
+      moveInternalToggle.addEventListener("change", function () {
+        if (!isDraftDoc) {
+          return;
+        }
+        doc.header.move_internal = !!moveInternalToggle.checked;
+        if (doc.header.move_internal) {
+          if (doc.header.from_id) {
+            doc.header.to = doc.header.from || "";
+            doc.header.to_name = doc.header.from_name || null;
+            doc.header.to_id = doc.header.from_id || null;
+          } else {
+            doc.header.to = "";
+            doc.header.to_name = null;
+            doc.header.to_id = null;
+          }
+        }
+        saveDocState().then(refreshDocView);
+      });
+    }
+
+    if (huScanBtn) {
+      huScanBtn.addEventListener("click", function () {
+        if (!isDraftDoc) {
+          return;
+        }
+        openHuOverlay("hu");
+      });
+    }
+
+    if (huFromScanBtn) {
+      huFromScanBtn.addEventListener("click", function () {
+        if (!isDraftDoc) {
+          return;
+        }
+        openHuOverlay("from_hu");
+      });
+    }
+
+    if (huToScanBtn) {
+      huToScanBtn.addEventListener("click", function () {
+        if (!isDraftDoc) {
+          return;
+        }
+        openHuOverlay("to_hu");
+      });
+    }
 
     locationFieldInputs.forEach(function (input) {
       var field = input.getAttribute("data-location-field");
@@ -3047,30 +4258,36 @@
         applyCatalogState(null);
       });
 
+    refreshHuHeaderDisplay();
     focusFirstLocationOrBarcode();
   }
 
   function wireSettings() {
-    var input = document.getElementById("deviceIdInput");
-    var status = document.getElementById("saveStatus");
-    var saveBtn = document.getElementById("saveSettingsBtn");
+    var deviceIdValue = document.getElementById("deviceIdValue");
+    var deviceIdHint = document.getElementById("deviceIdHint");
     var exportBtn = document.getElementById("exportFromSettingsBtn");
-    var exportItemsBtn = document.getElementById("exportItemsBtn");
     var importBtn = document.getElementById("importDataBtn");
     var fileInput = document.getElementById("dataFileInput");
     var dataStatusText = document.getElementById("dataStatus");
     var dataCountsText = document.getElementById("dataCounts");
 
+    function renderDeviceId(value) {
+      if (!deviceIdValue) {
+        return;
+      }
+      var clean = value ? String(value).trim() : "";
+      deviceIdValue.textContent = clean || "Не задан";
+      if (deviceIdHint) {
+        deviceIdHint.classList.toggle("is-hidden", !!clean);
+      }
+    }
+
     TsdStorage.getSetting("device_id")
       .then(function (value) {
-        if (input) {
-          input.value = value || "CT48-01";
-        }
+        renderDeviceId(value);
       })
       .catch(function () {
-        if (input) {
-          input.value = "CT48-01";
-        }
+        renderDeviceId("");
       });
 
     function renderDataStatus(statusInfo) {
@@ -3100,24 +4317,6 @@
         renderDataStatus(null);
       });
 
-    if (saveBtn) {
-      saveBtn.addEventListener("click", function () {
-        var value = input ? input.value.trim() : "";
-        if (!value) {
-          value = "CT48-01";
-        }
-
-        TsdStorage.setSetting("device_id", value).then(function () {
-          if (status) {
-            status.textContent = "Сохранено";
-            setTimeout(function () {
-              status.textContent = "";
-            }, 1500);
-          }
-        });
-      });
-    }
-
     if (importBtn && fileInput) {
       importBtn.addEventListener("click", function () {
         fileInput.click();
@@ -3135,22 +4334,27 @@
         reader.onload = function () {
           try {
             var data = JSON.parse(reader.result);
-            if (!data.meta || data.meta.schemaVersion !== 1) {
-              if (dataStatusText) {
-                dataStatusText.textContent = "Неверная версия схемы данных";
-              }
-              return;
-            }
+            var importedDeviceId =
+              data.meta && data.meta.device_id ? String(data.meta.device_id).trim() : "";
             TsdStorage.importTsdData(data)
+              .then(function () {
+                if (importedDeviceId) {
+                  return TsdStorage.setSetting("device_id", importedDeviceId).then(function () {
+                    renderDeviceId(importedDeviceId);
+                  });
+                }
+                return false;
+              })
               .then(function () {
                 return TsdStorage.getDataStatus();
               })
               .then(function (statusInfo) {
                 renderDataStatus(statusInfo);
               })
-              .catch(function () {
+              .catch(function (error) {
                 if (dataStatusText) {
-                  dataStatusText.textContent = "Ошибка импорта данных";
+                  dataStatusText.textContent =
+                    error && error.message ? error.message : "Ошибка импорта данных";
                 }
               });
           } catch (error) {
@@ -3173,13 +4377,7 @@
 
     if (exportBtn) {
       exportBtn.addEventListener("click", function () {
-        exportReadyDocs("exportStatus");
-      });
-    }
-
-    if (exportItemsBtn) {
-      exportItemsBtn.addEventListener("click", function () {
-        exportLocalItems("itemsExportStatus");
+        exportAllJsonl("exportStatus");
       });
     }
   }
@@ -3193,12 +4391,9 @@
     var dateKey = getDateKey(now);
     var prefix = OPS[op].prefix;
 
-    Promise.all([TsdStorage.getSetting("device_id"), TsdStorage.nextDocCounter(prefix, dateKey)])
-      .then(function (results) {
-        var deviceId = results[0] || "CT48-01";
-        var counter = results[1];
-        var docRef =
-          prefix + "-" + dateKey + "-" + deviceId + "-" + padNumber(counter, 3);
+    TsdStorage.nextDocCounter(prefix, dateKey)
+      .then(function (counter) {
+        var docRef = prefix + "-" + dateKey + "-" + padNumber(counter, 3);
         var docId = createUuid();
         var nowIso = new Date().toISOString();
 
@@ -3230,51 +4425,59 @@
       return {
         partner: "",
         partner_id: null,
+        hu: "",
         to: "",
         to_name: null,
         to_id: null,
-        qtyMode: "INC1",
+        qtyMode: "ASK",
       };
     }
     if (op === "OUTBOUND") {
       return {
         partner: "",
         partner_id: null,
+        hu: "",
         order_id: null,
         order_ref: "",
         from: "",
         from_name: null,
         from_id: null,
-        qtyMode: "INC1",
+        qtyMode: "ASK",
       };
     }
     if (op === "MOVE") {
       return {
+        hu: "",
         from: "",
         from_name: null,
         from_id: null,
         to: "",
         to_name: null,
         to_id: null,
-        qtyMode: "INC1",
+        move_internal: false,
+        from_hu: "",
+        to_hu: "",
+        qtyMode: "ASK",
       };
     }
     if (op === "WRITE_OFF") {
       return {
+        hu: "",
         from: "",
         from_name: null,
         from_id: null,
         reason_code: null,
         reason_label: null,
-        qtyMode: "INC1",
+        qtyMode: "ASK",
       };
     }
     if (op === "INVENTORY") {
       return {
+        hu: "",
         location: "",
         location_name: null,
         location_id: null,
-        qtyMode: "INC1",
+        qtyMode: "ASK",
       };
     }
     return {};
@@ -3285,10 +4488,83 @@
     return trimmed ? trimmed : "";
   }
 
+  function normalizeHuCode(value) {
+    var trimmed = normalizeValue(value);
+    if (!trimmed) {
+      return "";
+    }
+    if (trimmed.toUpperCase().indexOf("HU-") !== 0) {
+      return null;
+    }
+    return trimmed.toUpperCase();
+  }
+
+  function getMissingLocationFields(doc) {
+    var header = (doc && doc.header) || {};
+    var missing = [];
+
+    if (doc.op === "INBOUND") {
+      if (!normalizeValue(header.to) && !header.to_id) {
+        missing.push("to");
+      }
+      return missing;
+    }
+
+    if (doc.op === "OUTBOUND" || doc.op === "WRITE_OFF") {
+      if (!normalizeValue(header.from) && !header.from_id) {
+        missing.push("from");
+      }
+      return missing;
+    }
+
+    if (doc.op === "MOVE") {
+      if (!normalizeValue(header.from) && !header.from_id) {
+        missing.push("from");
+      }
+      if (!normalizeValue(header.to) && !header.to_id) {
+        missing.push("to");
+      }
+      if (header.move_internal) {
+        if (!normalizeValue(header.from_hu)) {
+          missing.push("from_hu");
+        }
+        if (!normalizeValue(header.to_hu)) {
+          missing.push("to_hu");
+        }
+        var missingFromHu = normalizeHuCode(header.from_hu);
+        var missingToHu = normalizeHuCode(header.to_hu);
+        if (missingFromHu && missingToHu && missingFromHu === missingToHu) {
+          missing.push("to_hu");
+        }
+      }
+      return missing;
+    }
+
+    if (doc.op === "INVENTORY") {
+      if (!normalizeValue(header.location) && !header.location_id) {
+        missing.push("location");
+      }
+    }
+
+    return missing;
+  }
+
+  function logExportWarning(doc, missingFields) {
+    if (typeof console !== "undefined" && console.warn) {
+      console.warn("TSD export skipped: missing fields", {
+        doc_ref: doc && doc.doc_ref,
+        op: doc && doc.op,
+        missing: missingFields,
+      });
+    }
+  }
+
   function buildLineData(op, header) {
     var from = null;
     var to = null;
     var reason = null;
+    var fromHu = null;
+    var toHu = null;
 
     if (op === "INBOUND") {
       to = normalizeValue(header.to) || null;
@@ -3297,6 +4573,8 @@
     } else if (op === "MOVE") {
       from = normalizeValue(header.from) || null;
       to = normalizeValue(header.to) || null;
+      fromHu = normalizeHuCode(header.from_hu) || null;
+      toHu = normalizeHuCode(header.to_hu) || null;
     } else if (op === "WRITE_OFF") {
       from = normalizeValue(header.from) || null;
       reason = normalizeValue(header.reason_code) || null;
@@ -3304,7 +4582,7 @@
       to = normalizeValue(header.location) || null;
     }
 
-    return { from: from, to: to, reason_code: reason };
+    return { from: from, to: to, from_hu: fromHu, to_hu: toHu, reason_code: reason };
   }
 
   function buildLineKey(op, barcode, lineData) {
@@ -3316,7 +4594,17 @@
       return safeBarcode + "|" + (lineData.from || "");
     }
     if (op === "MOVE") {
-      return safeBarcode + "|" + (lineData.from || "") + "|" + (lineData.to || "");
+      return (
+        safeBarcode +
+        "|" +
+        (lineData.from || "") +
+        "|" +
+        (lineData.to || "") +
+        "|" +
+        (lineData.from_hu || "") +
+        "|" +
+        (lineData.to_hu || "")
+      );
     }
     if (op === "WRITE_OFF") {
       return safeBarcode + "|" + (lineData.from || "") + "|" + (lineData.reason_code || "");
@@ -3348,6 +4636,216 @@
     }
     return true;
   }
+  function exportAllJsonl(statusElementId) {
+    var statusEl = statusElementId ? document.getElementById(statusElementId) : null;
+
+    function setStatus(text) {
+      if (statusEl) {
+        statusEl.textContent = text;
+      }
+    }
+
+    function downloadJsonl(filename, lines, errorText) {
+      if (!lines.length) {
+        return false;
+      }
+
+      try {
+        var blob = new Blob([lines.join("\n")], { type: "application/jsonl" });
+        var url = URL.createObjectURL(blob);
+        var link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      } catch (error) {
+        setStatus(errorText);
+        console.error("TSD shift export failed", error);
+        return false;
+      }
+
+      return true;
+    }
+
+    Promise.all([
+      TsdStorage.listDocs(),
+      TsdStorage.listLocalItemsForExport(),
+      TsdStorage.getSetting("device_id"),
+    ])
+      .then(function (results) {
+        var docs = results[0] || [];
+        var items = results[1] || [];
+        var deviceId = results[2] || "CT48-01";
+        var readyDocs = docs.filter(function (doc) {
+          return doc.status === "READY";
+        });
+        var exportableDocs = [];
+        var skippedDocs = [];
+        readyDocs.forEach(function (doc) {
+          var missingFields = getMissingLocationFields(doc);
+          if (missingFields.length) {
+            logExportWarning(doc, missingFields);
+            skippedDocs.push({ doc: doc, missing: missingFields });
+            return;
+          }
+          exportableDocs.push(doc);
+        });
+
+        if (!exportableDocs.length && !items.length) {
+          if (skippedDocs.length) {
+            setStatus("Есть документы без обязательных полей. Проверьте Куда/Откуда.");
+            return;
+          }
+          setStatus("Нет данных для экспорта");
+          return;
+        }
+
+        var now = new Date();
+        var nowIso = now.toISOString();
+        var dateKey = getDateKey(now);
+        var timeKey = getTimeKey(now);
+
+        var itemLines = items.map(function (item) {
+          var barcode =
+            item.barcode ||
+            (Array.isArray(item.barcodes) && item.barcodes[0]) ||
+            "";
+          var record = {
+            schema_version: 1,
+            event_id: createUuid(),
+            ts: nowIso,
+            device_id: deviceId,
+            event: "ITEM_UPSERT",
+            item: {
+              name: item.name || "",
+              barcode: barcode || "",
+              gtin: item.gtin || "",
+              base_uom: item.base_uom || "",
+            },
+          };
+          return JSON.stringify(record);
+        });
+
+        var opLines = [];
+        exportableDocs.forEach(function (doc) {
+          var header = doc.header || {};
+          var fallbackFrom = normalizeValue(header.from) || null;
+          var fallbackTo = normalizeValue(header.to) || null;
+          var fallbackReason = normalizeValue(header.reason_code) || null;
+          var huCode = normalizeHuCode(header.hu);
+          if (doc.op === "INVENTORY") {
+            fallbackTo = normalizeValue(header.location) || null;
+          }
+
+          (doc.lines || []).forEach(function (line) {
+            var record = {
+              schema_version: 1,
+              event_id: createUuid(),
+              ts: nowIso,
+              device_id: deviceId,
+              event: "OP",
+              op: doc.op,
+              doc_ref: doc.doc_ref,
+              barcode: line.barcode,
+              qty: line.qty,
+              from: line.from || fallbackFrom,
+              to: line.to || fallbackTo,
+              partner_id: header.partner_id ? header.partner_id : null,
+              order_ref: header.order_ref ? header.order_ref : null,
+              reason_code: line.reason_code || fallbackReason,
+              hu_code: doc.op === "MOVE" ? null : huCode || null,
+            };
+            if (doc.op === "MOVE") {
+              record.from_loc = line.from || fallbackFrom;
+              record.to_loc = line.to || fallbackTo;
+              record.from_hu = normalizeHuCode(line.from_hu || header.from_hu) || null;
+              record.to_hu = normalizeHuCode(line.to_hu || header.to_hu) || null;
+            }
+            opLines.push(JSON.stringify(record));
+          });
+        });
+
+        var opsWarning = "";
+        if (!opLines.length) {
+          if (exportableDocs.length) {
+            opsWarning = "Нет строк для экспорта операций";
+          } else if (skippedDocs.length) {
+            opsWarning = "Пропущено операций: " + skippedDocs.length + " (нет Куда/Откуда)";
+          }
+        }
+
+        if (!opLines.length && !itemLines.length) {
+          if (opsWarning) {
+            setStatus(opsWarning);
+            return;
+          }
+          setStatus("Нет данных для экспорта");
+          return;
+        }
+
+        var lines = itemLines.concat(opLines);
+        var filename = "SHIFT_" + dateKey + "_" + deviceId + "_" + timeKey + ".jsonl";
+        if (!downloadJsonl(filename, lines, "Ошибка экспорта смены")) {
+          setStatus("Ошибка экспорта смены");
+          return;
+        }
+
+        var exportedAt = new Date().toISOString();
+        var saveTasks = [];
+
+        if (opLines.length) {
+          var saveDocs = exportableDocs.map(function (doc) {
+            doc.status = "EXPORTED";
+            doc.exportedAt = exportedAt;
+            doc.updatedAt = exportedAt;
+            return TsdStorage.saveDoc(doc);
+          });
+          saveTasks.push(Promise.all(saveDocs));
+        }
+
+        if (itemLines.length) {
+          var ids = items.map(function (item) {
+            return item.itemId;
+          });
+          saveTasks.push(TsdStorage.markLocalItemsExported(ids, exportedAt));
+        }
+
+        Promise.all(saveTasks)
+          .then(function () {
+            var parts = [];
+            if (itemLines.length) {
+              parts.push("Товары: " + items.length);
+            }
+            if (opLines.length) {
+              parts.push(
+                "Операции: " + exportableDocs.length + " (" + opLines.length + " строк)"
+              );
+            } else if (opsWarning) {
+              parts.push(opsWarning);
+            }
+            setStatus("Экспортировано: " + parts.join(" · "));
+            console.info("TSD shift export complete", {
+              items: itemLines.length,
+              ops: opLines.length,
+              device_id: deviceId,
+              file: filename,
+            });
+            if (opLines.length && currentRoute && currentRoute.name === "docs") {
+              renderRoute();
+            }
+          })
+          .catch(function (error) {
+            console.error("TSD shift export status save failed", error);
+            setStatus("Ошибка сохранения статусов");
+          });
+      })
+      .catch(function (error) {
+        console.error("TSD shift export failed", error);
+        setStatus("Ошибка экспорта");
+      });
+  }
   function exportReadyDocs(statusElementId) {
     var statusEl = statusElementId ? document.getElementById(statusElementId) : null;
 
@@ -3364,8 +4862,23 @@
         var readyDocs = docs.filter(function (doc) {
           return doc.status === "READY";
         });
+        var exportableDocs = [];
+        var skippedDocs = [];
+        readyDocs.forEach(function (doc) {
+          var missingFields = getMissingLocationFields(doc);
+          if (missingFields.length) {
+            logExportWarning(doc, missingFields);
+            skippedDocs.push({ doc: doc, missing: missingFields });
+            return;
+          }
+          exportableDocs.push(doc);
+        });
 
-        if (!readyDocs.length) {
+        if (!exportableDocs.length) {
+          if (skippedDocs.length) {
+            setStatus("Есть операции без обязательных полей. Проверьте Куда/Откуда.");
+            return;
+          }
           setStatus("Нет готовых операций для экспорта");
           return;
         }
@@ -3377,7 +4890,16 @@
         var filename = "SHIFT_" + dateKey + "_" + deviceId + "_" + timeKey + ".jsonl";
         var lines = [];
 
-        readyDocs.forEach(function (doc) {
+        exportableDocs.forEach(function (doc) {
+          var header = doc.header || {};
+          var fallbackFrom = normalizeValue(header.from) || null;
+          var fallbackTo = normalizeValue(header.to) || null;
+          var fallbackReason = normalizeValue(header.reason_code) || null;
+          var huCode = normalizeHuCode(header.hu);
+          if (doc.op === "INVENTORY") {
+            fallbackTo = normalizeValue(header.location) || null;
+          }
+
           (doc.lines || []).forEach(function (line) {
             var record = {
               event_id: createUuid(),
@@ -3387,13 +4909,22 @@
               doc_ref: doc.doc_ref,
               barcode: line.barcode,
               qty: line.qty,
-              from: line.from || null,
-              to: line.to || null,
-              partner_id: doc.header && doc.header.partner_id ? doc.header.partner_id : null,
-              order_id: doc.header && doc.header.order_id ? doc.header.order_id : null,
-              order_ref: doc.header && doc.header.order_ref ? doc.header.order_ref : null,
-              reason_code: line.reason_code || null,
+              from: line.from || fallbackFrom,
+              to: line.to || fallbackTo,
+              partner_id: header.partner_id ? header.partner_id : null,
+              order_id: header.order_id ? header.order_id : null,
+              order_ref: header.order_ref ? header.order_ref : null,
+              reason_code: line.reason_code || fallbackReason,
             };
+            if (doc.op === "MOVE") {
+              record.from_loc = line.from || fallbackFrom;
+              record.to_loc = line.to || fallbackTo;
+              record.from_hu = normalizeHuCode(line.from_hu || header.from_hu) || null;
+              record.to_hu = normalizeHuCode(line.to_hu || header.to_hu) || null;
+              record.hu_code = null;
+            } else {
+              record.hu_code = huCode || null;
+            }
             lines.push(JSON.stringify(record));
           });
         });
@@ -3419,7 +4950,7 @@
         }
 
         var exportedAt = new Date().toISOString();
-        var saveTasks = readyDocs.map(function (doc) {
+        var saveTasks = exportableDocs.map(function (doc) {
           doc.status = "EXPORTED";
           doc.exportedAt = exportedAt;
           doc.updatedAt = exportedAt;
@@ -3428,7 +4959,11 @@
 
         Promise.all(saveTasks)
           .then(function () {
-            setStatus("Экспортировано: " + readyDocs.length + " операций");
+            var message = "Экспортировано: " + exportableDocs.length + " операций";
+            if (skippedDocs.length) {
+              message += " (пропущено: " + skippedDocs.length + ")";
+            }
+            setStatus(message);
             if (currentRoute && currentRoute.name === "docs") {
               renderRoute();
             }
@@ -3469,6 +5004,69 @@
       disabled +
       ">+</button>" +
       "  </div>"
+    );
+  }
+
+  function renderHuField(header, isDraft) {
+    var huValue = normalizeValue(header.hu);
+    var huLabel = huValue ? "HU: " + huValue : "HU: не задан";
+    return (
+      '  <div class="field-row field-row-hu" id="huPickerRow">' +
+      '    <div class="field-label">HU</div>' +
+      '    <div class="field-value" id="huValue">' +
+      escapeHtml(huLabel) +
+      "</div>" +
+      '    <button class="btn btn-outline field-action" id="huScanBtn" type="button" ' +
+      (isDraft ? "" : "disabled") +
+      ">Сканировать HU</button>" +
+      "  </div>" +
+      '  <div class="field-error" id="huError"></div>'
+    );
+  }
+
+  function renderMoveInternalRow(header, isDraft) {
+    var isChecked = header.move_internal ? "checked" : "";
+    var disabled = isDraft ? "" : "disabled";
+    return (
+      '  <div class="field-row">' +
+      '    <div class="field-label">Перемещение</div>' +
+      '    <div class="field-value field-value-toggle">' +
+      '      <label class="toggle-inline">' +
+      '        <input type="checkbox" id="moveInternalToggle" ' +
+      isChecked +
+      " " +
+      disabled +
+      " />" +
+      "        <span>Внутри склада</span>" +
+      "      </label>" +
+      "    </div>" +
+      "    <div></div>" +
+      "  </div>"
+    );
+  }
+
+  function renderMoveHuField(label, valueId, scanId, errorId, value, isDraft) {
+    var huValue = normalizeValue(value);
+    var huLabel = huValue ? "HU: " + huValue : "HU: не задан";
+    return (
+      '  <div class="field-row field-row-hu">' +
+      '    <div class="field-label">' +
+      escapeHtml(label) +
+      "</div>" +
+      '    <div class="field-value" id="' +
+      valueId +
+      '">' +
+      escapeHtml(huLabel) +
+      "</div>" +
+      '    <button class="btn btn-outline field-action" id="' +
+      scanId +
+      '" type="button" ' +
+      (isDraft ? "" : "disabled") +
+      ">Сканировать</button>" +
+      "  </div>" +
+      '  <div class="field-error" id="' +
+      errorId +
+      '"></div>'
     );
   }
 
@@ -3553,6 +5151,10 @@
         return TsdStorage.ensureDefaults();
       })
       .then(function () {
+        updateNetworkStatus();
+        window.addEventListener("online", updateNetworkStatus);
+        window.addEventListener("offline", updateNetworkStatus);
+
         if (backBtn) {
           backBtn.addEventListener("click", function () {
             if (!currentRoute) {
@@ -3570,6 +5172,10 @@
           } else {
             navigate("/home");
           }
+        } else if (currentRoute.name === "orders") {
+          navigate("/home");
+        } else if (currentRoute.name === "order") {
+          navigate("/orders");
         } else if (currentRoute.name === "stock" || currentRoute.name === "settings") {
           navigate("/home");
         } else {
@@ -3594,4 +5200,5 @@
       });
   });
 })();
+
 

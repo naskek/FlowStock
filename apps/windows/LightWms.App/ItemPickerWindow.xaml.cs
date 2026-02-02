@@ -15,13 +15,13 @@ public partial class ItemPickerWindow : Window
 
     public Item? SelectedItem { get; private set; }
 
-    public ItemPickerWindow(AppServices services)
+    public ItemPickerWindow(AppServices services, IEnumerable<Item>? items = null)
     {
         _services = services;
         InitializeComponent();
 
         ItemsGrid.ItemsSource = _items;
-        LoadItems();
+        LoadItems(items);
 
         _view = CollectionViewSource.GetDefaultView(_items);
         _view.Filter = FilterItem;
@@ -34,10 +34,11 @@ public partial class ItemPickerWindow : Window
         };
     }
 
-    private void LoadItems()
+    private void LoadItems(IEnumerable<Item>? items)
     {
         _items.Clear();
-        foreach (var item in _services.Catalog.GetItems(null))
+        var source = items ?? _services.Catalog.GetItems(null);
+        foreach (var item in source)
         {
             _items.Add(item);
         }
@@ -78,7 +79,7 @@ public partial class ItemPickerWindow : Window
         CommitSelection();
     }
 
-    private void ItemsGrid_KeyDown(object sender, KeyEventArgs e)
+    private void ItemsGrid_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
         if (e.Key == Key.Enter)
         {
@@ -87,7 +88,7 @@ public partial class ItemPickerWindow : Window
         }
     }
 
-    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    private void Window_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
         if (e.Key == Key.Escape)
         {

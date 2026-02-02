@@ -3,7 +3,8 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Заказ"
         Height="700" Width="1100"
-        WindowStartupLocation="CenterOwner">
+        WindowStartupLocation="CenterOwner"
+        Closing="OrderDetailsWindow_Closing">
     <Grid Margin="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -44,10 +45,11 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
-            <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
-                <Button x:Name="AddItemButton" Content="+ Товар" Click="AddLine_Click" TabIndex="6" />
-                <Button x:Name="DeleteLineButton" Content="Удалить строку" Click="DeleteLine_Click" Margin="8,0,0,0" TabIndex="7" />
-            </StackPanel>
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+            <Button x:Name="AddItemButton" Content="+ Товар" Click="AddLine_Click" TabIndex="6" />
+            <Button x:Name="EditLineButton" Content="Редактировать" Click="EditLine_Click" Margin="8,0,0,0" TabIndex="7" />
+            <Button x:Name="DeleteLineButton" Content="Удалить строку" Click="DeleteLine_Click" Margin="8,0,0,0" TabIndex="8" />
+        </StackPanel>
             <Grid Grid.Row="1">
                 <DataGrid x:Name="OrderLinesGrid" AutoGenerateColumns="False" IsReadOnly="True"
                           SelectionChanged="OrderLinesGrid_SelectionChanged" TabIndex="8">
@@ -73,9 +75,17 @@
                            IsHitTestVisible="False" />
             </Grid>
         </Grid>
-        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button x:Name="SaveButton" Content="Сохранить" Width="120" Click="Save_Click" TabIndex="9" />
-            <Button Content="Закрыть" Width="120" IsCancel="True" Margin="8,0,0,0" TabIndex="10" />
-        </StackPanel>
+        <Grid Grid.Row="2" Margin="0,12,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBlock x:Name="SaveStatusText" VerticalAlignment="Center" Foreground="Gray" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="SaveButton" Content="Сохранить и закрыть" Width="160" Click="Save_Click" TabIndex="9" />
+                <Button x:Name="CloseButton" Content="Закрыть" Width="120" IsCancel="True" Margin="8,0,0,0"
+                        Click="Close_Click" TabIndex="10" />
+            </StackPanel>
+        </Grid>
     </Grid>
 </Window>

@@ -154,6 +154,32 @@ public sealed class OrderService
         });
     }
 
+    public void DeleteOrder(long orderId)
+    {
+        var existing = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+        if (existing.Status != OrderStatus.Draft)
+        {
+            throw new InvalidOperationException("Удалить можно только заказ в статусе \"Черновик\".");
+        }
+
+        if (_data.HasOutboundDocs(orderId))
+        {
+            throw new InvalidOperationException("Нельзя удалить заказ: есть отгрузки или связанные документы.");
+        }
+
+        var shippedTotals = _data.GetShippedTotalsByOrder(orderId);
+        if (shippedTotals.Values.Any(qty => qty > QtyTolerance))
+        {
+            throw new InvalidOperationException("Нельзя удалить заказ: есть отгрузки.");
+        }
+
+        _data.ExecuteInTransaction(store =>
+        {
+            store.DeleteOrderLines(orderId);
+            store.DeleteOrder(orderId);
+        });
+    }
+
     private void ApplyLineMetrics(long orderId, IReadOnlyList<OrderLineView> lines)
     {
         var availableByItem = _data.GetLedgerTotalsByItem();
@@ -220,7 +246,7 @@ public sealed class OrderService
         {
             nextStatus = OrderStatus.Shipped;
         }
-        else if (hasOutbound && order.Status == OrderStatus.Accepted)
+        else if (hasOutbound && (order.Status == OrderStatus.Accepted || order.Status == OrderStatus.Draft))
         {
             nextStatus = OrderStatus.InProgress;
         }

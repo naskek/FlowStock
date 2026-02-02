@@ -18,7 +18,7 @@
                       KeyDown="ItemsGrid_KeyDown">
                 <DataGrid.Columns>
                     <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="*" />
-                    <DataGridTextColumn Header="Штрихкод" Binding="{Binding Barcode}" Width="180" />
+                    <DataGridTextColumn Header="SKU / штрихкод" Binding="{Binding Barcode}" Width="180" />
                     <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="140" />
                     <DataGridTextColumn Header="Базовая единица" Binding="{Binding BaseUom}" Width="140" />
                 </DataGrid.Columns>

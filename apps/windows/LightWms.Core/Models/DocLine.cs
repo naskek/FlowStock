@@ -10,4 +10,6 @@ public sealed class DocLine
     public string? UomCode { get; init; }
     public long? FromLocationId { get; init; }
     public long? ToLocationId { get; init; }
+    public string? FromHu { get; init; }
+    public string? ToHu { get; init; }
 }

@@ -6,13 +6,8 @@
     <DockPanel>
         <Menu DockPanel.Dock="Top">
             <MenuItem Header="Операции">
-                <MenuItem Header="Новый документ..." InputGestureText="Ctrl+N" Click="NewDocMenu_Click" />
                 <MenuItem Header="Открыть выбранный" InputGestureText="Ctrl+O" Click="DocsOpen_Click" />
                 <MenuItem Header="Закрыть текущий документ" InputGestureText="Ctrl+Enter" Click="DocClose_Click" />
-            </MenuItem>
-            <MenuItem Header="Импорт">
-                <MenuItem Header="Импорт JSONL..." InputGestureText="Ctrl+I" Click="ImportMenu_Click" />
-                <MenuItem Header="Ошибки импорта" Click="ImportErrors_Click" />
             </MenuItem>
             <MenuItem Header="Справочники">
                 <MenuItem Header="Товары" Click="ViewItems_Click" />
@@ -22,19 +17,13 @@
                 <MenuItem Header="Ед. измерения..." Click="UomMenu_Click" />
                 <MenuItem Header="Упаковки..." Click="PackagingManager_Click" />
             </MenuItem>
-            <MenuItem Header="Вид">
-                <MenuItem Header="Остатки" Click="ViewStatus_Click" />
-                <MenuItem Header="Операции" Click="ViewDocs_Click" />
-                <MenuItem Header="Заказы" Click="ViewOrders_Click" />
-                <MenuItem Header="Товары" Click="ViewItems_Click" />
-                <MenuItem Header="Места хранения" Click="ViewLocations_Click" />
-                <MenuItem Header="Контрагенты" Click="ViewPartners_Click" />
-            </MenuItem>
             <MenuItem Header="Сервис">
                 <MenuItem Header="Синхронизация с ТСД..." Click="OpenTsdSync_Click" />
+                <MenuItem Header="Устройства ТСД..." Click="OpenTsdDevices_Click" />
                 <Separator />
                 <MenuItem Header="Резервные копии..." Click="OpenBackupManager_Click" />
                 <MenuItem Header="Администрирование..." Click="OpenAdmin_Click" />
+                <MenuItem Header="HU Реестр..." Click="OpenHuRegistry_Click" />
                 <Separator />
                 <MenuItem Header="Открыть папку данных" Click="OpenDataFolder_Click" />
                 <MenuItem Header="Открыть папку логов" Click="OpenLogsFolder_Click" />
@@ -52,13 +41,19 @@
                         <TextBox x:Name="StatusSearchBox" Width="240" Margin="0,0,8,0" />
                         <Button Content="Поиск" Click="StatusSearch_Click" Margin="0,0,8,0" />
                         <Button Content="Обновить" Click="StatusRefresh_Click" />
+                        <TextBlock Text="Место хранения" VerticalAlignment="Center" Margin="12,0,6,0" />
+                        <ComboBox x:Name="StockLocationFilter" Width="220" DisplayMemberPath="Name"
+                                  SelectionChanged="StockLocationFilter_SelectionChanged" />
+                        <TextBlock Text="HU" VerticalAlignment="Center" Margin="12,0,6,0" />
+                        <ComboBox x:Name="StockHuFilter" Width="200" DisplayMemberPath="Name"
+                                  SelectionChanged="StockHuFilter_SelectionChanged" />
                     </StackPanel>
                     <DataGrid x:Name="StockGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
-                            <DataGridTextColumn Header="Штрихкод" Binding="{Binding Barcode}" Width="160" />
+                            <DataGridTextColumn Header="SKU / штрихкод" Binding="{Binding Barcode}" Width="160" />
                             <DataGridTextColumn Header="Место хранения" Binding="{Binding LocationCode}" Width="140" />
-                            <DataGridTextColumn Header="Упаковки" Binding="{Binding PackagingDisplay}" Width="220" />
+                            <DataGridTextColumn Header="HU" Binding="{Binding HuDisplay}" Width="160" />
                             <DataGridTextColumn Header="В базе" Binding="{Binding BaseDisplay}" Width="140" />
                         </DataGrid.Columns>
                     </DataGrid>
@@ -115,12 +110,14 @@
                             <DataGridTextColumn Header="Статус" Binding="{Binding StatusDisplay}" Width="120" />
                         <DataGridTextColumn Header="Контрагент" Binding="{Binding PartnerDisplay}" Width="220" />
                             <DataGridTextColumn Header="Заказ" Binding="{Binding OrderRef}" Width="160" />
+                            <DataGridTextColumn Header="HU" Binding="{Binding HuDisplay}" Width="160" />
                             <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="160" />
                             <DataGridTextColumn Header="Закрыт" Binding="{Binding ClosedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="160" />
                         </DataGrid.Columns>
                     </DataGrid>
                     <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,8,0,8">
-                        <Button Content="Обновить" Click="DocsRefresh_Click" />
+                        <Button Content="Новый документ" Click="NewDocMenu_Click" />
+                        <Button Content="Обновить" Click="DocsRefresh_Click" Margin="8,0,0,0" />
                     </StackPanel>
                 </Grid>
             </TabItem>
@@ -144,6 +141,7 @@
                     </DataGrid>
                     <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,8,0,8">
                         <Button Content="Новый" Click="OrdersNew_Click" />
+                        <Button Content="Удалить" Click="OrdersDelete_Click" Margin="8,0,0,0" />
                         <Button Content="Обновить" Click="OrdersRefresh_Click" Margin="8,0,0,0" />
                     </StackPanel>
                 </Grid>
@@ -159,7 +157,7 @@
                             <StackPanel Margin="8">
                                 <TextBlock Text="Наименование" />
                                 <TextBox x:Name="ItemNameBox" Margin="0,2,0,8" TabIndex="1" />
-                                <TextBlock Text="Штрихкод" />
+                                <TextBlock Text="SKU / штрихкод" />
                                 <TextBox x:Name="ItemBarcodeBox" Margin="0,2,0,8" TabIndex="2" />
                                 <TextBlock Text="GTIN" />
                                 <TextBox x:Name="ItemGtinBox" Margin="0,2,0,8" TabIndex="3" />
@@ -179,14 +177,12 @@
                             <Button x:Name="ItemSaveButton" Content="Сохранить" Click="UpdateItem_Click" Margin="8,0,0,0" TabIndex="8" />
                             <Button x:Name="ItemDeleteButton" Content="Удалить" Click="DeleteItem_Click" Margin="8,0,0,0" TabIndex="9" />
                         </StackPanel>
-                        <TextBlock Margin="0,8,0,0" Foreground="Gray"
-                                   Text="Подсказка: JSONL использует Штрихкод/GTIN." />
                     </StackPanel>
                     <DataGrid x:Name="ItemsGrid" Grid.Column="1" AutoGenerateColumns="False" IsReadOnly="True"
                               SelectionChanged="ItemsGrid_SelectionChanged" TabIndex="20">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="*" />
-                            <DataGridTextColumn Header="Штрихкод" Binding="{Binding Barcode}" Width="180" />
+                            <DataGridTextColumn Header="SKU / штрихкод" Binding="{Binding Barcode}" Width="180" />
                             <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="140" />
                             <DataGridTextColumn Header="Базовая единица" Binding="{Binding BaseUom}" Width="160" />
                         </DataGrid.Columns>
@@ -213,8 +209,6 @@
                             <Button x:Name="LocationSaveButton" Content="Сохранить" Click="UpdateLocation_Click" Margin="8,0,0,0" TabIndex="4" />
                             <Button x:Name="LocationDeleteButton" Content="Удалить" Click="DeleteLocation_Click" Margin="8,0,0,0" TabIndex="5" />
                         </StackPanel>
-                        <TextBlock Margin="0,8,0,0" Foreground="Gray"
-                                   Text="Подсказка: JSONL использует код места хранения." />
                     </StackPanel>
                     <DataGrid x:Name="LocationsGrid" Grid.Column="1" AutoGenerateColumns="False" IsReadOnly="True"
                               SelectionChanged="LocationsGrid_SelectionChanged" TabIndex="20">
@@ -237,13 +231,17 @@
                                 <TextBlock Text="Наименование" />
                                 <TextBox x:Name="PartnerNameBox" Margin="0,2,0,8" TabIndex="1" />
                                 <TextBlock Text="ИНН" />
-                                <TextBox x:Name="PartnerCodeBox" Margin="0,2,0,0" TabIndex="2" />
+                                <TextBox x:Name="PartnerCodeBox" Margin="0,2,0,0" TabIndex="2"
+                                         PreviewTextInput="PartnerCodeBox_PreviewTextInput"
+                                         DataObject.Pasting="PartnerCodeBox_OnPaste" />
+                                <TextBlock Text="Статус" Margin="0,8,0,0" />
+                                <ComboBox x:Name="PartnerStatusCombo" Margin="0,2,0,0" TabIndex="3" DisplayMemberPath="Name" />
                             </StackPanel>
                         </GroupBox>
                         <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                            <Button Content="Добавить" Click="AddPartner_Click" TabIndex="3" />
-                            <Button x:Name="PartnerSaveButton" Content="Сохранить" Click="UpdatePartner_Click" Margin="8,0,0,0" TabIndex="4" />
-                            <Button x:Name="PartnerDeleteButton" Content="Удалить" Click="DeletePartner_Click" Margin="8,0,0,0" TabIndex="5" />
+                            <Button Content="Добавить" Click="AddPartner_Click" TabIndex="4" />
+                            <Button x:Name="PartnerSaveButton" Content="Сохранить" Click="UpdatePartner_Click" Margin="8,0,0,0" TabIndex="5" />
+                            <Button x:Name="PartnerDeleteButton" Content="Удалить" Click="DeletePartner_Click" Margin="8,0,0,0" TabIndex="6" />
                         </StackPanel>
                     </StackPanel>
                     <DataGrid x:Name="PartnersGrid" Grid.Column="1" AutoGenerateColumns="False" IsReadOnly="True"

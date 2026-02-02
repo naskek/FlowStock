@@ -37,4 +37,22 @@ public sealed class Doc
             return PartnerName ?? string.Empty;
         }
     }
+
+    public string HuDisplay
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(ShippingRef))
+            {
+                return string.Empty;
+            }
+
+            if (!ShippingRef.StartsWith("HU-", StringComparison.OrdinalIgnoreCase))
+            {
+                return string.Empty;
+            }
+
+            return $"HU: {ShippingRef}";
+        }
+    }
 }

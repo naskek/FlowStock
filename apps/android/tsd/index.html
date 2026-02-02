@@ -7,6 +7,8 @@
       content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
     />
     <title>LightWMS MVP</title>
+    <meta name="theme-color" content="#1f6f8b" />
+    <link rel="manifest" href="manifest.json" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -15,14 +17,17 @@
         <button id="backBtn" class="icon-btn back-btn" type="button" aria-label="Назад">
           &larr;
         </button>
-        <div class="app-title"></div>
+        <div class="app-title-wrap">
+          <div class="app-title"></div>
+          <span id="networkStatus" class="status-badge">Онлайн</span>
+        </div>
         <button
           id="settingsBtn"
           class="icon-btn settings-btn"
           type="button"
           aria-label="Настройки"
         >
-          &#9881;
+          &#9881;&#65038;
         </button>
       </header>
       <main id="app" class="app-content" role="main"></main>
@@ -39,6 +44,15 @@
     />
     <script src="storage.js"></script>
     <script src="app.js"></script>
+    <script>
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", function () {
+          navigator.serviceWorker.register("./service-worker.js").catch(function () {
+            // ignore
+          });
+        });
+      }
+    </script>
   </body>
 </html>
 

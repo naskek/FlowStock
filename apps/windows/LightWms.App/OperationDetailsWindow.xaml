@@ -9,6 +9,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
         <StackPanel Grid.Row="0" Margin="0,0,0,8">
             <DockPanel LastChildFill="True">
@@ -26,19 +27,49 @@
                 </StackPanel>
                 <StackPanel x:Name="DocOrderPanel" Margin="0,0,12,0">
                     <TextBlock Text="Заказ" />
-                    <TextBox x:Name="DocOrderRefBox" Width="160" Margin="0,4,0,0" />
-                </StackPanel>
-                <StackPanel x:Name="DocShippingPanel" Margin="0,0,12,0">
-                    <TextBlock Text="Накладная/ТТН" />
-                    <TextBox x:Name="DocShippingRefBox" Width="160" Margin="0,4,0,0" />
+                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                        <ComboBox x:Name="DocOrderCombo" Width="220" DisplayMemberPath="DisplayName" IsEditable="True"
+                                  SelectionChanged="DocOrderCombo_SelectionChanged" KeyUp="DocOrderCombo_KeyUp" />
+                        <Button x:Name="DocOrderClearButton" Content="Сброс" Width="60" Margin="8,0,0,0"
+                                Click="DocOrderClear_Click" />
+                    </StackPanel>
+                    <CheckBox x:Name="DocPartialCheck"
+                              Content="Частичная отгрузка"
+                              Margin="0,6,0,0"
+                              Checked="DocPartialCheck_Changed"
+                              Unchecked="DocPartialCheck_Changed" />
                 </StackPanel>
                 <StackPanel x:Name="DocFromPanel" Margin="0,0,12,0">
                     <TextBlock x:Name="DocFromLabel" Text="Откуда" />
-                    <ComboBox x:Name="DocFromCombo" Width="140" Margin="0,4,0,0" DisplayMemberPath="Code" />
+                    <ComboBox x:Name="DocFromCombo" Width="220" Margin="0,4,0,0" DisplayMemberPath="DisplayName" />
                 </StackPanel>
                 <StackPanel x:Name="DocToPanel" Margin="0,0,12,0">
                     <TextBlock x:Name="DocToLabel" Text="Куда" />
-                    <ComboBox x:Name="DocToCombo" Width="140" Margin="0,4,0,0" DisplayMemberPath="Code" />
+                    <ComboBox x:Name="DocToCombo" Width="220" Margin="0,4,0,0" DisplayMemberPath="DisplayName" />
+                </StackPanel>
+                <StackPanel x:Name="DocMoveInternalPanel" Margin="0,0,12,0">
+                    <TextBlock Text="Перемещение" />
+                    <CheckBox x:Name="DocMoveInternalCheck"
+                              Content="Внутри склада"
+                              Margin="0,6,0,0"
+                              Checked="DocMoveInternalCheck_Changed"
+                              Unchecked="DocMoveInternalCheck_Changed" />
+                </StackPanel>
+                <StackPanel x:Name="DocHuFromPanel" Margin="0,0,12,0">
+                    <TextBlock Text="HU (откуда)" />
+                    <ComboBox x:Name="DocHuFromCombo"
+                              Width="220"
+                              Margin="0,4,0,0"
+                              DisplayMemberPath="DisplayName" />
+                </StackPanel>
+                <StackPanel x:Name="DocHuPanel" Margin="0,0,12,0">
+                    <TextBlock x:Name="DocHuLabel" Text="HU" />
+                    <ComboBox x:Name="DocHuCombo"
+                              Width="220"
+                              Margin="0,4,0,0"
+                              DisplayMemberPath="DisplayName"
+                              SelectionChanged="DocHuCombo_SelectionChanged"
+                              KeyUp="DocHuCombo_KeyUp" />
                 </StackPanel>
             </WrapPanel>
         </StackPanel>
@@ -50,12 +81,25 @@
         <DataGrid x:Name="DocLinesGrid" Grid.Row="2" AutoGenerateColumns="False" IsReadOnly="True"
                   SelectionChanged="DocLines_SelectionChanged"
                   KeyDown="DocLinesGrid_KeyDown">
+            <DataGrid.RowStyle>
+                <Style TargetType="DataGridRow">
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding HasShortage}" Value="True">
+                            <Setter Property="Background" Value="#FFF4CCCC" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </DataGrid.RowStyle>
             <DataGrid.Columns>
                 <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
-                <DataGridTextColumn Header="Кол-во" Binding="{Binding QtyDisplay}" Width="180" />
-                <DataGridTextColumn x:Name="DocFromColumn" Header="Откуда" Binding="{Binding FromLocation}" Width="140" />
-                <DataGridTextColumn x:Name="DocToColumn" Header="Куда" Binding="{Binding ToLocation}" Width="140" />
+                <DataGridTextColumn Header="Ввод" Binding="{Binding InputQtyDisplay}" Width="120" />
+                <DataGridTextColumn Header="Ед. ввода" Binding="{Binding InputUomDisplay}" Width="220" />
+                <DataGridTextColumn Header="В base" Binding="{Binding BaseQtyDisplay}" Width="140" />
+                <DataGridTextColumn Header="Доступно" Binding="{Binding AvailableQty, StringFormat={}{0:0.###}}" Width="140" />
+                <DataGridTextColumn x:Name="DocFromColumn" Header="Откуда" Binding="{Binding FromLocation}" Width="220" />
+                <DataGridTextColumn x:Name="DocToColumn" Header="Куда" Binding="{Binding ToLocation}" Width="220" />
             </DataGrid.Columns>
         </DataGrid>
+        <TextBlock x:Name="DocShortageText" Grid.Row="3" Margin="0,6,0,0" Foreground="DarkRed" Visibility="Collapsed" />
     </Grid>
 </Window>

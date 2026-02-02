@@ -54,7 +54,9 @@ public interface IDataStore
     long AddDocLine(DocLine line);
     void UpdateDocLineQty(long docLineId, double qty, double? qtyInput, string? uomCode);
     void DeleteDocLine(long docLineId);
+    void DeleteDocLines(long docId);
     void UpdateDocHeader(long docId, long? partnerId, string? orderRef, string? shippingRef);
+    void UpdateDocOrder(long docId, long? orderId, string? orderRef);
     void UpdateDocStatus(long docId, DocStatus status, DateTime? closedAt);
 
     Order? GetOrder(long id);
@@ -66,6 +68,7 @@ public interface IDataStore
     IReadOnlyList<OrderLineView> GetOrderLineViews(long orderId);
     long AddOrderLine(OrderLine line);
     void DeleteOrderLines(long orderId);
+    void DeleteOrder(long orderId);
     IReadOnlyDictionary<long, double> GetLedgerTotalsByItem();
     IReadOnlyDictionary<long, double> GetShippedTotalsByOrder(long orderId);
     DateTime? GetOrderShippedAt(long orderId);
@@ -74,6 +77,13 @@ public interface IDataStore
     void AddLedgerEntry(LedgerEntry entry);
     IReadOnlyList<StockRow> GetStock(string? search);
     double GetLedgerBalance(long itemId, long locationId);
+    double GetLedgerBalance(long itemId, long locationId, string? huCode);
+    IReadOnlyList<string?> GetHuCodesByLocation(long locationId);
+    IReadOnlyList<string> GetAllHuCodes();
+    IReadOnlyList<Item> GetItemsByLocationAndHu(long locationId, string? huCode);
+    double GetAvailableQty(long itemId, long locationId, string? huCode);
+    IReadOnlyDictionary<string, double> GetLedgerTotalsByHu();
+    IReadOnlyList<HuStockRow> GetHuStockRows();
 
     bool IsEventImported(string eventId);
     void AddImportedEvent(ImportedEvent ev);

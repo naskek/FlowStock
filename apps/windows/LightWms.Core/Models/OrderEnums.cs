@@ -2,6 +2,7 @@ namespace LightWms.Core.Models;
 
 public enum OrderStatus
 {
+    Draft,
     Accepted,
     InProgress,
     Shipped
@@ -13,6 +14,7 @@ public static class OrderStatusMapper
     {
         return status?.Trim().ToUpperInvariant() switch
         {
+            "DRAFT" => OrderStatus.Draft,
             "ACCEPTED" => OrderStatus.Accepted,
             "IN_PROGRESS" => OrderStatus.InProgress,
             "SHIPPED" => OrderStatus.Shipped,
@@ -24,6 +26,7 @@ public static class OrderStatusMapper
     {
         return status switch
         {
+            OrderStatus.Draft => "DRAFT",
             OrderStatus.Accepted => "ACCEPTED",
             OrderStatus.InProgress => "IN_PROGRESS",
             OrderStatus.Shipped => "SHIPPED",
@@ -35,6 +38,7 @@ public static class OrderStatusMapper
     {
         return status switch
         {
+            OrderStatus.Draft => "Черновик",
             OrderStatus.Accepted => "Принят",
             OrderStatus.InProgress => "В процессе",
             OrderStatus.Shipped => "Отгружен",
