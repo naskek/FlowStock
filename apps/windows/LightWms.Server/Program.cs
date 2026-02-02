@@ -189,10 +189,10 @@ app.MapGet("/api/items", (HttpRequest request) =>
         ? @"
 SELECT id, name, barcode, gtin, base_uom, uom
 FROM items
-WHERE @search IS NULL
-   OR name ILIKE @search
-   OR barcode ILIKE @search
-   OR gtin ILIKE @search
+WHERE @search::text IS NULL
+   OR name ILIKE @search::text
+   OR barcode ILIKE @search::text
+   OR gtin ILIKE @search::text
 ORDER BY name;"
         : @"
 SELECT id, name, barcode, gtin, base_uom, uom
