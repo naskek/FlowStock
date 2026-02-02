@@ -4,7 +4,35 @@ namespace LightWms.Server;
 
 public sealed class CreateDocRequest
 {
-    public string? Op { get; set; }
+    [JsonPropertyName("doc_uid")]
+    public string? DocUid { get; set; }
+
+    [JsonPropertyName("event_id")]
+    public string? EventId { get; set; }
+
+    [JsonPropertyName("device_id")]
+    public string? DeviceId { get; set; }
+
+    [JsonPropertyName("type")]
+    public string? Type { get; set; }
+
+    [JsonPropertyName("doc_ref")]
+    public string? DocRef { get; set; }
+
+    [JsonPropertyName("partner_id")]
+    public long? PartnerId { get; set; }
+
+    [JsonPropertyName("from_location_id")]
+    public long? FromLocationId { get; set; }
+
+    [JsonPropertyName("to_location_id")]
+    public long? ToLocationId { get; set; }
+
+    [JsonPropertyName("from_hu")]
+    public string? FromHu { get; set; }
+
+    [JsonPropertyName("to_hu")]
+    public string? ToHu { get; set; }
 }
 
 public sealed class CreateDocResponse
@@ -14,20 +42,34 @@ public sealed class CreateDocResponse
     public string Status { get; init; } = string.Empty;
 }
 
-public sealed class AddMoveLineRequest
+public sealed class AddDocLineRequest
 {
-    public string? Barcode { get; set; }
-    public double Qty { get; set; }
-    public string? FromLocCode { get; set; }
-    public string? ToLocCode { get; set; }
-    public string? FromHu { get; set; }
-    public string? ToHu { get; set; }
+    [JsonPropertyName("event_id")]
     public string? EventId { get; set; }
+
+    [JsonPropertyName("device_id")]
+    public string? DeviceId { get; set; }
+
+    [JsonPropertyName("barcode")]
+    public string? Barcode { get; set; }
+
+    [JsonPropertyName("item_id")]
+    public long? ItemId { get; set; }
+
+    [JsonPropertyName("qty")]
+    public double Qty { get; set; }
+
+    [JsonPropertyName("uom_code")]
+    public string? UomCode { get; set; }
 }
 
 public sealed class CloseDocRequest
 {
+    [JsonPropertyName("event_id")]
     public string? EventId { get; set; }
+
+    [JsonPropertyName("device_id")]
+    public string? DeviceId { get; set; }
 }
 
 public sealed class HuGenerateRequest

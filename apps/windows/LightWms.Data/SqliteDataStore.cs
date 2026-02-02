@@ -155,7 +155,15 @@ CREATE TABLE IF NOT EXISTS api_docs (
     doc_uid TEXT PRIMARY KEY,
     doc_id INTEGER NOT NULL,
     status TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    doc_type TEXT,
+    doc_ref TEXT,
+    partner_id INTEGER,
+    from_location_id INTEGER,
+    to_location_id INTEGER,
+    from_hu TEXT,
+    to_hu TEXT,
+    device_id TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_api_docs_doc ON api_docs(doc_id);
 CREATE TABLE IF NOT EXISTS api_events (
@@ -208,6 +216,14 @@ CREATE INDEX IF NOT EXISTS idx_hus_created_at ON hus(created_at);
         EnsureColumn(connection, "doc_lines", "to_hu", "TEXT");
         EnsureColumn(connection, "ledger", "hu", "TEXT");
         EnsureColumn(connection, "ledger", "hu_code", "TEXT");
+        EnsureColumn(connection, "api_docs", "doc_type", "TEXT");
+        EnsureColumn(connection, "api_docs", "doc_ref", "TEXT");
+        EnsureColumn(connection, "api_docs", "partner_id", "INTEGER");
+        EnsureColumn(connection, "api_docs", "from_location_id", "INTEGER");
+        EnsureColumn(connection, "api_docs", "to_location_id", "INTEGER");
+        EnsureColumn(connection, "api_docs", "from_hu", "TEXT");
+        EnsureColumn(connection, "api_docs", "to_hu", "TEXT");
+        EnsureColumn(connection, "api_docs", "device_id", "TEXT");
         EnsureColumn(connection, "api_events", "received_at", "TEXT");
         EnsureColumn(connection, "api_events", "device_id", "TEXT");
         EnsureColumn(connection, "api_events", "raw_json", "TEXT");

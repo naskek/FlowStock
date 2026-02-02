@@ -621,36 +621,290 @@ app.MapPost("/api/ops", async (HttpRequest request, SqliteDataStore store, Docum
     return Results.Ok(new ApiResult(true));
 });
 
-app.MapPost("/api/docs", (CreateDocRequest request, SqliteDataStore store, DocumentService docs, ApiDocStore apiStore) =>
+app.MapPost("/api/docs", async (HttpRequest request, SqliteDataStore store, DocumentService docs, ApiDocStore apiStore) =>
 {
-    if (!string.Equals(request.Op, "MOVE", StringComparison.OrdinalIgnoreCase))
+    var rawJson = await ReadBody(request);
+    if (string.IsNullOrWhiteSpace(rawJson))
     {
-        return Results.BadRequest(new ApiResult(false, "UNSUPPORTED_OP"));
+        return Results.BadRequest(new ApiResult(false, "EMPTY_BODY"));
     }
 
-    var docRef = docs.GenerateDocRef(DocType.Move, DateTime.Now);
-    var docId = docs.CreateDoc(DocType.Move, docRef, null, null, null, null);
-    var docUid = Guid.NewGuid().ToString("N");
-    apiStore.AddApiDoc(docUid, docId, "DRAFT");
-
-    return Results.Ok(new CreateDocResponse
+    CreateDocRequest? createRequest;
+    try
     {
-        DocUid = docUid,
-        DocRef = docRef,
-        Status = "DRAFT"
-    });
-});
+        createRequest = JsonSerializer.Deserialize<CreateDocRequest>(
+            rawJson,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    }
+    catch (JsonException)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+    }
 
-app.MapPost("/api/docs/{docUid}/lines", (string docUid, AddMoveLineRequest request, SqliteDataStore store, DocumentService docs, ApiDocStore apiStore) =>
-{
-    if (string.IsNullOrWhiteSpace(request.EventId))
+    if (createRequest == null)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+    }
+
+    var docUid = string.IsNullOrWhiteSpace(createRequest.DocUid) ? null : createRequest.DocUid.Trim();
+    if (string.IsNullOrWhiteSpace(docUid))
+    {
+        return Results.BadRequest(new ApiResult(false, "MISSING_DOC_UID"));
+    }
+
+    if (string.IsNullOrWhiteSpace(createRequest.EventId))
     {
         return Results.BadRequest(new ApiResult(false, "MISSING_EVENT_ID"));
     }
 
-    if (apiStore.IsEventProcessed(request.EventId))
+    var docType = ParseDocType(createRequest.Type);
+    if (docType == null || docType is not (DocType.Inbound or DocType.Outbound or DocType.Move))
     {
-        return Results.Ok(new ApiResult(true));
+        return Results.BadRequest(new ApiResult(false, "INVALID_TYPE"));
+    }
+
+    var existingEvent = apiStore.GetEvent(createRequest.EventId);
+    if (existingEvent != null)
+    {
+        if (string.Equals(existingEvent.EventType, "DOC_CREATE", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(existingEvent.DocUid, docUid, StringComparison.OrdinalIgnoreCase))
+        {
+            var existingDoc = apiStore.GetApiDoc(docUid);
+            if (existingDoc != null)
+            {
+                return Results.Ok(new
+                {
+                    ok = true,
+                    doc = new
+                    {
+                        id = existingDoc.DocId,
+                        doc_uid = docUid,
+                        doc_ref = existingDoc.DocRef,
+                        status = existingDoc.Status,
+                        type = existingDoc.DocType
+                    }
+                });
+            }
+
+            return Results.Ok(new ApiResult(true));
+        }
+
+        return Results.BadRequest(new ApiResult(false, "EVENT_ID_CONFLICT"));
+    }
+
+    var existingDocInfo = apiStore.GetApiDoc(docUid);
+    if (existingDocInfo != null)
+    {
+        var expectedType = DocTypeMapper.ToOpString(docType.Value);
+        if (!string.IsNullOrWhiteSpace(existingDocInfo.DocType)
+            && !string.Equals(existingDocInfo.DocType, expectedType, StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+        }
+
+        if (createRequest.PartnerId.HasValue && existingDocInfo.PartnerId != createRequest.PartnerId)
+        {
+            return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+        }
+
+        if (createRequest.FromLocationId.HasValue && existingDocInfo.FromLocationId != createRequest.FromLocationId)
+        {
+            return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+        }
+
+        if (createRequest.ToLocationId.HasValue && existingDocInfo.ToLocationId != createRequest.ToLocationId)
+        {
+            return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+        }
+
+        var fromHu = NormalizeHu(createRequest.FromHu);
+        var toHu = NormalizeHu(createRequest.ToHu);
+        if (!string.IsNullOrWhiteSpace(fromHu) && !string.Equals(existingDocInfo.FromHu, fromHu, StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+        }
+
+        if (!string.IsNullOrWhiteSpace(toHu) && !string.Equals(existingDocInfo.ToHu, toHu, StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+        }
+
+        if (!string.IsNullOrWhiteSpace(createRequest.DocRef)
+            && !string.Equals(existingDocInfo.DocRef, createRequest.DocRef.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+        }
+
+        return Results.Ok(new
+        {
+            ok = true,
+            doc = new
+            {
+                id = existingDocInfo.DocId,
+                doc_uid = docUid,
+                doc_ref = existingDocInfo.DocRef,
+                status = existingDocInfo.Status,
+                type = existingDocInfo.DocType
+            }
+        });
+    }
+
+    var partnerId = createRequest.PartnerId;
+    if (docType == DocType.Inbound || docType == DocType.Outbound)
+    {
+        if (!partnerId.HasValue)
+        {
+            return Results.BadRequest(new ApiResult(false, "MISSING_PARTNER"));
+        }
+
+        if (store.GetPartner(partnerId.Value) == null)
+        {
+            return Results.BadRequest(new ApiResult(false, "UNKNOWN_PARTNER"));
+        }
+    }
+
+    var fromLocationId = createRequest.FromLocationId;
+    var toLocationId = createRequest.ToLocationId;
+    if (docType == DocType.Move || docType == DocType.Outbound)
+    {
+        if (!fromLocationId.HasValue)
+        {
+            return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
+        }
+
+        if (store.FindLocationById(fromLocationId.Value) == null)
+        {
+            return Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION"));
+        }
+    }
+
+    if (docType == DocType.Move || docType == DocType.Inbound)
+    {
+        if (!toLocationId.HasValue)
+        {
+            return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
+        }
+
+        if (store.FindLocationById(toLocationId.Value) == null)
+        {
+            return Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION"));
+        }
+    }
+
+    var normalizedFromHu = NormalizeHu(createRequest.FromHu);
+    var normalizedToHu = NormalizeHu(createRequest.ToHu);
+
+    var missingHu = new List<string>();
+    if (!string.IsNullOrWhiteSpace(normalizedFromHu))
+    {
+        var record = store.GetHuByCode(normalizedFromHu);
+        if (record == null || !IsHuAllowed(record))
+        {
+            missingHu.Add("from_hu");
+        }
+    }
+    if (!string.IsNullOrWhiteSpace(normalizedToHu))
+    {
+        var record = store.GetHuByCode(normalizedToHu);
+        if (record == null || !IsHuAllowed(record))
+        {
+            missingHu.Add("to_hu");
+        }
+    }
+
+    if (missingHu.Count > 0)
+    {
+        return Results.BadRequest(new
+        {
+            ok = false,
+            error = "UNKNOWN_HU",
+            missing = missingHu
+        });
+    }
+
+    var docRef = string.IsNullOrWhiteSpace(createRequest.DocRef)
+        ? docs.GenerateDocRef(docType.Value, DateTime.Now)
+        : createRequest.DocRef.Trim();
+
+    long docId;
+    try
+    {
+        docId = docs.CreateDoc(docType.Value, docRef, null, partnerId, null, null, null);
+    }
+    catch (ArgumentException)
+    {
+        return Results.BadRequest(new ApiResult(false, "DOC_REF_EXISTS"));
+    }
+
+    apiStore.AddApiDoc(
+        docUid,
+        docId,
+        "DRAFT",
+        DocTypeMapper.ToOpString(docType.Value),
+        docRef,
+        partnerId,
+        fromLocationId,
+        toLocationId,
+        normalizedFromHu,
+        normalizedToHu,
+        createRequest.DeviceId);
+
+    apiStore.RecordEvent(createRequest.EventId, "DOC_CREATE", docUid, createRequest.DeviceId, rawJson);
+
+    return Results.Ok(new
+    {
+        ok = true,
+        doc = new
+        {
+            id = docId,
+            doc_uid = docUid,
+            doc_ref = docRef,
+            status = "DRAFT",
+            type = DocTypeMapper.ToOpString(docType.Value)
+        }
+    });
+});
+
+app.MapPost("/api/docs/{docUid}/lines", async (string docUid, HttpRequest request, SqliteDataStore store, DocumentService docs, ApiDocStore apiStore) =>
+{
+    var rawJson = await ReadBody(request);
+    if (string.IsNullOrWhiteSpace(rawJson))
+    {
+        return Results.BadRequest(new ApiResult(false, "EMPTY_BODY"));
+    }
+
+    AddDocLineRequest? lineRequest;
+    try
+    {
+        lineRequest = JsonSerializer.Deserialize<AddDocLineRequest>(
+            rawJson,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    }
+    catch (JsonException)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+    }
+
+    if (lineRequest == null)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+    }
+
+    if (string.IsNullOrWhiteSpace(lineRequest.EventId))
+    {
+        return Results.BadRequest(new ApiResult(false, "MISSING_EVENT_ID"));
+    }
+
+    var existingEvent = apiStore.GetEvent(lineRequest.EventId);
+    if (existingEvent != null)
+    {
+        if (string.Equals(existingEvent.EventType, "DOC_LINE", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(existingEvent.DocUid, docUid, StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Ok(new ApiResult(true));
+        }
+
+        return Results.BadRequest(new ApiResult(false, "EVENT_ID_CONFLICT"));
     }
 
     var docInfo = apiStore.GetApiDoc(docUid);
@@ -659,63 +913,153 @@ app.MapPost("/api/docs/{docUid}/lines", (string docUid, AddMoveLineRequest reque
         return Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"));
     }
 
-    if (!string.Equals(docInfo.Value.Status, "DRAFT", StringComparison.OrdinalIgnoreCase))
+    if (!string.Equals(docInfo.Status, "DRAFT", StringComparison.OrdinalIgnoreCase))
     {
-        return Results.BadRequest(new ApiResult(false, "DOC_CLOSED"));
+        return Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT"));
     }
 
-    if (string.IsNullOrWhiteSpace(request.Barcode))
-    {
-        return Results.BadRequest(new ApiResult(false, "MISSING_BARCODE"));
-    }
-
-    if (request.Qty <= 0)
+    if (lineRequest.Qty <= 0)
     {
         return Results.BadRequest(new ApiResult(false, "INVALID_QTY"));
     }
 
-    var item = store.FindItemByBarcode(request.Barcode.Trim())
-               ?? FindItemByBarcodeVariant(store, request.Barcode.Trim());
+    var docType = ParseDocType(docInfo.DocType);
+    if (docType == null)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_TYPE"));
+    }
+
+    Item? item = null;
+    if (lineRequest.ItemId.HasValue)
+    {
+        item = store.FindItemById(lineRequest.ItemId.Value);
+    }
+    else if (!string.IsNullOrWhiteSpace(lineRequest.Barcode))
+    {
+        var barcode = lineRequest.Barcode.Trim();
+        item = store.FindItemByBarcode(barcode) ?? FindItemByBarcodeVariant(store, barcode);
+    }
+
     if (item == null)
     {
-        return Results.BadRequest(new ApiResult(false, "UNKNOWN_BARCODE"));
+        return Results.BadRequest(new ApiResult(false, "UNKNOWN_ITEM"));
     }
 
-    var fromLocation = ResolveLocation(store, request.FromLocCode);
-    var toLocation = ResolveLocation(store, request.ToLocCode);
-    if (fromLocation == null || toLocation == null)
+    long? fromLocationId = null;
+    long? toLocationId = null;
+    string? fromHu = null;
+    string? toHu = null;
+
+    switch (docType.Value)
     {
-        return Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION"));
+        case DocType.Inbound:
+            toLocationId = docInfo.ToLocationId;
+            toHu = NormalizeHu(docInfo.ToHu);
+            if (!toLocationId.HasValue)
+            {
+                return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
+            }
+            break;
+        case DocType.Outbound:
+            fromLocationId = docInfo.FromLocationId;
+            fromHu = NormalizeHu(docInfo.FromHu);
+            if (!fromLocationId.HasValue)
+            {
+                return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
+            }
+            break;
+        case DocType.Move:
+            fromLocationId = docInfo.FromLocationId;
+            toLocationId = docInfo.ToLocationId;
+            fromHu = NormalizeHu(docInfo.FromHu);
+            toHu = NormalizeHu(docInfo.ToHu);
+            if (!fromLocationId.HasValue || !toLocationId.HasValue)
+            {
+                return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
+            }
+            break;
     }
 
-    var fromHu = NormalizeHu(request.FromHu);
-    var toHu = NormalizeHu(request.ToHu);
-    var available = store.GetLedgerBalance(item.Id, fromLocation.Id, fromHu);
-    var reserved = apiStore.GetReservedQty(item.Id, fromLocation.Id, docUid);
-    var remaining = available - reserved;
-
-    if (remaining < request.Qty)
+    try
     {
-        return Results.Ok(new ApiResult(false, "INSUFFICIENT_STOCK"));
+        docs.AddDocLine(
+            docInfo.DocId,
+            item.Id,
+            lineRequest.Qty,
+            fromLocationId,
+            toLocationId,
+            null,
+            lineRequest.UomCode,
+            fromHu,
+            toHu);
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
     }
 
-    docs.AddDocLine(docInfo.Value.DocId, item.Id, request.Qty, fromLocation.Id, toLocation.Id, null, null, fromHu, toHu);
-    apiStore.AddReservationLine(docUid, item.Id, fromLocation.Id, request.Qty);
-    apiStore.RecordEvent(request.EventId, "LINE", docUid);
+    apiStore.RecordEvent(lineRequest.EventId, "DOC_LINE", docUid, lineRequest.DeviceId, rawJson);
 
-    return Results.Ok(new ApiResult(true));
+    var lastLine = store.GetDocLines(docInfo.DocId)
+        .Where(line => line.ItemId == item.Id)
+        .OrderByDescending(line => line.Id)
+        .FirstOrDefault();
+
+    return Results.Ok(new
+    {
+        ok = true,
+        line = lastLine == null
+            ? null
+            : new
+            {
+                id = lastLine.Id,
+                item_id = lastLine.ItemId,
+                qty = lastLine.Qty,
+                uom_code = lastLine.UomCode
+            }
+    });
 });
 
-app.MapPost("/api/docs/{docUid}/close", (string docUid, CloseDocRequest request, SqliteDataStore store, DocumentService docs, ApiDocStore apiStore) =>
+app.MapPost("/api/docs/{docUid}/close", async (string docUid, HttpRequest request, SqliteDataStore store, DocumentService docs, ApiDocStore apiStore) =>
 {
-    if (string.IsNullOrWhiteSpace(request.EventId))
+    var rawJson = await ReadBody(request);
+    if (string.IsNullOrWhiteSpace(rawJson))
+    {
+        return Results.BadRequest(new ApiResult(false, "EMPTY_BODY"));
+    }
+
+    CloseDocRequest? closeRequest;
+    try
+    {
+        closeRequest = JsonSerializer.Deserialize<CloseDocRequest>(
+            rawJson,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    }
+    catch (JsonException)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+    }
+
+    if (closeRequest == null)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+    }
+
+    if (string.IsNullOrWhiteSpace(closeRequest.EventId))
     {
         return Results.BadRequest(new ApiResult(false, "MISSING_EVENT_ID"));
     }
 
-    if (apiStore.IsEventProcessed(request.EventId))
+    var existingEvent = apiStore.GetEvent(closeRequest.EventId);
+    if (existingEvent != null)
     {
-        return Results.Ok(new ApiResult(true));
+        if (string.Equals(existingEvent.EventType, "DOC_CLOSE", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(existingEvent.DocUid, docUid, StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Ok(new { ok = true, closed = true });
+        }
+
+        return Results.BadRequest(new ApiResult(false, "EVENT_ID_CONFLICT"));
     }
 
     var docInfo = apiStore.GetApiDoc(docUid);
@@ -724,20 +1068,27 @@ app.MapPost("/api/docs/{docUid}/close", (string docUid, CloseDocRequest request,
         return Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"));
     }
 
-    var result = docs.TryCloseDoc(docInfo.Value.DocId, allowNegative: false);
+    var result = docs.TryCloseDoc(docInfo.DocId, allowNegative: false);
     if (!result.Success)
     {
-        var error = result.Errors.Count > 0
-            ? string.Join("; ", result.Errors)
-            : "CLOSE_FAILED";
-        return Results.Ok(new ApiResult(false, error));
+        return Results.Ok(new
+        {
+            ok = false,
+            closed = false,
+            errors = result.Errors.Count > 0 ? result.Errors : new List<string> { "CLOSE_FAILED" }
+        });
     }
 
-    apiStore.ClearReservations(docUid);
     apiStore.UpdateApiDocStatus(docUid, "CLOSED");
-    apiStore.RecordEvent(request.EventId, "CLOSE", docUid);
+    apiStore.RecordEvent(closeRequest.EventId, "DOC_CLOSE", docUid, closeRequest.DeviceId, rawJson);
 
-    return Results.Ok(new ApiResult(true));
+    return Results.Ok(new
+    {
+        ok = true,
+        closed = true,
+        doc_ref = docInfo.DocRef,
+        warnings = result.Warnings
+    });
 });
 
 if (Directory.Exists(tsdRoot) && File.Exists(tsdIndexPath))
@@ -859,16 +1210,6 @@ static string? NormalizeHu(string? value)
     return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }
 
-static Location? ResolveLocation(SqliteDataStore store, string? code)
-{
-    if (string.IsNullOrWhiteSpace(code))
-    {
-        return null;
-    }
-
-    return store.FindLocationByCode(code.Trim());
-}
-
 static LocationResolution ResolveLocationForEvent(SqliteDataStore store, string? code, int? id)
 {
     if (id.HasValue)
@@ -964,6 +1305,23 @@ static Item? FindItemByBarcodeVariant(SqliteDataStore store, string barcode)
     }
 
     return null;
+}
+
+static async Task<string> ReadBody(HttpRequest request)
+{
+    using var reader = new StreamReader(request.Body);
+    return await reader.ReadToEndAsync();
+}
+
+static DocType? ParseDocType(string? value)
+{
+    return DocTypeMapper.FromOpString(value);
+}
+
+static bool IsHuAllowed(HuRecord record)
+{
+    return string.Equals(record.Status, "ACTIVE", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(record.Status, "OPEN", StringComparison.OrdinalIgnoreCase);
 }
 
 static IReadOnlyDictionary<long, PartnerRole> LoadPartnerStatuses()
