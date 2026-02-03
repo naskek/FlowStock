@@ -2,7 +2,7 @@
   "use strict";
 
   var FORCE_ONLINE = true;
-  var ONLINE_ERROR_MESSAGE = "Нет связи с сервером LightWMS. Проверьте Wi-Fi.";
+  var ONLINE_ERROR_MESSAGE = "Нет связи с сервером FlowStock. Проверьте Wi-Fi.";
   var PING_TIMEOUT_MS = 4000;
   var API_TIMEOUT_MS = 10000;
   var BASE_URL_SETTING = "base_url";

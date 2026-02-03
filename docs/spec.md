@@ -1,4 +1,4 @@
-# LightWMS Local MVP Spec
+# FlowStock MVP Spec
 
 ## Scope
 - Windows WPF app with local SQLite.

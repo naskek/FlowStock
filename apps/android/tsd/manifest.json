@@ -1,6 +1,6 @@
 {
-  "name": "LightWMS TSD",
-  "short_name": "LightWMS TSD",
+  "name": "FlowStock TSD",
+  "short_name": "FlowStock TSD",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

@@ -1,0 +1,66 @@
+<Window x:Class="FlowStock.App.AdminWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Администрирование"
+        Height="700" Width="900"
+        WindowStartupLocation="CenterOwner">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <GroupBox Header="Резервные копии" Grid.Row="0">
+            <StackPanel Margin="8">
+                <TextBlock Text="Текущая база данных" />
+                <TextBox x:Name="DatabasePathBox" Margin="0,4,0,8" IsReadOnly="True" />
+                <StackPanel Orientation="Horizontal">
+                    <Button Content="Создать резервную копию" Width="200" Click="CreateBackup_Click" />
+                </StackPanel>
+            </StackPanel>
+        </GroupBox>
+        <GroupBox Header="Опасная зона" Grid.Row="1" Margin="0,12,0,0">
+            <StackPanel Margin="8">
+                <TextBlock Text="Выберите вариант сброса" FontWeight="SemiBold" />
+                <RadioButton x:Name="ResetMovementsRadio"
+                             Content="Сбросить движения (операции, строки, ledger, заказы). Справочники останутся."
+                             Margin="0,6,0,0"
+                             Checked="ResetModeChanged" />
+                <RadioButton x:Name="FullResetRadio"
+                             Content="Полный сброс (удалить все данные и создать новую БД)"
+                             Margin="0,4,0,0"
+                             Checked="ResetModeChanged" />
+                <RadioButton x:Name="SelectiveResetRadio"
+                             Content="Точечный сброс (выбор таблиц)"
+                             Margin="0,4,0,0"
+                             Checked="ResetModeChanged" />
+                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                    <TextBlock Text="Статистика" VerticalAlignment="Center" />
+                    <Button Content="Обновить" Margin="8,0,0,0" Click="RefreshCounts_Click" />
+                </StackPanel>
+                <DataGrid x:Name="CountsGrid" AutoGenerateColumns="False" IsReadOnly="True" Height="220" Margin="0,6,0,0"
+                          SelectionMode="Extended" SelectionUnit="FullRow" SelectionChanged="CountsGrid_SelectionChanged">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Таблица" Binding="{Binding Table}" Width="*" />
+                        <DataGridTextColumn Header="Записей" Binding="{Binding Count}" Width="140" />
+                    </DataGrid.Columns>
+                </DataGrid>
+                <StackPanel Margin="0,10,0,0">
+                    <CheckBox x:Name="ConfirmCheck" Content="Я понимаю последствия" Checked="ConfirmChanged" Unchecked="ConfirmChanged" />
+                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                        <TextBlock Text="Введите" VerticalAlignment="Center" />
+                        <TextBox x:Name="ConfirmTextBox" Width="120" Margin="6,0,0,0" TextChanged="ConfirmTextChanged" />
+                        <TextBlock Text="УДАЛИТЬ для подтверждения" VerticalAlignment="Center" Margin="6,0,0,0" />
+                    </StackPanel>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+                    <Button x:Name="ExecuteResetButton" Content="Выполнить" Width="120" Click="ExecuteReset_Click" />
+                </StackPanel>
+            </StackPanel>
+        </GroupBox>
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="Закрыть" Width="120" IsCancel="True" />
+        </StackPanel>
+    </Grid>
+</Window>
+

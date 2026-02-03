@@ -1,0 +1,57 @@
+<Window x:Class="FlowStock.App.BackupManagerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Резервные копии"
+        Height="620" Width="900"
+        WindowStartupLocation="CenterOwner">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <GroupBox Header="Сделать сейчас" Grid.Row="0">
+            <StackPanel Margin="8">
+                <StackPanel Orientation="Horizontal">
+                    <Button Content="Создать бэкап" Click="CreateBackup_Click" Width="140" />
+                    <Button Content="Открыть папку" Click="OpenFolder_Click" Width="140" Margin="8,0,0,0" />
+                </StackPanel>
+                <TextBlock x:Name="BackupFolderText" Margin="0,6,0,8" Foreground="Gray" TextWrapping="Wrap" />
+                <DataGrid x:Name="BackupsGrid" AutoGenerateColumns="False" IsReadOnly="True"
+                          SelectionChanged="BackupsGrid_SelectionChanged" Height="320">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Дата/время" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="180" />
+                        <DataGridTextColumn Header="Размер" Binding="{Binding SizeDisplay}" Width="120" />
+                        <DataGridTextColumn Header="Имя файла" Binding="{Binding FileName}" Width="*" />
+                    </DataGrid.Columns>
+                </DataGrid>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
+                    <Button x:Name="DeleteBackupButton" Content="Удалить выбранный" Click="DeleteBackup_Click" Width="160" />
+                </StackPanel>
+            </StackPanel>
+        </GroupBox>
+        <GroupBox Header="Автобэкапы" Grid.Row="1" Margin="0,12,0,0">
+            <StackPanel Margin="8">
+                <CheckBox x:Name="BackupsEnabledCheck" Content="Включить автобэкапы" Checked="BackupsEnabledChanged" Unchecked="BackupsEnabledChanged" />
+                <StackPanel Margin="0,8,0,0">
+                    <RadioButton x:Name="ModeEveryStartRadio" Content="При каждом запуске" GroupName="BackupMode"
+                                 Checked="BackupModeChanged" />
+                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                        <RadioButton x:Name="ModeIfOlderRadio" Content="При запуске, если прошло более"
+                                     GroupName="BackupMode" VerticalAlignment="Center" Checked="BackupModeChanged" />
+                        <TextBox x:Name="BackupHoursBox" Width="60" Margin="8,0,0,0" />
+                        <TextBlock Text="часов" VerticalAlignment="Center" Margin="6,0,0,0" />
+                    </StackPanel>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                    <TextBlock Text="Хранить последние" VerticalAlignment="Center" />
+                    <TextBox x:Name="KeepLastBox" Width="60" Margin="8,0,0,0" />
+                    <TextBlock Text="бэкапов" VerticalAlignment="Center" Margin="6,0,0,0" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+                    <Button Content="Сохранить настройки" Click="SaveSettings_Click" Width="170" />
+                </StackPanel>
+            </StackPanel>
+        </GroupBox>
+    </Grid>
+</Window>
+

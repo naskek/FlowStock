@@ -94,7 +94,7 @@
   function ensureServerAvailable() {
     return pingServer(true).then(function (ok) {
       if (!ok) {
-        alert("Нет связи с сервером LightWMS. Проверьте Wi-Fi.");
+        alert("Нет связи с сервером FlowStock. Проверьте Wi-Fi.");
         throw new Error("server_unavailable");
       }
       return true;

@@ -1,0 +1,30 @@
+<Window x:Class="FlowStock.App.NewDocWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Новый документ" Height="420" Width="520"
+        WindowStartupLocation="CenterOwner">
+    <Grid Margin="12">
+        <StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                <TextBlock Text="Тип" Width="120" VerticalAlignment="Center" />
+                <ComboBox x:Name="TypeCombo" Width="320" DisplayMemberPath="Name"
+                          SelectionChanged="TypeCombo_SelectionChanged" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                <TextBlock Text="Номер" Width="120" VerticalAlignment="Center" />
+                <TextBox x:Name="DocRefBox" Width="200" />
+                <Button Content="Сгенерировать" Width="110" Margin="8,0,0,0" Click="GenerateRef_Click" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                <TextBlock Text="Комментарий" Width="120" VerticalAlignment="Top" />
+                <TextBox x:Name="CommentBox" Width="320" Height="60"
+                         AcceptsReturn="True" TextWrapping="Wrap" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="Создать" Width="100" IsDefault="True" Click="Create_Click" />
+                <Button Content="Отмена" Width="100" IsCancel="True" Margin="8,0,0,0" />
+            </StackPanel>
+        </StackPanel>
+    </Grid>
+</Window>
+
