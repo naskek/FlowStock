@@ -113,6 +113,35 @@ LIMIT 1;
             reader.IsDBNull(9) ? null : reader.GetString(9));
     }
 
+    public void UpdateApiDocHeader(
+        string docUid,
+        long? partnerId,
+        long? fromLocationId,
+        long? toLocationId,
+        string? fromHu,
+        string? toHu)
+    {
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+UPDATE api_docs
+SET
+    partner_id = @partner_id,
+    from_location_id = @from_location_id,
+    to_location_id = @to_location_id,
+    from_hu = @from_hu,
+    to_hu = @to_hu
+WHERE doc_uid = @doc_uid;
+";
+        command.Parameters.AddWithValue("@doc_uid", docUid);
+        command.Parameters.AddWithValue("@partner_id", partnerId.HasValue ? partnerId.Value : DBNull.Value);
+        command.Parameters.AddWithValue("@from_location_id", fromLocationId.HasValue ? fromLocationId.Value : DBNull.Value);
+        command.Parameters.AddWithValue("@to_location_id", toLocationId.HasValue ? toLocationId.Value : DBNull.Value);
+        command.Parameters.AddWithValue("@from_hu", string.IsNullOrWhiteSpace(fromHu) ? DBNull.Value : fromHu.Trim());
+        command.Parameters.AddWithValue("@to_hu", string.IsNullOrWhiteSpace(toHu) ? DBNull.Value : toHu.Trim());
+        command.ExecuteNonQuery();
+    }
+
     public void UpdateApiDocStatus(string docUid, string status)
     {
         using var connection = OpenConnection();

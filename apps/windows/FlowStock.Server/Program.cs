@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Data.Common;
 using System.Globalization;
 using System.IO;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using FlowStock.Core.Abstractions;
@@ -12,59 +13,28 @@ using FlowStock.Server;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.StaticFiles;
-using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.FileProviders;
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 
-var dbProvider = ResolveDbProvider(builder.Configuration);
-string? sqlitePath = null;
-string? postgresConnectionString = null;
+var postgresConnectionString = BuildPostgresConnectionString(builder.Configuration);
 
-if (dbProvider == DbProvider.Postgres)
+builder.Services.AddSingleton<PostgresDataStore>(sp =>
 {
-    postgresConnectionString = BuildPostgresConnectionString(builder.Configuration);
-}
-else
-{
-    sqlitePath = ResolveSqlitePath(builder.Configuration);
-}
-
-if (dbProvider == DbProvider.Postgres)
-{
-    builder.Services.AddSingleton<PostgresDataStore>(sp =>
-    {
-        var store = new PostgresDataStore(postgresConnectionString!);
-        store.Initialize();
-        return store;
-    });
-    builder.Services.AddSingleton<FlowStock.Core.Abstractions.IDataStore>(sp => sp.GetRequiredService<PostgresDataStore>());
-    builder.Services.AddSingleton<IApiDocStore>(new PostgresApiDocStore(postgresConnectionString!));
-}
-else
-{
-    builder.Services.AddSingleton<SqliteDataStore>(sp =>
-    {
-        var directory = Path.GetDirectoryName(sqlitePath);
-        if (!string.IsNullOrWhiteSpace(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-        var store = new SqliteDataStore(sqlitePath!);
-        store.Initialize();
-        return store;
-    });
-    builder.Services.AddSingleton<FlowStock.Core.Abstractions.IDataStore>(sp => sp.GetRequiredService<SqliteDataStore>());
-    builder.Services.AddSingleton<IApiDocStore>(new ApiDocStore(sqlitePath!));
-}
+    var store = new PostgresDataStore(postgresConnectionString);
+    store.Initialize();
+    return store;
+});
+builder.Services.AddSingleton<FlowStock.Core.Abstractions.IDataStore>(sp => sp.GetRequiredService<PostgresDataStore>());
+builder.Services.AddSingleton<IApiDocStore>(new PostgresApiDocStore(postgresConnectionString));
 builder.Services.AddSingleton<DocumentService>();
 
 var app = builder.Build();
 
 app.UseHttpsRedirection();
 
-LogDbInfo(app.Logger, dbProvider, sqlitePath, postgresConnectionString);
+LogDbInfo(app.Logger, postgresConnectionString);
 
 app.Use(async (context, next) =>
 {
@@ -116,9 +86,81 @@ app.MapGet("/api/ping", () =>
     });
 });
 
+app.MapPost("/api/tsd/login", async (HttpRequest request) =>
+{
+    var rawJson = await ReadBody(request);
+    if (string.IsNullOrWhiteSpace(rawJson))
+    {
+        return Results.BadRequest(new ApiResult(false, "EMPTY_BODY"));
+    }
+
+    TsdLoginRequest? loginRequest;
+    try
+    {
+        loginRequest = JsonSerializer.Deserialize<TsdLoginRequest>(
+            rawJson,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    }
+    catch (JsonException)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+    }
+
+    if (loginRequest == null
+        || string.IsNullOrWhiteSpace(loginRequest.Login)
+        || string.IsNullOrWhiteSpace(loginRequest.Password))
+    {
+        return Results.BadRequest(new ApiResult(false, "MISSING_CREDENTIALS"));
+    }
+
+    using var connection = OpenConnection(postgresConnectionString);
+    using var command = connection.CreateCommand();
+    command.CommandText = @"
+SELECT id, device_id, password_salt, password_hash, password_iterations, is_active
+FROM tsd_devices
+WHERE login = @login;";
+    AddParam(command, "@login", loginRequest.Login.Trim());
+
+    using var reader = command.ExecuteReader();
+    if (!reader.Read())
+    {
+        return Results.Json(new ApiResult(false, "INVALID_CREDENTIALS"), statusCode: StatusCodes.Status401Unauthorized);
+    }
+
+    var id = reader.GetInt64(0);
+    var deviceId = reader.GetString(1);
+    var salt = reader.GetString(2);
+    var hash = reader.GetString(3);
+    var iterations = reader.GetInt32(4);
+    var isActive = reader.GetBoolean(5);
+
+    if (!isActive)
+    {
+        return Results.Json(new ApiResult(false, "DEVICE_BLOCKED"), statusCode: StatusCodes.Status401Unauthorized);
+    }
+
+    if (!TryVerifyPassword(loginRequest.Password, salt, hash, iterations))
+    {
+        return Results.Json(new ApiResult(false, "INVALID_CREDENTIALS"), statusCode: StatusCodes.Status401Unauthorized);
+    }
+
+    reader.Close();
+    using var update = connection.CreateCommand();
+    update.CommandText = "UPDATE tsd_devices SET last_seen = @last_seen WHERE id = @id;";
+    AddParam(update, "@last_seen", DateTime.Now.ToString("s", CultureInfo.InvariantCulture));
+    AddParam(update, "@id", id);
+    update.ExecuteNonQuery();
+
+    return Results.Ok(new
+    {
+        ok = true,
+        device_id = deviceId
+    });
+});
+
 app.MapGet("/api/diag/db", () =>
 {
-    var info = BuildDbInfo(dbProvider, sqlitePath, postgresConnectionString);
+    var info = BuildDbInfo(postgresConnectionString);
     return Results.Ok(info);
 });
 
@@ -134,7 +176,7 @@ app.MapGet("/api/diag/routes", (EndpointDataSource dataSource) =>
 
 app.MapGet("/api/diag/counts", () =>
 {
-    using var connection = OpenConnection(dbProvider, sqlitePath, postgresConnectionString);
+    using var connection = OpenConnection(postgresConnectionString);
     return Results.Ok(new
     {
         items = CountTable(connection, "items"),
@@ -183,10 +225,9 @@ app.MapGet("/api/items", (HttpRequest request) =>
     var query = request.Query["q"].ToString();
     var search = string.IsNullOrWhiteSpace(query) ? null : $"%{query.Trim()}%";
 
-    using var connection = OpenConnection(dbProvider, sqlitePath, postgresConnectionString);
+    using var connection = OpenConnection(postgresConnectionString);
     using var command = connection.CreateCommand();
-    command.CommandText = dbProvider == DbProvider.Postgres
-        ? @"
+   command.CommandText = @"
 SELECT id, name, barcode, gtin, base_uom, uom
 FROM items
 WHERE @search::text IS NULL
@@ -194,14 +235,7 @@ WHERE @search::text IS NULL
    OR barcode ILIKE @search::text
    OR gtin ILIKE @search::text
 ORDER BY name;"
-        : @"
-SELECT id, name, barcode, gtin, base_uom, uom
-FROM items
-WHERE @search IS NULL
-   OR name LIKE @search COLLATE NOCASE
-   OR barcode LIKE @search COLLATE NOCASE
-   OR gtin LIKE @search COLLATE NOCASE
-ORDER BY name;";
+    ;
     AddParam(command, "@search", search ?? (object)DBNull.Value);
     using var reader = command.ExecuteReader();
     var list = new List<object>();
@@ -257,9 +291,153 @@ app.MapGet("/api/partners", (HttpRequest request, IDataStore store) =>
     return Results.Ok(list);
 });
 
+app.MapGet("/api/docs", (HttpRequest request, IDataStore store) =>
+{
+    var op = request.Query["op"].ToString();
+    var status = request.Query["status"].ToString();
+    var typeFilter = string.IsNullOrWhiteSpace(op) ? null : DocTypeMapper.FromOpString(op);
+    var statusFilter = string.IsNullOrWhiteSpace(status) ? null : DocTypeMapper.StatusFromString(status);
+
+    var docs = store.GetDocs();
+    if (typeFilter.HasValue)
+    {
+        docs = docs.Where(doc => doc.Type == typeFilter.Value).ToList();
+    }
+    if (statusFilter.HasValue)
+    {
+        docs = docs.Where(doc => doc.Status == statusFilter.Value).ToList();
+    }
+
+    var list = docs
+        .OrderByDescending(doc => doc.CreatedAt)
+        .Select(MapDoc)
+        .ToList();
+    return Results.Ok(list);
+});
+
+app.MapGet("/api/docs/next-ref", (HttpRequest request, DocumentService docs) =>
+{
+    var type = request.Query["type"].ToString();
+    var docType = ParseDocType(type);
+    if (docType == null)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_TYPE"));
+    }
+
+    var docRef = docs.GenerateDocRef(docType.Value, DateTime.Now);
+    return Results.Ok(new
+    {
+        ok = true,
+        doc_ref = docRef
+    });
+});
+
+app.MapGet("/api/docs/{docId:long}", (long docId, IDataStore store) =>
+{
+    var doc = store.GetDoc(docId);
+    if (doc == null)
+    {
+        return Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"));
+    }
+
+    return Results.Ok(MapDoc(doc));
+});
+
+app.MapGet("/api/docs/{docId:long}/lines", (long docId, IDataStore store) =>
+{
+    var doc = store.GetDoc(docId);
+    if (doc == null)
+    {
+        return Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"));
+    }
+
+    var lines = store.GetDocLineViews(docId)
+        .Select(MapDocLine)
+        .ToList();
+    return Results.Ok(lines);
+});
+
+app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>
+{
+    var query = request.Query["q"].ToString();
+    var normalized = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
+
+    var orderService = new OrderService(store);
+    var orders = orderService.GetOrders();
+    if (!string.IsNullOrWhiteSpace(normalized))
+    {
+        orders = orders
+            .Where(order =>
+                order.OrderRef.Contains(normalized, StringComparison.OrdinalIgnoreCase)
+                || (!string.IsNullOrWhiteSpace(order.PartnerName)
+                    && order.PartnerName.Contains(normalized, StringComparison.OrdinalIgnoreCase))
+                || (!string.IsNullOrWhiteSpace(order.PartnerCode)
+                    && order.PartnerCode.Contains(normalized, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+    }
+
+    var list = orders.Select(MapOrder).ToList();
+    return Results.Ok(list);
+});
+
+app.MapGet("/api/orders/{orderId:long}", (long orderId, IDataStore store) =>
+{
+    var orderService = new OrderService(store);
+    var order = orderService.GetOrder(orderId);
+    if (order == null)
+    {
+        return Results.NotFound(new ApiResult(false, "ORDER_NOT_FOUND"));
+    }
+
+    return Results.Ok(MapOrder(order));
+});
+
+app.MapGet("/api/orders/{orderId:long}/lines", (long orderId, IDataStore store) =>
+{
+    if (store.GetOrder(orderId) == null)
+    {
+        return Results.NotFound(new ApiResult(false, "ORDER_NOT_FOUND"));
+    }
+
+    var shippedByItem = store.GetShippedTotalsByOrder(orderId);
+    using var connection = OpenConnection(postgresConnectionString);
+    using var command = connection.CreateCommand();
+    command.CommandText = @"
+SELECT ol.id, ol.order_id, ol.item_id, ol.qty_ordered, i.name, i.barcode
+FROM order_lines ol
+INNER JOIN items i ON i.id = ol.item_id
+WHERE ol.order_id = @order_id
+ORDER BY i.name;";
+    AddParam(command, "@order_id", orderId);
+
+    using var reader = command.ExecuteReader();
+    var lines = new List<object>();
+    while (reader.Read())
+    {
+        var itemId = reader.GetInt64(2);
+        var ordered = reader.GetDouble(3);
+        var shipped = shippedByItem.TryGetValue(itemId, out var shippedQty) ? shippedQty : 0;
+        var left = Math.Max(0, ordered - shipped);
+
+        lines.Add(new
+        {
+            id = reader.GetInt64(0),
+            order_id = reader.GetInt64(1),
+            item_id = itemId,
+            item_name = reader.GetString(4),
+            barcode = reader.IsDBNull(5) ? null : reader.GetString(5),
+            qty_ordered = ordered,
+            qty_shipped = shipped,
+            qty_left = left
+        });
+    }
+
+    return Results.Ok(lines);
+});
+
 app.MapGet("/api/stock", () =>
 {
-    using var connection = OpenConnection(dbProvider, sqlitePath, postgresConnectionString);
+    using var connection = OpenConnection(postgresConnectionString);
     using var command = connection.CreateCommand();
     command.CommandText = @"
 SELECT item_id, location_id, COALESCE(SUM(qty_delta), 0) AS qty
@@ -296,9 +474,11 @@ app.MapGet("/api/stock/by-barcode/{barcode}", (string barcode, IDataStore store)
         return Results.NotFound(new ApiResult(false, "UNKNOWN_BARCODE"));
     }
 
-    using var connection = OpenConnection(dbProvider, sqlitePath, postgresConnectionString);
-    using var totalsCommand = connection.CreateCommand();
-    totalsCommand.CommandText = @"
+    using var connection = OpenConnection(postgresConnectionString);
+    var totals = new List<object>();
+    using (var totalsCommand = connection.CreateCommand())
+    {
+        totalsCommand.CommandText = @"
 SELECT l.id, l.code, COALESCE(SUM(led.qty_delta), 0) AS qty
 FROM ledger led
 INNER JOIN locations l ON l.id = led.location_id
@@ -306,42 +486,44 @@ WHERE led.item_id = @item_id
 GROUP BY l.id, l.code
 HAVING SUM(led.qty_delta) != 0
 ORDER BY l.code;";
-    AddParam(totalsCommand, "@item_id", item.Id);
-    using var totalsReader = totalsCommand.ExecuteReader();
-    var totals = new List<object>();
-    while (totalsReader.Read())
-    {
-        totals.Add(new
+        AddParam(totalsCommand, "@item_id", item.Id);
+        using var totalsReader = totalsCommand.ExecuteReader();
+        while (totalsReader.Read())
         {
-            location_id = totalsReader.GetInt64(0),
-            location_code = totalsReader.GetString(1),
-            qty = totalsReader.GetDouble(2)
-        });
+            totals.Add(new
+            {
+                location_id = totalsReader.GetInt64(0),
+                location_code = totalsReader.GetString(1),
+                qty = totalsReader.GetDouble(2)
+            });
+        }
     }
 
-    using var byHuCommand = connection.CreateCommand();
-    byHuCommand.CommandText = @"
+    var byHu = new List<object>();
+    using (var byHuCommand = connection.CreateCommand())
+    {
+        byHuCommand.CommandText = @"
 SELECT COALESCE(led.hu_code, led.hu) AS hu, l.id, l.code, COALESCE(SUM(led.qty_delta), 0) AS qty
 FROM ledger led
 INNER JOIN locations l ON l.id = led.location_id
 WHERE led.item_id = @item_id
   AND COALESCE(led.hu_code, led.hu) IS NOT NULL
   AND COALESCE(led.hu_code, led.hu) <> ''
-GROUP BY hu, l.id, l.code
+GROUP BY COALESCE(led.hu_code, led.hu), l.id, l.code
 HAVING SUM(led.qty_delta) != 0
-ORDER BY hu, l.code;";
-    AddParam(byHuCommand, "@item_id", item.Id);
-    using var byHuReader = byHuCommand.ExecuteReader();
-    var byHu = new List<object>();
-    while (byHuReader.Read())
-    {
-        byHu.Add(new
+ORDER BY COALESCE(led.hu_code, led.hu), l.code;";
+        AddParam(byHuCommand, "@item_id", item.Id);
+        using var byHuReader = byHuCommand.ExecuteReader();
+        while (byHuReader.Read())
         {
-            hu = byHuReader.GetString(0),
-            location_id = byHuReader.GetInt64(1),
-            location_code = byHuReader.GetString(2),
-            qty = byHuReader.GetDouble(3)
-        });
+            byHu.Add(new
+            {
+                hu = byHuReader.GetString(0),
+                location_id = byHuReader.GetInt64(1),
+                location_code = byHuReader.GetString(2),
+                qty = byHuReader.GetDouble(3)
+            });
+        }
     }
 
     return Results.Ok(new
@@ -384,7 +566,7 @@ app.MapGet("/api/hus", (HttpRequest request) =>
         take = 1000;
     }
 
-    using var connection = OpenConnection(dbProvider, sqlitePath, postgresConnectionString);
+    using var connection = OpenConnection(postgresConnectionString);
     using var command = connection.CreateCommand();
     command.CommandText = @"
 SELECT id, hu_code, status, created_at, created_by, closed_at, note
@@ -458,7 +640,7 @@ app.MapPost("/api/hus/generate", (HuGenerateRequest request) =>
     var createdAt = DateTime.Now.ToString("s", CultureInfo.InvariantCulture);
     var codes = new List<string>(count);
 
-    using var connection = OpenConnection(dbProvider, sqlitePath, postgresConnectionString);
+    using var connection = OpenConnection(postgresConnectionString);
     using var transaction = connection.BeginTransaction();
     try
     {
@@ -467,16 +649,10 @@ app.MapPost("/api/hus/generate", (HuGenerateRequest request) =>
             var tmpCode = "TMP-" + Guid.NewGuid().ToString("N");
             using var insert = connection.CreateCommand();
             insert.Transaction = transaction;
-            insert.CommandText = dbProvider == DbProvider.Postgres
-                ? @"
+            insert.CommandText = @"
 INSERT INTO hus(hu_code, status, created_at, created_by)
 VALUES(@hu_code, 'OPEN', @created_at, @created_by)
 RETURNING id;
-"
-                : @"
-INSERT INTO hus(hu_code, status, created_at, created_by)
-VALUES(@hu_code, 'OPEN', @created_at, @created_by);
-SELECT last_insert_rowid();
 ";
             AddParam(insert, "@hu_code", tmpCode);
             AddParam(insert, "@created_at", createdAt);
@@ -524,6 +700,11 @@ app.MapPost("/api/ops", async (HttpRequest request, IDataStore store, DocumentSe
     if (!OperationEventParser.TryParse(rawJson, out var opEvent, out var parseError))
     {
         return Results.BadRequest(new ApiResult(false, parseError ?? "INVALID_JSON"));
+    }
+
+    if (opEvent == null)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
     }
 
     if (string.IsNullOrWhiteSpace(opEvent.EventId))
@@ -592,11 +773,16 @@ app.MapPost("/api/ops", async (HttpRequest request, IDataStore store, DocumentSe
 
     var docRef = opEvent.DocRef.Trim();
     var docType = isMove ? DocType.Move : DocType.Inbound;
-    var existingDoc = store.FindDocByRef(docRef, docType);
+    var existingDoc = store.FindDocByRef(docRef);
     long docId;
 
     if (existingDoc != null)
     {
+        if (existingDoc.Type != docType)
+        {
+            return Results.BadRequest(new ApiResult(false, "DOC_REF_EXISTS"));
+        }
+
         if (existingDoc.Status == DocStatus.Closed)
         {
             return Results.BadRequest(new ApiResult(false, "DOC_ALREADY_CLOSED"));
@@ -693,6 +879,8 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
         return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
     }
 
+    var draftOnly = createRequest.DraftOnly;
+
     var docUid = string.IsNullOrWhiteSpace(createRequest.DocUid) ? null : createRequest.DocUid.Trim();
     if (string.IsNullOrWhiteSpace(docUid))
     {
@@ -749,37 +937,176 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
             return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
         }
 
-        if (createRequest.PartnerId.HasValue && existingDocInfo.PartnerId != createRequest.PartnerId)
+        var requestedRef = string.IsNullOrWhiteSpace(createRequest.DocRef) ? null : createRequest.DocRef.Trim();
+        if (!string.IsNullOrWhiteSpace(requestedRef)
+            && !string.Equals(existingDocInfo.DocRef, requestedRef, StringComparison.OrdinalIgnoreCase))
         {
             return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
         }
 
-        if (createRequest.FromLocationId.HasValue && existingDocInfo.FromLocationId != createRequest.FromLocationId)
+        var partnerId = existingDocInfo.PartnerId;
+        var fromLocationId = existingDocInfo.FromLocationId;
+        var toLocationId = existingDocInfo.ToLocationId;
+        var fromHu = existingDocInfo.FromHu;
+        var toHu = existingDocInfo.ToHu;
+        var updated = false;
+
+        if (createRequest.PartnerId.HasValue)
         {
-            return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+            var requestedPartnerId = createRequest.PartnerId.Value;
+            if (partnerId.HasValue && partnerId.Value != requestedPartnerId)
+            {
+                return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+            }
+
+            if (!partnerId.HasValue)
+            {
+                if (store.GetPartner(requestedPartnerId) == null)
+                {
+                    return Results.BadRequest(new ApiResult(false, "UNKNOWN_PARTNER"));
+                }
+
+                partnerId = requestedPartnerId;
+                updated = true;
+            }
         }
 
-        if (createRequest.ToLocationId.HasValue && existingDocInfo.ToLocationId != createRequest.ToLocationId)
+        if (createRequest.FromLocationId.HasValue)
         {
-            return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+            var requestedFrom = createRequest.FromLocationId.Value;
+            if (fromLocationId.HasValue && fromLocationId.Value != requestedFrom)
+            {
+                return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+            }
+
+            if (!fromLocationId.HasValue)
+            {
+                if (store.FindLocationById(requestedFrom) == null)
+                {
+                    return Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION"));
+                }
+
+                fromLocationId = requestedFrom;
+                updated = true;
+            }
         }
 
-        var fromHu = NormalizeHu(createRequest.FromHu);
-        var toHu = NormalizeHu(createRequest.ToHu);
-        if (!string.IsNullOrWhiteSpace(fromHu) && !string.Equals(existingDocInfo.FromHu, fromHu, StringComparison.OrdinalIgnoreCase))
+        if (createRequest.ToLocationId.HasValue)
         {
-            return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+            var requestedTo = createRequest.ToLocationId.Value;
+            if (toLocationId.HasValue && toLocationId.Value != requestedTo)
+            {
+                return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+            }
+
+            if (!toLocationId.HasValue)
+            {
+                if (store.FindLocationById(requestedTo) == null)
+                {
+                    return Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION"));
+                }
+
+                toLocationId = requestedTo;
+                updated = true;
+            }
         }
 
-        if (!string.IsNullOrWhiteSpace(toHu) && !string.Equals(existingDocInfo.ToHu, toHu, StringComparison.OrdinalIgnoreCase))
+        var requestedFromHu = NormalizeHu(createRequest.FromHu);
+        var requestedToHu = NormalizeHu(createRequest.ToHu);
+        var missingHu = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(requestedFromHu))
         {
-            return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+            if (!string.IsNullOrWhiteSpace(fromHu)
+                && !string.Equals(fromHu, requestedFromHu, StringComparison.OrdinalIgnoreCase))
+            {
+                return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+            }
+
+            if (string.IsNullOrWhiteSpace(fromHu))
+            {
+                var record = store.GetHuByCode(requestedFromHu);
+                if (record == null || !IsHuAllowed(record))
+                {
+                    missingHu.Add("from_hu");
+                }
+                else
+                {
+                    fromHu = requestedFromHu;
+                    updated = true;
+                }
+            }
         }
 
-        if (!string.IsNullOrWhiteSpace(createRequest.DocRef)
-            && !string.Equals(existingDocInfo.DocRef, createRequest.DocRef.Trim(), StringComparison.OrdinalIgnoreCase))
+        if (!string.IsNullOrWhiteSpace(requestedToHu))
         {
-            return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+            if (!string.IsNullOrWhiteSpace(toHu)
+                && !string.Equals(toHu, requestedToHu, StringComparison.OrdinalIgnoreCase))
+            {
+                return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+            }
+
+            if (string.IsNullOrWhiteSpace(toHu))
+            {
+                var record = store.GetHuByCode(requestedToHu);
+                if (record == null || !IsHuAllowed(record))
+                {
+                    missingHu.Add("to_hu");
+                }
+                else
+                {
+                    toHu = requestedToHu;
+                    updated = true;
+                }
+            }
+        }
+
+        if (missingHu.Count > 0)
+        {
+            return Results.BadRequest(new
+            {
+                ok = false,
+                error = "UNKNOWN_HU",
+                missing = missingHu
+            });
+        }
+
+        if (!draftOnly)
+        {
+            if ((docType == DocType.Inbound || docType == DocType.Outbound) && !partnerId.HasValue)
+            {
+                return Results.BadRequest(new ApiResult(false, "MISSING_PARTNER"));
+            }
+
+            if (docType == DocType.Move || docType == DocType.Outbound)
+            {
+                if (!fromLocationId.HasValue)
+                {
+                    return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
+                }
+            }
+
+            if (docType == DocType.Move || docType == DocType.Inbound)
+            {
+                if (!toLocationId.HasValue)
+                {
+                    return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
+                }
+            }
+        }
+
+        if (updated)
+        {
+            if (partnerId.HasValue && existingDocInfo.PartnerId != partnerId)
+            {
+                var doc = store.GetDoc(existingDocInfo.DocId);
+                if (doc != null && doc.Status == DocStatus.Draft)
+                {
+                    store.UpdateDocHeader(existingDocInfo.DocId, partnerId, doc.OrderRef, doc.ShippingRef);
+                }
+            }
+
+            apiStore.UpdateApiDocHeader(docUid, partnerId, fromLocationId, toLocationId, fromHu, toHu);
         }
 
         return Results.Ok(new
@@ -796,58 +1123,57 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
         });
     }
 
-    var partnerId = createRequest.PartnerId;
-    if (docType == DocType.Inbound || docType == DocType.Outbound)
+    var partnerIdValue = createRequest.PartnerId;
+    if (partnerIdValue.HasValue && store.GetPartner(partnerIdValue.Value) == null)
     {
-        if (!partnerId.HasValue)
+        return Results.BadRequest(new ApiResult(false, "UNKNOWN_PARTNER"));
+    }
+
+    if (!draftOnly && (docType == DocType.Inbound || docType == DocType.Outbound))
+    {
+        if (!partnerIdValue.HasValue)
         {
             return Results.BadRequest(new ApiResult(false, "MISSING_PARTNER"));
         }
-
-        if (store.GetPartner(partnerId.Value) == null)
-        {
-            return Results.BadRequest(new ApiResult(false, "UNKNOWN_PARTNER"));
-        }
     }
 
-    var fromLocationId = createRequest.FromLocationId;
-    var toLocationId = createRequest.ToLocationId;
-    if (docType == DocType.Move || docType == DocType.Outbound)
+    var fromLocationIdValue = createRequest.FromLocationId;
+    var toLocationIdValue = createRequest.ToLocationId;
+    if (fromLocationIdValue.HasValue && store.FindLocationById(fromLocationIdValue.Value) == null)
     {
-        if (!fromLocationId.HasValue)
+        return Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION"));
+    }
+    if (toLocationIdValue.HasValue && store.FindLocationById(toLocationIdValue.Value) == null)
+    {
+        return Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION"));
+    }
+
+    if (!draftOnly && (docType == DocType.Move || docType == DocType.Outbound))
+    {
+        if (!fromLocationIdValue.HasValue)
         {
             return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
         }
-
-        if (store.FindLocationById(fromLocationId.Value) == null)
-        {
-            return Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION"));
-        }
     }
 
-    if (docType == DocType.Move || docType == DocType.Inbound)
+    if (!draftOnly && (docType == DocType.Move || docType == DocType.Inbound))
     {
-        if (!toLocationId.HasValue)
+        if (!toLocationIdValue.HasValue)
         {
             return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
-        }
-
-        if (store.FindLocationById(toLocationId.Value) == null)
-        {
-            return Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION"));
         }
     }
 
     var normalizedFromHu = NormalizeHu(createRequest.FromHu);
     var normalizedToHu = NormalizeHu(createRequest.ToHu);
 
-    var missingHu = new List<string>();
+    var missingHuNew = new List<string>();
     if (!string.IsNullOrWhiteSpace(normalizedFromHu))
     {
         var record = store.GetHuByCode(normalizedFromHu);
         if (record == null || !IsHuAllowed(record))
         {
-            missingHu.Add("from_hu");
+            missingHuNew.Add("from_hu");
         }
     }
     if (!string.IsNullOrWhiteSpace(normalizedToHu))
@@ -855,32 +1181,48 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
         var record = store.GetHuByCode(normalizedToHu);
         if (record == null || !IsHuAllowed(record))
         {
-            missingHu.Add("to_hu");
+            missingHuNew.Add("to_hu");
         }
     }
 
-    if (missingHu.Count > 0)
+    if (missingHuNew.Count > 0)
     {
         return Results.BadRequest(new
         {
             ok = false,
             error = "UNKNOWN_HU",
-            missing = missingHu
+            missing = missingHuNew
         });
     }
 
-    var docRef = string.IsNullOrWhiteSpace(createRequest.DocRef)
-        ? docs.GenerateDocRef(docType.Value, DateTime.Now)
-        : createRequest.DocRef.Trim();
+    var requestedRefValue = string.IsNullOrWhiteSpace(createRequest.DocRef) ? null : createRequest.DocRef.Trim();
+    var docRef = requestedRefValue;
+    if (string.IsNullOrWhiteSpace(docRef))
+    {
+        docRef = docs.GenerateDocRef(docType.Value, DateTime.Now);
+    }
+    else if (store.FindDocByRef(docRef) != null)
+    {
+        docRef = docs.GenerateDocRef(docType.Value, DateTime.Now);
+    }
+    var comment = string.IsNullOrWhiteSpace(createRequest.Comment) ? null : createRequest.Comment.Trim();
 
     long docId;
     try
     {
-        docId = docs.CreateDoc(docType.Value, docRef, null, partnerId, null, null, null);
+        docId = docs.CreateDoc(docType.Value, docRef, comment, partnerIdValue, null, null, null);
     }
-    catch (ArgumentException)
+    catch (ArgumentException ex) when (string.Equals(ex.ParamName, "docRef", StringComparison.Ordinal))
     {
-        return Results.BadRequest(new ApiResult(false, "DOC_REF_EXISTS"));
+        docRef = docs.GenerateDocRef(docType.Value, DateTime.Now);
+        try
+        {
+            docId = docs.CreateDoc(docType.Value, docRef, comment, partnerIdValue, null, null, null);
+        }
+        catch (ArgumentException)
+        {
+            return Results.BadRequest(new ApiResult(false, "DOC_REF_EXISTS"));
+        }
     }
 
     apiStore.AddApiDoc(
@@ -889,14 +1231,17 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
         "DRAFT",
         DocTypeMapper.ToOpString(docType.Value),
         docRef,
-        partnerId,
-        fromLocationId,
-        toLocationId,
+        partnerIdValue,
+        fromLocationIdValue,
+        toLocationIdValue,
         normalizedFromHu,
         normalizedToHu,
         createRequest.DeviceId);
 
     apiStore.RecordEvent(createRequest.EventId, "DOC_CREATE", docUid, createRequest.DeviceId, rawJson);
+
+    var docRefChanged = !string.IsNullOrWhiteSpace(requestedRefValue)
+                        && !string.Equals(requestedRefValue, docRef, StringComparison.OrdinalIgnoreCase);
 
     return Results.Ok(new
     {
@@ -907,7 +1252,8 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
             doc_uid = docUid,
             doc_ref = docRef,
             status = "DRAFT",
-            type = DocTypeMapper.ToOpString(docType.Value)
+            type = DocTypeMapper.ToOpString(docType.Value),
+            doc_ref_changed = docRefChanged
         }
     });
 });
@@ -1155,40 +1501,13 @@ if (Directory.Exists(tsdRoot) && File.Exists(tsdIndexPath))
 
 app.Run();
 
-static DbProvider ResolveDbProvider(IConfiguration configuration)
-{
-    var provider = ReadSetting(configuration, "FLOWSTOCK_DB_PROVIDER", "LIGHTWMS_DB_PROVIDER");
-    if (string.IsNullOrWhiteSpace(provider))
-    {
-        return DbProvider.Sqlite;
-    }
-
-    return provider.Trim().Equals("postgres", StringComparison.OrdinalIgnoreCase)
-        ? DbProvider.Postgres
-        : DbProvider.Sqlite;
-}
-
-static string ResolveSqlitePath(IConfiguration configuration)
-{
-    var configured = configuration["DbPath"];
-    var path = string.IsNullOrWhiteSpace(configured) ? ServerPaths.DatabasePath : configured;
-    path = Environment.ExpandEnvironmentVariables(path);
-    return Path.GetFullPath(path);
-}
-
 static string BuildPostgresConnectionString(IConfiguration configuration)
 {
-    var host = ReadSetting(configuration, "FLOWSTOCK_PG_HOST", "LIGHTWMS_PG_HOST");
-    var database = ReadSetting(configuration, "FLOWSTOCK_PG_DB", "LIGHTWMS_PG_DB");
-    var user = ReadSetting(configuration, "FLOWSTOCK_PG_USER", "LIGHTWMS_PG_USER");
-    var password = ReadSetting(configuration, "FLOWSTOCK_PG_PASSWORD", "LIGHTWMS_PG_PASSWORD");
-    var portText = ReadSetting(configuration, "FLOWSTOCK_PG_PORT", "LIGHTWMS_PG_PORT");
-
-    if (string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(database) || string.IsNullOrWhiteSpace(user))
-    {
-        throw new InvalidOperationException(
-            "Missing postgres connection settings. Set FLOWSTOCK_PG_HOST/DB/USER/PASSWORD (or legacy LIGHTWMS_PG_*).");
-    }
+    var host = configuration["FLOWSTOCK_PG_HOST"] ?? "127.0.0.1";
+    var database = configuration["FLOWSTOCK_PG_DB"] ?? "flowstock";
+    var user = configuration["FLOWSTOCK_PG_USER"] ?? "flowstock";
+    var password = configuration["FLOWSTOCK_PG_PASSWORD"] ?? "flowstock";
+    var portText = configuration["FLOWSTOCK_PG_PORT"] ?? "15432";
 
     var builder = new NpgsqlConnectionStringBuilder
     {
@@ -1206,69 +1525,27 @@ static string BuildPostgresConnectionString(IConfiguration configuration)
     return builder.ConnectionString;
 }
 
-static string? ReadSetting(IConfiguration configuration, string key, string legacyKey)
+static void LogDbInfo(ILogger logger, string? postgresConnectionString)
 {
-    var value = configuration[key];
-    if (!string.IsNullOrWhiteSpace(value))
-    {
-        return value;
-    }
-
-    return configuration[legacyKey];
-}
-
-static void LogDbInfo(ILogger logger, DbProvider provider, string? sqlitePath, string? postgresConnectionString)
-{
-    if (provider == DbProvider.Postgres)
-    {
-        var info = BuildPostgresInfo(postgresConnectionString);
-        logger.LogInformation(
-            "DB: postgres host={Host} db={Database} port={Port} user={User}",
-            info.Host,
-            info.Database,
-            info.Port,
-            info.Username);
-        return;
-    }
-
-    var fileInfo = new FileInfo(sqlitePath ?? string.Empty);
-    var exists = fileInfo.Exists;
-    var sizeBytes = exists ? fileInfo.Length : 0;
-    var lastWriteUtc = exists
-        ? fileInfo.LastWriteTimeUtc.ToString("O", CultureInfo.InvariantCulture)
-        : null;
-
+    var info = BuildPostgresInfo(postgresConnectionString);
     logger.LogInformation(
-        "DB: {Path} exists={Exists} size={Size} lastWriteUtc={LastWriteUtc}",
-        sqlitePath,
-        exists,
-        sizeBytes,
-        lastWriteUtc);
+        "DB: postgres host={Host} db={Database} port={Port} user={User}",
+        info.Host,
+        info.Database,
+        info.Port,
+        info.Username);
 }
 
-static object BuildDbInfo(DbProvider provider, string? sqlitePath, string? postgresConnectionString)
+static object BuildDbInfo(string? postgresConnectionString)
 {
-    if (provider == DbProvider.Postgres)
-    {
-        var info = BuildPostgresInfo(postgresConnectionString);
-        return new
-        {
-            provider = "postgres",
-            host = info.Host,
-            port = info.Port,
-            database = info.Database,
-            user = info.Username
-        };
-    }
-
-    var fileInfo = new FileInfo(sqlitePath ?? string.Empty);
+    var info = BuildPostgresInfo(postgresConnectionString);
     return new
     {
-        provider = "sqlite",
-        dbPath = sqlitePath,
-        exists = fileInfo.Exists,
-        sizeBytes = fileInfo.Exists ? fileInfo.Length : 0,
-        lastWriteUtc = fileInfo.Exists ? fileInfo.LastWriteTimeUtc.ToString("O", CultureInfo.InvariantCulture) : null
+        provider = "postgres",
+        host = info.Host,
+        port = info.Port,
+        database = info.Database,
+        user = info.Username
     };
 }
 
@@ -1317,11 +1594,9 @@ static List<string> BuildRouteList(EndpointDataSource dataSource)
         .ToList();
 }
 
-static DbConnection OpenConnection(DbProvider provider, string? sqlitePath, string? postgresConnectionString)
+static DbConnection OpenConnection(string? postgresConnectionString)
 {
-    DbConnection connection = provider == DbProvider.Postgres
-        ? new NpgsqlConnection(postgresConnectionString)
-        : new SqliteConnection($"Data Source={sqlitePath}");
+    var connection = new NpgsqlConnection(postgresConnectionString);
     connection.Open();
     return connection;
 }
@@ -1350,7 +1625,10 @@ static (string Host, int Port, string Database, string Username) BuildPostgresIn
     }
 
     var builder = new NpgsqlConnectionStringBuilder(connectionString);
-    return (builder.Host, builder.Port, builder.Database, builder.Username);
+    var host = builder.Host ?? string.Empty;
+    var database = builder.Database ?? string.Empty;
+    var user = builder.Username ?? string.Empty;
+    return (host, builder.Port, database, user);
 }
 
 static string? NormalizeHu(string? value)
@@ -1455,6 +1733,61 @@ static Item? FindItemByBarcodeVariant(IDataStore store, string barcode)
     return null;
 }
 
+static object MapOrder(Order order)
+{
+    return new
+    {
+        id = order.Id,
+        order_ref = order.OrderRef,
+        partner_id = order.PartnerId,
+        partner_name = order.PartnerName,
+        partner_code = order.PartnerCode,
+        due_date = order.DueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+        status = OrderStatusMapper.StatusToDisplayName(order.Status),
+        created_at = order.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
+        shipped_at = order.ShippedAt?.ToString("O", CultureInfo.InvariantCulture)
+    };
+}
+
+static object MapDoc(Doc doc)
+{
+    return new
+    {
+        id = doc.Id,
+        doc_ref = doc.DocRef,
+        op = DocTypeMapper.ToOpString(doc.Type),
+        status = DocTypeMapper.StatusToString(doc.Status),
+        created_at = doc.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
+        closed_at = doc.ClosedAt?.ToString("O", CultureInfo.InvariantCulture),
+        partner_id = doc.PartnerId,
+        partner_name = doc.PartnerName,
+        partner_code = doc.PartnerCode,
+        order_id = doc.OrderId,
+        order_ref = doc.OrderRef,
+        shipping_ref = doc.ShippingRef,
+        comment = doc.Comment
+    };
+}
+
+static object MapDocLine(DocLineView line)
+{
+    return new
+    {
+        id = line.Id,
+        item_id = line.ItemId,
+        item_name = line.ItemName,
+        barcode = line.Barcode,
+        qty = line.Qty,
+        qty_input = line.QtyInput,
+        uom_code = line.UomCode,
+        base_uom = line.BaseUom,
+        from_location = line.FromLocation,
+        to_location = line.ToLocation,
+        from_hu = line.FromHu,
+        to_hu = line.ToHu
+    };
+}
+
 static async Task<string> ReadBody(HttpRequest request)
 {
     using var reader = new StreamReader(request.Body);
@@ -1530,6 +1863,35 @@ static bool ShouldIncludePartner(PartnerRole status, PartnerRoleFilter filter)
     };
 }
 
+static bool TryVerifyPassword(string password, string saltBase64, string hashBase64, int iterations)
+{
+    if (string.IsNullOrWhiteSpace(password))
+    {
+        return false;
+    }
+
+    byte[] salt;
+    byte[] expectedHash;
+    try
+    {
+        salt = Convert.FromBase64String(saltBase64);
+        expectedHash = Convert.FromBase64String(hashBase64);
+    }
+    catch (FormatException)
+    {
+        return false;
+    }
+
+    if (iterations <= 0)
+    {
+        return false;
+    }
+
+    using var derive = new Rfc2898DeriveBytes(password, salt, iterations, HashAlgorithmName.SHA256);
+    var actual = derive.GetBytes(expectedHash.Length);
+    return CryptographicOperations.FixedTimeEquals(actual, expectedHash);
+}
+
 sealed class LocationResolution
 {
     public Location? Location { get; init; }
@@ -1552,9 +1914,4 @@ enum PartnerRoleFilter
     Unknown
 }
 
-enum DbProvider
-{
-    Sqlite,
-    Postgres
-}
 

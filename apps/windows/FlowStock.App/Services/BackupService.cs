@@ -1,20 +1,21 @@
 using System.Diagnostics;
 using System.IO;
 using System.Globalization;
-using Microsoft.Data.Sqlite;
+using System.Linq;
+using Npgsql;
 
 namespace FlowStock.App;
 
 public sealed class BackupService
 {
-    private readonly string _dbPath;
+    private readonly string _connectionString;
     private readonly string _backupsDir;
     private readonly FileLogger _logger;
     private readonly object _sync = new();
 
-    public BackupService(string dbPath, string backupsDir, FileLogger logger)
+    public BackupService(string connectionString, string backupsDir, FileLogger logger)
     {
-        _dbPath = dbPath;
+        _connectionString = connectionString;
         _backupsDir = backupsDir;
         _logger = logger;
     }
@@ -24,16 +25,9 @@ public sealed class BackupService
         lock (_sync)
         {
             Directory.CreateDirectory(_backupsDir);
-            if (!File.Exists(_dbPath))
-            {
-                throw new FileNotFoundException("Файл базы данных не найден.", _dbPath);
-            }
-
-            TryCheckpoint();
-
-            var fileName = $"FlowStock_{DateTime.Now:yyyyMMdd_HHmmss}.db";
+            var fileName = $"FlowStock_{DateTime.Now:yyyyMMdd_HHmmss}.dump";
             var targetPath = Path.Combine(_backupsDir, fileName);
-            File.Copy(_dbPath, targetPath, overwrite: false);
+            RunPgDump(targetPath);
 
             var size = new FileInfo(targetPath).Length;
             _logger.Info($"Backup created ({reason}) path={targetPath} size={size}");
@@ -48,7 +42,14 @@ public sealed class BackupService
             return new List<BackupInfo>();
         }
 
-        var files = Directory.GetFiles(_backupsDir, "*.db");
+        var files = Directory.EnumerateFiles(_backupsDir)
+            .Where(file =>
+            {
+                var extension = Path.GetExtension(file);
+                return string.Equals(extension, ".dump", StringComparison.OrdinalIgnoreCase)
+                       || string.Equals(extension, ".db", StringComparison.OrdinalIgnoreCase);
+            })
+            .ToArray();
         var list = new List<BackupInfo>(files.Length);
         foreach (var file in files)
         {
@@ -108,19 +109,54 @@ public sealed class BackupService
         });
     }
 
-    private void TryCheckpoint()
+    private void RunPgDump(string targetPath)
     {
-        try
+        var builder = new NpgsqlConnectionStringBuilder(_connectionString);
+        if (string.IsNullOrWhiteSpace(builder.Host) || string.IsNullOrWhiteSpace(builder.Database))
         {
-            using var connection = new SqliteConnection($"Data Source={_dbPath}");
-            connection.Open();
-            using var command = connection.CreateCommand();
-            command.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
-            command.ExecuteNonQuery();
+            throw new InvalidOperationException("Postgres connection settings are missing.");
         }
-        catch (Exception ex)
+
+        var args = new List<string>
         {
-            _logger.Warn($"Backup checkpoint failed: {ex.Message}");
+            "--format=c",
+            "--no-owner",
+            "--no-acl",
+            $"--host \"{builder.Host}\"",
+            $"--port {builder.Port}",
+            $"--username \"{builder.Username}\"",
+            $"--file \"{targetPath}\"",
+            $"\"{builder.Database}\""
+        };
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "pg_dump",
+            Arguments = string.Join(" ", args),
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+
+        if (!string.IsNullOrWhiteSpace(builder.Password))
+        {
+            startInfo.Environment["PGPASSWORD"] = builder.Password;
+        }
+
+        using var process = Process.Start(startInfo);
+        if (process == null)
+        {
+            throw new InvalidOperationException("Failed to start pg_dump.");
+        }
+
+        var output = process.StandardOutput.ReadToEnd();
+        var error = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+
+        if (process.ExitCode != 0)
+        {
+            var details = string.IsNullOrWhiteSpace(error) ? output : error;
+            throw new InvalidOperationException($"pg_dump failed: {details}");
         }
     }
 

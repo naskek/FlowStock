@@ -1,3 +1,5 @@
+using System;
+
 namespace FlowStock.Core.Models;
 
 public sealed class Doc
@@ -15,10 +17,40 @@ public sealed class Doc
     public string? Comment { get; init; }
     public string? PartnerName { get; init; }
     public string? PartnerCode { get; init; }
+    public int LineCount { get; init; }
+    public string? SourceDeviceId { get; init; }
 
     public string TypeDisplay => DocTypeMapper.ToDisplayName(Type);
 
-    public string StatusDisplay => DocTypeMapper.StatusToDisplayName(Status);
+    public string StatusDisplay
+    {
+        get
+        {
+            if (Status == DocStatus.Draft
+                && (IsTsdSource(Comment, SourceDeviceId)))
+            {
+                var deviceLabel = string.IsNullOrWhiteSpace(SourceDeviceId) ? null : SourceDeviceId.Trim();
+                var prefix = deviceLabel == null
+                    ? "Принято с ТСД"
+                    : $"Принято с ТСД ({deviceLabel})";
+                var tsdStatus = LineCount > 0 ? "Наполнен" : "Черновик";
+                return $"{prefix} - {tsdStatus}";
+            }
+
+            return DocTypeMapper.StatusToDisplayName(Status);
+        }
+    }
+
+    private static bool IsTsdSource(string? comment, string? sourceDeviceId)
+    {
+        if (!string.IsNullOrWhiteSpace(sourceDeviceId))
+        {
+            return true;
+        }
+
+        return !string.IsNullOrWhiteSpace(comment)
+               && comment.StartsWith("TSD", StringComparison.OrdinalIgnoreCase);
+    }
 
     public string PartnerDisplay
     {

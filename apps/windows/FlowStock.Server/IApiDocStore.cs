@@ -16,6 +16,13 @@ public interface IApiDocStore
         string? deviceId);
 
     ApiDocInfo? GetApiDoc(string docUid);
+    void UpdateApiDocHeader(
+        string docUid,
+        long? partnerId,
+        long? fromLocationId,
+        long? toLocationId,
+        string? fromHu,
+        string? toHu);
     void UpdateApiDocStatus(string docUid, string status);
     bool IsEventProcessed(string eventId);
     ApiEventInfo? GetEvent(string eventId);

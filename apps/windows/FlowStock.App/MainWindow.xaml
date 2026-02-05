@@ -18,8 +18,8 @@
                 <MenuItem Header="Упаковки..." Click="PackagingManager_Click" />
             </MenuItem>
             <MenuItem Header="Сервис">
-                <MenuItem Header="Синхронизация с ТСД..." Click="OpenTsdSync_Click" />
-                <MenuItem Header="Устройства ТСД..." Click="OpenTsdDevices_Click" />
+                <MenuItem Header="Подключение к БД..." Click="OpenDbConnection_Click" />
+                <MenuItem Header="ТСД устройства..." Click="OpenTsdDevices_Click" />
                 <Separator />
                 <MenuItem Header="Резервные копии..." Click="OpenBackupManager_Click" />
                 <MenuItem Header="Администрирование..." Click="OpenAdmin_Click" />

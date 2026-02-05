@@ -22,7 +22,6 @@ services:
     environment:
       ASPNETCORE_URLS: http://0.0.0.0:8080
 
-      FLOWSTOCK_DB_PROVIDER: postgres
       FLOWSTOCK_PG_HOST: postgres
       FLOWSTOCK_PG_PORT: 5432
       FLOWSTOCK_PG_DB: ${POSTGRES_DB}
@@ -30,15 +29,6 @@ services:
       FLOWSTOCK_PG_PASSWORD: ${POSTGRES_PASSWORD}
 
       FLOWSTOCK_TSD_ROOT: /app/tsd
-
-      LIGHTWMS_DB_PROVIDER: postgres
-      LIGHTWMS_PG_HOST: postgres
-      LIGHTWMS_PG_PORT: 5432
-      LIGHTWMS_PG_DB: ${POSTGRES_DB}
-      LIGHTWMS_PG_USER: ${POSTGRES_USER}
-      LIGHTWMS_PG_PASSWORD: ${POSTGRES_PASSWORD}
-
-      LIGHTWMS_TSD_ROOT: /app/tsd
     depends_on:
       postgres:
         condition: service_healthy

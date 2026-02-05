@@ -17,6 +17,7 @@ public sealed class ImportService
     private const string ReasonUnknownLocation = "UNKNOWN_LOCATION";
     private const string ReasonHuMismatch = "HU_MISMATCH";
     private const string ReasonMoveHuRequired = "MOVE внутри склада требует from_hu/to_hu. Обновите ТСД или пересоздайте документ.";
+    private const string ReasonDocRefExists = "DOC_REF_EXISTS";
 
     private readonly IDataStore _data;
     private readonly JsonSerializerOptions _jsonOptions;
@@ -257,7 +258,24 @@ public sealed class ImportService
                 ? DocRefGenerator.Generate(store, importEvent.Type, importEvent.Timestamp.Date)
                 : importEvent.DocRef;
 
-            var doc = store.FindDocByRef(docRef, importEvent.Type);
+            var doc = store.FindDocByRef(docRef);
+            if (doc != null && doc.Type != importEvent.Type)
+            {
+                if (allowErrorInsert)
+                {
+                    store.AddImportError(new ImportError
+                    {
+                        EventId = importEvent.EventId,
+                        Reason = ReasonDocRefExists,
+                        RawJson = rawJson,
+                        CreatedAt = DateTime.Now
+                    });
+                }
+
+                outcome = ImportOutcome.Error;
+                return;
+            }
+
             if (doc == null)
             {
                 var partnerId = ResolvePartnerId(store, importEvent);

@@ -17,7 +17,8 @@
   var STATUS_ORDER = {
     DRAFT: 0,
     READY: 1,
-    EXPORTED: 2,
+    CLOSED: 2,
+    EXPORTED: 3,
   };
 
   var NAV_ORIGIN_KEY = "tsdNavOrigin";
@@ -255,7 +256,7 @@
 
   function formatDateTime(value) {
     if (!value) {
-      return "—";
+      return "-";
     }
     var date = new Date(value);
     if (isNaN(date.getTime())) {
@@ -269,10 +270,33 @@
     return day + "." + month + "." + year + " " + hours + ":" + minutes;
   }
 
+  function isServerDocId(value) {
+    return /^[0-9]+$/.test(String(value || ""));
+  }
+
+  function getDocSortTime(doc) {
+    if (!doc) {
+      return 0;
+    }
+    var raw =
+      doc.updatedAt ||
+      doc.updated_at ||
+      doc.createdAt ||
+      doc.created_at ||
+      doc.closed_at ||
+      doc.closedAt ||
+      null;
+    if (!raw) {
+      return 0;
+    }
+    var date = new Date(raw);
+    return isNaN(date.getTime()) ? 0 : date.getTime();
+  }
+
   function getOrderStatusInfo(status) {
     var raw = String(status || "").trim();
     if (!raw) {
-      return { label: "—", className: "order-status-pill order-status-neutral" };
+      return { label: "-", className: "order-status-pill order-status-neutral" };
     }
     var normalized = raw.toLowerCase();
     if (
@@ -411,7 +435,7 @@
       return;
     }
 
-    if (route.name === "home") {
+    if (route.name === "home" || route.name === "login") {
       if (backBtn.parentNode) {
         backBtn.parentNode.removeChild(backBtn);
       }
@@ -426,6 +450,7 @@
 
     if (settingsBtn) {
       settingsBtn.classList.toggle("is-active", route.name === "settings");
+      settingsBtn.classList.toggle("is-hidden", route.name === "login");
     }
   }
 
@@ -437,17 +462,59 @@
     }
     var route = getRoute();
     currentRoute = route;
-    updateHeader(route);
 
     if (!app) {
       return;
     }
 
+    TsdStorage.getSetting("device_id")
+      .then(function (deviceId) {
+        var hasDevice = deviceId && String(deviceId).trim();
+        if (!hasDevice && route.name !== "login") {
+          navigate("/login");
+          return;
+        }
+        if (hasDevice && route.name === "login") {
+          navigate("/home");
+          return;
+        }
+        updateHeader(route);
+        renderRouteInternal(route);
+      })
+      .catch(function () {
+        if (route.name !== "login") {
+          navigate("/login");
+          return;
+        }
+        updateHeader(route);
+        renderRouteInternal(route);
+      });
+  }
+
+  function renderRouteInternal(route) {
+    if (route.name === "login") {
+      app.innerHTML = renderLogin();
+      wireLogin();
+      return;
+    }
+
     if (route.name === "docs") {
       app.innerHTML = renderLoading();
-      TsdStorage.listDocs()
-        .then(function (docs) {
-          app.innerHTML = renderDocsList(docs, route.op);
+      Promise.all([
+        TsdStorage.listDocs().catch(function () { return []; }),
+        TsdStorage.apiGetDocs(route.op).catch(function () { return null; }),
+      ])
+        .then(function (results) {
+          var localDocs = results[0] || [];
+          var serverDocs = results[1];
+          var notice = null;
+          var combined = localDocs.slice();
+          if (Array.isArray(serverDocs)) {
+            combined = combined.concat(serverDocs);
+          } else {
+            notice = "Документы с сервера недоступны.";
+          }
+          app.innerHTML = renderDocsList(combined, route.op, notice);
           wireDocsList();
         })
         .catch(function () {
@@ -464,18 +531,38 @@
 
     if (route.name === "doc") {
       app.innerHTML = renderLoading();
-      TsdStorage.getDoc(route.id)
-        .then(function (doc) {
-          if (!doc) {
-            app.innerHTML = renderError("Документ не найден");
-            return;
-          }
-          app.innerHTML = renderDoc(doc);
-          wireDoc(doc);
-        })
-        .catch(function () {
-          app.innerHTML = renderError("Ошибка загрузки документа");
-        });
+      if (isServerDocId(route.id)) {
+        TsdStorage.apiGetDocById(route.id)
+          .then(function (doc) {
+            if (!doc) {
+              app.innerHTML = renderError("Документ не найден");
+              return;
+            }
+            return TsdStorage.apiGetDocLines(route.id)
+              .then(function (lines) {
+                app.innerHTML = renderServerDoc(doc, lines || []);
+              })
+              .catch(function () {
+                app.innerHTML = renderError("Ошибка загрузки строк документа");
+              });
+          })
+          .catch(function () {
+            app.innerHTML = renderError("Ошибка загрузки документа");
+          });
+      } else {
+        TsdStorage.getDoc(route.id)
+          .then(function (doc) {
+            if (!doc) {
+              app.innerHTML = renderError("Документ не найден");
+              return;
+            }
+            app.innerHTML = renderDoc(doc);
+            wireDoc(doc);
+          })
+          .catch(function () {
+            app.innerHTML = renderError("Ошибка загрузки документа");
+          });
+      }
       return;
     }
 
@@ -499,18 +586,9 @@
             app.innerHTML = renderError("Заказ не найден");
             return;
           }
-          return Promise.all([
-            TsdStorage.listOrderLines(route.id),
-            order.partnerId ? TsdStorage.getPartnerById(order.partnerId) : Promise.resolve(null),
-          ])
-            .then(function (results) {
-              var lines = results[0] || [];
-              var partner = results[1];
-              if (partner) {
-                order.partnerName = partner.name || "";
-                order.partnerInn = partner.inn || "";
-              }
-              app.innerHTML = renderOrderDetails(order, lines);
+          return TsdStorage.listOrderLines(route.id)
+            .then(function (lines) {
+              app.innerHTML = renderOrderDetails(order, lines || []);
               wireOrderDetails();
             })
             .catch(function () {
@@ -568,7 +646,7 @@
       "</section>"
     );
   }
-  function renderDocsList(docs, opFilter) {
+  function renderDocsList(docs, opFilter, notice) {
     var list = docs || [];
     var listOp = opFilter && OPS[opFilter] ? opFilter : null;
     if (listOp) {
@@ -581,8 +659,8 @@
       if (statusDiff !== 0) {
         return statusDiff;
       }
-      var dateA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
-      var dateB = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+      var dateA = getDocSortTime(a);
+      var dateB = getDocSortTime(b);
       return dateB - dateA;
     });
 
@@ -629,6 +707,10 @@
         "</div>";
     }
 
+    var noticeHtml = notice
+      ? '<div class="status">' + escapeHtml(notice) + "</div>"
+      : "";
+
     return (
       '<section class="screen">' +
       '  <div class="screen-card doc-screen-card">' +
@@ -636,6 +718,7 @@
       escapeHtml(title) +
       "</div>" +
       actionsHtml +
+      noticeHtml +
       '    <div class="doc-list">' +
       rows +
       "    </div>" +
@@ -1160,12 +1243,7 @@
     var opLabel = OPS[doc.op] ? OPS[doc.op].label : doc.op;
     var docRefValue = doc.doc_ref || "";
     var docRefDisplay = docRefValue ? escapeHtml(docRefValue) : "—";
-    var docRefInputHtml =
-      isDraft
-        ? '<input class="doc-ref-input" id="docRefInput" type="text" value="' +
-          escapeHtml(docRefValue) +
-          '" placeholder="—" />'
-        : '<span class="doc-ref-text">' + docRefDisplay + "</span>";
+    var docRefInputHtml = '<span class="doc-ref-text">' + docRefDisplay + "</span>";
 
     return (
       '<section class="screen">' +
@@ -1207,9 +1285,6 @@
       ">Undo</button>" +
       (isDraft
         ? '      <button class="btn primary-btn" id="finishBtn">Завершить</button>'
-        : "") +
-      (isDraft
-        ? '      <button class="btn btn-danger" id="deleteDraftBtn">🗑️ Удалить черновик</button>'
         : "") +
       (isReady
         ? '      <button class="btn btn-outline" id="revertBtn">Вернуть в черновик</button>'
@@ -1625,7 +1700,6 @@
         (isDraft ? "" : "disabled") +
         ">+</button>" +
         "  </div>" +
-        '  <div class="field-hint is-hidden" id="orderHint">Нет списка заказов - импортируйте с ПК</div>' +
         renderHuField(header, isDraft) +
         "</div>"
       );
@@ -1805,18 +1879,137 @@
       '    <h1 class="screen-title">Настройки</h1>' +
       '    <label class="form-label">ID устройства</label>' +
       '    <div class="field-value" id="deviceIdValue"></div>' +
-      '    <div class="field-hint is-hidden" id="deviceIdHint">Назначается при импорте с ПК</div>' +
-      '    <button id="importDataBtn" class="btn btn-outline" type="button">' +
-      "      Загрузить данные с ПК..." +
-      "    </button>" +
-      '    <input id="dataFileInput" class="file-input" type="file" accept=".json,application/json" />' +
-      '    <div id="dataStatus" class="status"></div>' +
-      '    <div id="dataCounts" class="status status-muted"></div>' +
-      '    <button id="exportFromSettingsBtn" class="btn btn-outline" type="button">' +
-      "      Экспорт смены (SHIFT)" +
-      "    </button>" +
-      '    <div id="exportStatus" class="status"></div>' +
       '    <div class="version">Версия приложения: 0.1</div>' +
+      "  </div>" +
+      "</section>"
+    );
+  }
+
+  function renderServerDocLines(lines) {
+    var rows = (lines || [])
+      .map(function (line) {
+        var nameText = line.itemName || "-";
+        var barcodeText = line.barcode || "";
+        var qtyValue = Number(line.qty) || 0;
+        var uom = line.uom ? " " + line.uom : "";
+        return (
+          '<div class="lines-row">' +
+          '  <div class="lines-cell">' +
+          '    <div class="line-name">' +
+          escapeHtml(nameText) +
+          "</div>" +
+          (barcodeText
+            ? '    <div class="line-barcode">' + escapeHtml(barcodeText) + "</div>"
+            : "") +
+          "  </div>" +
+          '  <div class="lines-cell" style="text-align:right;">' +
+          escapeHtml(String(qtyValue) + uom) +
+          "</div>" +
+          "</div>"
+        );
+      })
+      .join("");
+
+    if (!rows) {
+      return '<div class="empty-state">Строк нет.</div>';
+    }
+
+    return (
+      '<div class="lines-table">' +
+      '  <div class="lines-header">' +
+      '    <div class="lines-cell">Товар</div>' +
+      '    <div class="lines-cell qty-column">Кол-во</div>' +
+      "  </div>" +
+      rows +
+      "</div>"
+    );
+  }
+
+  function renderServerDoc(doc, lines) {
+    var opLabel = OPS[doc.op] ? OPS[doc.op].label : doc.op;
+    var statusLabel = STATUS_LABELS[doc.status] || doc.status;
+    var statusClass = "status-" + String(doc.status || "").toLowerCase();
+    var partnerLabel = doc.partnerCode && doc.partnerName
+      ? doc.partnerCode + " - " + doc.partnerName
+      : doc.partnerCode || doc.partnerName || "-";
+    var orderRef = doc.order_ref || "-";
+    var shippingRef = doc.shipping_ref || "-";
+    var createdAt = formatDateTime(doc.created_at || doc.createdAt);
+    var closedAt = formatDateTime(doc.closed_at || doc.closedAt);
+    var linesHtml = renderServerDocLines(lines);
+
+    return (
+      '<section class="screen">' +
+      '  <div class="screen-card doc-screen-card">' +
+      '    <div class="doc-header">' +
+      '      <div class="doc-head-top">' +
+      '        <div class="doc-titleblock">' +
+      '          <div class="doc-header-title">' +
+      escapeHtml(opLabel) +
+      "</div>" +
+      '          <div class="doc-ref-line">№ ' +
+      escapeHtml(doc.doc_ref || "-") +
+      "</div>" +
+      "        </div>" +
+      '        <div class="status-pill ' +
+      escapeHtml(statusClass) +
+      '">' +
+      escapeHtml(statusLabel) +
+      "</div>" +
+      "      </div>" +
+      "    </div>" +
+      '    <div class="order-fields">' +
+      '      <div class="order-field-row">' +
+      '        <div class="order-field-label">Контрагент</div>' +
+      '        <div class="order-field-value">' +
+      escapeHtml(partnerLabel) +
+      "</div>" +
+      "      </div>" +
+      '      <div class="order-field-row">' +
+      '        <div class="order-field-label">Заказ</div>' +
+      '        <div class="order-field-value">' +
+      escapeHtml(orderRef) +
+      "</div>" +
+      "      </div>" +
+      '      <div class="order-field-row">' +
+      '        <div class="order-field-label">HU</div>' +
+      '        <div class="order-field-value">' +
+      escapeHtml(shippingRef) +
+      "</div>" +
+      "      </div>" +
+      '      <div class="order-field-row">' +
+      '        <div class="order-field-label">Создан</div>' +
+      '        <div class="order-field-value">' +
+      escapeHtml(createdAt) +
+      "</div>" +
+      "      </div>" +
+      '      <div class="order-field-row">' +
+      '        <div class="order-field-label">Закрыт</div>' +
+      '        <div class="order-field-value">' +
+      escapeHtml(closedAt) +
+      "</div>" +
+      "      </div>" +
+      "    </div>" +
+      '    <div class="section-subtitle">Строки</div>' +
+      '    <div class="lines-section">' +
+      linesHtml +
+      "    </div>" +
+      "  </div>" +
+      "</section>"
+    );
+  }
+
+  function renderLogin() {
+    return (
+      '<section class="screen">' +
+      '  <div class="screen-card">' +
+      '    <h1 class="screen-title">Вход</h1>' +
+      '    <label class="form-label" for="loginInput">Логин</label>' +
+      '    <input class="form-input" id="loginInput" type="text" autocomplete="username" />' +
+      '    <label class="form-label" for="passwordInput">Пароль</label>' +
+      '    <input class="form-input" id="passwordInput" type="password" autocomplete="current-password" />' +
+      '    <button id="loginBtn" class="btn primary-btn" type="button">Войти</button>' +
+      '    <div id="loginStatus" class="status"></div>' +
       "  </div>" +
       "</section>"
     );
@@ -1870,21 +2063,10 @@
     var listEl = document.getElementById("ordersList");
     var statusEl = document.getElementById("ordersStatus");
 
-    function updateOrdersStatus() {
-      if (!statusEl) {
-        return;
+    function setStatus(text) {
+      if (statusEl) {
+        statusEl.textContent = text || "";
       }
-      TsdStorage.getDataStatus()
-        .then(function (status) {
-          if (status && status.exportedAt) {
-            statusEl.textContent = "По состоянию на: " + status.exportedAt;
-            return;
-          }
-          statusEl.textContent = "Данные не загружены";
-        })
-        .catch(function () {
-          statusEl.textContent = "Данные не загружены";
-        });
     }
 
     function renderList(orders) {
@@ -1950,18 +2132,18 @@
     }
 
     function loadOrders(query) {
-      if (statusEl) {
-        statusEl.textContent = "Загрузка...";
-      }
+      setStatus("Загрузка...");
       TsdStorage.listOrders({ q: query })
         .then(function (orders) {
           renderList(orders);
-          updateOrdersStatus();
+          if (!orders || !orders.length) {
+            setStatus("Заказов нет");
+          } else {
+            setStatus("Данные с сервера");
+          }
         })
         .catch(function () {
-          if (statusEl) {
-            statusEl.textContent = "Ошибка загрузки заказов";
-          }
+          setStatus("Ошибка загрузки заказов");
           renderList([]);
         });
     }
@@ -2580,6 +2762,7 @@
     }
 
     function close() {
+      unlockOverlayScroll();
       document.body.removeChild(overlay);
       document.removeEventListener("keydown", onKeyDown);
       if (typeof config.onClose === "function") {
@@ -2683,6 +2866,7 @@
     }
 
     function close() {
+      unlockOverlayScroll();
       document.body.removeChild(overlay);
       document.removeEventListener("keydown", onKeyDown);
       if (gtinHintTimer) {
@@ -2862,10 +3046,8 @@
     var undoBtn = document.getElementById("undoBtn");
     var finishBtn = document.getElementById("finishBtn");
     var revertBtn = document.getElementById("revertBtn");
-    var docRefInput = document.getElementById("docRefInput");
     var headerInputs = document.querySelectorAll("[data-header]");
     var deleteButtons = document.querySelectorAll(".line-delete");
-    var deleteDocBtn = document.getElementById("deleteDraftBtn");
     var manualInputButtons = document.querySelectorAll(".kbd-btn");
     var partnerPickBtn = document.getElementById("partnerPickBtn");
     var toPickBtn = document.getElementById("toPickBtn");
@@ -2894,8 +3076,6 @@
     var huToValueEl = document.getElementById("huToValue");
     var huToScanBtn = document.getElementById("huToScanBtn");
     var huToErrorEl = document.getElementById("huToError");
-    var orderHint = document.getElementById("orderHint");
-    var dataStatus = null;
     var lookupToken = 0;
     var qtyModeButtons = document.querySelectorAll(".qty-mode-btn");
     var qtyOverlay = null;
@@ -2966,12 +3146,11 @@
       enterScanMode();
     }
 
-    function applyCatalogState(status) {
+    function applyCatalogState() {
       var online = serverStatus.ok !== false;
       var hasPartners = online;
-      var hasLocations =
-        online || (status && status.counts && status.counts.locations > 0);
-      var hasOrders = status && status.counts && status.counts.orders > 0;
+      var hasLocations = online;
+      var hasOrders = online;
 
       if (partnerPickerRow) {
         partnerPickerRow.classList.remove("is-hidden");
@@ -2997,9 +3176,6 @@
         locationPickBtn.disabled = !hasLocations || !isDraft;
       }
 
-      if (orderHint) {
-        orderHint.classList.toggle("is-hidden", hasOrders);
-      }
     }
 
     function closeQuantityOverlay() {
@@ -4371,32 +4547,6 @@
       });
     }
 
-    if (deleteDocBtn) {
-      deleteDocBtn.addEventListener("click", function () {
-        if (doc.status !== "DRAFT") {
-          return;
-        }
-        openConfirmOverlay(
-          "Удалить документ?",
-          "Документ-черновик будет удалён без возможности восстановления.",
-          "Удалить",
-          function () {
-            deleteDocBtn.disabled = true;
-            TsdStorage.deleteDoc(doc.id)
-              .then(function () {
-                alert("Черновик удалён");
-                setNavOrigin("history");
-                navigate("/docs");
-              })
-              .catch(function () {
-                setDocStatus("Ошибка удаления документа");
-                deleteDocBtn.disabled = false;
-              });
-          }
-        );
-      });
-    }
-
     if (revertBtn) {
       revertBtn.addEventListener("click", function () {
         if (doc.status !== "READY") {
@@ -4407,13 +4557,6 @@
       });
     }
 
-
-    if (docRefInput) {
-      docRefInput.addEventListener("input", function () {
-        doc.doc_ref = docRefInput.value.trim();
-        saveDocState();
-      });
-    }
 
     headerInputs.forEach(function (input) {
       var handler = function () {
@@ -4580,15 +4723,8 @@
       });
     });
 
-    TsdStorage.getDataStatus()
-      .then(function (status) {
-        dataStatus = status;
-        applyCatalogState(status);
-        hydrateHeaderFromCatalog();
-      })
-      .catch(function () {
-        applyCatalogState(null);
-      });
+    applyCatalogState();
+    hydrateHeaderFromCatalog();
 
     refreshHuHeaderDisplay();
     focusFirstLocationOrBarcode();
@@ -4596,12 +4732,6 @@
 
   function wireSettings() {
     var deviceIdValue = document.getElementById("deviceIdValue");
-    var deviceIdHint = document.getElementById("deviceIdHint");
-    var exportBtn = document.getElementById("exportFromSettingsBtn");
-    var importBtn = document.getElementById("importDataBtn");
-    var fileInput = document.getElementById("dataFileInput");
-    var dataStatusText = document.getElementById("dataStatus");
-    var dataCountsText = document.getElementById("dataCounts");
 
     function renderDeviceId(value) {
       if (!deviceIdValue) {
@@ -4609,9 +4739,6 @@
       }
       var clean = value ? String(value).trim() : "";
       deviceIdValue.textContent = clean || "Не задан";
-      if (deviceIdHint) {
-        deviceIdHint.classList.toggle("is-hidden", !!clean);
-      }
     }
 
     TsdStorage.getSetting("device_id")
@@ -4621,105 +4748,74 @@
       .catch(function () {
         renderDeviceId("");
       });
+  }
 
-    function renderDataStatus(statusInfo) {
-      if (!dataStatusText || !dataCountsText) {
-        return;
+  function wireLogin() {
+    var loginInput = document.getElementById("loginInput");
+    var passwordInput = document.getElementById("passwordInput");
+    var loginBtn = document.getElementById("loginBtn");
+    var statusEl = document.getElementById("loginStatus");
+
+    function setStatus(text) {
+      if (statusEl) {
+        statusEl.textContent = text || "";
       }
-      if (!statusInfo || !statusInfo.exportedAt) {
-        dataStatusText.textContent = "Данные не загружены";
-        dataCountsText.textContent = "";
-        return;
-      }
-      var huStatus = statusInfo.huExportedAt
-        ? "HU: " + statusInfo.huExportedAt
-        : "HU: отсутствует";
-      dataStatusText.textContent =
-        "Данные обновлены: " + statusInfo.exportedAt + " (" + huStatus + ")";
-      dataCountsText.textContent =
-        "Товары: " +
-        statusInfo.counts.items +
-        " · Контрагенты: " +
-        statusInfo.counts.partners +
-        " · Локации: " +
-        statusInfo.counts.locations +
-        " · Остатки: " +
-        statusInfo.counts.stock +
-        " · HU: " +
-        (statusInfo.counts.huStock || 0);
     }
 
-    TsdStorage.getDataStatus()
-      .then(renderDataStatus)
-      .catch(function () {
-        renderDataStatus(null);
-      });
-
-    if (importBtn && fileInput) {
-      importBtn.addEventListener("click", function () {
-        fileInput.click();
-      });
-
-      fileInput.addEventListener("change", function () {
-        var file = fileInput.files && fileInput.files[0];
-        if (!file) {
-          return;
-        }
-        if (dataStatusText) {
-          dataStatusText.textContent = "Загрузка данных...";
-        }
-        var reader = new FileReader();
-        reader.onload = function () {
-          try {
-            var data = JSON.parse(reader.result);
-            var importedDeviceId =
-              data.meta && data.meta.device_id ? String(data.meta.device_id).trim() : "";
-            TsdStorage.importTsdData(data)
-              .then(function () {
-                if (importedDeviceId) {
-                  return TsdStorage.setSetting("device_id", importedDeviceId).then(function () {
-                    renderDeviceId(importedDeviceId);
-                  });
-                }
-                return false;
-              })
-              .then(function () {
-                return TsdStorage.getDataStatus();
-              })
-              .then(function (statusInfo) {
-                renderDataStatus(statusInfo);
-                if (statusInfo && window.console) {
-                  console.log("[import] data status:", statusInfo);
-                }
-              })
-              .catch(function (error) {
-                if (dataStatusText) {
-                  dataStatusText.textContent =
-                    error && error.message ? error.message : "Ошибка импорта данных";
-                }
-              });
-          } catch (error) {
-            if (dataStatusText) {
-              dataStatusText.textContent = "Некорректный JSON";
-            }
-          } finally {
-            fileInput.value = "";
+    function submit() {
+      if (!loginInput || !passwordInput || !loginBtn) {
+        return;
+      }
+      var login = loginInput.value ? loginInput.value.trim() : "";
+      var password = passwordInput.value || "";
+      if (!login || !password) {
+        setStatus("Введите логин и пароль.");
+        return;
+      }
+      loginBtn.disabled = true;
+      setStatus("Подключение...");
+      TsdStorage.apiLogin(login, password)
+        .then(function (result) {
+          var deviceId = result && result.device_id ? String(result.device_id).trim() : "";
+          if (!deviceId) {
+            throw new Error("NO_DEVICE_ID");
           }
-        };
-        reader.onerror = function () {
-          if (dataStatusText) {
-            dataStatusText.textContent = "Ошибка чтения файла";
+          return TsdStorage.setSetting("device_id", deviceId);
+        })
+        .then(function () {
+          setStatus("");
+          navigate("/home");
+        })
+        .catch(function (error) {
+          loginBtn.disabled = false;
+          var message = "Ошибка входа.";
+          var code = error && error.message ? error.message : "";
+          if (code === "INVALID_CREDENTIALS") {
+            message = "Пользователь не найден. Обратитесь к оператору.";
+          } else if (code === "DEVICE_BLOCKED") {
+            message = "Устройство заблокировано. Обратитесь к оператору.";
+          } else if (code === "MISSING_CREDENTIALS") {
+            message = "Введите логин и пароль.";
           }
-          fileInput.value = "";
-        };
-        reader.readAsText(file);
+          setStatus(message);
+        });
+    }
+
+    if (loginBtn) {
+      loginBtn.addEventListener("click", submit);
+    }
+
+    if (passwordInput) {
+      passwordInput.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          submit();
+        }
       });
     }
 
-    if (exportBtn) {
-      exportBtn.addEventListener("click", function () {
-        exportAllJsonl("exportStatus");
-      });
+    if (loginInput) {
+      loginInput.focus();
     }
   }
 
@@ -4728,17 +4824,22 @@
       return;
     }
 
-    var now = new Date();
-    var dateKey = getDateKey(now);
-    var prefix = OPS[op].prefix;
+    var docId = createUuid();
+    var eventId = createUuid();
 
     ensureServerAvailable()
       .then(function () {
-        return TsdStorage.nextDocCounter(prefix, dateKey);
+        return TsdStorage.getSetting("device_id");
       })
-      .then(function (counter) {
-        var docRef = prefix + "-" + dateKey + "-" + padNumber(counter, 3);
-        var docId = createUuid();
+      .then(function (deviceId) {
+        return TsdStorage.apiCreateDocDraft(op, docId, eventId, deviceId || null);
+      })
+      .then(function (payload) {
+        var docInfo = payload && payload.doc ? payload.doc : payload;
+        var docRef = docInfo && docInfo.doc_ref ? String(docInfo.doc_ref) : "";
+        if (!docRef) {
+          throw new Error("INVALID_DOC_REF");
+        }
         var nowIso = new Date().toISOString();
 
         var doc = {
@@ -4760,6 +4861,7 @@
         });
       })
       .catch(function () {
+        alert("Не удалось создать документ. Проверьте связь с сервером.");
         return false;
       });
   }
@@ -4908,6 +5010,73 @@
       return Promise.reject(new Error("Нет строк для отправки"));
     }
 
+    if (doc.op !== "INBOUND" && doc.op !== "OUTBOUND" && doc.op !== "MOVE") {
+      return Promise.reject(new Error("Операция пока не поддерживается на сервере."));
+    }
+
+    function mapApiError(code) {
+      if (!code) {
+        return "Ошибка сервера";
+      }
+      if (code === "MISSING_PARTNER") {
+        return "Укажите контрагента.";
+      }
+      if (code === "UNKNOWN_PARTNER") {
+        return "Контрагент не найден.";
+      }
+      if (code === "MISSING_LOCATION") {
+        return "Укажите локацию.";
+      }
+      if (code === "UNKNOWN_LOCATION") {
+        return "Локация не найдена.";
+      }
+      if (code === "UNKNOWN_ITEM") {
+        return "Товар не найден.";
+      }
+      if (code === "DOC_REF_EXISTS") {
+        return "Документ с таким номером уже существует.";
+      }
+      if (code === "DOC_NOT_DRAFT") {
+        return "Документ уже закрыт.";
+      }
+      if (code === "DOC_NOT_FOUND") {
+        return "Документ не найден.";
+      }
+      if (code === "INVALID_TYPE") {
+        return "Тип документа не поддерживается.";
+      }
+      if (code === "INVALID_QTY") {
+        return "Некорректное количество.";
+      }
+      return code;
+    }
+
+    function postJson(url, payload) {
+      return fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+        .then(function (response) {
+          return response
+            .json()
+            .catch(function () {
+              return null;
+            })
+            .then(function (payload) {
+              if (!response.ok) {
+                var errorText = (payload && payload.error) || "SERVER_ERROR";
+                throw new Error(mapApiError(errorText));
+              }
+              if (payload && payload.ok === false) {
+                var apiError = payload.error || "SERVER_ERROR";
+                throw new Error(mapApiError(apiError));
+              }
+              return payload;
+            });
+        });
+    }
+
     return ensureServerAvailable()
       .then(function () {
         return Promise.all([getServerBaseUrl(), TsdStorage.getSetting("device_id")]);
@@ -4915,60 +5084,62 @@
       .then(function (result) {
         var baseUrl = result[0];
         var deviceId = result[1] || null;
+        var header = doc.header || {};
+        var docUid = doc.id;
+        var fromLocationId = header.from_id || null;
+        var toLocationId = header.to_id || null;
+        var mainHu = normalizeHuCode(header.hu);
+        var fromHu = normalizeHuCode(header.from_hu) || null;
+        var toHu = normalizeHuCode(header.to_hu) || null;
 
-        var ops = doc.lines.map(function (line) {
-          return {
-            schema_version: 1,
-            event_id: createUuid(),
-            ts: new Date().toISOString(),
-            device_id: deviceId,
-            op: doc.op,
-            doc_ref: doc.doc_ref || "",
-            barcode: line.barcode,
-            qty: Number(line.qty) || 0,
-            from_loc: line.from || null,
-            to_loc: line.to || null,
-            from_hu: normalizeHuCode(line.from_hu) || null,
-            to_hu: normalizeHuCode(line.to_hu) || null,
-            partner_code: (doc.header && doc.header.partner_code) || null,
-            order_ref: (doc.header && doc.header.order_ref) || null,
-            reason_code: line.reason_code || (doc.header && doc.header.reason_code) || null,
-          };
+        if (doc.op === "INBOUND") {
+          toHu = mainHu || toHu;
+        } else if (doc.op === "OUTBOUND") {
+          fromHu = mainHu || fromHu;
+        }
+
+        var docPayload = {
+          doc_uid: docUid,
+          event_id: createUuid(),
+          device_id: deviceId,
+          type: doc.op,
+          doc_ref: doc.doc_ref || null,
+          comment: "TSD",
+          partner_id: header.partner_id || null,
+          from_location_id: fromLocationId,
+          to_location_id: toLocationId,
+          from_hu: fromHu || null,
+          to_hu: toHu || null,
+        };
+
+        return postJson(baseUrl + "/api/docs", docPayload).then(function (createResult) {
+          var docInfo = createResult && createResult.doc ? createResult.doc : null;
+          if (docInfo && docInfo.doc_ref) {
+            var resolvedRef = String(docInfo.doc_ref);
+            if (resolvedRef) {
+              doc.doc_ref = resolvedRef;
+            }
+            if (docInfo.doc_ref_changed) {
+              alert("Номер документа занят. Присвоен новый: " + resolvedRef);
+            }
+          }
+          return doc.lines.reduce(function (chain, line) {
+            return chain.then(function () {
+              var qty = Number(line.qty) || 0;
+              var linePayload = {
+                event_id: createUuid(),
+                device_id: deviceId,
+                qty: qty,
+              };
+              if (line.itemId) {
+                linePayload.item_id = line.itemId;
+              } else {
+                linePayload.barcode = line.barcode || "";
+              }
+              return postJson(baseUrl + "/api/docs/" + encodeURIComponent(docUid) + "/lines", linePayload);
+            });
+          }, Promise.resolve(true));
         });
-
-        return ops.reduce(function (chain, op) {
-          return chain.then(function () {
-            return fetch(baseUrl + "/api/ops", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(op),
-            })
-              .then(function (response) {
-                return response
-                  .json()
-                  .catch(function () {
-                    return null;
-                  })
-                  .then(function (payload) {
-                    if (!response.ok) {
-                      var errorText = (payload && payload.error) || "SERVER_ERROR";
-                      if (errorText === "UNSUPPORTED_OP") {
-                        errorText = "Сервер пока принимает только MOVE.";
-                      }
-                      throw new Error(errorText);
-                    }
-                    if (payload && payload.ok === false) {
-                      var apiError = payload.error || "SERVER_ERROR";
-                      if (apiError === "UNSUPPORTED_OP") {
-                        apiError = "Сервер пока принимает только MOVE.";
-                      }
-                      throw new Error(apiError);
-                    }
-                    return true;
-                  });
-              });
-          });
-        }, Promise.resolve(true));
       });
   }
 

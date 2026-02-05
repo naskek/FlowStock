@@ -36,7 +36,12 @@ public sealed class DocumentService
         }
 
         var trimmedRef = docRef.Trim();
-        if (_data.FindDocByRef(trimmedRef, type) != null)
+        if (_data.FindDocByRef(trimmedRef) != null)
+        {
+            throw new ArgumentException("Документ с таким номером уже существует.", nameof(docRef));
+        }
+        if (TryParseDocRefSequence(trimmedRef, out var year, out var sequence)
+            && _data.IsDocRefSequenceTaken(year, sequence))
         {
             throw new ArgumentException("Документ с таким номером уже существует.", nameof(docRef));
         }
@@ -567,6 +572,36 @@ public sealed class DocumentService
             check.Errors.Add("Для отгрузки требуется контрагент.");
         }
         return check;
+    }
+
+    private static bool TryParseDocRefSequence(string docRef, out int year, out int sequence)
+    {
+        year = 0;
+        sequence = 0;
+        if (string.IsNullOrWhiteSpace(docRef))
+        {
+            return false;
+        }
+
+        var parts = docRef.Split('-', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 3)
+        {
+            return false;
+        }
+
+        if (!int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out year))
+        {
+            year = 0;
+            return false;
+        }
+
+        if (!int.TryParse(parts[^1], NumberStyles.Integer, CultureInfo.InvariantCulture, out sequence))
+        {
+            sequence = 0;
+            return false;
+        }
+
+        return year > 0 && sequence > 0;
     }
 
     private static string FormatQty(double value)

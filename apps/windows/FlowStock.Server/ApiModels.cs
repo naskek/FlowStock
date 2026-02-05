@@ -19,6 +19,9 @@ public sealed class CreateDocRequest
     [JsonPropertyName("doc_ref")]
     public string? DocRef { get; set; }
 
+    [JsonPropertyName("comment")]
+    public string? Comment { get; set; }
+
     [JsonPropertyName("partner_id")]
     public long? PartnerId { get; set; }
 
@@ -33,6 +36,9 @@ public sealed class CreateDocRequest
 
     [JsonPropertyName("to_hu")]
     public string? ToHu { get; set; }
+
+    [JsonPropertyName("draft_only")]
+    public bool DraftOnly { get; set; }
 }
 
 public sealed class CreateDocResponse
@@ -78,6 +84,15 @@ public sealed class HuGenerateRequest
 
     [JsonPropertyName("created_by")]
     public string? CreatedBy { get; set; }
+}
+
+public sealed class TsdLoginRequest
+{
+    [JsonPropertyName("login")]
+    public string? Login { get; set; }
+
+    [JsonPropertyName("password")]
+    public string? Password { get; set; }
 }
 
 public sealed class ApiResult

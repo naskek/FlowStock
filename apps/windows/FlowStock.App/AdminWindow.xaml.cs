@@ -2,7 +2,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
 using System.Windows;
-using Microsoft.Data.Sqlite;
+using Npgsql;
 
 namespace FlowStock.App;
 
@@ -227,8 +227,9 @@ public partial class AdminWindow : Window
                 var counts = _services.Admin.GetTableCounts();
                 var archive = _services.Admin.FullReset();
                 var summary = BuildDeleteSummary(counts, TableOrder);
+                var archiveText = string.IsNullOrWhiteSpace(archive) ? "Архив: не создан." : $"Архив: {archive}";
                 MessageBox.Show(
-                    $"Полный сброс выполнен.\nАрхив: {archive}\n{summary}\nРекомендуется перезапустить приложение.",
+                    $"Полный сброс выполнен.\n{archiveText}\n{summary}\nРекомендуется перезапустить приложение.",
                     "Администрирование",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
@@ -237,7 +238,7 @@ public partial class AdminWindow : Window
             _onReset?.Invoke();
             LoadCounts();
         }
-        catch (SqliteException ex)
+        catch (PostgresException ex)
         {
             _services.AdminLogger.Error("admin_reset failed", ex);
             MessageBox.Show($"Не удалось выполнить удаление: {ex.Message}", "Администрирование", MessageBoxButton.OK, MessageBoxImage.Error);

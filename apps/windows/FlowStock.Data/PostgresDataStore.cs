@@ -10,7 +10,13 @@ public sealed class PostgresDataStore : IDataStore
     private readonly string _connectionString;
     private readonly NpgsqlConnection? _connection;
     private readonly NpgsqlTransaction? _transaction;
-    private const string DocSelectBase = "SELECT d.id, d.doc_ref, d.type, d.status, d.created_at, d.closed_at, d.partner_id, d.order_id, d.order_ref, d.shipping_ref, d.comment, p.name, p.code FROM docs d LEFT JOIN partners p ON p.id = d.partner_id";
+    private const string DocSelectBase =
+        "SELECT d.id, d.doc_ref, d.type, d.status, d.created_at, d.closed_at, d.partner_id, d.order_id, d.order_ref, d.shipping_ref, d.comment, p.name, p.code, " +
+        "COALESCE(dl.line_count, 0) AS line_count, ad.device_id " +
+        "FROM docs d " +
+        "LEFT JOIN partners p ON p.id = d.partner_id " +
+        "LEFT JOIN (SELECT doc_id, COUNT(*) AS line_count FROM doc_lines GROUP BY doc_id) dl ON dl.doc_id = d.id " +
+        "LEFT JOIN (SELECT doc_id, MAX(device_id) AS device_id FROM api_docs GROUP BY doc_id) ad ON ad.doc_id = d.id";
     private const string OrderSelectBase = "SELECT o.id, o.order_ref, o.partner_id, o.due_date, o.status, o.comment, o.created_at, p.name, p.code FROM orders o LEFT JOIN partners p ON p.id = o.partner_id";
 
     public PostgresDataStore(string connectionString)
@@ -106,7 +112,8 @@ CREATE TABLE IF NOT EXISTS docs (
     FOREIGN KEY (partner_id) REFERENCES partners(id),
     FOREIGN KEY (order_id) REFERENCES orders(id)
 );
-CREATE UNIQUE INDEX IF NOT EXISTS ix_docs_ref_type ON docs(doc_ref, type);
+DROP INDEX IF EXISTS ix_docs_ref_type;
+CREATE UNIQUE INDEX IF NOT EXISTS ix_docs_ref ON docs(doc_ref);
 CREATE TABLE IF NOT EXISTS doc_lines (
     id BIGSERIAL PRIMARY KEY,
     doc_id BIGINT NOT NULL,
@@ -190,6 +197,19 @@ CREATE TABLE IF NOT EXISTS hus (
 );
 CREATE INDEX IF NOT EXISTS idx_hus_status ON hus(status);
 CREATE INDEX IF NOT EXISTS idx_hus_created_at ON hus(created_at);
+CREATE TABLE IF NOT EXISTS tsd_devices (
+    id BIGSERIAL PRIMARY KEY,
+    device_id TEXT NOT NULL UNIQUE,
+    login TEXT NOT NULL UNIQUE,
+    password_salt TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    password_iterations INTEGER NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TEXT NOT NULL,
+    last_seen TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_tsd_devices_login ON tsd_devices(login);
+CREATE INDEX IF NOT EXISTS ix_tsd_devices_device_id ON tsd_devices(device_id);
 ";
         command.ExecuteNonQuery();
 
@@ -743,13 +763,12 @@ WHERE id = @id;
         });
     }
 
-    public Doc? FindDocByRef(string docRef, DocType type)
+    public Doc? FindDocByRef(string docRef)
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, $"{DocSelectBase} WHERE d.doc_ref = @doc_ref AND d.type = @type");
+            using var command = CreateCommand(connection, $"{DocSelectBase} WHERE d.doc_ref = @doc_ref");
             command.Parameters.AddWithValue("@doc_ref", docRef);
-            command.Parameters.AddWithValue("@type", DocTypeMapper.ToOpString(type));
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadDoc(reader) : null;
         });
@@ -799,37 +818,94 @@ WHERE id = @id;
         });
     }
 
-    public int GetMaxDocRefSequence(DocType type, string prefix)
+    public int GetMaxDocRefSequenceByYear(int year)
     {
-        if (string.IsNullOrWhiteSpace(prefix))
+        if (year <= 0)
         {
             return 0;
         }
 
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT doc_ref FROM docs WHERE type = @type AND doc_ref LIKE @prefix");
-            command.Parameters.AddWithValue("@type", DocTypeMapper.ToOpString(type));
-            command.Parameters.AddWithValue("@prefix", $"{prefix}%");
+            var yearToken = year.ToString(CultureInfo.InvariantCulture);
+            using var command = CreateCommand(connection, "SELECT doc_ref FROM docs WHERE doc_ref LIKE @pattern");
+            command.Parameters.AddWithValue("@pattern", $"%-{yearToken}-%");
             using var reader = command.ExecuteReader();
 
             var max = 0;
             while (reader.Read())
             {
                 var docRef = reader.GetString(0);
-                if (!docRef.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                if (string.IsNullOrWhiteSpace(docRef))
                 {
                     continue;
                 }
 
-                var suffix = docRef.Substring(prefix.Length);
-                if (int.TryParse(suffix, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) && value > max)
+                var parts = docRef.Split('-', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 3)
+                {
+                    continue;
+                }
+
+                if (!string.Equals(parts[1], yearToken, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var suffix = parts[^1];
+                if (int.TryParse(suffix, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
+                    && value > max)
                 {
                     max = value;
                 }
             }
 
             return max;
+        });
+    }
+
+    public bool IsDocRefSequenceTaken(int year, int sequence)
+    {
+        if (year <= 0 || sequence <= 0)
+        {
+            return false;
+        }
+
+        return WithConnection(connection =>
+        {
+            var yearToken = year.ToString(CultureInfo.InvariantCulture);
+            using var command = CreateCommand(connection, "SELECT doc_ref FROM docs WHERE doc_ref LIKE @pattern");
+            command.Parameters.AddWithValue("@pattern", $"%-{yearToken}-%");
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                var docRef = reader.GetString(0);
+                if (string.IsNullOrWhiteSpace(docRef))
+                {
+                    continue;
+                }
+
+                var parts = docRef.Split('-', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 3)
+                {
+                    continue;
+                }
+
+                if (!string.Equals(parts[1], yearToken, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var suffix = parts[^1];
+                if (int.TryParse(suffix, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
+                    && value == sequence)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         });
     }
 
@@ -1859,6 +1935,8 @@ RETURNING id;
         string? comment = null;
         string? partnerName = null;
         string? partnerCode = null;
+        var lineCount = 0;
+        string? sourceDeviceId = null;
 
         if (reader.FieldCount > 6 && !reader.IsDBNull(6))
         {
@@ -1895,6 +1973,16 @@ RETURNING id;
             partnerCode = reader.GetString(12);
         }
 
+        if (reader.FieldCount > 13 && !reader.IsDBNull(13))
+        {
+            lineCount = Convert.ToInt32(reader.GetInt64(13));
+        }
+
+        if (reader.FieldCount > 14 && !reader.IsDBNull(14))
+        {
+            sourceDeviceId = reader.GetString(14);
+        }
+
         return new Doc
         {
             Id = reader.GetInt64(0),
@@ -1909,7 +1997,9 @@ RETURNING id;
             ShippingRef = shippingRef,
             Comment = comment,
             PartnerName = partnerName,
-            PartnerCode = partnerCode
+            PartnerCode = partnerCode,
+            LineCount = lineCount,
+            SourceDeviceId = sourceDeviceId
         };
     }
 

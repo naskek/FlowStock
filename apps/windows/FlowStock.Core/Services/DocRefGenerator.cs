@@ -8,17 +8,18 @@ public static class DocRefGenerator
     public static string Generate(IDataStore data, DocType type, DateTime date)
     {
         var prefix = GetPrefix(type);
-        var baseRef = $"{prefix}-{date:yyyyMMdd}-";
-        var max = data.GetMaxDocRefSequence(type, baseRef);
+        var year = date.Year;
+        var baseRef = $"{prefix}-{year}-";
+        var max = data.GetMaxDocRefSequenceByYear(year);
         var next = max + 1;
 
         string candidate;
         do
         {
-            candidate = $"{baseRef}{next:000}";
+            candidate = $"{baseRef}{next:000000}";
             next++;
         }
-        while (data.FindDocByRef(candidate, type) != null);
+        while (data.FindDocByRef(candidate) != null);
 
         return candidate;
     }

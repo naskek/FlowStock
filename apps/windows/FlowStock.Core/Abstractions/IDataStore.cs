@@ -43,11 +43,12 @@ public interface IDataStore
     void DeletePartner(long partnerId);
     bool IsPartnerUsed(long partnerId);
 
-    Doc? FindDocByRef(string docRef, DocType type);
+    Doc? FindDocByRef(string docRef);
     Doc? GetDoc(long id);
     IReadOnlyList<Doc> GetDocs();
     IReadOnlyList<Doc> GetDocsByOrder(long orderId);
-    int GetMaxDocRefSequence(DocType type, string prefix);
+    int GetMaxDocRefSequenceByYear(int year);
+    bool IsDocRefSequenceTaken(int year, int sequence);
     long AddDoc(Doc doc);
     IReadOnlyList<DocLine> GetDocLines(long docId);
     IReadOnlyList<DocLineView> GetDocLineViews(long docId);

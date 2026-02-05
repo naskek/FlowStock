@@ -2,16 +2,16 @@
 
 ## Scope
 - Server-centric workflow. The server is the single source of truth.
-- Desktop WPF client works against the server API (online).
-- TSD PWA works offline and syncs via JSONL files.
-- PostgreSQL is the primary storage. SQLite is dev-only if needed.
+- Desktop WPF client connects directly to PostgreSQL as an operator UI.
+- TSD PWA works offline and syncs via JSONL files through the server.
+- PostgreSQL is the only supported storage.
 - JSON (non-JSONL) exchange is not used.
 - Stock is computed from ledger only.
 
 ## Components
-- FlowStock.Server: ASP.NET Core Minimal API, DB access, diagnostics, JSONL import.
-- FlowStock.App: WPF desktop client UI.
-- TSD PWA: offline data capture and JSONL export/import.
+- FlowStock.Server: ASP.NET Core Minimal API, DB access, diagnostics, JSONL import/export.
+- FlowStock.App: WPF desktop operator UI with direct PostgreSQL connection (FLOWSTOCK_PG_* env or settings.json postgres).
+- TSD PWA: offline data capture and JSONL export/import (no direct DB access).
 
 ## Data model (server DB)
 - items(id, name, barcode, gtin, uom)
@@ -44,7 +44,7 @@
   "ts": "YYYY-MM-DDTHH:MM:SS",
   "device_id": "TSD-01",
   "op": "INBOUND|WRITE_OFF|MOVE|INVENTORY|OUTBOUND",
-  "doc_ref": "SHIFT-YYYY-MM-DD-OP1-INBOUND",
+  "doc_ref": "IN-2025-000001",
   "barcode": "string",
   "qty": 10,
   "from": "LOC-CODE-or-null",
@@ -53,13 +53,14 @@
   "to_hu": "HU-or-null"
 }
 ```
+- doc_ref format: `TYPE-YYYY-000001` (sequence is zero-padded to 6 digits and is unique across all doc types per year).
 
 ## Import rules
 - Idempotency: if event_id already in imported_events, skip.
 - Unknown barcode: add to import_errors with reason UNKNOWN_BARCODE; do not crash.
 - Unknown location: add to import_errors with reason UNKNOWN_LOCATION.
 - Invalid JSONL or missing required fields: add to import_errors (INVALID_JSON or MISSING_FIELD).
-- Documents are grouped by (doc_ref + op) and created as DRAFT.
+- Documents are grouped by doc_ref (unique per year across all types) and created as DRAFT.
 - Each event appends a doc_line.
 - Ledger entries are created only when the document is closed.
 

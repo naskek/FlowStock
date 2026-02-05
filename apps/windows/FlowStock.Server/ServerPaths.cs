@@ -6,8 +6,6 @@ public static class ServerPaths
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "FlowStock");
 
-    public static string DatabasePath => Path.Combine(BaseDir, "flowstock.db");
-
     public static string TsdRoot => ResolveTsdRoot();
 
     private static string ResolveTsdRoot()

@@ -6,7 +6,7 @@
 - Closed documents are immutable; corrections are separate docs.
 
 ## Source of truth
-- Read and follow: ./spec_updated.md and ./spec_orders_updated.md
+- Read and follow: ./docs/spec.md and ./docs/spec_orders.md
 - If behavior changes, update specs in the same PR.
 
 ## Repo map

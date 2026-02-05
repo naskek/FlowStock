@@ -44,7 +44,7 @@
    - `partner_id` = из заказа
    - `order_ref` = из заказа
    - `order_id` = id заказа
-   - `doc_ref` = `OUT-{order_ref}-{yyyyMMdd-HHmm}` (с уникальным суффиксом при коллизии)
+   - `doc_ref` = `OUT-YYYY-000001` (глобальная последовательность за год, уникальна для всех типов)
 2. Для каждой позиции с `can_ship_now > 0` создается строка:
    - `qty` = `can_ship_now`
    - `from_location`:

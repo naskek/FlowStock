@@ -1,4 +1,5 @@
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -64,11 +65,11 @@ public sealed class BackupSettings
     public BackupMode BackupMode { get; set; } = BackupMode.OnStartIfOlderThanHours;
     public int BackupIfOlderThanHours { get; set; } = 24;
     public int KeepLastNBackups { get; set; } = 30;
-    public string? TsdFolderPath { get; set; }
-    public bool TsdAutoPromptEnabled { get; set; } = true;
     public int HuNextSequence { get; set; } = 1;
-    [JsonPropertyName("tsd")]
-    public TsdSettings Tsd { get; set; } = new();
+    [JsonPropertyName("postgres")]
+    public PostgresSettings Postgres { get; set; } = new();
+    [JsonPropertyName("recent_postgres")]
+    public List<PostgresConnectionProfile> RecentPostgres { get; set; } = new();
 
     public static BackupSettings Default()
     {
@@ -87,63 +88,71 @@ public sealed class BackupSettings
             KeepLastNBackups = 1;
         }
 
-        if (string.IsNullOrWhiteSpace(TsdFolderPath))
-        {
-            TsdFolderPath = null;
-        }
-
         if (HuNextSequence < 1)
         {
             HuNextSequence = 1;
         }
 
-        Tsd = (Tsd ?? new TsdSettings()).Normalize();
-
-        return this;
-    }
-}
-
-public sealed class TsdSettings
-{
-    [JsonPropertyName("devices")]
-    public List<TsdDevice> Devices { get; set; } = new();
-
-    [JsonPropertyName("last_device_id")]
-    public string? LastDeviceId { get; set; }
-
-    public TsdSettings Normalize()
-    {
-        Devices = Devices ?? new List<TsdDevice>();
-        Devices = Devices
-            .Where(device => device != null && !string.IsNullOrWhiteSpace(device.Id))
-            .Select(device => new TsdDevice
-            {
-                Id = device.Id.Trim(),
-                Name = string.IsNullOrWhiteSpace(device.Name) ? device.Id.Trim() : device.Name.Trim()
-            })
-            .GroupBy(device => device.Id, StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.First())
+        Postgres = (Postgres ?? new PostgresSettings()).Normalize();
+        RecentPostgres = (RecentPostgres ?? new List<PostgresConnectionProfile>())
+            .Where(profile => profile != null)
+            .Select(profile => profile!.Normalize())
+            .Where(profile => !string.IsNullOrWhiteSpace(profile.Host)
+                              && !string.IsNullOrWhiteSpace(profile.Port)
+                              && !string.IsNullOrWhiteSpace(profile.Database)
+                              && !string.IsNullOrWhiteSpace(profile.Username))
             .ToList();
 
-        if (string.IsNullOrWhiteSpace(LastDeviceId))
-        {
-            LastDeviceId = null;
-        }
-        else
-        {
-            LastDeviceId = LastDeviceId.Trim();
-        }
-
         return this;
     }
 }
 
-public sealed class TsdDevice
+public sealed class PostgresSettings
 {
-    [JsonPropertyName("id")]
-    public string Id { get; set; } = string.Empty;
+    public string? Host { get; set; }
+    public string? Port { get; set; }
+    public string? Database { get; set; }
+    public string? Username { get; set; }
+    public string? Password { get; set; }
 
-    [JsonPropertyName("name")]
-    public string? Name { get; set; }
+    public PostgresSettings Normalize()
+    {
+        Host = NormalizeValue(Host);
+        Port = NormalizeValue(Port);
+        Database = NormalizeValue(Database);
+        Username = NormalizeValue(Username);
+        Password = NormalizeValue(Password);
+
+        return this;
+    }
+
+    private static string? NormalizeValue(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+}
+
+public sealed class PostgresConnectionProfile
+{
+    public string? Host { get; set; }
+    public string? Port { get; set; }
+    public string? Database { get; set; }
+    public string? Username { get; set; }
+    public string? Password { get; set; }
+
+    public PostgresConnectionProfile Normalize()
+    {
+        Host = NormalizeValue(Host);
+        Port = NormalizeValue(Port);
+        Database = NormalizeValue(Database);
+        Username = NormalizeValue(Username);
+        Password = NormalizeValue(Password);
+        return this;
+    }
+
+    private static string? NormalizeValue(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
 }
 

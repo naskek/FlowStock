@@ -181,6 +181,90 @@
     };
   }
 
+  function normalizeApiOrder(order) {
+    if (!order || order.id == null) {
+      return null;
+    }
+    var id = Number(order.id);
+    if (!id) {
+      return null;
+    }
+    var orderRef = String(order.order_ref || order.orderRef || "").trim();
+    return {
+      orderId: id,
+      number: orderRef,
+      partnerId: order.partner_id != null ? Number(order.partner_id) : null,
+      partnerName: String(order.partner_name || order.partnerName || "").trim(),
+      partnerInn: String(order.partner_code || order.partnerInn || order.partnerCode || "").trim(),
+      plannedDate: order.due_date || order.dueDate || null,
+      createdAt: order.created_at || order.createdAt || null,
+      shippedAt: order.shipped_at || order.shippedAt || null,
+      status: order.status || order.status_display || order.statusDisplay || null,
+    };
+  }
+
+  function normalizeApiOrderLine(line) {
+    if (!line || line.item_id == null || line.order_id == null) {
+      return null;
+    }
+    var orderId = Number(line.order_id);
+    var itemId = Number(line.item_id);
+    if (!orderId || !itemId) {
+      return null;
+    }
+    return {
+      orderId: orderId,
+      itemId: itemId,
+      itemName: String(line.item_name || line.itemName || ""),
+      barcode: String(line.barcode || ""),
+      orderedQty: Number(line.qty_ordered) || 0,
+      shippedQty: Number(line.qty_shipped) || 0,
+      leftQty: Number(line.qty_left) || 0,
+    };
+  }
+
+  function normalizeApiDoc(doc) {
+    if (!doc || doc.id == null) {
+      return null;
+    }
+    var id = Number(doc.id);
+    if (!id) {
+      return null;
+    }
+    return {
+      id: id,
+      doc_ref: String(doc.doc_ref || doc.docRef || ""),
+      op: String(doc.op || doc.type || "").trim(),
+      status: String(doc.status || "").trim(),
+      createdAt: doc.created_at || doc.createdAt || null,
+      created_at: doc.created_at || doc.createdAt || null,
+      closed_at: doc.closed_at || doc.closedAt || null,
+      partnerName: String(doc.partner_name || doc.partnerName || "").trim(),
+      partnerCode: String(doc.partner_code || doc.partnerCode || "").trim(),
+      order_ref: String(doc.order_ref || doc.orderRef || "").trim(),
+      shipping_ref: String(doc.shipping_ref || doc.shippingRef || "").trim(),
+      comment: doc.comment || null,
+    };
+  }
+
+  function normalizeApiDocLine(line) {
+    if (!line || line.item_id == null) {
+      return null;
+    }
+    return {
+      itemId: Number(line.item_id),
+      itemName: String(line.item_name || line.itemName || ""),
+      barcode: String(line.barcode || ""),
+      qty: Number(line.qty) || 0,
+      qtyInput: line.qty_input != null ? Number(line.qty_input) : null,
+      uom: String(line.uom_code || line.base_uom || "").trim(),
+      fromLocation: line.from_location || null,
+      toLocation: line.to_location || null,
+      fromHu: line.from_hu || null,
+      toHu: line.to_hu || null,
+    };
+  }
+
   function apiSearchItems(query, limit) {
     var q = String(query || "").trim();
     return getBaseUrl().then(function (baseUrl) {
@@ -308,6 +392,224 @@
         apiPartnersCache[roleValue] = partners;
         return partners.slice();
       });
+  }
+
+  function apiGetPartnerById(id) {
+    var target = Number(id);
+    if (!target) {
+      return Promise.resolve(null);
+    }
+    return apiGetPartners("both").then(function (partners) {
+      for (var i = 0; i < partners.length; i += 1) {
+        if (Number(partners[i].partnerId) === target) {
+          return partners[i];
+        }
+      }
+      return null;
+    });
+  }
+
+  function apiFindLocationByCode(code) {
+    var clean = String(code || "").trim().toLowerCase();
+    if (!clean) {
+      return Promise.resolve(null);
+    }
+    return apiGetLocations().then(function (locations) {
+      for (var i = 0; i < locations.length; i += 1) {
+        if (String(locations[i].code || "").toLowerCase() === clean) {
+          return locations[i];
+        }
+      }
+      return null;
+    });
+  }
+
+  function apiGetOrders(query) {
+    var q = String(query || "").trim();
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        var url = baseUrl + "/api/orders";
+        if (q) {
+          url += "?q=" + encodeURIComponent(q);
+        }
+        return fetchJsonWithTimeout(url, { method: "GET" });
+      })
+      .then(function (payload) {
+        if (!Array.isArray(payload)) {
+          throw new Error("INVALID_ORDERS");
+        }
+        return payload
+          .map(normalizeApiOrder)
+          .filter(function (order) {
+            return !!order;
+          });
+      });
+  }
+
+  function apiGetOrderById(id) {
+    var target = Number(id);
+    if (!target) {
+      return Promise.resolve(null);
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/orders/" + encodeURIComponent(target), {
+          method: "GET",
+        });
+      })
+      .then(function (payload) {
+        var order = normalizeApiOrder(payload);
+        return order || null;
+      })
+      .catch(function (error) {
+        if (error && error.message === "ORDER_NOT_FOUND") {
+          return null;
+        }
+        throw error;
+      });
+  }
+
+  function apiGetOrderLines(orderId) {
+    var target = Number(orderId);
+    if (!target) {
+      return Promise.resolve([]);
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(
+          baseUrl + "/api/orders/" + encodeURIComponent(target) + "/lines",
+          { method: "GET" }
+        );
+      })
+      .then(function (payload) {
+        if (!Array.isArray(payload)) {
+          throw new Error("INVALID_ORDER_LINES");
+        }
+        return payload
+          .map(normalizeApiOrderLine)
+          .filter(function (line) {
+            return !!line;
+          });
+      });
+  }
+
+  function apiGetDocs(op) {
+    var opValue = String(op || "").trim();
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        var url = baseUrl + "/api/docs";
+        if (opValue) {
+          url += "?op=" + encodeURIComponent(opValue);
+        }
+        return fetchJsonWithTimeout(url, { method: "GET" });
+      })
+      .then(function (payload) {
+        if (!Array.isArray(payload)) {
+          throw new Error("INVALID_DOCS");
+        }
+        return payload
+          .map(normalizeApiDoc)
+          .filter(function (doc) {
+            return !!doc;
+          });
+      });
+  }
+
+  function apiGetNextDocRef(op) {
+    var opValue = String(op || "").trim();
+    if (!opValue) {
+      return Promise.reject(new Error("INVALID_TYPE"));
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        var url = baseUrl + "/api/docs/next-ref?type=" + encodeURIComponent(opValue);
+        return fetchJsonWithTimeout(url, { method: "GET" });
+      })
+      .then(function (payload) {
+        if (!payload || !payload.doc_ref) {
+          throw new Error("INVALID_DOC_REF");
+        }
+        return String(payload.doc_ref);
+      });
+  }
+
+  function apiGetDocById(id) {
+    var target = Number(id);
+    if (!target) {
+      return Promise.resolve(null);
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/docs/" + encodeURIComponent(target), {
+          method: "GET",
+        });
+      })
+      .then(function (payload) {
+        var doc = normalizeApiDoc(payload);
+        return doc || null;
+      })
+      .catch(function (error) {
+        if (error && error.message === "DOC_NOT_FOUND") {
+          return null;
+        }
+        throw error;
+      });
+  }
+
+  function apiGetDocLines(docId) {
+    var target = Number(docId);
+    if (!target) {
+      return Promise.resolve([]);
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(
+          baseUrl + "/api/docs/" + encodeURIComponent(target) + "/lines",
+          { method: "GET" }
+        );
+      })
+      .then(function (payload) {
+        if (!Array.isArray(payload)) {
+          throw new Error("INVALID_DOC_LINES");
+        }
+        return payload
+          .map(normalizeApiDocLine)
+          .filter(function (line) {
+            return !!line;
+          });
+      });
+  }
+
+  function apiLogin(login, password) {
+    var payload = {
+      login: String(login || ""),
+      password: String(password || ""),
+    };
+    return getBaseUrl().then(function (baseUrl) {
+      return fetchJsonWithTimeout(baseUrl + "/api/tsd/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    });
+  }
+
+  function apiCreateDocDraft(op, docUid, eventId, deviceId) {
+    var payload = {
+      doc_uid: String(docUid || ""),
+      event_id: String(eventId || ""),
+      device_id: deviceId ? String(deviceId) : null,
+      type: String(op || ""),
+      draft_only: true,
+      comment: "TSD",
+    };
+    return getBaseUrl().then(function (baseUrl) {
+      return fetchJsonWithTimeout(baseUrl + "/api/docs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    });
   }
 
   function apiSearchLocations(query) {
@@ -1796,40 +2098,7 @@
   }
 
   function searchOrders(query) {
-    var q = String(query || "").toLowerCase();
-    return init().then(function () {
-      return new Promise(function (resolve, reject) {
-        var results = [];
-        var request = db.transaction(STORE_ORDERS, "readonly")
-          .objectStore(STORE_ORDERS)
-          .openCursor();
-
-        request.onsuccess = function (event) {
-          var cursor = event.target.result;
-          if (!cursor) {
-            resolve(results);
-            return;
-          }
-          var value = cursor.value;
-          if (!q) {
-            results.push(value);
-          } else {
-            if (value.numberLower && value.numberLower.indexOf(q) !== -1) {
-              results.push(value);
-            }
-          }
-          if (results.length >= 100) {
-            resolve(results);
-            return;
-          }
-          cursor.continue();
-        };
-
-        request.onerror = function () {
-          reject(request.error);
-        };
-      });
-    });
+    return apiGetOrders(query);
   }
 
   function listOrders(query) {
@@ -1839,139 +2108,19 @@
     } else if (query && typeof query.q === "string") {
       q = query.q;
     }
-    var needle = String(q || "").toLowerCase();
-    return init().then(function () {
-      return loadPartnerMap().then(function (partners) {
-        return new Promise(function (resolve, reject) {
-          var results = [];
-          var request = db.transaction(STORE_ORDERS, "readonly")
-            .objectStore(STORE_ORDERS)
-            .openCursor();
-
-          request.onsuccess = function (event) {
-            var cursor = event.target.result;
-            if (!cursor) {
-              resolve(results);
-              return;
-            }
-            var order = cursor.value || {};
-            var partner = partners[order.partnerId] || {};
-            var partnerName = partner.name || "";
-            var partnerInn = partner.inn || "";
-            var number = order.number || order.orderNumber || "";
-            var candidate =
-              String(order.numberLower || String(number || "").toLowerCase()) +
-              "|" +
-              String(partnerName || "").toLowerCase() +
-              "|" +
-              String(partnerInn || "").toLowerCase();
-            if (!needle || candidate.indexOf(needle) !== -1) {
-              results.push({
-                orderId: order.orderId,
-                number: number,
-                partnerId: order.partnerId || null,
-                partnerName: partnerName,
-                partnerInn: partnerInn,
-                plannedDate: order.plannedDate || order.planned_date || null,
-                shippedAt: order.shippedAt || order.shipped_at || null,
-                createdAt: order.createdAt || order.created_at || null,
-                status: order.status || null,
-              });
-            }
-            cursor.continue();
-          };
-
-          request.onerror = function () {
-            reject(request.error);
-          };
-        });
-      });
-    });
+    return apiGetOrders(q);
   }
 
   function listOrderLines(orderId) {
-    return init().then(function () {
-      return Promise.all([loadItemMap(), new Promise(function (resolve, reject) {
-        var lines = [];
-        var tx = db.transaction(STORE_ORDER_LINES, "readonly");
-        var index = tx.objectStore(STORE_ORDER_LINES).index("byOrderId");
-        var range = IDBKeyRange.only(orderId);
-        var request = index.openCursor(range);
-        request.onsuccess = function (event) {
-          var cursor = event.target.result;
-          if (cursor) {
-            lines.push(cursor.value);
-            cursor.continue();
-            return;
-          }
-          resolve(lines);
-        };
-        request.onerror = function () {
-          reject(request.error);
-        };
-      })]).then(function (results) {
-        var items = results[0] || {};
-        var rawLines = results[1] || [];
-        return rawLines.map(function (line) {
-          var item = items[line.itemId] || {};
-          var barcode = line.barcode;
-          if (!barcode) {
-            if (Array.isArray(item.barcodes) && item.barcodes.length) {
-              barcode = item.barcodes[0];
-            } else {
-              barcode = item.gtin || "";
-            }
-          }
-          var orderedQty = Number(line.orderedQty) || 0;
-          var shippedQty = Number(line.shippedQty) || 0;
-          var leftQty = Number(line.leftQty);
-          if (isNaN(leftQty)) {
-            leftQty = Math.max(orderedQty - shippedQty, 0);
-          }
-          return {
-            orderId: line.orderId,
-            itemId: line.itemId,
-            itemName: line.itemName || item.name || "",
-            barcode: barcode,
-            orderedQty: orderedQty,
-            shippedQty: shippedQty,
-            leftQty: leftQty,
-          };
-        });
-      });
-    });
+    return apiGetOrderLines(orderId);
   }
 
   function getPartnerById(id) {
-    return init().then(function () {
-      return new Promise(function (resolve, reject) {
-        var request = db.transaction(STORE_PARTNERS, "readonly")
-          .objectStore(STORE_PARTNERS)
-          .get(id);
-        request.onsuccess = function () {
-          resolve(request.result || null);
-        };
-        request.onerror = function () {
-          reject(request.error);
-        };
-      });
-    });
+    return apiGetPartnerById(id);
   }
 
   function getOrderById(id) {
-    return init().then(function () {
-      return new Promise(function (resolve, reject) {
-        var request = db.transaction(STORE_ORDERS, "readonly")
-          .objectStore(STORE_ORDERS)
-          .get(id);
-        request.onsuccess = function () {
-          resolve(request.result || null);
-        };
-        request.onerror = function () {
-          reject(request.error);
-        };
-      });
-    });
+    return apiGetOrderById(id);
   }
 
   function getLocationById(id) {
@@ -1991,23 +2140,7 @@
   }
 
   function findLocationByCode(code) {
-    var clean = String(code || "").trim().toLowerCase();
-    if (!clean) {
-      return Promise.resolve(null);
-    }
-    return init().then(function () {
-      return new Promise(function (resolve, reject) {
-        var tx = db.transaction(STORE_LOCATIONS, "readonly");
-        var index = tx.objectStore(STORE_LOCATIONS).index("codeLower");
-        var request = index.get(clean);
-        request.onsuccess = function () {
-          resolve(request.result || null);
-        };
-        request.onerror = function () {
-          reject(request.error);
-        };
-      });
-    });
+    return apiFindLocationByCode(code);
   }
 
   var offlineStorage = {
@@ -2051,6 +2184,12 @@
     apiGetLocationById: apiGetLocationById,
     apiGetStockByBarcode: apiGetStockByBarcode,
     apiGetPartners: apiGetPartners,
+    apiGetDocs: apiGetDocs,
+    apiGetNextDocRef: apiGetNextDocRef,
+    apiGetDocById: apiGetDocById,
+    apiGetDocLines: apiGetDocLines,
+    apiCreateDocDraft: apiCreateDocDraft,
+    apiLogin: apiLogin,
   };
 
   global.TsdStorage = FORCE_ONLINE ? wrapOnline(offlineStorage) : offlineStorage;

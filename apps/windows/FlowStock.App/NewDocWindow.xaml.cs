@@ -78,6 +78,20 @@ public partial class NewDocWindow : Window
         }
         catch (ArgumentException ex)
         {
+            if (string.Equals(ex.ParamName, "docRef", StringComparison.Ordinal))
+            {
+                var suggested = _services.Documents.GenerateDocRef(option.Type, DateTime.Now);
+                DocRefBox.Text = suggested;
+                DocRefBox.Focus();
+                DocRefBox.SelectAll();
+                MessageBox.Show(
+                    $"Номер уже занят. Предложен новый: {suggested}",
+                    "Документ",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
             MessageBox.Show(ex.Message, "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         catch (Exception ex)

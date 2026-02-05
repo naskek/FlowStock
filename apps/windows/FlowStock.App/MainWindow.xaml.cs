@@ -6,8 +6,8 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Input;
 using FlowStock.Core.Models;
-using Microsoft.Data.Sqlite;
 using Microsoft.Win32;
+using Npgsql;
 
 namespace FlowStock.App;
 
@@ -49,7 +49,6 @@ public partial class MainWindow : Window
     private Location? _selectedLocation;
     private Partner? _selectedPartner;
     private bool _suppressPackagingSelection;
-    private TsSyncWindow? _tsdWindow;
     private const int TabStatusIndex = 0;
     private const int TabDocsIndex = 1;
     private const int TabOrdersIndex = 2;
@@ -630,7 +629,7 @@ public partial class MainWindow : Window
         {
             MessageBox.Show(ex.Message, "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
-        catch (SqliteException ex) when (IsSqliteConstraint(ex))
+        catch (PostgresException ex) when (IsPostgresConstraint(ex))
         {
             if (TryShowItemBarcodeDuplicate(barcode, null))
             {
@@ -734,7 +733,7 @@ public partial class MainWindow : Window
         {
             MessageBox.Show(ex.Message, "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
-        catch (SqliteException ex) when (IsSqliteConstraint(ex))
+        catch (PostgresException ex) when (IsPostgresConstraint(ex))
         {
             if (TryShowPartnerDuplicate(partnerCode, null))
             {
@@ -792,7 +791,7 @@ public partial class MainWindow : Window
         {
             MessageBox.Show(ex.Message, "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
-        catch (SqliteException ex) when (IsSqliteConstraint(ex))
+        catch (PostgresException ex) when (IsPostgresConstraint(ex))
         {
             if (TryShowItemBarcodeDuplicate(barcode, _selectedItem.Id))
             {
@@ -937,7 +936,7 @@ public partial class MainWindow : Window
         {
             MessageBox.Show(ex.Message, "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
-        catch (SqliteException ex) when (IsSqliteConstraint(ex))
+        catch (PostgresException ex) when (IsPostgresConstraint(ex))
         {
             if (TryShowPartnerDuplicate(partnerCode, _selectedPartner.Id))
             {
@@ -1115,68 +1114,21 @@ public partial class MainWindow : Window
         window.ShowDialog();
     }
 
-    private void ExportTsdData_Click(object sender, RoutedEventArgs e)
+    private void OpenDbConnection_Click(object sender, RoutedEventArgs e)
     {
-        var exportDir = Path.Combine(_services.BaseDir, "Exports");
-        Directory.CreateDirectory(exportDir);
-
-        var dialog = new SaveFileDialog
-        {
-            Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
-            FileName = TsSyncWindow.TsdDataFileName,
-            InitialDirectory = exportDir
-        };
-
-        if (dialog.ShowDialog() != true)
-        {
-            return;
-        }
-
-        try
-        {
-            TsSyncWindow.ExportTsdData(_services, dialog.FileName);
-            MessageBox.Show($"Файл сохранен:\n{dialog.FileName}", "Выгрузка на ТСД", MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-        catch (Exception ex)
-        {
-            _services.AppLogger.Error($"TSD export failed path={dialog.FileName}", ex);
-            MessageBox.Show(ex.Message, "Выгрузка на ТСД", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void OpenTsdSync_Click(object sender, RoutedEventArgs e)
-    {
-        OpenTsdSyncWindow();
-    }
-
-    private void OpenTsdDevices_Click(object sender, RoutedEventArgs e)
-    {
-        var window = new TsdDevicesWindow(_services)
+        var window = new DbConnectionWindow(_services)
         {
             Owner = this
         };
         window.ShowDialog();
     }
 
-    private void OpenTsdSyncWindow()
+    private void OpenTsdDevices_Click(object sender, RoutedEventArgs e)
     {
-        if (_tsdWindow != null)
-        {
-            _tsdWindow.Activate();
-            return;
-        }
-
-        var window = new TsSyncWindow(_services, () =>
-        {
-            LoadDocs();
-            LoadStock(StatusSearchBox.Text);
-        })
+        var window = new TsdDeviceWindow(_services)
         {
             Owner = this
         };
-
-        _tsdWindow = window;
-        window.Closed += (_, _) => _tsdWindow = null;
         window.ShowDialog();
     }
 
@@ -1444,9 +1396,9 @@ public partial class MainWindow : Window
         return true;
     }
 
-    private static bool IsSqliteConstraint(SqliteException ex)
+    private static bool IsPostgresConstraint(PostgresException ex)
     {
-        return ex.SqliteErrorCode == 19;
+        return string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal);
     }
 
     private static string FormatQty(double value)

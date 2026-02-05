@@ -1,6 +1,5 @@
-using System.IO;
 using FlowStock.Core.Abstractions;
-using Microsoft.Data.Sqlite;
+using Npgsql;
 
 namespace FlowStock.App;
 
@@ -20,23 +19,23 @@ public sealed class AdminService
         "import_errors"
     };
 
-    private readonly string _dbPath;
-    private readonly string _backupsDir;
+    private readonly string _connectionString;
+    private readonly BackupService _backups;
     private readonly FileLogger _adminLogger;
     private readonly IDataStore _dataStore;
 
-    public AdminService(string dbPath, string backupsDir, IDataStore dataStore, FileLogger adminLogger)
+    public AdminService(string connectionString, IDataStore dataStore, BackupService backups, FileLogger adminLogger)
     {
-        _dbPath = dbPath;
-        _backupsDir = backupsDir;
+        _connectionString = connectionString;
         _dataStore = dataStore;
+        _backups = backups;
         _adminLogger = adminLogger;
     }
 
     public Dictionary<string, long> GetTableCounts()
     {
         var result = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
-        using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        using var connection = new NpgsqlConnection(_connectionString);
         connection.Open();
 
         foreach (var table in GetTrackedTables())
@@ -52,7 +51,7 @@ public sealed class AdminService
 
     public void DeleteTables(IReadOnlyList<string> tables)
     {
-        using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        using var connection = new NpgsqlConnection(_connectionString);
         connection.Open();
         using var transaction = connection.BeginTransaction();
 
@@ -75,7 +74,7 @@ public sealed class AdminService
 
     public void ResetMovements()
     {
-        using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        using var connection = new NpgsqlConnection(_connectionString);
         connection.Open();
         using var transaction = connection.BeginTransaction();
 
@@ -98,22 +97,26 @@ DELETE FROM import_errors;
 
     public string FullReset()
     {
-        Directory.CreateDirectory(_backupsDir);
-        var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-        var archivePath = Path.Combine(_backupsDir, $"FlowStock_old_{stamp}.db");
-
-        if (File.Exists(_dbPath))
+        string? archivePath = null;
+        try
         {
-            File.Move(_dbPath, archivePath, overwrite: true);
+            archivePath = _backups.CreateBackup("admin_full_reset");
+        }
+        catch (Exception ex)
+        {
+            _adminLogger.Warn($"full_reset archive failed: {ex.Message}");
         }
 
-        MoveIfExists(_dbPath + "-wal", archivePath + "-wal");
-        MoveIfExists(_dbPath + "-shm", archivePath + "-shm");
+        using var connection = new NpgsqlConnection(_connectionString);
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = $"TRUNCATE {string.Join(", ", AllTables)} RESTART IDENTITY CASCADE;";
+        command.ExecuteNonQuery();
 
         _dataStore.Initialize();
 
-        _adminLogger.Info($"full_reset success archived={archivePath}");
-        return archivePath;
+        _adminLogger.Info($"full_reset success archived={archivePath ?? "none"}");
+        return archivePath ?? string.Empty;
     }
 
     private static IEnumerable<string> GetTrackedTables()
@@ -121,14 +124,25 @@ DELETE FROM import_errors;
         return TrackedTables;
     }
 
-    private static void MoveIfExists(string sourcePath, string targetPath)
+    private static readonly string[] AllTables =
     {
-        if (!File.Exists(sourcePath))
-        {
-            return;
-        }
-
-        File.Move(sourcePath, targetPath, overwrite: true);
-    }
+        "api_events",
+        "api_docs",
+        "stock_reservation_lines",
+        "tsd_devices",
+        "ledger",
+        "doc_lines",
+        "docs",
+        "order_lines",
+        "orders",
+        "item_packaging",
+        "items",
+        "uoms",
+        "hus",
+        "locations",
+        "partners",
+        "imported_events",
+        "import_errors"
+    };
 }
 

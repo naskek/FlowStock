@@ -22,6 +22,7 @@ public sealed class AppServices
     public FileLogger AppLogger { get; }
     public FileLogger AdminLogger { get; }
     public string DatabasePath { get; }
+    public string ConnectionString { get; }
     public string BaseDir { get; }
     public string BackupsDir { get; }
     public string LogsDir { get; }
@@ -32,7 +33,8 @@ public sealed class AppServices
 
     private AppServices(
         IDataStore dataStore,
-        string databasePath,
+        string connectionString,
+        string databaseTarget,
         string baseDir,
         string backupsDir,
         string logsDir,
@@ -50,11 +52,12 @@ public sealed class AppServices
         Settings = new SettingsService(settingsPath);
         Hus = new HuService(dataStore);
         Import = new ImportService(dataStore);
-        Backups = new BackupService(databasePath, backupsDir, appLogger);
+        Backups = new BackupService(connectionString, backupsDir, appLogger);
         AdminAuth = new AdminAuthService(adminPath, adminLogger);
-        Admin = new AdminService(databasePath, backupsDir, dataStore, adminLogger);
+        Admin = new AdminService(connectionString, dataStore, Backups, adminLogger);
         PartnerStatuses = new PartnerStatusService(partnerStatusPath);
-        DatabasePath = databasePath;
+        DatabasePath = databaseTarget;
+        ConnectionString = connectionString;
         BaseDir = baseDir;
         BackupsDir = backupsDir;
         LogsDir = logsDir;
@@ -74,7 +77,6 @@ public sealed class AppServices
         var settingsPath = AppPaths.SettingsPath;
         var adminPath = AppPaths.AdminPath;
         var partnerStatusPath = AppPaths.PartnerStatusPath;
-        var dbPath = AppPaths.DatabasePath;
 
         Directory.CreateDirectory(baseDir);
         Directory.CreateDirectory(backupsDir);
@@ -82,28 +84,17 @@ public sealed class AppServices
 
         var appLogger = new FileLogger(Path.Combine(logsDir, "app.log"));
         var adminLogger = new FileLogger(Path.Combine(logsDir, "admin.log"));
-        var config = LoadAppConfig();
-        var provider = ResolveDbProvider(config);
-        IDataStore dataStore;
-        if (provider == DbProvider.Postgres)
-        {
-            var connectionString = BuildPostgresConnectionString(config);
-            dataStore = new PostgresDataStore(connectionString);
-            dataStore.Initialize();
-            var target = FormatPostgresTarget(connectionString);
-            appLogger.Info($"Database provider: postgres {target}");
-        }
-        else
-        {
-            MigrateLegacyDatabase(dbPath);
-            dataStore = new SqliteDataStore(dbPath);
-            dataStore.Initialize();
-            appLogger.Info($"Database provider: sqlite {dbPath}");
-        }
+        var userSettings = new SettingsService(settingsPath).Load();
+        var connectionString = BuildPostgresConnectionString(userSettings);
+        IDataStore dataStore = new PostgresDataStore(connectionString);
+        dataStore.Initialize();
+        var target = FormatPostgresTarget(connectionString);
+        appLogger.Info($"Database provider: postgres {target}");
 
         return new AppServices(
             dataStore,
-            dbPath,
+            connectionString,
+            target,
             baseDir,
             backupsDir,
             logsDir,
@@ -114,81 +105,19 @@ public sealed class AppServices
             adminLogger);
     }
 
-    private static void MigrateLegacyDatabase(string dbPath)
+    private static string BuildPostgresConnectionString(BackupSettings? userSettings)
     {
-        if (File.Exists(dbPath))
-        {
-            return;
-        }
-
-        var legacyPath = AppPaths.LegacyDatabasePath;
-        if (!File.Exists(legacyPath))
-        {
-            return;
-        }
-
-        var dir = Path.GetDirectoryName(dbPath);
-        if (!string.IsNullOrWhiteSpace(dir))
-        {
-            Directory.CreateDirectory(dir);
-        }
-
-        File.Copy(legacyPath, dbPath, overwrite: false);
-        CopyIfExists(legacyPath + "-wal", dbPath + "-wal");
-        CopyIfExists(legacyPath + "-shm", dbPath + "-shm");
-    }
-
-    private static void CopyIfExists(string source, string target)
-    {
-        if (!File.Exists(source))
-        {
-            return;
-        }
-
-        File.Copy(source, target, overwrite: true);
-    }
-
-    private static AppConfig LoadAppConfig()
-    {
-        var path = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
-        if (!File.Exists(path))
-        {
-            return new AppConfig();
-        }
-
-        try
-        {
-            var json = File.ReadAllText(path);
-            return System.Text.Json.JsonSerializer.Deserialize<AppConfig>(json) ?? new AppConfig();
-        }
-        catch
-        {
-            return new AppConfig();
-        }
-    }
-
-    private static DbProvider ResolveDbProvider(AppConfig config)
-    {
-        var raw = ReadEnvOrConfig("FLOWSTOCK_DB_PROVIDER", "LIGHTWMS_DB_PROVIDER", config.DbProvider);
-        if (string.Equals(raw, "postgres", StringComparison.OrdinalIgnoreCase))
-        {
-            return DbProvider.Postgres;
-        }
-
-        return DbProvider.Sqlite;
-    }
-
-    private static string BuildPostgresConnectionString(AppConfig config)
-    {
-        var host = ReadEnvOrConfig("FLOWSTOCK_PG_HOST", "LIGHTWMS_PG_HOST", config.Postgres?.Host) ?? "127.0.0.1";
-        var port = ReadEnvOrConfig("FLOWSTOCK_PG_PORT", "LIGHTWMS_PG_PORT", config.Postgres?.Port) ?? "5432";
-        var database = ReadEnvOrConfig("FLOWSTOCK_PG_DB", "LIGHTWMS_PG_DB", config.Postgres?.Database) ?? "flowstock";
-        var user = ReadEnvOrConfig("FLOWSTOCK_PG_USER", "LIGHTWMS_PG_USER", config.Postgres?.Username) ?? "postgres";
-        var password = ReadEnvOrConfig("FLOWSTOCK_PG_PASSWORD", "LIGHTWMS_PG_PASSWORD", config.Postgres?.Password) ?? string.Empty;
+        var userPostgres = userSettings?.Postgres;
+        var host = ReadEnvOrSettings("FLOWSTOCK_PG_HOST", userPostgres?.Host) ?? "127.0.0.1";
+        var port = ReadEnvOrSettings("FLOWSTOCK_PG_PORT", userPostgres?.Port) ?? "15432";
+        var database = ReadEnvOrSettings("FLOWSTOCK_PG_DB", userPostgres?.Database) ?? "flowstock";
+        var user = ReadEnvOrSettings("FLOWSTOCK_PG_USER", userPostgres?.Username) ?? "postgres";
+        var password = ReadEnvOrSettings("FLOWSTOCK_PG_PASSWORD", userPostgres?.Password) ?? string.Empty;
+        host = NormalizeHost(host);
         return $"Host={host};Port={port};Database={database};Username={user};Password={password};";
     }
 
-    private static string? ReadEnvOrConfig(string envKey, string legacyEnvKey, string? fallback)
+    private static string? ReadEnvOrSettings(string envKey, string? settingsValue)
     {
         var value = Environment.GetEnvironmentVariable(envKey);
         if (!string.IsNullOrWhiteSpace(value))
@@ -196,8 +125,12 @@ public sealed class AppServices
             return value;
         }
 
-        value = Environment.GetEnvironmentVariable(legacyEnvKey);
-        return string.IsNullOrWhiteSpace(value) ? fallback : value;
+        if (!string.IsNullOrWhiteSpace(settingsValue))
+        {
+            return settingsValue;
+        }
+
+        return null;
     }
 
     private static string FormatPostgresTarget(string connectionString)
@@ -238,25 +171,11 @@ public sealed class AppServices
         return "unknown";
     }
 
-    private enum DbProvider
+    private static string NormalizeHost(string host)
     {
-        Sqlite,
-        Postgres
-    }
-
-    private sealed class AppConfig
-    {
-        public string? DbProvider { get; set; }
-        public PostgresConfig? Postgres { get; set; }
-    }
-
-    private sealed class PostgresConfig
-    {
-        public string? Host { get; set; }
-        public string? Port { get; set; }
-        public string? Database { get; set; }
-        public string? Username { get; set; }
-        public string? Password { get; set; }
+        return host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+            ? "127.0.0.1"
+            : host;
     }
 }
 
