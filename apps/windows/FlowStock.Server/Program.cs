@@ -329,6 +329,57 @@ ORDER BY name;"
     return Results.Ok(list);
 });
 
+app.MapPost("/api/item-requests", async (HttpRequest request, IDataStore store) =>
+{
+    var rawJson = await ReadBody(request);
+    if (string.IsNullOrWhiteSpace(rawJson))
+    {
+        return Results.BadRequest(new ApiResult(false, "EMPTY_BODY"));
+    }
+
+    ItemRequestCreateRequest? createRequest;
+    try
+    {
+        createRequest = JsonSerializer.Deserialize<ItemRequestCreateRequest>(
+            rawJson,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    }
+    catch (JsonException)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+    }
+
+    if (createRequest == null)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+    }
+
+    var barcode = createRequest.Barcode?.Trim();
+    var comment = createRequest.Comment?.Trim();
+    if (string.IsNullOrWhiteSpace(barcode))
+    {
+        return Results.BadRequest(new ApiResult(false, "MISSING_BARCODE"));
+    }
+
+    if (string.IsNullOrWhiteSpace(comment))
+    {
+        return Results.BadRequest(new ApiResult(false, "MISSING_COMMENT"));
+    }
+
+    var itemRequest = new ItemRequest
+    {
+        Barcode = barcode,
+        Comment = comment,
+        DeviceId = string.IsNullOrWhiteSpace(createRequest.DeviceId) ? null : createRequest.DeviceId.Trim(),
+        Login = string.IsNullOrWhiteSpace(createRequest.Login) ? null : createRequest.Login.Trim(),
+        CreatedAt = DateTime.Now,
+        Status = "NEW"
+    };
+
+    store.AddItemRequest(itemRequest);
+    return Results.Ok(new ApiResult(true));
+});
+
 app.MapGet("/api/partners", (HttpRequest request, IDataStore store) =>
 {
     var role = request.Query["role"].ToString();

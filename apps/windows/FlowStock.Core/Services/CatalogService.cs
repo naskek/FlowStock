@@ -32,7 +32,7 @@ public sealed class CatalogService
         return _data.GetPartners();
     }
 
-    public long CreateItem(string name, string? barcode, string? gtin, string? baseUom)
+    public long CreateItem(string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -45,7 +45,11 @@ public sealed class CatalogService
             Name = name.Trim(),
             Barcode = string.IsNullOrWhiteSpace(barcode) ? null : barcode.Trim(),
             Gtin = string.IsNullOrWhiteSpace(gtin) ? null : gtin.Trim(),
-            BaseUom = normalizedUom
+            BaseUom = normalizedUom,
+            Brand = string.IsNullOrWhiteSpace(brand) ? null : brand.Trim(),
+            Volume = string.IsNullOrWhiteSpace(volume) ? null : volume.Trim(),
+            ShelfLifeMonths = shelfLifeMonths,
+            TaraId = taraId
         };
 
         return _data.AddItem(item);
@@ -114,7 +118,7 @@ public sealed class CatalogService
         _data.UpdateItemBarcode(itemId, barcode.Trim());
     }
 
-    public void UpdateItem(long itemId, string name, string? barcode, string? gtin, string? baseUom)
+    public void UpdateItem(long itemId, string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -135,7 +139,11 @@ public sealed class CatalogService
             Barcode = string.IsNullOrWhiteSpace(barcode) ? null : barcode.Trim(),
             Gtin = string.IsNullOrWhiteSpace(gtin) ? null : gtin.Trim(),
             BaseUom = normalizedUom,
-            DefaultPackagingId = existing.DefaultPackagingId
+            DefaultPackagingId = existing.DefaultPackagingId,
+            Brand = string.IsNullOrWhiteSpace(brand) ? null : brand.Trim(),
+            Volume = string.IsNullOrWhiteSpace(volume) ? null : volume.Trim(),
+            ShelfLifeMonths = shelfLifeMonths,
+            TaraId = taraId
         };
 
         _data.UpdateItem(item);
@@ -199,6 +207,52 @@ public sealed class CatalogService
         }
 
         _data.DeleteLocation(locationId);
+    }
+
+    public IReadOnlyList<Tara> GetTaras()
+    {
+        return _data.GetTaras();
+    }
+
+    public long CreateTara(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new ArgumentException("Наименование обязательно.", nameof(name));
+        }
+
+        var tara = new Tara
+        {
+            Name = name.Trim()
+        };
+
+        return _data.AddTara(tara);
+    }
+
+    public void UpdateTara(long taraId, string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new ArgumentException("Наименование обязательно.", nameof(name));
+        }
+
+        var tara = new Tara
+        {
+            Id = taraId,
+            Name = name.Trim()
+        };
+
+        _data.UpdateTara(tara);
+    }
+
+    public void DeleteTara(long taraId)
+    {
+        if (_data.IsTaraUsed(taraId))
+        {
+            throw new InvalidOperationException("Нельзя удалить тару, которая используется в товарах.");
+        }
+
+        _data.DeleteTara(taraId);
     }
 
     public void UpdatePartner(long partnerId, string name, string? code)

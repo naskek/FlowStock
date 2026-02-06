@@ -45,13 +45,22 @@ CREATE TABLE IF NOT EXISTS items (
     gtin TEXT,
     uom TEXT,
     base_uom TEXT NOT NULL DEFAULT 'шт',
-    default_packaging_id BIGINT
+    default_packaging_id BIGINT,
+    brand TEXT,
+    volume TEXT,
+    shelf_life_months INTEGER,
+    tara_id BIGINT
 );
 CREATE TABLE IF NOT EXISTS uoms (
     id BIGSERIAL PRIMARY KEY,
     name TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ix_uoms_name ON uoms(name);
+CREATE TABLE IF NOT EXISTS taras (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_taras_name ON taras(name);
 CREATE TABLE IF NOT EXISTS item_packaging (
     id BIGSERIAL PRIMARY KEY,
     item_id BIGINT NOT NULL,
@@ -76,6 +85,17 @@ CREATE TABLE IF NOT EXISTS partners (
     created_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ix_partners_code ON partners(code);
+CREATE TABLE IF NOT EXISTS item_requests (
+    id BIGSERIAL PRIMARY KEY,
+    barcode TEXT NOT NULL,
+    comment TEXT NOT NULL,
+    device_id TEXT,
+    login TEXT,
+    status TEXT NOT NULL DEFAULT 'NEW',
+    created_at TEXT NOT NULL,
+    resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_item_requests_status ON item_requests(status);
 CREATE TABLE IF NOT EXISTS orders (
     id BIGSERIAL PRIMARY KEY,
     order_ref TEXT NOT NULL,
@@ -218,6 +238,10 @@ CREATE INDEX IF NOT EXISTS ix_tsd_devices_device_id ON tsd_devices(device_id);
         EnsureColumn(connection, "items", "uom", "TEXT");
         EnsureColumn(connection, "items", "base_uom", "TEXT NOT NULL DEFAULT 'шт'");
         EnsureColumn(connection, "items", "default_packaging_id", "BIGINT");
+        EnsureColumn(connection, "items", "brand", "TEXT");
+        EnsureColumn(connection, "items", "volume", "TEXT");
+        EnsureColumn(connection, "items", "shelf_life_months", "INTEGER");
+        EnsureColumn(connection, "items", "tara_id", "BIGINT");
         EnsureColumn(connection, "partners", "created_at", "TEXT");
         EnsureColumn(connection, "docs", "partner_id", "BIGINT");
         EnsureColumn(connection, "docs", "order_id", "BIGINT");
@@ -246,6 +270,8 @@ CREATE INDEX IF NOT EXISTS ix_tsd_devices_device_id ON tsd_devices(device_id);
         EnsureIndex(connection, "ix_docs_order", "docs(order_id)");
         EnsureIndex(connection, "ix_item_packaging_item_code", "item_packaging(item_id, code)");
         EnsureIndex(connection, "ix_item_packaging_item", "item_packaging(item_id)");
+        EnsureIndex(connection, "ix_taras_name", "taras(name)");
+        EnsureIndex(connection, "ix_item_requests_status", "item_requests(status)");
         EnsureIndex(connection, "ix_ledger_item_loc_hu", "ledger(item_id, location_id, hu)");
         EnsureIndex(connection, "ix_ledger_item_loc_hu_code", "ledger(item_id, location_id, hu_code)");
         EnsureIndex(connection, "idx_hus_status", "hus(status)");
@@ -274,7 +300,7 @@ CREATE INDEX IF NOT EXISTS ix_tsd_devices_device_id ON tsd_devices(device_id);
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT id, name, barcode, gtin, base_uom, default_packaging_id FROM items WHERE barcode = @barcode OR gtin = @barcode");
+            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.tara_id, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id WHERE i.barcode = @barcode OR i.gtin = @barcode");
             command.Parameters.AddWithValue("@barcode", barcode);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
@@ -285,7 +311,7 @@ CREATE INDEX IF NOT EXISTS ix_tsd_devices_device_id ON tsd_devices(device_id);
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT id, name, barcode, gtin, base_uom, default_packaging_id FROM items WHERE id = @id");
+            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.tara_id, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id WHERE i.id = @id");
             command.Parameters.AddWithValue("@id", id);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
@@ -318,8 +344,8 @@ CREATE INDEX IF NOT EXISTS ix_tsd_devices_device_id ON tsd_devices(device_id);
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO items(name, barcode, gtin, base_uom, default_packaging_id)
-VALUES(@name, @barcode, @gtin, @base_uom, @default_packaging_id)
+INSERT INTO items(name, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, tara_id)
+VALUES(@name, @barcode, @gtin, @base_uom, @default_packaging_id, @brand, @volume, @shelf_life_months, @tara_id)
 RETURNING id;
 ");
             command.Parameters.AddWithValue("@name", item.Name);
@@ -327,6 +353,10 @@ RETURNING id;
             command.Parameters.AddWithValue("@gtin", (object?)item.Gtin ?? DBNull.Value);
             command.Parameters.AddWithValue("@base_uom", item.BaseUom);
             command.Parameters.AddWithValue("@default_packaging_id", item.DefaultPackagingId.HasValue ? item.DefaultPackagingId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@brand", string.IsNullOrWhiteSpace(item.Brand) ? DBNull.Value : item.Brand.Trim());
+            command.Parameters.AddWithValue("@volume", string.IsNullOrWhiteSpace(item.Volume) ? DBNull.Value : item.Volume.Trim());
+            command.Parameters.AddWithValue("@shelf_life_months", item.ShelfLifeMonths.HasValue ? item.ShelfLifeMonths.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@tara_id", item.TaraId.HasValue ? item.TaraId.Value : DBNull.Value);
             return (long)(command.ExecuteScalar() ?? 0L);
         });
     }
@@ -353,7 +383,11 @@ SET name = @name,
     barcode = @barcode,
     gtin = @gtin,
     base_uom = @base_uom,
-    default_packaging_id = @default_packaging_id
+    default_packaging_id = @default_packaging_id,
+    brand = @brand,
+    volume = @volume,
+    shelf_life_months = @shelf_life_months,
+    tara_id = @tara_id
 WHERE id = @id;
 ");
             command.Parameters.AddWithValue("@name", item.Name);
@@ -361,6 +395,10 @@ WHERE id = @id;
             command.Parameters.AddWithValue("@gtin", (object?)item.Gtin ?? DBNull.Value);
             command.Parameters.AddWithValue("@base_uom", item.BaseUom);
             command.Parameters.AddWithValue("@default_packaging_id", item.DefaultPackagingId.HasValue ? item.DefaultPackagingId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@brand", string.IsNullOrWhiteSpace(item.Brand) ? DBNull.Value : item.Brand.Trim());
+            command.Parameters.AddWithValue("@volume", string.IsNullOrWhiteSpace(item.Volume) ? DBNull.Value : item.Volume.Trim());
+            command.Parameters.AddWithValue("@shelf_life_months", item.ShelfLifeMonths.HasValue ? item.ShelfLifeMonths.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@tara_id", item.TaraId.HasValue ? item.TaraId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@id", item.Id);
             command.ExecuteNonQuery();
             return 0;
@@ -657,6 +695,67 @@ RETURNING id;
 ");
             command.Parameters.AddWithValue("@name", uom.Name);
             return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public IReadOnlyList<Tara> GetTaras()
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "SELECT id, name FROM taras ORDER BY name");
+            using var reader = command.ExecuteReader();
+            var list = new List<Tara>();
+            while (reader.Read())
+            {
+                list.Add(ReadTara(reader));
+            }
+
+            return list;
+        });
+    }
+
+    public long AddTara(Tara tara)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"INSERT INTO taras(name)
+VALUES(@name)
+RETURNING id;");
+            command.Parameters.AddWithValue("@name", tara.Name);
+            return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public void UpdateTara(Tara tara)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "UPDATE taras SET name = @name WHERE id = @id");
+            command.Parameters.AddWithValue("@name", tara.Name);
+            command.Parameters.AddWithValue("@id", tara.Id);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void DeleteTara(long taraId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "DELETE FROM taras WHERE id = @id");
+            command.Parameters.AddWithValue("@id", taraId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public bool IsTaraUsed(long taraId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "SELECT 1 FROM items WHERE tara_id = @id LIMIT 1");
+            command.Parameters.AddWithValue("@id", taraId);
+            return command.ExecuteScalar() != null;
         });
     }
 
@@ -1494,7 +1593,7 @@ ORDER BY COALESCE(hu_code, hu);
         return WithConnection(connection =>
         {
             var sql = @"
-SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id
+SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.tara_id, NULL AS tara_name
 FROM ledger l
 INNER JOIN items i ON i.id = l.item_id
 WHERE l.location_id = @location_id";
@@ -1892,8 +1991,13 @@ RETURNING id;
             Name = reader.GetString(1),
             Barcode = reader.IsDBNull(2) ? null : reader.GetString(2),
             Gtin = reader.IsDBNull(3) ? null : reader.GetString(3),
-            BaseUom = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom,
-            DefaultPackagingId = reader.IsDBNull(5) ? null : reader.GetInt64(5)
+            BaseUom = string.IsNullOrWhiteSpace(baseUom) ? "èâ" : baseUom,
+            DefaultPackagingId = reader.IsDBNull(5) ? null : reader.GetInt64(5),
+            Brand = reader.IsDBNull(6) ? null : reader.GetString(6),
+            Volume = reader.IsDBNull(7) ? null : reader.GetString(7),
+            ShelfLifeMonths = reader.IsDBNull(8) ? null : reader.GetInt32(8),
+            TaraId = reader.IsDBNull(9) ? null : reader.GetInt64(9),
+            TaraName = reader.IsDBNull(10) ? null : reader.GetString(10)
         };
     }
 
@@ -1918,6 +2022,15 @@ RETURNING id;
             Id = reader.GetInt64(0),
             Code = reader.GetString(1),
             Name = reader.GetString(2)
+        };
+    }
+
+    private static Tara ReadTara(NpgsqlDataReader reader)
+    {
+        return new Tara
+        {
+            Id = reader.GetInt64(0),
+            Name = reader.GetString(1)
         };
     }
 
@@ -2229,10 +2342,10 @@ ON CONFLICT (hu_code) DO NOTHING;";
     {
         if (string.IsNullOrWhiteSpace(search))
         {
-            return "SELECT id, name, barcode, gtin, base_uom, default_packaging_id FROM items ORDER BY name";
+            return "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.tara_id, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id ORDER BY i.name";
         }
 
-        return "SELECT id, name, barcode, gtin, base_uom, default_packaging_id FROM items WHERE name ILIKE @search OR barcode ILIKE @search ORDER BY name";
+        return "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.tara_id, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id WHERE i.name ILIKE @search OR i.barcode ILIKE @search OR i.gtin ILIKE @search ORDER BY i.name";
     }
 
     private static string BuildStockQuery(string? search)
@@ -2251,6 +2364,68 @@ INNER JOIN locations l ON l.id = led.location_id
 
         baseQuery += "GROUP BY i.id, i.name, i.barcode, i.base_uom, l.id, COALESCE(led.hu_code, led.hu) HAVING SUM(led.qty_delta) != 0 ORDER BY i.name, l.code, COALESCE(led.hu_code, led.hu)";
         return baseQuery;
+    }
+
+    public long AddItemRequest(ItemRequest request)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"INSERT INTO item_requests(barcode, comment, device_id, login, status, created_at, resolved_at)
+VALUES(@barcode, @comment, @device_id, @login, @status, @created_at, @resolved_at)
+RETURNING id;");
+            command.Parameters.AddWithValue("@barcode", request.Barcode);
+            command.Parameters.AddWithValue("@comment", request.Comment);
+            command.Parameters.AddWithValue("@device_id", string.IsNullOrWhiteSpace(request.DeviceId) ? DBNull.Value : request.DeviceId.Trim());
+            command.Parameters.AddWithValue("@login", string.IsNullOrWhiteSpace(request.Login) ? DBNull.Value : request.Login.Trim());
+            command.Parameters.AddWithValue("@status", string.IsNullOrWhiteSpace(request.Status) ? "NEW" : request.Status.Trim());
+            command.Parameters.AddWithValue("@created_at", ToDbDate(request.CreatedAt));
+            command.Parameters.AddWithValue("@resolved_at", request.ResolvedAt.HasValue ? ToDbDate(request.ResolvedAt.Value) : DBNull.Value);
+            return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public IReadOnlyList<ItemRequest> GetItemRequests(bool includeResolved)
+    {
+        return WithConnection(connection =>
+        {
+            var sql = "SELECT id, barcode, comment, device_id, login, created_at, status, resolved_at FROM item_requests";
+            if (!includeResolved)
+            {
+                sql += " WHERE status <> 'RESOLVED'";
+            }
+            sql += " ORDER BY created_at DESC";
+            using var command = CreateCommand(connection, sql);
+            using var reader = command.ExecuteReader();
+            var list = new List<ItemRequest>();
+            while (reader.Read())
+            {
+                list.Add(new ItemRequest
+                {
+                    Id = reader.GetInt64(0),
+                    Barcode = reader.GetString(1),
+                    Comment = reader.GetString(2),
+                    DeviceId = reader.IsDBNull(3) ? null : reader.GetString(3),
+                    Login = reader.IsDBNull(4) ? null : reader.GetString(4),
+                    CreatedAt = FromDbDate(reader.IsDBNull(5) ? null : reader.GetString(5)) ?? DateTime.MinValue,
+                    Status = reader.IsDBNull(6) ? "NEW" : reader.GetString(6),
+                    ResolvedAt = reader.IsDBNull(7) ? null : FromDbDate(reader.GetString(7))
+                });
+            }
+
+            return list;
+        });
+    }
+
+    public void MarkItemRequestResolved(long requestId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "UPDATE item_requests SET status = 'RESOLVED', resolved_at = @resolved_at WHERE id = @id");
+            command.Parameters.AddWithValue("@resolved_at", ToDbDate(DateTime.Now));
+            command.Parameters.AddWithValue("@id", requestId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
     }
 
     private static string BuildImportErrorsQuery(string? reason)

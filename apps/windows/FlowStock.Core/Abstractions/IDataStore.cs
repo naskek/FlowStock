@@ -35,6 +35,12 @@ public interface IDataStore
     IReadOnlyList<Uom> GetUoms();
     long AddUom(Uom uom);
 
+    IReadOnlyList<Tara> GetTaras();
+    long AddTara(Tara tara);
+    void UpdateTara(Tara tara);
+    void DeleteTara(long taraId);
+    bool IsTaraUsed(long taraId);
+
     Partner? GetPartner(long id);
     Partner? FindPartnerByCode(string code);
     IReadOnlyList<Partner> GetPartners();
@@ -99,5 +105,9 @@ public interface IDataStore
     IReadOnlyList<ImportError> GetImportErrors(string? reason);
     ImportError? GetImportError(long id);
     void DeleteImportError(long id);
+
+    long AddItemRequest(ItemRequest request);
+    IReadOnlyList<ItemRequest> GetItemRequests(bool includeResolved);
+    void MarkItemRequestResolved(long requestId);
 }
 

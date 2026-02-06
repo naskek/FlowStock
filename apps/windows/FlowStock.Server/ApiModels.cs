@@ -101,6 +101,21 @@ public sealed class TsdLoginRequest
     public string? Password { get; set; }
 }
 
+public sealed class ItemRequestCreateRequest
+{
+    [JsonPropertyName("barcode")]
+    public string? Barcode { get; set; }
+
+    [JsonPropertyName("comment")]
+    public string? Comment { get; set; }
+
+    [JsonPropertyName("device_id")]
+    public string? DeviceId { get; set; }
+
+    [JsonPropertyName("login")]
+    public string? Login { get; set; }
+}
+
 public sealed class ApiResult
 {
     public ApiResult(bool ok, string? error = null)
