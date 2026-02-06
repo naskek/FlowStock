@@ -112,7 +112,7 @@ public partial class ImportErrorsWindow : Window
         try
         {
             var uom = (NewItemUomCombo.SelectedItem as Uom)?.Name;
-            _services.Catalog.CreateItem(NewItemNameBox.Text, _selectedError.Barcode, NewItemGtinBox.Text, uom);
+            _services.Catalog.CreateItem(NewItemNameBox.Text, _selectedError.Barcode, NewItemGtinBox.Text, uom, null, null, null, null);
             NewItemNameBox.Text = string.Empty;
             NewItemGtinBox.Text = string.Empty;
             NewItemUomCombo.SelectedItem = null;

@@ -1,0 +1,26 @@
+<Window x:Class="FlowStock.App.ItemRequestsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Запросы на товары" Height="520" Width="900">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+            <Button x:Name="ResolveButton" Content="Отметить обработанным" Click="Resolve_Click" />
+            <Button Content="Закрыть" Click="Close_Click" Margin="8,0,0,0" />
+        </StackPanel>
+        <DataGrid x:Name="RequestsGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
+                  SelectionMode="Extended" SelectionUnit="FullRow">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="Auto" MaxWidth="160" />
+                <DataGridTextColumn Header="Штрихкод" Binding="{Binding Barcode}" Width="Auto" MaxWidth="220" />
+                <DataGridTextColumn Header="Комментарий" Binding="{Binding Comment}" Width="*" />
+                <DataGridTextColumn Header="Устройство" Binding="{Binding DeviceId}" Width="Auto" MaxWidth="140" />
+                <DataGridTextColumn Header="Логин" Binding="{Binding Login}" Width="Auto" MaxWidth="120" />
+                <DataGridTextColumn Header="Статус" Binding="{Binding Status}" Width="Auto" MaxWidth="120" />
+            </DataGrid.Columns>
+        </DataGrid>
+    </Grid>
+</Window>

@@ -20,6 +20,7 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<Item> _items = new();
     private readonly ObservableCollection<Location> _locations = new();
     private readonly ObservableCollection<Uom> _uoms = new();
+    private readonly ObservableCollection<Tara> _taras = new();
     private readonly ObservableCollection<PartnerRow> _partners = new();
     private readonly ObservableCollection<Doc> _docs = new();
     private readonly ObservableCollection<Order> _orders = new();
@@ -71,6 +72,7 @@ public partial class MainWindow : Window
         ItemsGrid.ItemsSource = _items;
         LocationsGrid.ItemsSource = _locations;
         ItemUomCombo.ItemsSource = _uoms;
+        ItemTaraCombo.ItemsSource = _taras;
         ItemDisplayUomCombo.ItemsSource = _itemPackagingOptions;
         PartnersGrid.ItemsSource = _partners;
         PartnerStatusCombo.ItemsSource = _partnerStatusOptions;
@@ -100,11 +102,13 @@ public partial class MainWindow : Window
     {
         LoadItems();
         LoadUoms();
+        LoadTaras();
         LoadLocations();
         LoadPartners();
         LoadDocs();
         LoadOrders();
         LoadStock(null);
+        UpdateItemRequestsBadge();
     }
 
     private void MainWindow_Loaded(object? sender, RoutedEventArgs e)
@@ -125,6 +129,11 @@ public partial class MainWindow : Window
     private void MainTabs_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
         if (!IsLoaded)
+        {
+            return;
+        }
+
+        if (!ReferenceEquals(e.Source, MainTabs))
         {
             return;
         }
@@ -173,6 +182,8 @@ public partial class MainWindow : Window
                     }
                     break;
             }
+
+            UpdateItemRequestsBadge();
         }
         catch (Exception ex)
         {
@@ -240,6 +251,15 @@ public partial class MainWindow : Window
         foreach (var uom in _services.Catalog.GetUoms())
         {
             _uoms.Add(uom);
+        }
+    }
+
+    private void LoadTaras()
+    {
+        _taras.Clear();
+        foreach (var tara in _services.Catalog.GetTaras())
+        {
+            _taras.Add(tara);
         }
     }
 
@@ -741,15 +761,35 @@ public partial class MainWindow : Window
 
         var barcode = NormalizeIdentifier(ItemBarcodeBox.Text);
         var gtin = NormalizeIdentifier(ItemGtinBox.Text);
+        if (string.IsNullOrWhiteSpace(barcode) && !string.IsNullOrWhiteSpace(gtin))
+        {
+            barcode = gtin;
+        }
+
+        if (string.IsNullOrWhiteSpace(barcode))
+        {
+            MessageBox.Show("Введите SKU / штрихкод или GTIN.", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
         if (!TryValidateItemIdentifiers(barcode, gtin, null))
         {
             return;
         }
 
+        if (!TryParseShelfLifeMonths(ItemShelfLifeBox.Text, out var shelfLifeMonths))
+        {
+            return;
+        }
+
+        var brand = NormalizeIdentifier(ItemBrandBox.Text);
+        var volume = NormalizeIdentifier(ItemVolumeBox.Text);
+        var taraId = (ItemTaraCombo.SelectedItem as Tara)?.Id;
+
         try
         {
             var baseUom = (ItemUomCombo.SelectedItem as Uom)?.Name;
-            _services.Catalog.CreateItem(ItemNameBox.Text, barcode, gtin, baseUom);
+            _services.Catalog.CreateItem(ItemNameBox.Text, barcode, gtin, baseUom, brand, volume, shelfLifeMonths, taraId);
             LoadItems();
             ClearItemForm();
         }
@@ -785,10 +825,15 @@ public partial class MainWindow : Window
             return;
         }
 
-        try
+        var window = new ItemImportPreviewWindow(_services, dialog.FileName)
         {
-            var summary = ImportItemsFromExcel(dialog.FileName);
+            Owner = this
+        };
+
+        if (window.ShowDialog() == true && window.ImportSummary != null)
+        {
             LoadItems();
+            var summary = window.ImportSummary;
             var message =
                 "Импорт завершен.\n" +
                 $"Создано: {summary.Created}\n" +
@@ -797,10 +842,6 @@ public partial class MainWindow : Window
                 $"Пропущено (некорректные строки): {summary.InvalidRows}\n" +
                 $"Ошибки: {summary.Errors}";
             MessageBox.Show(message, "Товары", MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Товары", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -922,6 +963,10 @@ public partial class MainWindow : Window
         ItemNameBox.Text = _selectedItem.Name;
         ItemBarcodeBox.Text = _selectedItem.Barcode ?? string.Empty;
         ItemGtinBox.Text = _selectedItem.Gtin ?? string.Empty;
+        ItemBrandBox.Text = _selectedItem.Brand ?? string.Empty;
+        ItemVolumeBox.Text = _selectedItem.Volume ?? string.Empty;
+        ItemShelfLifeBox.Text = _selectedItem.ShelfLifeMonths.HasValue ? _selectedItem.ShelfLifeMonths.Value.ToString(CultureInfo.InvariantCulture) : string.Empty;
+        ItemTaraCombo.SelectedItem = _taras.FirstOrDefault(t => t.Id == _selectedItem.TaraId);
         ItemUomCombo.SelectedItem = _uoms.FirstOrDefault(u => string.Equals(u.Name, _selectedItem.BaseUom, StringComparison.OrdinalIgnoreCase));
         LoadItemPackagingOptions(_selectedItem);
     }
@@ -964,15 +1009,35 @@ public partial class MainWindow : Window
 
         var barcode = NormalizeIdentifier(ItemBarcodeBox.Text);
         var gtin = NormalizeIdentifier(ItemGtinBox.Text);
+        if (string.IsNullOrWhiteSpace(barcode) && !string.IsNullOrWhiteSpace(gtin))
+        {
+            barcode = gtin;
+        }
+
+        if (string.IsNullOrWhiteSpace(barcode))
+        {
+            MessageBox.Show("Введите SKU / штрихкод или GTIN.", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
         if (!TryValidateItemIdentifiers(barcode, gtin, _selectedItem.Id))
         {
             return;
         }
 
+        if (!TryParseShelfLifeMonths(ItemShelfLifeBox.Text, out var shelfLifeMonths))
+        {
+            return;
+        }
+
+        var brand = NormalizeIdentifier(ItemBrandBox.Text);
+        var volume = NormalizeIdentifier(ItemVolumeBox.Text);
+        var taraId = (ItemTaraCombo.SelectedItem as Tara)?.Id;
+
         try
         {
             var baseUom = (ItemUomCombo.SelectedItem as Uom)?.Name;
-            _services.Catalog.UpdateItem(_selectedItem.Id, ItemNameBox.Text, barcode, gtin, baseUom);
+            _services.Catalog.UpdateItem(_selectedItem.Id, ItemNameBox.Text, barcode, gtin, baseUom, brand, volume, shelfLifeMonths, taraId);
             ReloadItemsAndSelect(_selectedItem.Id);
         }
         catch (ArgumentException ex)
@@ -1060,7 +1125,7 @@ public partial class MainWindow : Window
                 {
                     AddBarcodeVariants(seenCodes, code);
                     var gtin = IsDigitsOnly(code) ? code : null;
-                    _services.Catalog.CreateItem(name, code, gtin, null);
+                    _services.Catalog.CreateItem(name, code, gtin, null, null, null, null, null);
                     created++;
                     AddBarcodeVariants(existingCodes, code);
                     AddBarcodeVariants(existingCodes, gtin);
@@ -1425,6 +1490,10 @@ public partial class MainWindow : Window
         return ItemNameBox.IsKeyboardFocusWithin
                || ItemBarcodeBox.IsKeyboardFocusWithin
                || ItemGtinBox.IsKeyboardFocusWithin
+               || ItemBrandBox.IsKeyboardFocusWithin
+               || ItemVolumeBox.IsKeyboardFocusWithin
+               || ItemShelfLifeBox.IsKeyboardFocusWithin
+               || ItemTaraCombo.IsKeyboardFocusWithin
                || ItemUomCombo.IsKeyboardFocusWithin
                || ItemDisplayUomCombo.IsKeyboardFocusWithin;
     }
@@ -1654,6 +1723,16 @@ public partial class MainWindow : Window
         window.ShowDialog();
     }
 
+    private void OpenItemRequests_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new ItemRequestsWindow(_services, UpdateItemRequestsBadge)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+        UpdateItemRequestsBadge();
+    }
+
     private void OpenTsdDevices_Click(object sender, RoutedEventArgs e)
     {
         var window = new TsdDeviceWindow(_services)
@@ -1717,6 +1796,16 @@ public partial class MainWindow : Window
         LoadUoms();
     }
 
+    private void TaraMenu_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new TaraWindow(_services, LoadTaras)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+        LoadTaras();
+    }
+
     private void PackagingManager_Click(object sender, RoutedEventArgs e)
     {
         var window = new PackagingManagerWindow(_services)
@@ -1740,12 +1829,35 @@ public partial class MainWindow : Window
         window.Owner = this;
         window.ShowDialog();
     }
+    private void UpdateItemRequestsBadge()
+    {
+        if (ItemRequestsBadge == null || ItemRequestsCountText == null)
+        {
+            return;
+        }
+
+        try
+        {
+            var count = _services.DataStore.GetItemRequests(false).Count;
+            ItemRequestsCountText.Text = count.ToString();
+            ItemRequestsBadge.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error("Item requests badge update failed", ex);
+        }
+    }
+
     private void ClearItemForm()
     {
         _selectedItem = null;
         ItemNameBox.Text = string.Empty;
         ItemBarcodeBox.Text = string.Empty;
         ItemGtinBox.Text = string.Empty;
+        ItemBrandBox.Text = string.Empty;
+        ItemVolumeBox.Text = string.Empty;
+        ItemShelfLifeBox.Text = string.Empty;
+        ItemTaraCombo.SelectedItem = null;
         ItemUomCombo.SelectedItem = _uoms.FirstOrDefault(u => string.Equals(u.Name, "шт", StringComparison.OrdinalIgnoreCase));
         ItemSaveButton.IsEnabled = false;
         ItemDeleteButton.IsEnabled = false;
@@ -1859,6 +1971,24 @@ public partial class MainWindow : Window
         }
 
         return partner;
+    }
+
+    private bool TryParseShelfLifeMonths(string? value, out int? months)
+    {
+        months = null;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return true;
+        }
+
+        if (!int.TryParse(value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) || parsed <= 0)
+        {
+            MessageBox.Show("Срок годности должен быть целым числом месяцев.", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        months = parsed;
+        return true;
     }
 
     private bool TryValidateItemIdentifiers(string? barcode, string? gtin, long? currentItemId)

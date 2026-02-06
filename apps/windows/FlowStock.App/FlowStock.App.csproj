@@ -8,6 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationIcon>..\..\..\img\fs_icon.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>

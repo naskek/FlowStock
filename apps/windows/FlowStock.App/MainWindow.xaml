@@ -4,31 +4,50 @@
         Title="FlowStock" Height="720" Width="1100"
         PreviewKeyDown="MainWindow_PreviewKeyDown">
     <DockPanel>
-        <Menu DockPanel.Dock="Top">
-            <MenuItem Header="Операции">
-                <MenuItem Header="Открыть выбранный" InputGestureText="Ctrl+O" Click="DocsOpen_Click" />
-                <MenuItem Header="Закрыть текущий документ" InputGestureText="Ctrl+Enter" Click="DocClose_Click" />
-            </MenuItem>
-            <MenuItem Header="Справочники">
-                <MenuItem Header="Товары" Click="ViewItems_Click" />
-                <MenuItem Header="Места хранения" Click="ViewLocations_Click" />
-                <MenuItem Header="Контрагенты" Click="ViewPartners_Click" />
-                <Separator />
-                <MenuItem Header="Ед. измерения..." Click="UomMenu_Click" />
-                <MenuItem Header="Упаковки..." Click="PackagingManager_Click" />
-            </MenuItem>
-            <MenuItem Header="Сервис">
-                <MenuItem Header="Подключение к БД..." Click="OpenDbConnection_Click" />
-                <MenuItem Header="Создание аккаунта..." Click="OpenTsdDevices_Click" />
-                <Separator />
-                <MenuItem Header="Резервные копии..." Click="OpenBackupManager_Click" />
-                <MenuItem Header="Администрирование..." Click="OpenAdmin_Click" />
-                <MenuItem Header="HU Реестр..." Click="OpenHuRegistry_Click" />
-                <Separator />
-                <MenuItem Header="Открыть папку данных" Click="OpenDataFolder_Click" />
-                <MenuItem Header="Открыть папку логов" Click="OpenLogsFolder_Click" />
-            </MenuItem>
-        </Menu>
+        <Grid DockPanel.Dock="Top">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Menu Grid.Column="0">
+                <MenuItem Header="Операции">
+                    <MenuItem Header="Открыть выбранный" InputGestureText="Ctrl+O" Click="DocsOpen_Click" />
+                    <MenuItem Header="Закрыть текущий документ" InputGestureText="Ctrl+Enter" Click="DocClose_Click" />
+                </MenuItem>
+                <MenuItem Header="Справочники">
+                    <MenuItem Header="Товары" Click="ViewItems_Click" />
+                    <MenuItem Header="Места хранения" Click="ViewLocations_Click" />
+                    <MenuItem Header="Контрагенты" Click="ViewPartners_Click" />
+                    <MenuItem Header="Тара..." Click="TaraMenu_Click" />
+                    <Separator />
+                    <MenuItem Header="Ед. измерения..." Click="UomMenu_Click" />
+                    <MenuItem Header="Упаковки..." Click="PackagingManager_Click" />
+                </MenuItem>
+                <MenuItem Header="Сервис">
+                    <MenuItem Header="Подключение к БД..." Click="OpenDbConnection_Click" />
+                    <MenuItem Header="Создание аккаунта..." Click="OpenTsdDevices_Click" />
+                    <MenuItem Header="Запросы по товарам..." Click="OpenItemRequests_Click" />
+                    <Separator />
+                    <MenuItem Header="Резервные копии..." Click="OpenBackupManager_Click" />
+                    <MenuItem Header="Администрирование..." Click="OpenAdmin_Click" />
+                    <MenuItem Header="HU Реестр..." Click="OpenHuRegistry_Click" />
+                    <Separator />
+                    <MenuItem Header="Открыть папку данных" Click="OpenDataFolder_Click" />
+                    <MenuItem Header="Открыть папку логов" Click="OpenLogsFolder_Click" />
+                </MenuItem>
+            </Menu>
+            <Button Grid.Column="1" x:Name="ItemRequestsButton" Margin="6,0,6,0" Padding="8,2"
+                    VerticalAlignment="Center" Click="OpenItemRequests_Click">
+                <Grid>
+                    <TextBlock Text="🔔" FontSize="14" VerticalAlignment="Center" />
+                    <Border x:Name="ItemRequestsBadge" Background="#C62828" CornerRadius="8"
+                            HorizontalAlignment="Right" VerticalAlignment="Top"
+                            Padding="4,0" Margin="10,-4,0,0" Visibility="Collapsed">
+                        <TextBlock x:Name="ItemRequestsCountText" Foreground="White" FontSize="10" />
+                    </Border>
+                </Grid>
+            </Button>
+        </Grid>
         <Border Margin="12">
             <TabControl x:Name="MainTabs" SelectionChanged="MainTabs_SelectionChanged">
             <TabItem Header="Остатки">
@@ -155,21 +174,29 @@
                                 <TextBox x:Name="ItemBarcodeBox" Margin="0,2,0,8" TabIndex="2" />
                                 <TextBlock Text="GTIN" />
                                 <TextBox x:Name="ItemGtinBox" Margin="0,2,0,8" TabIndex="3" />
+                                <TextBlock Text="Бренд" />
+                                <TextBox x:Name="ItemBrandBox" Margin="0,2,0,8" TabIndex="4" />
+                                <TextBlock Text="Объем" />
+                                <TextBox x:Name="ItemVolumeBox" Margin="0,2,0,8" TabIndex="5" />
+                                <TextBlock Text="Срок годности (мес.)" />
+                                <TextBox x:Name="ItemShelfLifeBox" Margin="0,2,0,8" TabIndex="6" />
+                                <TextBlock Text="Тара" />
+                                <ComboBox x:Name="ItemTaraCombo" Margin="0,2,0,8" DisplayMemberPath="Name" TabIndex="7" />
                                 <TextBlock Text="Базовая единица" />
-                                <ComboBox x:Name="ItemUomCombo" Margin="0,2,0,8" DisplayMemberPath="Name" TabIndex="4" />
+                                <ComboBox x:Name="ItemUomCombo" Margin="0,2,0,8" DisplayMemberPath="Name" TabIndex="8" />
                                 <TextBlock Text="Отображать в" />
                                 <ComboBox x:Name="ItemDisplayUomCombo" Margin="0,2,0,0"
                                           DisplayMemberPath="Name"
                                           SelectionChanged="ItemDisplayUomCombo_SelectionChanged"
-                                          TabIndex="5" />
+                                          TabIndex="9" />
                                 <Button x:Name="ItemPackagingButton" Content="Упаковки..." Margin="0,8,0,0"
-                                        Width="140" Click="ItemPackaging_Click" TabIndex="6" />
+                                        Width="140" Click="ItemPackaging_Click" TabIndex="10" />
                             </StackPanel>
                         </GroupBox>
                         <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                            <Button Content="Добавить" Click="AddItem_Click" TabIndex="7" />
-                            <Button x:Name="ItemSaveButton" Content="Сохранить" Click="UpdateItem_Click" Margin="8,0,0,0" TabIndex="8" />
-                            <Button x:Name="ItemDeleteButton" Content="Удалить" Click="DeleteItem_Click" Margin="8,0,0,0" TabIndex="9" />
+                            <Button Content="Добавить" Click="AddItem_Click" TabIndex="11" />
+                            <Button x:Name="ItemSaveButton" Content="Сохранить" Click="UpdateItem_Click" Margin="8,0,0,0" TabIndex="12" />
+                            <Button x:Name="ItemDeleteButton" Content="Удалить" Click="DeleteItem_Click" Margin="8,0,0,0" TabIndex="13" />
                         </StackPanel>
                         <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                             <Button Content="Импорт Excel..." Click="ImportItems_Click" Width="140" />
@@ -189,6 +216,10 @@
                             <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="SKU / штрихкод" Binding="{Binding Barcode}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Бренд" Binding="{Binding Brand}" Width="Auto" MaxWidth="240" />
+                            <DataGridTextColumn Header="Объем" Binding="{Binding Volume}" Width="Auto" MaxWidth="160" />
+                            <DataGridTextColumn Header="Срок годности (мес.)" Binding="{Binding ShelfLifeMonths}" Width="Auto" MaxWidth="180" />
+                            <DataGridTextColumn Header="Тара" Binding="{Binding TaraName}" Width="Auto" MaxWidth="200" />
                             <DataGridTextColumn Header="Базовая единица" Binding="{Binding BaseUom}" Width="Auto" MaxWidth="320" />
                         </DataGrid.Columns>
                     </DataGrid>
@@ -264,5 +295,6 @@
         </Border>
     </DockPanel>
 </Window>
+
 
 
