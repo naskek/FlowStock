@@ -12,11 +12,11 @@ public sealed class PostgresDataStore : IDataStore
     private readonly NpgsqlTransaction? _transaction;
     private const string DocSelectBase =
         "SELECT d.id, d.doc_ref, d.type, d.status, d.created_at, d.closed_at, d.partner_id, d.order_id, d.order_ref, d.shipping_ref, d.comment, p.name, p.code, " +
-        "COALESCE(dl.line_count, 0) AS line_count, ad.device_id " +
+        "COALESCE(dl.line_count, 0) AS line_count, ad.device_id, ad.doc_uid " +
         "FROM docs d " +
         "LEFT JOIN partners p ON p.id = d.partner_id " +
         "LEFT JOIN (SELECT doc_id, COUNT(*) AS line_count FROM doc_lines GROUP BY doc_id) dl ON dl.doc_id = d.id " +
-        "LEFT JOIN (SELECT doc_id, MAX(device_id) AS device_id FROM api_docs GROUP BY doc_id) ad ON ad.doc_id = d.id";
+        "LEFT JOIN (SELECT doc_id, MAX(device_id) AS device_id, MAX(doc_uid) AS doc_uid FROM api_docs GROUP BY doc_id) ad ON ad.doc_id = d.id";
     private const string OrderSelectBase = "SELECT o.id, o.order_ref, o.partner_id, o.due_date, o.status, o.comment, o.created_at, p.name, p.code FROM orders o LEFT JOIN partners p ON p.id = o.partner_id";
 
     public PostgresDataStore(string connectionString)
@@ -204,6 +204,7 @@ CREATE TABLE IF NOT EXISTS tsd_devices (
     password_salt TEXT NOT NULL,
     password_hash TEXT NOT NULL,
     password_iterations INTEGER NOT NULL,
+    platform TEXT NOT NULL DEFAULT 'TSD',
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TEXT NOT NULL,
     last_seen TEXT
@@ -240,6 +241,7 @@ CREATE INDEX IF NOT EXISTS ix_tsd_devices_device_id ON tsd_devices(device_id);
         EnsureColumn(connection, "api_events", "received_at", "TEXT");
         EnsureColumn(connection, "api_events", "device_id", "TEXT");
         EnsureColumn(connection, "api_events", "raw_json", "TEXT");
+        EnsureColumn(connection, "tsd_devices", "platform", "TEXT NOT NULL DEFAULT 'TSD'");
 
         EnsureIndex(connection, "ix_docs_order", "docs(order_id)");
         EnsureIndex(connection, "ix_item_packaging_item_code", "item_packaging(item_id, code)");
@@ -1060,6 +1062,22 @@ WHERE id = @id
             command.Parameters.AddWithValue("@partner_id", partnerId.HasValue ? partnerId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@order_ref", string.IsNullOrWhiteSpace(orderRef) ? DBNull.Value : orderRef);
             command.Parameters.AddWithValue("@shipping_ref", string.IsNullOrWhiteSpace(shippingRef) ? DBNull.Value : shippingRef);
+            command.Parameters.AddWithValue("@id", docId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void UpdateDocComment(long docId, string? comment)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE docs
+SET comment = @comment
+WHERE id = @id;
+");
+            command.Parameters.AddWithValue("@comment", string.IsNullOrWhiteSpace(comment) ? DBNull.Value : comment);
             command.Parameters.AddWithValue("@id", docId);
             command.ExecuteNonQuery();
             return 0;
@@ -1937,6 +1955,7 @@ RETURNING id;
         string? partnerCode = null;
         var lineCount = 0;
         string? sourceDeviceId = null;
+        string? apiDocUid = null;
 
         if (reader.FieldCount > 6 && !reader.IsDBNull(6))
         {
@@ -1983,6 +2002,11 @@ RETURNING id;
             sourceDeviceId = reader.GetString(14);
         }
 
+        if (reader.FieldCount > 15 && !reader.IsDBNull(15))
+        {
+            apiDocUid = reader.GetString(15);
+        }
+
         return new Doc
         {
             Id = reader.GetInt64(0),
@@ -1999,7 +2023,8 @@ RETURNING id;
             PartnerName = partnerName,
             PartnerCode = partnerCode,
             LineCount = lineCount,
-            SourceDeviceId = sourceDeviceId
+            SourceDeviceId = sourceDeviceId,
+            ApiDocUid = apiDocUid
         };
     }
 

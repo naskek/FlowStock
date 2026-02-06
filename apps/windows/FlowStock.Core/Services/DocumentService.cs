@@ -338,6 +338,23 @@ public sealed class DocumentService
         _data.UpdateDocHeader(docId, partnerId, cleanedOrderRef, cleanedShippingRef);
     }
 
+    public void MarkDocForRecount(long docId)
+    {
+        var doc = _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
+        if (doc.Status != DocStatus.Draft)
+        {
+            throw new InvalidOperationException("Документ уже закрыт.");
+        }
+        if (doc.Type != DocType.Inventory)
+        {
+            throw new InvalidOperationException("На пересчет можно отправить только инвентаризацию.");
+        }
+
+        var current = doc.Comment?.Trim();
+        var next = BuildRecountComment(current);
+        _data.UpdateDocComment(docId, next);
+    }
+
     public int ApplyOrderToDoc(long docId, long orderId)
     {
         var doc = _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
@@ -809,6 +826,26 @@ public sealed class DocumentService
     private static string? NormalizeHuValue(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static string BuildRecountComment(string? current)
+    {
+        if (string.IsNullOrWhiteSpace(current))
+        {
+            return "TSD:RECOUNT";
+        }
+
+        if (current.IndexOf("RECOUNT", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return current;
+        }
+
+        if (current.StartsWith("TSD", StringComparison.OrdinalIgnoreCase))
+        {
+            return "TSD:RECOUNT";
+        }
+
+        return $"{current} RECOUNT";
     }
 
     private static (string? fromHu, string? toHu) ResolveLedgerHu(Doc doc, DocLine line, string? docHu)

@@ -1,7 +1,7 @@
 <Window x:Class="FlowStock.App.TsdDeviceWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="ТСД устройства"
+        Title="Создание аккаунта"
         Height="560" Width="900"
         WindowStartupLocation="CenterOwner">
     <Grid Margin="12">
@@ -10,7 +10,7 @@
             <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
         <StackPanel Grid.Column="0">
-            <TextBlock Text="Устройства" FontWeight="SemiBold" />
+            <TextBlock Text="Аккаунты" FontWeight="SemiBold" />
             <DataGrid x:Name="DevicesGrid"
                       AutoGenerateColumns="False"
                       IsReadOnly="True"
@@ -18,10 +18,10 @@
                       Margin="0,6,0,8"
                       SelectionChanged="DevicesGrid_SelectionChanged">
                 <DataGrid.Columns>
-                    <DataGridTextColumn Header="ID" Binding="{Binding DeviceId}" Width="*" />
+                    <DataGridTextColumn Header="ID" Binding="{Binding DeviceId}" Width="160" />
                     <DataGridTextColumn Header="Логин" Binding="{Binding Login}" Width="160" />
+                    <DataGridTextColumn Header="Платформа" Binding="{Binding PlatformDisplay}" Width="120" />
                     <DataGridCheckBoxColumn Header="Активен" Binding="{Binding IsActive}" Width="90" />
-                    <DataGridTextColumn Header="Последняя активность" Binding="{Binding LastSeen}" Width="200" />
                 </DataGrid.Columns>
             </DataGrid>
             <StackPanel Orientation="Horizontal">
@@ -30,17 +30,20 @@
                 <Button x:Name="BlockButton" Content="Заблокировать" Width="140" Margin="8,0,0,0" Click="ToggleActive_Click" />
             </StackPanel>
         </StackPanel>
-        <GroupBox Grid.Column="1" Header="Данные устройства" Margin="12,0,0,0">
+        <GroupBox Grid.Column="1" Header="Данные аккаунта" Margin="12,0,0,0">
             <StackPanel Margin="8">
-                <TextBlock Text="ID устройства" />
+                <TextBlock Text="ID" />
                 <TextBox x:Name="DeviceIdBox" Margin="0,2,0,8" />
                 <TextBlock Text="Логин" />
                 <TextBox x:Name="LoginBox" Margin="0,2,0,8" />
                 <TextBlock Text="Пароль" />
                 <TextBox x:Name="PasswordBox" Margin="0,2,0,8" />
                 <CheckBox x:Name="IsActiveCheck" Content="Активен" Margin="0,0,0,8" />
-                <TextBlock Text="Последняя активность" />
-                <TextBox x:Name="LastSeenBox" Margin="0,2,0,8" IsReadOnly="True" />
+                <TextBlock Text="Платформа" />
+                <ComboBox x:Name="PlatformBox" Margin="0,2,0,8">
+                    <ComboBoxItem Content="ТСД" Tag="TSD" />
+                    <ComboBoxItem Content="ПК" Tag="PC" />
+                </ComboBox>
                 <Button Content="Сохранить" Width="140" Click="Save_Click" />
             </StackPanel>
         </GroupBox>

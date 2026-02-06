@@ -19,7 +19,7 @@
             </MenuItem>
             <MenuItem Header="Сервис">
                 <MenuItem Header="Подключение к БД..." Click="OpenDbConnection_Click" />
-                <MenuItem Header="ТСД устройства..." Click="OpenTsdDevices_Click" />
+                <MenuItem Header="Создание аккаунта..." Click="OpenTsdDevices_Click" />
                 <Separator />
                 <MenuItem Header="Резервные копии..." Click="OpenBackupManager_Click" />
                 <MenuItem Header="Администрирование..." Click="OpenAdmin_Click" />
@@ -30,7 +30,7 @@
             </MenuItem>
         </Menu>
         <Border Margin="12">
-            <TabControl x:Name="MainTabs">
+            <TabControl x:Name="MainTabs" SelectionChanged="MainTabs_SelectionChanged">
             <TabItem Header="Остатки">
                 <Grid>
                     <Grid.RowDefinitions>
@@ -40,7 +40,6 @@
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                         <TextBox x:Name="StatusSearchBox" Width="240" Margin="0,0,8,0" />
                         <Button Content="Поиск" Click="StatusSearch_Click" Margin="0,0,8,0" />
-                        <Button Content="Обновить" Click="StatusRefresh_Click" />
                         <TextBlock Text="Место хранения" VerticalAlignment="Center" Margin="12,0,6,0" />
                         <ComboBox x:Name="StockLocationFilter" Width="220" DisplayMemberPath="Name"
                                   SelectionChanged="StockLocationFilter_SelectionChanged" />
@@ -50,11 +49,11 @@
                     </StackPanel>
                     <DataGrid x:Name="StockGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
-                            <DataGridTextColumn Header="SKU / штрихкод" Binding="{Binding Barcode}" Width="160" />
-                            <DataGridTextColumn Header="Место хранения" Binding="{Binding LocationCode}" Width="140" />
-                            <DataGridTextColumn Header="HU" Binding="{Binding HuDisplay}" Width="160" />
-                            <DataGridTextColumn Header="В базе" Binding="{Binding BaseDisplay}" Width="140" />
+                            <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="SKU / штрихкод" Binding="{Binding Barcode}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Место хранения" Binding="{Binding LocationCode}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="HU" Binding="{Binding HuDisplay}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="В базе" Binding="{Binding BaseDisplay}" Width="Auto" MaxWidth="320" />
                         </DataGrid.Columns>
                     </DataGrid>
                     <TextBlock x:Name="StockEmptyText"
@@ -78,7 +77,6 @@
                     </Grid.RowDefinitions>
                     <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
                         <Button Content="Новый документ" Click="NewDocMenu_Click" />
-                        <Button Content="Обновить" Click="DocsRefresh_Click" Margin="8,0,0,0" />
                     </StackPanel>
                     <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
                         <TextBlock Text="Поиск" VerticalAlignment="Center" />
@@ -95,14 +93,21 @@
                               MouseDoubleClick="DocsGrid_MouseDoubleClick"
                               KeyDown="DocsGrid_KeyDown">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="Номер" Binding="{Binding DocRef}" Width="*" />
-                            <DataGridTextColumn Header="Тип" Binding="{Binding TypeDisplay}" Width="160" />
-                            <DataGridTextColumn Header="Статус" Binding="{Binding StatusDisplay}" Width="120" />
-                        <DataGridTextColumn Header="Контрагент" Binding="{Binding PartnerDisplay}" Width="220" />
-                            <DataGridTextColumn Header="Заказ" Binding="{Binding OrderRef}" Width="160" />
-                            <DataGridTextColumn Header="HU" Binding="{Binding HuDisplay}" Width="160" />
-                            <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="160" />
-                            <DataGridTextColumn Header="Закрыт" Binding="{Binding ClosedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="160" />
+                            <DataGridTextColumn Header="Номер" Binding="{Binding DocRef}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Тип" Binding="{Binding TypeDisplay}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Статус" Binding="{Binding StatusDisplay}" Width="Auto" MaxWidth="320">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                        <Setter Property="ToolTip" Value="{Binding StatusDisplay}" />
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                        <DataGridTextColumn Header="Контрагент" Binding="{Binding PartnerDisplay}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Заказ" Binding="{Binding OrderRef}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="HU" Binding="{Binding HuDisplay}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Закрыт" Binding="{Binding ClosedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="Auto" MaxWidth="320" />
                         </DataGrid.Columns>
                     </DataGrid>
                 </Grid>
@@ -116,18 +121,17 @@
                     <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
                         <Button Content="Новый" Click="OrdersNew_Click" />
                         <Button Content="Удалить" Click="OrdersDelete_Click" Margin="8,0,0,0" />
-                        <Button Content="Обновить" Click="OrdersRefresh_Click" Margin="8,0,0,0" />
                     </StackPanel>
                     <DataGrid x:Name="OrdersGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
                               MouseDoubleClick="OrdersGrid_MouseDoubleClick"
                               KeyDown="OrdersGrid_KeyDown">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="Номер" Binding="{Binding OrderRef}" Width="*" />
-                            <DataGridTextColumn Header="Контрагент" Binding="{Binding PartnerDisplay}" Width="220" />
-                            <DataGridTextColumn Header="Плановая отгрузка" Binding="{Binding DueDate, StringFormat={}{0:dd'/'MM'/'yyyy}}" Width="160" />
-                            <DataGridTextColumn Header="Статус" Binding="{Binding StatusDisplay}" Width="140" />
-                            <DataGridTextColumn Header="Факт отгрузки" Binding="{Binding ShippedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="160" />
-                            <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="160" />
+                            <DataGridTextColumn Header="Номер" Binding="{Binding OrderRef}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Контрагент" Binding="{Binding PartnerDisplay}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Плановая отгрузка" Binding="{Binding DueDate, StringFormat={}{0:dd'/'MM'/'yyyy}}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Статус" Binding="{Binding StatusDisplay}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Факт отгрузки" Binding="{Binding ShippedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="Auto" MaxWidth="320" />
                         </DataGrid.Columns>
                     </DataGrid>
                 </Grid>
@@ -182,10 +186,10 @@
                               SelectionMode="Extended" SelectionUnit="FullRow"
                               SelectionChanged="ItemsGrid_SelectionChanged" KeyDown="ItemsGrid_KeyDown" TabIndex="20">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="*" />
-                            <DataGridTextColumn Header="SKU / штрихкод" Binding="{Binding Barcode}" Width="180" />
-                            <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="140" />
-                            <DataGridTextColumn Header="Базовая единица" Binding="{Binding BaseUom}" Width="160" />
+                            <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="SKU / штрихкод" Binding="{Binding Barcode}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Базовая единица" Binding="{Binding BaseUom}" Width="Auto" MaxWidth="320" />
                         </DataGrid.Columns>
                     </DataGrid>
                 </Grid>
@@ -214,8 +218,8 @@
                     <DataGrid x:Name="LocationsGrid" Grid.Column="1" AutoGenerateColumns="False" IsReadOnly="True"
                               SelectionChanged="LocationsGrid_SelectionChanged" TabIndex="20">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="Код" Binding="{Binding Code}" Width="160" />
-                            <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="*" />
+                            <DataGridTextColumn Header="Код" Binding="{Binding Code}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="Auto" MaxWidth="320" />
                         </DataGrid.Columns>
                     </DataGrid>
                 </Grid>
@@ -248,10 +252,10 @@
                     <DataGrid x:Name="PartnersGrid" Grid.Column="1" AutoGenerateColumns="False" IsReadOnly="True"
                               SelectionChanged="PartnersGrid_SelectionChanged" TabIndex="20">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="ИНН" Binding="{Binding Code}" Width="160" />
-                            <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="*" />
-                            <DataGridTextColumn Header="Статус" Binding="{Binding StatusDisplay}" Width="160" />
-                            <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="160" />
+                            <DataGridTextColumn Header="ИНН" Binding="{Binding Code}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Статус" Binding="{Binding StatusDisplay}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="Auto" MaxWidth="320" />
                         </DataGrid.Columns>
                     </DataGrid>
                 </Grid>
@@ -260,4 +264,5 @@
         </Border>
     </DockPanel>
 </Window>
+
 

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FlowStock · ПК</title>
+    <meta name="theme-color" content="#14324b" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body class="pc-body needs-login">
+    <header class="pc-header">
+      <div class="pc-brand">
+        <div class="pc-title">FlowStock · Просмотр</div>
+        <div class="pc-subtitle">Локальная сеть · read-only</div>
+      </div>
+      <nav class="pc-tabs">
+        <button class="btn pc-tab is-active" data-view="stock">Остатки</button>
+        <button class="btn pc-tab" data-view="orders">Заказы</button>
+      </nav>
+      <div class="pc-account">
+        <div id="accountLabel" class="pc-account-label">Гость</div>
+        <button id="logoutBtn" class="btn btn-outline pc-logout" type="button">Выйти</button>
+      </div>
+    </header>
+    <main id="app" class="pc-content"></main>
+    <script src="./app.js"></script>
+  </body>
+</html>

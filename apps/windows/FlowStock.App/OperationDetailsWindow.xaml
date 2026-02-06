@@ -15,6 +15,7 @@
             <DockPanel LastChildFill="True">
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                     <Button x:Name="DocCloseButton" Content="Провести" Click="DocClose_Click" />
+                    <Button x:Name="DocRecountButton" Content="На пересчет" Click="DocRecount_Click" Margin="8,0,0,0" />
                     <Button x:Name="DocHeaderSaveButton" Content="Сохранить" Click="DocHeaderSave_Click" Margin="8,0,0,0" />
                     <Button Content="Закрыть окно" IsCancel="True" Margin="8,0,0,0" />
                 </StackPanel>

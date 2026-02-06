@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Threading;
 using ExcelDataReader;
 using FlowStock.Core.Models;
 using Microsoft.Win32;
@@ -26,7 +27,10 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<StockLocationFilterOption> _stockLocationFilters = new();
     private readonly ObservableCollection<StockHuFilterOption> _stockHuFilters = new();
     private readonly ObservableCollection<PackagingOption> _itemPackagingOptions = new();
+    private readonly DispatcherTimer _autoRefreshTimer;
+    private bool _autoRefreshInProgress;
     private static bool _excelEncodingRegistered;
+    private static readonly TimeSpan AutoRefreshInterval = TimeSpan.FromSeconds(20);
     private readonly List<PartnerStatusOption> _partnerStatusOptions = new()
     {
         new PartnerStatusOption(PartnerStatus.Supplier, "Поставщик"),
@@ -85,6 +89,11 @@ public partial class MainWindow : Window
         ClearItemForm();
         ClearLocationForm();
         ClearPartnerForm();
+
+        _autoRefreshTimer = new DispatcherTimer { Interval = AutoRefreshInterval };
+        _autoRefreshTimer.Tick += AutoRefreshTimer_Tick;
+        Loaded += MainWindow_Loaded;
+        Closed += MainWindow_Closed;
     }
 
     private void LoadAll()
@@ -96,6 +105,83 @@ public partial class MainWindow : Window
         LoadDocs();
         LoadOrders();
         LoadStock(null);
+    }
+
+    private void MainWindow_Loaded(object? sender, RoutedEventArgs e)
+    {
+        _autoRefreshTimer.Start();
+    }
+
+    private void MainWindow_Closed(object? sender, EventArgs e)
+    {
+        _autoRefreshTimer.Stop();
+    }
+
+    private void AutoRefreshTimer_Tick(object? sender, EventArgs e)
+    {
+        RefreshActiveTab();
+    }
+
+    private void MainTabs_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded)
+        {
+            return;
+        }
+
+        RefreshActiveTab();
+    }
+
+    private void RefreshActiveTab()
+    {
+        if (_autoRefreshInProgress)
+        {
+            return;
+        }
+
+        _autoRefreshInProgress = true;
+        try
+        {
+            switch (MainTabs.SelectedIndex)
+            {
+                case TabStatusIndex:
+                    LoadStockHuFilters();
+                    LoadStock(StatusSearchBox.Text);
+                    break;
+                case TabDocsIndex:
+                    LoadDocs();
+                    break;
+                case TabOrdersIndex:
+                    LoadOrders();
+                    break;
+                case TabItemsIndex:
+                    if (!IsItemFormEditing())
+                    {
+                        LoadItems(ItemsSearchBox?.Text);
+                    }
+                    break;
+                case TabLocationsIndex:
+                    if (!IsLocationFormEditing())
+                    {
+                        LoadLocations();
+                    }
+                    break;
+                case TabPartnersIndex:
+                    if (!IsPartnerFormEditing())
+                    {
+                        LoadPartners();
+                    }
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error("Auto refresh failed", ex);
+        }
+        finally
+        {
+            _autoRefreshInProgress = false;
+        }
     }
 
     private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -137,6 +223,7 @@ public partial class MainWindow : Window
 
     private void LoadItems(string? search = null)
     {
+        var selectedId = _selectedItem?.Id;
         _items.Clear();
         var query = search ?? ItemsSearchBox?.Text;
         var normalized = NormalizeIdentifier(query);
@@ -144,6 +231,7 @@ public partial class MainWindow : Window
         {
             _items.Add(item);
         }
+        RestoreItemSelection(selectedId);
     }
 
     private void LoadUoms()
@@ -194,6 +282,7 @@ public partial class MainWindow : Window
 
     private void LoadLocations()
     {
+        var selectedId = _selectedLocation?.Id;
         _locations.Clear();
         foreach (var location in _services.Catalog.GetLocations())
         {
@@ -202,6 +291,7 @@ public partial class MainWindow : Window
 
         LoadStockLocationFilters();
         LoadStockHuFilters();
+        RestoreLocationSelection(selectedId);
     }
 
     private void LoadStockLocationFilters()
@@ -266,21 +356,25 @@ public partial class MainWindow : Window
 
     private void LoadPartners()
     {
+        var selectedId = _selectedPartner?.Id;
         _partners.Clear();
         foreach (var partner in _services.Catalog.GetPartners())
         {
             var status = _services.PartnerStatuses.GetStatus(partner.Id);
             _partners.Add(new PartnerRow(partner, GetPartnerStatusLabel(status)));
         }
+        RestorePartnerSelection(selectedId);
     }
 
     private void LoadDocs()
     {
+        var selectedId = (DocsGrid.SelectedItem as Doc)?.Id;
         _docs.Clear();
         foreach (var doc in ApplyDocFilters(_services.Documents.GetDocs()))
         {
             _docs.Add(doc);
         }
+        RestoreDocSelection(selectedId);
     }
 
     private IEnumerable<Doc> ApplyDocFilters(IReadOnlyList<Doc> docs)
@@ -325,11 +419,13 @@ public partial class MainWindow : Window
 
     private void LoadOrders()
     {
+        var selectedId = (OrdersGrid.SelectedItem as Order)?.Id;
         _orders.Clear();
         foreach (var order in _services.Orders.GetOrders())
         {
             _orders.Add(order);
         }
+        RestoreOrderSelection(selectedId);
     }
 
     private void LoadStock(string? search)
@@ -408,12 +504,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private void StatusRefresh_Click(object sender, RoutedEventArgs e)
-    {
-        LoadStockHuFilters();
-        LoadStock(StatusSearchBox.Text);
-    }
-
     private void StockLocationFilter_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
         LoadStockHuFilters();
@@ -433,11 +523,6 @@ public partial class MainWindow : Window
     private string? GetSelectedStockHuCode()
     {
         return (StockHuFilter.SelectedItem as StockHuFilterOption)?.Code;
-    }
-
-    private void DocsRefresh_Click(object sender, RoutedEventArgs e)
-    {
-        LoadDocs();
     }
 
     private void DocsApplyFilters_Click(object sender, RoutedEventArgs e)
@@ -511,11 +596,6 @@ public partial class MainWindow : Window
             e.Handled = true;
             OpenSelectedDoc();
         }
-    }
-
-    private void OrdersRefresh_Click(object sender, RoutedEventArgs e)
-    {
-        LoadOrders();
     }
 
     private void OrdersNew_Click(object sender, RoutedEventArgs e)
@@ -602,6 +682,12 @@ public partial class MainWindow : Window
         if (doc.Status == DocStatus.Closed)
         {
             MessageBox.Show("Операция уже закрыта.", "Операции", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (doc.IsRecountRequested)
+        {
+            MessageBox.Show("Операция находится на перерасчете. Дождитесь данных от ТСД.", "Операции", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -838,6 +924,23 @@ public partial class MainWindow : Window
         ItemGtinBox.Text = _selectedItem.Gtin ?? string.Empty;
         ItemUomCombo.SelectedItem = _uoms.FirstOrDefault(u => string.Equals(u.Name, _selectedItem.BaseUom, StringComparison.OrdinalIgnoreCase));
         LoadItemPackagingOptions(_selectedItem);
+    }
+
+    private void RestoreItemSelection(long? itemId)
+    {
+        if (!itemId.HasValue)
+        {
+            return;
+        }
+
+        var item = _items.FirstOrDefault(i => i.Id == itemId.Value);
+        if (item == null)
+        {
+            return;
+        }
+
+        ItemsGrid.SelectedItem = item;
+        ItemsGrid.ScrollIntoView(item);
     }
 
     private void ItemsGrid_KeyDown(object sender, KeyEventArgs e)
@@ -1183,6 +1286,23 @@ public partial class MainWindow : Window
         LocationNameBox.Text = _selectedLocation.Name;
     }
 
+    private void RestoreLocationSelection(long? locationId)
+    {
+        if (!locationId.HasValue)
+        {
+            return;
+        }
+
+        var location = _locations.FirstOrDefault(l => l.Id == locationId.Value);
+        if (location == null)
+        {
+            return;
+        }
+
+        LocationsGrid.SelectedItem = location;
+        LocationsGrid.ScrollIntoView(location);
+    }
+
     private void UpdateLocation_Click(object sender, RoutedEventArgs e)
     {
         if (_selectedLocation == null)
@@ -1247,6 +1367,79 @@ public partial class MainWindow : Window
         PartnerNameBox.Text = _selectedPartner.Name;
         PartnerCodeBox.Text = _selectedPartner.Code ?? string.Empty;
         SetPartnerStatusSelection(_services.PartnerStatuses.GetStatus(_selectedPartner.Id));
+    }
+
+    private void RestorePartnerSelection(long? partnerId)
+    {
+        if (!partnerId.HasValue)
+        {
+            return;
+        }
+
+        var row = _partners.FirstOrDefault(p => p.Partner.Id == partnerId.Value);
+        if (row == null)
+        {
+            return;
+        }
+
+        PartnersGrid.SelectedItem = row;
+        PartnersGrid.ScrollIntoView(row);
+    }
+
+    private void RestoreDocSelection(long? docId)
+    {
+        if (!docId.HasValue)
+        {
+            return;
+        }
+
+        var doc = _docs.FirstOrDefault(d => d.Id == docId.Value);
+        if (doc == null)
+        {
+            return;
+        }
+
+        DocsGrid.SelectedItem = doc;
+        DocsGrid.ScrollIntoView(doc);
+    }
+
+    private void RestoreOrderSelection(long? orderId)
+    {
+        if (!orderId.HasValue)
+        {
+            return;
+        }
+
+        var order = _orders.FirstOrDefault(o => o.Id == orderId.Value);
+        if (order == null)
+        {
+            return;
+        }
+
+        OrdersGrid.SelectedItem = order;
+        OrdersGrid.ScrollIntoView(order);
+    }
+
+    private bool IsItemFormEditing()
+    {
+        return ItemNameBox.IsKeyboardFocusWithin
+               || ItemBarcodeBox.IsKeyboardFocusWithin
+               || ItemGtinBox.IsKeyboardFocusWithin
+               || ItemUomCombo.IsKeyboardFocusWithin
+               || ItemDisplayUomCombo.IsKeyboardFocusWithin;
+    }
+
+    private bool IsLocationFormEditing()
+    {
+        return LocationCodeBox.IsKeyboardFocusWithin
+               || LocationNameBox.IsKeyboardFocusWithin;
+    }
+
+    private bool IsPartnerFormEditing()
+    {
+        return PartnerNameBox.IsKeyboardFocusWithin
+               || PartnerCodeBox.IsKeyboardFocusWithin
+               || PartnerStatusCombo.IsKeyboardFocusWithin;
     }
 
     private void UpdatePartner_Click(object sender, RoutedEventArgs e)

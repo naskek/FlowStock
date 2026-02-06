@@ -46,7 +46,7 @@ public partial class TsdDeviceWindow : Window
         LoginBox.Text = device.Login;
         PasswordBox.Text = string.Empty;
         IsActiveCheck.IsChecked = device.IsActive;
-        LastSeenBox.Text = string.IsNullOrWhiteSpace(device.LastSeen) ? "-" : device.LastSeen;
+        SetPlatformSelection(device.Platform);
         UpdateBlockButton();
     }
 
@@ -80,7 +80,7 @@ public partial class TsdDeviceWindow : Window
         catch (Exception ex)
         {
             _services.AppLogger.Error("tsd_device_toggle_failed", ex);
-            MessageBox.Show(ex.Message, "ТСД устройства", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(ex.Message, "Аккаунты", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -90,27 +90,28 @@ public partial class TsdDeviceWindow : Window
         var login = LoginBox.Text?.Trim() ?? string.Empty;
         var password = PasswordBox.Text ?? string.Empty;
         var isActive = IsActiveCheck.IsChecked == true;
+        var platform = GetSelectedPlatform();
 
         try
         {
             if (_selected == null)
             {
-                _deviceService.AddDevice(deviceId, login, password, isActive);
+                _deviceService.AddDevice(deviceId, login, password, isActive, platform);
             }
             else
             {
                 var passwordToUpdate = string.IsNullOrWhiteSpace(password) ? null : password;
-                _deviceService.UpdateDevice(_selected.Id, deviceId, login, passwordToUpdate, isActive);
+                _deviceService.UpdateDevice(_selected.Id, deviceId, login, passwordToUpdate, isActive, platform);
             }
 
             LoadDevices();
             SelectDeviceByKey(deviceId, login);
-            MessageBox.Show("Изменения сохранены.", "ТСД устройства", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Изменения сохранены.", "Аккаунты", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex)
         {
             _services.AppLogger.Error("tsd_device_save_failed", ex);
-            MessageBox.Show(ex.Message, "ТСД устройства", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(ex.Message, "Аккаунты", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -120,7 +121,7 @@ public partial class TsdDeviceWindow : Window
         LoginBox.Text = string.Empty;
         PasswordBox.Text = string.Empty;
         IsActiveCheck.IsChecked = true;
-        LastSeenBox.Text = string.Empty;
+        SetPlatformSelection("TSD");
         UpdateBlockButton();
     }
 
@@ -171,5 +172,31 @@ public partial class TsdDeviceWindow : Window
         }
 
         DevicesGrid.SelectedItem = null;
+    }
+
+    private string GetSelectedPlatform()
+    {
+        if (PlatformBox.SelectedItem is ComboBoxItem item && item.Tag is string tag)
+        {
+            return tag;
+        }
+
+        return "TSD";
+    }
+
+    private void SetPlatformSelection(string? platform)
+    {
+        var normalized = string.Equals(platform, "PC", StringComparison.OrdinalIgnoreCase) ? "PC" : "TSD";
+        foreach (var entry in PlatformBox.Items)
+        {
+            if (entry is ComboBoxItem item && item.Tag is string tag
+                && string.Equals(tag, normalized, StringComparison.OrdinalIgnoreCase))
+            {
+                PlatformBox.SelectedItem = item;
+                return;
+            }
+        }
+
+        PlatformBox.SelectedIndex = 0;
     }
 }

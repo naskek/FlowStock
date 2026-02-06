@@ -234,7 +234,11 @@
     var statusValue = String(doc.status || "").trim();
     var commentValue = doc.comment != null ? String(doc.comment).trim() : "";
     var sourceDeviceId = String(doc.source_device_id || doc.sourceDeviceId || "").trim();
-    if (
+    var docUid = String(doc.doc_uid || doc.docUid || "").trim();
+    var isRecount = commentValue.toUpperCase().indexOf("RECOUNT") >= 0;
+    if (statusValue === "DRAFT" && isRecount) {
+      statusValue = "RECOUNT";
+    } else if (
       statusValue === "DRAFT" &&
       (commentValue.toUpperCase().indexOf("TSD") === 0 || sourceDeviceId)
     ) {
@@ -243,6 +247,7 @@
     return {
       id: id,
       doc_ref: String(doc.doc_ref || doc.docRef || ""),
+      doc_uid: docUid || null,
       op: String(doc.op || doc.type || "").trim(),
       status: statusValue,
       createdAt: doc.created_at || doc.createdAt || null,
@@ -254,6 +259,7 @@
       shipping_ref: String(doc.shipping_ref || doc.shippingRef || "").trim(),
       comment: doc.comment || null,
       source_device_id: sourceDeviceId || null,
+      recount: isRecount,
     };
   }
 

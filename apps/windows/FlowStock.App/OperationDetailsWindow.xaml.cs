@@ -245,7 +245,7 @@ public partial class OperationDetailsWindow : Window
         if (e.Key == Key.Delete)
         {
             e.Handled = true;
-            if (_doc?.Status != DocStatus.Draft)
+            if (!IsDocEditable())
             {
                 return;
             }
@@ -262,6 +262,49 @@ public partial class OperationDetailsWindow : Window
         TryCloseCurrentDoc();
     }
 
+    private void DocRecount_Click(object sender, RoutedEventArgs e)
+    {
+        if (_doc == null)
+        {
+            MessageBox.Show("Операция не выбрана.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (_doc.Status != DocStatus.Draft)
+        {
+            MessageBox.Show("Операция уже закрыта.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (_doc.Type != DocType.Inventory)
+        {
+            MessageBox.Show("На пересчет можно отправить только инвентаризацию.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            "Отправить инвентаризацию на пересчет? ТСД сможет дополнить или уточнить строки.",
+            "Инвентаризация",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question,
+            MessageBoxResult.No);
+        if (confirm != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        try
+        {
+            _services.Documents.MarkDocForRecount(_doc.Id);
+            MessageBox.Show("Инвентаризация отправлена на пересчет.", "Инвентаризация", MessageBoxButton.OK, MessageBoxImage.Information);
+            Close();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Инвентаризация", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
     private void TryCloseCurrentDoc()
     {
         if (_doc == null)
@@ -273,6 +316,12 @@ public partial class OperationDetailsWindow : Window
         if (_doc.Status == DocStatus.Closed)
         {
             MessageBox.Show("Операция уже закрыта.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (_doc.IsRecountRequested)
+        {
+            MessageBox.Show("Операция находится на перерасчете. Дождитесь данных от ТСД.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -584,12 +633,13 @@ public partial class OperationDetailsWindow : Window
 
         DocInfoText.Text = FormatDocHeader(_doc);
         var isDraft = _doc.Status == DocStatus.Draft;
-        DocCloseButton.IsEnabled = isDraft;
-        DocHeaderPanel.IsEnabled = isDraft;
+        var isEditable = isDraft && !_doc.IsRecountRequested;
+        DocCloseButton.IsEnabled = isEditable;
+        DocHeaderPanel.IsEnabled = isEditable;
 
         MarkHeaderSaved();
         _suppressDirtyTracking = true;
-        ConfigureHeaderFields(_doc, isDraft);
+        ConfigureHeaderFields(_doc, isEditable);
         UpdatePartialUi();
         ApplyPartnerFilter();
         DocPartnerCombo.SelectedItem = _partners.FirstOrDefault(p => p.Id == _doc.PartnerId);
@@ -602,7 +652,7 @@ public partial class OperationDetailsWindow : Window
         UpdatePartnerLock();
         UpdateActionButtons();
 
-        if (_doc.Status == DocStatus.Draft)
+        if (isEditable)
         {
             AddItemButton.Focus();
         }
@@ -888,7 +938,7 @@ public partial class OperationDetailsWindow : Window
         DocPartnerCombo.IsEnabled = DocOrderCombo.SelectedItem == null;
     }
 
-    private void ConfigureHeaderFields(Doc doc, bool isDraft)
+    private void ConfigureHeaderFields(Doc doc, bool isEditable)
     {
         var showPartner = false;
         var showOrder = false;
@@ -941,10 +991,10 @@ public partial class OperationDetailsWindow : Window
         DocToLabel.Text = toLabel;
         DocHuLabel.Text = doc.Type == DocType.Move ? "HU (куда)" : "HU";
         DocPartialCheck.Visibility = showOrder ? Visibility.Visible : Visibility.Collapsed;
-        DocHuCombo.IsEnabled = isDraft;
-        DocHuFromCombo.IsEnabled = isDraft;
+        DocHuCombo.IsEnabled = isEditable;
+        DocHuFromCombo.IsEnabled = isEditable;
         DocHuCombo.IsEditable = doc.Type == DocType.Move;
-        DocMoveInternalCheck.IsEnabled = isDraft;
+        DocMoveInternalCheck.IsEnabled = isEditable;
 
         if (!showFrom)
         {
@@ -963,7 +1013,12 @@ public partial class OperationDetailsWindow : Window
         DocHeaderSaveButton.Visibility = showPartner || showOrder || showHu
             ? Visibility.Visible
             : Visibility.Collapsed;
-        DocHeaderSaveButton.IsEnabled = isDraft;
+        DocHeaderSaveButton.IsEnabled = isEditable;
+
+        DocRecountButton.Visibility = doc.Type == DocType.Inventory && IsTsdSource(doc)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        DocRecountButton.IsEnabled = isEditable;
 
         var showInventory = doc.Type == DocType.Inventory;
         DocInventoryDbColumn.Visibility = showInventory ? Visibility.Visible : Visibility.Collapsed;
@@ -972,6 +1027,22 @@ public partial class OperationDetailsWindow : Window
         DocToColumn.Visibility = showTo ? Visibility.Visible : Visibility.Collapsed;
         DocFromColumn.Header = fromLabel;
         DocToColumn.Header = toLabel;
+    }
+
+    private static bool IsTsdSource(Doc doc)
+    {
+        if (!string.IsNullOrWhiteSpace(doc.SourceDeviceId))
+        {
+            return true;
+        }
+
+        return !string.IsNullOrWhiteSpace(doc.Comment)
+               && doc.Comment.StartsWith("TSD", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsDocEditable()
+    {
+        return _doc?.Status == DocStatus.Draft && _doc?.IsRecountRequested != true;
     }
 
     private static string FormatDocHeader(Doc doc)
@@ -985,23 +1056,23 @@ public partial class OperationDetailsWindow : Window
 
     private void UpdateLineButtons()
     {
-        var isDraft = _doc?.Status == DocStatus.Draft;
+        var isEditable = IsDocEditable();
         var hasOrder = HasOrderBinding();
         var allowPartialEdit = hasOrder && _isPartialShipment;
-        AddItemButton.IsEnabled = isDraft && !hasOrder;
-        EditLineButton.IsEnabled = isDraft && _selectedDocLine != null && (!hasOrder || allowPartialEdit);
-        DeleteLineButton.IsEnabled = isDraft && _selectedDocLine != null && !hasOrder;
-        DocPartialCheck.IsEnabled = isDraft && hasOrder;
+        AddItemButton.IsEnabled = isEditable && !hasOrder;
+        EditLineButton.IsEnabled = isEditable && _selectedDocLine != null && (!hasOrder || allowPartialEdit);
+        DeleteLineButton.IsEnabled = isEditable && _selectedDocLine != null && !hasOrder;
+        DocPartialCheck.IsEnabled = isEditable && hasOrder;
     }
 
     private void UpdateActionButtons()
     {
-        var isDraft = _doc?.Status == DocStatus.Draft;
+        var isEditable = IsDocEditable();
         var hasId = _doc?.Id > 0;
         var hasPartner = !IsPartnerRequired() || _doc?.PartnerId != null || DocPartnerCombo.SelectedItem != null;
         var hasShortage = _doc?.Type == DocType.Outbound && _hasOutboundShortage;
-        DocCloseButton.IsEnabled = isDraft && hasId && hasPartner && !hasShortage;
-        DocHeaderSaveButton.IsEnabled = isDraft && _hasUnsavedChanges;
+        DocCloseButton.IsEnabled = isEditable && hasId && hasPartner && !hasShortage;
+        DocHeaderSaveButton.IsEnabled = isEditable && _hasUnsavedChanges;
     }
 
     private bool IsPartnerRequired()
@@ -1081,6 +1152,12 @@ public partial class OperationDetailsWindow : Window
         if (_doc.Status != DocStatus.Draft)
         {
             MessageBox.Show("Операция уже закрыта.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+            return false;
+        }
+
+        if (_doc.IsRecountRequested)
+        {
+            MessageBox.Show("Операция находится на перерасчете. Изменения недоступны до ответа от ТСД.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
             return false;
         }
 
@@ -1709,6 +1786,12 @@ public partial class OperationDetailsWindow : Window
         if (_doc.Status != DocStatus.Draft)
         {
             MessageBox.Show("Операция уже закрыта.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+            return false;
+        }
+
+        if (_doc.IsRecountRequested)
+        {
+            MessageBox.Show("Операция находится на перерасчете. Дождитесь данных от ТСД.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
             return false;
         }
 

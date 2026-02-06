@@ -67,6 +67,12 @@ public sealed class AddDocLineRequest
 
     [JsonPropertyName("uom_code")]
     public string? UomCode { get; set; }
+
+    [JsonPropertyName("from_hu")]
+    public string? FromHu { get; set; }
+
+    [JsonPropertyName("to_hu")]
+    public string? ToHu { get; set; }
 }
 
 public sealed class CloseDocRequest

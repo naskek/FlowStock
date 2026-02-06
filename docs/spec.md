@@ -72,6 +72,16 @@
 - OUTBOUND: -qty from from-location.
 - INVENTORY: for each item+location(+HU) in the document, adjust ledger by (counted qty - current qty). Only the specified locations are affected.
 
+## TSD online docs
+- Inventory lines can include HU per line (to_hu) when multiple HU exist in one location.
+- Recount is marked by setting comment to `TSD:RECOUNT`.
+- While comment includes `RECOUNT`, WPF shows a recount status label and locks editing until new TSD data clears the flag.
+
+## Accounts
+- Logins for web clients are stored in `tsd_devices` with a platform flag (`TSD` or `PC`).
+- `/api/tsd/login` returns `device_id` and `platform`; UI routes to the matching web client.
+- PC web client is served on a separate HTTPS port (default `7154`).
+
 ## UI screens (MVP)
 - Status: stock list + search.
 - Documents: list with JSONL import panel and access to import errors.

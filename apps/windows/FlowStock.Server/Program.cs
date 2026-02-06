@@ -58,22 +58,87 @@ app.Use(async (context, next) =>
 
 var tsdRoot = ServerPaths.TsdRoot;
 var tsdIndexPath = Path.Combine(tsdRoot, "index.html");
-if (Directory.Exists(tsdRoot))
-{
-    var fileProvider = new PhysicalFileProvider(tsdRoot);
-    var contentTypeProvider = new FileExtensionContentTypeProvider();
-    contentTypeProvider.Mappings[".jsonl"] = "application/x-ndjson";
-    contentTypeProvider.Mappings[".webmanifest"] = "application/manifest+json";
+var pcRoot = ServerPaths.PcRoot;
+var pcIndexPath = Path.Combine(pcRoot, "index.html");
+var pcPort = ResolvePcPort(builder.Configuration);
 
-    app.UseDefaultFiles(new DefaultFilesOptions
+app.Use(async (context, next) =>
+{
+    if (context.Connection.LocalPort != pcPort
+        && context.Request.Path.StartsWithSegments("/pc", out var remaining))
     {
-        FileProvider = fileProvider
-    });
-    app.UseStaticFiles(new StaticFileOptions
-    {
-        FileProvider = fileProvider,
-        ContentTypeProvider = contentTypeProvider
-    });
+        var host = context.Request.Host.Host;
+        var path = remaining.HasValue ? remaining.Value : "/";
+        var query = context.Request.QueryString.HasValue ? context.Request.QueryString.Value : string.Empty;
+        var target = $"{context.Request.Scheme}://{host}:{pcPort}{path}{query}";
+        context.Response.Redirect(target, false);
+        return;
+    }
+
+    await next();
+});
+
+if (Directory.Exists(pcRoot) && File.Exists(pcIndexPath))
+{
+    var pcProvider = new PhysicalFileProvider(pcRoot);
+    var pcContentTypes = new FileExtensionContentTypeProvider();
+    pcContentTypes.Mappings[".webmanifest"] = "application/manifest+json";
+
+    app.UseWhen(
+        context => context.Connection.LocalPort == pcPort
+                   && !context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase),
+        pcApp =>
+        {
+            pcApp.UseDefaultFiles(new DefaultFilesOptions { FileProvider = pcProvider });
+            pcApp.UseStaticFiles(new StaticFileOptions
+            {
+                FileProvider = pcProvider,
+                ContentTypeProvider = pcContentTypes
+            });
+            pcApp.Use(async (context, next) =>
+            {
+                await next();
+                if (context.Response.StatusCode != StatusCodes.Status404NotFound)
+                {
+                    return;
+                }
+
+                context.Response.ContentType = "text/html; charset=utf-8";
+                await context.Response.SendFileAsync(pcIndexPath);
+            });
+        });
+}
+
+if (Directory.Exists(tsdRoot) && File.Exists(tsdIndexPath))
+{
+    var tsdProvider = new PhysicalFileProvider(tsdRoot);
+    var tsdContentTypes = new FileExtensionContentTypeProvider();
+    tsdContentTypes.Mappings[".jsonl"] = "application/x-ndjson";
+    tsdContentTypes.Mappings[".webmanifest"] = "application/manifest+json";
+
+    app.UseWhen(
+        context => context.Connection.LocalPort != pcPort
+                   && !context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase),
+        tsdApp =>
+        {
+            tsdApp.UseDefaultFiles(new DefaultFilesOptions { FileProvider = tsdProvider });
+            tsdApp.UseStaticFiles(new StaticFileOptions
+            {
+                FileProvider = tsdProvider,
+                ContentTypeProvider = tsdContentTypes
+            });
+            tsdApp.Use(async (context, next) =>
+            {
+                await next();
+                if (context.Response.StatusCode != StatusCodes.Status404NotFound)
+                {
+                    return;
+                }
+
+                context.Response.ContentType = "text/html; charset=utf-8";
+                await context.Response.SendFileAsync(tsdIndexPath);
+            });
+        });
 }
 
 app.MapGet("/api/ping", () =>
@@ -116,7 +181,7 @@ app.MapPost("/api/tsd/login", async (HttpRequest request) =>
     using var connection = OpenConnection(postgresConnectionString);
     using var command = connection.CreateCommand();
     command.CommandText = @"
-SELECT id, device_id, password_salt, password_hash, password_iterations, is_active
+SELECT id, device_id, password_salt, password_hash, password_iterations, is_active, platform
 FROM tsd_devices
 WHERE login = @login;";
     AddParam(command, "@login", loginRequest.Login.Trim());
@@ -133,6 +198,8 @@ WHERE login = @login;";
     var hash = reader.GetString(3);
     var iterations = reader.GetInt32(4);
     var isActive = reader.GetBoolean(5);
+    var platform = reader.IsDBNull(6) ? "TSD" : reader.GetString(6);
+    var platformNormalized = NormalizeDevicePlatform(platform);
 
     if (!isActive)
     {
@@ -154,7 +221,9 @@ WHERE login = @login;";
     return Results.Ok(new
     {
         ok = true,
-        device_id = deviceId
+        device_id = deviceId,
+        platform = platformNormalized,
+        pc_port = pcPort
     });
 });
 
@@ -930,6 +999,12 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
     var existingDocInfo = apiStore.GetApiDoc(docUid);
     if (existingDocInfo != null)
     {
+        var existingDoc = store.GetDoc(existingDocInfo.DocId);
+        if (existingDoc == null)
+        {
+            return Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"));
+        }
+
         var expectedType = DocTypeMapper.ToOpString(docType.Value);
         if (!string.IsNullOrWhiteSpace(existingDocInfo.DocType)
             && !string.Equals(existingDocInfo.DocType, expectedType, StringComparison.OrdinalIgnoreCase))
@@ -1111,6 +1186,26 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
 
         var resolvedShippingRef = ResolveDocShippingRef(docType.Value, fromHu, toHu);
         UpdateDocShippingRefIfNeeded(store, existingDocInfo.DocId, resolvedShippingRef);
+
+        if (!string.IsNullOrWhiteSpace(createRequest.Comment))
+        {
+            var cleanedComment = createRequest.Comment.Trim();
+            var existingRecount = IsRecountComment(existingDoc.Comment);
+            var incomingRecount = IsRecountComment(cleanedComment);
+            if (existingDoc.Status == DocStatus.Draft
+                && !existingRecount
+                && !string.Equals(existingDoc.Comment ?? string.Empty, cleanedComment, StringComparison.Ordinal))
+            {
+                store.UpdateDocComment(existingDocInfo.DocId, cleanedComment);
+            }
+            else if (existingDoc.Status == DocStatus.Draft
+                     && existingRecount
+                     && incomingRecount
+                     && !string.Equals(existingDoc.Comment ?? string.Empty, cleanedComment, StringComparison.Ordinal))
+            {
+                store.UpdateDocComment(existingDocInfo.DocId, cleanedComment);
+            }
+        }
 
         return Results.Ok(new
         {
@@ -1310,6 +1405,23 @@ app.MapPost("/api/docs/{docUid}/lines", async (string docUid, HttpRequest reques
         return Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"));
     }
 
+    var existingDoc = store.GetDoc(docInfo.DocId);
+    if (existingDoc == null)
+    {
+        return Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"));
+    }
+
+    if (IsRecountComment(existingDoc.Comment))
+    {
+        if (existingDoc.Status != DocStatus.Draft)
+        {
+            return Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT"));
+        }
+
+        store.DeleteDocLines(docInfo.DocId);
+        store.UpdateDocComment(docInfo.DocId, "TSD");
+    }
+
     if (!string.Equals(docInfo.Status, "DRAFT", StringComparison.OrdinalIgnoreCase))
     {
         return Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT"));
@@ -1324,6 +1436,35 @@ app.MapPost("/api/docs/{docUid}/lines", async (string docUid, HttpRequest reques
     if (docType == null)
     {
         return Results.BadRequest(new ApiResult(false, "INVALID_TYPE"));
+    }
+
+    var requestedFromHu = NormalizeHu(lineRequest.FromHu);
+    var requestedToHu = NormalizeHu(lineRequest.ToHu);
+    var missingHu = new List<string>();
+    if (!string.IsNullOrWhiteSpace(requestedFromHu))
+    {
+        var record = store.GetHuByCode(requestedFromHu);
+        if (record == null || !IsHuAllowed(record))
+        {
+            missingHu.Add("from_hu");
+        }
+    }
+    if (!string.IsNullOrWhiteSpace(requestedToHu))
+    {
+        var record = store.GetHuByCode(requestedToHu);
+        if (record == null || !IsHuAllowed(record))
+        {
+            missingHu.Add("to_hu");
+        }
+    }
+    if (missingHu.Count > 0)
+    {
+        return Results.BadRequest(new
+        {
+            ok = false,
+            error = "UNKNOWN_HU",
+            missing = missingHu
+        });
     }
 
     Item? item = null;
@@ -1377,7 +1518,9 @@ app.MapPost("/api/docs/{docUid}/lines", async (string docUid, HttpRequest reques
             break;
         case DocType.WriteOff:
             fromLocationId = docInfo.FromLocationId;
-            fromHu = NormalizeHu(docInfo.FromHu);
+            fromHu = !string.IsNullOrWhiteSpace(requestedFromHu)
+                ? requestedFromHu
+                : NormalizeHu(docInfo.FromHu);
             if (!fromLocationId.HasValue)
             {
                 return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
@@ -1385,7 +1528,9 @@ app.MapPost("/api/docs/{docUid}/lines", async (string docUid, HttpRequest reques
             break;
         case DocType.Inventory:
             toLocationId = docInfo.ToLocationId;
-            toHu = NormalizeHu(docInfo.ToHu);
+            toHu = !string.IsNullOrWhiteSpace(requestedToHu)
+                ? requestedToHu
+                : NormalizeHu(docInfo.ToHu);
             if (!toLocationId.HasValue)
             {
                 return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
@@ -1504,21 +1649,6 @@ app.MapPost("/api/docs/{docUid}/close", async (string docUid, HttpRequest reques
     });
 });
 
-if (Directory.Exists(tsdRoot) && File.Exists(tsdIndexPath))
-{
-    app.MapFallback(async context =>
-    {
-        if (context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase))
-        {
-            context.Response.StatusCode = StatusCodes.Status404NotFound;
-            return;
-        }
-
-        context.Response.ContentType = "text/html; charset=utf-8";
-        await context.Response.SendFileAsync(tsdIndexPath);
-    });
-}
-
 app.Run();
 
 static string BuildPostgresConnectionString(IConfiguration configuration)
@@ -1543,6 +1673,27 @@ static string BuildPostgresConnectionString(IConfiguration configuration)
     }
 
     return builder.ConnectionString;
+}
+
+static int ResolvePcPort(IConfiguration configuration)
+{
+    var configured = configuration["FLOWSTOCK_PC_PORT"];
+    if (!string.IsNullOrWhiteSpace(configured) && int.TryParse(configured, out var parsed))
+    {
+        return parsed;
+    }
+
+    var pcUrl = configuration["Kestrel:Endpoints:PcHttps:Url"];
+    if (!string.IsNullOrWhiteSpace(pcUrl))
+    {
+        var urlValue = pcUrl.Contains("://", StringComparison.Ordinal) ? pcUrl : $"https://{pcUrl}";
+        if (Uri.TryCreate(urlValue, UriKind.Absolute, out var uri) && uri.Port > 0)
+        {
+            return uri.Port;
+        }
+    }
+
+    return 7154;
 }
 
 static void LogDbInfo(ILogger logger, string? postgresConnectionString)
@@ -1654,6 +1805,12 @@ static (string Host, int Port, string Database, string Username) BuildPostgresIn
 static string? NormalizeHu(string? value)
 {
     return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+}
+
+static string NormalizeDevicePlatform(string? value)
+{
+    var normalized = string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim().ToUpperInvariant();
+    return normalized == "PC" ? "PC" : "TSD";
 }
 
 static string? ResolveDocShippingRef(DocType type, string? fromHu, string? toHu)
@@ -1809,6 +1966,7 @@ static object MapDoc(Doc doc)
     {
         id = doc.Id,
         doc_ref = doc.DocRef,
+        doc_uid = doc.ApiDocUid,
         op = DocTypeMapper.ToOpString(doc.Type),
         status = DocTypeMapper.StatusToString(doc.Status),
         created_at = doc.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
@@ -1852,6 +2010,12 @@ static async Task<string> ReadBody(HttpRequest request)
 static DocType? ParseDocType(string? value)
 {
     return DocTypeMapper.FromOpString(value);
+}
+
+static bool IsRecountComment(string? comment)
+{
+    return !string.IsNullOrWhiteSpace(comment)
+           && comment.IndexOf("RECOUNT", StringComparison.OrdinalIgnoreCase) >= 0;
 }
 
 static bool IsHuAllowed(HuRecord record)

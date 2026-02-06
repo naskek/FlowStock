@@ -19,6 +19,7 @@ public sealed class Doc
     public string? PartnerCode { get; init; }
     public int LineCount { get; init; }
     public string? SourceDeviceId { get; init; }
+    public string? ApiDocUid { get; init; }
 
     public string TypeDisplay => DocTypeMapper.ToDisplayName(Type);
 
@@ -33,7 +34,9 @@ public sealed class Doc
                 var prefix = deviceLabel == null
                     ? "Принято с ТСД"
                     : $"Принято с ТСД ({deviceLabel})";
-                var tsdStatus = LineCount > 0 ? "Наполнен" : "Черновик";
+                var tsdStatus = IsRecountRequested
+                    ? "На перерасчете"
+                    : (LineCount > 0 ? "Наполнен" : "Черновик");
                 return $"{prefix} - {tsdStatus}";
             }
 
@@ -50,6 +53,14 @@ public sealed class Doc
 
         return !string.IsNullOrWhiteSpace(comment)
                && comment.StartsWith("TSD", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public bool IsRecountRequested => HasRecountFlag(Comment);
+
+    private static bool HasRecountFlag(string? comment)
+    {
+        return !string.IsNullOrWhiteSpace(comment)
+               && comment.IndexOf("RECOUNT", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     public string PartnerDisplay
