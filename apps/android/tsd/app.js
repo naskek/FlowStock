@@ -11,8 +11,32 @@
   var scanSink = document.getElementById("scanSink");
   var currentRoute = null;
   var scanKeydownHandler = null;
+  var scanInputHandler = null;
+  var scanInputKeydownHandler = null;
+  var scannerManager = null;
+  var pendingScanHandler = null;
+  var activeScanHandler = null;
+  var scanHandlerActive = false;
+  var scanPreferredTarget = null;
+  var scannerMode = "auto";
+  var SCANNER_MODE_KEY = "scannerMode";
+  var SCAN_DEBUG_OPEN_KEY = "scanDebugOpen";
+  var softKeyboardEnabled = false;
+  var SOFT_KEYBOARD_KEY = "softKeyboardEnabled";
   var SERVER_PING_INTERVAL = 15000;
   var serverStatus = { ok: null, checkedAt: 0 };
+  var scanDebug = {
+    enabled: false,
+    log: [],
+    maxEntries: 200,
+    logEl: null,
+    stateEl: null,
+    handlersAttached: false,
+    keydownHandler: null,
+    inputHandler: null,
+    focusHandler: null,
+    blurHandler: null,
+  };
 
   var STATUS_ORDER = {
     DRAFT: 0,
@@ -24,6 +48,249 @@
 
   var NAV_ORIGIN_KEY = "tsdNavOrigin";
 
+  function normalizeScannerMode(value) {
+    var mode = String(value || "").toLowerCase();
+    if (mode === "keyboard" || mode === "intent" || mode === "auto") {
+      return mode;
+    }
+    return "auto";
+  }
+
+  function normalizeSoftKeyboardSetting(value) {
+    if (typeof value === "boolean") {
+      return value;
+    }
+    if (value === "false" || value === "0") {
+      return false;
+    }
+    return true;
+  }
+
+  function isDebugMode() {
+    try {
+      if (window.location && /[?&]debug=1/.test(window.location.search || "")) {
+        return true;
+      }
+      if (window.localStorage && localStorage.getItem("flowstock_debug") === "1") {
+        return true;
+      }
+    } catch (error) {
+      return false;
+    }
+    return false;
+  }
+
+  function formatDebugTarget(target) {
+    if (!target) {
+      return "-";
+    }
+    var tag = target.tagName ? target.tagName.toLowerCase() : "node";
+    var id = target.id ? "#" + target.id : "";
+    var cls = "";
+    if (target.classList && target.classList.length) {
+      cls = "." + Array.prototype.join.call(target.classList, ".");
+    }
+    var scanAllowed =
+      typeof target.getAttribute === "function" && target.getAttribute("data-scan-allow") === "1"
+        ? " scan"
+        : "";
+    return tag + id + cls + scanAllowed;
+  }
+
+  function getScanBlockReason() {
+    if (!scanHandlerActive) {
+      return "handler-off";
+    }
+    if (isManualOverlayOpen()) {
+      return "modal-open";
+    }
+    if (currentRoute && currentRoute.name === "login") {
+      return "login";
+    }
+    var active = document.activeElement;
+    if (!active) {
+      return "";
+    }
+    if (scanSink && active === scanSink) {
+      return "";
+    }
+    if (isScanAllowedElement(active)) {
+      return "";
+    }
+    if (active.isContentEditable) {
+      return "content-editable";
+    }
+    var tag = active.tagName;
+    if (!tag) {
+      return "";
+    }
+    tag = tag.toUpperCase();
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
+      return "focus-input";
+    }
+    return "";
+  }
+
+  function getScanStateSnapshot() {
+    var active = document.activeElement;
+    var preferred = getPreferredScanTarget();
+    var provider =
+      scannerManager && scannerManager.getProviderType
+        ? scannerManager.getProviderType()
+        : "keyboard";
+    return {
+      route: currentRoute ? currentRoute.name : "-",
+      handlerActive: scanHandlerActive,
+      canScan: canScanNow(),
+      blockReason: getScanBlockReason(),
+      activeElement: formatDebugTarget(active),
+      preferredTarget: formatDebugTarget(preferred),
+      scanSinkFocused: !!(scanSink && active === scanSink),
+      scannerMode: scannerMode,
+      softKeyboardEnabled: softKeyboardEnabled,
+      provider: provider,
+      overlayOpen: isManualOverlayOpen(),
+    };
+  }
+
+  function formatScanState(state) {
+    if (!state) {
+      return "";
+    }
+    var lines = [
+      "route: " + state.route,
+      "handler: " + (state.handlerActive ? "on" : "off"),
+      "canScan: " + (state.canScan ? "yes" : "no") + (state.blockReason ? " (" + state.blockReason + ")" : ""),
+      "active: " + state.activeElement,
+      "preferred: " + state.preferredTarget,
+      "scanSink: " + (state.scanSinkFocused ? "focused" : "no"),
+      "provider: " + state.provider + " (" + state.scannerMode + ")",
+      "soft keyboard: " + (state.softKeyboardEnabled ? "on" : "off"),
+      "overlay: " + (state.overlayOpen ? "open" : "none"),
+    ];
+    return lines.join("\n");
+  }
+
+  function appendScanDebug(label, message) {
+    if (!scanDebug.enabled) {
+      return;
+    }
+    var stamp = new Date().toISOString();
+    var text = stamp + " " + label + (message ? " " + message : "");
+    scanDebug.log.unshift(text);
+    if (scanDebug.log.length > scanDebug.maxEntries) {
+      scanDebug.log.length = scanDebug.maxEntries;
+    }
+    if (scanDebug.logEl) {
+      scanDebug.logEl.textContent = scanDebug.log.join("\n");
+    }
+    if (scanDebug.stateEl) {
+      scanDebug.stateEl.textContent = formatScanState(getScanStateSnapshot());
+    }
+  }
+
+  function clearScanDebugLog() {
+    scanDebug.log = [];
+    if (scanDebug.logEl) {
+      scanDebug.logEl.textContent = "";
+    }
+  }
+
+  function attachScanDebugHandlers() {
+    if (scanDebug.handlersAttached) {
+      return;
+    }
+    scanDebug.keydownHandler = function (event) {
+      if (!scanDebug.enabled) {
+        return;
+      }
+      var details =
+        'key="' +
+        String(event.key) +
+        '" code=' +
+        String(event.code || "") +
+        " which=" +
+        String(event.which || 0) +
+        " target=" +
+        formatDebugTarget(event.target) +
+        " alt=" +
+        (event.altKey ? "1" : "0") +
+        " ctrl=" +
+        (event.ctrlKey ? "1" : "0") +
+        " shift=" +
+        (event.shiftKey ? "1" : "0");
+      appendScanDebug("keydown", details);
+    };
+    scanDebug.inputHandler = function (event) {
+      if (!scanDebug.enabled) {
+        return;
+      }
+      var target = event.target;
+      var value = "";
+      if (target && typeof target.value === "string") {
+        value = target.value;
+      }
+      if (value && value.length > 120) {
+        value = value.slice(0, 120) + "...";
+      }
+      appendScanDebug("input", 'target=' + formatDebugTarget(target) + ' value="' + value + '"');
+    };
+    scanDebug.focusHandler = function (event) {
+      if (!scanDebug.enabled) {
+        return;
+      }
+      appendScanDebug("focusin", formatDebugTarget(event.target));
+    };
+    scanDebug.blurHandler = function (event) {
+      if (!scanDebug.enabled) {
+        return;
+      }
+      appendScanDebug("focusout", formatDebugTarget(event.target));
+    };
+
+    document.addEventListener("keydown", scanDebug.keydownHandler, true);
+    document.addEventListener("input", scanDebug.inputHandler, true);
+    document.addEventListener("focusin", scanDebug.focusHandler, true);
+    document.addEventListener("focusout", scanDebug.blurHandler, true);
+    scanDebug.handlersAttached = true;
+  }
+
+  function detachScanDebugHandlers() {
+    if (!scanDebug.handlersAttached) {
+      return;
+    }
+    document.removeEventListener("keydown", scanDebug.keydownHandler, true);
+    document.removeEventListener("input", scanDebug.inputHandler, true);
+    document.removeEventListener("focusin", scanDebug.focusHandler, true);
+    document.removeEventListener("focusout", scanDebug.blurHandler, true);
+    scanDebug.keydownHandler = null;
+    scanDebug.inputHandler = null;
+    scanDebug.focusHandler = null;
+    scanDebug.blurHandler = null;
+    scanDebug.handlersAttached = false;
+  }
+
+  function setScanDebugEnabled(enabled) {
+    scanDebug.enabled = !!enabled;
+    if (scanDebug.enabled) {
+      attachScanDebugHandlers();
+      appendScanDebug("debug", "enabled");
+    } else {
+      detachScanDebugHandlers();
+    }
+  }
+
+  function mountScanDebugUI(logEl, stateEl) {
+    scanDebug.logEl = logEl || null;
+    scanDebug.stateEl = stateEl || null;
+    if (scanDebug.logEl) {
+      scanDebug.logEl.textContent = scanDebug.log.join("\n");
+    }
+    if (scanDebug.stateEl) {
+      scanDebug.stateEl.textContent = formatScanState(getScanStateSnapshot());
+    }
+  }
+
   function updateNetworkStatus() {
     if (!networkStatus) {
       return;
@@ -32,6 +299,128 @@
     var online = serverStatus.ok;
     networkStatus.textContent = online ? "Server: OK" : "Server: OFF";
     networkStatus.classList.toggle("is-offline", !online);
+  }
+
+  function isSoftKeyboardSuppressed() {
+    if (softKeyboardEnabled) {
+      return false;
+    }
+    if (currentRoute && currentRoute.name === "login") {
+      return false;
+    }
+    return true;
+  }
+
+  function hideVirtualKeyboard() {
+    if (!navigator || !navigator.virtualKeyboard || !navigator.virtualKeyboard.hide) {
+      return;
+    }
+    try {
+      navigator.virtualKeyboard.hide();
+    } catch (error) {
+      // ignore
+    }
+  }
+
+  function rememberInputMode(target) {
+    if (!target || typeof target.getAttribute !== "function") {
+      return;
+    }
+    if (target.getAttribute("data-orig-inputmode") != null) {
+      return;
+    }
+    var mode = target.getAttribute("inputmode");
+    target.setAttribute("data-orig-inputmode", mode != null ? mode : "");
+  }
+
+  function applyScanInputMode(target) {
+    if (!target || typeof target.setAttribute !== "function") {
+      return;
+    }
+    rememberInputMode(target);
+    target.setAttribute("inputmode", "text");
+  }
+
+  function applyInputMode(target, suppress) {
+    if (!target || typeof target.setAttribute !== "function") {
+      return;
+    }
+    rememberInputMode(target);
+    if (suppress) {
+      target.setAttribute("inputmode", "none");
+      return;
+    }
+    var original = target.getAttribute("data-orig-inputmode");
+    if (original) {
+      target.setAttribute("inputmode", original);
+    } else {
+      target.removeAttribute("inputmode");
+    }
+  }
+
+  function shouldLockKeyboardForInput(input) {
+    if (!input || !input.tagName) {
+      return false;
+    }
+    var tag = input.tagName.toUpperCase();
+    if (tag === "TEXTAREA") {
+      return true;
+    }
+    if (tag !== "INPUT") {
+      return false;
+    }
+    var type = (input.type || "").toLowerCase();
+    if (
+      type === "checkbox" ||
+      type === "radio" ||
+      type === "button" ||
+      type === "submit" ||
+      type === "range" ||
+      type === "color"
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  function applySoftKeyboardSetting(root) {
+    var suppress = isSoftKeyboardSuppressed();
+    var scope = root || document;
+    var inputs = scope.querySelectorAll("input, textarea, select");
+    inputs.forEach(function (input) {
+      var scanAllowed = isScanAllowedElement(input);
+      if (suppress) {
+        if (scanAllowed) {
+          applyScanInputMode(input);
+          input.setAttribute("data-scan-readonly", "1");
+        } else if (shouldLockKeyboardForInput(input)) {
+          input.setAttribute("data-kbd-readonly", "1");
+        }
+        applyInputMode(input, !scanAllowed);
+        if (shouldLockKeyboardForInput(input)) {
+          input.readOnly = true;
+        }
+        return;
+      }
+      if (input.hasAttribute("data-scan-readonly")) {
+        input.removeAttribute("data-scan-readonly");
+      }
+      if (input.hasAttribute("data-kbd-readonly")) {
+        input.removeAttribute("data-kbd-readonly");
+      }
+      if (shouldLockKeyboardForInput(input)) {
+        input.readOnly = false;
+      }
+      applyInputMode(input, false);
+    });
+    if (suppress) {
+      hideVirtualKeyboard();
+    }
+  }
+
+  function setSoftKeyboardEnabled(enabled) {
+    softKeyboardEnabled = !!enabled;
+    applySoftKeyboardSetting(document);
   }
 
   function normalizeBaseUrl(value) {
@@ -133,33 +522,252 @@
   }
 
   function isManualOverlayOpen() {
-    return !!document.querySelector(".overlay");
+    var overlays = document.querySelectorAll(".overlay");
+    if (!overlays.length) {
+      return false;
+    }
+    for (var i = 0; i < overlays.length; i += 1) {
+      if (overlays[i].getAttribute("data-scan-allow") === "1") {
+        continue;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  function isScanAllowedElement(el) {
+    if (!el || typeof el.getAttribute !== "function") {
+      return false;
+    }
+    if (el.getAttribute("data-scan-allow") === "1") {
+      return true;
+    }
+    return false;
+  }
+
+  function canScanNow() {
+    if (!scanHandlerActive) {
+      return false;
+    }
+    if (isManualOverlayOpen()) {
+      return false;
+    }
+    if (currentRoute && currentRoute.name === "login") {
+      return false;
+    }
+    var active = document.activeElement;
+    if (!active) {
+      return true;
+    }
+    if (scanSink && active === scanSink) {
+      return true;
+    }
+    if (isScanAllowedElement(active)) {
+      return true;
+    }
+    if (active.isContentEditable) {
+      return false;
+    }
+    var tag = active.tagName;
+    if (!tag) {
+      return true;
+    }
+    tag = tag.toUpperCase();
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
+      return false;
+    }
+    return true;
+  }
+
+  function setPreferredScanTarget(el) {
+    scanPreferredTarget = el || null;
+  }
+
+  function getPreferredScanTarget() {
+    if (!scanPreferredTarget) {
+      return null;
+    }
+    if (scanPreferredTarget.disabled) {
+      return null;
+    }
+    if (!scanPreferredTarget.isConnected) {
+      return null;
+    }
+    if (typeof scanPreferredTarget.getClientRects === "function") {
+      if (!scanPreferredTarget.getClientRects().length) {
+        return null;
+      }
+    }
+    return scanPreferredTarget;
+  }
+
+  function focusPreferredScanTarget() {
+    var target = getPreferredScanTarget();
+    if (target && typeof target.focus === "function") {
+      target.focus();
+      return true;
+    }
+    return false;
+  }
+
+  function shouldFocusForScan(target) {
+    if (!target) {
+      return true;
+    }
+    if (isScanAllowedElement(target)) {
+      return false;
+    }
+    if (target.isContentEditable) {
+      return false;
+    }
+    var tag = target.tagName ? target.tagName.toUpperCase() : "";
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
+      return false;
+    }
+    return true;
+  }
+
+  function ensureScanFocus() {
+    if (!scanHandlerActive) {
+      return;
+    }
+    if (isManualOverlayOpen()) {
+      return;
+    }
+    if (currentRoute && currentRoute.name === "login") {
+      return;
+    }
+    enterScanMode();
   }
 
   function enterScanMode() {
     var active = document.activeElement;
+    if (isScanAllowedElement(active)) {
+      setScanHighlight(true);
+      if (isSoftKeyboardSuppressed()) {
+        hideVirtualKeyboard();
+      }
+      return;
+    }
     if (active && active.blur) {
       active.blur();
+    }
+    if (focusPreferredScanTarget()) {
+      setScanHighlight(true);
+      if (isSoftKeyboardSuppressed()) {
+        hideVirtualKeyboard();
+      }
+      return;
+    }
+    if (scannerManager && scannerManager.focus) {
+      scannerManager.focus();
+      setScanHighlight(true);
+      if (isSoftKeyboardSuppressed()) {
+        hideVirtualKeyboard();
+      }
+      return;
     }
     if (scanSink) {
       scanSink.value = "";
       scanSink.focus();
     }
     setScanHighlight(true);
+    if (isSoftKeyboardSuppressed()) {
+      hideVirtualKeyboard();
+    }
   }
 
   function setScanHandler(handler) {
-    if (scanKeydownHandler) {
-      if (scanKeydownHandler.cleanup) {
-        scanKeydownHandler.cleanup();
+    scanHandlerActive = !!handler;
+    activeScanHandler = handler || null;
+    var wrappedHandler = handler
+      ? function (scan) {
+          if (scanDebug.enabled) {
+            var detail =
+              (scan && scan.source ? scan.source : "scan") +
+              " " +
+              (scan && scan.value ? scan.value : "");
+            appendScanDebug("scan", detail);
+          }
+          if (activeScanHandler) {
+            activeScanHandler(scan);
+          }
+        }
+      : null;
+    if (!scannerManager) {
+      pendingScanHandler = wrappedHandler;
+      return;
+    }
+    scannerManager.setHandler(wrappedHandler);
+  }
+
+  function setScanInputHandlers(inputHandler, keydownHandler) {
+    // Scan input handlers are managed by the scanner module.
+    scanInputHandler = null;
+    scanInputKeydownHandler = null;
+  }
+
+  function initScannerManager() {
+    if (!window.FlowStockScanner || !window.FlowStockScanner.createScannerManager) {
+      return Promise.resolve(false);
+    }
+    scannerManager = window.FlowStockScanner.createScannerManager({
+      scanSink: scanSink,
+      canScan: canScanNow,
+    });
+    scannerManager.setErrorHandler(function (error) {
+      if (window.console && console.warn) {
+        console.warn("Scanner error", error);
       }
-      document.removeEventListener("keydown", scanKeydownHandler, true);
-      scanKeydownHandler = null;
+      if (scanDebug.enabled) {
+        var message = error && error.message ? error.message : String(error || "error");
+        appendScanDebug("scan-error", message);
+      }
+    });
+    var envMode = window.FLOWSTOCK_SCANNER_MODE;
+    if (envMode) {
+      scannerMode = normalizeScannerMode(envMode);
+      scannerManager.setMode(scannerMode);
+      scannerManager.start();
+      if (pendingScanHandler) {
+        scannerManager.setHandler(pendingScanHandler);
+        pendingScanHandler = null;
+      }
+      return TsdStorage.setSetting(SCANNER_MODE_KEY, scannerMode).catch(function () {
+        return false;
+      });
     }
-    if (handler) {
-      scanKeydownHandler = handler;
-      document.addEventListener("keydown", scanKeydownHandler, true);
+    return TsdStorage.getSetting(SCANNER_MODE_KEY)
+      .then(function (mode) {
+        scannerMode = normalizeScannerMode(mode);
+        scannerManager.setMode(scannerMode);
+        scannerManager.start();
+        if (pendingScanHandler) {
+          scannerManager.setHandler(pendingScanHandler);
+          pendingScanHandler = null;
+        }
+        return true;
+      })
+      .catch(function () {
+        scannerMode = "auto";
+        scannerManager.setMode(scannerMode);
+        scannerManager.start();
+        if (pendingScanHandler) {
+          scannerManager.setHandler(pendingScanHandler);
+          pendingScanHandler = null;
+        }
+        return false;
+      });
+  }
+
+  function updateScannerMode(nextMode) {
+    scannerMode = normalizeScannerMode(nextMode);
+    if (scannerManager) {
+      scannerManager.setMode(scannerMode);
     }
+    return TsdStorage.setSetting(SCANNER_MODE_KEY, scannerMode).catch(function () {
+      return false;
+    });
   }
 
   var STATUS_LABELS = {
@@ -184,6 +792,7 @@
     { code: "EXPIRED", label: "Просрочено" },
     { code: "DEFECT", label: "Брак" },
     { code: "SAMPLE", label: "Проба" },
+    { code: "PRODUCTION", label: "Производство" },
     { code: "OTHER", label: "Прочее" },
   ];
 
@@ -494,6 +1103,8 @@
 
   function renderRoute() {
     setScanHandler(null);
+    setScanInputHandlers(null, null);
+    setPreferredScanTarget(null);
     if (!window.location.hash || window.location.hash === "#") {
       navigate("/home");
       return;
@@ -533,13 +1144,23 @@
     if (route.name === "login") {
       app.innerHTML = renderLogin();
       wireLogin();
+      applySoftKeyboardSetting(app);
       return;
     }
 
     if (route.name === "docs") {
       app.innerHTML = renderLoading();
-      TsdStorage.apiGetDocs(route.op)
-        .then(function (serverDocs) {
+      Promise.all([
+        TsdStorage.apiGetDocs(route.op).catch(function () {
+          return null;
+        }),
+        TsdStorage.listDocs().catch(function () {
+          return [];
+        }),
+      ])
+        .then(function (results) {
+          var serverDocs = results[0];
+          var localDocs = results[1] || [];
           var notice = null;
           var list = [];
           if (Array.isArray(serverDocs)) {
@@ -547,11 +1168,27 @@
           } else {
             notice = "Документы с сервера недоступны.";
           }
+          if (localDocs.length) {
+            var localIds = {};
+            localDocs.forEach(function (doc) {
+              localIds[String(doc.id)] = true;
+            });
+            list = list.filter(function (doc) {
+              var docUid = doc && (doc.doc_uid || doc.docUid) ? String(doc.doc_uid || doc.docUid) : "";
+              if (!docUid) {
+                return true;
+              }
+              return !localIds[docUid];
+            });
+            list = localDocs.concat(list);
+          }
           app.innerHTML = renderDocsList(list, route.op, notice);
           wireDocsList();
+          applySoftKeyboardSetting(app);
         })
         .catch(function () {
           app.innerHTML = renderError("Ошибка загрузки документов");
+          applySoftKeyboardSetting(app);
         });
       return;
     }
@@ -559,6 +1196,7 @@
     if (route.name === "new") {
       app.innerHTML = renderNewOp();
       wireNewOp();
+      applySoftKeyboardSetting(app);
       return;
     }
 
@@ -569,32 +1207,39 @@
           .then(function (doc) {
             if (!doc) {
               app.innerHTML = renderError("Документ не найден");
+              applySoftKeyboardSetting(app);
               return;
             }
             return TsdStorage.apiGetDocLines(route.id)
               .then(function (lines) {
                 app.innerHTML = renderServerDoc(doc, lines || []);
                 wireServerDoc(doc, lines || []);
+                applySoftKeyboardSetting(app);
               })
               .catch(function () {
                 app.innerHTML = renderError("Ошибка загрузки строк документа");
+                applySoftKeyboardSetting(app);
               });
           })
           .catch(function () {
             app.innerHTML = renderError("Ошибка загрузки документа");
+            applySoftKeyboardSetting(app);
           });
       } else {
         TsdStorage.getDoc(route.id)
           .then(function (doc) {
             if (!doc) {
               app.innerHTML = renderError("Документ не найден");
+              applySoftKeyboardSetting(app);
               return;
             }
             app.innerHTML = renderDoc(doc);
             wireDoc(doc);
+            applySoftKeyboardSetting(app);
           })
           .catch(function () {
             app.innerHTML = renderError("Ошибка загрузки документа");
+            applySoftKeyboardSetting(app);
           });
       }
       return;
@@ -603,12 +1248,14 @@
     if (route.name === "settings") {
       app.innerHTML = renderSettings();
       wireSettings();
+      applySoftKeyboardSetting(app);
       return;
     }
 
     if (route.name === "orders") {
       app.innerHTML = renderOrders();
       wireOrders();
+      applySoftKeyboardSetting(app);
       return;
     }
 
@@ -618,19 +1265,23 @@
         .then(function (order) {
           if (!order) {
             app.innerHTML = renderError("Заказ не найден");
+            applySoftKeyboardSetting(app);
             return;
           }
           return TsdStorage.listOrderLines(route.id)
             .then(function (lines) {
               app.innerHTML = renderOrderDetails(order, lines || []);
               wireOrderDetails();
+              applySoftKeyboardSetting(app);
             })
             .catch(function () {
               app.innerHTML = renderError("Ошибка загрузки строк заказа");
+              applySoftKeyboardSetting(app);
             });
         })
         .catch(function () {
           app.innerHTML = renderError("Ошибка загрузки заказа");
+          applySoftKeyboardSetting(app);
         });
       return;
     }
@@ -638,23 +1289,27 @@
     if (route.name === "items") {
       app.innerHTML = renderItems();
       wireItems();
+      applySoftKeyboardSetting(app);
       return;
     }
 
     if (route.name === "stock") {
       app.innerHTML = renderStock();
       wireStock();
+      applySoftKeyboardSetting(app);
       return;
     }
 
     if (route.name === "hu") {
       app.innerHTML = renderHuLookup();
       wireHuLookup();
+      applySoftKeyboardSetting(app);
       return;
     }
 
     app.innerHTML = renderHome();
     wireHome();
+    applySoftKeyboardSetting(app);
   }
 
   function renderLoading() {
@@ -910,7 +1565,7 @@
       '    <div id="stockStatus" class="stock-status">Дата актуальности: -</div>' +
       '    <div class="section-subtitle">Сканирование</div>' +
       '    <div class="scan-input-row">' +
-      '      <input class="form-input" id="stockScanInput" type="text" inputmode="none" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" readonly placeholder="Сканируйте HU или товар" />' +
+      '      <input class="form-input" id="stockScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" placeholder="Сканируйте HU или товар" />' +
       '      <button class="btn btn-outline" id="stockScanBtn" type="button">Сканировать</button>' +
       "    </div>" +
       '    <div id="stockMessage" class="stock-message"></div>' +
@@ -963,8 +1618,7 @@
     var detailsEl = document.getElementById("stockDetails");
     var clearBtn = document.getElementById("stockClearBtn");
     var dataReady = false;
-    var scanBuffer = "";
-    var scanBufferTimer = null;
+    var lastStockValue = "";
     var locationMap = {};
     var itemsById = {};
     var itemsLoading = null;
@@ -1506,24 +2160,11 @@
         });
     }
 
-    function clearScanBuffer() {
-      scanBuffer = "";
-      if (scanBufferTimer) {
-        clearTimeout(scanBufferTimer);
-        scanBufferTimer = null;
-      }
+    function clearScanInput() {
       if (scanInput) {
         scanInput.value = "";
       }
-    }
-
-    function scheduleScanBufferReset() {
-      if (scanBufferTimer) {
-        clearTimeout(scanBufferTimer);
-      }
-      scanBufferTimer = window.setTimeout(function () {
-        clearScanBuffer();
-      }, 400);
+      lastStockValue = "";
     }
 
     function handleScannedValue(value) {
@@ -1532,60 +2173,45 @@
         return;
       }
       if (scanInput) {
+        lastStockValue = trimmed;
         scanInput.value = trimmed;
       }
       if (normalizeHuCode(trimmed)) {
         showHuStock(trimmed);
+        clearScanInput();
         return;
       }
       handleStockSearch(trimmed);
+      clearScanInput();
     }
 
-    function handleScanKeydown(event) {
-      if (isManualOverlayOpen()) {
-        return;
-      }
-      if (event.key === "Enter") {
-        if (scanBuffer) {
-          var value = scanBuffer;
-          clearScanBuffer();
-          handleScannedValue(value);
-          event.preventDefault();
-        }
-        return;
-      }
-      if (
-        event.key &&
-        event.key.length === 1 &&
-        !event.altKey &&
-        !event.ctrlKey &&
-        !event.metaKey
-      ) {
-        scanBuffer += event.key;
-        scheduleScanBufferReset();
-        if (scanInput) {
-          scanInput.value = scanBuffer;
-        }
-      }
+    function handleScanEvent(scan) {
+      var value = scan && scan.value ? scan.value : scan;
+      handleScannedValue(value);
     }
 
-    handleScanKeydown.cleanup = function () {
-      clearScanBuffer();
-    };
-
-    setScanHandler(handleScanKeydown);
+    setScanHandler(handleScanEvent);
 
     if (scanBtn) {
       scanBtn.addEventListener("click", function () {
-        clearScanBuffer();
+        clearScanInput();
         enterScanMode();
       });
     }
 
     if (scanInput) {
-      scanInput.addEventListener("click", function () {
-        clearScanBuffer();
-        enterScanMode();
+      setPreferredScanTarget(scanInput);
+      scanInput.addEventListener("input", function () {
+        if (scanInput.value !== lastStockValue) {
+          scanInput.value = lastStockValue;
+        }
+      });
+      scanInput.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          handleScannedValue(scanInput.value);
+          return;
+        }
       });
     }
 
@@ -1604,6 +2230,7 @@
     }
 
     updateDataStatus();
+    ensureScanFocus();
   }
 
   function getDocTotals(lines) {
@@ -1703,8 +2330,7 @@
     var lookupConfirm = null;
     var lookupValue = null;
     var lastHuRawInput = "";
-    var scanBuffer = "";
-    var scanBufferTimer = null;
+    var lastLookupValue = "";
     var overlayKeyListener = null;
 
     function setStatus(text) {
@@ -1862,6 +2488,7 @@
       if (!trimmed) {
         lookupValue = null;
         lookupInput.value = rawNormalized;
+        lastLookupValue = lookupInput.value;
         if (lookupError) {
           lookupError.textContent =
             showError && rawNormalized
@@ -1879,6 +2506,7 @@
 
       lookupValue = trimmed;
       lookupInput.value = trimmed;
+      lastLookupValue = lookupInput.value;
       if (lookupError) {
         lookupError.textContent = "Найден HU: " + trimmed;
       }
@@ -1887,59 +2515,13 @@
       }
     }
 
-    function clearScanBuffer() {
-      scanBuffer = "";
-      if (scanBufferTimer) {
-        clearTimeout(scanBufferTimer);
-        scanBufferTimer = null;
-      }
-    }
-
-    function finalizeScanBuffer(showError) {
-      if (!scanBuffer) {
-        return;
-      }
-      var value = scanBuffer;
-      clearScanBuffer();
-      setLookupValue(value, showError);
-    }
-
-    function scheduleScanBufferReset() {
-      if (scanBufferTimer) {
-        clearTimeout(scanBufferTimer);
-      }
-      scanBufferTimer = window.setTimeout(function () {
-        finalizeScanBuffer(true);
-      }, 300);
-    }
-
-    function handleScanKeydown(event) {
+    function handleScanEvent(scan) {
       if (!lookupOverlay) {
         return;
       }
-      if (event.key === "Enter" || event.key === "Tab") {
-        finalizeScanBuffer(true);
-        event.preventDefault();
-        return;
-      }
-      if (
-        event.key &&
-        event.key.length === 1 &&
-        !event.altKey &&
-        !event.ctrlKey &&
-        !event.metaKey
-      ) {
-        scanBuffer += event.key;
-        scheduleScanBufferReset();
-        if (lookupInput) {
-          lookupInput.value = scanBuffer;
-        }
-      }
+      var value = scan && scan.value ? scan.value : scan;
+      setLookupValue(value, true);
     }
-
-    handleScanKeydown.cleanup = function () {
-      clearScanBuffer();
-    };
 
     function openLookupOverlay() {
       if (lookupOverlay) {
@@ -1948,6 +2530,7 @@
       lookupOverlay = document.createElement("div");
       lookupOverlay.className = "overlay hu-lookup-overlay";
       lookupOverlay.setAttribute("tabindex", "-1");
+      lookupOverlay.setAttribute("data-scan-allow", "1");
       lookupOverlay.innerHTML =
         '<div class="overlay-card">' +
         '  <div class="overlay-header">' +
@@ -1956,7 +2539,7 @@
         "  </div>" +
         '  <div class="overlay-body">' +
         '    <div class="form-label">Отсканируйте HU-код</div>' +
-        '    <input class="form-input" id="huLookupInput" type="text" placeholder="HU-000001" inputmode="none" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />' +
+        '    <input class="form-input" id="huLookupInput" type="text" placeholder="HU-000001" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" />' +
         '    <div class="field-error" id="huLookupError"></div>' +
         '    <div class="overlay-actions">' +
         '      <button class="btn btn-outline" type="button" id="huLookupCancel">Отмена</button>' +
@@ -1983,6 +2566,7 @@
         lookupError = null;
         lookupConfirm = null;
         lookupValue = null;
+        setPreferredScanTarget(null);
         if (overlayKeyListener) {
           document.removeEventListener("keydown", overlayKeyListener);
           overlayKeyListener = null;
@@ -1999,8 +2583,19 @@
       }
 
       if (lookupInput) {
+        setPreferredScanTarget(lookupInput);
         lookupInput.addEventListener("input", function () {
+          if (lookupInput.value !== lastLookupValue) {
+            lookupInput.value = lastLookupValue;
+          }
           setLookupValue(lookupInput.value, true);
+        });
+        lookupInput.addEventListener("keydown", function (event) {
+          if (event.key === "Enter" && lookupConfirm && !lookupConfirm.disabled) {
+            event.preventDefault();
+            confirmLookup();
+            return;
+          }
         });
       }
       if (cancelBtn) {
@@ -2025,11 +2620,12 @@
       document.addEventListener("keydown", overlayKeyListener);
 
       setLookupValue("", false);
-      clearScanBuffer();
-      enterScanMode();
+      if (lookupInput) {
+        lookupInput.focus();
+      }
     }
 
-    setScanHandler(handleScanKeydown);
+    setScanHandler(handleScanEvent);
 
     if (scanBtn) {
       scanBtn.addEventListener("click", function () {
@@ -2194,7 +2790,7 @@
       '" data-mode="ASK" type="button">Кол-во</button>' +
       "  </div>" +
       '  <div class="scan-input-row">' +
-      '    <input class="form-input scan-input" id="barcodeInput" type="text" inputmode="none" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" readonly ' +
+      '    <input class="form-input scan-input" id="barcodeInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" ' +
       (isDraft ? "" : "disabled") +
       " />" +
       '    <button class="btn btn-outline kbd-btn" data-manual="barcode" type="button" aria-label="Ручной ввод" ' +
@@ -2278,12 +2874,53 @@
     }
 
   function renderSettings() {
+    var debugScanner = isDebugMode();
+    var scannerHtml = "";
+    var debugPanel = "";
+    if (debugScanner) {
+      scannerHtml =
+        '<label class="form-label">Scanner mode (debug)</label>' +
+        '    <select class="form-input" id="scannerModeSelect">' +
+        '      <option value="auto">auto</option>' +
+        '      <option value="keyboard">keyboard</option>' +
+        '      <option value="intent">intent</option>' +
+        "    </select>" +
+        '    <div class="field-hint" id="scannerModeHint"></div>';
+      debugPanel =
+        '<label class="toggle-row">' +
+        '  <span class="toggle-label">Отладка сканера</span>' +
+        '  <span class="toggle-switch">' +
+        '    <input type="checkbox" id="scanDebugPanelToggle" />' +
+        '    <span class="toggle-slider"></span>' +
+        "  </span>" +
+        "</label>" +
+        '<div class="debug-panel is-collapsed" id="scanDebugPanel">' +
+        '  <div class="debug-title">Scanner debug</div>' +
+        (scannerHtml ? '  <div class="debug-block">' + scannerHtml + "</div>" : "") +
+        '  <div class="debug-actions">' +
+        '    <button class="btn btn-outline" type="button" id="scanDebugFocusBtn">Фокус сканера</button>' +
+        '    <button class="btn btn-outline" type="button" id="scanDebugStateBtn">Снимок</button>' +
+        '    <button class="btn btn-outline" type="button" id="scanDebugClearBtn">Очистить</button>' +
+        '    <button class="btn btn-outline" type="button" id="scanDebugCopyBtn">Копировать</button>' +
+        "  </div>" +
+        '  <pre class="debug-state" id="scanDebugState"></pre>' +
+        '  <pre class="debug-log" id="scanDebugLog"></pre>' +
+        "</div>";
+    }
     return (
       '<section class="screen">' +
       '  <div class="screen-card">' +
       '    <h1 class="screen-title">Настройки</h1>' +
       '    <label class="form-label">ID устройства</label>' +
       '    <div class="field-value" id="deviceIdValue"></div>' +
+      '    <label class="toggle-row">' +
+      '      <span class="toggle-label">Разрешить экранную клавиатуру</span>' +
+      '      <span class="toggle-switch">' +
+      '        <input type="checkbox" id="softKeyboardToggle" />' +
+      '        <span class="toggle-slider"></span>' +
+      "      </span>" +
+      "    </label>" +
+      (debugPanel ? debugPanel : "") +
       '    <div class="version">Версия приложения: 0.1</div>' +
       "  </div>" +
       "</section>"
@@ -2363,6 +3000,32 @@
     return unique.length === 1 ? unique[0] : "";
   }
 
+  function getUniqueLineValue(lines, field, normalizeFn) {
+    var unique = "";
+    var hasValue = false;
+    var list = Array.isArray(lines) ? lines : [];
+    for (var i = 0; i < list.length; i += 1) {
+      var line = list[i];
+      if (!line) {
+        continue;
+      }
+      var raw = line[field];
+      var normalized = normalizeFn ? normalizeFn(raw) : normalizeValue(raw);
+      if (!normalized) {
+        continue;
+      }
+      if (!hasValue) {
+        unique = normalized;
+        hasValue = true;
+        continue;
+      }
+      if (unique !== normalized) {
+        return "";
+      }
+    }
+    return hasValue ? unique : "";
+  }
+
   function renderServerDoc(doc, lines) {
     var opLabel = OPS[doc.op] ? OPS[doc.op].label : doc.op;
     var statusLabel = STATUS_LABELS[doc.status] || doc.status;
@@ -2388,9 +3051,10 @@
     var shippingLabel = shippingRef || resolvedHuFromLines || "-";
     var isInventory = String(doc.op || "").toUpperCase() === "INVENTORY";
     var canResumeRecount = doc.status === "RECOUNT" && isInventory && doc.doc_uid;
-    var recountAction = canResumeRecount
+    var canResumeDraft = doc.status === "DRAFT" && doc.doc_uid;
+    var resumeAction = canResumeRecount || canResumeDraft
       ? '<div class="actions-row doc-actions">' +
-        '  <button class="btn primary-btn" id="recountResumeBtn">В работу</button>' +
+        '  <button class="btn primary-btn" id="docResumeBtn">В работу</button>' +
         "</div>"
       : "";
 
@@ -2414,7 +3078,7 @@
       "</div>" +
       "      </div>" +
       "    </div>" +
-      recountAction +
+      resumeAction +
       '    <div class="order-fields">' +
       '      <div class="order-field-row">' +
       '        <div class="order-field-label">Контрагент</div>' +
@@ -2452,14 +3116,203 @@
   }
 
   function wireServerDoc(doc, lines) {
-    var resumeBtn = document.getElementById("recountResumeBtn");
+    var resumeBtn = document.getElementById("docResumeBtn");
     if (!resumeBtn) {
       return;
     }
 
     resumeBtn.addEventListener("click", function () {
-      startRecountDoc(doc, lines || []);
+      if (doc.status === "RECOUNT") {
+        startRecountDoc(doc, lines || []);
+        return;
+      }
+      if (doc.status === "DRAFT") {
+        startDraftDoc(doc, lines || []);
+      }
     });
+  }
+
+  function startDraftDoc(doc, lines) {
+    if (!doc || !doc.doc_uid) {
+      alert("Нельзя продолжить документ без идентификатора ТСД.");
+      return;
+    }
+
+    var docUid = String(doc.doc_uid);
+    var nowIso = new Date().toISOString();
+    var op = String(doc.op || "").toUpperCase();
+    var header = getDefaultHeader(doc.op);
+
+    var partnerId = doc.partner_id != null ? Number(doc.partner_id) : null;
+    if (partnerId != null && isNaN(partnerId)) {
+      partnerId = null;
+    }
+    var orderId = doc.order_id != null ? Number(doc.order_id) : null;
+    if (orderId != null && isNaN(orderId)) {
+      orderId = null;
+    }
+
+    var fromLocation = getUniqueLineValue(lines, "fromLocation", normalizeValue);
+    var toLocation = getUniqueLineValue(lines, "toLocation", normalizeValue);
+    var fromHu = getUniqueLineValue(lines, "fromHu", normalizeHuCode);
+    var toHu = getUniqueLineValue(lines, "toHu", normalizeHuCode);
+
+    if (op === "INBOUND") {
+      header.to = toLocation;
+      header.hu = toHu || "";
+      header.partner_id = partnerId;
+      if (doc.partnerName || doc.partnerCode) {
+        header.partner = formatPartnerLabel({
+          name: doc.partnerName || "",
+          code: doc.partnerCode || "",
+        });
+      }
+    } else if (op === "OUTBOUND") {
+      header.from = fromLocation;
+      header.hu = fromHu || "";
+      header.partner_id = partnerId;
+      header.order_id = orderId;
+      header.order_ref = doc.order_ref || "";
+      if (doc.partnerName || doc.partnerCode) {
+        header.partner = formatPartnerLabel({
+          name: doc.partnerName || "",
+          code: doc.partnerCode || "",
+        });
+      }
+    } else if (op === "MOVE") {
+      header.from = fromLocation;
+      header.to = toLocation;
+      header.from_hu = fromHu || "";
+      header.to_hu = toHu || "";
+      if (header.from && header.to && header.from === header.to) {
+        header.move_internal = true;
+      }
+    } else if (op === "WRITE_OFF") {
+      header.from = fromLocation;
+      header.hu = fromHu || "";
+      header.reason_code = doc.reason_code || null;
+      header.reason_label = getReasonLabel(header.reason_code) || null;
+    } else if (op === "INVENTORY") {
+      header.location = toLocation || fromLocation;
+      header.hu = toHu || "";
+    }
+
+    var localLines = (lines || [])
+      .map(function (line) {
+        return {
+          barcode: String(line.barcode || ""),
+          qty: Number(line.qty) || 0,
+          from: line.fromLocation || null,
+          to: line.toLocation || null,
+          from_hu: line.fromHu || null,
+          to_hu: line.toHu || null,
+          reason_code: null,
+          itemId: line.itemId || null,
+          itemName: line.itemName || null,
+        };
+      })
+      .filter(function (line) {
+        return line.barcode;
+      });
+
+    if (op === "INBOUND" && header.to) {
+      localLines.forEach(function (line) {
+        if (!line.to) {
+          line.to = header.to;
+        }
+      });
+    }
+    if ((op === "OUTBOUND" || op === "WRITE_OFF") && header.from) {
+      localLines.forEach(function (line) {
+        if (!line.from) {
+          line.from = header.from;
+        }
+      });
+    }
+    if (op === "MOVE") {
+      if (header.from) {
+        localLines.forEach(function (line) {
+          if (!line.from) {
+            line.from = header.from;
+          }
+        });
+      }
+      if (header.to) {
+        localLines.forEach(function (line) {
+          if (!line.to) {
+            line.to = header.to;
+          }
+        });
+      }
+    }
+    if (op === "INVENTORY" && header.location) {
+      localLines.forEach(function (line) {
+        if (!line.to) {
+          line.to = header.location;
+        }
+      });
+    }
+    if (op === "WRITE_OFF" && header.reason_code) {
+      localLines.forEach(function (line) {
+        line.reason_code = header.reason_code;
+      });
+    }
+
+    function saveDoc(locationMap) {
+      if (header.from) {
+        var fromLocationEntry = locationMap && locationMap[header.from];
+        if (fromLocationEntry) {
+          header.from_id = fromLocationEntry.locationId || null;
+          header.from_name = fromLocationEntry.name || null;
+        }
+      }
+      if (header.to) {
+        var toLocationEntry = locationMap && locationMap[header.to];
+        if (toLocationEntry) {
+          header.to_id = toLocationEntry.locationId || null;
+          header.to_name = toLocationEntry.name || null;
+        }
+      }
+      if (header.location) {
+        var locationEntry = locationMap && locationMap[header.location];
+        if (locationEntry) {
+          header.location_id = locationEntry.locationId || null;
+          header.location_name = locationEntry.name || null;
+        }
+      }
+
+      var localDoc = {
+        id: docUid,
+        op: doc.op,
+        doc_ref: doc.doc_ref || "",
+        status: "DRAFT",
+        header: header,
+        lines: localLines,
+        undoStack: [],
+        createdAt: doc.created_at || nowIso,
+        updatedAt: nowIso,
+        exportedAt: null,
+      };
+
+      return TsdStorage.saveDoc(localDoc).then(function () {
+        setNavOrigin("docs");
+        navigate("/doc/" + encodeURIComponent(docUid));
+      });
+    }
+
+    TsdStorage.apiGetLocations()
+      .then(function (locations) {
+        var map = {};
+        (locations || []).forEach(function (location) {
+          if (location && location.code) {
+            map[String(location.code)] = location;
+          }
+        });
+        return saveDoc(map);
+      })
+      .catch(function () {
+        return saveDoc(null);
+      });
   }
 
   function startRecountDoc(doc, lines) {
@@ -3653,14 +4506,12 @@
     var huToScanBtn = document.getElementById("huToScanBtn");
     var huToErrorEl = document.getElementById("huToError");
     var lookupToken = 0;
+    var lastBarcodeValue = "";
     var qtyModeButtons = document.querySelectorAll(".qty-mode-btn");
     var qtyOverlay = null;
     var qtyOverlayKeyListener = null;
     var isDraftDoc = doc.status === "DRAFT";
     var docActionStatus = document.getElementById("docActionStatus");
-    var scanTarget = { type: "barcode", field: null };
-    var scanBuffer = "";
-    var scanBufferTimer = null;
     var incBtn = null;
     var incHoldTimer = null;
     var incHoldTriggered = false;
@@ -3674,6 +4525,21 @@
     var huLocationCache = null;
     var huLocationCachedAt = 0;
     var HU_LOCATION_TTL_MS = 10000;
+    var apiItemsCache = null;
+    var apiItemsCacheAt = 0;
+    var API_ITEMS_CACHE_MS = 60000;
+    var lastScanHandledAt = 0;
+    var lastScanHandledValue = "";
+
+    function clearBarcodeInput(keepScanInfo) {
+      if (barcodeInput) {
+        barcodeInput.value = "";
+      }
+      lastBarcodeValue = "";
+      if (!keepScanInfo) {
+        updateScanInfoByBarcode("");
+      }
+    }
 
     function setDocStatus(text) {
       if (!docActionStatus) {
@@ -3715,13 +4581,7 @@
         });
     }
 
-    function setScanTarget(type, field) {
-      scanTarget.type = type;
-      scanTarget.field = field || null;
-    }
-
     function focusBarcode() {
-      setScanTarget("barcode");
       enterScanMode();
     }
 
@@ -4314,14 +5174,19 @@
       if (doc.status !== "DRAFT") {
         return;
       }
-      if (!ensureLocationSelectedForOperation(true)) {
-        return;
-      }
       var barcode = normalizeValue(
         barcodeOverride != null ? barcodeOverride : barcodeInput ? barcodeInput.value : ""
       );
       if (!barcode) {
         focusBarcode();
+        return;
+      }
+      var huCode = extractHuCode(barcode);
+      if (huCode) {
+        handleHuScan(huCode);
+        return;
+      }
+      if (!ensureLocationSelectedForOperation(true)) {
         return;
       }
       var qtyMode = doc.header.qtyMode === "INC1" ? "INC1" : "ASK";
@@ -4606,6 +5471,143 @@
       nodes.valueEl.textContent = label;
     }
 
+    function applyHuContentsFromStock(huCode) {
+      if (!isDraftDoc) {
+        return Promise.resolve(false);
+      }
+      if (doc.op !== "OUTBOUND" && doc.op !== "WRITE_OFF") {
+        return Promise.resolve(false);
+      }
+      var normalized = normalizeHuCode(huCode);
+      if (!normalized) {
+        return Promise.resolve(false);
+      }
+      var fromLocationId = doc.header.from_id || null;
+      setDocStatus("Загрузка содержимого HU...");
+      return TsdStorage.apiGetHuStockRows()
+        .then(function (rows) {
+          var filtered = (rows || []).filter(function (row) {
+            if (normalizeHuCode(row.hu) !== normalized) {
+              return false;
+            }
+            if (fromLocationId && row.locationId !== fromLocationId) {
+              return false;
+            }
+            var qty = Number(row.qty) || 0;
+            return qty > 0;
+          });
+          if (!filtered.length) {
+            return null;
+          }
+          var grouped = {};
+          filtered.forEach(function (row) {
+            var itemId = Number(row.itemId);
+            var qty = Number(row.qty) || 0;
+            if (!itemId || qty <= 0) {
+              return;
+            }
+            grouped[itemId] = (grouped[itemId] || 0) + qty;
+          });
+          var itemIds = Object.keys(grouped)
+            .map(function (id) {
+              return Number(id);
+            })
+            .filter(function (id) {
+              return !!id;
+            });
+          if (!itemIds.length) {
+            return null;
+          }
+          return TsdStorage.getItemsByIds(itemIds).then(function (itemsMap) {
+            var map = itemsMap || {};
+            var missing = [];
+            itemIds.forEach(function (id) {
+              if (!map[id]) {
+                missing.push(id);
+              }
+            });
+            if (!missing.length) {
+              return { grouped: grouped, itemsMap: map };
+            }
+            var now = Date.now();
+            var useCache = apiItemsCache && now - apiItemsCacheAt < API_ITEMS_CACHE_MS;
+            var loader = useCache ? Promise.resolve(apiItemsCache) : TsdStorage.apiSearchItems("");
+            return loader
+              .then(function (items) {
+                var list = items || [];
+                if (!useCache) {
+                  apiItemsCache = list;
+                  apiItemsCacheAt = Date.now();
+                }
+                var missingMap = {};
+                missing.forEach(function (id) {
+                  missingMap[id] = true;
+                });
+                list.forEach(function (item) {
+                  if (item && missingMap[item.itemId]) {
+                    map[item.itemId] = item;
+                  }
+                });
+                return { grouped: grouped, itemsMap: map };
+              })
+              .catch(function () {
+                return { grouped: grouped, itemsMap: map };
+              });
+          });
+        })
+        .then(function (result) {
+          if (!result) {
+            setDocStatus("HU пустой.");
+            return false;
+          }
+          var grouped = result.grouped;
+          var itemsMap = result.itemsMap || {};
+          var lineData = buildLineData(doc.op, doc.header);
+          var nextLines = [];
+          Object.keys(grouped).forEach(function (itemIdStr) {
+            var itemId = Number(itemIdStr);
+            var qty = grouped[itemIdStr];
+            if (!itemId || !qty) {
+              return;
+            }
+            var item = itemsMap[itemId] || null;
+            var barcode = "";
+            var name = "";
+            if (item) {
+              barcode = item.barcode || item.sku || item.gtin || "";
+              name = item.name || "";
+            }
+            nextLines.push({
+              barcode: barcode,
+              qty: qty,
+              from: lineData.from,
+              to: lineData.to,
+              from_hu: lineData.from_hu,
+              to_hu: lineData.to_hu,
+              reason_code: lineData.reason_code,
+              itemId: itemId,
+              itemName: name,
+            });
+          });
+          if (!nextLines.length) {
+            setDocStatus("HU пустой.");
+            return false;
+          }
+          doc.lines = nextLines;
+          doc.undoStack = [];
+          doc.updatedAt = new Date().toISOString();
+          return saveDocState().then(function () {
+            refreshDocView();
+            setDocStatus("HU загружен.");
+            return true;
+          });
+        })
+        .catch(function () {
+          setDocStatus("Ошибка загрузки HU.");
+          return false;
+        });
+    }
+
     function getLocationFieldForHu(target) {
       if (doc.op === "MOVE") {
         if (target === "from_hu") {
@@ -4755,6 +5757,101 @@
       });
     }
 
+    function resolveMoveHuTarget(huCode) {
+      var fromHu = normalizeValue(doc.header.from_hu);
+      var toHu = normalizeValue(doc.header.to_hu);
+      if (!fromHu) {
+        return Promise.resolve("from_hu");
+      }
+      if (!toHu) {
+        return Promise.resolve("to_hu");
+      }
+      var fromLocationId = doc.header.from_id || null;
+      var toLocationId = doc.header.to_id || null;
+      if (!fromLocationId && !toLocationId) {
+        return Promise.resolve("to_hu");
+      }
+      var normalized = normalizeHuCode(huCode);
+      if (!normalized) {
+        return Promise.resolve("to_hu");
+      }
+      return getHuLocationRows()
+        .then(function (rows) {
+          var locationId = null;
+          for (var i = 0; i < rows.length; i += 1) {
+            var rowHu = normalizeHuCode(rows[i].hu);
+            if (rowHu && rowHu === normalized) {
+              locationId = rows[i].locationId;
+              break;
+            }
+          }
+          if (locationId && fromLocationId && locationId === fromLocationId) {
+            return "from_hu";
+          }
+          if (locationId && toLocationId && locationId === toLocationId) {
+            return "to_hu";
+          }
+          return "to_hu";
+        })
+        .catch(function () {
+          return "to_hu";
+        });
+    }
+
+    function resolveHuTarget(huCode) {
+      if (doc.op !== "MOVE") {
+        return Promise.resolve("hu");
+      }
+      return resolveMoveHuTarget(huCode);
+    }
+
+    function handleHuScan(huCode) {
+      if (!isDraftDoc) {
+        return;
+      }
+      var normalized = normalizeHuCode(huCode) || extractHuCode(huCode);
+      if (!normalized) {
+        return;
+      }
+      var targetField = "hu";
+      resolveHuTarget(normalized)
+        .then(function (target) {
+          targetField = target || "hu";
+          if (!ensureLocationSelectedForHu(targetField, true)) {
+            return null;
+          }
+          return checkHuLocationAvailability(normalized, targetField).then(function (result) {
+            if (!result || result.ok === false) {
+              var message =
+                result && result.message ? result.message : "HU недоступен для выбранной локации.";
+              setHuError(message, targetField);
+              return null;
+            }
+            doc.header[targetField] = normalized;
+            setHuError("", targetField);
+            setHuDisplay(normalized, targetField);
+            var shouldPopulate =
+              targetField === "hu" && (doc.op === "OUTBOUND" || doc.op === "WRITE_OFF");
+            if (shouldPopulate) {
+              return applyHuContentsFromStock(normalized).then(function (applied) {
+                if (!applied) {
+                  setHuError("Не удалось загрузить содержимое HU.", targetField);
+                  return saveDocState();
+                }
+                return true;
+              });
+            }
+            return saveDocState();
+          });
+        })
+        .catch(function () {
+          setHuError("Ошибка проверки HU.", targetField);
+        })
+        .finally(function () {
+          focusBarcode();
+        });
+    }
+
     function validateHuField(field, showAlert) {
       var target = field || "hu";
       var current = normalizeValue(doc.header[target]);
@@ -4801,8 +5898,8 @@
         return;
       }
       var trimmed = normalizeValue(rawValue);
-      var normalized = normalizeHuCode(trimmed);
-      if (normalized === null) {
+      var normalized = extractHuCode(trimmed);
+      if (!normalized) {
         huModalValue = null;
         if (huModalError) {
           huModalError.textContent =
@@ -4887,8 +5984,7 @@
         }
         setDocStatus("");
         huModalTarget = "hu";
-        setScanTarget("barcode");
-        enterScanMode();
+        focusBarcode();
       }
 
       function confirmHu() {
@@ -4899,6 +5995,7 @@
           return;
         }
         var pendingValue = huModalValue;
+        var shouldPopulate = huModalTarget === "hu" && (doc.op === "OUTBOUND" || doc.op === "WRITE_OFF");
         if (huModalConfirm) {
           huModalConfirm.disabled = true;
         }
@@ -4916,15 +6013,28 @@
             doc.header[huModalTarget] = pendingValue;
             setHuError("", huModalTarget);
             setHuDisplay(pendingValue, huModalTarget);
-            saveDocState();
-            closeOverlay();
+            if (shouldPopulate) {
+              return applyHuContentsFromStock(pendingValue).then(function (applied) {
+                if (!applied) {
+                  if (huModalError) {
+                    huModalError.textContent = "Не удалось загрузить содержимое HU.";
+                  }
+                  return;
+                }
+                closeOverlay();
+              });
+            }
+            return saveDocState().then(function () {
+              refreshDocView();
+              closeOverlay();
+            });
           })
           .catch(function () {
             if (huModalError) {
               huModalError.textContent = "Ошибка проверки HU.";
             }
           })
-          .then(function () {
+          .finally(function () {
             if (huModalConfirm) {
               huModalConfirm.disabled = false;
             }
@@ -4965,31 +6075,8 @@
         statusLabel = "Сканируйте HU-назначение";
       }
       setHuModalValue(doc.header[huModalTarget], false);
-      setScanTarget("hu", huModalTarget);
       setDocStatus(statusLabel);
-      clearScanBuffer();
       enterScanMode();
-    }
-
-    function clearScanBuffer() {
-      scanBuffer = "";
-      if (scanBufferTimer) {
-        clearTimeout(scanBufferTimer);
-        scanBufferTimer = null;
-      }
-      if (barcodeInput && scanTarget.type === "barcode") {
-        barcodeInput.value = "";
-      }
-      updateScanInfoByBarcode("");
-    }
-
-    function scheduleScanBufferReset() {
-      if (scanBufferTimer) {
-        clearTimeout(scanBufferTimer);
-      }
-      scanBufferTimer = window.setTimeout(function () {
-        clearScanBuffer();
-      }, 400);
     }
 
     function handleScannedValue(value) {
@@ -4997,69 +6084,55 @@
       if (!trimmed) {
         return;
       }
-      if (scanTarget.type === "hu") {
-        setHuModalValue(trimmed, true);
+      var huCode = extractHuCode(trimmed);
+      if (barcodeInput) {
+        lastBarcodeValue = trimmed;
+        barcodeInput.value = trimmed;
+        if (!huCode) {
+          updateScanInfoByBarcode(trimmed);
+        }
+      }
+      var now = Date.now();
+      if (lastScanHandledValue === trimmed && now - lastScanHandledAt < 120) {
+        return;
+      }
+      lastScanHandledValue = trimmed;
+      lastScanHandledAt = now;
+      if (huCode) {
+        setScanInfo("HU добавлен", false);
+        handleHuScan(huCode);
+        clearBarcodeInput(true);
         return;
       }
       handleAddLine(trimmed);
+      clearBarcodeInput();
     }
 
-    function handleScanKeydown(event) {
-      if (isManualOverlayOpen() && scanTarget.type !== "hu") {
-        return;
-      }
+    function handleScanEvent(scan) {
       if (!isDraftDoc) {
         return;
       }
-      if (event.key === "Enter") {
-        if (scanBuffer) {
-          var value = scanBuffer;
-          clearScanBuffer();
-          handleScannedValue(value);
-          event.preventDefault();
-        }
-        return;
-      }
-      if (
-        event.key &&
-        event.key.length === 1 &&
-        !event.altKey &&
-        !event.ctrlKey &&
-        !event.metaKey
-      ) {
-        scanBuffer += event.key;
-        scheduleScanBufferReset();
-        if (barcodeInput && scanTarget.type === "barcode") {
-          barcodeInput.value = scanBuffer;
-          updateScanInfoByBarcode(scanBuffer);
-        } else if (huModalInput && scanTarget.type === "hu") {
-          huModalInput.value = scanBuffer;
-        }
-      }
+      var value = scan && scan.value ? scan.value : scan;
+      handleScannedValue(value);
     }
 
-    handleScanKeydown.cleanup = function () {
-      clearScanBuffer();
-    };
-
-    setScanHandler(handleScanKeydown);
+    setScanHandler(handleScanEvent);
 
     if (barcodeInput) {
-      barcodeInput.addEventListener("focus", function () {
-        setScanTarget("barcode");
-        enterScanMode();
-      });
-      barcodeInput.addEventListener("click", function () {
-        setScanTarget("barcode");
-        enterScanMode();
-      });
+      setPreferredScanTarget(barcodeInput);
       barcodeInput.addEventListener("input", function () {
-        updateScanInfoByBarcode(barcodeInput.value);
+        if (barcodeInput.value !== lastBarcodeValue) {
+          barcodeInput.value = lastBarcodeValue;
+        }
+        if (!extractHuCode(barcodeInput.value)) {
+          updateScanInfoByBarcode(barcodeInput.value);
+        }
       });
       barcodeInput.addEventListener("keydown", function (event) {
         if (event.key === "Enter") {
           event.preventDefault();
           handleAddLine();
+          return;
         }
       });
     }
@@ -5384,14 +6457,6 @@
       });
     }
 
-    if (huScanBtn) {
-      huScanBtn.addEventListener("click", function () {
-        if (!isDraftDoc) {
-          return;
-        }
-        openHuOverlay("hu");
-      });
-    }
     if (huClearBtn) {
       huClearBtn.addEventListener("click", function () {
         if (!isDraftDoc) {
@@ -5409,7 +6474,10 @@
         if (!isDraftDoc) {
           return;
         }
-        openHuOverlay("from_hu");
+        doc.header.from_hu = "";
+        setHuError("", "from_hu");
+        setHuDisplay("", "from_hu");
+        saveDocState();
       });
     }
 
@@ -5418,7 +6486,10 @@
         if (!isDraftDoc) {
           return;
         }
-        openHuOverlay("to_hu");
+        doc.header.to_hu = "";
+        setHuError("", "to_hu");
+        setHuDisplay("", "to_hu");
+        saveDocState();
       });
     }
 
@@ -5457,10 +6528,10 @@
             placeholder: "Введите штрихкод",
             inputMode: "text",
             onClose: function () {
-              setScanTarget("barcode");
+              focusBarcode();
             },
             onSubmit: function (value) {
-              setScanTarget("barcode");
+              focusBarcode();
               handleAddLine(value);
             },
           });
@@ -5472,7 +6543,7 @@
           placeholder: "Введите код локации",
           inputMode: "text",
           onClose: function () {
-            setScanTarget("barcode");
+            focusBarcode();
           },
           onSubmit: function (value) {
             handleLocationEntry(target, value);
@@ -5513,6 +6584,17 @@
 
   function wireSettings() {
     var deviceIdValue = document.getElementById("deviceIdValue");
+    var softKeyboardToggle = document.getElementById("softKeyboardToggle");
+    var scannerSelect = document.getElementById("scannerModeSelect");
+    var scannerHint = document.getElementById("scannerModeHint");
+    var scanDebugPanelToggle = document.getElementById("scanDebugPanelToggle");
+    var scanDebugPanel = document.getElementById("scanDebugPanel");
+    var scanDebugLog = document.getElementById("scanDebugLog");
+    var scanDebugState = document.getElementById("scanDebugState");
+    var scanDebugFocusBtn = document.getElementById("scanDebugFocusBtn");
+    var scanDebugStateBtn = document.getElementById("scanDebugStateBtn");
+    var scanDebugClearBtn = document.getElementById("scanDebugClearBtn");
+    var scanDebugCopyBtn = document.getElementById("scanDebugCopyBtn");
 
     function renderDeviceId(value) {
       if (!deviceIdValue) {
@@ -5522,6 +6604,17 @@
       deviceIdValue.textContent = clean || "Не задан";
     }
 
+    function renderScannerHint() {
+      if (!scannerHint) {
+        return;
+      }
+      var provider =
+        scannerManager && scannerManager.getProviderType
+          ? scannerManager.getProviderType()
+          : "keyboard";
+      scannerHint.textContent = "Текущий провайдер: " + provider;
+    }
+
     TsdStorage.getSetting("device_id")
       .then(function (value) {
         renderDeviceId(value);
@@ -5529,6 +6622,111 @@
       .catch(function () {
         renderDeviceId("");
       });
+
+    if (scannerSelect) {
+      TsdStorage.getSetting(SCANNER_MODE_KEY)
+        .then(function (value) {
+          scannerSelect.value = normalizeScannerMode(value);
+          renderScannerHint();
+        })
+        .catch(function () {
+          scannerSelect.value = normalizeScannerMode(scannerMode);
+          renderScannerHint();
+        });
+
+      scannerSelect.addEventListener("change", function () {
+        var value = normalizeScannerMode(scannerSelect.value);
+        updateScannerMode(value).then(function () {
+          renderScannerHint();
+        });
+      });
+    }
+
+    if (softKeyboardToggle) {
+      softKeyboardToggle.checked = softKeyboardEnabled;
+      softKeyboardToggle.addEventListener("change", function () {
+        var enabled = !!softKeyboardToggle.checked;
+        setSoftKeyboardEnabled(enabled);
+        TsdStorage.setSetting(SOFT_KEYBOARD_KEY, enabled).catch(function () {
+          return false;
+        });
+      });
+    }
+
+    function setDebugPanelOpen(open) {
+      var isOpen = !!open;
+      if (scanDebugPanel) {
+        scanDebugPanel.classList.toggle("is-collapsed", !isOpen);
+      }
+      if (scanDebugPanelToggle) {
+        scanDebugPanelToggle.checked = isOpen;
+      }
+      setScanDebugEnabled(isOpen);
+      if (isOpen && scanDebug.stateEl) {
+        scanDebug.stateEl.textContent = formatScanState(getScanStateSnapshot());
+      }
+    }
+
+    if (scanDebugLog || scanDebugState) {
+      mountScanDebugUI(scanDebugLog, scanDebugState);
+      if (scanDebugPanelToggle || scanDebugPanel) {
+        TsdStorage.getSetting(SCAN_DEBUG_OPEN_KEY)
+          .then(function (value) {
+            setDebugPanelOpen(!!value);
+          })
+          .catch(function () {
+            setDebugPanelOpen(false);
+          });
+      }
+    }
+
+    if (scanDebugPanelToggle) {
+      scanDebugPanelToggle.addEventListener("change", function () {
+        var open = !!scanDebugPanelToggle.checked;
+        setDebugPanelOpen(open);
+        TsdStorage.setSetting(SCAN_DEBUG_OPEN_KEY, open).catch(function () {
+          return false;
+        });
+      });
+    }
+
+    if (scanDebugFocusBtn) {
+      scanDebugFocusBtn.addEventListener("click", function () {
+        enterScanMode();
+        appendScanDebug("focus", formatDebugTarget(document.activeElement));
+      });
+    }
+
+    if (scanDebugStateBtn) {
+      scanDebugStateBtn.addEventListener("click", function () {
+        if (scanDebug.stateEl) {
+          scanDebug.stateEl.textContent = formatScanState(getScanStateSnapshot());
+        }
+        appendScanDebug("snapshot", "");
+      });
+    }
+
+    if (scanDebugClearBtn) {
+      scanDebugClearBtn.addEventListener("click", function () {
+        clearScanDebugLog();
+      });
+    }
+
+    if (scanDebugCopyBtn) {
+      scanDebugCopyBtn.addEventListener("click", function () {
+        var text = scanDebug.log.join("\n");
+        if (!text) {
+          return;
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(function () {
+            appendScanDebug("copy", "ok");
+          });
+        } else {
+          window.prompt("Скопируйте лог:", text);
+        }
+      });
+    }
   }
 
   function wireLogin() {
@@ -5729,6 +6927,29 @@
   function normalizeValue(value) {
     var trimmed = String(value || "").trim();
     return trimmed ? trimmed : "";
+  }
+
+  function extractHuCode(value) {
+    var normalized = normalizeValue(value).toUpperCase();
+    if (!normalized) {
+      return "";
+    }
+    normalized = normalized
+      .replace(/\u041D/g, "H") // Cyrillic Н -> Latin H
+      .replace(/\u0423/g, "U"); // Cyrillic У -> Latin U
+    var cleaned = normalized.replace(/[^A-Z0-9-]/g, "");
+    if (!cleaned) {
+      return "";
+    }
+    var match = cleaned.match(/HU-?\d{6}/);
+    if (!match) {
+      return "";
+    }
+    var digits = match[0].replace(/[^0-9]/g, "");
+    if (digits.length !== 6) {
+      return "";
+    }
+    return "HU-" + digits;
   }
 
   function normalizeHuCode(value) {
@@ -6003,6 +7224,7 @@
           type: doc.op,
           doc_ref: doc.doc_ref || null,
           comment: "TSD",
+          reason_code: doc.op === "WRITE_OFF" ? normalizeValue(header.reason_code) || null : null,
           partner_id: header.partner_id || null,
           from_location_id: fromLocationId,
           to_location_id: toLocationId,
@@ -6507,9 +7729,6 @@
       '    <div class="field-value" id="huValue">' +
       escapeHtml(huLabel) +
       "</div>" +
-      '    <button class="btn btn-outline field-action" id="huScanBtn" type="button" ' +
-      (isDraft ? "" : "disabled") +
-      ">Сканировать HU</button>" +
       '    <button class="btn btn-ghost field-action" id="huClearBtn" type="button" ' +
       (isDraft ? "" : "disabled") +
       ">Сбросить</button>" +
@@ -6552,11 +7771,11 @@
       '">' +
       escapeHtml(huLabel) +
       "</div>" +
-      '    <button class="btn btn-outline field-action" id="' +
+      '    <button class="btn btn-ghost field-action" id="' +
       scanId +
       '" type="button" ' +
       (isDraft ? "" : "disabled") +
-      ">Сканировать</button>" +
+      ">Сбросить</button>" +
       "  </div>" +
       '  <div class="field-error" id="' +
       errorId +
@@ -6645,6 +7864,21 @@
         return TsdStorage.ensureDefaults();
       })
       .then(function () {
+        return TsdStorage.getSetting(SOFT_KEYBOARD_KEY)
+          .then(function (value) {
+            softKeyboardEnabled = normalizeSoftKeyboardSetting(value);
+          })
+          .catch(function () {
+            softKeyboardEnabled = false;
+          });
+      })
+      .then(function () {
+        return initScannerManager();
+      })
+      .then(function () {
+        if (isDebugMode()) {
+          setScanDebugEnabled(true);
+        }
         pingServer(true);
         window.setInterval(function () {
           pingServer(false);
@@ -6656,6 +7890,50 @@
           serverStatus.ok = false;
           serverStatus.checkedAt = Date.now();
           updateNetworkStatus();
+        });
+        document.addEventListener(
+          "pointerdown",
+          function (event) {
+            if (!scanHandlerActive || isManualOverlayOpen()) {
+              return;
+            }
+            if (!shouldFocusForScan(event.target)) {
+              return;
+            }
+            window.setTimeout(function () {
+              ensureScanFocus();
+            }, 0);
+          },
+          true
+        );
+        window.addEventListener("focus", function () {
+          ensureScanFocus();
+        });
+        document.addEventListener(
+          "focusin",
+          function (event) {
+            if (isSoftKeyboardSuppressed()) {
+              if (isScanAllowedElement(event.target)) {
+                applyScanInputMode(event.target);
+                event.target.setAttribute("data-scan-readonly", "1");
+                if (shouldLockKeyboardForInput(event.target)) {
+                  event.target.readOnly = true;
+                }
+              } else {
+                if (shouldLockKeyboardForInput(event.target)) {
+                  event.target.readOnly = true;
+                }
+                applyInputMode(event.target, true);
+              }
+              hideVirtualKeyboard();
+            }
+          },
+          true
+        );
+        document.addEventListener("visibilitychange", function () {
+          if (!document.hidden) {
+            ensureScanFocus();
+          }
         });
 
         if (backBtn) {

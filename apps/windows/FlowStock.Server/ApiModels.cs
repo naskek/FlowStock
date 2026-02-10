@@ -22,6 +22,9 @@ public sealed class CreateDocRequest
     [JsonPropertyName("comment")]
     public string? Comment { get; set; }
 
+    [JsonPropertyName("reason_code")]
+    public string? ReasonCode { get; set; }
+
     [JsonPropertyName("partner_id")]
     public long? PartnerId { get; set; }
 

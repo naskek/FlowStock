@@ -11,7 +11,7 @@ public sealed class PostgresDataStore : IDataStore
     private readonly NpgsqlConnection? _connection;
     private readonly NpgsqlTransaction? _transaction;
     private const string DocSelectBase =
-        "SELECT d.id, d.doc_ref, d.type, d.status, d.created_at, d.closed_at, d.partner_id, d.order_id, d.order_ref, d.shipping_ref, d.comment, p.name, p.code, " +
+        "SELECT d.id, d.doc_ref, d.type, d.status, d.created_at, d.closed_at, d.partner_id, d.order_id, d.order_ref, d.shipping_ref, d.reason_code, d.comment, p.name, p.code, " +
         "COALESCE(dl.line_count, 0) AS line_count, ad.device_id, ad.doc_uid " +
         "FROM docs d " +
         "LEFT JOIN partners p ON p.id = d.partner_id " +
@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS docs (
     order_id BIGINT,
     order_ref TEXT,
     shipping_ref TEXT,
+    reason_code TEXT,
     comment TEXT,
     FOREIGN KEY (partner_id) REFERENCES partners(id),
     FOREIGN KEY (order_id) REFERENCES orders(id)
@@ -247,6 +248,7 @@ CREATE INDEX IF NOT EXISTS ix_tsd_devices_device_id ON tsd_devices(device_id);
         EnsureColumn(connection, "docs", "order_id", "BIGINT");
         EnsureColumn(connection, "docs", "order_ref", "TEXT");
         EnsureColumn(connection, "docs", "shipping_ref", "TEXT");
+        EnsureColumn(connection, "docs", "reason_code", "TEXT");
         EnsureColumn(connection, "docs", "comment", "TEXT");
         EnsureColumn(connection, "doc_lines", "qty_input", "REAL");
         EnsureColumn(connection, "doc_lines", "uom_code", "TEXT");
@@ -1015,8 +1017,8 @@ WHERE id = @id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO docs(doc_ref, type, status, created_at, closed_at, partner_id, order_id, order_ref, shipping_ref, comment)
-VALUES(@doc_ref, @type, @status, @created_at, @closed_at, @partner_id, @order_id, @order_ref, @shipping_ref, @comment)
+INSERT INTO docs(doc_ref, type, status, created_at, closed_at, partner_id, order_id, order_ref, shipping_ref, reason_code, comment)
+VALUES(@doc_ref, @type, @status, @created_at, @closed_at, @partner_id, @order_id, @order_ref, @shipping_ref, @reason_code, @comment)
 RETURNING id;
 ");
             command.Parameters.AddWithValue("@doc_ref", doc.DocRef);
@@ -1028,6 +1030,7 @@ RETURNING id;
             command.Parameters.AddWithValue("@order_id", doc.OrderId.HasValue ? doc.OrderId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@order_ref", string.IsNullOrWhiteSpace(doc.OrderRef) ? DBNull.Value : doc.OrderRef);
             command.Parameters.AddWithValue("@shipping_ref", string.IsNullOrWhiteSpace(doc.ShippingRef) ? DBNull.Value : doc.ShippingRef);
+            command.Parameters.AddWithValue("@reason_code", string.IsNullOrWhiteSpace(doc.ReasonCode) ? DBNull.Value : doc.ReasonCode);
             command.Parameters.AddWithValue("@comment", string.IsNullOrWhiteSpace(doc.Comment) ? DBNull.Value : doc.Comment);
             return (long)(command.ExecuteScalar() ?? 0L);
         });
@@ -1161,6 +1164,22 @@ WHERE id = @id
             command.Parameters.AddWithValue("@partner_id", partnerId.HasValue ? partnerId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@order_ref", string.IsNullOrWhiteSpace(orderRef) ? DBNull.Value : orderRef);
             command.Parameters.AddWithValue("@shipping_ref", string.IsNullOrWhiteSpace(shippingRef) ? DBNull.Value : shippingRef);
+            command.Parameters.AddWithValue("@id", docId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void UpdateDocReason(long docId, string? reasonCode)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE docs
+SET reason_code = @reason_code
+WHERE id = @id;
+");
+            command.Parameters.AddWithValue("@reason_code", string.IsNullOrWhiteSpace(reasonCode) ? DBNull.Value : reasonCode);
             command.Parameters.AddWithValue("@id", docId);
             command.ExecuteNonQuery();
             return 0;
@@ -2063,6 +2082,7 @@ RETURNING id;
         long? orderId = null;
         string? orderRef = null;
         string? shippingRef = null;
+        string? reasonCode = null;
         string? comment = null;
         string? partnerName = null;
         string? partnerCode = null;
@@ -2092,32 +2112,37 @@ RETURNING id;
 
         if (reader.FieldCount > 10 && !reader.IsDBNull(10))
         {
-            comment = reader.GetString(10);
+            reasonCode = reader.GetString(10);
         }
 
         if (reader.FieldCount > 11 && !reader.IsDBNull(11))
         {
-            partnerName = reader.GetString(11);
+            comment = reader.GetString(11);
         }
 
         if (reader.FieldCount > 12 && !reader.IsDBNull(12))
         {
-            partnerCode = reader.GetString(12);
+            partnerName = reader.GetString(12);
         }
 
         if (reader.FieldCount > 13 && !reader.IsDBNull(13))
         {
-            lineCount = Convert.ToInt32(reader.GetInt64(13));
+            partnerCode = reader.GetString(13);
         }
 
         if (reader.FieldCount > 14 && !reader.IsDBNull(14))
         {
-            sourceDeviceId = reader.GetString(14);
+            lineCount = Convert.ToInt32(reader.GetInt64(14));
         }
 
         if (reader.FieldCount > 15 && !reader.IsDBNull(15))
         {
-            apiDocUid = reader.GetString(15);
+            sourceDeviceId = reader.GetString(15);
+        }
+
+        if (reader.FieldCount > 16 && !reader.IsDBNull(16))
+        {
+            apiDocUid = reader.GetString(16);
         }
 
         return new Doc
@@ -2132,6 +2157,7 @@ RETURNING id;
             OrderId = orderId,
             OrderRef = orderRef,
             ShippingRef = shippingRef,
+            ReasonCode = reasonCode,
             Comment = comment,
             PartnerName = partnerName,
             PartnerCode = partnerCode,

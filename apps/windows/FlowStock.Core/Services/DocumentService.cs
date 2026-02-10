@@ -224,29 +224,87 @@ public sealed class DocumentService
                                 .OrderBy(location => location.Code, StringComparer.OrdinalIgnoreCase)
                                 .ToList();
 
-                            var outboundHu = (string?)null;
-                            foreach (var location in locations)
+                            var outboundHu = NormalizeHuValue(fromHu);
+                            if (!string.IsNullOrWhiteSpace(outboundHu))
+                            {
+                                foreach (var location in locations)
+                                {
+                                    if (remaining <= 0)
+                                    {
+                                        break;
+                                    }
+
+                                    var available = store.GetLedgerBalance(line.ItemId, location.Id, outboundHu);
+                                    if (available <= 0)
+                                    {
+                                        continue;
+                                    }
+
+                                    var take = Math.Min(available, remaining);
+                                    store.AddLedgerEntry(new LedgerEntry
+                                    {
+                                        Timestamp = closedAt,
+                                        DocId = docId,
+                                        ItemId = line.ItemId,
+                                        LocationId = location.Id,
+                                        QtyDelta = -take,
+                                        HuCode = outboundHu
+                                    });
+                                    remaining -= take;
+                                }
+                                break;
+                            }
+
+                            var locationCodes = locations.ToDictionary(location => location.Id, location => location.Code);
+                            var nonHuSources = locations
+                                .Select(location => new
+                                {
+                                    LocationId = location.Id,
+                                    location.Code,
+                                    HuCode = (string?)null,
+                                    Qty = store.GetLedgerBalance(line.ItemId, location.Id, null)
+                                })
+                                .Where(source => source.Qty > 0);
+
+                            var huSources = store.GetHuStockRows()
+                                .Where(row => row.ItemId == line.ItemId && row.Qty > 0)
+                                .Select(row => new
+                                {
+                                    row.LocationId,
+                                    Code = locationCodes.TryGetValue(row.LocationId, out var code) ? code : row.LocationId.ToString(CultureInfo.InvariantCulture),
+                                    HuCode = NormalizeHuValue(row.HuCode),
+                                    row.Qty
+                                })
+                                .Where(source => !string.IsNullOrWhiteSpace(source.HuCode));
+
+                            var sources = nonHuSources
+                                .Concat(huSources)
+                                .OrderBy(source => source.Code, StringComparer.OrdinalIgnoreCase)
+                                .ThenBy(source => string.IsNullOrWhiteSpace(source.HuCode) ? 0 : 1)
+                                .ThenBy(source => source.HuCode, StringComparer.OrdinalIgnoreCase)
+                                .ToList();
+
+                            foreach (var source in sources)
                             {
                                 if (remaining <= 0)
                                 {
                                     break;
                                 }
 
-                                var available = store.GetLedgerBalance(line.ItemId, location.Id, outboundHu);
-                                if (available <= 0)
+                                var take = Math.Min(source.Qty, remaining);
+                                if (take <= 0)
                                 {
                                     continue;
                                 }
 
-                                var take = Math.Min(available, remaining);
                                 store.AddLedgerEntry(new LedgerEntry
                                 {
                                     Timestamp = closedAt,
                                     DocId = docId,
                                     ItemId = line.ItemId,
-                                    LocationId = location.Id,
+                                    LocationId = source.LocationId,
                                     QtyDelta = -take,
-                                    HuCode = outboundHu
+                                    HuCode = source.HuCode
                                 });
                                 remaining -= take;
                             }
@@ -336,6 +394,18 @@ public sealed class DocumentService
         var cleanedShippingRef = string.IsNullOrWhiteSpace(shippingRef) ? null : shippingRef.Trim();
 
         _data.UpdateDocHeader(docId, partnerId, cleanedOrderRef, cleanedShippingRef);
+    }
+
+    public void UpdateDocReason(long docId, string? reasonCode)
+    {
+        var doc = _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
+        if (doc.Status != DocStatus.Draft)
+        {
+            throw new InvalidOperationException("Документ уже закрыт.");
+        }
+
+        var cleanedReason = string.IsNullOrWhiteSpace(reasonCode) ? null : reasonCode.Trim();
+        _data.UpdateDocReason(docId, cleanedReason);
     }
 
     public void MarkDocForRecount(long docId)
@@ -520,6 +590,11 @@ public sealed class DocumentService
             return check;
         }
 
+        if (doc.Type == DocType.WriteOff && string.IsNullOrWhiteSpace(doc.ReasonCode))
+        {
+            check.Errors.Add("Для списания требуется причина.");
+        }
+
         var docHu = NormalizeHuValue(doc.ShippingRef);
         var lines = _data.GetDocLines(docId);
         if (lines.Count == 0)
@@ -618,9 +693,14 @@ public sealed class DocumentService
         if (doc.Type == DocType.Outbound)
         {
             var autoAllocation = lines.Any(line => !line.FromLocationId.HasValue);
+            IReadOnlyDictionary<long, double>? totalsByItem = autoAllocation
+                ? _data.GetLedgerTotalsByItem()
+                : null;
             foreach (var entry in outboundByItem)
             {
-                var current = GetTotalAvailableQty(entry.Key, autoAllocation ? null : docHu, locations);
+                var current = autoAllocation
+                    ? (totalsByItem != null && totalsByItem.TryGetValue(entry.Key, out var total) ? total : 0)
+                    : GetTotalAvailableQty(entry.Key, docHu, locations);
                 var future = current - entry.Value;
                 if (future < 0)
                 {

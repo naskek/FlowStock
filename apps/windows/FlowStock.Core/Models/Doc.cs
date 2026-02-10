@@ -14,6 +14,7 @@ public sealed class Doc
     public long? OrderId { get; init; }
     public string? OrderRef { get; init; }
     public string? ShippingRef { get; init; }
+    public string? ReasonCode { get; init; }
     public string? Comment { get; init; }
     public string? PartnerName { get; init; }
     public string? PartnerCode { get; init; }

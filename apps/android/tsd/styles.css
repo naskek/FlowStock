@@ -194,13 +194,127 @@ body {
   display: none;
 }
 
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 6px 0 12px 0;
+  font-size: 13px;
+  color: #0f2d36;
+}
+
+.toggle-label {
+  flex: 1;
+}
+
+.toggle-switch {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  flex: 0 0 auto;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: #c9d4da;
+  border-radius: 999px;
+  transition: background 0.2s ease;
+}
+
+.toggle-slider::before {
+  content: "";
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  left: 2px;
+  top: 2px;
+  background: #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+  transition: transform 0.2s ease;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: var(--primary);
+}
+
+.toggle-switch input:checked + .toggle-slider::before {
+  transform: translateX(20px);
+}
+
 .scan-sink {
   position: fixed;
-  left: -1000px;
-  top: -1000px;
+  left: 0;
+  top: 0;
   width: 1px;
   height: 1px;
   opacity: 0;
+  pointer-events: none;
+}
+
+.debug-panel {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px dashed #9fb3bd;
+  border-radius: 12px;
+  background: #f8fafb;
+  color: #143642;
+  font-size: 12px;
+}
+
+.debug-panel.is-collapsed {
+  display: none;
+}
+
+.debug-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.debug-block {
+  margin-bottom: 8px;
+}
+
+.debug-toggle {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.debug-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.debug-state {
+  background: #ffffff;
+  border: 1px solid #dbe3e7;
+  border-radius: 8px;
+  padding: 8px;
+  margin: 0 0 8px 0;
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+.debug-log {
+  background: #0b1e26;
+  color: #cfe9f1;
+  border-radius: 8px;
+  padding: 8px;
+  font-size: 11px;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
 }
 
 .screen {

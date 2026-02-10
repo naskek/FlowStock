@@ -1262,6 +1262,16 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
             }
         }
 
+        if (docType == DocType.WriteOff && !string.IsNullOrWhiteSpace(createRequest.ReasonCode))
+        {
+            var cleanedReason = createRequest.ReasonCode.Trim();
+            if (existingDoc.Status == DocStatus.Draft
+                && !string.Equals(existingDoc.ReasonCode ?? string.Empty, cleanedReason, StringComparison.OrdinalIgnoreCase))
+            {
+                store.UpdateDocReason(existingDocInfo.DocId, cleanedReason);
+            }
+        }
+
         return Results.Ok(new
         {
             ok = true,
@@ -1360,6 +1370,7 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
         docRef = docs.GenerateDocRef(docType.Value, DateTime.Now);
     }
     var comment = string.IsNullOrWhiteSpace(createRequest.Comment) ? null : createRequest.Comment.Trim();
+    var reasonCode = string.IsNullOrWhiteSpace(createRequest.ReasonCode) ? null : createRequest.ReasonCode.Trim();
 
     long docId;
     try
@@ -1377,6 +1388,11 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
         {
             return Results.BadRequest(new ApiResult(false, "DOC_REF_EXISTS"));
         }
+    }
+
+    if (docType == DocType.WriteOff && !string.IsNullOrWhiteSpace(reasonCode))
+    {
+        docs.UpdateDocReason(docId, reasonCode);
     }
 
     apiStore.AddApiDoc(
@@ -2032,8 +2048,10 @@ static object MapDoc(Doc doc)
         order_id = doc.OrderId,
         order_ref = doc.OrderRef,
         shipping_ref = doc.ShippingRef,
+        reason_code = doc.ReasonCode,
         comment = doc.Comment,
-        source_device_id = doc.SourceDeviceId
+        source_device_id = doc.SourceDeviceId,
+        line_count = doc.LineCount
     };
 }
 

@@ -21,7 +21,7 @@
 - partners(id, name, inn, ... )
 - orders(id, order_ref, partner_id, due_date, status, comment, created_at)
 - order_lines(id, order_id, item_id, qty_ordered)
-- docs(id, doc_ref, type, status, created_at, closed_at, partner_id, order_id, order_ref, shipping_ref)
+- docs(id, doc_ref, type, status, created_at, closed_at, partner_id, order_id, order_ref, shipping_ref, reason_code)
 - doc_lines(id, doc_id, item_id, qty, from_location_id, to_location_id, uom, from_hu, to_hu)
 - ledger(id, ts, doc_id, item_id, location_id, qty_delta, hu_code)
 
@@ -30,11 +30,14 @@
 - Closed documents are immutable.
 - Corrections are separate documents (out of MVP scope).
 - HU code can have stock only in one location at a time.
+- Write-off documents require a reason_code before closing.
 
 ## TSD online flow
 - Drafts are created via API; server assigns `doc_ref`.
 - Lines are added via API; closing a document writes to the ledger.
 - `doc_ref` format: `TYPE-YYYY-000001` (sequence is zero-padded to 6 digits and is unique across all doc types per year).
+- Drafts with `doc_uid` can be resumed on TSD (server draft is reconstructed as a local draft for editing).
+- TSD scanner defaults to Keyboard wedge; Intent mode works only via JS bridge (see TSD README). For Chrome/PWA, keep Keyboard mode and disable Intent output.
 
 ## Unknown items
 - TSD cannot create items directly.

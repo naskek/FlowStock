@@ -233,16 +233,31 @@
     if (!id) {
       return null;
     }
+    var partnerId = doc.partner_id != null ? Number(doc.partner_id) : null;
+    if (partnerId != null && isNaN(partnerId)) {
+      partnerId = null;
+    }
+    var orderId = doc.order_id != null ? Number(doc.order_id) : null;
+    if (orderId != null && isNaN(orderId)) {
+      orderId = null;
+    }
     var statusValue = String(doc.status || "").trim();
     var commentValue = doc.comment != null ? String(doc.comment).trim() : "";
     var sourceDeviceId = String(doc.source_device_id || doc.sourceDeviceId || "").trim();
     var docUid = String(doc.doc_uid || doc.docUid || "").trim();
+    var lineCount = 0;
+    if (doc.line_count != null) {
+      lineCount = Number(doc.line_count) || 0;
+    } else if (doc.lineCount != null) {
+      lineCount = Number(doc.lineCount) || 0;
+    }
     var isRecount = commentValue.toUpperCase().indexOf("RECOUNT") >= 0;
     if (statusValue === "DRAFT" && isRecount) {
       statusValue = "RECOUNT";
     } else if (
       statusValue === "DRAFT" &&
-      (commentValue.toUpperCase().indexOf("TSD") === 0 || sourceDeviceId)
+      (commentValue.toUpperCase().indexOf("TSD") === 0 || sourceDeviceId) &&
+      lineCount > 0
     ) {
       statusValue = "READY";
     }
@@ -255,10 +270,14 @@
       createdAt: doc.created_at || doc.createdAt || null,
       created_at: doc.created_at || doc.createdAt || null,
       closed_at: doc.closed_at || doc.closedAt || null,
+      partner_id: partnerId,
       partnerName: String(doc.partner_name || doc.partnerName || "").trim(),
       partnerCode: String(doc.partner_code || doc.partnerCode || "").trim(),
+      order_id: orderId,
       order_ref: String(doc.order_ref || doc.orderRef || "").trim(),
       shipping_ref: String(doc.shipping_ref || doc.shippingRef || "").trim(),
+      reason_code: String(doc.reason_code || doc.reasonCode || "").trim(),
+      line_count: lineCount,
       comment: doc.comment || null,
       source_device_id: sourceDeviceId || null,
       recount: isRecount,
@@ -1094,6 +1113,30 @@
         return getSetting("qtyStep").then(function (value) {
           if (!value || isNaN(Number(value)) || Number(value) < 1) {
             return setSetting("qtyStep", 1);
+          }
+          return true;
+        });
+      })
+      .then(function () {
+        return getSetting("scannerMode").then(function (value) {
+          if (!value || typeof value !== "string") {
+            return setSetting("scannerMode", "auto");
+          }
+          return true;
+        });
+      })
+      .then(function () {
+        return getSetting("scanDebugOpen").then(function (value) {
+          if (typeof value !== "boolean") {
+            return setSetting("scanDebugOpen", false);
+          }
+          return true;
+        });
+      })
+      .then(function () {
+        return getSetting("softKeyboardEnabled").then(function (value) {
+          if (typeof value !== "boolean") {
+            return setSetting("softKeyboardEnabled", false);
           }
           return true;
         });

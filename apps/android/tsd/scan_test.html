@@ -1,0 +1,65 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Scan test</title>
+<style>
+  body { font-family: sans-serif; padding: 12px; }
+  textarea { width: 100%; height: 120px; font-size: 18px; }
+  pre { white-space: pre-wrap; background:#f5f5f5; padding:10px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; margin:10px 0; }
+  button { padding:10px 12px; }
+</style>
+
+<h2>Тест wedge-сканирования</h2>
+<p>Тапни в поле ниже, потом сканируй. Должны появляться цифры/символы.</p>
+
+<textarea id="t" autofocus placeholder="Сюда должен “печататься” скан"></textarea>
+
+<div class="row">
+  <button id="btnFocus">Сфокусировать поле</button>
+  <button id="btnDownload">Скачать log.txt</button>
+  <button id="btnClear">Очистить лог</button>
+</div>
+
+<h3>Лог keydown:</h3>
+<pre id="log"></pre>
+
+<script>
+  const t = document.getElementById('t');
+  const logEl = document.getElementById('log');
+
+  let logText = ""; // тут копим полный лог
+
+  function addLine(line) {
+    logText = line + "\n" + logText;       // новые сверху
+    logEl.textContent = logText;
+  }
+
+  document.getElementById('btnFocus').onclick = () => t.focus();
+
+  document.addEventListener('keydown', (e) => {
+    const line =
+      `${new Date().toISOString()} ` +
+      `key="${e.key}" code=${e.code} which=${e.which} target=${e.target.tagName}`;
+    addLine(line);
+  }, true);
+
+  document.getElementById('btnClear').onclick = () => {
+    logText = "";
+    logEl.textContent = "";
+  };
+
+  document.getElementById('btnDownload').onclick = () => {
+    // Делаем файл и инициируем скачивание
+    const blob = new Blob([logText || "(empty)\n"], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'log.txt';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+
+    URL.revokeObjectURL(url);
+  };
+</script>

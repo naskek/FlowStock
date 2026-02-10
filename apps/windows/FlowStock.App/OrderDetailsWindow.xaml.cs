@@ -202,19 +202,20 @@ public partial class OrderDetailsWindow : Window
 
         var picker = new ItemPickerWindow(_services)
         {
-            Owner = this
+            Owner = this,
+            KeepOpenOnSelect = true
         };
+        picker.ItemPicked += (_, item) => AddOrderLine(item, picker);
+        picker.ShowDialog();
+    }
 
-        if (picker.ShowDialog() != true || picker.SelectedItem is not Item item)
-        {
-            return;
-        }
-
+    private void AddOrderLine(Item item, Window owner)
+    {
         var packagings = _services.Packagings.GetPackagings(item.Id);
         var defaultUomCode = ResolveDefaultUomCode(item, packagings);
         var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, 1, defaultUomCode)
         {
-            Owner = this
+            Owner = owner
         };
         if (qtyDialog.ShowDialog() != true)
         {

@@ -10,14 +10,73 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
-        <TextBox x:Name="SearchBox" Grid.Row="0" Margin="0,0,0,8"
-                 TextChanged="SearchBox_TextChanged" />
+        <StackPanel Grid.Row="0" Margin="0,0,0,8">
+            <TextBox x:Name="SearchBox" TextChanged="SearchBox_TextChanged" />
+            <Expander Header="Фильтры" Margin="0,6,0,0">
+                <Border BorderBrush="#E1E8ED" BorderThickness="1" CornerRadius="6" Padding="8">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                            <TextBlock Text="Бренд" FontWeight="SemiBold" />
+                            <StackPanel Orientation="Horizontal" Margin="0,4,0,4">
+                                <Button Content="Все" Click="BrandFilterAll_Click" Padding="6,2" />
+                                <Button Content="Нет" Click="BrandFilterNone_Click" Padding="6,2" Margin="6,0,0,0" />
+                            </StackPanel>
+                            <ListBox x:Name="BrandFilterList" MaxHeight="160"
+                                     ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <CheckBox Content="{Binding Label}" IsChecked="{Binding IsChecked, Mode=TwoWay}" />
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Margin="0,0,8,0">
+                            <TextBlock Text="Объем" FontWeight="SemiBold" />
+                            <StackPanel Orientation="Horizontal" Margin="0,4,0,4">
+                                <Button Content="Все" Click="VolumeFilterAll_Click" Padding="6,2" />
+                                <Button Content="Нет" Click="VolumeFilterNone_Click" Padding="6,2" Margin="6,0,0,0" />
+                            </StackPanel>
+                            <ListBox x:Name="VolumeFilterList" MaxHeight="160"
+                                     ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <CheckBox Content="{Binding Label}" IsChecked="{Binding IsChecked, Mode=TwoWay}" />
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2">
+                            <TextBlock Text="Базовая единица" FontWeight="SemiBold" />
+                            <StackPanel Orientation="Horizontal" Margin="0,4,0,4">
+                                <Button Content="Все" Click="UomFilterAll_Click" Padding="6,2" />
+                                <Button Content="Нет" Click="UomFilterNone_Click" Padding="6,2" Margin="6,0,0,0" />
+                            </StackPanel>
+                            <ListBox x:Name="UomFilterList" MaxHeight="160"
+                                     ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <CheckBox Content="{Binding Label}" IsChecked="{Binding IsChecked, Mode=TwoWay}" />
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </Expander>
+        </StackPanel>
         <Grid Grid.Row="1">
             <DataGrid x:Name="ItemsGrid" AutoGenerateColumns="False" IsReadOnly="True"
                       MouseDoubleClick="ItemsGrid_MouseDoubleClick"
                       KeyDown="ItemsGrid_KeyDown">
                 <DataGrid.Columns>
                     <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="*" />
+                    <DataGridTextColumn Header="Бренд" Binding="{Binding Brand}" Width="140" />
+                    <DataGridTextColumn Header="Объем" Binding="{Binding Volume}" Width="120" />
                     <DataGridTextColumn Header="SKU / штрихкод" Binding="{Binding Barcode}" Width="180" />
                     <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="140" />
                     <DataGridTextColumn Header="Базовая единица" Binding="{Binding BaseUom}" Width="140" />

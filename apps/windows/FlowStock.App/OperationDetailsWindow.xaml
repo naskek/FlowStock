@@ -44,6 +44,12 @@
                     <TextBlock x:Name="DocFromLabel" Text="Откуда" />
                     <ComboBox x:Name="DocFromCombo" Width="220" Margin="0,4,0,0" DisplayMemberPath="DisplayName" />
                 </StackPanel>
+                <StackPanel x:Name="DocReasonPanel" Margin="0,0,12,0">
+                    <TextBlock Text="Причина" />
+                    <ComboBox x:Name="DocReasonCombo" Width="220" Margin="0,4,0,0"
+                              DisplayMemberPath="Label"
+                              SelectionChanged="DocReasonCombo_SelectionChanged" />
+                </StackPanel>
                 <StackPanel x:Name="DocToPanel" Margin="0,0,12,0">
                     <TextBlock x:Name="DocToLabel" Text="Куда" />
                     <ComboBox x:Name="DocToCombo" Width="220" Margin="0,4,0,0" DisplayMemberPath="DisplayName" />

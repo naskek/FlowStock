@@ -20,6 +20,7 @@ public partial class OperationDetailsWindow : Window
     private readonly List<OrderOption> _ordersAll = new();
     private readonly ObservableCollection<HuOption> _huToOptions = new();
     private readonly ObservableCollection<HuOption> _huFromOptions = new();
+    private readonly List<WriteOffReasonOption> _writeOffReasons = new();
     private readonly Dictionary<long, double> _orderedQtyByItem = new();
     private readonly long _docId;
     private Doc? _doc;
@@ -46,9 +47,11 @@ public partial class OperationDetailsWindow : Window
         DocOrderCombo.ItemsSource = _orders;
         DocHuCombo.ItemsSource = _huToOptions;
         DocHuFromCombo.ItemsSource = _huFromOptions;
+        DocReasonCombo.ItemsSource = _writeOffReasons;
         DocFromCombo.SelectionChanged += DocFromCombo_SelectionChanged;
         DocToCombo.SelectionChanged += DocToCombo_SelectionChanged;
 
+        LoadWriteOffReasons();
         LoadCatalog();
         LoadOrders();
         LoadDoc();
@@ -61,6 +64,17 @@ public partial class OperationDetailsWindow : Window
             e.Handled = true;
             TryCloseCurrentDoc();
         }
+    }
+
+    private void LoadWriteOffReasons()
+    {
+        _writeOffReasons.Clear();
+        _writeOffReasons.Add(new WriteOffReasonOption("DAMAGED", "Повреждено"));
+        _writeOffReasons.Add(new WriteOffReasonOption("EXPIRED", "Просрочено"));
+        _writeOffReasons.Add(new WriteOffReasonOption("DEFECT", "Брак"));
+        _writeOffReasons.Add(new WriteOffReasonOption("SAMPLE", "Проба"));
+        _writeOffReasons.Add(new WriteOffReasonOption("PRODUCTION", "Производство"));
+        _writeOffReasons.Add(new WriteOffReasonOption("OTHER", "Прочее"));
     }
 
     private void LoadCatalog()
@@ -647,6 +661,7 @@ public partial class OperationDetailsWindow : Window
         ApplyHeaderLocationsFromLines();
         LoadHuOptions();
         SetHuSelection(_doc);
+        ApplyReasonSelection(_doc);
         _suppressDirtyTracking = false;
         UpdateLineButtons();
         UpdatePartnerLock();
@@ -741,6 +756,19 @@ public partial class OperationDetailsWindow : Window
         }
     }
 
+    private void ApplyReasonSelection(Doc doc)
+    {
+        if (doc.Type != DocType.WriteOff)
+        {
+            DocReasonCombo.SelectedItem = null;
+            return;
+        }
+
+        var selected = _writeOffReasons.FirstOrDefault(reason =>
+            string.Equals(reason.Code, doc.ReasonCode, StringComparison.OrdinalIgnoreCase));
+        DocReasonCombo.SelectedItem = selected;
+    }
+
     private Location? ResolveUniqueLocation(IReadOnlyList<DocLine> lines, Func<DocLine, long?> selector)
     {
         var ids = lines
@@ -789,6 +817,16 @@ public partial class OperationDetailsWindow : Window
     }
 
     private void DocHuCombo_KeyUp(object sender, KeyEventArgs e)
+    {
+        if (_suppressDirtyTracking || _doc?.Status != DocStatus.Draft)
+        {
+            return;
+        }
+
+        MarkHeaderDirty();
+    }
+
+    private void DocReasonCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
         if (_suppressDirtyTracking || _doc?.Status != DocStatus.Draft)
         {
@@ -945,6 +983,7 @@ public partial class OperationDetailsWindow : Window
         var showFrom = false;
         var showTo = false;
         var showHu = true;
+        var showReason = false;
         var partnerLabel = "Контрагент";
         var fromLabel = "Откуда";
         var toLabel = "Куда";
@@ -970,6 +1009,7 @@ public partial class OperationDetailsWindow : Window
                 break;
             case DocType.WriteOff:
                 showFrom = true;
+                showReason = true;
                 fromLabel = "Место хранения";
                 break;
             case DocType.Inventory:
@@ -981,6 +1021,7 @@ public partial class OperationDetailsWindow : Window
         DocPartnerPanel.Visibility = showPartner ? Visibility.Visible : Visibility.Collapsed;
         DocOrderPanel.Visibility = showOrder ? Visibility.Visible : Visibility.Collapsed;
         DocFromPanel.Visibility = showFrom ? Visibility.Visible : Visibility.Collapsed;
+        DocReasonPanel.Visibility = showReason ? Visibility.Visible : Visibility.Collapsed;
         DocToPanel.Visibility = showTo ? Visibility.Visible : Visibility.Collapsed;
         DocHuPanel.Visibility = showHu ? Visibility.Visible : Visibility.Collapsed;
         DocHuFromPanel.Visibility = doc.Type == DocType.Move ? Visibility.Visible : Visibility.Collapsed;
@@ -995,6 +1036,7 @@ public partial class OperationDetailsWindow : Window
         DocHuFromCombo.IsEnabled = isEditable;
         DocHuCombo.IsEditable = doc.Type == DocType.Move;
         DocMoveInternalCheck.IsEnabled = isEditable;
+        DocReasonCombo.IsEnabled = isEditable;
 
         if (!showFrom)
         {
@@ -1010,7 +1052,7 @@ public partial class OperationDetailsWindow : Window
             DocMoveInternalCheck.IsChecked = false;
         }
 
-        DocHeaderSaveButton.Visibility = showPartner || showOrder || showHu
+        DocHeaderSaveButton.Visibility = showPartner || showOrder || showHu || showReason
             ? Visibility.Visible
             : Visibility.Collapsed;
         DocHeaderSaveButton.IsEnabled = isEditable;
@@ -1163,6 +1205,7 @@ public partial class OperationDetailsWindow : Window
 
         var partnerId = (DocPartnerCombo.SelectedItem as Partner)?.Id;
         var huCode = GetSelectedHuCode(DocHuCombo);
+        var reasonCode = (DocReasonCombo.SelectedItem as WriteOffReasonOption)?.Code;
         try
         {
             if (!TryResolveOrder(out var orderOption))
@@ -1189,6 +1232,11 @@ public partial class OperationDetailsWindow : Window
                 _services.Documents.ClearDocOrder(_doc.Id, partnerId);
                 _services.Documents.UpdateDocHeader(_doc.Id, partnerId, null, huCode);
                 ResetPartialMode();
+            }
+
+            if (_doc.Type == DocType.WriteOff)
+            {
+                _services.Documents.UpdateDocReason(_doc.Id, reasonCode);
             }
 
             LoadDoc();
@@ -1943,6 +1991,8 @@ public partial class OperationDetailsWindow : Window
         public string? FromLocation { get; init; }
         public string? ToLocation { get; init; }
     }
+
+    private sealed record WriteOffReasonOption(string Code, string Label);
 
     private sealed record OrderOption(long Id, string OrderRef, long PartnerId, string PartnerDisplay)
     {
