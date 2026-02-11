@@ -36,5 +36,40 @@ services:
       - "${FLOWSTOCK_PORT:-8080}:8080"
     restart: unless-stopped
 
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      flowstock:
+        condition: service_started
+    ports:
+      - "${FLOWSTOCK_HTTP_PORT:-80}:80"
+      - "${FLOWSTOCK_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/flowstock.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    restart: unless-stopped
+
+  pgbackup:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: ${POSTGRES_DB}
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      BACKUP_DIR: /backups
+      BACKUP_PREFIX: FlowStock
+      BACKUP_KEEP: ${BACKUP_KEEP:-30}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+    volumes:
+      - pgbackups:/backups
+      - ./backup/pg_backup.sh:/usr/local/bin/pg_backup.sh:ro
+    command: ["sh", "/usr/local/bin/pg_backup.sh"]
+    restart: unless-stopped
+
 volumes:
   pgdata:
+  pgbackups:
