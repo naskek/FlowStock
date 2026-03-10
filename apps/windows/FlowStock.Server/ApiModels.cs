@@ -102,6 +102,39 @@ public sealed class CloseDocRequest
     public string? DeviceId { get; set; }
 }
 
+public sealed class CloseDocResponse
+{
+    [JsonPropertyName("ok")]
+    public bool Ok { get; init; }
+
+    [JsonPropertyName("closed")]
+    public bool Closed { get; init; }
+
+    [JsonPropertyName("doc_uid")]
+    public string? DocUid { get; init; }
+
+    [JsonPropertyName("doc_ref")]
+    public string? DocRef { get; init; }
+
+    [JsonPropertyName("doc_status")]
+    public string? DocStatus { get; init; }
+
+    [JsonPropertyName("result")]
+    public string Result { get; init; } = string.Empty;
+
+    [JsonPropertyName("errors")]
+    public IReadOnlyList<string> Errors { get; init; } = Array.Empty<string>();
+
+    [JsonPropertyName("warnings")]
+    public IReadOnlyList<string> Warnings { get; init; } = Array.Empty<string>();
+
+    [JsonPropertyName("idempotent_replay")]
+    public bool IdempotentReplay { get; init; }
+
+    [JsonPropertyName("already_closed")]
+    public bool AlreadyClosed { get; init; }
+}
+
 public sealed class HuGenerateRequest
 {
     public int Count { get; set; }
