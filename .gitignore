@@ -33,6 +33,8 @@ logs/
 # .NET
 bin/
 obj/
+.dotnet/
+.nuget/
 
 # Temporary build outputs
 .tmp/
