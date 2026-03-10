@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: flowstock-postgres-local
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_DB: flowstock
+      POSTGRES_USER: flowstock
+      POSTGRES_PASSWORD: flowstock
+    volumes:
+      - flowstock_pgdata_local:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  flowstock_pgdata_local:
