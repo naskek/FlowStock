@@ -2157,9 +2157,9 @@ LIMIT 1;
         return WithConnection(connection =>
         {
             var normalizedTake = take < 1 ? 1 : take;
-            if (normalizedTake > 1000)
+            if (normalizedTake > 10000)
             {
-                normalizedTake = 1000;
+                normalizedTake = 10000;
             }
 
             var sql = @"
@@ -3283,6 +3283,32 @@ WHERE id = @id AND (status = @expected_status_on_hand OR status = @expected_stat
             command.Parameters.AddWithValue("@line_id", lineId);
             command.Parameters.AddWithValue("@order_id", orderId.HasValue ? orderId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@id", codeId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void ReopenHu(string code, string? reopenedBy, string? note)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            return;
+        }
+
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE hus
+SET status = @status,
+    closed_at = NULL,
+    note = @note,
+    created_by = COALESCE(created_by, @reopened_by)
+WHERE hu_code = @code;
+");
+            command.Parameters.AddWithValue("@status", "ACTIVE");
+            command.Parameters.AddWithValue("@note", string.IsNullOrWhiteSpace(note) ? DBNull.Value : note.Trim());
+            command.Parameters.AddWithValue("@reopened_by", string.IsNullOrWhiteSpace(reopenedBy) ? DBNull.Value : reopenedBy.Trim());
+            command.Parameters.AddWithValue("@code", code.Trim());
             command.ExecuteNonQuery();
             return 0;
         });

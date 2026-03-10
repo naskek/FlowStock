@@ -7,6 +7,8 @@ namespace FlowStock.Core.Services;
 public sealed class DocumentService
 {
     private readonly IDataStore _data;
+    private const string AutoHuCreatedBy = "WINDOWS-AUTO";
+    private static bool KmWorkflowEnabled => false;
 
     public DocumentService(IDataStore data)
     {
@@ -238,7 +240,7 @@ public sealed class DocumentService
                 }
             }
 
-            if (doc.Type == DocType.Outbound)
+            if (KmWorkflowEnabled && doc.Type == DocType.Outbound)
             {
                 AutoAssignOutboundKmCodes(store, doc, lines, docHu, docId);
             }
@@ -795,7 +797,7 @@ public sealed class DocumentService
         var normalizedFromHu = NormalizeHuValue(fromHu);
         var normalizedToHu = NormalizeHuValue(toHu);
         ValidateLineLocations(doc.Type, line.FromLocationId, line.ToLocationId, normalizedFromHu, normalizedToHu);
-        EnsureHuAssignmentAllowed(doc.Type, line.Id);
+        EnsureHuAssignmentAllowed(_data, doc.Type, line.Id);
 
         if (qty > line.Qty + 0.000001)
         {
@@ -892,7 +894,7 @@ public sealed class DocumentService
             throw new InvalidOperationException("Количество в строке должно быть больше 0.");
         }
 
-        EnsureHuAssignmentAllowed(doc.Type, line.Id);
+        EnsureHuAssignmentAllowed(_data, doc.Type, line.Id);
 
         var requiredHuCount = (int)Math.Ceiling(line.Qty / maxQtyPerHu);
         if (requiredHuCount <= 1)
@@ -971,6 +973,137 @@ public sealed class DocumentService
         });
     }
 
+    public int AutoDistributeProductionReceiptHus(long docId, IReadOnlyCollection<long>? docLineIds = null)
+    {
+        var requestedIds = docLineIds?
+            .Distinct()
+            .ToList();
+
+        var usedHuCount = 0;
+        _data.ExecuteInTransaction(store =>
+        {
+            var doc = store.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
+            if (doc.Status != DocStatus.Draft)
+            {
+                throw new InvalidOperationException("Документ уже закрыт.");
+            }
+
+            if (doc.Type != DocType.ProductionReceipt)
+            {
+                throw new InvalidOperationException("Автораспределение HU доступно только для выпуска продукции.");
+            }
+
+            var allLines = EnsureOrderLineLinks(store, doc, store.GetDocLines(docId))
+                .OrderBy(line => line.Id)
+                .ToList();
+            if (allLines.Count == 0)
+            {
+                throw new InvalidOperationException("В документе нет строк для распределения.");
+            }
+
+            var selectedIds = requestedIds?.ToHashSet() ?? allLines.Select(line => line.Id).ToHashSet();
+            var targetLines = allLines
+                .Where(line => selectedIds.Contains(line.Id))
+                .ToList();
+            if (targetLines.Count == 0)
+            {
+                throw new InvalidOperationException("Не выбраны строки для распределения.");
+            }
+
+            var itemsById = store.GetItems(null).ToDictionary(item => item.Id, item => item);
+            var requiredHuCount = 0;
+            foreach (var line in targetLines)
+            {
+                EnsureHuAssignmentAllowed(store, doc.Type, line.Id);
+
+                if (!line.ToLocationId.HasValue)
+                {
+                    throw new InvalidOperationException("Для выпуска продукции требуется локация приёмки.");
+                }
+
+                if (!itemsById.TryGetValue(line.ItemId, out var item))
+                {
+                    throw new InvalidOperationException($"Товар ID {line.ItemId} не найден.");
+                }
+
+                if (!item.MaxQtyPerHu.HasValue || item.MaxQtyPerHu.Value <= 0)
+                {
+                    throw new InvalidOperationException($"Для товара \"{item.Name}\" не задан лимит шт. на HU.");
+                }
+
+                requiredHuCount += (int)Math.Ceiling(line.Qty / item.MaxQtyPerHu.Value);
+            }
+
+            var reservedHuCodes = allLines
+                .Where(line => !selectedIds.Contains(line.Id))
+                .Select(line => NormalizeHuValue(line.ToHu))
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var allocatedHuCodes = AllocateProductionHuCodes(store, requiredHuCount, reservedHuCodes);
+            usedHuCount = allocatedHuCodes.Count;
+
+            var huQueue = new Queue<string>(allocatedHuCodes);
+            var replacementLines = new List<DocLine>();
+            foreach (var line in targetLines)
+            {
+                var item = itemsById[line.ItemId];
+                var maxQtyPerHu = item.MaxQtyPerHu!.Value;
+                var ratio = line.QtyInput.HasValue && line.Qty > 0
+                    ? line.QtyInput.Value / line.Qty
+                    : (double?)null;
+                var remainingQty = line.Qty;
+                var remainingInput = line.QtyInput;
+
+                while (remainingQty > 0.000001)
+                {
+                    var chunkQty = Math.Min(maxQtyPerHu, remainingQty);
+                    var chunkInput = (double?)null;
+                    if (ratio.HasValue)
+                    {
+                        chunkInput = remainingQty - chunkQty <= 0.000001
+                            ? remainingInput
+                            : ratio.Value * chunkQty;
+                        if (remainingInput.HasValue)
+                        {
+                            remainingInput -= chunkInput;
+                        }
+                    }
+
+                    replacementLines.Add(new DocLine
+                    {
+                        DocId = docId,
+                        OrderLineId = line.OrderLineId,
+                        ItemId = line.ItemId,
+                        Qty = chunkQty,
+                        QtyInput = chunkInput,
+                        UomCode = line.UomCode,
+                        FromLocationId = line.FromLocationId,
+                        ToLocationId = line.ToLocationId,
+                        FromHu = NormalizeHuValue(line.FromHu),
+                        ToHu = huQueue.Dequeue()
+                    });
+
+                    remainingQty -= chunkQty;
+                }
+            }
+
+            foreach (var line in targetLines)
+            {
+                store.DeleteDocLine(line.Id);
+            }
+
+            foreach (var line in replacementLines)
+            {
+                store.AddDocLine(line);
+            }
+        });
+
+        return usedHuCount;
+    }
+
     public void DeleteDocLine(long docId, long docLineId)
     {
         var doc = _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
@@ -986,6 +1119,40 @@ public sealed class DocumentService
         }
 
         _data.DeleteDocLine(docLineId);
+    }
+
+    public void DeleteDocLines(long docId, IReadOnlyCollection<long> docLineIds)
+    {
+        if (docLineIds == null || docLineIds.Count == 0)
+        {
+            throw new ArgumentException("Не выбраны строки для удаления.", nameof(docLineIds));
+        }
+
+        var doc = _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
+        if (doc.Status != DocStatus.Draft)
+        {
+            throw new InvalidOperationException("Документ уже закрыт.");
+        }
+
+        var selectedIds = docLineIds
+            .Distinct()
+            .ToList();
+        var existingIds = _data.GetDocLines(docId)
+            .Select(line => line.Id)
+            .ToHashSet();
+        var missingId = selectedIds.FirstOrDefault(id => !existingIds.Contains(id));
+        if (missingId != 0)
+        {
+            throw new InvalidOperationException("Одна из выбранных строк не найдена.");
+        }
+
+        _data.ExecuteInTransaction(store =>
+        {
+            foreach (var id in selectedIds)
+            {
+                store.DeleteDocLine(id);
+            }
+        });
     }
 
     private static IReadOnlyList<DocLine> EnsureOrderLineLinks(IDataStore store, Doc doc, IReadOnlyList<DocLine> lines)
@@ -1177,7 +1344,9 @@ public sealed class DocumentService
                     $"{rowLabel}: количество {FormatQty(line.Qty)} превышает лимит {FormatQty(maxQtyPerHu)} на один HU. Разбейте строку на несколько HU.");
             }
 
-            if (item?.IsMarked == true && (doc.Type == DocType.ProductionReceipt || doc.Type == DocType.Outbound))
+            if (KmWorkflowEnabled
+                && item?.IsMarked == true
+                && (doc.Type == DocType.ProductionReceipt || doc.Type == DocType.Outbound))
             {
                 var rounded = Math.Round(line.Qty);
                 if (Math.Abs(line.Qty - rounded) > 0.0001)
@@ -1559,6 +1728,53 @@ public sealed class DocumentService
         return $"{current} RECOUNT";
     }
 
+    private static List<string> AllocateProductionHuCodes(
+        IDataStore store,
+        int requiredCount,
+        IReadOnlyCollection<string> reservedHuCodes)
+    {
+        if (requiredCount <= 0)
+        {
+            return new List<string>();
+        }
+
+        var reserved = reservedHuCodes
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Select(code => code.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var totalsByHu = store.GetLedgerTotalsByHu();
+        var reusable = store.GetHus(null, 10000)
+            .Where(record => !string.IsNullOrWhiteSpace(record.Code))
+            .Where(record => !reserved.Contains(record.Code))
+            .Where(record => !string.Equals(record.Status, "VOID", StringComparison.OrdinalIgnoreCase))
+            .Where(record => !totalsByHu.TryGetValue(record.Code, out var qty) || Math.Abs(qty) <= 0.000001)
+            .OrderBy(record => record.Code, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var codes = new List<string>(requiredCount);
+        foreach (var record in reusable)
+        {
+            if (codes.Count >= requiredCount)
+            {
+                break;
+            }
+
+            if (string.Equals(record.Status, "CLOSED", StringComparison.OrdinalIgnoreCase))
+            {
+                store.ReopenHu(record.Code, AutoHuCreatedBy, "Автовозврат в оборот для выпуска продукции");
+            }
+
+            codes.Add(record.Code);
+        }
+
+        while (codes.Count < requiredCount)
+        {
+            codes.Add(store.CreateHuRecord(AutoHuCreatedBy).Code);
+        }
+
+        return codes;
+    }
+
     private static (string? fromHu, string? toHu) ResolveLedgerHu(Doc doc, DocLine line, string? docHu)
     {
         var lineFrom = NormalizeHuValue(line.FromHu);
@@ -1588,17 +1804,14 @@ public sealed class DocumentService
             return (lineFrom, lineTo);
         }
 
-        if (!string.IsNullOrWhiteSpace(docHu))
+        if (doc.Type == DocType.Inbound || doc.Type == DocType.Inventory || doc.Type == DocType.ProductionReceipt)
         {
-            return doc.Type switch
-            {
-                DocType.Inbound => (null, docHu),
-                DocType.Inventory => (null, docHu),
-                DocType.ProductionReceipt => (null, docHu),
-                DocType.Outbound => (docHu, null),
-                DocType.WriteOff => (docHu, null),
-                _ => (lineFrom, lineTo)
-            };
+            return (null, lineTo ?? docHu);
+        }
+
+        if (doc.Type == DocType.Outbound || doc.Type == DocType.WriteOff)
+        {
+            return (lineFrom ?? docHu, null);
         }
 
         return (lineFrom, lineTo);
@@ -1687,14 +1900,19 @@ public sealed class DocumentService
         }
     }
 
-    private void EnsureHuAssignmentAllowed(DocType type, long docLineId)
+    private static void EnsureHuAssignmentAllowed(IDataStore store, DocType type, long docLineId)
     {
-        if (type == DocType.ProductionReceipt && _data.CountKmCodesByReceiptLine(docLineId) > 0)
+        if (!KmWorkflowEnabled)
+        {
+            return;
+        }
+
+        if (type == DocType.ProductionReceipt && store.CountKmCodesByReceiptLine(docLineId) > 0)
         {
             throw new InvalidOperationException("Нельзя менять HU строки после привязки КМ.");
         }
 
-        if (type == DocType.Outbound && _data.CountKmCodesByShipmentLine(docLineId) > 0)
+        if (type == DocType.Outbound && store.CountKmCodesByShipmentLine(docLineId) > 0)
         {
             throw new InvalidOperationException("Нельзя менять HU строки после привязки КМ.");
         }

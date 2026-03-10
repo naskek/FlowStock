@@ -193,7 +193,7 @@
                             <DataGridTextColumn Header="Макс. шт/HU" Binding="{Binding MaxQtyPerHu, StringFormat={}{0:0.###}}" Width="Auto" MaxWidth="160" />
                             <DataGridTextColumn Header="Тара" Binding="{Binding TaraName}" Width="Auto" MaxWidth="200" />
                             <DataGridTextColumn Header="Базовая единица" Binding="{Binding BaseUom}" Width="Auto" MaxWidth="320" />
-                            <DataGridCheckBoxColumn Header="КМ" Binding="{Binding IsMarked}" Width="Auto" MaxWidth="80" />
+                            <DataGridCheckBoxColumn Header="КМ" Binding="{Binding IsMarked}" Width="Auto" MaxWidth="80" Visibility="Collapsed" />
                         </DataGrid.Columns>
                     </DataGrid>
                 </Grid>
@@ -242,7 +242,7 @@
                     </DataGrid>
                 </Grid>
             </TabItem>
-            <TabItem Header="Маркировка (КМ)">
+            <TabItem Header="Маркировка (КМ)" Visibility="Collapsed">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />

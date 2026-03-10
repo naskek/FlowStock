@@ -12,6 +12,7 @@ namespace FlowStock.App;
 
 public partial class OperationDetailsWindow : Window
 {
+    private static bool KmUiEnabled => false;
     private readonly AppServices _services;
     private readonly ObservableCollection<Location> _locations = new();
     private readonly ObservableCollection<Partner> _partners = new();
@@ -63,6 +64,19 @@ public partial class OperationDetailsWindow : Window
 
     private void OperationDetailsWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (e.Key == Key.Delete)
+        {
+            if (DocLinesGrid.IsKeyboardFocusWithin
+                && GetSelectedDocLines().Count > 0
+                && IsDocEditable())
+            {
+                e.Handled = true;
+                DocDeleteLine_Click(DocLinesGrid, new RoutedEventArgs());
+            }
+
+            return;
+        }
+
         if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.Enter)
         {
             e.Handled = true;
@@ -199,24 +213,9 @@ public partial class OperationDetailsWindow : Window
             var inputQty = ResolveInputQty(line, selectedPackaging);
             var hasShortage = isOutbound && shortageByItem.ContainsKey(line.ItemId);
             var huDisplay = ResolveLineHuDisplay(_doc?.Type ?? DocType.Inbound, line);
-            var isMarked = itemsById.TryGetValue(line.ItemId, out var item) && item.IsMarked;
-            var kmAssigned = 0;
+            var isMarked = KmUiEnabled && itemsById.TryGetValue(line.ItemId, out var item) && item.IsMarked;
             var kmDisplay = string.Empty;
             var kmEnabled = false;
-            if (isProductionReceipt || isOutbound)
-            {
-                kmAssigned = isMarked
-                    ? (isProductionReceipt
-                        ? _services.Km.GetAssignedCountForReceiptLine(line.Id)
-                        : _services.Km.GetAssignedCountForShipmentLine(line.Id))
-                    : 0;
-                kmDisplay = isMarked ? $"КМ: {kmAssigned}/{FormatQty(line.Qty)}" : "КМ: -";
-                kmEnabled = isEditable
-                            && isMarked
-                            && (isOutbound
-                                || !string.IsNullOrWhiteSpace(line.ToLocation)
-                                && !string.IsNullOrWhiteSpace(line.ToHu));
-            }
             var inventoryDbQty = (double?)null;
             var inventoryDiffQty = (double?)null;
             var hasInventoryDiff = false;
@@ -339,7 +338,9 @@ public partial class OperationDetailsWindow : Window
 
     private void DocLines_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
-        _selectedDocLine = DocLinesGrid.SelectedItem as DocLineDisplay;
+        _selectedDocLine = GetSelectedDocLines().Count == 1
+            ? DocLinesGrid.SelectedItem as DocLineDisplay
+            : null;
         UpdateLineButtons();
         LoadOutboundHuCandidates();
     }
@@ -356,10 +357,6 @@ public partial class OperationDetailsWindow : Window
         {
             e.Handled = true;
             if (!IsDocEditable())
-            {
-                return;
-            }
-            if (HasOrderBinding())
             {
                 return;
             }
@@ -653,20 +650,19 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        if (HasOrderBinding())
+        var selectedLineIds = GetSelectedDocLines()
+            .Select(line => line.Id)
+            .Distinct()
+            .ToList();
+        if (selectedLineIds.Count == 0)
         {
-            return;
-        }
-
-        if (_selectedDocLine == null)
-        {
-            MessageBox.Show("Выберите строку.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("Выберите хотя бы одну строку.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
         try
         {
-            _services.Documents.DeleteDocLine(_doc!.Id, _selectedDocLine.Id);
+            _services.Documents.DeleteDocLines(_doc!.Id, selectedLineIds);
             LoadDocLines();
         }
         catch (Exception ex)
@@ -677,6 +673,12 @@ public partial class OperationDetailsWindow : Window
 
     private void KmCodes_Click(object sender, RoutedEventArgs e)
     {
+        if (!KmUiEnabled)
+        {
+            MessageBox.Show("Маркировка в WPF временно заморожена.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
         if (_doc == null || _selectedDocLine == null)
         {
             MessageBox.Show("Выберите строку документа.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -736,6 +738,12 @@ public partial class OperationDetailsWindow : Window
 
     private void KmDistribute_Click(object sender, RoutedEventArgs e)
     {
+        if (!KmUiEnabled)
+        {
+            MessageBox.Show("Маркировка в WPF временно заморожена.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
         if (_doc == null || (_doc.Type != DocType.ProductionReceipt && _doc.Type != DocType.Outbound))
         {
             return;
@@ -986,6 +994,46 @@ public partial class OperationDetailsWindow : Window
         {
             _services.Documents.AssignDocLineHu(_doc.Id, line.Id, qty, targetFromHu, targetToHu);
             LoadDoc();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void AutoHuButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!EnsureDraftDocSelected())
+        {
+            return;
+        }
+
+        if (_doc?.Type != DocType.ProductionReceipt)
+        {
+            return;
+        }
+
+        if (_hasUnsavedChanges && !TrySaveHeader())
+        {
+            return;
+        }
+
+        var selectedLineIds = GetSelectedDocLines()
+            .Select(line => line.Id)
+            .Distinct()
+            .ToList();
+
+        try
+        {
+            var usedHuCount = _services.Documents.AutoDistributeProductionReceiptHus(
+                _doc.Id,
+                selectedLineIds.Count > 0 ? selectedLineIds : null);
+            LoadDoc();
+            MessageBox.Show(
+                $"Автораспределение по HU выполнено. Назначено HU: {usedHuCount}.",
+                "Операция",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
         }
         catch (Exception ex)
         {
@@ -1518,6 +1566,7 @@ public partial class OperationDetailsWindow : Window
                 showOrder = true;
                 showBatch = true;
                 showComment = true;
+                showHu = false;
                 toLabel = "Локация приёмки";
                 break;
         }
@@ -1544,7 +1593,7 @@ public partial class OperationDetailsWindow : Window
         DocPartialCheck.Visibility = doc.Type == DocType.Outbound ? Visibility.Visible : Visibility.Collapsed;
         DocHuCombo.IsEnabled = isEditable;
         DocHuFromCombo.IsEnabled = isEditable;
-        DocHuCombo.IsEditable = doc.Type == DocType.Move || doc.Type == DocType.ProductionReceipt;
+        DocHuCombo.IsEditable = doc.Type == DocType.Move;
         DocMoveInternalCheck.IsEnabled = isEditable;
         DocReasonCombo.IsEnabled = isEditable;
 
@@ -1575,13 +1624,22 @@ public partial class OperationDetailsWindow : Window
         var showInventory = doc.Type == DocType.Inventory;
         DocInventoryDbColumn.Visibility = showInventory ? Visibility.Visible : Visibility.Collapsed;
         DocInventoryDiffColumn.Visibility = showInventory ? Visibility.Visible : Visibility.Collapsed;
-        DocHuColumn.Visibility = showHu ? Visibility.Visible : Visibility.Collapsed;
-        DocKmColumn.Visibility = doc.Type is DocType.ProductionReceipt or DocType.Outbound ? Visibility.Visible : Visibility.Collapsed;
+        DocHuColumn.Visibility = doc.Type == DocType.ProductionReceipt || showHu
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        DocKmColumn.Visibility = KmUiEnabled && (doc.Type is DocType.ProductionReceipt or DocType.Outbound)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         DocOrderLineColumn.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
         DocFromColumn.Visibility = showFrom ? Visibility.Visible : Visibility.Collapsed;
         DocToColumn.Visibility = showTo ? Visibility.Visible : Visibility.Collapsed;
-        KmCodesButton.Visibility = doc.Type is DocType.ProductionReceipt or DocType.Outbound ? Visibility.Visible : Visibility.Collapsed;
-        AssignHuButton.Visibility = showHu && doc.Type != DocType.Move ? Visibility.Visible : Visibility.Collapsed;
+        KmCodesButton.Visibility = KmUiEnabled && (doc.Type is DocType.ProductionReceipt or DocType.Outbound)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        AutoHuButton.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
+        AssignHuButton.Visibility = showHu && doc.Type != DocType.Move && doc.Type != DocType.ProductionReceipt
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         DocFromColumn.Header = fromLabel;
         DocToColumn.Header = toLabel;
 
@@ -1619,14 +1677,19 @@ public partial class OperationDetailsWindow : Window
         var isEditable = IsDocEditable();
         var hasOrder = HasOrderBinding();
         var allowPartialEdit = hasOrder && _isPartialShipment;
+        var selectedLineCount = GetSelectedDocLines().Count;
+        var hasSelection = selectedLineCount > 0;
+        var hasSingleSelection = selectedLineCount == 1 && _selectedDocLine != null;
         AddItemButton.IsEnabled = isEditable && !hasOrder;
-        EditLineButton.IsEnabled = isEditable && _selectedDocLine != null && (!hasOrder || allowPartialEdit);
-        AssignHuButton.IsEnabled = isEditable && _selectedDocLine != null && SupportsLineHuAssignment();
-        DeleteLineButton.IsEnabled = isEditable && _selectedDocLine != null && !hasOrder;
+        AutoHuButton.IsEnabled = isEditable && _doc?.Type == DocType.ProductionReceipt && _docLines.Count > 0;
+        EditLineButton.IsEnabled = isEditable && hasSingleSelection && (!hasOrder || allowPartialEdit);
+        AssignHuButton.IsEnabled = isEditable && hasSingleSelection && SupportsLineHuAssignment();
+        DeleteLineButton.IsEnabled = isEditable && hasSelection;
         DocPartialCheck.IsEnabled = isEditable && _doc?.Type == DocType.Outbound && hasOrder;
-        KmCodesButton.IsEnabled = isEditable
-                                  && _selectedDocLine != null
-                                  && _selectedDocLine.IsMarked
+        KmCodesButton.IsEnabled = KmUiEnabled
+                                  && isEditable
+                                  && hasSingleSelection
+                                  && _selectedDocLine?.IsMarked == true
                                   && (_doc?.Type == DocType.ProductionReceipt || _doc?.Type == DocType.Outbound);
         if (_doc?.Type == DocType.ProductionReceipt)
         {
@@ -1649,17 +1712,13 @@ public partial class OperationDetailsWindow : Window
         _selectedOutboundHu = null;
         UpdateOutboundHuButton();
 
-        if (_doc?.Type != DocType.Outbound)
+        if (_doc?.Type != DocType.Outbound || _selectedDocLine == null)
         {
             OutboundHuPanel.Visibility = Visibility.Collapsed;
             return;
         }
 
         OutboundHuPanel.Visibility = Visibility.Visible;
-        if (_selectedDocLine == null)
-        {
-            return;
-        }
 
         var locationsById = _locations.ToDictionary(location => location.Id, location => location);
         var rows = _services.DataStore.GetHuStockRows()
@@ -1979,7 +2038,9 @@ public partial class OperationDetailsWindow : Window
         }
 
         var partnerId = (DocPartnerCombo.SelectedItem as Partner)?.Id;
-        var huCode = GetSelectedHuCode(DocHuCombo);
+        var huCode = _doc.Type == DocType.ProductionReceipt
+            ? null
+            : GetSelectedHuCode(DocHuCombo);
         var reasonCode = (DocReasonCombo.SelectedItem as WriteOffReasonOption)?.Code;
         var productionBatch = DocBatchBox.Text;
         var comment = DocCommentBox.Text;
@@ -2449,7 +2510,8 @@ public partial class OperationDetailsWindow : Window
     private IEnumerable<string> GetFreeHuCodes(IReadOnlyDictionary<string, double> totalsByHu)
     {
         return GetAvailableHuCodes()
-            .Where(code => !totalsByHu.TryGetValue(code, out var qty) || qty <= 0.000001);
+            .Where(code => !totalsByHu.TryGetValue(code, out var qty) || qty <= 0.000001)
+            .OrderBy(code => code, StringComparer.OrdinalIgnoreCase);
     }
 
     private static bool IsSelectableHu(HuRecord record)
@@ -2509,6 +2571,15 @@ public partial class OperationDetailsWindow : Window
 
     private void SetHuSelection(Doc doc)
     {
+        if (doc.Type == DocType.ProductionReceipt)
+        {
+            _suppressDirtyTracking = true;
+            DocHuCombo.SelectedItem = _huToOptions.FirstOrDefault(option => option.Code == null) ?? _huToOptions.FirstOrDefault();
+            DocHuFromCombo.SelectedItem = _huFromOptions.FirstOrDefault(option => option.Code == null) ?? _huFromOptions.FirstOrDefault();
+            _suppressDirtyTracking = false;
+            return;
+        }
+
         var normalized = NormalizeHuCode(doc.ShippingRef) ?? ResolveHeaderHuFromLines(doc);
         var currentFromHu = (DocHuFromCombo.SelectedItem as HuOption)?.Code;
         _suppressDirtyTracking = true;
@@ -2656,6 +2727,11 @@ public partial class OperationDetailsWindow : Window
         {
             fromHu = (DocHuFromCombo.SelectedItem as HuOption)?.Code;
             toHu = GetSelectedHuCode(DocHuCombo);
+        }
+        else if (_doc.Type == DocType.ProductionReceipt)
+        {
+            fromHu = null;
+            toHu = null;
         }
         else
         {
@@ -2828,6 +2904,13 @@ public partial class OperationDetailsWindow : Window
     private bool SupportsLineHuAssignment()
     {
         return _doc?.Type is DocType.Inbound or DocType.Inventory or DocType.ProductionReceipt or DocType.WriteOff or DocType.Outbound;
+    }
+
+    private IReadOnlyList<DocLineDisplay> GetSelectedDocLines()
+    {
+        return DocLinesGrid.SelectedItems
+            .OfType<DocLineDisplay>()
+            .ToList();
     }
 
     private sealed class DocLineDisplay

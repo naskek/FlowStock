@@ -112,7 +112,7 @@ public partial class ItemEditWindow : Window
 
         var baseUom = (UomCombo.SelectedItem as Uom)?.Name;
         var taraId = (TaraCombo.SelectedItem as TaraOption)?.Id;
-        var isMarked = MarkedCheck.IsChecked == true;
+        var isMarked = _item?.IsMarked ?? false;
 
         try
         {

@@ -1,0 +1,132 @@
+using FlowStock.Core.Models;
+using FlowStock.Server.Tests.CloseDocument.Infrastructure;
+
+namespace FlowStock.Server.Tests.CloseDocument;
+
+public sealed class ValidationTests
+{
+    [Fact]
+    public void CloseWithNoLines_Fails()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedDoc(new Doc
+        {
+            Id = 1,
+            DocRef = "IN-2026-000002",
+            Type = DocType.Inbound,
+            Status = DocStatus.Draft,
+            CreatedAt = new DateTime(2026, 3, 10, 12, 0, 0, DateTimeKind.Utc)
+        });
+
+        var service = harness.CreateService();
+        var result = service.TryCloseDoc(1, allowNegative: false);
+
+        Assert.False(result.Success);
+        Assert.Contains(result.Errors, error => error.Contains("Добавьте хотя бы один товар", StringComparison.Ordinal));
+        Assert.Empty(result.Warnings);
+        Assert.Empty(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Draft, harness.GetDoc(1).Status);
+    }
+
+    [Fact]
+    public void WriteOffWithoutReason_Fails()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedDoc(new Doc
+        {
+            Id = 2,
+            DocRef = "WO-2026-000001",
+            Type = DocType.WriteOff,
+            Status = DocStatus.Draft,
+            CreatedAt = new DateTime(2026, 3, 10, 12, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedItem(new Item { Id = 100, Name = "Горчица" });
+        harness.SeedLocation(new Location { Id = 10, Code = "01", Name = "Склад 01" });
+        harness.SeedBalance(itemId: 100, locationId: 10, qty: 50);
+        harness.SeedLine(new DocLine
+        {
+            Id = 21,
+            DocId = 2,
+            ItemId = 100,
+            Qty = 5,
+            FromLocationId = 10
+        });
+
+        var service = harness.CreateService();
+        var result = service.TryCloseDoc(2, allowNegative: false);
+
+        Assert.False(result.Success);
+        Assert.Contains(result.Errors, error => error.Contains("требуется причина", StringComparison.OrdinalIgnoreCase));
+        Assert.Empty(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Draft, harness.GetDoc(2).Status);
+    }
+
+    [Fact]
+    public void ProductionReceiptWithoutHu_Fails()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedDoc(new Doc
+        {
+            Id = 3,
+            DocRef = "PRD-2026-000001",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            CreatedAt = new DateTime(2026, 3, 10, 12, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedItem(new Item { Id = 100, Name = "Горчица" });
+        harness.SeedLocation(new Location { Id = 10, Code = "01", Name = "Склад 01" });
+        harness.SeedLine(new DocLine
+        {
+            Id = 31,
+            DocId = 3,
+            ItemId = 100,
+            Qty = 5,
+            ToLocationId = 10
+        });
+
+        var service = harness.CreateService();
+        var result = service.TryCloseDoc(3, allowNegative: false);
+
+        Assert.False(result.Success);
+        Assert.Contains(result.Errors, error => error.Contains("требуется HU", StringComparison.OrdinalIgnoreCase));
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void ProductionReceiptExceedingMaxQtyPerHu_Fails()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedDoc(new Doc
+        {
+            Id = 4,
+            DocRef = "PRD-2026-000002",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            CreatedAt = new DateTime(2026, 3, 10, 12, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedItem(new Item
+        {
+            Id = 100,
+            Name = "Горчица",
+            MaxQtyPerHu = 600
+        });
+        harness.SeedLocation(new Location { Id = 10, Code = "01", Name = "Склад 01" });
+        harness.SeedLine(new DocLine
+        {
+            Id = 41,
+            DocId = 4,
+            ItemId = 100,
+            Qty = 601,
+            ToLocationId = 10,
+            ToHu = "HU-000001"
+        });
+
+        var service = harness.CreateService();
+        var result = service.TryCloseDoc(4, allowNegative: false);
+
+        Assert.False(result.Success);
+        Assert.Contains(result.Errors, error => error.Contains("превышает лимит", StringComparison.OrdinalIgnoreCase));
+        Assert.Empty(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Draft, harness.GetDoc(4).Status);
+    }
+}

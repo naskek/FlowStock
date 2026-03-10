@@ -96,12 +96,15 @@
         <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
             <Button x:Name="AddItemButton" Content="+ Товар" Click="DocAddLine_Click" />
             <Button x:Name="FillFromOrderButton" Content="Заполнить из заказа" Click="DocFillFromOrder_Click" Margin="8,0,0,0" />
+            <Button x:Name="AutoHuButton" Content="Распределить по HU" Click="AutoHuButton_Click" Margin="8,0,0,0" />
             <Button x:Name="EditLineButton" Content="Изменить количество..." Click="DocEditLine_Click" Margin="8,0,0,0" />
             <Button x:Name="AssignHuButton" Content="Назначить HU..." Click="AssignHuButton_Click" Margin="8,0,0,0" />
-            <Button x:Name="DeleteLineButton" Content="Удалить строку" Click="DocDeleteLine_Click" Margin="8,0,0,0" />
+            <Button x:Name="DeleteLineButton" Content="Удалить строки" Click="DocDeleteLine_Click" Margin="8,0,0,0" />
             <Button x:Name="KmCodesButton" Content="Коды КМ..." Click="KmCodes_Click" Margin="8,0,0,0" />
         </StackPanel>
         <DataGrid x:Name="DocLinesGrid" Grid.Row="2" AutoGenerateColumns="False" IsReadOnly="True"
+                  SelectionMode="Extended"
+                  SelectionUnit="FullRow"
                   SelectionChanged="DocLines_SelectionChanged"
                   KeyDown="DocLinesGrid_KeyDown">
             <DataGrid.RowStyle>

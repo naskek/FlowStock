@@ -29,7 +29,7 @@
         <GroupBox Header="Режим удаления" Grid.Row="2" Margin="0,12,0,0">
             <StackPanel Margin="8">
                 <TextBlock x:Name="DeleteModeStatusText" FontWeight="SemiBold" />
-                <TextBlock Text="При включении станут доступны кнопки удаления во вкладках: Заказы, Товары, Места хранения, Контрагенты, Маркировка (КМ)."
+                <TextBlock Text="При включении станут доступны кнопки удаления во вкладках: Заказы, Товары, Места хранения, Контрагенты."
                            Margin="0,6,0,10"
                            TextWrapping="Wrap" />
                 <Button x:Name="ToggleDeleteModeButton" Width="240" HorizontalAlignment="Left" Click="ToggleDeleteMode_Click" />
@@ -40,7 +40,7 @@
             <StackPanel Margin="8">
                 <TextBlock Text="Удаляет тестовые операции: документы, строки, ledger, заказы, imported events/errors."
                            TextWrapping="Wrap" />
-                <TextBlock Text="Справочники и коды КМ остаются, связи КМ с операциями будут сброшены."
+                <TextBlock Text="Справочники остаются без изменений."
                            Margin="0,4,0,10"
                            TextWrapping="Wrap" />
                 <Button Content="Очистить операции" Width="220" HorizontalAlignment="Left" Click="ClearOperations_Click" />

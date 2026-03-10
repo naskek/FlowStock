@@ -110,6 +110,7 @@ public interface IDataStore
     HuRecord? GetHuByCode(string code);
     IReadOnlyList<HuRecord> GetHus(string? search, int take);
     void CloseHu(string code, string? closedBy, string? note);
+    void ReopenHu(string code, string? reopenedBy, string? note);
     IReadOnlyList<HuLedgerRow> GetHuLedgerRows(string code);
 
     bool IsEventImported(string eventId);

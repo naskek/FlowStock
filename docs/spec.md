@@ -60,16 +60,18 @@
 - Incoming requests: single WPF inbox window (from bell/menu) for item requests and order web requests, with processing actions in one place.
   - For order requests, WPF provides a details modal with full order payload before approval.
 - Admin: no direct table reset/edit from WPF; only backup and temporary admin unlock for row deletion in tabs.
-- Row deletion in tabs (orders/items/locations/partners/KM batches/codes) is blocked by default and allowed only after admin unlock.
+- Row deletion in tabs (orders/items/locations/partners) is blocked by default and allowed only after admin unlock.
 - Admin includes a dedicated "clear operations" action for test cleanup (docs/doc_lines/ledger/orders/order_lines/import events/errors). Dictionaries stay intact.
-- KM tab batch list shows package status directly (without opening batch details), based on current KM code statuses in the batch.
+- KM in WPF is temporarily frozen: the KM tab, KM actions in document windows, and KM edit controls in item cards are hidden from the client. During the freeze, document validation/closing does not require KM assignment and does not auto-ship KM codes.
 
 ## Documents (extra)
 - HU в документе хранится на уровне строки (`doc_lines.from_hu` / `doc_lines.to_hu`). Значение HU в шапке используется как значение по умолчанию и как быстрый выбор для операций со строками, но один документ может содержать строки с разными HU.
 - Выпуск продукции: приемка готовой продукции на склад (плюс в ledger), HU обязателен на момент проведения по каждой строке, партия производства хранится в `production_batch_no`, документ может быть связан с заказом (order_id/order_ref).
   - При выборе заказа автоматически подставляются остатки по строкам заказа (order_line_id) с учетом уже закрытых выпусков.
   - Для `orders.order_type = INTERNAL` этот документ является основным способом закрытия заказа по факту выпуска.
-  - Если в карточке товара задан `items.max_qty_per_hu`, назначение HU в WPF для строки выпуска автоматически распределяет строку по нескольким HU так, чтобы каждая строка не превышала лимит на HU.
+  - В WPF для выпуска используется отдельное действие `Распределить по HU`: система сама берёт свободные HU из реестра по порядку кода, при необходимости повторно вводит в оборот свободные `CLOSED` HU и, если их не хватает, создаёт новые HU.
+  - Если в карточке товара задан `items.max_qty_per_hu`, `Распределить по HU` автоматически делит строки выпуска так, чтобы каждая строка не превышала лимит на один HU.
+  - При проведении приоритет имеет HU строки; HU из шапки используется только как fallback для старых/неполных строк, а не как переопределение уже назначенных HU строки.
   - При проведении проверяется, что количество в каждой строке выпуска не превышает `max_qty_per_hu` (если лимит задан).
   - Для совместимости со старыми черновиками при проверке/проведении выполняется авто-ремап устаревшего `order_line_id` по `item_id` (только при однозначном совпадении строки заказа).
 - Отгрузка по заказу: OUTBOUND может быть связан с заказом (order_id/order_ref).
@@ -80,6 +82,7 @@
   - В ручной OUTBOUND выбор товара фильтруется по остаткам источника (выбранные локация/HU), чтобы показывать только отгружаемые позиции.
 
 ## Marking (KM) MVP
+- KM domain logic and data storage remain in backend/DB, but the client workflow is currently frozen: WPF UI is disabled, and document validation/closing does not enforce KM assignment.
 - Импорт CSV/TSV кодов в `km_code_batch` + `km_code` (защита по hash файла и UNIQUE(code_raw)).
 - During KM import, code duplicate checks are enforced per file and against DB (case-insensitive), with normalization of wrapped quotes.
 - При сопоставлении GTIN в КМ поддерживаются 13 и 14 цифр: 13-значный GTIN нормализуется до 14-значного добавлением ведущего `0`.
