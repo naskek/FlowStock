@@ -277,7 +277,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+    private async void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Delete)
         {
@@ -310,7 +310,7 @@ public partial class MainWindow : Window
                 break;
             case Key.Enter:
                 e.Handled = true;
-                TryCloseSelectedDoc();
+                await TryCloseSelectedDocAsync();
                 break;
         }
     }
@@ -743,12 +743,12 @@ public partial class MainWindow : Window
         LoadStock(StatusSearchBox.Text);
     }
 
-    private void DocClose_Click(object sender, RoutedEventArgs e)
+    private async void DocClose_Click(object sender, RoutedEventArgs e)
     {
-        TryCloseSelectedDoc();
+        await TryCloseSelectedDocAsync();
     }
 
-    private void TryCloseSelectedDoc()
+    private async Task TryCloseSelectedDocAsync()
     {
         if (DocsGrid.SelectedItem is not Doc doc)
         {
@@ -768,6 +768,34 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_services.WpfCloseDocuments.IsServerCloseEnabled())
+        {
+            await TryCloseSelectedDocViaServerAsync(doc);
+            return;
+        }
+
+        TryCloseSelectedDocLegacy(doc);
+    }
+
+    private async Task TryCloseSelectedDocViaServerAsync(Doc doc)
+    {
+        var result = await _services.WpfCloseDocuments.CloseAsync(doc);
+        if (!result.IsSuccess)
+        {
+            MessageBox.Show(result.Message, "Операции", MessageBoxButton.OK, ResolveServerCloseMessageImage(result.Kind));
+            return;
+        }
+
+        RefreshAfterClose(doc.Id);
+
+        if (!string.IsNullOrWhiteSpace(result.Message))
+        {
+            MessageBox.Show(result.Message, "Операции", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+    }
+
+    private void TryCloseSelectedDocLegacy(Doc doc)
+    {
         var result = _services.Documents.TryCloseDoc(doc.Id, allowNegative: false);
         if (result.Errors.Count > 0)
         {
@@ -800,12 +828,31 @@ public partial class MainWindow : Window
             return;
         }
 
+        RefreshAfterClose(doc.Id);
+    }
+
+    private void RefreshAfterClose(long docId)
+    {
         LoadDocs();
         LoadStock(StatusSearchBox.Text);
-        if (doc.Type == DocType.Outbound)
+
+        var refreshed = _services.Documents.GetDoc(docId);
+        if (refreshed?.Type is DocType.Outbound or DocType.ProductionReceipt)
         {
             LoadOrders();
         }
+    }
+
+    private static MessageBoxImage ResolveServerCloseMessageImage(WpfCloseDocumentResultKind kind)
+    {
+        return kind switch
+        {
+            WpfCloseDocumentResultKind.ValidationFailed => MessageBoxImage.Warning,
+            WpfCloseDocumentResultKind.NotFound => MessageBoxImage.Warning,
+            WpfCloseDocumentResultKind.EventConflict => MessageBoxImage.Warning,
+            WpfCloseDocumentResultKind.ServerRejected => MessageBoxImage.Warning,
+            _ => MessageBoxImage.Error
+        };
     }
 
     private void AddItem_Click(object sender, RoutedEventArgs e)

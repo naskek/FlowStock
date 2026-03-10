@@ -20,6 +20,7 @@ public sealed class AppServices
     public AdminAuthService AdminAuth { get; }
     public AdminService Admin { get; }
     public PartnerStatusService PartnerStatuses { get; }
+    public WpfCloseDocumentService WpfCloseDocuments { get; }
     public FileLogger AppLogger { get; }
     public FileLogger AdminLogger { get; }
     public string DatabasePath { get; }
@@ -58,6 +59,7 @@ public sealed class AppServices
         AdminAuth = new AdminAuthService(adminPath, adminLogger);
         Admin = new AdminService(connectionString, dataStore, Backups, adminLogger);
         PartnerStatuses = new PartnerStatusService(partnerStatusPath);
+        WpfCloseDocuments = new WpfCloseDocumentService(connectionString, Settings, appLogger);
         DatabasePath = databaseTarget;
         ConnectionString = connectionString;
         BaseDir = baseDir;

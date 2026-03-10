@@ -68,6 +68,8 @@ public sealed class BackupSettings
     public int HuNextSequence { get; set; } = 1;
     [JsonPropertyName("postgres")]
     public PostgresSettings Postgres { get; set; } = new();
+    [JsonPropertyName("server")]
+    public ServerSettings Server { get; set; } = new();
     [JsonPropertyName("recent_postgres")]
     public List<PostgresConnectionProfile> RecentPostgres { get; set; } = new();
 
@@ -94,6 +96,7 @@ public sealed class BackupSettings
         }
 
         Postgres = (Postgres ?? new PostgresSettings()).Normalize();
+        Server = (Server ?? new ServerSettings()).Normalize();
         RecentPostgres = (RecentPostgres ?? new List<PostgresConnectionProfile>())
             .Where(profile => profile != null)
             .Select(profile => profile!.Normalize())
@@ -104,6 +107,46 @@ public sealed class BackupSettings
             .ToList();
 
         return this;
+    }
+}
+
+public sealed class ServerSettings
+{
+    [JsonPropertyName("use_server_close_document")]
+    public bool UseServerCloseDocument { get; set; }
+
+    [JsonPropertyName("base_url")]
+    public string? BaseUrl { get; set; }
+
+    [JsonPropertyName("device_id")]
+    public string? DeviceId { get; set; }
+
+    [JsonPropertyName("close_timeout_seconds")]
+    public int CloseTimeoutSeconds { get; set; } = 15;
+
+    [JsonPropertyName("allow_invalid_tls")]
+    public bool AllowInvalidTls { get; set; }
+
+    public ServerSettings Normalize()
+    {
+        BaseUrl = NormalizeValue(BaseUrl);
+        DeviceId = NormalizeValue(DeviceId);
+
+        if (CloseTimeoutSeconds < 1)
+        {
+            CloseTimeoutSeconds = 1;
+        }
+        else if (CloseTimeoutSeconds > 120)
+        {
+            CloseTimeoutSeconds = 120;
+        }
+
+        return this;
+    }
+
+    private static string? NormalizeValue(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 }
 

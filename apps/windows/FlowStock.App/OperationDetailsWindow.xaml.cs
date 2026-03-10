@@ -62,7 +62,7 @@ public partial class OperationDetailsWindow : Window
         LoadDoc();
     }
 
-    private void OperationDetailsWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+    private async void OperationDetailsWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Delete)
         {
@@ -80,7 +80,7 @@ public partial class OperationDetailsWindow : Window
         if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.Enter)
         {
             e.Handled = true;
-            TryCloseCurrentDoc();
+            await TryCloseCurrentDocAsync();
         }
     }
 
@@ -364,9 +364,9 @@ public partial class OperationDetailsWindow : Window
         }
     }
 
-    private void DocClose_Click(object sender, RoutedEventArgs e)
+    private async void DocClose_Click(object sender, RoutedEventArgs e)
     {
-        TryCloseCurrentDoc();
+        await TryCloseCurrentDocAsync();
     }
 
     private void DocRecount_Click(object sender, RoutedEventArgs e)
@@ -412,7 +412,7 @@ public partial class OperationDetailsWindow : Window
         }
     }
 
-    private void TryCloseCurrentDoc()
+    private async Task TryCloseCurrentDocAsync()
     {
         if (_doc == null)
         {
@@ -465,6 +465,47 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
+        if (_services.WpfCloseDocuments.IsServerCloseEnabled())
+        {
+            await TryCloseCurrentDocViaServerAsync(doc);
+            return;
+        }
+
+        TryCloseCurrentDocLegacy(doc);
+    }
+
+    private async Task TryCloseCurrentDocViaServerAsync(Doc doc)
+    {
+        var result = await _services.WpfCloseDocuments.CloseAsync(doc);
+        if (!result.IsSuccess)
+        {
+            MessageBox.Show(result.Message, "Операция", MessageBoxButton.OK, ResolveServerCloseMessageImage(result.Kind));
+            return;
+        }
+
+        LoadDoc();
+        if (!string.IsNullOrWhiteSpace(result.Message))
+        {
+            MessageBox.Show(result.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
+        Close();
+    }
+
+    private static MessageBoxImage ResolveServerCloseMessageImage(WpfCloseDocumentResultKind kind)
+    {
+        return kind switch
+        {
+            WpfCloseDocumentResultKind.ValidationFailed => MessageBoxImage.Warning,
+            WpfCloseDocumentResultKind.NotFound => MessageBoxImage.Warning,
+            WpfCloseDocumentResultKind.EventConflict => MessageBoxImage.Warning,
+            WpfCloseDocumentResultKind.ServerRejected => MessageBoxImage.Warning,
+            _ => MessageBoxImage.Error
+        };
+    }
+
+    private void TryCloseCurrentDocLegacy(Doc doc)
+    {
         CloseDocResult result;
         try
         {

@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Подключение к БД"
-        Height="360" Width="520"
+        Height="640" Width="640"
         WindowStartupLocation="CenterOwner">
     <Grid Margin="12">
         <Grid.RowDefinitions>
@@ -14,45 +14,121 @@
             <TextBlock Text="Текущее подключение" />
             <TextBlock x:Name="CurrentTargetText" FontWeight="SemiBold" />
         </StackPanel>
-        <GroupBox Grid.Row="1" Header="Параметры подключения">
-            <Grid Margin="8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="140" />
-                    <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                </Grid.RowDefinitions>
-                <TextBlock Grid.Row="0" Grid.Column="0" Text="Host" VerticalAlignment="Center" />
-                <TextBox x:Name="HostBox" Grid.Row="0" Grid.Column="1" Margin="8,0,0,6" />
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <GroupBox Header="Параметры подключения">
+                    <Grid Margin="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="140" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Host" VerticalAlignment="Center" />
+                        <TextBox x:Name="HostBox" Grid.Row="0" Grid.Column="1" Margin="8,0,0,6" />
 
-                <TextBlock Grid.Row="1" Grid.Column="0" Text="Port" VerticalAlignment="Center" />
-                <TextBox x:Name="PortBox" Grid.Row="1" Grid.Column="1" Margin="8,0,0,6" />
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Port" VerticalAlignment="Center" />
+                        <TextBox x:Name="PortBox" Grid.Row="1" Grid.Column="1" Margin="8,0,0,6" />
 
-                <TextBlock Grid.Row="2" Grid.Column="0" Text="Database" VerticalAlignment="Center" />
-                <TextBox x:Name="DatabaseBox" Grid.Row="2" Grid.Column="1" Margin="8,0,0,6" />
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Database" VerticalAlignment="Center" />
+                        <TextBox x:Name="DatabaseBox" Grid.Row="2" Grid.Column="1" Margin="8,0,0,6" />
 
-                <TextBlock Grid.Row="3" Grid.Column="0" Text="Username" VerticalAlignment="Center" />
-                <TextBox x:Name="UsernameBox" Grid.Row="3" Grid.Column="1" Margin="8,0,0,6" />
+                        <TextBlock Grid.Row="3" Grid.Column="0" Text="Username" VerticalAlignment="Center" />
+                        <TextBox x:Name="UsernameBox" Grid.Row="3" Grid.Column="1" Margin="8,0,0,6" />
 
-                <TextBlock Grid.Row="4" Grid.Column="0" Text="Password" VerticalAlignment="Center" />
-                <PasswordBox x:Name="PasswordBox" Grid.Row="4" Grid.Column="1" Margin="8,0,0,6" />
+                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Password" VerticalAlignment="Center" />
+                        <PasswordBox x:Name="PasswordBox" Grid.Row="4" Grid.Column="1" Margin="8,0,0,6" />
 
-                <TextBlock Grid.Row="5" Grid.Column="0" Text="Последние подключения" VerticalAlignment="Center" />
-                <ComboBox x:Name="RecentConnectionsCombo"
-                          Grid.Row="5"
-                          Grid.Column="1"
-                          Margin="8,0,0,0"
-                          DisplayMemberPath="Display"
-                          SelectionChanged="RecentConnectionsCombo_SelectionChanged" />
+                        <TextBlock Grid.Row="5" Grid.Column="0" Text="Последние подключения" VerticalAlignment="Center" />
+                        <ComboBox x:Name="RecentConnectionsCombo"
+                                  Grid.Row="5"
+                                  Grid.Column="1"
+                                  Margin="8,0,0,0"
+                                  DisplayMemberPath="Display"
+                                  SelectionChanged="RecentConnectionsCombo_SelectionChanged" />
+                    </Grid>
+                </GroupBox>
 
-            </Grid>
-        </GroupBox>
+                <GroupBox Header="CloseDocument server mode" Margin="0,12,0,0">
+                    <Grid Margin="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="160" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Grid.Row="0" Grid.ColumnSpan="2" Margin="0,0,0,10">
+                            <TextBlock x:Name="CloseModeText" FontWeight="SemiBold" />
+                            <TextBlock x:Name="ConfigLoadedText" Margin="0,4,0,0" />
+                            <TextBlock x:Name="ActiveClosePathText" Margin="0,4,0,0" />
+                            <TextBlock x:Name="EnvironmentOverrideText"
+                                       Margin="0,6,0,0"
+                                       Foreground="DarkOrange"
+                                       TextWrapping="Wrap"
+                                       Visibility="Collapsed" />
+                        </StackPanel>
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Base URL" VerticalAlignment="Center" />
+                        <TextBox x:Name="ServerBaseUrlBox" Grid.Row="1" Grid.Column="1" Margin="8,0,0,6" />
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Device ID" VerticalAlignment="Center" />
+                        <TextBox x:Name="ServerDeviceIdBox" Grid.Row="2" Grid.Column="1" Margin="8,0,0,6" />
+
+                        <TextBlock Grid.Row="3" Grid.Column="0" Text="Timeout (sec)" VerticalAlignment="Center" />
+                        <TextBox x:Name="ServerTimeoutBox" Grid.Row="3" Grid.Column="1" Margin="8,0,0,6" />
+
+                        <TextBlock Grid.Row="4" Grid.Column="0" Text="TLS" VerticalAlignment="Top" />
+                        <StackPanel Grid.Row="4" Grid.Column="1" Margin="8,0,0,6">
+                            <CheckBox x:Name="AllowInvalidTlsCheckBox"
+                                      Content="Allow invalid TLS (dev-only / unsafe)" />
+                            <TextBlock Margin="0,4,0,0"
+                                       Foreground="DarkOrange"
+                                       Text="Use only for local development with an untrusted certificate."
+                                       TextWrapping="Wrap" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="5"
+                                    Grid.ColumnSpan="2"
+                                    Orientation="Horizontal"
+                                    HorizontalAlignment="Right"
+                                    Margin="0,8,0,0">
+                            <Button x:Name="ToggleCloseModeButton"
+                                    Width="150"
+                                    Click="ToggleCloseMode_Click" />
+                            <Button Content="Check server"
+                                    Width="110"
+                                    Margin="8,0,0,0"
+                                    Click="CheckServer_Click" />
+                            <Button Content="Save"
+                                    Width="100"
+                                    Margin="8,0,0,0"
+                                    Click="SaveServerSettings_Click" />
+                        </StackPanel>
+
+                        <TextBlock x:Name="ServerStatusText"
+                                   Grid.Row="6"
+                                   Grid.ColumnSpan="2"
+                                   Margin="0,10,0,0"
+                                   TextWrapping="Wrap" />
+                    </Grid>
+                </GroupBox>
+            </StackPanel>
+        </ScrollViewer>
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
             <Button Content="Тест подключения" Width="120" Click="TestConnection_Click" />
             <Button Content="Подключиться" Width="120" Margin="8,0,0,0" Click="Save_Click" />

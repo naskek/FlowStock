@@ -1,18 +1,31 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using System.Net;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using Npgsql;
+using MediaBrushes = System.Windows.Media.Brushes;
 
 namespace FlowStock.App;
 
 public partial class DbConnectionWindow : Window
 {
     private readonly AppServices _services;
+    private readonly CloseDocumentApiClient _closeDocumentApiClient = new();
     private BackupSettings _settings;
     private readonly List<RecentConnectionOption> _recentOptions = new();
+    private bool _useServerCloseDocument;
+    private static readonly string[] ServerEnvironmentKeys =
+    {
+        "FLOWSTOCK_USE_SERVER_CLOSE_DOCUMENT",
+        "FLOWSTOCK_SERVER_BASE_URL",
+        "FLOWSTOCK_SERVER_DEVICE_ID",
+        "FLOWSTOCK_SERVER_CLOSE_TIMEOUT_SECONDS",
+        "FLOWSTOCK_SERVER_ALLOW_INVALID_TLS"
+    };
     private const string DefaultHost = "127.0.0.1";
     private const string DefaultPort = "15432";
     private const string DefaultDatabase = "flowstock";
@@ -36,6 +49,7 @@ public partial class DbConnectionWindow : Window
         PasswordBox.Password = postgres.Password ?? string.Empty;
 
         LoadRecentConnections();
+        LoadServerSettingsUi();
     }
 
     private void Save_Click(object sender, RoutedEventArgs e)
@@ -98,6 +112,148 @@ public partial class DbConnectionWindow : Window
             "Подключение к БД",
             MessageBoxButton.OK,
             MessageBoxImage.Information);
+    }
+
+    private void LoadServerSettingsUi()
+    {
+        var server = (_settings.Server ?? new ServerSettings()).Normalize();
+        ApplyServerSettingsToInputs(new ServerSettings
+        {
+            UseServerCloseDocument = server.UseServerCloseDocument,
+            BaseUrl = server.BaseUrl ?? WpfCloseDocumentService.DefaultServerBaseUrl,
+            DeviceId = server.DeviceId ?? WpfCloseDocumentService.BuildDefaultDeviceId(),
+            CloseTimeoutSeconds = server.CloseTimeoutSeconds < 1
+                ? WpfCloseDocumentService.DefaultCloseTimeoutSeconds
+                : server.CloseTimeoutSeconds,
+            AllowInvalidTls = server.AllowInvalidTls
+        });
+        RefreshServerStatus();
+        SetServerStatus(string.Empty, MediaBrushes.Gray);
+    }
+
+    private void ApplyServerSettingsToInputs(ServerSettings server)
+    {
+        SetCloseMode(server.UseServerCloseDocument);
+        ServerBaseUrlBox.Text = server.BaseUrl ?? WpfCloseDocumentService.DefaultServerBaseUrl;
+        ServerDeviceIdBox.Text = server.DeviceId ?? WpfCloseDocumentService.BuildDefaultDeviceId();
+        ServerTimeoutBox.Text = server.CloseTimeoutSeconds.ToString(CultureInfo.InvariantCulture);
+        AllowInvalidTlsCheckBox.IsChecked = server.AllowInvalidTls;
+    }
+
+    private void RefreshServerStatus()
+    {
+        CloseModeText.Text = $"Close mode: {FormatCloseMode(_useServerCloseDocument)}";
+        ConfigLoadedText.Text = $"Config loaded: {(File.Exists(_services.SettingsPath) ? "yes" : "no")}";
+
+        var effective = _services.WpfCloseDocuments.GetEffectiveConfiguration();
+        ActiveClosePathText.Text = $"Active close path: {FormatCloseMode(effective.UseServerCloseDocument)}";
+
+        var overrides = GetServerEnvironmentOverrides();
+        if (overrides.Count == 0)
+        {
+            EnvironmentOverrideText.Visibility = Visibility.Collapsed;
+            EnvironmentOverrideText.Text = string.Empty;
+            return;
+        }
+
+        EnvironmentOverrideText.Text =
+            $"Environment override active: {string.Join(", ", overrides)}. Active close path may differ from saved settings.";
+        EnvironmentOverrideText.Visibility = Visibility.Visible;
+    }
+
+    private void ToggleCloseMode_Click(object sender, RoutedEventArgs e)
+    {
+        SetCloseMode(!_useServerCloseDocument);
+        RefreshServerStatus();
+        SetServerStatus(string.Empty, MediaBrushes.Gray);
+    }
+
+    private void SetCloseMode(bool useServerCloseDocument)
+    {
+        _useServerCloseDocument = useServerCloseDocument;
+        ToggleCloseModeButton.Content = useServerCloseDocument
+            ? "Switch to Legacy"
+            : "Switch to Server API";
+    }
+
+    private async void CheckServer_Click(object sender, RoutedEventArgs e)
+    {
+        if (!TryReadServerSettingsInput(out var serverSettings))
+        {
+            return;
+        }
+
+        SetServerStatus("Checking server...", MediaBrushes.DimGray);
+
+        var result = await _closeDocumentApiClient.PingAsync(
+            new ServerCloseClientOptions
+            {
+                BaseUrl = serverSettings.BaseUrl ?? WpfCloseDocumentService.DefaultServerBaseUrl,
+                AllowInvalidTls = serverSettings.AllowInvalidTls
+            },
+            serverSettings.CloseTimeoutSeconds);
+
+        var brush = result.IsSuccess ? MediaBrushes.DarkGreen : MediaBrushes.DarkRed;
+        SetServerStatus(result.Message, brush);
+
+        var caption = result.IsSuccess ? "Check server" : "Check server failed";
+        var icon = result.IsSuccess ? MessageBoxImage.Information : MessageBoxImage.Warning;
+        MessageBox.Show(result.Message, caption, MessageBoxButton.OK, icon);
+    }
+
+    private void SaveServerSettings_Click(object sender, RoutedEventArgs e)
+    {
+        if (!TryReadServerSettingsInput(out var serverSettings))
+        {
+            return;
+        }
+
+        _settings.Server = serverSettings;
+        _services.Settings.Save(_settings);
+        ApplyServerSettingsToInputs(serverSettings);
+        RefreshServerStatus();
+
+        const string message = "Settings saved to %APPDATA%\\FlowStock\\settings.json";
+        SetServerStatus(message, MediaBrushes.DarkGreen);
+        MessageBox.Show(message, "CloseDocument settings", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private bool TryReadServerSettingsInput(out ServerSettings serverSettings)
+    {
+        serverSettings = new ServerSettings();
+
+        var baseUrl = ServerBaseUrlBox.Text?.Trim() ?? string.Empty;
+        var deviceId = ServerDeviceIdBox.Text?.Trim();
+        var timeoutText = ServerTimeoutBox.Text?.Trim() ?? string.Empty;
+
+        if (string.IsNullOrWhiteSpace(baseUrl))
+        {
+            MessageBox.Show("Base URL is required.", "CloseDocument settings", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        if (!int.TryParse(timeoutText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var timeoutSeconds) || timeoutSeconds <= 0)
+        {
+            MessageBox.Show("Timeout (sec) must be a positive integer.", "CloseDocument settings", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        serverSettings = new ServerSettings
+        {
+            UseServerCloseDocument = _useServerCloseDocument,
+            BaseUrl = NormalizeServerBaseUrl(baseUrl),
+            DeviceId = string.IsNullOrWhiteSpace(deviceId) ? WpfCloseDocumentService.BuildDefaultDeviceId() : deviceId,
+            CloseTimeoutSeconds = timeoutSeconds,
+            AllowInvalidTls = AllowInvalidTlsCheckBox.IsChecked == true
+        }.Normalize();
+
+        return true;
+    }
+
+    private void SetServerStatus(string message, System.Windows.Media.Brush brush)
+    {
+        ServerStatusText.Text = message;
+        ServerStatusText.Foreground = brush;
     }
 
     private bool TryReadInput(out ConnectionInput input)
@@ -250,6 +406,36 @@ public partial class DbConnectionWindow : Window
         return host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
             ? DefaultHost
             : host;
+    }
+
+    private static string NormalizeServerBaseUrl(string baseUrl)
+    {
+        var normalized = baseUrl.Trim();
+        if (!normalized.Contains("://", StringComparison.Ordinal))
+        {
+            normalized = "https://" + normalized;
+        }
+
+        return normalized.TrimEnd('/');
+    }
+
+    private static string FormatCloseMode(bool useServerCloseDocument)
+    {
+        return useServerCloseDocument ? "Server API" : "Legacy";
+    }
+
+    private static List<string> GetServerEnvironmentOverrides()
+    {
+        var overrides = new List<string>();
+        foreach (var key in ServerEnvironmentKeys)
+        {
+            if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(key)))
+            {
+                overrides.Add(key);
+            }
+        }
+
+        return overrides;
     }
 
     private sealed record EffectiveConfig(string Host, string Port, string Database, string Username);
