@@ -1107,7 +1107,7 @@ static string BuildPostgresConnectionString(IConfiguration configuration)
     var database = configuration["FLOWSTOCK_PG_DB"] ?? "flowstock";
     var user = configuration["FLOWSTOCK_PG_USER"] ?? "flowstock";
     var password = configuration["FLOWSTOCK_PG_PASSWORD"] ?? "flowstock";
-    var portText = configuration["FLOWSTOCK_PG_PORT"] ?? "15432";
+    var portText = configuration["FLOWSTOCK_PG_PORT"] ?? "5432";
 
     var builder = new NpgsqlConnectionStringBuilder
     {

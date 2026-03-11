@@ -12,6 +12,9 @@ internal sealed class CloseDocumentHarness
     private readonly Dictionary<long, List<DocLine>> _linesByDoc = new();
     private readonly Dictionary<long, Item> _items = new();
     private readonly Dictionary<long, Location> _locations = new();
+    private readonly Dictionary<long, Partner> _partners = new();
+    private readonly Dictionary<long, Order> _orders = new();
+    private readonly Dictionary<string, HuRecord> _hus = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<(long ItemId, long LocationId, string? HuCode), double> _seedBalances = new();
     private readonly List<LedgerEntry> _postedLedger = new();
     private long _nextDocId = 1;
@@ -25,6 +28,8 @@ internal sealed class CloseDocumentHarness
 
     public IReadOnlyList<LedgerEntry> LedgerEntries => _postedLedger;
     public IDataStore Store => _store.Object;
+    public int DocCount => _docs.Count;
+    public int TotalDocLineCount => _linesByDoc.Values.Sum(lines => lines.Count);
 
     public DocumentService CreateService()
     {
@@ -39,6 +44,29 @@ internal sealed class CloseDocumentHarness
     public Doc? FindDocByRef(string docRef)
     {
         return _docs.Values.FirstOrDefault(doc => string.Equals(doc.DocRef, docRef, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public IReadOnlyList<DocLine> GetDocLines(long docId)
+    {
+        return _linesByDoc.TryGetValue(docId, out var lines)
+            ? lines
+                .OrderBy(line => line.Id)
+                .Select(line => new DocLine
+                {
+                    Id = line.Id,
+                    DocId = line.DocId,
+                    OrderLineId = line.OrderLineId,
+                    ItemId = line.ItemId,
+                    Qty = line.Qty,
+                    QtyInput = line.QtyInput,
+                    UomCode = line.UomCode,
+                    FromLocationId = line.FromLocationId,
+                    ToLocationId = line.ToLocationId,
+                    FromHu = line.FromHu,
+                    ToHu = line.ToHu
+                })
+                .ToArray()
+            : Array.Empty<DocLine>();
     }
 
     public void SeedDoc(Doc doc)
@@ -71,6 +99,21 @@ internal sealed class CloseDocumentHarness
     public void SeedLocation(Location location)
     {
         _locations[location.Id] = location;
+    }
+
+    public void SeedPartner(Partner partner)
+    {
+        _partners[partner.Id] = partner;
+    }
+
+    public void SeedOrder(Order order)
+    {
+        _orders[order.Id] = order;
+    }
+
+    public void SeedHu(HuRecord hu)
+    {
+        _hus[hu.Code] = hu;
     }
 
     public void SeedBalance(long itemId, long locationId, double qty, string? huCode = null)
@@ -117,6 +160,24 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.GetLocations())
             .Returns(() => _locations.Values.OrderBy(location => location.Id).ToArray());
 
+        _store.Setup(store => store.GetPartner(It.IsAny<long>()))
+            .Returns<long>(partnerId => _partners.TryGetValue(partnerId, out var partner) ? partner : null);
+
+        _store.Setup(store => store.GetPartners())
+            .Returns(() => _partners.Values.OrderBy(partner => partner.Id).ToArray());
+
+        _store.Setup(store => store.GetOrder(It.IsAny<long>()))
+            .Returns<long>(orderId => _orders.TryGetValue(orderId, out var order) ? order : null);
+
+        _store.Setup(store => store.GetOrders())
+            .Returns(() => _orders.Values.OrderBy(order => order.Id).ToArray());
+
+        _store.Setup(store => store.GetDocs())
+            .Returns(() => _docs.Values.OrderBy(doc => doc.Id).ToArray());
+
+        _store.Setup(store => store.GetDocsByOrder(It.IsAny<long>()))
+            .Returns<long>(orderId => _docs.Values.Where(doc => doc.OrderId == orderId).OrderBy(doc => doc.Id).ToArray());
+
         _store.Setup(store => store.IsDocRefSequenceTaken(It.IsAny<int>(), It.IsAny<int>()))
             .Returns(false);
 
@@ -145,7 +206,7 @@ internal sealed class CloseDocumentHarness
             .Returns(() => BuildHuStockRows());
 
         _store.Setup(store => store.GetHuByCode(It.IsAny<string>()))
-            .Returns((HuRecord?)null);
+            .Returns<string>(code => _hus.TryGetValue(code.Trim(), out var hu) ? hu : null);
 
         _store.Setup(store => store.AddDoc(It.IsAny<Doc>()))
             .Returns<Doc>(doc =>
@@ -204,6 +265,15 @@ internal sealed class CloseDocumentHarness
                 return lineId;
             });
 
+        _store.Setup(store => store.DeleteDocLines(It.IsAny<long>()))
+            .Callback<long>(docId =>
+            {
+                if (_linesByDoc.ContainsKey(docId))
+                {
+                    _linesByDoc[docId].Clear();
+                }
+            });
+
         _store.Setup(store => store.UpdateDocHeader(It.IsAny<long>(), It.IsAny<long?>(), It.IsAny<string?>(), It.IsAny<string?>()))
             .Callback<long, long?, string?, string?>((docId, partnerId, orderRef, shippingRef) =>
             {
@@ -224,6 +294,99 @@ internal sealed class CloseDocumentHarness
                     OrderId = current.OrderId,
                     OrderRef = orderRef,
                     ShippingRef = shippingRef,
+                    ReasonCode = current.ReasonCode,
+                    Comment = current.Comment,
+                    ProductionBatchNo = current.ProductionBatchNo,
+                    PartnerName = current.PartnerName,
+                    PartnerCode = current.PartnerCode,
+                    LineCount = current.LineCount,
+                    SourceDeviceId = current.SourceDeviceId,
+                    ApiDocUid = current.ApiDocUid
+                };
+            });
+
+        _store.Setup(store => store.UpdateDocReason(It.IsAny<long>(), It.IsAny<string?>()))
+            .Callback<long, string?>((docId, reasonCode) =>
+            {
+                if (!_docs.TryGetValue(docId, out var current))
+                {
+                    return;
+                }
+
+                _docs[docId] = new Doc
+                {
+                    Id = current.Id,
+                    DocRef = current.DocRef,
+                    Type = current.Type,
+                    Status = current.Status,
+                    CreatedAt = current.CreatedAt,
+                    ClosedAt = current.ClosedAt,
+                    PartnerId = current.PartnerId,
+                    OrderId = current.OrderId,
+                    OrderRef = current.OrderRef,
+                    ShippingRef = current.ShippingRef,
+                    ReasonCode = reasonCode,
+                    Comment = current.Comment,
+                    ProductionBatchNo = current.ProductionBatchNo,
+                    PartnerName = current.PartnerName,
+                    PartnerCode = current.PartnerCode,
+                    LineCount = current.LineCount,
+                    SourceDeviceId = current.SourceDeviceId,
+                    ApiDocUid = current.ApiDocUid
+                };
+            });
+
+        _store.Setup(store => store.UpdateDocComment(It.IsAny<long>(), It.IsAny<string?>()))
+            .Callback<long, string?>((docId, comment) =>
+            {
+                if (!_docs.TryGetValue(docId, out var current))
+                {
+                    return;
+                }
+
+                _docs[docId] = new Doc
+                {
+                    Id = current.Id,
+                    DocRef = current.DocRef,
+                    Type = current.Type,
+                    Status = current.Status,
+                    CreatedAt = current.CreatedAt,
+                    ClosedAt = current.ClosedAt,
+                    PartnerId = current.PartnerId,
+                    OrderId = current.OrderId,
+                    OrderRef = current.OrderRef,
+                    ShippingRef = current.ShippingRef,
+                    ReasonCode = current.ReasonCode,
+                    Comment = comment,
+                    ProductionBatchNo = current.ProductionBatchNo,
+                    PartnerName = current.PartnerName,
+                    PartnerCode = current.PartnerCode,
+                    LineCount = current.LineCount,
+                    SourceDeviceId = current.SourceDeviceId,
+                    ApiDocUid = current.ApiDocUid
+                };
+            });
+
+        _store.Setup(store => store.UpdateDocOrder(It.IsAny<long>(), It.IsAny<long?>(), It.IsAny<string?>()))
+            .Callback<long, long?, string?>((docId, orderId, orderRef) =>
+            {
+                if (!_docs.TryGetValue(docId, out var current))
+                {
+                    return;
+                }
+
+                _docs[docId] = new Doc
+                {
+                    Id = current.Id,
+                    DocRef = current.DocRef,
+                    Type = current.Type,
+                    Status = current.Status,
+                    CreatedAt = current.CreatedAt,
+                    ClosedAt = current.ClosedAt,
+                    PartnerId = current.PartnerId,
+                    OrderId = orderId,
+                    OrderRef = orderRef,
+                    ShippingRef = current.ShippingRef,
                     ReasonCode = current.ReasonCode,
                     Comment = current.Comment,
                     ProductionBatchNo = current.ProductionBatchNo,

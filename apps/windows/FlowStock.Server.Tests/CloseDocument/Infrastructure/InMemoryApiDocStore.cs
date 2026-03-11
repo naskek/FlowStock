@@ -8,6 +8,8 @@ internal sealed class InMemoryApiDocStore : IApiDocStore
     private readonly Dictionary<string, RecordedApiEvent> _events = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<ReservationLine> _reservations = new();
 
+    public int ApiDocCount => _docs.Count;
+
     public ApiDocInfo? GetApiDoc(string docUid)
     {
         return _docs.TryGetValue(docUid, out var info) ? info : null;
@@ -16,7 +18,7 @@ internal sealed class InMemoryApiDocStore : IApiDocStore
     public ApiEventInfo? GetEvent(string eventId)
     {
         return _events.TryGetValue(eventId, out var info)
-            ? new ApiEventInfo(info.EventType, info.DocUid)
+            ? new ApiEventInfo(info.EventType, info.DocUid, info.DeviceId, info.RawJson)
             : null;
     }
 

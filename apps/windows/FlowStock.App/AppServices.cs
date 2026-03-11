@@ -20,7 +20,10 @@ public sealed class AppServices
     public AdminAuthService AdminAuth { get; }
     public AdminService Admin { get; }
     public PartnerStatusService PartnerStatuses { get; }
+    public WpfCreateDocDraftService WpfCreateDocDrafts { get; }
     public WpfCloseDocumentService WpfCloseDocuments { get; }
+    public WpfAddDocLineService WpfAddDocLines { get; }
+    public WpfBatchAddDocLineService WpfBatchAddDocLines { get; }
     public FileLogger AppLogger { get; }
     public FileLogger AdminLogger { get; }
     public string DatabasePath { get; }
@@ -59,7 +62,10 @@ public sealed class AppServices
         AdminAuth = new AdminAuthService(adminPath, adminLogger);
         Admin = new AdminService(connectionString, dataStore, Backups, adminLogger);
         PartnerStatuses = new PartnerStatusService(partnerStatusPath);
+        WpfCreateDocDrafts = new WpfCreateDocDraftService(Settings, appLogger);
         WpfCloseDocuments = new WpfCloseDocumentService(connectionString, Settings, appLogger);
+        WpfAddDocLines = new WpfAddDocLineService(connectionString, Settings, appLogger);
+        WpfBatchAddDocLines = new WpfBatchAddDocLineService(connectionString, Settings, appLogger);
         DatabasePath = databaseTarget;
         ConnectionString = connectionString;
         BaseDir = baseDir;

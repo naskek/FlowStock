@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 using FlowStock.Core.Services;
@@ -18,12 +20,62 @@ public static class DocumentDraftEndpoints
         HttpRequest request,
         IDataStore store,
         DocumentService docs,
-        IApiDocStore apiStore)
+        IApiDocStore apiStore,
+        ILoggerFactory loggerFactory)
     {
+        var logger = loggerFactory.CreateLogger("FlowStock.Server.DocumentLifecycle");
+        var started = Stopwatch.StartNew();
+        var path = request.Path.Value ?? "/api/docs";
+
+        IResult LogCreateAndReturn(
+            IResult result,
+            LogLevel level,
+            string outcome,
+            string? docUid = null,
+            long? docId = null,
+            string? docRef = null,
+            string? docType = null,
+            string? docStatusBefore = null,
+            string? docStatusAfter = null,
+            int? lineCount = null,
+            bool? apiEventWritten = null,
+            bool? idempotentReplay = null,
+            IEnumerable<string>? errors = null,
+            string? eventId = null,
+            string? deviceId = null)
+        {
+            started.Stop();
+            ServerOperationLogging.LogDocumentLifecycleOperation(
+                logger,
+                level,
+                operation: "CreateDocDraft",
+                path: path,
+                result: outcome,
+                docUid: docUid,
+                docId: docId,
+                docRef: docRef,
+                docType: docType,
+                docStatusBefore: docStatusBefore,
+                docStatusAfter: docStatusAfter,
+                lineCount: lineCount,
+                ledgerRowsWritten: 0,
+                eventId: eventId,
+                deviceId: deviceId,
+                apiEventWritten: apiEventWritten,
+                idempotentReplay: idempotentReplay,
+                elapsedMs: started.ElapsedMilliseconds,
+                errors: errors);
+            return result;
+        }
+
         var rawJson = await ReadBody(request);
         if (string.IsNullOrWhiteSpace(rawJson))
         {
-            return Results.BadRequest(new ApiResult(false, "EMPTY_BODY"));
+            return LogCreateAndReturn(
+                Results.BadRequest(new ApiResult(false, "EMPTY_BODY")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                errors: ["EMPTY_BODY"]);
         }
 
         CreateDocRequest? createRequest;
@@ -35,12 +87,20 @@ public static class DocumentDraftEndpoints
         }
         catch (JsonException)
         {
-            return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+            return LogCreateAndReturn(
+                Results.BadRequest(new ApiResult(false, "INVALID_JSON")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                errors: ["INVALID_JSON"]);
         }
 
         if (createRequest == null)
         {
-            return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+            return LogCreateAndReturn(
+                Results.BadRequest(new ApiResult(false, "INVALID_JSON")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                errors: ["INVALID_JSON"]);
         }
 
         var draftOnly = createRequest.DraftOnly;
@@ -48,19 +108,40 @@ public static class DocumentDraftEndpoints
         var docUid = string.IsNullOrWhiteSpace(createRequest.DocUid) ? null : createRequest.DocUid.Trim();
         if (string.IsNullOrWhiteSpace(docUid))
         {
-            return Results.BadRequest(new ApiResult(false, "MISSING_DOC_UID"));
+            return LogCreateAndReturn(
+                Results.BadRequest(new ApiResult(false, "MISSING_DOC_UID")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                errors: ["MISSING_DOC_UID"],
+                eventId: createRequest.EventId,
+                deviceId: createRequest.DeviceId);
         }
 
         if (string.IsNullOrWhiteSpace(createRequest.EventId))
         {
-            return Results.BadRequest(new ApiResult(false, "MISSING_EVENT_ID"));
+            return LogCreateAndReturn(
+                Results.BadRequest(new ApiResult(false, "MISSING_EVENT_ID")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docUid: docUid,
+                errors: ["MISSING_EVENT_ID"],
+                deviceId: createRequest.DeviceId);
         }
 
         var docType = ParseDocType(createRequest.Type);
         if (docType == null || docType is not (DocType.Inbound or DocType.Outbound or DocType.Move or DocType.Inventory or DocType.WriteOff or DocType.ProductionReceipt))
         {
-            return Results.BadRequest(new ApiResult(false, "INVALID_TYPE"));
+            return LogCreateAndReturn(
+                Results.BadRequest(new ApiResult(false, "INVALID_TYPE")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docUid: docUid,
+                errors: ["INVALID_TYPE"],
+                eventId: createRequest.EventId,
+                deviceId: createRequest.DeviceId);
         }
+
+        var docTypeValue = DocTypeMapper.ToOpString(docType.Value);
 
         var requestedOrderId = createRequest.OrderId;
         var requestedOrderRef = string.IsNullOrWhiteSpace(createRequest.OrderRef) ? null : createRequest.OrderRef.Trim();
@@ -70,7 +151,15 @@ public static class DocumentDraftEndpoints
             requestedOrder = store.GetOrder(requestedOrderId.Value);
             if (requestedOrder == null)
             {
-                return Results.BadRequest(new ApiResult(false, "UNKNOWN_ORDER"));
+                return LogCreateAndReturn(
+                    Results.BadRequest(new ApiResult(false, "UNKNOWN_ORDER")),
+                    LogLevel.Warning,
+                    outcome: "VALIDATION_FAILED",
+                    docUid: docUid,
+                    docType: docTypeValue,
+                    errors: ["UNKNOWN_ORDER"],
+                    eventId: createRequest.EventId,
+                    deviceId: createRequest.DeviceId);
             }
         }
         else if (!string.IsNullOrWhiteSpace(requestedOrderRef))
@@ -88,7 +177,15 @@ public static class DocumentDraftEndpoints
             && docType == DocType.Outbound
             && requestedOrder.Type != OrderType.Customer)
         {
-            return Results.BadRequest(new ApiResult(false, "INTERNAL_ORDER_NOT_ALLOWED_FOR_OUTBOUND"));
+            return LogCreateAndReturn(
+                Results.BadRequest(new ApiResult(false, "INTERNAL_ORDER_NOT_ALLOWED_FOR_OUTBOUND")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docUid: docUid,
+                docType: docTypeValue,
+                errors: ["INTERNAL_ORDER_NOT_ALLOWED_FOR_OUTBOUND"],
+                eventId: createRequest.EventId,
+                deviceId: createRequest.DeviceId);
         }
 
         var existingEvent = apiStore.GetEvent(createRequest.EventId);
@@ -97,27 +194,72 @@ public static class DocumentDraftEndpoints
             if (string.Equals(existingEvent.EventType, "DOC_CREATE", StringComparison.OrdinalIgnoreCase)
                 && string.Equals(existingEvent.DocUid, docUid, StringComparison.OrdinalIgnoreCase))
             {
+                if (!IsEquivalentCreateReplay(existingEvent.RawJson, createRequest))
+                {
+                    return LogCreateAndReturn(
+                        Results.BadRequest(new ApiResult(false, "EVENT_ID_CONFLICT")),
+                        LogLevel.Warning,
+                        outcome: "EVENT_ID_CONFLICT",
+                        docUid: docUid,
+                        docType: docTypeValue,
+                        errors: ["EVENT_ID_CONFLICT"],
+                        eventId: createRequest.EventId,
+                        deviceId: createRequest.DeviceId);
+                }
+
                 var existingDoc = apiStore.GetApiDoc(docUid);
                 if (existingDoc != null)
                 {
-                    return Results.Ok(new
-                    {
-                        ok = true,
-                        doc = new
+                    var replayDoc = store.GetDoc(existingDoc.DocId);
+                    return LogCreateAndReturn(
+                        Results.Ok(new
                         {
-                            id = existingDoc.DocId,
-                            doc_uid = docUid,
-                            doc_ref = existingDoc.DocRef,
-                            status = existingDoc.Status,
-                            type = existingDoc.DocType
-                        }
-                    });
+                            ok = true,
+                            doc = new
+                            {
+                                id = existingDoc.DocId,
+                                doc_uid = docUid,
+                                doc_ref = existingDoc.DocRef,
+                                status = existingDoc.Status,
+                                type = existingDoc.DocType
+                            }
+                        }),
+                        LogLevel.Information,
+                        outcome: "IDEMPOTENT_REPLAY",
+                        docUid: docUid,
+                        docId: existingDoc.DocId,
+                        docRef: existingDoc.DocRef,
+                        docType: existingDoc.DocType,
+                        docStatusBefore: replayDoc == null ? existingDoc.Status : DocTypeMapper.StatusToString(replayDoc.Status),
+                        docStatusAfter: replayDoc == null ? existingDoc.Status : DocTypeMapper.StatusToString(replayDoc.Status),
+                        lineCount: replayDoc?.LineCount,
+                        apiEventWritten: false,
+                        idempotentReplay: true,
+                        eventId: createRequest.EventId,
+                        deviceId: createRequest.DeviceId);
                 }
 
-                return Results.Ok(new ApiResult(true));
+                return LogCreateAndReturn(
+                    Results.Ok(new ApiResult(true)),
+                    LogLevel.Information,
+                    outcome: "IDEMPOTENT_REPLAY",
+                    docUid: docUid,
+                    docType: docTypeValue,
+                    apiEventWritten: false,
+                    idempotentReplay: true,
+                    eventId: createRequest.EventId,
+                    deviceId: createRequest.DeviceId);
             }
 
-            return Results.BadRequest(new ApiResult(false, "EVENT_ID_CONFLICT"));
+            return LogCreateAndReturn(
+                Results.BadRequest(new ApiResult(false, "EVENT_ID_CONFLICT")),
+                LogLevel.Warning,
+                outcome: "EVENT_ID_CONFLICT",
+                docUid: docUid,
+                docType: docTypeValue,
+                errors: ["EVENT_ID_CONFLICT"],
+                eventId: createRequest.EventId,
+                deviceId: createRequest.DeviceId);
         }
 
         var existingDocInfo = apiStore.GetApiDoc(docUid);
@@ -126,21 +268,54 @@ public static class DocumentDraftEndpoints
             var existingDoc = store.GetDoc(existingDocInfo.DocId);
             if (existingDoc == null)
             {
-                return Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"));
+                return LogCreateAndReturn(
+                    Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND")),
+                    LogLevel.Warning,
+                    outcome: "DOC_NOT_FOUND",
+                    docUid: docUid,
+                    docId: existingDocInfo.DocId,
+                    docRef: existingDocInfo.DocRef,
+                    docType: existingDocInfo.DocType,
+                    docStatusBefore: existingDocInfo.Status,
+                    errors: ["DOC_NOT_FOUND"],
+                    eventId: createRequest.EventId,
+                    deviceId: createRequest.DeviceId);
             }
 
             var expectedType = DocTypeMapper.ToOpString(docType.Value);
             if (!string.IsNullOrWhiteSpace(existingDocInfo.DocType)
                 && !string.Equals(existingDocInfo.DocType, expectedType, StringComparison.OrdinalIgnoreCase))
             {
-                return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+                return LogCreateAndReturn(
+                    Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID")),
+                    LogLevel.Warning,
+                    outcome: "VALIDATION_FAILED",
+                    docUid: docUid,
+                    docId: existingDocInfo.DocId,
+                    docRef: existingDocInfo.DocRef,
+                    docType: existingDocInfo.DocType,
+                    docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                    errors: ["DUPLICATE_DOC_UID"],
+                    eventId: createRequest.EventId,
+                    deviceId: createRequest.DeviceId);
             }
 
             var requestedRef = string.IsNullOrWhiteSpace(createRequest.DocRef) ? null : createRequest.DocRef.Trim();
             if (!string.IsNullOrWhiteSpace(requestedRef)
                 && !string.Equals(existingDocInfo.DocRef, requestedRef, StringComparison.OrdinalIgnoreCase))
             {
-                return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+                return LogCreateAndReturn(
+                    Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID")),
+                    LogLevel.Warning,
+                    outcome: "VALIDATION_FAILED",
+                    docUid: docUid,
+                    docId: existingDocInfo.DocId,
+                    docRef: existingDocInfo.DocRef,
+                    docType: existingDocInfo.DocType,
+                    docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                    errors: ["DUPLICATE_DOC_UID"],
+                    eventId: createRequest.EventId,
+                    deviceId: createRequest.DeviceId);
             }
 
             var partnerId = existingDocInfo.PartnerId;
@@ -154,7 +329,18 @@ public static class DocumentDraftEndpoints
             {
                 if (existingDoc.OrderId.HasValue && existingDoc.OrderId.Value != requestedOrderId.Value)
                 {
-                    return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+                    return LogCreateAndReturn(
+                        Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID")),
+                        LogLevel.Warning,
+                        outcome: "VALIDATION_FAILED",
+                        docUid: docUid,
+                        docId: existingDocInfo.DocId,
+                        docRef: existingDocInfo.DocRef,
+                        docType: existingDocInfo.DocType,
+                        docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                        errors: ["DUPLICATE_DOC_UID"],
+                        eventId: createRequest.EventId,
+                        deviceId: createRequest.DeviceId);
                 }
 
                 if (!existingDoc.OrderId.HasValue)
@@ -175,14 +361,36 @@ public static class DocumentDraftEndpoints
                 var requestedPartnerId = createRequest.PartnerId.Value;
                 if (partnerId.HasValue && partnerId.Value != requestedPartnerId)
                 {
-                    return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+                    return LogCreateAndReturn(
+                        Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID")),
+                        LogLevel.Warning,
+                        outcome: "VALIDATION_FAILED",
+                        docUid: docUid,
+                        docId: existingDocInfo.DocId,
+                        docRef: existingDocInfo.DocRef,
+                        docType: existingDocInfo.DocType,
+                        docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                        errors: ["DUPLICATE_DOC_UID"],
+                        eventId: createRequest.EventId,
+                        deviceId: createRequest.DeviceId);
                 }
 
                 if (!partnerId.HasValue)
                 {
                     if (store.GetPartner(requestedPartnerId) == null)
                     {
-                        return Results.BadRequest(new ApiResult(false, "UNKNOWN_PARTNER"));
+                        return LogCreateAndReturn(
+                            Results.BadRequest(new ApiResult(false, "UNKNOWN_PARTNER")),
+                            LogLevel.Warning,
+                            outcome: "VALIDATION_FAILED",
+                            docUid: docUid,
+                            docId: existingDocInfo.DocId,
+                            docRef: existingDocInfo.DocRef,
+                            docType: existingDocInfo.DocType,
+                            docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                            errors: ["UNKNOWN_PARTNER"],
+                            eventId: createRequest.EventId,
+                            deviceId: createRequest.DeviceId);
                     }
 
                     partnerId = requestedPartnerId;
@@ -195,14 +403,36 @@ public static class DocumentDraftEndpoints
                 var requestedFrom = createRequest.FromLocationId.Value;
                 if (fromLocationId.HasValue && fromLocationId.Value != requestedFrom)
                 {
-                    return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+                    return LogCreateAndReturn(
+                        Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID")),
+                        LogLevel.Warning,
+                        outcome: "VALIDATION_FAILED",
+                        docUid: docUid,
+                        docId: existingDocInfo.DocId,
+                        docRef: existingDocInfo.DocRef,
+                        docType: existingDocInfo.DocType,
+                        docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                        errors: ["DUPLICATE_DOC_UID"],
+                        eventId: createRequest.EventId,
+                        deviceId: createRequest.DeviceId);
                 }
 
                 if (!fromLocationId.HasValue)
                 {
                     if (store.FindLocationById(requestedFrom) == null)
                     {
-                        return Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION"));
+                        return LogCreateAndReturn(
+                            Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION")),
+                            LogLevel.Warning,
+                            outcome: "VALIDATION_FAILED",
+                            docUid: docUid,
+                            docId: existingDocInfo.DocId,
+                            docRef: existingDocInfo.DocRef,
+                            docType: existingDocInfo.DocType,
+                            docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                            errors: ["UNKNOWN_LOCATION"],
+                            eventId: createRequest.EventId,
+                            deviceId: createRequest.DeviceId);
                     }
 
                     fromLocationId = requestedFrom;
@@ -215,14 +445,36 @@ public static class DocumentDraftEndpoints
                 var requestedTo = createRequest.ToLocationId.Value;
                 if (toLocationId.HasValue && toLocationId.Value != requestedTo)
                 {
-                    return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+                    return LogCreateAndReturn(
+                        Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID")),
+                        LogLevel.Warning,
+                        outcome: "VALIDATION_FAILED",
+                        docUid: docUid,
+                        docId: existingDocInfo.DocId,
+                        docRef: existingDocInfo.DocRef,
+                        docType: existingDocInfo.DocType,
+                        docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                        errors: ["DUPLICATE_DOC_UID"],
+                        eventId: createRequest.EventId,
+                        deviceId: createRequest.DeviceId);
                 }
 
                 if (!toLocationId.HasValue)
                 {
                     if (store.FindLocationById(requestedTo) == null)
                     {
-                        return Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION"));
+                        return LogCreateAndReturn(
+                            Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION")),
+                            LogLevel.Warning,
+                            outcome: "VALIDATION_FAILED",
+                            docUid: docUid,
+                            docId: existingDocInfo.DocId,
+                            docRef: existingDocInfo.DocRef,
+                            docType: existingDocInfo.DocType,
+                            docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                            errors: ["UNKNOWN_LOCATION"],
+                            eventId: createRequest.EventId,
+                            deviceId: createRequest.DeviceId);
                     }
 
                     toLocationId = requestedTo;
@@ -239,7 +491,18 @@ public static class DocumentDraftEndpoints
                 if (!string.IsNullOrWhiteSpace(fromHu)
                     && !string.Equals(fromHu, requestedFromHu, StringComparison.OrdinalIgnoreCase))
                 {
-                    return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+                    return LogCreateAndReturn(
+                        Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID")),
+                        LogLevel.Warning,
+                        outcome: "VALIDATION_FAILED",
+                        docUid: docUid,
+                        docId: existingDocInfo.DocId,
+                        docRef: existingDocInfo.DocRef,
+                        docType: existingDocInfo.DocType,
+                        docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                        errors: ["DUPLICATE_DOC_UID"],
+                        eventId: createRequest.EventId,
+                        deviceId: createRequest.DeviceId);
                 }
 
                 if (string.IsNullOrWhiteSpace(fromHu))
@@ -262,7 +525,18 @@ public static class DocumentDraftEndpoints
                 if (!string.IsNullOrWhiteSpace(toHu)
                     && !string.Equals(toHu, requestedToHu, StringComparison.OrdinalIgnoreCase))
                 {
-                    return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+                    return LogCreateAndReturn(
+                        Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID")),
+                        LogLevel.Warning,
+                        outcome: "VALIDATION_FAILED",
+                        docUid: docUid,
+                        docId: existingDocInfo.DocId,
+                        docRef: existingDocInfo.DocRef,
+                        docType: existingDocInfo.DocType,
+                        docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                        errors: ["DUPLICATE_DOC_UID"],
+                        eventId: createRequest.EventId,
+                        deviceId: createRequest.DeviceId);
                 }
 
                 if (string.IsNullOrWhiteSpace(toHu))
@@ -282,26 +556,59 @@ public static class DocumentDraftEndpoints
 
             if (missingHu.Count > 0)
             {
-                return Results.BadRequest(new
-                {
-                    ok = false,
-                    error = "UNKNOWN_HU",
-                    missing = missingHu
-                });
+                return LogCreateAndReturn(
+                    Results.BadRequest(new
+                    {
+                        ok = false,
+                        error = "UNKNOWN_HU",
+                        missing = missingHu
+                    }),
+                    LogLevel.Warning,
+                    outcome: "VALIDATION_FAILED",
+                    docUid: docUid,
+                    docId: existingDocInfo.DocId,
+                    docRef: existingDocInfo.DocRef,
+                    docType: existingDocInfo.DocType,
+                    docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                    errors: ["UNKNOWN_HU", $"missing={string.Join(",", missingHu)}"],
+                    eventId: createRequest.EventId,
+                    deviceId: createRequest.DeviceId);
             }
 
             if (!draftOnly)
             {
                 if ((docType == DocType.Inbound || docType == DocType.Outbound) && !partnerId.HasValue)
                 {
-                    return Results.BadRequest(new ApiResult(false, "MISSING_PARTNER"));
+                    return LogCreateAndReturn(
+                        Results.BadRequest(new ApiResult(false, "MISSING_PARTNER")),
+                        LogLevel.Warning,
+                        outcome: "VALIDATION_FAILED",
+                        docUid: docUid,
+                        docId: existingDocInfo.DocId,
+                        docRef: existingDocInfo.DocRef,
+                        docType: existingDocInfo.DocType,
+                        docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                        errors: ["MISSING_PARTNER"],
+                        eventId: createRequest.EventId,
+                        deviceId: createRequest.DeviceId);
                 }
 
                 if (docType == DocType.Move || docType == DocType.Outbound || docType == DocType.WriteOff)
                 {
                     if (!fromLocationId.HasValue)
                     {
-                        return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
+                        return LogCreateAndReturn(
+                            Results.BadRequest(new ApiResult(false, "MISSING_LOCATION")),
+                            LogLevel.Warning,
+                            outcome: "VALIDATION_FAILED",
+                            docUid: docUid,
+                            docId: existingDocInfo.DocId,
+                            docRef: existingDocInfo.DocRef,
+                            docType: existingDocInfo.DocType,
+                            docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                            errors: ["MISSING_LOCATION"],
+                            eventId: createRequest.EventId,
+                            deviceId: createRequest.DeviceId);
                     }
                 }
 
@@ -309,7 +616,18 @@ public static class DocumentDraftEndpoints
                 {
                     if (!toLocationId.HasValue)
                     {
-                        return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
+                        return LogCreateAndReturn(
+                            Results.BadRequest(new ApiResult(false, "MISSING_LOCATION")),
+                            LogLevel.Warning,
+                            outcome: "VALIDATION_FAILED",
+                            docUid: docUid,
+                            docId: existingDocInfo.DocId,
+                            docRef: existingDocInfo.DocRef,
+                            docType: existingDocInfo.DocType,
+                            docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                            errors: ["MISSING_LOCATION"],
+                            eventId: createRequest.EventId,
+                            deviceId: createRequest.DeviceId);
                     }
                 }
             }
@@ -361,18 +679,35 @@ public static class DocumentDraftEndpoints
                 }
             }
 
-            return Results.Ok(new
-            {
-                ok = true,
-                doc = new
+            apiStore.RecordEvent(createRequest.EventId, "DOC_CREATE", docUid, createRequest.DeviceId, rawJson);
+
+            var existingDocAfter = store.GetDoc(existingDocInfo.DocId) ?? existingDoc;
+            return LogCreateAndReturn(
+                Results.Ok(new
                 {
-                    id = existingDocInfo.DocId,
-                    doc_uid = docUid,
-                    doc_ref = existingDocInfo.DocRef,
-                    status = existingDocInfo.Status,
-                    type = existingDocInfo.DocType
-                }
-            });
+                    ok = true,
+                    doc = new
+                    {
+                        id = existingDocInfo.DocId,
+                        doc_uid = docUid,
+                        doc_ref = existingDocInfo.DocRef,
+                        status = existingDocInfo.Status,
+                        type = existingDocInfo.DocType
+                    }
+                }),
+                LogLevel.Information,
+                outcome: "UPSERTED",
+                docUid: docUid,
+                docId: existingDocInfo.DocId,
+                docRef: existingDocInfo.DocRef,
+                docType: existingDocInfo.DocType,
+                docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                docStatusAfter: DocTypeMapper.StatusToString(existingDocAfter.Status),
+                lineCount: existingDocAfter.LineCount,
+                apiEventWritten: true,
+                idempotentReplay: false,
+                eventId: createRequest.EventId,
+                deviceId: createRequest.DeviceId);
         }
 
         var partnerIdValue = createRequest.PartnerId;
@@ -380,7 +715,15 @@ public static class DocumentDraftEndpoints
         {
             if (partnerIdValue.HasValue && partnerIdValue.Value != requestedOrder.PartnerId)
             {
-                return Results.BadRequest(new ApiResult(false, "ORDER_PARTNER_MISMATCH"));
+                return LogCreateAndReturn(
+                    Results.BadRequest(new ApiResult(false, "ORDER_PARTNER_MISMATCH")),
+                    LogLevel.Warning,
+                    outcome: "VALIDATION_FAILED",
+                    docUid: docUid,
+                    docType: docTypeValue,
+                    errors: ["ORDER_PARTNER_MISMATCH"],
+                    eventId: createRequest.EventId,
+                    deviceId: createRequest.DeviceId);
             }
 
             partnerIdValue = requestedOrder.PartnerId;
@@ -388,14 +731,30 @@ public static class DocumentDraftEndpoints
 
         if (partnerIdValue.HasValue && store.GetPartner(partnerIdValue.Value) == null)
         {
-            return Results.BadRequest(new ApiResult(false, "UNKNOWN_PARTNER"));
+            return LogCreateAndReturn(
+                Results.BadRequest(new ApiResult(false, "UNKNOWN_PARTNER")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docUid: docUid,
+                docType: docTypeValue,
+                errors: ["UNKNOWN_PARTNER"],
+                eventId: createRequest.EventId,
+                deviceId: createRequest.DeviceId);
         }
 
         if (!draftOnly && (docType == DocType.Inbound || docType == DocType.Outbound))
         {
             if (!partnerIdValue.HasValue)
             {
-                return Results.BadRequest(new ApiResult(false, "MISSING_PARTNER"));
+                return LogCreateAndReturn(
+                    Results.BadRequest(new ApiResult(false, "MISSING_PARTNER")),
+                    LogLevel.Warning,
+                    outcome: "VALIDATION_FAILED",
+                    docUid: docUid,
+                    docType: docTypeValue,
+                    errors: ["MISSING_PARTNER"],
+                    eventId: createRequest.EventId,
+                    deviceId: createRequest.DeviceId);
             }
         }
 
@@ -403,19 +762,43 @@ public static class DocumentDraftEndpoints
         var toLocationIdValue = createRequest.ToLocationId;
         if (fromLocationIdValue.HasValue && store.FindLocationById(fromLocationIdValue.Value) == null)
         {
-            return Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION"));
+            return LogCreateAndReturn(
+                Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docUid: docUid,
+                docType: docTypeValue,
+                errors: ["UNKNOWN_LOCATION"],
+                eventId: createRequest.EventId,
+                deviceId: createRequest.DeviceId);
         }
 
         if (toLocationIdValue.HasValue && store.FindLocationById(toLocationIdValue.Value) == null)
         {
-            return Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION"));
+            return LogCreateAndReturn(
+                Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docUid: docUid,
+                docType: docTypeValue,
+                errors: ["UNKNOWN_LOCATION"],
+                eventId: createRequest.EventId,
+                deviceId: createRequest.DeviceId);
         }
 
         if (!draftOnly && (docType == DocType.Move || docType == DocType.Outbound || docType == DocType.WriteOff))
         {
             if (!fromLocationIdValue.HasValue)
             {
-                return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
+                return LogCreateAndReturn(
+                    Results.BadRequest(new ApiResult(false, "MISSING_LOCATION")),
+                    LogLevel.Warning,
+                    outcome: "VALIDATION_FAILED",
+                    docUid: docUid,
+                    docType: docTypeValue,
+                    errors: ["MISSING_LOCATION"],
+                    eventId: createRequest.EventId,
+                    deviceId: createRequest.DeviceId);
             }
         }
 
@@ -423,7 +806,15 @@ public static class DocumentDraftEndpoints
         {
             if (!toLocationIdValue.HasValue)
             {
-                return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
+                return LogCreateAndReturn(
+                    Results.BadRequest(new ApiResult(false, "MISSING_LOCATION")),
+                    LogLevel.Warning,
+                    outcome: "VALIDATION_FAILED",
+                    docUid: docUid,
+                    docType: docTypeValue,
+                    errors: ["MISSING_LOCATION"],
+                    eventId: createRequest.EventId,
+                    deviceId: createRequest.DeviceId);
             }
         }
 
@@ -451,12 +842,20 @@ public static class DocumentDraftEndpoints
 
         if (missingHuNew.Count > 0)
         {
-            return Results.BadRequest(new
-            {
-                ok = false,
-                error = "UNKNOWN_HU",
-                missing = missingHuNew
-            });
+            return LogCreateAndReturn(
+                Results.BadRequest(new
+                {
+                    ok = false,
+                    error = "UNKNOWN_HU",
+                    missing = missingHuNew
+                }),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docUid: docUid,
+                docType: docTypeValue,
+                errors: ["UNKNOWN_HU", $"missing={string.Join(",", missingHuNew)}"],
+                eventId: createRequest.EventId,
+                deviceId: createRequest.DeviceId);
         }
 
         var resolvedShippingRefNew = ResolveDocShippingRef(docType.Value, normalizedFromHu, normalizedToHu);
@@ -488,7 +887,16 @@ public static class DocumentDraftEndpoints
             }
             catch (ArgumentException)
             {
-                return Results.BadRequest(new ApiResult(false, "DOC_REF_EXISTS"));
+                return LogCreateAndReturn(
+                    Results.BadRequest(new ApiResult(false, "DOC_REF_EXISTS")),
+                    LogLevel.Warning,
+                    outcome: "VALIDATION_FAILED",
+                    docUid: docUid,
+                    docRef: docRef,
+                    docType: docTypeValue,
+                    errors: ["DOC_REF_EXISTS"],
+                    eventId: createRequest.EventId,
+                    deviceId: createRequest.DeviceId);
             }
         }
 
@@ -515,19 +923,33 @@ public static class DocumentDraftEndpoints
         var docRefChanged = !string.IsNullOrWhiteSpace(requestedRefValue)
                             && !string.Equals(requestedRefValue, docRef, StringComparison.OrdinalIgnoreCase);
 
-        return Results.Ok(new
-        {
-            ok = true,
-            doc = new
+        var createdDoc = store.GetDoc(docId);
+        return LogCreateAndReturn(
+            Results.Ok(new
             {
-                id = docId,
-                doc_uid = docUid,
-                doc_ref = docRef,
-                status = "DRAFT",
-                type = DocTypeMapper.ToOpString(docType.Value),
-                doc_ref_changed = docRefChanged
-            }
-        });
+                ok = true,
+                doc = new
+                {
+                    id = docId,
+                    doc_uid = docUid,
+                    doc_ref = docRef,
+                    status = "DRAFT",
+                    type = DocTypeMapper.ToOpString(docType.Value),
+                    doc_ref_changed = docRefChanged
+                }
+            }),
+            LogLevel.Information,
+            outcome: "CREATED",
+            docUid: docUid,
+            docId: docId,
+            docRef: docRef,
+            docType: docTypeValue,
+            docStatusAfter: createdDoc == null ? "DRAFT" : DocTypeMapper.StatusToString(createdDoc.Status),
+            lineCount: createdDoc?.LineCount ?? 0,
+            apiEventWritten: true,
+            idempotentReplay: false,
+            eventId: createRequest.EventId,
+            deviceId: createRequest.DeviceId);
     }
 
     public static async Task<IResult> HandleAddLineAsync(
@@ -535,12 +957,65 @@ public static class DocumentDraftEndpoints
         HttpRequest request,
         IDataStore store,
         DocumentService docs,
-        IApiDocStore apiStore)
+        IApiDocStore apiStore,
+        ILoggerFactory loggerFactory)
     {
+        var logger = loggerFactory.CreateLogger("FlowStock.Server.DocumentLifecycle");
+        var started = Stopwatch.StartNew();
+        var path = request.Path.Value ?? "/api/docs/{docUid}/lines";
+
+        IResult LogLineAndReturn(
+            IResult result,
+            LogLevel level,
+            string outcome,
+            long? docId = null,
+            string? docRef = null,
+            string? docType = null,
+            string? docStatusBefore = null,
+            string? docStatusAfter = null,
+            int? lineCount = null,
+            long? lineId = null,
+            bool? apiEventWritten = null,
+            bool? appended = null,
+            bool? idempotentReplay = null,
+            IEnumerable<string>? errors = null,
+            string? eventId = null,
+            string? deviceId = null)
+        {
+            started.Stop();
+            ServerOperationLogging.LogDocumentLifecycleOperation(
+                logger,
+                level,
+                operation: "AddDocLine",
+                path: path,
+                result: outcome,
+                docUid: docUid,
+                docId: docId,
+                docRef: docRef,
+                docType: docType,
+                docStatusBefore: docStatusBefore,
+                docStatusAfter: docStatusAfter,
+                lineCount: lineCount,
+                lineId: lineId,
+                ledgerRowsWritten: 0,
+                eventId: eventId,
+                deviceId: deviceId,
+                apiEventWritten: apiEventWritten,
+                appended: appended,
+                idempotentReplay: idempotentReplay,
+                elapsedMs: started.ElapsedMilliseconds,
+                errors: errors);
+            return result;
+        }
+
         var rawJson = await ReadBody(request);
         if (string.IsNullOrWhiteSpace(rawJson))
         {
-            return Results.BadRequest(new ApiResult(false, "EMPTY_BODY"));
+            return LogLineAndReturn(
+                Results.BadRequest(new ApiResult(false, "EMPTY_BODY")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                errors: ["EMPTY_BODY"]);
         }
 
         AddDocLineRequest? lineRequest;
@@ -552,48 +1027,175 @@ public static class DocumentDraftEndpoints
         }
         catch (JsonException)
         {
-            return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+            return LogLineAndReturn(
+                Results.BadRequest(new ApiResult(false, "INVALID_JSON")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                errors: ["INVALID_JSON"]);
         }
 
         if (lineRequest == null)
         {
-            return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+            return LogLineAndReturn(
+                Results.BadRequest(new ApiResult(false, "INVALID_JSON")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                errors: ["INVALID_JSON"]);
         }
 
         if (string.IsNullOrWhiteSpace(lineRequest.EventId))
         {
-            return Results.BadRequest(new ApiResult(false, "MISSING_EVENT_ID"));
+            return LogLineAndReturn(
+                Results.BadRequest(new ApiResult(false, "MISSING_EVENT_ID")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                errors: ["MISSING_EVENT_ID"],
+                deviceId: lineRequest.DeviceId);
         }
 
+        var normalizedIncoming = NormalizeLineReplayPayload(docUid, lineRequest);
         var existingEvent = apiStore.GetEvent(lineRequest.EventId);
         if (existingEvent != null)
         {
             if (string.Equals(existingEvent.EventType, "DOC_LINE", StringComparison.OrdinalIgnoreCase)
                 && string.Equals(existingEvent.DocUid, docUid, StringComparison.OrdinalIgnoreCase))
             {
-                return Results.Ok(new ApiResult(true));
+                if (!TryReadStoredLineReplay(existingEvent.RawJson, out var storedReplay))
+                {
+                    if (!TryReadLegacyLineReplay(existingEvent.RawJson, out var legacyRequest)
+                        || !IsEquivalentLineReplay(NormalizeLineReplayPayload(docUid, legacyRequest), normalizedIncoming))
+                    {
+                        return LogLineAndReturn(
+                            Results.BadRequest(new ApiResult(false, "EVENT_ID_CONFLICT")),
+                            LogLevel.Warning,
+                            outcome: "EVENT_ID_CONFLICT",
+                            errors: ["EVENT_ID_CONFLICT"],
+                            eventId: lineRequest.EventId,
+                            deviceId: lineRequest.DeviceId);
+                    }
+
+                    var legacyDocInfo = apiStore.GetApiDoc(docUid);
+                    var legacyDoc = legacyDocInfo == null ? null : store.GetDoc(legacyDocInfo.DocId);
+                    var legacyDocStatus = ResolveCurrentDocStatus(store, legacyDocInfo);
+                    return LogLineAndReturn(
+                        Results.Ok(new
+                        {
+                            ok = true,
+                            result = "IDEMPOTENT_REPLAY",
+                            doc_uid = docUid,
+                            doc_status = legacyDocStatus,
+                            appended = false,
+                            idempotent_replay = true,
+                            line = (object?)null
+                        }),
+                        LogLevel.Information,
+                        outcome: "IDEMPOTENT_REPLAY",
+                        docId: legacyDocInfo?.DocId,
+                        docRef: legacyDocInfo?.DocRef,
+                        docType: legacyDocInfo?.DocType,
+                        docStatusBefore: legacyDocStatus,
+                        docStatusAfter: legacyDocStatus,
+                        lineCount: legacyDoc?.LineCount,
+                        apiEventWritten: false,
+                        appended: false,
+                        idempotentReplay: true,
+                        eventId: lineRequest.EventId,
+                        deviceId: lineRequest.DeviceId);
+                }
+
+                if (!IsEquivalentLineReplay(storedReplay.Normalized, normalizedIncoming))
+                {
+                    return LogLineAndReturn(
+                        Results.BadRequest(new ApiResult(false, "EVENT_ID_CONFLICT")),
+                        LogLevel.Warning,
+                        outcome: "EVENT_ID_CONFLICT",
+                        errors: ["EVENT_ID_CONFLICT"],
+                        eventId: lineRequest.EventId,
+                        deviceId: lineRequest.DeviceId);
+                }
+
+                var replayDocInfo = apiStore.GetApiDoc(docUid);
+                var replayDoc = replayDocInfo == null ? null : store.GetDoc(replayDocInfo.DocId);
+                var replayDocStatus = storedReplay.DocStatus ?? ResolveCurrentDocStatus(store, replayDocInfo);
+                return LogLineAndReturn(
+                    Results.Ok(new
+                    {
+                        ok = true,
+                        result = "IDEMPOTENT_REPLAY",
+                        doc_uid = docUid,
+                        doc_status = replayDocStatus,
+                        appended = false,
+                        idempotent_replay = true,
+                        line = storedReplay.Line
+                    }),
+                    LogLevel.Information,
+                    outcome: "IDEMPOTENT_REPLAY",
+                    docId: replayDocInfo?.DocId,
+                    docRef: replayDocInfo?.DocRef,
+                    docType: replayDocInfo?.DocType,
+                    docStatusBefore: replayDocStatus,
+                    docStatusAfter: replayDocStatus,
+                    lineCount: replayDoc?.LineCount,
+                    lineId: storedReplay.Line?.Id,
+                    apiEventWritten: false,
+                    appended: false,
+                    idempotentReplay: true,
+                    eventId: lineRequest.EventId,
+                    deviceId: lineRequest.DeviceId);
             }
 
-            return Results.BadRequest(new ApiResult(false, "EVENT_ID_CONFLICT"));
+            return LogLineAndReturn(
+                Results.BadRequest(new ApiResult(false, "EVENT_ID_CONFLICT")),
+                LogLevel.Warning,
+                outcome: "EVENT_ID_CONFLICT",
+                errors: ["EVENT_ID_CONFLICT"],
+                eventId: lineRequest.EventId,
+                deviceId: lineRequest.DeviceId);
         }
 
         var docInfo = apiStore.GetApiDoc(docUid);
         if (docInfo == null)
         {
-            return Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"));
+            return LogLineAndReturn(
+                Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND")),
+                LogLevel.Warning,
+                outcome: "DOC_NOT_FOUND",
+                errors: ["DOC_NOT_FOUND"],
+                eventId: lineRequest.EventId,
+                deviceId: lineRequest.DeviceId);
         }
 
         var existingDoc = store.GetDoc(docInfo.DocId);
         if (existingDoc == null)
         {
-            return Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"));
+            return LogLineAndReturn(
+                Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND")),
+                LogLevel.Warning,
+                outcome: "DOC_NOT_FOUND",
+                docId: docInfo.DocId,
+                docRef: docInfo.DocRef,
+                docType: docInfo.DocType,
+                docStatusBefore: docInfo.Status,
+                errors: ["DOC_NOT_FOUND"],
+                eventId: lineRequest.EventId,
+                deviceId: lineRequest.DeviceId);
         }
 
         if (IsRecountComment(existingDoc.Comment))
         {
             if (existingDoc.Status != DocStatus.Draft)
             {
-                return Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT"));
+                return LogLineAndReturn(
+                    Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT")),
+                    LogLevel.Warning,
+                    outcome: "VALIDATION_FAILED",
+                    docId: docInfo.DocId,
+                    docRef: docInfo.DocRef,
+                    docType: docInfo.DocType,
+                    docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                    errors: ["DOC_NOT_DRAFT"],
+                    eventId: lineRequest.EventId,
+                    deviceId: lineRequest.DeviceId);
             }
 
             store.DeleteDocLines(docInfo.DocId);
@@ -602,19 +1204,51 @@ public static class DocumentDraftEndpoints
 
         if (!string.Equals(docInfo.Status, "DRAFT", StringComparison.OrdinalIgnoreCase))
         {
-            return Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT"));
+            return LogLineAndReturn(
+                Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docId: docInfo.DocId,
+                docRef: docInfo.DocRef,
+                docType: docInfo.DocType,
+                docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                errors: ["DOC_NOT_DRAFT"],
+                eventId: lineRequest.EventId,
+                deviceId: lineRequest.DeviceId);
         }
 
         if (lineRequest.Qty <= 0)
         {
-            return Results.BadRequest(new ApiResult(false, "INVALID_QTY"));
+            return LogLineAndReturn(
+                Results.BadRequest(new ApiResult(false, "INVALID_QTY")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docId: docInfo.DocId,
+                docRef: docInfo.DocRef,
+                docType: docInfo.DocType,
+                docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                errors: ["INVALID_QTY"],
+                eventId: lineRequest.EventId,
+                deviceId: lineRequest.DeviceId);
         }
 
         var docType = ParseDocType(docInfo.DocType);
         if (docType == null)
         {
-            return Results.BadRequest(new ApiResult(false, "INVALID_TYPE"));
+            return LogLineAndReturn(
+                Results.BadRequest(new ApiResult(false, "INVALID_TYPE")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docId: docInfo.DocId,
+                docRef: docInfo.DocRef,
+                docType: docInfo.DocType,
+                docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                errors: ["INVALID_TYPE"],
+                eventId: lineRequest.EventId,
+                deviceId: lineRequest.DeviceId);
         }
+
+        var docTypeValue = DocTypeMapper.ToOpString(docType.Value);
 
         var requestedFromHu = NormalizeHu(lineRequest.FromHu);
         var requestedToHu = NormalizeHu(lineRequest.ToHu);
@@ -639,12 +1273,22 @@ public static class DocumentDraftEndpoints
 
         if (missingHu.Count > 0)
         {
-            return Results.BadRequest(new
-            {
-                ok = false,
-                error = "UNKNOWN_HU",
-                missing = missingHu
-            });
+            return LogLineAndReturn(
+                Results.BadRequest(new
+                {
+                    ok = false,
+                    error = "UNKNOWN_HU",
+                    missing = missingHu
+                }),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docId: docInfo.DocId,
+                docRef: docInfo.DocRef,
+                docType: docTypeValue,
+                docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                errors: ["UNKNOWN_HU", $"missing={string.Join(",", missingHu)}"],
+                eventId: lineRequest.EventId,
+                deviceId: lineRequest.DeviceId);
         }
 
         Item? item = null;
@@ -660,7 +1304,17 @@ public static class DocumentDraftEndpoints
 
         if (item == null)
         {
-            return Results.BadRequest(new ApiResult(false, "UNKNOWN_ITEM"));
+            return LogLineAndReturn(
+                Results.BadRequest(new ApiResult(false, "UNKNOWN_ITEM")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docId: docInfo.DocId,
+                docRef: docInfo.DocRef,
+                docType: docTypeValue,
+                docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                errors: ["UNKNOWN_ITEM"],
+                eventId: lineRequest.EventId,
+                deviceId: lineRequest.DeviceId);
         }
 
         long? fromLocationId = null;
@@ -675,7 +1329,17 @@ public static class DocumentDraftEndpoints
                 toHu = NormalizeHu(docInfo.ToHu);
                 if (!toLocationId.HasValue)
                 {
-                    return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
+                    return LogLineAndReturn(
+                        Results.BadRequest(new ApiResult(false, "MISSING_LOCATION")),
+                        LogLevel.Warning,
+                        outcome: "VALIDATION_FAILED",
+                        docId: docInfo.DocId,
+                        docRef: docInfo.DocRef,
+                        docType: docTypeValue,
+                        docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                        errors: ["MISSING_LOCATION"],
+                        eventId: lineRequest.EventId,
+                        deviceId: lineRequest.DeviceId);
                 }
                 break;
             case DocType.ProductionReceipt:
@@ -683,13 +1347,33 @@ public static class DocumentDraftEndpoints
                 toHu = NormalizeHu(docInfo.ToHu);
                 if (!toLocationId.HasValue)
                 {
-                    return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
+                    return LogLineAndReturn(
+                        Results.BadRequest(new ApiResult(false, "MISSING_LOCATION")),
+                        LogLevel.Warning,
+                        outcome: "VALIDATION_FAILED",
+                        docId: docInfo.DocId,
+                        docRef: docInfo.DocRef,
+                        docType: docTypeValue,
+                        docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                        errors: ["MISSING_LOCATION"],
+                        eventId: lineRequest.EventId,
+                        deviceId: lineRequest.DeviceId);
                 }
                 break;
             case DocType.Outbound:
                 if (lineRequest.FromLocationId.HasValue && store.FindLocationById(lineRequest.FromLocationId.Value) == null)
                 {
-                    return Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION"));
+                    return LogLineAndReturn(
+                        Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION")),
+                        LogLevel.Warning,
+                        outcome: "VALIDATION_FAILED",
+                        docId: docInfo.DocId,
+                        docRef: docInfo.DocRef,
+                        docType: docTypeValue,
+                        docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                        errors: ["UNKNOWN_LOCATION"],
+                        eventId: lineRequest.EventId,
+                        deviceId: lineRequest.DeviceId);
                 }
 
                 fromLocationId = lineRequest.FromLocationId ?? docInfo.FromLocationId;
@@ -698,7 +1382,17 @@ public static class DocumentDraftEndpoints
                     : NormalizeHu(docInfo.FromHu);
                 if (!fromLocationId.HasValue)
                 {
-                    return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
+                    return LogLineAndReturn(
+                        Results.BadRequest(new ApiResult(false, "MISSING_LOCATION")),
+                        LogLevel.Warning,
+                        outcome: "VALIDATION_FAILED",
+                        docId: docInfo.DocId,
+                        docRef: docInfo.DocRef,
+                        docType: docTypeValue,
+                        docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                        errors: ["MISSING_LOCATION"],
+                        eventId: lineRequest.EventId,
+                        deviceId: lineRequest.DeviceId);
                 }
                 break;
             case DocType.Move:
@@ -708,7 +1402,17 @@ public static class DocumentDraftEndpoints
                 toHu = NormalizeHu(docInfo.ToHu);
                 if (!fromLocationId.HasValue || !toLocationId.HasValue)
                 {
-                    return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
+                    return LogLineAndReturn(
+                        Results.BadRequest(new ApiResult(false, "MISSING_LOCATION")),
+                        LogLevel.Warning,
+                        outcome: "VALIDATION_FAILED",
+                        docId: docInfo.DocId,
+                        docRef: docInfo.DocRef,
+                        docType: docTypeValue,
+                        docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                        errors: ["MISSING_LOCATION"],
+                        eventId: lineRequest.EventId,
+                        deviceId: lineRequest.DeviceId);
                 }
                 break;
             case DocType.WriteOff:
@@ -718,7 +1422,17 @@ public static class DocumentDraftEndpoints
                     : NormalizeHu(docInfo.FromHu);
                 if (!fromLocationId.HasValue)
                 {
-                    return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
+                    return LogLineAndReturn(
+                        Results.BadRequest(new ApiResult(false, "MISSING_LOCATION")),
+                        LogLevel.Warning,
+                        outcome: "VALIDATION_FAILED",
+                        docId: docInfo.DocId,
+                        docRef: docInfo.DocRef,
+                        docType: docTypeValue,
+                        docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                        errors: ["MISSING_LOCATION"],
+                        eventId: lineRequest.EventId,
+                        deviceId: lineRequest.DeviceId);
                 }
                 break;
             case DocType.Inventory:
@@ -728,7 +1442,17 @@ public static class DocumentDraftEndpoints
                     : NormalizeHu(docInfo.ToHu);
                 if (!toLocationId.HasValue)
                 {
-                    return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
+                    return LogLineAndReturn(
+                        Results.BadRequest(new ApiResult(false, "MISSING_LOCATION")),
+                        LogLevel.Warning,
+                        outcome: "VALIDATION_FAILED",
+                        docId: docInfo.DocId,
+                        docRef: docInfo.DocRef,
+                        docType: docTypeValue,
+                        docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                        errors: ["MISSING_LOCATION"],
+                        eventId: lineRequest.EventId,
+                        deviceId: lineRequest.DeviceId);
                 }
                 break;
         }
@@ -749,29 +1473,79 @@ public static class DocumentDraftEndpoints
         }
         catch (Exception ex)
         {
-            return Results.BadRequest(new ApiResult(false, ex.Message));
+            return LogLineAndReturn(
+                Results.BadRequest(new ApiResult(false, ex.Message)),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docId: docInfo.DocId,
+                docRef: docInfo.DocRef,
+                docType: docTypeValue,
+                docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                errors: [ex.Message],
+                eventId: lineRequest.EventId,
+                deviceId: lineRequest.DeviceId);
         }
-
-        apiStore.RecordEvent(lineRequest.EventId, "DOC_LINE", docUid, lineRequest.DeviceId, rawJson);
 
         var lastLine = store.GetDocLines(docInfo.DocId)
             .Where(line => line.ItemId == item.Id)
             .OrderByDescending(line => line.Id)
             .FirstOrDefault();
 
-        return Results.Ok(new
+        var lineResponse = lastLine == null
+            ? null
+            : new DocLineReplayResponse
+            {
+                Id = lastLine.Id,
+                ItemId = lastLine.ItemId,
+                Qty = lastLine.Qty,
+                UomCode = lastLine.UomCode,
+                OrderLineId = lastLine.OrderLineId,
+                FromLocationId = lastLine.FromLocationId,
+                ToLocationId = lastLine.ToLocationId,
+                FromHu = NormalizeHu(lastLine.FromHu),
+                ToHu = NormalizeHu(lastLine.ToHu)
+            };
+
+        var replayRecord = new StoredDocLineReplay
         {
-            ok = true,
-            line = lastLine == null
-                ? null
-                : new
-                {
-                    id = lastLine.Id,
-                    item_id = lastLine.ItemId,
-                    qty = lastLine.Qty,
-                    uom_code = lastLine.UomCode
-                }
-        });
+            Normalized = normalizedIncoming,
+            DocStatus = "DRAFT",
+            Line = lineResponse
+        };
+
+        apiStore.RecordEvent(
+            lineRequest.EventId,
+            "DOC_LINE",
+            docUid,
+            lineRequest.DeviceId,
+            JsonSerializer.Serialize(replayRecord));
+
+        var updatedDoc = store.GetDoc(docInfo.DocId) ?? existingDoc;
+        return LogLineAndReturn(
+            Results.Ok(new
+            {
+                ok = true,
+                result = "APPENDED",
+                doc_uid = docUid,
+                doc_status = "DRAFT",
+                appended = true,
+                idempotent_replay = false,
+                line = lineResponse
+            }),
+            LogLevel.Information,
+            outcome: "CREATED",
+            docId: docInfo.DocId,
+            docRef: docInfo.DocRef,
+            docType: docTypeValue,
+            docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+            docStatusAfter: DocTypeMapper.StatusToString(updatedDoc.Status),
+            lineCount: updatedDoc.LineCount,
+            lineId: lineResponse?.Id,
+            apiEventWritten: true,
+            appended: true,
+            idempotentReplay: false,
+            eventId: lineRequest.EventId,
+            deviceId: lineRequest.DeviceId);
     }
 
     private static async Task<string> ReadBody(HttpRequest request)
@@ -852,5 +1626,219 @@ public static class DocumentDraftEndpoints
         }
 
         return null;
+    }
+
+    private static bool IsEquivalentCreateReplay(string? existingRawJson, CreateDocRequest incoming)
+    {
+        if (string.IsNullOrWhiteSpace(existingRawJson))
+        {
+            return false;
+        }
+
+        CreateDocRequest? existing;
+        try
+        {
+            existing = JsonSerializer.Deserialize<CreateDocRequest>(
+                existingRawJson,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        if (existing == null)
+        {
+            return false;
+        }
+
+        return string.Equals(Normalize(existing.DocUid), Normalize(incoming.DocUid), StringComparison.OrdinalIgnoreCase)
+               && string.Equals(Normalize(existing.EventId), Normalize(incoming.EventId), StringComparison.OrdinalIgnoreCase)
+               && string.Equals(Normalize(existing.DeviceId), Normalize(incoming.DeviceId), StringComparison.OrdinalIgnoreCase)
+               && string.Equals(Normalize(existing.Type), Normalize(incoming.Type), StringComparison.OrdinalIgnoreCase)
+               && string.Equals(Normalize(existing.DocRef), Normalize(incoming.DocRef), StringComparison.OrdinalIgnoreCase)
+               && string.Equals(Normalize(existing.Comment), Normalize(incoming.Comment), StringComparison.Ordinal)
+               && string.Equals(Normalize(existing.ReasonCode), Normalize(incoming.ReasonCode), StringComparison.OrdinalIgnoreCase)
+               && existing.PartnerId == incoming.PartnerId
+               && existing.OrderId == incoming.OrderId
+               && string.Equals(Normalize(existing.OrderRef), Normalize(incoming.OrderRef), StringComparison.OrdinalIgnoreCase)
+               && existing.FromLocationId == incoming.FromLocationId
+               && existing.ToLocationId == incoming.ToLocationId
+               && string.Equals(Normalize(existing.FromHu), Normalize(incoming.FromHu), StringComparison.OrdinalIgnoreCase)
+               && string.Equals(Normalize(existing.ToHu), Normalize(incoming.ToHu), StringComparison.OrdinalIgnoreCase)
+               && existing.DraftOnly == incoming.DraftOnly;
+    }
+
+    private static NormalizedLineReplayPayload NormalizeLineReplayPayload(string docUid, AddDocLineRequest request)
+    {
+        return new NormalizedLineReplayPayload
+        {
+            DocUid = Normalize(docUid),
+            EventId = Normalize(request.EventId),
+            DeviceId = Normalize(request.DeviceId),
+            Barcode = Normalize(request.Barcode),
+            ItemId = request.ItemId,
+            OrderLineId = request.OrderLineId,
+            Qty = request.Qty,
+            UomCode = Normalize(request.UomCode),
+            FromLocationId = request.FromLocationId,
+            ToLocationId = request.ToLocationId,
+            FromHu = NormalizeHu(request.FromHu),
+            ToHu = NormalizeHu(request.ToHu)
+        };
+    }
+
+    private static bool TryReadStoredLineReplay(string? rawJson, out StoredDocLineReplay replay)
+    {
+        replay = new StoredDocLineReplay();
+        if (string.IsNullOrWhiteSpace(rawJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<StoredDocLineReplay>(
+                rawJson,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+            if (parsed?.Normalized == null)
+            {
+                return false;
+            }
+
+            replay = parsed;
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryReadLegacyLineReplay(string? rawJson, out AddDocLineRequest request)
+    {
+        request = new AddDocLineRequest();
+        if (string.IsNullOrWhiteSpace(rawJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<AddDocLineRequest>(
+                rawJson,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+            if (parsed == null)
+            {
+                return false;
+            }
+
+            request = parsed;
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsEquivalentLineReplay(NormalizedLineReplayPayload? existing, NormalizedLineReplayPayload incoming)
+    {
+        if (existing == null)
+        {
+            return false;
+        }
+
+        return string.Equals(existing.DocUid, incoming.DocUid, StringComparison.OrdinalIgnoreCase)
+               && string.Equals(existing.EventId, incoming.EventId, StringComparison.OrdinalIgnoreCase)
+               && string.Equals(existing.DeviceId, incoming.DeviceId, StringComparison.OrdinalIgnoreCase)
+               && string.Equals(existing.Barcode, incoming.Barcode, StringComparison.OrdinalIgnoreCase)
+               && existing.ItemId == incoming.ItemId
+               && existing.OrderLineId == incoming.OrderLineId
+               && existing.Qty == incoming.Qty
+               && string.Equals(existing.UomCode, incoming.UomCode, StringComparison.OrdinalIgnoreCase)
+               && existing.FromLocationId == incoming.FromLocationId
+               && existing.ToLocationId == incoming.ToLocationId
+               && string.Equals(existing.FromHu, incoming.FromHu, StringComparison.OrdinalIgnoreCase)
+               && string.Equals(existing.ToHu, incoming.ToHu, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ResolveCurrentDocStatus(IDataStore store, ApiDocInfo? docInfo)
+    {
+        if (docInfo != null)
+        {
+            var doc = store.GetDoc(docInfo.DocId);
+            if (doc != null)
+            {
+                return doc.Status.ToString().ToUpperInvariant();
+            }
+
+            if (!string.IsNullOrWhiteSpace(docInfo.Status))
+            {
+                return docInfo.Status;
+            }
+        }
+
+        return "DRAFT";
+    }
+
+    private static string? Normalize(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private sealed class StoredDocLineReplay
+    {
+        public NormalizedLineReplayPayload? Normalized { get; init; }
+        public string? DocStatus { get; init; }
+        public DocLineReplayResponse? Line { get; init; }
+    }
+
+    private sealed class NormalizedLineReplayPayload
+    {
+        public string? DocUid { get; init; }
+        public string? EventId { get; init; }
+        public string? DeviceId { get; init; }
+        public string? Barcode { get; init; }
+        public long? ItemId { get; init; }
+        public long? OrderLineId { get; init; }
+        public double Qty { get; init; }
+        public string? UomCode { get; init; }
+        public long? FromLocationId { get; init; }
+        public long? ToLocationId { get; init; }
+        public string? FromHu { get; init; }
+        public string? ToHu { get; init; }
+    }
+
+    private sealed class DocLineReplayResponse
+    {
+        [JsonPropertyName("id")]
+        public long Id { get; init; }
+
+        [JsonPropertyName("item_id")]
+        public long ItemId { get; init; }
+
+        [JsonPropertyName("qty")]
+        public double Qty { get; init; }
+
+        [JsonPropertyName("uom_code")]
+        public string? UomCode { get; init; }
+
+        [JsonPropertyName("order_line_id")]
+        public long? OrderLineId { get; init; }
+
+        [JsonPropertyName("from_location_id")]
+        public long? FromLocationId { get; init; }
+
+        [JsonPropertyName("to_location_id")]
+        public long? ToLocationId { get; init; }
+
+        [JsonPropertyName("from_hu")]
+        public string? FromHu { get; init; }
+
+        [JsonPropertyName("to_hu")]
+        public string? ToHu { get; init; }
     }
 }

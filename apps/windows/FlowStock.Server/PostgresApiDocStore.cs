@@ -166,7 +166,7 @@ WHERE doc_uid = @doc_uid;
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = @"
-SELECT event_type, doc_uid
+SELECT event_type, doc_uid, device_id, raw_json
 FROM api_events
 WHERE event_id = @event_id
 LIMIT 1;";
@@ -179,7 +179,9 @@ LIMIT 1;";
 
         return new ApiEventInfo(
             reader.GetString(0),
-            reader.IsDBNull(1) ? null : reader.GetString(1));
+            reader.IsDBNull(1) ? null : reader.GetString(1),
+            reader.IsDBNull(2) ? null : reader.GetString(2),
+            reader.IsDBNull(3) ? null : reader.GetString(3));
     }
 
     public void RecordEvent(string eventId, string eventType, string? docUid, string? deviceId, string? rawJson)

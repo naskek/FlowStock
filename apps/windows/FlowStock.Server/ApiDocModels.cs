@@ -12,4 +12,8 @@ public sealed record ApiDocInfo(
     string? ToHu,
     string? DeviceId);
 
-public sealed record ApiEventInfo(string EventType, string? DocUid);
+public sealed record ApiEventInfo(
+    string EventType,
+    string? DocUid,
+    string? DeviceId,
+    string? RawJson);

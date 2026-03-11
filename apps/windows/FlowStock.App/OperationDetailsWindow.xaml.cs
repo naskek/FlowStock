@@ -432,7 +432,7 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        if (_hasUnsavedChanges && !TrySaveHeader())
+        if (_hasUnsavedChanges && !await TrySaveHeaderAsync())
         {
             return;
         }
@@ -574,14 +574,14 @@ public partial class OperationDetailsWindow : Window
         Close();
     }
 
-    private void DocAddLine_Click(object sender, RoutedEventArgs e)
+    private async void DocAddLine_Click(object sender, RoutedEventArgs e)
     {
         if (!EnsureDraftDocSelected())
         {
             return;
         }
 
-        if (_hasUnsavedChanges && !TrySaveHeader())
+        if (_hasUnsavedChanges && !await TrySaveHeaderAsync())
         {
             return;
         }
@@ -655,6 +655,86 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
+        if (_services.WpfAddDocLines.IsServerAddDocLineEnabled())
+        {
+            await TryAddLineViaServerAsync(item, qtyBase, qtyInput, uomCode, fromLocation, toLocation, fromHu, toHu);
+            return;
+        }
+
+        TryAddLineLegacy(item, qtyBase, qtyInput, uomCode, fromLocation, toLocation, fromHu, toHu);
+    }
+
+    private async Task TryAddLineViaServerAsync(
+        Item item,
+        double qtyBase,
+        double? qtyInput,
+        string? uomCode,
+        Location? fromLocation,
+        Location? toLocation,
+        string? fromHu,
+        string? toHu)
+    {
+        var doc = _doc;
+        if (doc == null)
+        {
+            MessageBox.Show("Операция не выбрана.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var result = await _services.WpfAddDocLines.AddLineAsync(
+            doc,
+            new WpfAddDocLineContext(
+                item.Id,
+                item.Barcode,
+                null,
+                qtyBase,
+                qtyInput,
+                uomCode,
+                fromLocation?.Id,
+                toLocation?.Id,
+                fromHu,
+                toHu));
+
+        if (result.ShouldRefresh)
+        {
+            LoadDoc();
+        }
+
+        if (result.IsSuccess)
+        {
+            if (!string.IsNullOrWhiteSpace(result.Message))
+            {
+                MessageBox.Show(result.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+
+            return;
+        }
+
+        MessageBox.Show(result.Message, "Операция", MessageBoxButton.OK, ResolveServerAddLineMessageImage(result.Kind));
+    }
+
+    private static MessageBoxImage ResolveServerAddLineMessageImage(WpfAddDocLineResultKind kind)
+    {
+        return kind switch
+        {
+            WpfAddDocLineResultKind.ValidationFailed => MessageBoxImage.Warning,
+            WpfAddDocLineResultKind.NotFound => MessageBoxImage.Warning,
+            WpfAddDocLineResultKind.EventConflict => MessageBoxImage.Warning,
+            WpfAddDocLineResultKind.ServerRejected => MessageBoxImage.Warning,
+            _ => MessageBoxImage.Error
+        };
+    }
+
+    private void TryAddLineLegacy(
+        Item item,
+        double qtyBase,
+        double? qtyInput,
+        string? uomCode,
+        Location? fromLocation,
+        Location? toLocation,
+        string? fromHu,
+        string? toHu)
+    {
         try
         {
             var existing = _services.DataStore.GetDocLines(_doc!.Id)
@@ -1042,7 +1122,7 @@ public partial class OperationDetailsWindow : Window
         }
     }
 
-    private void AutoHuButton_Click(object sender, RoutedEventArgs e)
+    private async void AutoHuButton_Click(object sender, RoutedEventArgs e)
     {
         if (!EnsureDraftDocSelected())
         {
@@ -1054,7 +1134,7 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        if (_hasUnsavedChanges && !TrySaveHeader())
+        if (_hasUnsavedChanges && !await TrySaveHeaderAsync())
         {
             return;
         }
@@ -1181,9 +1261,9 @@ public partial class OperationDetailsWindow : Window
         return true;
     }
 
-    private void DocHeaderSave_Click(object sender, RoutedEventArgs e)
+    private async void DocHeaderSave_Click(object sender, RoutedEventArgs e)
     {
-        TrySaveHeader();
+        await TrySaveHeaderAsync();
     }
 
     private void UpdateDocView()
@@ -1406,7 +1486,7 @@ public partial class OperationDetailsWindow : Window
         MarkHeaderDirty();
     }
 
-    private void DocOrderCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    private async void DocOrderCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
         if (_suppressOrderSync)
         {
@@ -1421,7 +1501,7 @@ public partial class OperationDetailsWindow : Window
 
         if (_doc?.Type == DocType.ProductionReceipt)
         {
-            TryApplyReceiptOrderSelection(selected);
+            await TryApplyReceiptOrderSelectionAsync(selected);
             UpdateLineButtons();
             return;
         }
@@ -1442,7 +1522,7 @@ public partial class OperationDetailsWindow : Window
         _suppressOrderSync = false;
         UpdatePartnerLock();
         ResetPartialMode();
-        TryApplyOrderSelection(selected);
+        await TryApplyOrderSelectionAsync(selected);
         UpdateLineButtons();
     }
 
@@ -1481,7 +1561,7 @@ public partial class OperationDetailsWindow : Window
         UpdateActionButtons();
     }
 
-    private void DocPartialCheck_Changed(object sender, RoutedEventArgs e)
+    private async void DocPartialCheck_Changed(object sender, RoutedEventArgs e)
     {
         if (_suppressPartialSync)
         {
@@ -1497,7 +1577,7 @@ public partial class OperationDetailsWindow : Window
         _isPartialShipment = DocPartialCheck.IsChecked == true;
         if (!_isPartialShipment && _doc?.OrderId.HasValue == true)
         {
-            TryApplyOrderSelection(new OrderOption(_doc.OrderId.Value, _doc.OrderRef ?? string.Empty, OrderType.Customer, _doc.PartnerId, string.Empty));
+            await TryApplyOrderSelectionAsync(new OrderOption(_doc.OrderId.Value, _doc.OrderRef ?? string.Empty, OrderType.Customer, _doc.PartnerId, string.Empty));
         }
 
         UpdateLineButtons();
@@ -1907,7 +1987,23 @@ public partial class OperationDetailsWindow : Window
         return _doc?.Type == DocType.Outbound && (_doc?.OrderId.HasValue == true || DocOrderCombo.SelectedItem != null);
     }
 
-    private void TryApplyOrderSelection(OrderOption selected)
+    private async Task<bool> TryApplyOrderSelectionAsync(OrderOption selected)
+    {
+        if (_doc == null || _doc.Type != DocType.Outbound)
+        {
+            return false;
+        }
+
+        if (_services.WpfBatchAddDocLines.IsServerBatchAddDocLineEnabled())
+        {
+            return await TryApplyOrderSelectionViaServerAsync(selected);
+        }
+
+        TryApplyOrderSelectionLegacy(selected);
+        return true;
+    }
+
+    private void TryApplyOrderSelectionLegacy(OrderOption selected)
     {
         if (_doc == null || _doc.Type != DocType.Outbound)
         {
@@ -1930,7 +2026,61 @@ public partial class OperationDetailsWindow : Window
         }
     }
 
-    private void TryApplyReceiptOrderSelection(OrderOption selected)
+    private async Task<bool> TryApplyOrderSelectionViaServerAsync(OrderOption selected)
+    {
+        if (_doc == null)
+        {
+            return false;
+        }
+
+        if (!TryGetLineLocations(out var fromLocation, out _, out var fromHu, out _))
+        {
+            return false;
+        }
+
+        var contexts = BuildOutboundOrderBatchContexts(selected.Id, fromLocation?.Id, fromHu);
+        var headerHu = GetSelectedHuCode(DocHuCombo);
+
+        try
+        {
+            _services.Documents.UpdateDocHeader(_doc.Id, selected.PartnerId, selected.OrderRef, headerHu);
+            _services.Documents.UpdateDocOrderBinding(_doc.Id, selected.Id);
+            _services.DataStore.DeleteDocLines(_doc.Id);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
+            return false;
+        }
+
+        var result = await _services.WpfBatchAddDocLines.AddLinesBatchAsync(_doc, contexts);
+        LoadDoc();
+
+        if (!result.IsSuccess)
+        {
+            MessageBox.Show(
+                BuildBatchFailureMessage(result),
+                "Операция",
+                MessageBoxButton.OK,
+                ResolveServerAddLineMessageImage(result.Kind));
+            return false;
+        }
+
+        LoadOrderQuantities(selected.Id);
+        ResetPartialMode();
+        if (result.AddedCount == 0)
+        {
+            MessageBox.Show("По заказу нет остатка к отгрузке.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        else if (!string.IsNullOrWhiteSpace(result.Message))
+        {
+            MessageBox.Show(result.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
+        return true;
+    }
+
+    private async Task TryApplyReceiptOrderSelectionAsync(OrderOption selected)
     {
         if (_doc == null || _doc.Type != DocType.ProductionReceipt)
         {
@@ -1961,10 +2111,10 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        FillProductionReceiptFromOrder(selected.Id, replaceLines: false, showEmptyMessage: false);
+        await FillProductionReceiptFromOrderAsync(selected.Id, replaceLines: false, showEmptyMessage: false);
     }
 
-    private void DocFillFromOrder_Click(object sender, RoutedEventArgs e)
+    private async void DocFillFromOrder_Click(object sender, RoutedEventArgs e)
     {
         if (_doc == null || _doc.Type != DocType.ProductionReceipt)
         {
@@ -2001,10 +2151,10 @@ public partial class OperationDetailsWindow : Window
             replaceLines = true;
         }
 
-        FillProductionReceiptFromOrder(selected.Id, replaceLines, showEmptyMessage: true);
+        await FillProductionReceiptFromOrderAsync(selected.Id, replaceLines, showEmptyMessage: true);
     }
 
-    private void FillProductionReceiptFromOrder(long orderId, bool replaceLines, bool showEmptyMessage)
+    private async Task FillProductionReceiptFromOrderAsync(long orderId, bool replaceLines, bool showEmptyMessage)
     {
         if (_doc == null)
         {
@@ -2013,6 +2163,48 @@ public partial class OperationDetailsWindow : Window
 
         if (!TryGetLineLocations(out _, out var toLocation, out _, out var toHu))
         {
+            return;
+        }
+
+        if (_services.WpfBatchAddDocLines.IsServerBatchAddDocLineEnabled())
+        {
+            var contexts = BuildProductionReceiptBatchContexts(orderId, toLocation?.Id, toHu);
+            try
+            {
+                _services.Documents.UpdateDocOrderBinding(_doc.Id, orderId);
+                if (replaceLines)
+                {
+                    _services.DataStore.DeleteDocLines(_doc.Id);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            var result = await _services.WpfBatchAddDocLines.AddLinesBatchAsync(_doc, contexts);
+            LoadDoc();
+
+            if (!result.IsSuccess)
+            {
+                MessageBox.Show(
+                    BuildBatchFailureMessage(result),
+                    "Операция",
+                    MessageBoxButton.OK,
+                    ResolveServerAddLineMessageImage(result.Kind));
+                return;
+            }
+
+            if (showEmptyMessage && result.AddedCount == 0)
+            {
+                MessageBox.Show("Нет позиций для приёмки по выбранному заказу.", "Выпуск продукции", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            else if (!string.IsNullOrWhiteSpace(result.Message))
+            {
+                MessageBox.Show(result.Message, "Выпуск продукции", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+
             return;
         }
 
@@ -2029,6 +2221,52 @@ public partial class OperationDetailsWindow : Window
         {
             MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    private IReadOnlyList<WpfAddDocLineContext> BuildOutboundOrderBatchContexts(long orderId, long? fromLocationId, string? fromHu)
+    {
+        return _services.Documents.GetOrderShipmentRemaining(orderId)
+            .Where(line => line.QtyRemaining > 0)
+            .Select(line => new WpfAddDocLineContext(
+                line.ItemId,
+                null,
+                line.OrderLineId,
+                line.QtyRemaining,
+                null,
+                null,
+                fromLocationId,
+                null,
+                NormalizeHuValue(fromHu),
+                null))
+            .ToList();
+    }
+
+    private IReadOnlyList<WpfAddDocLineContext> BuildProductionReceiptBatchContexts(long orderId, long? toLocationId, string? toHu)
+    {
+        return _services.Documents.GetOrderReceiptRemaining(orderId)
+            .Where(line => line.QtyRemaining > 0)
+            .Select(line => new WpfAddDocLineContext(
+                line.ItemId,
+                null,
+                line.OrderLineId,
+                line.QtyRemaining,
+                null,
+                null,
+                null,
+                toLocationId,
+                null,
+                NormalizeHuValue(toHu)))
+            .ToList();
+    }
+
+    private static string BuildBatchFailureMessage(WpfBatchAddDocLinesResult result)
+    {
+        if (result.AddedCount <= 0 && result.ReplayCount <= 0)
+        {
+            return result.Message;
+        }
+
+        return $"{result.Message}{Environment.NewLine}{Environment.NewLine}Уже обработано строк: {result.AddedCount + result.ReplayCount}. Перед повтором обновите документ и проверьте текущие строки.";
     }
 
     private void ClearDocOrderBinding()
@@ -2058,7 +2296,7 @@ public partial class OperationDetailsWindow : Window
         }
     }
 
-    private bool TrySaveHeader()
+    private async Task<bool> TrySaveHeaderAsync()
     {
         if (_doc == null)
         {
@@ -2102,23 +2340,28 @@ public partial class OperationDetailsWindow : Window
             if (orderOption != null)
             {
                 var headerPartnerId = _doc.Type == DocType.Outbound ? orderOption.PartnerId : partnerId;
-                _services.Documents.UpdateDocHeader(_doc.Id, headerPartnerId, orderOption.OrderRef, huCode);
                 if (_doc.Type == DocType.Outbound)
                 {
                     if (!_isPartialShipment || _doc.OrderId != orderOption.Id)
                     {
-                        var added = _services.Documents.ApplyOrderToDoc(_doc.Id, orderOption.Id);
-                        LoadOrderQuantities(orderOption.Id);
-                        ResetPartialMode();
-                        if (added == 0)
+                        if (!await TryApplyOrderSelectionAsync(orderOption))
                         {
-                            MessageBox.Show("По заказу нет остатка к отгрузке.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+                            return false;
                         }
+                    }
+                    else
+                    {
+                        _services.Documents.UpdateDocHeader(_doc.Id, headerPartnerId, orderOption.OrderRef, huCode);
                     }
                 }
                 else if (_doc.Type == DocType.ProductionReceipt)
                 {
+                    _services.Documents.UpdateDocHeader(_doc.Id, headerPartnerId, orderOption.OrderRef, huCode);
                     _services.Documents.UpdateDocOrderBinding(_doc.Id, orderOption.Id);
+                }
+                else
+                {
+                    _services.Documents.UpdateDocHeader(_doc.Id, headerPartnerId, orderOption.OrderRef, huCode);
                 }
             }
             else

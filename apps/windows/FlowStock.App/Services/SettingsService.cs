@@ -112,8 +112,14 @@ public sealed class BackupSettings
 
 public sealed class ServerSettings
 {
+    [JsonPropertyName("use_server_create_doc_draft")]
+    public bool UseServerCreateDocDraft { get; set; }
+
     [JsonPropertyName("use_server_close_document")]
     public bool UseServerCloseDocument { get; set; }
+
+    [JsonPropertyName("use_server_add_doc_line")]
+    public bool UseServerAddDocLine { get; set; }
 
     [JsonPropertyName("base_url")]
     public string? BaseUrl { get; set; }

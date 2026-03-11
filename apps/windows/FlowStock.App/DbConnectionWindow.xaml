@@ -55,7 +55,7 @@
                     </Grid>
                 </GroupBox>
 
-                <GroupBox Header="CloseDocument server mode" Margin="0,12,0,0">
+                <GroupBox Header="Server API mode" Margin="0,12,0,0">
                     <Grid Margin="8">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="160" />
@@ -70,12 +70,17 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
 
                         <StackPanel Grid.Row="0" Grid.ColumnSpan="2" Margin="0,0,0,10">
+                            <TextBlock x:Name="CreateModeText" FontWeight="SemiBold" />
                             <TextBlock x:Name="CloseModeText" FontWeight="SemiBold" />
+                            <TextBlock x:Name="LineAddModeText" Margin="0,4,0,0" />
                             <TextBlock x:Name="ConfigLoadedText" Margin="0,4,0,0" />
+                            <TextBlock x:Name="ActiveCreatePathText" Margin="0,4,0,0" />
                             <TextBlock x:Name="ActiveClosePathText" Margin="0,4,0,0" />
+                            <TextBlock x:Name="ActiveLineAddPathText" Margin="0,4,0,0" />
                             <TextBlock x:Name="EnvironmentOverrideText"
                                        Margin="0,6,0,0"
                                        Foreground="DarkOrange"
@@ -102,7 +107,25 @@
                                        TextWrapping="Wrap" />
                         </StackPanel>
 
-                        <StackPanel Grid.Row="5"
+                        <TextBlock Grid.Row="5" Grid.Column="0" Text="Draft create" VerticalAlignment="Center" />
+                        <CheckBox x:Name="UseServerCreateDraftCheckBox"
+                                  Grid.Row="5"
+                                  Grid.Column="1"
+                                  Margin="8,0,0,6"
+                                  Content="Use Server API for new draft creation"
+                                  Checked="UseServerCreateDraftCheckBox_Changed"
+                                  Unchecked="UseServerCreateDraftCheckBox_Changed" />
+
+                        <TextBlock Grid.Row="6" Grid.Column="0" Text="AddLine / batch" VerticalAlignment="Center" />
+                        <CheckBox x:Name="UseServerAddLineCheckBox"
+                                  Grid.Row="6"
+                                  Grid.Column="1"
+                                  Margin="8,0,0,6"
+                                  Content="Use Server API for '+ Товар' and batch line fills"
+                                  Checked="UseServerAddLineCheckBox_Changed"
+                                  Unchecked="UseServerAddLineCheckBox_Changed" />
+
+                        <StackPanel Grid.Row="7"
                                     Grid.ColumnSpan="2"
                                     Orientation="Horizontal"
                                     HorizontalAlignment="Right"
@@ -121,7 +144,7 @@
                         </StackPanel>
 
                         <TextBlock x:Name="ServerStatusText"
-                                   Grid.Row="6"
+                                   Grid.Row="8"
                                    Grid.ColumnSpan="2"
                                    Margin="0,10,0,0"
                                    TextWrapping="Wrap" />

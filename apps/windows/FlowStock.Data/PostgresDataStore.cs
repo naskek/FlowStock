@@ -1170,6 +1170,19 @@ RETURNING id;
         });
     }
 
+    public int CountLedgerEntriesByDocId(long docId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "SELECT COUNT(*) FROM ledger WHERE doc_id = @doc_id");
+            command.Parameters.AddWithValue("@doc_id", docId);
+            var result = command.ExecuteScalar();
+            return result == null || result == DBNull.Value
+                ? 0
+                : Convert.ToInt32(result, CultureInfo.InvariantCulture);
+        });
+    }
+
     public IReadOnlyList<DocLineView> GetDocLineViews(long docId)
     {
         return WithConnection(connection =>

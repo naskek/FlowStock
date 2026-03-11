@@ -20,7 +20,9 @@ public partial class DbConnectionWindow : Window
     private bool _useServerCloseDocument;
     private static readonly string[] ServerEnvironmentKeys =
     {
+        "FLOWSTOCK_USE_SERVER_CREATE_DOC_DRAFT",
         "FLOWSTOCK_USE_SERVER_CLOSE_DOCUMENT",
+        "FLOWSTOCK_USE_SERVER_ADD_DOC_LINE",
         "FLOWSTOCK_SERVER_BASE_URL",
         "FLOWSTOCK_SERVER_DEVICE_ID",
         "FLOWSTOCK_SERVER_CLOSE_TIMEOUT_SECONDS",
@@ -119,7 +121,9 @@ public partial class DbConnectionWindow : Window
         var server = (_settings.Server ?? new ServerSettings()).Normalize();
         ApplyServerSettingsToInputs(new ServerSettings
         {
+            UseServerCreateDocDraft = server.UseServerCreateDocDraft,
             UseServerCloseDocument = server.UseServerCloseDocument,
+            UseServerAddDocLine = server.UseServerAddDocLine,
             BaseUrl = server.BaseUrl ?? WpfCloseDocumentService.DefaultServerBaseUrl,
             DeviceId = server.DeviceId ?? WpfCloseDocumentService.BuildDefaultDeviceId(),
             CloseTimeoutSeconds = server.CloseTimeoutSeconds < 1
@@ -133,7 +137,9 @@ public partial class DbConnectionWindow : Window
 
     private void ApplyServerSettingsToInputs(ServerSettings server)
     {
+        UseServerCreateDraftCheckBox.IsChecked = server.UseServerCreateDocDraft;
         SetCloseMode(server.UseServerCloseDocument);
+        UseServerAddLineCheckBox.IsChecked = server.UseServerAddDocLine;
         ServerBaseUrlBox.Text = server.BaseUrl ?? WpfCloseDocumentService.DefaultServerBaseUrl;
         ServerDeviceIdBox.Text = server.DeviceId ?? WpfCloseDocumentService.BuildDefaultDeviceId();
         ServerTimeoutBox.Text = server.CloseTimeoutSeconds.ToString(CultureInfo.InvariantCulture);
@@ -142,11 +148,17 @@ public partial class DbConnectionWindow : Window
 
     private void RefreshServerStatus()
     {
+        CreateModeText.Text = $"Draft create mode: {FormatCloseMode(UseServerCreateDraftCheckBox.IsChecked == true)}";
         CloseModeText.Text = $"Close mode: {FormatCloseMode(_useServerCloseDocument)}";
+        LineAddModeText.Text = $"Line add mode (manual + batch): {FormatCloseMode(UseServerAddLineCheckBox.IsChecked == true)}";
         ConfigLoadedText.Text = $"Config loaded: {(File.Exists(_services.SettingsPath) ? "yes" : "no")}";
 
+        var effectiveCreate = _services.WpfCreateDocDrafts.GetEffectiveConfiguration();
+        ActiveCreatePathText.Text = $"Active draft create path: {FormatCloseMode(effectiveCreate.UseServerCreateDocDraft)}";
         var effective = _services.WpfCloseDocuments.GetEffectiveConfiguration();
         ActiveClosePathText.Text = $"Active close path: {FormatCloseMode(effective.UseServerCloseDocument)}";
+        var effectiveLine = _services.WpfAddDocLines.GetEffectiveConfiguration();
+        ActiveLineAddPathText.Text = $"Active line add path (manual + batch): {FormatCloseMode(effectiveLine.UseServerAddDocLine)}";
 
         var overrides = GetServerEnvironmentOverrides();
         if (overrides.Count == 0)
@@ -157,13 +169,25 @@ public partial class DbConnectionWindow : Window
         }
 
         EnvironmentOverrideText.Text =
-            $"Environment override active: {string.Join(", ", overrides)}. Active close path may differ from saved settings.";
+            $"Environment override active: {string.Join(", ", overrides)}. Active server paths may differ from saved settings.";
         EnvironmentOverrideText.Visibility = Visibility.Visible;
     }
 
     private void ToggleCloseMode_Click(object sender, RoutedEventArgs e)
     {
         SetCloseMode(!_useServerCloseDocument);
+        RefreshServerStatus();
+        SetServerStatus(string.Empty, MediaBrushes.Gray);
+    }
+
+    private void UseServerCreateDraftCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        RefreshServerStatus();
+        SetServerStatus(string.Empty, MediaBrushes.Gray);
+    }
+
+    private void UseServerAddLineCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
         RefreshServerStatus();
         SetServerStatus(string.Empty, MediaBrushes.Gray);
     }
@@ -215,7 +239,7 @@ public partial class DbConnectionWindow : Window
 
         const string message = "Settings saved to %APPDATA%\\FlowStock\\settings.json";
         SetServerStatus(message, MediaBrushes.DarkGreen);
-        MessageBox.Show(message, "CloseDocument settings", MessageBoxButton.OK, MessageBoxImage.Information);
+        MessageBox.Show(message, "Server API settings", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     private bool TryReadServerSettingsInput(out ServerSettings serverSettings)
@@ -228,19 +252,21 @@ public partial class DbConnectionWindow : Window
 
         if (string.IsNullOrWhiteSpace(baseUrl))
         {
-            MessageBox.Show("Base URL is required.", "CloseDocument settings", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("Base URL is required.", "Server API settings", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
 
         if (!int.TryParse(timeoutText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var timeoutSeconds) || timeoutSeconds <= 0)
         {
-            MessageBox.Show("Timeout (sec) must be a positive integer.", "CloseDocument settings", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("Timeout (sec) must be a positive integer.", "Server API settings", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
 
         serverSettings = new ServerSettings
         {
+            UseServerCreateDocDraft = UseServerCreateDraftCheckBox.IsChecked == true,
             UseServerCloseDocument = _useServerCloseDocument,
+            UseServerAddDocLine = UseServerAddLineCheckBox.IsChecked == true,
             BaseUrl = NormalizeServerBaseUrl(baseUrl),
             DeviceId = string.IsNullOrWhiteSpace(deviceId) ? WpfCloseDocumentService.BuildDefaultDeviceId() : deviceId,
             CloseTimeoutSeconds = timeoutSeconds,
