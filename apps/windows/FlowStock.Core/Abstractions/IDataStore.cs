@@ -1,4 +1,5 @@
 using FlowStock.Core.Models;
+using FlowStock.Core.Models.Marking;
 
 namespace FlowStock.Core.Abstractions;
 
@@ -127,6 +128,14 @@ public interface IDataStore
     long AddOrderRequest(OrderRequest request);
     IReadOnlyList<OrderRequest> GetOrderRequests(bool includeResolved);
     void ResolveOrderRequest(long requestId, string status, string resolvedBy, string? note, long? appliedOrderId);
+
+    Guid AddMarkingCodeImport(MarkingCodeImport import);
+    MarkingCodeImport? FindMarkingCodeImportByHash(string fileHash);
+    void UpdateMarkingCodeImport(MarkingCodeImport import);
+    bool ExistsMarkingCodeByRaw(string code);
+    void AddMarkingCodes(IReadOnlyList<MarkingCode> codes);
+    MarkingOrder? FindMarkingOrderByRequestNumber(string requestNumber);
+    void UpdateMarkingOrderStatus(Guid id, string status, DateTime? codesBoundAt, DateTime updatedAt);
 
     long AddKmCodeBatch(KmCodeBatch batch);
     void UpdateKmCodeBatchStats(long batchId, int totalCodes, int errorCount);

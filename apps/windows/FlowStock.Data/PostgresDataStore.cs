@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Linq;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
+using FlowStock.Core.Models.Marking;
 using Npgsql;
 
 namespace FlowStock.Data;
@@ -295,6 +296,105 @@ CREATE INDEX IF NOT EXISTS idx_km_code_sku_id ON km_code(sku_id);
 CREATE INDEX IF NOT EXISTS idx_km_code_receipt_doc_id ON km_code(receipt_doc_id);
 CREATE INDEX IF NOT EXISTS idx_km_code_ship_doc_id ON km_code(ship_doc_id);
 CREATE INDEX IF NOT EXISTS idx_km_code_order_id ON km_code(order_id);
+CREATE TABLE IF NOT EXISTS marking_order (
+    id UUID PRIMARY KEY,
+    order_id BIGINT NOT NULL,
+    item_id BIGINT,
+    gtin TEXT,
+    requested_quantity INTEGER NOT NULL,
+    request_number TEXT NOT NULL,
+    status TEXT NOT NULL,
+    notes TEXT,
+    requested_at TEXT,
+    codes_bound_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (order_id) REFERENCES orders(id),
+    FOREIGN KEY (item_id) REFERENCES items(id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_marking_order_request_number ON marking_order(request_number);
+CREATE INDEX IF NOT EXISTS ix_marking_order_order_id ON marking_order(order_id);
+CREATE INDEX IF NOT EXISTS ix_marking_order_status ON marking_order(status);
+CREATE INDEX IF NOT EXISTS ix_marking_order_gtin ON marking_order(gtin);
+CREATE TABLE IF NOT EXISTS marking_code_import (
+    id UUID PRIMARY KEY,
+    original_filename TEXT NOT NULL,
+    storage_path TEXT NOT NULL,
+    file_hash TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    detected_request_number TEXT,
+    detected_gtin TEXT,
+    detected_quantity INTEGER,
+    matched_marking_order_id UUID,
+    match_confidence NUMERIC(5,4),
+    status TEXT NOT NULL,
+    imported_rows INTEGER NOT NULL DEFAULT 0,
+    valid_code_rows INTEGER NOT NULL DEFAULT 0,
+    duplicate_code_rows INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT,
+    created_at TEXT NOT NULL,
+    processed_at TEXT,
+    FOREIGN KEY (matched_marking_order_id) REFERENCES marking_order(id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_marking_code_import_file_hash ON marking_code_import(file_hash);
+CREATE INDEX IF NOT EXISTS ix_marking_code_import_status_created ON marking_code_import(status, created_at);
+CREATE INDEX IF NOT EXISTS ix_marking_code_import_order_id ON marking_code_import(matched_marking_order_id);
+CREATE INDEX IF NOT EXISTS ix_marking_code_import_request_number ON marking_code_import(detected_request_number);
+CREATE TABLE IF NOT EXISTS marking_code (
+    id UUID PRIMARY KEY,
+    code TEXT NOT NULL,
+    code_hash TEXT NOT NULL,
+    gtin TEXT,
+    marking_order_id UUID NOT NULL,
+    import_id UUID NOT NULL,
+    status TEXT NOT NULL,
+    source_row_number INTEGER,
+    printed_at TEXT,
+    applied_at TEXT,
+    reported_at TEXT,
+    introduced_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (marking_order_id) REFERENCES marking_order(id),
+    FOREIGN KEY (import_id) REFERENCES marking_code_import(id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_marking_code_code ON marking_code(code);
+CREATE INDEX IF NOT EXISTS ix_marking_code_code_hash ON marking_code(code_hash);
+CREATE INDEX IF NOT EXISTS ix_marking_code_order_status ON marking_code(marking_order_id, status);
+CREATE INDEX IF NOT EXISTS ix_marking_code_import_id ON marking_code(import_id);
+CREATE INDEX IF NOT EXISTS ix_marking_code_gtin ON marking_code(gtin);
+CREATE TABLE IF NOT EXISTS marking_print_batch (
+    id UUID PRIMARY KEY,
+    marking_order_id UUID NOT NULL,
+    batch_number INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    codes_count INTEGER NOT NULL DEFAULT 0,
+    printer_target_type TEXT,
+    printer_target_value TEXT,
+    debug_layout INTEGER NOT NULL DEFAULT 0,
+    reprint_of_batch_id UUID,
+    printed_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    notes TEXT,
+    FOREIGN KEY (marking_order_id) REFERENCES marking_order(id),
+    FOREIGN KEY (reprint_of_batch_id) REFERENCES marking_print_batch(id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_marking_print_batch_order_batch_number ON marking_print_batch(marking_order_id, batch_number);
+CREATE INDEX IF NOT EXISTS ix_marking_print_batch_order_status ON marking_print_batch(marking_order_id, status);
+CREATE INDEX IF NOT EXISTS ix_marking_print_batch_reprint_of_batch_id ON marking_print_batch(reprint_of_batch_id);
+CREATE TABLE IF NOT EXISTS marking_print_batch_code (
+    id UUID PRIMARY KEY,
+    print_batch_id UUID NOT NULL,
+    marking_code_id UUID NOT NULL,
+    sequence_no INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (print_batch_id) REFERENCES marking_print_batch(id),
+    FOREIGN KEY (marking_code_id) REFERENCES marking_code(id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_marking_print_batch_code_sequence ON marking_print_batch_code(print_batch_id, sequence_no);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_marking_print_batch_code_marking_code ON marking_print_batch_code(print_batch_id, marking_code_id);
+CREATE INDEX IF NOT EXISTS ix_marking_print_batch_code_marking_code_id ON marking_print_batch_code(marking_code_id);
 ";
         command.ExecuteNonQuery();
 
@@ -3470,6 +3570,229 @@ WHERE id = @id;");
         });
     }
 
+    public Guid AddMarkingCodeImport(MarkingCodeImport import)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO marking_code_import(
+    id,
+    original_filename,
+    storage_path,
+    file_hash,
+    source_type,
+    detected_request_number,
+    detected_gtin,
+    detected_quantity,
+    matched_marking_order_id,
+    match_confidence,
+    status,
+    imported_rows,
+    valid_code_rows,
+    duplicate_code_rows,
+    error_message,
+    created_at,
+    processed_at)
+VALUES(
+    @id,
+    @original_filename,
+    @storage_path,
+    @file_hash,
+    @source_type,
+    @detected_request_number,
+    @detected_gtin,
+    @detected_quantity,
+    @matched_marking_order_id,
+    @match_confidence,
+    @status,
+    @imported_rows,
+    @valid_code_rows,
+    @duplicate_code_rows,
+    @error_message,
+    @created_at,
+    @processed_at)
+RETURNING id;");
+            command.Parameters.AddWithValue("@id", import.Id);
+            command.Parameters.AddWithValue("@original_filename", import.OriginalFilename);
+            command.Parameters.AddWithValue("@storage_path", import.StoragePath);
+            command.Parameters.AddWithValue("@file_hash", import.FileHash);
+            command.Parameters.AddWithValue("@source_type", import.SourceType);
+            command.Parameters.AddWithValue("@detected_request_number", string.IsNullOrWhiteSpace(import.DetectedRequestNumber) ? DBNull.Value : import.DetectedRequestNumber.Trim());
+            command.Parameters.AddWithValue("@detected_gtin", string.IsNullOrWhiteSpace(import.DetectedGtin) ? DBNull.Value : import.DetectedGtin.Trim());
+            command.Parameters.AddWithValue("@detected_quantity", import.DetectedQuantity.HasValue ? import.DetectedQuantity.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@matched_marking_order_id", import.MatchedMarkingOrderId.HasValue ? import.MatchedMarkingOrderId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@match_confidence", import.MatchConfidence.HasValue ? import.MatchConfidence.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@status", import.Status);
+            command.Parameters.AddWithValue("@imported_rows", import.ImportedRows);
+            command.Parameters.AddWithValue("@valid_code_rows", import.ValidCodeRows);
+            command.Parameters.AddWithValue("@duplicate_code_rows", import.DuplicateCodeRows);
+            command.Parameters.AddWithValue("@error_message", string.IsNullOrWhiteSpace(import.ErrorMessage) ? DBNull.Value : import.ErrorMessage.Trim());
+            command.Parameters.AddWithValue("@created_at", ToDbDate(import.CreatedAt));
+            command.Parameters.AddWithValue("@processed_at", import.ProcessedAt.HasValue ? ToDbDate(import.ProcessedAt.Value) : DBNull.Value);
+            return (Guid)(command.ExecuteScalar() ?? Guid.Empty);
+        });
+    }
+
+    public MarkingCodeImport? FindMarkingCodeImportByHash(string fileHash)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildMarkingCodeImportQuery("WHERE i.file_hash = @file_hash"));
+            command.Parameters.AddWithValue("@file_hash", fileHash);
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadMarkingCodeImport(reader) : null;
+        });
+    }
+
+    public void UpdateMarkingCodeImport(MarkingCodeImport import)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE marking_code_import
+SET original_filename = @original_filename,
+    storage_path = @storage_path,
+    file_hash = @file_hash,
+    source_type = @source_type,
+    detected_request_number = @detected_request_number,
+    detected_gtin = @detected_gtin,
+    detected_quantity = @detected_quantity,
+    matched_marking_order_id = @matched_marking_order_id,
+    match_confidence = @match_confidence,
+    status = @status,
+    imported_rows = @imported_rows,
+    valid_code_rows = @valid_code_rows,
+    duplicate_code_rows = @duplicate_code_rows,
+    error_message = @error_message,
+    created_at = @created_at,
+    processed_at = @processed_at
+WHERE id = @id;");
+            command.Parameters.AddWithValue("@id", import.Id);
+            command.Parameters.AddWithValue("@original_filename", import.OriginalFilename);
+            command.Parameters.AddWithValue("@storage_path", import.StoragePath);
+            command.Parameters.AddWithValue("@file_hash", import.FileHash);
+            command.Parameters.AddWithValue("@source_type", import.SourceType);
+            command.Parameters.AddWithValue("@detected_request_number", string.IsNullOrWhiteSpace(import.DetectedRequestNumber) ? DBNull.Value : import.DetectedRequestNumber.Trim());
+            command.Parameters.AddWithValue("@detected_gtin", string.IsNullOrWhiteSpace(import.DetectedGtin) ? DBNull.Value : import.DetectedGtin.Trim());
+            command.Parameters.AddWithValue("@detected_quantity", import.DetectedQuantity.HasValue ? import.DetectedQuantity.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@matched_marking_order_id", import.MatchedMarkingOrderId.HasValue ? import.MatchedMarkingOrderId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@match_confidence", import.MatchConfidence.HasValue ? import.MatchConfidence.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@status", import.Status);
+            command.Parameters.AddWithValue("@imported_rows", import.ImportedRows);
+            command.Parameters.AddWithValue("@valid_code_rows", import.ValidCodeRows);
+            command.Parameters.AddWithValue("@duplicate_code_rows", import.DuplicateCodeRows);
+            command.Parameters.AddWithValue("@error_message", string.IsNullOrWhiteSpace(import.ErrorMessage) ? DBNull.Value : import.ErrorMessage.Trim());
+            command.Parameters.AddWithValue("@created_at", ToDbDate(import.CreatedAt));
+            command.Parameters.AddWithValue("@processed_at", import.ProcessedAt.HasValue ? ToDbDate(import.ProcessedAt.Value) : DBNull.Value);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public bool ExistsMarkingCodeByRaw(string code)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "SELECT 1 FROM marking_code WHERE code = @code LIMIT 1");
+            command.Parameters.AddWithValue("@code", code);
+            var result = command.ExecuteScalar();
+            return result != null && result != DBNull.Value;
+        });
+    }
+
+    public void AddMarkingCodes(IReadOnlyList<MarkingCode> codes)
+    {
+        if (codes.Count == 0)
+        {
+            return;
+        }
+
+        WithConnection(connection =>
+        {
+            foreach (var code in codes)
+            {
+                using var command = CreateCommand(connection, @"
+INSERT INTO marking_code(
+    id,
+    code,
+    code_hash,
+    gtin,
+    marking_order_id,
+    import_id,
+    status,
+    source_row_number,
+    printed_at,
+    applied_at,
+    reported_at,
+    introduced_at,
+    created_at,
+    updated_at)
+VALUES(
+    @id,
+    @code,
+    @code_hash,
+    @gtin,
+    @marking_order_id,
+    @import_id,
+    @status,
+    @source_row_number,
+    @printed_at,
+    @applied_at,
+    @reported_at,
+    @introduced_at,
+    @created_at,
+    @updated_at);");
+                command.Parameters.AddWithValue("@id", code.Id);
+                command.Parameters.AddWithValue("@code", code.Code);
+                command.Parameters.AddWithValue("@code_hash", code.CodeHash);
+                command.Parameters.AddWithValue("@gtin", string.IsNullOrWhiteSpace(code.Gtin) ? DBNull.Value : code.Gtin.Trim());
+                command.Parameters.AddWithValue("@marking_order_id", code.MarkingOrderId);
+                command.Parameters.AddWithValue("@import_id", code.ImportId);
+                command.Parameters.AddWithValue("@status", code.Status);
+                command.Parameters.AddWithValue("@source_row_number", code.SourceRowNumber.HasValue ? code.SourceRowNumber.Value : DBNull.Value);
+                command.Parameters.AddWithValue("@printed_at", code.PrintedAt.HasValue ? ToDbDate(code.PrintedAt.Value) : DBNull.Value);
+                command.Parameters.AddWithValue("@applied_at", code.AppliedAt.HasValue ? ToDbDate(code.AppliedAt.Value) : DBNull.Value);
+                command.Parameters.AddWithValue("@reported_at", code.ReportedAt.HasValue ? ToDbDate(code.ReportedAt.Value) : DBNull.Value);
+                command.Parameters.AddWithValue("@introduced_at", code.IntroducedAt.HasValue ? ToDbDate(code.IntroducedAt.Value) : DBNull.Value);
+                command.Parameters.AddWithValue("@created_at", ToDbDate(code.CreatedAt));
+                command.Parameters.AddWithValue("@updated_at", ToDbDate(code.UpdatedAt));
+                command.ExecuteNonQuery();
+            }
+
+            return 0;
+        });
+    }
+
+    public MarkingOrder? FindMarkingOrderByRequestNumber(string requestNumber)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildMarkingOrderQuery("WHERE mo.request_number = @request_number"));
+            command.Parameters.AddWithValue("@request_number", requestNumber.Trim());
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadMarkingOrder(reader) : null;
+        });
+    }
+
+    public void UpdateMarkingOrderStatus(Guid id, string status, DateTime? codesBoundAt, DateTime updatedAt)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE marking_order
+SET status = @status,
+    codes_bound_at = @codes_bound_at,
+    updated_at = @updated_at
+WHERE id = @id;");
+            command.Parameters.AddWithValue("@status", status);
+            command.Parameters.AddWithValue("@codes_bound_at", codesBoundAt.HasValue ? ToDbDate(codesBoundAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@updated_at", ToDbDate(updatedAt));
+            command.Parameters.AddWithValue("@id", id);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
     public int DeleteKmCodesFromBatch(long batchId, IReadOnlyList<long> codeIds)
     {
         if (codeIds.Count == 0)
@@ -3557,6 +3880,88 @@ WHERE batch_id = @batch_id
         });
     }
 
+    private static string BuildMarkingOrderQuery(string whereClause)
+    {
+        var sql = @"
+SELECT mo.id,
+       mo.order_id,
+       mo.item_id,
+       mo.gtin,
+       mo.requested_quantity,
+       mo.request_number,
+       mo.status,
+       mo.notes,
+       mo.requested_at,
+       mo.codes_bound_at,
+       mo.created_at,
+       mo.updated_at
+FROM marking_order mo
+";
+        if (!string.IsNullOrWhiteSpace(whereClause))
+        {
+            sql += whereClause + "\n";
+        }
+
+        return sql;
+    }
+
+    private static string BuildMarkingCodeImportQuery(string whereClause)
+    {
+        var sql = @"
+SELECT i.id,
+       i.original_filename,
+       i.storage_path,
+       i.file_hash,
+       i.source_type,
+       i.detected_request_number,
+       i.detected_gtin,
+       i.detected_quantity,
+       i.matched_marking_order_id,
+       i.match_confidence,
+       i.status,
+       i.imported_rows,
+       i.valid_code_rows,
+       i.duplicate_code_rows,
+       i.error_message,
+       i.created_at,
+       i.processed_at
+FROM marking_code_import i
+";
+        if (!string.IsNullOrWhiteSpace(whereClause))
+        {
+            sql += whereClause + "\n";
+        }
+
+        return sql;
+    }
+
+    private static string BuildMarkingCodeQuery(string whereClause)
+    {
+        var sql = @"
+SELECT c.id,
+       c.code,
+       c.code_hash,
+       c.gtin,
+       c.marking_order_id,
+       c.import_id,
+       c.status,
+       c.source_row_number,
+       c.printed_at,
+       c.applied_at,
+       c.reported_at,
+       c.introduced_at,
+       c.created_at,
+       c.updated_at
+FROM marking_code c
+";
+        if (!string.IsNullOrWhiteSpace(whereClause))
+        {
+            sql += whereClause + "\n";
+        }
+
+        return sql;
+    }
+
     private static string BuildKmBatchQuery(string whereClause)
     {
         var sql = @"
@@ -3630,6 +4035,49 @@ LEFT JOIN locations l ON l.id = c.location_id
         };
     }
 
+    private static MarkingOrder ReadMarkingOrder(NpgsqlDataReader reader)
+    {
+        return new MarkingOrder
+        {
+            Id = reader.GetGuid(0),
+            OrderId = reader.GetInt64(1),
+            ItemId = reader.IsDBNull(2) ? null : reader.GetInt64(2),
+            Gtin = reader.IsDBNull(3) ? null : reader.GetString(3),
+            RequestedQuantity = reader.IsDBNull(4) ? 0 : reader.GetInt32(4),
+            RequestNumber = reader.GetString(5),
+            Status = reader.GetString(6),
+            Notes = reader.IsDBNull(7) ? null : reader.GetString(7),
+            RequestedAt = reader.IsDBNull(8) ? null : FromDbDate(reader.GetString(8)),
+            CodesBoundAt = reader.IsDBNull(9) ? null : FromDbDate(reader.GetString(9)),
+            CreatedAt = FromDbDate(reader.GetString(10)) ?? DateTime.MinValue,
+            UpdatedAt = FromDbDate(reader.GetString(11)) ?? DateTime.MinValue
+        };
+    }
+
+    private static MarkingCodeImport ReadMarkingCodeImport(NpgsqlDataReader reader)
+    {
+        return new MarkingCodeImport
+        {
+            Id = reader.GetGuid(0),
+            OriginalFilename = reader.GetString(1),
+            StoragePath = reader.GetString(2),
+            FileHash = reader.GetString(3),
+            SourceType = reader.GetString(4),
+            DetectedRequestNumber = reader.IsDBNull(5) ? null : reader.GetString(5),
+            DetectedGtin = reader.IsDBNull(6) ? null : reader.GetString(6),
+            DetectedQuantity = reader.IsDBNull(7) ? null : reader.GetInt32(7),
+            MatchedMarkingOrderId = reader.IsDBNull(8) ? null : reader.GetGuid(8),
+            MatchConfidence = reader.IsDBNull(9) ? null : reader.GetDecimal(9),
+            Status = reader.GetString(10),
+            ImportedRows = reader.IsDBNull(11) ? 0 : reader.GetInt32(11),
+            ValidCodeRows = reader.IsDBNull(12) ? 0 : reader.GetInt32(12),
+            DuplicateCodeRows = reader.IsDBNull(13) ? 0 : reader.GetInt32(13),
+            ErrorMessage = reader.IsDBNull(14) ? null : reader.GetString(14),
+            CreatedAt = FromDbDate(reader.GetString(15)) ?? DateTime.MinValue,
+            ProcessedAt = reader.IsDBNull(16) ? null : FromDbDate(reader.GetString(16))
+        };
+    }
+
     private static KmCode ReadKmCode(NpgsqlDataReader reader)
     {
         return new KmCode
@@ -3652,6 +4100,27 @@ LEFT JOIN locations l ON l.id = c.location_id
             ShipDocId = reader.IsDBNull(15) ? null : reader.GetInt64(15),
             ShipLineId = reader.IsDBNull(16) ? null : reader.GetInt64(16),
             OrderId = reader.IsDBNull(17) ? null : reader.GetInt64(17)
+        };
+    }
+
+    private static MarkingCode ReadMarkingCode(NpgsqlDataReader reader)
+    {
+        return new MarkingCode
+        {
+            Id = reader.GetGuid(0),
+            Code = reader.GetString(1),
+            CodeHash = reader.GetString(2),
+            Gtin = reader.IsDBNull(3) ? null : reader.GetString(3),
+            MarkingOrderId = reader.GetGuid(4),
+            ImportId = reader.GetGuid(5),
+            Status = reader.GetString(6),
+            SourceRowNumber = reader.IsDBNull(7) ? null : reader.GetInt32(7),
+            PrintedAt = reader.IsDBNull(8) ? null : FromDbDate(reader.GetString(8)),
+            AppliedAt = reader.IsDBNull(9) ? null : FromDbDate(reader.GetString(9)),
+            ReportedAt = reader.IsDBNull(10) ? null : FromDbDate(reader.GetString(10)),
+            IntroducedAt = reader.IsDBNull(11) ? null : FromDbDate(reader.GetString(11)),
+            CreatedAt = FromDbDate(reader.GetString(12)) ?? DateTime.MinValue,
+            UpdatedAt = FromDbDate(reader.GetString(13)) ?? DateTime.MinValue
         };
     }
 

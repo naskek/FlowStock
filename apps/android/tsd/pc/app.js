@@ -756,6 +756,7 @@
     document.body.appendChild(modal);
 
     var refs = {
+      card: modal.querySelector(".pc-modal-card"),
       closeBtn: modal.querySelector("#newOrderCloseBtn"),
       orderRefInput: modal.querySelector("#newOrderRefInput"),
       partnerSelect: modal.querySelector("#newOrderPartnerSelect"),
@@ -769,6 +770,10 @@
     var items = [];
     var partners = [];
     var linesState = [];
+    var activeSuggestIndex = -1;
+    var suggestionOverlay = document.createElement("div");
+    suggestionOverlay.className = "pc-order-suggest pc-order-suggest-floating";
+    document.body.appendChild(suggestionOverlay);
 
     function setStatus(text) {
       if (refs.statusEl) {
@@ -776,7 +781,117 @@
       }
     }
 
+    function hideSuggestionOverlay() {
+      activeSuggestIndex = -1;
+      suggestionOverlay.classList.remove("is-open");
+      suggestionOverlay.innerHTML = "";
+      suggestionOverlay.removeAttribute("data-index");
+      suggestionOverlay.style.left = "";
+      suggestionOverlay.style.top = "";
+      suggestionOverlay.style.width = "";
+      suggestionOverlay.style.maxHeight = "";
+    }
+
+    function positionSuggestionOverlay(queryEl) {
+      if (!queryEl) {
+        return;
+      }
+
+      var rect = queryEl.getBoundingClientRect();
+      var viewportMargin = 12;
+      var maxWidth = Math.max(180, window.innerWidth - viewportMargin * 2);
+      var minWidth = Math.min(220, maxWidth);
+      var width = Math.max(minWidth, Math.min(rect.width, maxWidth));
+      var left = rect.left;
+      if (left + width > window.innerWidth - viewportMargin) {
+        left = window.innerWidth - viewportMargin - width;
+      }
+      left = Math.max(viewportMargin, left);
+
+      var availableBelow = window.innerHeight - rect.bottom - viewportMargin;
+      var availableAbove = rect.top - viewportMargin;
+      var openUpward = availableBelow < 180 && availableAbove > availableBelow;
+      var availableHeight = openUpward ? availableAbove : availableBelow;
+      var maxHeight = Math.max(120, Math.min(260, availableHeight - 8));
+      var top = openUpward ? rect.top - maxHeight - 4 : rect.bottom + 4;
+
+      if (top + maxHeight > window.innerHeight - viewportMargin) {
+        top = window.innerHeight - viewportMargin - maxHeight;
+      }
+      top = Math.max(viewportMargin, top);
+
+      suggestionOverlay.style.left = left + "px";
+      suggestionOverlay.style.top = top + "px";
+      suggestionOverlay.style.width = width + "px";
+      suggestionOverlay.style.maxHeight = maxHeight + "px";
+    }
+
+    function showSuggestionOverlay(index, queryEl, filteredItems, selectedId) {
+      var source = Array.isArray(filteredItems) ? filteredItems : [];
+      if (!queryEl || !source.length) {
+        hideSuggestionOverlay();
+        return;
+      }
+
+      activeSuggestIndex = index;
+      suggestionOverlay.setAttribute("data-index", String(index));
+      suggestionOverlay.innerHTML = buildItemSuggestionList(source, selectedId);
+      suggestionOverlay.classList.add("is-open");
+      positionSuggestionOverlay(queryEl);
+    }
+
+    function syncSuggestionOverlay() {
+      if (activeSuggestIndex < 0 || !refs.linesWrap || !linesState[activeSuggestIndex]) {
+        hideSuggestionOverlay();
+        return;
+      }
+
+      var queryEl = refs.linesWrap.querySelector('.line-item-query[data-index="' + activeSuggestIndex + '"]');
+      if (!queryEl || document.activeElement !== queryEl) {
+        hideSuggestionOverlay();
+        return;
+      }
+
+      var line = linesState[activeSuggestIndex];
+      var normalizedQuery = normalizeText(line.query);
+      var filtered = normalizedQuery ? filterItems(line.query) : [];
+      if (!normalizedQuery || !filtered.length) {
+        hideSuggestionOverlay();
+        return;
+      }
+
+      showSuggestionOverlay(activeSuggestIndex, queryEl, filtered, line.item_id);
+    }
+
+    function applySuggestedItem(index, selectedId) {
+      if (!linesState[index]) {
+        return;
+      }
+
+      linesState[index].item_id = selectedId;
+      var selectedItem = getItemById(selectedId);
+      if (selectedItem) {
+        linesState[index].query = selectedItem.gtin || selectedItem.barcode || selectedItem.name || "";
+      }
+
+      var queryEl = refs.linesWrap.querySelector('.line-item-query[data-index="' + index + '"]');
+      if (queryEl) {
+        queryEl.value = linesState[index].query;
+        queryEl.focus();
+      }
+
+      updateLineControls(index);
+    }
+
     function close() {
+      window.removeEventListener("resize", syncSuggestionOverlay);
+      if (refs.card) {
+        refs.card.removeEventListener("scroll", syncSuggestionOverlay);
+      }
+      hideSuggestionOverlay();
+      if (suggestionOverlay && suggestionOverlay.parentNode) {
+        suggestionOverlay.parentNode.removeChild(suggestionOverlay);
+      }
       if (modal && modal.parentNode) {
         modal.parentNode.removeChild(modal);
       }
@@ -986,7 +1101,6 @@
 
       var line = linesState[index];
       var queryEl = refs.linesWrap.querySelector('.line-item-query[data-index="' + index + '"]');
-      var suggestEl = refs.linesWrap.querySelector('.line-item-suggest[data-index="' + index + '"]');
       var hintEl = refs.linesWrap.querySelector('.line-item-hint[data-index="' + index + '"]');
       if (!queryEl) {
         return;
@@ -994,13 +1108,14 @@
 
       var normalizedQuery = normalizeText(line.query);
       var filtered = normalizedQuery ? filterItems(line.query) : [];
-      if (suggestEl) {
-        suggestEl.innerHTML = buildItemSuggestionList(filtered, line.item_id);
-        var shouldOpen =
-          normalizedQuery.length > 0 &&
-          filtered.length > 0 &&
-          document.activeElement === queryEl;
-        suggestEl.classList.toggle("is-open", shouldOpen);
+      var shouldOpen =
+        normalizedQuery.length > 0 &&
+        filtered.length > 0 &&
+        document.activeElement === queryEl;
+      if (shouldOpen) {
+        showSuggestionOverlay(index, queryEl, filtered, line.item_id);
+      } else if (activeSuggestIndex === index) {
+        hideSuggestionOverlay();
       }
 
       var selectedItem = getItemById(line.item_id);
@@ -1025,6 +1140,7 @@
         linesState.push({ item_id: 0, qty_ordered: 1, query: "" });
       }
 
+      hideSuggestionOverlay();
       refs.linesWrap.innerHTML = linesState
         .map(function (line, index) {
           var query = String(line.query || "");
@@ -1037,9 +1153,6 @@
             '" type="text" autocomplete="off" placeholder="Введите GTIN/SKU или название" value="' +
             escapeHtml(query) +
             '" />' +
-            '<div class="pc-order-suggest line-item-suggest" data-index="' +
-            index +
-            '"></div>' +
             "</div>" +
             '<div class="pc-order-line-hint line-item-hint" data-index="' +
             index +
@@ -1090,42 +1203,6 @@
           window.setTimeout(function () {
             updateLineControls(index);
           }, 120);
-        });
-      });
-
-      var suggestLists = refs.linesWrap.querySelectorAll(".line-item-suggest");
-      suggestLists.forEach(function (listEl) {
-        listEl.addEventListener("mousedown", function (event) {
-          var target = event.target;
-          while (
-            target &&
-            target !== listEl &&
-            !(target.classList && target.classList.contains("pc-order-suggest-item"))
-          ) {
-            target = target.parentNode;
-          }
-          if (!target || target === listEl) {
-            return;
-          }
-
-          event.preventDefault();
-          var index = Number(listEl.getAttribute("data-index"));
-          if (!linesState[index]) {
-            return;
-          }
-
-          var selectedId = Number(target.getAttribute("data-item-id")) || 0;
-          linesState[index].item_id = selectedId;
-          var selectedItem = getItemById(selectedId);
-          if (selectedItem) {
-            linesState[index].query = selectedItem.gtin || selectedItem.barcode || selectedItem.name || "";
-            var queryEl = refs.linesWrap.querySelector('.line-item-query[data-index="' + index + '"]');
-            if (queryEl) {
-              queryEl.value = linesState[index].query;
-              queryEl.focus();
-            }
-          }
-          updateLineControls(index);
         });
       });
 
@@ -1249,8 +1326,34 @@
         renderLines();
       });
     }
-    if (refs.submitBtn) {
-      refs.submitBtn.addEventListener("click", submit);
+      if (refs.submitBtn) {
+        refs.submitBtn.addEventListener("click", submit);
+      }
+    suggestionOverlay.addEventListener("mousedown", function (event) {
+      var target = event.target;
+      while (
+        target &&
+        target !== suggestionOverlay &&
+        !(target.classList && target.classList.contains("pc-order-suggest-item"))
+      ) {
+        target = target.parentNode;
+      }
+      if (!target || target === suggestionOverlay) {
+        return;
+      }
+
+      event.preventDefault();
+      var index = activeSuggestIndex;
+      var selectedId = Number(target.getAttribute("data-item-id")) || 0;
+      if (!selectedId || index < 0) {
+        return;
+      }
+
+      applySuggestedItem(index, selectedId);
+    });
+    window.addEventListener("resize", syncSuggestionOverlay);
+    if (refs.card) {
+      refs.card.addEventListener("scroll", syncSuggestionOverlay);
     }
 
     if (refs.orderRefInput) {

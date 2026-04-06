@@ -203,6 +203,7 @@ body.pc-body {
 }
 
 .pc-modal-card {
+  position: relative;
   background: #ffffff;
   border-radius: 16px;
   padding: 18px;
@@ -246,10 +247,16 @@ body.pc-body {
 }
 
 .pc-order-line-row {
+  position: relative;
+  z-index: 0;
   display: grid;
   grid-template-columns: minmax(220px, 1fr) 130px auto;
   gap: 8px;
   align-items: start;
+}
+
+.pc-order-line-row:focus-within {
+  z-index: 80;
 }
 
 .pc-order-line-item-cell {
@@ -259,6 +266,7 @@ body.pc-body {
 
 .pc-order-line-autocomplete {
   position: relative;
+  z-index: 1;
 }
 
 .pc-order-suggest {
@@ -266,7 +274,7 @@ body.pc-body {
   left: 0;
   right: 0;
   top: calc(100% + 4px);
-  z-index: 40;
+  z-index: 90;
   display: none;
   max-height: 260px;
   overflow-y: auto;
@@ -278,6 +286,14 @@ body.pc-body {
 
 .pc-order-suggest.is-open {
   display: block;
+}
+
+.pc-order-suggest-floating {
+  position: fixed;
+  right: auto;
+  top: 0;
+  left: 0;
+  z-index: 120;
 }
 
 .pc-order-suggest-item {
