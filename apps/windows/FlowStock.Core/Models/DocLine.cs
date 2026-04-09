@@ -14,5 +14,6 @@ public sealed class DocLine
     public long? ToLocationId { get; init; }
     public string? FromHu { get; init; }
     public string? ToHu { get; init; }
+    public bool PackSingleHu { get; init; }
 }
 

@@ -15,6 +15,25 @@ services:
       retries: 30
     restart: unless-stopped
 
+  migrator:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: ${POSTGRES_DB}
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      MIGRATIONS_DIR: /migrations
+      POSTGRES_WAIT_TIMEOUT_SECONDS: ${POSTGRES_WAIT_TIMEOUT_SECONDS:-120}
+    volumes:
+      - ./postgres/migrations:/migrations:ro
+      - ./scripts:/scripts:ro
+    command: ["sh", "/scripts/run_migrations.sh"]
+    restart: "no"
+
   flowstock:
     build:
       context: ..
@@ -32,15 +51,23 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
     ports:
       - "${FLOWSTOCK_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health/ready >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
     restart: unless-stopped
 
   nginx:
     image: nginx:1.27-alpine
     depends_on:
       flowstock:
-        condition: service_started
+        condition: service_healthy
     ports:
       - "${FLOWSTOCK_HTTP_PORT:-80}:80"
       - "${FLOWSTOCK_HTTPS_PORT:-443}:443"

@@ -117,7 +117,7 @@ public partial class NewDocWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(ex.Message, "Документ", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(DatabaseErrorFormatter.Format(ex), "Документ", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 

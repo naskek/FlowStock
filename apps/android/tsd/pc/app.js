@@ -14,10 +14,104 @@
   var cachedStockRows = [];
   var cachedHuRows = [];
   var cachedCombinedRows = [];
+  var clientBlocks = getDefaultClientBlocks();
+
+  function getDefaultClientBlocks() {
+    return {
+      pc_stock: true,
+      pc_catalog: true,
+      pc_orders: true,
+    };
+  }
+
+  function applyClientBlocks(raw) {
+    var next = getDefaultClientBlocks();
+    if (raw && typeof raw === "object") {
+      Object.keys(next).forEach(function (key) {
+        if (raw[key] === false) {
+          next[key] = false;
+        }
+      });
+    }
+    clientBlocks = next;
+    return clientBlocks;
+  }
+
+  function isClientBlockEnabled(key) {
+    return clientBlocks[key] !== false;
+  }
+
+  function getEnabledViews() {
+    var views = [];
+    if (isClientBlockEnabled("pc_stock")) {
+      views.push("stock");
+    }
+    if (isClientBlockEnabled("pc_catalog")) {
+      views.push("catalog");
+    }
+    if (isClientBlockEnabled("pc_orders")) {
+      views.push("orders");
+    }
+    return views;
+  }
+
+  function resolveAllowedView(view) {
+    var enabledViews = getEnabledViews();
+    if (!enabledViews.length) {
+      return null;
+    }
+    if (enabledViews.indexOf(view) >= 0) {
+      return view;
+    }
+    return enabledViews[0];
+  }
+
+  function syncTabsVisibility() {
+    tabs.forEach(function (tab) {
+      var view = tab.getAttribute("data-view") || "";
+      var visible =
+        (view === "stock" && isClientBlockEnabled("pc_stock")) ||
+        (view === "catalog" && isClientBlockEnabled("pc_catalog")) ||
+        (view === "orders" && isClientBlockEnabled("pc_orders"));
+      tab.hidden = !visible;
+    });
+  }
+
+  function getClientBlocksSignature() {
+    return Object.keys(clientBlocks)
+      .sort()
+      .map(function (key) {
+        return key + ":" + (clientBlocks[key] === false ? "0" : "1");
+      })
+      .join("|");
+  }
+
+  function refreshClientBlocksIfChanged() {
+    var before = getClientBlocksSignature();
+    return loadClientBlocks().then(function () {
+      syncTabsVisibility();
+      var after = getClientBlocksSignature();
+      if (before !== after) {
+        currentView = resolveAllowedView(currentView) || "stock";
+        renderView(currentView);
+      }
+      return after !== before;
+    });
+  }
 
   function normalizePlatform(value) {
     var normalized = String(value || "").trim().toUpperCase();
-    return normalized === "PC" ? "PC" : "TSD";
+    if (normalized === "PC") {
+      return "PC";
+    }
+    if (normalized === "BOTH" || normalized === "PC+TSD" || normalized === "PC_TSD") {
+      return "BOTH";
+    }
+    return "TSD";
+  }
+
+  function hasPcAccess(account) {
+    return !!account && (account.platform === "PC" || account.platform === "BOTH");
   }
 
   function loadAccount() {
@@ -117,6 +211,16 @@
     });
   }
 
+  function loadClientBlocks() {
+    return fetchJson("/api/client-blocks")
+      .then(function (result) {
+        return applyClientBlocks(result && result.blocks);
+      })
+      .catch(function () {
+        return applyClientBlocks(null);
+      });
+  }
+
   function formatDate(value) {
     if (!value) {
       return "-";
@@ -178,6 +282,65 @@
       .replace(/'/g, "&#39;");
   }
 
+  function normalizeSearchQuery(value) {
+    return String(value || "").trim().toLowerCase();
+  }
+
+  function matchesItemSearch(entry, normalizedQuery, includeLocationCode) {
+    if (!normalizedQuery) {
+      return true;
+    }
+
+    if (entry.itemName && entry.itemName.toLowerCase().indexOf(normalizedQuery) !== -1) {
+      return true;
+    }
+    if (entry.brand && entry.brand.toLowerCase().indexOf(normalizedQuery) !== -1) {
+      return true;
+    }
+    if (entry.volume && entry.volume.toLowerCase().indexOf(normalizedQuery) !== -1) {
+      return true;
+    }
+    if (entry.barcode && entry.barcode.toLowerCase().indexOf(normalizedQuery) !== -1) {
+      return true;
+    }
+    if (entry.gtin && entry.gtin.toLowerCase().indexOf(normalizedQuery) !== -1) {
+      return true;
+    }
+    if (includeLocationCode && entry.locationCode && entry.locationCode.toLowerCase().indexOf(normalizedQuery) !== -1) {
+      return true;
+    }
+
+    return false;
+  }
+
+  function setCachedItems(items) {
+    cachedItems = Array.isArray(items) ? items : [];
+    cachedItemsById = {};
+    cachedItems.forEach(function (item) {
+      cachedItemsById[Number(item.id)] = {
+        itemId: Number(item.id),
+        name: item.name || "",
+        barcode: item.barcode || "",
+        gtin: item.gtin || "",
+        brand: item.brand || "",
+        volume: item.volume || "",
+        base_uom: item.base_uom_code || item.base_uom || "",
+      };
+    });
+  }
+
+  function setCachedLocations(locations) {
+    cachedLocations = Array.isArray(locations) ? locations : [];
+    cachedLocationsById = {};
+    cachedLocations.forEach(function (loc) {
+      cachedLocationsById[Number(loc.id)] = {
+        locationId: Number(loc.id),
+        code: loc.code || "",
+        name: loc.name || "",
+      };
+    });
+  }
+
   function renderLogin() {
     return (
       '<section class="pc-login-card">' +
@@ -222,13 +385,16 @@
           if (!deviceId) {
             throw new Error("NO_DEVICE_ID");
           }
-          if (platform !== "PC") {
+          if (platform !== "PC" && platform !== "BOTH") {
             throw new Error("WRONG_PLATFORM");
           }
+          applyClientBlocks(result && result.blocks);
           var account = { device_id: deviceId, login: login, platform: platform };
           saveAccount(account);
           setAccountLabel(account);
           setLoginState(true);
+          currentView = resolveAllowedView(currentView) || "stock";
+          syncTabsVisibility();
           renderView(currentView);
         })
         .catch(function (error) {
@@ -242,7 +408,7 @@
           } else if (code === "DEVICE_BLOCKED") {
             message = "Аккаунт заблокирован. Обратитесь к оператору.";
           } else if (code === "WRONG_PLATFORM") {
-            message = "Этот аккаунт предназначен для ТСД.";
+            message = "Этот аккаунт не имеет доступа к ПК.";
           }
           setStatus(message);
         });
@@ -284,6 +450,35 @@
       '    <div id="stockStatus" class="pc-status"></div>' +
       "  </div>" +
       '  <div id="stockTableWrap"></div>' +
+      "</section>"
+    );
+  }
+
+  function renderCatalog() {
+    return (
+      '<section class="pc-card">' +
+      '  <div class="section-title">Каталог товаров</div>' +
+      '  <div class="pc-toolbar">' +
+      '    <div class="form-field">' +
+      '      <label class="form-label" for="catalogSearchInput">Поиск</label>' +
+      '      <input class="form-input" id="catalogSearchInput" type="text" autocomplete="off" placeholder="Название, бренд, объем, SKU, GTIN, штрихкод" />' +
+      "    </div>" +
+      '    <div class="pc-toolbar-actions">' +
+      '      <button id="catalogRefreshBtn" class="btn btn-outline" type="button">Обновить</button>' +
+      "    </div>" +
+      '    <div id="catalogStatus" class="pc-status"></div>' +
+      "  </div>" +
+      '  <div class="pc-note">Поиск работает по тем же полям, что и в остатках: название, бренд, объем, SKU, GTIN и штрихкод.</div>' +
+      '  <div id="catalogTableWrap"></div>' +
+      "</section>"
+    );
+  }
+
+  function renderNoAccess() {
+    return (
+      '<section class="pc-card">' +
+      '  <div class="section-title">Доступ ограничен</div>' +
+      '  <div class="pc-note">Все блоки ПК-клиента сейчас временно отключены администратором.</div>' +
       "</section>"
     );
   }
@@ -341,6 +536,66 @@
     );
   }
 
+  function renderCatalogTable(rows) {
+    if (!rows || !rows.length) {
+      return '<div class="empty-state">Товары не найдены.</div>';
+    }
+
+    var body = rows
+      .map(function (row) {
+        return (
+          "<tr>" +
+          "<td>" +
+          escapeHtml(String(row.itemId || "-")) +
+          "</td>" +
+          "<td>" +
+          escapeHtml(row.itemName || "-") +
+          "</td>" +
+          "<td>" +
+          escapeHtml(row.brand || "-") +
+          "</td>" +
+          "<td>" +
+          escapeHtml(row.volume || "-") +
+          "</td>" +
+          "<td>" +
+          escapeHtml(row.barcode || "-") +
+          "</td>" +
+          "<td>" +
+          escapeHtml(row.gtin || "-") +
+          "</td>" +
+          "<td>" +
+          escapeHtml(row.baseUom || "-") +
+          "</td>" +
+          "</tr>"
+        );
+      })
+      .join("");
+
+    return (
+      '<table class="pc-table">' +
+      "<thead><tr>" +
+      "<th>ID</th>" +
+      "<th>Товар</th>" +
+      "<th>Бренд</th>" +
+      "<th>Объем</th>" +
+      "<th>SKU / ШК</th>" +
+      "<th>GTIN</th>" +
+      "<th>Ед.</th>" +
+      "</tr></thead>" +
+      "<tbody>" +
+      body +
+      "</tbody>" +
+      "</table>"
+    );
+  }
+
+  function loadCatalogData() {
+    return fetchJson("/api/items").then(function (items) {
+      setCachedItems(items);
+      return cachedItems;
+    });
+  }
+
   function loadStockData() {
     return Promise.all([
       fetchJson("/api/items"),
@@ -348,32 +603,10 @@
       fetchJson("/api/stock"),
       fetchJson("/api/hu-stock"),
     ]).then(function (payloads) {
-      cachedItems = Array.isArray(payloads[0]) ? payloads[0] : [];
-      cachedLocations = Array.isArray(payloads[1]) ? payloads[1] : [];
+      setCachedItems(payloads[0]);
+      setCachedLocations(payloads[1]);
       var stockRows = Array.isArray(payloads[2]) ? payloads[2] : [];
       var huRows = Array.isArray(payloads[3]) ? payloads[3] : [];
-
-      cachedItemsById = {};
-      cachedItems.forEach(function (item) {
-        cachedItemsById[Number(item.id)] = {
-          itemId: Number(item.id),
-          name: item.name || "",
-          barcode: item.barcode || "",
-          gtin: item.gtin || "",
-          brand: item.brand || "",
-          volume: item.volume || "",
-          base_uom: item.base_uom_code || item.base_uom || "",
-        };
-      });
-
-      cachedLocationsById = {};
-      cachedLocations.forEach(function (loc) {
-        cachedLocationsById[Number(loc.id)] = {
-          locationId: Number(loc.id),
-          code: loc.code || "",
-          name: loc.name || "",
-        };
-      });
 
       cachedStockRows = stockRows.map(function (row) {
         var item = cachedItemsById[Number(row.item_id)] || {};
@@ -470,7 +703,7 @@
       if (!tableWrap) {
         return;
       }
-      var query = searchInput ? searchInput.value.trim().toLowerCase() : "";
+      var query = normalizeSearchQuery(searchInput ? searchInput.value : "");
       var locationId = locationSelect ? Number(locationSelect.value) : 0;
       var hu = huSelect ? String(huSelect.value || "").trim() : "";
       var source = cachedCombinedRows.length ? cachedCombinedRows : cachedStockRows;
@@ -482,17 +715,7 @@
         if (hu && row.hu !== hu) {
           return false;
         }
-        if (!query) {
-          return true;
-        }
-        return (
-          (row.itemName && row.itemName.toLowerCase().indexOf(query) !== -1) ||
-          (row.brand && row.brand.toLowerCase().indexOf(query) !== -1) ||
-          (row.volume && row.volume.toLowerCase().indexOf(query) !== -1) ||
-          (row.barcode && row.barcode.toLowerCase().indexOf(query) !== -1) ||
-          (row.gtin && row.gtin.toLowerCase().indexOf(query) !== -1) ||
-          (row.locationCode && row.locationCode.toLowerCase().indexOf(query) !== -1)
-        );
+        return matchesItemSearch(row, query, true);
       });
 
       setStatus("Строк: " + rows.length);
@@ -590,6 +813,87 @@
     if (huSelect) {
       huSelect.addEventListener("change", renderRows);
     }
+  }
+
+  function wireCatalog() {
+    var searchInput = document.getElementById("catalogSearchInput");
+    var refreshBtn = document.getElementById("catalogRefreshBtn");
+    var statusEl = document.getElementById("catalogStatus");
+    var tableWrap = document.getElementById("catalogTableWrap");
+    var debounce = null;
+
+    function setStatus(text) {
+      if (statusEl) {
+        statusEl.textContent = text || "";
+      }
+    }
+
+    function buildRows() {
+      return cachedItems
+        .map(function (item) {
+          return {
+            itemId: Number(item.id) || 0,
+            itemName: item.name || "",
+            brand: item.brand || "",
+            volume: item.volume || "",
+            barcode: item.barcode || "",
+            gtin: item.gtin || "",
+            baseUom: item.base_uom_code || item.base_uom || "",
+          };
+        })
+        .sort(function (left, right) {
+          var leftName = String(left.itemName || "").toLowerCase();
+          var rightName = String(right.itemName || "").toLowerCase();
+          if (leftName !== rightName) {
+            return leftName < rightName ? -1 : 1;
+          }
+          return left.itemId - right.itemId;
+        });
+    }
+
+    function renderRows() {
+      if (!tableWrap) {
+        return;
+      }
+
+      var query = normalizeSearchQuery(searchInput ? searchInput.value : "");
+      var rows = buildRows().filter(function (row) {
+        return matchesItemSearch(row, query, false);
+      });
+
+      setStatus("Товаров: " + rows.length);
+      tableWrap.innerHTML = renderCatalogTable(rows);
+    }
+
+    function loadAndRender() {
+      setStatus("Загрузка...");
+      loadCatalogData()
+        .then(function () {
+          renderRows();
+        })
+        .catch(function () {
+          setStatus("Ошибка загрузки каталога");
+          if (tableWrap) {
+            tableWrap.innerHTML = '<div class="empty-state">Данные недоступны.</div>';
+          }
+        });
+    }
+
+    function scheduleRender() {
+      if (debounce) {
+        clearTimeout(debounce);
+      }
+      debounce = window.setTimeout(renderRows, 150);
+    }
+
+    if (searchInput) {
+      searchInput.addEventListener("input", scheduleRender);
+    }
+    if (refreshBtn) {
+      refreshBtn.addEventListener("click", loadAndRender);
+    }
+
+    loadAndRender();
   }
 
   function renderOrders() {
@@ -1270,7 +1574,7 @@
         setStatus("Строки " + unresolvedLines.join(", ") + ": выберите товар (доступен поиск по GTIN/названию).");
         return;
       }
-      if (!account || account.platform !== "PC") {
+      if (!hasPcAccess(account)) {
         setStatus("Сессия неактивна. Войдите повторно.");
         return;
       }
@@ -1472,7 +1776,7 @@
           setRequestStatus("Выбран текущий статус.");
           return;
         }
-        if (!account || account.platform !== "PC") {
+        if (!hasPcAccess(account)) {
           setRequestStatus("Сессия неактивна. Войдите повторно.");
           return;
         }
@@ -1639,7 +1943,25 @@
       return;
     }
 
-    if (view === "orders") {
+    syncTabsVisibility();
+    var allowedView = resolveAllowedView(view);
+    if (!allowedView) {
+      currentView = "stock";
+      setActiveTab("");
+      app.innerHTML = renderNoAccess();
+      return;
+    }
+
+    currentView = allowedView;
+    setActiveTab(allowedView);
+
+    if (allowedView === "catalog") {
+      app.innerHTML = renderCatalog();
+      wireCatalog();
+      return;
+    }
+
+    if (allowedView === "orders") {
       app.innerHTML = renderOrders();
       wireOrders();
       return;
@@ -1658,7 +1980,9 @@
 
   function init() {
     var account = loadAccount();
-    if (!account || account.platform !== "PC") {
+    if (!hasPcAccess(account)) {
+      applyClientBlocks(null);
+      syncTabsVisibility();
       setLoginState(false);
       setAccountLabel(null);
       if (app) {
@@ -1670,14 +1994,23 @@
 
     setLoginState(true);
     setAccountLabel(account);
-    renderView(currentView);
+    syncTabsVisibility();
+    if (app) {
+      app.innerHTML = '<section class="pc-card"><div class="pc-status">Загрузка...</div></section>';
+    }
+    loadClientBlocks().then(function () {
+      currentView = resolveAllowedView(currentView) || "stock";
+      renderView(currentView);
+    });
   }
 
   tabs.forEach(function (tab) {
     tab.addEventListener("click", function () {
       var view = tab.getAttribute("data-view") || "stock";
+      if (resolveAllowedView(view) !== view) {
+        return;
+      }
       currentView = view;
-      setActiveTab(view);
       renderView(view);
     });
   });
@@ -1685,6 +2018,8 @@
   if (logoutBtn) {
     logoutBtn.addEventListener("click", function () {
       clearAccount();
+      applyClientBlocks(null);
+      syncTabsVisibility();
       setAccountLabel(null);
       setLoginState(false);
       if (app) {
@@ -1693,6 +2028,20 @@
       }
     });
   }
+
+  window.addEventListener("focus", function () {
+    if (!hasPcAccess(loadAccount())) {
+      return;
+    }
+    refreshClientBlocksIfChanged();
+  });
+
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden || !hasPcAccess(loadAccount())) {
+      return;
+    }
+    refreshClientBlocksIfChanged();
+  });
 
   init();
 })();

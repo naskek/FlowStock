@@ -2,54 +2,105 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Администрирование"
-        Height="460" Width="760"
+        Height="720" Width="820"
         WindowStartupLocation="CenterOwner">
-    <Grid Margin="12">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
-        </Grid.RowDefinitions>
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <Grid Margin="12">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0"
+            <TextBlock Grid.Row="0"
                    Text="Удаление данных выполняется во вкладках WPF и доступно только в админ-режиме."
                    TextWrapping="Wrap"
                    Margin="0,0,0,8" />
 
-        <GroupBox Header="Резервные копии" Grid.Row="1">
-            <StackPanel Margin="8">
-                <TextBlock Text="Текущая база данных" />
-                <TextBox x:Name="DatabasePathBox" Margin="0,4,0,8" IsReadOnly="True" />
-                <Button Content="Создать резервную копию" Width="220" HorizontalAlignment="Left" Click="CreateBackup_Click" />
-            </StackPanel>
-        </GroupBox>
+            <GroupBox Header="Резервные копии" Grid.Row="1">
+                <StackPanel Margin="8">
+                    <TextBlock Text="Текущая база данных" />
+                    <TextBox x:Name="DatabasePathBox" Margin="0,4,0,8" IsReadOnly="True" />
+                    <Button Content="Создать резервную копию" Width="220" HorizontalAlignment="Left" Click="CreateBackup_Click" />
+                </StackPanel>
+            </GroupBox>
 
-        <GroupBox Header="Режим удаления" Grid.Row="2" Margin="0,12,0,0">
-            <StackPanel Margin="8">
-                <TextBlock x:Name="DeleteModeStatusText" FontWeight="SemiBold" />
-                <TextBlock Text="При включении станут доступны кнопки удаления во вкладках: Заказы, Товары, Места хранения, Контрагенты."
+            <GroupBox Header="Режим удаления" Grid.Row="2" Margin="0,12,0,0">
+                <StackPanel Margin="8">
+                    <TextBlock x:Name="DeleteModeStatusText" FontWeight="SemiBold" />
+                    <TextBlock Text="При включении станут доступны кнопки удаления во вкладках: Заказы, Товары, Места хранения, Контрагенты."
                            Margin="0,6,0,10"
                            TextWrapping="Wrap" />
-                <Button x:Name="ToggleDeleteModeButton" Width="240" HorizontalAlignment="Left" Click="ToggleDeleteMode_Click" />
-            </StackPanel>
-        </GroupBox>
+                    <Button x:Name="ToggleDeleteModeButton" Width="240" HorizontalAlignment="Left" Click="ToggleDeleteMode_Click" />
+                </StackPanel>
+            </GroupBox>
 
-        <GroupBox Header="Очистка перед стартом" Grid.Row="3" Margin="0,12,0,0">
-            <StackPanel Margin="8">
-                <TextBlock Text="Удаляет тестовые операции: документы, строки, ledger, заказы, imported events/errors."
-                           TextWrapping="Wrap" />
-                <TextBlock Text="Справочники остаются без изменений."
-                           Margin="0,4,0,10"
-                           TextWrapping="Wrap" />
-                <Button Content="Очистить операции" Width="220" HorizontalAlignment="Left" Click="ClearOperations_Click" />
-            </StackPanel>
-        </GroupBox>
+            <GroupBox Header="Доступ к веб-блокам" Grid.Row="3" Margin="0,12,0,0">
+                <Grid Margin="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="24" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
 
-        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
-            <Button Content="Закрыть" Width="120" IsCancel="True" />
-        </StackPanel>
-    </Grid>
+                    <StackPanel Grid.Row="0" Grid.Column="0">
+                        <TextBlock Text="ПК веб-клиент" FontWeight="SemiBold" />
+                        <TextBlock Text="Отключенный блок скрывается у всех пользователей ПК."
+                                   Margin="0,4,0,10"
+                                   TextWrapping="Wrap" />
+                        <StackPanel x:Name="PcBlocksPanel" />
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="0" Grid.Column="2">
+                        <TextBlock Text="ТСД веб-клиент" FontWeight="SemiBold" />
+                        <TextBlock Text="Отключенные пункты не показываются на ТСД и не открываются по прямому маршруту."
+                                   Margin="0,4,0,10"
+                                   TextWrapping="Wrap" />
+                        <TextBlock Text="Основные блоки" FontWeight="SemiBold" />
+                        <StackPanel x:Name="TsdMainBlocksPanel" Margin="0,6,0,10" />
+                        <TextBlock Text="Операции" FontWeight="SemiBold" />
+                        <StackPanel x:Name="TsdOperationBlocksPanel" Margin="0,6,0,0" />
+                    </StackPanel>
+
+                    <TextBlock x:Name="ClientBlocksStatusText"
+                               Grid.Row="1"
+                               Grid.ColumnSpan="3"
+                               Margin="0,12,0,10"
+                               TextWrapping="Wrap" />
+
+                    <Button x:Name="SaveClientBlocksButton"
+                            Grid.Row="2"
+                            Grid.ColumnSpan="3"
+                            Content="Сохранить доступ к блокам"
+                            Width="240"
+                            HorizontalAlignment="Left"
+                            Click="SaveClientBlocks_Click" />
+                </Grid>
+            </GroupBox>
+
+            <GroupBox Header="Очистка перед стартом" Grid.Row="4" Margin="0,12,0,0">
+                <StackPanel Margin="8">
+                    <TextBlock Text="Удаляет тестовые операции: документы, строки, ledger, заказы, imported events/errors."
+                               TextWrapping="Wrap" />
+                    <TextBlock Text="Справочники остаются без изменений."
+                               Margin="0,4,0,10"
+                               TextWrapping="Wrap" />
+                    <Button Content="Очистить операции" Width="220" HorizontalAlignment="Left" Click="ClearOperations_Click" />
+                </StackPanel>
+            </GroupBox>
+
+            <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+                <Button Content="Закрыть" Width="120" IsCancel="True" />
+            </StackPanel>
+        </Grid>
+    </ScrollViewer>
 </Window>
 

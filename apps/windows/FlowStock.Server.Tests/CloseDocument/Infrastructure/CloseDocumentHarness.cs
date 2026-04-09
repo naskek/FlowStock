@@ -129,7 +129,8 @@ internal sealed class CloseDocumentHarness
             FromLocationId = line.FromLocationId,
             ToLocationId = line.ToLocationId,
             FromHu = line.FromHu,
-            ToHu = line.ToHu
+            ToHu = line.ToHu,
+            PackSingleHu = line.PackSingleHu
         };
     }
 
@@ -579,11 +580,73 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.GetLedgerTotalsByItem())
             .Returns(() => BuildTotalsByItem());
 
+        _store.Setup(store => store.GetLedgerTotalsByHu())
+            .Returns(() => BuildTotalsByHu());
+
         _store.Setup(store => store.GetHuStockRows())
             .Returns(() => BuildHuStockRows());
 
         _store.Setup(store => store.GetHuByCode(It.IsAny<string>()))
             .Returns<string>(code => _hus.TryGetValue(code.Trim(), out var hu) ? hu : null);
+
+        _store.Setup(store => store.GetHus(It.IsAny<string?>(), It.IsAny<int>()))
+            .Returns<string?, int>((_, take) => _hus.Values
+                .OrderBy(hu => hu.Code, StringComparer.OrdinalIgnoreCase)
+                .Take(take)
+                .ToArray());
+
+        _store.Setup(store => store.CreateHuRecord(It.IsAny<string?>()))
+            .Returns<string?>(createdBy =>
+            {
+                var code = $"HU-{_hus.Count + 1:000000}";
+                var hu = new HuRecord
+                {
+                    Id = _hus.Count + 1,
+                    Code = code,
+                    Status = "ACTIVE",
+                    CreatedAt = DateTime.UtcNow,
+                    CreatedBy = createdBy
+                };
+                _hus[code] = hu;
+                return hu;
+            });
+
+        _store.Setup(store => store.CreateHuRecord(It.IsAny<string>(), It.IsAny<string?>()))
+            .Returns<string, string?>((code, createdBy) =>
+            {
+                var normalized = code.Trim();
+                var hu = new HuRecord
+                {
+                    Id = _hus.Count + 1,
+                    Code = normalized,
+                    Status = "ACTIVE",
+                    CreatedAt = DateTime.UtcNow,
+                    CreatedBy = createdBy
+                };
+                _hus[normalized] = hu;
+                return hu;
+            });
+
+        _store.Setup(store => store.ReopenHu(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>()))
+            .Callback<string, string?, string?>((code, reopenedBy, note) =>
+            {
+                var normalized = code.Trim();
+                if (!_hus.TryGetValue(normalized, out var current))
+                {
+                    return;
+                }
+
+                _hus[normalized] = new HuRecord
+                {
+                    Id = current.Id,
+                    Code = current.Code,
+                    Status = "ACTIVE",
+                    CreatedAt = current.CreatedAt,
+                    CreatedBy = current.CreatedBy,
+                    ClosedAt = null,
+                    Note = note ?? current.Note
+                };
+            });
 
         _store.Setup(store => store.AddDoc(It.IsAny<Doc>()))
             .Returns<Doc>(doc =>
@@ -637,10 +700,27 @@ internal sealed class CloseDocumentHarness
                     FromLocationId = line.FromLocationId,
                     ToLocationId = line.ToLocationId,
                     FromHu = line.FromHu,
-                    ToHu = line.ToHu
+                    ToHu = line.ToHu,
+                    PackSingleHu = line.PackSingleHu
                 });
 
                 return lineId;
+            });
+
+        _store.Setup(store => store.DeleteDocLine(It.IsAny<long>()))
+            .Callback<long>(docLineId =>
+            {
+                foreach (var pair in _linesByDoc)
+                {
+                    var index = pair.Value.FindIndex(line => line.Id == docLineId);
+                    if (index < 0)
+                    {
+                        continue;
+                    }
+
+                    pair.Value.RemoveAt(index);
+                    return;
+                }
             });
 
         _store.Setup(store => store.DeleteDocLines(It.IsAny<long>()))
@@ -802,7 +882,8 @@ internal sealed class CloseDocumentHarness
                             FromLocationId = current.FromLocationId,
                             ToLocationId = current.ToLocationId,
                             FromHu = current.FromHu,
-                            ToHu = current.ToHu
+                            ToHu = current.ToHu,
+                            PackSingleHu = current.PackSingleHu
                         };
                         return;
                     }
@@ -892,6 +973,38 @@ internal sealed class CloseDocumentHarness
         foreach (var entry in _postedLedger)
         {
             totals[entry.ItemId] = totals.TryGetValue(entry.ItemId, out var current)
+                ? current + entry.QtyDelta
+                : entry.QtyDelta;
+        }
+
+        return totals;
+    }
+
+    private IReadOnlyDictionary<string, double> BuildTotalsByHu()
+    {
+        var totals = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var balance in _seedBalances)
+        {
+            if (string.IsNullOrWhiteSpace(balance.Key.HuCode))
+            {
+                continue;
+            }
+
+            totals[balance.Key.HuCode!] = totals.TryGetValue(balance.Key.HuCode!, out var current)
+                ? current + balance.Value
+                : balance.Value;
+        }
+
+        foreach (var entry in _postedLedger)
+        {
+            var huCode = NormalizeHu(entry.HuCode);
+            if (string.IsNullOrWhiteSpace(huCode))
+            {
+                continue;
+            }
+
+            totals[huCode] = totals.TryGetValue(huCode, out var current)
                 ? current + entry.QtyDelta
                 : entry.QtyDelta;
         }

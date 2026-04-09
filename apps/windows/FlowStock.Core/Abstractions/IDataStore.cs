@@ -65,6 +65,7 @@ public interface IDataStore
     long AddDocLine(DocLine line);
     void UpdateDocLineQty(long docLineId, double qty, double? qtyInput, string? uomCode);
     void UpdateDocLineHu(long docLineId, string? fromHu, string? toHu);
+    void UpdateDocLinePackSingleHu(long docLineId, bool packSingleHu);
     void UpdateDocLineOrderLineId(long docLineId, long? orderLineId);
     void DeleteDocLine(long docLineId);
     void DeleteDocLines(long docId);
@@ -136,6 +137,8 @@ public interface IDataStore
     void AddMarkingCodes(IReadOnlyList<MarkingCode> codes);
     MarkingOrder? FindMarkingOrderByRequestNumber(string requestNumber);
     void UpdateMarkingOrderStatus(Guid id, string status, DateTime? codesBoundAt, DateTime updatedAt);
+    IReadOnlyList<ClientBlockSetting> GetClientBlockSettings();
+    void SaveClientBlockSettings(IReadOnlyList<ClientBlockSetting> settings);
 
     long AddKmCodeBatch(KmCodeBatch batch);
     void UpdateKmCodeBatchStats(long batchId, int totalCodes, int errorCount);

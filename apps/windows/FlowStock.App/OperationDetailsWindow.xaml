@@ -134,6 +134,17 @@
                         </Style>
                     </DataGridTextColumn.ElementStyle>
                 </DataGridTextColumn>
+                <DataGridTemplateColumn x:Name="DocPackSingleHuColumn" Header="Общий HU" Width="110">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <CheckBox IsChecked="{Binding PackSingleHu, Mode=OneWay}"
+                                      Click="PackSingleHuCheckBox_Click"
+                                      HorizontalAlignment="Center"
+                                      IsEnabled="{Binding RelativeSource={RelativeSource AncestorType=DataGrid}, Path=Tag}"
+                                      ToolTip="Не дробить строку. При автораспределении отмеченные строки могут попасть на один общий HU, если суммарная загрузка паллеты не превышена." />
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
                 <DataGridTemplateColumn x:Name="DocKmColumn" Header="КМ" Width="220">
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>

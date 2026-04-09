@@ -15,5 +15,6 @@ public sealed class DocLineView
     public string? ToLocation { get; init; }
     public string? FromHu { get; init; }
     public string? ToHu { get; init; }
+    public bool PackSingleHu { get; init; }
 }
 

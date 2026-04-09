@@ -10,11 +10,32 @@ services:
       POSTGRES_PASSWORD: flowstock
     volumes:
       - flowstock_pgdata:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 3s
       retries: 20
+
+  migrator:
+    image: postgres:16-alpine
+    container_name: flowstock-pg-dev-migrator
+    depends_on:
+      pg:
+        condition: service_healthy
+    environment:
+      PGHOST: pg
+      PGPORT: 5432
+      PGDATABASE: flowstock
+      PGUSER: flowstock
+      PGPASSWORD: flowstock
+      MIGRATIONS_DIR: /migrations
+      POSTGRES_WAIT_TIMEOUT_SECONDS: ${POSTGRES_WAIT_TIMEOUT_SECONDS:-120}
+    volumes:
+      - ./postgres/migrations:/migrations:ro
+      - ./scripts:/scripts:ro
+    command: ["sh", "/scripts/run_migrations.sh"]
+    restart: "no"
 
 volumes:
   flowstock_pgdata:

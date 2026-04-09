@@ -27,13 +27,10 @@
             <StackPanel Orientation="Horizontal">
                 <Button Content="Обновить" Width="120" Click="Refresh_Click" />
                 <Button Content="Новый" Width="120" Margin="8,0,0,0" Click="New_Click" />
-                <Button x:Name="BlockButton" Content="Заблокировать" Width="140" Margin="8,0,0,0" Click="ToggleActive_Click" />
             </StackPanel>
         </StackPanel>
         <GroupBox Grid.Column="1" Header="Данные аккаунта" Margin="12,0,0,0">
             <StackPanel Margin="8">
-                <TextBlock Text="ID" />
-                <TextBox x:Name="DeviceIdBox" Margin="0,2,0,8" />
                 <TextBlock Text="Логин" />
                 <TextBox x:Name="LoginBox" Margin="0,2,0,8" />
                 <TextBlock Text="Пароль" />
@@ -43,6 +40,7 @@
                 <ComboBox x:Name="PlatformBox" Margin="0,2,0,8">
                     <ComboBoxItem Content="ТСД" Tag="TSD" />
                     <ComboBoxItem Content="ПК" Tag="PC" />
+                    <ComboBoxItem Content="ПК + ТСД" Tag="BOTH" />
                 </ComboBox>
                 <Button Content="Сохранить" Width="140" Click="Save_Click" />
             </StackPanel>

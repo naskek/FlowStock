@@ -266,6 +266,7 @@ public partial class OperationDetailsWindow : Window
                 IsMarked = isMarked,
                 OrderLineDisplay = orderLineDisplay,
                 OrderLineHint = orderLineHint,
+                PackSingleHu = line.PackSingleHu,
                 KmDisplay = kmDisplay,
                 KmDistributeEnabled = kmEnabled,
                 HuDisplay = huDisplay,
@@ -1289,7 +1290,9 @@ public partial class OperationDetailsWindow : Window
             return false;
         }
 
-        var requiredHuCount = (int)Math.Ceiling(line.Qty / maxQtyPerHu);
+        var requiredHuCount = line.PackSingleHu
+            ? 1
+            : (int)Math.Ceiling(line.Qty / maxQtyPerHu);
         var huCodes = new List<string> { selectedHu };
         if (requiredHuCount > 1)
         {
@@ -1503,6 +1506,36 @@ public partial class OperationDetailsWindow : Window
                     DocToCombo.SelectedItem = toLocation;
                 }
             }
+        }
+    }
+
+    private void PackSingleHuCheckBox_Click(object sender, RoutedEventArgs e)
+    {
+        if (_doc == null || _doc.Type != DocType.ProductionReceipt)
+        {
+            return;
+        }
+
+        if (!IsDocEditable())
+        {
+            LoadDocLines();
+            return;
+        }
+
+        if (sender is not System.Windows.Controls.CheckBox checkBox || checkBox.DataContext is not DocLineDisplay lineDisplay)
+        {
+            return;
+        }
+
+        try
+        {
+            _services.Documents.UpdateProductionLinePackSingleHu(_doc.Id, lineDisplay.Id, checkBox.IsChecked == true);
+            LoadDocLines();
+        }
+        catch (Exception ex)
+        {
+            LoadDocLines();
+            MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -1882,6 +1915,7 @@ public partial class OperationDetailsWindow : Window
         DocRecountButton.IsEnabled = isEditable;
 
         var showInventory = doc.Type == DocType.Inventory;
+        DocLinesGrid.Tag = isEditable;
         DocInventoryDbColumn.Visibility = showInventory ? Visibility.Visible : Visibility.Collapsed;
         DocInventoryDiffColumn.Visibility = showInventory ? Visibility.Visible : Visibility.Collapsed;
         DocHuColumn.Visibility = doc.Type == DocType.ProductionReceipt || showHu
@@ -1891,6 +1925,7 @@ public partial class OperationDetailsWindow : Window
             ? Visibility.Visible
             : Visibility.Collapsed;
         DocOrderLineColumn.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
+        DocPackSingleHuColumn.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
         DocFromColumn.Visibility = showFrom ? Visibility.Visible : Visibility.Collapsed;
         DocToColumn.Visibility = showTo ? Visibility.Visible : Visibility.Collapsed;
         KmCodesButton.Visibility = KmUiEnabled && (doc.Type is DocType.ProductionReceipt or DocType.Outbound)
@@ -3677,6 +3712,7 @@ public partial class OperationDetailsWindow : Window
         public bool IsMarked { get; init; }
         public string OrderLineDisplay { get; init; } = string.Empty;
         public string OrderLineHint { get; init; } = string.Empty;
+        public bool PackSingleHu { get; init; }
         public string KmDisplay { get; init; } = string.Empty;
         public bool KmDistributeEnabled { get; init; }
         public string? HuDisplay { get; init; }

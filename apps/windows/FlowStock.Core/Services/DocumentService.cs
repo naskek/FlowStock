@@ -775,6 +775,28 @@ public sealed class DocumentService
         _data.UpdateDocLineQty(docLineId, qty, qtyInput, uomCode);
     }
 
+    public void UpdateProductionLinePackSingleHu(long docId, long docLineId, bool packSingleHu)
+    {
+        var doc = _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
+        if (doc.Status != DocStatus.Draft)
+        {
+            throw new InvalidOperationException("Документ уже закрыт.");
+        }
+
+        if (doc.Type != DocType.ProductionReceipt)
+        {
+            throw new InvalidOperationException("Признак \"в 1 HU\" доступен только для выпуска продукции.");
+        }
+
+        var line = EnsureOrderLineLinks(_data, doc, _data.GetDocLines(docId)).FirstOrDefault(entry => entry.Id == docLineId);
+        if (line == null)
+        {
+            throw new InvalidOperationException("Строка не найдена.");
+        }
+
+        _data.UpdateDocLinePackSingleHu(docLineId, packSingleHu);
+    }
+
     public void AssignDocLineHu(long docId, long docLineId, double qty, string? fromHu, string? toHu)
     {
         if (qty <= 0)
@@ -845,7 +867,8 @@ public sealed class DocumentService
                 FromLocationId = line.FromLocationId,
                 ToLocationId = line.ToLocationId,
                 FromHu = normalizedFromHu,
-                ToHu = normalizedToHu
+                ToHu = normalizedToHu,
+                PackSingleHu = line.PackSingleHu
             });
         });
     }
@@ -897,7 +920,16 @@ public sealed class DocumentService
 
         EnsureHuAssignmentAllowed(_data, doc.Type, line.Id);
 
-        var requiredHuCount = (int)Math.Ceiling(line.Qty / maxQtyPerHu);
+        if (line.PackSingleHu && line.Qty > maxQtyPerHu + 0.000001)
+        {
+            throw new InvalidOperationException(
+                $"Количество {FormatQty(line.Qty)} превышает лимит {FormatQty(maxQtyPerHu)} для одного HU. " +
+                "Снимите признак общего HU или уменьшите количество.");
+        }
+
+        var requiredHuCount = line.PackSingleHu
+            ? 1
+            : (int)Math.Ceiling(line.Qty / maxQtyPerHu);
         if (requiredHuCount <= 1)
         {
             AssignDocLineHu(docId, docLineId, line.Qty, line.FromHu, normalizedHus[0]);
@@ -968,7 +1000,8 @@ public sealed class DocumentService
                     FromLocationId = line.FromLocationId,
                     ToLocationId = line.ToLocationId,
                     FromHu = NormalizeHuValue(line.FromHu),
-                    ToHu = chunk.toHu
+                    ToHu = chunk.toHu,
+                    PackSingleHu = line.PackSingleHu
                 });
             }
         });
@@ -1013,6 +1046,7 @@ public sealed class DocumentService
 
             var itemsById = store.GetItems(null).ToDictionary(item => item.Id, item => item);
             var requiredHuCount = 0;
+            var wholeLines = new List<DocLine>();
             foreach (var line in targetLines)
             {
                 EnsureHuAssignmentAllowed(store, doc.Type, line.Id);
@@ -1032,8 +1066,17 @@ public sealed class DocumentService
                     throw new InvalidOperationException($"Для товара \"{item.Name}\" не задан лимит шт. на HU.");
                 }
 
+                if (line.PackSingleHu)
+                {
+                    wholeLines.Add(line);
+                    continue;
+                }
+
                 requiredHuCount += (int)Math.Ceiling(line.Qty / item.MaxQtyPerHu.Value);
             }
+
+            var wholeLineGroups = BuildProductionReceiptWholeLineGroups(wholeLines, itemsById);
+            requiredHuCount += wholeLineGroups.Count;
 
             var reservedHuCodes = allLines
                 .Where(line => !selectedIds.Contains(line.Id))
@@ -1047,9 +1090,38 @@ public sealed class DocumentService
             usedHuCount = allocatedHuCodes.Count;
 
             var huQueue = new Queue<string>(allocatedHuCodes);
+            var wholeLineHuByLineId = new Dictionary<long, string>();
+            foreach (var group in wholeLineGroups)
+            {
+                var huCode = huQueue.Dequeue();
+                foreach (var line in group)
+                {
+                    wholeLineHuByLineId[line.Id] = huCode;
+                }
+            }
+
             var replacementLines = new List<DocLine>();
             foreach (var line in targetLines)
             {
+                if (line.PackSingleHu)
+                {
+                    replacementLines.Add(new DocLine
+                    {
+                        DocId = docId,
+                        OrderLineId = line.OrderLineId,
+                        ItemId = line.ItemId,
+                        Qty = line.Qty,
+                        QtyInput = line.QtyInput,
+                        UomCode = line.UomCode,
+                        FromLocationId = line.FromLocationId,
+                        ToLocationId = line.ToLocationId,
+                        FromHu = NormalizeHuValue(line.FromHu),
+                        ToHu = wholeLineHuByLineId[line.Id],
+                        PackSingleHu = line.PackSingleHu
+                    });
+                    continue;
+                }
+
                 var item = itemsById[line.ItemId];
                 var maxQtyPerHu = item.MaxQtyPerHu!.Value;
                 var ratio = line.QtyInput.HasValue && line.Qty > 0
@@ -1084,7 +1156,8 @@ public sealed class DocumentService
                         FromLocationId = line.FromLocationId,
                         ToLocationId = line.ToLocationId,
                         FromHu = NormalizeHuValue(line.FromHu),
-                        ToHu = huQueue.Dequeue()
+                        ToHu = huQueue.Dequeue(),
+                        PackSingleHu = line.PackSingleHu
                     });
 
                     remainingQty -= chunkQty;
@@ -1227,7 +1300,8 @@ public sealed class DocumentService
             FromLocationId = line.FromLocationId,
             ToLocationId = line.ToLocationId,
             FromHu = line.FromHu,
-            ToHu = line.ToHu
+            ToHu = line.ToHu,
+            PackSingleHu = line.PackSingleHu
         };
     }
 
@@ -1469,6 +1543,36 @@ public sealed class DocumentService
                     var itemLabel = itemsById.TryGetValue(entry.Key, out var name) ? name.Name : $"ID {entry.Key}";
                     check.Errors.Add($"{itemLabel}: на складе {FormatQty(current)}, требуется {FormatQty(entry.Value)}.");
                 }
+            }
+        }
+
+        if (doc.Type == DocType.ProductionReceipt)
+        {
+            var huLoadByCode = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+            foreach (var line in lines)
+            {
+                var item = itemsById.TryGetValue(line.ItemId, out var found) ? found : null;
+                if (item?.MaxQtyPerHu is not double maxQtyPerHu || maxQtyPerHu <= 0 || line.Qty > maxQtyPerHu + 0.000001)
+                {
+                    continue;
+                }
+
+                var (_, toHu) = ResolveLedgerHu(doc, line, docHu);
+                var normalizedToHu = NormalizeHuValue(toHu);
+                if (string.IsNullOrWhiteSpace(normalizedToHu))
+                {
+                    continue;
+                }
+
+                huLoadByCode[normalizedToHu] = huLoadByCode.TryGetValue(normalizedToHu, out var currentLoad)
+                    ? currentLoad + (line.Qty / maxQtyPerHu)
+                    : (line.Qty / maxQtyPerHu);
+            }
+
+            foreach (var pair in huLoadByCode.Where(entry => entry.Value > 1.000001))
+            {
+                check.Errors.Add(
+                    $"HU {pair.Key}: суммарная загрузка {FormatQty(pair.Value)} паллеты превышает 1. Разбейте строки по разным HU.");
             }
         }
 
@@ -1774,6 +1878,80 @@ public sealed class DocumentService
         }
 
         return codes;
+    }
+
+    private static List<List<DocLine>> BuildProductionReceiptWholeLineGroups(
+        IReadOnlyList<DocLine> wholeLines,
+        IReadOnlyDictionary<long, Item> itemsById)
+    {
+        if (wholeLines.Count == 0)
+        {
+            return new List<List<DocLine>>();
+        }
+
+        var ordered = wholeLines
+            .Select(line =>
+            {
+                var item = itemsById[line.ItemId];
+                var maxQtyPerHu = item.MaxQtyPerHu!.Value;
+                if (line.Qty > maxQtyPerHu + 0.000001)
+                {
+                    throw new InvalidOperationException(
+                        $"Товар \"{item.Name}\" количеством {FormatQty(line.Qty)} не помещается в один общий HU: лимит {FormatQty(maxQtyPerHu)}.");
+                }
+
+                return new WholeLineLoad(line, line.Qty / maxQtyPerHu);
+            })
+            .OrderByDescending(entry => entry.Load)
+            .ThenBy(entry => entry.Line.Id)
+            .ToList();
+
+        var groups = new List<WholeLineGroup>();
+        foreach (var entry in ordered)
+        {
+            var placed = false;
+            foreach (var group in groups)
+            {
+                if (!group.TryAdd(entry))
+                {
+                    continue;
+                }
+
+                placed = true;
+                break;
+            }
+
+            if (!placed)
+            {
+                var group = new WholeLineGroup();
+                group.TryAdd(entry);
+                groups.Add(group);
+            }
+        }
+
+        return groups
+            .Select(group => group.Lines.ToList())
+            .ToList();
+    }
+
+    private sealed record WholeLineLoad(DocLine Line, double Load);
+
+    private sealed class WholeLineGroup
+    {
+        public List<DocLine> Lines { get; } = new();
+        private double Load { get; set; }
+
+        public bool TryAdd(WholeLineLoad line)
+        {
+            if (Load + line.Load > 1.000001)
+            {
+                return false;
+            }
+
+            Lines.Add(line.Line);
+            Load += line.Load;
+            return true;
+        }
     }
 
     private static (string? fromHu, string? toHu) ResolveLedgerHu(Doc doc, DocLine line, string? docHu)

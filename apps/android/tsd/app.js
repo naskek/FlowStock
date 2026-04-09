@@ -47,6 +47,63 @@
   };
 
   var NAV_ORIGIN_KEY = "tsdNavOrigin";
+  var clientBlocks = getDefaultClientBlocks();
+  var clientBlocksLoadPromise = null;
+
+  function getDefaultClientBlocks() {
+    return {
+      tsd_operations: true,
+      tsd_stock: true,
+      tsd_catalog: true,
+      tsd_orders: true,
+      tsd_inbound: true,
+      tsd_production_receipt: true,
+      tsd_outbound: true,
+      tsd_move: true,
+      tsd_write_off: true,
+      tsd_inventory: true,
+    };
+  }
+
+  function applyClientBlocks(raw) {
+    var next = getDefaultClientBlocks();
+    if (raw && typeof raw === "object") {
+      Object.keys(next).forEach(function (key) {
+        if (raw[key] === false) {
+          next[key] = false;
+        }
+      });
+    }
+    clientBlocks = next;
+    return clientBlocks;
+  }
+
+  function fetchClientBlocks() {
+    return fetch("/api/client-blocks", { method: "GET", cache: "no-store" })
+      .then(function (response) {
+        return response
+          .json()
+          .catch(function () {
+            return null;
+          })
+          .then(function (payload) {
+            if (!response.ok) {
+              throw new Error("CLIENT_BLOCKS_ERROR");
+            }
+            return applyClientBlocks(payload && payload.blocks);
+          });
+      })
+      .catch(function () {
+        return applyClientBlocks(null);
+      });
+  }
+
+  function ensureClientBlocksLoaded(forceRefresh) {
+    if (forceRefresh || !clientBlocksLoadPromise) {
+      clientBlocksLoadPromise = fetchClientBlocks();
+    }
+    return clientBlocksLoadPromise;
+  }
 
   function normalizeScannerMode(value) {
     var mode = String(value || "").toLowerCase();
@@ -781,10 +838,20 @@
 
   var OPS = {
     INBOUND: { label: "Приемка", prefix: "IN" },
+    PRODUCTION_RECEIPT: { label: "Выпуск продукции", prefix: "PRD" },
     OUTBOUND: { label: "Отгрузка", prefix: "OUT" },
     MOVE: { label: "Перемещение", prefix: "MOVE" },
     WRITE_OFF: { label: "Списание", prefix: "WO" },
     INVENTORY: { label: "Инвентаризация", prefix: "INV" },
+  };
+
+  var OP_BLOCK_KEYS = {
+    INBOUND: "tsd_inbound",
+    PRODUCTION_RECEIPT: "tsd_production_receipt",
+    OUTBOUND: "tsd_outbound",
+    MOVE: "tsd_move",
+    WRITE_OFF: "tsd_write_off",
+    INVENTORY: "tsd_inventory",
   };
 
   var WRITE_OFF_REASONS = [
@@ -798,11 +865,62 @@
 
   var REQUIRED_FIELDS = {
     INBOUND: ["to"],
+    PRODUCTION_RECEIPT: ["to"],
     OUTBOUND: ["from"],
     MOVE: ["from", "to"],
     WRITE_OFF: ["from", "reason_code"],
     INVENTORY: ["location"],
   };
+
+  function isClientBlockEnabled(key) {
+    return clientBlocks[key] !== false;
+  }
+
+  function isOperationEnabled(op) {
+    var normalizedOp = String(op || "").toUpperCase();
+    var blockKey = OP_BLOCK_KEYS[normalizedOp];
+    if (!blockKey) {
+      return false;
+    }
+    return isClientBlockEnabled("tsd_operations") && isClientBlockEnabled(blockKey);
+  }
+
+  function getEnabledOperations() {
+    return Object.keys(OPS).filter(function (op) {
+      return isOperationEnabled(op);
+    });
+  }
+
+  function hasOperationsMenu() {
+    return getEnabledOperations().length > 0;
+  }
+
+  function isRouteAllowed(route) {
+    if (!route) {
+      return true;
+    }
+
+    if (route.name === "home" || route.name === "login" || route.name === "settings" || route.name === "hu") {
+      return true;
+    }
+    if (route.name === "operations" || route.name === "new") {
+      return hasOperationsMenu();
+    }
+    if (route.name === "docs") {
+      return !!route.op && isOperationEnabled(route.op);
+    }
+    if (route.name === "stock") {
+      return isClientBlockEnabled("tsd_stock");
+    }
+    if (route.name === "items") {
+      return isClientBlockEnabled("tsd_catalog");
+    }
+    if (route.name === "orders" || route.name === "order") {
+      return isClientBlockEnabled("tsd_orders");
+    }
+
+    return true;
+  }
 
   function escapeHtml(value) {
     return String(value || "")
@@ -815,7 +933,13 @@
 
   function normalizePlatform(value) {
     var normalized = String(value || "").trim().toUpperCase();
-    return normalized === "PC" ? "PC" : "TSD";
+    if (normalized === "PC") {
+      return "PC";
+    }
+    if (normalized === "BOTH" || normalized === "PC+TSD" || normalized === "PC_TSD") {
+      return "BOTH";
+    }
+    return "TSD";
   }
 
   function storeAccount(deviceId, platform, login) {
@@ -1059,8 +1183,14 @@
     }
 
     var parts = path.split("/");
+    if (parts[0] === "operations") {
+      return { name: "operations" };
+    }
     if (parts[0] === "docs" && parts[1]) {
       return { name: "docs", op: decodeURIComponent(parts[1]) };
+    }
+    if (parts[0] === "docs") {
+      return { name: "docs" };
     }
     if (parts[0] === "doc" && parts[1]) {
       return { name: "doc", id: decodeURIComponent(parts[1]) };
@@ -1127,16 +1257,34 @@
           navigate("/home");
           return;
         }
-        updateHeader(route);
-        renderRouteInternal(route);
+        ensureClientBlocksLoaded(true)
+          .then(function () {
+            if (!isRouteAllowed(route)) {
+              navigate("/home");
+              return;
+            }
+            updateHeader(route);
+            renderRouteInternal(route);
+          })
+          .catch(function () {
+            updateHeader(route);
+            renderRouteInternal(route);
+          });
       })
       .catch(function () {
         if (route.name !== "login") {
           navigate("/login");
           return;
         }
-        updateHeader(route);
-        renderRouteInternal(route);
+        ensureClientBlocksLoaded(true)
+          .then(function () {
+            updateHeader(route);
+            renderRouteInternal(route);
+          })
+          .catch(function () {
+            updateHeader(route);
+            renderRouteInternal(route);
+          });
       });
   }
 
@@ -1149,6 +1297,10 @@
     }
 
     if (route.name === "docs") {
+      if (!route.op || !isOperationEnabled(route.op)) {
+        navigate("/home");
+        return;
+      }
       app.innerHTML = renderLoading();
       Promise.all([
         TsdStorage.apiGetDocs(route.op).catch(function () {
@@ -1193,9 +1345,13 @@
       return;
     }
 
-    if (route.name === "new") {
-      app.innerHTML = renderNewOp();
-      wireNewOp();
+    if (route.name === "operations" || route.name === "new") {
+      if (!hasOperationsMenu()) {
+        navigate("/home");
+        return;
+      }
+      app.innerHTML = renderOperationsMenu();
+      wireOperationsMenu();
       applySoftKeyboardSetting(app);
       return;
     }
@@ -1208,6 +1364,10 @@
             if (!doc) {
               app.innerHTML = renderError("Документ не найден");
               applySoftKeyboardSetting(app);
+              return;
+            }
+            if (!isOperationEnabled(doc.op)) {
+              navigate("/home");
               return;
             }
             return TsdStorage.apiGetDocLines(route.id)
@@ -1235,6 +1395,10 @@
             if (!doc) {
               app.innerHTML = renderError("Документ не найден");
               applySoftKeyboardSetting(app);
+              return;
+            }
+            if (!isOperationEnabled(doc.op)) {
+              navigate("/home");
               return;
             }
             app.innerHTML = renderDoc(doc);
@@ -1316,6 +1480,21 @@
     applySoftKeyboardSetting(app);
   }
 
+  function canRefreshClientBlocksForCurrentRoute() {
+    if (!currentRoute) {
+      return false;
+    }
+
+    return (
+      currentRoute.name === "home" ||
+      currentRoute.name === "operations" ||
+      currentRoute.name === "docs" ||
+      currentRoute.name === "stock" ||
+      currentRoute.name === "items" ||
+      currentRoute.name === "orders"
+    );
+  }
+
   function renderLoading() {
     return '<section class="screen"><div class="screen-card">Загрузка...</div></section>';
   }
@@ -1328,19 +1507,51 @@
     );
   }
 
+  function buildHomeMenuButtonsHtml() {
+    var buttons = [];
+    if (hasOperationsMenu()) {
+      buttons.push('<button class="btn menu-btn" data-route="operations">Операции</button>');
+    }
+    if (isClientBlockEnabled("tsd_stock")) {
+      buttons.push('<button class="btn menu-btn" data-route="stock">Остатки</button>');
+    }
+    if (isClientBlockEnabled("tsd_catalog")) {
+      buttons.push('<button class="btn menu-btn" data-route="items">Каталог</button>');
+    }
+    if (isClientBlockEnabled("tsd_orders")) {
+      buttons.push('<button class="btn menu-btn" data-route="orders">Заказы</button>');
+    }
+    if (!buttons.length) {
+      return '<div class="empty-state">Все блоки ТСД сейчас временно отключены.</div>';
+    }
+    return buttons.join("");
+  }
+
+  function buildOperationsMenuButtonsHtml() {
+    var buttons = [];
+    Object.keys(OPS).forEach(function (op) {
+      if (!isOperationEnabled(op)) {
+        return;
+      }
+      buttons.push(
+        '<button class="btn menu-btn" data-op="' +
+          escapeHtml(op) +
+          '">' +
+          escapeHtml(OPS[op].label) +
+          "</button>"
+      );
+    });
+    if (!buttons.length) {
+      return '<div class="empty-state">Все операции сейчас временно отключены.</div>';
+    }
+    return buttons.join("");
+  }
+
   function renderHome() {
     return (
       '<section class="screen home-screen">' +
       '  <div class="menu-grid">' +
-      '    <button class="btn menu-btn" data-op="INBOUND">Приемка</button>' +
-      '    <button class="btn menu-btn" data-op="OUTBOUND">Отгрузка</button>' +
-      '    <button class="btn menu-btn" data-op="MOVE">Перемещение</button>' +
-      '    <button class="btn menu-btn" data-op="WRITE_OFF">Списание</button>' +
-      '    <button class="btn menu-btn" data-route="stock">Остатки</button>' +
-      '    <button class="btn menu-btn" data-route="items">Товары</button>' +
-      '    <button class="btn menu-btn" data-op="INVENTORY">Инвентаризация</button>' +
-      '    <button class="btn menu-btn" data-route="orders">Заказы</button>' +
-      '    <button class="btn menu-btn" data-route="docs">История операций</button>' +
+      buildHomeMenuButtonsHtml() +
       "  </div>" +
       "</section>"
     );
@@ -1395,7 +1606,7 @@
       rows = '<div class="empty-state">Операций пока нет.</div>';
     }
 
-    var title = listOp && OPS[listOp] ? OPS[listOp].label : "История операций";
+    var title = listOp && OPS[listOp] ? OPS[listOp].label : "Операции";
     var actionsHtml = "";
     if (listOp) {
       actionsHtml =
@@ -1544,17 +1755,13 @@
     );
   }
 
-  function renderNewOp() {
+  function renderOperationsMenu() {
     return (
       '<section class="screen">' +
       '  <div class="screen-card">' +
-      '    <div class="section-title">Новая операция</div>' +
+      '    <div class="section-title">Операции</div>' +
       '    <div class="menu-grid">' +
-      '      <button class="btn menu-btn" data-op="INBOUND">Приемка</button>' +
-      '      <button class="btn menu-btn" data-op="OUTBOUND">Отгрузка</button>' +
-      '      <button class="btn menu-btn" data-op="MOVE">Перемещение</button>' +
-      '      <button class="btn menu-btn" data-op="WRITE_OFF">Списание</button>' +
-      '      <button class="btn menu-btn" data-op="INVENTORY">Инвентаризация</button>' +
+      buildOperationsMenuButtonsHtml() +
       "    </div>" +
       "  </div>" +
       "</section>"
@@ -1588,7 +1795,7 @@
     return (
       '<section class="screen">' +
       '  <div class="screen-card doc-screen-card">' +
-      '    <div class="section-title">Товары</div>' +
+      '    <div class="section-title">Каталог</div>' +
       '    <input class="form-input" id="itemsSearchInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Поиск по названию, SKU, GTIN или штрихкоду" />' +
       '    <div id="itemsStatus" class="status"></div>' +
       '    <div id="itemsList" class="doc-list"></div>' +
@@ -2671,6 +2878,23 @@
       );
     }
 
+    if (doc.op === "PRODUCTION_RECEIPT") {
+      var receiptToValue = formatLocationLabel(header.to, header.to_name);
+      return (
+        '<div class="header-fields">' +
+        renderPickerRow({
+          label: "Куда",
+          value: receiptToValue,
+          valueId: "toValue",
+          pickId: "toPickBtn",
+          disabled: !isDraft,
+        }) +
+        '  <div class="field-error" id="toError"></div>' +
+        renderHuField(header, isDraft) +
+        "</div>"
+      );
+    }
+
     if (doc.op === "OUTBOUND") {
       var outboundPartnerValue = header.partner || "Не выбран";
       var outboundFromValue = formatLocationLabel(header.from, header.from_name);
@@ -3020,7 +3244,7 @@
   function resolveDocHuFromLines(op, lines) {
     var field = "";
     var opValue = String(op || "").toUpperCase();
-    if (opValue === "INBOUND" || opValue === "INVENTORY") {
+    if (opValue === "INBOUND" || opValue === "PRODUCTION_RECEIPT" || opValue === "INVENTORY") {
       field = "toHu";
     } else if (opValue === "OUTBOUND" || opValue === "WRITE_OFF") {
       field = "fromHu";
@@ -3086,7 +3310,8 @@
     var createdAt = formatDateTime(doc.created_at || doc.createdAt);
     var closedAt = formatDateTime(doc.closed_at || doc.closedAt);
     var linesHtml = renderServerDocLines(lines);
-    var showOrder = String(doc.op || "").toUpperCase() === "OUTBOUND";
+    var opValue = String(doc.op || "").toUpperCase();
+    var showOrder = opValue === "OUTBOUND" || opValue === "PRODUCTION_RECEIPT";
     var orderRowHtml = showOrder
       ? '      <div class="order-field-row">' +
         '        <div class="order-field-label">Заказ</div>' +
@@ -3215,6 +3440,11 @@
           code: doc.partnerCode || "",
         });
       }
+    } else if (op === "PRODUCTION_RECEIPT") {
+      header.to = toLocation;
+      header.hu = toHu || "";
+      header.order_id = orderId;
+      header.order_ref = doc.order_ref || "";
     } else if (op === "OUTBOUND") {
       header.from = fromLocation;
       header.hu = fromHu || "";
@@ -3266,7 +3496,7 @@
         return line.barcode;
       });
 
-    if (op === "INBOUND" && header.to) {
+    if ((op === "INBOUND" || op === "PRODUCTION_RECEIPT") && header.to) {
       localLines.forEach(function (line) {
         if (!line.to) {
           line.to = header.to;
@@ -3484,7 +3714,7 @@
     buttons.forEach(function (btn) {
       btn.addEventListener("click", function () {
         var op = btn.getAttribute("data-op");
-        if (op) {
+        if (op && isOperationEnabled(op)) {
           navigate("/docs/" + encodeURIComponent(op));
         }
       });
@@ -3502,7 +3732,7 @@
     var newBtn = document.getElementById("newDocBtn");
     var docs = document.querySelectorAll("[data-doc]");
     var listOp = currentRoute && currentRoute.op ? currentRoute.op : null;
-    var listOrigin = listOp ? "home" : "history";
+    var listOrigin = listOp ? "operations" : "home";
 
     if (newBtn) {
       newBtn.addEventListener("click", function () {
@@ -3724,12 +3954,15 @@
     // Read-only screen; no actions to wire.
   }
 
-  function wireNewOp() {
+  function wireOperationsMenu() {
     var buttons = document.querySelectorAll("[data-op]");
     buttons.forEach(function (btn) {
       btn.addEventListener("click", function () {
         var op = btn.getAttribute("data-op");
-        createDocAndOpen(op, "history");
+        if (!op || !isOperationEnabled(op)) {
+          return;
+        }
+        createDocAndOpen(op, "operations");
       });
     });
   }
@@ -5303,6 +5536,11 @@
           setLocationError("to", "Для приемки выберите место хранения (Куда).");
           valid = false;
         }
+      } else if (doc.op === "PRODUCTION_RECEIPT") {
+        if (!normalizeValue(doc.header.to) && !doc.header.to_id) {
+          setLocationError("to", "Для выпуска продукции выберите место хранения (Куда).");
+          valid = false;
+        }
       } else if (doc.op === "OUTBOUND") {
         if (!doc.header.partner_id) {
           setPartnerError("Выберите покупателя");
@@ -5729,7 +5967,7 @@
         }
         return null;
       }
-      if (doc.op === "INBOUND") {
+      if (doc.op === "INBOUND" || doc.op === "PRODUCTION_RECEIPT") {
         return "to";
       }
       if (doc.op === "OUTBOUND" || doc.op === "WRITE_OFF") {
@@ -5755,8 +5993,10 @@
     }
 
     function getLocationErrorMessage(field) {
-      if (doc.op === "INBOUND" && field === "to") {
-        return "Для приемки выберите место хранения (Куда).";
+      if ((doc.op === "INBOUND" || doc.op === "PRODUCTION_RECEIPT") && field === "to") {
+        return doc.op === "PRODUCTION_RECEIPT"
+          ? "Для выпуска продукции выберите место хранения (Куда)."
+          : "Для приемки выберите место хранения (Куда).";
       }
       return "Укажите место хранения";
     }
@@ -5784,7 +6024,7 @@
       setLocationError("to", "");
       setLocationError("location", "");
 
-      if (doc.op === "INBOUND") {
+      if (doc.op === "INBOUND" || doc.op === "PRODUCTION_RECEIPT") {
         if (!hasSelectedLocation("to")) {
           var inboundMessage = getLocationErrorMessage("to");
           setLocationError("to", inboundMessage);
@@ -6790,8 +7030,12 @@
         }
         if (!validateBeforeFinish()) {
           var missingFields = getMissingLocationFields(doc);
-          if (doc.op === "INBOUND" && missingFields.indexOf("to") >= 0) {
-            alert("Для приемки выберите место хранения (Куда).");
+          if ((doc.op === "INBOUND" || doc.op === "PRODUCTION_RECEIPT") && missingFields.indexOf("to") >= 0) {
+            alert(
+              doc.op === "PRODUCTION_RECEIPT"
+                ? "Для выпуска продукции выберите место хранения (Куда)."
+                : "Для приемки выберите место хранения (Куда)."
+            );
           }
           return;
         }
@@ -7192,6 +7436,8 @@
           if (!deviceId) {
             throw new Error("NO_DEVICE_ID");
           }
+          applyClientBlocks(result && result.blocks);
+          clientBlocksLoadPromise = Promise.resolve(clientBlocks);
           storeAccount(deviceId, platform, login);
           if (platform === "PC") {
             redirecting = true;
@@ -7245,7 +7491,7 @@
   }
 
   function createDocAndOpen(op, navOrigin) {
-    if (!OPS[op]) {
+    if (!OPS[op] || !isOperationEnabled(op)) {
       return;
     }
 
@@ -7296,6 +7542,15 @@
       return {
         partner: "",
         partner_id: null,
+        hu: "",
+        to: "",
+        to_name: null,
+        to_id: null,
+        qtyMode: "ASK",
+      };
+    }
+    if (op === "PRODUCTION_RECEIPT") {
+      return {
         hu: "",
         to: "",
         to_name: null,
@@ -7421,7 +7676,7 @@
     var header = (doc && doc.header) || {};
     var missing = [];
 
-    if (doc.op === "INBOUND") {
+    if (doc.op === "INBOUND" || doc.op === "PRODUCTION_RECEIPT") {
       if (!normalizeValue(header.to) && !header.to_id) {
         missing.push("to");
       }
@@ -7484,6 +7739,7 @@
 
     if (
       doc.op !== "INBOUND" &&
+      doc.op !== "PRODUCTION_RECEIPT" &&
       doc.op !== "OUTBOUND" &&
       doc.op !== "MOVE" &&
       doc.op !== "WRITE_OFF" &&
@@ -7570,7 +7826,7 @@
         toHu = null;
       }
 
-      if (currentDoc.op === "INBOUND") {
+      if (currentDoc.op === "INBOUND" || currentDoc.op === "PRODUCTION_RECEIPT") {
         toHu = mainHu || toHu;
       } else if (currentDoc.op === "OUTBOUND" || currentDoc.op === "WRITE_OFF") {
         fromHu = mainHu || fromHu;
@@ -7641,7 +7897,7 @@
           toHu = null;
         }
 
-        if (doc.op === "INBOUND") {
+        if (doc.op === "INBOUND" || doc.op === "PRODUCTION_RECEIPT") {
           toHu = mainHu || toHu;
         } else if (doc.op === "OUTBOUND" || doc.op === "WRITE_OFF") {
           fromHu = mainHu || fromHu;
@@ -7724,7 +7980,7 @@
     var fromId = null;
     var toId = null;
 
-    if (op === "INBOUND") {
+    if (op === "INBOUND" || op === "PRODUCTION_RECEIPT") {
       to = normalizeValue(header.to) || null;
       toId = header.to_id || null;
     } else if (op === "OUTBOUND") {
@@ -7760,7 +8016,7 @@
 
   function buildLineKey(op, barcode, lineData) {
     var safeBarcode = normalizeValue(barcode);
-    if (op === "INBOUND") {
+    if (op === "INBOUND" || op === "PRODUCTION_RECEIPT") {
       return safeBarcode + "|" + (lineData.to || "");
     }
     if (op === "OUTBOUND") {
@@ -8392,24 +8648,36 @@
         );
         document.addEventListener("visibilitychange", function () {
           if (!document.hidden) {
+            if (canRefreshClientBlocksForCurrentRoute()) {
+              renderRoute();
+            }
             ensureScanFocus();
+          }
+        });
+        window.addEventListener("focus", function () {
+          if (canRefreshClientBlocksForCurrentRoute()) {
+            renderRoute();
           }
         });
 
         if (backBtn) {
           backBtn.addEventListener("click", function () {
             if (!currentRoute) {
-              navigate("/docs");
+              navigate("/home");
               return;
             }
             var origin = getNavOrigin();
             if (currentRoute.name === "home") {
-              navigate("/docs");
-            } else if (currentRoute.name === "docs") {
               navigate("/home");
+            } else if (currentRoute.name === "operations") {
+              navigate("/home");
+            } else if (currentRoute.name === "docs") {
+              navigate("/operations");
             } else if (currentRoute.name === "doc" || currentRoute.name === "new") {
               if (origin === "history") {
                 navigate("/docs");
+              } else if (origin === "operations") {
+                navigate("/operations");
               } else {
                 navigate("/home");
               }
@@ -8417,7 +8685,7 @@
               navigate("/home");
             } else if (currentRoute.name === "order") {
               navigate("/orders");
-            } else if (currentRoute.name === "stock" || currentRoute.name === "settings") {
+            } else if (currentRoute.name === "stock" || currentRoute.name === "settings" || currentRoute.name === "items") {
               navigate("/home");
             } else {
               navigate("/home");

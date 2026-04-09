@@ -1,5 +1,10 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Windows;
+using FlowStock.Core.Models;
+using WpfCheckBox = System.Windows.Controls.CheckBox;
+using WpfPanel = System.Windows.Controls.Panel;
 
 namespace FlowStock.App;
 
@@ -8,6 +13,7 @@ public partial class AdminWindow : Window
     private readonly AppServices _services;
     private readonly Action<bool>? _onDeleteModeChanged;
     private readonly Action? _onOperationsCleared;
+    private readonly Dictionary<string, WpfCheckBox> _clientBlockBoxes = new(StringComparer.OrdinalIgnoreCase);
     private bool _deleteModeEnabled;
 
     public AdminWindow(AppServices services, bool deleteModeEnabled, Action<bool>? onDeleteModeChanged, Action? onOperationsCleared = null)
@@ -20,6 +26,7 @@ public partial class AdminWindow : Window
         InitializeComponent();
         DatabasePathBox.Text = _services.DatabasePath;
         UpdateDeleteModeUi();
+        LoadClientBlocksUi();
     }
 
     private void CreateBackup_Click(object sender, RoutedEventArgs e)
@@ -117,6 +124,24 @@ public partial class AdminWindow : Window
         ToggleDeleteModeButton.Content = "Включить режим удаления";
     }
 
+    private void SaveClientBlocks_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var settings = _clientBlockBoxes
+                .Select(entry => new ClientBlockSetting(entry.Key, entry.Value.IsChecked == true))
+                .ToList();
+            _services.DataStore.SaveClientBlockSettings(settings);
+            ClientBlocksStatusText.Text = "Доступ к веб-блокам сохранен. Изменения применятся после обновления страницы у пользователей.";
+            _services.AdminLogger.Info("admin_client_blocks saved");
+        }
+        catch (Exception ex)
+        {
+            _services.AdminLogger.Error("admin_client_blocks save failed", ex);
+            MessageBox.Show(ex.Message, "Администрирование", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
     private bool TryCreateBackup(string reason)
     {
         try
@@ -132,6 +157,54 @@ public partial class AdminWindow : Window
             _services.AdminLogger.Error("admin_backup failed", ex);
             MessageBox.Show(ex.Message, "Администрирование", MessageBoxButton.OK, MessageBoxImage.Error);
             return false;
+        }
+    }
+
+    private void LoadClientBlocksUi()
+    {
+        try
+        {
+            var states = ClientBlockCatalog.MergeWithDefaults(_services.DataStore.GetClientBlockSettings());
+            _clientBlockBoxes.Clear();
+            PopulateClientBlockPanel(
+                PcBlocksPanel,
+                ClientBlockCatalog.All.Where(definition => definition.Client == "PC"),
+                states);
+            PopulateClientBlockPanel(
+                TsdMainBlocksPanel,
+                ClientBlockCatalog.All.Where(definition => definition.Client == "TSD" && definition.Section == "Основные"),
+                states);
+            PopulateClientBlockPanel(
+                TsdOperationBlocksPanel,
+                ClientBlockCatalog.All.Where(definition => definition.Client == "TSD" && definition.Section == "Операции"),
+                states);
+            ClientBlocksStatusText.Text = "Отключенные блоки скрываются у всех пользователей веб-клиентов.";
+        }
+        catch (Exception ex)
+        {
+            _services.AdminLogger.Error("admin_client_blocks load failed", ex);
+            ClientBlocksStatusText.Text = "Не удалось загрузить доступ к веб-блокам.";
+            SaveClientBlocksButton.IsEnabled = false;
+        }
+    }
+
+    private void PopulateClientBlockPanel(
+        WpfPanel panel,
+        IEnumerable<ClientBlockDefinition> definitions,
+        IReadOnlyDictionary<string, bool> states)
+    {
+        panel.Children.Clear();
+        foreach (var definition in definitions)
+        {
+            var isEnabled = states.TryGetValue(definition.Key, out var value) ? value : true;
+            var checkBox = new WpfCheckBox
+            {
+                Content = definition.Label,
+                IsChecked = isEnabled,
+                Margin = new Thickness(0, 0, 0, 6)
+            };
+            panel.Children.Add(checkBox);
+            _clientBlockBoxes[definition.Key] = checkBox;
         }
     }
 }

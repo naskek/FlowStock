@@ -18,5 +18,25 @@ services:
       retries: 20
     restart: unless-stopped
 
+  migrator:
+    image: postgres:16-alpine
+    container_name: flowstock-postgres-local-migrator
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: flowstock
+      PGUSER: flowstock
+      PGPASSWORD: flowstock
+      MIGRATIONS_DIR: /migrations
+      POSTGRES_WAIT_TIMEOUT_SECONDS: ${POSTGRES_WAIT_TIMEOUT_SECONDS:-120}
+    volumes:
+      - ./postgres/migrations:/migrations:ro
+      - ./scripts:/scripts:ro
+    command: ["sh", "/scripts/run_migrations.sh"]
+    restart: "no"
+
 volumes:
   flowstock_pgdata_local:

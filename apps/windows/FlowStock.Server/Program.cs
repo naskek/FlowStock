@@ -20,11 +20,9 @@ var builder = WebApplication.CreateBuilder(args);
 
 var postgresConnectionString = BuildPostgresConnectionString(builder.Configuration);
 
-builder.Services.AddSingleton<PostgresDataStore>(sp =>
+builder.Services.AddSingleton<PostgresDataStore>(_ =>
 {
-    var store = new PostgresDataStore(postgresConnectionString);
-    store.Initialize();
-    return store;
+    return new PostgresDataStore(postgresConnectionString);
 });
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.IDataStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton<IApiDocStore>(new PostgresApiDocStore(postgresConnectionString));
@@ -32,16 +30,39 @@ builder.Services.AddSingleton<DocumentService>();
 
 var app = builder.Build();
 
-// Force schema initialization before the first HTTP request. Some endpoints use
-// direct SQL connections and may execute before IDataStore is lazily resolved.
-app.Services.GetRequiredService<PostgresDataStore>();
-
 OrderCreateEndpoint.Map(app);
 OrderUpdateEndpoint.Map(app);
 OrderDeleteEndpoint.Map(app);
 OrderStatusEndpoint.Map(app);
 
-app.UseHttpsRedirection();
+app.MapGet("/health/live", () => Results.Ok(new { status = "alive" }));
+app.MapGet("/health/ready", async (CancellationToken cancellationToken) =>
+{
+    try
+    {
+        await using var connection = new NpgsqlConnection(postgresConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+SELECT COUNT(*)
+FROM schema_migrations;";
+        var appliedMigrations = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken) ?? 0);
+        if (appliedMigrations <= 0)
+        {
+            return Results.Json(new { status = "not_ready" }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
+        return Results.Ok(new { status = "ready" });
+    }
+    catch
+    {
+        return Results.Json(new { status = "not_ready" }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+});
+
+app.UseWhen(
+    context => !context.Request.Path.StartsWithSegments("/health"),
+    branch => branch.UseHttpsRedirection());
 
 LogDbInfo(app.Logger, postgresConnectionString);
 
@@ -160,7 +181,16 @@ app.MapGet("/api/ping", () =>
     });
 });
 
-app.MapPost("/api/tsd/login", async (HttpRequest request) =>
+app.MapGet("/api/client-blocks", (IDataStore store) =>
+{
+    return Results.Ok(new
+    {
+        ok = true,
+        blocks = BuildClientBlockStates(store.GetClientBlockSettings())
+    });
+});
+
+app.MapPost("/api/tsd/login", async (HttpRequest request, IDataStore store) =>
 {
     var rawJson = await ReadBody(request);
     if (string.IsNullOrWhiteSpace(rawJson))
@@ -232,7 +262,8 @@ WHERE login = @login;";
         ok = true,
         device_id = deviceId,
         platform = platformNormalized,
-        pc_port = pcPort
+        pc_port = pcPort,
+        blocks = BuildClientBlockStates(store.GetClientBlockSettings())
     });
 });
 
@@ -1265,7 +1296,19 @@ static string? NormalizeHu(string? value)
 static string NormalizeDevicePlatform(string? value)
 {
     var normalized = string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim().ToUpperInvariant();
-    return normalized == "PC" ? "PC" : "TSD";
+    return normalized switch
+    {
+        "PC" => "PC",
+        "BOTH" => "BOTH",
+        "PC+TSD" => "BOTH",
+        "PC_TSD" => "BOTH",
+        _ => "TSD"
+    };
+}
+
+static IReadOnlyDictionary<string, bool> BuildClientBlockStates(IReadOnlyList<ClientBlockSetting> settings)
+{
+    return ClientBlockCatalog.MergeWithDefaults(settings);
 }
 
 static Item? FindItemByBarcodeVariant(IDataStore store, string barcode)
@@ -1515,7 +1558,7 @@ FROM tsd_devices
 WHERE login = @login
   AND device_id = @device_id
   AND is_active = TRUE
-  AND UPPER(COALESCE(platform, 'TSD')) = 'PC'
+  AND UPPER(COALESCE(platform, 'TSD')) IN ('PC', 'BOTH')
 LIMIT 1;";
     AddParam(command, "@login", login);
     AddParam(command, "@device_id", deviceId);

@@ -31,7 +31,7 @@ public partial class App : Application
         catch (Exception ex)
         {
             LogException("Startup", ex);
-            MessageBox.Show($"Startup error. See log: {_logPath}\n{ex.Message}", "FlowStock", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show($"Startup error. See log: {_logPath}\n{DatabaseErrorFormatter.Format(ex)}", "FlowStock", MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(-1);
         }
     }
@@ -39,7 +39,7 @@ public partial class App : Application
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
         LogException("Dispatcher", e.Exception);
-        MessageBox.Show($"Unexpected error. See log: {_logPath}\n{e.Exception.Message}", "FlowStock", MessageBoxButton.OK, MessageBoxImage.Error);
+        MessageBox.Show($"Unexpected error. See log: {_logPath}\n{DatabaseErrorFormatter.Format(e.Exception)}", "FlowStock", MessageBoxButton.OK, MessageBoxImage.Error);
         e.Handled = true;
     }
 

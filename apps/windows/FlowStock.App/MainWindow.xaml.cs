@@ -173,16 +173,15 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             _services.AppLogger.Error("Initial data load failed", ex);
-            MessageBox.Show(
-                "Не удалось подключиться к БД при запуске. Приложение открыто, но часть данных недоступна." +
-                Environment.NewLine +
-                Environment.NewLine +
-                "Проверьте настройки в меню: Сервис -> Подключение к БД." +
-                Environment.NewLine +
-                $"Техническая ошибка: {ex.Message}",
-                "FlowStock",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
+            var message = DatabaseErrorFormatter.IsSchemaIssue(ex)
+                ? DatabaseErrorFormatter.Format(ex)
+                : "Не удалось подключиться к БД при запуске. Приложение открыто, но часть данных недоступна." +
+                  Environment.NewLine +
+                  Environment.NewLine +
+                  "Проверьте настройки в меню: Сервис -> Подключение к БД." +
+                  Environment.NewLine +
+                  $"Техническая ошибка: {ex.Message}";
+            MessageBox.Show(message, "FlowStock", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
 
@@ -632,22 +631,30 @@ public partial class MainWindow : Window
 
     private void OpenDocDetails(Doc doc)
     {
-        var wasClosed = doc.Status == DocStatus.Closed;
-        var window = new OperationDetailsWindow(_services, doc.Id)
+        try
         {
-            Owner = this
-        };
-        window.ShowDialog();
-
-        LoadDocs();
-        var refreshed = _services.Documents.GetDoc(doc.Id);
-        if (!wasClosed && refreshed?.Status == DocStatus.Closed)
-        {
-            LoadStock(StatusSearchBox.Text);
-            if (refreshed.Type == DocType.Outbound || refreshed.Type == DocType.ProductionReceipt)
+            var wasClosed = doc.Status == DocStatus.Closed;
+            var window = new OperationDetailsWindow(_services, doc.Id)
             {
-                LoadOrders();
+                Owner = this
+            };
+            window.ShowDialog();
+
+            LoadDocs();
+            var refreshed = _services.Documents.GetDoc(doc.Id);
+            if (!wasClosed && refreshed?.Status == DocStatus.Closed)
+            {
+                LoadStock(StatusSearchBox.Text);
+                if (refreshed.Type == DocType.Outbound || refreshed.Type == DocType.ProductionReceipt)
+                {
+                    LoadOrders();
+                }
             }
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error($"Open doc details failed for doc_id={doc.Id}", ex);
+            MessageBox.Show(DatabaseErrorFormatter.Format(ex), "Операции", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 

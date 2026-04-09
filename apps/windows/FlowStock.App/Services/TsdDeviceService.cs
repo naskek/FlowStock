@@ -44,12 +44,8 @@ ORDER BY login;";
         return list;
     }
 
-    public void AddDevice(string deviceId, string login, string password, bool isActive, string platform)
+    public void AddDevice(string login, string password, bool isActive, string platform)
     {
-        if (string.IsNullOrWhiteSpace(deviceId))
-        {
-            throw new ArgumentException("ID устройства не задан.", nameof(deviceId));
-        }
         if (string.IsNullOrWhiteSpace(login))
         {
             throw new ArgumentException("Логин не задан.", nameof(login));
@@ -65,11 +61,14 @@ ORDER BY login;";
 
         using var connection = new NpgsqlConnection(_connectionString);
         connection.Open();
+        EnsureUniqueLogin(connection, login.Trim(), null);
+
+        var deviceId = GenerateDeviceId(connection);
         using var command = connection.CreateCommand();
         command.CommandText = @"
 INSERT INTO tsd_devices(device_id, login, password_salt, password_hash, password_iterations, platform, is_active, created_at)
 VALUES(@device_id, @login, @salt, @hash, @iterations, @platform, @is_active, @created_at);";
-        command.Parameters.AddWithValue("@device_id", deviceId.Trim());
+        command.Parameters.AddWithValue("@device_id", deviceId);
         command.Parameters.AddWithValue("@login", login.Trim());
         command.Parameters.AddWithValue("@salt", Convert.ToBase64String(salt));
         command.Parameters.AddWithValue("@hash", Convert.ToBase64String(hash));
@@ -77,19 +76,15 @@ VALUES(@device_id, @login, @salt, @hash, @iterations, @platform, @is_active, @cr
         command.Parameters.AddWithValue("@platform", normalizedPlatform);
         command.Parameters.AddWithValue("@is_active", isActive);
         command.Parameters.AddWithValue("@created_at", DateTime.Now.ToString("s"));
-        command.ExecuteNonQuery();
+        ExecuteAccountCommand(command);
         _logger.Info($"tsd_device_add device_id={deviceId} login={login} platform={normalizedPlatform}");
     }
 
-    public void UpdateDevice(long id, string deviceId, string login, string? password, bool isActive, string platform)
+    public void UpdateDevice(long id, string login, string? password, bool isActive, string platform)
     {
         if (id <= 0)
         {
             throw new ArgumentException("Некорректный идентификатор устройства.", nameof(id));
-        }
-        if (string.IsNullOrWhiteSpace(deviceId))
-        {
-            throw new ArgumentException("ID устройства не задан.", nameof(deviceId));
         }
         if (string.IsNullOrWhiteSpace(login))
         {
@@ -100,6 +95,7 @@ VALUES(@device_id, @login, @salt, @hash, @iterations, @platform, @is_active, @cr
 
         using var connection = new NpgsqlConnection(_connectionString);
         connection.Open();
+        EnsureUniqueLogin(connection, login.Trim(), id);
 
         if (!string.IsNullOrWhiteSpace(password))
         {
@@ -108,15 +104,13 @@ VALUES(@device_id, @login, @salt, @hash, @iterations, @platform, @is_active, @cr
             using var command = connection.CreateCommand();
             command.CommandText = @"
 UPDATE tsd_devices
-SET device_id = @device_id,
-    login = @login,
+SET login = @login,
     platform = @platform,
     is_active = @is_active,
     password_salt = @salt,
     password_hash = @hash,
     password_iterations = @iterations
 WHERE id = @id;";
-            command.Parameters.AddWithValue("@device_id", deviceId.Trim());
             command.Parameters.AddWithValue("@login", login.Trim());
             command.Parameters.AddWithValue("@platform", normalizedPlatform);
             command.Parameters.AddWithValue("@is_active", isActive);
@@ -124,27 +118,25 @@ WHERE id = @id;";
             command.Parameters.AddWithValue("@hash", Convert.ToBase64String(hash));
             command.Parameters.AddWithValue("@iterations", DefaultIterations);
             command.Parameters.AddWithValue("@id", id);
-            command.ExecuteNonQuery();
+            ExecuteAccountCommand(command);
         }
         else
         {
             using var command = connection.CreateCommand();
             command.CommandText = @"
 UPDATE tsd_devices
-SET device_id = @device_id,
-    login = @login,
+SET login = @login,
     platform = @platform,
     is_active = @is_active
 WHERE id = @id;";
-            command.Parameters.AddWithValue("@device_id", deviceId.Trim());
             command.Parameters.AddWithValue("@login", login.Trim());
             command.Parameters.AddWithValue("@platform", normalizedPlatform);
             command.Parameters.AddWithValue("@is_active", isActive);
             command.Parameters.AddWithValue("@id", id);
-            command.ExecuteNonQuery();
+            ExecuteAccountCommand(command);
         }
 
-        _logger.Info($"tsd_device_update id={id} device_id={deviceId} login={login} platform={normalizedPlatform} active={isActive}");
+        _logger.Info($"tsd_device_update id={id} login={login} platform={normalizedPlatform} active={isActive}");
     }
 
     public void SetDeviceActive(long id, bool isActive)
@@ -168,7 +160,71 @@ WHERE id = @id;";
     private static string NormalizePlatform(string? platform)
     {
         var normalized = string.IsNullOrWhiteSpace(platform) ? string.Empty : platform.Trim().ToUpperInvariant();
-        return normalized == "PC" ? "PC" : "TSD";
+        return normalized switch
+        {
+            "PC" => "PC",
+            "BOTH" => "BOTH",
+            "PC+TSD" => "BOTH",
+            "PC_TSD" => "BOTH",
+            _ => "TSD"
+        };
+    }
+
+    private static void EnsureUniqueLogin(NpgsqlConnection connection, string login, long? excludedId)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = excludedId.HasValue
+            ? @"
+SELECT platform
+FROM tsd_devices
+WHERE UPPER(login) = UPPER(@login)
+  AND id <> @excluded_id
+LIMIT 1;"
+            : @"
+SELECT platform
+FROM tsd_devices
+WHERE UPPER(login) = UPPER(@login)
+LIMIT 1;";
+        command.Parameters.AddWithValue("@login", login);
+        if (excludedId.HasValue)
+        {
+            command.Parameters.AddWithValue("@excluded_id", excludedId.Value);
+        }
+
+        var existingPlatform = command.ExecuteScalar() as string;
+        if (!string.IsNullOrWhiteSpace(existingPlatform))
+        {
+            throw new InvalidOperationException("Логин уже используется другим аккаунтом ПК/ТСД.");
+        }
+    }
+
+    private static string GenerateDeviceId(NpgsqlConnection connection)
+    {
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            var candidate = $"ACC-{Guid.NewGuid():N}".Substring(0, 12).ToUpperInvariant();
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT 1 FROM tsd_devices WHERE device_id = @device_id LIMIT 1;";
+            command.Parameters.AddWithValue("@device_id", candidate);
+            if (command.ExecuteScalar() == null)
+            {
+                return candidate;
+            }
+        }
+
+        throw new InvalidOperationException("Не удалось сгенерировать уникальный ID аккаунта.");
+    }
+
+    private static void ExecuteAccountCommand(NpgsqlCommand command)
+    {
+        try
+        {
+            command.ExecuteNonQuery();
+        }
+        catch (PostgresException ex) when (string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Логин уже используется другим аккаунтом ПК/ТСД.", ex);
+        }
     }
 }
 
@@ -184,5 +240,7 @@ public sealed class TsdDeviceInfo
 
     public string PlatformDisplay => string.Equals(Platform, "PC", StringComparison.OrdinalIgnoreCase)
         ? "ПК"
-        : "ТСД";
+        : string.Equals(Platform, "BOTH", StringComparison.OrdinalIgnoreCase)
+            ? "ПК + ТСД"
+            : "ТСД";
 }

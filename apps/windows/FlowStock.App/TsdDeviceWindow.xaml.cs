@@ -42,18 +42,15 @@ public partial class TsdDeviceWindow : Window
             return;
         }
 
-        DeviceIdBox.Text = device.DeviceId;
         LoginBox.Text = device.Login;
         PasswordBox.Text = string.Empty;
         IsActiveCheck.IsChecked = device.IsActive;
         SetPlatformSelection(device.Platform);
-        UpdateBlockButton();
     }
 
     private void Refresh_Click(object sender, RoutedEventArgs e)
     {
         LoadDevices();
-        UpdateBlockButton();
     }
 
     private void New_Click(object sender, RoutedEventArgs e)
@@ -63,49 +60,35 @@ public partial class TsdDeviceWindow : Window
         ClearForm();
     }
 
-    private void ToggleActive_Click(object sender, RoutedEventArgs e)
-    {
-        if (_selected == null)
-        {
-            return;
-        }
-
-        var next = !_selected.IsActive;
-        try
-        {
-            _deviceService.SetDeviceActive(_selected.Id, next);
-            LoadDevices();
-            SelectDevice(_selected.Id);
-        }
-        catch (Exception ex)
-        {
-            _services.AppLogger.Error("tsd_device_toggle_failed", ex);
-            MessageBox.Show(ex.Message, "Аккаунты", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
     private void Save_Click(object sender, RoutedEventArgs e)
     {
-        var deviceId = DeviceIdBox.Text?.Trim() ?? string.Empty;
         var login = LoginBox.Text?.Trim() ?? string.Empty;
         var password = PasswordBox.Text ?? string.Empty;
         var isActive = IsActiveCheck.IsChecked == true;
         var platform = GetSelectedPlatform();
+        var selectedId = _selected?.Id ?? 0;
 
         try
         {
             if (_selected == null)
             {
-                _deviceService.AddDevice(deviceId, login, password, isActive, platform);
+                _deviceService.AddDevice(login, password, isActive, platform);
             }
             else
             {
                 var passwordToUpdate = string.IsNullOrWhiteSpace(password) ? null : password;
-                _deviceService.UpdateDevice(_selected.Id, deviceId, login, passwordToUpdate, isActive, platform);
+                _deviceService.UpdateDevice(selectedId, login, passwordToUpdate, isActive, platform);
             }
 
             LoadDevices();
-            SelectDeviceByKey(deviceId, login);
+            if (selectedId > 0)
+            {
+                SelectDevice(selectedId);
+            }
+            else
+            {
+                SelectDeviceByLogin(login);
+            }
             MessageBox.Show("Изменения сохранены.", "Аккаунты", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex)
@@ -117,30 +100,10 @@ public partial class TsdDeviceWindow : Window
 
     private void ClearForm()
     {
-        DeviceIdBox.Text = string.Empty;
         LoginBox.Text = string.Empty;
         PasswordBox.Text = string.Empty;
         IsActiveCheck.IsChecked = true;
         SetPlatformSelection("TSD");
-        UpdateBlockButton();
-    }
-
-    private void UpdateBlockButton()
-    {
-        if (BlockButton == null)
-        {
-            return;
-        }
-
-        if (_selected == null)
-        {
-            BlockButton.IsEnabled = false;
-            BlockButton.Content = "Заблокировать";
-            return;
-        }
-
-        BlockButton.IsEnabled = true;
-        BlockButton.Content = _selected.IsActive ? "Заблокировать" : "Разблокировать";
     }
 
     private void SelectDevice(long id)
@@ -158,12 +121,11 @@ public partial class TsdDeviceWindow : Window
         DevicesGrid.SelectedItem = null;
     }
 
-    private void SelectDeviceByKey(string deviceId, string login)
+    private void SelectDeviceByLogin(string login)
     {
         foreach (var device in _devices)
         {
-            if (string.Equals(device.DeviceId, deviceId, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(device.Login, login, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(device.Login, login, StringComparison.OrdinalIgnoreCase))
             {
                 DevicesGrid.SelectedItem = device;
                 DevicesGrid.ScrollIntoView(device);
@@ -186,7 +148,11 @@ public partial class TsdDeviceWindow : Window
 
     private void SetPlatformSelection(string? platform)
     {
-        var normalized = string.Equals(platform, "PC", StringComparison.OrdinalIgnoreCase) ? "PC" : "TSD";
+        var normalized = string.Equals(platform, "PC", StringComparison.OrdinalIgnoreCase)
+            ? "PC"
+            : string.Equals(platform, "BOTH", StringComparison.OrdinalIgnoreCase)
+                ? "BOTH"
+                : "TSD";
         foreach (var entry in PlatformBox.Items)
         {
             if (entry is ComboBoxItem item && item.Tag is string tag
