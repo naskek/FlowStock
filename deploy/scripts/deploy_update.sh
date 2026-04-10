@@ -19,6 +19,7 @@ on_error() {
 trap on_error ERR
 
 ensure_docker
+ensure_tls_assets
 ensure_compose_config
 ensure_postgres_healthy
 

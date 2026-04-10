@@ -2,9 +2,17 @@
 
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+FLOWSTOCK_ENV_FILE="${FLOWSTOCK_ENV_FILE:-${DEPLOY_DIR}/.env}"
+
+if [[ -f "$FLOWSTOCK_ENV_FILE" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$FLOWSTOCK_ENV_FILE"
+    set +a
+fi
+
 FLOWSTOCK_REPO_DIR="${FLOWSTOCK_REPO_DIR:-$(cd -- "${DEPLOY_DIR}/.." && pwd)}"
 FLOWSTOCK_COMPOSE_FILE="${FLOWSTOCK_COMPOSE_FILE:-${DEPLOY_DIR}/docker-compose.yml}"
-FLOWSTOCK_ENV_FILE="${FLOWSTOCK_ENV_FILE:-${DEPLOY_DIR}/.env}"
 FLOWSTOCK_PROJECT_NAME="${FLOWSTOCK_PROJECT_NAME:-flowstock}"
 FLOWSTOCK_RUNTIME_DIR="${FLOWSTOCK_RUNTIME_DIR:-${DEPLOY_DIR}/runtime}"
 FLOWSTOCK_BACKUP_OUTPUT_DIR="${FLOWSTOCK_BACKUP_OUTPUT_DIR:-${FLOWSTOCK_RUNTIME_DIR}/backups}"
@@ -14,6 +22,20 @@ POSTGRES_WAIT_TIMEOUT_SECONDS="${POSTGRES_WAIT_TIMEOUT_SECONDS:-120}"
 FLOWSTOCK_GIT_REMOTE="${FLOWSTOCK_GIT_REMOTE:-origin}"
 FLOWSTOCK_GIT_BRANCH="${FLOWSTOCK_GIT_BRANCH:-main}"
 FLOWSTOCK_DEFAULT_DEPLOY_REF="${FLOWSTOCK_DEFAULT_DEPLOY_REF:-${FLOWSTOCK_GIT_REMOTE}/${FLOWSTOCK_GIT_BRANCH}}"
+FLOWSTOCK_TLS_MODE="${FLOWSTOCK_TLS_MODE:-manual}"
+FLOWSTOCK_TLS_SERVER_NAME="${FLOWSTOCK_TLS_SERVER_NAME:-flowstock.local}"
+FLOWSTOCK_TLS_SANS="${FLOWSTOCK_TLS_SANS:-}"
+FLOWSTOCK_CA_DIR="${FLOWSTOCK_CA_DIR:-/opt/flowstock-secrets/ca}"
+FLOWSTOCK_CA_COMMON_NAME="${FLOWSTOCK_CA_COMMON_NAME:-FlowStock Local Root CA}"
+FLOWSTOCK_CA_CERT_DAYS="${FLOWSTOCK_CA_CERT_DAYS:-3650}"
+FLOWSTOCK_SERVER_CERT_DAYS="${FLOWSTOCK_SERVER_CERT_DAYS:-825}"
+FLOWSTOCK_SERVER_CERT_RENEW_BEFORE_DAYS="${FLOWSTOCK_SERVER_CERT_RENEW_BEFORE_DAYS:-30}"
+FLOWSTOCK_TLS_CERT_DIR="${FLOWSTOCK_TLS_CERT_DIR:-${DEPLOY_DIR}/nginx/certs}"
+FLOWSTOCK_TLS_CERT_PATH="${FLOWSTOCK_TLS_CERT_PATH:-${FLOWSTOCK_TLS_CERT_DIR}/flowstock.crt}"
+FLOWSTOCK_TLS_KEY_PATH="${FLOWSTOCK_TLS_KEY_PATH:-${FLOWSTOCK_TLS_CERT_DIR}/flowstock.key}"
+FLOWSTOCK_CA_CERT_PATH="${FLOWSTOCK_CA_CERT_PATH:-${FLOWSTOCK_CA_DIR}/flowstock-root-ca.crt}"
+FLOWSTOCK_CA_KEY_PATH="${FLOWSTOCK_CA_KEY_PATH:-${FLOWSTOCK_CA_DIR}/flowstock-root-ca.key}"
+FLOWSTOCK_CA_SERIAL_PATH="${FLOWSTOCK_CA_SERIAL_PATH:-${FLOWSTOCK_CA_DIR}/flowstock-root-ca.srl}"
 
 log() {
     printf '[flowstock] %s\n' "$*"
@@ -27,6 +49,11 @@ fail() {
 require_file() {
     local path="$1"
     [[ -f "$path" ]] || fail "required file not found: $path"
+}
+
+require_command() {
+    local name="$1"
+    command -v "$name" >/dev/null 2>&1 || fail "required command is not installed: $name"
 }
 
 ensure_runtime_dirs() {
@@ -54,6 +81,50 @@ ensure_git_clean_worktree() {
         git_in_repo status --short >&2 || true
         fail "git worktree has uncommitted tracked changes; commit or revert them before deploy"
     fi
+}
+
+is_ipv4_like() {
+    local value="$1"
+    [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+}
+
+default_tls_san() {
+    if is_ipv4_like "$FLOWSTOCK_TLS_SERVER_NAME"; then
+        printf 'IP:%s\n' "$FLOWSTOCK_TLS_SERVER_NAME"
+    else
+        printf 'DNS:%s\n' "$FLOWSTOCK_TLS_SERVER_NAME"
+    fi
+}
+
+normalized_tls_sans() {
+    local primary_san
+    local sans
+
+    primary_san="$(default_tls_san)"
+    sans="${FLOWSTOCK_TLS_SANS:-$primary_san}"
+    if [[ ",$sans," != *",$primary_san,"* ]]; then
+        sans="${primary_san},${sans}"
+    fi
+
+    printf '%s\n' "$sans"
+}
+
+ensure_tls_assets() {
+    mkdir -p "$FLOWSTOCK_TLS_CERT_DIR"
+
+    case "$FLOWSTOCK_TLS_MODE" in
+        manual|"")
+            require_file "$FLOWSTOCK_TLS_CERT_PATH"
+            require_file "$FLOWSTOCK_TLS_KEY_PATH"
+            ;;
+        local_ca)
+            require_command openssl
+            bash "${SCRIPT_DIR}/renew_server_cert.sh"
+            ;;
+        *)
+            fail "unsupported FLOWSTOCK_TLS_MODE: $FLOWSTOCK_TLS_MODE"
+            ;;
+    esac
 }
 
 compose() {
