@@ -68,14 +68,21 @@ public partial class AdminWindow : Window
         }
     }
 
-    private void SaveClientBlocks_Click(object sender, RoutedEventArgs e)
+    private async void SaveClientBlocks_Click(object sender, RoutedEventArgs e)
     {
         try
         {
             var settings = _clientBlockBoxes
                 .Select(entry => new ClientBlockSetting(entry.Key, entry.Value.IsChecked == true))
                 .ToList();
-            _services.DataStore.SaveClientBlockSettings(settings);
+            var saved = await _services.WpfAdminApi
+                .TrySaveClientBlocksAsync(settings)
+                .ConfigureAwait(true);
+            if (!saved)
+            {
+                _services.DataStore.SaveClientBlockSettings(settings);
+            }
+
             ClientBlocksStatusText.Text = "Доступ к веб-блокам сохранен. Изменения применятся после обновления страницы у пользователей.";
             _services.AdminLogger.Info("admin_client_blocks saved");
         }
@@ -90,7 +97,10 @@ public partial class AdminWindow : Window
     {
         try
         {
-            var states = ClientBlockCatalog.MergeWithDefaults(_services.DataStore.GetClientBlockSettings());
+            var settings = _services.WpfAdminApi.TryGetClientBlocks(out var apiSettings)
+                ? apiSettings
+                : _services.DataStore.GetClientBlockSettings();
+            var states = ClientBlockCatalog.MergeWithDefaults(settings);
             _clientBlockBoxes.Clear();
             PopulateClientBlockPanel(
                 PcBlocksPanel,

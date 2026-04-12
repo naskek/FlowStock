@@ -36,7 +36,9 @@ public partial class HuRegistryWindow : Window
     {
         try
         {
-            _items = _services.Hus.GetHus(null, MaxLoad).ToList();
+            _items = _services.WpfHuApi.TryGetHus(null, MaxLoad, out var apiHus)
+                ? apiHus.ToList()
+                : _services.Hus.GetHus(null, MaxLoad).ToList();
         }
         catch (Exception ex)
         {
@@ -104,14 +106,16 @@ public partial class HuRegistryWindow : Window
             return;
         }
 
-        var rows = _services.Hus.GetHuLedgerRows(row.Code);
+        var rows = _services.WpfHuApi.TryGetHuLedgerRows(row.Code, out var apiRows)
+            ? apiRows
+            : _services.Hus.GetHuLedgerRows(row.Code);
         foreach (var entry in rows)
         {
             _composition.Add(new HuLedgerRowDisplay(entry));
         }
     }
 
-    private void CloseHu_Click(object sender, RoutedEventArgs e)
+    private async void CloseHu_Click(object sender, RoutedEventArgs e)
     {
         if (RegistryGrid.SelectedItem is not HuRow row)
         {
@@ -122,7 +126,18 @@ public partial class HuRegistryWindow : Window
         var note = CloseNoteBox.Text?.Trim();
         try
         {
-            _services.Hus.CloseHu(row.Code, string.IsNullOrWhiteSpace(note) ? null : note, DefaultCreatedBy);
+            var result = await _services.WpfHuApi
+                .TryCloseHuAsync(row.Code, note, DefaultCreatedBy)
+                .ConfigureAwait(true);
+            if (!result.IsSuccess)
+            {
+                if (!string.IsNullOrWhiteSpace(result.Error))
+                {
+                    throw new InvalidOperationException(result.Error);
+                }
+
+                _services.Hus.CloseHu(row.Code, string.IsNullOrWhiteSpace(note) ? null : note, DefaultCreatedBy);
+            }
         }
         catch (Exception ex)
         {
@@ -134,7 +149,7 @@ public partial class HuRegistryWindow : Window
         LoadItems();
     }
 
-    private void Generate_Click(object sender, RoutedEventArgs e)
+    private async void Generate_Click(object sender, RoutedEventArgs e)
     {
         if (!TryParseCount(out var count))
         {
@@ -145,7 +160,22 @@ public partial class HuRegistryWindow : Window
         IReadOnlyList<string> codes;
         try
         {
-            codes = _services.Hus.Generate(count, DefaultCreatedBy);
+            var result = await _services.WpfHuApi
+                .TryGenerateAsync(count, DefaultCreatedBy)
+                .ConfigureAwait(true);
+            if (!result.IsSuccess)
+            {
+                if (!string.IsNullOrWhiteSpace(result.Error))
+                {
+                    throw new InvalidOperationException(result.Error);
+                }
+
+                codes = _services.Hus.Generate(count, DefaultCreatedBy);
+            }
+            else
+            {
+                codes = result.Codes;
+            }
         }
         catch (Exception ex)
         {

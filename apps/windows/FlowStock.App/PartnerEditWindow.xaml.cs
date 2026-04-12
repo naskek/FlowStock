@@ -39,12 +39,14 @@ public partial class PartnerEditWindow : Window
         IdBox.Text = _partner.Id.ToString();
         NameBox.Text = _partner.Name;
         InnBox.Text = _partner.Code ?? string.Empty;
-        var currentStatus = _services.PartnerStatuses.GetStatus(_partner.Id);
+        var currentStatus = _services.WpfPartnerApi.TryGetPartners(out var apiPartners)
+            ? apiPartners.FirstOrDefault(entry => entry.Partner.Id == _partner.Id)?.Status ?? _services.PartnerStatuses.GetStatus(_partner.Id)
+            : _services.PartnerStatuses.GetStatus(_partner.Id);
         StatusCombo.SelectedItem = _statusOptions.FirstOrDefault(option => option.Status == currentStatus)
                                    ?? _statusOptions.LastOrDefault();
     }
 
-    private void Save_Click(object sender, RoutedEventArgs e)
+    private async void Save_Click(object sender, RoutedEventArgs e)
     {
         var name = NameBox.Text?.Trim() ?? string.Empty;
         var inn = NormalizeInn(InnBox.Text);
@@ -71,14 +73,36 @@ public partial class PartnerEditWindow : Window
         {
             if (_partner == null)
             {
-                var partnerId = _services.Catalog.CreatePartner(name, inn);
-                _services.PartnerStatuses.SetStatus(partnerId, status);
+                var result = await _services.WpfPartnerApi.TryCreatePartnerAsync(name, inn, status).ConfigureAwait(true);
+                if (!result.IsSuccess && !string.IsNullOrWhiteSpace(result.Error))
+                {
+                    throw new InvalidOperationException(result.Error);
+                }
+
+                var partnerId = result.IsSuccess
+                    ? (result.PartnerId ?? 0)
+                    : _services.Catalog.CreatePartner(name, inn);
+                if (!result.IsSuccess)
+                {
+                    _services.PartnerStatuses.SetStatus(partnerId, status);
+                }
+
                 SavedPartnerId = partnerId;
             }
             else
             {
-                _services.Catalog.UpdatePartner(_partner.Id, name, inn);
-                _services.PartnerStatuses.SetStatus(_partner.Id, status);
+                var result = await _services.WpfPartnerApi.TryUpdatePartnerAsync(_partner.Id, name, inn, status).ConfigureAwait(true);
+                if (!result.IsSuccess)
+                {
+                    if (!string.IsNullOrWhiteSpace(result.Error))
+                    {
+                        throw new InvalidOperationException(result.Error);
+                    }
+
+                    _services.Catalog.UpdatePartner(_partner.Id, name, inn);
+                    _services.PartnerStatuses.SetStatus(_partner.Id, status);
+                }
+
                 SavedPartnerId = _partner.Id;
             }
 
@@ -108,7 +132,9 @@ public partial class PartnerEditWindow : Window
             return true;
         }
 
-        var duplicate = _services.DataStore.FindPartnerByCode(inn);
+        var duplicate = _services.WpfPartnerApi.TryGetPartners(out var apiPartners)
+            ? apiPartners.Select(entry => entry.Partner).FirstOrDefault(partner => string.Equals(partner.Code, inn, StringComparison.OrdinalIgnoreCase))
+            : _services.DataStore.FindPartnerByCode(inn);
         if (duplicate == null)
         {
             return true;

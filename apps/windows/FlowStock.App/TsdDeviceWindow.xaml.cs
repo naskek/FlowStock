@@ -26,7 +26,10 @@ public partial class TsdDeviceWindow : Window
     private void LoadDevices()
     {
         _devices.Clear();
-        foreach (var device in _deviceService.GetDevices())
+        var devices = _services.WpfAdminApi.TryGetTsdDevices(out var apiDevices)
+            ? apiDevices
+            : _deviceService.GetDevices();
+        foreach (var device in devices)
         {
             _devices.Add(device);
         }
@@ -60,7 +63,7 @@ public partial class TsdDeviceWindow : Window
         ClearForm();
     }
 
-    private void Save_Click(object sender, RoutedEventArgs e)
+    private async void Save_Click(object sender, RoutedEventArgs e)
     {
         var login = LoginBox.Text?.Trim() ?? string.Empty;
         var password = PasswordBox.Text ?? string.Empty;
@@ -72,12 +75,24 @@ public partial class TsdDeviceWindow : Window
         {
             if (_selected == null)
             {
-                _deviceService.AddDevice(login, password, isActive, platform);
+                var saved = await _services.WpfAdminApi
+                    .TryAddTsdDeviceAsync(login, password, isActive, platform)
+                    .ConfigureAwait(true);
+                if (!saved)
+                {
+                    _deviceService.AddDevice(login, password, isActive, platform);
+                }
             }
             else
             {
                 var passwordToUpdate = string.IsNullOrWhiteSpace(password) ? null : password;
-                _deviceService.UpdateDevice(selectedId, login, passwordToUpdate, isActive, platform);
+                var saved = await _services.WpfAdminApi
+                    .TryUpdateTsdDeviceAsync(selectedId, login, passwordToUpdate, isActive, platform)
+                    .ConfigureAwait(true);
+                if (!saved)
+                {
+                    _deviceService.UpdateDevice(selectedId, login, passwordToUpdate, isActive, platform);
+                }
             }
 
             LoadDevices();

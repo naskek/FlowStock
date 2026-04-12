@@ -185,6 +185,24 @@ public sealed class HuGenerateRequest
     public string? CreatedBy { get; set; }
 }
 
+public sealed class CreateHuRequest
+{
+    [JsonPropertyName("hu_code")]
+    public string? HuCode { get; set; }
+
+    [JsonPropertyName("created_by")]
+    public string? CreatedBy { get; set; }
+}
+
+public sealed class CloseHuRequest
+{
+    [JsonPropertyName("closed_by")]
+    public string? ClosedBy { get; set; }
+
+    [JsonPropertyName("note")]
+    public string? Note { get; set; }
+}
+
 public sealed class TsdLoginRequest
 {
     [JsonPropertyName("login")]
@@ -426,6 +444,96 @@ public sealed class ResolveOrderRequestRequest
 
     [JsonPropertyName("applied_order_id")]
     public long? AppliedOrderId { get; set; }
+}
+
+public sealed class ClientBlockSettingRequest
+{
+    [JsonPropertyName("key")]
+    public string? Key { get; set; }
+
+    [JsonPropertyName("is_enabled")]
+    public bool IsEnabled { get; set; }
+}
+
+public sealed class SaveClientBlocksRequest
+{
+    [JsonPropertyName("blocks")]
+    public List<ClientBlockSettingRequest>? Blocks { get; set; }
+}
+
+public sealed class UpsertTsdDeviceRequest
+{
+    [JsonPropertyName("login")]
+    public string? Login { get; set; }
+
+    [JsonPropertyName("password")]
+    public string? Password { get; set; }
+
+    [JsonPropertyName("is_active")]
+    public bool IsActive { get; set; }
+
+    [JsonPropertyName("platform")]
+    public string? Platform { get; set; }
+}
+
+public sealed class UpsertItemRequest
+{
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("barcode")]
+    public string? Barcode { get; set; }
+
+    [JsonPropertyName("gtin")]
+    public string? Gtin { get; set; }
+
+    [JsonPropertyName("base_uom")]
+    public string? BaseUom { get; set; }
+
+    [JsonPropertyName("brand")]
+    public string? Brand { get; set; }
+
+    [JsonPropertyName("volume")]
+    public string? Volume { get; set; }
+
+    [JsonPropertyName("shelf_life_months")]
+    public int? ShelfLifeMonths { get; set; }
+
+    [JsonPropertyName("tara_id")]
+    public long? TaraId { get; set; }
+
+    [JsonPropertyName("is_marked")]
+    public bool IsMarked { get; set; }
+
+    [JsonPropertyName("max_qty_per_hu")]
+    public double? MaxQtyPerHu { get; set; }
+}
+
+public sealed class UpsertLocationRequest
+{
+    [JsonPropertyName("code")]
+    public string? Code { get; set; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+}
+
+public sealed class CreateNamedEntityRequest
+{
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+}
+
+public sealed class UpsertPartnerRequest
+{
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("code")]
+    public string? Code { get; set; }
+
+    [JsonPropertyName("status")]
+    public string? Status { get; set; }
 }
 
 public sealed class ApiResult

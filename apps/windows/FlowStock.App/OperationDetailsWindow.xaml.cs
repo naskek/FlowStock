@@ -2674,7 +2674,9 @@ public partial class OperationDetailsWindow : Window
             return false;
         }
 
-        var existing = _services.Hus.GetHuByCode(normalized);
+        var existing = _services.WpfHuApi.TryGetHuByCode(normalized, out var apiHu)
+            ? apiHu
+            : _services.Hus.GetHuByCode(normalized);
         if (existing != null)
         {
             return true;
@@ -2693,7 +2695,19 @@ public partial class OperationDetailsWindow : Window
 
         try
         {
-            _services.Hus.CreateHuWithCode(normalized);
+            var result = _services.WpfHuApi.TryCreateHuAsync(normalized, null)
+                .ConfigureAwait(false)
+                .GetAwaiter()
+                .GetResult();
+            if (!result.IsSuccess)
+            {
+                if (!string.IsNullOrWhiteSpace(result.Error))
+                {
+                    throw new InvalidOperationException(result.Error);
+                }
+
+                _services.Hus.CreateHuWithCode(normalized);
+            }
             RefreshHuOptions();
             return true;
         }
@@ -2708,6 +2722,27 @@ public partial class OperationDetailsWindow : Window
     {
         _partners.Clear();
         var docType = _doc?.Type;
+        if (_services.WpfPartnerApi.TryGetPartners(out var apiPartners))
+        {
+            foreach (var entry in apiPartners)
+            {
+                var partner = _partnersAll.FirstOrDefault(candidate => candidate.Id == entry.Partner.Id) ?? entry.Partner;
+                if (docType == DocType.Inbound && entry.Status == PartnerStatus.Client)
+                {
+                    continue;
+                }
+
+                if (docType == DocType.Outbound && entry.Status == PartnerStatus.Supplier)
+                {
+                    continue;
+                }
+
+                _partners.Add(partner);
+            }
+
+            return;
+        }
+
         foreach (var partner in _partnersAll)
         {
             var status = _services.PartnerStatuses.GetStatus(partner.Id);
@@ -3130,7 +3165,9 @@ public partial class OperationDetailsWindow : Window
     {
         try
         {
-            var hus = _services.Hus.GetHus(null, 2000);
+            var hus = _services.WpfHuApi.TryGetHus(null, 2000, out var apiHus)
+                ? apiHus
+                : _services.Hus.GetHus(null, 2000);
             return hus
                 .Where(IsSelectableHu)
                 .Select(hu => hu.Code)
@@ -3162,22 +3199,7 @@ public partial class OperationDetailsWindow : Window
                     : row.Qty;
             }
 
-            if (totals.Count > 0)
-            {
-                return totals;
-            }
-        }
-
-        foreach (var row in _services.DataStore.GetHuStockRows())
-        {
-            if (row.LocationId != locationId || string.IsNullOrWhiteSpace(row.HuCode))
-            {
-                continue;
-            }
-
-            totals[row.HuCode] = totals.TryGetValue(row.HuCode, out var current)
-                ? current + row.Qty
-                : row.Qty;
+            return totals;
         }
 
         return totals;
@@ -3199,7 +3221,7 @@ public partial class OperationDetailsWindow : Window
                 : row.Qty;
         }
 
-        return totals.Count > 0 ? totals : _services.DataStore.GetLedgerTotalsByHu();
+        return totals;
     }
 
     private IReadOnlyList<string?> GetHuCodesByLocation(long locationId)
@@ -3213,13 +3235,10 @@ public partial class OperationDetailsWindow : Window
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Cast<string?>()
                 .ToList();
-            if (codes.Count > 0)
-            {
-                return codes;
-            }
+            return codes;
         }
 
-        return _services.DataStore.GetHuCodesByLocation(locationId).ToList();
+        return Array.Empty<string?>();
     }
 
     private IEnumerable<string> GetFreeHuCodes(IReadOnlyDictionary<string, double> totalsByHu)

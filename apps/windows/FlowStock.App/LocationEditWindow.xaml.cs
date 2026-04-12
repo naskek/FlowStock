@@ -30,7 +30,7 @@ public partial class LocationEditWindow : Window
         NameBox.Text = _location.Name;
     }
 
-    private void Save_Click(object sender, RoutedEventArgs e)
+    private async void Save_Click(object sender, RoutedEventArgs e)
     {
         var code = CodeBox.Text?.Trim() ?? string.Empty;
         var name = NameBox.Text?.Trim() ?? string.Empty;
@@ -44,12 +44,30 @@ public partial class LocationEditWindow : Window
         {
             if (_location == null)
             {
-                var locationId = _services.Catalog.CreateLocation(code, name);
+                var result = await _services.WpfCatalogApi.TryCreateLocationAsync(code, name).ConfigureAwait(true);
+                if (!result.IsSuccess && !string.IsNullOrWhiteSpace(result.Error))
+                {
+                    throw new InvalidOperationException(result.Error);
+                }
+
+                var locationId = result.IsSuccess
+                    ? (result.CreatedId ?? 0)
+                    : _services.Catalog.CreateLocation(code, name);
                 SavedLocationId = locationId;
             }
             else
             {
-                _services.Catalog.UpdateLocation(_location.Id, code, name);
+                var result = await _services.WpfCatalogApi.TryUpdateLocationAsync(_location.Id, code, name).ConfigureAwait(true);
+                if (!result.IsSuccess)
+                {
+                    if (!string.IsNullOrWhiteSpace(result.Error))
+                    {
+                        throw new InvalidOperationException(result.Error);
+                    }
+
+                    _services.Catalog.UpdateLocation(_location.Id, code, name);
+                }
+
                 SavedLocationId = _location.Id;
             }
 

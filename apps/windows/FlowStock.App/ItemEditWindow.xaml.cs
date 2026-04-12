@@ -27,12 +27,17 @@ public partial class ItemEditWindow : Window
     private void LoadLookups()
     {
         _uoms.Clear();
-        _uoms.AddRange(_services.Catalog.GetUoms());
+        _uoms.AddRange(_services.WpfCatalogApi.TryGetUoms(out var apiUoms)
+            ? apiUoms
+            : _services.Catalog.GetUoms());
         UomCombo.ItemsSource = _uoms;
 
         _taras.Clear();
         _taras.Add(TaraOption.Empty);
-        foreach (var tara in _services.Catalog.GetTaras())
+        var taras = _services.WpfCatalogApi.TryGetTaras(out var apiTaras)
+            ? apiTaras
+            : _services.Catalog.GetTaras();
+        foreach (var tara in taras)
         {
             _taras.Add(new TaraOption(tara.Id, tara.Name));
         }
@@ -71,7 +76,7 @@ public partial class ItemEditWindow : Window
         TaraCombo.SelectedItem = _taras.FirstOrDefault(t => t.Id == _item.TaraId) ?? TaraOption.Empty;
     }
 
-    private void Save_Click(object sender, RoutedEventArgs e)
+    private async void Save_Click(object sender, RoutedEventArgs e)
     {
         var name = NameBox.Text?.Trim() ?? string.Empty;
         var barcode = Normalize(BarcodeBox.Text);
@@ -116,14 +121,61 @@ public partial class ItemEditWindow : Window
 
         try
         {
+            var candidate = new Item
+            {
+                Id = _item?.Id ?? 0,
+                Name = name,
+                Barcode = barcode,
+                Gtin = gtin,
+                BaseUom = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom.Trim(),
+                Brand = brand,
+                Volume = volume,
+                ShelfLifeMonths = shelfLifeMonths,
+                MaxQtyPerHu = maxQtyPerHu,
+                TaraId = taraId,
+                IsMarked = isMarked
+            };
+
             if (_item == null)
             {
-                var itemId = _services.Catalog.CreateItem(name, barcode, gtin, baseUom, brand, volume, shelfLifeMonths, taraId, isMarked, maxQtyPerHu);
+                var result = await _services.WpfCatalogApi.TryCreateItemAsync(candidate).ConfigureAwait(true);
+                if (!result.IsSuccess && !string.IsNullOrWhiteSpace(result.Error))
+                {
+                    throw new InvalidOperationException(result.Error);
+                }
+
+                var itemId = result.IsSuccess
+                    ? (result.CreatedId ?? 0)
+                    : _services.Catalog.CreateItem(name, barcode, gtin, baseUom, brand, volume, shelfLifeMonths, taraId, isMarked, maxQtyPerHu);
                 SavedItemId = itemId;
             }
             else
             {
-                _services.Catalog.UpdateItem(_item.Id, name, barcode, gtin, baseUom, brand, volume, shelfLifeMonths, taraId, isMarked, maxQtyPerHu);
+                var updateCandidate = new Item
+                {
+                    Id = _item.Id,
+                    Name = candidate.Name,
+                    Barcode = candidate.Barcode,
+                    Gtin = candidate.Gtin,
+                    BaseUom = candidate.BaseUom,
+                    Brand = candidate.Brand,
+                    Volume = candidate.Volume,
+                    ShelfLifeMonths = candidate.ShelfLifeMonths,
+                    MaxQtyPerHu = candidate.MaxQtyPerHu,
+                    TaraId = candidate.TaraId,
+                    IsMarked = candidate.IsMarked
+                };
+                var result = await _services.WpfCatalogApi.TryUpdateItemAsync(updateCandidate).ConfigureAwait(true);
+                if (!result.IsSuccess)
+                {
+                    if (!string.IsNullOrWhiteSpace(result.Error))
+                    {
+                        throw new InvalidOperationException(result.Error);
+                    }
+
+                    _services.Catalog.UpdateItem(_item.Id, name, barcode, gtin, baseUom, brand, volume, shelfLifeMonths, taraId, isMarked, maxQtyPerHu);
+                }
+
                 SavedItemId = _item.Id;
             }
 
@@ -194,7 +246,9 @@ public partial class ItemEditWindow : Window
 
     private bool TryValidateItemIdentifiers(string? barcode, string? gtin, long? currentItemId)
     {
-        var items = _services.Catalog.GetItems(null);
+        var items = _services.WpfReadApi.TryGetItems(null, out var apiItems)
+            ? apiItems
+            : _services.Catalog.GetItems(null);
 
         if (!string.IsNullOrWhiteSpace(barcode))
         {
@@ -232,7 +286,7 @@ public partial class ItemEditWindow : Window
             return false;
         }
 
-        var duplicate = _services.Catalog.GetItems(null)
+        var duplicate = (_services.WpfReadApi.TryGetItems(null, out var apiItems) ? apiItems : _services.Catalog.GetItems(null))
             .FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.Barcode)
                                     && string.Equals(item.Barcode, barcode, StringComparison.OrdinalIgnoreCase)
                                     && (!currentItemId.HasValue || item.Id != currentItemId.Value));

@@ -62,8 +62,22 @@ public partial class OrderDetailsWindow : Window
     private void LoadPartners()
     {
         _partners.Clear();
-        var partners = _services.WpfReadApi.TryGetPartners(out var apiPartners)
-            ? apiPartners
+        if (_services.WpfPartnerApi.TryGetPartners(out var apiPartners))
+        {
+            foreach (var entry in apiPartners)
+            {
+                if (entry.Status == PartnerStatus.Supplier)
+                {
+                    continue;
+                }
+
+                _partners.Add(entry.Partner);
+            }
+            return;
+        }
+
+        var partners = _services.WpfReadApi.TryGetPartners(out var readApiPartners)
+            ? readApiPartners
             : _services.Catalog.GetPartners();
         foreach (var partner in partners)
         {
@@ -709,6 +723,11 @@ public partial class OrderDetailsWindow : Window
 
     private bool IsSupplierPartner(long partnerId)
     {
+        if (_services.WpfPartnerApi.TryGetPartners(out var apiPartners))
+        {
+            return apiPartners.FirstOrDefault(entry => entry.Partner.Id == partnerId)?.Status == PartnerStatus.Supplier;
+        }
+
         return _services.PartnerStatuses.GetStatus(partnerId) == PartnerStatus.Supplier;
     }
 
