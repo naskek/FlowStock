@@ -6,6 +6,8 @@ public sealed class OrderLineView
     public long OrderId { get; init; }
     public long ItemId { get; init; }
     public string ItemName { get; init; } = string.Empty;
+    public string? Barcode { get; init; }
+    public string? Gtin { get; init; }
     public double QtyOrdered { get; set; }
     public double QtyShipped { get; set; }
     public double QtyProduced { get; set; }

@@ -282,15 +282,23 @@ public sealed class DocumentService
                     case DocType.Outbound:
                         if (line.FromLocationId.HasValue)
                         {
-                            store.AddLedgerEntry(new LedgerEntry
+                            var outboundHu = NormalizeHuValue(fromHu);
+                            if (!string.IsNullOrWhiteSpace(outboundHu))
                             {
-                                Timestamp = closedAt,
-                                DocId = docId,
-                                ItemId = line.ItemId,
-                                LocationId = line.FromLocationId.Value,
-                                QtyDelta = -line.Qty,
-                                HuCode = fromHu
-                            });
+                                store.AddLedgerEntry(new LedgerEntry
+                                {
+                                    Timestamp = closedAt,
+                                    DocId = docId,
+                                    ItemId = line.ItemId,
+                                    LocationId = line.FromLocationId.Value,
+                                    QtyDelta = -line.Qty,
+                                    HuCode = outboundHu
+                                });
+                            }
+                            else
+                            {
+                                AddOutboundLedgerEntriesFromLocation(store, closedAt, docId, line, line.FromLocationId.Value);
+                            }
                         }
                         else
                         {
@@ -1348,6 +1356,7 @@ public sealed class DocumentService
         var locationsById = locations.ToDictionary(location => location.Id, location => location.Code);
 
         var outgoingBySource = new Dictionary<StockKey, double>();
+        var outboundByLocation = new Dictionary<ItemLocationKey, double>();
         var outboundByItem = new Dictionary<long, double>();
 
         for (var index = 0; index < lines.Count; index++)
@@ -1498,14 +1507,38 @@ public sealed class DocumentService
             {
                 if (line.Qty > 0 && line.FromLocationId.HasValue)
                 {
-                    var key = new StockKey(line.ItemId, line.FromLocationId.Value, NormalizeHuValue(fromHu));
-                    outgoingBySource[key] = outgoingBySource.TryGetValue(key, out var current) ? current + line.Qty : line.Qty;
+                    var normalizedFromHu = NormalizeHuValue(fromHu);
+                    if (doc.Type == DocType.Outbound && string.IsNullOrWhiteSpace(normalizedFromHu))
+                    {
+                        var key = new ItemLocationKey(line.ItemId, line.FromLocationId.Value);
+                        outboundByLocation[key] = outboundByLocation.TryGetValue(key, out var current) ? current + line.Qty : line.Qty;
+                    }
+                    else
+                    {
+                        var key = new StockKey(line.ItemId, line.FromLocationId.Value, normalizedFromHu);
+                        outgoingBySource[key] = outgoingBySource.TryGetValue(key, out var current) ? current + line.Qty : line.Qty;
+                    }
                 }
                 else if (doc.Type == DocType.Outbound)
                 {
                     outboundByItem[line.ItemId] = outboundByItem.TryGetValue(line.ItemId, out var current)
                         ? current + line.Qty
                         : line.Qty;
+                }
+            }
+        }
+
+        if (outboundByLocation.Count > 0)
+        {
+            foreach (var entry in outboundByLocation)
+            {
+                var current = GetTotalAvailableQtyAtLocation(entry.Key.ItemId, entry.Key.LocationId);
+                var future = current - entry.Value;
+                if (future < 0)
+                {
+                    var itemLabel = itemsById.TryGetValue(entry.Key.ItemId, out var name) ? name.Name : $"ID {entry.Key.ItemId}";
+                    var locationLabel = locationsById.TryGetValue(entry.Key.LocationId, out var code) ? code : $"ID {entry.Key.LocationId}";
+                    check.Errors.Add($"{itemLabel} @ {locationLabel}: на складе {FormatQty(current)}, требуется {FormatQty(entry.Value)}.");
                 }
             }
         }
@@ -1753,6 +1786,20 @@ public sealed class DocumentService
         foreach (var location in locations)
         {
             total += _data.GetAvailableQty(itemId, location.Id, huCode);
+        }
+
+        return total;
+    }
+
+    private double GetTotalAvailableQtyAtLocation(long itemId, long locationId)
+    {
+        var total = _data.GetAvailableQty(itemId, locationId, null);
+        foreach (var row in _data.GetHuStockRows())
+        {
+            if (row.ItemId == itemId && row.LocationId == locationId)
+            {
+                total += row.Qty;
+            }
         }
 
         return total;
@@ -2133,6 +2180,53 @@ public sealed class DocumentService
         return onHand.Concat(inPool).ToArray();
     }
 
+    private static void AddOutboundLedgerEntriesFromLocation(
+        IDataStore store,
+        DateTime closedAt,
+        long docId,
+        DocLine line,
+        long locationId)
+    {
+        var remaining = line.Qty;
+        var sources = new List<OutboundStockSource>();
+        var nonHuQty = store.GetLedgerBalance(line.ItemId, locationId, null);
+        if (nonHuQty > 0)
+        {
+            sources.Add(new OutboundStockSource(locationId, null, nonHuQty));
+        }
+
+        sources.AddRange(store.GetHuStockRows()
+            .Where(row => row.ItemId == line.ItemId && row.LocationId == locationId && row.Qty > 0)
+            .Select(row => new OutboundStockSource(locationId, NormalizeHuValue(row.HuCode), row.Qty))
+            .Where(source => !string.IsNullOrWhiteSpace(source.HuCode))
+            .OrderBy(source => source.HuCode, StringComparer.OrdinalIgnoreCase));
+
+        foreach (var source in sources)
+        {
+            if (remaining <= 0)
+            {
+                break;
+            }
+
+            var take = Math.Min(source.Qty, remaining);
+            if (take <= 0)
+            {
+                continue;
+            }
+
+            store.AddLedgerEntry(new LedgerEntry
+            {
+                Timestamp = closedAt,
+                DocId = docId,
+                ItemId = line.ItemId,
+                LocationId = source.LocationId,
+                QtyDelta = -take,
+                HuCode = source.HuCode
+            });
+            remaining -= take;
+        }
+    }
+
     private static string? NormalizeGtinForKm(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -2155,6 +2249,10 @@ public sealed class DocumentService
     }
 
     private readonly record struct StockKey(long ItemId, long LocationId, string? Hu);
+
+    private readonly record struct ItemLocationKey(long ItemId, long LocationId);
+
+    private readonly record struct OutboundStockSource(long LocationId, string? HuCode, double Qty);
 
     private sealed class CloseDocCheck
     {

@@ -498,6 +498,8 @@ public sealed class WpfReadApiService
             OrderId = ReadInt64(element, "order_id"),
             ItemId = ReadInt64(element, "item_id"),
             ItemName = ReadString(element, "item_name") ?? string.Empty,
+            Barcode = ReadString(element, "barcode"),
+            Gtin = ReadString(element, "gtin"),
             QtyOrdered = ReadDouble(element, "qty_ordered"),
             QtyShipped = ReadDouble(element, "qty_shipped"),
             QtyProduced = ReadDouble(element, "qty_produced"),

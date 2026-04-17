@@ -75,7 +75,7 @@
 - Tara: редактор справочника в разделе `Справочники`.
 - Locations: список с ID + modal create/edit (`code`, `name`).
 - Простой CRUD по `items`, `locations`, `uoms` и `taras` использует server API.
-- Partners: список с ID + modal create/edit.
+- Partners: список с ID + modal create/edit/delete.
   - CRUD по контрагентам и их роли/статусу (`Supplier` / `Client` / `Both`) работают через server API.
 - Orders: список + детали (см. `spec_orders.md`).
 - Incoming requests: единое WPF-окно входящих запросов (из колокольчика/меню) для item requests и web order requests, со всеми действиями обработки в одном месте.
@@ -88,7 +88,7 @@
   - Управление web-login account-ами (`tsd_devices`) и глобальными настройками блоков (`client_blocks`) читается и сохраняется через server API.
 - HU registry в WPF (`HU Реестр`) читает/генерирует/закрывает HU через server API.
 - WPF HU-selectors и stock-by-HU helper-ы берут доступные HU из тех же server read-model, что используются для stock/HU.
-- Удаление строк в табах (orders/items/locations/partners) в текущем WPF UI по-прежнему заблокировано.
+- Удаление строк в табах `orders/items/locations` в текущем WPF UI по-прежнему заблокировано; контрагенты удаляются через server API при наличии выбранной строки.
 - В Admin есть отдельная action `очистить операции` для тестового cleanup (`docs/doc_lines/ledger/orders/order_lines/import events/errors`). Справочники при этом не затрагиваются.
 - В Admin есть отдельный раздел глобального доступа к web blocks:
   - PC blocks: `Остатки`, `Каталог`, `Заказы`.
@@ -112,6 +112,7 @@
 - Отгрузка по заказу: `OUTBOUND` может быть связан с заказом (`order_id/order_ref`).
   - При выборе заказа автоматически подставляются остатки по строкам заказа (`order_line_id`) с учетом уже закрытых отгрузок.
   - В `OUTBOUND` доступны только клиентские заказы (`order_type = CUSTOMER`); внутренние заказы не участвуют в клиентской отгрузке.
+  - Если строка `OUTBOUND` содержит `from_location_id`, но не содержит `from_hu`, проведение распределяет списание по доступным остаткам этой локации: сначала без HU, затем по HU в порядке кода.
   - TSD показывает `pick list` HU/локаций по выбранной строке и позволяет привязать HU/локацию к строке отгрузки.
   - Для маркируемых SKU `pick list` строится по `km_code` (`status=OnHand`) с фильтром по заказу; для немаркируемых — по `ledger`.
   - В ручном `OUTBOUND` выбор товара фильтруется по остаткам источника (выбранные `location/HU`), чтобы показывать только реально отгружаемые позиции.

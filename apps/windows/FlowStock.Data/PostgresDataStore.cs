@@ -1238,7 +1238,7 @@ WHERE id = @id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT ol.id, ol.order_id, ol.item_id, i.name, ol.qty_ordered
+SELECT ol.id, ol.order_id, ol.item_id, i.name, i.barcode, i.gtin, ol.qty_ordered
 FROM order_lines ol
 INNER JOIN items i ON i.id = ol.item_id
 WHERE ol.order_id = @order_id
@@ -1255,7 +1255,9 @@ ORDER BY i.name;
                     OrderId = reader.GetInt64(1),
                     ItemId = reader.GetInt64(2),
                     ItemName = reader.GetString(3),
-                    QtyOrdered = reader.GetDouble(4)
+                    Barcode = reader.IsDBNull(4) ? null : reader.GetString(4),
+                    Gtin = reader.IsDBNull(5) ? null : reader.GetString(5),
+                    QtyOrdered = reader.GetDouble(6)
                 });
             }
 

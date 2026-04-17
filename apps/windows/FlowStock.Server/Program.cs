@@ -1592,6 +1592,8 @@ app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>
     }
 
     var list = orders.Select(MapOrder).ToList();
+    var pendingCreateOrders = GetPendingCreateOrderRows(store, normalized);
+    list.AddRange(pendingCreateOrders);
     return Results.Ok(list);
 });
 
@@ -1624,7 +1626,6 @@ app.MapGet("/api/orders/{orderId:long}/lines", (long orderId, IDataStore store) 
         return Results.NotFound(new ApiResult(false, "ORDER_NOT_FOUND"));
     }
 
-    var itemLookup = store.GetItems(null).ToDictionary(item => item.Id, item => item);
     var lines = orderService.GetOrderLineViews(orderId)
         .Select(line => new
         {
@@ -1632,7 +1633,8 @@ app.MapGet("/api/orders/{orderId:long}/lines", (long orderId, IDataStore store) 
             order_id = line.OrderId,
             item_id = line.ItemId,
             item_name = line.ItemName,
-            barcode = itemLookup.TryGetValue(line.ItemId, out var item) ? item.Barcode : null,
+            barcode = line.Barcode,
+            gtin = line.Gtin,
             qty_ordered = line.QtyOrdered,
             qty_shipped = line.QtyShipped,
             qty_produced = line.QtyProduced,
@@ -2803,7 +2805,125 @@ static string GenerateNextOrderRef(IDataStore store)
         }
     }
 
+    foreach (var request in store.GetOrderRequests(includeResolved: false))
+    {
+        if (!string.Equals(request.RequestType, OrderRequestType.CreateOrder, StringComparison.OrdinalIgnoreCase))
+        {
+            continue;
+        }
+
+        var orderRef = TryReadJsonString(request.PayloadJson, "order_ref")?.Trim();
+        if (string.IsNullOrWhiteSpace(orderRef) || !IsDigitsOnly(orderRef))
+        {
+            continue;
+        }
+
+        if (long.TryParse(orderRef, NumberStyles.None, CultureInfo.InvariantCulture, out var value)
+            && value > max)
+        {
+            max = value;
+        }
+    }
+
     return (max + 1).ToString("D3", CultureInfo.InvariantCulture);
+}
+
+static List<object> GetPendingCreateOrderRows(IDataStore store, string? normalizedQuery)
+{
+    var rows = new List<object>();
+    var pendingRequests = store.GetOrderRequests(includeResolved: false)
+        .Where(request => string.Equals(request.RequestType, OrderRequestType.CreateOrder, StringComparison.OrdinalIgnoreCase))
+        .OrderByDescending(request => request.CreatedAt)
+        .ThenByDescending(request => request.Id);
+
+    foreach (var request in pendingRequests)
+    {
+        var orderRef = TryReadJsonString(request.PayloadJson, "order_ref")?.Trim();
+        if (string.IsNullOrWhiteSpace(orderRef))
+        {
+            continue;
+        }
+
+        var partnerId = TryReadJsonInt64(request.PayloadJson, "partner_id");
+        var partner = partnerId.HasValue ? store.GetPartner(partnerId.Value) : null;
+        var dueDate = TryReadJsonString(request.PayloadJson, "due_date");
+        var partnerName = partner?.Name ?? string.Empty;
+        var partnerCode = partner?.Code ?? string.Empty;
+
+        if (!string.IsNullOrWhiteSpace(normalizedQuery)
+            && !orderRef.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase)
+            && !partnerName.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase)
+            && !partnerCode.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase))
+        {
+            continue;
+        }
+
+        rows.Add(new
+        {
+            id = $"request:{request.Id}",
+            request_id = request.Id,
+            order_ref = orderRef,
+            order_type = OrderStatusMapper.TypeToString(OrderType.Customer),
+            partner_id = partnerId,
+            partner_name = partnerName,
+            partner_code = partnerCode,
+            due_date = dueDate,
+            status = "Ожидает подтверждения",
+            status_code = "PENDING_CONFIRMATION",
+            created_at = request.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
+            shipped_at = (string?)null,
+            is_pending_confirmation = true
+        });
+    }
+
+    return rows;
+}
+
+static string? TryReadJsonString(string json, string propertyName)
+{
+    try
+    {
+        using var document = JsonDocument.Parse(json);
+        if (!document.RootElement.TryGetProperty(propertyName, out var property))
+        {
+            return null;
+        }
+
+        return property.ValueKind == JsonValueKind.String ? property.GetString() : property.ToString();
+    }
+    catch (JsonException)
+    {
+        return null;
+    }
+}
+
+static long? TryReadJsonInt64(string json, string propertyName)
+{
+    try
+    {
+        using var document = JsonDocument.Parse(json);
+        if (!document.RootElement.TryGetProperty(propertyName, out var property))
+        {
+            return null;
+        }
+
+        if (property.ValueKind == JsonValueKind.Number && property.TryGetInt64(out var number))
+        {
+            return number;
+        }
+
+        if (property.ValueKind == JsonValueKind.String
+            && long.TryParse(property.GetString(), NumberStyles.None, CultureInfo.InvariantCulture, out var parsed))
+        {
+            return parsed;
+        }
+    }
+    catch (JsonException)
+    {
+        return null;
+    }
+
+    return null;
 }
 
 static bool IsDigitsOnly(string value)

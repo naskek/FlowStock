@@ -384,6 +384,8 @@ public partial class OrderDetailsWindow : Window
             {
                 ItemId = item.Id,
                 ItemName = item.Name,
+                Barcode = item.Barcode,
+                Gtin = item.Gtin,
                 QtyOrdered = qtyBase
             });
         }
@@ -604,9 +606,16 @@ public partial class OrderDetailsWindow : Window
         TypeCombo.IsEnabled = canEdit && !_orderId.HasValue;
         PartnerCombo.IsEnabled = canEdit && type == OrderType.Customer;
 
-        if (type == OrderType.Internal && PartnerCombo.SelectedItem != null)
+        if (type == OrderType.Internal)
         {
-            PartnerCombo.SelectedItem = null;
+            if (PartnerCombo.SelectedItem != null)
+            {
+                PartnerCombo.SelectedItem = null;
+            }
+            if (!string.IsNullOrWhiteSpace(PartnerCombo.Text))
+            {
+                PartnerCombo.Text = string.Empty;
+            }
         }
 
         OrderTypeHintText.Text = type == OrderType.Internal
@@ -680,7 +689,9 @@ public partial class OrderDetailsWindow : Window
 
         if (type == OrderType.Customer)
         {
-            if (PartnerCombo.SelectedItem is not Partner partner)
+            var partner = PartnerCombo.SelectedItem as Partner
+                          ?? FindPartnerByQuery(PartnerCombo.Text);
+            if (partner == null)
             {
                 if (_order?.PartnerId is long existingPartnerId && IsSupplierPartner(existingPartnerId))
                 {
@@ -691,6 +702,7 @@ public partial class OrderDetailsWindow : Window
                 MessageBox.Show("Выберите контрагента.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return false;
             }
+            PartnerCombo.SelectedItem = partner;
 
             if (IsSupplierPartner(partner.Id))
             {
@@ -713,6 +725,23 @@ public partial class OrderDetailsWindow : Window
         }
 
         return true;
+    }
+
+    private Partner? FindPartnerByQuery(string? query)
+    {
+        var normalized = (query ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return null;
+        }
+
+        var matches = _partners
+            .Where(partner => string.Equals(partner.DisplayName, normalized, StringComparison.OrdinalIgnoreCase)
+                              || string.Equals(partner.Name, normalized, StringComparison.OrdinalIgnoreCase)
+                              || string.Equals(partner.Code, normalized, StringComparison.OrdinalIgnoreCase))
+            .Take(2)
+            .ToList();
+        return matches.Count == 1 ? matches[0] : null;
     }
 
     private bool IsSupplierPartner(long partnerId)

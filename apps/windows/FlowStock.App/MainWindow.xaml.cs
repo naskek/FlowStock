@@ -130,7 +130,7 @@ public partial class MainWindow : Window
 
         if (PartnerDeleteButton != null)
         {
-            PartnerDeleteButton.IsEnabled = _adminDeleteModeEnabled && _selectedPartner != null;
+            PartnerDeleteButton.IsEnabled = _selectedPartner != null;
         }
 
         if (PartnerEditButton != null)
@@ -1522,11 +1522,6 @@ public partial class MainWindow : Window
 
     private async void DeletePartner_Click(object sender, RoutedEventArgs e)
     {
-        if (!EnsureDeleteModeEnabled("Контрагенты"))
-        {
-            return;
-        }
-
         if (_selectedPartner == null)
         {
             MessageBox.Show("Выберите контрагента.", "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);

@@ -980,10 +980,11 @@
     }
     var body = rows
       .map(function (order) {
+        var isPending = order && order.is_pending_confirmation;
         return (
-          '<tr data-order="' +
-          escapeHtml(String(order.id)) +
-          '">' +
+          "<tr" +
+          (isPending ? "" : ' data-order="' + escapeHtml(String(order.id)) + '"') +
+          ">" +
           "<td>" +
           escapeHtml(order.order_ref || "-") +
           "</td>" +
@@ -1000,7 +1001,7 @@
           escapeHtml(formatDate(order.shipped_at)) +
           "</td>" +
           "<td>" +
-          escapeHtml(order.status || "-") +
+          escapeHtml(order.status || (isPending ? "Ожидает подтверждения" : "-")) +
           "</td>" +
           "</tr>"
         );
@@ -1084,8 +1085,10 @@
       '      <input class="form-input" id="newOrderRefInput" type="text" autocomplete="off" />' +
       "    </div>" +
       '    <div class="form-field">' +
-      '      <label class="form-label" for="newOrderPartnerSelect">Контрагент</label>' +
-      '      <select class="form-input" id="newOrderPartnerSelect"></select>' +
+      '      <label class="form-label" for="newOrderPartnerInput">Контрагент</label>' +
+      '      <input class="form-input" id="newOrderPartnerInput" type="text" list="newOrderPartnerList" autocomplete="off" placeholder="Введите имя или код" />' +
+      '      <datalist id="newOrderPartnerList"></datalist>' +
+      '      <div class="pc-order-line-hint" id="newOrderPartnerHint"></div>' +
       "    </div>" +
       '    <div class="form-field">' +
       '      <label class="form-label" for="newOrderDueDateInput">Плановая дата</label>' +
@@ -1112,7 +1115,9 @@
       card: modal.querySelector(".pc-modal-card"),
       closeBtn: modal.querySelector("#newOrderCloseBtn"),
       orderRefInput: modal.querySelector("#newOrderRefInput"),
-      partnerSelect: modal.querySelector("#newOrderPartnerSelect"),
+      partnerInput: modal.querySelector("#newOrderPartnerInput"),
+      partnerDatalist: modal.querySelector("#newOrderPartnerList"),
+      partnerHint: modal.querySelector("#newOrderPartnerHint"),
       dueDateInput: modal.querySelector("#newOrderDueDateInput"),
       commentInput: modal.querySelector("#newOrderCommentInput"),
       linesWrap: modal.querySelector("#newOrderLinesWrap"),
@@ -1224,7 +1229,7 @@
       linesState[index].item_id = selectedId;
       var selectedItem = getItemById(selectedId);
       if (selectedItem) {
-        linesState[index].query = selectedItem.gtin || selectedItem.barcode || selectedItem.name || "";
+        linesState[index].query = buildItemLabel(selectedItem);
       }
 
       var queryEl = refs.linesWrap.querySelector('.line-item-query[data-index="' + index + '"]');
@@ -1250,25 +1255,68 @@
       }
     }
 
+    function buildPartnerLabel(partner) {
+      if (!partner) {
+        return "";
+      }
+      return partner.code ? partner.code + " — " + (partner.name || "") : partner.name || "";
+    }
+
     function buildPartnerOptions() {
-      if (!refs.partnerSelect) {
+      if (!refs.partnerDatalist) {
         return;
       }
-      var options =
-        '<option value="">Выберите контрагента</option>' +
-        partners
-          .map(function (partner) {
-            var label = partner.code ? partner.code + " — " + (partner.name || "") : partner.name || "";
-            return (
-              '<option value="' +
-              escapeHtml(String(partner.id)) +
-              '">' +
-              escapeHtml(label) +
-              "</option>"
-            );
-          })
-          .join("");
-      refs.partnerSelect.innerHTML = options;
+      refs.partnerDatalist.innerHTML = partners
+        .map(function (partner) {
+          return '<option value="' + escapeHtml(buildPartnerLabel(partner)) + '"></option>';
+        })
+        .join("");
+    }
+
+    function findPartnerByQuery(query) {
+      var normalized = normalizeText(query);
+      if (!normalized) {
+        return null;
+      }
+
+      var exact = null;
+      var exactCount = 0;
+      partners.forEach(function (partner) {
+        var label = normalizeText(buildPartnerLabel(partner));
+        var name = normalizeText(partner.name);
+        var code = normalizeText(partner.code);
+        if (label === normalized || name === normalized || code === normalized) {
+          exact = partner;
+          exactCount += 1;
+        }
+      });
+
+      return exactCount === 1 ? exact : null;
+    }
+
+    function updatePartnerHint() {
+      if (!refs.partnerInput || !refs.partnerHint) {
+        return;
+      }
+      var value = String(refs.partnerInput.value || "").trim();
+      if (!value) {
+        refs.partnerHint.textContent = "";
+        return;
+      }
+      var partner = findPartnerByQuery(value);
+      refs.partnerHint.textContent = partner ? "" : "Выберите контрагента из выпадающего списка.";
+    }
+
+    function applyPartnerInputSelection() {
+      if (!refs.partnerInput) {
+        return;
+      }
+
+      var partner = findPartnerByQuery(refs.partnerInput.value);
+      if (partner) {
+        refs.partnerInput.value = buildPartnerLabel(partner);
+      }
+      updatePartnerHint();
     }
 
     function buildItemLabel(item) {
@@ -1474,7 +1522,7 @@
       var selectedItem = getItemById(line.item_id);
       if (hintEl) {
         if (selectedItem) {
-          hintEl.textContent = "Выбрано: " + buildItemLabel(selectedItem);
+          hintEl.textContent = "";
         } else if (normalizedQuery && filtered.length === 0) {
           hintEl.textContent = "Совпадения не найдены.";
         } else if (normalizedQuery) {
@@ -1582,7 +1630,8 @@
 
     function submit() {
       var orderRef = refs.orderRefInput && refs.orderRefInput.value ? refs.orderRefInput.value.trim() : "";
-      var partnerId = refs.partnerSelect ? Number(refs.partnerSelect.value) : 0;
+      var selectedPartner = refs.partnerInput ? findPartnerByQuery(refs.partnerInput.value) : null;
+      var partnerId = selectedPartner ? Number(selectedPartner.id) : 0;
       var dueDate = refs.dueDateInput ? String(refs.dueDateInput.value || "").trim() : "";
       var comment = refs.commentInput ? String(refs.commentInput.value || "").trim() : "";
       var account = loadAccount();
@@ -1612,7 +1661,7 @@
         return;
       }
       if (!partnerId) {
-        setStatus("Выберите контрагента.");
+        setStatus("Выберите контрагента из списка.");
         return;
       }
       if (!lines.length) {
@@ -1665,11 +1714,6 @@
         });
     }
 
-    modal.addEventListener("click", function (event) {
-      if (event.target === modal) {
-        close();
-      }
-    });
     if (refs.closeBtn) {
       refs.closeBtn.addEventListener("click", close);
     }
@@ -1678,6 +1722,11 @@
         linesState.push({ item_id: 0, qty_ordered: 1, query: "" });
         renderLines();
       });
+    }
+    if (refs.partnerInput) {
+      refs.partnerInput.addEventListener("input", updatePartnerHint);
+      refs.partnerInput.addEventListener("change", applyPartnerInputSelection);
+      refs.partnerInput.addEventListener("blur", applyPartnerInputSelection);
     }
       if (refs.submitBtn) {
         refs.submitBtn.addEventListener("click", submit);
@@ -1792,11 +1841,6 @@
       document.body.removeChild(modal);
     }
 
-    modal.addEventListener("click", function (event) {
-      if (event.target === modal) {
-        close();
-      }
-    });
     var closeBtn = modal.querySelector("#modalCloseBtn");
     if (closeBtn) {
       closeBtn.addEventListener("click", close);
@@ -1882,6 +1926,9 @@
               escapeHtml(line.barcode || "-") +
               "</td>" +
               "<td>" +
+              escapeHtml(line.gtin || "-") +
+              "</td>" +
+              "<td>" +
               escapeHtml(String(line.qty_ordered || 0)) +
               "</td>" +
               "<td>" +
@@ -1898,7 +1945,8 @@
           '<table class="pc-table">' +
           "<thead><tr>" +
           "<th>Товар</th>" +
-          "<th>ШК</th>" +
+          "<th>SKU / ШК</th>" +
+          "<th>GTIN</th>" +
           "<th>Заказано</th>" +
           "<th>" +
           escapeHtml(processedHeader) +

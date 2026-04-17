@@ -2201,14 +2201,13 @@ public partial class OperationDetailsWindow : Window
             return false;
         }
 
-        var contexts = BuildOutboundOrderBatchContexts(selected.Id, fromLocation?.Id, fromHu);
-        var headerHu = GetSelectedHuCode(DocHuCombo);
+        var contexts = BuildOutboundOrderBatchContexts(selected.Id, fromLocation?.Id);
         LogOutboundOrderBoundInfo($"fill from order server branch prepared: order_id={selected.Id}; contexts={contexts.Count}; from_location_id={fromLocation?.Id}; from_hu={NormalizeHuValue(fromHu) ?? "-"}");
 
         var headerSaved = await TryPersistHeaderViaServerAsync(
             selected.PartnerId,
             selected.Id,
-            headerHu,
+            null,
             null,
             null,
             null,
@@ -2406,7 +2405,7 @@ public partial class OperationDetailsWindow : Window
         }
     }
 
-    private IReadOnlyList<WpfAddDocLineContext> BuildOutboundOrderBatchContexts(long orderId, long? fromLocationId, string? fromHu)
+    private IReadOnlyList<WpfAddDocLineContext> BuildOutboundOrderBatchContexts(long orderId, long? fromLocationId)
     {
         return GetOrderShipmentRemaining(orderId)
             .Where(line => line.QtyRemaining > 0)
@@ -2419,7 +2418,7 @@ public partial class OperationDetailsWindow : Window
                 null,
                 fromLocationId,
                 null,
-                NormalizeHuValue(fromHu),
+                null,
                 null))
             .ToList();
     }
