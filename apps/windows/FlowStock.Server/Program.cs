@@ -2898,6 +2898,7 @@ static List<object> TryReadPendingCreateOrderLines(IDataStore store, string json
             return result;
         }
 
+        var availableByItem = store.GetLedgerTotalsByItem();
         foreach (var lineElement in linesElement.EnumerateArray())
         {
             var itemId = TryReadJsonElementInt64(lineElement, "item_id");
@@ -2907,6 +2908,7 @@ static List<object> TryReadPendingCreateOrderLines(IDataStore store, string json
             }
 
             var item = store.FindItemById(itemId.Value);
+            var available = availableByItem.TryGetValue(itemId.Value, out var availableQty) ? availableQty : 0d;
             result.Add(new
             {
                 item_id = itemId.Value,
@@ -2916,7 +2918,8 @@ static List<object> TryReadPendingCreateOrderLines(IDataStore store, string json
                 qty_ordered = TryReadJsonElementDouble(lineElement, "qty_ordered") ?? 0d,
                 qty_shipped = 0d,
                 qty_produced = 0d,
-                qty_left = TryReadJsonElementDouble(lineElement, "qty_ordered") ?? 0d
+                qty_left = TryReadJsonElementDouble(lineElement, "qty_ordered") ?? 0d,
+                qty_available = available
             });
         }
     }

@@ -1001,7 +1001,7 @@
           escapeHtml(formatDate(order.shipped_at)) +
           "</td>" +
           "<td>" +
-          escapeHtml(order.status || (isPending ? "Ожидает подтверждения" : "-")) +
+          getOrderStatusHtml(order) +
           "</td>" +
           "</tr>"
         );
@@ -1070,6 +1070,158 @@
     return "";
   }
 
+  function formatQuantity(value) {
+    var number = Number(value) || 0;
+    if (Math.abs(number - Math.round(number)) < 0.000001) {
+      return String(Math.round(number));
+    }
+    return number.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+  }
+
+  function isInternalOrder(order) {
+    return String(order && order.order_type ? order.order_type : "").trim().toUpperCase() === "INTERNAL";
+  }
+
+  function isShippedOrder(order) {
+    return toOrderStatusCode(order && order.status) === "SHIPPED";
+  }
+
+  function isActiveShipmentOrder(order) {
+    var status = toOrderStatusCode(order && order.status);
+    return (
+      order &&
+      !order.is_pending_confirmation &&
+      !isInternalOrder(order) &&
+      (status === "ACCEPTED" || status === "IN_PROGRESS")
+    );
+  }
+
+  function getLineRequiredQty(line) {
+    var left = Number(line && (line.qty_left != null ? line.qty_left : line.qty_remaining));
+    if (!isNaN(left)) {
+      return Math.max(0, left);
+    }
+    var ordered = Number(line && line.qty_ordered) || 0;
+    var shipped = Number(line && line.qty_shipped) || 0;
+    return Math.max(0, ordered - shipped);
+  }
+
+  function getLineAvailableQty(line) {
+    return Number(line && line.qty_available) || 0;
+  }
+
+  function getAvailabilityState(line) {
+    var required = getLineRequiredQty(line);
+    var available = getLineAvailableQty(line);
+    var shortage = Math.max(0, required - available);
+    return {
+      required: required,
+      available: available,
+      shortage: shortage,
+      ready: shortage <= 0.000001,
+    };
+  }
+
+  function getShipmentReadiness(lines) {
+    var source = Array.isArray(lines) ? lines : [];
+    if (!source.length) {
+      return null;
+    }
+
+    var totalShortage = 0;
+    var hasRequiredQty = false;
+    source.forEach(function (line) {
+      var state = getAvailabilityState(line);
+      if (state.required > 0.000001) {
+        hasRequiredQty = true;
+      }
+      totalShortage += state.shortage;
+    });
+
+    if (!hasRequiredQty) {
+      return null;
+    }
+
+    return {
+      ready: totalShortage <= 0.000001,
+      shortage: totalShortage,
+      text: totalShortage <= 0.000001 ? "Готов к отгрузке" : "Не готов к отгрузке",
+    };
+  }
+
+  function getOrderStatusHtml(order) {
+    var readiness = order && order.shipment_readiness;
+    if (readiness && readiness.text) {
+      return renderStatusBadge(readiness.text, readiness.ready ? "success" : "warning");
+    }
+    if (isShippedOrder(order)) {
+      return renderStatusBadge((order && order.status) || "Отгружен", "completed");
+    }
+    return escapeHtml((order && order.status) || (order && order.is_pending_confirmation ? "Ожидает подтверждения" : "-"));
+  }
+
+  function renderReadinessBadge(readiness) {
+    if (!readiness || !readiness.text) {
+      return "";
+    }
+    return renderStatusBadge(readiness.text, readiness.ready ? "success" : "warning", "pc-status-badge-inline");
+  }
+
+  function renderStatusBadge(text, tone, extraClass) {
+    var normalizedTone = tone || "neutral";
+    var icon = "•";
+    if (normalizedTone === "success") {
+      icon = "✓";
+    } else if (normalizedTone === "warning") {
+      icon = "!";
+    } else if (normalizedTone === "completed") {
+      icon = "✓";
+    }
+
+    var className = "pc-status-badge pc-status-badge-" + normalizedTone;
+    if (extraClass) {
+      className += " " + extraClass;
+    }
+
+    return (
+      '<span class="' +
+      className +
+      '">' +
+      '<span class="pc-status-badge-icon" aria-hidden="true">' +
+      escapeHtml(icon) +
+      "</span>" +
+      "<span>" +
+      escapeHtml(text || "-") +
+      "</span>" +
+      "</span>"
+    );
+  }
+
+  function loadOrderReadiness(order) {
+    if (!isActiveShipmentOrder(order)) {
+      return Promise.resolve(order);
+    }
+
+    return fetchJson("/api/orders/" + encodeURIComponent(order.id) + "/lines")
+      .then(function (lines) {
+        order.shipment_readiness = getShipmentReadiness(lines);
+        return order;
+      })
+      .catch(function () {
+        order.shipment_readiness = null;
+        return order;
+      });
+  }
+
+  function enrichOrdersWithReadiness(rows) {
+    var source = Array.isArray(rows) ? rows : [];
+    return Promise.all(
+      source.map(function (order) {
+        return loadOrderReadiness(order);
+      })
+    );
+  }
+
   function openNewOrderModal(onSubmitted) {
     var modal = document.createElement("div");
     modal.className = "pc-modal";
@@ -1087,7 +1239,6 @@
       '    <div class="form-field">' +
       '      <label class="form-label" for="newOrderPartnerInput">Контрагент</label>' +
       '      <input class="form-input" id="newOrderPartnerInput" type="text" autocomplete="off" placeholder="Введите имя или код" />' +
-      '      <div class="pc-order-line-hint" id="newOrderPartnerHint"></div>' +
       "    </div>" +
       '    <div class="form-field">' +
       '      <label class="form-label" for="newOrderDueDateInput">Плановая дата</label>' +
@@ -1115,7 +1266,6 @@
       closeBtn: modal.querySelector("#newOrderCloseBtn"),
       orderRefInput: modal.querySelector("#newOrderRefInput"),
       partnerInput: modal.querySelector("#newOrderPartnerInput"),
-      partnerHint: modal.querySelector("#newOrderPartnerHint"),
       dueDateInput: modal.querySelector("#newOrderDueDateInput"),
       commentInput: modal.querySelector("#newOrderCommentInput"),
       linesWrap: modal.querySelector("#newOrderLinesWrap"),
@@ -1423,21 +1573,19 @@
     }
 
     function updatePartnerHint() {
-      if (!refs.partnerInput || !refs.partnerHint) {
+      if (!refs.partnerInput) {
         return;
       }
       var value = String(refs.partnerInput.value || "").trim();
       if (!value) {
         selectedPartnerId = 0;
         hidePartnerSuggestionOverlay();
-        refs.partnerHint.textContent = "";
         return;
       }
       var partner = findPartnerByQuery(value);
       if (partner) {
         selectedPartnerId = Number(partner.id) || 0;
         hidePartnerSuggestionOverlay();
-        refs.partnerHint.textContent = "";
         return;
       }
 
@@ -1448,8 +1596,6 @@
       } else {
         hidePartnerSuggestionOverlay();
       }
-
-      refs.partnerHint.textContent = partner ? "" : "Выберите контрагента из выпадающего списка.";
     }
 
     function applyPartnerInputSelection() {
@@ -1982,15 +2128,16 @@
     var isPending = order && order.is_pending_confirmation;
     var currentStatusCode = toOrderStatusCode(order.status);
     var canChangeStatus = !isPending && (currentStatusCode === "ACCEPTED" || currentStatusCode === "IN_PROGRESS");
-    var isInternalOrder = String(order.order_type || "").trim().toUpperCase() === "INTERNAL";
+    var isInternal = isInternalOrder(order);
+    var showAvailableColumn = !isShippedOrder(order);
     var modal = document.createElement("div");
     modal.className = "pc-modal";
     modal.innerHTML =
-      '<div class="pc-modal-card">' +
+      '<div class="pc-modal-card pc-order-modal-card">' +
       '  <div class="pc-modal-header">' +
       '    <div class="pc-modal-title">Заказ ' +
       escapeHtml(order.order_ref || "-") +
-      "</div>" +
+      ' <span id="orderReadinessBadge"></span></div>' +
       '    <button class="btn btn-outline" type="button" id="modalCloseBtn">Закрыть</button>' +
       "  </div>" +
       '  <div class="pc-status">Тип: ' +
@@ -2106,10 +2253,20 @@
           wrap.innerHTML = "<div>Строк нет.</div>";
           return;
         }
-        var processedHeader = isInternalOrder ? "Выпущено" : "Отгружено";
+        var readiness = !isInternal && showAvailableColumn ? getShipmentReadiness(lines) : null;
+        var readinessBadge = modal.querySelector("#orderReadinessBadge");
+        if (readinessBadge) {
+          readinessBadge.outerHTML = renderReadinessBadge(readiness);
+        }
+        var processedHeader = isInternal ? "Выпущено" : "Отгружено";
         var body = lines
           .map(function (line) {
-            var processedQty = isInternalOrder ? line.qty_produced || 0 : line.qty_shipped || 0;
+            var processedQty = isInternal ? line.qty_produced || 0 : line.qty_shipped || 0;
+            var availabilityState = getAvailabilityState(line);
+            var shortageTitle = availabilityState.ready
+              ? ""
+              : ' title="Не хватает: ' + escapeHtml(formatQuantity(availabilityState.shortage)) + '"';
+            var availabilityClass = availabilityState.ready ? "pc-availability-ready" : "pc-availability-short";
             return (
               "<tr>" +
               "<td>" +
@@ -2127,15 +2284,23 @@
               "<td>" +
               escapeHtml(String(processedQty)) +
               "</td>" +
-              "<td>" +
-              escapeHtml(String(line.qty_left || 0)) +
-              "</td>" +
+              (showAvailableColumn
+                ? "<td>" +
+                  '<span class="pc-availability ' +
+                  availabilityClass +
+                  '"' +
+                  shortageTitle +
+                  ">" +
+                  escapeHtml(formatQuantity(availabilityState.available)) +
+                  "</span>" +
+                  "</td>"
+                : "") +
               "</tr>"
             );
           })
           .join("");
         wrap.innerHTML =
-          '<table class="pc-table">' +
+          '<table class="pc-table pc-order-lines-table">' +
           "<thead><tr>" +
           "<th>Товар</th>" +
           "<th>SKU / ШК</th>" +
@@ -2144,7 +2309,7 @@
           "<th>" +
           escapeHtml(processedHeader) +
           "</th>" +
-          "<th>Осталось</th>" +
+          (showAvailableColumn ? "<th>В наличии</th>" : "") +
           "</tr></thead>" +
           "<tbody>" +
           body +
@@ -2197,8 +2362,18 @@
       setStatus("Загрузка...");
       loadOrders(query)
         .then(function (rows) {
-          renderTable(rows);
-          setStatus(rows && rows.length ? "Данные с сервера" : "Заказов нет");
+          var source = Array.isArray(rows) ? rows : [];
+          renderTable(source);
+          if (!source.length) {
+            setStatus("Заказов нет");
+            return source;
+          }
+          setStatus("Загрузка готовности...");
+          return enrichOrdersWithReadiness(source).then(function (enrichedRows) {
+            renderTable(enrichedRows);
+            setStatus("Данные с сервера");
+            return enrichedRows;
+          });
         })
         .catch(function () {
           renderTable([]);
