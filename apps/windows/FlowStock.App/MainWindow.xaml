@@ -222,7 +222,9 @@
                     </StackPanel>
                     <DataGrid x:Name="ItemsGrid" Grid.Row="2" AutoGenerateColumns="False" IsReadOnly="True"
                               SelectionMode="Extended" SelectionUnit="FullRow"
-                              SelectionChanged="ItemsGrid_SelectionChanged" KeyDown="ItemsGrid_KeyDown" TabIndex="20">
+                              SelectionChanged="ItemsGrid_SelectionChanged"
+                              MouseDoubleClick="ItemsGrid_MouseDoubleClick"
+                              KeyDown="ItemsGrid_KeyDown" TabIndex="20">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="ID" Binding="{Binding Id}" Width="Auto" MaxWidth="120" />
                             <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="Auto" MaxWidth="320" />

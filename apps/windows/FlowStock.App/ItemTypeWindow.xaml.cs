@@ -167,7 +167,7 @@ public partial class ItemTypeWindow : Window
         CodeBox.Text = string.Empty;
         SortOrderBox.Text = "0";
         IsActiveCheck.IsChecked = true;
-        VisibleInCatalogCheck.IsChecked = false;
+        VisibleInCatalogCheck.IsChecked = true;
         EnableMinStockCheck.IsChecked = false;
         SaveButton.Content = "Добавить";
         UpdateDeleteButton();

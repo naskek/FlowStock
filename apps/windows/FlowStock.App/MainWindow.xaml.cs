@@ -1235,6 +1235,16 @@ public partial class MainWindow : Window
         DeleteItem_Click(sender, new RoutedEventArgs());
     }
 
+    private void ItemsGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (ItemsGrid.SelectedItem is not Item)
+        {
+            return;
+        }
+
+        EditItem_Click(sender, new RoutedEventArgs());
+    }
+
     private ImportItemsSummary ImportItemsFromExcel(string filePath)
     {
         EnsureExcelEncoding();

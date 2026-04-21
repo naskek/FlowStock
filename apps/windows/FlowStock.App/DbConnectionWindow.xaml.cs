@@ -96,6 +96,12 @@ public partial class DbConnectionWindow : Window
             return;
         }
 
+        if (!TryReadServerSettingsInput(out var serverSettings))
+        {
+            return;
+        }
+        serverSettings = SyncServerHostWithDatabase(input, serverSettings);
+
         if (!TryRunConnectionTest(input, out var diagnostics))
         {
             return;
@@ -111,8 +117,13 @@ public partial class DbConnectionWindow : Window
             return;
         }
 
-        if (!ConfirmApiTargetMatchesDatabase(input))
+        if (HasBlockingServerEnvironmentOverride(serverSettings, out var serverOverrideMessage))
         {
+            MessageBox.Show(
+                serverOverrideMessage,
+                "FlowStock Server",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
             return;
         }
 
@@ -122,34 +133,132 @@ public partial class DbConnectionWindow : Window
         _settings.Postgres.Database = input.Database;
         _settings.Postgres.Username = input.Username;
         _settings.Postgres.Password = string.IsNullOrWhiteSpace(input.Password) ? null : input.Password;
+        _settings.Server = serverSettings;
 
         _services.Settings.Save(_settings);
+        ApplyServerSettingsToInputs(serverSettings);
+        RefreshServerStatus();
 
         MessageBox.Show(
             BuildSuccessMessage(diagnostics)
-            + $"{Environment.NewLine}{Environment.NewLine}Настройки сохранены. Приложение будет перезапущено.",
+            + $"{Environment.NewLine}Server API: {serverSettings.GetServerBaseUrlOrDefault()}"
+            + $"{Environment.NewLine}{Environment.NewLine}Настройки БД и API сохранены. Хост API автоматически синхронизирован с хостом БД. Приложение будет перезапущено.",
             "Подключение к БД",
             MessageBoxButton.OK,
             MessageBoxImage.Information);
         RestartApplication();
     }
 
-    private void TestConnection_Click(object sender, RoutedEventArgs e)
+    private async void TestConnection_Click(object sender, RoutedEventArgs e)
     {
         if (!TryReadInput(out var input))
         {
             return;
         }
 
-        if (!TryRunConnectionTest(input, out var diagnostics))
+        if (!TryReadServerSettingsInput(out var serverSettings))
         {
             return;
         }
+        serverSettings = SyncServerHostWithDatabase(input, serverSettings);
+        ApplyServerSettingsToInputs(serverSettings);
+        SetServerStatus("Выполняется комплексная проверка: БД, API, схема...", MediaBrushes.DimGray);
 
-            MessageBox.Show(BuildSuccessMessage(diagnostics),
-            "Подключение к БД",
-            MessageBoxButton.OK,
-            MessageBoxImage.Information);
+        TestConnectionButton.IsEnabled = false;
+        try
+        {
+            if (!TryBuildConnectionString(input, out var connectionString))
+            {
+                ShowConnectionError("Ошибка подключения", "Не удалось сформировать строку подключения.");
+                return;
+            }
+
+            if (!TryRunConnectionTest(input, out var diagnostics))
+            {
+                SetServerStatus("Проверка БД не пройдена.", MediaBrushes.DarkRed);
+                return;
+            }
+
+            SchemaVersionCheckResult schema;
+            try
+            {
+                schema = await Task.Run(() => CheckSchemaVersion(connectionString));
+            }
+            catch (Exception ex)
+            {
+                _services.AppLogger.Error("db_schema_version_check_failed", ex);
+                SetServerStatus("Проверка схемы не пройдена.", MediaBrushes.DarkRed);
+                ShowConnectionError("Ошибка проверки схемы БД", ex.ToString());
+                return;
+            }
+
+            var apiPing = await _closeDocumentApiClient.PingAsync(
+                new ServerCloseClientOptions
+                {
+                    BaseUrl = serverSettings.GetServerBaseUrlOrDefault(),
+                    AllowInvalidTls = serverSettings.AllowInvalidTls
+                },
+                serverSettings.CloseTimeoutSeconds);
+
+            var issues = new List<string>();
+            if (!schema.SchemaMigrationsExists)
+            {
+                issues.Add("Отсутствует таблица schema_migrations.");
+            }
+
+            if (schema.PendingVersions.Count > 0)
+            {
+                issues.Add($"Есть непримененные миграции: {string.Join(", ", schema.PendingVersions)}");
+            }
+
+            if (schema.UnknownAppliedVersions.Count > 0)
+            {
+                issues.Add($"В БД есть неизвестные миграции: {string.Join(", ", schema.UnknownAppliedVersions)}");
+            }
+
+            if (!schema.IsFlowStockSchemaValid)
+            {
+                issues.Add($"Проверка целостности схемы не пройдена: {schema.ValidationError ?? "unknown error"}");
+            }
+
+            if (!apiPing.IsSuccess)
+            {
+                issues.Add($"FlowStock Server API недоступен: {apiPing.Message}");
+            }
+
+            if (issues.Count > 0)
+            {
+                var details = new StringBuilder();
+                details.AppendLine("Комплексная проверка не пройдена.");
+                details.AppendLine($"БД: {diagnostics.Database} ({diagnostics.ServerAddr}:{diagnostics.ServerPort}), пользователь {diagnostics.User}");
+                details.AppendLine($"API: {serverSettings.GetServerBaseUrlOrDefault()}");
+                details.AppendLine();
+                details.AppendLine("Проблемы:");
+                foreach (var issue in issues)
+                {
+                    details.AppendLine($"- {issue}");
+                }
+
+                SetServerStatus("Проверка не пройдена.", MediaBrushes.DarkRed);
+                ShowConnectionError("База не готова к подключению.", details.ToString());
+                return;
+            }
+
+            SetServerStatus("Проверка пройдена. База готова к подключению.", MediaBrushes.DarkGreen);
+            MessageBox.Show(
+                BuildSuccessMessage(diagnostics)
+                + Environment.NewLine
+                + $"API: {serverSettings.GetServerBaseUrlOrDefault()} — OK"
+                + Environment.NewLine
+                + "Версия схемы: OK (миграции применены).",
+                "Тест подключения",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        finally
+        {
+            TestConnectionButton.IsEnabled = true;
+        }
     }
 
     private async void ApplyMigrations_Click(object sender, RoutedEventArgs e)
@@ -217,94 +326,6 @@ public partial class DbConnectionWindow : Window
         }
     }
 
-    private async void CheckSchemaVersion_Click(object sender, RoutedEventArgs e)
-    {
-        if (!TryReadInput(out var input))
-        {
-            return;
-        }
-
-        if (!TryBuildConnectionString(input, out var connectionString))
-        {
-            return;
-        }
-
-        CheckSchemaVersionButton.IsEnabled = false;
-        try
-        {
-            var result = await Task.Run(() => CheckSchemaVersion(connectionString));
-
-            var summary = new StringBuilder();
-            summary.AppendLine("Проверка версии схемы завершена.");
-            summary.AppendLine(result.SchemaMigrationsExists
-                ? "Таблица schema_migrations: есть"
-                : "Таблица schema_migrations: отсутствует");
-            summary.AppendLine($"Применено версий: {result.AppliedVersions.Count}");
-
-            if (!string.IsNullOrWhiteSpace(result.MigrationsDirectory))
-            {
-                summary.AppendLine($"Каталог миграций: {result.MigrationsDirectory}");
-                summary.AppendLine($"Доступно файлов миграций: {result.AvailableVersions.Count}");
-                summary.AppendLine($"Ожидают применения: {result.PendingVersions.Count}");
-            }
-            else
-            {
-                summary.AppendLine("Каталог миграций не найден рядом с репозиторием.");
-            }
-
-            if (result.AppliedVersions.Count > 0)
-            {
-                summary.AppendLine($"Последняя примененная: {result.AppliedVersions[^1]}");
-            }
-
-            if (result.AvailableVersions.Count > 0)
-            {
-                summary.AppendLine($"Последняя доступная: {result.AvailableVersions[^1]}");
-            }
-
-            if (result.PendingVersions.Count > 0)
-            {
-                summary.AppendLine();
-                summary.AppendLine("Не применены:");
-                summary.AppendLine(string.Join(", ", result.PendingVersions));
-            }
-
-            if (result.UnknownAppliedVersions.Count > 0)
-            {
-                summary.AppendLine();
-                summary.AppendLine("В БД есть версии, которых нет в папке миграций:");
-                summary.AppendLine(string.Join(", ", result.UnknownAppliedVersions));
-            }
-
-            if (!result.IsFlowStockSchemaValid && !string.IsNullOrWhiteSpace(result.ValidationError))
-            {
-                summary.AppendLine();
-                summary.AppendLine("Проверка целостности схемы:");
-                summary.AppendLine(result.ValidationError);
-            }
-            else
-            {
-                summary.AppendLine();
-                summary.AppendLine("Проверка целостности схемы: OK");
-            }
-
-            MessageBox.Show(
-                summary.ToString(),
-                "Проверка схемы БД",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-        }
-        catch (Exception ex)
-        {
-            _services.AppLogger.Error("db_schema_version_check_failed", ex);
-            ShowConnectionError($"Не удалось проверить схему: {ex.Message}", ex.ToString());
-        }
-        finally
-        {
-            CheckSchemaVersionButton.IsEnabled = true;
-        }
-    }
-
     private async void ScanConnections_Click(object sender, RoutedEventArgs e)
     {
         await DiscoverConnectionsAsync();
@@ -341,6 +362,12 @@ public partial class DbConnectionWindow : Window
     private void LoadServerSettingsUi()
     {
         var server = (_settings.Server ?? new ServerSettings()).Normalize();
+        var effectiveDb = GetEffectiveConfig();
+        if (!string.IsNullOrWhiteSpace(effectiveDb.Host))
+        {
+            server = SyncServerHost(server, effectiveDb.Host);
+        }
+
         ApplyServerSettingsToInputs(new ServerSettings
         {
             ServerBaseUrl = server.GetServerBaseUrlOrDefault(),
@@ -358,22 +385,11 @@ public partial class DbConnectionWindow : Window
 
     private void ApplyServerSettingsToInputs(ServerSettings server)
     {
-        ServerBaseUrlBox.Text = server.GetServerBaseUrlOrDefault();
-        PcClientUrlBox.Text = server.GetPcClientUrlOrDefault();
-        TsdClientUrlBox.Text = server.GetTsdClientUrlOrDefault();
-        ServerDeviceIdBox.Text = server.DeviceId ?? WpfCloseDocumentService.BuildDefaultDeviceId();
-        ServerTimeoutBox.Text = server.CloseTimeoutSeconds.ToString(CultureInfo.InvariantCulture);
         AllowInvalidTlsCheckBox.IsChecked = server.AllowInvalidTls;
     }
 
     private void RefreshServerStatus()
     {
-        ApiWriteModeText.Text = "API-only write-path: заказы, подтверждение входящих веб-заявок, создание/проведение документов и строки документов.";
-        var effective = _services.WpfCloseDocuments.GetEffectiveConfiguration();
-        ApiWriteCoverageText.Text =
-            $"Effective DB: {_services.DatabasePath} | Effective API target: {effective.BaseUrl} | device: {effective.DeviceId} | timeout: {effective.CloseTimeoutSeconds}s | TLS override: {(effective.AllowInvalidTls ? "dev-only enabled" : "strict")}";
-        ConfigLoadedText.Text = $"Config loaded: {(File.Exists(_services.SettingsPath) ? "yes" : "no")}";
-
         var overrides = GetServerEnvironmentOverrides();
         if (overrides.Count == 0)
         {
@@ -419,12 +435,27 @@ public partial class DbConnectionWindow : Window
             return;
         }
 
+        if (TryReadInput(out var input))
+        {
+            serverSettings = SyncServerHostWithDatabase(input, serverSettings);
+        }
+        else
+        {
+            var effectiveDb = GetEffectiveConfig();
+            if (!string.IsNullOrWhiteSpace(effectiveDb.Host))
+            {
+                serverSettings = SyncServerHost(serverSettings, effectiveDb.Host);
+            }
+        }
+
         _settings.Server = serverSettings;
         _services.Settings.Save(_settings);
         ApplyServerSettingsToInputs(serverSettings);
         RefreshServerStatus();
 
-        const string message = "Settings saved to %APPDATA%\\FlowStock\\settings.json";
+        var message = "Settings saved to %APPDATA%\\FlowStock\\settings.json"
+                      + Environment.NewLine
+                      + "API/PC/TSD host synchronized with current DB host.";
         SetServerStatus(message, MediaBrushes.DarkGreen);
         MessageBox.Show(message, "Server API settings", MessageBoxButton.OK, MessageBoxImage.Information);
     }
@@ -432,55 +463,30 @@ public partial class DbConnectionWindow : Window
     private bool TryReadServerSettingsInput(out ServerSettings serverSettings)
     {
         serverSettings = new ServerSettings();
-
-        var serverBaseUrlInput = ServerBaseUrlBox.Text?.Trim() ?? string.Empty;
-        var pcClientUrlInput = PcClientUrlBox.Text?.Trim() ?? string.Empty;
-        var tsdClientUrlInput = TsdClientUrlBox.Text?.Trim() ?? string.Empty;
-        var deviceId = ServerDeviceIdBox.Text?.Trim();
-        var timeoutText = ServerTimeoutBox.Text?.Trim() ?? string.Empty;
-
-        if (!TryNormalizeRootUrl(serverBaseUrlInput, Uri.UriSchemeHttps, "Адрес сервера", out var serverBaseUrl))
+        if (!TryReadInput(out var dbInput))
         {
             return false;
         }
 
-        if (!TryNormalizeRootUrl(pcClientUrlInput, Uri.UriSchemeHttps, "Адрес ПК-интерфейса", out var pcClientUrl))
-        {
-            return false;
-        }
-
-        if (!TryNormalizeRootUrl(tsdClientUrlInput, Uri.UriSchemeHttp, "Адрес ТСД-интерфейса", out var tsdClientUrl))
-        {
-            return false;
-        }
-
-        if (!int.TryParse(timeoutText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var timeoutSeconds) || timeoutSeconds <= 0)
-        {
-            MessageBox.Show("Timeout (sec) must be a positive integer.", "Server API settings", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return false;
-        }
-
+        var host = NormalizeHost(dbInput.Host);
+        var existing = (_settings.Server ?? new ServerSettings()).Normalize();
+        var timeoutSeconds = existing.CloseTimeoutSeconds < 1
+            ? WpfCloseDocumentService.DefaultCloseTimeoutSeconds
+            : existing.CloseTimeoutSeconds;
+        var deviceId = string.IsNullOrWhiteSpace(existing.DeviceId)
+            ? WpfCloseDocumentService.BuildDefaultDeviceId()
+            : existing.DeviceId;
         serverSettings = new ServerSettings
         {
-            ServerBaseUrl = serverBaseUrl,
-            PcClientUrl = pcClientUrl,
-            TsdClientUrl = tsdClientUrl,
-            DeviceId = string.IsNullOrWhiteSpace(deviceId) ? WpfCloseDocumentService.BuildDefaultDeviceId() : deviceId,
+            ServerBaseUrl = $"https://{host}:7154",
+            PcClientUrl = $"https://{host}:7154",
+            TsdClientUrl = $"http://{host}:7153",
+            DeviceId = deviceId,
             CloseTimeoutSeconds = timeoutSeconds,
             AllowInvalidTls = AllowInvalidTlsCheckBox.IsChecked == true
         }.Normalize();
 
         return true;
-    }
-
-    private void OpenPcClient_Click(object sender, RoutedEventArgs e)
-    {
-        OpenConfiguredUrl(PcClientUrlBox.Text, Uri.UriSchemeHttps, "PC URL");
-    }
-
-    private void OpenTsdClient_Click(object sender, RoutedEventArgs e)
-    {
-        OpenConfiguredUrl(TsdClientUrlBox.Text, Uri.UriSchemeHttp, "TSD URL");
     }
 
     private void SetServerStatus(string message, System.Windows.Media.Brush brush)
@@ -1025,31 +1031,54 @@ LIMIT 1;";
         return true;
     }
 
-    private bool ConfirmApiTargetMatchesDatabase(ConnectionInput input)
+
+    private bool HasBlockingServerEnvironmentOverride(ServerSettings requested, out string message)
     {
-        var rawServerUrl = ServerBaseUrlBox.Text?.Trim();
-        if (!FlowStockUrlHelper.TryNormalizeRootUrl(rawServerUrl, Uri.UriSchemeHttps, out var normalizedServerUrl, out _)
-            || !Uri.TryCreate(normalizedServerUrl, UriKind.Absolute, out var serverUri))
+        message = string.Empty;
+        var overrides = GetServerEnvironmentOverrides();
+        if (overrides.Count == 0)
         {
-            return true;
+            return false;
         }
 
-        if (AreEquivalentHosts(input.Host, serverUri.Host))
+        var effective = _services.WpfCloseDocuments.GetEffectiveConfiguration();
+        var sameBaseUrl = string.Equals(
+            NormalizeUrlForCompare(effective.BaseUrl),
+            NormalizeUrlForCompare(requested.GetServerBaseUrlOrDefault()),
+            StringComparison.OrdinalIgnoreCase);
+        var sameDeviceId = string.Equals(
+            effective.DeviceId ?? string.Empty,
+            requested.DeviceId ?? string.Empty,
+            StringComparison.OrdinalIgnoreCase);
+        var sameTimeout = effective.CloseTimeoutSeconds == requested.CloseTimeoutSeconds;
+        var sameTls = effective.AllowInvalidTls == requested.AllowInvalidTls;
+
+        if (sameBaseUrl && sameDeviceId && sameTimeout && sameTls)
         {
-            return true;
+            return false;
         }
 
-        var result = MessageBox.Show(
-            $"БД выбрана: {NormalizeHost(input.Host)}:{input.Port}/{input.Database}{Environment.NewLine}"
-            + $"Server API URL: {normalizedServerUrl}{Environment.NewLine}{Environment.NewLine}"
-            + "Часть WPF уже работает через Server API. Эти операции записи пойдут в указанный Server API, а не напрямую в выбранную БД. "
-            + "Если это разные стенды, данные будут расходиться. Продолжить?",
-            "Проверка стенда FlowStock",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Warning,
-            MessageBoxResult.No);
+        message =
+            "Переключение FlowStock Server API не будет применено, потому что активны переменные окружения: "
+            + string.Join(", ", overrides)
+            + Environment.NewLine
+            + "Они имеют приоритет над %APPDATA%\\FlowStock\\settings.json. Уберите эти переменные из процесса/ярлыка/терминала и запустите WPF заново.";
+        return true;
+    }
 
-        return result == MessageBoxResult.Yes;
+    private static string NormalizeUrlForCompare(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        if (Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri))
+        {
+            return uri.GetLeftPart(UriPartial.Authority).TrimEnd('/').ToLowerInvariant();
+        }
+
+        return value.Trim().TrimEnd('/').ToLowerInvariant();
     }
 
     private static string? ReadEnvOrSettings(string envKey, string? settingsValue)
@@ -1068,6 +1097,46 @@ LIMIT 1;";
         return host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
             ? LoopbackHost
             : host;
+    }
+
+    private static ServerSettings SyncServerHostWithDatabase(ConnectionInput input, ServerSettings serverSettings)
+    {
+        var syncedHost = NormalizeHost(input.Host.Trim());
+        return SyncServerHost(serverSettings, syncedHost);
+    }
+
+    private static ServerSettings SyncServerHost(ServerSettings serverSettings, string dbHost)
+    {
+        var syncedHost = NormalizeHost(dbHost.Trim());
+        var synced = new ServerSettings
+        {
+            ServerBaseUrl = ReplaceHost(serverSettings.GetServerBaseUrlOrDefault(), syncedHost),
+            PcClientUrl = ReplaceHost(serverSettings.GetPcClientUrlOrDefault(), syncedHost),
+            TsdClientUrl = ReplaceHost(serverSettings.GetTsdClientUrlOrDefault(), syncedHost),
+            DeviceId = serverSettings.DeviceId,
+            CloseTimeoutSeconds = serverSettings.CloseTimeoutSeconds,
+            AllowInvalidTls = serverSettings.AllowInvalidTls
+        };
+
+        return synced.Normalize();
+    }
+
+    private static string ReplaceHost(string absoluteRootUrl, string host)
+    {
+        if (!Uri.TryCreate(absoluteRootUrl, UriKind.Absolute, out var uri))
+        {
+            return absoluteRootUrl;
+        }
+
+        var builder = new UriBuilder(uri)
+        {
+            Host = host,
+            Path = "/",
+            Query = string.Empty,
+            Fragment = string.Empty
+        };
+
+        return builder.Uri.AbsoluteUri.TrimEnd('/');
     }
 
     private static void ValidateFlowStockSchema(string connectionString)

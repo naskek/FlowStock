@@ -1089,7 +1089,7 @@ app.MapPost("/api/item-types", async (HttpRequest request, CatalogService catalo
             parsed.Value?.Code,
             parsed.Value?.SortOrder ?? 0,
             parsed.Value?.IsActive ?? true,
-            parsed.Value?.IsVisibleInProductCatalog ?? false,
+            parsed.Value?.IsVisibleInProductCatalog ?? true,
             parsed.Value?.EnableMinStockControl ?? false);
         return Results.Ok(new { ok = true, item_type_id = itemTypeId });
     }
@@ -1119,7 +1119,7 @@ app.MapPost("/api/item-types/{itemTypeId:long}", async (long itemTypeId, HttpReq
             parsed.Value?.Code,
             parsed.Value?.SortOrder ?? 0,
             parsed.Value?.IsActive ?? true,
-            parsed.Value?.IsVisibleInProductCatalog ?? false,
+            parsed.Value?.IsVisibleInProductCatalog ?? true,
             parsed.Value?.EnableMinStockControl ?? false);
         return Results.Ok(new ApiResult(true));
     }

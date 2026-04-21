@@ -80,6 +80,7 @@
 - Documents: список + детали + проведение.
 - Items: список с ID + modal create/edit (`name`, `barcode/SKU`, `gtin`, `brand`, `volume`, `shelf life months`, `max qty per HU`, `tara`, `uom`, `item_type`, `min_stock_qty`, `is_marked`) + Excel import с preview и column mapping.
 - Item types: редактор справочника типов номенклатуры (создание, редактирование, удаление/деактивация при использовании, настройка флагов `is_visible_in_product_catalog` и `enable_min_stock_control`).
+  - Для новых типов `is_visible_in_product_catalog` по умолчанию включен; после миграции V0005 тип `Без типа` (`GENERAL`) автоматически помечается видимым в PC каталоге.
 - Item packagings: редактор упаковок в карточке товара и общий packaging manager используют server API для list/create/update/deactivate/set-default.
 - Tara: редактор справочника в разделе `Справочники`.
 - Locations: список с ID + modal create/edit (`code`, `name`).
