@@ -154,6 +154,26 @@ body.pc-body {
   background: #eef7fb;
 }
 
+.pc-low-stock-card {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid #f3d7d7;
+  border-radius: 12px;
+  background: #fff7f7;
+}
+
+.pc-low-stock-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #a62525;
+}
+
+.pc-low-stock-table-wrap {
+  max-height: 220px;
+  overflow: auto;
+}
+
 .pc-table {
   width: 100%;
   border-collapse: collapse;

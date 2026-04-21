@@ -9,6 +9,7 @@
   var currentView = "stock";
   var cachedItems = [];
   var cachedItemsById = {};
+  var cachedItemTypes = [];
   var cachedLocations = [];
   var cachedLocationsById = {};
   var cachedStockRows = [];
@@ -366,6 +367,10 @@
     cachedItems = Array.isArray(items) ? items : [];
     cachedItemsById = {};
     cachedItems.forEach(function (item) {
+      var minStockQty = Number(item.min_stock_qty);
+      if (!isFinite(minStockQty)) {
+        minStockQty = null;
+      }
       cachedItemsById[Number(item.id)] = {
         itemId: Number(item.id),
         name: item.name || "",
@@ -374,6 +379,9 @@
         brand: item.brand || "",
         volume: item.volume || "",
         base_uom: item.base_uom_code || item.base_uom || "",
+        itemTypeName: item.item_type_name || "",
+        itemTypeEnableMinStockControl: item.item_type_enable_min_stock_control === true,
+        minStockQty: minStockQty,
       };
     });
   }
@@ -482,7 +490,7 @@
   function renderStock() {
     return (
       '<section class="pc-card">' +
-      '  <div class="section-title">Остатки</div>' +
+      '  <div class="section-title">Состояние склада</div>' +
       '  <div class="pc-toolbar">' +
       '    <div class="form-field">' +
       '      <label class="form-label" for="stockSearchInput">Поиск</label>' +
@@ -498,6 +506,7 @@
       "    </div>" +
       '    <div id="stockStatus" class="pc-status"></div>' +
       "  </div>" +
+      '  <div id="stockLowWrap"></div>' +
       '  <div id="stockTableWrap"></div>' +
       "</section>"
     );
@@ -511,6 +520,10 @@
       '    <div class="form-field">' +
       '      <label class="form-label" for="catalogSearchInput">Поиск</label>' +
       '      <input class="form-input" id="catalogSearchInput" type="text" autocomplete="off" placeholder="Название, бренд, объем, SKU, GTIN, штрихкод" />' +
+      "    </div>" +
+      '    <div class="form-field">' +
+      '      <label class="form-label" for="catalogTypeFilter">Тип</label>' +
+      '      <select class="form-input" id="catalogTypeFilter"></select>' +
       "    </div>" +
       '    <div class="pc-toolbar-actions">' +
       '      <button id="catalogRefreshBtn" class="btn btn-outline" type="button">Обновить</button>' +
@@ -639,7 +652,13 @@
   }
 
   function loadCatalogData() {
-    return fetchJson("/api/items").then(function (items) {
+    return Promise.all([
+      fetchJson("/api/items"),
+      fetchJson("/api/item-types?include_inactive=0"),
+    ]).then(function (payloads) {
+      var items = payloads[0];
+      var itemTypes = payloads[1];
+      cachedItemTypes = Array.isArray(itemTypes) ? itemTypes.slice() : [];
       var sourceItems = Array.isArray(items) ? items : [];
       var visibleItems = sourceItems.filter(function (item) {
         return item && item.item_type_is_visible_in_product_catalog === true;
@@ -652,6 +671,58 @@
       setCachedItems(visibleItems);
       return cachedItems;
     });
+  }
+
+  function renderLowStockTable(rows) {
+    if (!rows || !rows.length) {
+      return "";
+    }
+
+    var body = rows
+      .map(function (row) {
+        return (
+          "<tr>" +
+          "<td>" +
+          escapeHtml(row.itemName || "-") +
+          "</td>" +
+          "<td>" +
+          escapeHtml(row.itemTypeName || "-") +
+          "</td>" +
+          '<td><span class="pc-qty">' +
+          escapeHtml(row.qtyDisplay || "0") +
+          "</span></td>" +
+          "<td>" +
+          escapeHtml(row.minStockDisplay || "-") +
+          "</td>" +
+          "<td>" +
+          escapeHtml(row.shortageDisplay || "-") +
+          "</td>" +
+          "</tr>"
+        );
+      })
+      .join("");
+
+    return (
+      '<section class="pc-low-stock-card">' +
+      '  <div class="pc-low-stock-title">Позиции ниже минимума: ' +
+      rows.length +
+      "</div>" +
+      '  <div class="pc-low-stock-table-wrap">' +
+      '    <table class="pc-table">' +
+      "      <thead><tr>" +
+      "        <th>Товар</th>" +
+      "        <th>Тип</th>" +
+      "        <th>В наличии</th>" +
+      "        <th>Минимум</th>" +
+      "        <th>Нехватка</th>" +
+      "      </tr></thead>" +
+      "      <tbody>" +
+      body +
+      "      </tbody>" +
+      "    </table>" +
+      "  </div>" +
+      "</section>"
+    );
   }
 
   function loadStockData() {
@@ -748,6 +819,7 @@
     var locationSelect = document.getElementById("stockLocationFilter");
     var huSelect = document.getElementById("stockHuFilter");
     var statusEl = document.getElementById("stockStatus");
+    var lowWrap = document.getElementById("stockLowWrap");
     var tableWrap = document.getElementById("stockTableWrap");
     var debounce = null;
 
@@ -755,6 +827,59 @@
       if (statusEl) {
         statusEl.textContent = text || "";
       }
+    }
+
+    function buildLowStockRows() {
+      var totalsByItem = {};
+      cachedStockRows.forEach(function (row) {
+        var itemId = Number(row.itemId) || 0;
+        if (!itemId) {
+          return;
+        }
+        totalsByItem[itemId] = (totalsByItem[itemId] || 0) + (Number(row.qty) || 0);
+      });
+
+      return cachedItems
+        .map(function (item) {
+          var itemId = Number(item.id) || 0;
+          var cached = cachedItemsById[itemId] || {};
+          var minStockQty = Number(cached.minStockQty);
+          if (!(cached.itemTypeEnableMinStockControl === true) || !isFinite(minStockQty)) {
+            return null;
+          }
+
+          var qty = Number(totalsByItem[itemId] || 0);
+          if (qty >= minStockQty) {
+            return null;
+          }
+
+          var shortage = Math.max(0, minStockQty - qty);
+          return {
+            itemName: cached.name || item.name || "-",
+            itemTypeName: cached.itemTypeName || "-",
+            qtyDisplay: formatQtyDisplay(qty, itemId),
+            minStockDisplay: formatQtyDisplay(minStockQty, itemId),
+            shortageDisplay: formatQtyDisplay(shortage, itemId),
+            shortage: shortage,
+          };
+        })
+        .filter(function (row) {
+          return !!row;
+        })
+        .sort(function (a, b) {
+          if (b.shortage !== a.shortage) {
+            return b.shortage - a.shortage;
+          }
+          return String(a.itemName || "").localeCompare(String(b.itemName || ""), "ru");
+        });
+    }
+
+    function renderLowStock() {
+      if (!lowWrap) {
+        return;
+      }
+      var lowRows = buildLowStockRows();
+      lowWrap.innerHTML = renderLowStockTable(lowRows);
     }
 
     function renderRows() {
@@ -777,6 +902,7 @@
       });
 
       setStatus("Строк: " + rows.length);
+      renderLowStock();
       tableWrap.innerHTML = renderStockTable(rows);
     }
 
@@ -875,6 +1001,7 @@
 
   function wireCatalog() {
     var searchInput = document.getElementById("catalogSearchInput");
+    var typeFilter = document.getElementById("catalogTypeFilter");
     var refreshBtn = document.getElementById("catalogRefreshBtn");
     var statusEl = document.getElementById("catalogStatus");
     var tableWrap = document.getElementById("catalogTableWrap");
@@ -891,6 +1018,8 @@
         .map(function (item) {
           return {
             itemId: Number(item.id) || 0,
+            itemTypeId: Number(item.item_type_id) || 0,
+            itemTypeName: item.item_type_name || "",
             itemName: item.name || "",
             brand: item.brand || "",
             volume: item.volume || "",
@@ -915,7 +1044,11 @@
       }
 
       var query = normalizeSearchQuery(searchInput ? searchInput.value : "");
+      var typeId = typeFilter ? Number(typeFilter.value || 0) : 0;
       var rows = buildRows().filter(function (row) {
+        if (typeId && row.itemTypeId !== typeId) {
+          return false;
+        }
         return matchesItemSearch(row, query, false);
       });
 
@@ -923,10 +1056,49 @@
       tableWrap.innerHTML = renderCatalogTable(rows);
     }
 
+    function fillTypeFilter() {
+      if (!typeFilter) {
+        return;
+      }
+
+      var previous = String(typeFilter.value || "");
+      var options =
+        '<option value="">Все типы</option>' +
+        cachedItemTypes
+          .slice()
+          .sort(function (left, right) {
+            var leftOrder = Number(left && left.sort_order) || 0;
+            var rightOrder = Number(right && right.sort_order) || 0;
+            if (leftOrder !== rightOrder) {
+              return leftOrder - rightOrder;
+            }
+            var leftName = String((left && left.name) || "").toLowerCase();
+            var rightName = String((right && right.name) || "").toLowerCase();
+            return leftName < rightName ? -1 : leftName > rightName ? 1 : 0;
+          })
+          .map(function (type) {
+            var id = Number(type && type.id) || 0;
+            var name = String((type && type.name) || "").trim() || "Без названия";
+            return '<option value="' + escapeHtml(String(id)) + '">' + escapeHtml(name) + "</option>";
+          })
+          .join("");
+
+      typeFilter.innerHTML = options;
+      if (previous) {
+        var hasPrevious = Array.prototype.some.call(typeFilter.options || [], function (option) {
+          return String(option.value || "") === previous;
+        });
+        if (hasPrevious) {
+          typeFilter.value = previous;
+        }
+      }
+    }
+
     function loadAndRender() {
       setStatus("Загрузка...");
       loadCatalogData()
         .then(function () {
+          fillTypeFilter();
           renderRows();
         })
         .catch(function () {
@@ -946,6 +1118,9 @@
 
     if (searchInput) {
       searchInput.addEventListener("input", scheduleRender);
+    }
+    if (typeFilter) {
+      typeFilter.addEventListener("change", renderRows);
     }
     if (refreshBtn) {
       refreshBtn.addEventListener("click", loadAndRender);

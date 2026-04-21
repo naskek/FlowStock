@@ -55,13 +55,12 @@ public partial class MainWindow : Window
     private Partner? _selectedPartner;
     private bool _adminDeleteModeEnabled = false;
     private const int TabStatusIndex = 0;
-    private const int TabLowStockIndex = 1;
-    private const int TabDocsIndex = 2;
-    private const int TabOrdersIndex = 3;
-    private const int TabItemsIndex = 4;
-    private const int TabLocationsIndex = 5;
-    private const int TabPartnersIndex = 6;
-    private const int TabKmIndex = 7;
+    private const int TabDocsIndex = 1;
+    private const int TabOrdersIndex = 2;
+    private const int TabItemsIndex = 3;
+    private const int TabLocationsIndex = 4;
+    private const int TabPartnersIndex = 5;
+    private const int TabKmIndex = 6;
 
     public MainWindow(AppServices services)
     {
@@ -251,9 +250,6 @@ public partial class MainWindow : Window
                     LoadItemTypes();
                     LoadStockHuFilters();
                     LoadStock(StatusSearchBox.Text);
-                    break;
-                case TabLowStockIndex:
-                    LoadLowStockView();
                     break;
                 case TabDocsIndex:
                     LoadDocs();
@@ -556,7 +552,10 @@ public partial class MainWindow : Window
         var rows = _services.WpfReadApi.TryGetStockRows(search, out var apiRows)
             ? apiRows
             : Array.Empty<StockRow>();
-        var lowStockByItem = BuildLowStockByItem(rows);
+        var allItems = _services.WpfReadApi.TryGetItems(null, out var apiItems)
+            ? apiItems
+            : Array.Empty<Item>();
+        var lowStockByItem = BuildLowStockByItem(rows, allItems);
         foreach (var row in rows)
         {
             if (!string.IsNullOrWhiteSpace(locationCode)
@@ -597,10 +596,7 @@ public partial class MainWindow : Window
         }
 
         UpdateStockEmptyState(search);
-        if (MainTabs.SelectedIndex != TabLowStockIndex)
-        {
-            LoadLowStockView();
-        }
+        LoadLowStockView();
     }
 
     private void UpdateStockEmptyState(string? search)
@@ -619,9 +615,9 @@ public partial class MainWindow : Window
         StockEmptyText.Visibility = Visibility.Collapsed;
     }
 
-    private Dictionary<long, LowStockSnapshot> BuildLowStockByItem(IReadOnlyList<StockRow> rows)
+    private Dictionary<long, LowStockSnapshot> BuildLowStockByItem(IReadOnlyList<StockRow> rows, IReadOnlyList<Item> allItems)
     {
-        return rows
+        var snapshots = rows
             .GroupBy(row => row.ItemId)
             .Select(group =>
             {
@@ -635,12 +631,41 @@ public partial class MainWindow : Window
                     group.Key,
                     first.ItemName,
                     first.ItemTypeName ?? "Без типа",
+                    first.BaseUom,
                     totalQty,
                     minStockQty,
                     isBelow);
             })
             .Where(snapshot => snapshot.IsBelowMin)
             .ToDictionary(snapshot => snapshot.ItemId, snapshot => snapshot);
+
+        foreach (var item in allItems)
+        {
+            if (snapshots.ContainsKey(item.Id))
+            {
+                continue;
+            }
+
+            var minStockQty = item.MinStockQty;
+            var isBelow = item.ItemTypeEnableMinStockControl
+                          && minStockQty.HasValue
+                          && 0d < minStockQty.Value;
+            if (!isBelow)
+            {
+                continue;
+            }
+
+            snapshots[item.Id] = new LowStockSnapshot(
+                item.Id,
+                item.Name,
+                item.ItemTypeName ?? "Без типа",
+                item.BaseUom,
+                0d,
+                minStockQty,
+                true);
+        }
+
+        return snapshots;
     }
 
     private void LoadLowStockView()
@@ -649,7 +674,10 @@ public partial class MainWindow : Window
         var rows = _services.WpfReadApi.TryGetStockRows(null, out var apiRows)
             ? apiRows
             : Array.Empty<StockRow>();
-        var lowStockByItem = BuildLowStockByItem(rows);
+        var allItems = _services.WpfReadApi.TryGetItems(null, out var apiItems)
+            ? apiItems
+            : Array.Empty<Item>();
+        var lowStockByItem = BuildLowStockByItem(rows, allItems);
         var belowMinRows = lowStockByItem
             .Values
             .OrderBy(snapshot => snapshot.ItemName, StringComparer.OrdinalIgnoreCase)
@@ -662,9 +690,9 @@ public partial class MainWindow : Window
             {
                 ItemName = snapshot.ItemName,
                 ItemTypeName = snapshot.ItemTypeName,
-                QtyDisplay = FormatQty(snapshot.Qty),
-                MinStockQtyDisplay = FormatQty(snapshot.MinStockQty.GetValueOrDefault()),
-                ShortageDisplay = FormatQty(shortage > 0 ? shortage : 0)
+                QtyDisplay = FormatQtyWithUom(snapshot.Qty, snapshot.BaseUom),
+                MinStockQtyDisplay = FormatQtyWithUom(snapshot.MinStockQty.GetValueOrDefault(), snapshot.BaseUom),
+                ShortageDisplay = FormatQtyWithUom(shortage > 0 ? shortage : 0, snapshot.BaseUom)
             });
         }
 
@@ -2163,6 +2191,17 @@ public partial class MainWindow : Window
         return value.ToString("0.###", CultureInfo.CurrentCulture);
     }
 
+    private static string FormatQtyWithUom(double value, string? baseUom)
+    {
+        var formattedValue = FormatQty(value);
+        if (string.IsNullOrWhiteSpace(baseUom))
+        {
+            return formattedValue;
+        }
+
+        return $"{formattedValue} {baseUom.Trim()}";
+    }
+
     private sealed record DocTypeFilterOption(DocType? Type, string Name);
 
     private sealed record DocStatusFilterOption(DocStatus? Status, string Name);
@@ -2194,7 +2233,14 @@ public partial class MainWindow : Window
 
     private sealed record StockItemTypeFilterOption(long? Id, string Name);
 
-    private sealed record LowStockSnapshot(long ItemId, string ItemName, string ItemTypeName, double Qty, double? MinStockQty, bool IsBelowMin);
+    private sealed record LowStockSnapshot(
+        long ItemId,
+        string ItemName,
+        string ItemTypeName,
+        string BaseUom,
+        double Qty,
+        double? MinStockQty,
+        bool IsBelowMin);
 
     private sealed record LowStockDisplayRow
     {
