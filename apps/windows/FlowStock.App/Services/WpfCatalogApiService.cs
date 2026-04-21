@@ -59,6 +59,30 @@ public sealed class WpfCatalogApiService
             out taras);
     }
 
+    public bool TryGetItemTypes(bool includeInactive, out IReadOnlyList<ItemType> itemTypes)
+    {
+        itemTypes = Array.Empty<ItemType>();
+        var path = includeInactive ? "/api/item-types?include_inactive=1" : "/api/item-types";
+        return TryRead(
+            path,
+            root => root.ValueKind == JsonValueKind.Array
+                ? root.EnumerateArray()
+                    .Select(element => new ItemType
+                    {
+                        Id = ReadInt64(element, "id"),
+                        Name = ReadString(element, "name") ?? string.Empty,
+                        Code = ReadString(element, "code"),
+                        SortOrder = ReadInt32(element, "sort_order"),
+                        IsActive = ReadBool(element, "is_active"),
+                        IsVisibleInProductCatalog = ReadBool(element, "is_visible_in_product_catalog"),
+                        EnableMinStockControl = ReadBool(element, "enable_min_stock_control")
+                    })
+                    .ToList()
+                : new List<ItemType>(),
+            "catalog-item-types",
+            out itemTypes);
+    }
+
     public async Task<(bool IsSuccess, long? CreatedId, string? Error)> TryCreateItemAsync(Item item, CancellationToken cancellationToken = default)
     {
         return await TryPostForIdAsync(
@@ -74,7 +98,9 @@ public sealed class WpfCatalogApiService
                     shelf_life_months = item.ShelfLifeMonths,
                     tara_id = item.TaraId,
                     is_marked = item.IsMarked,
-                    max_qty_per_hu = item.MaxQtyPerHu
+                    max_qty_per_hu = item.MaxQtyPerHu,
+                    item_type_id = item.ItemTypeId,
+                    min_stock_qty = item.MinStockQty
                 },
                 "item_id",
                 "catalog-create-item",
@@ -97,7 +123,9 @@ public sealed class WpfCatalogApiService
                     shelf_life_months = item.ShelfLifeMonths,
                     tara_id = item.TaraId,
                     is_marked = item.IsMarked,
-                    max_qty_per_hu = item.MaxQtyPerHu
+                    max_qty_per_hu = item.MaxQtyPerHu,
+                    item_type_id = item.ItemTypeId,
+                    min_stock_qty = item.MinStockQty
                 },
                 "catalog-update-item",
                 cancellationToken)
@@ -165,6 +193,48 @@ public sealed class WpfCatalogApiService
     public async Task<(bool IsSuccess, string? Error)> TryDeleteTaraAsync(long id, CancellationToken cancellationToken = default)
     {
         return await TryDeleteAsync($"/api/taras/{id}", "catalog-delete-tara", cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<(bool IsSuccess, long? CreatedId, string? Error)> TryCreateItemTypeAsync(ItemType itemType, CancellationToken cancellationToken = default)
+    {
+        return await TryPostForIdAsync(
+                "/api/item-types",
+                new
+                {
+                    name = itemType.Name,
+                    code = itemType.Code,
+                    sort_order = itemType.SortOrder,
+                    is_active = itemType.IsActive,
+                    is_visible_in_product_catalog = itemType.IsVisibleInProductCatalog,
+                    enable_min_stock_control = itemType.EnableMinStockControl
+                },
+                "item_type_id",
+                "catalog-create-item-type",
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    public async Task<(bool IsSuccess, string? Error)> TryUpdateItemTypeAsync(ItemType itemType, CancellationToken cancellationToken = default)
+    {
+        return await TryPostAsync(
+                $"/api/item-types/{itemType.Id}",
+                new
+                {
+                    name = itemType.Name,
+                    code = itemType.Code,
+                    sort_order = itemType.SortOrder,
+                    is_active = itemType.IsActive,
+                    is_visible_in_product_catalog = itemType.IsVisibleInProductCatalog,
+                    enable_min_stock_control = itemType.EnableMinStockControl
+                },
+                "catalog-update-item-type",
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    public async Task<(bool IsSuccess, string? Error)> TryDeleteItemTypeAsync(long id, CancellationToken cancellationToken = default)
+    {
+        return await TryDeleteAsync($"/api/item-types/{id}", "catalog-delete-item-type", cancellationToken).ConfigureAwait(false);
     }
 
     private bool TryRead<T>(string relativePath, Func<JsonElement, T> map, string operationName, out T value)
@@ -439,6 +509,28 @@ public sealed class WpfCatalogApiService
         return element.TryGetProperty(propertyName, out var value) && value.TryGetInt64(out var parsed)
             ? parsed
             : 0L;
+    }
+
+    private static int ReadInt32(JsonElement element, string propertyName)
+    {
+        return element.TryGetProperty(propertyName, out var value) && value.TryGetInt32(out var parsed)
+            ? parsed
+            : 0;
+    }
+
+    private static bool ReadBool(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property))
+        {
+            return false;
+        }
+
+        if (property.ValueKind == JsonValueKind.True || property.ValueKind == JsonValueKind.False)
+        {
+            return property.GetBoolean();
+        }
+
+        return bool.TryParse(property.ToString(), out var parsed) && parsed;
     }
 }
 

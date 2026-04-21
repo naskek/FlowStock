@@ -15,4 +15,9 @@ public sealed class Item
     public long? TaraId { get; init; }
     public string? TaraName { get; init; }
     public bool IsMarked { get; init; }
+    public long? ItemTypeId { get; init; }
+    public string? ItemTypeName { get; init; }
+    public bool ItemTypeIsVisibleInProductCatalog { get; init; }
+    public bool ItemTypeEnableMinStockControl { get; init; }
+    public double? MinStockQty { get; init; }
 }

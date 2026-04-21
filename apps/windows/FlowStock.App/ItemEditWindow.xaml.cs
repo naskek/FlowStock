@@ -11,6 +11,7 @@ public partial class ItemEditWindow : Window
     private readonly Item? _item;
     private readonly List<Uom> _uoms = new();
     private readonly List<TaraOption> _taras = new();
+    private readonly List<ItemTypeOption> _itemTypes = new();
 
     public long? SavedItemId { get; private set; }
 
@@ -42,6 +43,17 @@ public partial class ItemEditWindow : Window
             _taras.Add(new TaraOption(tara.Id, tara.Name));
         }
         TaraCombo.ItemsSource = _taras;
+
+        _itemTypes.Clear();
+        _itemTypes.Add(ItemTypeOption.Empty);
+        var itemTypes = _services.WpfCatalogApi.TryGetItemTypes(includeInactive: true, out var apiItemTypes)
+            ? apiItemTypes
+            : Array.Empty<ItemType>();
+        foreach (var itemType in itemTypes)
+        {
+            _itemTypes.Add(new ItemTypeOption(itemType.Id, itemType.Name, itemType.EnableMinStockControl));
+        }
+        ItemTypeCombo.ItemsSource = _itemTypes;
     }
 
     private void FillData()
@@ -54,6 +66,9 @@ public partial class ItemEditWindow : Window
             UomCombo.SelectedItem = _uoms.FirstOrDefault(u => string.Equals(u.Name, "шт", StringComparison.OrdinalIgnoreCase))
                                     ?? _uoms.FirstOrDefault();
             TaraCombo.SelectedItem = TaraOption.Empty;
+            ItemTypeCombo.SelectedItem = _itemTypes.FirstOrDefault(t => t.Id.HasValue) ?? _itemTypes.FirstOrDefault();
+            MinStockQtyBox.Text = string.Empty;
+            UpdateMinStockControls();
             return;
         }
 
@@ -74,6 +89,11 @@ public partial class ItemEditWindow : Window
         UomCombo.SelectedItem = _uoms.FirstOrDefault(u => string.Equals(u.Name, _item.BaseUom, StringComparison.OrdinalIgnoreCase))
                                 ?? _uoms.FirstOrDefault();
         TaraCombo.SelectedItem = _taras.FirstOrDefault(t => t.Id == _item.TaraId) ?? TaraOption.Empty;
+        ItemTypeCombo.SelectedItem = _itemTypes.FirstOrDefault(t => t.Id == _item.ItemTypeId) ?? _itemTypes.FirstOrDefault();
+        MinStockQtyBox.Text = _item.MinStockQty.HasValue
+            ? _item.MinStockQty.Value.ToString("0.###", CultureInfo.InvariantCulture)
+            : string.Empty;
+        UpdateMinStockControls();
     }
 
     private async void Save_Click(object sender, RoutedEventArgs e)
@@ -110,6 +130,11 @@ public partial class ItemEditWindow : Window
             return;
         }
 
+        if (!TryParseMinStockQty(MinStockQtyBox.Text, out var minStockQty))
+        {
+            return;
+        }
+
         if (!TryValidateItemIdentifiers(barcode, gtin, _item?.Id))
         {
             return;
@@ -117,7 +142,14 @@ public partial class ItemEditWindow : Window
 
         var baseUom = (UomCombo.SelectedItem as Uom)?.Name;
         var taraId = (TaraCombo.SelectedItem as TaraOption)?.Id;
+        var itemType = ItemTypeCombo.SelectedItem as ItemTypeOption;
+        var itemTypeId = itemType?.Id;
         var isMarked = _item?.IsMarked ?? false;
+
+        if (itemType?.EnableMinStockControl != true)
+        {
+            minStockQty = null;
+        }
 
         try
         {
@@ -133,7 +165,9 @@ public partial class ItemEditWindow : Window
                 ShelfLifeMonths = shelfLifeMonths,
                 MaxQtyPerHu = maxQtyPerHu,
                 TaraId = taraId,
-                IsMarked = isMarked
+                IsMarked = isMarked,
+                ItemTypeId = itemTypeId,
+                MinStockQty = minStockQty
             };
 
             if (_item == null)
@@ -167,7 +201,9 @@ public partial class ItemEditWindow : Window
                     ShelfLifeMonths = candidate.ShelfLifeMonths,
                     MaxQtyPerHu = candidate.MaxQtyPerHu,
                     TaraId = candidate.TaraId,
-                    IsMarked = candidate.IsMarked
+                    IsMarked = candidate.IsMarked,
+                    ItemTypeId = candidate.ItemTypeId,
+                    MinStockQty = candidate.MinStockQty
                 };
                 var result = await _services.WpfCatalogApi.TryUpdateItemAsync(updateCandidate).ConfigureAwait(true);
                 if (!result.IsSuccess)
@@ -243,6 +279,32 @@ public partial class ItemEditWindow : Window
         return true;
     }
 
+    private bool TryParseMinStockQty(string? value, out double? minStockQty)
+    {
+        minStockQty = null;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return true;
+        }
+
+        var raw = value.Trim();
+        if (!double.TryParse(raw, NumberStyles.Float, CultureInfo.CurrentCulture, out var parsed)
+            && !double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out parsed))
+        {
+            MessageBox.Show("Минимальный остаток должен быть числом.", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        if (parsed < 0)
+        {
+            MessageBox.Show("Минимальный остаток не может быть отрицательным.", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        minStockQty = parsed;
+        return true;
+    }
+
     private bool TryValidateItemIdentifiers(string? barcode, string? gtin, long? currentItemId)
     {
         var items = _services.WpfReadApi.TryGetItems(null, out var apiItems)
@@ -309,8 +371,29 @@ public partial class ItemEditWindow : Window
         return string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal);
     }
 
+    private void ItemTypeCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        UpdateMinStockControls();
+    }
+
+    private void UpdateMinStockControls()
+    {
+        var selectedType = ItemTypeCombo.SelectedItem as ItemTypeOption;
+        var isEnabled = selectedType?.EnableMinStockControl == true;
+        MinStockQtyBox.IsEnabled = isEnabled;
+        if (!isEnabled)
+        {
+            MinStockQtyBox.Text = string.Empty;
+        }
+    }
+
     private sealed record TaraOption(long? Id, string Name)
     {
         public static TaraOption Empty { get; } = new(null, "Не выбрана");
+    }
+
+    private sealed record ItemTypeOption(long? Id, string Name, bool EnableMinStockControl)
+    {
+        public static ItemTypeOption Empty { get; } = new(null, "Не выбран", false);
     }
 }

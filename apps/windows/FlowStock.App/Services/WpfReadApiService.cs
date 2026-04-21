@@ -526,7 +526,12 @@ public sealed class WpfReadApiService
             MaxQtyPerHu = ReadNullableDouble(element, "max_qty_per_hu"),
             TaraId = ReadNullableInt64(element, "tara_id"),
             TaraName = ReadString(element, "tara_name"),
-            IsMarked = ReadBool(element, "is_marked")
+            IsMarked = ReadBool(element, "is_marked"),
+            ItemTypeId = ReadNullableInt64(element, "item_type_id"),
+            ItemTypeName = ReadString(element, "item_type_name"),
+            ItemTypeIsVisibleInProductCatalog = ReadBool(element, "item_type_is_visible_in_product_catalog"),
+            ItemTypeEnableMinStockControl = ReadBool(element, "item_type_enable_min_stock_control"),
+            MinStockQty = ReadNullableDouble(element, "min_stock_qty")
         };
     }
 
@@ -540,7 +545,11 @@ public sealed class WpfReadApiService
             LocationCode = ReadString(element, "location_code") ?? string.Empty,
             Hu = ReadString(element, "hu"),
             Qty = ReadDouble(element, "qty"),
-            BaseUom = ReadString(element, "base_uom") ?? "шт"
+            BaseUom = ReadString(element, "base_uom") ?? "шт",
+            ItemTypeId = ReadNullableInt64(element, "item_type_id"),
+            ItemTypeName = ReadString(element, "item_type_name"),
+            ItemTypeEnableMinStockControl = ReadBool(element, "item_type_enable_min_stock_control"),
+            MinStockQty = ReadNullableDouble(element, "min_stock_qty")
         };
     }
 

@@ -19,7 +19,8 @@
 - `TSD PWA`: online data capture через API (без прямого доступа к БД).
 - `PC web client`: остатки доступны только на чтение; создание заказа и смена статуса заказа отправляются как requests и применяются только после подтверждения в WPF.
   - Отправка requests разрешена только активным аккаунтам с PC-access (`tsd_devices.platform=PC` или `BOTH`).
-  - На порту `7154` доступны три операторских экрана: `Остатки`, `Каталог`, `Заказы`.
+- На порту `7154` доступны три операторских экрана: `Остатки`, `Каталог`, `Заказы`.
+  - Каталог продукции показывает только товары, у которых тип номенклатуры помечен `is_visible_in_product_catalog = true`.
 - WPF admin хранит глобальные web block switches в PostgreSQL. Если блок отключен, он скрывается для всех пользователей соответствующего web client, а прямой переход на него блокируется после перезагрузки страницы.
 - Web clients не опрашивают block settings непрерывно. Конфигурация блоков перечитывается на старте и на `focus` / `visibilitychange`; server API requests из отключенного block context отклоняются с `403 BLOCK_DISABLED`, после чего клиент перечитывает конфигурацию блоков и перерисовывает UI.
 
@@ -29,7 +30,8 @@
 - `http://SERVER_IP:7153/` открывает TSD web client.
 
 ## Модель данных (server DB)
-- `items(id, name, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, max_qty_per_hu, tara_id, is_marked)`
+- `items(id, name, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, max_qty_per_hu, tara_id, is_marked, item_type_id, min_stock_qty)`
+- `item_types(id, name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control)`
 - `taras(id, name)`
 - `item_requests(id, barcode, comment, device_id, login, status, created_at, resolved_at)`
 - `order_requests(id, request_type, payload_json, status, created_at, created_by_login, created_by_device_id, resolved_at, resolved_by, resolution_note, applied_order_id)`
@@ -46,6 +48,7 @@
 
 ## Инварианты
 - Остатки рассчитываются только из `ledger`.
+- Контроль минимального остатка рассчитывается только из `ledger` (суммарно по всем локациям и HU для товара).
 - Закрытые документы неизменяемы.
 - Исправления оформляются отдельными документами.
 - Один HU-code может иметь остаток только в одной локации одновременно.
@@ -69,8 +72,12 @@
 
 ## Экраны UI (MVP)
 - Status: список остатков + поиск.
+  - Добавлены фильтры по типу номенклатуры и режим `только ниже минимума`.
+  - Добавлено визуальное выделение строк ниже минимального остатка.
+  - Добавлена отдельная вкладка `Ниже минимума` и индикатор на главном экране `Позиции ниже минимума: N`.
 - Documents: список + детали + проведение.
-- Items: список с ID + modal create/edit (`name`, `barcode/SKU`, `gtin`, `brand`, `volume`, `shelf life months`, `max qty per HU`, `tara`, `uom`, `is_marked`) + Excel import с preview и column mapping.
+- Items: список с ID + modal create/edit (`name`, `barcode/SKU`, `gtin`, `brand`, `volume`, `shelf life months`, `max qty per HU`, `tara`, `uom`, `item_type`, `min_stock_qty`, `is_marked`) + Excel import с preview и column mapping.
+- Item types: редактор справочника типов номенклатуры (создание, редактирование, удаление/деактивация при использовании, настройка флагов `is_visible_in_product_catalog` и `enable_min_stock_control`).
 - Item packagings: редактор упаковок в карточке товара и общий packaging manager используют server API для list/create/update/deactivate/set-default.
 - Tara: редактор справочника в разделе `Справочники`.
 - Locations: список с ID + modal create/edit (`code`, `name`).

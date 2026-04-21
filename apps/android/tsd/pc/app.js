@@ -640,7 +640,10 @@
 
   function loadCatalogData() {
     return fetchJson("/api/items").then(function (items) {
-      setCachedItems(items);
+      var visibleItems = (Array.isArray(items) ? items : []).filter(function (item) {
+        return item && item.item_type_is_visible_in_product_catalog === true;
+      });
+      setCachedItems(visibleItems);
       return cachedItems;
     });
   }

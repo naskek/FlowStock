@@ -567,6 +567,33 @@ public sealed class UpsertItemRequest
 
     [JsonPropertyName("max_qty_per_hu")]
     public double? MaxQtyPerHu { get; set; }
+
+    [JsonPropertyName("item_type_id")]
+    public long? ItemTypeId { get; set; }
+
+    [JsonPropertyName("min_stock_qty")]
+    public double? MinStockQty { get; set; }
+}
+
+public sealed class UpsertItemTypeRequest
+{
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("code")]
+    public string? Code { get; set; }
+
+    [JsonPropertyName("sort_order")]
+    public int SortOrder { get; set; }
+
+    [JsonPropertyName("is_active")]
+    public bool IsActive { get; set; } = true;
+
+    [JsonPropertyName("is_visible_in_product_catalog")]
+    public bool IsVisibleInProductCatalog { get; set; }
+
+    [JsonPropertyName("enable_min_stock_control")]
+    public bool EnableMinStockControl { get; set; }
 }
 
 public sealed class UpsertLocationRequest

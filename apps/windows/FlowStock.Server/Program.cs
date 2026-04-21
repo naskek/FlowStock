@@ -701,9 +701,15 @@ SELECT i.id,
        i.max_qty_per_hu,
        i.tara_id,
        t.name,
-       i.is_marked
+       i.is_marked,
+       i.item_type_id,
+       it.name,
+       COALESCE(it.is_visible_in_product_catalog, FALSE),
+       COALESCE(it.enable_min_stock_control, FALSE),
+       i.min_stock_qty
 FROM items i
 LEFT JOIN taras t ON t.id = i.tara_id
+LEFT JOIN item_types it ON it.id = i.item_type_id
 WHERE @search::text IS NULL
    OR i.name ILIKE @search::text
    OR i.barcode ILIKE @search::text
@@ -752,7 +758,12 @@ ORDER BY i.name;"
             max_qty_per_hu = reader.IsDBNull(10) ? (double?)null : Convert.ToDouble(reader.GetValue(10), CultureInfo.InvariantCulture),
             tara_id = reader.IsDBNull(11) ? (long?)null : reader.GetInt64(11),
             tara_name = reader.IsDBNull(12) ? null : reader.GetString(12),
-            is_marked = isMarked
+            is_marked = isMarked,
+            item_type_id = reader.IsDBNull(14) ? (long?)null : reader.GetInt64(14),
+            item_type_name = reader.IsDBNull(15) ? null : reader.GetString(15),
+            item_type_is_visible_in_product_catalog = !reader.IsDBNull(16) && reader.GetBoolean(16),
+            item_type_enable_min_stock_control = !reader.IsDBNull(17) && reader.GetBoolean(17),
+            min_stock_qty = reader.IsDBNull(18) ? (double?)null : Convert.ToDouble(reader.GetValue(18), CultureInfo.InvariantCulture)
         });
     }
 
@@ -779,7 +790,9 @@ app.MapPost("/api/items", async (HttpRequest request, CatalogService catalog) =>
             parsed.Value?.ShelfLifeMonths,
             parsed.Value?.TaraId,
             parsed.Value?.IsMarked == true,
-            parsed.Value?.MaxQtyPerHu);
+            parsed.Value?.MaxQtyPerHu,
+            parsed.Value?.ItemTypeId,
+            parsed.Value?.MinStockQty);
         return Results.Ok(new { ok = true, item_id = itemId });
     }
     catch (ArgumentException ex)
@@ -813,7 +826,9 @@ app.MapPost("/api/items/{itemId:long}", async (long itemId, HttpRequest request,
             parsed.Value?.ShelfLifeMonths,
             parsed.Value?.TaraId,
             parsed.Value?.IsMarked == true,
-            parsed.Value?.MaxQtyPerHu);
+            parsed.Value?.MaxQtyPerHu,
+            parsed.Value?.ItemTypeId,
+            parsed.Value?.MinStockQty);
         return Results.Ok(new ApiResult(true));
     }
     catch (ArgumentException ex)
@@ -1033,6 +1048,100 @@ app.MapDelete("/api/taras/{taraId:long}", (long taraId, CatalogService catalog) 
     try
     {
         catalog.DeleteTara(taraId);
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+});
+
+app.MapGet("/api/item-types", (HttpRequest request, CatalogService catalog) =>
+{
+    var includeInactive = ParseIncludeInactive(request.Query["include_inactive"].ToString());
+    var itemTypes = catalog.GetItemTypes(includeInactive)
+        .Select(itemType => new
+        {
+            id = itemType.Id,
+            name = itemType.Name,
+            code = itemType.Code,
+            sort_order = itemType.SortOrder,
+            is_active = itemType.IsActive,
+            is_visible_in_product_catalog = itemType.IsVisibleInProductCatalog,
+            enable_min_stock_control = itemType.EnableMinStockControl
+        })
+        .ToList();
+    return Results.Ok(itemTypes);
+});
+
+app.MapPost("/api/item-types", async (HttpRequest request, CatalogService catalog) =>
+{
+    var parsed = await ParseJsonBody<UpsertItemTypeRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    try
+    {
+        var itemTypeId = catalog.CreateItemType(
+            parsed.Value?.Name ?? string.Empty,
+            parsed.Value?.Code,
+            parsed.Value?.SortOrder ?? 0,
+            parsed.Value?.IsActive ?? true,
+            parsed.Value?.IsVisibleInProductCatalog ?? false,
+            parsed.Value?.EnableMinStockControl ?? false);
+        return Results.Ok(new { ok = true, item_type_id = itemTypeId });
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+    catch (PostgresException ex) when (string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal))
+    {
+        return Results.Conflict(new ApiResult(false, "ITEM_TYPE_ALREADY_EXISTS"));
+    }
+});
+
+app.MapPost("/api/item-types/{itemTypeId:long}", async (long itemTypeId, HttpRequest request, CatalogService catalog) =>
+{
+    var parsed = await ParseJsonBody<UpsertItemTypeRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    try
+    {
+        catalog.UpdateItemType(
+            itemTypeId,
+            parsed.Value?.Name ?? string.Empty,
+            parsed.Value?.Code,
+            parsed.Value?.SortOrder ?? 0,
+            parsed.Value?.IsActive ?? true,
+            parsed.Value?.IsVisibleInProductCatalog ?? false,
+            parsed.Value?.EnableMinStockControl ?? false);
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+    catch (PostgresException ex) when (string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal))
+    {
+        return Results.Conflict(new ApiResult(false, "ITEM_TYPE_ALREADY_EXISTS"));
+    }
+});
+
+app.MapDelete("/api/item-types/{itemTypeId:long}", (long itemTypeId, CatalogService catalog) =>
+{
+    try
+    {
+        catalog.DeleteItemType(itemTypeId);
         return Results.Ok(new ApiResult(true));
     }
     catch (InvalidOperationException ex)
@@ -2755,7 +2864,12 @@ static object MapItem(Item item)
         shelf_life_months = item.ShelfLifeMonths,
         tara_id = item.TaraId,
         tara_name = item.TaraName,
-        is_marked = item.IsMarked
+        is_marked = item.IsMarked,
+        item_type_id = item.ItemTypeId,
+        item_type_name = item.ItemTypeName,
+        item_type_is_visible_in_product_catalog = item.ItemTypeIsVisibleInProductCatalog,
+        item_type_enable_min_stock_control = item.ItemTypeEnableMinStockControl,
+        min_stock_qty = item.MinStockQty
     };
 }
 
@@ -3122,7 +3236,11 @@ static object MapStockRow(StockRow row)
         location_code = row.LocationCode,
         hu = row.Hu,
         qty = row.Qty,
-        base_uom = string.IsNullOrWhiteSpace(row.BaseUom) ? "шт" : row.BaseUom
+        base_uom = string.IsNullOrWhiteSpace(row.BaseUom) ? "шт" : row.BaseUom,
+        item_type_id = row.ItemTypeId,
+        item_type_name = row.ItemTypeName,
+        item_type_enable_min_stock_control = row.ItemTypeEnableMinStockControl,
+        min_stock_qty = row.MinStockQty
     };
 }
 

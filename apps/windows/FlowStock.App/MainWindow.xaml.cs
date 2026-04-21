@@ -25,8 +25,10 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<Doc> _docs = new();
     private readonly ObservableCollection<Order> _orders = new();
     private readonly ObservableCollection<StockDisplayRow> _stock = new();
+    private readonly ObservableCollection<LowStockDisplayRow> _lowStock = new();
     private readonly ObservableCollection<StockLocationFilterOption> _stockLocationFilters = new();
     private readonly ObservableCollection<StockHuFilterOption> _stockHuFilters = new();
+    private readonly ObservableCollection<StockItemTypeFilterOption> _stockItemTypeFilters = new();
     private readonly ObservableCollection<KmCodeBatch> _kmBatches = new();
     private readonly DispatcherTimer _autoRefreshTimer;
     private bool _autoRefreshInProgress;
@@ -53,12 +55,13 @@ public partial class MainWindow : Window
     private Partner? _selectedPartner;
     private bool _adminDeleteModeEnabled = false;
     private const int TabStatusIndex = 0;
-    private const int TabDocsIndex = 1;
-    private const int TabOrdersIndex = 2;
-    private const int TabItemsIndex = 3;
-    private const int TabLocationsIndex = 4;
-    private const int TabPartnersIndex = 5;
-    private const int TabKmIndex = 6;
+    private const int TabLowStockIndex = 1;
+    private const int TabDocsIndex = 2;
+    private const int TabOrdersIndex = 3;
+    private const int TabItemsIndex = 4;
+    private const int TabLocationsIndex = 5;
+    private const int TabPartnersIndex = 6;
+    private const int TabKmIndex = 7;
 
     public MainWindow(AppServices services)
     {
@@ -71,8 +74,10 @@ public partial class MainWindow : Window
         DocsGrid.ItemsSource = _docs;
         OrdersGrid.ItemsSource = _orders;
         StockGrid.ItemsSource = _stock;
+        LowStockGrid.ItemsSource = _lowStock;
         StockLocationFilter.ItemsSource = _stockLocationFilters;
         StockHuFilter.ItemsSource = _stockHuFilters;
+        StockItemTypeFilter.ItemsSource = _stockItemTypeFilters;
         KmBatchesGrid.ItemsSource = _kmBatches;
         DocsTypeFilter.ItemsSource = _docTypeFilters;
         DocsTypeFilter.SelectedIndex = 0;
@@ -187,6 +192,7 @@ public partial class MainWindow : Window
 
     private void LoadAll()
     {
+        LoadItemTypes();
         LoadItems();
         LoadUoms();
         LoadTaras();
@@ -195,6 +201,7 @@ public partial class MainWindow : Window
         LoadDocs();
         LoadOrders();
         LoadStock(null);
+        LoadLowStockView();
         UpdateItemRequestsBadge();
     }
 
@@ -241,8 +248,12 @@ public partial class MainWindow : Window
             switch (MainTabs.SelectedIndex)
             {
                 case TabStatusIndex:
+                    LoadItemTypes();
                     LoadStockHuFilters();
                     LoadStock(StatusSearchBox.Text);
+                    break;
+                case TabLowStockIndex:
+                    LoadLowStockView();
                     break;
                 case TabDocsIndex:
                     LoadDocs();
@@ -352,6 +363,25 @@ public partial class MainWindow : Window
         {
             _taras.Add(tara);
         }
+    }
+
+    private void LoadItemTypes()
+    {
+        var selectedId = GetSelectedStockItemTypeId();
+        _stockItemTypeFilters.Clear();
+        _stockItemTypeFilters.Add(new StockItemTypeFilterOption(null, "Все типы"));
+
+        var itemTypes = _services.WpfCatalogApi.TryGetItemTypes(includeInactive: false, out var apiItemTypes)
+            ? apiItemTypes
+            : Array.Empty<ItemType>();
+        foreach (var itemType in itemTypes.OrderBy(type => type.SortOrder).ThenBy(type => type.Name))
+        {
+            _stockItemTypeFilters.Add(new StockItemTypeFilterOption(itemType.Id, itemType.Name));
+        }
+
+        var selected = _stockItemTypeFilters.FirstOrDefault(option => option.Id == selectedId)
+                       ?? _stockItemTypeFilters.FirstOrDefault();
+        StockItemTypeFilter.SelectedItem = selected;
     }
 
     private void LoadLocations()
@@ -521,9 +551,12 @@ public partial class MainWindow : Window
         _stock.Clear();
         var locationCode = GetSelectedStockLocationCode();
         var huCode = GetSelectedStockHuCode();
+        var itemTypeId = GetSelectedStockItemTypeId();
+        var belowMinOnly = StockBelowMinOnlyCheckBox.IsChecked == true;
         var rows = _services.WpfReadApi.TryGetStockRows(search, out var apiRows)
             ? apiRows
             : Array.Empty<StockRow>();
+        var lowStockByItem = BuildLowStockByItem(rows);
         foreach (var row in rows)
         {
             if (!string.IsNullOrWhiteSpace(locationCode)
@@ -536,21 +569,38 @@ public partial class MainWindow : Window
             {
                 continue;
             }
+            if (itemTypeId.HasValue && row.ItemTypeId != itemTypeId.Value)
+            {
+                continue;
+            }
+
+            var isBelowMin = lowStockByItem.ContainsKey(row.ItemId);
+            if (belowMinOnly && !isBelowMin)
+            {
+                continue;
+            }
 
             var packaging = _services.Packagings.FormatAsPackaging(row.ItemId, row.Qty);
             var baseDisplay = $"{FormatQty(row.Qty)} {row.BaseUom}";
             _stock.Add(new StockDisplayRow
             {
+                ItemId = row.ItemId,
                 ItemName = row.ItemName,
+                ItemTypeName = row.ItemTypeName ?? "Без типа",
                 Barcode = row.Barcode,
                 LocationCode = row.LocationCode,
                 HuDisplay = row.Hu ?? string.Empty,
                 PackagingDisplay = packaging,
-                BaseDisplay = baseDisplay
+                BaseDisplay = baseDisplay,
+                IsBelowMin = isBelowMin
             });
         }
 
         UpdateStockEmptyState(search);
+        if (MainTabs.SelectedIndex != TabLowStockIndex)
+        {
+            LoadLowStockView();
+        }
     }
 
     private void UpdateStockEmptyState(string? search)
@@ -558,13 +608,89 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(search)
             && _stock.Count == 0
             && string.IsNullOrWhiteSpace(GetSelectedStockLocationCode())
-            && string.IsNullOrWhiteSpace(GetSelectedStockHuCode()))
+            && string.IsNullOrWhiteSpace(GetSelectedStockHuCode())
+            && !GetSelectedStockItemTypeId().HasValue
+            && StockBelowMinOnlyCheckBox.IsChecked != true)
         {
             StockEmptyText.Visibility = Visibility.Visible;
             return;
         }
 
         StockEmptyText.Visibility = Visibility.Collapsed;
+    }
+
+    private Dictionary<long, LowStockSnapshot> BuildLowStockByItem(IReadOnlyList<StockRow> rows)
+    {
+        return rows
+            .GroupBy(row => row.ItemId)
+            .Select(group =>
+            {
+                var first = group.First();
+                var totalQty = group.Sum(row => row.Qty);
+                var minStockQty = first.MinStockQty;
+                var isBelow = first.ItemTypeEnableMinStockControl
+                              && minStockQty.HasValue
+                              && totalQty < minStockQty.Value;
+                return new LowStockSnapshot(
+                    group.Key,
+                    first.ItemName,
+                    first.ItemTypeName ?? "Без типа",
+                    totalQty,
+                    minStockQty,
+                    isBelow);
+            })
+            .Where(snapshot => snapshot.IsBelowMin)
+            .ToDictionary(snapshot => snapshot.ItemId, snapshot => snapshot);
+    }
+
+    private void LoadLowStockView()
+    {
+        _lowStock.Clear();
+        var rows = _services.WpfReadApi.TryGetStockRows(null, out var apiRows)
+            ? apiRows
+            : Array.Empty<StockRow>();
+        var lowStockByItem = BuildLowStockByItem(rows);
+        var belowMinRows = lowStockByItem
+            .Values
+            .OrderBy(snapshot => snapshot.ItemName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        foreach (var snapshot in belowMinRows)
+        {
+            var shortage = snapshot.MinStockQty.GetValueOrDefault() - snapshot.Qty;
+            _lowStock.Add(new LowStockDisplayRow
+            {
+                ItemName = snapshot.ItemName,
+                ItemTypeName = snapshot.ItemTypeName,
+                QtyDisplay = FormatQty(snapshot.Qty),
+                MinStockQtyDisplay = FormatQty(snapshot.MinStockQty.GetValueOrDefault()),
+                ShortageDisplay = FormatQty(shortage > 0 ? shortage : 0)
+            });
+        }
+
+        LowStockSummaryText.Text = belowMinRows.Count == 0
+            ? "Позиции ниже минимума отсутствуют."
+            : $"Позиции ниже минимума: {belowMinRows.Count}";
+        UpdateLowStockIndicator(lowStockByItem);
+    }
+
+    private void UpdateLowStockIndicator(IReadOnlyDictionary<long, LowStockSnapshot> lowStockByItem)
+    {
+        if (LowStockIndicatorText == null)
+        {
+            return;
+        }
+
+        var count = lowStockByItem.Count;
+        if (count <= 0)
+        {
+            LowStockIndicatorText.Text = string.Empty;
+            LowStockIndicatorText.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        LowStockIndicatorText.Text = $"Позиции ниже минимума: {count}";
+        LowStockIndicatorText.Visibility = Visibility.Visible;
     }
 
     private void StatusSearch_Click(object sender, RoutedEventArgs e)
@@ -606,6 +732,16 @@ public partial class MainWindow : Window
         LoadStock(StatusSearchBox.Text);
     }
 
+    private void StockItemTypeFilter_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        LoadStock(StatusSearchBox.Text);
+    }
+
+    private void StockBelowMinOnlyCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        LoadStock(StatusSearchBox.Text);
+    }
+
     private string? GetSelectedStockLocationCode()
     {
         return (StockLocationFilter.SelectedItem as StockLocationFilterOption)?.Code;
@@ -614,6 +750,11 @@ public partial class MainWindow : Window
     private string? GetSelectedStockHuCode()
     {
         return (StockHuFilter.SelectedItem as StockHuFilterOption)?.Code;
+    }
+
+    private long? GetSelectedStockItemTypeId()
+    {
+        return (StockItemTypeFilter.SelectedItem as StockItemTypeFilterOption)?.Id;
     }
 
     private void DocsApplyFilters_Click(object sender, RoutedEventArgs e)
@@ -1866,6 +2007,25 @@ public partial class MainWindow : Window
         LoadUoms();
     }
 
+    private void ItemTypesMenu_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new ItemTypeWindow(_services, () =>
+        {
+            LoadItemTypes();
+            LoadItems(ItemsSearchBox?.Text);
+            LoadStock(StatusSearchBox.Text);
+            LoadLowStockView();
+        })
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+        LoadItemTypes();
+        LoadItems(ItemsSearchBox?.Text);
+        LoadStock(StatusSearchBox.Text);
+        LoadLowStockView();
+    }
+
     private void TaraMenu_Click(object sender, RoutedEventArgs e)
     {
         var window = new TaraWindow(_services, LoadTaras)
@@ -2007,17 +2167,33 @@ public partial class MainWindow : Window
 
     private sealed record StockDisplayRow
     {
+        public long ItemId { get; init; }
         public string ItemName { get; init; } = string.Empty;
+        public string ItemTypeName { get; init; } = string.Empty;
         public string? Barcode { get; init; }
         public string LocationCode { get; init; } = string.Empty;
         public string HuDisplay { get; init; } = string.Empty;
         public string PackagingDisplay { get; init; } = string.Empty;
         public string BaseDisplay { get; init; } = string.Empty;
+        public bool IsBelowMin { get; init; }
     }
 
     private sealed record StockLocationFilterOption(string? Code, string Name);
 
     private sealed record StockHuFilterOption(string? Code, string Name);
+
+    private sealed record StockItemTypeFilterOption(long? Id, string Name);
+
+    private sealed record LowStockSnapshot(long ItemId, string ItemName, string ItemTypeName, double Qty, double? MinStockQty, bool IsBelowMin);
+
+    private sealed record LowStockDisplayRow
+    {
+        public string ItemName { get; init; } = string.Empty;
+        public string ItemTypeName { get; init; } = string.Empty;
+        public string QtyDisplay { get; init; } = string.Empty;
+        public string MinStockQtyDisplay { get; init; } = string.Empty;
+        public string ShortageDisplay { get; init; } = string.Empty;
+    }
 
     private sealed record ImportItemsSummary(int Created, int Duplicates, int EmptyRows, int InvalidRows, int Errors);
 }
