@@ -640,9 +640,15 @@
 
   function loadCatalogData() {
     return fetchJson("/api/items").then(function (items) {
-      var visibleItems = (Array.isArray(items) ? items : []).filter(function (item) {
+      var sourceItems = Array.isArray(items) ? items : [];
+      var visibleItems = sourceItems.filter(function (item) {
         return item && item.item_type_is_visible_in_product_catalog === true;
       });
+      if (visibleItems.length === 0 && sourceItems.length > 0) {
+        // Fallback for legacy/inconsistent type visibility setup:
+        // keep catalog usable instead of showing an empty screen.
+        visibleItems = sourceItems.slice();
+      }
       setCachedItems(visibleItems);
       return cachedItems;
     });

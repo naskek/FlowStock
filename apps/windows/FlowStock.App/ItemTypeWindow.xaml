@@ -1,7 +1,11 @@
 <Window x:Class="FlowStock.App.ItemTypeWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Типы номенклатуры" Height="460" Width="840"
+        Title="Типы номенклатуры"
+        SizeToContent="WidthAndHeight"
+        MinWidth="840" MinHeight="460"
+        MaxWidth="{x:Static SystemParameters.MaximizedPrimaryScreenWidth}"
+        MaxHeight="{x:Static SystemParameters.MaximizedPrimaryScreenHeight}"
         WindowStartupLocation="CenterOwner">
     <Grid Margin="12">
         <Grid.RowDefinitions>
