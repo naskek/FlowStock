@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Net;
+using System.Text;
 using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
@@ -149,6 +150,159 @@ public partial class DbConnectionWindow : Window
             "Подключение к БД",
             MessageBoxButton.OK,
             MessageBoxImage.Information);
+    }
+
+    private async void ApplyMigrations_Click(object sender, RoutedEventArgs e)
+    {
+        if (!TryReadInput(out var input))
+        {
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            "Будут применены недостающие SQL-миграции FlowStock к выбранной базе.\n"
+            + "Существующие данные не удаляются, но перед production-миграцией рекомендуется сделать backup.\n\n"
+            + "Продолжить?",
+            "Инициализация / миграции БД",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question,
+            MessageBoxResult.No);
+        if (confirm != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        if (!TryBuildConnectionString(input, out var connectionString))
+        {
+            return;
+        }
+
+        ApplyMigrationsButton.IsEnabled = false;
+        try
+        {
+            var result = await Task.Run(() => ApplySchemaMigrations(connectionString));
+            ValidateFlowStockSchema(connectionString);
+            AddRecentConnection(input);
+
+            var summary = new StringBuilder();
+            summary.AppendLine("Миграции применены успешно.");
+            summary.AppendLine($"Каталог миграций: {result.MigrationsDirectory}");
+            summary.AppendLine($"Применено: {result.AppliedVersions.Count}");
+            summary.AppendLine($"Пропущено (уже в БД): {result.SkippedVersions.Count}");
+            if (result.AppliedVersions.Count > 0)
+            {
+                summary.AppendLine();
+                summary.AppendLine("Новые версии:");
+                summary.AppendLine(string.Join(", ", result.AppliedVersions));
+            }
+
+            summary.AppendLine();
+            summary.AppendLine("Схема FlowStock: OK.");
+            summary.AppendLine("Перезапустите WPF/Server, чтобы подхватить изменения.");
+
+            MessageBox.Show(
+                summary.ToString(),
+                "Инициализация / миграции БД",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error("db_migration_failed", ex);
+            ShowConnectionError($"Не удалось применить миграции: {ex.Message}", ex.ToString());
+        }
+        finally
+        {
+            ApplyMigrationsButton.IsEnabled = true;
+        }
+    }
+
+    private async void CheckSchemaVersion_Click(object sender, RoutedEventArgs e)
+    {
+        if (!TryReadInput(out var input))
+        {
+            return;
+        }
+
+        if (!TryBuildConnectionString(input, out var connectionString))
+        {
+            return;
+        }
+
+        CheckSchemaVersionButton.IsEnabled = false;
+        try
+        {
+            var result = await Task.Run(() => CheckSchemaVersion(connectionString));
+
+            var summary = new StringBuilder();
+            summary.AppendLine("Проверка версии схемы завершена.");
+            summary.AppendLine(result.SchemaMigrationsExists
+                ? "Таблица schema_migrations: есть"
+                : "Таблица schema_migrations: отсутствует");
+            summary.AppendLine($"Применено версий: {result.AppliedVersions.Count}");
+
+            if (!string.IsNullOrWhiteSpace(result.MigrationsDirectory))
+            {
+                summary.AppendLine($"Каталог миграций: {result.MigrationsDirectory}");
+                summary.AppendLine($"Доступно файлов миграций: {result.AvailableVersions.Count}");
+                summary.AppendLine($"Ожидают применения: {result.PendingVersions.Count}");
+            }
+            else
+            {
+                summary.AppendLine("Каталог миграций не найден рядом с репозиторием.");
+            }
+
+            if (result.AppliedVersions.Count > 0)
+            {
+                summary.AppendLine($"Последняя примененная: {result.AppliedVersions[^1]}");
+            }
+
+            if (result.AvailableVersions.Count > 0)
+            {
+                summary.AppendLine($"Последняя доступная: {result.AvailableVersions[^1]}");
+            }
+
+            if (result.PendingVersions.Count > 0)
+            {
+                summary.AppendLine();
+                summary.AppendLine("Не применены:");
+                summary.AppendLine(string.Join(", ", result.PendingVersions));
+            }
+
+            if (result.UnknownAppliedVersions.Count > 0)
+            {
+                summary.AppendLine();
+                summary.AppendLine("В БД есть версии, которых нет в папке миграций:");
+                summary.AppendLine(string.Join(", ", result.UnknownAppliedVersions));
+            }
+
+            if (!result.IsFlowStockSchemaValid && !string.IsNullOrWhiteSpace(result.ValidationError))
+            {
+                summary.AppendLine();
+                summary.AppendLine("Проверка целостности схемы:");
+                summary.AppendLine(result.ValidationError);
+            }
+            else
+            {
+                summary.AppendLine();
+                summary.AppendLine("Проверка целостности схемы: OK");
+            }
+
+            MessageBox.Show(
+                summary.ToString(),
+                "Проверка схемы БД",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error("db_schema_version_check_failed", ex);
+            ShowConnectionError($"Не удалось проверить схему: {ex.Message}", ex.ToString());
+        }
+        finally
+        {
+            CheckSchemaVersionButton.IsEnabled = true;
+        }
     }
 
     private async void ScanConnections_Click(object sender, RoutedEventArgs e)
@@ -462,7 +616,247 @@ public partial class DbConnectionWindow : Window
         return true;
     }
 
+    private static bool TryBuildConnectionString(ConnectionInput input, out string connectionString)
+    {
+        connectionString = string.Empty;
+        try
+        {
+            var builder = new NpgsqlConnectionStringBuilder
+            {
+                Host = NormalizeHost(input.Host),
+                Port = input.Port,
+                Database = input.Database,
+                Username = input.Username,
+                Password = input.Password,
+                Timeout = 10
+            };
+            connectionString = builder.ConnectionString;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static MigrationApplyResult ApplySchemaMigrations(string connectionString)
+    {
+        if (!TryResolveMigrationsDirectory(out var migrationsDirectory))
+        {
+            throw new InvalidOperationException(
+                "Каталог миграций не найден. Ожидался путь deploy/postgres/migrations рядом с репозиторием FlowStock.");
+        }
+
+        var migrationFiles = Directory.GetFiles(migrationsDirectory, "V*.sql", SearchOption.TopDirectoryOnly)
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (migrationFiles.Count == 0)
+        {
+            throw new InvalidOperationException($"В каталоге {migrationsDirectory} не найдено файлов миграций V*.sql.");
+        }
+
+        var appliedVersions = new List<string>();
+        var skippedVersions = new List<string>();
+
+        using var connection = new NpgsqlConnection(connectionString);
+        connection.Open();
+
+        using (var bootstrap = connection.CreateCommand())
+        {
+            bootstrap.CommandText = @"
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version TEXT PRIMARY KEY,
+    filename TEXT NOT NULL UNIQUE,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);";
+            bootstrap.ExecuteNonQuery();
+        }
+
+        foreach (var migrationPath in migrationFiles)
+        {
+            var filename = Path.GetFileName(migrationPath);
+            var version = GetMigrationVersion(filename);
+
+            using (var exists = connection.CreateCommand())
+            {
+                exists.CommandText = "SELECT 1 FROM schema_migrations WHERE version = @version LIMIT 1;";
+                exists.Parameters.AddWithValue("@version", version);
+                var alreadyApplied = exists.ExecuteScalar() != null;
+                if (alreadyApplied)
+                {
+                    skippedVersions.Add(version);
+                    continue;
+                }
+            }
+
+            var sql = File.ReadAllText(migrationPath);
+            using var apply = connection.CreateCommand();
+            apply.CommandText = $@"
+BEGIN;
+{sql}
+INSERT INTO schema_migrations(version, filename, applied_at)
+VALUES (@version, @filename, NOW());
+COMMIT;";
+            apply.Parameters.AddWithValue("@version", version);
+            apply.Parameters.AddWithValue("@filename", filename);
+            apply.ExecuteNonQuery();
+            appliedVersions.Add(version);
+        }
+
+        return new MigrationApplyResult(migrationsDirectory, appliedVersions, skippedVersions);
+    }
+
+    private static SchemaVersionCheckResult CheckSchemaVersion(string connectionString)
+    {
+        var availableVersions = new List<string>();
+        var appliedVersions = new List<string>();
+        var pendingVersions = new List<string>();
+        var unknownAppliedVersions = new List<string>();
+
+        var hasMigrationsDirectory = TryResolveMigrationsDirectory(out var migrationsDirectory);
+        if (!hasMigrationsDirectory)
+        {
+            migrationsDirectory = string.Empty;
+        }
+        else
+        {
+            availableVersions = Directory.GetFiles(migrationsDirectory, "V*.sql", SearchOption.TopDirectoryOnly)
+                .Select(path => GetMigrationVersion(Path.GetFileName(path)))
+                .OrderBy(version => version, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        var schemaMigrationsExists = false;
+        string? validationError = null;
+        var isFlowStockSchemaValid = false;
+
+        using var connection = new NpgsqlConnection(connectionString);
+        connection.Open();
+
+        schemaMigrationsExists = TableExistsInConnection(connection, "schema_migrations");
+        if (schemaMigrationsExists)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT version FROM schema_migrations ORDER BY version;";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                if (!reader.IsDBNull(0))
+                {
+                    appliedVersions.Add(reader.GetString(0));
+                }
+            }
+        }
+
+        if (availableVersions.Count > 0)
+        {
+            pendingVersions = availableVersions
+                .Where(version => !appliedVersions.Contains(version, StringComparer.OrdinalIgnoreCase))
+                .ToList();
+            unknownAppliedVersions = appliedVersions
+                .Where(version => !availableVersions.Contains(version, StringComparer.OrdinalIgnoreCase))
+                .ToList();
+        }
+
+        try
+        {
+            ValidateFlowStockSchema(connectionString);
+            isFlowStockSchemaValid = true;
+        }
+        catch (Exception ex)
+        {
+            validationError = ex.Message;
+        }
+
+        return new SchemaVersionCheckResult(
+            migrationsDirectory,
+            schemaMigrationsExists,
+            availableVersions,
+            appliedVersions,
+            pendingVersions,
+            unknownAppliedVersions,
+            isFlowStockSchemaValid,
+            validationError);
+    }
+
+    private static string GetMigrationVersion(string filename)
+    {
+        if (string.IsNullOrWhiteSpace(filename))
+        {
+            throw new InvalidOperationException("Пустое имя файла миграции.");
+        }
+
+        var markerIndex = filename.IndexOf("__", StringComparison.Ordinal);
+        if (markerIndex <= 0)
+        {
+            throw new InvalidOperationException($"Некорректное имя файла миграции: {filename}");
+        }
+
+        return filename.Substring(0, markerIndex);
+    }
+
+    private static bool TryResolveMigrationsDirectory(out string migrationsDirectory)
+    {
+        var roots = new List<string>();
+        if (!string.IsNullOrWhiteSpace(AppContext.BaseDirectory))
+        {
+            roots.Add(AppContext.BaseDirectory);
+        }
+
+        if (!string.IsNullOrWhiteSpace(Environment.CurrentDirectory))
+        {
+            roots.Add(Environment.CurrentDirectory);
+        }
+
+        foreach (var root in roots.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var directory = new DirectoryInfo(root);
+            while (directory != null)
+            {
+                var candidate = Path.Combine(directory.FullName, "deploy", "postgres", "migrations");
+                if (Directory.Exists(candidate))
+                {
+                    migrationsDirectory = candidate;
+                    return true;
+                }
+
+                directory = directory.Parent;
+            }
+        }
+
+        migrationsDirectory = string.Empty;
+        return false;
+    }
+
+    private static bool TableExistsInConnection(NpgsqlConnection connection, string tableName)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+SELECT 1
+FROM information_schema.tables
+WHERE table_schema = current_schema()
+  AND table_name = @table_name
+LIMIT 1;";
+        command.Parameters.AddWithValue("@table_name", tableName.ToLowerInvariant());
+        return command.ExecuteScalar() != null;
+    }
+
     private sealed record ConnectionInput(string Host, int Port, string Database, string Username, string Password);
+
+    private sealed record MigrationApplyResult(
+        string MigrationsDirectory,
+        IReadOnlyList<string> AppliedVersions,
+        IReadOnlyList<string> SkippedVersions);
+
+    private sealed record SchemaVersionCheckResult(
+        string MigrationsDirectory,
+        bool SchemaMigrationsExists,
+        IReadOnlyList<string> AvailableVersions,
+        IReadOnlyList<string> AppliedVersions,
+        IReadOnlyList<string> PendingVersions,
+        IReadOnlyList<string> UnknownAppliedVersions,
+        bool IsFlowStockSchemaValid,
+        string? ValidationError);
 
     private static string BuildPostgresSummary(PostgresException ex, ConnectionInput input)
     {

@@ -13,6 +13,8 @@
   - Экспортирует `/health/live` и `/health/ready` для container liveness/readiness.
 - `FlowStock.App`: WPF desktop operator UI с прямым подключением к PostgreSQL (`FLOWSTOCK_PG_*` env или `settings.json postgres`).
   - Если PostgreSQL не настроен или недоступен на старте приложения, WPF сначала открывает окно подключения к БД и не открывает основной UI, пока подключение не будет настроено успешно.
+  - В окне подключения доступна кнопка `Инициализировать / миграции`: она применяет недостающие SQL-миграции `deploy/postgres/migrations` в выбранную БД, не переисполняя уже отмеченные версии в `schema_migrations`.
+  - В том же окне есть кнопка `Проверить схему`: она только проверяет текущие примененные версии и соответствие доступным миграциям, без изменения БД.
   - Настройка подключения к БД по умолчанию использует autodiscovery кандидатов `host:port` PostgreSQL на локальном ПК и в локальной сети; ручной ввод `host/port` остается как fallback.
   - Раздел FlowStock Server в окне подключения к БД используется только для настройки API endpoint-ов и диагностики. Для non-KM runtime-сценариев WPF legacy per-operation toggles удалены, всегда используется server path.
   - Non-KM runtime read/write-потоки WPF используют `FlowStock.Server` для списков, деталей, request inbox, справочников, контрагентов, HU, packaging и import tooling. Прямой доступ к PostgreSQL в WPF остается только для startup connection/bootstrap и замороженных KM-specific code path.
