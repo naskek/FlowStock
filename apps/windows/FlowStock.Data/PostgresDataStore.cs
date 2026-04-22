@@ -2319,8 +2319,8 @@ RETURNING id;
         {
             Id = reader.GetInt64(0),
             Name = reader.GetString(1),
-            Barcode = reader.IsDBNull(2) ? null : reader.GetString(2),
-            Gtin = reader.IsDBNull(3) ? null : reader.GetString(3),
+            Barcode = reader.IsDBNull(3) ? null : reader.GetString(3),
+            Gtin = reader.IsDBNull(4) ? null : reader.GetString(4),
             IsActive = reader.IsDBNull(2) || reader.GetBoolean(2),
             BaseUom = string.IsNullOrWhiteSpace(baseUom) ? "èâ" : baseUom,
             DefaultPackagingId = reader.IsDBNull(6) ? null : reader.GetInt64(6),

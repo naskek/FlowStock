@@ -241,6 +241,7 @@
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="ID" Binding="{Binding Id}" Width="Auto" MaxWidth="120" />
                             <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="Auto" MaxWidth="320" />
+                            <DataGridCheckBoxColumn Header="Активно" Binding="{Binding IsActive}" Width="Auto" MaxWidth="100" />
                             <DataGridTextColumn Header="SKU / штрихкод" Binding="{Binding Barcode}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="Тип" Binding="{Binding ItemTypeName}" Width="Auto" MaxWidth="220" />
