@@ -6,6 +6,7 @@ public sealed class Location
     public string Code { get; init; } = string.Empty;
     public string Name { get; init; } = string.Empty;
     public int? MaxHuSlots { get; init; }
+    public bool AutoHuDistributionEnabled { get; init; } = true;
     public string DisplayName => string.IsNullOrWhiteSpace(Name) ? Code : $"{Code} - {Name}";
 }
 

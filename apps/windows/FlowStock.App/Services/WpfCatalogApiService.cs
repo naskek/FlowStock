@@ -137,22 +137,45 @@ public sealed class WpfCatalogApiService
         return await TryDeleteAsync($"/api/items/{itemId}", "catalog-delete-item", cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task<(bool IsSuccess, long? CreatedId, string? Error)> TryCreateLocationAsync(string code, string name, int? maxHuSlots, CancellationToken cancellationToken = default)
+    public async Task<(bool IsSuccess, long? CreatedId, string? Error)> TryCreateLocationAsync(
+        string code,
+        string name,
+        int? maxHuSlots,
+        bool autoHuDistributionEnabled,
+        CancellationToken cancellationToken = default)
     {
         return await TryPostForIdAsync(
                 "/api/locations",
-                new { code, name, max_hu_slots = maxHuSlots },
+                new
+                {
+                    code,
+                    name,
+                    max_hu_slots = maxHuSlots,
+                    auto_hu_distribution_enabled = autoHuDistributionEnabled
+                },
                 "location_id",
                 "catalog-create-location",
                 cancellationToken)
             .ConfigureAwait(false);
     }
 
-    public async Task<(bool IsSuccess, string? Error)> TryUpdateLocationAsync(long id, string code, string name, int? maxHuSlots, CancellationToken cancellationToken = default)
+    public async Task<(bool IsSuccess, string? Error)> TryUpdateLocationAsync(
+        long id,
+        string code,
+        string name,
+        int? maxHuSlots,
+        bool autoHuDistributionEnabled,
+        CancellationToken cancellationToken = default)
     {
         return await TryPostAsync(
                 $"/api/locations/{id}",
-                new { code, name, max_hu_slots = maxHuSlots },
+                new
+                {
+                    code,
+                    name,
+                    max_hu_slots = maxHuSlots,
+                    auto_hu_distribution_enabled = autoHuDistributionEnabled
+                },
                 "catalog-update-location",
                 cancellationToken)
             .ConfigureAwait(false);

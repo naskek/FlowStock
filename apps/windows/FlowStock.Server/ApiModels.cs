@@ -609,6 +609,9 @@ public sealed class UpsertLocationRequest
 
     [JsonPropertyName("max_hu_slots")]
     public int? MaxHuSlots { get; set; }
+
+    [JsonPropertyName("auto_hu_distribution_enabled")]
+    public bool? AutoHuDistributionEnabled { get; set; }
 }
 
 public sealed class CreateNamedEntityRequest

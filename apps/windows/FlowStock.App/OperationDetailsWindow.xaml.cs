@@ -2317,6 +2317,7 @@ public partial class OperationDetailsWindow : Window
         }
 
         var fallback = _locations
+            .Where(location => location.AutoHuDistributionEnabled)
             .OrderBy(location => location.Code, StringComparer.OrdinalIgnoreCase)
             .FirstOrDefault();
         if (fallback == null)
@@ -2459,7 +2460,18 @@ public partial class OperationDetailsWindow : Window
                 continue;
             }
 
+            var location = _locations.FirstOrDefault(candidate => candidate.Id == locationId);
+            if (location == null)
+            {
+                continue;
+            }
+
             if (fromLocationId.HasValue && locationId != fromLocationId.Value)
+            {
+                continue;
+            }
+
+            if (!fromLocationId.HasValue && !location.AutoHuDistributionEnabled)
             {
                 continue;
             }

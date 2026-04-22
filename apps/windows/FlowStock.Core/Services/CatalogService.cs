@@ -60,7 +60,7 @@ public sealed class CatalogService
         return _data.AddItem(item);
     }
 
-    public long CreateLocation(string code, string name, int? maxHuSlots)
+    public long CreateLocation(string code, string name, int? maxHuSlots, bool? autoHuDistributionEnabled)
     {
         if (string.IsNullOrWhiteSpace(code))
         {
@@ -80,7 +80,8 @@ public sealed class CatalogService
         {
             Code = code.Trim(),
             Name = name.Trim(),
-            MaxHuSlots = maxHuSlots
+            MaxHuSlots = maxHuSlots,
+            AutoHuDistributionEnabled = autoHuDistributionEnabled ?? true
         };
 
         return _data.AddLocation(location);
@@ -190,7 +191,7 @@ public sealed class CatalogService
         _data.DeleteItem(itemId);
     }
 
-    public void UpdateLocation(long locationId, string code, string name, int? maxHuSlots)
+    public void UpdateLocation(long locationId, string code, string name, int? maxHuSlots, bool? autoHuDistributionEnabled)
     {
         if (string.IsNullOrWhiteSpace(code))
         {
@@ -217,7 +218,8 @@ public sealed class CatalogService
             Id = locationId,
             Code = code.Trim(),
             Name = name.Trim(),
-            MaxHuSlots = maxHuSlots
+            MaxHuSlots = maxHuSlots,
+            AutoHuDistributionEnabled = autoHuDistributionEnabled ?? existing.AutoHuDistributionEnabled
         };
 
         _data.UpdateLocation(location);

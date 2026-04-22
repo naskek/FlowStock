@@ -603,7 +603,8 @@ app.MapGet("/api/locations", (IDataStore store) =>
             id = location.Id,
             code = location.Code,
             name = location.Name,
-            max_hu_slots = location.MaxHuSlots
+            max_hu_slots = location.MaxHuSlots,
+            auto_hu_distribution_enabled = location.AutoHuDistributionEnabled
         })
         .ToList();
     return Results.Ok(locations);
@@ -622,7 +623,8 @@ app.MapPost("/api/locations", async (HttpRequest request, CatalogService catalog
         var locationId = catalog.CreateLocation(
             parsed.Value?.Code ?? string.Empty,
             parsed.Value?.Name ?? string.Empty,
-            parsed.Value?.MaxHuSlots);
+            parsed.Value?.MaxHuSlots,
+            parsed.Value?.AutoHuDistributionEnabled);
         return Results.Ok(new { ok = true, location_id = locationId });
     }
     catch (ArgumentException ex)
@@ -645,7 +647,8 @@ app.MapPost("/api/locations/{locationId:long}", async (long locationId, HttpRequ
             locationId,
             parsed.Value?.Code ?? string.Empty,
             parsed.Value?.Name ?? string.Empty,
-            parsed.Value?.MaxHuSlots);
+            parsed.Value?.MaxHuSlots,
+            parsed.Value?.AutoHuDistributionEnabled);
         return Results.Ok(new ApiResult(true));
     }
     catch (ArgumentException ex)

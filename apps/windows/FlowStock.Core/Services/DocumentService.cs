@@ -304,6 +304,7 @@ public sealed class DocumentService
                         {
                             var remaining = line.Qty;
                             var locations = store.GetLocations()
+                                .Where(location => location.AutoHuDistributionEnabled)
                                 .OrderBy(location => location.Code, StringComparer.OrdinalIgnoreCase)
                                 .ToList();
 
@@ -1582,13 +1583,13 @@ public sealed class DocumentService
         if (doc.Type == DocType.Outbound)
         {
             var autoAllocation = lines.Any(line => !line.FromLocationId.HasValue);
-            IReadOnlyDictionary<long, double>? totalsByItem = autoAllocation
-                ? _data.GetLedgerTotalsByItem()
-                : null;
+            IReadOnlyList<Location> autoAllocationLocations = autoAllocation
+                ? locations.Where(location => location.AutoHuDistributionEnabled).ToList()
+                : Array.Empty<Location>();
             foreach (var entry in outboundByItem)
             {
                 var current = autoAllocation
-                    ? (totalsByItem != null && totalsByItem.TryGetValue(entry.Key, out var total) ? total : 0)
+                    ? GetTotalAvailableQty(entry.Key, docHu, autoAllocationLocations)
                     : GetTotalAvailableQty(entry.Key, docHu, locations);
                 var future = current - entry.Value;
                 if (future < 0)
@@ -1758,7 +1759,7 @@ public sealed class DocumentService
         IReadOnlyDictionary<long, string> locationsById)
     {
         var limitedLocations = _data.GetLocations()
-            .Where(location => location.MaxHuSlots.HasValue && location.MaxHuSlots.Value > 0)
+            .Where(location => location.AutoHuDistributionEnabled && location.MaxHuSlots.HasValue && location.MaxHuSlots.Value > 0)
             .ToDictionary(location => location.Id, location => location.MaxHuSlots!.Value);
         if (limitedLocations.Count == 0)
         {

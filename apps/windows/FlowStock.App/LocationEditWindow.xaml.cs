@@ -30,6 +30,7 @@ public partial class LocationEditWindow : Window
         CodeBox.Text = _location.Code;
         NameBox.Text = _location.Name;
         MaxHuSlotsBox.Text = _location.MaxHuSlots?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
+        AutoHuDistributionCheck.IsChecked = _location.AutoHuDistributionEnabled;
     }
 
     private async void Save_Click(object sender, RoutedEventArgs e)
@@ -59,7 +60,11 @@ public partial class LocationEditWindow : Window
         {
             if (_location == null)
             {
-                var result = await _services.WpfCatalogApi.TryCreateLocationAsync(code, name, maxHuSlots).ConfigureAwait(true);
+                var result = await _services.WpfCatalogApi.TryCreateLocationAsync(
+                    code,
+                    name,
+                    maxHuSlots,
+                    AutoHuDistributionCheck.IsChecked == true).ConfigureAwait(true);
                 if (!result.IsSuccess && !string.IsNullOrWhiteSpace(result.Error))
                 {
                     throw new InvalidOperationException(result.Error);
@@ -76,7 +81,12 @@ public partial class LocationEditWindow : Window
             }
             else
             {
-                var result = await _services.WpfCatalogApi.TryUpdateLocationAsync(_location.Id, code, name, maxHuSlots).ConfigureAwait(true);
+                var result = await _services.WpfCatalogApi.TryUpdateLocationAsync(
+                    _location.Id,
+                    code,
+                    name,
+                    maxHuSlots,
+                    AutoHuDistributionCheck.IsChecked == true).ConfigureAwait(true);
                 if (!result.IsSuccess)
                 {
                     throw new InvalidOperationException(result.Error ?? "Не удалось обновить место хранения через сервер.");

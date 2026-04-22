@@ -422,12 +422,26 @@ public sealed class WpfReadApiService
 
     private static Location MapLocation(JsonElement element)
     {
+        var autoHuDistributionEnabled = true;
+        if (element.TryGetProperty("auto_hu_distribution_enabled", out var autoProperty))
+        {
+            if (autoProperty.ValueKind == JsonValueKind.True || autoProperty.ValueKind == JsonValueKind.False)
+            {
+                autoHuDistributionEnabled = autoProperty.GetBoolean();
+            }
+            else if (!bool.TryParse(autoProperty.ToString(), out autoHuDistributionEnabled))
+            {
+                autoHuDistributionEnabled = true;
+            }
+        }
+
         return new Location
         {
             Id = ReadInt64(element, "id"),
             Code = ReadString(element, "code") ?? string.Empty,
             Name = ReadString(element, "name") ?? string.Empty,
-            MaxHuSlots = ReadNullableInt32(element, "max_hu_slots")
+            MaxHuSlots = ReadNullableInt32(element, "max_hu_slots"),
+            AutoHuDistributionEnabled = autoHuDistributionEnabled
         };
     }
 
