@@ -1053,17 +1053,59 @@ public sealed class DocumentService
                 throw new InvalidOperationException("Не выбраны строки для распределения.");
             }
 
+            var autoLocations = store.GetLocations()
+                .Where(location => location.AutoHuDistributionEnabled)
+                .OrderBy(location => location.Code, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (autoLocations.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    "Нет доступных локаций с включенным флагом \"Авто HU распределение\".");
+            }
+
+            var autoLocationById = autoLocations.ToDictionary(location => location.Id);
+            var occupiedHuByLocation = autoLocations.ToDictionary(
+                location => location.Id,
+                _ => new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+
+            foreach (var row in store.GetHuStockRows().Where(row => row.Qty > 0))
+            {
+                if (!autoLocationById.ContainsKey(row.LocationId))
+                {
+                    continue;
+                }
+
+                var normalizedHu = NormalizeHuValue(row.HuCode);
+                if (string.IsNullOrWhiteSpace(normalizedHu))
+                {
+                    continue;
+                }
+
+                occupiedHuByLocation[row.LocationId].Add(normalizedHu);
+            }
+
+            foreach (var line in allLines.Where(line => !selectedIds.Contains(line.Id)))
+            {
+                if (!line.ToLocationId.HasValue || !autoLocationById.ContainsKey(line.ToLocationId.Value))
+                {
+                    continue;
+                }
+
+                var normalizedToHu = NormalizeHuValue(line.ToHu);
+                if (string.IsNullOrWhiteSpace(normalizedToHu))
+                {
+                    continue;
+                }
+
+                occupiedHuByLocation[line.ToLocationId.Value].Add(normalizedToHu);
+            }
+
             var itemsById = store.GetItems(null).ToDictionary(item => item.Id, item => item);
             var requiredHuCount = 0;
             var wholeLines = new List<DocLine>();
             foreach (var line in targetLines)
             {
                 EnsureHuAssignmentAllowed(store, doc.Type, line.Id);
-
-                if (!line.ToLocationId.HasValue)
-                {
-                    throw new InvalidOperationException("Для выпуска продукции требуется локация приёмки.");
-                }
 
                 if (!itemsById.TryGetValue(line.ItemId, out var item))
                 {
@@ -1099,6 +1141,44 @@ public sealed class DocumentService
             var allocatedHuCodes = AllocateProductionHuCodes(store, requiredHuCount, reservedHuCodes);
             usedHuCount = allocatedHuCodes.Count;
 
+            var locationByHu = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+
+            long ResolveLocationForHu(string huCode, long? preferredLocationId)
+            {
+                if (locationByHu.TryGetValue(huCode, out var assignedLocationId))
+                {
+                    return assignedLocationId;
+                }
+
+                var orderedCandidates = autoLocations;
+                if (preferredLocationId.HasValue && autoLocationById.ContainsKey(preferredLocationId.Value))
+                {
+                    orderedCandidates = autoLocations
+                        .OrderByDescending(location => location.Id == preferredLocationId.Value)
+                        .ThenBy(location => location.Code, StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                }
+
+                foreach (var candidate in orderedCandidates)
+                {
+                    var occupiedSet = occupiedHuByLocation[candidate.Id];
+                    var alreadyOccupied = occupiedSet.Contains(huCode);
+                    var hasFreeSlot = !candidate.MaxHuSlots.HasValue || occupiedSet.Count < candidate.MaxHuSlots.Value;
+                    if (!alreadyOccupied && !hasFreeSlot)
+                    {
+                        continue;
+                    }
+
+                    occupiedSet.Add(huCode);
+                    locationByHu[huCode] = candidate.Id;
+                    return candidate.Id;
+                }
+
+                throw new InvalidOperationException(
+                    "Нет свободных HU-мест в локациях с включенным \"Авто HU распределение\". " +
+                    "Освободите места, увеличьте лимит или назначьте локацию вручную.");
+            }
+
             var huQueue = new Queue<string>(allocatedHuCodes);
             var wholeLineHuByLineId = new Dictionary<long, string>();
             foreach (var group in wholeLineGroups)
@@ -1115,6 +1195,7 @@ public sealed class DocumentService
             {
                 if (line.PackSingleHu)
                 {
+                    var targetHu = wholeLineHuByLineId[line.Id];
                     replacementLines.Add(new DocLine
                     {
                         DocId = docId,
@@ -1124,9 +1205,9 @@ public sealed class DocumentService
                         QtyInput = line.QtyInput,
                         UomCode = line.UomCode,
                         FromLocationId = line.FromLocationId,
-                        ToLocationId = line.ToLocationId,
+                        ToLocationId = ResolveLocationForHu(targetHu, line.ToLocationId),
                         FromHu = NormalizeHuValue(line.FromHu),
-                        ToHu = wholeLineHuByLineId[line.Id],
+                        ToHu = targetHu,
                         PackSingleHu = line.PackSingleHu
                     });
                     continue;
@@ -1136,6 +1217,7 @@ public sealed class DocumentService
                 var maxQtyPerHu = item.MaxQtyPerHu;
                 if (!maxQtyPerHu.HasValue || maxQtyPerHu.Value <= 0)
                 {
+                    var targetHu = huQueue.Dequeue();
                     replacementLines.Add(new DocLine
                     {
                         DocId = docId,
@@ -1145,9 +1227,9 @@ public sealed class DocumentService
                         QtyInput = line.QtyInput,
                         UomCode = line.UomCode,
                         FromLocationId = line.FromLocationId,
-                        ToLocationId = line.ToLocationId,
+                        ToLocationId = ResolveLocationForHu(targetHu, line.ToLocationId),
                         FromHu = NormalizeHuValue(line.FromHu),
-                        ToHu = huQueue.Dequeue(),
+                        ToHu = targetHu,
                         PackSingleHu = line.PackSingleHu
                     });
                     continue;
@@ -1162,6 +1244,7 @@ public sealed class DocumentService
                 while (remainingQty > 0.000001)
                 {
                     var chunkQty = Math.Min(maxQtyPerHu.Value, remainingQty);
+                    var targetHu = huQueue.Dequeue();
                     var chunkInput = (double?)null;
                     if (ratio.HasValue)
                     {
@@ -1183,9 +1266,9 @@ public sealed class DocumentService
                         QtyInput = chunkInput,
                         UomCode = line.UomCode,
                         FromLocationId = line.FromLocationId,
-                        ToLocationId = line.ToLocationId,
+                        ToLocationId = ResolveLocationForHu(targetHu, line.ToLocationId),
                         FromHu = NormalizeHuValue(line.FromHu),
-                        ToHu = huQueue.Dequeue(),
+                        ToHu = targetHu,
                         PackSingleHu = line.PackSingleHu
                     });
 
