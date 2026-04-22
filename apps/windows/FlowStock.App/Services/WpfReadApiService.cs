@@ -426,7 +426,8 @@ public sealed class WpfReadApiService
         {
             Id = ReadInt64(element, "id"),
             Code = ReadString(element, "code") ?? string.Empty,
-            Name = ReadString(element, "name") ?? string.Empty
+            Name = ReadString(element, "name") ?? string.Empty,
+            MaxHuSlots = ReadNullableInt32(element, "max_hu_slots")
         };
     }
 

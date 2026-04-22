@@ -60,7 +60,7 @@ public sealed class CatalogService
         return _data.AddItem(item);
     }
 
-    public long CreateLocation(string code, string name)
+    public long CreateLocation(string code, string name, int? maxHuSlots)
     {
         if (string.IsNullOrWhiteSpace(code))
         {
@@ -71,11 +71,16 @@ public sealed class CatalogService
         {
             throw new ArgumentException("Наименование обязательно.", nameof(name));
         }
+        if (maxHuSlots.HasValue && maxHuSlots.Value <= 0)
+        {
+            throw new ArgumentException("Лимит HU должен быть больше 0.", nameof(maxHuSlots));
+        }
 
         var location = new Location
         {
             Code = code.Trim(),
-            Name = name.Trim()
+            Name = name.Trim(),
+            MaxHuSlots = maxHuSlots
         };
 
         return _data.AddLocation(location);
@@ -185,7 +190,7 @@ public sealed class CatalogService
         _data.DeleteItem(itemId);
     }
 
-    public void UpdateLocation(long locationId, string code, string name)
+    public void UpdateLocation(long locationId, string code, string name, int? maxHuSlots)
     {
         if (string.IsNullOrWhiteSpace(code))
         {
@@ -195,6 +200,10 @@ public sealed class CatalogService
         if (string.IsNullOrWhiteSpace(name))
         {
             throw new ArgumentException("Наименование обязательно.", nameof(name));
+        }
+        if (maxHuSlots.HasValue && maxHuSlots.Value <= 0)
+        {
+            throw new ArgumentException("Лимит HU должен быть больше 0.", nameof(maxHuSlots));
         }
 
         var existing = _data.FindLocationById(locationId);
@@ -207,7 +216,8 @@ public sealed class CatalogService
         {
             Id = locationId,
             Code = code.Trim(),
-            Name = name.Trim()
+            Name = name.Trim(),
+            MaxHuSlots = maxHuSlots
         };
 
         _data.UpdateLocation(location);

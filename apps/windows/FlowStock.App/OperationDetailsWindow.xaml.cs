@@ -564,9 +564,9 @@ public partial class OperationDetailsWindow : Window
 
         if (HasOrderBinding())
         {
-            LogOutboundOrderBoundInfo("manual add blocked: order-bound outbound requires explicit fill-from-order flow");
+            LogOutboundOrderBoundInfo("manual add blocked: order-bound outbound");
             MessageBox.Show(
-                "Для отгрузки с привязанным заказом ручное добавление строк отключено. Используйте 'Заполнить из заказа'.",
+                "Для отгрузки с привязанным заказом ручное добавление строк отключено.",
                 "Операция",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
@@ -592,17 +592,18 @@ public partial class OperationDetailsWindow : Window
         }
         else if (_doc?.Type == DocType.Outbound)
         {
-            if (DocFromCombo.SelectedItem is not Location selectedFromLocation)
-            {
-                MessageBox.Show("Выберите локацию отгрузки.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-
             var selectedHu = GetSelectedHuCode(DocHuCombo);
-            filteredItems = GetAvailableItemsByLocationAndHu(selectedFromLocation.Id, selectedHu);
+            if (DocFromCombo.SelectedItem is Location selectedFromLocation)
+            {
+                filteredItems = GetAvailableItemsByLocationAndHu(selectedFromLocation.Id, selectedHu);
+            }
+            else
+            {
+                filteredItems = GetAvailableItemsForOutboundHu(selectedHu);
+            }
             if (!filteredItems.Any())
             {
-                MessageBox.Show("Нет доступных товаров для выбранной локации и HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show("Нет доступных товаров для выбранного HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
         }
@@ -911,7 +912,7 @@ public partial class OperationDetailsWindow : Window
         {
             LogOutboundOrderBoundInfo("line update blocked: order-bound outbound allows qty edit only in partial shipment mode");
             MessageBox.Show(
-                "Изменение количества доступно только в режиме 'Частичная отгрузка'. Для полного восстановления строк используйте 'Заполнить из заказа'.",
+                "Изменение количества доступно только в режиме 'Частичная отгрузка'.",
                 "Операция",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
@@ -1602,12 +1603,8 @@ public partial class OperationDetailsWindow : Window
         if (_doc?.Type == DocType.Outbound)
         {
             MarkHeaderDirty();
-            LogOutboundOrderBoundInfo($"implicit trigger suppressed: order selection changed; order_id={selected.Id}; fill/rebuild not invoked");
-            MessageBox.Show(
-                "Заказ изменён. Нажмите 'Заполнить из заказа', чтобы пересобрать строки.",
-                "Операция",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
+            LogOutboundOrderBoundInfo($"auto fill triggered: order selection changed; order_id={selected.Id}; mode=server");
+            await TryApplyOrderSelectionAsync(selected);
             UpdateLineButtons();
             UpdateActionButtons();
             return;
@@ -1652,7 +1649,7 @@ public partial class OperationDetailsWindow : Window
         UpdateActionButtons();
     }
 
-    private void DocPartialCheck_Changed(object sender, RoutedEventArgs e)
+    private async void DocPartialCheck_Changed(object sender, RoutedEventArgs e)
     {
         if (_suppressPartialSync)
         {
@@ -1668,12 +1665,11 @@ public partial class OperationDetailsWindow : Window
         _isPartialShipment = DocPartialCheck.IsChecked == true;
         if (!_isPartialShipment && _doc?.OrderId.HasValue == true)
         {
-            LogOutboundOrderBoundInfo($"implicit trigger suppressed: partial shipment disabled; order_id={_doc.OrderId.Value}; fill/rebuild not invoked");
-            MessageBox.Show(
-                "Режим частичной отгрузки изменён. Нажмите 'Заполнить из заказа', чтобы пересобрать строки.",
-                "Операция",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
+            LogOutboundOrderBoundInfo($"auto fill triggered: partial shipment changed; order_id={_doc.OrderId.Value}; partial={_isPartialShipment}");
+            if (TryResolveOrder(out var orderOption) && orderOption != null)
+            {
+                await TryApplyOrderSelectionAsync(orderOption);
+            }
         }
 
         UpdateLineButtons();
@@ -1760,8 +1756,6 @@ public partial class OperationDetailsWindow : Window
                 showPartner = true;
                 partnerLabel = "Покупатель";
                 showOrder = true;
-                showFrom = true;
-                fromLabel = "Локация отгрузки";
                 break;
             case DocType.Move:
                 showFrom = true;
@@ -1862,10 +1856,8 @@ public partial class OperationDetailsWindow : Window
         DocFromColumn.Header = fromLabel;
         DocToColumn.Header = toLabel;
 
-        FillFromOrderButton.Visibility = doc.Type == DocType.ProductionReceipt || doc.Type == DocType.Outbound
-            ? Visibility.Visible
-            : Visibility.Collapsed;
-        FillFromOrderButton.IsEnabled = isEditable && DocOrderCombo.SelectedItem != null;
+        FillFromOrderButton.Visibility = Visibility.Collapsed;
+        FillFromOrderButton.IsEnabled = false;
     }
 
     private static bool IsTsdSource(Doc doc)
@@ -1911,10 +1903,7 @@ public partial class OperationDetailsWindow : Window
                                   && hasSingleSelection
                                   && _selectedDocLine?.IsMarked == true
                                   && (_doc?.Type == DocType.ProductionReceipt || _doc?.Type == DocType.Outbound);
-        if (_doc?.Type is DocType.ProductionReceipt or DocType.Outbound)
-        {
-            FillFromOrderButton.IsEnabled = isEditable && DocOrderCombo.SelectedItem != null;
-        }
+        FillFromOrderButton.IsEnabled = false;
         UpdateOutboundHuButton();
     }
 
@@ -2212,14 +2201,8 @@ public partial class OperationDetailsWindow : Window
             return false;
         }
 
-        if (!TryGetLineLocations(out var fromLocation, out _, out var fromHu, out _, nameof(TryApplyOrderSelectionViaServerAsync)))
-        {
-            LogOutboundOrderBoundWarn($"fill from order aborted before server call: order_id={selected.Id}; source location/HU validation failed");
-            return false;
-        }
-
-        var contexts = BuildOutboundOrderBatchContexts(selected.Id, fromLocation?.Id);
-        LogOutboundOrderBoundInfo($"fill from order server branch prepared: order_id={selected.Id}; contexts={contexts.Count}; from_location_id={fromLocation?.Id}; from_hu={NormalizeHuValue(fromHu) ?? "-"}");
+        var contexts = BuildOutboundOrderBatchContexts(selected.Id, null);
+        LogOutboundOrderBoundInfo($"fill from order server branch prepared: order_id={selected.Id}; contexts={contexts.Count}; from_location_id=-; from_hu=-");
 
         var headerSaved = await TryPersistHeaderViaServerAsync(
             selected.PartnerId,
@@ -2293,21 +2276,59 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
+        var replaceLines = false;
         var existingLines = _docLines;
         if (existingLines.Count > 0)
         {
-            LoadDoc();
-            return;
+            var confirm = MessageBox.Show(
+                "Заменить текущие строки данными из заказа?",
+                "Выпуск продукции",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question,
+                MessageBoxResult.Yes);
+            if (confirm != MessageBoxResult.Yes)
+            {
+                LoadDoc();
+                return;
+            }
+
+            replaceLines = true;
         }
 
-        var toLocation = DocToCombo.SelectedItem as Location;
+        var toLocation = EnsureProductionReceiptLocationSelected();
         if (toLocation == null)
         {
-            LoadDoc();
+            MessageBox.Show(
+                "Для выпуска продукции выберите локацию приёмки.",
+                "Выпуск продукции",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
             return;
         }
 
-        await FillProductionReceiptFromOrderAsync(selected.Id, replaceLines: false, showEmptyMessage: false);
+        await FillProductionReceiptFromOrderAsync(selected.Id, replaceLines, showEmptyMessage: false);
+    }
+
+    private Location? EnsureProductionReceiptLocationSelected()
+    {
+        if (DocToCombo.SelectedItem is Location selected)
+        {
+            return selected;
+        }
+
+        var fallback = _locations
+            .OrderBy(location => location.Code, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+        if (fallback == null)
+        {
+            return null;
+        }
+
+        var previousSuppress = _suppressDirtyTracking;
+        _suppressDirtyTracking = true;
+        DocToCombo.SelectedItem = fallback;
+        _suppressDirtyTracking = previousSuppress;
+        return fallback;
     }
 
     private async void DocFillFromOrder_Click(object sender, RoutedEventArgs e)
@@ -2424,20 +2445,111 @@ public partial class OperationDetailsWindow : Window
 
     private IReadOnlyList<WpfAddDocLineContext> BuildOutboundOrderBatchContexts(long orderId, long? fromLocationId)
     {
-        return GetOrderShipmentRemaining(orderId)
-            .Where(line => line.QtyRemaining > 0)
-            .Select(line => new WpfAddDocLineContext(
-                line.ItemId,
-                null,
-                line.OrderLineId,
-                line.QtyRemaining,
-                null,
-                null,
-                fromLocationId,
-                null,
-                null,
-                null))
-            .ToList();
+        var requestedHu = NormalizeHuValue(GetSelectedHuCode(DocHuCombo));
+        var locationsByCode = _locations
+            .Where(location => !string.IsNullOrWhiteSpace(location.Code))
+            .ToDictionary(location => location.Code, location => location.Id, StringComparer.OrdinalIgnoreCase);
+
+        var sourcePools = new Dictionary<(long ItemId, long LocationId, string HuKey), OutboundSourcePool>();
+        foreach (var row in GetStockRows().Where(row => row.Qty > 0))
+        {
+            if (string.IsNullOrWhiteSpace(row.LocationCode)
+                || !locationsByCode.TryGetValue(row.LocationCode, out var locationId))
+            {
+                continue;
+            }
+
+            if (fromLocationId.HasValue && locationId != fromLocationId.Value)
+            {
+                continue;
+            }
+
+            var hu = NormalizeHuValue(row.Hu);
+            if (!string.IsNullOrWhiteSpace(requestedHu)
+                && !string.Equals(hu, requestedHu, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var huKey = hu ?? string.Empty;
+            var key = (row.ItemId, locationId, huKey);
+            if (!sourcePools.TryGetValue(key, out var pool))
+            {
+                pool = new OutboundSourcePool
+                {
+                    ItemId = row.ItemId,
+                    LocationId = locationId,
+                    HuCode = hu,
+                    RemainingQty = 0
+                };
+                sourcePools[key] = pool;
+            }
+
+            pool.RemainingQty += row.Qty;
+        }
+
+        var stockPoolsByItem = sourcePools.Values
+            .GroupBy(pool => pool.ItemId)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderBy(pool => pool.LocationId)
+                    .ThenBy(pool => pool.HuCode ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                    .ToList());
+
+        var contexts = new List<WpfAddDocLineContext>();
+        foreach (var line in GetOrderShipmentRemaining(orderId).Where(line => line.QtyRemaining > 0))
+        {
+            var qtyRemaining = line.QtyRemaining;
+            if (stockPoolsByItem.TryGetValue(line.ItemId, out var pools))
+            {
+                foreach (var pool in pools)
+                {
+                    if (qtyRemaining <= 0.000001)
+                    {
+                        break;
+                    }
+
+                    if (pool.RemainingQty <= 0.000001)
+                    {
+                        continue;
+                    }
+
+                    var allocatedQty = Math.Min(qtyRemaining, pool.RemainingQty);
+                    contexts.Add(new WpfAddDocLineContext(
+                        line.ItemId,
+                        null,
+                        line.OrderLineId,
+                        allocatedQty,
+                        null,
+                        null,
+                        pool.LocationId,
+                        null,
+                        pool.HuCode,
+                        null));
+
+                    pool.RemainingQty -= allocatedQty;
+                    qtyRemaining -= allocatedQty;
+                }
+            }
+
+            if (qtyRemaining > 0.000001)
+            {
+                contexts.Add(new WpfAddDocLineContext(
+                    line.ItemId,
+                    null,
+                    line.OrderLineId,
+                    qtyRemaining,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null));
+            }
+        }
+
+        return contexts;
     }
 
     private IReadOnlyList<WpfAddDocLineContext> BuildProductionReceiptBatchContexts(long orderId, long? toLocationId, string? toHu)
@@ -2563,7 +2675,6 @@ public partial class OperationDetailsWindow : Window
         var reasonCode = (DocReasonCombo.SelectedItem as WriteOffReasonOption)?.Code;
         var productionBatch = DocBatchBox.Text;
         var comment = DocCommentBox.Text;
-        var outboundFillReminderNeeded = false;
         try
         {
             if (_doc.Type == DocType.ProductionReceipt
@@ -2592,8 +2703,7 @@ public partial class OperationDetailsWindow : Window
                     LoadOrderQuantities(orderOption.Id);
                     if (orderChanged)
                     {
-                        outboundFillReminderNeeded = true;
-                        LogOutboundOrderBoundInfo($"implicit trigger suppressed: save updated order binding/header for order_id={orderOption.Id}; fill/rebuild not invoked");
+                        LogOutboundOrderBoundInfo($"order binding updated in header: order_id={orderOption.Id}");
                     }
                 }
                 else if (_doc.Type == DocType.ProductionReceipt)
@@ -2626,14 +2736,6 @@ public partial class OperationDetailsWindow : Window
 
             LoadDoc();
             MarkHeaderSaved();
-            if (outboundFillReminderNeeded)
-            {
-                MessageBox.Show(
-                    "Параметры заказа сохранены. Нажмите 'Заполнить из заказа', чтобы пересобрать строки.",
-                    "Операция",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information);
-            }
             return true;
         }
         catch (Exception ex)
@@ -2945,6 +3047,26 @@ public partial class OperationDetailsWindow : Window
             ? apiItems
             : Array.Empty<Item>();
         var itemIds = rows.Select(row => row.ItemId).Distinct().ToHashSet();
+        return items.Where(item => itemIds.Contains(item.Id)).ToList();
+    }
+
+    private IReadOnlyList<Item> GetAvailableItemsForOutboundHu(string? huCode)
+    {
+        var normalizedHu = NormalizeHuValue(huCode);
+        var itemIds = GetStockRows()
+            .Where(row => row.Qty > 0
+                          && string.Equals(NormalizeHuValue(row.Hu), normalizedHu, StringComparison.OrdinalIgnoreCase))
+            .Select(row => row.ItemId)
+            .Distinct()
+            .ToHashSet();
+        if (itemIds.Count == 0)
+        {
+            return Array.Empty<Item>();
+        }
+
+        var items = _services.WpfReadApi.TryGetItems(null, out var apiItems)
+            ? apiItems
+            : Array.Empty<Item>();
         return items.Where(item => itemIds.Contains(item.Id)).ToList();
     }
 
@@ -3530,6 +3652,14 @@ public partial class OperationDetailsWindow : Window
         public string DisplayName { get; }
     }
 
+    private sealed class OutboundSourcePool
+    {
+        public long ItemId { get; init; }
+        public long LocationId { get; init; }
+        public string? HuCode { get; init; }
+        public double RemainingQty { get; set; }
+    }
+
     private bool TryGetLineLocations(
         out Location? fromLocation,
         out Location? toLocation,
@@ -3722,11 +3852,6 @@ public partial class OperationDetailsWindow : Window
                 }
                 return true;
             case DocType.Outbound:
-                if (fromLocation == null)
-                {
-                    MessageBox.Show("Для отгрузки выберите место хранения источника.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return false;
-                }
                 return true;
             case DocType.Move:
                 if (fromLocation == null || toLocation == null)

@@ -137,22 +137,22 @@ public sealed class WpfCatalogApiService
         return await TryDeleteAsync($"/api/items/{itemId}", "catalog-delete-item", cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task<(bool IsSuccess, long? CreatedId, string? Error)> TryCreateLocationAsync(string code, string name, CancellationToken cancellationToken = default)
+    public async Task<(bool IsSuccess, long? CreatedId, string? Error)> TryCreateLocationAsync(string code, string name, int? maxHuSlots, CancellationToken cancellationToken = default)
     {
         return await TryPostForIdAsync(
                 "/api/locations",
-                new { code, name },
+                new { code, name, max_hu_slots = maxHuSlots },
                 "location_id",
                 "catalog-create-location",
                 cancellationToken)
             .ConfigureAwait(false);
     }
 
-    public async Task<(bool IsSuccess, string? Error)> TryUpdateLocationAsync(long id, string code, string name, CancellationToken cancellationToken = default)
+    public async Task<(bool IsSuccess, string? Error)> TryUpdateLocationAsync(long id, string code, string name, int? maxHuSlots, CancellationToken cancellationToken = default)
     {
         return await TryPostAsync(
                 $"/api/locations/{id}",
-                new { code, name },
+                new { code, name, max_hu_slots = maxHuSlots },
                 "catalog-update-location",
                 cancellationToken)
             .ConfigureAwait(false);

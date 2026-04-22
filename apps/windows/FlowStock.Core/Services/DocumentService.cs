@@ -1666,6 +1666,10 @@ public sealed class DocumentService
         {
             check.Errors.Add(error);
         }
+        foreach (var error in BuildLocationHuCapacityErrors(doc, lines, locationsById))
+        {
+            check.Errors.Add(error);
+        }
 
         check.Doc = doc;
         if (doc.Type == DocType.Outbound && !doc.PartnerId.HasValue)
@@ -1743,6 +1747,81 @@ public sealed class DocumentService
             {
                 errors.Add($"HU {hu} должен находиться только в одной локации. Сейчас: {string.Join(", ", locations)}.");
             }
+        }
+
+        return errors;
+    }
+
+    private IEnumerable<string> BuildLocationHuCapacityErrors(
+        Doc doc,
+        IReadOnlyList<DocLine> lines,
+        IReadOnlyDictionary<long, string> locationsById)
+    {
+        var limitedLocations = _data.GetLocations()
+            .Where(location => location.MaxHuSlots.HasValue && location.MaxHuSlots.Value > 0)
+            .ToDictionary(location => location.Id, location => location.MaxHuSlots!.Value);
+        if (limitedLocations.Count == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        var huLocationBalances = new Dictionary<(long LocationId, string HuCode), double>();
+        foreach (var row in _data.GetHuStockRows())
+        {
+            var huCode = NormalizeHuValue(row.HuCode);
+            if (string.IsNullOrWhiteSpace(huCode))
+            {
+                continue;
+            }
+
+            var key = (row.LocationId, huCode);
+            huLocationBalances[key] = huLocationBalances.TryGetValue(key, out var current)
+                ? current + row.Qty
+                : row.Qty;
+        }
+
+        var docHu = NormalizeHuValue(doc.ShippingRef);
+        foreach (var line in lines)
+        {
+            var (fromHu, toHu) = ResolveLedgerHu(doc, line, docHu);
+            var normalizedFromHu = NormalizeHuValue(fromHu);
+            if (line.FromLocationId.HasValue && !string.IsNullOrWhiteSpace(normalizedFromHu))
+            {
+                var key = (line.FromLocationId.Value, normalizedFromHu);
+                huLocationBalances[key] = huLocationBalances.TryGetValue(key, out var current)
+                    ? current - line.Qty
+                    : -line.Qty;
+            }
+
+            var normalizedToHu = NormalizeHuValue(toHu);
+            if (line.ToLocationId.HasValue && !string.IsNullOrWhiteSpace(normalizedToHu))
+            {
+                var key = (line.ToLocationId.Value, normalizedToHu);
+                huLocationBalances[key] = huLocationBalances.TryGetValue(key, out var current)
+                    ? current + line.Qty
+                    : line.Qty;
+            }
+        }
+
+        var occupiedByLocation = huLocationBalances
+            .Where(entry => entry.Value > 0.000001)
+            .GroupBy(entry => entry.Key.LocationId)
+            .ToDictionary(group => group.Key, group => group.Count());
+
+        var errors = new List<string>();
+        foreach (var entry in limitedLocations)
+        {
+            var occupiedCount = occupiedByLocation.TryGetValue(entry.Key, out var count) ? count : 0;
+            if (occupiedCount <= entry.Value)
+            {
+                continue;
+            }
+
+            var locationLabel = locationsById.TryGetValue(entry.Key, out var code)
+                ? code
+                : $"ID {entry.Key}";
+            errors.Add(
+                $"Локация {locationLabel}: занято HU мест {occupiedCount}, лимит {entry.Value}. Уменьшите количество разных HU в локации.");
         }
 
         return errors;

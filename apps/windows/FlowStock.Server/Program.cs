@@ -598,7 +598,13 @@ app.MapGet("/api/diag/counts", () =>
 app.MapGet("/api/locations", (IDataStore store) =>
 {
     var locations = store.GetLocations()
-        .Select(location => new { id = location.Id, code = location.Code, name = location.Name })
+        .Select(location => new
+        {
+            id = location.Id,
+            code = location.Code,
+            name = location.Name,
+            max_hu_slots = location.MaxHuSlots
+        })
         .ToList();
     return Results.Ok(locations);
 });
@@ -613,7 +619,10 @@ app.MapPost("/api/locations", async (HttpRequest request, CatalogService catalog
 
     try
     {
-        var locationId = catalog.CreateLocation(parsed.Value?.Code ?? string.Empty, parsed.Value?.Name ?? string.Empty);
+        var locationId = catalog.CreateLocation(
+            parsed.Value?.Code ?? string.Empty,
+            parsed.Value?.Name ?? string.Empty,
+            parsed.Value?.MaxHuSlots);
         return Results.Ok(new { ok = true, location_id = locationId });
     }
     catch (ArgumentException ex)
@@ -632,7 +641,11 @@ app.MapPost("/api/locations/{locationId:long}", async (long locationId, HttpRequ
 
     try
     {
-        catalog.UpdateLocation(locationId, parsed.Value?.Code ?? string.Empty, parsed.Value?.Name ?? string.Empty);
+        catalog.UpdateLocation(
+            locationId,
+            parsed.Value?.Code ?? string.Empty,
+            parsed.Value?.Name ?? string.Empty,
+            parsed.Value?.MaxHuSlots);
         return Results.Ok(new ApiResult(true));
     }
     catch (ArgumentException ex)

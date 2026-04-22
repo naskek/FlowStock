@@ -606,6 +606,9 @@ public sealed class UpsertLocationRequest
 
     [JsonPropertyName("name")]
     public string? Name { get; set; }
+
+    [JsonPropertyName("max_hu_slots")]
+    public int? MaxHuSlots { get; set; }
 }
 
 public sealed class CreateNamedEntityRequest

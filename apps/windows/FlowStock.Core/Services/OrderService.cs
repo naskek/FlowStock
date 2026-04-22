@@ -301,23 +301,62 @@ public sealed class OrderService
         }
 
         var shippedByLine = _data.GetShippedTotalsByOrderLine(order.Id);
+        var producedByOrderLine = _data.GetOrderReceiptRemaining(order.Id)
+            .ToDictionary(line => line.OrderLineId, line => line.QtyReceived);
+        var reservedOutstandingByItem = GetReservedOutstandingByItemForCustomerOrders();
 
         foreach (var line in lines)
         {
             var available = availableByItem.TryGetValue(line.ItemId, out var availableQty) ? availableQty : 0;
             var shipped = shippedByLine.TryGetValue(line.Id, out var shippedQty) ? shippedQty : 0;
+            var produced = producedByOrderLine.TryGetValue(line.Id, out var producedQty) ? producedQty : 0;
             var remaining = Math.Max(0, line.QtyOrdered - shipped);
-            var availableForShip = Math.Max(0, available);
+            var reservedForLine = Math.Max(0, produced - shipped);
+            var reservedByItem = reservedOutstandingByItem.TryGetValue(line.ItemId, out var reservedQty)
+                ? reservedQty
+                : 0;
+            var unreservedAvailable = Math.Max(0, Math.Max(0, available) - reservedByItem);
+            var availableForShip = reservedForLine + unreservedAvailable;
             var canShip = Math.Min(remaining, availableForShip);
             var shortage = Math.Max(0, remaining - availableForShip);
 
             line.QtyAvailable = available;
             line.QtyShipped = shipped;
-            line.QtyProduced = 0;
+            line.QtyProduced = produced;
             line.QtyRemaining = remaining;
             line.CanShipNow = canShip;
             line.Shortage = shortage;
         }
+    }
+
+    private IReadOnlyDictionary<long, double> GetReservedOutstandingByItemForCustomerOrders()
+    {
+        var reserved = new Dictionary<long, double>();
+        var customerOrders = _data.GetOrders()
+            .Where(order => order.Type == OrderType.Customer)
+            .ToList();
+
+        foreach (var customerOrder in customerOrders)
+        {
+            var shippedByLine = _data.GetShippedTotalsByOrderLine(customerOrder.Id);
+            foreach (var receiptLine in _data.GetOrderReceiptRemaining(customerOrder.Id))
+            {
+                var shipped = shippedByLine.TryGetValue(receiptLine.OrderLineId, out var shippedQty)
+                    ? shippedQty
+                    : 0;
+                var outstanding = Math.Max(0, receiptLine.QtyReceived - shipped);
+                if (outstanding <= QtyTolerance)
+                {
+                    continue;
+                }
+
+                reserved[receiptLine.ItemId] = reserved.TryGetValue(receiptLine.ItemId, out var current)
+                    ? current + outstanding
+                    : outstanding;
+            }
+        }
+
+        return reserved;
     }
 
     private static List<OrderLineView> NormalizeLines(IReadOnlyList<OrderLineView> lines)

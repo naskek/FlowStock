@@ -347,7 +347,7 @@ WHERE id = @id;
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT id, code, name FROM locations WHERE code = @code");
+            using var command = CreateCommand(connection, "SELECT id, code, name, max_hu_slots FROM locations WHERE code = @code");
             command.Parameters.AddWithValue("@code", code);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadLocation(reader) : null;
@@ -358,7 +358,7 @@ WHERE id = @id;
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT id, code, name FROM locations WHERE id = @id");
+            using var command = CreateCommand(connection, "SELECT id, code, name, max_hu_slots FROM locations WHERE id = @id");
             command.Parameters.AddWithValue("@id", id);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadLocation(reader) : null;
@@ -369,7 +369,7 @@ WHERE id = @id;
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT id, code, name FROM locations ORDER BY code");
+            using var command = CreateCommand(connection, "SELECT id, code, name, max_hu_slots FROM locations ORDER BY code");
             using var reader = command.ExecuteReader();
             var locations = new List<Location>();
             while (reader.Read())
@@ -386,12 +386,13 @@ WHERE id = @id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO locations(code, name)
-VALUES(@code, @name)
+INSERT INTO locations(code, name, max_hu_slots)
+VALUES(@code, @name, @max_hu_slots)
 RETURNING id;
 ");
             command.Parameters.AddWithValue("@code", location.Code);
             command.Parameters.AddWithValue("@name", location.Name);
+            command.Parameters.AddWithValue("@max_hu_slots", location.MaxHuSlots.HasValue ? location.MaxHuSlots.Value : DBNull.Value);
             return (long)(command.ExecuteScalar() ?? 0L);
         });
     }
@@ -403,11 +404,13 @@ RETURNING id;
             using var command = CreateCommand(connection, @"
 UPDATE locations
 SET code = @code,
-    name = @name
+    name = @name,
+    max_hu_slots = @max_hu_slots
 WHERE id = @id;
 ");
             command.Parameters.AddWithValue("@code", location.Code);
             command.Parameters.AddWithValue("@name", location.Name);
+            command.Parameters.AddWithValue("@max_hu_slots", location.MaxHuSlots.HasValue ? location.MaxHuSlots.Value : DBNull.Value);
             command.Parameters.AddWithValue("@id", location.Id);
             command.ExecuteNonQuery();
             return 0;
@@ -2320,7 +2323,8 @@ RETURNING id;
         {
             Id = reader.GetInt64(0),
             Code = reader.GetString(1),
-            Name = reader.GetString(2)
+            Name = reader.GetString(2),
+            MaxHuSlots = reader.IsDBNull(3) ? null : reader.GetInt32(3)
         };
     }
 

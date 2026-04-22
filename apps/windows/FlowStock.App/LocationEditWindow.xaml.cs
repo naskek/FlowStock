@@ -1,5 +1,6 @@
 using System.Windows;
 using FlowStock.Core.Models;
+using System.Globalization;
 
 namespace FlowStock.App;
 
@@ -28,23 +29,37 @@ public partial class LocationEditWindow : Window
         IdBox.Text = _location.Id.ToString();
         CodeBox.Text = _location.Code;
         NameBox.Text = _location.Name;
+        MaxHuSlotsBox.Text = _location.MaxHuSlots?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
     }
 
     private async void Save_Click(object sender, RoutedEventArgs e)
     {
         var code = CodeBox.Text?.Trim() ?? string.Empty;
         var name = NameBox.Text?.Trim() ?? string.Empty;
+        var maxHuRaw = MaxHuSlotsBox.Text?.Trim();
         if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(name))
         {
             MessageBox.Show("Введите код и наименование места хранения.", "Места хранения", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
+        int? maxHuSlots = null;
+        if (!string.IsNullOrWhiteSpace(maxHuRaw))
+        {
+            if (!int.TryParse(maxHuRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) || parsed <= 0)
+            {
+                MessageBox.Show("Лимит HU должен быть целым числом больше 0.", "Места хранения", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            maxHuSlots = parsed;
+        }
+
         try
         {
             if (_location == null)
             {
-                var result = await _services.WpfCatalogApi.TryCreateLocationAsync(code, name).ConfigureAwait(true);
+                var result = await _services.WpfCatalogApi.TryCreateLocationAsync(code, name, maxHuSlots).ConfigureAwait(true);
                 if (!result.IsSuccess && !string.IsNullOrWhiteSpace(result.Error))
                 {
                     throw new InvalidOperationException(result.Error);
@@ -61,7 +76,7 @@ public partial class LocationEditWindow : Window
             }
             else
             {
-                var result = await _services.WpfCatalogApi.TryUpdateLocationAsync(_location.Id, code, name).ConfigureAwait(true);
+                var result = await _services.WpfCatalogApi.TryUpdateLocationAsync(_location.Id, code, name, maxHuSlots).ConfigureAwait(true);
                 if (!result.IsSuccess)
                 {
                     throw new InvalidOperationException(result.Error ?? "Не удалось обновить место хранения через сервер.");

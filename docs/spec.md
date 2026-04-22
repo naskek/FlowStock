@@ -99,6 +99,8 @@
 - HU registry в WPF (`HU Реестр`) читает/генерирует/закрывает HU через server API.
 - WPF HU-selectors и stock-by-HU helper-ы берут доступные HU из тех же server read-model, что используются для stock/HU.
 - Удаление строк в табах `orders/items/locations` в текущем WPF UI по-прежнему заблокировано; контрагенты удаляются через server API при наличии выбранной строки.
+- Для `locations` поддерживается опциональный лимит вместимости по HU (`max_hu_slots`): это максимум одновременно занятых HU-мест в локации.
+  - Если лимит задан, проведение документов (`INBOUND`/`PRODUCTION_RECEIPT`/`MOVE`) не допускает превышение количества занятых HU в целевой локации.
 - В Admin есть отдельная action `очистить операции` для тестового cleanup (`docs/doc_lines/ledger/orders/order_lines/import events/errors`). Справочники при этом не затрагиваются.
 - В Admin есть отдельный раздел глобального доступа к web blocks:
   - PC blocks: `Состояние склада`, `Каталог`, `Заказы`.

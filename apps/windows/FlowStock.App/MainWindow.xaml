@@ -274,6 +274,7 @@
                             <DataGridTextColumn Header="ID" Binding="{Binding Id}" Width="Auto" MaxWidth="120" />
                             <DataGridTextColumn Header="Код" Binding="{Binding Code}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Макс. HU мест" Binding="{Binding MaxHuSlots}" Width="Auto" MaxWidth="180" />
                         </DataGrid.Columns>
                     </DataGrid>
                 </Grid>
