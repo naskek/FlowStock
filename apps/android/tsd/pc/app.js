@@ -1287,15 +1287,6 @@
     });
   }
 
-  function loadNextOrderRef() {
-    return fetchJson("/api/orders/next-ref").then(function (payload) {
-      if (!payload || !payload.order_ref) {
-        return "";
-      }
-      return String(payload.order_ref).trim();
-    });
-  }
-
   function toOrderStatusCode(display) {
     var normalized = String(display || "").trim().toLowerCase();
     if (normalized === "принят" || normalized === "accepted") {
@@ -1410,6 +1401,21 @@
     return renderStatusBadge(readiness.text, readiness.ready ? "success" : "warning", "pc-status-badge-inline");
   }
 
+  function sortOrdersNewestFirst(rows) {
+    var source = Array.isArray(rows) ? rows.slice() : [];
+    source.sort(function (left, right) {
+      var leftTime = Date.parse(left && left.created_at ? String(left.created_at) : "") || 0;
+      var rightTime = Date.parse(right && right.created_at ? String(right.created_at) : "") || 0;
+      if (leftTime !== rightTime) {
+        return rightTime - leftTime;
+      }
+      var leftId = Number(left && left.id) || 0;
+      var rightId = Number(right && right.id) || 0;
+      return rightId - leftId;
+    });
+    return source;
+  }
+
   function renderStatusBadge(text, tone, extraClass) {
     var normalizedTone = tone || "neutral";
     var icon = "•";
@@ -1476,12 +1482,12 @@
       "  </div>" +
       '  <div class="pc-order-form">' +
       '    <div class="form-field">' +
-      '      <label class="form-label" for="newOrderRefInput">Номер заказа</label>' +
-      '      <input class="form-input" id="newOrderRefInput" type="text" autocomplete="off" />' +
-      "    </div>" +
-      '    <div class="form-field">' +
       '      <label class="form-label" for="newOrderPartnerInput">Контрагент</label>' +
       '      <input class="form-input" id="newOrderPartnerInput" type="text" autocomplete="off" placeholder="Введите имя или код" />' +
+      '      <label class="pc-inline-check pc-order-internal-check">' +
+      '        <input id="newOrderInternalInput" type="checkbox" />' +
+      "        Внутренний заказ" +
+      "      </label>" +
       "    </div>" +
       '    <div class="form-field">' +
       '      <label class="form-label" for="newOrderDueDateInput">Плановая дата</label>' +
@@ -1507,8 +1513,8 @@
     var refs = {
       card: modal.querySelector(".pc-modal-card"),
       closeBtn: modal.querySelector("#newOrderCloseBtn"),
-      orderRefInput: modal.querySelector("#newOrderRefInput"),
       partnerInput: modal.querySelector("#newOrderPartnerInput"),
+      internalInput: modal.querySelector("#newOrderInternalInput"),
       dueDateInput: modal.querySelector("#newOrderDueDateInput"),
       commentInput: modal.querySelector("#newOrderCommentInput"),
       linesWrap: modal.querySelector("#newOrderLinesWrap"),
@@ -1867,6 +1873,26 @@
       refs.partnerInput.focus();
     }
 
+    function isInternalOrderRequested() {
+      return !!(refs.internalInput && refs.internalInput.checked);
+    }
+
+    function syncInternalOrderState() {
+      if (!refs.partnerInput) {
+        return;
+      }
+
+      var internal = isInternalOrderRequested();
+      refs.partnerInput.disabled = internal;
+      if (internal) {
+        selectedPartnerId = 0;
+        refs.partnerInput.value = "";
+        hidePartnerSuggestionOverlay();
+      } else {
+        updatePartnerHint();
+      }
+    }
+
     function buildItemLabel(item) {
       if (!item) {
         return "Без названия";
@@ -2177,12 +2203,12 @@
     }
 
     function submit() {
-      var orderRef = refs.orderRefInput && refs.orderRefInput.value ? refs.orderRefInput.value.trim() : "";
+      var internalOrder = isInternalOrderRequested();
       var selectedPartner = selectedPartnerId ? getPartnerById(selectedPartnerId) : null;
-      if (!selectedPartner && refs.partnerInput) {
+      if (!internalOrder && !selectedPartner && refs.partnerInput) {
         selectedPartner = findPartnerByQuery(refs.partnerInput.value);
       }
-      var partnerId = selectedPartner ? Number(selectedPartner.id) : 0;
+      var partnerId = internalOrder ? 0 : (selectedPartner ? Number(selectedPartner.id) : 0);
       var dueDate = refs.dueDateInput ? String(refs.dueDateInput.value || "").trim() : "";
       var comment = refs.commentInput ? String(refs.commentInput.value || "").trim() : "";
       var account = loadAccount();
@@ -2207,11 +2233,7 @@
         });
       });
 
-      if (!orderRef) {
-        setStatus("Укажите номер заказа.");
-        return;
-      }
-      if (!partnerId) {
+      if (!internalOrder && !partnerId) {
         setStatus("Выберите контрагента из списка.");
         return;
       }
@@ -2237,8 +2259,8 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          order_ref: orderRef,
-          partner_id: partnerId,
+          order_type: internalOrder ? "INTERNAL" : "CUSTOMER",
+          partner_id: internalOrder ? null : partnerId,
           due_date: dueDate || null,
           comment: comment || null,
           lines: lines,
@@ -2279,6 +2301,9 @@
       refs.partnerInput.addEventListener("change", applyPartnerInputSelection);
       refs.partnerInput.addEventListener("blur", applyPartnerInputSelection);
       refs.partnerInput.addEventListener("focus", updatePartnerHint);
+    }
+    if (refs.internalInput) {
+      refs.internalInput.addEventListener("change", syncInternalOrderState);
     }
     if (refs.submitBtn) {
       refs.submitBtn.addEventListener("click", submit);
@@ -2333,15 +2358,10 @@
       refs.card.addEventListener("scroll", syncPartnerSuggestionOverlay);
     }
 
-    if (refs.orderRefInput) {
-      refs.orderRefInput.disabled = true;
-    }
-
     setStatus("Загрузка справочников...");
-    Promise.all([loadOrderReferenceData(), loadNextOrderRef()])
+    Promise.all([loadOrderReferenceData()])
       .then(function (payload) {
         var refsData = payload[0];
-        var nextOrderRef = payload[1];
 
         partners = refsData.partners;
         items = refsData.items.sort(function (a, b) {
@@ -2351,18 +2371,15 @@
         });
 
         updatePartnerHint();
-        linesState = [{ item_id: 0, qty_ordered: 1, query: "" }];
-        if (refs.orderRefInput) {
-          refs.orderRefInput.value = nextOrderRef || "";
-          refs.orderRefInput.disabled = false;
+        if (refs.internalInput) {
+          refs.internalInput.checked = false;
         }
+        syncInternalOrderState();
+        linesState = [{ item_id: 0, qty_ordered: 1, query: "" }];
         renderLines();
         setStatus("");
       })
       .catch(function () {
-        if (refs.orderRefInput) {
-          refs.orderRefInput.disabled = false;
-        }
         setStatus("Ошибка загрузки справочников.");
       });
   }
@@ -2605,7 +2622,7 @@
       setStatus("Загрузка...");
       loadOrders(query)
         .then(function (rows) {
-          var source = Array.isArray(rows) ? rows : [];
+          var source = sortOrdersNewestFirst(rows);
           renderTable(source);
           if (!source.length) {
             setStatus("Заказов нет");
@@ -2613,7 +2630,7 @@
           }
           setStatus("Загрузка готовности...");
           return enrichOrdersWithReadiness(source).then(function (enrichedRows) {
-            renderTable(enrichedRows);
+            renderTable(sortOrdersNewestFirst(enrichedRows));
             setStatus("Данные с сервера");
             return enrichedRows;
           });

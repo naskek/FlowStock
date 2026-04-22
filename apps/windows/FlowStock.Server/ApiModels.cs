@@ -457,6 +457,9 @@ public sealed class OrderCreateRequestCreateRequest
     [JsonPropertyName("order_ref")]
     public string? OrderRef { get; set; }
 
+    [JsonPropertyName("order_type")]
+    public string? OrderType { get; set; }
+
     [JsonPropertyName("partner_id")]
     public long? PartnerId { get; set; }
 

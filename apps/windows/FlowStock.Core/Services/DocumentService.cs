@@ -1069,14 +1069,15 @@ public sealed class DocumentService
                     throw new InvalidOperationException($"Товар ID {line.ItemId} не найден.");
                 }
 
-                if (!item.MaxQtyPerHu.HasValue || item.MaxQtyPerHu.Value <= 0)
-                {
-                    throw new InvalidOperationException($"Для товара \"{item.Name}\" не задан лимит шт. на HU.");
-                }
-
                 if (line.PackSingleHu)
                 {
                     wholeLines.Add(line);
+                    continue;
+                }
+
+                if (!item.MaxQtyPerHu.HasValue || item.MaxQtyPerHu.Value <= 0)
+                {
+                    requiredHuCount += 1;
                     continue;
                 }
 
@@ -1131,7 +1132,26 @@ public sealed class DocumentService
                 }
 
                 var item = itemsById[line.ItemId];
-                var maxQtyPerHu = item.MaxQtyPerHu!.Value;
+                var maxQtyPerHu = item.MaxQtyPerHu;
+                if (!maxQtyPerHu.HasValue || maxQtyPerHu.Value <= 0)
+                {
+                    replacementLines.Add(new DocLine
+                    {
+                        DocId = docId,
+                        OrderLineId = line.OrderLineId,
+                        ItemId = line.ItemId,
+                        Qty = line.Qty,
+                        QtyInput = line.QtyInput,
+                        UomCode = line.UomCode,
+                        FromLocationId = line.FromLocationId,
+                        ToLocationId = line.ToLocationId,
+                        FromHu = NormalizeHuValue(line.FromHu),
+                        ToHu = huQueue.Dequeue(),
+                        PackSingleHu = line.PackSingleHu
+                    });
+                    continue;
+                }
+
                 var ratio = line.QtyInput.HasValue && line.Qty > 0
                     ? line.QtyInput.Value / line.Qty
                     : (double?)null;
@@ -1140,7 +1160,7 @@ public sealed class DocumentService
 
                 while (remainingQty > 0.000001)
                 {
-                    var chunkQty = Math.Min(maxQtyPerHu, remainingQty);
+                    var chunkQty = Math.Min(maxQtyPerHu.Value, remainingQty);
                     var chunkInput = (double?)null;
                     if (ratio.HasValue)
                     {
@@ -1940,14 +1960,21 @@ public sealed class DocumentService
             .Select(line =>
             {
                 var item = itemsById[line.ItemId];
-                var maxQtyPerHu = item.MaxQtyPerHu!.Value;
-                if (line.Qty > maxQtyPerHu + 0.000001)
+                var maxQtyPerHu = item.MaxQtyPerHu;
+                if (!maxQtyPerHu.HasValue || maxQtyPerHu.Value <= 0)
                 {
-                    throw new InvalidOperationException(
-                        $"Товар \"{item.Name}\" количеством {FormatQty(line.Qty)} не помещается в один общий HU: лимит {FormatQty(maxQtyPerHu)}.");
+                    // If HU limit is not configured, do not consume pallet capacity for grouping.
+                    // This keeps "PackSingleHu" behavior usable for legacy items without max_qty_per_hu.
+                    return new WholeLineLoad(line, 0.0);
                 }
 
-                return new WholeLineLoad(line, line.Qty / maxQtyPerHu);
+                if (line.Qty > maxQtyPerHu.Value + 0.000001)
+                {
+                    throw new InvalidOperationException(
+                        $"Товар \"{item.Name}\" количеством {FormatQty(line.Qty)} не помещается в один общий HU: лимит {FormatQty(maxQtyPerHu.Value)}.");
+                }
+
+                return new WholeLineLoad(line, line.Qty / maxQtyPerHu.Value);
             })
             .OrderByDescending(entry => entry.Load)
             .ThenBy(entry => entry.Line.Id)

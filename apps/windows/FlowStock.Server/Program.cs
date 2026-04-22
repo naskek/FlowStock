@@ -1814,21 +1814,28 @@ app.MapPost("/api/orders/requests/create", async (HttpRequest request, IDataStor
         return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
     }
 
-    var orderRef = createRequest.OrderRef?.Trim();
-    if (string.IsNullOrWhiteSpace(orderRef))
+    var orderType = string.IsNullOrWhiteSpace(createRequest.OrderType)
+        ? OrderType.Customer
+        : (OrderStatusMapper.TypeFromString(createRequest.OrderType) ?? (OrderType?)null);
+    if (!orderType.HasValue)
     {
-        return Results.BadRequest(new ApiResult(false, "MISSING_ORDER_REF"));
+        return Results.BadRequest(new ApiResult(false, "INVALID_TYPE"));
     }
 
-    if (!createRequest.PartnerId.HasValue || createRequest.PartnerId.Value <= 0)
-    {
-        return Results.BadRequest(new ApiResult(false, "MISSING_PARTNER_ID"));
-    }
+    var orderRef = GenerateNextOrderRef(store);
 
-    var partner = store.GetPartner(createRequest.PartnerId.Value);
-    if (partner == null)
+    if (orderType.Value == OrderType.Customer)
     {
-        return Results.BadRequest(new ApiResult(false, "PARTNER_NOT_FOUND"));
+        if (!createRequest.PartnerId.HasValue || createRequest.PartnerId.Value <= 0)
+        {
+            return Results.BadRequest(new ApiResult(false, "MISSING_PARTNER_ID"));
+        }
+
+        var partner = store.GetPartner(createRequest.PartnerId.Value);
+        if (partner == null)
+        {
+            return Results.BadRequest(new ApiResult(false, "PARTNER_NOT_FOUND"));
+        }
     }
 
     DateTime? dueDate = null;
@@ -1894,7 +1901,8 @@ app.MapPost("/api/orders/requests/create", async (HttpRequest request, IDataStor
     var payloadJson = JsonSerializer.Serialize(new
     {
         order_ref = orderRef,
-        partner_id = createRequest.PartnerId.Value,
+        order_type = OrderStatusMapper.TypeToString(orderType.Value),
+        partner_id = orderType.Value == OrderType.Customer ? createRequest.PartnerId : null,
         due_date = dueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
         comment = string.IsNullOrWhiteSpace(createRequest.Comment) ? null : createRequest.Comment.Trim(),
         lines = normalizedLines
@@ -2913,12 +2921,15 @@ static List<object> GetPendingCreateOrderRows(IDataStore store, string? normaliz
     foreach (var request in pendingRequests)
     {
         var orderRef = TryReadJsonString(request.PayloadJson, "order_ref")?.Trim();
-        if (string.IsNullOrWhiteSpace(orderRef))
-        {
-            continue;
-        }
+        var displayOrderRef = string.IsNullOrWhiteSpace(orderRef)
+            ? $"Заявка #{request.Id}"
+            : orderRef;
+        var orderType = OrderStatusMapper.TypeFromString(TryReadJsonString(request.PayloadJson, "order_type"))
+            ?? OrderType.Customer;
 
-        var partnerId = TryReadJsonInt64(request.PayloadJson, "partner_id");
+        var partnerId = orderType == OrderType.Customer
+            ? TryReadJsonInt64(request.PayloadJson, "partner_id")
+            : null;
         var partner = partnerId.HasValue ? store.GetPartner(partnerId.Value) : null;
         var dueDate = TryReadJsonString(request.PayloadJson, "due_date");
         var partnerName = partner?.Name ?? string.Empty;
@@ -2926,7 +2937,7 @@ static List<object> GetPendingCreateOrderRows(IDataStore store, string? normaliz
         var lines = TryReadPendingCreateOrderLines(store, request.PayloadJson);
 
         if (!string.IsNullOrWhiteSpace(normalizedQuery)
-            && !orderRef.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase)
+            && !displayOrderRef.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase)
             && !partnerName.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase)
             && !partnerCode.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase))
         {
@@ -2937,8 +2948,8 @@ static List<object> GetPendingCreateOrderRows(IDataStore store, string? normaliz
         {
             id = $"request:{request.Id}",
             request_id = request.Id,
-            order_ref = orderRef,
-            order_type = OrderStatusMapper.TypeToString(OrderType.Customer),
+            order_ref = displayOrderRef,
+            order_type = OrderStatusMapper.TypeToString(orderType),
             partner_id = partnerId,
             partner_name = partnerName,
             partner_code = partnerCode,

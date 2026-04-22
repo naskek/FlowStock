@@ -548,6 +548,19 @@ body.pc-body {
   gap: 4px;
 }
 
+.pc-order-internal-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--pc-muted);
+  user-select: none;
+}
+
+.pc-order-internal-check input[type="checkbox"] {
+  margin: 0;
+}
+
 .form-input {
   width: 100%;
   border-radius: 10px;
@@ -561,6 +574,13 @@ body.pc-body {
   outline: none;
   border-color: var(--pc-accent);
   box-shadow: 0 0 0 2px rgba(31, 111, 139, 0.15);
+}
+
+.form-input:disabled {
+  background: #f1f3f5;
+  color: #7b8793;
+  border-color: #d7dde3;
+  cursor: not-allowed;
 }
 
 .status {
