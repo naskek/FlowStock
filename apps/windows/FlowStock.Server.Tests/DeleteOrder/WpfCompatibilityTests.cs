@@ -38,7 +38,7 @@ public sealed class WpfCompatibilityTests
     }
 
     [Fact]
-    public async Task WpfLegacyDeletePath_RemainsAvailableUnderFeatureFlag()
+    public async Task WpfDeleteOrder_IgnoresLegacyFlagAndStillUsesCanonicalApi()
     {
         var (harness, apiStore, orderId) = DeleteOrderHttpScenario.CreateDraftCustomerScenario();
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
@@ -47,9 +47,9 @@ public sealed class WpfCompatibilityTests
 
         var result = await service.DeleteOrderAsync(orderId);
 
-        Assert.False(result.IsSuccess);
-        Assert.Equal(WpfDeleteOrderResultKind.FeatureDisabled, result.Kind);
-        Assert.NotNull(harness.Store.GetOrder(orderId));
+        Assert.True(result.IsSuccess);
+        Assert.Equal(WpfDeleteOrderResultKind.Deleted, result.Kind);
+        Assert.Null(harness.Store.GetOrder(orderId));
     }
 
     private sealed class TempSettingsScope : IDisposable

@@ -14,7 +14,10 @@ public sealed class ApprovalFlowTests
         var (harness, apiStore, request) = IncomingRequestsOrderConvergenceScenario.CreateCreateOrderApprovalScenario();
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
         using var temp = new TempSettingsScope(host.Client.BaseAddress!, useServerIncomingRequestOrderApproval: true);
-        var service = new IncomingRequestOrderApiBridgeService(new SettingsService(temp.SettingsPath), new FileLogger(temp.LogPath), harness.Store);
+        var settingsService = new SettingsService(temp.SettingsPath);
+        var logger = new FileLogger(temp.LogPath);
+        var requestsApi = new WpfIncomingRequestsApiService(settingsService, logger);
+        var service = new IncomingRequestOrderApiBridgeService(settingsService, logger, requestsApi);
 
         var result = await service.ApproveAsync(request, "wpf-operator");
 
@@ -41,7 +44,10 @@ public sealed class ApprovalFlowTests
         var (harness, apiStore, request, orderId) = IncomingRequestsOrderConvergenceScenario.CreateSetStatusApprovalScenario();
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
         using var temp = new TempSettingsScope(host.Client.BaseAddress!, useServerIncomingRequestOrderApproval: true);
-        var service = new IncomingRequestOrderApiBridgeService(new SettingsService(temp.SettingsPath), new FileLogger(temp.LogPath), harness.Store);
+        var settingsService = new SettingsService(temp.SettingsPath);
+        var logger = new FileLogger(temp.LogPath);
+        var requestsApi = new WpfIncomingRequestsApiService(settingsService, logger);
+        var service = new IncomingRequestOrderApiBridgeService(settingsService, logger, requestsApi);
 
         var result = await service.ApproveAsync(request, "wpf-operator");
 

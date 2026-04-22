@@ -1327,7 +1327,23 @@ public static class DocumentDraftEndpoints
         switch (docType.Value)
         {
             case DocType.Inbound:
-                toLocationId = docInfo.ToLocationId;
+                if (lineRequest.ToLocationId.HasValue && store.FindLocationById(lineRequest.ToLocationId.Value) == null)
+                {
+                    return LogLineAndReturn(
+                        Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION")),
+                        LogLevel.Warning,
+                        outcome: "VALIDATION_FAILED",
+                        docId: docInfo.DocId,
+                        docRef: docInfo.DocRef,
+                        docType: docTypeValue,
+                        docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                        errors: ["UNKNOWN_LOCATION"],
+                        eventId: lineRequest.EventId,
+                        deviceId: lineRequest.DeviceId);
+                }
+
+                // Allow sending location per-line (WPF may not have persisted header yet).
+                toLocationId = lineRequest.ToLocationId ?? docInfo.ToLocationId;
                 toHu = NormalizeHu(docInfo.ToHu);
                 if (!toLocationId.HasValue)
                 {
@@ -1343,9 +1359,30 @@ public static class DocumentDraftEndpoints
                         eventId: lineRequest.EventId,
                         deviceId: lineRequest.DeviceId);
                 }
+
+                // If header was missing but line provided the location, persist it for subsequent lines.
+                if (!docInfo.ToLocationId.HasValue && toLocationId.HasValue)
+                {
+                    apiStore.UpdateApiDocHeader(docUid, docInfo.PartnerId, docInfo.FromLocationId, toLocationId, docInfo.FromHu, docInfo.ToHu);
+                }
                 break;
             case DocType.ProductionReceipt:
-                toLocationId = docInfo.ToLocationId;
+                if (lineRequest.ToLocationId.HasValue && store.FindLocationById(lineRequest.ToLocationId.Value) == null)
+                {
+                    return LogLineAndReturn(
+                        Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION")),
+                        LogLevel.Warning,
+                        outcome: "VALIDATION_FAILED",
+                        docId: docInfo.DocId,
+                        docRef: docInfo.DocRef,
+                        docType: docTypeValue,
+                        docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                        errors: ["UNKNOWN_LOCATION"],
+                        eventId: lineRequest.EventId,
+                        deviceId: lineRequest.DeviceId);
+                }
+
+                toLocationId = lineRequest.ToLocationId ?? docInfo.ToLocationId;
                 toHu = NormalizeHu(docInfo.ToHu);
                 if (!toLocationId.HasValue)
                 {
@@ -1360,6 +1397,11 @@ public static class DocumentDraftEndpoints
                         errors: ["MISSING_LOCATION"],
                         eventId: lineRequest.EventId,
                         deviceId: lineRequest.DeviceId);
+                }
+
+                if (!docInfo.ToLocationId.HasValue && toLocationId.HasValue)
+                {
+                    apiStore.UpdateApiDocHeader(docUid, docInfo.PartnerId, docInfo.FromLocationId, toLocationId, docInfo.FromHu, docInfo.ToHu);
                 }
                 break;
             case DocType.Outbound:
@@ -1438,7 +1480,22 @@ public static class DocumentDraftEndpoints
                 }
                 break;
             case DocType.Inventory:
-                toLocationId = docInfo.ToLocationId;
+                if (lineRequest.ToLocationId.HasValue && store.FindLocationById(lineRequest.ToLocationId.Value) == null)
+                {
+                    return LogLineAndReturn(
+                        Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION")),
+                        LogLevel.Warning,
+                        outcome: "VALIDATION_FAILED",
+                        docId: docInfo.DocId,
+                        docRef: docInfo.DocRef,
+                        docType: docTypeValue,
+                        docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                        errors: ["UNKNOWN_LOCATION"],
+                        eventId: lineRequest.EventId,
+                        deviceId: lineRequest.DeviceId);
+                }
+
+                toLocationId = lineRequest.ToLocationId ?? docInfo.ToLocationId;
                 toHu = !string.IsNullOrWhiteSpace(requestedToHu)
                     ? requestedToHu
                     : NormalizeHu(docInfo.ToHu);
@@ -1455,6 +1512,11 @@ public static class DocumentDraftEndpoints
                         errors: ["MISSING_LOCATION"],
                         eventId: lineRequest.EventId,
                         deviceId: lineRequest.DeviceId);
+                }
+
+                if (!docInfo.ToLocationId.HasValue && toLocationId.HasValue)
+                {
+                    apiStore.UpdateApiDocHeader(docUid, docInfo.PartnerId, docInfo.FromLocationId, toLocationId, docInfo.FromHu, docInfo.ToHu);
                 }
                 break;
         }

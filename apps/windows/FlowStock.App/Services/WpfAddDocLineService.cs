@@ -20,11 +20,6 @@ public sealed class WpfAddDocLineService
         _apiClient = new AddDocLineApiClient();
     }
 
-    public bool IsServerAddDocLineEnabled()
-    {
-        return LoadConfiguration().UseServerAddDocLine;
-    }
-
     public WpfServerAddDocLineConfiguration GetEffectiveConfiguration()
     {
         return LoadConfiguration();
@@ -36,11 +31,6 @@ public sealed class WpfAddDocLineService
         CancellationToken cancellationToken = default)
     {
         var configuration = LoadConfiguration();
-        if (!configuration.UseServerAddDocLine)
-        {
-            return Task.FromResult(WpfAddDocLineResult.FeatureDisabled());
-        }
-
         return AddLineCoreAsync(doc, context, configuration, null, cancellationToken);
     }
 
@@ -228,7 +218,6 @@ public sealed class WpfAddDocLineService
     private WpfServerAddDocLineConfiguration LoadConfiguration()
     {
         var settings = _settings.Load().Server ?? new ServerSettings();
-        var useServerAddDocLine = ReadEnvBool("FLOWSTOCK_USE_SERVER_ADD_DOC_LINE") ?? settings.UseServerAddDocLine;
         var baseUrl = NormalizeBaseUrl(ReadEnvOrSettings("FLOWSTOCK_SERVER_BASE_URL", settings.BaseUrl) ?? WpfCloseDocumentService.DefaultServerBaseUrl);
         var deviceId = ReadEnvOrSettings("FLOWSTOCK_SERVER_DEVICE_ID", settings.DeviceId);
         if (string.IsNullOrWhiteSpace(deviceId))
@@ -243,7 +232,6 @@ public sealed class WpfAddDocLineService
         }
 
         return new WpfServerAddDocLineConfiguration(
-            useServerAddDocLine,
             baseUrl,
             deviceId,
             timeoutSeconds,
@@ -464,7 +452,6 @@ public sealed record WpfAddDocLineContext(
     string? ToHu);
 
 public sealed record WpfServerAddDocLineConfiguration(
-    bool UseServerAddDocLine,
     string BaseUrl,
     string DeviceId,
     int RequestTimeoutSeconds,
@@ -480,14 +467,6 @@ public sealed class WpfAddDocLineResult
 
     public bool IsSuccess => Kind is WpfAddDocLineResultKind.Added
         or WpfAddDocLineResultKind.IdempotentReplay;
-
-    public static WpfAddDocLineResult FeatureDisabled()
-    {
-        return new WpfAddDocLineResult
-        {
-            Kind = WpfAddDocLineResultKind.FeatureDisabled
-        };
-    }
 
     public static WpfAddDocLineResult Success(
         WpfAddDocLineResultKind kind,
@@ -522,7 +501,6 @@ public sealed class WpfAddDocLineResult
 
 public enum WpfAddDocLineResultKind
 {
-    FeatureDisabled,
     Added,
     IdempotentReplay,
     ValidationFailed,

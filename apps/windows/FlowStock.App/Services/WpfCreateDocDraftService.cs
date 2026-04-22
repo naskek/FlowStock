@@ -17,11 +17,6 @@ public sealed class WpfCreateDocDraftService
         _apiClient = new CreateDocDraftApiClient();
     }
 
-    public bool IsServerCreateEnabled()
-    {
-        return LoadConfiguration().UseServerCreateDocDraft;
-    }
-
     public WpfServerCreateDocDraftConfiguration GetEffectiveConfiguration()
     {
         return LoadConfiguration();
@@ -32,11 +27,6 @@ public sealed class WpfCreateDocDraftService
         CancellationToken cancellationToken = default)
     {
         var configuration = LoadConfiguration();
-        if (!configuration.UseServerCreateDocDraft)
-        {
-            return WpfCreateDocDraftResult.FeatureDisabled();
-        }
-
         var request = new CreateDocDraftApiRequest
         {
             DocUid = context.DocUid,
@@ -224,7 +214,6 @@ public sealed class WpfCreateDocDraftService
     private WpfServerCreateDocDraftConfiguration LoadConfiguration()
     {
         var settings = _settings.Load().Server ?? new ServerSettings();
-        var useServerCreateDocDraft = ReadEnvBool("FLOWSTOCK_USE_SERVER_CREATE_DOC_DRAFT") ?? settings.UseServerCreateDocDraft;
         var baseUrl = NormalizeBaseUrl(ReadEnvOrSettings("FLOWSTOCK_SERVER_BASE_URL", settings.BaseUrl) ?? WpfCloseDocumentService.DefaultServerBaseUrl);
         var deviceId = ReadEnvOrSettings("FLOWSTOCK_SERVER_DEVICE_ID", settings.DeviceId);
         if (string.IsNullOrWhiteSpace(deviceId))
@@ -239,7 +228,6 @@ public sealed class WpfCreateDocDraftService
         }
 
         return new WpfServerCreateDocDraftConfiguration(
-            useServerCreateDocDraft,
             baseUrl,
             deviceId,
             timeoutSeconds,
@@ -317,7 +305,6 @@ public sealed record WpfCreateDocDraftContext(
     string? Comment);
 
 public sealed record WpfServerCreateDocDraftConfiguration(
-    bool UseServerCreateDocDraft,
     string BaseUrl,
     string DeviceId,
     int RequestTimeoutSeconds,
@@ -332,14 +319,6 @@ public sealed class WpfCreateDocDraftResult
 
     public bool IsSuccess => Kind is WpfCreateDocDraftResultKind.Created
         or WpfCreateDocDraftResultKind.IdempotentReplay;
-
-    public static WpfCreateDocDraftResult FeatureDisabled()
-    {
-        return new WpfCreateDocDraftResult
-        {
-            Kind = WpfCreateDocDraftResultKind.FeatureDisabled
-        };
-    }
 
     public static WpfCreateDocDraftResult Success(
         WpfCreateDocDraftResultKind kind,
@@ -370,7 +349,6 @@ public sealed class WpfCreateDocDraftResult
 
 public enum WpfCreateDocDraftResultKind
 {
-    FeatureDisabled,
     Created,
     IdempotentReplay,
     ValidationFailed,

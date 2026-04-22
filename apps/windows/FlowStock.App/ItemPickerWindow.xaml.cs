@@ -47,7 +47,10 @@ public partial class ItemPickerWindow : Window
     private void LoadItems(IEnumerable<Item>? items)
     {
         _items.Clear();
-        var source = items ?? _services.Catalog.GetItems(null);
+        var source = items
+            ?? (_services.WpfReadApi.TryGetItems(null, out var apiItems)
+                ? apiItems
+                : Array.Empty<Item>());
         foreach (var item in source)
         {
             _items.Add(item);

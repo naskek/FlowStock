@@ -45,6 +45,14 @@ public interface IDataStore
     void DeleteTara(long taraId);
     bool IsTaraUsed(long taraId);
 
+    IReadOnlyList<ItemType> GetItemTypes(bool includeInactive);
+    ItemType? GetItemType(long id);
+    long AddItemType(ItemType itemType);
+    void UpdateItemType(ItemType itemType);
+    void DeleteItemType(long itemTypeId);
+    void DeactivateItemType(long itemTypeId);
+    bool IsItemTypeUsed(long itemTypeId);
+
     Partner? GetPartner(long id);
     Partner? FindPartnerByCode(string code);
     IReadOnlyList<Partner> GetPartners();

@@ -25,7 +25,10 @@ public partial class UomWindow : Window
     private void LoadUoms()
     {
         _uoms.Clear();
-        foreach (var uom in _services.Catalog.GetUoms())
+        var uoms = _services.WpfCatalogApi.TryGetUoms(out var apiUoms)
+            ? apiUoms
+            : Array.Empty<Uom>();
+        foreach (var uom in uoms)
         {
             _uoms.Add(uom);
         }
@@ -33,7 +36,7 @@ public partial class UomWindow : Window
         UpdateDeleteButton();
     }
 
-    private void AddUom_Click(object sender, RoutedEventArgs e)
+    private async void AddUom_Click(object sender, RoutedEventArgs e)
     {
         if (string.IsNullOrWhiteSpace(UomNameBox.Text))
         {
@@ -43,7 +46,12 @@ public partial class UomWindow : Window
 
         try
         {
-            _services.Catalog.CreateUom(UomNameBox.Text);
+            var result = await _services.WpfCatalogApi.TryCreateUomAsync(UomNameBox.Text.Trim()).ConfigureAwait(true);
+            if (!result.IsSuccess)
+            {
+                throw new InvalidOperationException(result.Error ?? "Не удалось создать единицу измерения через сервер.");
+            }
+
             UomNameBox.Text = string.Empty;
             LoadUoms();
             _onChanged?.Invoke();
@@ -58,7 +66,7 @@ public partial class UomWindow : Window
         }
     }
 
-    private void DeleteUom_Click(object sender, RoutedEventArgs e)
+    private async void DeleteUom_Click(object sender, RoutedEventArgs e)
     {
         if (_selectedUom == null)
         {
@@ -79,7 +87,12 @@ public partial class UomWindow : Window
 
         try
         {
-            _services.Catalog.DeleteUom(_selectedUom.Id);
+            var result = await _services.WpfCatalogApi.TryDeleteUomAsync(_selectedUom.Id).ConfigureAwait(true);
+            if (!result.IsSuccess)
+            {
+                throw new InvalidOperationException(result.Error ?? "Не удалось удалить единицу измерения через сервер.");
+            }
+
             LoadUoms();
             _onChanged?.Invoke();
         }

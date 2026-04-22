@@ -20,11 +20,6 @@ public sealed class WpfUpdateDocLineService
         _apiClient = new UpdateDocLineApiClient();
     }
 
-    public bool IsServerUpdateEnabled()
-    {
-        return LoadConfiguration().UseServerUpdateDocLine;
-    }
-
     public WpfServerUpdateDocLineConfiguration GetEffectiveConfiguration()
     {
         return LoadConfiguration();
@@ -36,11 +31,6 @@ public sealed class WpfUpdateDocLineService
         CancellationToken cancellationToken = default)
     {
         var configuration = LoadConfiguration();
-        if (!configuration.UseServerUpdateDocLine)
-        {
-            return WpfUpdateDocLineResult.FeatureDisabled();
-        }
-
         string docUid;
         try
         {
@@ -205,7 +195,6 @@ public sealed class WpfUpdateDocLineService
     private WpfServerUpdateDocLineConfiguration LoadConfiguration()
     {
         var settings = _settings.Load().Server ?? new ServerSettings();
-        var useServerUpdateDocLine = ReadEnvBool("FLOWSTOCK_USE_SERVER_UPDATE_DOC_LINE") ?? settings.UseServerUpdateDocLine;
         var baseUrl = NormalizeBaseUrl(ReadEnvOrSettings("FLOWSTOCK_SERVER_BASE_URL", settings.BaseUrl) ?? WpfCloseDocumentService.DefaultServerBaseUrl);
         var deviceId = ReadEnvOrSettings("FLOWSTOCK_SERVER_DEVICE_ID", settings.DeviceId);
         if (string.IsNullOrWhiteSpace(deviceId))
@@ -220,7 +209,6 @@ public sealed class WpfUpdateDocLineService
         }
 
         return new WpfServerUpdateDocLineConfiguration(
-            useServerUpdateDocLine,
             baseUrl,
             deviceId,
             timeoutSeconds,
@@ -438,7 +426,6 @@ public sealed record WpfUpdateDocLineContext(
     string? ToHu);
 
 public sealed record WpfServerUpdateDocLineConfiguration(
-    bool UseServerUpdateDocLine,
     string BaseUrl,
     string DeviceId,
     int RequestTimeoutSeconds,
@@ -454,14 +441,6 @@ public sealed class WpfUpdateDocLineResult
 
     public bool IsSuccess => Kind is WpfUpdateDocLineResultKind.Updated
         or WpfUpdateDocLineResultKind.IdempotentReplay;
-
-    public static WpfUpdateDocLineResult FeatureDisabled()
-    {
-        return new WpfUpdateDocLineResult
-        {
-            Kind = WpfUpdateDocLineResultKind.FeatureDisabled
-        };
-    }
 
     public static WpfUpdateDocLineResult Success(
         WpfUpdateDocLineResultKind kind,
@@ -496,7 +475,6 @@ public sealed class WpfUpdateDocLineResult
 
 public enum WpfUpdateDocLineResultKind
 {
-    FeatureDisabled,
     Updated,
     IdempotentReplay,
     ValidationFailed,

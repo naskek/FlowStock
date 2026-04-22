@@ -3,6 +3,8 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Linq;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using FlowStock.Core.Models;
 
@@ -12,6 +14,7 @@ public partial class OrderDetailsWindow : Window
 {
     private readonly AppServices _services;
     private readonly ObservableCollection<Partner> _partners = new();
+    private readonly List<Partner> _partnersAll = new();
     private readonly ObservableCollection<OrderLineView> _lines = new();
     private readonly List<OrderTypeOption> _typeOptions = new()
     {
@@ -25,6 +28,7 @@ public partial class OrderDetailsWindow : Window
     private bool _isLoading;
     private bool _hasUnsavedChanges;
     private bool _allowCloseWithoutPrompt;
+    private bool _suppressPartnerFilter;
 
     public OrderDetailsWindow(AppServices services)
     {
@@ -54,6 +58,7 @@ public partial class OrderDetailsWindow : Window
         OrderRefBox.TextChanged += OrderHeaderChanged;
         TypeCombo.SelectionChanged += TypeCombo_SelectionChanged;
         PartnerCombo.SelectionChanged += OrderHeaderChanged;
+        PartnerCombo.AddHandler(System.Windows.Controls.Primitives.TextBoxBase.TextChangedEvent, new TextChangedEventHandler(PartnerCombo_TextChanged));
         DueDatePicker.SelectedDateChanged += OrderHeaderChanged;
         StatusCombo.SelectionChanged += OrderHeaderChanged;
         CommentBox.TextChanged += OrderHeaderChanged;
@@ -61,17 +66,69 @@ public partial class OrderDetailsWindow : Window
 
     private void LoadPartners()
     {
+        _partnersAll.Clear();
         _partners.Clear();
-        foreach (var partner in _services.Catalog.GetPartners())
+        if (_services.WpfPartnerApi.TryGetPartners(out var apiPartners))
         {
-            var status = _services.PartnerStatuses.GetStatus(partner.Id);
-            if (status == PartnerStatus.Supplier)
+            foreach (var entry in apiPartners)
             {
-                continue;
-            }
+                if (entry.Status == PartnerStatus.Supplier)
+                {
+                    continue;
+                }
 
-            _partners.Add(partner);
+                _partnersAll.Add(entry.Partner);
+            }
+            ApplyPartnerFilter();
+            return;
         }
+
+        var partners = _services.WpfReadApi.TryGetPartners(out var readApiPartners)
+            ? readApiPartners
+            : Array.Empty<Partner>();
+        foreach (var partner in partners)
+        {
+            _partnersAll.Add(partner);
+        }
+
+        ApplyPartnerFilter();
+    }
+
+    private void ApplyPartnerFilter(string? query = null, long? forceIncludePartnerId = null)
+    {
+        var normalized = NormalizePartnerSearch(query);
+        var selectedPartnerId = forceIncludePartnerId ?? (PartnerCombo.SelectedItem as Partner)?.Id;
+
+        _suppressPartnerFilter = true;
+        try
+        {
+            _partners.Clear();
+            foreach (var partner in _partnersAll)
+            {
+                if (selectedPartnerId.HasValue && partner.Id == selectedPartnerId.Value
+                    || PartnerMatchesSearch(partner, normalized))
+                {
+                    _partners.Add(partner);
+                }
+            }
+        }
+        finally
+        {
+            _suppressPartnerFilter = false;
+        }
+    }
+
+    private void PartnerCombo_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_isLoading || _suppressPartnerFilter || !PartnerCombo.IsKeyboardFocusWithin)
+        {
+            return;
+        }
+
+        var text = PartnerCombo.Text ?? string.Empty;
+        ApplyPartnerFilter(text);
+        PartnerCombo.IsDropDownOpen = !string.IsNullOrWhiteSpace(text) && _partners.Count > 0;
+        RestoreComboText(PartnerCombo, text);
     }
 
     private void PrepareNewOrder()
@@ -80,7 +137,9 @@ public partial class OrderDetailsWindow : Window
         Title = "Новый заказ";
         _order = null;
         _orderId = null;
-        OrderRefBox.Text = GenerateNextOrderRef();
+        OrderRefBox.Text = _services.WpfReadApi.TryGenerateNextOrderRef(out var orderRef)
+            ? orderRef
+            : GenerateNextOrderRef();
         TypeCombo.SelectedItem = _typeOptions.First(option => option.Type == OrderType.Customer);
         PartnerCombo.SelectedItem = null;
         DueDatePicker.SelectedDate = null;
@@ -103,7 +162,9 @@ public partial class OrderDetailsWindow : Window
         }
 
         BeginLoad();
-        _order = _services.Orders.GetOrder(_orderId.Value);
+        _order = _services.WpfReadApi.TryGetOrder(_orderId.Value, out var apiOrder)
+            ? apiOrder
+            : null;
         if (_order == null)
         {
             MessageBox.Show("Заказ не найден.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -117,7 +178,7 @@ public partial class OrderDetailsWindow : Window
         TypeCombo.SelectedItem = _typeOptions.FirstOrDefault(option => option.Type == _order.Type)
                                 ?? _typeOptions.First();
         PartnerCombo.SelectedItem = _order.PartnerId.HasValue
-            ? _partners.FirstOrDefault(p => p.Id == _order.PartnerId.Value)
+            ? _partnersAll.FirstOrDefault(p => p.Id == _order.PartnerId.Value)
             : null;
         DueDatePicker.SelectedDate = _order.DueDate;
         CommentBox.Text = _order.Comment ?? string.Empty;
@@ -128,7 +189,10 @@ public partial class OrderDetailsWindow : Window
             .FirstOrDefault(option => option.Status == _order.Status);
 
         _lines.Clear();
-        foreach (var line in _services.Orders.GetOrderLineViews(_order.Id))
+        var lines = _services.WpfReadApi.TryGetOrderLines(_order.Id, out var apiLines)
+            ? apiLines
+            : Array.Empty<OrderLineView>();
+        foreach (var line in lines)
         {
             _lines.Add(line);
         }
@@ -153,15 +217,7 @@ public partial class OrderDetailsWindow : Window
 
     private bool TrySaveOrder(bool showFeedback)
     {
-        var useServerSetOrderStatus = _orderId.HasValue && _services.WpfSetOrderStatuses.IsServerStatusChangeEnabled();
-        var useServerUpdateOrder = _orderId.HasValue && _services.WpfUpdateOrders.IsServerUpdateEnabled();
-        var useServerCreateOrder = !_orderId.HasValue && _services.WpfCreateOrders.IsServerCreateEnabled();
-        if (!TryGetHeaderValues(useServerCreateOrder || useServerUpdateOrder, out var orderRef, out var type, out var partnerId, out var dueDate, out var status, out var comment))
-        {
-            return false;
-        }
-
-        if (!useServerCreateOrder && !useServerUpdateOrder && !TryValidateOrderRefUnique(orderRef))
+        if (!TryGetHeaderValues(allowBlankOrderRef: false, out var orderRef, out var type, out var partnerId, out var dueDate, out var status, out var comment))
         {
             return false;
         }
@@ -172,44 +228,13 @@ public partial class OrderDetailsWindow : Window
             {
                 if (CanUseDirectStatusChangeFlow(orderRef, type, partnerId, dueDate, status, comment))
                 {
-                    if (useServerSetOrderStatus)
-                    {
-                        return TrySetOrderStatusViaServer(_orderId.Value, status, showFeedback);
-                    }
-
-                    _services.Orders.ChangeOrderStatus(_orderId.Value, status);
-                    LoadOrder();
-                    if (showFeedback)
-                    {
-                        SaveStatusText.Text = "Сохранено";
-                    }
-
-                    return true;
+                    return TrySetOrderStatusViaServer(_orderId.Value, status, showFeedback);
                 }
 
-                if (useServerUpdateOrder)
-                {
-                    return TryUpdateOrderViaServer(_orderId.Value, orderRef, type, partnerId, dueDate, status, comment, showFeedback);
-                }
-
-                _services.Orders.UpdateOrder(_orderId.Value, orderRef, partnerId, dueDate, status, comment, _lines, type);
-            }
-            else if (useServerCreateOrder)
-            {
-                return TryCreateOrderViaServer(orderRef, type, partnerId, dueDate, status, comment, showFeedback);
-            }
-            else
-            {
-                _orderId = _services.Orders.CreateOrder(orderRef, partnerId, dueDate, status, comment, _lines, type);
+                return TryUpdateOrderViaServer(_orderId.Value, orderRef, type, partnerId, dueDate, status, comment, showFeedback);
             }
 
-            LoadOrder();
-            if (showFeedback)
-            {
-                SaveStatusText.Text = "Сохранено";
-            }
-
-            return true;
+            return TryCreateOrderViaServer(orderRef, type, partnerId, dueDate, status, comment, showFeedback);
         }
         catch (ArgumentException ex)
         {
@@ -380,7 +405,9 @@ public partial class OrderDetailsWindow : Window
 
     private void AddOrderLine(Item item, Window owner)
     {
-        var packagings = _services.Packagings.GetPackagings(item.Id);
+        var packagings = _services.WpfPackagingApi.TryGetPackagings(item.Id, includeInactive: false, out var apiPackagings)
+            ? apiPackagings
+            : Array.Empty<ItemPackaging>();
         var defaultUomCode = ResolveDefaultUomCode(item, packagings);
         var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, 1, defaultUomCode)
         {
@@ -403,6 +430,8 @@ public partial class OrderDetailsWindow : Window
             {
                 ItemId = item.Id,
                 ItemName = item.Name,
+                Barcode = item.Barcode,
+                Gtin = item.Gtin,
                 QtyOrdered = qtyBase
             });
         }
@@ -424,14 +453,17 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        var item = _services.DataStore.FindItemById(_selectedLine.ItemId);
+        var item = (_services.WpfReadApi.TryGetItems(null, out var apiItems) ? apiItems : Array.Empty<Item>())
+            .FirstOrDefault(candidate => candidate.Id == _selectedLine.ItemId);
         if (item == null)
         {
             MessageBox.Show("Товар не найден.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Error);
             return;
         }
 
-        var packagings = _services.Packagings.GetPackagings(item.Id);
+        var packagings = _services.WpfPackagingApi.TryGetPackagings(item.Id, includeInactive: false, out var apiPackagings)
+            ? apiPackagings
+            : Array.Empty<ItemPackaging>();
         var defaultUomCode = ResolveDefaultUomCode(item, packagings);
         var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, _selectedLine.QtyOrdered, defaultUomCode)
         {
@@ -476,20 +508,31 @@ public partial class OrderDetailsWindow : Window
     private void RefreshLineMetrics()
     {
         var type = GetSelectedOrderType();
-        var availableByItem = _services.Orders.GetItemAvailability();
+        if (_orderId.HasValue && !_hasUnsavedChanges && TryRefreshPersistedOrderLineMetricsFromApi(type))
+        {
+            return;
+        }
+
+        var availableByItem = _services.WpfReadApi.TryGetItemAvailability(out var apiAvailability)
+            ? apiAvailability
+            : new Dictionary<long, double>();
         var processedByLine = new Dictionary<long, double>();
 
         if (_orderId.HasValue)
         {
             if (type == OrderType.Internal)
             {
-                processedByLine = _services.Documents.GetOrderReceiptRemaining(_orderId.Value)
-                    .ToDictionary(line => line.OrderLineId, line => line.QtyReceived);
+                var receiptRemaining = _services.WpfReadApi.TryGetOrderReceiptRemaining(_orderId.Value, out var apiReceipt)
+                    ? apiReceipt
+                    : Array.Empty<OrderReceiptLine>();
+                processedByLine = receiptRemaining.ToDictionary(line => line.OrderLineId, line => line.QtyReceived);
             }
             else
             {
-                processedByLine = _services.Orders.GetShippedTotals(_orderId.Value)
-                    .ToDictionary(entry => entry.Key, entry => entry.Value);
+                if (_services.WpfReadApi.TryGetOrderLines(_orderId.Value, out var apiLines))
+                {
+                    processedByLine = apiLines.ToDictionary(line => line.Id, line => line.QtyShipped);
+                }
             }
         }
 
@@ -518,6 +561,34 @@ public partial class OrderDetailsWindow : Window
 
         UpdateEmptyState();
         OrderLinesGrid.Items.Refresh();
+    }
+
+    private bool TryRefreshPersistedOrderLineMetricsFromApi(OrderType type)
+    {
+        if (!_orderId.HasValue || !_services.WpfReadApi.TryGetOrderLines(_orderId.Value, out var apiLines))
+        {
+            return false;
+        }
+
+        var metricsByLine = apiLines.ToDictionary(line => line.Id, line => line);
+        foreach (var line in _lines)
+        {
+            if (!metricsByLine.TryGetValue(line.Id, out var persisted))
+            {
+                return false;
+            }
+
+            line.QtyAvailable = persisted.QtyAvailable;
+            line.QtyProduced = persisted.QtyProduced;
+            line.QtyShipped = persisted.QtyShipped;
+            line.QtyRemaining = persisted.QtyRemaining;
+            line.CanShipNow = type == OrderType.Internal ? 0 : persisted.CanShipNow;
+            line.Shortage = type == OrderType.Internal ? 0 : persisted.Shortage;
+        }
+
+        UpdateEmptyState();
+        OrderLinesGrid.Items.Refresh();
+        return true;
     }
 
     private void UpdateEmptyState()
@@ -581,9 +652,16 @@ public partial class OrderDetailsWindow : Window
         TypeCombo.IsEnabled = canEdit && !_orderId.HasValue;
         PartnerCombo.IsEnabled = canEdit && type == OrderType.Customer;
 
-        if (type == OrderType.Internal && PartnerCombo.SelectedItem != null)
+        if (type == OrderType.Internal)
         {
-            PartnerCombo.SelectedItem = null;
+            if (PartnerCombo.SelectedItem != null)
+            {
+                PartnerCombo.SelectedItem = null;
+            }
+            if (!string.IsNullOrWhiteSpace(PartnerCombo.Text))
+            {
+                PartnerCombo.Text = string.Empty;
+            }
         }
 
         OrderTypeHintText.Text = type == OrderType.Internal
@@ -657,7 +735,9 @@ public partial class OrderDetailsWindow : Window
 
         if (type == OrderType.Customer)
         {
-            if (PartnerCombo.SelectedItem is not Partner partner)
+            var partner = FindPartnerByQuery(PartnerCombo.Text)
+                          ?? (string.IsNullOrWhiteSpace(PartnerCombo.Text) ? PartnerCombo.SelectedItem as Partner : null);
+            if (partner == null)
             {
                 if (_order?.PartnerId is long existingPartnerId && IsSupplierPartner(existingPartnerId))
                 {
@@ -668,6 +748,7 @@ public partial class OrderDetailsWindow : Window
                 MessageBox.Show("Выберите контрагента.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return false;
             }
+            PartnerCombo.SelectedItem = partner;
 
             if (IsSupplierPartner(partner.Id))
             {
@@ -692,15 +773,84 @@ public partial class OrderDetailsWindow : Window
         return true;
     }
 
+    private Partner? FindPartnerByQuery(string? query)
+    {
+        var normalized = (query ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return null;
+        }
+
+        var matches = _partners
+            .Concat(_partnersAll)
+            .GroupBy(partner => partner.Id)
+            .Select(group => group.First())
+            .Where(partner => string.Equals(partner.DisplayName, normalized, StringComparison.OrdinalIgnoreCase)
+                              || string.Equals(partner.Name, normalized, StringComparison.OrdinalIgnoreCase)
+                              || string.Equals(partner.Code, normalized, StringComparison.OrdinalIgnoreCase))
+            .Take(2)
+            .ToList();
+        return matches.Count == 1 ? matches[0] : null;
+    }
+
+    private static string NormalizePartnerSearch(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value)
+            ? string.Empty
+            : value.Trim().ToLowerInvariant();
+    }
+
+    private static bool PartnerMatchesSearch(Partner partner, string normalizedQuery)
+    {
+        if (string.IsNullOrWhiteSpace(normalizedQuery))
+        {
+            return true;
+        }
+
+        return ContainsPartnerText(partner.DisplayName, normalizedQuery)
+               || ContainsPartnerText(partner.Name, normalizedQuery)
+               || ContainsPartnerText(partner.Code, normalizedQuery);
+    }
+
+    private static bool ContainsPartnerText(string? value, string normalizedQuery)
+    {
+        return !string.IsNullOrWhiteSpace(value)
+               && value.Trim().ToLowerInvariant().Contains(normalizedQuery, StringComparison.Ordinal);
+    }
+
+    private static void RestoreComboText(System.Windows.Controls.ComboBox comboBox, string text)
+    {
+        comboBox.Dispatcher.BeginInvoke(() =>
+        {
+            if (comboBox.Template.FindName("PART_EditableTextBox", comboBox) is System.Windows.Controls.TextBox textBox)
+            {
+                if (!string.Equals(textBox.Text, text, StringComparison.Ordinal))
+                {
+                    textBox.Text = text;
+                }
+
+                textBox.CaretIndex = textBox.Text.Length;
+            }
+        });
+    }
+
     private bool IsSupplierPartner(long partnerId)
     {
-        return _services.PartnerStatuses.GetStatus(partnerId) == PartnerStatus.Supplier;
+        if (_services.WpfPartnerApi.TryGetPartners(out var apiPartners))
+        {
+            return apiPartners.FirstOrDefault(entry => entry.Partner.Id == partnerId)?.Status == PartnerStatus.Supplier;
+        }
+
+        return false;
     }
 
     private bool TryValidateOrderRefUnique(string orderRef)
     {
         var normalized = orderRef.Trim();
-        var duplicate = _services.Orders.GetOrders()
+        var orders = _services.WpfReadApi.TryGetOrders(includeInternal: true, search: null, out var apiOrders)
+            ? apiOrders
+            : Array.Empty<Order>();
+        var duplicate = orders
             .FirstOrDefault(order => string.Equals(order.OrderRef, normalized, StringComparison.OrdinalIgnoreCase)
                                      && (!_orderId.HasValue || order.Id != _orderId.Value));
         if (duplicate == null)
@@ -760,7 +910,10 @@ public partial class OrderDetailsWindow : Window
     private string GenerateNextOrderRef()
     {
         var max = 0L;
-        foreach (var order in _services.Orders.GetOrders())
+        var orders = _services.WpfReadApi.TryGetOrders(includeInternal: true, search: null, out var apiOrders)
+            ? apiOrders
+            : Array.Empty<Order>();
+        foreach (var order in orders)
         {
             var orderRef = order.OrderRef?.Trim();
             if (string.IsNullOrWhiteSpace(orderRef) || !IsDigitsOnly(orderRef))
@@ -838,7 +991,10 @@ public partial class OrderDetailsWindow : Window
             return false;
         }
 
-        var persistedLines = _services.Orders.GetOrderLineViews(_orderId.Value);
+        if (!_services.WpfReadApi.TryGetOrderLines(_orderId.Value, out var persistedLines))
+        {
+            return false;
+        }
         return HaveEquivalentLineSnapshot(_lines, persistedLines);
     }
 

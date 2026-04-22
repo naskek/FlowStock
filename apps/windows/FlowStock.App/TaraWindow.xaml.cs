@@ -26,7 +26,10 @@ public partial class TaraWindow : Window
     private void LoadTaras()
     {
         _taras.Clear();
-        foreach (var tara in _services.Catalog.GetTaras())
+        var taras = _services.WpfCatalogApi.TryGetTaras(out var apiTaras)
+            ? apiTaras
+            : Array.Empty<Tara>();
+        foreach (var tara in taras)
         {
             _taras.Add(tara);
         }
@@ -34,7 +37,7 @@ public partial class TaraWindow : Window
         UpdateDeleteButton();
     }
 
-    private void AddTara_Click(object sender, RoutedEventArgs e)
+    private async void AddTara_Click(object sender, RoutedEventArgs e)
     {
         if (string.IsNullOrWhiteSpace(TaraNameBox.Text))
         {
@@ -44,7 +47,12 @@ public partial class TaraWindow : Window
 
         try
         {
-            _services.Catalog.CreateTara(TaraNameBox.Text);
+            var result = await _services.WpfCatalogApi.TryCreateTaraAsync(TaraNameBox.Text.Trim()).ConfigureAwait(true);
+            if (!result.IsSuccess)
+            {
+                throw new InvalidOperationException(result.Error ?? "Не удалось создать тару через сервер.");
+            }
+
             TaraNameBox.Text = string.Empty;
             LoadTaras();
             _onChanged?.Invoke();
@@ -63,7 +71,7 @@ public partial class TaraWindow : Window
         }
     }
 
-    private void DeleteTara_Click(object sender, RoutedEventArgs e)
+    private async void DeleteTara_Click(object sender, RoutedEventArgs e)
     {
         if (_selectedTara == null)
         {
@@ -84,7 +92,12 @@ public partial class TaraWindow : Window
 
         try
         {
-            _services.Catalog.DeleteTara(_selectedTara.Id);
+            var result = await _services.WpfCatalogApi.TryDeleteTaraAsync(_selectedTara.Id).ConfigureAwait(true);
+            if (!result.IsSuccess)
+            {
+                throw new InvalidOperationException(result.Error ?? "Не удалось удалить тару через сервер.");
+            }
+
             LoadTaras();
             _onChanged?.Invoke();
         }

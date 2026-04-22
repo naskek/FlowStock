@@ -33,10 +33,29 @@ public sealed class ImportService
 
     public ImportResult ImportJsonl(string filePath)
     {
+        return ImportJsonlLines(File.ReadLines(filePath));
+    }
+
+    public ImportResult ImportJsonlContent(string content)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return new ImportResult();
+        }
+
+        var lines = content
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Split('\n');
+        return ImportJsonlLines(lines);
+    }
+
+    private ImportResult ImportJsonlLines(IEnumerable<string> lines)
+    {
         var result = new ImportResult();
         var deviceIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var line in File.ReadLines(filePath))
+        foreach (var line in lines)
         {
             if (string.IsNullOrWhiteSpace(line))
             {
@@ -66,7 +85,7 @@ public sealed class ImportService
                 ImportOutcome outcome;
                 try
                 {
-                    outcome = ProcessItemUpsert(itemUpsertEvent, line, filePath, allowErrorInsert: true);
+                    outcome = ProcessItemUpsert(itemUpsertEvent, line, "jsonl", allowErrorInsert: true);
                 }
                 catch
                 {
@@ -104,7 +123,7 @@ public sealed class ImportService
 
             try
             {
-                var outcome = ProcessEvent(importEvent!, line, filePath, allowErrorInsert: true, out var docCreated);
+                var outcome = ProcessEvent(importEvent!, line, "jsonl", allowErrorInsert: true, out var docCreated);
                 switch (outcome)
                 {
                     case ImportOutcome.Imported:

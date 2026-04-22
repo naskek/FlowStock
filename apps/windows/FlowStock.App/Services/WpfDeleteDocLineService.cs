@@ -20,11 +20,6 @@ public sealed class WpfDeleteDocLineService
         _apiClient = new DeleteDocLineApiClient();
     }
 
-    public bool IsServerDeleteEnabled()
-    {
-        return LoadConfiguration().UseServerDeleteDocLine;
-    }
-
     public WpfServerDeleteDocLineConfiguration GetEffectiveConfiguration()
     {
         return LoadConfiguration();
@@ -36,11 +31,6 @@ public sealed class WpfDeleteDocLineService
         CancellationToken cancellationToken = default)
     {
         var configuration = LoadConfiguration();
-        if (!configuration.UseServerDeleteDocLine)
-        {
-            return WpfDeleteDocLineResult.FeatureDisabled();
-        }
-
         var selectedIds = (lineIds ?? Array.Empty<long>())
             .Where(id => id > 0)
             .Distinct()
@@ -252,7 +242,6 @@ public sealed class WpfDeleteDocLineService
     private WpfServerDeleteDocLineConfiguration LoadConfiguration()
     {
         var settings = _settings.Load().Server ?? new ServerSettings();
-        var useServerDeleteDocLine = ReadEnvBool("FLOWSTOCK_USE_SERVER_DELETE_DOC_LINE") ?? settings.UseServerDeleteDocLine;
         var baseUrl = NormalizeBaseUrl(ReadEnvOrSettings("FLOWSTOCK_SERVER_BASE_URL", settings.BaseUrl) ?? WpfCloseDocumentService.DefaultServerBaseUrl);
         var deviceId = ReadEnvOrSettings("FLOWSTOCK_SERVER_DEVICE_ID", settings.DeviceId);
         if (string.IsNullOrWhiteSpace(deviceId))
@@ -267,7 +256,6 @@ public sealed class WpfDeleteDocLineService
         }
 
         return new WpfServerDeleteDocLineConfiguration(
-            useServerDeleteDocLine,
             baseUrl,
             deviceId,
             timeoutSeconds,
@@ -461,7 +449,6 @@ WHERE doc_uid = @doc_uid;";
 }
 
 public sealed record WpfServerDeleteDocLineConfiguration(
-    bool UseServerDeleteDocLine,
     string BaseUrl,
     string DeviceId,
     int RequestTimeoutSeconds,
@@ -476,14 +463,6 @@ public sealed class WpfDeleteDocLineResult
 
     public bool IsSuccess => Kind is WpfDeleteDocLineResultKind.Deleted
         or WpfDeleteDocLineResultKind.IdempotentReplay;
-
-    public static WpfDeleteDocLineResult FeatureDisabled()
-    {
-        return new WpfDeleteDocLineResult
-        {
-            Kind = WpfDeleteDocLineResultKind.FeatureDisabled
-        };
-    }
 
     public static WpfDeleteDocLineResult Success(
         WpfDeleteDocLineResultKind kind,
@@ -516,7 +495,6 @@ public sealed class WpfDeleteDocLineResult
 
 public enum WpfDeleteDocLineResultKind
 {
-    FeatureDisabled,
     Deleted,
     IdempotentReplay,
     ValidationFailed,

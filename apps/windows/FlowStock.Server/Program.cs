@@ -27,6 +27,9 @@ builder.Services.AddSingleton<PostgresDataStore>(_ =>
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.IDataStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton<IApiDocStore>(new PostgresApiDocStore(postgresConnectionString));
 builder.Services.AddSingleton<DocumentService>();
+builder.Services.AddSingleton<CatalogService>();
+builder.Services.AddSingleton<ImportService>();
+builder.Services.AddSingleton<ItemPackagingService>();
 
 var app = builder.Build();
 
@@ -98,7 +101,35 @@ var tsdRoot = ServerPaths.TsdRoot;
 var tsdIndexPath = Path.Combine(tsdRoot, "index.html");
 var pcRoot = ServerPaths.PcRoot;
 var pcIndexPath = Path.Combine(pcRoot, "index.html");
-var pcPort = ResolvePcPort(builder.Configuration);
+
+if (Directory.Exists(tsdRoot) && File.Exists(tsdIndexPath))
+{
+    var tsdProvider = new PhysicalFileProvider(tsdRoot);
+    var tsdContentTypes = new FileExtensionContentTypeProvider();
+    tsdContentTypes.Mappings[".jsonl"] = "application/x-ndjson";
+    tsdContentTypes.Mappings[".webmanifest"] = "application/manifest+json";
+
+    app.Map("/tsd", tsdApp =>
+    {
+        tsdApp.UseDefaultFiles(new DefaultFilesOptions { FileProvider = tsdProvider });
+        tsdApp.UseStaticFiles(new StaticFileOptions
+        {
+            FileProvider = tsdProvider,
+            ContentTypeProvider = tsdContentTypes
+        });
+        tsdApp.Use(async (context, next) =>
+        {
+            await next();
+            if (context.Response.StatusCode != StatusCodes.Status404NotFound)
+            {
+                return;
+            }
+
+            context.Response.ContentType = "text/html; charset=utf-8";
+            await context.Response.SendFileAsync(tsdIndexPath);
+        });
+    });
+}
 
 if (Directory.Exists(pcRoot) && File.Exists(pcIndexPath))
 {
@@ -107,8 +138,8 @@ if (Directory.Exists(pcRoot) && File.Exists(pcIndexPath))
     pcContentTypes.Mappings[".webmanifest"] = "application/manifest+json";
 
     app.UseWhen(
-        context => IsPcRequest(context, pcPort)
-                   && !context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase),
+        context => !context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase)
+                   && !context.Request.Path.StartsWithSegments("/tsd", StringComparison.OrdinalIgnoreCase),
         pcApp =>
         {
             pcApp.UseDefaultFiles(new DefaultFilesOptions { FileProvider = pcProvider });
@@ -131,38 +162,6 @@ if (Directory.Exists(pcRoot) && File.Exists(pcIndexPath))
         });
 }
 
-if (Directory.Exists(tsdRoot) && File.Exists(tsdIndexPath))
-{
-    var tsdProvider = new PhysicalFileProvider(tsdRoot);
-    var tsdContentTypes = new FileExtensionContentTypeProvider();
-    tsdContentTypes.Mappings[".jsonl"] = "application/x-ndjson";
-    tsdContentTypes.Mappings[".webmanifest"] = "application/manifest+json";
-
-    app.UseWhen(
-        context => !IsPcRequest(context, pcPort)
-                   && !context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase),
-        tsdApp =>
-        {
-            tsdApp.UseDefaultFiles(new DefaultFilesOptions { FileProvider = tsdProvider });
-            tsdApp.UseStaticFiles(new StaticFileOptions
-            {
-                FileProvider = tsdProvider,
-                ContentTypeProvider = tsdContentTypes
-            });
-            tsdApp.Use(async (context, next) =>
-            {
-                await next();
-                if (context.Response.StatusCode != StatusCodes.Status404NotFound)
-                {
-                    return;
-                }
-
-                context.Response.ContentType = "text/html; charset=utf-8";
-                await context.Response.SendFileAsync(tsdIndexPath);
-            });
-        });
-}
-
 app.MapGet("/api/ping", () =>
 {
     return Results.Ok(new
@@ -180,6 +179,314 @@ app.MapGet("/api/client-blocks", (IDataStore store) =>
         ok = true,
         blocks = BuildClientBlockStates(store.GetClientBlockSettings())
     });
+});
+
+app.MapPost("/api/client-blocks", async (HttpRequest request, IDataStore store) =>
+{
+    var rawJson = await ReadBody(request);
+    if (string.IsNullOrWhiteSpace(rawJson))
+    {
+        return Results.BadRequest(new ApiResult(false, "EMPTY_BODY"));
+    }
+
+    SaveClientBlocksRequest? saveRequest;
+    try
+    {
+        saveRequest = JsonSerializer.Deserialize<SaveClientBlocksRequest>(
+            rawJson,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    }
+    catch (JsonException)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+    }
+
+    var blocks = saveRequest?.Blocks ?? new List<ClientBlockSettingRequest>();
+    var normalized = new List<ClientBlockSetting>();
+    foreach (var block in blocks)
+    {
+        var key = block.Key?.Trim();
+        if (!ClientBlockCatalog.IsKnownKey(key))
+        {
+            return Results.BadRequest(new ApiResult(false, "INVALID_BLOCK_KEY"));
+        }
+
+        normalized.Add(new ClientBlockSetting(key!, block.IsEnabled));
+    }
+
+    store.SaveClientBlockSettings(normalized);
+    return Results.Ok(new ApiResult(true));
+});
+
+app.MapGet("/api/import-errors", (HttpRequest request, ImportService importService) =>
+{
+    var reason = request.Query["reason"].ToString();
+    var normalized = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
+    var errors = importService.GetImportErrors(normalized)
+        .Select(MapImportErrorView)
+        .ToList();
+    return Results.Ok(errors);
+});
+
+app.MapPost("/api/import-errors/{errorId:long}/reapply", (long errorId, ImportService importService) =>
+{
+    if (errorId <= 0)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_IMPORT_ERROR_ID"));
+    }
+
+    var applied = importService.ReapplyError(errorId);
+    return applied
+        ? Results.Ok(new ApiResult(true))
+        : Results.Ok(new ApiResult(false, "REAPPLY_FAILED"));
+});
+
+app.MapPost("/api/imports/jsonl", async (HttpRequest request, ImportService importService) =>
+{
+    var parsed = await ParseJsonBody<ImportJsonlRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    var content = parsed.Value?.Content;
+    if (string.IsNullOrWhiteSpace(content))
+    {
+        return Results.BadRequest(new ApiResult(false, "EMPTY_CONTENT"));
+    }
+
+    var result = importService.ImportJsonlContent(content);
+    return Results.Ok(new
+    {
+        imported = result.Imported,
+        duplicates = result.Duplicates,
+        errors = result.Errors,
+        documents_created = result.DocumentsCreated,
+        operations_imported = result.OperationsImported,
+        lines_imported = result.LinesImported,
+        items_upserted = result.ItemsUpserted,
+        device_ids = result.DeviceIds
+    });
+});
+
+app.MapGet("/api/admin/tsd-devices", () =>
+{
+    using var connection = OpenConnection(postgresConnectionString);
+    using var command = connection.CreateCommand();
+    command.CommandText = @"
+SELECT id, device_id, login, platform, is_active, created_at, last_seen
+FROM tsd_devices
+ORDER BY login;";
+    using var reader = command.ExecuteReader();
+    var list = new List<object>();
+    while (reader.Read())
+    {
+        var platform = reader.IsDBNull(3) ? "TSD" : reader.GetString(3);
+        list.Add(new
+        {
+            id = reader.GetInt64(0),
+            device_id = reader.GetString(1),
+            login = reader.GetString(2),
+            platform = NormalizeDevicePlatform(platform),
+            is_active = reader.GetBoolean(4),
+            created_at = reader.IsDBNull(5) ? null : reader.GetString(5),
+            last_seen = reader.IsDBNull(6) ? null : reader.GetString(6)
+        });
+    }
+
+    return Results.Ok(list);
+});
+
+app.MapPost("/api/admin/tsd-devices", async (HttpRequest request) =>
+{
+    var rawJson = await ReadBody(request);
+    if (string.IsNullOrWhiteSpace(rawJson))
+    {
+        return Results.BadRequest(new ApiResult(false, "EMPTY_BODY"));
+    }
+
+    UpsertTsdDeviceRequest? upsertRequest;
+    try
+    {
+        upsertRequest = JsonSerializer.Deserialize<UpsertTsdDeviceRequest>(
+            rawJson,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    }
+    catch (JsonException)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+    }
+
+    if (upsertRequest == null)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+    }
+
+    var login = upsertRequest.Login?.Trim();
+    if (string.IsNullOrWhiteSpace(login))
+    {
+        return Results.BadRequest(new ApiResult(false, "MISSING_LOGIN"));
+    }
+
+    var password = upsertRequest.Password ?? string.Empty;
+    if (string.IsNullOrWhiteSpace(password))
+    {
+        return Results.BadRequest(new ApiResult(false, "MISSING_PASSWORD"));
+    }
+
+    var normalizedPlatform = NormalizeDevicePlatform(upsertRequest.Platform);
+    var salt = RandomNumberGenerator.GetBytes(16);
+    var hash = HashPassword(password, salt, 100_000);
+
+    using var connection = OpenConnection(postgresConnectionString);
+    try
+    {
+        EnsureUniqueTsdDeviceLogin(connection, login, null);
+    }
+    catch (InvalidOperationException)
+    {
+        return Results.Conflict(new ApiResult(false, "LOGIN_ALREADY_EXISTS"));
+    }
+
+    var deviceId = GenerateTsdDeviceId(connection);
+    using var command = connection.CreateCommand();
+    command.CommandText = @"
+INSERT INTO tsd_devices(device_id, login, password_salt, password_hash, password_iterations, platform, is_active, created_at)
+VALUES(@device_id, @login, @salt, @hash, @iterations, @platform, @is_active, @created_at);";
+    AddParam(command, "@device_id", deviceId);
+    AddParam(command, "@login", login);
+    AddParam(command, "@salt", Convert.ToBase64String(salt));
+    AddParam(command, "@hash", Convert.ToBase64String(hash));
+    AddParam(command, "@iterations", 100_000);
+    AddParam(command, "@platform", normalizedPlatform);
+    AddParam(command, "@is_active", upsertRequest.IsActive);
+    AddParam(command, "@created_at", DateTime.Now.ToString("s", CultureInfo.InvariantCulture));
+
+    try
+    {
+        command.ExecuteNonQuery();
+    }
+    catch (PostgresException ex) when (string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal))
+    {
+        return Results.Conflict(new ApiResult(false, "LOGIN_ALREADY_EXISTS"));
+    }
+
+    return Results.Ok(new
+    {
+        ok = true,
+        device_id = deviceId
+    });
+});
+
+app.MapPost("/api/admin/tsd-devices/{id:long}", async (long id, HttpRequest request) =>
+{
+    var rawJson = await ReadBody(request);
+    if (string.IsNullOrWhiteSpace(rawJson))
+    {
+        return Results.BadRequest(new ApiResult(false, "EMPTY_BODY"));
+    }
+
+    UpsertTsdDeviceRequest? upsertRequest;
+    try
+    {
+        upsertRequest = JsonSerializer.Deserialize<UpsertTsdDeviceRequest>(
+            rawJson,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    }
+    catch (JsonException)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+    }
+
+    if (upsertRequest == null)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+    }
+
+    var login = upsertRequest.Login?.Trim();
+    if (string.IsNullOrWhiteSpace(login))
+    {
+        return Results.BadRequest(new ApiResult(false, "MISSING_LOGIN"));
+    }
+
+    var normalizedPlatform = NormalizeDevicePlatform(upsertRequest.Platform);
+
+    using var connection = OpenConnection(postgresConnectionString);
+    using (var exists = connection.CreateCommand())
+    {
+        exists.CommandText = "SELECT 1 FROM tsd_devices WHERE id = @id LIMIT 1;";
+        AddParam(exists, "@id", id);
+        if (exists.ExecuteScalar() == null)
+        {
+            return Results.NotFound(new ApiResult(false, "DEVICE_NOT_FOUND"));
+        }
+    }
+
+    try
+    {
+        EnsureUniqueTsdDeviceLogin(connection, login, id);
+    }
+    catch (InvalidOperationException)
+    {
+        return Results.Conflict(new ApiResult(false, "LOGIN_ALREADY_EXISTS"));
+    }
+
+    if (!string.IsNullOrWhiteSpace(upsertRequest.Password))
+    {
+        var salt = RandomNumberGenerator.GetBytes(16);
+        var hash = HashPassword(upsertRequest.Password, salt, 100_000);
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+UPDATE tsd_devices
+SET login = @login,
+    platform = @platform,
+    is_active = @is_active,
+    password_salt = @salt,
+    password_hash = @hash,
+    password_iterations = @iterations
+WHERE id = @id;";
+        AddParam(command, "@login", login);
+        AddParam(command, "@platform", normalizedPlatform);
+        AddParam(command, "@is_active", upsertRequest.IsActive);
+        AddParam(command, "@salt", Convert.ToBase64String(salt));
+        AddParam(command, "@hash", Convert.ToBase64String(hash));
+        AddParam(command, "@iterations", 100_000);
+        AddParam(command, "@id", id);
+
+        try
+        {
+            command.ExecuteNonQuery();
+        }
+        catch (PostgresException ex) when (string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal))
+        {
+            return Results.Conflict(new ApiResult(false, "LOGIN_ALREADY_EXISTS"));
+        }
+    }
+    else
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+UPDATE tsd_devices
+SET login = @login,
+    platform = @platform,
+    is_active = @is_active
+WHERE id = @id;";
+        AddParam(command, "@login", login);
+        AddParam(command, "@platform", normalizedPlatform);
+        AddParam(command, "@is_active", upsertRequest.IsActive);
+        AddParam(command, "@id", id);
+
+        try
+        {
+            command.ExecuteNonQuery();
+        }
+        catch (PostgresException ex) when (string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal))
+        {
+            return Results.Conflict(new ApiResult(false, "LOGIN_ALREADY_EXISTS"));
+        }
+    }
+
+    return Results.Ok(new ApiResult(true));
 });
 
 app.MapPost("/api/tsd/login", async (HttpRequest request, IDataStore store) =>
@@ -254,7 +561,6 @@ WHERE login = @login;";
         ok = true,
         device_id = deviceId,
         platform = platformNormalized,
-        pc_port = pcPort,
         blocks = BuildClientBlockStates(store.GetClientBlockSettings())
     });
 });
@@ -297,6 +603,61 @@ app.MapGet("/api/locations", (IDataStore store) =>
     return Results.Ok(locations);
 });
 
+app.MapPost("/api/locations", async (HttpRequest request, CatalogService catalog) =>
+{
+    var parsed = await ParseJsonBody<UpsertLocationRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    try
+    {
+        var locationId = catalog.CreateLocation(parsed.Value?.Code ?? string.Empty, parsed.Value?.Name ?? string.Empty);
+        return Results.Ok(new { ok = true, location_id = locationId });
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+});
+
+app.MapPost("/api/locations/{locationId:long}", async (long locationId, HttpRequest request, CatalogService catalog) =>
+{
+    var parsed = await ParseJsonBody<UpsertLocationRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    try
+    {
+        catalog.UpdateLocation(locationId, parsed.Value?.Code ?? string.Empty, parsed.Value?.Name ?? string.Empty);
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+});
+
+app.MapDelete("/api/locations/{locationId:long}", (long locationId, CatalogService catalog) =>
+{
+    try
+    {
+        catalog.DeleteLocation(locationId);
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+});
+
 app.MapGet("/api/items/by-barcode/{barcode}", (string barcode, IDataStore store) =>
 {
     if (string.IsNullOrWhiteSpace(barcode))
@@ -311,17 +672,7 @@ app.MapGet("/api/items/by-barcode/{barcode}", (string barcode, IDataStore store)
         return Results.NotFound();
     }
 
-    return Results.Ok(new
-    {
-        id = item.Id,
-        name = item.Name,
-        barcode = item.Barcode,
-        gtin = item.Gtin,
-        base_uom_code = item.BaseUom,
-        max_qty_per_hu = item.MaxQtyPerHu,
-        brand = item.Brand,
-        volume = item.Volume
-    });
+    return Results.Ok(MapItem(item));
 });
 
 app.MapGet("/api/items", (HttpRequest request) =>
@@ -332,19 +683,55 @@ app.MapGet("/api/items", (HttpRequest request) =>
     using var connection = OpenConnection(postgresConnectionString);
     using var command = connection.CreateCommand();
    command.CommandText = @"
-SELECT id, name, barcode, gtin, base_uom, uom, max_qty_per_hu, brand, volume
-FROM items
+SELECT i.id,
+       i.name,
+       i.barcode,
+       i.gtin,
+       i.base_uom,
+       i.uom,
+       i.default_packaging_id,
+       i.brand,
+       i.volume,
+       i.shelf_life_months,
+       i.max_qty_per_hu,
+       i.tara_id,
+       t.name,
+       i.is_marked,
+       i.item_type_id,
+       it.name,
+       COALESCE(it.is_visible_in_product_catalog, FALSE),
+       COALESCE(it.enable_min_stock_control, FALSE),
+       i.min_stock_qty
+FROM items i
+LEFT JOIN taras t ON t.id = i.tara_id
+LEFT JOIN item_types it ON it.id = i.item_type_id
 WHERE @search::text IS NULL
-   OR name ILIKE @search::text
-   OR barcode ILIKE @search::text
-   OR gtin ILIKE @search::text
-ORDER BY name;"
+   OR i.name ILIKE @search::text
+   OR i.barcode ILIKE @search::text
+   OR i.gtin ILIKE @search::text
+ORDER BY i.name;"
     ;
     AddParam(command, "@search", search ?? (object)DBNull.Value);
     using var reader = command.ExecuteReader();
     var list = new List<object>();
     while (reader.Read())
     {
+        // Compatibility: some databases have items.is_marked as integer (0/1) instead of boolean.
+        bool isMarked = false;
+        if (!reader.IsDBNull(13))
+        {
+            var raw = reader.GetValue(13);
+            isMarked = raw switch
+            {
+                bool b => b,
+                byte b => b != 0,
+                short s => s != 0,
+                int i => i != 0,
+                long l => l != 0,
+                _ => Convert.ToInt32(raw, CultureInfo.InvariantCulture) != 0
+            };
+        }
+
         var baseUom = reader.IsDBNull(4) ? null : reader.GetString(4);
         if (string.IsNullOrWhiteSpace(baseUom) && !reader.IsDBNull(5))
         {
@@ -357,14 +744,405 @@ ORDER BY name;"
             name = reader.GetString(1),
             barcode = reader.IsDBNull(2) ? null : reader.GetString(2),
             gtin = reader.IsDBNull(3) ? null : reader.GetString(3),
+            base_uom = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom,
             base_uom_code = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom,
-            max_qty_per_hu = reader.IsDBNull(6) ? (double?)null : Convert.ToDouble(reader.GetValue(6), CultureInfo.InvariantCulture),
+            default_packaging_id = reader.IsDBNull(6) ? (long?)null : reader.GetInt64(6),
             brand = reader.IsDBNull(7) ? null : reader.GetString(7),
-            volume = reader.IsDBNull(8) ? null : reader.GetString(8)
+            volume = reader.IsDBNull(8) ? null : reader.GetString(8),
+            shelf_life_months = reader.IsDBNull(9) ? (int?)null : reader.GetInt32(9),
+            max_qty_per_hu = reader.IsDBNull(10) ? (double?)null : Convert.ToDouble(reader.GetValue(10), CultureInfo.InvariantCulture),
+            tara_id = reader.IsDBNull(11) ? (long?)null : reader.GetInt64(11),
+            tara_name = reader.IsDBNull(12) ? null : reader.GetString(12),
+            is_marked = isMarked,
+            item_type_id = reader.IsDBNull(14) ? (long?)null : reader.GetInt64(14),
+            item_type_name = reader.IsDBNull(15) ? null : reader.GetString(15),
+            item_type_is_visible_in_product_catalog = !reader.IsDBNull(16) && reader.GetBoolean(16),
+            item_type_enable_min_stock_control = !reader.IsDBNull(17) && reader.GetBoolean(17),
+            min_stock_qty = reader.IsDBNull(18) ? (double?)null : Convert.ToDouble(reader.GetValue(18), CultureInfo.InvariantCulture)
         });
     }
 
     return Results.Ok(list);
+});
+
+app.MapPost("/api/items", async (HttpRequest request, CatalogService catalog) =>
+{
+    var parsed = await ParseJsonBody<UpsertItemRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    try
+    {
+        var itemId = catalog.CreateItem(
+            parsed.Value?.Name ?? string.Empty,
+            parsed.Value?.Barcode,
+            parsed.Value?.Gtin,
+            parsed.Value?.BaseUom,
+            parsed.Value?.Brand,
+            parsed.Value?.Volume,
+            parsed.Value?.ShelfLifeMonths,
+            parsed.Value?.TaraId,
+            parsed.Value?.IsMarked == true,
+            parsed.Value?.MaxQtyPerHu,
+            parsed.Value?.ItemTypeId,
+            parsed.Value?.MinStockQty);
+        return Results.Ok(new { ok = true, item_id = itemId });
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+    catch (PostgresException ex) when (string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal))
+    {
+        return Results.Conflict(new ApiResult(false, "ITEM_ALREADY_EXISTS"));
+    }
+});
+
+app.MapPost("/api/items/{itemId:long}", async (long itemId, HttpRequest request, CatalogService catalog) =>
+{
+    var parsed = await ParseJsonBody<UpsertItemRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    try
+    {
+        catalog.UpdateItem(
+            itemId,
+            parsed.Value?.Name ?? string.Empty,
+            parsed.Value?.Barcode,
+            parsed.Value?.Gtin,
+            parsed.Value?.BaseUom,
+            parsed.Value?.Brand,
+            parsed.Value?.Volume,
+            parsed.Value?.ShelfLifeMonths,
+            parsed.Value?.TaraId,
+            parsed.Value?.IsMarked == true,
+            parsed.Value?.MaxQtyPerHu,
+            parsed.Value?.ItemTypeId,
+            parsed.Value?.MinStockQty);
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+    catch (PostgresException ex) when (string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal))
+    {
+        return Results.Conflict(new ApiResult(false, "ITEM_ALREADY_EXISTS"));
+    }
+});
+
+app.MapDelete("/api/items/{itemId:long}", (long itemId, CatalogService catalog) =>
+{
+    try
+    {
+        catalog.DeleteItem(itemId);
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+});
+
+app.MapGet("/api/packagings", (HttpRequest request, IDataStore store) =>
+{
+    var includeInactive = ParseIncludeInactive(request.Query["include_inactive"].ToString());
+    var itemIdText = request.Query["item_id"].ToString();
+    var itemIdFilter = long.TryParse(itemIdText, out var parsedItemId) && parsedItemId > 0
+        ? parsedItemId
+        : (long?)null;
+
+    var items = itemIdFilter.HasValue
+        ? new[] { itemIdFilter.Value }
+        : store.GetItems(null).Select(item => item.Id).ToArray();
+
+    var list = new List<object>();
+    foreach (var itemId in items)
+    {
+        foreach (var packaging in store.GetItemPackagings(itemId, includeInactive))
+        {
+            list.Add(MapItemPackaging(packaging));
+        }
+    }
+
+    return Results.Ok(list);
+});
+
+app.MapPost("/api/packagings", async (HttpRequest request, ItemPackagingService packagings) =>
+{
+    var parsed = await ParseJsonBody<UpsertPackagingRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    try
+    {
+        var packagingId = packagings.CreatePackaging(
+            parsed.Value!.ItemId,
+            parsed.Value.Code ?? string.Empty,
+            parsed.Value.Name ?? string.Empty,
+            parsed.Value.FactorToBase,
+            parsed.Value.SortOrder);
+        return Results.Ok(new { ok = true, packaging_id = packagingId });
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+});
+
+app.MapPost("/api/packagings/{packagingId:long}", async (long packagingId, HttpRequest request, ItemPackagingService packagings) =>
+{
+    var parsed = await ParseJsonBody<UpsertPackagingRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    try
+    {
+        packagings.UpdatePackaging(
+            packagingId,
+            parsed.Value!.ItemId,
+            parsed.Value.Code ?? string.Empty,
+            parsed.Value.Name ?? string.Empty,
+            parsed.Value.FactorToBase,
+            parsed.Value.SortOrder,
+            parsed.Value.IsActive ?? true);
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+});
+
+app.MapDelete("/api/packagings/{packagingId:long}", (long packagingId, ItemPackagingService packagings) =>
+{
+    try
+    {
+        packagings.DeactivatePackaging(packagingId);
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+});
+
+app.MapPost("/api/items/{itemId:long}/default-packaging", async (long itemId, HttpRequest request, ItemPackagingService packagings) =>
+{
+    var parsed = await ParseJsonBody<SetDefaultPackagingRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    try
+    {
+        packagings.SetDefaultPackaging(itemId, parsed.Value!.PackagingId);
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+});
+
+app.MapGet("/api/uoms", (CatalogService catalog) =>
+{
+    var uoms = catalog.GetUoms()
+        .Select(uom => new { id = uom.Id, name = uom.Name })
+        .ToList();
+    return Results.Ok(uoms);
+});
+
+app.MapPost("/api/uoms", async (HttpRequest request, CatalogService catalog) =>
+{
+    var parsed = await ParseJsonBody<CreateNamedEntityRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    try
+    {
+        var uomId = catalog.CreateUom(parsed.Value?.Name ?? string.Empty);
+        return Results.Ok(new { ok = true, uom_id = uomId });
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+});
+
+app.MapDelete("/api/uoms/{uomId:long}", (long uomId, CatalogService catalog) =>
+{
+    try
+    {
+        catalog.DeleteUom(uomId);
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+});
+
+app.MapGet("/api/taras", (CatalogService catalog) =>
+{
+    var taras = catalog.GetTaras()
+        .Select(tara => new { id = tara.Id, name = tara.Name })
+        .ToList();
+    return Results.Ok(taras);
+});
+
+app.MapPost("/api/taras", async (HttpRequest request, CatalogService catalog) =>
+{
+    var parsed = await ParseJsonBody<CreateNamedEntityRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    try
+    {
+        var taraId = catalog.CreateTara(parsed.Value?.Name ?? string.Empty);
+        return Results.Ok(new { ok = true, tara_id = taraId });
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+    catch (PostgresException ex) when (string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal))
+    {
+        return Results.Conflict(new ApiResult(false, "TARA_ALREADY_EXISTS"));
+    }
+});
+
+app.MapDelete("/api/taras/{taraId:long}", (long taraId, CatalogService catalog) =>
+{
+    try
+    {
+        catalog.DeleteTara(taraId);
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+});
+
+app.MapGet("/api/item-types", (HttpRequest request, CatalogService catalog) =>
+{
+    var includeInactive = ParseIncludeInactive(request.Query["include_inactive"].ToString());
+    var itemTypes = catalog.GetItemTypes(includeInactive)
+        .Select(itemType => new
+        {
+            id = itemType.Id,
+            name = itemType.Name,
+            code = itemType.Code,
+            sort_order = itemType.SortOrder,
+            is_active = itemType.IsActive,
+            is_visible_in_product_catalog = itemType.IsVisibleInProductCatalog,
+            enable_min_stock_control = itemType.EnableMinStockControl
+        })
+        .ToList();
+    return Results.Ok(itemTypes);
+});
+
+app.MapPost("/api/item-types", async (HttpRequest request, CatalogService catalog) =>
+{
+    var parsed = await ParseJsonBody<UpsertItemTypeRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    try
+    {
+        var itemTypeId = catalog.CreateItemType(
+            parsed.Value?.Name ?? string.Empty,
+            parsed.Value?.Code,
+            parsed.Value?.SortOrder ?? 0,
+            parsed.Value?.IsActive ?? true,
+            parsed.Value?.IsVisibleInProductCatalog ?? true,
+            parsed.Value?.EnableMinStockControl ?? false);
+        return Results.Ok(new { ok = true, item_type_id = itemTypeId });
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+    catch (PostgresException ex) when (string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal))
+    {
+        return Results.Conflict(new ApiResult(false, "ITEM_TYPE_ALREADY_EXISTS"));
+    }
+});
+
+app.MapPost("/api/item-types/{itemTypeId:long}", async (long itemTypeId, HttpRequest request, CatalogService catalog) =>
+{
+    var parsed = await ParseJsonBody<UpsertItemTypeRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    try
+    {
+        catalog.UpdateItemType(
+            itemTypeId,
+            parsed.Value?.Name ?? string.Empty,
+            parsed.Value?.Code,
+            parsed.Value?.SortOrder ?? 0,
+            parsed.Value?.IsActive ?? true,
+            parsed.Value?.IsVisibleInProductCatalog ?? true,
+            parsed.Value?.EnableMinStockControl ?? false);
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+    catch (PostgresException ex) when (string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal))
+    {
+        return Results.Conflict(new ApiResult(false, "ITEM_TYPE_ALREADY_EXISTS"));
+    }
+});
+
+app.MapDelete("/api/item-types/{itemTypeId:long}", (long itemTypeId, CatalogService catalog) =>
+{
+    try
+    {
+        catalog.DeleteItemType(itemTypeId);
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
 });
 
 app.MapPost("/api/item-requests", async (HttpRequest request, IDataStore store) =>
@@ -418,6 +1196,32 @@ app.MapPost("/api/item-requests", async (HttpRequest request, IDataStore store) 
     return Results.Ok(new ApiResult(true));
 });
 
+app.MapGet("/api/item-requests", (HttpRequest request, IDataStore store) =>
+{
+    var includeResolved = ParseIncludeResolved(request.Query["include_resolved"]);
+    var list = store.GetItemRequests(includeResolved)
+        .Select(MapItemRequest)
+        .ToList();
+    return Results.Ok(list);
+});
+
+app.MapPost("/api/item-requests/{requestId:long}/resolve", (long requestId, IDataStore store) =>
+{
+    var existing = store.GetItemRequests(true)
+        .FirstOrDefault(itemRequest => itemRequest.Id == requestId);
+    if (existing == null)
+    {
+        return Results.NotFound(new ApiResult(false, "ITEM_REQUEST_NOT_FOUND"));
+    }
+
+    if (!string.Equals(existing.Status, "RESOLVED", StringComparison.OrdinalIgnoreCase))
+    {
+        store.MarkItemRequestResolved(requestId);
+    }
+
+    return Results.Ok(new ApiResult(true));
+});
+
 app.MapGet("/api/partners", (HttpRequest request, IDataStore store) =>
 {
     var role = request.Query["role"].ToString();
@@ -442,11 +1246,90 @@ app.MapGet("/api/partners", (HttpRequest request, IDataStore store) =>
         {
             id = partner.Id,
             name = partner.Name,
-            code = partner.Code
+            code = partner.Code,
+            status = status.ToString()
         });
     }
 
     return Results.Ok(list);
+});
+
+app.MapPost("/api/partners", async (HttpRequest request, CatalogService catalog) =>
+{
+    var parsed = await ParseJsonBody<UpsertPartnerRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    var status = ParsePartnerStatusValue(parsed.Value?.Status);
+    if (!status.HasValue)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_PARTNER_STATUS"));
+    }
+
+    try
+    {
+        var partnerId = catalog.CreatePartner(parsed.Value?.Name ?? string.Empty, parsed.Value?.Code);
+        SavePartnerStatus(partnerId, status.Value);
+        return Results.Ok(new { ok = true, partner_id = partnerId });
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+    catch (PostgresException ex) when (string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal))
+    {
+        return Results.Conflict(new ApiResult(false, "PARTNER_ALREADY_EXISTS"));
+    }
+});
+
+app.MapPost("/api/partners/{partnerId:long}", async (long partnerId, HttpRequest request, CatalogService catalog) =>
+{
+    var parsed = await ParseJsonBody<UpsertPartnerRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    var status = ParsePartnerStatusValue(parsed.Value?.Status);
+    if (!status.HasValue)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_PARTNER_STATUS"));
+    }
+
+    try
+    {
+        catalog.UpdatePartner(partnerId, parsed.Value?.Name ?? string.Empty, parsed.Value?.Code);
+        SavePartnerStatus(partnerId, status.Value);
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+    catch (PostgresException ex) when (string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal))
+    {
+        return Results.Conflict(new ApiResult(false, "PARTNER_ALREADY_EXISTS"));
+    }
+});
+
+app.MapDelete("/api/partners/{partnerId:long}", (long partnerId, CatalogService catalog) =>
+{
+    try
+    {
+        catalog.DeletePartner(partnerId);
+        RemovePartnerStatus(partnerId);
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
 });
 
 app.MapGet("/api/docs", (HttpRequest request, IDataStore store) =>
@@ -515,12 +1398,285 @@ app.MapGet("/api/docs/{docId:long}/lines", (long docId, IDataStore store) =>
     return Results.Ok(lines);
 });
 
+app.MapPost("/api/docs/{docId:long}/recount", (long docId, IDataStore store, DocumentService docs) =>
+{
+    var doc = store.GetDoc(docId);
+    if (doc == null)
+    {
+        return Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"));
+    }
+
+    if (doc.Status != DocStatus.Draft)
+    {
+        return Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT"));
+    }
+
+    if (doc.Type != DocType.Inventory)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_DOC_TYPE"));
+    }
+
+    docs.MarkDocForRecount(docId);
+    return Results.Ok(new ApiResult(true));
+});
+
+app.MapPost("/api/docs/{docId:long}/header", async (long docId, HttpRequest request, IDataStore store, DocumentService docs) =>
+{
+    var doc = store.GetDoc(docId);
+    if (doc == null)
+    {
+        return Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"));
+    }
+
+    if (doc.Status != DocStatus.Draft)
+    {
+        return Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT"));
+    }
+
+    var parsed = await ParseJsonBody<SaveDocHeaderRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    var saveRequest = parsed.Value!;
+    var partnerId = saveRequest.PartnerId;
+    if (partnerId.HasValue && store.GetPartner(partnerId.Value) == null)
+    {
+        return Results.BadRequest(new ApiResult(false, "PARTNER_NOT_FOUND"));
+    }
+
+    var shippingRef = NormalizeHu(saveRequest.ShippingRef);
+    var reasonCode = string.IsNullOrWhiteSpace(saveRequest.ReasonCode) ? null : saveRequest.ReasonCode.Trim();
+    var comment = string.IsNullOrWhiteSpace(saveRequest.Comment) ? null : saveRequest.Comment.Trim();
+    var productionBatchNo = string.IsNullOrWhiteSpace(saveRequest.ProductionBatchNo) ? null : saveRequest.ProductionBatchNo.Trim();
+
+    Order? order = null;
+    if (saveRequest.OrderId.HasValue)
+    {
+        order = store.GetOrder(saveRequest.OrderId.Value);
+        if (order == null)
+        {
+            return Results.BadRequest(new ApiResult(false, "ORDER_NOT_FOUND"));
+        }
+    }
+
+    if (order != null)
+    {
+        var headerPartnerId = doc.Type == DocType.Outbound ? order.PartnerId : partnerId;
+        docs.UpdateDocHeader(docId, headerPartnerId, order.OrderRef, shippingRef);
+        docs.UpdateDocOrderBinding(docId, order.Id);
+    }
+    else
+    {
+        if (doc.Type == DocType.Outbound)
+        {
+            docs.ClearDocOrder(docId, partnerId);
+        }
+        else if (doc.Type == DocType.ProductionReceipt)
+        {
+            docs.UpdateDocOrderBinding(docId, null);
+        }
+
+        docs.UpdateDocHeader(docId, partnerId, null, shippingRef);
+    }
+
+    if (doc.Type == DocType.WriteOff)
+    {
+        docs.UpdateDocReason(docId, reasonCode);
+    }
+    else if (doc.Type == DocType.ProductionReceipt)
+    {
+        docs.UpdateDocProductionBatch(docId, productionBatchNo);
+        docs.UpdateDocComment(docId, comment);
+    }
+
+    var updated = store.GetDoc(docId);
+    return updated == null
+        ? Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"))
+        : Results.Ok(MapDoc(updated));
+});
+
+app.MapPost("/api/docs/{docId:long}/lines/{lineId:long}/assign-hu", async (long docId, long lineId, HttpRequest request, IDataStore store, DocumentService docs) =>
+{
+    var doc = store.GetDoc(docId);
+    if (doc == null)
+    {
+        return Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"));
+    }
+
+    if (doc.Status != DocStatus.Draft)
+    {
+        return Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT"));
+    }
+
+    if (store.GetDocLines(docId).All(line => line.Id != lineId))
+    {
+        return Results.BadRequest(new ApiResult(false, "UNKNOWN_LINE"));
+    }
+
+    var parsed = await ParseJsonBody<AssignDocLineHuRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    var assignRequest = parsed.Value!;
+    if (assignRequest.Qty <= 0)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_QTY"));
+    }
+
+    try
+    {
+        docs.AssignDocLineHu(
+            docId,
+            lineId,
+            assignRequest.Qty,
+            NormalizeHu(assignRequest.FromHu),
+            NormalizeHu(assignRequest.ToHu));
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+});
+
+app.MapPost("/api/docs/{docId:long}/production-receipt/auto-distribute-hus", async (long docId, HttpRequest request, IDataStore store, DocumentService docs) =>
+{
+    var doc = store.GetDoc(docId);
+    if (doc == null)
+    {
+        return Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"));
+    }
+
+    if (doc.Status != DocStatus.Draft)
+    {
+        return Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT"));
+    }
+
+    if (doc.Type != DocType.ProductionReceipt)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_DOC_TYPE"));
+    }
+
+    var parsed = await ParseJsonBody<AutoDistributeProductionReceiptHusRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    var lineIds = (parsed.Value!.LineIds ?? new List<long>())
+        .Where(id => id > 0)
+        .Distinct()
+        .ToList();
+
+    var usedHuCount = docs.AutoDistributeProductionReceiptHus(docId, lineIds.Count > 0 ? lineIds : null);
+    return Results.Ok(new
+    {
+        ok = true,
+        used_hu_count = usedHuCount
+    });
+});
+
+app.MapPost("/api/docs/{docId:long}/lines/{lineId:long}/distribute-hu-capacity", async (long docId, long lineId, HttpRequest request, IDataStore store, DocumentService docs) =>
+{
+    var doc = store.GetDoc(docId);
+    if (doc == null)
+    {
+        return Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"));
+    }
+
+    if (doc.Status != DocStatus.Draft)
+    {
+        return Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT"));
+    }
+
+    if (doc.Type != DocType.ProductionReceipt)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_DOC_TYPE"));
+    }
+
+    if (store.GetDocLines(docId).All(line => line.Id != lineId))
+    {
+        return Results.BadRequest(new ApiResult(false, "UNKNOWN_LINE"));
+    }
+
+    var parsed = await ParseJsonBody<DistributeProductionLineByHuCapacityRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    var distributeRequest = parsed.Value!;
+    if (distributeRequest.MaxQtyPerHu <= 0)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_CAPACITY"));
+    }
+
+    var huCodes = (distributeRequest.HuCodes ?? new List<string>())
+        .Where(code => !string.IsNullOrWhiteSpace(code))
+        .Select(code => code.Trim())
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToList();
+    if (huCodes.Count == 0)
+    {
+        return Results.BadRequest(new ApiResult(false, "MISSING_HU"));
+    }
+
+    try
+    {
+        docs.DistributeProductionLineByHuCapacity(docId, lineId, distributeRequest.MaxQtyPerHu, huCodes);
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+});
+
+app.MapPost("/api/docs/{docId:long}/lines/{lineId:long}/pack-single-hu", async (long docId, long lineId, HttpRequest request, IDataStore store, DocumentService docs) =>
+{
+    var doc = store.GetDoc(docId);
+    if (doc == null)
+    {
+        return Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"));
+    }
+
+    if (doc.Status != DocStatus.Draft)
+    {
+        return Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT"));
+    }
+
+    if (doc.Type != DocType.ProductionReceipt)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_DOC_TYPE"));
+    }
+
+    if (store.GetDocLines(docId).All(line => line.Id != lineId))
+    {
+        return Results.BadRequest(new ApiResult(false, "UNKNOWN_LINE"));
+    }
+
+    var parsed = await ParseJsonBody<SetPackSingleHuRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    docs.UpdateProductionLinePackSingleHu(docId, lineId, parsed.Value!.PackSingleHu);
+    return Results.Ok(new ApiResult(true));
+});
+
 app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>
 {
     var query = request.Query["q"].ToString();
     var normalized = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
     var includeInternal = string.Equals(request.Query["include_internal"], "1", StringComparison.OrdinalIgnoreCase)
                           || string.Equals(request.Query["include_internal"], "true", StringComparison.OrdinalIgnoreCase);
+    var includePendingRequests = string.Equals(request.Query["include_pending_requests"], "1", StringComparison.OrdinalIgnoreCase)
+                                 || string.Equals(request.Query["include_pending_requests"], "true", StringComparison.OrdinalIgnoreCase);
 
     var orderService = new OrderService(store);
     var orders = orderService.GetOrders();
@@ -542,6 +1698,11 @@ app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>
     }
 
     var list = orders.Select(MapOrder).ToList();
+    if (includePendingRequests)
+    {
+        var pendingCreateOrders = GetPendingCreateOrderRows(store, normalized);
+        list.AddRange(pendingCreateOrders);
+    }
     return Results.Ok(list);
 });
 
@@ -574,7 +1735,6 @@ app.MapGet("/api/orders/{orderId:long}/lines", (long orderId, IDataStore store) 
         return Results.NotFound(new ApiResult(false, "ORDER_NOT_FOUND"));
     }
 
-    var itemLookup = store.GetItems(null).ToDictionary(item => item.Id, item => item);
     var lines = orderService.GetOrderLineViews(orderId)
         .Select(line => new
         {
@@ -582,14 +1742,50 @@ app.MapGet("/api/orders/{orderId:long}/lines", (long orderId, IDataStore store) 
             order_id = line.OrderId,
             item_id = line.ItemId,
             item_name = line.ItemName,
-            barcode = itemLookup.TryGetValue(line.ItemId, out var item) ? item.Barcode : null,
+            barcode = line.Barcode,
+            gtin = line.Gtin,
             qty_ordered = line.QtyOrdered,
             qty_shipped = line.QtyShipped,
             qty_produced = line.QtyProduced,
-            qty_left = line.QtyRemaining
+            qty_left = line.QtyRemaining,
+            qty_available = line.QtyAvailable,
+            can_ship_now = line.CanShipNow,
+            shortage = line.Shortage
         })
         .ToList();
 
+    return Results.Ok(lines);
+});
+
+app.MapGet("/api/orders/{orderId:long}/shipment-remaining", (long orderId, IDataStore store) =>
+{
+    var orderService = new OrderService(store);
+    var order = orderService.GetOrder(orderId);
+    if (order == null)
+    {
+        return Results.NotFound(new ApiResult(false, "ORDER_NOT_FOUND"));
+    }
+
+    var documentService = new DocumentService(store);
+    var lines = documentService.GetOrderShipmentRemaining(orderId)
+        .Select(MapOrderShipmentRemaining)
+        .ToList();
+    return Results.Ok(lines);
+});
+
+app.MapGet("/api/orders/{orderId:long}/receipt-remaining", (long orderId, IDataStore store) =>
+{
+    var orderService = new OrderService(store);
+    var order = orderService.GetOrder(orderId);
+    if (order == null)
+    {
+        return Results.NotFound(new ApiResult(false, "ORDER_NOT_FOUND"));
+    }
+
+    var documentService = new DocumentService(store);
+    var lines = documentService.GetOrderReceiptRemaining(orderId)
+        .Select(MapOrderReceiptRemaining)
+        .ToList();
     return Results.Ok(lines);
 });
 
@@ -799,6 +1995,82 @@ app.MapPost("/api/orders/requests/status", async (HttpRequest request, IDataStor
     });
 });
 
+app.MapGet("/api/orders/requests", (HttpRequest request, IDataStore store) =>
+{
+    var includeResolved = ParseIncludeResolved(request.Query["include_resolved"]);
+    var list = store.GetOrderRequests(includeResolved)
+        .Select(MapOrderRequest)
+        .ToList();
+    return Results.Ok(list);
+});
+
+app.MapGet("/api/requests/summary", (IDataStore store) =>
+{
+    var itemCount = store.GetItemRequests(false).Count;
+    var orderCount = store.GetOrderRequests(false).Count;
+    return Results.Ok(new
+    {
+        item_requests_pending = itemCount,
+        order_requests_pending = orderCount,
+        total_pending = itemCount + orderCount
+    });
+});
+
+app.MapPost("/api/orders/requests/{requestId:long}/resolve", async (long requestId, HttpRequest request, IDataStore store) =>
+{
+    var rawJson = await ReadBody(request);
+    if (string.IsNullOrWhiteSpace(rawJson))
+    {
+        return Results.BadRequest(new ApiResult(false, "EMPTY_BODY"));
+    }
+
+    ResolveOrderRequestRequest? resolveRequest;
+    try
+    {
+        resolveRequest = JsonSerializer.Deserialize<ResolveOrderRequestRequest>(
+            rawJson,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    }
+    catch (JsonException)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+    }
+
+    if (resolveRequest == null)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+    }
+
+    var existing = store.GetOrderRequests(true)
+        .FirstOrDefault(orderRequest => orderRequest.Id == requestId);
+    if (existing == null)
+    {
+        return Results.NotFound(new ApiResult(false, "ORDER_REQUEST_NOT_FOUND"));
+    }
+
+    var status = NormalizeOrderRequestResolutionStatus(resolveRequest.Status);
+    if (status == null)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_STATUS"));
+    }
+
+    var resolvedBy = string.IsNullOrWhiteSpace(resolveRequest.ResolvedBy)
+        ? "WPF"
+        : resolveRequest.ResolvedBy.Trim();
+    var note = string.IsNullOrWhiteSpace(resolveRequest.Note)
+        ? null
+        : resolveRequest.Note.Trim();
+
+    store.ResolveOrderRequest(
+        requestId,
+        status,
+        resolvedBy,
+        note,
+        resolveRequest.AppliedOrderId);
+
+    return Results.Ok(new ApiResult(true));
+});
+
 app.MapGet("/api/stock", () =>
 {
     using var connection = OpenConnection(postgresConnectionString);
@@ -821,6 +2093,16 @@ ORDER BY item_id, location_id;";
         });
     }
 
+    return Results.Ok(rows);
+});
+
+app.MapGet("/api/stock/rows", (HttpRequest request, IDataStore store) =>
+{
+    var query = request.Query["q"].ToString();
+    var normalized = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
+    var rows = store.GetStock(normalized)
+        .Select(MapStockRow)
+        .ToList();
     return Results.Ok(rows);
 });
 
@@ -987,9 +2269,10 @@ ORDER BY h.hu_code;";
     return Results.Ok(rows);
 });
 
-app.MapGet("/api/hus", (HttpRequest request) =>
+app.MapGet("/api/hus", (HttpRequest request, IDataStore store) =>
 {
     var takeText = request.Query["take"].ToString();
+    var searchText = request.Query["q"].ToString();
     var take = 200;
     if (!string.IsNullOrWhiteSpace(takeText) && int.TryParse(takeText, out var parsed))
     {
@@ -1005,30 +2288,10 @@ app.MapGet("/api/hus", (HttpRequest request) =>
         take = 1000;
     }
 
-    using var connection = OpenConnection(postgresConnectionString);
-    using var command = connection.CreateCommand();
-    command.CommandText = @"
-SELECT id, hu_code, status, created_at, created_by, closed_at, note
-FROM hus
-ORDER BY id DESC
-LIMIT @take;";
-    AddParam(command, "@take", take);
-    using var reader = command.ExecuteReader();
-    var list = new List<object>();
-    while (reader.Read())
-    {
-        list.Add(new
-        {
-            id = reader.GetInt64(0),
-            hu_code = reader.GetString(1),
-            status = reader.GetString(2),
-            created_at = reader.GetString(3),
-            created_by = reader.IsDBNull(4) ? null : reader.GetString(4),
-            closed_at = reader.IsDBNull(5) ? null : reader.GetString(5),
-            note = reader.IsDBNull(6) ? null : reader.GetString(6)
-        });
-    }
-
+    var normalizedSearch = string.IsNullOrWhiteSpace(searchText) ? null : searchText.Trim();
+    var list = store.GetHus(normalizedSearch, take)
+        .Select(MapHuRecord)
+        .ToList();
     return Results.Ok(list);
 });
 
@@ -1054,17 +2317,93 @@ app.MapGet("/api/hus/{huCode}", (string huCode, IDataStore store) =>
     return Results.Ok(new
     {
         ok = true,
-        hu = new
-        {
-            id = record.Id,
-            hu_code = record.Code,
-            status = record.Status,
-            created_at = record.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
-            created_by = record.CreatedBy,
-            closed_at = record.ClosedAt?.ToString("O", CultureInfo.InvariantCulture),
-            note = record.Note
-        }
+        hu = MapHuRecord(record)
     });
+});
+
+app.MapGet("/api/hus/{huCode}/ledger", (string huCode, IDataStore store) =>
+{
+    if (string.IsNullOrWhiteSpace(huCode))
+    {
+        return Results.BadRequest(new ApiResult(false, "MISSING_HU"));
+    }
+
+    var normalized = NormalizeHu(huCode);
+    if (string.IsNullOrWhiteSpace(normalized))
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_HU"));
+    }
+
+    var rows = store.GetHuLedgerRows(normalized)
+        .Select(MapHuLedgerRow)
+        .ToList();
+    return Results.Ok(rows);
+});
+
+app.MapPost("/api/hus", async (HttpRequest request, IDataStore store) =>
+{
+    var parsed = await ParseJsonBody<CreateHuRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    var huCode = NormalizeHu(parsed.Value!.HuCode);
+    if (string.IsNullOrWhiteSpace(huCode))
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_HU"));
+    }
+
+    var existing = store.GetHuByCode(huCode);
+    if (existing != null)
+    {
+        return Results.Ok(new
+        {
+            ok = true,
+            created = false,
+            hu = MapHuRecord(existing)
+        });
+    }
+
+    var createdBy = string.IsNullOrWhiteSpace(parsed.Value.CreatedBy) ? null : parsed.Value.CreatedBy.Trim();
+    var created = store.CreateHuRecord(huCode, createdBy);
+    return Results.Ok(new
+    {
+        ok = true,
+        created = true,
+        hu = MapHuRecord(created)
+    });
+});
+
+app.MapPost("/api/hus/{huCode}/close", async (string huCode, HttpRequest request, IDataStore store) =>
+{
+    if (string.IsNullOrWhiteSpace(huCode))
+    {
+        return Results.BadRequest(new ApiResult(false, "MISSING_HU"));
+    }
+
+    var normalized = NormalizeHu(huCode);
+    if (string.IsNullOrWhiteSpace(normalized))
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_HU"));
+    }
+
+    var existing = store.GetHuByCode(normalized);
+    if (existing == null)
+    {
+        return Results.NotFound(new ApiResult(false, "UNKNOWN_HU"));
+    }
+
+    var parsed = await ParseJsonBody<CloseHuRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    var closedBy = string.IsNullOrWhiteSpace(parsed.Value!.ClosedBy) ? null : parsed.Value.ClosedBy.Trim();
+    var note = string.IsNullOrWhiteSpace(parsed.Value.Note) ? null : parsed.Value.Note.Trim();
+    store.CloseHu(normalized, closedBy, note);
+    return Results.Ok(new ApiResult(true));
 });
 
 app.MapPost("/api/hus/generate", (HuGenerateRequest request) =>
@@ -1121,7 +2460,7 @@ RETURNING id;
 });
 
 // Example (RECEIVE):
-// curl.exe -k -X POST "https://localhost:7153/api/ops" -H "Content-Type: application/json" ^
+// curl.exe -k -X POST "https://localhost:7154/api/ops" -H "Content-Type: application/json" ^
 //   -d "{\"schema_version\":1,\"event_id\":\"...\",\"ts\":\"2026-01-27T18:45:00Z\",\"device_id\":\"CT48-01\",\"op\":\"RECEIVE\",\"doc_ref\":\"IN-ONLINE-0001\",\"barcode\":\"4660011933641\",\"qty\":10,\"to_loc\":\"A1\"}"
 OpsEndpoint.Map(app);
 DocumentDraftEndpoints.Map(app);
@@ -1151,46 +2490,6 @@ static string BuildPostgresConnectionString(IConfiguration configuration)
     }
 
     return builder.ConnectionString;
-}
-
-static int ResolvePcPort(IConfiguration configuration)
-{
-    var configured = configuration["FLOWSTOCK_PC_PORT"];
-    if (!string.IsNullOrWhiteSpace(configured) && int.TryParse(configured, out var parsed))
-    {
-        return parsed;
-    }
-
-    var pcUrl = configuration["Kestrel:Endpoints:PcHttps:Url"];
-    if (!string.IsNullOrWhiteSpace(pcUrl))
-    {
-        var urlValue = pcUrl.Contains("://", StringComparison.Ordinal) ? pcUrl : $"https://{pcUrl}";
-        if (Uri.TryCreate(urlValue, UriKind.Absolute, out var uri) && uri.Port > 0)
-        {
-            return uri.Port;
-        }
-    }
-
-    return 7154;
-}
-
-static bool IsPcRequest(HttpContext context, int pcPort)
-{
-    if (context.Connection.LocalPort == pcPort)
-    {
-        return true;
-    }
-
-    if (!context.Request.Headers.TryGetValue("X-Forwarded-Proto", out var forwardedProto))
-    {
-        return false;
-    }
-
-    var proto = forwardedProto.ToString()
-        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-        .FirstOrDefault();
-
-    return string.Equals(proto, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
 }
 
 static void LogDbInfo(ILogger logger, string? postgresConnectionString)
@@ -1315,6 +2614,56 @@ static string NormalizeDevicePlatform(string? value)
         "PC_TSD" => "BOTH",
         _ => "TSD"
     };
+}
+
+static byte[] HashPassword(string password, byte[] salt, int iterations)
+{
+    using var derive = new Rfc2898DeriveBytes(password, salt, iterations, HashAlgorithmName.SHA256);
+    return derive.GetBytes(32);
+}
+
+static void EnsureUniqueTsdDeviceLogin(DbConnection connection, string login, long? excludedId)
+{
+    using var command = connection.CreateCommand();
+    command.CommandText = excludedId.HasValue
+        ? @"
+SELECT 1
+FROM tsd_devices
+WHERE UPPER(login) = UPPER(@login)
+  AND id <> @excluded_id
+LIMIT 1;"
+        : @"
+SELECT 1
+FROM tsd_devices
+WHERE UPPER(login) = UPPER(@login)
+LIMIT 1;";
+    AddParam(command, "@login", login);
+    if (excludedId.HasValue)
+    {
+        AddParam(command, "@excluded_id", excludedId.Value);
+    }
+
+    if (command.ExecuteScalar() != null)
+    {
+        throw new InvalidOperationException("Логин уже используется другим аккаунтом ПК/ТСД.");
+    }
+}
+
+static string GenerateTsdDeviceId(DbConnection connection)
+{
+    for (var attempt = 0; attempt < 5; attempt++)
+    {
+        var candidate = $"ACC-{Guid.NewGuid():N}".Substring(0, 12).ToUpperInvariant();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM tsd_devices WHERE device_id = @device_id LIMIT 1;";
+        AddParam(command, "@device_id", candidate);
+        if (command.ExecuteScalar() == null)
+        {
+            return candidate;
+        }
+    }
+
+    throw new InvalidOperationException("Не удалось сгенерировать уникальный ID аккаунта.");
 }
 
 static IReadOnlyDictionary<string, bool> BuildClientBlockStates(IReadOnlyList<ClientBlockSetting> settings)
@@ -1447,8 +2796,68 @@ static object MapOrder(Order order)
         partner_code = order.PartnerCode,
         due_date = order.DueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
         status = OrderStatusMapper.StatusToDisplayName(order.Status, order.Type),
+        comment = order.Comment,
         created_at = order.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
         shipped_at = order.ShippedAt?.ToString("O", CultureInfo.InvariantCulture)
+    };
+}
+
+static object MapItem(Item item)
+{
+    return new
+    {
+        id = item.Id,
+        name = item.Name,
+        barcode = item.Barcode,
+        gtin = item.Gtin,
+        base_uom = string.IsNullOrWhiteSpace(item.BaseUom) ? "шт" : item.BaseUom,
+        base_uom_code = string.IsNullOrWhiteSpace(item.BaseUom) ? "шт" : item.BaseUom,
+        default_packaging_id = item.DefaultPackagingId,
+        max_qty_per_hu = item.MaxQtyPerHu,
+        brand = item.Brand,
+        volume = item.Volume,
+        shelf_life_months = item.ShelfLifeMonths,
+        tara_id = item.TaraId,
+        tara_name = item.TaraName,
+        is_marked = item.IsMarked,
+        item_type_id = item.ItemTypeId,
+        item_type_name = item.ItemTypeName,
+        item_type_is_visible_in_product_catalog = item.ItemTypeIsVisibleInProductCatalog,
+        item_type_enable_min_stock_control = item.ItemTypeEnableMinStockControl,
+        min_stock_qty = item.MinStockQty
+    };
+}
+
+static object MapItemRequest(ItemRequest request)
+{
+    return new
+    {
+        id = request.Id,
+        barcode = request.Barcode,
+        comment = request.Comment,
+        device_id = request.DeviceId,
+        login = request.Login,
+        created_at = request.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
+        status = request.Status,
+        resolved_at = request.ResolvedAt?.ToString("O", CultureInfo.InvariantCulture)
+    };
+}
+
+static object MapOrderRequest(OrderRequest request)
+{
+    return new
+    {
+        id = request.Id,
+        request_type = request.RequestType,
+        payload_json = request.PayloadJson,
+        status = request.Status,
+        created_at = request.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
+        created_by_login = request.CreatedByLogin,
+        created_by_device_id = request.CreatedByDeviceId,
+        resolved_at = request.ResolvedAt?.ToString("O", CultureInfo.InvariantCulture),
+        resolved_by = request.ResolvedBy,
+        resolution_note = request.ResolutionNote,
+        applied_order_id = request.AppliedOrderId
     };
 }
 
@@ -1470,7 +2879,214 @@ static string GenerateNextOrderRef(IDataStore store)
         }
     }
 
+    foreach (var request in store.GetOrderRequests(includeResolved: false))
+    {
+        if (!string.Equals(request.RequestType, OrderRequestType.CreateOrder, StringComparison.OrdinalIgnoreCase))
+        {
+            continue;
+        }
+
+        var orderRef = TryReadJsonString(request.PayloadJson, "order_ref")?.Trim();
+        if (string.IsNullOrWhiteSpace(orderRef) || !IsDigitsOnly(orderRef))
+        {
+            continue;
+        }
+
+        if (long.TryParse(orderRef, NumberStyles.None, CultureInfo.InvariantCulture, out var value)
+            && value > max)
+        {
+            max = value;
+        }
+    }
+
     return (max + 1).ToString("D3", CultureInfo.InvariantCulture);
+}
+
+static List<object> GetPendingCreateOrderRows(IDataStore store, string? normalizedQuery)
+{
+    var rows = new List<object>();
+    var pendingRequests = store.GetOrderRequests(includeResolved: false)
+        .Where(request => string.Equals(request.RequestType, OrderRequestType.CreateOrder, StringComparison.OrdinalIgnoreCase))
+        .OrderByDescending(request => request.CreatedAt)
+        .ThenByDescending(request => request.Id);
+
+    foreach (var request in pendingRequests)
+    {
+        var orderRef = TryReadJsonString(request.PayloadJson, "order_ref")?.Trim();
+        if (string.IsNullOrWhiteSpace(orderRef))
+        {
+            continue;
+        }
+
+        var partnerId = TryReadJsonInt64(request.PayloadJson, "partner_id");
+        var partner = partnerId.HasValue ? store.GetPartner(partnerId.Value) : null;
+        var dueDate = TryReadJsonString(request.PayloadJson, "due_date");
+        var partnerName = partner?.Name ?? string.Empty;
+        var partnerCode = partner?.Code ?? string.Empty;
+        var lines = TryReadPendingCreateOrderLines(store, request.PayloadJson);
+
+        if (!string.IsNullOrWhiteSpace(normalizedQuery)
+            && !orderRef.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase)
+            && !partnerName.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase)
+            && !partnerCode.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase))
+        {
+            continue;
+        }
+
+        rows.Add(new
+        {
+            id = $"request:{request.Id}",
+            request_id = request.Id,
+            order_ref = orderRef,
+            order_type = OrderStatusMapper.TypeToString(OrderType.Customer),
+            partner_id = partnerId,
+            partner_name = partnerName,
+            partner_code = partnerCode,
+            due_date = dueDate,
+            status = "Ожидает подтверждения",
+            status_code = "PENDING_CONFIRMATION",
+            created_at = request.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
+            shipped_at = (string?)null,
+            is_pending_confirmation = true,
+            lines
+        });
+    }
+
+    return rows;
+}
+
+static List<object> TryReadPendingCreateOrderLines(IDataStore store, string json)
+{
+    var result = new List<object>();
+    try
+    {
+        using var document = JsonDocument.Parse(json);
+        if (!document.RootElement.TryGetProperty("lines", out var linesElement)
+            || linesElement.ValueKind != JsonValueKind.Array)
+        {
+            return result;
+        }
+
+        var availableByItem = store.GetLedgerTotalsByItem();
+        foreach (var lineElement in linesElement.EnumerateArray())
+        {
+            var itemId = TryReadJsonElementInt64(lineElement, "item_id");
+            if (!itemId.HasValue || itemId.Value <= 0)
+            {
+                continue;
+            }
+
+            var item = store.FindItemById(itemId.Value);
+            var available = availableByItem.TryGetValue(itemId.Value, out var availableQty) ? availableQty : 0d;
+            result.Add(new
+            {
+                item_id = itemId.Value,
+                item_name = item?.Name ?? $"ID={itemId.Value}",
+                barcode = item?.Barcode,
+                gtin = item?.Gtin,
+                qty_ordered = TryReadJsonElementDouble(lineElement, "qty_ordered") ?? 0d,
+                qty_shipped = 0d,
+                qty_produced = 0d,
+                qty_left = TryReadJsonElementDouble(lineElement, "qty_ordered") ?? 0d,
+                qty_available = available
+            });
+        }
+    }
+    catch (JsonException)
+    {
+        return result;
+    }
+
+    return result;
+}
+
+static string? TryReadJsonString(string json, string propertyName)
+{
+    try
+    {
+        using var document = JsonDocument.Parse(json);
+        if (!document.RootElement.TryGetProperty(propertyName, out var property))
+        {
+            return null;
+        }
+
+        return property.ValueKind == JsonValueKind.String ? property.GetString() : property.ToString();
+    }
+    catch (JsonException)
+    {
+        return null;
+    }
+}
+
+static long? TryReadJsonInt64(string json, string propertyName)
+{
+    try
+    {
+        using var document = JsonDocument.Parse(json);
+        if (!document.RootElement.TryGetProperty(propertyName, out var property))
+        {
+            return null;
+        }
+
+        if (property.ValueKind == JsonValueKind.Number && property.TryGetInt64(out var number))
+        {
+            return number;
+        }
+
+        if (property.ValueKind == JsonValueKind.String
+            && long.TryParse(property.GetString(), NumberStyles.None, CultureInfo.InvariantCulture, out var parsed))
+        {
+            return parsed;
+        }
+    }
+    catch (JsonException)
+    {
+        return null;
+    }
+
+    return null;
+}
+
+static long? TryReadJsonElementInt64(JsonElement element, string propertyName)
+{
+    if (!element.TryGetProperty(propertyName, out var property))
+    {
+        return null;
+    }
+
+    if (property.ValueKind == JsonValueKind.Number && property.TryGetInt64(out var number))
+    {
+        return number;
+    }
+
+    if (property.ValueKind == JsonValueKind.String
+        && long.TryParse(property.GetString(), NumberStyles.None, CultureInfo.InvariantCulture, out var parsed))
+    {
+        return parsed;
+    }
+
+    return null;
+}
+
+static double? TryReadJsonElementDouble(JsonElement element, string propertyName)
+{
+    if (!element.TryGetProperty(propertyName, out var property))
+    {
+        return null;
+    }
+
+    if (property.ValueKind == JsonValueKind.Number && property.TryGetDouble(out var number))
+    {
+        return number;
+    }
+
+    if (property.ValueKind == JsonValueKind.String
+        && double.TryParse(property.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
+    {
+        return parsed;
+    }
+
+    return null;
 }
 
 static bool IsDigitsOnly(string value)
@@ -1510,6 +3126,7 @@ static object MapDoc(Doc doc)
         shipping_ref = doc.ShippingRef,
         reason_code = doc.ReasonCode,
         comment = doc.Comment,
+        production_batch_no = doc.ProductionBatchNo,
         source_device_id = doc.SourceDeviceId,
         line_count = doc.LineCount
     };
@@ -1531,7 +3148,109 @@ static object MapDocLine(DocLineView line)
         from_location = line.FromLocation,
         to_location = line.ToLocation,
         from_hu = line.FromHu,
-        to_hu = line.ToHu
+        to_hu = line.ToHu,
+        pack_single_hu = line.PackSingleHu
+    };
+}
+
+static object MapOrderShipmentRemaining(OrderShipmentLine line)
+{
+    return new
+    {
+        order_line_id = line.OrderLineId,
+        order_id = line.OrderId,
+        item_id = line.ItemId,
+        item_name = line.ItemName,
+        qty_ordered = line.QtyOrdered,
+        qty_shipped = line.QtyShipped,
+        qty_remaining = line.QtyRemaining
+    };
+}
+
+static object MapOrderReceiptRemaining(OrderReceiptLine line)
+{
+    return new
+    {
+        order_line_id = line.OrderLineId,
+        order_id = line.OrderId,
+        item_id = line.ItemId,
+        item_name = line.ItemName,
+        qty_ordered = line.QtyOrdered,
+        qty_received = line.QtyReceived,
+        qty_remaining = line.QtyRemaining
+    };
+}
+
+static object MapStockRow(StockRow row)
+{
+    return new
+    {
+        item_id = row.ItemId,
+        item_name = row.ItemName,
+        barcode = row.Barcode,
+        location_code = row.LocationCode,
+        hu = row.Hu,
+        qty = row.Qty,
+        base_uom = string.IsNullOrWhiteSpace(row.BaseUom) ? "шт" : row.BaseUom,
+        item_type_id = row.ItemTypeId,
+        item_type_name = row.ItemTypeName,
+        item_type_enable_min_stock_control = row.ItemTypeEnableMinStockControl,
+        min_stock_qty = row.MinStockQty
+    };
+}
+
+static object MapHuRecord(HuRecord record)
+{
+    return new
+    {
+        id = record.Id,
+        hu_code = record.Code,
+        status = record.Status,
+        created_at = record.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
+        created_by = record.CreatedBy,
+        closed_at = record.ClosedAt?.ToString("O", CultureInfo.InvariantCulture),
+        note = record.Note
+    };
+}
+
+static object MapHuLedgerRow(HuLedgerRow row)
+{
+    return new
+    {
+        hu_code = row.HuCode,
+        item_id = row.ItemId,
+        item_name = row.ItemName,
+        location_id = row.LocationId,
+        location_code = row.LocationCode,
+        qty = row.Qty,
+        base_uom = string.IsNullOrWhiteSpace(row.BaseUom) ? "шт" : row.BaseUom
+    };
+}
+
+static object MapImportErrorView(ImportErrorView error)
+{
+    return new
+    {
+        id = error.Id,
+        event_id = error.EventId,
+        reason = error.Reason,
+        raw_json = error.RawJson,
+        created_at = error.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
+        barcode = error.Barcode
+    };
+}
+
+static object MapItemPackaging(ItemPackaging packaging)
+{
+    return new
+    {
+        id = packaging.Id,
+        item_id = packaging.ItemId,
+        code = packaging.Code,
+        name = packaging.Name,
+        factor_to_base = packaging.FactorToBase,
+        is_active = packaging.IsActive,
+        sort_order = packaging.SortOrder
     };
 }
 
@@ -1539,6 +3258,81 @@ static async Task<string> ReadBody(HttpRequest request)
 {
     using var reader = new StreamReader(request.Body);
     return await reader.ReadToEndAsync();
+}
+
+static async Task<(bool IsSuccess, T? Value, IResult? Error)> ParseJsonBody<T>(HttpRequest request)
+{
+    var rawJson = await ReadBody(request);
+    if (string.IsNullOrWhiteSpace(rawJson))
+    {
+        return (false, default, Results.BadRequest(new ApiResult(false, "EMPTY_BODY")));
+    }
+
+    try
+    {
+        var value = JsonSerializer.Deserialize<T>(
+            rawJson,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        if (value == null)
+        {
+            return (false, default, Results.BadRequest(new ApiResult(false, "INVALID_JSON")));
+        }
+
+        return (true, value, null);
+    }
+    catch (JsonException)
+    {
+        return (false, default, Results.BadRequest(new ApiResult(false, "INVALID_JSON")));
+    }
+}
+
+static bool ParseIncludeResolved(string? value)
+{
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        return false;
+    }
+
+    return value.Trim().ToLowerInvariant() switch
+    {
+        "1" => true,
+        "true" => true,
+        "yes" => true,
+        "on" => true,
+        _ => false
+    };
+}
+
+static bool ParseIncludeInactive(string? value)
+{
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        return false;
+    }
+
+    return value.Trim().ToLowerInvariant() switch
+    {
+        "1" => true,
+        "true" => true,
+        "yes" => true,
+        "on" => true,
+        _ => false
+    };
+}
+
+static string? NormalizeOrderRequestResolutionStatus(string? value)
+{
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        return null;
+    }
+
+    return value.Trim().ToUpperInvariant() switch
+    {
+        OrderRequestStatus.Approved => OrderRequestStatus.Approved,
+        OrderRequestStatus.Rejected => OrderRequestStatus.Rejected,
+        _ => null
+    };
 }
 
 static bool TryParseManualOrderStatus(string? value, out OrderStatus status)
@@ -1595,9 +3389,104 @@ static IReadOnlyDictionary<long, PartnerRole> LoadPartnerStatuses()
     }
 }
 
+static void SavePartnerStatus(long partnerId, PartnerRole status)
+{
+    var path = GetPartnerStatusPath();
+    Dictionary<long, PartnerRole> data;
+    if (File.Exists(path))
+    {
+        try
+        {
+            var json = File.ReadAllText(path);
+            var options = new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+                Converters = { new JsonStringEnumConverter() }
+            };
+            data = JsonSerializer.Deserialize<Dictionary<long, PartnerRole>>(json, options)
+                   ?? new Dictionary<long, PartnerRole>();
+        }
+        catch
+        {
+            data = new Dictionary<long, PartnerRole>();
+        }
+    }
+    else
+    {
+        data = new Dictionary<long, PartnerRole>();
+    }
+
+    data[partnerId] = status;
+    SavePartnerStatuses(path, data);
+}
+
+static void RemovePartnerStatus(long partnerId)
+{
+    var path = GetPartnerStatusPath();
+    if (!File.Exists(path))
+    {
+        return;
+    }
+
+    try
+    {
+        var json = File.ReadAllText(path);
+        var options = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            Converters = { new JsonStringEnumConverter() }
+        };
+        var data = JsonSerializer.Deserialize<Dictionary<long, PartnerRole>>(json, options)
+                   ?? new Dictionary<long, PartnerRole>();
+        if (!data.Remove(partnerId))
+        {
+            return;
+        }
+
+        SavePartnerStatuses(path, data);
+    }
+    catch
+    {
+    }
+}
+
+static void SavePartnerStatuses(string path, Dictionary<long, PartnerRole> data)
+{
+    var dir = Path.GetDirectoryName(path);
+    if (!string.IsNullOrWhiteSpace(dir))
+    {
+        Directory.CreateDirectory(dir);
+    }
+
+    var options = new JsonSerializerOptions
+    {
+        WriteIndented = true,
+        Converters = { new JsonStringEnumConverter() }
+    };
+    var json = JsonSerializer.Serialize(data, options);
+    File.WriteAllText(path, json);
+}
+
 static string GetPartnerStatusPath()
 {
     return Path.Combine(ServerPaths.BaseDir, "partner_statuses.json");
+}
+
+static PartnerRole? ParsePartnerStatusValue(string? value)
+{
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        return PartnerRole.Both;
+    }
+
+    return value.Trim().ToUpperInvariant() switch
+    {
+        "SUPPLIER" => PartnerRole.Supplier,
+        "CLIENT" => PartnerRole.Client,
+        "CUSTOMER" => PartnerRole.Client,
+        "BOTH" => PartnerRole.Both,
+        _ => null
+    };
 }
 
 static PartnerRoleFilter ParsePartnerRole(string? value)

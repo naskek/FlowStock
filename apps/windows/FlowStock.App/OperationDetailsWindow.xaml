@@ -25,7 +25,9 @@
             <WrapPanel x:Name="DocHeaderPanel" Margin="0,6,0,0">
                 <StackPanel x:Name="DocPartnerPanel" Margin="0,0,12,0">
                     <TextBlock x:Name="DocPartnerLabel" Text="Контрагент" />
-                    <ComboBox x:Name="DocPartnerCombo" Width="220" Margin="0,4,0,0" DisplayMemberPath="DisplayName" />
+                    <ComboBox x:Name="DocPartnerCombo" Width="220" Margin="0,4,0,0" DisplayMemberPath="DisplayName"
+                              IsEditable="True" IsTextSearchEnabled="False" TextSearch.TextPath="DisplayName"
+                              StaysOpenOnEdit="True" />
                 </StackPanel>
                 <StackPanel x:Name="DocOrderPanel" Margin="0,0,12,0">
                     <TextBlock Text="Заказ" />

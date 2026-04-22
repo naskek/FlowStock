@@ -22,11 +22,6 @@ public sealed class WpfCloseDocumentService
         _apiClient = new CloseDocumentApiClient();
     }
 
-    public bool IsServerCloseEnabled()
-    {
-        return LoadConfiguration().UseServerCloseDocument;
-    }
-
     public WpfServerCloseConfiguration GetEffectiveConfiguration()
     {
         return LoadConfiguration();
@@ -35,11 +30,6 @@ public sealed class WpfCloseDocumentService
     public async Task<WpfCloseDocumentResult> CloseAsync(Doc doc, CancellationToken cancellationToken = default)
     {
         var configuration = LoadConfiguration();
-        if (!configuration.UseServerCloseDocument)
-        {
-            return WpfCloseDocumentResult.FeatureDisabled();
-        }
-
         string docUid;
         try
         {
@@ -200,7 +190,6 @@ public sealed class WpfCloseDocumentService
     private WpfServerCloseConfiguration LoadConfiguration()
     {
         var settings = _settings.Load().Server ?? new ServerSettings();
-        var useServerClose = ReadEnvBool("FLOWSTOCK_USE_SERVER_CLOSE_DOCUMENT") ?? settings.UseServerCloseDocument;
         var baseUrl = NormalizeBaseUrl(ReadEnvOrSettings("FLOWSTOCK_SERVER_BASE_URL", settings.BaseUrl) ?? DefaultServerBaseUrl);
         var deviceId = ReadEnvOrSettings("FLOWSTOCK_SERVER_DEVICE_ID", settings.DeviceId);
         if (string.IsNullOrWhiteSpace(deviceId))
@@ -215,7 +204,7 @@ public sealed class WpfCloseDocumentService
         }
 
         var allowInvalidTls = ReadEnvBool("FLOWSTOCK_SERVER_ALLOW_INVALID_TLS") ?? settings.AllowInvalidTls;
-        return new WpfServerCloseConfiguration(useServerClose, baseUrl, deviceId, timeoutSeconds, allowInvalidTls);
+        return new WpfServerCloseConfiguration(baseUrl, deviceId, timeoutSeconds, allowInvalidTls);
     }
 
     public static string BuildDefaultDeviceId()
@@ -371,7 +360,6 @@ WHERE doc_uid = @doc_uid;";
     }
 
     public sealed record WpfServerCloseConfiguration(
-        bool UseServerCloseDocument,
         string BaseUrl,
         string DeviceId,
         int CloseTimeoutSeconds,
@@ -389,14 +377,6 @@ public sealed class WpfCloseDocumentResult
     public bool IsSuccess => Kind is WpfCloseDocumentResultKind.Closed
         or WpfCloseDocumentResultKind.AlreadyClosed
         or WpfCloseDocumentResultKind.IdempotentReplay;
-
-    public static WpfCloseDocumentResult FeatureDisabled()
-    {
-        return new WpfCloseDocumentResult
-        {
-            Kind = WpfCloseDocumentResultKind.FeatureDisabled
-        };
-    }
 
     public static WpfCloseDocumentResult FromServerResponse(
         WpfCloseDocumentResultKind kind,
@@ -429,7 +409,6 @@ public sealed class WpfCloseDocumentResult
 
 public enum WpfCloseDocumentResultKind
 {
-    FeatureDisabled,
     Closed,
     AlreadyClosed,
     IdempotentReplay,

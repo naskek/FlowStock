@@ -17,11 +17,6 @@ public sealed class WpfUpdateOrderService
         _apiClient = new UpdateOrderApiClient();
     }
 
-    public bool IsServerUpdateEnabled()
-    {
-        return LoadConfiguration().UseServerUpdateOrder;
-    }
-
     public WpfServerUpdateOrderConfiguration GetEffectiveConfiguration()
     {
         return LoadConfiguration();
@@ -32,11 +27,6 @@ public sealed class WpfUpdateOrderService
         CancellationToken cancellationToken = default)
     {
         var configuration = LoadConfiguration();
-        if (!configuration.UseServerUpdateOrder)
-        {
-            return WpfUpdateOrderResult.FeatureDisabled();
-        }
-
         var request = new UpdateOrderApiRequest
         {
             OrderRef = NormalizeValue(context.RequestedOrderRef),
@@ -223,7 +213,6 @@ public sealed class WpfUpdateOrderService
     private WpfServerUpdateOrderConfiguration LoadConfiguration()
     {
         var settings = _settings.Load().Server ?? new ServerSettings();
-        var useServerUpdateOrder = ReadEnvBool("FLOWSTOCK_USE_SERVER_UPDATE_ORDER") ?? settings.UseServerUpdateOrder;
         var baseUrl = NormalizeBaseUrl(ReadEnvOrSettings("FLOWSTOCK_SERVER_BASE_URL", settings.BaseUrl) ?? WpfCloseDocumentService.DefaultServerBaseUrl);
         var timeoutSeconds = ReadEnvInt("FLOWSTOCK_SERVER_CLOSE_TIMEOUT_SECONDS") ?? settings.CloseTimeoutSeconds;
         if (timeoutSeconds < 1)
@@ -232,7 +221,7 @@ public sealed class WpfUpdateOrderService
         }
 
         var allowInvalidTls = ReadEnvBool("FLOWSTOCK_SERVER_ALLOW_INVALID_TLS") ?? settings.AllowInvalidTls;
-        return new WpfServerUpdateOrderConfiguration(useServerUpdateOrder, baseUrl, timeoutSeconds, allowInvalidTls);
+        return new WpfServerUpdateOrderConfiguration(baseUrl, timeoutSeconds, allowInvalidTls);
     }
 
     private static string NormalizeBaseUrl(string value)
@@ -309,7 +298,6 @@ public sealed record WpfUpdateOrderContext(
     IReadOnlyList<OrderLineView> Lines);
 
 public sealed record WpfServerUpdateOrderConfiguration(
-    bool UseServerUpdateOrder,
     string BaseUrl,
     int RequestTimeoutSeconds,
     bool AllowInvalidTls);
@@ -322,14 +310,6 @@ public sealed class WpfUpdateOrderResult
     public Exception? Exception { get; init; }
 
     public bool IsSuccess => Kind == WpfUpdateOrderResultKind.Updated;
-
-    public static WpfUpdateOrderResult FeatureDisabled()
-    {
-        return new WpfUpdateOrderResult
-        {
-            Kind = WpfUpdateOrderResultKind.FeatureDisabled
-        };
-    }
 
     public static WpfUpdateOrderResult Success(string message, UpdateOrderApiResponse response)
     {
@@ -357,7 +337,6 @@ public sealed class WpfUpdateOrderResult
 
 public enum WpfUpdateOrderResultKind
 {
-    FeatureDisabled,
     Updated,
     ValidationFailed,
     NotFound,

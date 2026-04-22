@@ -9,6 +9,7 @@
   var currentView = "stock";
   var cachedItems = [];
   var cachedItemsById = {};
+  var cachedItemTypes = [];
   var cachedLocations = [];
   var cachedLocationsById = {};
   var cachedStockRows = [];
@@ -366,6 +367,10 @@
     cachedItems = Array.isArray(items) ? items : [];
     cachedItemsById = {};
     cachedItems.forEach(function (item) {
+      var minStockQty = Number(item.min_stock_qty);
+      if (!isFinite(minStockQty)) {
+        minStockQty = null;
+      }
       cachedItemsById[Number(item.id)] = {
         itemId: Number(item.id),
         name: item.name || "",
@@ -374,6 +379,10 @@
         brand: item.brand || "",
         volume: item.volume || "",
         base_uom: item.base_uom_code || item.base_uom || "",
+        itemTypeId: Number(item.item_type_id) || 0,
+        itemTypeName: item.item_type_name || "",
+        itemTypeEnableMinStockControl: item.item_type_enable_min_stock_control === true,
+        minStockQty: minStockQty,
       };
     });
   }
@@ -482,7 +491,7 @@
   function renderStock() {
     return (
       '<section class="pc-card">' +
-      '  <div class="section-title">Остатки</div>' +
+      '  <div class="section-title">Состояние склада</div>' +
       '  <div class="pc-toolbar">' +
       '    <div class="form-field">' +
       '      <label class="form-label" for="stockSearchInput">Поиск</label>' +
@@ -493,11 +502,20 @@
       '      <select class="form-input" id="stockLocationFilter"></select>' +
       "    </div>" +
       '    <div class="form-field">' +
-      '      <label class="form-label" for="stockHuFilter">HU</label>' +
-      '      <select class="form-input" id="stockHuFilter"></select>' +
+      '      <label class="form-label" for="stockTypeFilter">Тип</label>' +
+      '      <select class="form-input" id="stockTypeFilter"></select>' +
+      "    </div>" +
+      '    <div class="form-field">' +
+      '      <label class="form-label" for="stockHuInput">HU (только цифры)</label>' +
+      '      <div class="pc-hu-inline">' +
+      '        <span class="pc-hu-prefix">HU-</span>' +
+      '        <input class="form-input" id="stockHuInput" type="text" autocomplete="off" inputmode="numeric" placeholder="например, 00010" />' +
+      "      </div>" +
+      '      <div id="stockHuHint" class="pc-input-hint" hidden>Можно вводить только цифры.</div>' +
       "    </div>" +
       '    <div id="stockStatus" class="pc-status"></div>' +
       "  </div>" +
+      '  <div id="stockLowWrap"></div>' +
       '  <div id="stockTableWrap"></div>' +
       "</section>"
     );
@@ -511,6 +529,10 @@
       '    <div class="form-field">' +
       '      <label class="form-label" for="catalogSearchInput">Поиск</label>' +
       '      <input class="form-input" id="catalogSearchInput" type="text" autocomplete="off" placeholder="Название, бренд, объем, SKU, GTIN, штрихкод" />' +
+      "    </div>" +
+      '    <div class="form-field">' +
+      '      <label class="form-label" for="catalogTypeFilter">Тип</label>' +
+      '      <select class="form-input" id="catalogTypeFilter"></select>' +
       "    </div>" +
       '    <div class="pc-toolbar-actions">' +
       '      <button id="catalogRefreshBtn" class="btn btn-outline" type="button">Обновить</button>' +
@@ -639,10 +661,77 @@
   }
 
   function loadCatalogData() {
-    return fetchJson("/api/items").then(function (items) {
-      setCachedItems(items);
+    return Promise.all([
+      fetchJson("/api/items"),
+      fetchJson("/api/item-types?include_inactive=0"),
+    ]).then(function (payloads) {
+      var items = payloads[0];
+      var itemTypes = payloads[1];
+      cachedItemTypes = Array.isArray(itemTypes) ? itemTypes.slice() : [];
+      var sourceItems = Array.isArray(items) ? items : [];
+      var visibleItems = sourceItems.filter(function (item) {
+        return item && item.item_type_is_visible_in_product_catalog === true;
+      });
+      if (visibleItems.length === 0 && sourceItems.length > 0) {
+        // Fallback for legacy/inconsistent type visibility setup:
+        // keep catalog usable instead of showing an empty screen.
+        visibleItems = sourceItems.slice();
+      }
+      setCachedItems(visibleItems);
       return cachedItems;
     });
+  }
+
+  function renderLowStockTable(rows) {
+    if (!rows || !rows.length) {
+      return "";
+    }
+
+    var body = rows
+      .map(function (row) {
+        return (
+          "<tr>" +
+          "<td>" +
+          escapeHtml(row.itemName || "-") +
+          "</td>" +
+          "<td>" +
+          escapeHtml(row.itemTypeName || "-") +
+          "</td>" +
+          '<td><span class="pc-qty">' +
+          escapeHtml(row.qtyDisplay || "0") +
+          "</span></td>" +
+          "<td>" +
+          escapeHtml(row.minStockDisplay || "-") +
+          "</td>" +
+          "<td>" +
+          escapeHtml(row.shortageDisplay || "-") +
+          "</td>" +
+          "</tr>"
+        );
+      })
+      .join("");
+
+    return (
+      '<section class="pc-low-stock-card">' +
+      '  <div class="pc-low-stock-title">Позиции ниже минимума: ' +
+      rows.length +
+      "</div>" +
+      '  <div class="pc-low-stock-table-wrap">' +
+      '    <table class="pc-table">' +
+      "      <thead><tr>" +
+      "        <th>Товар</th>" +
+      "        <th>Тип</th>" +
+      "        <th>В наличии</th>" +
+      "        <th>Минимум</th>" +
+      "        <th>Нехватка</th>" +
+      "      </tr></thead>" +
+      "      <tbody>" +
+      body +
+      "      </tbody>" +
+      "    </table>" +
+      "  </div>" +
+      "</section>"
+    );
   }
 
   function loadStockData() {
@@ -651,9 +740,11 @@
       fetchJson("/api/locations"),
       fetchJson("/api/stock"),
       fetchJson("/api/hu-stock"),
+      fetchJson("/api/item-types?include_inactive=0"),
     ]).then(function (payloads) {
       setCachedItems(payloads[0]);
       setCachedLocations(payloads[1]);
+      cachedItemTypes = Array.isArray(payloads[4]) ? payloads[4] : [];
       var stockRows = Array.isArray(payloads[2]) ? payloads[2] : [];
       var huRows = Array.isArray(payloads[3]) ? payloads[3] : [];
 
@@ -672,6 +763,8 @@
           gtin: item.gtin || "",
           brand: item.brand || "",
           volume: item.volume || "",
+          itemTypeId: Number(item.itemTypeId) || 0,
+          itemTypeName: item.itemTypeName || "",
           locationCode: loc.code || "",
         };
       });
@@ -691,6 +784,8 @@
           gtin: item.gtin || "",
           brand: item.brand || "",
           volume: item.volume || "",
+          itemTypeId: Number(item.itemTypeId) || 0,
+          itemTypeName: item.itemTypeName || "",
           locationCode: loc.code || "",
           hu: row.hu || "",
         };
@@ -726,6 +821,8 @@
         gtin: row.gtin,
         brand: row.brand,
         volume: row.volume,
+        itemTypeId: Number(row.itemTypeId) || 0,
+        itemTypeName: row.itemTypeName || "",
         locationCode: row.locationCode,
         hu: "",
       });
@@ -737,8 +834,11 @@
   function wireStock() {
     var searchInput = document.getElementById("stockSearchInput");
     var locationSelect = document.getElementById("stockLocationFilter");
-    var huSelect = document.getElementById("stockHuFilter");
+    var typeFilter = document.getElementById("stockTypeFilter");
+    var huInput = document.getElementById("stockHuInput");
+    var huHint = document.getElementById("stockHuHint");
     var statusEl = document.getElementById("stockStatus");
+    var lowWrap = document.getElementById("stockLowWrap");
     var tableWrap = document.getElementById("stockTableWrap");
     var debounce = null;
 
@@ -748,64 +848,158 @@
       }
     }
 
+    function setHuValidationState(isValid) {
+      if (!huInput) {
+        return;
+      }
+      huInput.classList.toggle("form-input-error", !isValid);
+      if (huHint) {
+        huHint.hidden = isValid;
+      }
+    }
+
+    function getHuDigitsFilter() {
+      if (!huInput) {
+        return "";
+      }
+      var raw = String(huInput.value || "").trim();
+      var isValid = /^\d*$/.test(raw);
+      setHuValidationState(isValid);
+      if (!isValid) {
+        return "";
+      }
+      return raw;
+    }
+
+    function getTypeFilterId() {
+      if (!typeFilter) {
+        return 0;
+      }
+      return Number(typeFilter.value || 0) || 0;
+    }
+
+    function buildLowStockRows(typeId) {
+      var totalsByItem = {};
+      cachedStockRows.forEach(function (row) {
+        var itemId = Number(row.itemId) || 0;
+        if (!itemId) {
+          return;
+        }
+        totalsByItem[itemId] = (totalsByItem[itemId] || 0) + (Number(row.qty) || 0);
+      });
+
+      return cachedItems
+        .map(function (item) {
+          var itemId = Number(item.id) || 0;
+          var cached = cachedItemsById[itemId] || {};
+          var minStockQty = Number(cached.minStockQty);
+          var itemTypeId = Number(cached.itemTypeId) || 0;
+          if (typeId && itemTypeId !== typeId) {
+            return null;
+          }
+          if (!(cached.itemTypeEnableMinStockControl === true) || !isFinite(minStockQty)) {
+            return null;
+          }
+
+          var qty = Number(totalsByItem[itemId] || 0);
+          if (qty >= minStockQty) {
+            return null;
+          }
+
+          var shortage = Math.max(0, minStockQty - qty);
+          return {
+            itemName: cached.name || item.name || "-",
+            itemTypeName: cached.itemTypeName || "-",
+            qtyDisplay: formatQtyDisplay(qty, itemId),
+            minStockDisplay: formatQtyDisplay(minStockQty, itemId),
+            shortageDisplay: formatQtyDisplay(shortage, itemId),
+            shortage: shortage,
+          };
+        })
+        .filter(function (row) {
+          return !!row;
+        })
+        .sort(function (a, b) {
+          if (b.shortage !== a.shortage) {
+            return b.shortage - a.shortage;
+          }
+          return String(a.itemName || "").localeCompare(String(b.itemName || ""), "ru");
+        });
+    }
+
+    function renderLowStock() {
+      if (!lowWrap) {
+        return;
+      }
+      var lowRows = buildLowStockRows(getTypeFilterId());
+      lowWrap.innerHTML = renderLowStockTable(lowRows);
+    }
+
     function renderRows() {
       if (!tableWrap) {
         return;
       }
       var query = normalizeSearchQuery(searchInput ? searchInput.value : "");
       var locationId = locationSelect ? Number(locationSelect.value) : 0;
-      var hu = huSelect ? String(huSelect.value || "").trim() : "";
+      var typeId = getTypeFilterId();
+      var huDigits = getHuDigitsFilter();
       var source = cachedCombinedRows.length ? cachedCombinedRows : cachedStockRows;
 
       var rows = source.filter(function (row) {
         if (locationId && Number(row.locationId) !== locationId) {
           return false;
         }
-        if (hu && row.hu !== hu) {
+        if (typeId && Number(row.itemTypeId) !== typeId) {
+          return false;
+        }
+        var huRaw = String(row.hu || "");
+        if (huDigits && huRaw.indexOf(huDigits) === -1) {
           return false;
         }
         return matchesItemSearch(row, query, true);
       });
 
       setStatus("Строк: " + rows.length);
+      renderLowStock();
       tableWrap.innerHTML = renderStockTable(rows);
     }
 
-    function updateHuOptions() {
-      if (!huSelect) {
+    function fillTypeFilter() {
+      if (!typeFilter) {
         return;
       }
 
-      var locationId = locationSelect ? Number(locationSelect.value) : 0;
-      var previous = String(huSelect.value || "");
-      var hus = cachedHuRows
-        .filter(function (row) {
-          return !locationId || Number(row.locationId) === locationId;
-        })
-        .map(function (row) {
-          return row.hu;
-        })
-        .filter(function (value) {
-          return !!value;
-        })
-        .filter(function (value, index, arr) {
-          return arr.indexOf(value) === index;
-        })
-        .sort();
-      var huOptions =
-        '<option value="">Все HU</option>' +
-        hus
-          .map(function (code) {
-            return '<option value="' + escapeHtml(code) + '">' + escapeHtml(code) + "</option>";
+      var previous = String(typeFilter.value || "");
+      var options =
+        '<option value="">Все типы</option>' +
+        cachedItemTypes
+          .slice()
+          .sort(function (left, right) {
+            var leftOrder = Number(left && left.sort_order) || 0;
+            var rightOrder = Number(right && right.sort_order) || 0;
+            if (leftOrder !== rightOrder) {
+              return leftOrder - rightOrder;
+            }
+            var leftName = String((left && left.name) || "").toLowerCase();
+            var rightName = String((right && right.name) || "").toLowerCase();
+            return leftName < rightName ? -1 : leftName > rightName ? 1 : 0;
+          })
+          .map(function (type) {
+            var id = Number(type && type.id) || 0;
+            var name = String((type && type.name) || "").trim() || "Без названия";
+            return '<option value="' + escapeHtml(String(id)) + '">' + escapeHtml(name) + "</option>";
           })
           .join("");
-      huSelect.innerHTML = huOptions;
 
-      if (previous && hus.indexOf(previous) !== -1) {
-        huSelect.value = previous;
-        return;
+      typeFilter.innerHTML = options;
+      if (previous) {
+        var hasPrevious = Array.prototype.some.call(typeFilter.options || [], function (option) {
+          return String(option.value || "") === previous;
+        });
+        if (hasPrevious) {
+          typeFilter.value = previous;
+        }
       }
-      huSelect.value = "";
     }
 
     function fillFilters() {
@@ -827,7 +1021,7 @@
         locationSelect.innerHTML = options;
       }
 
-      updateHuOptions();
+      fillTypeFilter();
     }
 
     function scheduleRender() {
@@ -854,18 +1048,19 @@
       searchInput.addEventListener("input", scheduleRender);
     }
     if (locationSelect) {
-      locationSelect.addEventListener("change", function () {
-        updateHuOptions();
-        renderRows();
-      });
+      locationSelect.addEventListener("change", renderRows);
     }
-    if (huSelect) {
-      huSelect.addEventListener("change", renderRows);
+    if (typeFilter) {
+      typeFilter.addEventListener("change", renderRows);
+    }
+    if (huInput) {
+      huInput.addEventListener("input", scheduleRender);
     }
   }
 
   function wireCatalog() {
     var searchInput = document.getElementById("catalogSearchInput");
+    var typeFilter = document.getElementById("catalogTypeFilter");
     var refreshBtn = document.getElementById("catalogRefreshBtn");
     var statusEl = document.getElementById("catalogStatus");
     var tableWrap = document.getElementById("catalogTableWrap");
@@ -882,6 +1077,8 @@
         .map(function (item) {
           return {
             itemId: Number(item.id) || 0,
+            itemTypeId: Number(item.item_type_id) || 0,
+            itemTypeName: item.item_type_name || "",
             itemName: item.name || "",
             brand: item.brand || "",
             volume: item.volume || "",
@@ -906,7 +1103,11 @@
       }
 
       var query = normalizeSearchQuery(searchInput ? searchInput.value : "");
+      var typeId = typeFilter ? Number(typeFilter.value || 0) : 0;
       var rows = buildRows().filter(function (row) {
+        if (typeId && row.itemTypeId !== typeId) {
+          return false;
+        }
         return matchesItemSearch(row, query, false);
       });
 
@@ -914,10 +1115,49 @@
       tableWrap.innerHTML = renderCatalogTable(rows);
     }
 
+    function fillTypeFilter() {
+      if (!typeFilter) {
+        return;
+      }
+
+      var previous = String(typeFilter.value || "");
+      var options =
+        '<option value="">Все типы</option>' +
+        cachedItemTypes
+          .slice()
+          .sort(function (left, right) {
+            var leftOrder = Number(left && left.sort_order) || 0;
+            var rightOrder = Number(right && right.sort_order) || 0;
+            if (leftOrder !== rightOrder) {
+              return leftOrder - rightOrder;
+            }
+            var leftName = String((left && left.name) || "").toLowerCase();
+            var rightName = String((right && right.name) || "").toLowerCase();
+            return leftName < rightName ? -1 : leftName > rightName ? 1 : 0;
+          })
+          .map(function (type) {
+            var id = Number(type && type.id) || 0;
+            var name = String((type && type.name) || "").trim() || "Без названия";
+            return '<option value="' + escapeHtml(String(id)) + '">' + escapeHtml(name) + "</option>";
+          })
+          .join("");
+
+      typeFilter.innerHTML = options;
+      if (previous) {
+        var hasPrevious = Array.prototype.some.call(typeFilter.options || [], function (option) {
+          return String(option.value || "") === previous;
+        });
+        if (hasPrevious) {
+          typeFilter.value = previous;
+        }
+      }
+    }
+
     function loadAndRender() {
       setStatus("Загрузка...");
       loadCatalogData()
         .then(function () {
+          fillTypeFilter();
           renderRows();
         })
         .catch(function () {
@@ -937,6 +1177,9 @@
 
     if (searchInput) {
       searchInput.addEventListener("input", scheduleRender);
+    }
+    if (typeFilter) {
+      typeFilter.addEventListener("change", renderRows);
     }
     if (refreshBtn) {
       refreshBtn.addEventListener("click", loadAndRender);
@@ -980,10 +1223,11 @@
     }
     var body = rows
       .map(function (order) {
+        var isPending = order && order.is_pending_confirmation;
         return (
-          '<tr data-order="' +
-          escapeHtml(String(order.id)) +
-          '">' +
+          "<tr" +
+          ' data-order="' + escapeHtml(String(order.id)) + '"' +
+          ">" +
           "<td>" +
           escapeHtml(order.order_ref || "-") +
           "</td>" +
@@ -1000,7 +1244,7 @@
           escapeHtml(formatDate(order.shipped_at)) +
           "</td>" +
           "<td>" +
-          escapeHtml(order.status || "-") +
+          getOrderStatusHtml(order) +
           "</td>" +
           "</tr>"
         );
@@ -1025,7 +1269,7 @@
 
   function loadOrders(query) {
     var q = String(query || "").trim();
-    var url = "/api/orders?include_internal=1";
+    var url = "/api/orders?include_internal=1&include_pending_requests=1";
     if (q) {
       url += "&q=" + encodeURIComponent(q);
     }
@@ -1069,6 +1313,158 @@
     return "";
   }
 
+  function formatQuantity(value) {
+    var number = Number(value) || 0;
+    if (Math.abs(number - Math.round(number)) < 0.000001) {
+      return String(Math.round(number));
+    }
+    return number.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+  }
+
+  function isInternalOrder(order) {
+    return String(order && order.order_type ? order.order_type : "").trim().toUpperCase() === "INTERNAL";
+  }
+
+  function isShippedOrder(order) {
+    return toOrderStatusCode(order && order.status) === "SHIPPED";
+  }
+
+  function isActiveShipmentOrder(order) {
+    var status = toOrderStatusCode(order && order.status);
+    return (
+      order &&
+      !order.is_pending_confirmation &&
+      !isInternalOrder(order) &&
+      (status === "ACCEPTED" || status === "IN_PROGRESS")
+    );
+  }
+
+  function getLineRequiredQty(line) {
+    var left = Number(line && (line.qty_left != null ? line.qty_left : line.qty_remaining));
+    if (!isNaN(left)) {
+      return Math.max(0, left);
+    }
+    var ordered = Number(line && line.qty_ordered) || 0;
+    var shipped = Number(line && line.qty_shipped) || 0;
+    return Math.max(0, ordered - shipped);
+  }
+
+  function getLineAvailableQty(line) {
+    return Number(line && line.qty_available) || 0;
+  }
+
+  function getAvailabilityState(line) {
+    var required = getLineRequiredQty(line);
+    var available = getLineAvailableQty(line);
+    var shortage = Math.max(0, required - available);
+    return {
+      required: required,
+      available: available,
+      shortage: shortage,
+      ready: shortage <= 0.000001,
+    };
+  }
+
+  function getShipmentReadiness(lines) {
+    var source = Array.isArray(lines) ? lines : [];
+    if (!source.length) {
+      return null;
+    }
+
+    var totalShortage = 0;
+    var hasRequiredQty = false;
+    source.forEach(function (line) {
+      var state = getAvailabilityState(line);
+      if (state.required > 0.000001) {
+        hasRequiredQty = true;
+      }
+      totalShortage += state.shortage;
+    });
+
+    if (!hasRequiredQty) {
+      return null;
+    }
+
+    return {
+      ready: totalShortage <= 0.000001,
+      shortage: totalShortage,
+      text: totalShortage <= 0.000001 ? "Готов к отгрузке" : "Не готов к отгрузке",
+    };
+  }
+
+  function getOrderStatusHtml(order) {
+    var readiness = order && order.shipment_readiness;
+    if (readiness && readiness.text) {
+      return renderStatusBadge(readiness.text, readiness.ready ? "success" : "warning");
+    }
+    if (isShippedOrder(order)) {
+      return renderStatusBadge((order && order.status) || "Отгружен", "completed");
+    }
+    return escapeHtml((order && order.status) || (order && order.is_pending_confirmation ? "Ожидает подтверждения" : "-"));
+  }
+
+  function renderReadinessBadge(readiness) {
+    if (!readiness || !readiness.text) {
+      return "";
+    }
+    return renderStatusBadge(readiness.text, readiness.ready ? "success" : "warning", "pc-status-badge-inline");
+  }
+
+  function renderStatusBadge(text, tone, extraClass) {
+    var normalizedTone = tone || "neutral";
+    var icon = "•";
+    if (normalizedTone === "success") {
+      icon = "✓";
+    } else if (normalizedTone === "warning") {
+      icon = "!";
+    } else if (normalizedTone === "completed") {
+      icon = "✓";
+    }
+
+    var className = "pc-status-badge pc-status-badge-" + normalizedTone;
+    if (extraClass) {
+      className += " " + extraClass;
+    }
+
+    return (
+      '<span class="' +
+      className +
+      '">' +
+      '<span class="pc-status-badge-icon" aria-hidden="true">' +
+      escapeHtml(icon) +
+      "</span>" +
+      "<span>" +
+      escapeHtml(text || "-") +
+      "</span>" +
+      "</span>"
+    );
+  }
+
+  function loadOrderReadiness(order) {
+    if (!isActiveShipmentOrder(order)) {
+      return Promise.resolve(order);
+    }
+
+    return fetchJson("/api/orders/" + encodeURIComponent(order.id) + "/lines")
+      .then(function (lines) {
+        order.shipment_readiness = getShipmentReadiness(lines);
+        return order;
+      })
+      .catch(function () {
+        order.shipment_readiness = null;
+        return order;
+      });
+  }
+
+  function enrichOrdersWithReadiness(rows) {
+    var source = Array.isArray(rows) ? rows : [];
+    return Promise.all(
+      source.map(function (order) {
+        return loadOrderReadiness(order);
+      })
+    );
+  }
+
   function openNewOrderModal(onSubmitted) {
     var modal = document.createElement("div");
     modal.className = "pc-modal";
@@ -1084,8 +1480,8 @@
       '      <input class="form-input" id="newOrderRefInput" type="text" autocomplete="off" />' +
       "    </div>" +
       '    <div class="form-field">' +
-      '      <label class="form-label" for="newOrderPartnerSelect">Контрагент</label>' +
-      '      <select class="form-input" id="newOrderPartnerSelect"></select>' +
+      '      <label class="form-label" for="newOrderPartnerInput">Контрагент</label>' +
+      '      <input class="form-input" id="newOrderPartnerInput" type="text" autocomplete="off" placeholder="Введите имя или код" />' +
       "    </div>" +
       '    <div class="form-field">' +
       '      <label class="form-label" for="newOrderDueDateInput">Плановая дата</label>' +
@@ -1112,7 +1508,7 @@
       card: modal.querySelector(".pc-modal-card"),
       closeBtn: modal.querySelector("#newOrderCloseBtn"),
       orderRefInput: modal.querySelector("#newOrderRefInput"),
-      partnerSelect: modal.querySelector("#newOrderPartnerSelect"),
+      partnerInput: modal.querySelector("#newOrderPartnerInput"),
       dueDateInput: modal.querySelector("#newOrderDueDateInput"),
       commentInput: modal.querySelector("#newOrderCommentInput"),
       linesWrap: modal.querySelector("#newOrderLinesWrap"),
@@ -1123,10 +1519,14 @@
     var items = [];
     var partners = [];
     var linesState = [];
+    var selectedPartnerId = 0;
     var activeSuggestIndex = -1;
     var suggestionOverlay = document.createElement("div");
     suggestionOverlay.className = "pc-order-suggest pc-order-suggest-floating";
     document.body.appendChild(suggestionOverlay);
+    var partnerSuggestionOverlay = document.createElement("div");
+    partnerSuggestionOverlay.className = "pc-order-suggest pc-order-suggest-floating";
+    document.body.appendChild(partnerSuggestionOverlay);
 
     function setStatus(text) {
       if (refs.statusEl) {
@@ -1145,11 +1545,21 @@
       suggestionOverlay.style.maxHeight = "";
     }
 
-    function positionSuggestionOverlay(queryEl) {
+    function hidePartnerSuggestionOverlay() {
+      partnerSuggestionOverlay.classList.remove("is-open");
+      partnerSuggestionOverlay.innerHTML = "";
+      partnerSuggestionOverlay.style.left = "";
+      partnerSuggestionOverlay.style.top = "";
+      partnerSuggestionOverlay.style.width = "";
+      partnerSuggestionOverlay.style.maxHeight = "";
+    }
+
+    function positionSuggestionOverlay(queryEl, overlay) {
       if (!queryEl) {
         return;
       }
 
+      var targetOverlay = overlay || suggestionOverlay;
       var rect = queryEl.getBoundingClientRect();
       var viewportMargin = 12;
       var maxWidth = Math.max(180, window.innerWidth - viewportMargin * 2);
@@ -1173,10 +1583,10 @@
       }
       top = Math.max(viewportMargin, top);
 
-      suggestionOverlay.style.left = left + "px";
-      suggestionOverlay.style.top = top + "px";
-      suggestionOverlay.style.width = width + "px";
-      suggestionOverlay.style.maxHeight = maxHeight + "px";
+      targetOverlay.style.left = left + "px";
+      targetOverlay.style.top = top + "px";
+      targetOverlay.style.width = width + "px";
+      targetOverlay.style.maxHeight = maxHeight + "px";
     }
 
     function showSuggestionOverlay(index, queryEl, filteredItems, selectedId) {
@@ -1191,6 +1601,18 @@
       suggestionOverlay.innerHTML = buildItemSuggestionList(source, selectedId);
       suggestionOverlay.classList.add("is-open");
       positionSuggestionOverlay(queryEl);
+    }
+
+    function showPartnerSuggestionOverlay(queryEl, filteredPartners) {
+      var source = Array.isArray(filteredPartners) ? filteredPartners : [];
+      if (!queryEl || !source.length) {
+        hidePartnerSuggestionOverlay();
+        return;
+      }
+
+      partnerSuggestionOverlay.innerHTML = buildPartnerSuggestionList(source, selectedPartnerId);
+      partnerSuggestionOverlay.classList.add("is-open");
+      positionSuggestionOverlay(queryEl, partnerSuggestionOverlay);
     }
 
     function syncSuggestionOverlay() {
@@ -1216,6 +1638,22 @@
       showSuggestionOverlay(activeSuggestIndex, queryEl, filtered, line.item_id);
     }
 
+    function syncPartnerSuggestionOverlay() {
+      if (!refs.partnerInput || document.activeElement !== refs.partnerInput) {
+        hidePartnerSuggestionOverlay();
+        return;
+      }
+
+      var query = String(refs.partnerInput.value || "").trim();
+      var filtered = query ? filterPartners(query) : [];
+      if (!query || !filtered.length || findPartnerByQuery(query)) {
+        hidePartnerSuggestionOverlay();
+        return;
+      }
+
+      showPartnerSuggestionOverlay(refs.partnerInput, filtered);
+    }
+
     function applySuggestedItem(index, selectedId) {
       if (!linesState[index]) {
         return;
@@ -1224,7 +1662,7 @@
       linesState[index].item_id = selectedId;
       var selectedItem = getItemById(selectedId);
       if (selectedItem) {
-        linesState[index].query = selectedItem.gtin || selectedItem.barcode || selectedItem.name || "";
+        linesState[index].query = buildItemLabel(selectedItem);
       }
 
       var queryEl = refs.linesWrap.querySelector('.line-item-query[data-index="' + index + '"]');
@@ -1238,37 +1676,195 @@
 
     function close() {
       window.removeEventListener("resize", syncSuggestionOverlay);
+      window.removeEventListener("resize", syncPartnerSuggestionOverlay);
       if (refs.card) {
         refs.card.removeEventListener("scroll", syncSuggestionOverlay);
+        refs.card.removeEventListener("scroll", syncPartnerSuggestionOverlay);
       }
       hideSuggestionOverlay();
+      hidePartnerSuggestionOverlay();
       if (suggestionOverlay && suggestionOverlay.parentNode) {
         suggestionOverlay.parentNode.removeChild(suggestionOverlay);
+      }
+      if (partnerSuggestionOverlay && partnerSuggestionOverlay.parentNode) {
+        partnerSuggestionOverlay.parentNode.removeChild(partnerSuggestionOverlay);
       }
       if (modal && modal.parentNode) {
         modal.parentNode.removeChild(modal);
       }
     }
 
-    function buildPartnerOptions() {
-      if (!refs.partnerSelect) {
+    function buildPartnerLabel(partner) {
+      if (!partner) {
+        return "";
+      }
+      return partner.code ? partner.code + " — " + (partner.name || "") : partner.name || "";
+    }
+
+    function findPartnerByQuery(query) {
+      var normalized = normalizeText(query);
+      if (!normalized) {
+        return null;
+      }
+
+      var exact = null;
+      var exactCount = 0;
+      partners.forEach(function (partner) {
+        var label = normalizeText(buildPartnerLabel(partner));
+        var name = normalizeText(partner.name);
+        var code = normalizeText(partner.code);
+        if (label === normalized || name === normalized || code === normalized) {
+          exact = partner;
+          exactCount += 1;
+        }
+      });
+
+      return exactCount === 1 ? exact : null;
+    }
+
+    function getPartnerById(partnerId) {
+      var targetId = Number(partnerId);
+      if (!targetId) {
+        return null;
+      }
+
+      for (var i = 0; i < partners.length; i += 1) {
+        if (Number(partners[i].id) === targetId) {
+          return partners[i];
+        }
+      }
+      return null;
+    }
+
+    function getPartnerMatchRank(partner, normalizedQuery) {
+      var code = normalizeText(partner.code);
+      var name = normalizeText(partner.name);
+      var label = normalizeText(buildPartnerLabel(partner));
+
+      if (code && code === normalizedQuery) {
+        return 0;
+      }
+      if (name && name === normalizedQuery) {
+        return 1;
+      }
+      if (code && code.indexOf(normalizedQuery) === 0) {
+        return 2;
+      }
+      if (name && name.indexOf(normalizedQuery) === 0) {
+        return 3;
+      }
+      if (label && label.indexOf(normalizedQuery) !== -1) {
+        return 4;
+      }
+      return -1;
+    }
+
+    function filterPartners(query) {
+      var normalized = normalizeText(query);
+      if (!normalized) {
+        return partners.slice(0, 50);
+      }
+
+      var ranked = [];
+      partners.forEach(function (partner) {
+        var rank = getPartnerMatchRank(partner, normalized);
+        if (rank < 0) {
+          return;
+        }
+        ranked.push({
+          partner: partner,
+          rank: rank,
+          code: normalizeText(partner.code),
+          name: normalizeText(partner.name),
+        });
+      });
+
+      ranked.sort(function (left, right) {
+        if (left.rank !== right.rank) {
+          return left.rank - right.rank;
+        }
+        if (left.name !== right.name) {
+          return left.name < right.name ? -1 : 1;
+        }
+        if (left.code !== right.code) {
+          return left.code < right.code ? -1 : 1;
+        }
+        return (Number(left.partner.id) || 0) - (Number(right.partner.id) || 0);
+      });
+
+      return ranked.slice(0, 50).map(function (entry) {
+        return entry.partner;
+      });
+    }
+
+    function buildPartnerSuggestionList(filteredPartners, selectedId) {
+      var source = Array.isArray(filteredPartners) ? filteredPartners.slice(0, 30) : [];
+      return source
+        .map(function (partner) {
+          var selected = Number(selectedId) === Number(partner.id) ? " is-selected" : "";
+          return (
+            '<button class="pc-order-suggest-partner' +
+            selected +
+            '" type="button" data-partner-id="' +
+            escapeHtml(String(partner.id)) +
+            '">' +
+            escapeHtml(buildPartnerLabel(partner)) +
+            "</button>"
+          );
+        })
+        .join("");
+    }
+
+    function updatePartnerHint() {
+      if (!refs.partnerInput) {
         return;
       }
-      var options =
-        '<option value="">Выберите контрагента</option>' +
-        partners
-          .map(function (partner) {
-            var label = partner.code ? partner.code + " — " + (partner.name || "") : partner.name || "";
-            return (
-              '<option value="' +
-              escapeHtml(String(partner.id)) +
-              '">' +
-              escapeHtml(label) +
-              "</option>"
-            );
-          })
-          .join("");
-      refs.partnerSelect.innerHTML = options;
+      var value = String(refs.partnerInput.value || "").trim();
+      if (!value) {
+        selectedPartnerId = 0;
+        hidePartnerSuggestionOverlay();
+        return;
+      }
+      var partner = findPartnerByQuery(value);
+      if (partner) {
+        selectedPartnerId = Number(partner.id) || 0;
+        hidePartnerSuggestionOverlay();
+        return;
+      }
+
+      var filtered = filterPartners(value);
+      var shouldOpen = filtered.length > 0 && document.activeElement === refs.partnerInput;
+      if (shouldOpen) {
+        showPartnerSuggestionOverlay(refs.partnerInput, filtered);
+      } else {
+        hidePartnerSuggestionOverlay();
+      }
+    }
+
+    function applyPartnerInputSelection() {
+      if (!refs.partnerInput) {
+        return;
+      }
+
+      var partner = findPartnerByQuery(refs.partnerInput.value);
+      if (partner) {
+        selectedPartnerId = Number(partner.id) || 0;
+        refs.partnerInput.value = buildPartnerLabel(partner);
+      }
+      updatePartnerHint();
+    }
+
+    function applySuggestedPartner(selectedId) {
+      var partner = getPartnerById(selectedId);
+      if (!partner || !refs.partnerInput) {
+        return;
+      }
+
+      selectedPartnerId = Number(partner.id) || 0;
+      refs.partnerInput.value = buildPartnerLabel(partner);
+      hidePartnerSuggestionOverlay();
+      updatePartnerHint();
+      refs.partnerInput.focus();
     }
 
     function buildItemLabel(item) {
@@ -1474,7 +2070,7 @@
       var selectedItem = getItemById(line.item_id);
       if (hintEl) {
         if (selectedItem) {
-          hintEl.textContent = "Выбрано: " + buildItemLabel(selectedItem);
+          hintEl.textContent = "";
         } else if (normalizedQuery && filtered.length === 0) {
           hintEl.textContent = "Совпадения не найдены.";
         } else if (normalizedQuery) {
@@ -1582,7 +2178,11 @@
 
     function submit() {
       var orderRef = refs.orderRefInput && refs.orderRefInput.value ? refs.orderRefInput.value.trim() : "";
-      var partnerId = refs.partnerSelect ? Number(refs.partnerSelect.value) : 0;
+      var selectedPartner = selectedPartnerId ? getPartnerById(selectedPartnerId) : null;
+      if (!selectedPartner && refs.partnerInput) {
+        selectedPartner = findPartnerByQuery(refs.partnerInput.value);
+      }
+      var partnerId = selectedPartner ? Number(selectedPartner.id) : 0;
       var dueDate = refs.dueDateInput ? String(refs.dueDateInput.value || "").trim() : "";
       var comment = refs.commentInput ? String(refs.commentInput.value || "").trim() : "";
       var account = loadAccount();
@@ -1612,7 +2212,7 @@
         return;
       }
       if (!partnerId) {
-        setStatus("Выберите контрагента.");
+        setStatus("Выберите контрагента из списка.");
         return;
       }
       if (!lines.length) {
@@ -1665,11 +2265,6 @@
         });
     }
 
-    modal.addEventListener("click", function (event) {
-      if (event.target === modal) {
-        close();
-      }
-    });
     if (refs.closeBtn) {
       refs.closeBtn.addEventListener("click", close);
     }
@@ -1679,9 +2274,15 @@
         renderLines();
       });
     }
-      if (refs.submitBtn) {
-        refs.submitBtn.addEventListener("click", submit);
-      }
+    if (refs.partnerInput) {
+      refs.partnerInput.addEventListener("input", updatePartnerHint);
+      refs.partnerInput.addEventListener("change", applyPartnerInputSelection);
+      refs.partnerInput.addEventListener("blur", applyPartnerInputSelection);
+      refs.partnerInput.addEventListener("focus", updatePartnerHint);
+    }
+    if (refs.submitBtn) {
+      refs.submitBtn.addEventListener("click", submit);
+    }
     suggestionOverlay.addEventListener("mousedown", function (event) {
       var target = event.target;
       while (
@@ -1704,9 +2305,32 @@
 
       applySuggestedItem(index, selectedId);
     });
+    partnerSuggestionOverlay.addEventListener("mousedown", function (event) {
+      var target = event.target;
+      while (
+        target &&
+        target !== partnerSuggestionOverlay &&
+        !(target.classList && target.classList.contains("pc-order-suggest-partner"))
+      ) {
+        target = target.parentNode;
+      }
+      if (!target || target === partnerSuggestionOverlay) {
+        return;
+      }
+
+      event.preventDefault();
+      var selectedId = Number(target.getAttribute("data-partner-id")) || 0;
+      if (!selectedId) {
+        return;
+      }
+
+      applySuggestedPartner(selectedId);
+    });
     window.addEventListener("resize", syncSuggestionOverlay);
+    window.addEventListener("resize", syncPartnerSuggestionOverlay);
     if (refs.card) {
       refs.card.addEventListener("scroll", syncSuggestionOverlay);
+      refs.card.addEventListener("scroll", syncPartnerSuggestionOverlay);
     }
 
     if (refs.orderRefInput) {
@@ -1726,7 +2350,7 @@
           return left < right ? -1 : left > right ? 1 : 0;
         });
 
-        buildPartnerOptions();
+        updatePartnerHint();
         linesState = [{ item_id: 0, qty_ordered: 1, query: "" }];
         if (refs.orderRefInput) {
           refs.orderRefInput.value = nextOrderRef || "";
@@ -1744,17 +2368,19 @@
   }
 
   function openOrderModal(order, onSubmitted) {
+    var isPending = order && order.is_pending_confirmation;
     var currentStatusCode = toOrderStatusCode(order.status);
-    var canChangeStatus = currentStatusCode === "ACCEPTED" || currentStatusCode === "IN_PROGRESS";
-    var isInternalOrder = String(order.order_type || "").trim().toUpperCase() === "INTERNAL";
+    var canChangeStatus = !isPending && (currentStatusCode === "ACCEPTED" || currentStatusCode === "IN_PROGRESS");
+    var isInternal = isInternalOrder(order);
+    var showAvailableColumn = !isShippedOrder(order);
     var modal = document.createElement("div");
     modal.className = "pc-modal";
     modal.innerHTML =
-      '<div class="pc-modal-card">' +
+      '<div class="pc-modal-card pc-order-modal-card">' +
       '  <div class="pc-modal-header">' +
       '    <div class="pc-modal-title">Заказ ' +
       escapeHtml(order.order_ref || "-") +
-      "</div>" +
+      ' <span id="orderReadinessBadge"></span></div>' +
       '    <button class="btn btn-outline" type="button" id="modalCloseBtn">Закрыть</button>' +
       "  </div>" +
       '  <div class="pc-status">Тип: ' +
@@ -1781,7 +2407,9 @@
           "      </select>" +
           '      <button class="btn" type="button" id="orderStatusRequestBtn">Отправить заявку</button>' +
           "    </div>"
-        : '    <div class="pc-status">Статус этого заказа нельзя менять из веб-интерфейса.</div>') +
+        : '    <div class="pc-status">' +
+          (isPending ? "Заказ ожидает подтверждения в WPF." : "Статус этого заказа нельзя менять из веб-интерфейса.") +
+          "</div>") +
       '    <div id="orderRequestStatus" class="status"></div>' +
       "  </div>" +
       '  <div id="orderLinesWrap" class="pc-status" style="margin-top:12px;">Загрузка строк...</div>' +
@@ -1792,11 +2420,6 @@
       document.body.removeChild(modal);
     }
 
-    modal.addEventListener("click", function (event) {
-      if (event.target === modal) {
-        close();
-      }
-    });
     var closeBtn = modal.querySelector("#modalCloseBtn");
     if (closeBtn) {
       closeBtn.addEventListener("click", close);
@@ -1859,7 +2482,11 @@
       });
     }
 
-    fetchJson("/api/orders/" + encodeURIComponent(order.id) + "/lines")
+    var linesPromise = isPending
+      ? Promise.resolve(Array.isArray(order.lines) ? order.lines : [])
+      : fetchJson("/api/orders/" + encodeURIComponent(order.id) + "/lines");
+
+    linesPromise
       .then(function (lines) {
         var wrap = modal.querySelector("#orderLinesWrap");
         if (!wrap) {
@@ -1869,10 +2496,20 @@
           wrap.innerHTML = "<div>Строк нет.</div>";
           return;
         }
-        var processedHeader = isInternalOrder ? "Выпущено" : "Отгружено";
+        var readiness = !isInternal && showAvailableColumn ? getShipmentReadiness(lines) : null;
+        var readinessBadge = modal.querySelector("#orderReadinessBadge");
+        if (readinessBadge) {
+          readinessBadge.outerHTML = renderReadinessBadge(readiness);
+        }
+        var processedHeader = isInternal ? "Выпущено" : "Отгружено";
         var body = lines
           .map(function (line) {
-            var processedQty = isInternalOrder ? line.qty_produced || 0 : line.qty_shipped || 0;
+            var processedQty = isInternal ? line.qty_produced || 0 : line.qty_shipped || 0;
+            var availabilityState = getAvailabilityState(line);
+            var shortageTitle = availabilityState.ready
+              ? ""
+              : ' title="Не хватает: ' + escapeHtml(formatQuantity(availabilityState.shortage)) + '"';
+            var availabilityClass = availabilityState.ready ? "pc-availability-ready" : "pc-availability-short";
             return (
               "<tr>" +
               "<td>" +
@@ -1882,28 +2519,40 @@
               escapeHtml(line.barcode || "-") +
               "</td>" +
               "<td>" +
+              escapeHtml(line.gtin || "-") +
+              "</td>" +
+              "<td>" +
               escapeHtml(String(line.qty_ordered || 0)) +
               "</td>" +
               "<td>" +
               escapeHtml(String(processedQty)) +
               "</td>" +
-              "<td>" +
-              escapeHtml(String(line.qty_left || 0)) +
-              "</td>" +
+              (showAvailableColumn
+                ? "<td>" +
+                  '<span class="pc-availability ' +
+                  availabilityClass +
+                  '"' +
+                  shortageTitle +
+                  ">" +
+                  escapeHtml(formatQuantity(availabilityState.available)) +
+                  "</span>" +
+                  "</td>"
+                : "") +
               "</tr>"
             );
           })
           .join("");
         wrap.innerHTML =
-          '<table class="pc-table">' +
+          '<table class="pc-table pc-order-lines-table">' +
           "<thead><tr>" +
           "<th>Товар</th>" +
-          "<th>ШК</th>" +
+          "<th>SKU / ШК</th>" +
+          "<th>GTIN</th>" +
           "<th>Заказано</th>" +
           "<th>" +
           escapeHtml(processedHeader) +
           "</th>" +
-          "<th>Осталось</th>" +
+          (showAvailableColumn ? "<th>В наличии</th>" : "") +
           "</tr></thead>" +
           "<tbody>" +
           body +
@@ -1956,8 +2605,18 @@
       setStatus("Загрузка...");
       loadOrders(query)
         .then(function (rows) {
-          renderTable(rows);
-          setStatus(rows && rows.length ? "Данные с сервера" : "Заказов нет");
+          var source = Array.isArray(rows) ? rows : [];
+          renderTable(source);
+          if (!source.length) {
+            setStatus("Заказов нет");
+            return source;
+          }
+          setStatus("Загрузка готовности...");
+          return enrichOrdersWithReadiness(source).then(function (enrichedRows) {
+            renderTable(enrichedRows);
+            setStatus("Данные с сервера");
+            return enrichedRows;
+          });
         })
         .catch(function () {
           renderTable([]);

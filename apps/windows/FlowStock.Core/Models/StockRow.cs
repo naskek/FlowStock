@@ -9,5 +9,9 @@ public sealed class StockRow
     public string? Hu { get; init; }
     public double Qty { get; init; }
     public string BaseUom { get; init; } = "шт";
+    public long? ItemTypeId { get; init; }
+    public string? ItemTypeName { get; init; }
+    public bool ItemTypeEnableMinStockControl { get; init; }
+    public double? MinStockQty { get; init; }
 }
 

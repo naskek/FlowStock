@@ -23,6 +23,14 @@ public partial class App : Application
             var services = AppServices.CreateDefault();
             _appLogger = services.AppLogger;
             _logPath = services.AppLogPath;
+            if (!services.IsDatabaseAvailable)
+            {
+                var connectionWindow = new DbConnectionWindow(services, requireConnectionOnStartup: true);
+                connectionWindow.ShowDialog();
+                Shutdown(0);
+                return;
+            }
+
             TryRunAutoBackup(services);
             var mainWindow = new MainWindow(services);
             MainWindow = mainWindow;

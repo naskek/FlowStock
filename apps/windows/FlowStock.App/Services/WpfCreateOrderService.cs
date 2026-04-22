@@ -17,11 +17,6 @@ public sealed class WpfCreateOrderService
         _apiClient = new CreateOrderApiClient();
     }
 
-    public bool IsServerCreateEnabled()
-    {
-        return LoadConfiguration().UseServerCreateOrder;
-    }
-
     public WpfServerCreateOrderConfiguration GetEffectiveConfiguration()
     {
         return LoadConfiguration();
@@ -32,11 +27,6 @@ public sealed class WpfCreateOrderService
         CancellationToken cancellationToken = default)
     {
         var configuration = LoadConfiguration();
-        if (!configuration.UseServerCreateOrder)
-        {
-            return WpfCreateOrderResult.FeatureDisabled();
-        }
-
         var request = new CreateOrderApiRequest
         {
             OrderRef = NormalizeValue(context.RequestedOrderRef),
@@ -214,7 +204,6 @@ public sealed class WpfCreateOrderService
     private WpfServerCreateOrderConfiguration LoadConfiguration()
     {
         var settings = _settings.Load().Server ?? new ServerSettings();
-        var useServerCreateOrder = ReadEnvBool("FLOWSTOCK_USE_SERVER_CREATE_ORDER") ?? settings.UseServerCreateOrder;
         var baseUrl = NormalizeBaseUrl(ReadEnvOrSettings("FLOWSTOCK_SERVER_BASE_URL", settings.BaseUrl) ?? WpfCloseDocumentService.DefaultServerBaseUrl);
         var timeoutSeconds = ReadEnvInt("FLOWSTOCK_SERVER_CLOSE_TIMEOUT_SECONDS") ?? settings.CloseTimeoutSeconds;
         if (timeoutSeconds < 1)
@@ -223,7 +212,7 @@ public sealed class WpfCreateOrderService
         }
 
         var allowInvalidTls = ReadEnvBool("FLOWSTOCK_SERVER_ALLOW_INVALID_TLS") ?? settings.AllowInvalidTls;
-        return new WpfServerCreateOrderConfiguration(useServerCreateOrder, baseUrl, timeoutSeconds, allowInvalidTls);
+        return new WpfServerCreateOrderConfiguration(baseUrl, timeoutSeconds, allowInvalidTls);
     }
 
     private static string NormalizeBaseUrl(string value)
@@ -299,7 +288,6 @@ public sealed record WpfCreateOrderContext(
     IReadOnlyList<OrderLineView> Lines);
 
 public sealed record WpfServerCreateOrderConfiguration(
-    bool UseServerCreateOrder,
     string BaseUrl,
     int RequestTimeoutSeconds,
     bool AllowInvalidTls);
@@ -312,14 +300,6 @@ public sealed class WpfCreateOrderResult
     public Exception? Exception { get; init; }
 
     public bool IsSuccess => Kind == WpfCreateOrderResultKind.Created;
-
-    public static WpfCreateOrderResult FeatureDisabled()
-    {
-        return new WpfCreateOrderResult
-        {
-            Kind = WpfCreateOrderResultKind.FeatureDisabled
-        };
-    }
 
     public static WpfCreateOrderResult Success(string message, CreateOrderApiResponse response)
     {
@@ -347,7 +327,6 @@ public sealed class WpfCreateOrderResult
 
 public enum WpfCreateOrderResultKind
 {
-    FeatureDisabled,
     Created,
     ValidationFailed,
     ServerRejected,

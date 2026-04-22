@@ -285,7 +285,7 @@ public partial class ItemImportPreviewWindow : Window
         var shelfIndex = GetSelectedColumnIndex(ShelfLifeColumnCombo);
         var taraIndex = GetSelectedColumnIndex(TaraColumnCombo);
 
-        var existing = _services.Catalog.GetItems(null);
+        var existing = GetExistingItems();
         var existingCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in existing)
         {
@@ -293,7 +293,7 @@ public partial class ItemImportPreviewWindow : Window
             AddBarcodeVariants(existingCodes, item.Gtin);
         }
         var seenCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var taras = _services.Catalog.GetTaras();
+        var taras = GetTaras();
         var tarasByName = taras.ToDictionary(t => t.Name, StringComparer.OrdinalIgnoreCase);
 
         var emptyRows = 0;
@@ -502,7 +502,7 @@ public partial class ItemImportPreviewWindow : Window
         var shelfIndex = GetSelectedColumnIndex(ShelfLifeColumnCombo);
         var taraIndex = GetSelectedColumnIndex(TaraColumnCombo);
 
-        var taras = _services.Catalog.GetTaras();
+        var taras = GetTaras();
         var tarasByName = taras.ToDictionary(t => t.Name, StringComparer.OrdinalIgnoreCase);
 
         var created = 0;
@@ -574,7 +574,37 @@ public partial class ItemImportPreviewWindow : Window
 
             try
             {
-                _services.Catalog.CreateItem(name, barcode, gtin, null, brand, volume, shelfLifeMonths, taraId, false);
+                var candidate = new Item
+                {
+                    Name = name,
+                    Barcode = barcode,
+                    Gtin = gtin,
+                    BaseUom = "шт",
+                    Brand = brand,
+                    Volume = volume,
+                    ShelfLifeMonths = shelfLifeMonths,
+                    TaraId = taraId,
+                    IsMarked = false
+                };
+                var result = _services.WpfCatalogApi.TryCreateItemAsync(candidate)
+                    .ConfigureAwait(false)
+                    .GetAwaiter()
+                    .GetResult();
+                if (!result.IsSuccess)
+                {
+                    if (string.Equals(result.Error, "ITEM_ALREADY_EXISTS", StringComparison.OrdinalIgnoreCase))
+                    {
+                        duplicates++;
+                        continue;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(result.Error))
+                    {
+                        throw new InvalidOperationException(result.Error);
+                    }
+
+                    throw new InvalidOperationException("Не удалось создать товар через сервер.");
+                }
                 created++;
             }
             catch (ArgumentException)
@@ -605,6 +635,20 @@ public partial class ItemImportPreviewWindow : Window
     private static bool IsPostgresConstraint(PostgresException ex)
     {
         return ex.SqlState == "23505";
+    }
+
+    private IReadOnlyList<Item> GetExistingItems()
+    {
+        return _services.WpfReadApi.TryGetItems(null, out var apiItems)
+            ? apiItems
+            : Array.Empty<Item>();
+    }
+
+    private IReadOnlyList<Tara> GetTaras()
+    {
+        return _services.WpfCatalogApi.TryGetTaras(out var apiTaras)
+            ? apiTaras
+            : Array.Empty<Tara>();
     }
 
     private static void EnsureExcelEncoding()

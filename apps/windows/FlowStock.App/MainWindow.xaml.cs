@@ -25,8 +25,10 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<Doc> _docs = new();
     private readonly ObservableCollection<Order> _orders = new();
     private readonly ObservableCollection<StockDisplayRow> _stock = new();
+    private readonly ObservableCollection<LowStockDisplayRow> _lowStock = new();
     private readonly ObservableCollection<StockLocationFilterOption> _stockLocationFilters = new();
     private readonly ObservableCollection<StockHuFilterOption> _stockHuFilters = new();
+    private readonly ObservableCollection<StockItemTypeFilterOption> _stockItemTypeFilters = new();
     private readonly ObservableCollection<KmCodeBatch> _kmBatches = new();
     private readonly DispatcherTimer _autoRefreshTimer;
     private bool _autoRefreshInProgress;
@@ -71,8 +73,10 @@ public partial class MainWindow : Window
         DocsGrid.ItemsSource = _docs;
         OrdersGrid.ItemsSource = _orders;
         StockGrid.ItemsSource = _stock;
+        LowStockGrid.ItemsSource = _lowStock;
         StockLocationFilter.ItemsSource = _stockLocationFilters;
         StockHuFilter.ItemsSource = _stockHuFilters;
+        StockItemTypeFilter.ItemsSource = _stockItemTypeFilters;
         KmBatchesGrid.ItemsSource = _kmBatches;
         DocsTypeFilter.ItemsSource = _docTypeFilters;
         DocsTypeFilter.SelectedIndex = 0;
@@ -130,7 +134,7 @@ public partial class MainWindow : Window
 
         if (PartnerDeleteButton != null)
         {
-            PartnerDeleteButton.IsEnabled = _adminDeleteModeEnabled && _selectedPartner != null;
+            PartnerDeleteButton.IsEnabled = _selectedPartner != null;
         }
 
         if (PartnerEditButton != null)
@@ -178,7 +182,7 @@ public partial class MainWindow : Window
                 : "Не удалось подключиться к БД при запуске. Приложение открыто, но часть данных недоступна." +
                   Environment.NewLine +
                   Environment.NewLine +
-                  "Проверьте настройки в меню: Сервис -> Подключение к БД." +
+                  "Проверьте настройки в меню: Сервис -> Администрирование -> Подключение к БД." +
                   Environment.NewLine +
                   $"Техническая ошибка: {ex.Message}";
             MessageBox.Show(message, "FlowStock", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -187,6 +191,7 @@ public partial class MainWindow : Window
 
     private void LoadAll()
     {
+        LoadItemTypes();
         LoadItems();
         LoadUoms();
         LoadTaras();
@@ -195,6 +200,7 @@ public partial class MainWindow : Window
         LoadDocs();
         LoadOrders();
         LoadStock(null);
+        LoadLowStockView();
         UpdateItemRequestsBadge();
     }
 
@@ -241,6 +247,7 @@ public partial class MainWindow : Window
             switch (MainTabs.SelectedIndex)
             {
                 case TabStatusIndex:
+                    LoadItemTypes();
                     LoadStockHuFilters();
                     LoadStock(StatusSearchBox.Text);
                     break;
@@ -320,7 +327,10 @@ public partial class MainWindow : Window
         _items.Clear();
         var query = search ?? ItemsSearchBox?.Text;
         var normalized = NormalizeIdentifier(query);
-        foreach (var item in _services.Catalog.GetItems(normalized))
+        var items = _services.WpfReadApi.TryGetItems(normalized, out var apiItems)
+            ? apiItems
+            : Array.Empty<Item>();
+        foreach (var item in items)
         {
             _items.Add(item);
         }
@@ -330,7 +340,10 @@ public partial class MainWindow : Window
     private void LoadUoms()
     {
         _uoms.Clear();
-        foreach (var uom in _services.Catalog.GetUoms())
+        var uoms = _services.WpfCatalogApi.TryGetUoms(out var apiUoms)
+            ? apiUoms
+            : Array.Empty<Uom>();
+        foreach (var uom in uoms)
         {
             _uoms.Add(uom);
         }
@@ -339,17 +352,42 @@ public partial class MainWindow : Window
     private void LoadTaras()
     {
         _taras.Clear();
-        foreach (var tara in _services.Catalog.GetTaras())
+        var taras = _services.WpfCatalogApi.TryGetTaras(out var apiTaras)
+            ? apiTaras
+            : Array.Empty<Tara>();
+        foreach (var tara in taras)
         {
             _taras.Add(tara);
         }
+    }
+
+    private void LoadItemTypes()
+    {
+        var selectedId = GetSelectedStockItemTypeId();
+        _stockItemTypeFilters.Clear();
+        _stockItemTypeFilters.Add(new StockItemTypeFilterOption(null, "Все типы"));
+
+        var itemTypes = _services.WpfCatalogApi.TryGetItemTypes(includeInactive: false, out var apiItemTypes)
+            ? apiItemTypes
+            : Array.Empty<ItemType>();
+        foreach (var itemType in itemTypes.OrderBy(type => type.SortOrder).ThenBy(type => type.Name))
+        {
+            _stockItemTypeFilters.Add(new StockItemTypeFilterOption(itemType.Id, itemType.Name));
+        }
+
+        var selected = _stockItemTypeFilters.FirstOrDefault(option => option.Id == selectedId)
+                       ?? _stockItemTypeFilters.FirstOrDefault();
+        StockItemTypeFilter.SelectedItem = selected;
     }
 
     private void LoadLocations()
     {
         var selectedId = _selectedLocation?.Id;
         _locations.Clear();
-        foreach (var location in _services.Catalog.GetLocations())
+        var locations = _services.WpfReadApi.TryGetLocations(out var apiLocations)
+            ? apiLocations
+            : Array.Empty<Location>();
+        foreach (var location in locations)
         {
             _locations.Add(location);
         }
@@ -364,7 +402,7 @@ public partial class MainWindow : Window
         var selectedCode = GetSelectedStockLocationCode();
         _stockLocationFilters.Clear();
         _stockLocationFilters.Add(new StockLocationFilterOption(null, "Все места"));
-        foreach (var location in _services.Catalog.GetLocations())
+        foreach (var location in _locations)
         {
             _stockLocationFilters.Add(new StockLocationFilterOption(location.Code, location.DisplayName));
         }
@@ -394,26 +432,15 @@ public partial class MainWindow : Window
     private IEnumerable<string> GetAvailableHuCodesForFilter()
     {
         var locationCode = GetSelectedStockLocationCode();
-        if (!string.IsNullOrWhiteSpace(locationCode))
-        {
-            var location = _locations.FirstOrDefault(item =>
-                string.Equals(item.Code, locationCode, StringComparison.OrdinalIgnoreCase));
-            if (location == null)
-            {
-                return Enumerable.Empty<string>();
-            }
-
-            return _services.DataStore.GetHuCodesByLocation(location.Id)
-                .Where(code => !string.IsNullOrWhiteSpace(code))
-                .Select(code => code!)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-        }
-
-        return _services.DataStore.GetLedgerTotalsByHu()
-            .Where(entry => entry.Value > 0.000001)
-            .Select(entry => entry.Key)
+        var rows = _services.WpfReadApi.TryGetStockRows(null, out var apiRows)
+            ? apiRows
+            : Array.Empty<StockRow>();
+        return (string.IsNullOrWhiteSpace(locationCode)
+                ? rows
+                : rows.Where(row => string.Equals(row.LocationCode, locationCode, StringComparison.OrdinalIgnoreCase)))
+            .Select(row => row.Hu?.Trim())
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Select(code => code!)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -423,10 +450,22 @@ public partial class MainWindow : Window
     {
         var selectedId = _selectedPartner?.Id;
         _partners.Clear();
-        foreach (var partner in _services.Catalog.GetPartners())
+        if (_services.WpfPartnerApi.TryGetPartners(out var apiPartners))
         {
-            var status = _services.PartnerStatuses.GetStatus(partner.Id);
-            _partners.Add(new PartnerRow(partner, GetPartnerStatusLabel(status)));
+            foreach (var entry in apiPartners)
+            {
+                _partners.Add(new PartnerRow(entry.Partner, GetPartnerStatusLabel(entry.Status)));
+            }
+        }
+        else
+        {
+            var partners = _services.WpfReadApi.TryGetPartners(out var readApiPartners)
+                ? readApiPartners
+                : Array.Empty<Partner>();
+            foreach (var partner in partners)
+            {
+                _partners.Add(new PartnerRow(partner, string.Empty));
+            }
         }
         RestorePartnerSelection(selectedId);
     }
@@ -435,7 +474,13 @@ public partial class MainWindow : Window
     {
         var selectedId = (DocsGrid.SelectedItem as Doc)?.Id;
         _docs.Clear();
-        foreach (var doc in ApplyDocFilters(_services.Documents.GetDocs()))
+        var docs = _services.WpfReadApi.TryGetDocs(
+            (DocsTypeFilter.SelectedItem as DocTypeFilterOption)?.Type,
+            (DocsStatusFilter.SelectedItem as DocStatusFilterOption)?.Status,
+            out var apiDocs)
+            ? apiDocs
+            : Array.Empty<Doc>();
+        foreach (var doc in ApplyDocFilters(docs))
         {
             _docs.Add(doc);
         }
@@ -486,7 +531,10 @@ public partial class MainWindow : Window
     {
         var selectedId = (OrdersGrid.SelectedItem as Order)?.Id;
         _orders.Clear();
-        foreach (var order in _services.Orders.GetOrders())
+        var orders = _services.WpfReadApi.TryGetOrders(includeInternal: true, search: null, out var apiOrders)
+            ? apiOrders
+            : Array.Empty<Order>();
+        foreach (var order in orders)
         {
             _orders.Add(order);
         }
@@ -499,7 +547,16 @@ public partial class MainWindow : Window
         _stock.Clear();
         var locationCode = GetSelectedStockLocationCode();
         var huCode = GetSelectedStockHuCode();
-        foreach (var row in _services.Documents.GetStock(search))
+        var itemTypeId = GetSelectedStockItemTypeId();
+        var belowMinOnly = StockBelowMinOnlyCheckBox.IsChecked == true;
+        var rows = _services.WpfReadApi.TryGetStockRows(search, out var apiRows)
+            ? apiRows
+            : Array.Empty<StockRow>();
+        var allItems = _services.WpfReadApi.TryGetItems(null, out var apiItems)
+            ? apiItems
+            : Array.Empty<Item>();
+        var lowStockByItem = BuildLowStockByItem(rows, allItems);
+        foreach (var row in rows)
         {
             if (!string.IsNullOrWhiteSpace(locationCode)
                 && !string.Equals(row.LocationCode, locationCode, StringComparison.OrdinalIgnoreCase))
@@ -511,21 +568,35 @@ public partial class MainWindow : Window
             {
                 continue;
             }
+            if (itemTypeId.HasValue && row.ItemTypeId != itemTypeId.Value)
+            {
+                continue;
+            }
+
+            var isBelowMin = lowStockByItem.ContainsKey(row.ItemId);
+            if (belowMinOnly && !isBelowMin)
+            {
+                continue;
+            }
 
             var packaging = _services.Packagings.FormatAsPackaging(row.ItemId, row.Qty);
             var baseDisplay = $"{FormatQty(row.Qty)} {row.BaseUom}";
             _stock.Add(new StockDisplayRow
             {
+                ItemId = row.ItemId,
                 ItemName = row.ItemName,
+                ItemTypeName = row.ItemTypeName ?? "Без типа",
                 Barcode = row.Barcode,
                 LocationCode = row.LocationCode,
                 HuDisplay = row.Hu ?? string.Empty,
                 PackagingDisplay = packaging,
-                BaseDisplay = baseDisplay
+                BaseDisplay = baseDisplay,
+                IsBelowMin = isBelowMin
             });
         }
 
         UpdateStockEmptyState(search);
+        LoadLowStockView();
     }
 
     private void UpdateStockEmptyState(string? search)
@@ -533,13 +604,121 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(search)
             && _stock.Count == 0
             && string.IsNullOrWhiteSpace(GetSelectedStockLocationCode())
-            && string.IsNullOrWhiteSpace(GetSelectedStockHuCode()))
+            && string.IsNullOrWhiteSpace(GetSelectedStockHuCode())
+            && !GetSelectedStockItemTypeId().HasValue
+            && StockBelowMinOnlyCheckBox.IsChecked != true)
         {
             StockEmptyText.Visibility = Visibility.Visible;
             return;
         }
 
         StockEmptyText.Visibility = Visibility.Collapsed;
+    }
+
+    private Dictionary<long, LowStockSnapshot> BuildLowStockByItem(IReadOnlyList<StockRow> rows, IReadOnlyList<Item> allItems)
+    {
+        var snapshots = rows
+            .GroupBy(row => row.ItemId)
+            .Select(group =>
+            {
+                var first = group.First();
+                var totalQty = group.Sum(row => row.Qty);
+                var minStockQty = first.MinStockQty;
+                var isBelow = first.ItemTypeEnableMinStockControl
+                              && minStockQty.HasValue
+                              && totalQty < minStockQty.Value;
+                return new LowStockSnapshot(
+                    group.Key,
+                    first.ItemName,
+                    first.ItemTypeName ?? "Без типа",
+                    first.BaseUom,
+                    totalQty,
+                    minStockQty,
+                    isBelow);
+            })
+            .Where(snapshot => snapshot.IsBelowMin)
+            .ToDictionary(snapshot => snapshot.ItemId, snapshot => snapshot);
+
+        foreach (var item in allItems)
+        {
+            if (snapshots.ContainsKey(item.Id))
+            {
+                continue;
+            }
+
+            var minStockQty = item.MinStockQty;
+            var isBelow = item.ItemTypeEnableMinStockControl
+                          && minStockQty.HasValue
+                          && 0d < minStockQty.Value;
+            if (!isBelow)
+            {
+                continue;
+            }
+
+            snapshots[item.Id] = new LowStockSnapshot(
+                item.Id,
+                item.Name,
+                item.ItemTypeName ?? "Без типа",
+                item.BaseUom,
+                0d,
+                minStockQty,
+                true);
+        }
+
+        return snapshots;
+    }
+
+    private void LoadLowStockView()
+    {
+        _lowStock.Clear();
+        var rows = _services.WpfReadApi.TryGetStockRows(null, out var apiRows)
+            ? apiRows
+            : Array.Empty<StockRow>();
+        var allItems = _services.WpfReadApi.TryGetItems(null, out var apiItems)
+            ? apiItems
+            : Array.Empty<Item>();
+        var lowStockByItem = BuildLowStockByItem(rows, allItems);
+        var belowMinRows = lowStockByItem
+            .Values
+            .OrderBy(snapshot => snapshot.ItemName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        foreach (var snapshot in belowMinRows)
+        {
+            var shortage = snapshot.MinStockQty.GetValueOrDefault() - snapshot.Qty;
+            _lowStock.Add(new LowStockDisplayRow
+            {
+                ItemName = snapshot.ItemName,
+                ItemTypeName = snapshot.ItemTypeName,
+                QtyDisplay = FormatQtyWithUom(snapshot.Qty, snapshot.BaseUom),
+                MinStockQtyDisplay = FormatQtyWithUom(snapshot.MinStockQty.GetValueOrDefault(), snapshot.BaseUom),
+                ShortageDisplay = FormatQtyWithUom(shortage > 0 ? shortage : 0, snapshot.BaseUom)
+            });
+        }
+
+        LowStockSummaryText.Text = belowMinRows.Count == 0
+            ? "Позиции ниже минимума отсутствуют."
+            : $"Позиции ниже минимума: {belowMinRows.Count}";
+        UpdateLowStockIndicator(lowStockByItem);
+    }
+
+    private void UpdateLowStockIndicator(IReadOnlyDictionary<long, LowStockSnapshot> lowStockByItem)
+    {
+        if (LowStockIndicatorText == null)
+        {
+            return;
+        }
+
+        var count = lowStockByItem.Count;
+        if (count <= 0)
+        {
+            LowStockIndicatorText.Text = string.Empty;
+            LowStockIndicatorText.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        LowStockIndicatorText.Text = $"Позиции ниже минимума: {count}";
+        LowStockIndicatorText.Visibility = Visibility.Visible;
     }
 
     private void StatusSearch_Click(object sender, RoutedEventArgs e)
@@ -581,6 +760,16 @@ public partial class MainWindow : Window
         LoadStock(StatusSearchBox.Text);
     }
 
+    private void StockItemTypeFilter_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        LoadStock(StatusSearchBox.Text);
+    }
+
+    private void StockBelowMinOnlyCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        LoadStock(StatusSearchBox.Text);
+    }
+
     private string? GetSelectedStockLocationCode()
     {
         return (StockLocationFilter.SelectedItem as StockLocationFilterOption)?.Code;
@@ -589,6 +778,11 @@ public partial class MainWindow : Window
     private string? GetSelectedStockHuCode()
     {
         return (StockHuFilter.SelectedItem as StockHuFilterOption)?.Code;
+    }
+
+    private long? GetSelectedStockItemTypeId()
+    {
+        return (StockItemTypeFilter.SelectedItem as StockItemTypeFilterOption)?.Id;
     }
 
     private void DocsApplyFilters_Click(object sender, RoutedEventArgs e)
@@ -641,7 +835,7 @@ public partial class MainWindow : Window
             window.ShowDialog();
 
             LoadDocs();
-            var refreshed = _services.Documents.GetDoc(doc.Id);
+            var refreshed = _services.WpfReadApi.TryGetDoc(doc.Id, out var apiDoc) ? apiDoc : null;
             if (!wasClosed && refreshed?.Status == DocStatus.Closed)
             {
                 LoadStock(StatusSearchBox.Text);
@@ -701,24 +895,17 @@ public partial class MainWindow : Window
 
         try
         {
-            if (_services.WpfDeleteOrders.IsServerDeleteEnabled())
+            var result = _services.WpfDeleteOrders.DeleteOrderAsync(order.Id)
+                .ConfigureAwait(false)
+                .GetAwaiter()
+                .GetResult();
+            if (!result.IsSuccess)
             {
-                var result = _services.WpfDeleteOrders.DeleteOrderAsync(order.Id)
-                    .ConfigureAwait(false)
-                    .GetAwaiter()
-                    .GetResult();
-                if (!result.IsSuccess)
-                {
-                    var icon = result.Kind is WpfDeleteOrderResultKind.Timeout or WpfDeleteOrderResultKind.ServerUnavailable
-                        ? MessageBoxImage.Error
-                        : MessageBoxImage.Warning;
-                    MessageBox.Show(result.Message, "Заказы", MessageBoxButton.OK, icon);
-                    return;
-                }
-            }
-            else
-            {
-                _services.Orders.DeleteOrder(order.Id);
+                var icon = result.Kind is WpfDeleteOrderResultKind.Timeout or WpfDeleteOrderResultKind.ServerUnavailable
+                    ? MessageBoxImage.Error
+                    : MessageBoxImage.Warning;
+                MessageBox.Show(result.Message, "Заказы", MessageBoxButton.OK, icon);
+                return;
             }
 
             LoadOrders();
@@ -794,13 +981,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (_services.WpfCloseDocuments.IsServerCloseEnabled())
-        {
-            await TryCloseSelectedDocViaServerAsync(doc);
-            return;
-        }
-
-        TryCloseSelectedDocLegacy(doc);
+        await TryCloseSelectedDocViaServerAsync(doc);
     }
 
     private async Task TryCloseSelectedDocViaServerAsync(Doc doc)
@@ -820,49 +1001,12 @@ public partial class MainWindow : Window
         }
     }
 
-    private void TryCloseSelectedDocLegacy(Doc doc)
-    {
-        var result = _services.Documents.TryCloseDoc(doc.Id, allowNegative: false);
-        if (result.Errors.Count > 0)
-        {
-            MessageBox.Show(string.Join("\n", result.Errors), "Проверка операции", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        if (result.Warnings.Count > 0)
-        {
-            var warningText = "Остаток уйдет в минус:\n" + string.Join("\n", result.Warnings) + "\n\nЗакрыть операцию?";
-            var confirm = MessageBox.Show(warningText, "Предупреждение", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
-            if (confirm != MessageBoxResult.Yes)
-            {
-                return;
-            }
-
-            result = _services.Documents.TryCloseDoc(doc.Id, allowNegative: true);
-            if (!result.Success)
-            {
-                if (result.Errors.Count > 0)
-                {
-                    MessageBox.Show(string.Join("\n", result.Errors), "Проверка операции", MessageBoxButton.OK, MessageBoxImage.Warning);
-                }
-                return;
-            }
-        }
-
-        if (!result.Success)
-        {
-            return;
-        }
-
-        RefreshAfterClose(doc.Id);
-    }
-
     private void RefreshAfterClose(long docId)
     {
         LoadDocs();
         LoadStock(StatusSearchBox.Text);
 
-        var refreshed = _services.Documents.GetDoc(docId);
+        var refreshed = _services.WpfReadApi.TryGetDoc(docId, out var apiDoc) ? apiDoc : null;
         if (refreshed?.Type is DocType.Outbound or DocType.ProductionReceipt)
         {
             LoadOrders();
@@ -905,7 +1049,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        var current = _services.Catalog.GetItems(null).FirstOrDefault(item => item.Id == _selectedItem.Id) ?? _selectedItem;
+        var current = (_services.WpfReadApi.TryGetItems(null, out var apiItems) ? apiItems : Array.Empty<Item>())
+            .FirstOrDefault(item => item.Id == _selectedItem.Id) ?? _selectedItem;
         var window = new ItemEditWindow(_services, current)
         {
             Owner = this
@@ -1024,7 +1169,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        var current = _services.Catalog.GetLocations().FirstOrDefault(location => location.Id == _selectedLocation.Id) ?? _selectedLocation;
+        var current = (_services.WpfReadApi.TryGetLocations(out var apiLocations) ? apiLocations : Array.Empty<Location>())
+            .FirstOrDefault(location => location.Id == _selectedLocation.Id) ?? _selectedLocation;
         var window = new LocationEditWindow(_services, current)
         {
             Owner = this
@@ -1063,7 +1209,12 @@ public partial class MainWindow : Window
             return;
         }
 
-        var current = _services.Catalog.GetPartners().FirstOrDefault(p => p.Id == _selectedPartner.Id) ?? _selectedPartner;
+        var current = (_services.WpfPartnerApi.TryGetPartners(out var apiPartners)
+                ? apiPartners.Select(entry => entry.Partner)
+                : _services.WpfReadApi.TryGetPartners(out var apiReadPartners)
+                    ? apiReadPartners
+                    : Array.Empty<Partner>())
+            .FirstOrDefault(p => p.Id == _selectedPartner.Id) ?? _selectedPartner;
         var window = new PartnerEditWindow(_services, current)
         {
             Owner = this
@@ -1112,11 +1263,23 @@ public partial class MainWindow : Window
         DeleteItem_Click(sender, new RoutedEventArgs());
     }
 
+    private void ItemsGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (ItemsGrid.SelectedItem is not Item)
+        {
+            return;
+        }
+
+        EditItem_Click(sender, new RoutedEventArgs());
+    }
+
     private ImportItemsSummary ImportItemsFromExcel(string filePath)
     {
         EnsureExcelEncoding();
 
-        var existingItems = _services.Catalog.GetItems(null);
+        var existingItems = _services.WpfReadApi.TryGetItems(null, out var apiItems)
+            ? apiItems
+            : Array.Empty<Item>();
         var existingCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in existingItems)
         {
@@ -1178,7 +1341,27 @@ public partial class MainWindow : Window
                 {
                     AddBarcodeVariants(seenCodes, code);
                     var gtin = IsDigitsOnly(code) ? code : null;
-                    _services.Catalog.CreateItem(name, code, gtin, null, null, null, null, null, false);
+                    var createdResult = _services.WpfCatalogApi.TryCreateItemAsync(new Item
+                        {
+                            Name = name,
+                            Barcode = code,
+                            Gtin = gtin,
+                            BaseUom = "шт",
+                            IsMarked = false
+                        })
+                        .ConfigureAwait(false)
+                        .GetAwaiter()
+                        .GetResult();
+                    if (!createdResult.IsSuccess)
+                    {
+                        if (string.Equals(createdResult.Error, "ITEM_ALREADY_EXISTS", StringComparison.OrdinalIgnoreCase))
+                        {
+                            duplicates++;
+                            continue;
+                        }
+
+                        throw new InvalidOperationException(createdResult.Error ?? "Не удалось создать товар через сервер.");
+                    }
                     created++;
                     AddBarcodeVariants(existingCodes, code);
                     AddBarcodeVariants(existingCodes, gtin);
@@ -1332,7 +1515,7 @@ public partial class MainWindow : Window
         return false;
     }
 
-    private void DeleteItem_Click(object sender, RoutedEventArgs e)
+    private async void DeleteItem_Click(object sender, RoutedEventArgs e)
     {
         if (!EnsureDeleteModeEnabled("Товары"))
         {
@@ -1362,7 +1545,11 @@ public partial class MainWindow : Window
             {
                 try
                 {
-                    _services.Catalog.DeleteItem(item.Id);
+                    var deleted = await _services.WpfCatalogApi.TryDeleteItemAsync(item.Id).ConfigureAwait(true);
+                    if (!deleted.IsSuccess)
+                    {
+                        throw new InvalidOperationException(deleted.Error ?? "Не удалось удалить товар через сервер.");
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -1418,7 +1605,7 @@ public partial class MainWindow : Window
         LocationsGrid.ScrollIntoView(location);
     }
 
-    private void DeleteLocation_Click(object sender, RoutedEventArgs e)
+    private async void DeleteLocation_Click(object sender, RoutedEventArgs e)
     {
         if (!EnsureDeleteModeEnabled("Места хранения"))
         {
@@ -1439,7 +1626,12 @@ public partial class MainWindow : Window
 
         try
         {
-            _services.Catalog.DeleteLocation(_selectedLocation.Id);
+            var deleted = await _services.WpfCatalogApi.TryDeleteLocationAsync(_selectedLocation.Id).ConfigureAwait(true);
+            if (!deleted.IsSuccess)
+            {
+                throw new InvalidOperationException(deleted.Error ?? "Не удалось удалить место хранения через сервер.");
+            }
+
             LoadLocations();
             ClearLocationForm();
         }
@@ -1507,13 +1699,8 @@ public partial class MainWindow : Window
         OrdersGrid.ScrollIntoView(order);
     }
 
-    private void DeletePartner_Click(object sender, RoutedEventArgs e)
+    private async void DeletePartner_Click(object sender, RoutedEventArgs e)
     {
-        if (!EnsureDeleteModeEnabled("Контрагенты"))
-        {
-            return;
-        }
-
         if (_selectedPartner == null)
         {
             MessageBox.Show("Выберите контрагента.", "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -1528,8 +1715,12 @@ public partial class MainWindow : Window
 
         try
         {
-            _services.Catalog.DeletePartner(_selectedPartner.Id);
-            _services.PartnerStatuses.RemoveStatus(_selectedPartner.Id);
+            var deleted = await _services.WpfPartnerApi.TryDeletePartnerAsync(_selectedPartner.Id).ConfigureAwait(true);
+            if (!deleted.IsSuccess)
+            {
+                throw new InvalidOperationException(deleted.Error ?? "Не удалось удалить контрагента через сервер.");
+            }
+
             LoadPartners();
             ClearPartnerForm();
         }
@@ -1555,7 +1746,7 @@ public partial class MainWindow : Window
 
         LoadDocs();
         var created = _docs.FirstOrDefault(d => d.Id == window.CreatedDocId.Value)
-                      ?? _services.Documents.GetDoc(window.CreatedDocId.Value);
+                      ?? (_services.WpfReadApi.TryGetDoc(window.CreatedDocId.Value, out var apiDoc) ? apiDoc : null);
         if (created != null)
         {
             OpenDocDetails(created);
@@ -1588,7 +1779,22 @@ public partial class MainWindow : Window
             return;
         }
 
-        var result = _services.Import.ImportJsonl(path);
+        var content = File.ReadAllText(path);
+        var importCall = _services.WpfImportApi.TryImportJsonlAsync(content)
+            .ConfigureAwait(false)
+            .GetAwaiter()
+            .GetResult();
+        if (!importCall.IsSuccess || importCall.Result == null)
+        {
+            MessageBox.Show(
+                importCall.Error ?? "Не удалось выполнить импорт через сервер.",
+                "Импорт",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        var result = importCall.Result;
         var message = $"Импорт завершен.\nИмпортировано: {result.Imported}\nДубли: {result.Duplicates}\nОшибки: {result.Errors}";
         var icon = MessageBoxImage.Information;
 
@@ -1839,6 +2045,25 @@ public partial class MainWindow : Window
         LoadUoms();
     }
 
+    private void ItemTypesMenu_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new ItemTypeWindow(_services, () =>
+        {
+            LoadItemTypes();
+            LoadItems(ItemsSearchBox?.Text);
+            LoadStock(StatusSearchBox.Text);
+            LoadLowStockView();
+        })
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+        LoadItemTypes();
+        LoadItems(ItemsSearchBox?.Text);
+        LoadStock(StatusSearchBox.Text);
+        LoadLowStockView();
+    }
+
     private void TaraMenu_Click(object sender, RoutedEventArgs e)
     {
         var window = new TaraWindow(_services, LoadTaras)
@@ -1881,8 +2106,12 @@ public partial class MainWindow : Window
 
         try
         {
-            var itemCount = _services.DataStore.GetItemRequests(false).Count;
-            var orderCount = _services.DataStore.GetOrderRequests(false).Count;
+            var summary = _services.WpfIncomingRequestsApi.TryGetSummary(out var apiSummary)
+                ? apiSummary
+                : new IncomingRequestsSummary(0, 0);
+
+            var itemCount = summary.ItemRequestsPending;
+            var orderCount = summary.OrderRequestsPending;
             var count = itemCount + orderCount;
             ItemRequestsCountText.Text = count.ToString();
             ItemRequestsBadge.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -1962,6 +2191,17 @@ public partial class MainWindow : Window
         return value.ToString("0.###", CultureInfo.CurrentCulture);
     }
 
+    private static string FormatQtyWithUom(double value, string? baseUom)
+    {
+        var formattedValue = FormatQty(value);
+        if (string.IsNullOrWhiteSpace(baseUom))
+        {
+            return formattedValue;
+        }
+
+        return $"{formattedValue} {baseUom.Trim()}";
+    }
+
     private sealed record DocTypeFilterOption(DocType? Type, string Name);
 
     private sealed record DocStatusFilterOption(DocStatus? Status, string Name);
@@ -1976,17 +2216,40 @@ public partial class MainWindow : Window
 
     private sealed record StockDisplayRow
     {
+        public long ItemId { get; init; }
         public string ItemName { get; init; } = string.Empty;
+        public string ItemTypeName { get; init; } = string.Empty;
         public string? Barcode { get; init; }
         public string LocationCode { get; init; } = string.Empty;
         public string HuDisplay { get; init; } = string.Empty;
         public string PackagingDisplay { get; init; } = string.Empty;
         public string BaseDisplay { get; init; } = string.Empty;
+        public bool IsBelowMin { get; init; }
     }
 
     private sealed record StockLocationFilterOption(string? Code, string Name);
 
     private sealed record StockHuFilterOption(string? Code, string Name);
+
+    private sealed record StockItemTypeFilterOption(long? Id, string Name);
+
+    private sealed record LowStockSnapshot(
+        long ItemId,
+        string ItemName,
+        string ItemTypeName,
+        string BaseUom,
+        double Qty,
+        double? MinStockQty,
+        bool IsBelowMin);
+
+    private sealed record LowStockDisplayRow
+    {
+        public string ItemName { get; init; } = string.Empty;
+        public string ItemTypeName { get; init; } = string.Empty;
+        public string QtyDisplay { get; init; } = string.Empty;
+        public string MinStockQtyDisplay { get; init; } = string.Empty;
+        public string ShortageDisplay { get; init; } = string.Empty;
+    }
 
     private sealed record ImportItemsSummary(int Created, int Duplicates, int EmptyRows, int InvalidRows, int Errors);
 }

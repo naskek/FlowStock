@@ -1,7 +1,9 @@
+using System.Globalization;
 using System.IO;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Services;
 using FlowStock.Data;
+using Npgsql;
 
 namespace FlowStock.App;
 
@@ -20,6 +22,15 @@ public sealed class AppServices
     public AdminAuthService AdminAuth { get; }
     public AdminService Admin { get; }
     public PartnerStatusService PartnerStatuses { get; }
+    public WpfAdminApiService WpfAdminApi { get; }
+    public WpfCatalogApiService WpfCatalogApi { get; }
+    public WpfPartnerApiService WpfPartnerApi { get; }
+    public WpfHuApiService WpfHuApi { get; }
+    public WpfImportApiService WpfImportApi { get; }
+    public WpfPackagingApiService WpfPackagingApi { get; }
+    public WpfReadApiService WpfReadApi { get; }
+    public WpfDocumentRuntimeApiService WpfDocumentRuntimeApi { get; }
+    public WpfIncomingRequestsApiService WpfIncomingRequestsApi { get; }
     public WpfCreateOrderService WpfCreateOrders { get; }
     public WpfUpdateOrderService WpfUpdateOrders { get; }
     public WpfDeleteOrderService WpfDeleteOrders { get; }
@@ -42,6 +53,9 @@ public sealed class AppServices
     public string AdminPath { get; }
     public string AppLogPath { get; }
     public string AdminLogPath { get; }
+    public bool HasDatabaseConfiguration { get; }
+    public bool IsDatabaseAvailable { get; }
+    public string? DatabaseStartupError { get; }
 
     private AppServices(
         IDataStore dataStore,
@@ -54,7 +68,10 @@ public sealed class AppServices
         string adminPath,
         string partnerStatusPath,
         FileLogger appLogger,
-        FileLogger adminLogger)
+        FileLogger adminLogger,
+        bool hasDatabaseConfiguration,
+        bool isDatabaseAvailable,
+        string? databaseStartupError)
     {
         DataStore = dataStore;
         Catalog = new CatalogService(dataStore);
@@ -69,11 +86,20 @@ public sealed class AppServices
         AdminAuth = new AdminAuthService(adminPath, adminLogger);
         Admin = new AdminService(connectionString, dataStore, Backups, adminLogger);
         PartnerStatuses = new PartnerStatusService(partnerStatusPath);
+        WpfAdminApi = new WpfAdminApiService(Settings, appLogger);
+        WpfCatalogApi = new WpfCatalogApiService(Settings, appLogger);
+        WpfPartnerApi = new WpfPartnerApiService(Settings, appLogger);
+        WpfHuApi = new WpfHuApiService(Settings, appLogger);
+        WpfImportApi = new WpfImportApiService(Settings, appLogger);
+        WpfPackagingApi = new WpfPackagingApiService(Settings, appLogger);
+        WpfReadApi = new WpfReadApiService(Settings, appLogger);
+        WpfDocumentRuntimeApi = new WpfDocumentRuntimeApiService(Settings, appLogger);
+        WpfIncomingRequestsApi = new WpfIncomingRequestsApiService(Settings, appLogger);
         WpfCreateOrders = new WpfCreateOrderService(Settings, appLogger);
         WpfUpdateOrders = new WpfUpdateOrderService(Settings, appLogger);
         WpfDeleteOrders = new WpfDeleteOrderService(Settings, appLogger);
         WpfSetOrderStatuses = new WpfSetOrderStatusService(Settings, appLogger);
-        IncomingRequestOrderApprovals = new IncomingRequestOrderApiBridgeService(Settings, appLogger, dataStore);
+        IncomingRequestOrderApprovals = new IncomingRequestOrderApiBridgeService(Settings, appLogger, WpfIncomingRequestsApi);
         WpfCreateDocDrafts = new WpfCreateDocDraftService(Settings, appLogger);
         WpfCloseDocuments = new WpfCloseDocumentService(connectionString, Settings, appLogger);
         WpfAddDocLines = new WpfAddDocLineService(connectionString, Settings, appLogger);
@@ -91,6 +117,9 @@ public sealed class AppServices
         AdminLogger = adminLogger;
         AppLogPath = Path.Combine(logsDir, "app.log");
         AdminLogPath = Path.Combine(logsDir, "admin.log");
+        HasDatabaseConfiguration = hasDatabaseConfiguration;
+        IsDatabaseAvailable = isDatabaseAvailable;
+        DatabaseStartupError = databaseStartupError;
     }
 
     public static AppServices CreateDefault()
@@ -109,17 +138,31 @@ public sealed class AppServices
         var appLogger = new FileLogger(Path.Combine(logsDir, "app.log"));
         var adminLogger = new FileLogger(Path.Combine(logsDir, "admin.log"));
         var userSettings = new SettingsService(settingsPath).Load();
-        var connectionString = BuildPostgresConnectionString(userSettings);
+        var connectionConfig = BuildPostgresConnectionConfiguration(userSettings);
+        var connectionString = connectionConfig.ConnectionString;
         IDataStore dataStore = new PostgresDataStore(connectionString);
-        var target = FormatPostgresTarget(connectionString);
-        try
+        var target = connectionConfig.Target;
+        var isDatabaseAvailable = false;
+        string? databaseStartupError = null;
+
+        if (!connectionConfig.IsConfigured)
         {
-            dataStore.Initialize();
-            appLogger.Info($"Database provider: postgres {target}");
+            appLogger.Info("Database configuration is missing. WPF starts in connection setup mode.");
+            databaseStartupError = "Подключение к БД не настроено.";
         }
-        catch (Exception ex)
+        else
         {
-            appLogger.Error($"Database init failed for postgres {target}. App continues and can be configured from UI.", ex);
+            try
+            {
+                dataStore.Initialize();
+                isDatabaseAvailable = true;
+                appLogger.Info($"Database provider: postgres {target}");
+            }
+            catch (Exception ex)
+            {
+                appLogger.Error($"Database init failed for postgres {target}. App starts in connection setup mode.", ex);
+                databaseStartupError = DatabaseErrorFormatter.Format(ex);
+            }
         }
 
         return new AppServices(
@@ -133,19 +176,45 @@ public sealed class AppServices
             adminPath,
             partnerStatusPath,
             appLogger,
-            adminLogger);
+            adminLogger,
+            connectionConfig.IsConfigured,
+            isDatabaseAvailable,
+            databaseStartupError);
     }
 
-    private static string BuildPostgresConnectionString(BackupSettings? userSettings)
+    private static PostgresConnectionConfig BuildPostgresConnectionConfiguration(BackupSettings? userSettings)
     {
         var userPostgres = userSettings?.Postgres;
-        var host = ReadEnvOrSettings("FLOWSTOCK_PG_HOST", userPostgres?.Host) ?? "127.0.0.1";
-        var port = ReadEnvOrSettings("FLOWSTOCK_PG_PORT", userPostgres?.Port) ?? "15432";
-        var database = ReadEnvOrSettings("FLOWSTOCK_PG_DB", userPostgres?.Database) ?? "flowstock";
-        var user = ReadEnvOrSettings("FLOWSTOCK_PG_USER", userPostgres?.Username) ?? "postgres";
+        var host = ReadEnvOrSettings("FLOWSTOCK_PG_HOST", userPostgres?.Host);
+        var port = ReadEnvOrSettings("FLOWSTOCK_PG_PORT", userPostgres?.Port);
+        var database = ReadEnvOrSettings("FLOWSTOCK_PG_DB", userPostgres?.Database);
+        var user = ReadEnvOrSettings("FLOWSTOCK_PG_USER", userPostgres?.Username);
         var password = ReadEnvOrSettings("FLOWSTOCK_PG_PASSWORD", userPostgres?.Password) ?? string.Empty;
-        host = NormalizeHost(host);
-        return $"Host={host};Port={port};Database={database};Username={user};Password={password};";
+        var normalizedHost = string.IsNullOrWhiteSpace(host) ? null : NormalizeHost(host.Trim());
+        var normalizedDatabase = NormalizeValue(database);
+        var normalizedUser = NormalizeValue(user);
+        var normalizedPortText = NormalizeValue(port);
+        var hasValidPort = int.TryParse(normalizedPortText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedPort)
+                           && parsedPort > 0;
+        var isConfigured = !string.IsNullOrWhiteSpace(normalizedHost)
+                           && !string.IsNullOrWhiteSpace(normalizedDatabase)
+                           && !string.IsNullOrWhiteSpace(normalizedUser)
+                           && hasValidPort;
+
+        var builder = new NpgsqlConnectionStringBuilder
+        {
+            Host = normalizedHost ?? string.Empty,
+            Database = normalizedDatabase ?? string.Empty,
+            Username = normalizedUser ?? string.Empty,
+            Password = password
+        };
+
+        builder.Port = hasValidPort ? parsedPort : 5432;
+
+        return new PostgresConnectionConfig(
+            builder.ConnectionString,
+            FormatPostgresTarget(normalizedHost, normalizedPortText, normalizedDatabase),
+            isConfigured);
     }
 
     private static string? ReadEnvOrSettings(string envKey, string? settingsValue)
@@ -164,42 +233,14 @@ public sealed class AppServices
         return null;
     }
 
-    private static string FormatPostgresTarget(string connectionString)
+    private static string FormatPostgresTarget(string? host, string? port, string? database)
     {
-        var parts = connectionString.Split(';', StringSplitOptions.RemoveEmptyEntries);
-        string? host = null;
-        string? port = null;
-        string? database = null;
-        foreach (var part in parts)
-        {
-            var kv = part.Split('=', 2);
-            if (kv.Length != 2)
-            {
-                continue;
-            }
-
-            var key = kv[0].Trim();
-            var value = kv[1].Trim();
-            if (key.Equals("Host", StringComparison.OrdinalIgnoreCase))
-            {
-                host = value;
-            }
-            else if (key.Equals("Port", StringComparison.OrdinalIgnoreCase))
-            {
-                port = value;
-            }
-            else if (key.Equals("Database", StringComparison.OrdinalIgnoreCase))
-            {
-                database = value;
-            }
-        }
-
         if (!string.IsNullOrWhiteSpace(host) && !string.IsNullOrWhiteSpace(database))
         {
             return $"{host}:{port ?? "5432"}/{database}";
         }
 
-        return "unknown";
+        return "not configured";
     }
 
     private static string NormalizeHost(string host)
@@ -208,5 +249,12 @@ public sealed class AppServices
             ? "127.0.0.1"
             : host;
     }
+
+    private static string? NormalizeValue(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private sealed record PostgresConnectionConfig(string ConnectionString, string Target, bool IsConfigured);
 }
 

@@ -42,7 +42,7 @@
     if (window.location && String(window.location.origin || "").indexOf("http") === 0) {
       return normalizeBaseUrl(window.location.origin);
     }
-    return "https://localhost:7153";
+    return "https://localhost:7154";
   }
 
   function getBaseUrl() {
@@ -220,6 +220,11 @@
       volume: String(item.volume || "").trim(),
       base_uom: String(item.base_uom_code || item.base_uom || "").trim(),
       base_uom_code: String(item.base_uom_code || item.base_uom || "").trim(),
+      item_type_id: Number(item.item_type_id) || 0,
+      item_type_name: String(item.item_type_name || "").trim(),
+      item_type_is_visible_in_product_catalog: item.item_type_is_visible_in_product_catalog === true,
+      item_type_enable_min_stock_control: item.item_type_enable_min_stock_control === true,
+      min_stock_qty: item.min_stock_qty != null ? Number(item.min_stock_qty) : null,
     };
   }
 
@@ -381,6 +386,70 @@
       }
       return items;
     });
+  }
+
+  function apiGetStockRows(query) {
+    var q = String(query || "").trim();
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        var url = baseUrl + "/api/stock/rows";
+        if (q) {
+          url += "?q=" + encodeURIComponent(q);
+        }
+        return fetchJsonWithTimeout(url, { method: "GET" });
+      })
+      .then(function (payload) {
+        if (!Array.isArray(payload)) {
+          throw new Error("INVALID_STOCK_ROWS");
+        }
+        return payload.map(function (row) {
+          return {
+            item_id: Number(row.item_id) || 0,
+            item_name: String(row.item_name || "").trim(),
+            barcode: String(row.barcode || "").trim(),
+            location_code: String(row.location_code || "").trim(),
+            hu: String(row.hu || "").trim(),
+            qty: Number(row.qty) || 0,
+            base_uom: String(row.base_uom || "").trim(),
+            item_type_id: Number(row.item_type_id) || 0,
+            item_type_name: String(row.item_type_name || "").trim(),
+            item_type_enable_min_stock_control: row.item_type_enable_min_stock_control === true,
+            min_stock_qty: row.min_stock_qty != null ? Number(row.min_stock_qty) : null,
+            brand: String(row.brand || "").trim(),
+            volume: String(row.volume || "").trim(),
+            gtin: String(row.gtin || "").trim(),
+          };
+        });
+      });
+  }
+
+  function apiGetItemTypes(includeInactive) {
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        var url = baseUrl + "/api/item-types";
+        if (includeInactive === true) {
+          url += "?include_inactive=1";
+        } else {
+          url += "?include_inactive=0";
+        }
+        return fetchJsonWithTimeout(url, { method: "GET" });
+      })
+      .then(function (payload) {
+        if (!Array.isArray(payload)) {
+          throw new Error("INVALID_ITEM_TYPES");
+        }
+        return payload.map(function (itemType) {
+          return {
+            itemTypeId: Number(itemType.id) || 0,
+            name: String(itemType.name || ""),
+            code: String(itemType.code || ""),
+            sortOrder: Number(itemType.sort_order) || 0,
+            isActive: itemType.is_active === true,
+            isVisibleInProductCatalog: itemType.is_visible_in_product_catalog === true,
+            enableMinStockControl: itemType.enable_min_stock_control === true,
+          };
+        });
+      });
   }
 
   function apiGetItemByBarcode(barcode) {
@@ -1619,121 +1688,6 @@
     };
   }
 
-  function importTsdData(json) {
-    return init().then(function () {
-      var normalized;
-      try {
-        normalized = validateTsdData(json);
-      } catch (error) {
-        return Promise.reject(error);
-      }
-
-      return new Promise(function (resolve, reject) {
-        var tx = db.transaction(
-          [
-            STORE_META,
-            STORE_ITEMS,
-            STORE_ITEM_CODES,
-            STORE_PARTNERS,
-            STORE_LOCATIONS,
-            STORE_UOMS,
-            STORE_ORDERS,
-            STORE_ORDER_LINES,
-            STORE_STOCK,
-            STORE_HU_STOCK,
-          ],
-          "readwrite"
-        );
-        var metaStore = tx.objectStore(STORE_META);
-        var itemsStore = tx.objectStore(STORE_ITEMS);
-        var codesStore = tx.objectStore(STORE_ITEM_CODES);
-        var partnersStore = tx.objectStore(STORE_PARTNERS);
-        var locationsStore = tx.objectStore(STORE_LOCATIONS);
-        var uomsStore = tx.objectStore(STORE_UOMS);
-        var ordersStore = tx.objectStore(STORE_ORDERS);
-        var orderLinesStore = tx.objectStore(STORE_ORDER_LINES);
-        var stockStore = tx.objectStore(STORE_STOCK);
-        var huStockStore = tx.objectStore(STORE_HU_STOCK);
-
-        tx.oncomplete = function () {
-          invalidateLocationCache();
-          resolve(true);
-        };
-        tx.onerror = function () {
-          reject(tx.error);
-        };
-
-        Promise.all([
-          clearStore(metaStore),
-          clearStore(itemsStore),
-          clearStore(codesStore),
-          clearStore(partnersStore),
-          clearStore(locationsStore),
-          clearStore(uomsStore),
-          clearStore(ordersStore),
-          clearStore(orderLinesStore),
-          clearStore(stockStore),
-          clearStore(huStockStore),
-        ])
-          .then(function () {
-            metaStore.put({ key: "dataExportedAt", value: normalized.exportedAt });
-            metaStore.put({ key: "schemaVersion", value: normalized.schemaVersion });
-            metaStore.put({
-              key: "huStockExportedAt",
-              value: normalized.huStock ? normalized.huStock.exportedAt : "",
-            });
-
-            normalized.uoms.forEach(function (uom) {
-              uomsStore.put(uom);
-            });
-
-            normalized.items.forEach(function (item) {
-              itemsStore.put(item);
-            });
-
-            normalized.itemCodes.forEach(function (code) {
-              codesStore.put(code);
-            });
-
-            normalized.partners.forEach(function (partner) {
-              partnersStore.put(partner);
-            });
-
-            normalized.locations.forEach(function (location) {
-              locationsStore.put(location);
-            });
-
-            normalized.orders.forEach(function (order) {
-              ordersStore.put(order);
-            });
-
-            normalized.orderLines.forEach(function (line) {
-              orderLinesStore.put(line);
-            });
-
-            normalized.stockRows.forEach(function (row) {
-              stockStore.put(row);
-            });
-
-            if (normalized.huStock && Array.isArray(normalized.huStock.entries)) {
-              normalized.huStock.entries.forEach(function (entry) {
-                huStockStore.put(entry);
-              });
-            }
-          })
-          .catch(function (error) {
-            try {
-              tx.abort();
-            } catch (abortError) {
-              reject(abortError);
-              return;
-            }
-            reject(error);
-          });
-      });
-    });
-  }
-
   function countStore(storeName) {
     return init().then(function () {
       return new Promise(function (resolve, reject) {
@@ -2010,167 +1964,11 @@
     });
   }
 
-  function createLocalItem(data) {
-    return init().then(function () {
-      return new Promise(function (resolve, reject) {
-        var record = Object.assign({}, data);
-        var barcode = String(record.barcode || "").trim();
-        var gtin = String(record.gtin || "").trim();
-        if (!barcode) {
-          reject({ code: "barcode_required" });
-          return;
-        }
-
-        var tx = db.transaction([STORE_ITEMS, STORE_ITEM_CODES], "readwrite");
-        var itemsStore = tx.objectStore(STORE_ITEMS);
-        var codesStore = tx.objectStore(STORE_ITEM_CODES);
-        var pending = 0;
-        var hasError = false;
-        var created = false;
-
-        function fail(err) {
-          if (hasError) {
-            return;
-          }
-          hasError = true;
-          try {
-            tx.abort();
-          } catch (abortError) {
-            // ignore
-          }
-          reject(err);
-        }
-
-        function maybeCreate() {
-          if (hasError || created || pending > 0) {
-            return;
-          }
-          created = true;
-          record.itemId = record.itemId;
-          record.nameLower = String(record.name || "").toLowerCase();
-          record.skuLower = String(record.sku || "").toLowerCase();
-          record.gtinLower = String(record.gtin || "").toLowerCase();
-          record.barcodes = record.barcodes || [barcode];
-          itemsStore.put(record);
-          codesStore.put({ code: barcode, itemId: record.itemId, kind: "barcode" });
-          if (gtin && gtin !== barcode) {
-            codesStore.put({ code: gtin, itemId: record.itemId, kind: "gtin" });
-          }
-        }
-
-        function checkCode(code) {
-          if (!code) {
-            return;
-          }
-          pending += 1;
-          var request = codesStore.get(code);
-          request.onsuccess = function () {
-            pending -= 1;
-            if (request.result) {
-              fail({ code: "barcode_exists", value: code });
-              return;
-            }
-            maybeCreate();
-          };
-          request.onerror = function () {
-            pending -= 1;
-            fail(request.error);
-          };
-        }
-
-        tx.oncomplete = function () {
-          resolve(record);
-        };
-        tx.onerror = function () {
-          if (!hasError) {
-            reject(tx.error);
-          }
-        };
-
-        checkCode(barcode);
-        if (gtin && gtin !== barcode) {
-          checkCode(gtin);
-        }
-        if (!gtin || gtin === barcode) {
-          maybeCreate();
-        }
-      });
-    });
-  }
-
   function getTotalStockByItemId(itemId) {
     return getStockByItemId(itemId).then(function (rows) {
       return rows.reduce(function (sum, row) {
         return sum + (row.qtyBase || 0);
       }, 0);
-    });
-  }
-
-  function listLocalItemsForExport() {
-    return init().then(function () {
-      return new Promise(function (resolve, reject) {
-        var items = [];
-        var tx = db.transaction(STORE_ITEMS, "readonly");
-        var store = tx.objectStore(STORE_ITEMS);
-        var request = store.openCursor();
-        request.onsuccess = function (event) {
-          var cursor = event.target.result;
-          if (!cursor) {
-            resolve(items);
-            return;
-          }
-          var item = cursor.value || {};
-          if (item.created_on_device && !item.exported_at) {
-            items.push(item);
-          }
-          cursor.continue();
-        };
-        request.onerror = function () {
-          reject(request.error);
-        };
-      });
-    });
-  }
-
-  function markLocalItemsExported(itemIds, exportedAt) {
-    return init().then(function () {
-      return new Promise(function (resolve, reject) {
-        var ids = Array.isArray(itemIds) ? itemIds : [];
-        if (!ids.length) {
-          resolve(true);
-          return;
-        }
-        var tx = db.transaction(STORE_ITEMS, "readwrite");
-        var store = tx.objectStore(STORE_ITEMS);
-        var pending = ids.length;
-        var done = false;
-        tx.oncomplete = function () {
-          if (!done) {
-            resolve(true);
-          }
-        };
-        tx.onerror = function () {
-          reject(tx.error);
-        };
-        ids.forEach(function (id) {
-          var request = store.get(id);
-          request.onsuccess = function () {
-            var item = request.result;
-            if (item) {
-              item.exported_at = exportedAt;
-              store.put(item);
-            }
-            pending -= 1;
-            if (pending === 0 && !done) {
-              done = true;
-              resolve(true);
-            }
-          };
-          request.onerror = function () {
-            reject(request.error);
-          };
-        });
-      });
     });
   }
 
@@ -2348,16 +2146,11 @@
     saveDoc: saveDoc,
     deleteDoc: deleteDoc,
     listDocs: listDocs,
-    importTsdData: importTsdData,
     getDataStatus: getDataStatus,
     getMetaExportedAt: getMetaExportedAt,
     searchItems: searchItems,
     listUoms: listUoms,
-    createLocalItem: createLocalItem,
     findItemByCode: findItemByCode,
-    searchPartners: searchPartners,
-    searchLocations: searchLocations,
-    searchOrders: searchOrders,
     listOrders: listOrders,
     listOrderLines: listOrderLines,
     getPartnerById: getPartnerById,
@@ -2368,15 +2161,15 @@
     getHuStockByCode: getHuStockByCode,
     getItemsByIds: getItemsByIds,
     getTotalStockByItemId: getTotalStockByItemId,
-    listLocalItemsForExport: listLocalItemsForExport,
-    markLocalItemsExported: markLocalItemsExported,
     getBaseUrl: getBaseUrl,
     apiSearchItems: apiSearchItems,
+    apiGetItemTypes: apiGetItemTypes,
     apiFindItemByCode: apiFindItemByCode,
     apiCreateItemRequest: apiCreateItemRequest,
     apiGetLocations: apiGetLocations,
     apiSearchLocations: apiSearchLocations,
     apiGetLocationById: apiGetLocationById,
+    apiGetStockRows: apiGetStockRows,
     apiGetStockByBarcode: apiGetStockByBarcode,
     apiGetHuStockRows: apiGetHuStockRows,
     apiGetPartners: apiGetPartners,

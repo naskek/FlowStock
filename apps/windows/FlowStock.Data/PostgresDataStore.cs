@@ -56,7 +56,7 @@ public sealed class PostgresDataStore : IDataStore
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id WHERE i.barcode = @barcode OR i.gtin = @barcode");
+            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, i.min_stock_qty FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id WHERE i.barcode = @barcode OR i.gtin = @barcode");
             command.Parameters.AddWithValue("@barcode", barcode);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
@@ -67,7 +67,7 @@ public sealed class PostgresDataStore : IDataStore
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id WHERE i.gtin = @gtin");
+            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, i.min_stock_qty FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id WHERE i.gtin = @gtin");
             command.Parameters.AddWithValue("@gtin", gtin);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
@@ -78,7 +78,7 @@ public sealed class PostgresDataStore : IDataStore
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id WHERE i.id = @id");
+            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, i.min_stock_qty FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id WHERE i.id = @id");
             command.Parameters.AddWithValue("@id", id);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
@@ -111,8 +111,8 @@ public sealed class PostgresDataStore : IDataStore
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO items(name, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, max_qty_per_hu, tara_id, is_marked)
-VALUES(@name, @barcode, @gtin, @base_uom, @default_packaging_id, @brand, @volume, @shelf_life_months, @max_qty_per_hu, @tara_id, @is_marked)
+INSERT INTO items(name, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, max_qty_per_hu, tara_id, is_marked, item_type_id, min_stock_qty)
+VALUES(@name, @barcode, @gtin, @base_uom, @default_packaging_id, @brand, @volume, @shelf_life_months, @max_qty_per_hu, @tara_id, @is_marked, @item_type_id, @min_stock_qty)
 RETURNING id;
 ");
             command.Parameters.AddWithValue("@name", item.Name);
@@ -126,6 +126,8 @@ RETURNING id;
             command.Parameters.AddWithValue("@max_qty_per_hu", item.MaxQtyPerHu.HasValue ? item.MaxQtyPerHu.Value : DBNull.Value);
             command.Parameters.AddWithValue("@tara_id", item.TaraId.HasValue ? item.TaraId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@is_marked", item.IsMarked ? 1 : 0);
+            command.Parameters.AddWithValue("@item_type_id", item.ItemTypeId.HasValue ? item.ItemTypeId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@min_stock_qty", item.MinStockQty.HasValue ? item.MinStockQty.Value : DBNull.Value);
             return (long)(command.ExecuteScalar() ?? 0L);
         });
     }
@@ -158,7 +160,9 @@ SET name = @name,
     shelf_life_months = @shelf_life_months,
     max_qty_per_hu = @max_qty_per_hu,
     tara_id = @tara_id,
-    is_marked = @is_marked
+    is_marked = @is_marked,
+    item_type_id = @item_type_id,
+    min_stock_qty = @min_stock_qty
 WHERE id = @id;
 ");
             command.Parameters.AddWithValue("@name", item.Name);
@@ -172,6 +176,8 @@ WHERE id = @id;
             command.Parameters.AddWithValue("@max_qty_per_hu", item.MaxQtyPerHu.HasValue ? item.MaxQtyPerHu.Value : DBNull.Value);
             command.Parameters.AddWithValue("@tara_id", item.TaraId.HasValue ? item.TaraId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@is_marked", item.IsMarked ? 1 : 0);
+            command.Parameters.AddWithValue("@item_type_id", item.ItemTypeId.HasValue ? item.ItemTypeId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@min_stock_qty", item.MinStockQty.HasValue ? item.MinStockQty.Value : DBNull.Value);
             command.Parameters.AddWithValue("@id", item.Id);
             command.ExecuteNonQuery();
             return 0;
@@ -555,6 +561,121 @@ RETURNING id;");
         {
             using var command = CreateCommand(connection, "SELECT 1 FROM items WHERE tara_id = @id LIMIT 1");
             command.Parameters.AddWithValue("@id", taraId);
+            return command.ExecuteScalar() != null;
+        });
+    }
+
+    public IReadOnlyList<ItemType> GetItemTypes(bool includeInactive)
+    {
+        return WithConnection(connection =>
+        {
+            var sql = @"
+SELECT id, name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control
+FROM item_types";
+            if (!includeInactive)
+            {
+                sql += " WHERE is_active = TRUE";
+            }
+
+            sql += " ORDER BY sort_order, name;";
+            using var command = CreateCommand(connection, sql);
+            using var reader = command.ExecuteReader();
+            var list = new List<ItemType>();
+            while (reader.Read())
+            {
+                list.Add(ReadItemType(reader));
+            }
+
+            return list;
+        });
+    }
+
+    public ItemType? GetItemType(long id)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT id, name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control
+FROM item_types
+WHERE id = @id
+LIMIT 1;");
+            command.Parameters.AddWithValue("@id", id);
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadItemType(reader) : null;
+        });
+    }
+
+    public long AddItemType(ItemType itemType)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO item_types(name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control)
+VALUES(@name, @code, @sort_order, @is_active, @is_visible_in_product_catalog, @enable_min_stock_control)
+RETURNING id;");
+            command.Parameters.AddWithValue("@name", itemType.Name);
+            command.Parameters.AddWithValue("@code", string.IsNullOrWhiteSpace(itemType.Code) ? DBNull.Value : itemType.Code.Trim());
+            command.Parameters.AddWithValue("@sort_order", itemType.SortOrder);
+            command.Parameters.AddWithValue("@is_active", itemType.IsActive);
+            command.Parameters.AddWithValue("@is_visible_in_product_catalog", itemType.IsVisibleInProductCatalog);
+            command.Parameters.AddWithValue("@enable_min_stock_control", itemType.EnableMinStockControl);
+            return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public void UpdateItemType(ItemType itemType)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE item_types
+SET name = @name,
+    code = @code,
+    sort_order = @sort_order,
+    is_active = @is_active,
+    is_visible_in_product_catalog = @is_visible_in_product_catalog,
+    enable_min_stock_control = @enable_min_stock_control
+WHERE id = @id;");
+            command.Parameters.AddWithValue("@name", itemType.Name);
+            command.Parameters.AddWithValue("@code", string.IsNullOrWhiteSpace(itemType.Code) ? DBNull.Value : itemType.Code.Trim());
+            command.Parameters.AddWithValue("@sort_order", itemType.SortOrder);
+            command.Parameters.AddWithValue("@is_active", itemType.IsActive);
+            command.Parameters.AddWithValue("@is_visible_in_product_catalog", itemType.IsVisibleInProductCatalog);
+            command.Parameters.AddWithValue("@enable_min_stock_control", itemType.EnableMinStockControl);
+            command.Parameters.AddWithValue("@id", itemType.Id);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void DeleteItemType(long itemTypeId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "DELETE FROM item_types WHERE id = @id");
+            command.Parameters.AddWithValue("@id", itemTypeId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void DeactivateItemType(long itemTypeId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "UPDATE item_types SET is_active = FALSE WHERE id = @id");
+            command.Parameters.AddWithValue("@id", itemTypeId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public bool IsItemTypeUsed(long itemTypeId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "SELECT 1 FROM items WHERE item_type_id = @id LIMIT 1");
+            command.Parameters.AddWithValue("@id", itemTypeId);
             return command.ExecuteScalar() != null;
         });
     }
@@ -1238,7 +1359,7 @@ WHERE id = @id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT ol.id, ol.order_id, ol.item_id, i.name, ol.qty_ordered
+SELECT ol.id, ol.order_id, ol.item_id, i.name, i.barcode, i.gtin, ol.qty_ordered
 FROM order_lines ol
 INNER JOIN items i ON i.id = ol.item_id
 WHERE ol.order_id = @order_id
@@ -1255,7 +1376,9 @@ ORDER BY i.name;
                     OrderId = reader.GetInt64(1),
                     ItemId = reader.GetInt64(2),
                     ItemName = reader.GetString(3),
-                    QtyOrdered = reader.GetDouble(4)
+                    Barcode = reader.IsDBNull(4) ? null : reader.GetString(4),
+                    Gtin = reader.IsDBNull(5) ? null : reader.GetString(5),
+                    QtyOrdered = reader.GetDouble(6)
                 });
             }
 
@@ -1592,7 +1715,11 @@ VALUES(@ts, @doc_id, @item_id, @location_id, @qty_delta, @hu_code, @hu);
                     LocationCode = reader.GetString(3),
                     Hu = reader.IsDBNull(4) ? null : reader.GetString(4),
                     Qty = reader.GetDouble(5),
-                    BaseUom = reader.IsDBNull(6) ? "шт" : reader.GetString(6)
+                    BaseUom = reader.IsDBNull(6) ? "шт" : reader.GetString(6),
+                    ItemTypeId = reader.IsDBNull(7) ? null : reader.GetInt64(7),
+                    ItemTypeName = reader.IsDBNull(8) ? null : reader.GetString(8),
+                    ItemTypeEnableMinStockControl = !reader.IsDBNull(9) && reader.GetBoolean(9),
+                    MinStockQty = reader.IsDBNull(10) ? null : reader.GetDouble(10)
                 });
             }
 
@@ -2150,7 +2277,26 @@ RETURNING id;
             MaxQtyPerHu = reader.IsDBNull(9) ? null : Convert.ToDouble(reader.GetValue(9), CultureInfo.InvariantCulture),
             TaraId = reader.IsDBNull(10) ? null : reader.GetInt64(10),
             IsMarked = !reader.IsDBNull(11) && Convert.ToInt32(reader.GetValue(11), CultureInfo.InvariantCulture) != 0,
-            TaraName = reader.IsDBNull(12) ? null : reader.GetString(12)
+            TaraName = reader.IsDBNull(12) ? null : reader.GetString(12),
+            ItemTypeId = reader.IsDBNull(13) ? null : reader.GetInt64(13),
+            ItemTypeName = reader.IsDBNull(14) ? null : reader.GetString(14),
+            ItemTypeIsVisibleInProductCatalog = !reader.IsDBNull(15) && reader.GetBoolean(15),
+            ItemTypeEnableMinStockControl = !reader.IsDBNull(16) && reader.GetBoolean(16),
+            MinStockQty = reader.IsDBNull(17) ? null : Convert.ToDouble(reader.GetValue(17), CultureInfo.InvariantCulture)
+        };
+    }
+
+    private static ItemType ReadItemType(NpgsqlDataReader reader)
+    {
+        return new ItemType
+        {
+            Id = reader.GetInt64(0),
+            Name = reader.GetString(1),
+            Code = reader.IsDBNull(2) ? null : reader.GetString(2),
+            SortOrder = reader.IsDBNull(3) ? 0 : reader.GetInt32(3),
+            IsActive = !reader.IsDBNull(4) && reader.GetBoolean(4),
+            IsVisibleInProductCatalog = !reader.IsDBNull(5) && reader.GetBoolean(5),
+            EnableMinStockControl = !reader.IsDBNull(6) && reader.GetBoolean(6)
         };
     }
 
@@ -2473,6 +2619,7 @@ LIMIT 1;";
         var requiredTables = new[]
         {
             "items",
+            "item_types",
             "orders",
             "order_lines",
             "docs",
@@ -2495,7 +2642,11 @@ LIMIT 1;";
             || !ColumnExists(connection, "doc_lines", "replaces_line_id")
             || !ColumnExists(connection, "doc_lines", "pack_single_hu")
             || !ColumnExists(connection, "ledger", "hu_code")
-            || !ColumnExists(connection, "client_blocks", "is_enabled"))
+            || !ColumnExists(connection, "client_blocks", "is_enabled")
+            || !ColumnExists(connection, "items", "item_type_id")
+            || !ColumnExists(connection, "items", "min_stock_qty")
+            || !ColumnExists(connection, "item_types", "is_visible_in_product_catalog")
+            || !ColumnExists(connection, "item_types", "enable_min_stock_control"))
         {
             throw new InvalidOperationException("Database schema is outdated. Run deploy/scripts/migrate.sh before starting FlowStock.");
         }
@@ -2626,19 +2777,20 @@ WHERE COALESCE(i.is_marked, 0) = 0
     {
         if (string.IsNullOrWhiteSpace(search))
         {
-            return "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id ORDER BY i.name";
+            return "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, i.min_stock_qty FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id ORDER BY i.name";
         }
 
-        return "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id WHERE i.name ILIKE @search OR i.barcode ILIKE @search OR i.gtin ILIKE @search ORDER BY i.name";
+        return "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, i.min_stock_qty FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id WHERE i.name ILIKE @search OR i.barcode ILIKE @search OR i.gtin ILIKE @search ORDER BY i.name";
     }
 
     private static string BuildStockQuery(string? search)
     {
         var baseQuery = @"
-SELECT i.id, i.name, i.barcode, l.code, COALESCE(led.hu_code, led.hu), SUM(led.qty_delta) AS qty, i.base_uom
+SELECT i.id, i.name, i.barcode, l.code, COALESCE(led.hu_code, led.hu), SUM(led.qty_delta) AS qty, i.base_uom, i.item_type_id, it.name, COALESCE(it.enable_min_stock_control, FALSE), i.min_stock_qty
 FROM ledger led
 INNER JOIN items i ON i.id = led.item_id
 INNER JOIN locations l ON l.id = led.location_id
+LEFT JOIN item_types it ON it.id = i.item_type_id
 ";
 
         if (!string.IsNullOrWhiteSpace(search))
@@ -2646,7 +2798,7 @@ INNER JOIN locations l ON l.id = led.location_id
             baseQuery += "WHERE i.name ILIKE @search OR i.barcode ILIKE @search OR l.code ILIKE @search\n";
         }
 
-        baseQuery += "GROUP BY i.id, i.name, i.barcode, i.base_uom, l.id, COALESCE(led.hu_code, led.hu) HAVING SUM(led.qty_delta) != 0 ORDER BY i.name, l.code, COALESCE(led.hu_code, led.hu)";
+        baseQuery += "GROUP BY i.id, i.name, i.barcode, i.base_uom, i.item_type_id, it.name, it.enable_min_stock_control, i.min_stock_qty, l.id, COALESCE(led.hu_code, led.hu) HAVING SUM(led.qty_delta) != 0 ORDER BY i.name, l.code, COALESCE(led.hu_code, led.hu)";
         return baseQuery;
     }
 

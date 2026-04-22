@@ -1,27 +1,31 @@
 # AGENTS.md (FlowStock)
 
-## Product invariant
-- Stock is derived from ledger only.
-- Documents affect stock only on Close.
-- Closed documents are immutable; corrections are separate docs.
+## Язык работы
+- Дальнейшее общение по этому репозиторию ведется только на русском языке.
+- Все Markdown-документы (`*.md`) в репозитории должны поддерживаться на русском языке.
 
-## Source of truth
-- Read and follow: ./docs/spec.md and ./docs/spec_orders.md
-- If behavior changes, update specs in the same PR.
+## Инварианты продукта
+- Остатки рассчитываются только из `ledger`.
+- Документы влияют на остатки только при `Close`.
+- Закрытые документы неизменяемы; исправления оформляются отдельными документами.
 
-## Repo map
-- apps/windows/* : WPF client (.NET 8)
-- apps/windows/FlowStock.Server : Minimal API + Postgres
-- apps/android/tsd : offline PWA (IndexedDB + SW)
-- deploy/ : Dockerfile + compose
+## Источник истины
+- Обязательно читать и соблюдать: `./docs/spec.md` и `./docs/spec_orders.md`
+- Если поведение меняется, спецификации обновляются в том же PR.
 
-## Workflow rules
-- Always propose a short plan first (bullets).
-- Prefer minimal diffs; avoid drive-by refactors.
-- After code changes, run: build + relevant tests (or explain if none).
-- Never run destructive commands (rm -rf, git reset --hard, docker system prune) without explicit ask.
+## Карта репозитория
+- `apps/windows/*` : WPF-клиент (.NET 8)
+- `apps/windows/FlowStock.Server` : Minimal API + Postgres
+- `apps/android/tsd` : offline PWA (IndexedDB + SW)
+- `deploy/` : Dockerfile + compose
 
-## Commands
-- dotnet build
-- dotnet test (if tests exist)
-- docker compose up -d (if working on server+postgres)
+## Правила работы
+- Всегда сначала предлагать короткий план в виде списка.
+- Предпочитать минимальные диффы; избегать побочных рефакторингов.
+- После изменений в коде запускать: build + релевантные tests (или явно объяснять, почему их нет).
+- Никогда не выполнять destructive-команды (`rm -rf`, `git reset --hard`, `docker system prune`) без явного запроса.
+
+## Команды
+- `dotnet build`
+- `dotnet test` (если тесты есть)
+- `docker compose up -d` (если меняется server+postgres)

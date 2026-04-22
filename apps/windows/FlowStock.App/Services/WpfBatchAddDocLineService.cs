@@ -22,7 +22,7 @@ public sealed class WpfBatchAddDocLineService
 
     public bool IsServerBatchAddDocLineEnabled()
     {
-        return LoadConfiguration().UseServerAddDocLine;
+        return true;
     }
 
     public async Task<WpfBatchAddDocLinesResult> AddLinesBatchAsync(
@@ -31,11 +31,6 @@ public sealed class WpfBatchAddDocLineService
         CancellationToken cancellationToken = default)
     {
         var configuration = LoadConfiguration();
-        if (!configuration.UseServerAddDocLine)
-        {
-            return WpfBatchAddDocLinesResult.FeatureDisabled();
-        }
-
         if (contexts.Count == 0)
         {
             return WpfBatchAddDocLinesResult.Success(0, 0, shouldRefresh: false, string.Empty);
@@ -266,7 +261,6 @@ public sealed class WpfBatchAddDocLineService
     private WpfServerAddDocLineConfiguration LoadConfiguration()
     {
         var settings = _settings.Load().Server ?? new ServerSettings();
-        var useServerAddDocLine = ReadEnvBool("FLOWSTOCK_USE_SERVER_ADD_DOC_LINE") ?? settings.UseServerAddDocLine;
         var baseUrl = NormalizeBaseUrl(ReadEnvOrSettings("FLOWSTOCK_SERVER_BASE_URL", settings.BaseUrl) ?? WpfCloseDocumentService.DefaultServerBaseUrl);
         var deviceId = ReadEnvOrSettings("FLOWSTOCK_SERVER_DEVICE_ID", settings.DeviceId);
         if (string.IsNullOrWhiteSpace(deviceId))
@@ -281,7 +275,6 @@ public sealed class WpfBatchAddDocLineService
         }
 
         return new WpfServerAddDocLineConfiguration(
-            useServerAddDocLine,
             baseUrl,
             deviceId,
             timeoutSeconds,
@@ -500,14 +493,6 @@ public sealed class WpfBatchAddDocLinesResult
 
     public bool IsSuccess => Kind is WpfAddDocLineResultKind.Added
         or WpfAddDocLineResultKind.IdempotentReplay;
-
-    public static WpfBatchAddDocLinesResult FeatureDisabled()
-    {
-        return new WpfBatchAddDocLinesResult
-        {
-            Kind = WpfAddDocLineResultKind.FeatureDisabled
-        };
-    }
 
     public static WpfBatchAddDocLinesResult Success(
         int addedCount,

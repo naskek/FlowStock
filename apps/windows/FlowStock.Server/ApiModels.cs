@@ -185,6 +185,84 @@ public sealed class HuGenerateRequest
     public string? CreatedBy { get; set; }
 }
 
+public sealed class CreateHuRequest
+{
+    [JsonPropertyName("hu_code")]
+    public string? HuCode { get; set; }
+
+    [JsonPropertyName("created_by")]
+    public string? CreatedBy { get; set; }
+}
+
+public sealed class CloseHuRequest
+{
+    [JsonPropertyName("closed_by")]
+    public string? ClosedBy { get; set; }
+
+    [JsonPropertyName("note")]
+    public string? Note { get; set; }
+}
+
+public sealed class SaveDocHeaderRequest
+{
+    [JsonPropertyName("partner_id")]
+    public long? PartnerId { get; set; }
+
+    [JsonPropertyName("order_id")]
+    public long? OrderId { get; set; }
+
+    [JsonPropertyName("shipping_ref")]
+    public string? ShippingRef { get; set; }
+
+    [JsonPropertyName("reason_code")]
+    public string? ReasonCode { get; set; }
+
+    [JsonPropertyName("comment")]
+    public string? Comment { get; set; }
+
+    [JsonPropertyName("production_batch_no")]
+    public string? ProductionBatchNo { get; set; }
+}
+
+public sealed class AssignDocLineHuRequest
+{
+    [JsonPropertyName("qty")]
+    public double Qty { get; set; }
+
+    [JsonPropertyName("from_hu")]
+    public string? FromHu { get; set; }
+
+    [JsonPropertyName("to_hu")]
+    public string? ToHu { get; set; }
+}
+
+public sealed class AutoDistributeProductionReceiptHusRequest
+{
+    [JsonPropertyName("line_ids")]
+    public List<long>? LineIds { get; set; }
+}
+
+public sealed class DistributeProductionLineByHuCapacityRequest
+{
+    [JsonPropertyName("max_qty_per_hu")]
+    public double MaxQtyPerHu { get; set; }
+
+    [JsonPropertyName("hu_codes")]
+    public List<string>? HuCodes { get; set; }
+}
+
+public sealed class SetPackSingleHuRequest
+{
+    [JsonPropertyName("pack_single_hu")]
+    public bool PackSingleHu { get; set; }
+}
+
+public sealed class ImportJsonlRequest
+{
+    [JsonPropertyName("content")]
+    public string? Content { get; set; }
+}
+
 public sealed class TsdLoginRequest
 {
     [JsonPropertyName("login")]
@@ -411,6 +489,165 @@ public sealed class OrderStatusChangeRequestCreateRequest
 
     [JsonPropertyName("login")]
     public string? Login { get; set; }
+}
+
+public sealed class ResolveOrderRequestRequest
+{
+    [JsonPropertyName("status")]
+    public string? Status { get; set; }
+
+    [JsonPropertyName("resolved_by")]
+    public string? ResolvedBy { get; set; }
+
+    [JsonPropertyName("note")]
+    public string? Note { get; set; }
+
+    [JsonPropertyName("applied_order_id")]
+    public long? AppliedOrderId { get; set; }
+}
+
+public sealed class ClientBlockSettingRequest
+{
+    [JsonPropertyName("key")]
+    public string? Key { get; set; }
+
+    [JsonPropertyName("is_enabled")]
+    public bool IsEnabled { get; set; }
+}
+
+public sealed class SaveClientBlocksRequest
+{
+    [JsonPropertyName("blocks")]
+    public List<ClientBlockSettingRequest>? Blocks { get; set; }
+}
+
+public sealed class UpsertTsdDeviceRequest
+{
+    [JsonPropertyName("login")]
+    public string? Login { get; set; }
+
+    [JsonPropertyName("password")]
+    public string? Password { get; set; }
+
+    [JsonPropertyName("is_active")]
+    public bool IsActive { get; set; }
+
+    [JsonPropertyName("platform")]
+    public string? Platform { get; set; }
+}
+
+public sealed class UpsertItemRequest
+{
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("barcode")]
+    public string? Barcode { get; set; }
+
+    [JsonPropertyName("gtin")]
+    public string? Gtin { get; set; }
+
+    [JsonPropertyName("base_uom")]
+    public string? BaseUom { get; set; }
+
+    [JsonPropertyName("brand")]
+    public string? Brand { get; set; }
+
+    [JsonPropertyName("volume")]
+    public string? Volume { get; set; }
+
+    [JsonPropertyName("shelf_life_months")]
+    public int? ShelfLifeMonths { get; set; }
+
+    [JsonPropertyName("tara_id")]
+    public long? TaraId { get; set; }
+
+    [JsonPropertyName("is_marked")]
+    public bool IsMarked { get; set; }
+
+    [JsonPropertyName("max_qty_per_hu")]
+    public double? MaxQtyPerHu { get; set; }
+
+    [JsonPropertyName("item_type_id")]
+    public long? ItemTypeId { get; set; }
+
+    [JsonPropertyName("min_stock_qty")]
+    public double? MinStockQty { get; set; }
+}
+
+public sealed class UpsertItemTypeRequest
+{
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("code")]
+    public string? Code { get; set; }
+
+    [JsonPropertyName("sort_order")]
+    public int SortOrder { get; set; }
+
+    [JsonPropertyName("is_active")]
+    public bool IsActive { get; set; } = true;
+
+    [JsonPropertyName("is_visible_in_product_catalog")]
+    public bool IsVisibleInProductCatalog { get; set; }
+
+    [JsonPropertyName("enable_min_stock_control")]
+    public bool EnableMinStockControl { get; set; }
+}
+
+public sealed class UpsertLocationRequest
+{
+    [JsonPropertyName("code")]
+    public string? Code { get; set; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+}
+
+public sealed class CreateNamedEntityRequest
+{
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+}
+
+public sealed class UpsertPackagingRequest
+{
+    [JsonPropertyName("item_id")]
+    public long ItemId { get; set; }
+
+    [JsonPropertyName("code")]
+    public string? Code { get; set; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("factor_to_base")]
+    public double FactorToBase { get; set; }
+
+    [JsonPropertyName("sort_order")]
+    public int SortOrder { get; set; }
+
+    [JsonPropertyName("is_active")]
+    public bool? IsActive { get; set; }
+}
+
+public sealed class SetDefaultPackagingRequest
+{
+    [JsonPropertyName("packaging_id")]
+    public long? PackagingId { get; set; }
+}
+
+public sealed class UpsertPartnerRequest
+{
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("code")]
+    public string? Code { get; set; }
+
+    [JsonPropertyName("status")]
+    public string? Status { get; set; }
 }
 
 public sealed class ApiResult

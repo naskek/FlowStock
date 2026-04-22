@@ -61,4 +61,41 @@ public sealed class MigrationInvariantTests
 
         Assert.Empty(result.Warnings);
     }
+
+    [Fact]
+    public void OutboundWithoutLineHu_AllocatesFromMultipleHusInLocation()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedDoc(new Doc
+        {
+            Id = 3,
+            DocRef = "OUT-2026-000005",
+            Type = DocType.Outbound,
+            Status = DocStatus.Draft,
+            CreatedAt = new DateTime(2026, 3, 10, 14, 0, 0, DateTimeKind.Utc),
+            PartnerId = 20
+        });
+        harness.SeedPartner(new Partner { Id = 20, Code = "C001", Name = "Покупатель" });
+        harness.SeedItem(new Item { Id = 100, Name = "Горчица" });
+        harness.SeedLocation(new Location { Id = 10, Code = "01", Name = "Склад 01" });
+        harness.SeedBalance(100, 10, 4, "HU-000001");
+        harness.SeedBalance(100, 10, 6, "HU-000002");
+        harness.SeedLine(new DocLine
+        {
+            Id = 12,
+            DocId = 3,
+            ItemId = 100,
+            Qty = 10,
+            FromLocationId = 10
+        });
+
+        var service = harness.CreateService();
+        var result = service.TryCloseDoc(3, allowNegative: false);
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Errors);
+        Assert.Equal(DocStatus.Closed, harness.GetDoc(3).Status);
+        Assert.Contains(harness.LedgerEntries, entry => entry.HuCode == "HU-000001" && Math.Abs(entry.QtyDelta + 4) < 0.000001);
+        Assert.Contains(harness.LedgerEntries, entry => entry.HuCode == "HU-000002" && Math.Abs(entry.QtyDelta + 6) < 0.000001);
+    }
 }

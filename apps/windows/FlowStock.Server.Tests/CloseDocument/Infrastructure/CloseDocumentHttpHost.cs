@@ -1,8 +1,10 @@
 using FlowStock.Core.Abstractions;
+using FlowStock.Core.Models;
 using FlowStock.Core.Services;
 using FlowStock.Server;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.DependencyInjection;
@@ -44,6 +46,33 @@ internal sealed class CloseDocumentHttpHost : IAsyncDisposable
         DocumentDraftEndpoints.Map(app);
         CloseDocumentEndpoint.Map(app);
         OpsEndpoint.Map(app);
+        app.MapPost("/api/orders/requests/{requestId:long}/resolve", (long requestId, ResolveOrderRequestRequest request, IDataStore store) =>
+        {
+            var existing = store.GetOrderRequests(true).FirstOrDefault(entry => entry.Id == requestId);
+            if (existing == null)
+            {
+                return Results.NotFound(new ApiResult(false, "ORDER_REQUEST_NOT_FOUND"));
+            }
+
+            var status = string.Equals(request.Status, OrderRequestStatus.Approved, StringComparison.OrdinalIgnoreCase)
+                ? OrderRequestStatus.Approved
+                : string.Equals(request.Status, OrderRequestStatus.Rejected, StringComparison.OrdinalIgnoreCase)
+                    ? OrderRequestStatus.Rejected
+                    : null;
+            if (status == null)
+            {
+                return Results.BadRequest(new ApiResult(false, "INVALID_STATUS"));
+            }
+
+            store.ResolveOrderRequest(
+                requestId,
+                status,
+                string.IsNullOrWhiteSpace(request.ResolvedBy) ? "WPF" : request.ResolvedBy.Trim(),
+                string.IsNullOrWhiteSpace(request.Note) ? null : request.Note.Trim(),
+                request.AppliedOrderId);
+
+            return Results.Ok(new ApiResult(true));
+        });
 
         await app.StartAsync();
 

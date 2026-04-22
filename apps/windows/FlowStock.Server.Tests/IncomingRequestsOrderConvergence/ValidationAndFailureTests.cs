@@ -14,7 +14,10 @@ public sealed class ValidationAndFailureTests
         var (harness, apiStore, request) = IncomingRequestsOrderConvergenceScenario.CreateInvalidCreateOrderApprovalScenario();
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
         using var temp = new TempSettingsScope(host.Client.BaseAddress!, useServerIncomingRequestOrderApproval: true);
-        var service = new IncomingRequestOrderApiBridgeService(new SettingsService(temp.SettingsPath), new FileLogger(temp.LogPath), harness.Store);
+        var settingsService = new SettingsService(temp.SettingsPath);
+        var logger = new FileLogger(temp.LogPath);
+        var requestsApi = new WpfIncomingRequestsApiService(settingsService, logger);
+        var service = new IncomingRequestOrderApiBridgeService(settingsService, logger, requestsApi);
 
         var result = await service.ApproveAsync(request, "wpf-operator");
 
@@ -31,23 +34,26 @@ public sealed class ValidationAndFailureTests
     }
 
     [Fact]
-    public async Task LegacyFallback_RemainsAvailableUnderFeatureFlag()
+    public async Task Approval_IgnoresLegacyFlagAndStillUsesCanonicalApi()
     {
         var (harness, apiStore, request) = IncomingRequestsOrderConvergenceScenario.CreateCreateOrderApprovalScenario();
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
         using var temp = new TempSettingsScope(host.Client.BaseAddress!, useServerIncomingRequestOrderApproval: false);
-        var service = new IncomingRequestOrderApiBridgeService(new SettingsService(temp.SettingsPath), new FileLogger(temp.LogPath), harness.Store);
+        var settingsService = new SettingsService(temp.SettingsPath);
+        var logger = new FileLogger(temp.LogPath);
+        var requestsApi = new WpfIncomingRequestsApiService(settingsService, logger);
+        var service = new IncomingRequestOrderApiBridgeService(settingsService, logger, requestsApi);
 
         var result = await service.ApproveAsync(request, "wpf-operator");
 
-        Assert.False(result.IsSuccess);
-        Assert.Equal(IncomingRequestOrderApprovalResultKind.FeatureDisabled, result.Kind);
-        Assert.Equal(0, harness.OrderCount);
+        Assert.True(result.IsSuccess);
+        Assert.Equal(IncomingRequestOrderApprovalResultKind.Approved, result.Kind);
+        Assert.Equal(1, harness.OrderCount);
 
         var storedRequest = harness.GetOrderRequest(request.Id);
         Assert.NotNull(storedRequest);
-        Assert.Equal(OrderRequestStatus.Pending, storedRequest!.Status);
-        Assert.Null(storedRequest.ResolvedAt);
+        Assert.Equal(OrderRequestStatus.Approved, storedRequest!.Status);
+        Assert.NotNull(storedRequest.ResolvedAt);
     }
 
     private sealed class TempSettingsScope : IDisposable

@@ -26,7 +26,8 @@ public partial class ItemPackagingWindow : Window
 
     private void LoadItem()
     {
-        _item = _services.DataStore.FindItemById(_itemId);
+        _item = (_services.WpfReadApi.TryGetItems(null, out var apiItems) ? apiItems : Array.Empty<Item>())
+            .FirstOrDefault(item => item.Id == _itemId);
         var title = _item == null ? "Товар не найден" : $"Товар: {_item.Name} (база: {_item.BaseUom})";
         ItemTitleText.Text = title;
         PackagingFactorLabel.Text = _item == null
@@ -37,7 +38,10 @@ public partial class ItemPackagingWindow : Window
     private void LoadPackagings()
     {
         _packagings.Clear();
-        foreach (var packaging in _services.Packagings.GetPackagings(_itemId, includeInactive: true))
+        var packagings = _services.WpfPackagingApi.TryGetPackagings(_itemId, includeInactive: true, out var apiPackagings)
+            ? apiPackagings
+            : Array.Empty<ItemPackaging>();
+        foreach (var packaging in packagings)
         {
             _packagings.Add(packaging);
         }
@@ -65,7 +69,7 @@ public partial class ItemPackagingWindow : Window
         UpdateButtons();
     }
 
-    private void AddPackaging_Click(object sender, RoutedEventArgs e)
+    private async void AddPackaging_Click(object sender, RoutedEventArgs e)
     {
         if (!TryReadForm(out var code, out var name, out var factor, out var sortOrder))
         {
@@ -74,7 +78,13 @@ public partial class ItemPackagingWindow : Window
 
         try
         {
-            _services.Packagings.CreatePackaging(_itemId, code, name, factor, sortOrder);
+            var result = await _services.WpfPackagingApi
+                .TryCreatePackagingAsync(_itemId, code, name, factor, sortOrder)
+                .ConfigureAwait(true);
+            if (!result.IsSuccess)
+            {
+                throw new InvalidOperationException(result.Error ?? "Не удалось создать упаковку через сервер.");
+            }
             LoadPackagings();
         }
         catch (Exception ex)
@@ -83,7 +93,7 @@ public partial class ItemPackagingWindow : Window
         }
     }
 
-    private void SavePackaging_Click(object sender, RoutedEventArgs e)
+    private async void SavePackaging_Click(object sender, RoutedEventArgs e)
     {
         if (_selectedPackaging == null)
         {
@@ -99,7 +109,13 @@ public partial class ItemPackagingWindow : Window
         try
         {
             var isActive = PackagingActiveCheck.IsChecked == true;
-            _services.Packagings.UpdatePackaging(_selectedPackaging.Id, _itemId, code, name, factor, sortOrder, isActive);
+            var result = await _services.WpfPackagingApi
+                .TryUpdatePackagingAsync(_selectedPackaging.Id, _itemId, code, name, factor, sortOrder, isActive)
+                .ConfigureAwait(true);
+            if (!result.IsSuccess)
+            {
+                throw new InvalidOperationException(result.Error ?? "Не удалось обновить упаковку через сервер.");
+            }
             LoadPackagings();
         }
         catch (Exception ex)
@@ -108,7 +124,7 @@ public partial class ItemPackagingWindow : Window
         }
     }
 
-    private void DeletePackaging_Click(object sender, RoutedEventArgs e)
+    private async void DeletePackaging_Click(object sender, RoutedEventArgs e)
     {
         if (_selectedPackaging == null)
         {
@@ -124,7 +140,13 @@ public partial class ItemPackagingWindow : Window
 
         try
         {
-            _services.Packagings.DeactivatePackaging(_selectedPackaging.Id);
+            var result = await _services.WpfPackagingApi
+                .TryDeletePackagingAsync(_selectedPackaging.Id)
+                .ConfigureAwait(true);
+            if (!result.IsSuccess)
+            {
+                throw new InvalidOperationException(result.Error ?? "Не удалось удалить упаковку через сервер.");
+            }
             LoadPackagings();
         }
         catch (Exception ex)
@@ -133,7 +155,7 @@ public partial class ItemPackagingWindow : Window
         }
     }
 
-    private void SetDefault_Click(object sender, RoutedEventArgs e)
+    private async void SetDefault_Click(object sender, RoutedEventArgs e)
     {
         if (_selectedPackaging == null)
         {
@@ -143,7 +165,13 @@ public partial class ItemPackagingWindow : Window
 
         try
         {
-            _services.Packagings.SetDefaultPackaging(_itemId, _selectedPackaging.Id);
+            var result = await _services.WpfPackagingApi
+                .TrySetDefaultPackagingAsync(_itemId, _selectedPackaging.Id)
+                .ConfigureAwait(true);
+            if (!result.IsSuccess)
+            {
+                throw new InvalidOperationException(result.Error ?? "Не удалось установить упаковку по умолчанию через сервер.");
+            }
             MessageBox.Show("Упаковка по умолчанию установлена.", "Упаковки", MessageBoxButton.OK, MessageBoxImage.Information);
             LoadItem();
         }

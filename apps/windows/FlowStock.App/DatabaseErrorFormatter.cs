@@ -68,7 +68,7 @@ internal static class DatabaseErrorFormatter
 
     private static string BuildSchemaMessage()
     {
-        return "Схема БД устарела: не применена миграция `V0002__doc_lines_pack_single_hu.sql`." +
+        return "Схема БД FlowStock не инициализирована или не содержит все обязательные миграции." +
                Environment.NewLine +
                "Примените миграции к PostgreSQL и перезапустите WPF/сервер.";
     }

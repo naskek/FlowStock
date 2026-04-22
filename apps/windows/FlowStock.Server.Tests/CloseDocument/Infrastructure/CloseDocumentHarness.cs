@@ -15,6 +15,7 @@ internal sealed class CloseDocumentHarness
     private readonly Dictionary<long, Partner> _partners = new();
     private readonly Dictionary<long, Order> _orders = new();
     private readonly Dictionary<long, List<OrderLine>> _orderLinesByOrder = new();
+    private readonly Dictionary<long, ItemRequest> _itemRequests = new();
     private readonly Dictionary<long, OrderRequest> _orderRequests = new();
     private readonly Dictionary<long, IReadOnlyList<OrderReceiptLine>> _orderReceiptRemaining = new();
     private readonly Dictionary<long, IReadOnlyDictionary<long, double>> _shippedTotalsByOrderLine = new();
@@ -75,6 +76,16 @@ internal sealed class CloseDocumentHarness
         return _orderRequests.TryGetValue(requestId, out var request)
             ? CloneOrderRequest(request)
             : null;
+    }
+
+    public IReadOnlyList<ItemRequest> GetItemRequests(bool includeResolved)
+    {
+        return _itemRequests.Values
+            .Where(request => includeResolved
+                              || !string.Equals(request.Status, "RESOLVED", StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(request => request.CreatedAt)
+            .Select(CloneItemRequest)
+            .ToArray();
     }
 
     public IReadOnlyList<OrderRequest> GetOrderRequests(bool includeResolved)
@@ -142,6 +153,21 @@ internal sealed class CloseDocumentHarness
             OrderId = line.OrderId,
             ItemId = line.ItemId,
             QtyOrdered = line.QtyOrdered
+        };
+    }
+
+    private static ItemRequest CloneItemRequest(ItemRequest request)
+    {
+        return new ItemRequest
+        {
+            Id = request.Id,
+            Barcode = request.Barcode,
+            Comment = request.Comment,
+            DeviceId = request.DeviceId,
+            Login = request.Login,
+            CreatedAt = request.CreatedAt,
+            Status = request.Status,
+            ResolvedAt = request.ResolvedAt
         };
     }
 
@@ -222,6 +248,11 @@ internal sealed class CloseDocumentHarness
     public void SeedOrderRequest(OrderRequest request)
     {
         _orderRequests[request.Id] = CloneOrderRequest(request);
+    }
+
+    public void SeedItemRequest(ItemRequest request)
+    {
+        _itemRequests[request.Id] = CloneItemRequest(request);
     }
 
     public void SeedOrderReceiptRemaining(long orderId, params OrderReceiptLine[] lines)
@@ -523,6 +554,50 @@ internal sealed class CloseDocumentHarness
                     AppliedOrderId = request.AppliedOrderId
                 };
                 return requestId;
+            });
+
+        _store.Setup(store => store.AddItemRequest(It.IsAny<ItemRequest>()))
+            .Returns<ItemRequest>(request =>
+            {
+                var requestId = request.Id > 0
+                    ? request.Id
+                    : (_itemRequests.Count == 0 ? 1 : _itemRequests.Keys.Max() + 1);
+                _itemRequests[requestId] = new ItemRequest
+                {
+                    Id = requestId,
+                    Barcode = request.Barcode,
+                    Comment = request.Comment,
+                    DeviceId = request.DeviceId,
+                    Login = request.Login,
+                    CreatedAt = request.CreatedAt,
+                    Status = request.Status,
+                    ResolvedAt = request.ResolvedAt
+                };
+                return requestId;
+            });
+
+        _store.Setup(store => store.GetItemRequests(It.IsAny<bool>()))
+            .Returns<bool>(includeResolved => GetItemRequests(includeResolved));
+
+        _store.Setup(store => store.MarkItemRequestResolved(It.IsAny<long>()))
+            .Callback<long>(requestId =>
+            {
+                if (!_itemRequests.TryGetValue(requestId, out var current))
+                {
+                    return;
+                }
+
+                _itemRequests[requestId] = new ItemRequest
+                {
+                    Id = current.Id,
+                    Barcode = current.Barcode,
+                    Comment = current.Comment,
+                    DeviceId = current.DeviceId,
+                    Login = current.Login,
+                    CreatedAt = current.CreatedAt,
+                    Status = "RESOLVED",
+                    ResolvedAt = DateTime.Now
+                };
             });
 
         _store.Setup(store => store.GetOrderRequests(It.IsAny<bool>()))

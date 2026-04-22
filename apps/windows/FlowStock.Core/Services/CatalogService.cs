@@ -32,7 +32,7 @@ public sealed class CatalogService
         return _data.GetPartners();
     }
 
-    public long CreateItem(string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked, double? maxQtyPerHu = null)
+    public long CreateItem(string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked, double? maxQtyPerHu = null, long? itemTypeId = null, double? minStockQty = null)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -40,6 +40,7 @@ public sealed class CatalogService
         }
 
         var normalizedUom = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom.Trim();
+        var normalizedMinStock = NormalizeMinStock(itemTypeId, minStockQty);
         var item = new Item
         {
             Name = name.Trim(),
@@ -51,7 +52,9 @@ public sealed class CatalogService
             ShelfLifeMonths = shelfLifeMonths,
             MaxQtyPerHu = maxQtyPerHu,
             TaraId = taraId,
-            IsMarked = isMarked
+            IsMarked = isMarked,
+            ItemTypeId = itemTypeId,
+            MinStockQty = normalizedMinStock
         };
 
         return _data.AddItem(item);
@@ -130,7 +133,7 @@ public sealed class CatalogService
         _data.UpdateItemBarcode(itemId, barcode.Trim());
     }
 
-    public void UpdateItem(long itemId, string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked, double? maxQtyPerHu = null)
+    public void UpdateItem(long itemId, string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked, double? maxQtyPerHu = null, long? itemTypeId = null, double? minStockQty = null)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -144,6 +147,7 @@ public sealed class CatalogService
         }
 
         var normalizedUom = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom.Trim();
+        var normalizedMinStock = NormalizeMinStock(itemTypeId, minStockQty);
         var item = new Item
         {
             Id = itemId,
@@ -157,7 +161,9 @@ public sealed class CatalogService
             ShelfLifeMonths = shelfLifeMonths,
             MaxQtyPerHu = maxQtyPerHu,
             TaraId = taraId,
-            IsMarked = isMarked
+            IsMarked = isMarked,
+            ItemTypeId = itemTypeId,
+            MinStockQty = normalizedMinStock
         };
 
         _data.UpdateItem(item);
@@ -228,6 +234,11 @@ public sealed class CatalogService
         return _data.GetTaras();
     }
 
+    public IReadOnlyList<ItemType> GetItemTypes(bool includeInactive)
+    {
+        return _data.GetItemTypes(includeInactive);
+    }
+
     public long CreateTara(string name)
     {
         if (string.IsNullOrWhiteSpace(name))
@@ -269,6 +280,69 @@ public sealed class CatalogService
         _data.DeleteTara(taraId);
     }
 
+    public long CreateItemType(string name, string? code, int sortOrder, bool isActive, bool isVisibleInProductCatalog, bool enableMinStockControl)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new ArgumentException("Наименование обязательно.", nameof(name));
+        }
+
+        return _data.AddItemType(new ItemType
+        {
+            Name = name.Trim(),
+            Code = string.IsNullOrWhiteSpace(code) ? null : code.Trim(),
+            SortOrder = sortOrder,
+            IsActive = isActive,
+            IsVisibleInProductCatalog = isVisibleInProductCatalog,
+            EnableMinStockControl = enableMinStockControl
+        });
+    }
+
+    public void UpdateItemType(long itemTypeId, string name, string? code, int sortOrder, bool isActive, bool isVisibleInProductCatalog, bool enableMinStockControl)
+    {
+        if (itemTypeId <= 0)
+        {
+            throw new ArgumentException("Некорректный тип номенклатуры.", nameof(itemTypeId));
+        }
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new ArgumentException("Наименование обязательно.", nameof(name));
+        }
+
+        if (_data.GetItemType(itemTypeId) == null)
+        {
+            throw new InvalidOperationException("Тип номенклатуры не найден.");
+        }
+
+        _data.UpdateItemType(new ItemType
+        {
+            Id = itemTypeId,
+            Name = name.Trim(),
+            Code = string.IsNullOrWhiteSpace(code) ? null : code.Trim(),
+            SortOrder = sortOrder,
+            IsActive = isActive,
+            IsVisibleInProductCatalog = isVisibleInProductCatalog,
+            EnableMinStockControl = enableMinStockControl
+        });
+    }
+
+    public void DeleteItemType(long itemTypeId)
+    {
+        if (_data.GetItemType(itemTypeId) == null)
+        {
+            throw new InvalidOperationException("Тип номенклатуры не найден.");
+        }
+
+        if (_data.IsItemTypeUsed(itemTypeId))
+        {
+            _data.DeactivateItemType(itemTypeId);
+            return;
+        }
+
+        _data.DeleteItemType(itemTypeId);
+    }
+
     public void UpdatePartner(long partnerId, string name, string? code)
     {
         if (string.IsNullOrWhiteSpace(name))
@@ -307,6 +381,42 @@ public sealed class CatalogService
         }
 
         _data.DeletePartner(partnerId);
+    }
+
+    private double? NormalizeMinStock(long? itemTypeId, double? minStockQty)
+    {
+        if (!itemTypeId.HasValue || itemTypeId.Value <= 0)
+        {
+            return null;
+        }
+
+        var itemType = _data.GetItemType(itemTypeId.Value);
+        if (itemType == null)
+        {
+            throw new ArgumentException("Выбранный тип номенклатуры не найден.", nameof(itemTypeId));
+        }
+
+        if (!itemType.IsActive)
+        {
+            throw new ArgumentException("Выбранный тип номенклатуры неактивен.", nameof(itemTypeId));
+        }
+
+        if (!itemType.EnableMinStockControl)
+        {
+            return null;
+        }
+
+        if (!minStockQty.HasValue)
+        {
+            return null;
+        }
+
+        if (minStockQty.Value < 0)
+        {
+            throw new ArgumentException("Минимальный остаток не может быть отрицательным.", nameof(minStockQty));
+        }
+
+        return minStockQty.Value;
     }
 }
 

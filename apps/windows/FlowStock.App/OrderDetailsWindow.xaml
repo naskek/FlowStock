@@ -31,7 +31,9 @@
                 <ComboBox x:Name="TypeCombo" Grid.Row="0" Grid.Column="3" DisplayMemberPath="Name" Margin="0,0,0,6" TabIndex="2" />
 
                 <TextBlock Text="Контрагент" Grid.Row="1" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,0" />
-                <ComboBox x:Name="PartnerCombo" Grid.Row="1" Grid.Column="1" DisplayMemberPath="DisplayName" Margin="0,0,16,6" TabIndex="3" />
+                <ComboBox x:Name="PartnerCombo" Grid.Row="1" Grid.Column="1" DisplayMemberPath="DisplayName"
+                          IsEditable="True" IsTextSearchEnabled="False" TextSearch.TextPath="DisplayName"
+                          StaysOpenOnEdit="True" Margin="0,0,16,6" TabIndex="3" />
                 <TextBlock Text="Статус" Grid.Row="1" Grid.Column="2" VerticalAlignment="Center" Margin="0,0,8,0" />
                 <ComboBox x:Name="StatusCombo" Grid.Row="1" Grid.Column="3" DisplayMemberPath="Name" Margin="0,0,0,6" TabIndex="4" />
 
@@ -61,6 +63,8 @@
                           SelectionChanged="OrderLinesGrid_SelectionChanged" TabIndex="10">
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
+                        <DataGridTextColumn Header="SKU / ШК" Binding="{Binding Barcode}" Width="150" />
+                        <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="150" />
                         <DataGridTextColumn Header="Заказано (база)" Binding="{Binding QtyOrdered}" Width="140" />
                         <DataGridTextColumn x:Name="ProcessedQtyColumn" Header="Отгружено" Binding="{Binding QtyShipped}" Width="120" />
                         <DataGridTextColumn Header="Осталось" Binding="{Binding QtyRemaining}" Width="120" />

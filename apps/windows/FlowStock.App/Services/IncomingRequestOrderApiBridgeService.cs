@@ -2,7 +2,6 @@ using System.Globalization;
 using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 
 namespace FlowStock.App;
@@ -11,20 +10,18 @@ public sealed class IncomingRequestOrderApiBridgeService
 {
     private readonly SettingsService _settings;
     private readonly FileLogger _logger;
-    private readonly IDataStore _dataStore;
+    private readonly WpfIncomingRequestsApiService _incomingRequestsApi;
     private readonly CreateOrderApiClient _createOrderApiClient = new();
     private readonly SetOrderStatusApiClient _setOrderStatusApiClient = new();
 
-    public IncomingRequestOrderApiBridgeService(SettingsService settings, FileLogger logger, IDataStore dataStore)
+    public IncomingRequestOrderApiBridgeService(
+        SettingsService settings,
+        FileLogger logger,
+        WpfIncomingRequestsApiService incomingRequestsApi)
     {
         _settings = settings;
         _logger = logger;
-        _dataStore = dataStore;
-    }
-
-    public bool IsServerApprovalEnabled()
-    {
-        return LoadConfiguration().UseServerIncomingRequestOrderApproval;
+        _incomingRequestsApi = incomingRequestsApi;
     }
 
     public IncomingRequestOrderApiBridgeConfiguration GetEffectiveConfiguration()
@@ -44,11 +41,6 @@ public sealed class IncomingRequestOrderApiBridgeService
         CancellationToken cancellationToken = default)
     {
         var configuration = LoadConfiguration();
-        if (!configuration.UseServerIncomingRequestOrderApproval)
-        {
-            return IncomingRequestOrderApprovalResult.FeatureDisabled();
-        }
-
         if (string.Equals(request.RequestType, OrderRequestType.CreateOrder, StringComparison.OrdinalIgnoreCase))
         {
             return await ApproveCreateOrderAsync(request, resolvedBy, configuration, cancellationToken).ConfigureAwait(false);
@@ -172,12 +164,8 @@ public sealed class IncomingRequestOrderApiBridgeService
         }
 
         var note = $"Создан заказ ID={apiCall.Response.OrderId}.";
-        _dataStore.ResolveOrderRequest(
-            request.Id,
-            OrderRequestStatus.Approved,
-            resolvedBy,
-            note,
-            apiCall.Response.OrderId);
+        await MarkRequestApprovedAsync(request.Id, resolvedBy, note, apiCall.Response.OrderId, cancellationToken)
+            .ConfigureAwait(false);
 
         return IncomingRequestOrderApprovalResult.Success(apiCall.Response.OrderId, note);
     }
@@ -279,14 +267,33 @@ public sealed class IncomingRequestOrderApiBridgeService
             ? OrderStatusMapper.StatusToDisplayName(parsed)
             : apiCall.Response.Status;
         var note = $"Статус изменен на \"{displayStatus}\".";
-        _dataStore.ResolveOrderRequest(
-            request.Id,
-            OrderRequestStatus.Approved,
-            resolvedBy,
-            note,
-            payload.OrderId);
+        await MarkRequestApprovedAsync(request.Id, resolvedBy, note, payload.OrderId, cancellationToken)
+            .ConfigureAwait(false);
 
         return IncomingRequestOrderApprovalResult.Success(payload.OrderId, note);
+    }
+
+    private async Task MarkRequestApprovedAsync(
+        long requestId,
+        string resolvedBy,
+        string note,
+        long appliedOrderId,
+        CancellationToken cancellationToken)
+    {
+        if (await _incomingRequestsApi
+                .TryResolveOrderRequestAsync(
+                    requestId,
+                    OrderRequestStatus.Approved,
+                    resolvedBy,
+                    note,
+                    appliedOrderId,
+                    cancellationToken)
+                .ConfigureAwait(false))
+        {
+            return;
+        }
+        
+        throw new InvalidOperationException("Не удалось подтвердить заявку на сервере: не выполнена фиксация статуса APPROVED.");
     }
 
     private static IncomingRequestOrderApprovalResult MapCreateHttpError(CreateOrderApiCallResult apiCall)
@@ -361,8 +368,6 @@ public sealed class IncomingRequestOrderApiBridgeService
     private IncomingRequestOrderApiBridgeConfiguration LoadConfiguration()
     {
         var settings = _settings.Load().Server ?? new ServerSettings();
-        var enabled = ReadEnvBool("FLOWSTOCK_USE_SERVER_INCOMING_REQUEST_ORDER_APPROVAL")
-                      ?? settings.UseServerIncomingRequestOrderApproval;
         var baseUrl = NormalizeBaseUrl(ReadEnvOrSettings("FLOWSTOCK_SERVER_BASE_URL", settings.BaseUrl) ?? WpfCloseDocumentService.DefaultServerBaseUrl);
         var timeoutSeconds = ReadEnvInt("FLOWSTOCK_SERVER_CLOSE_TIMEOUT_SECONDS") ?? settings.CloseTimeoutSeconds;
         if (timeoutSeconds < 1)
@@ -371,7 +376,7 @@ public sealed class IncomingRequestOrderApiBridgeService
         }
 
         var allowInvalidTls = ReadEnvBool("FLOWSTOCK_SERVER_ALLOW_INVALID_TLS") ?? settings.AllowInvalidTls;
-        return new IncomingRequestOrderApiBridgeConfiguration(enabled, baseUrl, timeoutSeconds, allowInvalidTls);
+        return new IncomingRequestOrderApiBridgeConfiguration(baseUrl, timeoutSeconds, allowInvalidTls);
     }
 
     private static string NormalizeBaseUrl(string value)
@@ -479,7 +484,6 @@ public sealed class IncomingRequestOrderApiBridgeService
 }
 
 public sealed record IncomingRequestOrderApiBridgeConfiguration(
-    bool UseServerIncomingRequestOrderApproval,
     string BaseUrl,
     int RequestTimeoutSeconds,
     bool AllowInvalidTls);
@@ -492,14 +496,6 @@ public sealed class IncomingRequestOrderApprovalResult
     public Exception? Exception { get; init; }
 
     public bool IsSuccess => Kind == IncomingRequestOrderApprovalResultKind.Approved;
-
-    public static IncomingRequestOrderApprovalResult FeatureDisabled()
-    {
-        return new IncomingRequestOrderApprovalResult
-        {
-            Kind = IncomingRequestOrderApprovalResultKind.FeatureDisabled
-        };
-    }
 
     public static IncomingRequestOrderApprovalResult Success(long? appliedOrderId, string message)
     {
@@ -527,7 +523,6 @@ public sealed class IncomingRequestOrderApprovalResult
 
 public enum IncomingRequestOrderApprovalResultKind
 {
-    FeatureDisabled,
     Approved,
     ValidationFailed,
     NotFound,

@@ -12,6 +12,8 @@ public partial class OrderRequestDetailsWindow : Window
     private readonly AppServices _services;
     private readonly OrderRequest _request;
     private readonly ObservableCollection<OrderLineRow> _lines = new();
+    private IReadOnlyList<Partner> _partners = Array.Empty<Partner>();
+    private IReadOnlyList<Item> _items = Array.Empty<Item>();
 
     public OrderRequestDetailsWindow(AppServices services, OrderRequest request)
     {
@@ -19,6 +21,12 @@ public partial class OrderRequestDetailsWindow : Window
         _request = request;
         InitializeComponent();
         LinesGrid.ItemsSource = _lines;
+        _partners = _services.WpfPartnerApi.TryGetPartners(out var apiPartners)
+            ? apiPartners.Select(entry => entry.Partner).ToList()
+            : Array.Empty<Partner>();
+        _items = _services.WpfReadApi.TryGetItems(null, out var apiItems)
+            ? apiItems
+            : Array.Empty<Item>();
         LoadRequest();
     }
 
@@ -75,7 +83,7 @@ public partial class OrderRequestDetailsWindow : Window
         }
 
         OrderRefText.Text = string.IsNullOrWhiteSpace(payload.OrderRef) ? "-" : payload.OrderRef.Trim();
-        var partner = payload.PartnerId > 0 ? _services.DataStore.GetPartner(payload.PartnerId) : null;
+        var partner = payload.PartnerId > 0 ? _partners.FirstOrDefault(candidate => candidate.Id == payload.PartnerId) : null;
         PartnerText.Text = FormatPartner(partner, payload.PartnerId);
         DueDateText.Text = FormatDueDate(payload.DueDate);
         TargetStatusText.Text = OrderStatusMapper.StatusToDisplayName(OrderStatus.Accepted);
@@ -85,7 +93,7 @@ public partial class OrderRequestDetailsWindow : Window
         var lines = payload.Lines ?? new List<CreateOrderLinePayload>();
         foreach (var line in lines)
         {
-            var item = line.ItemId > 0 ? _services.DataStore.FindItemById(line.ItemId) : null;
+            var item = line.ItemId > 0 ? _items.FirstOrDefault(candidate => candidate.Id == line.ItemId) : null;
             _lines.Add(new OrderLineRow
             {
                 ItemId = line.ItemId,
@@ -125,9 +133,13 @@ public partial class OrderRequestDetailsWindow : Window
             return;
         }
 
-        var order = payload.OrderId > 0 ? _services.Orders.GetOrder(payload.OrderId) : null;
+        var order = payload.OrderId > 0
+            ? (_services.WpfReadApi.TryGetOrder(payload.OrderId, out var apiOrder) ? apiOrder : null)
+            : null;
         OrderRefText.Text = order?.OrderRef ?? $"ID={payload.OrderId}";
-        var partner = order?.PartnerId.HasValue == true ? _services.DataStore.GetPartner(order.PartnerId.Value) : null;
+        var partner = order?.PartnerId.HasValue == true
+            ? _partners.FirstOrDefault(candidate => candidate.Id == order.PartnerId.Value)
+            : null;
         PartnerText.Text = order != null ? FormatPartner(partner, order.PartnerId) : "-";
         DueDateText.Text = order?.DueDate.HasValue == true
             ? order.DueDate.Value.ToString("dd/MM/yyyy", CultureInfo.CurrentCulture)

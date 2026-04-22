@@ -63,12 +63,22 @@ public static class FlowStockEndpointDefaults
 {
     public const string ServerBaseUrl = "https://127.0.0.1:7154";
     public const string PcClientUrl = "https://127.0.0.1:7154";
-    public const string TsdClientUrl = "http://127.0.0.1:7153";
+    public const string TsdClientUrl = "https://127.0.0.1:7154/tsd";
 }
 
 public static class FlowStockUrlHelper
 {
     public static bool TryNormalizeRootUrl(string? value, string defaultScheme, out string normalized, out string error)
+    {
+        return TryNormalizeUrl(value, defaultScheme, allowPathPrefix: false, defaultPath: "/", out normalized, out error);
+    }
+
+    public static bool TryNormalizeTsdUrl(string? value, string defaultScheme, out string normalized, out string error)
+    {
+        return TryNormalizeUrl(value, defaultScheme, allowPathPrefix: true, defaultPath: "/tsd", out normalized, out error);
+    }
+
+    private static bool TryNormalizeUrl(string? value, string defaultScheme, bool allowPathPrefix, string defaultPath, out string normalized, out string error)
     {
         normalized = string.Empty;
         error = string.Empty;
@@ -100,7 +110,8 @@ public static class FlowStockUrlHelper
             return false;
         }
 
-        if (!string.IsNullOrWhiteSpace(uri.AbsolutePath)
+        if (!allowPathPrefix
+            && !string.IsNullOrWhiteSpace(uri.AbsolutePath)
             && !string.Equals(uri.AbsolutePath, "/", StringComparison.Ordinal))
         {
             error = "URL must not contain a path prefix.";
@@ -119,9 +130,20 @@ public static class FlowStockUrlHelper
             return false;
         }
 
+        var path = uri.AbsolutePath;
+        if (string.IsNullOrWhiteSpace(path) || string.Equals(path, "/", StringComparison.Ordinal))
+        {
+            path = defaultPath;
+        }
+        else if (!allowPathPrefix)
+        {
+            error = "URL must not contain a path prefix.";
+            return false;
+        }
+
         var builder = new UriBuilder(uri)
         {
-            Path = "/",
+            Path = path,
             Query = string.Empty,
             Fragment = string.Empty
         };
@@ -133,6 +155,13 @@ public static class FlowStockUrlHelper
     public static string NormalizeRootUrlOrDefault(string? value, string defaultUrl, string defaultScheme)
     {
         return TryNormalizeRootUrl(value, defaultScheme, out var normalized, out _)
+            ? normalized
+            : defaultUrl;
+    }
+
+    public static string NormalizeTsdUrlOrDefault(string? value, string defaultUrl, string defaultScheme)
+    {
+        return TryNormalizeTsdUrl(value, defaultScheme, out var normalized, out _)
             ? normalized
             : defaultUrl;
     }
@@ -248,6 +277,16 @@ public sealed class ServerSettings
 
     public ServerSettings Normalize()
     {
+        UseServerCreateOrder = true;
+        UseServerUpdateOrder = true;
+        UseServerDeleteOrder = true;
+        UseServerSetOrderStatus = true;
+        UseServerIncomingRequestOrderApproval = true;
+        UseServerCreateDocDraft = true;
+        UseServerCloseDocument = true;
+        UseServerAddDocLine = true;
+        UseServerUpdateDocLine = true;
+        UseServerDeleteDocLine = true;
         ServerBaseUrl = NormalizeValue(ServerBaseUrl);
         PcClientUrl = NormalizeValue(PcClientUrl);
         TsdClientUrl = NormalizeValue(TsdClientUrl);
@@ -277,7 +316,7 @@ public sealed class ServerSettings
 
     public string GetTsdClientUrlOrDefault()
     {
-        return FlowStockUrlHelper.NormalizeRootUrlOrDefault(TsdClientUrl, FlowStockEndpointDefaults.TsdClientUrl, Uri.UriSchemeHttp);
+        return FlowStockUrlHelper.NormalizeTsdUrlOrDefault(TsdClientUrl, FlowStockEndpointDefaults.TsdClientUrl, Uri.UriSchemeHttps);
     }
 
     private static string? NormalizeValue(string? value)

@@ -10,28 +10,23 @@
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <Menu Grid.Column="0">
-                <MenuItem Header="Операции">
-                    <MenuItem Header="Открыть выбранный" InputGestureText="Ctrl+O" Click="DocsOpen_Click" />
-                    <MenuItem Header="Закрыть текущий документ" InputGestureText="Ctrl+Enter" Click="DocClose_Click" />
-                </MenuItem>
                 <MenuItem Header="Справочники">
-                    <MenuItem Header="Товары" Click="ViewItems_Click" />
+                    <MenuItem Header="Каталог" Click="ViewItems_Click" />
+                    <MenuItem Header="Типы номенклатуры..." Click="ItemTypesMenu_Click" />
                     <MenuItem Header="Места хранения" Click="ViewLocations_Click" />
                     <MenuItem Header="Контрагенты" Click="ViewPartners_Click" />
                     <MenuItem Header="Тара..." Click="TaraMenu_Click" />
+                    <Separator />
+                    <MenuItem Header="HU Реестр..." Click="OpenHuRegistry_Click" />
                     <Separator />
                     <MenuItem Header="Ед. измерения..." Click="UomMenu_Click" />
                     <MenuItem Header="Упаковки..." Click="PackagingManager_Click" />
                 </MenuItem>
                 <MenuItem Header="Сервис">
-                    <MenuItem Header="Подключение к БД..." Click="OpenDbConnection_Click" />
-                    <MenuItem Header="Создание аккаунта..." Click="OpenTsdDevices_Click" />
                     <MenuItem Header="Входящие запросы..." Click="OpenIncomingRequests_Click" />
                     <Separator />
                     <MenuItem Header="Резервные копии..." Click="OpenBackupManager_Click" />
                     <MenuItem Header="Администрирование..." Click="OpenAdmin_Click" />
-                    <MenuItem Header="HU Реестр..." Click="OpenHuRegistry_Click" />
-                    <Separator />
                     <MenuItem Header="Открыть папку данных" Click="OpenDataFolder_Click" />
                     <MenuItem Header="Открыть папку логов" Click="OpenLogsFolder_Click" />
                 </MenuItem>
@@ -48,6 +43,12 @@
                 </Grid>
             </Button>
         </Grid>
+        <TextBlock x:Name="LowStockIndicatorText"
+                   DockPanel.Dock="Top"
+                   Margin="12,0,12,6"
+                   Foreground="#B71C1C"
+                   FontWeight="SemiBold"
+                   Visibility="Collapsed" />
         <Border Margin="12">
             <TabControl x:Name="MainTabs" SelectionChanged="MainTabs_SelectionChanged">
             <TabItem Header="Остатки">
@@ -55,6 +56,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                         <TextBox x:Name="StatusSearchBox" Width="240" Margin="0,0,8,0" />
@@ -65,10 +67,30 @@
                         <TextBlock Text="HU" VerticalAlignment="Center" Margin="12,0,6,0" />
                         <ComboBox x:Name="StockHuFilter" Width="200" DisplayMemberPath="Name"
                                   SelectionChanged="StockHuFilter_SelectionChanged" />
+                        <TextBlock Text="Тип" VerticalAlignment="Center" Margin="12,0,6,0" />
+                        <ComboBox x:Name="StockItemTypeFilter" Width="220" DisplayMemberPath="Name"
+                                  SelectionChanged="StockItemTypeFilter_SelectionChanged" />
+                        <CheckBox x:Name="StockBelowMinOnlyCheckBox"
+                                  Margin="12,0,0,0"
+                                  VerticalAlignment="Center"
+                                  Content="Только ниже минимума"
+                                  Checked="StockBelowMinOnlyCheckBox_Changed"
+                                  Unchecked="StockBelowMinOnlyCheckBox_Changed" />
                     </StackPanel>
                     <DataGrid x:Name="StockGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True">
+                        <DataGrid.RowStyle>
+                            <Style TargetType="DataGridRow">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsBelowMin}" Value="True">
+                                        <Setter Property="Foreground" Value="#B71C1C" />
+                                        <Setter Property="FontWeight" Value="SemiBold" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </DataGrid.RowStyle>
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Тип" Binding="{Binding ItemTypeName}" Width="Auto" MaxWidth="220" />
                             <DataGridTextColumn Header="SKU / штрихкод" Binding="{Binding Barcode}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="Место хранения" Binding="{Binding LocationCode}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="HU" Binding="{Binding HuDisplay}" Width="Auto" MaxWidth="320" />
@@ -85,6 +107,39 @@
                                HorizontalAlignment="Center"
                                VerticalAlignment="Center"
                                Visibility="Collapsed" />
+                    <Border Grid.Row="2"
+                            Margin="0,8,0,0"
+                            Padding="8"
+                            BorderBrush="#DDD"
+                            BorderThickness="1"
+                            CornerRadius="4">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <TextBlock x:Name="LowStockSummaryText"
+                                       Margin="0,0,0,6"
+                                       FontWeight="SemiBold"
+                                       Foreground="#B71C1C" />
+                            <DataGrid x:Name="LowStockGrid"
+                                      Grid.Row="1"
+                                      AutoGenerateColumns="False"
+                                      IsReadOnly="True"
+                                      Height="122"
+                                      CanUserAddRows="False"
+                                      HeadersVisibility="Column"
+                                      ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
+                                    <DataGridTextColumn Header="Тип" Binding="{Binding ItemTypeName}" Width="220" />
+                                    <DataGridTextColumn Header="В наличии" Binding="{Binding QtyDisplay}" Width="120" />
+                                    <DataGridTextColumn Header="Минимум" Binding="{Binding MinStockQtyDisplay}" Width="120" />
+                                    <DataGridTextColumn Header="Нехватка" Binding="{Binding ShortageDisplay}" Width="120" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </Grid>
+                    </Border>
                 </Grid>
             </TabItem>
             <TabItem Header="Операции">
@@ -157,7 +212,7 @@
                     </DataGrid>
                 </Grid>
             </TabItem>
-            <TabItem Header="Товары">
+            <TabItem Header="Каталог">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
@@ -181,12 +236,16 @@
                     </StackPanel>
                     <DataGrid x:Name="ItemsGrid" Grid.Row="2" AutoGenerateColumns="False" IsReadOnly="True"
                               SelectionMode="Extended" SelectionUnit="FullRow"
-                              SelectionChanged="ItemsGrid_SelectionChanged" KeyDown="ItemsGrid_KeyDown" TabIndex="20">
+                              SelectionChanged="ItemsGrid_SelectionChanged"
+                              MouseDoubleClick="ItemsGrid_MouseDoubleClick"
+                              KeyDown="ItemsGrid_KeyDown" TabIndex="20">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="ID" Binding="{Binding Id}" Width="Auto" MaxWidth="120" />
                             <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="SKU / штрихкод" Binding="{Binding Barcode}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Тип" Binding="{Binding ItemTypeName}" Width="Auto" MaxWidth="220" />
+                            <DataGridTextColumn Header="Мин. остаток" Binding="{Binding MinStockQty, StringFormat={}{0:0.###}}" Width="Auto" MaxWidth="140" />
                             <DataGridTextColumn Header="Бренд" Binding="{Binding Brand}" Width="Auto" MaxWidth="240" />
                             <DataGridTextColumn Header="Объем" Binding="{Binding Volume}" Width="Auto" MaxWidth="160" />
                             <DataGridTextColumn Header="Срок годности (мес.)" Binding="{Binding ShelfLifeMonths}" Width="Auto" MaxWidth="180" />

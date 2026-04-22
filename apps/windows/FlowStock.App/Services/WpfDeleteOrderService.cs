@@ -16,11 +16,6 @@ public sealed class WpfDeleteOrderService
         _apiClient = new DeleteOrderApiClient();
     }
 
-    public bool IsServerDeleteEnabled()
-    {
-        return LoadConfiguration().UseServerDeleteOrder;
-    }
-
     public WpfServerDeleteOrderConfiguration GetEffectiveConfiguration()
     {
         return LoadConfiguration();
@@ -29,11 +24,6 @@ public sealed class WpfDeleteOrderService
     public async Task<WpfDeleteOrderResult> DeleteOrderAsync(long orderId, CancellationToken cancellationToken = default)
     {
         var configuration = LoadConfiguration();
-        if (!configuration.UseServerDeleteOrder)
-        {
-            return WpfDeleteOrderResult.FeatureDisabled();
-        }
-
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(configuration.RequestTimeoutSeconds));
 
@@ -155,7 +145,6 @@ public sealed class WpfDeleteOrderService
     private WpfServerDeleteOrderConfiguration LoadConfiguration()
     {
         var settings = _settings.Load().Server ?? new ServerSettings();
-        var useServerDeleteOrder = ReadEnvBool("FLOWSTOCK_USE_SERVER_DELETE_ORDER") ?? settings.UseServerDeleteOrder;
         var baseUrl = NormalizeBaseUrl(ReadEnvOrSettings("FLOWSTOCK_SERVER_BASE_URL", settings.BaseUrl) ?? WpfCloseDocumentService.DefaultServerBaseUrl);
         var timeoutSeconds = ReadEnvInt("FLOWSTOCK_SERVER_CLOSE_TIMEOUT_SECONDS") ?? settings.CloseTimeoutSeconds;
         if (timeoutSeconds < 1)
@@ -164,7 +153,7 @@ public sealed class WpfDeleteOrderService
         }
 
         var allowInvalidTls = ReadEnvBool("FLOWSTOCK_SERVER_ALLOW_INVALID_TLS") ?? settings.AllowInvalidTls;
-        return new WpfServerDeleteOrderConfiguration(useServerDeleteOrder, baseUrl, timeoutSeconds, allowInvalidTls);
+        return new WpfServerDeleteOrderConfiguration(baseUrl, timeoutSeconds, allowInvalidTls);
     }
 
     private static string NormalizeBaseUrl(string value)
@@ -226,7 +215,6 @@ public sealed class WpfDeleteOrderService
 }
 
 public sealed record WpfServerDeleteOrderConfiguration(
-    bool UseServerDeleteOrder,
     string BaseUrl,
     int RequestTimeoutSeconds,
     bool AllowInvalidTls);
@@ -239,14 +227,6 @@ public sealed class WpfDeleteOrderResult
     public Exception? Exception { get; init; }
 
     public bool IsSuccess => Kind == WpfDeleteOrderResultKind.Deleted;
-
-    public static WpfDeleteOrderResult FeatureDisabled()
-    {
-        return new WpfDeleteOrderResult
-        {
-            Kind = WpfDeleteOrderResultKind.FeatureDisabled
-        };
-    }
 
     public static WpfDeleteOrderResult Success(string message, DeleteOrderApiResponse response)
     {
@@ -274,7 +254,6 @@ public sealed class WpfDeleteOrderResult
 
 public enum WpfDeleteOrderResultKind
 {
-    FeatureDisabled,
     Deleted,
     ValidationFailed,
     NotFound,

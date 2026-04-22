@@ -30,7 +30,7 @@ public partial class LocationEditWindow : Window
         NameBox.Text = _location.Name;
     }
 
-    private void Save_Click(object sender, RoutedEventArgs e)
+    private async void Save_Click(object sender, RoutedEventArgs e)
     {
         var code = CodeBox.Text?.Trim() ?? string.Empty;
         var name = NameBox.Text?.Trim() ?? string.Empty;
@@ -44,12 +44,29 @@ public partial class LocationEditWindow : Window
         {
             if (_location == null)
             {
-                var locationId = _services.Catalog.CreateLocation(code, name);
+                var result = await _services.WpfCatalogApi.TryCreateLocationAsync(code, name).ConfigureAwait(true);
+                if (!result.IsSuccess && !string.IsNullOrWhiteSpace(result.Error))
+                {
+                    throw new InvalidOperationException(result.Error);
+                }
+
+                var locationId = result.IsSuccess
+                    ? (result.CreatedId ?? 0)
+                    : 0;
+                if (locationId <= 0)
+                {
+                    throw new InvalidOperationException("Сервер не вернул идентификатор нового места хранения.");
+                }
                 SavedLocationId = locationId;
             }
             else
             {
-                _services.Catalog.UpdateLocation(_location.Id, code, name);
+                var result = await _services.WpfCatalogApi.TryUpdateLocationAsync(_location.Id, code, name).ConfigureAwait(true);
+                if (!result.IsSuccess)
+                {
+                    throw new InvalidOperationException(result.Error ?? "Не удалось обновить место хранения через сервер.");
+                }
+
                 SavedLocationId = _location.Id;
             }
 

@@ -73,7 +73,7 @@ public sealed class WpfCompatibilityTests
     }
 
     [Fact]
-    public async Task WpfLegacyUpdatePath_RemainsAvailableUnderFeatureFlag()
+    public async Task WpfUpdateOrder_IgnoresLegacyFlagAndStillUsesCanonicalApi()
     {
         var (harness, apiStore, orderId) = UpdateOrderHttpScenario.CreateCustomerScenario();
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
@@ -94,9 +94,9 @@ public sealed class WpfCompatibilityTests
                     new OrderLineView { ItemId = 1001, ItemName = "Горчица", QtyOrdered = 10 }
                 }));
 
-        Assert.Equal(WpfUpdateOrderResultKind.FeatureDisabled, result.Kind);
-        Assert.False(result.IsSuccess);
-        Assert.Equal("001", harness.GetOrder(orderId).OrderRef);
+        Assert.True(result.IsSuccess);
+        Assert.Equal(WpfUpdateOrderResultKind.Updated, result.Kind);
+        Assert.Equal("002", harness.GetOrder(orderId).OrderRef);
     }
 
     private sealed class TempSettingsScope : IDisposable

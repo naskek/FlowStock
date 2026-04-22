@@ -17,11 +17,6 @@ public sealed class WpfSetOrderStatusService
         _apiClient = new SetOrderStatusApiClient();
     }
 
-    public bool IsServerStatusChangeEnabled()
-    {
-        return LoadConfiguration().UseServerSetOrderStatus;
-    }
-
     public WpfServerSetOrderStatusConfiguration GetEffectiveConfiguration()
     {
         return LoadConfiguration();
@@ -30,11 +25,6 @@ public sealed class WpfSetOrderStatusService
     public async Task<WpfSetOrderStatusResult> SetStatusAsync(long orderId, OrderStatus status, CancellationToken cancellationToken = default)
     {
         var configuration = LoadConfiguration();
-        if (!configuration.UseServerSetOrderStatus)
-        {
-            return WpfSetOrderStatusResult.FeatureDisabled();
-        }
-
         var request = new SetOrderStatusApiRequest
         {
             Status = OrderStatusMapper.StatusToString(status)
@@ -160,7 +150,6 @@ public sealed class WpfSetOrderStatusService
     private WpfServerSetOrderStatusConfiguration LoadConfiguration()
     {
         var settings = _settings.Load().Server ?? new ServerSettings();
-        var useServerSetOrderStatus = ReadEnvBool("FLOWSTOCK_USE_SERVER_SET_ORDER_STATUS") ?? settings.UseServerSetOrderStatus;
         var baseUrl = NormalizeBaseUrl(ReadEnvOrSettings("FLOWSTOCK_SERVER_BASE_URL", settings.BaseUrl) ?? WpfCloseDocumentService.DefaultServerBaseUrl);
         var timeoutSeconds = ReadEnvInt("FLOWSTOCK_SERVER_CLOSE_TIMEOUT_SECONDS") ?? settings.CloseTimeoutSeconds;
         if (timeoutSeconds < 1)
@@ -169,7 +158,7 @@ public sealed class WpfSetOrderStatusService
         }
 
         var allowInvalidTls = ReadEnvBool("FLOWSTOCK_SERVER_ALLOW_INVALID_TLS") ?? settings.AllowInvalidTls;
-        return new WpfServerSetOrderStatusConfiguration(useServerSetOrderStatus, baseUrl, timeoutSeconds, allowInvalidTls);
+        return new WpfServerSetOrderStatusConfiguration(baseUrl, timeoutSeconds, allowInvalidTls);
     }
 
     private static string NormalizeBaseUrl(string value)
@@ -231,7 +220,6 @@ public sealed class WpfSetOrderStatusService
 }
 
 public sealed record WpfServerSetOrderStatusConfiguration(
-    bool UseServerSetOrderStatus,
     string BaseUrl,
     int RequestTimeoutSeconds,
     bool AllowInvalidTls);
@@ -244,14 +232,6 @@ public sealed class WpfSetOrderStatusResult
     public Exception? Exception { get; init; }
 
     public bool IsSuccess => Kind == WpfSetOrderStatusResultKind.StatusChanged;
-
-    public static WpfSetOrderStatusResult FeatureDisabled()
-    {
-        return new WpfSetOrderStatusResult
-        {
-            Kind = WpfSetOrderStatusResultKind.FeatureDisabled
-        };
-    }
 
     public static WpfSetOrderStatusResult Success(SetOrderStatusApiResponse response)
     {
@@ -278,7 +258,6 @@ public sealed class WpfSetOrderStatusResult
 
 public enum WpfSetOrderStatusResultKind
 {
-    FeatureDisabled,
     StatusChanged,
     ValidationFailed,
     NotFound,

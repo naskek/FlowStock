@@ -32,7 +32,10 @@ public partial class ImportErrorsWindow : Window
     private void LoadErrors()
     {
         _errors.Clear();
-        foreach (var error in _services.Import.GetImportErrors(null))
+        var errors = _services.WpfImportApi.TryGetImportErrors(null, out var apiErrors)
+            ? apiErrors
+            : Array.Empty<ImportErrorView>();
+        foreach (var error in errors)
         {
             _errors.Add(error);
         }
@@ -45,7 +48,10 @@ public partial class ImportErrorsWindow : Window
     private void LoadItems()
     {
         _items.Clear();
-        foreach (var item in _services.Catalog.GetItems(null))
+        var items = _services.WpfReadApi.TryGetItems(null, out var apiItems)
+            ? apiItems
+            : Array.Empty<Item>();
+        foreach (var item in items)
         {
             _items.Add(item);
         }
@@ -54,7 +60,10 @@ public partial class ImportErrorsWindow : Window
     private void LoadUoms()
     {
         _uoms.Clear();
-        foreach (var uom in _services.Catalog.GetUoms())
+        var uoms = _services.WpfCatalogApi.TryGetUoms(out var apiUoms)
+            ? apiUoms
+            : Array.Empty<Uom>();
+        foreach (var uom in uoms)
         {
             _uoms.Add(uom);
         }
@@ -71,7 +80,7 @@ public partial class ImportErrorsWindow : Window
         UpdateSelection();
     }
 
-    private void BindBarcode_Click(object sender, RoutedEventArgs e)
+    private async void BindBarcode_Click(object sender, RoutedEventArgs e)
     {
         if (_selectedError == null || string.IsNullOrWhiteSpace(_selectedError.Barcode))
         {
@@ -92,7 +101,27 @@ public partial class ImportErrorsWindow : Window
         }
         try
         {
-            _services.Catalog.AssignBarcode(item.Id, _selectedError.Barcode);
+            var updatedItem = new Item
+            {
+                Id = item.Id,
+                Name = item.Name,
+                Barcode = _selectedError.Barcode,
+                Gtin = item.Gtin,
+                BaseUom = item.BaseUom,
+                DefaultPackagingId = item.DefaultPackagingId,
+                Brand = item.Brand,
+                Volume = item.Volume,
+                ShelfLifeMonths = item.ShelfLifeMonths,
+                TaraId = item.TaraId,
+                TaraName = item.TaraName,
+                IsMarked = item.IsMarked,
+                MaxQtyPerHu = item.MaxQtyPerHu
+            };
+            var result = await _services.WpfCatalogApi.TryUpdateItemAsync(updatedItem).ConfigureAwait(true);
+            if (!result.IsSuccess)
+            {
+                throw new InvalidOperationException(result.Error ?? "Не удалось привязать штрихкод через сервер.");
+            }
             LoadItems();
         }
         catch (Exception ex)
@@ -101,7 +130,7 @@ public partial class ImportErrorsWindow : Window
         }
     }
 
-    private void CreateItem_Click(object sender, RoutedEventArgs e)
+    private async void CreateItem_Click(object sender, RoutedEventArgs e)
     {
         if (_selectedError == null || string.IsNullOrWhiteSpace(_selectedError.Barcode))
         {
@@ -112,7 +141,19 @@ public partial class ImportErrorsWindow : Window
         try
         {
             var uom = (NewItemUomCombo.SelectedItem as Uom)?.Name;
-            _services.Catalog.CreateItem(NewItemNameBox.Text, _selectedError.Barcode, NewItemGtinBox.Text, uom, null, null, null, null, false);
+            var candidate = new Item
+            {
+                Name = NewItemNameBox.Text?.Trim() ?? string.Empty,
+                Barcode = _selectedError.Barcode,
+                Gtin = string.IsNullOrWhiteSpace(NewItemGtinBox.Text) ? null : NewItemGtinBox.Text.Trim(),
+                BaseUom = string.IsNullOrWhiteSpace(uom) ? "шт" : uom,
+                IsMarked = false
+            };
+            var result = await _services.WpfCatalogApi.TryCreateItemAsync(candidate).ConfigureAwait(true);
+            if (!result.IsSuccess)
+            {
+                throw new InvalidOperationException(result.Error ?? "Не удалось создать товар через сервер.");
+            }
             NewItemNameBox.Text = string.Empty;
             NewItemGtinBox.Text = string.Empty;
             NewItemUomCombo.SelectedItem = null;
@@ -128,7 +169,7 @@ public partial class ImportErrorsWindow : Window
         }
     }
 
-    private void Reapply_Click(object sender, RoutedEventArgs e)
+    private async void Reapply_Click(object sender, RoutedEventArgs e)
     {
         if (_selectedError == null)
         {
@@ -136,10 +177,15 @@ public partial class ImportErrorsWindow : Window
             return;
         }
 
-        var applied = _services.Import.ReapplyError(_selectedError.Id);
+        var result = await _services.WpfImportApi.TryReapplyErrorAsync(_selectedError.Id).ConfigureAwait(true);
+        var applied = result.IsSuccess;
         if (!applied)
         {
-            MessageBox.Show("Не удалось переприменить. Проверьте, что штрихкод привязан к товару.", "Ошибки импорта", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(
+                result.Error ?? "Не удалось переприменить. Проверьте, что штрихкод привязан к товару.",
+                "Ошибки импорта",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
             return;
         }
 

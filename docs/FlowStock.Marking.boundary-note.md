@@ -1,31 +1,31 @@
-# FlowStock.Marking Boundary Note
+# Граница ответственности FlowStock.Marking
 
-## Intent
+## Назначение
 
-`FlowStock.Marking` belongs to the main `FlowStock` repository and should evolve as a domain module inside the main solution.
+`FlowStock.Marking` относится к основному репозиторию `FlowStock` и должен развиваться как доменный модуль внутри основной системы.
 
-## Boundary
+## Граница
 
-- domain lifecycle of marking must live in `FlowStock`
-- `FlowStock.Marking` owns requests, imports, binding, storage, statuses, and print preparation
-- local print runtime in `D:\TSC` remains a separate helper
-- print-agent is an execution helper, not the owner of marking business state
+- жизненный цикл домена маркировки должен жить внутри `FlowStock`
+- `FlowStock.Marking` отвечает за заявки, импорт, привязку, хранение, статусы и подготовку к печати
+- локальный runtime печати в `D:\\TSC` пока остается отдельным вспомогательным компонентом
+- print-agent является исполнительным помощником, а не владельцем бизнес-состояния маркировки
 
-## What stays outside main repo for now
+## Что пока остается вне основного репозитория
 
 - `tsc_batch_print`
-- localhost print agent runtime
-- TSPL transport and printer-specific code
-- HTML test pages and browser transport experiments
+- runtime локального print-agent на `localhost`
+- TSPL-транспорт и принтер-специфичный код
+- HTML-тестовые страницы и эксперименты с browser transport
 
-## What moves into main repo
+## Что должно переехать в основной репозиторий
 
-- domain specifications
-- data model documents
-- next step: entities, persistence mapping, and migrations for `FlowStock.Marking`
+- доменные спецификации
+- документы по модели данных
+- следующим шагом: сущности, persistence mapping и миграции для `FlowStock.Marking`
 
-## Recommendation
+## Рекомендация
 
-- do not implement marking inside the print helper
-- do not split `FlowStock.Marking` into a separate repository at this stage
-- add `FlowStock.Marking` as a domain area inside the existing FlowStock backend and data-access structure
+- не реализовывать домен маркировки внутри print-helper
+- не выносить `FlowStock.Marking` в отдельный репозиторий на текущем этапе
+- развивать `FlowStock.Marking` как доменную область внутри существующего backend и слоя доступа к данным FlowStock

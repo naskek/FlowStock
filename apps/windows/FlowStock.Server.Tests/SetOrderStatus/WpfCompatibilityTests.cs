@@ -39,7 +39,7 @@ public sealed class WpfCompatibilityTests
     }
 
     [Fact]
-    public async Task WpfLegacyStatusPath_RemainsAvailableUnderFeatureFlag()
+    public async Task WpfSetOrderStatus_IgnoresLegacyFlagAndStillUsesCanonicalApi()
     {
         var (harness, apiStore, orderId) = SetOrderStatusHttpScenario.CreateDraftCustomerScenario();
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
@@ -48,9 +48,9 @@ public sealed class WpfCompatibilityTests
 
         var result = await service.SetStatusAsync(orderId, OrderStatus.Accepted);
 
-        Assert.False(result.IsSuccess);
-        Assert.Equal(WpfSetOrderStatusResultKind.FeatureDisabled, result.Kind);
-        Assert.Equal(OrderStatus.Draft, harness.GetOrder(orderId).Status);
+        Assert.True(result.IsSuccess);
+        Assert.Equal(WpfSetOrderStatusResultKind.StatusChanged, result.Kind);
+        Assert.Equal(OrderStatus.Accepted, harness.GetOrder(orderId).Status);
     }
 
     private sealed class TempSettingsScope : IDisposable
