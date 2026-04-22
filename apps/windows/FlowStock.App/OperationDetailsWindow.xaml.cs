@@ -37,6 +37,8 @@ public partial class OperationDetailsWindow : Window
     private bool _suppressPartialSync;
     private bool _suppressDirtyTracking;
     private bool _isPartialShipment;
+    private bool _autoFillFromBoundOrderInProgress;
+    private readonly HashSet<string> _autoFillAttempts = new(StringComparer.Ordinal);
     private bool _hasUnsavedChanges;
     private bool _hasOutboundShortage;
     private int _outboundShortageCount;
@@ -188,6 +190,7 @@ public partial class OperationDetailsWindow : Window
         Title = $"Операция: {_doc.DocRef} ({DocTypeMapper.ToDisplayName(_doc.Type)})";
         LoadDocLines();
         UpdateDocView();
+        TriggerAutoFillBoundOrderIfNeeded();
     }
 
     private void LoadDocLines()
@@ -2444,6 +2447,64 @@ public partial class OperationDetailsWindow : Window
         }
     }
 
+    private void TriggerAutoFillBoundOrderIfNeeded()
+    {
+        if (_autoFillFromBoundOrderInProgress || _doc == null || _doc.Status != DocStatus.Draft)
+        {
+            return;
+        }
+
+        if (_docLines.Count > 0 || !_doc.OrderId.HasValue)
+        {
+            return;
+        }
+
+        if (_doc.Type != DocType.Outbound && _doc.Type != DocType.ProductionReceipt)
+        {
+            return;
+        }
+
+        var key = $"{_doc.Id}:{_doc.Type}:{_doc.OrderId.Value}";
+        if (_autoFillAttempts.Contains(key))
+        {
+            return;
+        }
+
+        var orderOption = _ordersAll.FirstOrDefault(order => order.Id == _doc.OrderId.Value);
+        if (orderOption == null)
+        {
+            return;
+        }
+
+        _autoFillAttempts.Add(key);
+        _ = AutoFillBoundOrderAsync(orderOption);
+    }
+
+    private async Task AutoFillBoundOrderAsync(OrderOption selected)
+    {
+        if (_doc == null)
+        {
+            return;
+        }
+
+        try
+        {
+            _autoFillFromBoundOrderInProgress = true;
+            if (_doc.Type == DocType.Outbound)
+            {
+                await TryApplyOrderSelectionAsync(selected);
+            }
+            else if (_doc.Type == DocType.ProductionReceipt)
+            {
+                await TryApplyReceiptOrderSelectionAsync(selected);
+            }
+        }
+        finally
+        {
+            _autoFillFromBoundOrderInProgress = false;
+        }
+    }
+
     private IReadOnlyList<WpfAddDocLineContext> BuildOutboundOrderBatchContexts(long orderId, long? fromLocationId)
     {
         var requestedHu = NormalizeHuValue(GetSelectedHuCode(DocHuCombo));
@@ -2566,13 +2627,17 @@ public partial class OperationDetailsWindow : Window
 
     private IReadOnlyList<WpfAddDocLineContext> BuildProductionReceiptBatchContexts(long orderId, long? toLocationId, string? toHu)
     {
-        return GetOrderReceiptRemaining(orderId)
-            .Where(line => line.QtyRemaining > 0)
+        var orderLines = _services.WpfReadApi.TryGetOrderLines(orderId, out var apiOrderLines)
+            ? apiOrderLines
+            : Array.Empty<OrderLineView>();
+
+        return orderLines
+            .Where(line => line.QtyOrdered > 0)
             .Select(line => new WpfAddDocLineContext(
                 line.ItemId,
                 null,
-                line.OrderLineId,
-                line.QtyRemaining,
+                line.Id,
+                line.QtyOrdered,
                 null,
                 null,
                 null,

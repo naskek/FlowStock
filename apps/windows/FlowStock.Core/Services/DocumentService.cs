@@ -614,10 +614,10 @@ public sealed class DocumentService
                 store.DeleteDocLines(docId);
             }
 
-            var remaining = store.GetOrderReceiptRemaining(orderId);
-            foreach (var line in remaining)
+            var orderLines = store.GetOrderLines(orderId);
+            foreach (var line in orderLines)
             {
-                if (line.QtyRemaining <= 0)
+                if (line.QtyOrdered <= 0)
                 {
                     continue;
                 }
@@ -625,9 +625,9 @@ public sealed class DocumentService
                 store.AddDocLine(new DocLine
                 {
                     DocId = docId,
-                    OrderLineId = line.OrderLineId,
+                    OrderLineId = line.Id,
                     ItemId = line.ItemId,
-                    Qty = line.QtyRemaining,
+                    Qty = line.QtyOrdered,
                     QtyInput = null,
                     UomCode = null,
                     FromLocationId = null,
@@ -1362,11 +1362,6 @@ public sealed class DocumentService
             check.Errors.Add("Добавьте хотя бы один товар в документ перед проведением.");
             return check;
         }
-        var receiptRemaining = doc.Type == DocType.ProductionReceipt && doc.OrderId.HasValue
-            ? _data.GetOrderReceiptRemaining(doc.OrderId.Value)
-                .ToDictionary(entry => entry.OrderLineId, entry => entry.QtyRemaining)
-            : new Dictionary<long, double>();
-        var receiptRequested = new Dictionary<long, double>();
         var shipmentRemaining = doc.Type == DocType.Outbound && doc.OrderId.HasValue
             ? _data.GetOrderShipmentRemaining(doc.OrderId.Value)
                 .ToDictionary(entry => entry.OrderLineId, entry => entry.QtyRemaining)
@@ -1495,21 +1490,7 @@ public sealed class DocumentService
                 }
             }
 
-            if (doc.Type == DocType.ProductionReceipt && line.OrderLineId.HasValue)
-            {
-                if (!doc.OrderId.HasValue)
-                {
-                    check.Errors.Add($"{rowLabel}: не указан заказ документа.");
-                }
-                else
-                {
-                    var orderLineId = line.OrderLineId.Value;
-                    receiptRequested[orderLineId] = receiptRequested.TryGetValue(orderLineId, out var current)
-                        ? current + line.Qty
-                        : line.Qty;
-                }
-            }
-            else if (doc.Type == DocType.Outbound && line.OrderLineId.HasValue)
+            if (doc.Type == DocType.Outbound && line.OrderLineId.HasValue)
             {
                 if (!doc.OrderId.HasValue)
                 {
@@ -1630,22 +1611,6 @@ public sealed class DocumentService
             }
         }
 
-        if (doc.Type == DocType.ProductionReceipt && receiptRequested.Count > 0)
-        {
-            foreach (var entry in receiptRequested)
-            {
-                if (!receiptRemaining.TryGetValue(entry.Key, out var remaining))
-                {
-                    check.Errors.Add($"Строка заказа {entry.Key}: не найдена.");
-                    continue;
-                }
-
-                if (entry.Value > remaining + 0.000001)
-                {
-                    check.Errors.Add($"Строка заказа {entry.Key}: превышен остаток {FormatQty(remaining)}.");
-                }
-            }
-        }
         if (doc.Type == DocType.Outbound && shipmentRequested.Count > 0)
         {
             foreach (var entry in shipmentRequested)
