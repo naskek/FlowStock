@@ -50,7 +50,7 @@
                 <StackPanel x:Name="DocReasonPanel" Margin="0,0,12,0">
                     <TextBlock Text="Причина" />
                     <ComboBox x:Name="DocReasonCombo" Width="220" Margin="0,4,0,0"
-                              DisplayMemberPath="Label"
+                              DisplayMemberPath="Name"
                               SelectionChanged="DocReasonCombo_SelectionChanged" />
                 </StackPanel>
                 <StackPanel x:Name="DocToPanel" Margin="0,0,12,0">
@@ -186,7 +186,7 @@
                 </DataGrid.Columns>
             </DataGrid>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,6,0,0">
-                <Button x:Name="OutboundHuApplyButton" Content="Добавить HU" Click="OutboundHuApply_Click" />
+                <Button x:Name="OutboundHuApplyButton" Content="Назначить HU" Click="OutboundHuApply_Click" />
             </StackPanel>
         </StackPanel>
         <TextBlock x:Name="DocShortageText" Grid.Row="4" Margin="0,6,0,0" Foreground="DarkRed" Visibility="Collapsed" />

@@ -531,6 +531,9 @@ public sealed class WpfReadApiService
         {
             Id = ReadInt64(element, "id"),
             Name = ReadString(element, "name") ?? string.Empty,
+            IsActive = !element.TryGetProperty("is_active", out var isActiveProperty)
+                       || isActiveProperty.ValueKind == JsonValueKind.Null
+                       || ReadBool(element, "is_active"),
             Barcode = ReadString(element, "barcode"),
             Gtin = ReadString(element, "gtin"),
             BaseUom = ReadString(element, "base_uom_code") ?? ReadString(element, "base_uom") ?? "шт",

@@ -1319,6 +1319,21 @@ public static class DocumentDraftEndpoints
                 deviceId: lineRequest.DeviceId);
         }
 
+        if (!item.IsActive)
+        {
+            return LogLineAndReturn(
+                Results.BadRequest(new ApiResult(false, "ITEM_INACTIVE")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docId: docInfo.DocId,
+                docRef: docInfo.DocRef,
+                docType: docTypeValue,
+                docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                errors: ["ITEM_INACTIVE"],
+                eventId: lineRequest.EventId,
+                deviceId: lineRequest.DeviceId);
+        }
+
         long? fromLocationId = null;
         long? toLocationId = null;
         string? fromHu = null;

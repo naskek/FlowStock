@@ -41,6 +41,25 @@ public sealed class WpfCatalogApiService
             out uoms);
     }
 
+    public bool TryGetWriteOffReasons(out IReadOnlyList<WriteOffReason> reasons)
+    {
+        reasons = Array.Empty<WriteOffReason>();
+        return TryRead(
+            "/api/write-off-reasons",
+            root => root.ValueKind == JsonValueKind.Array
+                ? root.EnumerateArray()
+                    .Select(element => new WriteOffReason
+                    {
+                        Id = ReadInt64(element, "id"),
+                        Code = ReadString(element, "code") ?? string.Empty,
+                        Name = ReadString(element, "name") ?? string.Empty
+                    })
+                    .ToList()
+                : new List<WriteOffReason>(),
+            "catalog-write-off-reasons",
+            out reasons);
+    }
+
     public bool TryGetTaras(out IReadOnlyList<Tara> taras)
     {
         taras = Array.Empty<Tara>();
@@ -90,6 +109,7 @@ public sealed class WpfCatalogApiService
                 new
                 {
                     name = item.Name,
+                    is_active = item.IsActive,
                     barcode = item.Barcode,
                     gtin = item.Gtin,
                     base_uom = item.BaseUom,
@@ -115,6 +135,7 @@ public sealed class WpfCatalogApiService
                 new
                 {
                     name = item.Name,
+                    is_active = item.IsActive,
                     barcode = item.Barcode,
                     gtin = item.Gtin,
                     base_uom = item.BaseUom,
@@ -200,6 +221,25 @@ public sealed class WpfCatalogApiService
     public async Task<(bool IsSuccess, string? Error)> TryDeleteUomAsync(long id, CancellationToken cancellationToken = default)
     {
         return await TryDeleteAsync($"/api/uoms/{id}", "catalog-delete-uom", cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<(bool IsSuccess, long? CreatedId, string? Error)> TryCreateWriteOffReasonAsync(
+        string code,
+        string name,
+        CancellationToken cancellationToken = default)
+    {
+        return await TryPostForIdAsync(
+                "/api/write-off-reasons",
+                new { code, name },
+                "reason_id",
+                "catalog-create-write-off-reason",
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    public async Task<(bool IsSuccess, string? Error)> TryDeleteWriteOffReasonAsync(long id, CancellationToken cancellationToken = default)
+    {
+        return await TryDeleteAsync($"/api/write-off-reasons/{id}", "catalog-delete-write-off-reason", cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<(bool IsSuccess, long? CreatedId, string? Error)> TryCreateTaraAsync(string name, CancellationToken cancellationToken = default)

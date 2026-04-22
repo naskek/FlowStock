@@ -5505,8 +5505,13 @@
             setScanInfo("Неизвестный код", true);
           }
         })
-        .catch(function () {
+        .catch(function (error) {
           if (token === lookupToken) {
+            var code = error && error.message ? error.message : "";
+            if (code === "ITEM_INACTIVE") {
+              setScanInfo("Карточка товара заблокирована", true);
+              return;
+            }
             setScanInfo("", false);
           }
         });
@@ -5800,7 +5805,12 @@
             focusBarcode();
           });
         })
-        .catch(function () {
+        .catch(function (error) {
+          var code = error && error.message ? error.message : "";
+          if (code === "ITEM_INACTIVE") {
+            setScanInfo("Карточка товара заблокирована", true);
+            return;
+          }
           setScanInfo("Товар не найден", true);
         });
 
@@ -6140,7 +6150,12 @@
             }
             addLineWithQuantity(barcode, qtyStep);
           })
-          .catch(function () {
+          .catch(function (error) {
+            var code = error && error.message ? error.message : "";
+            if (code === "ITEM_INACTIVE") {
+              setScanInfo("Карточка товара заблокирована", true);
+              return;
+            }
             addLineWithQuantity(barcode, qtyStep);
           });
         return;
@@ -8416,6 +8431,9 @@
       }
       if (code === "UNKNOWN_ITEM") {
         return "Товар не найден.";
+      }
+      if (code === "ITEM_INACTIVE") {
+        return "Карточка товара заблокирована.";
       }
       if (code === "DOC_REF_EXISTS") {
         return "Документ с таким номером уже существует.";

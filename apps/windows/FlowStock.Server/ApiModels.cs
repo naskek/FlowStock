@@ -544,6 +544,9 @@ public sealed class UpsertItemRequest
     [JsonPropertyName("name")]
     public string? Name { get; set; }
 
+    [JsonPropertyName("is_active")]
+    public bool? IsActive { get; set; }
+
     [JsonPropertyName("barcode")]
     public string? Barcode { get; set; }
 
@@ -616,6 +619,15 @@ public sealed class UpsertLocationRequest
 
 public sealed class CreateNamedEntityRequest
 {
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+}
+
+public sealed class CreateWriteOffReasonRequest
+{
+    [JsonPropertyName("code")]
+    public string? Code { get; set; }
+
     [JsonPropertyName("name")]
     public string? Name { get; set; }
 }

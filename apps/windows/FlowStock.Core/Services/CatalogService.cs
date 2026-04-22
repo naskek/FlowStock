@@ -32,7 +32,7 @@ public sealed class CatalogService
         return _data.GetPartners();
     }
 
-    public long CreateItem(string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked, double? maxQtyPerHu = null, long? itemTypeId = null, double? minStockQty = null)
+    public long CreateItem(string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked, bool isActive = true, double? maxQtyPerHu = null, long? itemTypeId = null, double? minStockQty = null)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -53,6 +53,7 @@ public sealed class CatalogService
             MaxQtyPerHu = maxQtyPerHu,
             TaraId = taraId,
             IsMarked = isMarked,
+            IsActive = isActive,
             ItemTypeId = itemTypeId,
             MinStockQty = normalizedMinStock
         };
@@ -102,6 +103,42 @@ public sealed class CatalogService
         return _data.AddUom(uom);
     }
 
+    public IReadOnlyList<WriteOffReason> GetWriteOffReasons()
+    {
+        return _data.GetWriteOffReasons();
+    }
+
+    public long CreateWriteOffReason(string code, string name)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            throw new ArgumentException("Код причины обязателен.", nameof(code));
+        }
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new ArgumentException("Наименование причины обязательно.", nameof(name));
+        }
+
+        var reason = new WriteOffReason
+        {
+            Code = code.Trim().ToUpperInvariant(),
+            Name = name.Trim()
+        };
+
+        return _data.AddWriteOffReason(reason);
+    }
+
+    public void DeleteWriteOffReason(long reasonId)
+    {
+        if (reasonId <= 0)
+        {
+            throw new ArgumentException("Некорректная причина списания.", nameof(reasonId));
+        }
+
+        _data.DeleteWriteOffReason(reasonId);
+    }
+
     public void DeleteUom(long uomId)
     {
         if (_data.IsUomUsed(uomId))
@@ -139,7 +176,7 @@ public sealed class CatalogService
         _data.UpdateItemBarcode(itemId, barcode.Trim());
     }
 
-    public void UpdateItem(long itemId, string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked, double? maxQtyPerHu = null, long? itemTypeId = null, double? minStockQty = null)
+    public void UpdateItem(long itemId, string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked, bool? isActive = null, double? maxQtyPerHu = null, long? itemTypeId = null, double? minStockQty = null)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -168,6 +205,7 @@ public sealed class CatalogService
             MaxQtyPerHu = maxQtyPerHu,
             TaraId = taraId,
             IsMarked = isMarked,
+            IsActive = isActive ?? existing.IsActive,
             ItemTypeId = itemTypeId,
             MinStockQty = normalizedMinStock
         };

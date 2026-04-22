@@ -364,7 +364,11 @@
   }
 
   function setCachedItems(items) {
-    cachedItems = Array.isArray(items) ? items : [];
+    cachedItems = Array.isArray(items)
+      ? items.filter(function (item) {
+          return item && item.is_active !== false;
+        })
+      : [];
     cachedItemsById = {};
     cachedItems.forEach(function (item) {
       var minStockQty = Number(item.min_stock_qty);

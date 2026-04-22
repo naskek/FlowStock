@@ -93,6 +93,11 @@ public static class OpsEndpoint
             return Results.BadRequest(new ApiResult(false, "UNKNOWN_BARCODE"));
         }
 
+        if (!item.IsActive)
+        {
+            return Results.BadRequest(new ApiResult(false, "ITEM_INACTIVE"));
+        }
+
         Location? fromLocation = null;
         if (isMove)
         {

@@ -26,6 +26,7 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="170" />
@@ -68,13 +69,18 @@
             <TextBlock Grid.Row="11" Grid.Column="0" Text="Базовая единица" VerticalAlignment="Center" />
             <ComboBox x:Name="UomCombo" Grid.Row="11" Grid.Column="1" Margin="8,0,0,8" DisplayMemberPath="Name" />
 
-            <CheckBox x:Name="MarkedCheck"
+            <CheckBox x:Name="IsActiveCheck"
                       Grid.Row="12" Grid.Column="1"
+                      Margin="8,0,0,8"
+                      Content="Активно" />
+
+            <CheckBox x:Name="MarkedCheck"
+                      Grid.Row="13" Grid.Column="1"
                       Margin="8,0,0,0"
                       Content="Маркируемый (КМ)"
                       Visibility="Collapsed" />
 
-            <StackPanel Grid.Row="13" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="8,12,0,0">
+            <StackPanel Grid.Row="14" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="8,12,0,0">
                 <Button Content="Сохранить" Width="120" IsDefault="True" Click="Save_Click" />
                 <Button Content="Отмена" Width="120" IsCancel="True" Margin="8,0,0,0" />
             </StackPanel>

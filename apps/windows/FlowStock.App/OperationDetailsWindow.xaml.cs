@@ -25,7 +25,7 @@ public partial class OperationDetailsWindow : Window
     private readonly List<OrderOption> _ordersAll = new();
     private readonly ObservableCollection<HuOption> _huToOptions = new();
     private readonly ObservableCollection<HuOption> _huFromOptions = new();
-    private readonly List<WriteOffReasonOption> _writeOffReasons = new();
+    private readonly ObservableCollection<WriteOffReason> _writeOffReasons = new();
     private readonly ObservableCollection<OutboundHuCandidate> _outboundHuCandidates = new();
     private readonly Dictionary<long, double> _orderedQtyByOrderLine = new();
     private readonly long _docId;
@@ -98,12 +98,22 @@ public partial class OperationDetailsWindow : Window
     private void LoadWriteOffReasons()
     {
         _writeOffReasons.Clear();
-        _writeOffReasons.Add(new WriteOffReasonOption("DAMAGED", "Повреждено"));
-        _writeOffReasons.Add(new WriteOffReasonOption("EXPIRED", "Просрочено"));
-        _writeOffReasons.Add(new WriteOffReasonOption("DEFECT", "Брак"));
-        _writeOffReasons.Add(new WriteOffReasonOption("SAMPLE", "Проба"));
-        _writeOffReasons.Add(new WriteOffReasonOption("PRODUCTION", "Производство"));
-        _writeOffReasons.Add(new WriteOffReasonOption("OTHER", "Прочее"));
+        var reasons = _services.WpfCatalogApi.TryGetWriteOffReasons(out var apiReasons)
+            ? apiReasons
+            : new[]
+            {
+                new WriteOffReason { Code = "DAMAGED", Name = "Повреждено" },
+                new WriteOffReason { Code = "EXPIRED", Name = "Просрочено" },
+                new WriteOffReason { Code = "DEFECT", Name = "Брак" },
+                new WriteOffReason { Code = "SAMPLE", Name = "Проба" },
+                new WriteOffReason { Code = "PRODUCTION", Name = "Производство" },
+                new WriteOffReason { Code = "OTHER", Name = "Прочее" }
+            };
+
+        foreach (var reason in reasons.OrderBy(reason => reason.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            _writeOffReasons.Add(reason);
+        }
     }
 
     private void LoadCatalog()
@@ -736,6 +746,7 @@ public partial class OperationDetailsWindow : Window
         }
 
         IEnumerable<Item>? filteredItems = null;
+        IReadOnlyDictionary<long, double>? pickerAvailabilityByItem = null;
         if (_doc?.Type == DocType.Move)
         {
             if (DocFromCombo.SelectedItem is not Location selectedFromLocation)
@@ -769,8 +780,20 @@ public partial class OperationDetailsWindow : Window
                 return;
             }
         }
+        else if (_doc?.Type == DocType.WriteOff)
+        {
+            pickerAvailabilityByItem = GetRemainingWriteOffAvailabilityByItem();
+            filteredItems = GetAvailableItemsForWriteOff()
+                .Where(item => pickerAvailabilityByItem.TryGetValue(item.Id, out var qty) && qty > QtyTolerance)
+                .ToList();
+            if (!filteredItems.Any())
+            {
+                MessageBox.Show("Нет доступных товаров для списания.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+        }
 
-        var picker = new ItemPickerWindow(_services, filteredItems)
+        var picker = new ItemPickerWindow(_services, filteredItems, pickerAvailabilityByItem)
         {
             Owner = this
         };
@@ -783,7 +806,31 @@ public partial class OperationDetailsWindow : Window
             ? apiPackagings
             : Array.Empty<ItemPackaging>();
         var defaultUomCode = ResolveDefaultUomCode(item, packagings);
-        var (availableQty, showAvailableLabel) = GetAvailableQtyForDialog(item.Id);
+        Location? fromLocation;
+        Location? toLocation;
+        string? fromHu;
+        string? toHu;
+        double? availableQty;
+        bool showAvailableLabel;
+
+        if (_doc?.Type == DocType.WriteOff)
+        {
+            availableQty = GetRemainingWriteOffQty(item.Id, null, null);
+            fromLocation = null;
+            toLocation = null;
+            fromHu = null;
+            toHu = null;
+            showAvailableLabel = true;
+        }
+        else
+        {
+            (availableQty, showAvailableLabel) = GetAvailableQtyForDialog(item.Id);
+            if (!TryGetLineLocations(out fromLocation, out toLocation, out fromHu, out toHu))
+            {
+                return;
+            }
+        }
+
         var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, 1, defaultUomCode, availableQty, showAvailableLabel)
         {
             Owner = this
@@ -796,12 +843,96 @@ public partial class OperationDetailsWindow : Window
         var qtyBase = qtyDialog.QtyBase;
         var qtyInput = qtyDialog.QtyInput;
         var uomCode = qtyDialog.UomCode;
-        if (!TryGetLineLocations(out var fromLocation, out var toLocation, out var fromHu, out var toHu))
+
+        if (_doc?.Type == DocType.WriteOff)
         {
+            await TryAddWriteOffLinesByHuViaServerAsync(item, qtyBase, uomCode);
             return;
         }
 
         await TryAddLineViaServerAsync(item, qtyBase, qtyInput, uomCode, fromLocation, toLocation, fromHu, toHu);
+    }
+
+    private async Task TryAddWriteOffLinesByHuViaServerAsync(
+        Item item,
+        double qtyBase,
+        string? uomCode)
+    {
+        if (_doc == null)
+        {
+            MessageBox.Show("Операция не выбрана.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var sources = GetWriteOffSources(item.Id);
+        if (sources.Count == 0)
+        {
+            MessageBox.Show("Нет доступного остатка для списания.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var available = sources.Sum(source => source.Qty);
+        if (available + QtyTolerance < qtyBase)
+        {
+            MessageBox.Show(
+                $"Недостаточно остатка: доступно {FormatQty(available)}.",
+                "Операция",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        var remaining = qtyBase;
+        var contexts = new List<WpfAddDocLineContext>();
+        foreach (var source in sources)
+        {
+            if (remaining <= QtyTolerance)
+            {
+                break;
+            }
+
+            var take = Math.Min(source.Qty, remaining);
+            if (take <= QtyTolerance)
+            {
+                continue;
+            }
+
+            contexts.Add(new WpfAddDocLineContext(
+                item.Id,
+                item.Barcode,
+                null,
+                take,
+                null,
+                uomCode,
+                source.LocationId,
+                null,
+                source.HuCode,
+                null));
+            remaining -= take;
+        }
+
+        if (remaining > QtyTolerance || contexts.Count == 0)
+        {
+            MessageBox.Show("Не удалось распределить количество по остаткам HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var result = await _services.WpfBatchAddDocLines.AddLinesBatchAsync(_doc, contexts);
+        LoadDoc();
+        if (!result.IsSuccess)
+        {
+            MessageBox.Show(
+                BuildBatchFailureMessage(result),
+                "Операция",
+                MessageBoxButton.OK,
+                ResolveServerAddLineMessageImage(result.Kind));
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(result.Message))
+        {
+            MessageBox.Show(result.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
     }
 
     private async Task TryAddLineViaServerAsync(
@@ -1110,7 +1241,7 @@ public partial class OperationDetailsWindow : Window
             : Array.Empty<ItemPackaging>();
         var defaultQty = _selectedDocLine.QtyInput ?? _selectedDocLine.QtyBase;
         var defaultUom = string.IsNullOrWhiteSpace(_selectedDocLine.UomCode) ? "BASE" : _selectedDocLine.UomCode;
-        var (availableQty, showAvailableLabel) = GetAvailableQtyForDialog(item.Id);
+        var (availableQty, showAvailableLabel) = GetAvailableQtyForDialog(item.Id, _selectedDocLine);
         var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, defaultQty, defaultUom, availableQty, showAvailableLabel)
         {
             Owner = this
@@ -1644,6 +1775,18 @@ public partial class OperationDetailsWindow : Window
 
         var selected = _writeOffReasons.FirstOrDefault(reason =>
             string.Equals(reason.Code, doc.ReasonCode, StringComparison.OrdinalIgnoreCase));
+        if (selected == null && !string.IsNullOrWhiteSpace(doc.ReasonCode))
+        {
+            selected = new WriteOffReason
+            {
+                Code = doc.ReasonCode.Trim(),
+                Name = doc.ReasonCode.Trim()
+            };
+            if (_writeOffReasons.All(reason => !string.Equals(reason.Code, selected.Code, StringComparison.OrdinalIgnoreCase)))
+            {
+                _writeOffReasons.Insert(0, selected);
+            }
+        }
         DocReasonCombo.SelectedItem = selected;
     }
 
@@ -1967,9 +2110,11 @@ public partial class OperationDetailsWindow : Window
     {
         var showPartner = false;
         var showOrder = false;
-        var showFrom = false;
+        var showFromHeader = false;
+        var showFromColumn = false;
         var showTo = false;
-        var showHu = true;
+        var showHuHeader = true;
+        var showHuColumn = true;
         var showReason = false;
         var showBatch = false;
         var showComment = false;
@@ -1991,14 +2136,16 @@ public partial class OperationDetailsWindow : Window
                 showOrder = true;
                 break;
             case DocType.Move:
-                showFrom = true;
+                showFromHeader = true;
+                showFromColumn = true;
                 showTo = true;
                 fromLabel = "Откуда";
                 toLabel = "Куда";
                 break;
             case DocType.WriteOff:
-                showFrom = true;
+                showFromColumn = true;
                 showReason = true;
+                showHuHeader = false;
                 fromLabel = "Место хранения";
                 break;
             case DocType.Inventory:
@@ -2010,19 +2157,20 @@ public partial class OperationDetailsWindow : Window
                 showOrder = true;
                 showBatch = false;
                 showComment = true;
-                showHu = false;
+                showHuHeader = false;
+                showHuColumn = true;
                 toLabel = "Локация приёмки";
                 break;
         }
 
         DocPartnerPanel.Visibility = showPartner ? Visibility.Visible : Visibility.Collapsed;
         DocOrderPanel.Visibility = showOrder ? Visibility.Visible : Visibility.Collapsed;
-        DocFromPanel.Visibility = showFrom ? Visibility.Visible : Visibility.Collapsed;
+        DocFromPanel.Visibility = showFromHeader ? Visibility.Visible : Visibility.Collapsed;
         DocReasonPanel.Visibility = showReason ? Visibility.Visible : Visibility.Collapsed;
         DocToPanel.Visibility = showTo ? Visibility.Visible : Visibility.Collapsed;
         DocBatchPanel.Visibility = showBatch ? Visibility.Visible : Visibility.Collapsed;
         DocCommentPanel.Visibility = showComment ? Visibility.Visible : Visibility.Collapsed;
-        DocHuPanel.Visibility = showHu ? Visibility.Visible : Visibility.Collapsed;
+        DocHuPanel.Visibility = showHuHeader ? Visibility.Visible : Visibility.Collapsed;
         DocHuFromPanel.Visibility = doc.Type == DocType.Move ? Visibility.Visible : Visibility.Collapsed;
         DocMoveInternalPanel.Visibility = doc.Type == DocType.Move ? Visibility.Visible : Visibility.Collapsed;
 
@@ -2041,7 +2189,7 @@ public partial class OperationDetailsWindow : Window
         DocMoveInternalCheck.IsEnabled = isEditable;
         DocReasonCombo.IsEnabled = isEditable;
 
-        if (!showFrom)
+        if (!showFromHeader)
         {
             DocFromCombo.SelectedItem = null;
         }
@@ -2055,7 +2203,7 @@ public partial class OperationDetailsWindow : Window
             DocMoveInternalCheck.IsChecked = false;
         }
 
-        DocHeaderSaveButton.Visibility = showPartner || showOrder || showHu || showReason || showBatch || showComment
+        DocHeaderSaveButton.Visibility = showPartner || showOrder || showHuHeader || showReason || showBatch || showComment
             ? Visibility.Visible
             : Visibility.Collapsed;
         DocHeaderSaveButton.IsEnabled = isEditable;
@@ -2069,7 +2217,7 @@ public partial class OperationDetailsWindow : Window
         DocLinesGrid.Tag = isEditable;
         DocInventoryDbColumn.Visibility = showInventory ? Visibility.Visible : Visibility.Collapsed;
         DocInventoryDiffColumn.Visibility = showInventory ? Visibility.Visible : Visibility.Collapsed;
-        DocHuColumn.Visibility = doc.Type == DocType.ProductionReceipt || showHu
+        DocHuColumn.Visibility = doc.Type == DocType.ProductionReceipt || showHuColumn
             ? Visibility.Visible
             : Visibility.Collapsed;
         DocKmColumn.Visibility = KmUiEnabled && (doc.Type is DocType.ProductionReceipt or DocType.Outbound)
@@ -2077,7 +2225,7 @@ public partial class OperationDetailsWindow : Window
             : Visibility.Collapsed;
         DocOrderLineColumn.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
         DocPackSingleHuColumn.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
-        DocFromColumn.Visibility = showFrom ? Visibility.Visible : Visibility.Collapsed;
+        DocFromColumn.Visibility = showFromColumn ? Visibility.Visible : Visibility.Collapsed;
         DocToEditColumn.Visibility = doc.Type is DocType.Inbound or DocType.ProductionReceipt
             ? Visibility.Visible
             : Visibility.Collapsed;
@@ -2088,7 +2236,7 @@ public partial class OperationDetailsWindow : Window
             ? Visibility.Visible
             : Visibility.Collapsed;
         AutoHuButton.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
-        AssignHuButton.Visibility = showHu && doc.Type != DocType.Move && doc.Type != DocType.ProductionReceipt
+        AssignHuButton.Visibility = showHuHeader && doc.Type != DocType.Move && doc.Type != DocType.ProductionReceipt
             ? Visibility.Visible
             : Visibility.Collapsed;
         DocFromColumn.Header = fromLabel;
@@ -2097,6 +2245,11 @@ public partial class OperationDetailsWindow : Window
 
         FillFromOrderButton.Visibility = Visibility.Collapsed;
         FillFromOrderButton.IsEnabled = false;
+
+        if (doc.Type != DocType.Outbound)
+        {
+            OutboundHuPanel.Visibility = Visibility.Collapsed;
+        }
     }
 
     private static bool IsTsdSource(Doc doc)
@@ -2214,21 +2367,21 @@ public partial class OperationDetailsWindow : Window
 
         if (_selectedDocLine == null || _selectedOutboundHu == null)
         {
-            MessageBox.Show("Выберите строку и HU.", "Отгрузка", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Выберите строку и HU.", _doc.Type == DocType.WriteOff ? "Списание" : "Отгрузка", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
         var line = FindCurrentDocLine(_selectedDocLine.Id);
         if (line == null)
         {
-            MessageBox.Show("Строка не найдена.", "Отгрузка", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("Строка не найдена.", _doc.Type == DocType.WriteOff ? "Списание" : "Отгрузка", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
         var maxQty = Math.Min(line.Qty, _selectedOutboundHu.Qty);
         if (maxQty <= 0)
         {
-            MessageBox.Show("Недостаточно остатка на выбранном HU.", "Отгрузка", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("Недостаточно остатка на выбранном HU.", _doc.Type == DocType.WriteOff ? "Списание" : "Отгрузка", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -2244,7 +2397,7 @@ public partial class OperationDetailsWindow : Window
         var qty = qtyDialog.Qty;
         if (qty <= 0 || qty > maxQty + 0.000001)
         {
-            MessageBox.Show($"Количество должно быть от 1 до {FormatQty(maxQty)}.", "Отгрузка", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show($"Количество должно быть от 1 до {FormatQty(maxQty)}.", _doc.Type == DocType.WriteOff ? "Списание" : "Отгрузка", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -2254,8 +2407,8 @@ public partial class OperationDetailsWindow : Window
             _selectedOutboundHu.LocationId,
             _selectedOutboundHu.HuCode,
             null,
-            "Отгрузка",
-            "outbound-hu-apply");
+            _doc.Type == DocType.WriteOff ? "Списание" : "Отгрузка",
+            _doc.Type == DocType.WriteOff ? "writeoff-hu-apply" : "outbound-hu-apply");
     }
 
     private void UpdateActionButtons()
@@ -2950,8 +3103,8 @@ public partial class OperationDetailsWindow : Window
         var saved = await TryPersistHeaderViaServerAsync(
             partnerId,
             null,
-            _doc.Type == DocType.ProductionReceipt ? null : GetSelectedHuCode(DocHuCombo),
-            _doc.Type == DocType.WriteOff ? (DocReasonCombo.SelectedItem as WriteOffReasonOption)?.Code : null,
+            _doc.Type is DocType.ProductionReceipt or DocType.WriteOff ? null : GetSelectedHuCode(DocHuCombo),
+            _doc.Type == DocType.WriteOff ? (DocReasonCombo.SelectedItem as WriteOffReason)?.Code : null,
             _doc.Type == DocType.ProductionReceipt ? DocBatchBox.Text : null,
             _doc.Type == DocType.ProductionReceipt ? DocCommentBox.Text : null,
             "Операция");
@@ -2989,10 +3142,10 @@ public partial class OperationDetailsWindow : Window
         }
 
         var partnerId = ResolveDocPartnerFromInput()?.Id;
-        var huCode = _doc.Type == DocType.ProductionReceipt
+        var huCode = _doc.Type is DocType.ProductionReceipt or DocType.WriteOff
             ? null
             : GetSelectedHuCode(DocHuCombo);
-        var reasonCode = (DocReasonCombo.SelectedItem as WriteOffReasonOption)?.Code;
+        var reasonCode = (DocReasonCombo.SelectedItem as WriteOffReason)?.Code;
         var productionBatch = DocBatchBox.Text;
         var comment = DocCommentBox.Text;
         try
@@ -3390,6 +3543,224 @@ public partial class OperationDetailsWindow : Window
         return items.Where(item => itemIds.Contains(item.Id)).ToList();
     }
 
+    private IReadOnlyList<Item> GetAvailableItemsForWriteOff()
+    {
+        var itemIds = GetStockRows()
+            .Where(row => row.Qty > 0)
+            .Select(row => row.ItemId)
+            .Distinct()
+            .ToHashSet();
+        if (itemIds.Count == 0)
+        {
+            return Array.Empty<Item>();
+        }
+
+        var items = _services.WpfReadApi.TryGetItems(null, out var apiItems)
+            ? apiItems
+            : Array.Empty<Item>();
+        return items.Where(item => itemIds.Contains(item.Id)).ToList();
+    }
+
+    private IReadOnlyDictionary<long, double> GetRemainingWriteOffAvailabilityByItem()
+    {
+        var availability = GetStockRows()
+            .Where(row => row.Qty > 0)
+            .GroupBy(row => row.ItemId)
+            .ToDictionary(group => group.Key, group => group.Sum(row => row.Qty));
+
+        foreach (var line in _docLines.Where(line => line.QtyBase > QtyTolerance))
+        {
+            if (!availability.ContainsKey(line.ItemId))
+            {
+                availability[line.ItemId] = 0;
+            }
+
+            availability[line.ItemId] -= line.QtyBase;
+        }
+
+        return availability
+            .Where(entry => entry.Value > QtyTolerance)
+            .ToDictionary(entry => entry.Key, entry => entry.Value);
+    }
+
+    private IReadOnlyList<WriteOffSource> GetWriteOffSources(long itemId)
+    {
+        var sources = GetStockRows()
+            .Where(row => row.ItemId == itemId && row.Qty > 0)
+            .Select(row => new
+            {
+                Row = row,
+                Location = _locations.FirstOrDefault(candidate =>
+                    string.Equals(candidate.Code, row.LocationCode, StringComparison.OrdinalIgnoreCase)),
+                Hu = NormalizeHuValue(row.Hu)
+            })
+            .Where(entry => entry.Location != null)
+            .GroupBy(entry => new { entry.Location!.Id, entry.Location.Code, entry.Hu })
+            .Select(group => new WriteOffSourceBalance(
+                group.Key.Id,
+                group.Key.Code,
+                group.Key.Hu,
+                group.Sum(entry => entry.Row.Qty)))
+            .Where(source => source.Qty > QtyTolerance)
+            .OrderBy(source => source.LocationCode, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(source => string.IsNullOrWhiteSpace(source.HuCode) ? 0 : 1)
+            .ThenBy(source => source.HuCode ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        foreach (var line in _docLines.Where(line => line.ItemId == itemId && line.QtyBase > QtyTolerance))
+        {
+            ApplyWriteOffReservation(sources, line.FromLocationId, NormalizeHuValue(line.FromHu), line.QtyBase);
+        }
+
+        return sources
+            .Where(source => source.Qty > QtyTolerance)
+            .Select(source => new WriteOffSource(source.LocationId, source.HuCode, source.Qty))
+            .ToList();
+    }
+
+    private static void ApplyWriteOffReservation(
+        List<WriteOffSourceBalance> sources,
+        long? locationId,
+        string? huCode,
+        double qty)
+    {
+        var scoped = locationId.HasValue
+            ? sources.Where(source => source.LocationId == locationId.Value).ToList()
+            : sources;
+        var remaining = qty;
+
+        if (!string.IsNullOrWhiteSpace(huCode))
+        {
+            var source = scoped.FirstOrDefault(entry =>
+                string.Equals(entry.HuCode, huCode, StringComparison.OrdinalIgnoreCase));
+            if (source != null)
+            {
+                source.Qty = Math.Max(0, source.Qty - remaining);
+            }
+            return;
+        }
+
+        foreach (var source in scoped)
+        {
+            if (remaining <= QtyTolerance)
+            {
+                break;
+            }
+
+            var take = Math.Min(source.Qty, remaining);
+            source.Qty -= take;
+            remaining -= take;
+        }
+    }
+
+    private double GetRemainingWriteOffQty(long itemId, long? locationId, string? huCode, long? exceptLineId = null)
+    {
+        var locationByCode = _locations
+            .Where(location => !string.IsNullOrWhiteSpace(location.Code))
+            .ToDictionary(location => location.Code, location => location.Id, StringComparer.OrdinalIgnoreCase);
+        var normalizedHu = NormalizeHuValue(huCode);
+
+        var available = GetStockRows()
+            .Where(row => row.ItemId == itemId && row.Qty > 0)
+            .Where(row => !locationId.HasValue
+                          || locationByCode.TryGetValue(row.LocationCode, out var rowLocationId)
+                          && rowLocationId == locationId.Value)
+            .Where(row => string.IsNullOrWhiteSpace(normalizedHu)
+                          || string.Equals(NormalizeHuValue(row.Hu), normalizedHu, StringComparison.OrdinalIgnoreCase))
+            .Sum(row => row.Qty);
+
+        var requested = _docLines
+            .Where(line => line.Id != exceptLineId
+                           && line.ItemId == itemId
+                           && line.QtyBase > QtyTolerance)
+            .Where(line => !locationId.HasValue || line.FromLocationId == locationId.Value)
+            .Where(line => string.IsNullOrWhiteSpace(normalizedHu)
+                           || string.Equals(NormalizeHuValue(line.FromHu), normalizedHu, StringComparison.OrdinalIgnoreCase))
+            .Sum(line => line.QtyBase);
+
+        return Math.Max(0, available - requested);
+    }
+
+    private bool TryResolveWriteOffSource(long itemId, out Location? location, out string? huCode, out double availableQty)
+    {
+        location = null;
+        huCode = null;
+        availableQty = 0;
+
+        var rows = GetStockRows()
+            .Where(row => row.ItemId == itemId && row.Qty > 0)
+            .Select(row => new
+            {
+                Row = row,
+                Location = _locations.FirstOrDefault(candidate =>
+                    string.Equals(candidate.Code, row.LocationCode, StringComparison.OrdinalIgnoreCase)),
+                Hu = NormalizeHuValue(row.Hu)
+            })
+            .Where(entry => entry.Location != null)
+            .ToList();
+        if (rows.Count == 0)
+        {
+            return false;
+        }
+
+        var selectedLocation = DocFromCombo.SelectedItem as Location;
+        var selectedHu = NormalizeHuValue(GetSelectedHuCode(DocHuCombo));
+
+        var scopedRows = rows;
+        if (selectedLocation != null)
+        {
+            var rowsByLocation = scopedRows
+                .Where(entry => entry.Location!.Id == selectedLocation.Id)
+                .ToList();
+            if (rowsByLocation.Count > 0)
+            {
+                scopedRows = rowsByLocation;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(selectedHu))
+        {
+            var rowsByHu = scopedRows
+                .Where(entry => string.Equals(entry.Hu, selectedHu, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (rowsByHu.Count > 0)
+            {
+                scopedRows = rowsByHu;
+            }
+        }
+
+        var preferred = scopedRows
+            .GroupBy(entry => new { entry.Location!.Id, entry.Location.Code, entry.Hu })
+            .Select(group => new
+            {
+                LocationId = group.Key.Id,
+                LocationCode = group.Key.Code,
+                HuCode = group.Key.Hu,
+                Qty = group.Sum(entry => entry.Row.Qty)
+            })
+            .OrderByDescending(entry => selectedLocation != null && entry.LocationId == selectedLocation.Id)
+            .ThenByDescending(entry => !string.IsNullOrWhiteSpace(selectedHu) && string.Equals(entry.HuCode, selectedHu, StringComparison.OrdinalIgnoreCase))
+            .ThenByDescending(entry => entry.Qty)
+            .ThenBy(entry => entry.LocationCode, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(entry => entry.HuCode ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+
+        if (preferred == null)
+        {
+            return false;
+        }
+
+        location = _locations.FirstOrDefault(candidate => candidate.Id == preferred.LocationId);
+        if (location == null)
+        {
+            return false;
+        }
+
+        huCode = preferred.HuCode;
+        availableQty = preferred.Qty;
+        return availableQty > QtyTolerance;
+    }
+
     private DocLine? FindCurrentDocLine(long lineId)
     {
         var line = _docLines.FirstOrDefault(entry => entry.Id == lineId);
@@ -3457,10 +3828,17 @@ public partial class OperationDetailsWindow : Window
         return _orderedQtyByOrderLine.TryGetValue(orderLineId, out orderedQty);
     }
 
-    private (double? AvailableQty, bool ShowAvailableLabel) GetAvailableQtyForDialog(long itemId)
+    private (double? AvailableQty, bool ShowAvailableLabel) GetAvailableQtyForDialog(long itemId, DocLineDisplay? currentLine = null)
     {
         if (_doc?.Type != DocType.Outbound)
         {
+            if (_doc?.Type == DocType.WriteOff)
+            {
+                var locationId = currentLine?.ItemId == itemId ? currentLine.FromLocationId : null;
+                var huCode = currentLine?.ItemId == itemId ? NormalizeHuValue(currentLine.FromHu) : null;
+                return (GetRemainingWriteOffQty(itemId, locationId, huCode, currentLine?.Id), true);
+            }
+
             if (_doc?.Type == DocType.Move)
             {
                 if (DocFromCombo.SelectedItem is Location fromLocation)
@@ -4026,6 +4404,11 @@ public partial class OperationDetailsWindow : Window
             fromHu = (DocHuFromCombo.SelectedItem as HuOption)?.Code;
             toHu = GetSelectedHuCode(DocHuCombo);
         }
+        else if (_doc.Type == DocType.WriteOff)
+        {
+            fromHu = null;
+            toHu = null;
+        }
         else if (_doc.Type == DocType.ProductionReceipt)
         {
             fromHu = null;
@@ -4261,7 +4644,7 @@ public partial class OperationDetailsWindow : Window
 
     private bool SupportsLineHuAssignment()
     {
-        return _doc?.Type is DocType.Inbound or DocType.Inventory or DocType.ProductionReceipt or DocType.WriteOff or DocType.Outbound;
+        return _doc?.Type is DocType.Inbound or DocType.Inventory or DocType.ProductionReceipt or DocType.Outbound;
     }
 
     private IReadOnlyList<DocLineDisplay> GetSelectedDocLines()
@@ -4316,7 +4699,23 @@ public partial class OperationDetailsWindow : Window
         public string QtyDisplay => OperationDetailsWindow.FormatQty(Qty);
     }
 
-    private sealed record WriteOffReasonOption(string Code, string Label);
+    private sealed record WriteOffSource(long LocationId, string? HuCode, double Qty);
+
+    private sealed class WriteOffSourceBalance
+    {
+        public WriteOffSourceBalance(long locationId, string locationCode, string? huCode, double qty)
+        {
+            LocationId = locationId;
+            LocationCode = locationCode;
+            HuCode = huCode;
+            Qty = qty;
+        }
+
+        public long LocationId { get; }
+        public string LocationCode { get; }
+        public string? HuCode { get; }
+        public double Qty { get; set; }
+    }
 
     private sealed record OrderOption(long Id, string OrderRef, OrderType Type, long? PartnerId, string PartnerDisplay)
     {

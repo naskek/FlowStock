@@ -70,9 +70,20 @@ public partial class QuantityUomDialog : Window
             return;
         }
 
+        var qtyBase = qty * option.FactorToBase;
+        if (_availableQty.HasValue && qtyBase > _availableQty.Value + 0.000001)
+        {
+            MessageBox.Show(
+                $"Количество превышает доступный остаток: доступно {_availableQty.Value.ToString("0.###", CultureInfo.CurrentCulture)} {_baseUom}.",
+                "Операция",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
         QtyInput = qty;
         UomCode = option.Code;
-        QtyBase = qty * option.FactorToBase;
+        QtyBase = qtyBase;
         DialogResult = true;
         Close();
     }

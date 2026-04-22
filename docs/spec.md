@@ -23,6 +23,7 @@
   - Отправка requests разрешена только активным аккаунтам с PC-access (`tsd_devices.platform=PC` или `BOTH`).
 - На порту `7154` доступны три операторских экрана: `Состояние склада`, `Каталог`, `Заказы`.
   - Каталог продукции показывает только товары, у которых тип номенклатуры помечен `is_visible_in_product_catalog = true`.
+  - Неактивные товары (`items.is_active = false`) не показываются в web-клиентах.
 - WPF admin хранит глобальные web block switches в PostgreSQL. Если блок отключен, он скрывается для всех пользователей соответствующего web client, а прямой переход на него блокируется после перезагрузки страницы.
 - Web clients не опрашивают block settings непрерывно. Конфигурация блоков перечитывается на старте и на `focus` / `visibilitychange`; server API requests из отключенного block context отклоняются с `403 BLOCK_DISABLED`, после чего клиент перечитывает конфигурацию блоков и перерисовывает UI.
 
@@ -32,10 +33,11 @@
 - `https://SERVER_IP:7154/tsd/` открывает TSD web client.
 
 ## Модель данных (server DB)
-- `items(id, name, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, max_qty_per_hu, tara_id, is_marked, item_type_id, min_stock_qty)`
+- `items(id, name, is_active, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, max_qty_per_hu, tara_id, is_marked, item_type_id, min_stock_qty)`
 - `item_types(id, name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control)`
 - `taras(id, name)`
 - `item_requests(id, barcode, comment, device_id, login, status, created_at, resolved_at)`
+- `write_off_reasons(id, code, name)`
 - `order_requests(id, request_type, payload_json, status, created_at, created_by_login, created_by_device_id, resolved_at, resolved_by, resolution_note, applied_order_id)`
 - `locations(id, code, name)`
 - `partners(id, name, inn, ... )`
@@ -78,13 +80,14 @@
   - Добавлен блок позиций ниже минимума над основным списком.
   - Ручной поиск по отдельному полю убран, вместо него используются встроенные фильтры.
 - Documents: список + детали + проведение.
-- Items: список с ID + modal create/edit (`name`, `barcode/SKU`, `gtin`, `brand`, `volume`, `shelf life months`, `max qty per HU`, `tara`, `uom`, `item_type`, `min_stock_qty`, `is_marked`) + Excel import с preview и column mapping.
+- Items: список с ID + modal create/edit (`name`, `is_active`, `barcode/SKU`, `gtin`, `brand`, `volume`, `shelf life months`, `max qty per HU`, `tara`, `uom`, `item_type`, `min_stock_qty`, `is_marked`) + Excel import с preview и column mapping.
 - Item types: редактор справочника типов номенклатуры (создание, редактирование, удаление/деактивация при использовании, настройка флагов `is_visible_in_product_catalog` и `enable_min_stock_control`).
   - Для новых типов `is_visible_in_product_catalog` по умолчанию включен; после миграции V0005 тип `Без типа` (`GENERAL`) автоматически помечается видимым в PC каталоге.
 - Item packagings: редактор упаковок в карточке товара и общий packaging manager используют server API для list/create/update/deactivate/set-default.
 - Tara: редактор справочника в разделе `Справочники`.
+- Причины списания: редактор справочника причин списания в разделе `Справочники` поддерживает добавление и удаление причин.
 - Locations: список с ID + modal create/edit (`code`, `name`).
-- Простой CRUD по `items`, `locations`, `uoms` и `taras` использует server API.
+- Простой CRUD по `items`, `locations`, `uoms`, `taras` и `write_off_reasons` использует server API.
 - Partners: список с ID + modal create/edit/delete.
   - CRUD по контрагентам и их роли/статусу (`Supplier` / `Client` / `Both`) работают через server API.
 - Orders: список + детали (см. `spec_orders.md`).
@@ -114,6 +117,7 @@
 - KM в WPF временно заморожен: вкладка KM, KM-действия в окнах документов и KM edit-control в карточках товара скрыты из клиента. Во время freeze document validation/close не требует назначения KM и не делает auto-ship KM codes.
 
 ## Документы (дополнительно)
+- Неактивный товар (`items.is_active = false`) не может участвовать в операциях: сервер отклоняет добавление строк с ошибкой `ITEM_INACTIVE`, а TSD при сканировании показывает сообщение о блокировке карточки товара.
 - HU в документе хранится на уровне строки (`doc_lines.from_hu` / `doc_lines.to_hu`). Значение HU в шапке используется как значение по умолчанию и как быстрый выбор для операций со строками, но один документ может содержать строки с разными HU.
 - `doc_lines.replaces_line_id` используется для append-only semantics черновиков (`UpdateDocLine` / `DeleteDocLine`). Историческая строка остается в БД; удаление строки создает tombstone-row с `qty = 0` и `replaces_line_id = deleted_line_id`. В document read-model и в расчетах заказов/проведения учитываются только активные строки с `qty > 0`, на которые не ссылается более новая запись.
 - Выпуск продукции: приемка готовой продукции на склад (плюс в `ledger`), HU обязателен на момент проведения по каждой строке, партия производства хранится в `production_batch_no`, документ может быть связан с заказом (`order_id/order_ref`).
@@ -139,6 +143,12 @@
   - TSD показывает `pick list` HU/локаций по выбранной строке и позволяет привязать HU/локацию к строке отгрузки.
   - Для маркируемых SKU `pick list` строится по `km_code` (`status=OnHand`) с фильтром по заказу; для немаркируемых — по `ledger`.
   - В ручном `OUTBOUND` выбор товара фильтруется по остаткам источника (выбранные `location/HU`), чтобы показывать только реально отгружаемые позиции.
+- Списание: в WPF источник строки задается на уровне строки документа, а не в шапке. Шапочный HU для `WRITE_OFF` не используется.
+  - При добавлении строки `WRITE_OFF` выбор товара показывает только товары с положительным доступным остатком и отдельную колонку доступного количества.
+  - Доступное количество в выборе товара и в диалоге количества считается по всем локациям/HU товара с учетом уже добавленных строк черновика.
+  - Ввод количества больше доступного остатка запрещен уже в диалоге количества.
+  - Введенное количество автоматически раскладывается в строки документа по фактическим источникам `from_location_id/from_hu`; нижняя панель `Где лежит (HU)` для списания не используется.
+  - Оператор вручную выбирает только `reason_code` из отдельного справочника причин списания.
 
 ## Marking (KM) MVP
 - Domain logic и хранение данных KM пока остаются в backend/DB, но клиентский workflow временно заморожен: WPF UI выключен, а validation/close документов не требует назначения KM.

@@ -701,6 +701,7 @@ app.MapGet("/api/items", (HttpRequest request) =>
    command.CommandText = @"
 SELECT i.id,
        i.name,
+       i.is_active,
        i.barcode,
        i.gtin,
        i.base_uom,
@@ -733,10 +734,12 @@ ORDER BY i.name;"
     while (reader.Read())
     {
         // Compatibility: some databases have items.is_marked as integer (0/1) instead of boolean.
+        var isActive = reader.IsDBNull(2) || reader.GetBoolean(2);
+
         bool isMarked = false;
-        if (!reader.IsDBNull(13))
+        if (!reader.IsDBNull(14))
         {
-            var raw = reader.GetValue(13);
+            var raw = reader.GetValue(14);
             isMarked = raw switch
             {
                 bool b => b,
@@ -748,33 +751,34 @@ ORDER BY i.name;"
             };
         }
 
-        var baseUom = reader.IsDBNull(4) ? null : reader.GetString(4);
-        if (string.IsNullOrWhiteSpace(baseUom) && !reader.IsDBNull(5))
+        var baseUom = reader.IsDBNull(5) ? null : reader.GetString(5);
+        if (string.IsNullOrWhiteSpace(baseUom) && !reader.IsDBNull(6))
         {
-            baseUom = reader.GetString(5);
+            baseUom = reader.GetString(6);
         }
 
         list.Add(new
         {
             id = reader.GetInt64(0),
             name = reader.GetString(1),
-            barcode = reader.IsDBNull(2) ? null : reader.GetString(2),
-            gtin = reader.IsDBNull(3) ? null : reader.GetString(3),
+            is_active = isActive,
+            barcode = reader.IsDBNull(3) ? null : reader.GetString(3),
+            gtin = reader.IsDBNull(4) ? null : reader.GetString(4),
             base_uom = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom,
             base_uom_code = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom,
-            default_packaging_id = reader.IsDBNull(6) ? (long?)null : reader.GetInt64(6),
-            brand = reader.IsDBNull(7) ? null : reader.GetString(7),
-            volume = reader.IsDBNull(8) ? null : reader.GetString(8),
-            shelf_life_months = reader.IsDBNull(9) ? (int?)null : reader.GetInt32(9),
-            max_qty_per_hu = reader.IsDBNull(10) ? (double?)null : Convert.ToDouble(reader.GetValue(10), CultureInfo.InvariantCulture),
-            tara_id = reader.IsDBNull(11) ? (long?)null : reader.GetInt64(11),
-            tara_name = reader.IsDBNull(12) ? null : reader.GetString(12),
+            default_packaging_id = reader.IsDBNull(7) ? (long?)null : reader.GetInt64(7),
+            brand = reader.IsDBNull(8) ? null : reader.GetString(8),
+            volume = reader.IsDBNull(9) ? null : reader.GetString(9),
+            shelf_life_months = reader.IsDBNull(10) ? (int?)null : reader.GetInt32(10),
+            max_qty_per_hu = reader.IsDBNull(11) ? (double?)null : Convert.ToDouble(reader.GetValue(11), CultureInfo.InvariantCulture),
+            tara_id = reader.IsDBNull(12) ? (long?)null : reader.GetInt64(12),
+            tara_name = reader.IsDBNull(13) ? null : reader.GetString(13),
             is_marked = isMarked,
-            item_type_id = reader.IsDBNull(14) ? (long?)null : reader.GetInt64(14),
-            item_type_name = reader.IsDBNull(15) ? null : reader.GetString(15),
-            item_type_is_visible_in_product_catalog = !reader.IsDBNull(16) && reader.GetBoolean(16),
-            item_type_enable_min_stock_control = !reader.IsDBNull(17) && reader.GetBoolean(17),
-            min_stock_qty = reader.IsDBNull(18) ? (double?)null : Convert.ToDouble(reader.GetValue(18), CultureInfo.InvariantCulture)
+            item_type_id = reader.IsDBNull(15) ? (long?)null : reader.GetInt64(15),
+            item_type_name = reader.IsDBNull(16) ? null : reader.GetString(16),
+            item_type_is_visible_in_product_catalog = !reader.IsDBNull(17) && reader.GetBoolean(17),
+            item_type_enable_min_stock_control = !reader.IsDBNull(18) && reader.GetBoolean(18),
+            min_stock_qty = reader.IsDBNull(19) ? (double?)null : Convert.ToDouble(reader.GetValue(19), CultureInfo.InvariantCulture)
         });
     }
 
@@ -801,6 +805,7 @@ app.MapPost("/api/items", async (HttpRequest request, CatalogService catalog) =>
             parsed.Value?.ShelfLifeMonths,
             parsed.Value?.TaraId,
             parsed.Value?.IsMarked == true,
+            parsed.Value?.IsActive != false,
             parsed.Value?.MaxQtyPerHu,
             parsed.Value?.ItemTypeId,
             parsed.Value?.MinStockQty);
@@ -837,6 +842,7 @@ app.MapPost("/api/items/{itemId:long}", async (long itemId, HttpRequest request,
             parsed.Value?.ShelfLifeMonths,
             parsed.Value?.TaraId,
             parsed.Value?.IsMarked == true,
+            parsed.Value?.IsActive,
             parsed.Value?.MaxQtyPerHu,
             parsed.Value?.ItemTypeId,
             parsed.Value?.MinStockQty);
@@ -1015,6 +1021,55 @@ app.MapDelete("/api/uoms/{uomId:long}", (long uomId, CatalogService catalog) =>
     try
     {
         catalog.DeleteUom(uomId);
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+});
+
+app.MapGet("/api/write-off-reasons", (CatalogService catalog) =>
+{
+    var reasons = catalog.GetWriteOffReasons()
+        .Select(reason => new
+        {
+            id = reason.Id,
+            code = reason.Code,
+            name = reason.Name
+        })
+        .ToList();
+    return Results.Ok(reasons);
+});
+
+app.MapPost("/api/write-off-reasons", async (HttpRequest request, CatalogService catalog) =>
+{
+    var parsed = await ParseJsonBody<CreateWriteOffReasonRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    try
+    {
+        var reasonId = catalog.CreateWriteOffReason(parsed.Value?.Code ?? string.Empty, parsed.Value?.Name ?? string.Empty);
+        return Results.Ok(new { ok = true, reason_id = reasonId });
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+    catch (PostgresException ex) when (string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal))
+    {
+        return Results.Conflict(new ApiResult(false, "WRITE_OFF_REASON_ALREADY_EXISTS"));
+    }
+});
+
+app.MapDelete("/api/write-off-reasons/{reasonId:long}", (long reasonId, CatalogService catalog) =>
+{
+    try
+    {
+        catalog.DeleteWriteOffReason(reasonId);
         return Results.Ok(new ApiResult(true));
     }
     catch (InvalidOperationException ex)
@@ -2769,6 +2824,7 @@ static object MapItem(Item item)
     {
         id = item.Id,
         name = item.Name,
+        is_active = item.IsActive,
         barcode = item.Barcode,
         gtin = item.Gtin,
         base_uom = string.IsNullOrWhiteSpace(item.BaseUom) ? "шт" : item.BaseUom,

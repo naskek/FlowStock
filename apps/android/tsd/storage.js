@@ -220,6 +220,7 @@
       volume: String(item.volume || "").trim(),
       base_uom: String(item.base_uom_code || item.base_uom || "").trim(),
       base_uom_code: String(item.base_uom_code || item.base_uom || "").trim(),
+      is_active: item.is_active !== false,
       item_type_id: Number(item.item_type_id) || 0,
       item_type_name: String(item.item_type_name || "").trim(),
       item_type_is_visible_in_product_catalog: item.item_type_is_visible_in_product_catalog === true,
@@ -379,7 +380,7 @@
       var items = payload
         .map(normalizeApiItem)
         .filter(function (item) {
-          return !!item;
+          return !!item && item.is_active !== false;
         });
       if (typeof limit === "number" && limit > 0 && items.length > limit) {
         return items.slice(0, limit);
@@ -480,6 +481,9 @@
     }
     return apiGetItemByBarcode(clean).then(function (item) {
       if (item) {
+        if (item.is_active === false) {
+          throw new Error("ITEM_INACTIVE");
+        }
         return item;
       }
       return apiSearchItems(clean, 20).then(function (items) {

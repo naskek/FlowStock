@@ -2058,6 +2058,15 @@ public partial class MainWindow : Window
         LoadUoms();
     }
 
+    private void WriteOffReasonsMenu_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new WriteOffReasonWindow(_services, null)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+    }
+
     private void ItemTypesMenu_Click(object sender, RoutedEventArgs e)
     {
         var window = new ItemTypeWindow(_services, () =>

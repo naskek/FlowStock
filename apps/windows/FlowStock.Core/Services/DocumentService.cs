@@ -276,15 +276,23 @@ public sealed class DocumentService
                     case DocType.WriteOff:
                         if (line.FromLocationId.HasValue)
                         {
-                            store.AddLedgerEntry(new LedgerEntry
+                            var writeOffHu = NormalizeHuValue(fromHu);
+                            if (!string.IsNullOrWhiteSpace(writeOffHu))
                             {
-                                Timestamp = closedAt,
-                                DocId = docId,
-                                ItemId = line.ItemId,
-                                LocationId = line.FromLocationId.Value,
-                                QtyDelta = -line.Qty,
-                                HuCode = fromHu
-                            });
+                                store.AddLedgerEntry(new LedgerEntry
+                                {
+                                    Timestamp = closedAt,
+                                    DocId = docId,
+                                    ItemId = line.ItemId,
+                                    LocationId = line.FromLocationId.Value,
+                                    QtyDelta = -line.Qty,
+                                    HuCode = writeOffHu
+                                });
+                            }
+                            else
+                            {
+                                AddOutboundLedgerEntriesFromLocation(store, closedAt, docId, line, line.FromLocationId.Value, null);
+                            }
                         }
                         break;
                     case DocType.Outbound:
@@ -709,9 +717,15 @@ public sealed class DocumentService
             throw new InvalidOperationException("Документ уже закрыт.");
         }
 
-        if (_data.FindItemById(itemId) == null)
+        var item = _data.FindItemById(itemId);
+        if (item == null)
         {
             throw new InvalidOperationException("Товар не найден.");
+        }
+
+        if (!item.IsActive)
+        {
+            throw new InvalidOperationException("Карточка товара заблокирована.");
         }
 
         ValidateLineLocations(doc.Type, fromLocationId, toLocationId, NormalizeHuValue(fromHu), NormalizeHuValue(toHu));
@@ -1494,6 +1508,18 @@ public sealed class DocumentService
             var rowLabel = $"Строка {index + 1} ({itemLabel})";
             var (fromHu, toHu) = ResolveLedgerHu(doc, line, docHu);
 
+            if (item == null)
+            {
+                check.Errors.Add($"{rowLabel}: товар не найден.");
+                continue;
+            }
+
+            if (!item.IsActive)
+            {
+                check.Errors.Add($"{rowLabel}: карточка товара заблокирована.");
+                continue;
+            }
+
             if (line.Qty <= 0)
             {
                 check.Errors.Add($"{rowLabel}: количество должно быть > 0.");
@@ -1621,7 +1647,8 @@ public sealed class DocumentService
                 if (line.Qty > 0 && line.FromLocationId.HasValue)
                 {
                     var normalizedFromHu = NormalizeHuValue(fromHu);
-                    if (doc.Type == DocType.Outbound && string.IsNullOrWhiteSpace(normalizedFromHu))
+                    if ((doc.Type == DocType.WriteOff || doc.Type == DocType.Outbound)
+                        && string.IsNullOrWhiteSpace(normalizedFromHu))
                     {
                         var key = new ItemLocationKey(line.ItemId, line.FromLocationId.Value);
                         outboundByLocation[key] = outboundByLocation.TryGetValue(key, out var current) ? current + line.Qty : line.Qty;
