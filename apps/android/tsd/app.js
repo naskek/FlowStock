@@ -554,13 +554,13 @@
         if (window.location && String(window.location.origin || "").indexOf("http") === 0) {
           return normalizeBaseUrl(window.location.origin);
         }
-        return "https://localhost:7153";
+        return "https://localhost:7154";
       })
       .catch(function () {
         if (window.location && String(window.location.origin || "").indexOf("http") === 0) {
           return normalizeBaseUrl(window.location.origin);
         }
-        return "https://localhost:7153";
+        return "https://localhost:7154";
       });
   }
 
@@ -1598,7 +1598,7 @@
       buttons.push('<button class="btn menu-btn" data-route="operations">Операции</button>');
     }
     if (isClientBlockEnabled("tsd_stock")) {
-      buttons.push('<button class="btn menu-btn" data-route="stock">Остатки</button>');
+      buttons.push('<button class="btn menu-btn" data-route="stock">Состояние склада</button>');
     }
     if (isClientBlockEnabled("tsd_catalog")) {
       buttons.push('<button class="btn menu-btn" data-route="items">Каталог</button>');
@@ -1610,6 +1610,144 @@
       return '<div class="empty-state">Все блоки ТСД сейчас временно отключены.</div>';
     }
     return buttons.join("");
+  }
+
+  var homeLowStockRequestSeq = 0;
+
+  function formatQtyWithUnit(qty, unit) {
+    var num = Number(qty);
+    if (!isFinite(num)) {
+      num = 0;
+    }
+    var normalized =
+      Math.abs(num - Math.round(num)) < 0.000001
+        ? String(Math.round(num))
+        : num.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+    return normalized + (unit ? " " + unit : "");
+  }
+
+  function renderHomeLowStockRows(rows) {
+    if (!rows || !rows.length) {
+      return '<div class="empty-state">Позиции ниже минимума отсутствуют.</div>';
+    }
+
+    var body = rows
+      .map(function (row) {
+        return (
+          "<tr>" +
+          "<td>" +
+          escapeHtml(row.itemName || "-") +
+          "</td>" +
+          "<td>" +
+          escapeHtml(row.itemTypeName || "-") +
+          "</td>" +
+          '<td><span class="pc-qty">' +
+          escapeHtml(row.qtyDisplay || "0") +
+          "</span></td>" +
+          "<td>" +
+          escapeHtml(row.minStockDisplay || "-") +
+          "</td>" +
+          "<td>" +
+          escapeHtml(row.shortageDisplay || "-") +
+          "</td>" +
+          "</tr>"
+        );
+      })
+      .join("");
+
+    return (
+      '<div class="pc-low-stock-card home-low-stock-card">' +
+      '  <div class="pc-low-stock-title">Позиции ниже минимума: ' +
+      rows.length +
+      "</div>" +
+      '  <div class="pc-low-stock-table-wrap">' +
+      '    <table class="pc-table">' +
+      "      <thead>" +
+      "        <tr>" +
+      "          <th>Товар</th>" +
+      "          <th>Тип</th>" +
+      "          <th>В наличии</th>" +
+      "          <th>Минимум</th>" +
+      "          <th>Нехватка</th>" +
+      "        </tr>" +
+      "      </thead>" +
+      "      <tbody>" +
+      body +
+      "      </tbody>" +
+      "    </table>" +
+      "  </div>" +
+      "</div>"
+    );
+  }
+
+  function loadHomeLowStockRows() {
+    return Promise.all([TsdStorage.apiSearchItems(""), TsdStorage.apiGetStockRows()]).then(function (
+      payloads
+    ) {
+      var items = Array.isArray(payloads[0]) ? payloads[0] : [];
+      var stockRows = Array.isArray(payloads[1]) ? payloads[1] : [];
+      var itemMap = {};
+      var totalsByItem = {};
+
+      items.forEach(function (item) {
+        var id = Number(item && (item.itemId != null ? item.itemId : item.id)) || 0;
+        if (!id) {
+          return;
+        }
+        itemMap[id] = {
+          itemId: id,
+          name: String(item.name || "").trim(),
+          base_uom: String(item.base_uom_code || item.base_uom || "").trim(),
+          itemTypeId: Number(item.item_type_id) || 0,
+          itemTypeName: String(item.item_type_name || "").trim(),
+          itemTypeEnableMinStockControl: item.item_type_enable_min_stock_control === true,
+          minStockQty: item.min_stock_qty != null ? Number(item.min_stock_qty) : null,
+        };
+      });
+
+      stockRows.forEach(function (row) {
+        var itemId = Number(row && row.item_id) || 0;
+        if (!itemId) {
+          return;
+        }
+        totalsByItem[itemId] = (totalsByItem[itemId] || 0) + Number(row.qty || 0);
+      });
+
+      return Object.keys(itemMap)
+        .map(function (key) {
+          return itemMap[Number(key)];
+        })
+        .filter(function (item) {
+          if (!item) {
+            return false;
+          }
+          if (!(item.itemTypeEnableMinStockControl === true) || item.minStockQty == null) {
+            return false;
+          }
+          var qty = Number(totalsByItem[item.itemId] || 0);
+          return qty < Number(item.minStockQty || 0);
+        })
+        .map(function (item) {
+          var qty = Number(totalsByItem[item.itemId] || 0);
+          var minStockQty = Number(item.minStockQty || 0);
+          var shortage = Math.max(0, minStockQty - qty);
+          var unit = item.base_uom || "шт";
+          return {
+            itemName: item.name || "-",
+            itemTypeName: item.itemTypeName || "-",
+            qtyDisplay: formatQtyWithUnit(qty, unit),
+            minStockDisplay: formatQtyWithUnit(minStockQty, unit),
+            shortageDisplay: formatQtyWithUnit(shortage, unit),
+            shortage: shortage,
+          };
+        })
+        .sort(function (a, b) {
+          if (b.shortage !== a.shortage) {
+            return b.shortage - a.shortage;
+          }
+          return String(a.itemName || "").localeCompare(String(b.itemName || ""), "ru");
+        });
+    });
   }
 
   function buildOperationsMenuButtonsHtml() {
@@ -1638,6 +1776,7 @@
       '  <div class="menu-grid">' +
       buildHomeMenuButtonsHtml() +
       "  </div>" +
+      '  <div id="homeLowStockWrap" class="home-low-stock-wrap"></div>' +
       "</section>"
     );
   }
@@ -1857,18 +1996,41 @@
     return (
       '<section class="screen">' +
       '  <div class="screen-card">' +
-      '    <div class="section-title">Остатки</div>' +
+      '    <div class="section-title">Состояние склада</div>' +
       '    <div id="stockStatus" class="stock-status">Дата актуальности: -</div>' +
       '    <div class="section-subtitle">Сканирование</div>' +
       '    <div class="scan-input-row">' +
       '      <input class="form-input" id="stockScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" placeholder="Сканируйте HU или товар" />' +
       '      <button class="btn btn-outline" id="stockScanBtn" type="button">Сканировать</button>' +
       "    </div>" +
+      '    <div class="stock-toolbar">' +
+      '      <div class="stock-filter-field">' +
+      '        <label class="form-label" for="stockSearchInput">Поиск</label>' +
+      '        <input class="form-input" id="stockSearchInput" type="text" autocomplete="off" placeholder="Название, бренд, объем, SKU, GTIN, штрихкод" />' +
+      "      </div>" +
+      '      <div class="stock-filter-field">' +
+      '        <label class="form-label" for="stockLocationFilter">Место хранения</label>' +
+      '        <select class="form-input" id="stockLocationFilter"></select>' +
+      "      </div>" +
+      '      <div class="stock-filter-field">' +
+      '        <label class="form-label" for="stockTypeFilter">Тип</label>' +
+      '        <select class="form-input" id="stockTypeFilter"></select>' +
+      "      </div>" +
+      '      <div class="stock-filter-field">' +
+      '        <label class="form-label" for="stockHuInput">HU (только цифры)</label>' +
+      '        <div class="stock-hu-inline">' +
+      '          <span class="stock-hu-prefix">HU-</span>' +
+      '          <input class="form-input" id="stockHuInput" type="text" autocomplete="off" inputmode="numeric" placeholder="например, 00010" />' +
+      "        </div>" +
+      '        <div id="stockHuHint" class="stock-input-hint" hidden>Можно вводить только цифры.</div>' +
+      "      </div>" +
+      '      <div id="stockStatusText" class="stock-toolbar-status"></div>' +
+      "    </div>" +
+      '    <div id="stockLowWrap"></div>' +
+      '    <div id="stockTableWrap"></div>' +
       '    <div id="stockMessage" class="stock-message"></div>' +
       '    <div id="stockDetails" class="stock-details"></div>' +
-      '    <div class="section-subtitle">Ручной поиск</div>' +
       '    <div class="actions-bar">' +
-      '      <button class="btn btn-outline" id="stockManualSearchBtn" type="button">Ручной поиск</button>' +
       '      <button class="btn btn-outline" id="stockClearBtn" type="button">Очистить</button>' +
       "    </div>" +
       "  </div>" +
@@ -1909,7 +2071,6 @@
     var statusLabel = document.getElementById("stockStatus");
     var scanInput = document.getElementById("stockScanInput");
     var scanBtn = document.getElementById("stockScanBtn");
-    var manualSearchBtn = document.getElementById("stockManualSearchBtn");
     var messageEl = document.getElementById("stockMessage");
     var detailsEl = document.getElementById("stockDetails");
     var clearBtn = document.getElementById("stockClearBtn");
@@ -1921,6 +2082,22 @@
     var huStockCache = null;
     var huStockCachedAt = 0;
     var HU_STOCK_TTL_MS = 15000;
+    var rowsStatusEl = document.getElementById("stockStatusText");
+    var stockSearchInput = document.getElementById("stockSearchInput");
+    var locationSelect = document.getElementById("stockLocationFilter");
+    var typeFilter = document.getElementById("stockTypeFilter");
+    var huInput = document.getElementById("stockHuInput");
+    var huHint = document.getElementById("stockHuHint");
+    var lowWrap = document.getElementById("stockLowWrap");
+    var tableWrap = document.getElementById("stockTableWrap");
+    var stockDataLoaded = false;
+    var stockRenderTimer = null;
+    var cachedItems = [];
+    var cachedItemsById = {};
+    var cachedItemTypes = [];
+    var cachedStockRows = [];
+    var cachedHuRows = [];
+    var cachedCombinedRows = [];
 
     function setStatusText(text) {
       if (statusLabel) {
@@ -1938,6 +2115,220 @@
       if (detailsEl) {
         detailsEl.innerHTML = "";
       }
+    }
+
+    function setRowsStatus(text) {
+      if (rowsStatusEl) {
+        rowsStatusEl.textContent = text || "";
+      }
+    }
+
+    function normalizeQty(value) {
+      var num = Number(value);
+      if (!isFinite(num)) {
+        return 0;
+      }
+      return num;
+    }
+
+    function formatQtyDisplay(qty, itemId) {
+      var num = normalizeQty(qty);
+      var item = cachedItemsById[Number(itemId)] || {};
+      var unit = item.base_uom || item.base_uom_code || "шт";
+      var normalized =
+        Math.abs(num - Math.round(num)) < 0.000001
+          ? String(Math.round(num))
+          : num.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+      return normalized + (unit ? " " + unit : "");
+    }
+
+    function setCachedItems(items) {
+      cachedItems = Array.isArray(items) ? items : [];
+      cachedItemsById = {};
+      cachedItems.forEach(function (item) {
+        var id = Number(item && item.itemId != null ? item.itemId : item.id);
+        if (!id) {
+          return;
+        }
+        cachedItemsById[id] = {
+          itemId: id,
+          name: String(item.name || "").trim(),
+          barcode: String(item.barcode || "").trim(),
+          gtin: String(item.gtin || "").trim(),
+          sku: String(item.sku || "").trim(),
+          brand: String(item.brand || "").trim(),
+          volume: String(item.volume || "").trim(),
+          base_uom: String(item.base_uom_code || item.base_uom || "").trim(),
+          base_uom_code: String(item.base_uom_code || item.base_uom || "").trim(),
+          itemTypeId: Number(item.item_type_id) || 0,
+          itemTypeName: String(item.item_type_name || "").trim(),
+          itemTypeEnableMinStockControl: item.item_type_enable_min_stock_control === true,
+          minStockQty: item.min_stock_qty != null ? Number(item.min_stock_qty) : null,
+        };
+      });
+      itemsById = Object.assign({}, cachedItemsById);
+    }
+
+    function setCachedLocations(locations) {
+      locationMap = {};
+      (Array.isArray(locations) ? locations : []).forEach(function (location) {
+        var id = Number(location && location.locationId != null ? location.locationId : location.id);
+        if (!id) {
+          return;
+        }
+        locationMap[id] = {
+          locationId: id,
+          code: String(location.code || "").trim(),
+          name: String(location.name || "").trim(),
+        };
+      });
+    }
+
+    function setCachedItemTypes(itemTypes) {
+      cachedItemTypes = Array.isArray(itemTypes) ? itemTypes.slice() : [];
+    }
+
+    function buildCombinedRows() {
+      var totalsByKey = {};
+      cachedHuRows.forEach(function (row) {
+        var key = Number(row.itemId) + "|" + Number(row.locationId);
+        totalsByKey[key] = (totalsByKey[key] || 0) + normalizeQty(row.qty);
+      });
+
+      var combined = cachedHuRows.slice();
+      cachedStockRows.forEach(function (row) {
+        var key = Number(row.itemId) + "|" + Number(row.locationId);
+        var huQty = totalsByKey[key] || 0;
+        var diff = normalizeQty(row.qty) - huQty;
+        if (Math.abs(diff) < 0.000001) {
+          return;
+        }
+
+        combined.push({
+          itemId: Number(row.itemId) || 0,
+          locationId: Number(row.locationId) || 0,
+          qty: diff,
+          qtyDisplay: formatQtyDisplay(diff, row.itemId),
+          itemName: row.itemName || "-",
+          barcode: row.barcode || "",
+          gtin: row.gtin || "",
+          brand: row.brand || "",
+          volume: row.volume || "",
+          itemTypeId: Number(row.itemTypeId) || 0,
+          itemTypeName: row.itemTypeName || "",
+          locationCode: row.locationCode || "",
+          hu: "",
+        });
+      });
+
+      cachedCombinedRows = combined;
+    }
+
+    function renderLowStockTable(rows) {
+      if (!rows || !rows.length) {
+        return "";
+      }
+
+      var body = rows
+        .map(function (row) {
+          return (
+            "<tr>" +
+            "<td>" +
+            escapeHtml(row.itemName || "-") +
+            "</td>" +
+            "<td>" +
+            escapeHtml(row.itemTypeName || "-") +
+            "</td>" +
+            '<td><span class="pc-qty">' +
+            escapeHtml(row.qtyDisplay || "0") +
+            "</span></td>" +
+            "<td>" +
+            escapeHtml(row.minStockDisplay || "-") +
+            "</td>" +
+            "<td>" +
+            escapeHtml(row.shortageDisplay || "-") +
+            "</td>" +
+            "</tr>"
+          );
+        })
+        .join("");
+
+      return (
+        '<section class="pc-low-stock-card">' +
+        '  <div class="pc-low-stock-title">Позиции ниже минимума: ' +
+        rows.length +
+        "</div>" +
+        '  <div class="pc-low-stock-table-wrap">' +
+        '    <table class="pc-table">' +
+        "      <thead><tr>" +
+        "        <th>Товар</th>" +
+        "        <th>Тип</th>" +
+        "        <th>В наличии</th>" +
+        "        <th>Минимум</th>" +
+        "        <th>Нехватка</th>" +
+        "      </tr></thead>" +
+        "      <tbody>" +
+        body +
+        "      </tbody>" +
+        "    </table>" +
+        "  </div>" +
+        "</section>"
+      );
+    }
+
+    function renderStockTable(rows) {
+      if (!rows || !rows.length) {
+        return '<div class="empty-state">Нет данных по остаткам.</div>';
+      }
+
+      var body = rows
+        .map(function (row) {
+          var qtyLabel = row.qtyDisplay || formatQtyDisplay(row.qty, row.itemId);
+          var huLabel = row.hu ? row.hu : "-";
+          return (
+            "<tr>" +
+            "<td>" +
+            escapeHtml(row.itemName || "-") +
+            "</td>" +
+            "<td>" +
+            escapeHtml(row.brand || "-") +
+            "</td>" +
+            "<td>" +
+            escapeHtml(row.volume || "-") +
+            "</td>" +
+            "<td>" +
+            escapeHtml(row.barcode || "-") +
+            "</td>" +
+            "<td>" +
+            escapeHtml(row.locationCode || "-") +
+            "</td>" +
+            "<td>" +
+            escapeHtml(huLabel) +
+            "</td>" +
+            '<td><span class="pc-qty">' +
+            escapeHtml(String(qtyLabel)) +
+            "</span></td>" +
+            "</tr>"
+          );
+        })
+        .join("");
+
+      return (
+        '<table class="pc-table">' +
+        "<thead><tr>" +
+        "<th>Товар</th>" +
+        "<th>Бренд</th>" +
+        "<th>Объем</th>" +
+        "<th>SKU / ШК</th>" +
+        "<th>Место</th>" +
+        "<th>HU</th>" +
+        "<th>Кол-во</th>" +
+        "</tr></thead>" +
+        "<tbody>" +
+        body +
+        "</tbody>" +
+        "</table>"
+      );
     }
 
     function renderLocationRows(rows) {
@@ -1983,6 +2374,282 @@
           return '<div class="stock-hu-row">' + escapeHtml(line) + "</div>";
         })
         .join("");
+    }
+
+    function getTypeFilterId() {
+      if (!typeFilter) {
+        return 0;
+      }
+      return Number(typeFilter.value || 0) || 0;
+    }
+
+    function getHuDigitsFilter() {
+      if (!huInput) {
+        return "";
+      }
+      var raw = String(huInput.value || "").trim();
+      var isValid = /^\d*$/.test(raw);
+      if (huInput) {
+        huInput.classList.toggle("form-input-error", !isValid);
+      }
+      if (huHint) {
+        huHint.hidden = isValid;
+      }
+      return isValid ? raw : "";
+    }
+
+    function matchesStockSearch(row, normalizedQuery) {
+      if (!normalizedQuery) {
+        return true;
+      }
+      var fields = [
+        row.itemName,
+        row.brand,
+        row.volume,
+        row.barcode,
+        row.gtin,
+        row.locationCode,
+        row.hu,
+        row.itemTypeName,
+      ];
+      for (var i = 0; i < fields.length; i += 1) {
+        var value = String(fields[i] || "").toLowerCase();
+        if (value.indexOf(normalizedQuery) !== -1) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function buildLowStockRows(typeId) {
+      var totalsByItem = {};
+      cachedStockRows.forEach(function (row) {
+        var itemId = Number(row.itemId) || 0;
+        if (!itemId) {
+          return;
+        }
+        totalsByItem[itemId] = (totalsByItem[itemId] || 0) + normalizeQty(row.qty);
+      });
+
+      return Object.keys(cachedItemsById)
+        .map(function (key) {
+          return cachedItemsById[Number(key)];
+        })
+        .filter(function (item) {
+          if (!item) {
+            return false;
+          }
+          if (typeId && Number(item.itemTypeId) !== typeId) {
+            return false;
+          }
+          if (!(item.itemTypeEnableMinStockControl === true) || item.minStockQty == null) {
+            return false;
+          }
+
+          var itemId = Number(item.itemId) || 0;
+          var qty = normalizeQty(totalsByItem[itemId] || 0);
+          return qty < normalizeQty(item.minStockQty);
+        })
+        .map(function (item) {
+          var itemId = Number(item.itemId) || 0;
+          var qty = normalizeQty(totalsByItem[itemId] || 0);
+          var minStockQty = normalizeQty(item.minStockQty);
+          var shortage = Math.max(0, minStockQty - qty);
+          return {
+            itemName: item.name || "-",
+            itemTypeName: item.itemTypeName || "-",
+            qtyDisplay: formatQtyDisplay(qty, itemId),
+            minStockDisplay: formatQtyDisplay(minStockQty, itemId),
+            shortageDisplay: formatQtyDisplay(shortage, itemId),
+            shortage: shortage,
+          };
+        })
+        .sort(function (a, b) {
+          if (b.shortage !== a.shortage) {
+            return b.shortage - a.shortage;
+          }
+          return String(a.itemName || "").localeCompare(String(b.itemName || ""), "ru");
+        });
+    }
+
+    function fillTypeFilter() {
+      if (!typeFilter) {
+        return;
+      }
+
+      var previous = String(typeFilter.value || "");
+      var options =
+        '<option value="">Все типы</option>' +
+        cachedItemTypes
+          .slice()
+          .sort(function (left, right) {
+            var leftOrder = Number(left && left.sortOrder) || Number(left && left.sort_order) || 0;
+            var rightOrder = Number(right && right.sortOrder) || Number(right && right.sort_order) || 0;
+            if (leftOrder !== rightOrder) {
+              return leftOrder - rightOrder;
+            }
+            var leftName = String((left && left.name) || "").toLowerCase();
+            var rightName = String((right && right.name) || "").toLowerCase();
+            return leftName < rightName ? -1 : leftName > rightName ? 1 : 0;
+          })
+          .map(function (type) {
+            var id = Number(type && (type.itemTypeId != null ? type.itemTypeId : type.id)) || 0;
+            var name = String((type && type.name) || "").trim() || "Без названия";
+            return '<option value="' + escapeHtml(String(id)) + '">' + escapeHtml(name) + "</option>";
+          })
+          .join("");
+
+      typeFilter.innerHTML = options;
+      if (previous) {
+        var hasPrevious = Array.prototype.some.call(typeFilter.options || [], function (option) {
+          return String(option.value || "") === previous;
+        });
+        if (hasPrevious) {
+          typeFilter.value = previous;
+        }
+      }
+    }
+
+    function fillFilters() {
+      if (locationSelect) {
+        var options =
+          '<option value="">Все места</option>' +
+          Object.keys(locationMap)
+            .map(function (key) {
+              return locationMap[Number(key)];
+            })
+            .filter(function (loc) {
+              return !!loc;
+            })
+            .map(function (loc) {
+              var label = loc.code ? loc.code + " — " + (loc.name || "") : loc.name || "";
+              return (
+                '<option value="' +
+                escapeHtml(String(loc.locationId)) +
+                '">' +
+                escapeHtml(label) +
+                "</option>"
+              );
+            })
+            .join("");
+        locationSelect.innerHTML = options;
+      }
+
+      fillTypeFilter();
+    }
+
+    function renderLowStock() {
+      if (!lowWrap) {
+        return;
+      }
+      var lowRows = buildLowStockRows(getTypeFilterId());
+      lowWrap.innerHTML = renderLowStockTable(lowRows);
+    }
+
+    function renderRows() {
+      if (!tableWrap) {
+        return;
+      }
+
+      var query = String(stockSearchInput && stockSearchInput.value ? stockSearchInput.value : "")
+        .trim()
+        .toLowerCase();
+      var locationId = locationSelect ? Number(locationSelect.value || 0) : 0;
+      var typeId = getTypeFilterId();
+      var huDigits = getHuDigitsFilter();
+      var source = cachedCombinedRows.length ? cachedCombinedRows : cachedStockRows;
+
+      var rows = source.filter(function (row) {
+        if (locationId && Number(row.locationId) !== locationId) {
+          return false;
+        }
+        if (typeId && Number(row.itemTypeId) !== typeId) {
+          return false;
+        }
+        var huRaw = String(row.hu || "");
+        if (huDigits && huRaw.indexOf(huDigits) === -1) {
+          return false;
+        }
+        return matchesStockSearch(row, query);
+      });
+
+      setRowsStatus("Строк: " + rows.length);
+      renderLowStock();
+      tableWrap.innerHTML = renderStockTable(rows);
+    }
+
+    function scheduleRender() {
+      if (stockRenderTimer) {
+        window.clearTimeout(stockRenderTimer);
+      }
+      stockRenderTimer = window.setTimeout(renderRows, 120);
+    }
+
+    function loadStockData() {
+      return Promise.all([
+        TsdStorage.apiSearchItems(""),
+        TsdStorage.apiGetLocations(),
+        TsdStorage.apiGetStockRows(),
+        TsdStorage.apiGetHuStockRows(),
+        TsdStorage.apiGetItemTypes(false),
+      ]).then(function (payloads) {
+        var items = Array.isArray(payloads[0]) ? payloads[0] : [];
+        var locations = Array.isArray(payloads[1]) ? payloads[1] : [];
+        var stockRows = Array.isArray(payloads[2]) ? payloads[2] : [];
+        var huRows = Array.isArray(payloads[3]) ? payloads[3] : [];
+        var itemTypes = Array.isArray(payloads[4]) ? payloads[4] : [];
+
+        setCachedItems(items);
+        setCachedLocations(locations);
+        setCachedItemTypes(itemTypes);
+
+        cachedStockRows = stockRows.map(function (row) {
+          var item = cachedItemsById[Number(row.item_id)] || {};
+          var location = locationMap[Number(row.location_id)] || {};
+          var qty = normalizeQty(row.qty);
+          return {
+            itemId: Number(row.item_id) || 0,
+            locationId: Number(row.location_id) || 0,
+            qty: qty,
+            qtyDisplay: formatQtyDisplay(qty, row.item_id),
+            itemName: item.name || row.item_name || "-",
+            barcode: item.barcode || row.barcode || "",
+            gtin: item.gtin || row.gtin || "",
+            brand: item.brand || row.brand || "",
+            volume: item.volume || row.volume || "",
+            itemTypeId: Number(item.itemTypeId || row.item_type_id) || 0,
+            itemTypeName: item.itemTypeName || row.item_type_name || "",
+            locationCode: location.code || row.location_code || "",
+            hu: row.hu || "",
+          };
+        });
+
+        cachedHuRows = huRows.map(function (row) {
+          var item = cachedItemsById[Number(row.itemId)] || {};
+          var location = locationMap[Number(row.locationId)] || {};
+          var qty = normalizeQty(row.qty);
+          return {
+            itemId: Number(row.itemId) || 0,
+            locationId: Number(row.locationId) || 0,
+            qty: qty,
+            qtyDisplay: formatQtyDisplay(qty, row.itemId),
+            itemName: item.name || "-",
+            barcode: item.barcode || "",
+            gtin: item.gtin || "",
+            brand: item.brand || "",
+            volume: item.volume || "",
+            itemTypeId: Number(item.itemTypeId) || 0,
+            itemTypeName: item.itemTypeName || "",
+            locationCode: location.code || "",
+            hu: row.hu || "",
+          };
+        });
+
+        buildCombinedRows();
+        fillFilters();
+        renderRows();
+        stockDataLoaded = true;
+      });
     }
 
     function renderDetails(item, rows, huRows) {
@@ -2243,190 +2910,6 @@
         });
     }
 
-    function openStockSearchOverlay() {
-      if (!dataReady) {
-        setStockMessage("Нет связи с сервером");
-        return;
-      }
-      setScanHighlight(false);
-      var overlay = document.createElement("div");
-      overlay.className = "overlay";
-      overlay.setAttribute("tabindex", "-1");
-      overlay.innerHTML =
-        '<div class="overlay-card">' +
-        '  <div class="overlay-header">' +
-        '    <div class="overlay-title">Ручной поиск</div>' +
-        '    <button class="btn btn-ghost overlay-close" type="button">Закрыть</button>' +
-        "  </div>" +
-        '  <label class="form-label" for="stockSearchField">Поиск товара</label>' +
-        '  <input class="form-input overlay-search" id="stockSearchField" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />' +
-        '  <div class="overlay-actions">' +
-        '    <button class="btn btn-outline" id="stockSearchKeyboard" type="button">Клавиатура</button>' +
-        '    <button class="btn btn-outline" id="stockSearchClear" type="button">Очистить</button>' +
-        "  </div>" +
-        '  <div class="overlay-section">' +
-        '    <div class="overlay-section-title">Результаты</div>' +
-        '    <div class="overlay-list overlay-results"></div>' +
-        "  </div>" +
-        '  <div class="stock-message" id="stockSearchMessage"></div>' +
-        "</div>";
-      var input = overlay.querySelector("#stockSearchField");
-      var resultsEl = overlay.querySelector(".overlay-results");
-      var messageEl = overlay.querySelector("#stockSearchMessage");
-      var closeBtn = overlay.querySelector(".overlay-close");
-      var keyboardBtn = overlay.querySelector("#stockSearchKeyboard");
-      var clearBtn = overlay.querySelector("#stockSearchClear");
-      var searchToken = 0;
-      var searchResults = [];
-
-      function setOverlayMessage(text) {
-        if (messageEl) {
-          messageEl.textContent = text || "";
-        }
-      }
-
-      function close() {
-        unlockOverlayScroll();
-        document.body.removeChild(overlay);
-        document.removeEventListener("keydown", onKeyDown);
-        enterScanMode();
-      }
-
-      function onKeyDown(event) {
-        if (event.key === "Escape") {
-          close();
-        }
-      }
-
-      function selectItem(item) {
-        if (!item) {
-          return;
-        }
-        itemsById[item.itemId] = item;
-        showStockItem(item);
-        close();
-      }
-
-      function renderResults(list) {
-        renderOverlayList(
-          resultsEl,
-          list,
-          function (item) {
-            return item.name || "-";
-          },
-          function (item) {
-            selectItem(item);
-          }
-        );
-      }
-
-      function runSearch(query) {
-        var q = String(query || "").trim();
-        if (q.length < 2) {
-          searchResults = [];
-          renderResults([]);
-          setOverlayMessage(q ? "Введите минимум 2 символа" : "");
-          return;
-        }
-        var token = (searchToken += 1);
-        setOverlayMessage("Ищем...");
-        TsdStorage.apiSearchItems(q, 20)
-          .then(function (items) {
-            if (token !== searchToken) {
-              return;
-            }
-            searchResults = items || [];
-            searchResults.forEach(function (item) {
-              var parts = [];
-              if (item.gtin) {
-                parts.push("GTIN: " + item.gtin);
-              }
-              if (item.sku) {
-                parts.push("SKU: " + item.sku);
-              }
-              if (item.barcode) {
-                parts.push("ШК: " + item.barcode);
-              }
-              item.subLabel = parts.join(" · ");
-            });
-            if (!searchResults.length) {
-              setOverlayMessage("Ничего не найдено");
-            } else {
-              setOverlayMessage("");
-            }
-            renderResults(searchResults);
-          })
-          .catch(function () {
-            if (token !== searchToken) {
-              return;
-            }
-            searchResults = [];
-            setOverlayMessage("Ошибка поиска");
-            renderResults([]);
-          });
-      }
-
-      if (input) {
-        input.placeholder = "Введите название/GTIN/SKU/штрихкод";
-        input.readOnly = true;
-        input.setAttribute("inputmode", "none");
-        input.addEventListener("input", function () {
-          runSearch(input.value);
-        });
-        input.addEventListener("keydown", function (event) {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            if (searchResults.length === 1) {
-              selectItem(searchResults[0]);
-              return;
-            }
-            runSearch(input.value);
-          }
-        });
-        input.addEventListener("blur", function () {
-          input.readOnly = true;
-          input.setAttribute("inputmode", "none");
-        });
-      }
-
-      if (keyboardBtn) {
-        keyboardBtn.addEventListener("click", function () {
-          if (!input) {
-            return;
-          }
-          input.readOnly = false;
-          input.setAttribute("inputmode", "text");
-          input.focus();
-        });
-      }
-
-      if (clearBtn) {
-        clearBtn.addEventListener("click", function () {
-          if (input) {
-            input.value = "";
-          }
-          searchResults = [];
-          renderResults([]);
-          setOverlayMessage("");
-        });
-      }
-
-      document.body.appendChild(overlay);
-      lockOverlayScroll();
-      document.addEventListener("keydown", onKeyDown);
-
-      overlay.addEventListener("click", function (event) {
-        if (event.target === overlay) {
-          close();
-        }
-      });
-
-      if (closeBtn) {
-        closeBtn.addEventListener("click", close);
-      }
-      focusOverlay(overlay);
-    }
-
     function updateDataStatus() {
       pingServer(true)
         .then(function (ok) {
@@ -2434,22 +2917,40 @@
           setStatusText(ok ? "Онлайн" : "Нет связи с сервером");
           if (!ok) {
             setStockMessage("Нет связи с сервером");
-            if (manualSearchBtn) {
-              manualSearchBtn.disabled = true;
+            setRowsStatus("");
+            if (lowWrap) {
+              lowWrap.innerHTML = "";
+            }
+            if (tableWrap) {
+              tableWrap.innerHTML = "";
             }
             clearDetails();
             return;
           }
-          if (manualSearchBtn) {
-            manualSearchBtn.disabled = false;
-          }
           setStockMessage("");
+          return loadStockData()
+            .then(function () {
+              renderRows();
+            })
+            .catch(function () {
+              setRowsStatus("Ошибка загрузки списка");
+              if (lowWrap) {
+                lowWrap.innerHTML = "";
+              }
+              if (tableWrap) {
+                tableWrap.innerHTML = '<div class="empty-state">Данные недоступны.</div>';
+              }
+            });
         })
         .catch(function () {
           setStatusText("Нет связи с сервером");
           setStockMessage("Нет связи с сервером");
-          if (manualSearchBtn) {
-            manualSearchBtn.disabled = true;
+          setRowsStatus("");
+          if (lowWrap) {
+            lowWrap.innerHTML = "";
+          }
+          if (tableWrap) {
+            tableWrap.innerHTML = "";
           }
           dataReady = false;
           clearDetails();
@@ -2511,8 +3012,20 @@
       });
     }
 
-    if (manualSearchBtn) {
-      manualSearchBtn.addEventListener("click", openStockSearchOverlay);
+    if (stockSearchInput) {
+      stockSearchInput.addEventListener("input", scheduleRender);
+    }
+
+    if (locationSelect) {
+      locationSelect.addEventListener("change", renderRows);
+    }
+
+    if (typeFilter) {
+      typeFilter.addEventListener("change", renderRows);
+    }
+
+    if (huInput) {
+      huInput.addEventListener("input", scheduleRender);
     }
 
     if (clearBtn) {
@@ -2520,8 +3033,26 @@
         if (scanInput) {
           scanInput.value = "";
         }
+        if (stockSearchInput) {
+          stockSearchInput.value = "";
+        }
+        if (locationSelect) {
+          locationSelect.value = "";
+        }
+        if (typeFilter) {
+          typeFilter.value = "";
+        }
+        if (huInput) {
+          huInput.value = "";
+          huInput.classList.remove("form-input-error");
+        }
+        if (huHint) {
+          huHint.hidden = true;
+        }
+        setRowsStatus("");
         clearDetails();
         setStockMessage("");
+        renderRows();
       });
     }
 
@@ -3795,6 +4326,9 @@
     );
   }
   function wireHome() {
+    var homeLowStockWrap = document.getElementById("homeLowStockWrap");
+    var homeLowStockRequestId = ++homeLowStockRequestSeq;
+
     var buttons = document.querySelectorAll("[data-op]");
     buttons.forEach(function (btn) {
       btn.addEventListener("click", function () {
@@ -3811,6 +4345,27 @@
         navigate("/" + (route || ""));
       });
     });
+
+    if (homeLowStockWrap && isClientBlockEnabled("tsd_stock")) {
+      homeLowStockWrap.innerHTML = '<div class="status">Загрузка позиций ниже минимума...</div>';
+      loadHomeLowStockRows()
+        .then(function (rows) {
+          if (!homeLowStockWrap || !currentRoute || currentRoute.name !== "home") {
+            return;
+          }
+          if (homeLowStockRequestId !== homeLowStockRequestSeq) {
+            return;
+          }
+          homeLowStockWrap.innerHTML = renderHomeLowStockRows(rows || []);
+        })
+        .catch(function () {
+          if (homeLowStockWrap && currentRoute && currentRoute.name === "home") {
+            homeLowStockWrap.innerHTML = '<div class="status">Не удалось загрузить позиции ниже минимума.</div>';
+          }
+        });
+    } else if (homeLowStockWrap) {
+      homeLowStockWrap.innerHTML = "";
+    }
   }
 
   function wireDocsList() {
@@ -8166,6 +8721,8 @@
   }
   function exportAllJsonl(statusElementId) {
     var statusEl = statusElementId ? document.getElementById(statusElementId) : null;
+    void statusEl;
+    return;
 
     function setStatus(text) {
       if (statusEl) {
@@ -8376,6 +8933,8 @@
   }
   function exportReadyDocs(statusElementId) {
     var statusEl = statusElementId ? document.getElementById(statusElementId) : null;
+    void statusEl;
+    return;
 
     function setStatus(text) {
       if (statusEl) {
@@ -8596,81 +9155,6 @@
       errorId +
       '"></div>'
     );
-  }
-
-  function exportLocalItems(statusElementId) {
-    var statusEl = statusElementId ? document.getElementById(statusElementId) : null;
-
-    function setStatus(text) {
-      if (statusEl) {
-        statusEl.textContent = text;
-      }
-    }
-
-    Promise.all([TsdStorage.listLocalItemsForExport(), TsdStorage.getSetting("device_id")])
-      .then(function (results) {
-        var items = results[0] || [];
-        var deviceId = results[1] || "CT48-01";
-        if (!items.length) {
-          setStatus("Нет новых товаров для экспорта");
-          return;
-        }
-
-        var now = new Date();
-        var nowIso = now.toISOString();
-        var dateKey = getDateKey(now);
-        var timeKey = getTimeKey(now);
-        var filename = "ITEMS_" + dateKey + "_" + timeKey + "_" + deviceId + ".jsonl";
-        var lines = items.map(function (item) {
-          var barcode =
-            item.barcode ||
-            (Array.isArray(item.barcodes) && item.barcodes[0]) ||
-            "";
-          var record = {
-            event: "ITEM_UPSERT",
-            ts: nowIso,
-            device_id: deviceId,
-            item: {
-              item_id: item.itemId,
-              name: item.name || "",
-              barcode: barcode || "",
-              gtin: item.gtin || "",
-              base_uom: item.base_uom || "",
-            },
-          };
-          return JSON.stringify(record);
-        });
-
-        try {
-          var blob = new Blob([lines.join("\n")], { type: "application/jsonl" });
-          var url = URL.createObjectURL(blob);
-          var link = document.createElement("a");
-          link.href = url;
-          link.download = filename;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          URL.revokeObjectURL(url);
-        } catch (error) {
-          setStatus("Ошибка экспорта товаров");
-          return;
-        }
-
-        var exportedAt = new Date().toISOString();
-        var ids = items.map(function (item) {
-          return item.itemId;
-        });
-        TsdStorage.markLocalItemsExported(ids, exportedAt)
-          .then(function () {
-            setStatus("Экспортировано товаров: " + items.length);
-          })
-          .catch(function () {
-            setStatus("Ошибка сохранения статусов товаров");
-          });
-      })
-      .catch(function () {
-        setStatus("Ошибка экспорта товаров");
-      });
   }
 
   document.addEventListener("DOMContentLoaded", function () {

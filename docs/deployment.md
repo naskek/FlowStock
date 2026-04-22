@@ -14,10 +14,10 @@
   4. проверка health
 
 ## URL-схема
-- Production использует отдельные root URL без префиксов `/pc` и `/tsd`.
+- Production использует единый HTTPS origin на `7154`.
 - `https://SERVER_IP:7154/` открывает PC web client.
-- `http://SERVER_IP:7153/` открывает TSD web client.
-- В `deploy/.env.example` по умолчанию используются внешние порты `7153` / `7154`.
+- `https://SERVER_IP:7154/tsd/` открывает TSD web client.
+- В `deploy/.env.example` по умолчанию используется только внешний HTTPS-порт `7154`.
 
 ## Обязательные файлы и каталоги
 - `deploy/.env`

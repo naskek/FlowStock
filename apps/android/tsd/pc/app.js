@@ -379,6 +379,7 @@
         brand: item.brand || "",
         volume: item.volume || "",
         base_uom: item.base_uom_code || item.base_uom || "",
+        itemTypeId: Number(item.item_type_id) || 0,
         itemTypeName: item.item_type_name || "",
         itemTypeEnableMinStockControl: item.item_type_enable_min_stock_control === true,
         minStockQty: minStockQty,
@@ -501,8 +502,16 @@
       '      <select class="form-input" id="stockLocationFilter"></select>' +
       "    </div>" +
       '    <div class="form-field">' +
-      '      <label class="form-label" for="stockHuFilter">HU</label>' +
-      '      <select class="form-input" id="stockHuFilter"></select>' +
+      '      <label class="form-label" for="stockTypeFilter">Тип</label>' +
+      '      <select class="form-input" id="stockTypeFilter"></select>' +
+      "    </div>" +
+      '    <div class="form-field">' +
+      '      <label class="form-label" for="stockHuInput">HU (только цифры)</label>' +
+      '      <div class="pc-hu-inline">' +
+      '        <span class="pc-hu-prefix">HU-</span>' +
+      '        <input class="form-input" id="stockHuInput" type="text" autocomplete="off" inputmode="numeric" placeholder="например, 00010" />' +
+      "      </div>" +
+      '      <div id="stockHuHint" class="pc-input-hint" hidden>Можно вводить только цифры.</div>' +
       "    </div>" +
       '    <div id="stockStatus" class="pc-status"></div>' +
       "  </div>" +
@@ -731,9 +740,11 @@
       fetchJson("/api/locations"),
       fetchJson("/api/stock"),
       fetchJson("/api/hu-stock"),
+      fetchJson("/api/item-types?include_inactive=0"),
     ]).then(function (payloads) {
       setCachedItems(payloads[0]);
       setCachedLocations(payloads[1]);
+      cachedItemTypes = Array.isArray(payloads[4]) ? payloads[4] : [];
       var stockRows = Array.isArray(payloads[2]) ? payloads[2] : [];
       var huRows = Array.isArray(payloads[3]) ? payloads[3] : [];
 
@@ -752,6 +763,8 @@
           gtin: item.gtin || "",
           brand: item.brand || "",
           volume: item.volume || "",
+          itemTypeId: Number(item.itemTypeId) || 0,
+          itemTypeName: item.itemTypeName || "",
           locationCode: loc.code || "",
         };
       });
@@ -771,6 +784,8 @@
           gtin: item.gtin || "",
           brand: item.brand || "",
           volume: item.volume || "",
+          itemTypeId: Number(item.itemTypeId) || 0,
+          itemTypeName: item.itemTypeName || "",
           locationCode: loc.code || "",
           hu: row.hu || "",
         };
@@ -806,6 +821,8 @@
         gtin: row.gtin,
         brand: row.brand,
         volume: row.volume,
+        itemTypeId: Number(row.itemTypeId) || 0,
+        itemTypeName: row.itemTypeName || "",
         locationCode: row.locationCode,
         hu: "",
       });
@@ -817,7 +834,9 @@
   function wireStock() {
     var searchInput = document.getElementById("stockSearchInput");
     var locationSelect = document.getElementById("stockLocationFilter");
-    var huSelect = document.getElementById("stockHuFilter");
+    var typeFilter = document.getElementById("stockTypeFilter");
+    var huInput = document.getElementById("stockHuInput");
+    var huHint = document.getElementById("stockHuHint");
     var statusEl = document.getElementById("stockStatus");
     var lowWrap = document.getElementById("stockLowWrap");
     var tableWrap = document.getElementById("stockTableWrap");
@@ -829,7 +848,37 @@
       }
     }
 
-    function buildLowStockRows() {
+    function setHuValidationState(isValid) {
+      if (!huInput) {
+        return;
+      }
+      huInput.classList.toggle("form-input-error", !isValid);
+      if (huHint) {
+        huHint.hidden = isValid;
+      }
+    }
+
+    function getHuDigitsFilter() {
+      if (!huInput) {
+        return "";
+      }
+      var raw = String(huInput.value || "").trim();
+      var isValid = /^\d*$/.test(raw);
+      setHuValidationState(isValid);
+      if (!isValid) {
+        return "";
+      }
+      return raw;
+    }
+
+    function getTypeFilterId() {
+      if (!typeFilter) {
+        return 0;
+      }
+      return Number(typeFilter.value || 0) || 0;
+    }
+
+    function buildLowStockRows(typeId) {
       var totalsByItem = {};
       cachedStockRows.forEach(function (row) {
         var itemId = Number(row.itemId) || 0;
@@ -844,6 +893,10 @@
           var itemId = Number(item.id) || 0;
           var cached = cachedItemsById[itemId] || {};
           var minStockQty = Number(cached.minStockQty);
+          var itemTypeId = Number(cached.itemTypeId) || 0;
+          if (typeId && itemTypeId !== typeId) {
+            return null;
+          }
           if (!(cached.itemTypeEnableMinStockControl === true) || !isFinite(minStockQty)) {
             return null;
           }
@@ -878,7 +931,7 @@
       if (!lowWrap) {
         return;
       }
-      var lowRows = buildLowStockRows();
+      var lowRows = buildLowStockRows(getTypeFilterId());
       lowWrap.innerHTML = renderLowStockTable(lowRows);
     }
 
@@ -888,14 +941,19 @@
       }
       var query = normalizeSearchQuery(searchInput ? searchInput.value : "");
       var locationId = locationSelect ? Number(locationSelect.value) : 0;
-      var hu = huSelect ? String(huSelect.value || "").trim() : "";
+      var typeId = getTypeFilterId();
+      var huDigits = getHuDigitsFilter();
       var source = cachedCombinedRows.length ? cachedCombinedRows : cachedStockRows;
 
       var rows = source.filter(function (row) {
         if (locationId && Number(row.locationId) !== locationId) {
           return false;
         }
-        if (hu && row.hu !== hu) {
+        if (typeId && Number(row.itemTypeId) !== typeId) {
+          return false;
+        }
+        var huRaw = String(row.hu || "");
+        if (huDigits && huRaw.indexOf(huDigits) === -1) {
           return false;
         }
         return matchesItemSearch(row, query, true);
@@ -906,41 +964,42 @@
       tableWrap.innerHTML = renderStockTable(rows);
     }
 
-    function updateHuOptions() {
-      if (!huSelect) {
+    function fillTypeFilter() {
+      if (!typeFilter) {
         return;
       }
 
-      var locationId = locationSelect ? Number(locationSelect.value) : 0;
-      var previous = String(huSelect.value || "");
-      var hus = cachedHuRows
-        .filter(function (row) {
-          return !locationId || Number(row.locationId) === locationId;
-        })
-        .map(function (row) {
-          return row.hu;
-        })
-        .filter(function (value) {
-          return !!value;
-        })
-        .filter(function (value, index, arr) {
-          return arr.indexOf(value) === index;
-        })
-        .sort();
-      var huOptions =
-        '<option value="">Все HU</option>' +
-        hus
-          .map(function (code) {
-            return '<option value="' + escapeHtml(code) + '">' + escapeHtml(code) + "</option>";
+      var previous = String(typeFilter.value || "");
+      var options =
+        '<option value="">Все типы</option>' +
+        cachedItemTypes
+          .slice()
+          .sort(function (left, right) {
+            var leftOrder = Number(left && left.sort_order) || 0;
+            var rightOrder = Number(right && right.sort_order) || 0;
+            if (leftOrder !== rightOrder) {
+              return leftOrder - rightOrder;
+            }
+            var leftName = String((left && left.name) || "").toLowerCase();
+            var rightName = String((right && right.name) || "").toLowerCase();
+            return leftName < rightName ? -1 : leftName > rightName ? 1 : 0;
+          })
+          .map(function (type) {
+            var id = Number(type && type.id) || 0;
+            var name = String((type && type.name) || "").trim() || "Без названия";
+            return '<option value="' + escapeHtml(String(id)) + '">' + escapeHtml(name) + "</option>";
           })
           .join("");
-      huSelect.innerHTML = huOptions;
 
-      if (previous && hus.indexOf(previous) !== -1) {
-        huSelect.value = previous;
-        return;
+      typeFilter.innerHTML = options;
+      if (previous) {
+        var hasPrevious = Array.prototype.some.call(typeFilter.options || [], function (option) {
+          return String(option.value || "") === previous;
+        });
+        if (hasPrevious) {
+          typeFilter.value = previous;
+        }
       }
-      huSelect.value = "";
     }
 
     function fillFilters() {
@@ -962,7 +1021,7 @@
         locationSelect.innerHTML = options;
       }
 
-      updateHuOptions();
+      fillTypeFilter();
     }
 
     function scheduleRender() {
@@ -989,13 +1048,13 @@
       searchInput.addEventListener("input", scheduleRender);
     }
     if (locationSelect) {
-      locationSelect.addEventListener("change", function () {
-        updateHuOptions();
-        renderRows();
-      });
+      locationSelect.addEventListener("change", renderRows);
     }
-    if (huSelect) {
-      huSelect.addEventListener("change", renderRows);
+    if (typeFilter) {
+      typeFilter.addEventListener("change", renderRows);
+    }
+    if (huInput) {
+      huInput.addEventListener("input", scheduleRender);
     }
   }
 

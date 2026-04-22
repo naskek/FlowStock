@@ -326,6 +326,14 @@ body {
   padding-top: 0;
 }
 
+.home-low-stock-wrap {
+  margin-top: 12px;
+}
+
+.home-low-stock-card {
+  margin-bottom: 0;
+}
+
 .screen-center {
   margin-top: auto;
   margin-bottom: auto;
@@ -372,6 +380,96 @@ body {
   font-size: 16px;
   color: #486581;
   margin-bottom: 12px;
+}
+
+.stock-toolbar {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.stock-filter-field {
+  display: grid;
+  gap: 4px;
+}
+
+.stock-hu-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stock-hu-prefix {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 700;
+  color: #52606d;
+}
+
+.stock-input-hint {
+  color: #b42318;
+  font-size: 12px;
+}
+
+.stock-toolbar-status {
+  font-size: 14px;
+  color: #486581;
+}
+
+.pc-low-stock-card {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 2px solid #f3d7d7;
+  border-radius: 14px;
+  background: #fff7f7;
+}
+
+.pc-low-stock-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #a62525;
+}
+
+.pc-low-stock-table-wrap {
+  max-height: 220px;
+  overflow: auto;
+}
+
+.pc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 560px;
+}
+
+.pc-table th,
+.pc-table td {
+  border-bottom: 1px solid #e5edf2;
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.pc-table th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #52606d;
+  background: #f8fafc;
+}
+
+.pc-table tr:hover td {
+  background: #f5f9fc;
+}
+
+.pc-qty {
+  font-weight: 700;
+}
+
+.form-input-error {
+  border-color: #b42318 !important;
+  box-shadow: 0 0 0 2px rgba(180, 35, 24, 0.15);
 }
 
 .stock-suggestions {
@@ -1581,5 +1679,162 @@ body.modal-open {
 
   .actions-row {
     grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 500px), (max-height: 820px) {
+  body {
+    font-size: 13px;
+  }
+
+  .app-header {
+    padding: 4px 6px 2px;
+    gap: 4px;
+  }
+
+  .app-title-wrap {
+    gap: 6px;
+  }
+
+  .app-logo {
+    height: 18px;
+    max-width: 60px;
+  }
+
+  .app-title {
+    font-size: 16px;
+  }
+
+  .status-badge {
+    padding: 3px 7px;
+    font-size: 10px;
+  }
+
+  .icon-btn {
+    width: 42px;
+    height: 42px;
+    font-size: 18px;
+    border-radius: 12px;
+  }
+
+  .app-content {
+    padding: 4px 6px 8px;
+  }
+
+  .btn {
+    font-size: 14px;
+    padding: 8px 10px;
+    border-radius: 10px;
+  }
+
+  .btn-ghost {
+    font-size: 13px;
+    padding: 5px 8px;
+  }
+
+  .btn-icon-top {
+    min-width: 40px;
+    height: 40px;
+    font-size: 18px;
+  }
+
+  .screen-card {
+    padding: 10px;
+    border-radius: 12px;
+  }
+
+  .doc-screen-card {
+    padding: 10px;
+  }
+
+  .section-title {
+    font-size: 16px;
+    margin-bottom: 8px;
+  }
+
+  .section-subtitle {
+    font-size: 14px;
+    margin: 10px 0 6px;
+  }
+
+  .menu-grid {
+    gap: 8px;
+  }
+
+  .menu-btn {
+    font-size: 14px;
+    padding: 10px 10px;
+  }
+
+  .stock-status,
+  .stock-toolbar-status,
+  .stock-suggestion-meta,
+  .manual-input-hint {
+    font-size: 13px;
+  }
+
+  .stock-toolbar,
+  .stock-suggestions,
+  .hu-actions,
+  .stock-message,
+  .stock-details,
+  .home-low-stock-wrap {
+    margin-bottom: 8px;
+  }
+
+  .stock-toolbar {
+    gap: 8px;
+  }
+
+  .pc-low-stock-card {
+    margin-bottom: 8px;
+    padding: 8px 10px;
+    border-radius: 12px;
+  }
+
+  .pc-low-stock-title {
+    font-size: 12px;
+    margin-bottom: 6px;
+  }
+
+  .pc-low-stock-table-wrap {
+    max-height: 160px;
+  }
+
+  .pc-table {
+    min-width: 100%;
+    font-size: 12px;
+  }
+
+  .pc-table th,
+  .pc-table td {
+    padding: 6px 8px;
+  }
+
+  .pc-table th {
+    font-size: 10px;
+  }
+
+  .stock-suggestion {
+    padding: 10px 12px;
+    border-radius: 12px;
+  }
+
+  .stock-suggestion-title {
+    font-size: 16px;
+  }
+
+  .manual-input-card {
+    max-width: none;
+  }
+
+  .manual-input-field {
+    font-size: 18px;
+  }
+
+  .overlay-actions,
+  .manual-input-actions,
+  .qty-overlay-actions {
+    gap: 6px;
   }
 }

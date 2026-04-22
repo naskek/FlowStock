@@ -101,7 +101,35 @@ var tsdRoot = ServerPaths.TsdRoot;
 var tsdIndexPath = Path.Combine(tsdRoot, "index.html");
 var pcRoot = ServerPaths.PcRoot;
 var pcIndexPath = Path.Combine(pcRoot, "index.html");
-var pcPort = ResolvePcPort(builder.Configuration);
+
+if (Directory.Exists(tsdRoot) && File.Exists(tsdIndexPath))
+{
+    var tsdProvider = new PhysicalFileProvider(tsdRoot);
+    var tsdContentTypes = new FileExtensionContentTypeProvider();
+    tsdContentTypes.Mappings[".jsonl"] = "application/x-ndjson";
+    tsdContentTypes.Mappings[".webmanifest"] = "application/manifest+json";
+
+    app.Map("/tsd", tsdApp =>
+    {
+        tsdApp.UseDefaultFiles(new DefaultFilesOptions { FileProvider = tsdProvider });
+        tsdApp.UseStaticFiles(new StaticFileOptions
+        {
+            FileProvider = tsdProvider,
+            ContentTypeProvider = tsdContentTypes
+        });
+        tsdApp.Use(async (context, next) =>
+        {
+            await next();
+            if (context.Response.StatusCode != StatusCodes.Status404NotFound)
+            {
+                return;
+            }
+
+            context.Response.ContentType = "text/html; charset=utf-8";
+            await context.Response.SendFileAsync(tsdIndexPath);
+        });
+    });
+}
 
 if (Directory.Exists(pcRoot) && File.Exists(pcIndexPath))
 {
@@ -110,8 +138,8 @@ if (Directory.Exists(pcRoot) && File.Exists(pcIndexPath))
     pcContentTypes.Mappings[".webmanifest"] = "application/manifest+json";
 
     app.UseWhen(
-        context => IsPcRequest(context, pcPort)
-                   && !context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase),
+        context => !context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase)
+                   && !context.Request.Path.StartsWithSegments("/tsd", StringComparison.OrdinalIgnoreCase),
         pcApp =>
         {
             pcApp.UseDefaultFiles(new DefaultFilesOptions { FileProvider = pcProvider });
@@ -130,38 +158,6 @@ if (Directory.Exists(pcRoot) && File.Exists(pcIndexPath))
 
                 context.Response.ContentType = "text/html; charset=utf-8";
                 await context.Response.SendFileAsync(pcIndexPath);
-            });
-        });
-}
-
-if (Directory.Exists(tsdRoot) && File.Exists(tsdIndexPath))
-{
-    var tsdProvider = new PhysicalFileProvider(tsdRoot);
-    var tsdContentTypes = new FileExtensionContentTypeProvider();
-    tsdContentTypes.Mappings[".jsonl"] = "application/x-ndjson";
-    tsdContentTypes.Mappings[".webmanifest"] = "application/manifest+json";
-
-    app.UseWhen(
-        context => !IsPcRequest(context, pcPort)
-                   && !context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase),
-        tsdApp =>
-        {
-            tsdApp.UseDefaultFiles(new DefaultFilesOptions { FileProvider = tsdProvider });
-            tsdApp.UseStaticFiles(new StaticFileOptions
-            {
-                FileProvider = tsdProvider,
-                ContentTypeProvider = tsdContentTypes
-            });
-            tsdApp.Use(async (context, next) =>
-            {
-                await next();
-                if (context.Response.StatusCode != StatusCodes.Status404NotFound)
-                {
-                    return;
-                }
-
-                context.Response.ContentType = "text/html; charset=utf-8";
-                await context.Response.SendFileAsync(tsdIndexPath);
             });
         });
 }
@@ -565,7 +561,6 @@ WHERE login = @login;";
         ok = true,
         device_id = deviceId,
         platform = platformNormalized,
-        pc_port = pcPort,
         blocks = BuildClientBlockStates(store.GetClientBlockSettings())
     });
 });
@@ -2465,7 +2460,7 @@ RETURNING id;
 });
 
 // Example (RECEIVE):
-// curl.exe -k -X POST "https://localhost:7153/api/ops" -H "Content-Type: application/json" ^
+// curl.exe -k -X POST "https://localhost:7154/api/ops" -H "Content-Type: application/json" ^
 //   -d "{\"schema_version\":1,\"event_id\":\"...\",\"ts\":\"2026-01-27T18:45:00Z\",\"device_id\":\"CT48-01\",\"op\":\"RECEIVE\",\"doc_ref\":\"IN-ONLINE-0001\",\"barcode\":\"4660011933641\",\"qty\":10,\"to_loc\":\"A1\"}"
 OpsEndpoint.Map(app);
 DocumentDraftEndpoints.Map(app);
@@ -2495,46 +2490,6 @@ static string BuildPostgresConnectionString(IConfiguration configuration)
     }
 
     return builder.ConnectionString;
-}
-
-static int ResolvePcPort(IConfiguration configuration)
-{
-    var configured = configuration["FLOWSTOCK_PC_PORT"];
-    if (!string.IsNullOrWhiteSpace(configured) && int.TryParse(configured, out var parsed))
-    {
-        return parsed;
-    }
-
-    var pcUrl = configuration["Kestrel:Endpoints:PcHttps:Url"];
-    if (!string.IsNullOrWhiteSpace(pcUrl))
-    {
-        var urlValue = pcUrl.Contains("://", StringComparison.Ordinal) ? pcUrl : $"https://{pcUrl}";
-        if (Uri.TryCreate(urlValue, UriKind.Absolute, out var uri) && uri.Port > 0)
-        {
-            return uri.Port;
-        }
-    }
-
-    return 7154;
-}
-
-static bool IsPcRequest(HttpContext context, int pcPort)
-{
-    if (context.Connection.LocalPort == pcPort)
-    {
-        return true;
-    }
-
-    if (!context.Request.Headers.TryGetValue("X-Forwarded-Proto", out var forwardedProto))
-    {
-        return false;
-    }
-
-    var proto = forwardedProto.ToString()
-        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-        .FirstOrDefault();
-
-    return string.Equals(proto, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
 }
 
 static void LogDbInfo(ILogger logger, string? postgresConnectionString)

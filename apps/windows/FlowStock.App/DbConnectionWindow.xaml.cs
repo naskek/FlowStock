@@ -480,7 +480,7 @@ public partial class DbConnectionWindow : Window
         {
             ServerBaseUrl = $"https://{host}:7154",
             PcClientUrl = $"https://{host}:7154",
-            TsdClientUrl = $"http://{host}:7153",
+            TsdClientUrl = $"https://{host}:7154/tsd",
             DeviceId = deviceId,
             CloseTimeoutSeconds = timeoutSeconds,
             AllowInvalidTls = AllowInvalidTlsCheckBox.IsChecked == true
@@ -1131,7 +1131,7 @@ LIMIT 1;";
         var builder = new UriBuilder(uri)
         {
             Host = host,
-            Path = "/",
+            Path = string.IsNullOrWhiteSpace(uri.AbsolutePath) ? "/" : uri.AbsolutePath,
             Query = string.Empty,
             Fragment = string.Empty
         };
