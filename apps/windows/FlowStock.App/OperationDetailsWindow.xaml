@@ -108,6 +108,7 @@
                   SelectionMode="Extended"
                   SelectionUnit="FullRow"
                   SelectionChanged="DocLines_SelectionChanged"
+                  MouseDoubleClick="DocLinesGrid_MouseDoubleClick"
                   KeyDown="DocLinesGrid_KeyDown">
             <DataGrid.RowStyle>
                 <Style TargetType="DataGridRow">
@@ -159,6 +160,18 @@
                 </DataGridTemplateColumn>
                 <DataGridTextColumn x:Name="DocHuColumn" Header="HU" Binding="{Binding HuDisplay}" Width="180" />
                 <DataGridTextColumn x:Name="DocFromColumn" Header="Откуда" Binding="{Binding FromLocation}" Width="220" />
+                <DataGridTemplateColumn x:Name="DocToEditColumn" Header="Куда" Width="220">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <ComboBox ItemsSource="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=RowLocationOptions}"
+                                      DisplayMemberPath="DisplayName"
+                                      SelectedValuePath="Id"
+                                      SelectedValue="{Binding ToLocationId}"
+                                      SelectionChanged="DocToLocationCombo_SelectionChanged"
+                                      IsEnabled="{Binding RelativeSource={RelativeSource AncestorType=DataGrid}, Path=Tag}" />
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
                 <DataGridTextColumn x:Name="DocToColumn" Header="Куда" Binding="{Binding ToLocation}" Width="220" />
             </DataGrid.Columns>
         </DataGrid>

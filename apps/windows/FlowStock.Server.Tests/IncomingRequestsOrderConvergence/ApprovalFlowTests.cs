@@ -28,7 +28,7 @@ public sealed class ApprovalFlowTests
 
         var createdOrderId = Assert.IsType<long>(result.AppliedOrderId);
         var order = harness.GetOrder(createdOrderId);
-        Assert.Equal(OrderStatus.Accepted, order.Status);
+        Assert.Equal(OrderStatus.InProgress, order.Status);
         Assert.Equal(200, order.PartnerId);
 
         var storedRequest = harness.GetOrderRequest(request.Id);
@@ -39,7 +39,7 @@ public sealed class ApprovalFlowTests
     }
 
     [Fact]
-    public async Task ApproveSetOrderStatusRequest_RoutesToCanonicalPostApiOrdersStatus_AndMarksRequestApproved()
+    public async Task ApproveSetOrderStatusRequest_Fails_WhenManualStatusSwitchIsDisabled()
     {
         var (harness, apiStore, request, orderId) = IncomingRequestsOrderConvergenceScenario.CreateSetStatusApprovalScenario();
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
@@ -51,15 +51,13 @@ public sealed class ApprovalFlowTests
 
         var result = await service.ApproveAsync(request, "wpf-operator");
 
-        Assert.True(result.IsSuccess);
-        Assert.Equal(IncomingRequestOrderApprovalResultKind.Approved, result.Kind);
-        Assert.Equal(OrderStatus.Accepted, harness.GetOrder(orderId).Status);
+        Assert.False(result.IsSuccess);
+        Assert.Equal(OrderStatus.Draft, harness.GetOrder(orderId).Status);
 
         var storedRequest = harness.GetOrderRequest(request.Id);
         Assert.NotNull(storedRequest);
-        Assert.Equal(OrderRequestStatus.Approved, storedRequest!.Status);
-        Assert.Equal(orderId, storedRequest.AppliedOrderId);
-        Assert.Contains("Статус изменен", storedRequest.ResolutionNote);
+        Assert.Equal(OrderRequestStatus.Pending, storedRequest!.Status);
+        Assert.Null(storedRequest.AppliedOrderId);
     }
 
     private sealed class TempSettingsScope : IDisposable

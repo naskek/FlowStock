@@ -1159,12 +1159,14 @@
       return { label: raw, className: "order-status-pill order-status-accepted" };
     }
     if (
+      normalized.indexOf("черновик") !== -1 ||
+      normalized.indexOf("draft") !== -1 ||
       normalized.indexOf("процесс") !== -1 ||
       normalized.indexOf("в работе") !== -1 ||
       normalized.indexOf("processing") !== -1 ||
       normalized.indexOf("picking") !== -1
     ) {
-      return { label: raw, className: "order-status-pill order-status-progress" };
+      return { label: "В работе", className: "order-status-pill order-status-progress" };
     }
     if (
       normalized.indexOf("отгруж") !== -1 ||

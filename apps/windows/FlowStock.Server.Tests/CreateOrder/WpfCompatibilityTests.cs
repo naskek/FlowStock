@@ -38,7 +38,7 @@ public sealed class WpfCompatibilityTests
         var order = harness.GetOrder(result.Response!.OrderId);
         Assert.Equal("001", order.OrderRef);
         Assert.Equal(OrderType.Customer, order.Type);
-        Assert.Equal(OrderStatus.Draft, order.Status);
+        Assert.Equal(OrderStatus.InProgress, order.Status);
         Assert.Equal(200, order.PartnerId);
     }
 

@@ -11,10 +11,8 @@
             </Grid.ColumnDefinitions>
             <Menu Grid.Column="0">
                 <MenuItem Header="Справочники">
-                    <MenuItem Header="Каталог" Click="ViewItems_Click" />
                     <MenuItem Header="Типы номенклатуры..." Click="ItemTypesMenu_Click" />
                     <MenuItem Header="Места хранения" Click="ViewLocations_Click" />
-                    <MenuItem Header="Контрагенты" Click="ViewPartners_Click" />
                     <MenuItem Header="Тара..." Click="TaraMenu_Click" />
                     <Separator />
                     <MenuItem Header="HU Реестр..." Click="OpenHuRegistry_Click" />
@@ -269,7 +267,9 @@
                         <Button x:Name="LocationDeleteButton" Content="Удалить" Click="DeleteLocation_Click" Margin="8,0,0,0" TabIndex="3" />
                     </StackPanel>
                     <DataGrid x:Name="LocationsGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
-                              SelectionChanged="LocationsGrid_SelectionChanged" TabIndex="20">
+                              SelectionChanged="LocationsGrid_SelectionChanged"
+                              MouseDoubleClick="LocationsGrid_MouseDoubleClick"
+                              TabIndex="20">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="ID" Binding="{Binding Id}" Width="Auto" MaxWidth="120" />
                             <DataGridTextColumn Header="Код" Binding="{Binding Code}" Width="Auto" MaxWidth="320" />
@@ -292,7 +292,9 @@
                         <Button x:Name="PartnerDeleteButton" Content="Удалить" Click="DeletePartner_Click" Margin="8,0,0,0" TabIndex="3" />
                     </StackPanel>
                     <DataGrid x:Name="PartnersGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
-                              SelectionChanged="PartnersGrid_SelectionChanged" TabIndex="20">
+                              SelectionChanged="PartnersGrid_SelectionChanged"
+                              MouseDoubleClick="PartnersGrid_MouseDoubleClick"
+                              TabIndex="20">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="ID" Binding="{Binding Id}" Width="Auto" MaxWidth="120" />
                             <DataGridTextColumn Header="ИНН" Binding="{Binding Code}" Width="Auto" MaxWidth="320" />

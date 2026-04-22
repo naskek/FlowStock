@@ -42,6 +42,8 @@ public partial class OperationDetailsWindow : Window
     private bool _hasUnsavedChanges;
     private bool _hasOutboundShortage;
     private int _outboundShortageCount;
+    private bool _isLoadingDocLines;
+    private const double QtyTolerance = 0.000001;
 
     public OperationDetailsWindow(AppServices services, long docId)
     {
@@ -68,6 +70,8 @@ public partial class OperationDetailsWindow : Window
         LoadOrders();
         LoadDoc();
     }
+
+    public IEnumerable<Location> RowLocationOptions => _locations;
 
     private async void OperationDetailsWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
@@ -139,6 +143,7 @@ public partial class OperationDetailsWindow : Window
     private void LoadOrders()
     {
         _ordersAll.Clear();
+        var isProductionReceipt = _doc?.Type == DocType.ProductionReceipt;
         var orders = _services.WpfReadApi.TryGetOrders(includeInternal: true, search: null, out var apiOrders)
             ? apiOrders
             : Array.Empty<Order>();
@@ -147,6 +152,16 @@ public partial class OperationDetailsWindow : Window
             if (order.Status == OrderStatus.Shipped)
             {
                 continue;
+            }
+
+            if (isProductionReceipt)
+            {
+                var hasReceiptRemaining = GetOrderReceiptRemaining(order.Id)
+                    .Any(line => line.QtyRemaining > QtyTolerance);
+                if (!hasReceiptRemaining)
+                {
+                    continue;
+                }
             }
 
             _ordersAll.Add(new OrderOption(order.Id, order.OrderRef, order.Type, order.PartnerId, order.PartnerDisplay));
@@ -187,6 +202,10 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
+        // Перезагружаем список заказов с учетом типа документа:
+        // для PRD показываем только заказы с ненулевым receipt_remaining.
+        LoadOrders();
+
         Title = $"Операция: {_doc.DocRef} ({DocTypeMapper.ToDisplayName(_doc.Type)})";
         LoadDocLines();
         UpdateDocView();
@@ -195,6 +214,7 @@ public partial class OperationDetailsWindow : Window
 
     private void LoadDocLines()
     {
+        _isLoadingDocLines = true;
         _docLines.Clear();
         var locationLookup = _locations
             .GroupBy(location => location.Code)
@@ -336,6 +356,7 @@ public partial class OperationDetailsWindow : Window
         UpdateAvailabilityStatus();
         UpdateActionButtons();
         LoadOutboundHuCandidates();
+        _isLoadingDocLines = false;
     }
 
     private static string? FormatLocationDisplay(string? code, IReadOnlyDictionary<string, Location> lookup)
@@ -418,6 +439,16 @@ public partial class OperationDetailsWindow : Window
             }
             DocDeleteLine_Click(sender, new RoutedEventArgs());
         }
+    }
+
+    private void DocLinesGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (!IsDocEditable() || _selectedDocLine == null)
+        {
+            return;
+        }
+
+        DocEditLine_Click(sender, new RoutedEventArgs());
     }
 
     private async void DocClose_Click(object sender, RoutedEventArgs e)
@@ -520,7 +551,135 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
+        if (!ConfirmCapacityOverrideIfNeeded(doc))
+        {
+            return;
+        }
+
         await TryCloseCurrentDocViaServerAsync(doc);
+    }
+
+    private bool ConfirmCapacityOverrideIfNeeded(Doc doc)
+    {
+        if (doc.Type is not (DocType.Inbound or DocType.ProductionReceipt))
+        {
+            return true;
+        }
+
+        var warnings = BuildProjectedCapacityWarnings();
+        if (warnings.Count == 0)
+        {
+            return true;
+        }
+
+        var message = "После проведения будет превышен лимит HU-мест в локациях:\n\n"
+                      + string.Join("\n", warnings)
+                      + "\n\nПродолжить проведение в режиме override?";
+        var firstConfirm = MessageBox.Show(
+            message,
+            "Операция",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+        if (firstConfirm != MessageBoxResult.Yes)
+        {
+            return false;
+        }
+
+        var secondConfirm = MessageBox.Show(
+            "Подтвердите override еще раз: провести документ, даже если лимит HU-мест превышен?",
+            "Операция",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+        return secondConfirm == MessageBoxResult.Yes;
+    }
+
+    private List<string> BuildProjectedCapacityWarnings()
+    {
+        var limitedLocations = _locations
+            .Where(location => location.AutoHuDistributionEnabled && location.MaxHuSlots.HasValue && location.MaxHuSlots.Value > 0)
+            .ToDictionary(location => location.Id, location => location);
+        if (limitedLocations.Count == 0)
+        {
+            return new List<string>();
+        }
+
+        var locationIdByCode = _locations
+            .Where(location => !string.IsNullOrWhiteSpace(location.Code))
+            .ToDictionary(location => location.Code, location => location.Id, StringComparer.OrdinalIgnoreCase);
+
+        var huBalances = new Dictionary<(long LocationId, string HuCode), double>();
+        foreach (var row in GetStockRows())
+        {
+            if (row.Qty <= 0 || string.IsNullOrWhiteSpace(row.LocationCode))
+            {
+                continue;
+            }
+
+            if (!locationIdByCode.TryGetValue(row.LocationCode, out var locationId) || !limitedLocations.ContainsKey(locationId))
+            {
+                continue;
+            }
+
+            var huCode = NormalizeHuValue(row.Hu);
+            if (string.IsNullOrWhiteSpace(huCode))
+            {
+                continue;
+            }
+
+            var key = (locationId, huCode);
+            huBalances[key] = huBalances.TryGetValue(key, out var current)
+                ? current + row.Qty
+                : row.Qty;
+        }
+
+        if (_doc?.Type is DocType.Inbound or DocType.ProductionReceipt)
+        {
+            foreach (var line in _docLines)
+            {
+                if (!line.ToLocationId.HasValue || line.QtyBase <= QtyTolerance)
+                {
+                    continue;
+                }
+
+                if (!limitedLocations.ContainsKey(line.ToLocationId.Value))
+                {
+                    continue;
+                }
+
+                var huCode = NormalizeHuValue(line.ToHu);
+                if (string.IsNullOrWhiteSpace(huCode))
+                {
+                    continue;
+                }
+
+                var key = (line.ToLocationId.Value, huCode);
+                huBalances[key] = huBalances.TryGetValue(key, out var current)
+                    ? current + line.QtyBase
+                    : line.QtyBase;
+            }
+        }
+
+        var occupiedCountByLocation = huBalances
+            .Where(entry => entry.Value > QtyTolerance)
+            .GroupBy(entry => entry.Key.LocationId)
+            .ToDictionary(group => group.Key, group => group.Count());
+
+        var warnings = new List<string>();
+        foreach (var location in limitedLocations.Values.OrderBy(location => location.Code, StringComparer.OrdinalIgnoreCase))
+        {
+            var occupied = occupiedCountByLocation.TryGetValue(location.Id, out var count) ? count : 0;
+            var limit = location.MaxHuSlots ?? 0;
+            if (occupied <= limit)
+            {
+                continue;
+            }
+
+            warnings.Add($"{location.DisplayName}: занято {occupied}, лимит {limit}.");
+        }
+
+        return warnings;
     }
 
     private async Task TryCloseCurrentDocViaServerAsync(Doc doc)
@@ -1186,7 +1345,10 @@ public partial class OperationDetailsWindow : Window
             selectedLineIds.Count > 0 ? selectedLineIds : null);
         if (!result.IsSuccess)
         {
-            MessageBox.Show(result.Error ?? "Не удалось выполнить автораспределение HU через сервер.", "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
+            var message = result.Error ?? "Не удалось выполнить автораспределение HU через сервер.";
+            message += Environment.NewLine + Environment.NewLine
+                       + "Можно продолжить вручную: назначить HU по строкам и при необходимости выбрать локацию приёмки в строке.";
+            MessageBox.Show(message, "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -1390,7 +1552,12 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        if (_doc.Type == DocType.Inbound || _doc.Type == DocType.Inventory || _doc.Type == DocType.ProductionReceipt)
+        if (_doc.Type == DocType.Inbound || _doc.Type == DocType.ProductionReceipt)
+        {
+            return;
+        }
+
+        if (_doc.Type == DocType.Inventory)
         {
             if (DocToCombo.SelectedItem == null)
             {
@@ -1728,6 +1895,69 @@ public partial class OperationDetailsWindow : Window
         RefreshHuOptions();
     }
 
+    private async void DocToLocationCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isLoadingDocLines || _doc == null || !IsDocEditable())
+        {
+            return;
+        }
+
+        if (_doc.Type is not (DocType.Inbound or DocType.ProductionReceipt))
+        {
+            return;
+        }
+
+        if (sender is not System.Windows.Controls.ComboBox combo || combo.DataContext is not DocLineDisplay lineDisplay)
+        {
+            return;
+        }
+
+        if (!combo.IsDropDownOpen && !combo.IsKeyboardFocusWithin)
+        {
+            return;
+        }
+
+        if (combo.SelectedItem is not Location targetLocation)
+        {
+            return;
+        }
+
+        if (lineDisplay.ToLocationId == targetLocation.Id)
+        {
+            return;
+        }
+
+        var currentLine = FindCurrentDocLine(lineDisplay.Id);
+        if (currentLine == null)
+        {
+            return;
+        }
+
+        var result = await _services.WpfUpdateDocLines.UpdateLineAsync(
+            _doc,
+            new WpfUpdateDocLineContext(
+                currentLine.Id,
+                currentLine.Qty,
+                currentLine.UomCode,
+                currentLine.FromLocationId,
+                targetLocation.Id,
+                currentLine.FromHu,
+                currentLine.ToHu));
+
+        if (!result.IsSuccess)
+        {
+            if (result.ShouldRefresh)
+            {
+                LoadDoc();
+            }
+
+            MessageBox.Show(result.Message, "Операция", MessageBoxButton.OK, ResolveServerUpdateLineMessageImage(result.Kind));
+            return;
+        }
+
+        LoadDoc();
+    }
+
     private void UpdatePartnerLock()
     {
         DocPartnerCombo.IsEnabled = DocOrderCombo.SelectedItem == null;
@@ -1752,7 +1982,7 @@ public partial class OperationDetailsWindow : Window
             case DocType.Inbound:
                 showPartner = true;
                 partnerLabel = "Поставщик";
-                showTo = true;
+                showTo = false;
                 toLabel = "Место хранения";
                 break;
             case DocType.Outbound:
@@ -1776,9 +2006,9 @@ public partial class OperationDetailsWindow : Window
                 toLabel = "Место хранения";
                 break;
             case DocType.ProductionReceipt:
-                showTo = true;
+                showTo = false;
                 showOrder = true;
-                showBatch = true;
+                showBatch = false;
                 showComment = true;
                 showHu = false;
                 toLabel = "Локация приёмки";
@@ -1848,7 +2078,12 @@ public partial class OperationDetailsWindow : Window
         DocOrderLineColumn.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
         DocPackSingleHuColumn.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
         DocFromColumn.Visibility = showFrom ? Visibility.Visible : Visibility.Collapsed;
-        DocToColumn.Visibility = showTo ? Visibility.Visible : Visibility.Collapsed;
+        DocToEditColumn.Visibility = doc.Type is DocType.Inbound or DocType.ProductionReceipt
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        DocToColumn.Visibility = showTo && doc.Type is not (DocType.Inbound or DocType.ProductionReceipt)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         KmCodesButton.Visibility = KmUiEnabled && (doc.Type is DocType.ProductionReceipt or DocType.Outbound)
             ? Visibility.Visible
             : Visibility.Collapsed;
@@ -1858,6 +2093,7 @@ public partial class OperationDetailsWindow : Window
             : Visibility.Collapsed;
         DocFromColumn.Header = fromLabel;
         DocToColumn.Header = toLabel;
+        DocToEditColumn.Header = toLabel;
 
         FillFromOrderButton.Visibility = Visibility.Collapsed;
         FillFromOrderButton.IsEnabled = false;
@@ -2314,25 +2550,31 @@ public partial class OperationDetailsWindow : Window
 
     private Location? EnsureProductionReceiptLocationSelected()
     {
-        if (DocToCombo.SelectedItem is Location selected)
-        {
-            return selected;
-        }
+        return ResolveDefaultReceiptLocation(preferAutoEnabled: true);
+    }
 
-        var fallback = _locations
-            .Where(location => location.AutoHuDistributionEnabled)
-            .OrderBy(location => location.Code, StringComparer.OrdinalIgnoreCase)
-            .FirstOrDefault();
-        if (fallback == null)
+    private Location? ResolveDefaultReceiptLocation(bool preferAutoEnabled)
+    {
+        if (_locations.Count == 0)
         {
             return null;
         }
 
-        var previousSuppress = _suppressDirtyTracking;
-        _suppressDirtyTracking = true;
-        DocToCombo.SelectedItem = fallback;
-        _suppressDirtyTracking = previousSuppress;
-        return fallback;
+        if (preferAutoEnabled)
+        {
+            var auto = _locations
+                .Where(location => location.AutoHuDistributionEnabled)
+                .OrderBy(location => location.Code, StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault();
+            if (auto != null)
+            {
+                return auto;
+            }
+        }
+
+        return _locations
+            .OrderBy(location => location.Code, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
     }
 
     private async void DocFillFromOrder_Click(object sender, RoutedEventArgs e)
@@ -2627,6 +2869,7 @@ public partial class OperationDetailsWindow : Window
 
     private IReadOnlyList<WpfAddDocLineContext> BuildProductionReceiptBatchContexts(long orderId, long? toLocationId, string? toHu)
     {
+        var effectiveToLocationId = toLocationId ?? ResolveDefaultReceiptLocation(preferAutoEnabled: true)?.Id;
         var orderLines = _services.WpfReadApi.TryGetOrderLines(orderId, out var apiOrderLines)
             ? apiOrderLines
             : Array.Empty<OrderLineView>();
@@ -2641,7 +2884,7 @@ public partial class OperationDetailsWindow : Window
                 null,
                 null,
                 null,
-                toLocationId,
+                effectiveToLocationId,
                 null,
                 NormalizeHuValue(toHu)))
             .ToList();
@@ -3431,9 +3674,20 @@ public partial class OperationDetailsWindow : Window
         }
         else
         {
-            var selectedLocation = _doc.Type == DocType.Inbound || _doc.Type == DocType.Inventory || _doc.Type == DocType.ProductionReceipt
-                ? DocToCombo.SelectedItem as Location
-                : DocFromCombo.SelectedItem as Location;
+            Location? selectedLocation;
+            if (_doc.Type == DocType.Inbound || _doc.Type == DocType.ProductionReceipt)
+            {
+                selectedLocation = ResolveDefaultReceiptLocation(preferAutoEnabled: true);
+            }
+            else if (_doc.Type == DocType.Inventory)
+            {
+                selectedLocation = DocToCombo.SelectedItem as Location;
+            }
+            else
+            {
+                selectedLocation = DocFromCombo.SelectedItem as Location;
+            }
+
             if (selectedLocation != null)
             {
                 var totalsByLocation = GetHuTotalsByLocation(selectedLocation.Id);
@@ -3757,6 +4011,10 @@ public partial class OperationDetailsWindow : Window
         if (_doc.Type == DocType.Inbound || _doc.Type == DocType.Inventory || _doc.Type == DocType.ProductionReceipt)
         {
             fromLocation = null;
+            if (_doc.Type is DocType.Inbound or DocType.ProductionReceipt)
+            {
+                toLocation ??= ResolveDefaultReceiptLocation(preferAutoEnabled: true);
+            }
         }
         else if (_doc.Type == DocType.WriteOff || _doc.Type == DocType.Outbound)
         {

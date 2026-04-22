@@ -8,6 +8,7 @@ public sealed class DocumentService
 {
     private readonly IDataStore _data;
     private const string AutoHuCreatedBy = "WINDOWS-AUTO";
+    private const double QtyTolerance = 0.000001;
     private static bool KmWorkflowEnabled => false;
 
     public DocumentService(IDataStore data)
@@ -120,13 +121,16 @@ public sealed class DocumentService
 
             if (doc.Type == DocType.ProductionReceipt)
             {
-                foreach (var line in store.GetOrderReceiptRemaining(orderId.Value))
+                var receiptLines = store.GetOrderReceiptRemaining(orderId.Value)
+                    .Where(line => line.QtyRemaining > QtyTolerance)
+                    .ToList();
+                if (receiptLines.Count == 0)
                 {
-                    if (line.QtyRemaining <= 0)
-                    {
-                        continue;
-                    }
+                    throw new InvalidOperationException("Нет позиций для приемки по выбранному заказу.");
+                }
 
+                foreach (var line in receiptLines)
+                {
                     store.AddDocLine(new DocLine
                     {
                         DocId = docId,
@@ -245,6 +249,10 @@ public sealed class DocumentService
                 AutoAssignOutboundKmCodes(store, doc, lines, docHu, docId);
             }
 
+            var orderBoundHuByItem = doc.Type == DocType.Outbound && doc.OrderId.HasValue
+                ? BuildOrderBoundHuByItem(store, doc.OrderId.Value)
+                : null;
+
             foreach (var line in lines)
             {
                 var (fromHu, toHu) = ResolveLedgerHu(doc, line, docHu);
@@ -297,7 +305,9 @@ public sealed class DocumentService
                             }
                             else
                             {
-                                AddOutboundLedgerEntriesFromLocation(store, closedAt, docId, line, line.FromLocationId.Value);
+                                HashSet<string>? boundHuCodes = null;
+                                orderBoundHuByItem?.TryGetValue(line.ItemId, out boundHuCodes);
+                                AddOutboundLedgerEntriesFromLocation(store, closedAt, docId, line, line.FromLocationId.Value, boundHuCodes);
                             }
                         }
                         else
@@ -340,13 +350,16 @@ public sealed class DocumentService
                             }
 
                             var locationCodes = locations.ToDictionary(location => location.Id, location => location.Code);
+                            HashSet<string>? boundHuCodes = null;
+                            orderBoundHuByItem?.TryGetValue(line.ItemId, out boundHuCodes);
+                            var hasOrderBoundHu = boundHuCodes != null && boundHuCodes.Count > 0;
                             var nonHuSources = locations
                                 .Select(location => new
                                 {
                                     LocationId = location.Id,
                                     location.Code,
                                     HuCode = (string?)null,
-                                    Qty = store.GetLedgerBalance(line.ItemId, location.Id, null)
+                                    Qty = hasOrderBoundHu ? 0d : store.GetLedgerBalance(line.ItemId, location.Id, null)
                                 })
                                 .Where(source => source.Qty > 0);
 
@@ -359,6 +372,7 @@ public sealed class DocumentService
                                     HuCode = NormalizeHuValue(row.HuCode),
                                     row.Qty
                                 })
+                                .Where(source => !hasOrderBoundHu || (source.HuCode != null && boundHuCodes!.Contains(source.HuCode)))
                                 .Where(source => !string.IsNullOrWhiteSpace(source.HuCode));
 
                             var sources = nonHuSources
@@ -608,26 +622,28 @@ public sealed class DocumentService
         var addedLines = 0;
         _data.ExecuteInTransaction(store =>
         {
+            var receiptLines = store.GetOrderReceiptRemaining(orderId)
+                .Where(line => line.QtyRemaining > QtyTolerance)
+                .ToList();
+            if (receiptLines.Count == 0)
+            {
+                throw new InvalidOperationException("Нет позиций для приемки по выбранному заказу.");
+            }
+
             store.UpdateDocOrder(docId, order.Id, cleanedOrderRef);
             if (replaceLines)
             {
                 store.DeleteDocLines(docId);
             }
 
-            var orderLines = store.GetOrderLines(orderId);
-            foreach (var line in orderLines)
+            foreach (var line in receiptLines)
             {
-                if (line.QtyOrdered <= 0)
-                {
-                    continue;
-                }
-
                 store.AddDocLine(new DocLine
                 {
                     DocId = docId,
-                    OrderLineId = line.Id,
+                    OrderLineId = line.OrderLineId,
                     ItemId = line.ItemId,
-                    Qty = line.QtyOrdered,
+                    Qty = line.QtyRemaining,
                     QtyInput = null,
                     UomCode = null,
                     FromLocationId = null,
@@ -1053,24 +1069,30 @@ public sealed class DocumentService
                 throw new InvalidOperationException("Не выбраны строки для распределения.");
             }
 
-            var autoLocations = store.GetLocations()
-                .Where(location => location.AutoHuDistributionEnabled)
+            var allLocations = store.GetLocations()
                 .OrderBy(location => location.Code, StringComparer.OrdinalIgnoreCase)
                 .ToList();
-            if (autoLocations.Count == 0)
+            if (allLocations.Count == 0)
             {
-                throw new InvalidOperationException(
-                    "Нет доступных локаций с включенным флагом \"Авто HU распределение\".");
+                throw new InvalidOperationException("Нет доступных локаций для распределения.");
             }
 
-            var autoLocationById = autoLocations.ToDictionary(location => location.Id);
-            var occupiedHuByLocation = autoLocations.ToDictionary(
+            var candidateLocations = allLocations
+                .Where(location => location.AutoHuDistributionEnabled)
+                .ToList();
+            if (candidateLocations.Count == 0)
+            {
+                candidateLocations = allLocations;
+            }
+
+            var candidateLocationById = candidateLocations.ToDictionary(location => location.Id);
+            var occupiedHuByLocation = candidateLocations.ToDictionary(
                 location => location.Id,
                 _ => new HashSet<string>(StringComparer.OrdinalIgnoreCase));
 
             foreach (var row in store.GetHuStockRows().Where(row => row.Qty > 0))
             {
-                if (!autoLocationById.ContainsKey(row.LocationId))
+                if (!candidateLocationById.ContainsKey(row.LocationId))
                 {
                     continue;
                 }
@@ -1086,7 +1108,7 @@ public sealed class DocumentService
 
             foreach (var line in allLines.Where(line => !selectedIds.Contains(line.Id)))
             {
-                if (!line.ToLocationId.HasValue || !autoLocationById.ContainsKey(line.ToLocationId.Value))
+                if (!line.ToLocationId.HasValue || !candidateLocationById.ContainsKey(line.ToLocationId.Value))
                 {
                     continue;
                 }
@@ -1150,10 +1172,10 @@ public sealed class DocumentService
                     return assignedLocationId;
                 }
 
-                var orderedCandidates = autoLocations;
-                if (preferredLocationId.HasValue && autoLocationById.ContainsKey(preferredLocationId.Value))
+                var orderedCandidates = candidateLocations;
+                if (preferredLocationId.HasValue && candidateLocationById.ContainsKey(preferredLocationId.Value))
                 {
-                    orderedCandidates = autoLocations
+                    orderedCandidates = candidateLocations
                         .OrderByDescending(location => location.Id == preferredLocationId.Value)
                         .ThenBy(location => location.Code, StringComparer.OrdinalIgnoreCase)
                         .ToList();
@@ -1174,9 +1196,12 @@ public sealed class DocumentService
                     return candidate.Id;
                 }
 
-                throw new InvalidOperationException(
-                    "Нет свободных HU-мест в локациях с включенным \"Авто HU распределение\". " +
-                    "Освободите места, увеличьте лимит или назначьте локацию вручную.");
+                var fallback = preferredLocationId.HasValue && candidateLocationById.ContainsKey(preferredLocationId.Value)
+                    ? preferredLocationId.Value
+                    : orderedCandidates[0].Id;
+                occupiedHuByLocation[fallback].Add(huCode);
+                locationByHu[huCode] = fallback;
+                return fallback;
             }
 
             var huQueue = new Queue<string>(allocatedHuCodes);
@@ -1457,6 +1482,9 @@ public sealed class DocumentService
         var outgoingBySource = new Dictionary<StockKey, double>();
         var outboundByLocation = new Dictionary<ItemLocationKey, double>();
         var outboundByItem = new Dictionary<long, double>();
+        var orderBoundHuByItem = doc.Type == DocType.Outbound && doc.OrderId.HasValue
+            ? BuildOrderBoundHuByItem(_data, doc.OrderId.Value)
+            : null;
 
         for (var index = 0; index < lines.Count; index++)
         {
@@ -1617,7 +1645,9 @@ public sealed class DocumentService
         {
             foreach (var entry in outboundByLocation)
             {
-                var current = GetTotalAvailableQtyAtLocation(entry.Key.ItemId, entry.Key.LocationId);
+                HashSet<string>? boundHuCodes = null;
+                orderBoundHuByItem?.TryGetValue(entry.Key.ItemId, out boundHuCodes);
+                var current = GetTotalAvailableQtyAtLocation(entry.Key.ItemId, entry.Key.LocationId, boundHuCodes);
                 var future = current - entry.Value;
                 if (future < 0)
                 {
@@ -1652,9 +1682,11 @@ public sealed class DocumentService
                 : Array.Empty<Location>();
             foreach (var entry in outboundByItem)
             {
+                HashSet<string>? boundHuCodes = null;
+                orderBoundHuByItem?.TryGetValue(entry.Key, out boundHuCodes);
                 var current = autoAllocation
-                    ? GetTotalAvailableQty(entry.Key, docHu, autoAllocationLocations)
-                    : GetTotalAvailableQty(entry.Key, docHu, locations);
+                    ? GetTotalAvailableQty(entry.Key, docHu, autoAllocationLocations, boundHuCodes)
+                    : GetTotalAvailableQty(entry.Key, docHu, locations, boundHuCodes);
                 var future = current - entry.Value;
                 if (future < 0)
                 {
@@ -1806,6 +1838,13 @@ public sealed class DocumentService
         IReadOnlyList<DocLine> lines,
         IReadOnlyDictionary<long, string> locationsById)
     {
+        // Для приемки/выпуска допускаем ручной override локации даже при переполнении лимита.
+        // Лимиты остаются ориентиром для авто-распределения, но не блокируют проведение документа.
+        if (doc.Type is DocType.Inbound or DocType.ProductionReceipt)
+        {
+            return Array.Empty<string>();
+        }
+
         var limitedLocations = _data.GetLocations()
             .Where(location => location.AutoHuDistributionEnabled && location.MaxHuSlots.HasValue && location.MaxHuSlots.Value > 0)
             .ToDictionary(location => location.Id, location => location.MaxHuSlots!.Value);
@@ -1928,8 +1967,86 @@ public sealed class DocumentService
         return value.ToString("0.###", CultureInfo.CurrentCulture);
     }
 
-    private double GetTotalAvailableQty(long itemId, string? huCode, IReadOnlyList<Location> locations)
+    private static Dictionary<long, HashSet<string>> BuildOrderBoundHuByItem(IDataStore store, long orderId)
     {
+        var result = new Dictionary<long, HashSet<string>>();
+        var productionDocs = store.GetDocsByOrder(orderId)
+            .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status == DocStatus.Closed)
+            .ToList();
+        foreach (var doc in productionDocs)
+        {
+            foreach (var line in store.GetDocLines(doc.Id))
+            {
+                if (line.Qty <= QtyTolerance)
+                {
+                    continue;
+                }
+
+                var huCode = NormalizeHuValue(line.ToHu);
+                if (string.IsNullOrWhiteSpace(huCode))
+                {
+                    continue;
+                }
+
+                if (!result.TryGetValue(line.ItemId, out var set))
+                {
+                    set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    result[line.ItemId] = set;
+                }
+
+                set.Add(huCode);
+            }
+        }
+
+        return result;
+    }
+
+    private double GetTotalAvailableQty(
+        long itemId,
+        string? huCode,
+        IReadOnlyList<Location> locations,
+        IReadOnlySet<string>? allowedHuCodes)
+    {
+        var normalizedHu = NormalizeHuValue(huCode);
+        if (!string.IsNullOrWhiteSpace(normalizedHu))
+        {
+            if (allowedHuCodes != null && allowedHuCodes.Count > 0 && !allowedHuCodes.Contains(normalizedHu))
+            {
+                return 0d;
+            }
+
+            var explicitTotal = 0d;
+            foreach (var location in locations)
+            {
+                explicitTotal += _data.GetAvailableQty(itemId, location.Id, normalizedHu);
+            }
+
+            return explicitTotal;
+        }
+
+        if (allowedHuCodes != null && allowedHuCodes.Count > 0)
+        {
+            var locationIds = locations.Select(location => location.Id).ToHashSet();
+            var huTotal = 0d;
+            foreach (var row in _data.GetHuStockRows())
+            {
+                if (row.ItemId != itemId || row.Qty <= 0 || !locationIds.Contains(row.LocationId))
+                {
+                    continue;
+                }
+
+                var rowHuCode = NormalizeHuValue(row.HuCode);
+                if (string.IsNullOrWhiteSpace(rowHuCode) || !allowedHuCodes.Contains(rowHuCode))
+                {
+                    continue;
+                }
+
+                huTotal += row.Qty;
+            }
+
+            return huTotal;
+        }
+
         var total = 0d;
         foreach (var location in locations)
         {
@@ -1939,8 +2056,30 @@ public sealed class DocumentService
         return total;
     }
 
-    private double GetTotalAvailableQtyAtLocation(long itemId, long locationId)
+    private double GetTotalAvailableQtyAtLocation(long itemId, long locationId, IReadOnlySet<string>? allowedHuCodes)
     {
+        if (allowedHuCodes != null && allowedHuCodes.Count > 0)
+        {
+            var huTotal = 0d;
+            foreach (var row in _data.GetHuStockRows())
+            {
+                if (row.ItemId != itemId || row.LocationId != locationId || row.Qty <= 0)
+                {
+                    continue;
+                }
+
+                var huCode = NormalizeHuValue(row.HuCode);
+                if (string.IsNullOrWhiteSpace(huCode) || !allowedHuCodes.Contains(huCode))
+                {
+                    continue;
+                }
+
+                huTotal += row.Qty;
+            }
+
+            return huTotal;
+        }
+
         var total = _data.GetAvailableQty(itemId, locationId, null);
         foreach (var row in _data.GetHuStockRows())
         {
@@ -2340,11 +2479,13 @@ public sealed class DocumentService
         DateTime closedAt,
         long docId,
         DocLine line,
-        long locationId)
+        long locationId,
+        IReadOnlySet<string>? allowedHuCodes)
     {
         var remaining = line.Qty;
         var sources = new List<OutboundStockSource>();
-        var nonHuQty = store.GetLedgerBalance(line.ItemId, locationId, null);
+        var hasAllowedHuCodes = allowedHuCodes != null && allowedHuCodes.Count > 0;
+        var nonHuQty = hasAllowedHuCodes ? 0 : store.GetLedgerBalance(line.ItemId, locationId, null);
         if (nonHuQty > 0)
         {
             sources.Add(new OutboundStockSource(locationId, null, nonHuQty));
@@ -2353,6 +2494,7 @@ public sealed class DocumentService
         sources.AddRange(store.GetHuStockRows()
             .Where(row => row.ItemId == line.ItemId && row.LocationId == locationId && row.Qty > 0)
             .Select(row => new OutboundStockSource(locationId, NormalizeHuValue(row.HuCode), row.Qty))
+            .Where(source => !hasAllowedHuCodes || (source.HuCode != null && allowedHuCodes!.Contains(source.HuCode)))
             .Where(source => !string.IsNullOrWhiteSpace(source.HuCode))
             .OrderBy(source => source.HuCode, StringComparer.OrdinalIgnoreCase));
 

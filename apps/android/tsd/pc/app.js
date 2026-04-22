@@ -1289,19 +1289,35 @@
 
   function toOrderStatusCode(display) {
     var normalized = String(display || "").trim().toLowerCase();
-    if (normalized === "принят" || normalized === "accepted") {
+    if (normalized === "готов к отгрузке" || normalized === "принят" || normalized === "accepted") {
       return "ACCEPTED";
     }
-    if (normalized === "в процессе" || normalized === "in_progress") {
+    if (normalized === "в процессе" || normalized === "в работе" || normalized === "in_progress") {
       return "IN_PROGRESS";
     }
     if (normalized === "черновик" || normalized === "draft") {
-      return "DRAFT";
+      return "IN_PROGRESS";
     }
     if (normalized === "отгружен" || normalized === "shipped") {
       return "SHIPPED";
     }
     return "";
+  }
+
+  function getOrderStatusPresentation(order) {
+    if (order && order.is_pending_confirmation) {
+      return { label: "Ожидает подтверждения", tone: "warning" };
+    }
+
+    var statusCode = toOrderStatusCode(order && order.status);
+    if (statusCode === "SHIPPED") {
+      return { label: "Отгружен", tone: "completed" };
+    }
+    if (statusCode === "ACCEPTED") {
+      return { label: "Готов к отгрузке", tone: "success" };
+    }
+
+    return { label: "В работе", tone: "inprogress" };
   }
 
   function formatQuantity(value) {
@@ -1388,10 +1404,9 @@
     if (readiness && readiness.text) {
       return renderStatusBadge(readiness.text, readiness.ready ? "success" : "warning");
     }
-    if (isShippedOrder(order)) {
-      return renderStatusBadge((order && order.status) || "Отгружен", "completed");
-    }
-    return escapeHtml((order && order.status) || (order && order.is_pending_confirmation ? "Ожидает подтверждения" : "-"));
+
+    var status = getOrderStatusPresentation(order);
+    return renderStatusBadge(status.label, status.tone);
   }
 
   function renderReadinessBadge(readiness) {
@@ -1425,6 +1440,8 @@
       icon = "!";
     } else if (normalizedTone === "completed") {
       icon = "✓";
+    } else if (normalizedTone === "inprogress") {
+      icon = "•";
     }
 
     var className = "pc-status-badge pc-status-badge-" + normalizedTone;
@@ -1500,11 +1517,10 @@
       "  </div>" +
       '  <div class="pc-order-lines-header">' +
       '    <div class="pc-modal-title">Строки заказа</div>' +
-      '    <button class="btn btn-ghost" type="button" id="newOrderAddLineBtn">Добавить строку</button>' +
       "  </div>" +
       '  <div id="newOrderLinesWrap" class="pc-order-lines"></div>' +
       '  <div class="pc-modal-footer">' +
-      '    <button class="btn primary-btn" type="button" id="newOrderSubmitBtn">Отправить заявку</button>' +
+      '    <button class="btn primary-btn pc-order-submit-btn" type="button" id="newOrderSubmitBtn">Отправить</button>' +
       '    <div id="newOrderStatus" class="status"></div>' +
       "  </div>" +
       "</div>";
@@ -1518,13 +1534,13 @@
       dueDateInput: modal.querySelector("#newOrderDueDateInput"),
       commentInput: modal.querySelector("#newOrderCommentInput"),
       linesWrap: modal.querySelector("#newOrderLinesWrap"),
-      addLineBtn: modal.querySelector("#newOrderAddLineBtn"),
       submitBtn: modal.querySelector("#newOrderSubmitBtn"),
       statusEl: modal.querySelector("#newOrderStatus"),
     };
     var items = [];
     var partners = [];
-    var linesState = [];
+    var linesState = [{ item_id: 0, qty_ordered: 1, query: "" }];
+    var activeLineIndex = 0;
     var selectedPartnerId = 0;
     var activeSuggestIndex = -1;
     var suggestionOverlay = document.createElement("div");
@@ -2114,12 +2130,15 @@
       if (!linesState.length) {
         linesState.push({ item_id: 0, qty_ordered: 1, query: "" });
       }
+      if (activeLineIndex < 0 || activeLineIndex >= linesState.length) {
+        activeLineIndex = linesState.length - 1;
+      }
 
       hideSuggestionOverlay();
       refs.linesWrap.innerHTML = linesState
         .map(function (line, index) {
           var query = String(line.query || "");
-          return (
+          var rowHtml =
             '<div class="pc-order-line-row">' +
             '<div class="pc-order-line-item-cell">' +
             '<div class="pc-order-line-autocomplete">' +
@@ -2138,11 +2157,19 @@
             '" type="number" min="0.001" step="0.001" value="' +
             escapeHtml(String(line.qty_ordered || "")) +
             '" />' +
-            '<button class="btn btn-ghost line-remove-btn" type="button" data-index="' +
+            '<button class="btn btn-ghost line-remove-btn line-remove-icon-btn" type="button" title="Удалить строку" aria-label="Удалить строку" data-index="' +
             index +
-            '">Удалить</button>' +
-            "</div>"
-          );
+            '">🗑</button>' +
+            "</div>";
+          if (index === activeLineIndex) {
+            rowHtml +=
+              '<div class="pc-order-line-add-row">' +
+              '<button class="btn btn-ghost line-add-btn" type="button" data-after-index="' +
+              index +
+              '"><span class="pc-plus-circle-icon">+</span>Добавить строку</button>' +
+              "</div>";
+          }
+          return rowHtml;
         })
         .join("");
 
@@ -2170,6 +2197,21 @@
 
         inputEl.addEventListener("focus", function () {
           var index = Number(inputEl.getAttribute("data-index"));
+          if (activeLineIndex !== index) {
+            activeLineIndex = index;
+            renderLines();
+            var refreshedInput = refs.linesWrap
+              ? refs.linesWrap.querySelector('.line-item-query[data-index="' + index + '"]')
+              : null;
+            if (refreshedInput) {
+              refreshedInput.focus();
+              var length = String(refreshedInput.value || "").length;
+              if (typeof refreshedInput.setSelectionRange === "function") {
+                refreshedInput.setSelectionRange(length, length);
+              }
+            }
+            return;
+          }
           updateLineControls(index);
         });
 
@@ -2190,13 +2232,44 @@
           }
           linesState[index].qty_ordered = Number(inputEl.value) || 0;
         });
+        inputEl.addEventListener("focus", function () {
+          var index = Number(inputEl.getAttribute("data-index"));
+          if (activeLineIndex !== index) {
+            activeLineIndex = index;
+            renderLines();
+            var refreshedInput = refs.linesWrap
+              ? refs.linesWrap.querySelector('.line-qty[data-index="' + index + '"]')
+              : null;
+            if (refreshedInput) {
+              refreshedInput.focus();
+            }
+          }
+        });
       });
 
       var removeButtons = refs.linesWrap.querySelectorAll(".line-remove-btn");
       removeButtons.forEach(function (btn) {
         btn.addEventListener("click", function () {
           var index = Number(btn.getAttribute("data-index"));
+          if (linesState.length <= 1) {
+            linesState = [{ item_id: 0, qty_ordered: 1, query: "" }];
+            activeLineIndex = 0;
+            renderLines();
+            return;
+          }
           linesState.splice(index, 1);
+          activeLineIndex = Math.max(0, Math.min(index, linesState.length - 1));
+          renderLines();
+        });
+      });
+
+      var addButtons = refs.linesWrap.querySelectorAll(".line-add-btn");
+      addButtons.forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var afterIndex = Number(btn.getAttribute("data-after-index"));
+          var insertAt = Number.isFinite(afterIndex) ? afterIndex + 1 : linesState.length;
+          linesState.splice(insertAt, 0, { item_id: 0, qty_ordered: 1, query: "" });
+          activeLineIndex = insertAt;
           renderLines();
         });
       });
@@ -2249,6 +2322,9 @@
         setStatus("Сессия неактивна. Войдите повторно.");
         return;
       }
+      if (!window.confirm("Полностью ли заполнен заказ?")) {
+        return;
+      }
 
       if (refs.submitBtn) {
         refs.submitBtn.disabled = true;
@@ -2289,12 +2365,6 @@
 
     if (refs.closeBtn) {
       refs.closeBtn.addEventListener("click", close);
-    }
-    if (refs.addLineBtn) {
-      refs.addLineBtn.addEventListener("click", function () {
-        linesState.push({ item_id: 0, qty_ordered: 1, query: "" });
-        renderLines();
-      });
     }
     if (refs.partnerInput) {
       refs.partnerInput.addEventListener("input", updatePartnerHint);
@@ -2376,18 +2446,19 @@
         }
         syncInternalOrderState();
         linesState = [{ item_id: 0, qty_ordered: 1, query: "" }];
+        activeLineIndex = 0;
         renderLines();
         setStatus("");
       })
       .catch(function () {
         setStatus("Ошибка загрузки справочников.");
       });
+
+    renderLines();
   }
 
   function openOrderModal(order, onSubmitted) {
     var isPending = order && order.is_pending_confirmation;
-    var currentStatusCode = toOrderStatusCode(order.status);
-    var canChangeStatus = !isPending && (currentStatusCode === "ACCEPTED" || currentStatusCode === "IN_PROGRESS");
     var isInternal = isInternalOrder(order);
     var showAvailableColumn = !isShippedOrder(order);
     var modal = document.createElement("div");
@@ -2411,23 +2482,11 @@
       escapeHtml(formatDate(order.shipped_at)) +
       "</div>" +
       '  <div class="pc-order-status-box">' +
-      (canChangeStatus
-        ? '    <div class="pc-order-status-row">' +
-          '      <label class="form-label" for="orderStatusSelect">Новый статус</label>' +
-          '      <select class="form-input" id="orderStatusSelect">' +
-          '        <option value="ACCEPTED"' +
-          (currentStatusCode === "ACCEPTED" ? ' selected="selected"' : "") +
-          ">Принят</option>" +
-          '        <option value="IN_PROGRESS"' +
-          (currentStatusCode === "IN_PROGRESS" ? ' selected="selected"' : "") +
-          ">В процессе</option>" +
-          "      </select>" +
-          '      <button class="btn" type="button" id="orderStatusRequestBtn">Отправить заявку</button>' +
-          "    </div>"
-        : '    <div class="pc-status">' +
-          (isPending ? "Заказ ожидает подтверждения в WPF." : "Статус этого заказа нельзя менять из веб-интерфейса.") +
-          "</div>") +
-      '    <div id="orderRequestStatus" class="status"></div>' +
+      '    <div class="pc-status">' +
+      (isPending
+        ? "Заказ ожидает подтверждения в WPF."
+        : "Статус формируется автоматически по выпуску и отгрузке.") +
+      "</div>" +
       "  </div>" +
       '  <div id="orderLinesWrap" class="pc-status" style="margin-top:12px;">Загрузка строк...</div>' +
       "</div>";
@@ -2440,63 +2499,6 @@
     var closeBtn = modal.querySelector("#modalCloseBtn");
     if (closeBtn) {
       closeBtn.addEventListener("click", close);
-    }
-
-    var statusSelect = modal.querySelector("#orderStatusSelect");
-    var statusBtn = modal.querySelector("#orderStatusRequestBtn");
-    var requestStatusEl = modal.querySelector("#orderRequestStatus");
-
-    function setRequestStatus(text) {
-      if (requestStatusEl) {
-        requestStatusEl.textContent = text || "";
-      }
-    }
-
-    if (statusBtn) {
-      statusBtn.addEventListener("click", function () {
-        var nextStatus = statusSelect ? String(statusSelect.value || "").trim() : "";
-        var account = loadAccount();
-
-        if (!nextStatus) {
-          setRequestStatus("Выберите статус.");
-          return;
-        }
-        if (nextStatus === currentStatusCode) {
-          setRequestStatus("Выбран текущий статус.");
-          return;
-        }
-        if (!hasPcAccess(account)) {
-          setRequestStatus("Сессия неактивна. Войдите повторно.");
-          return;
-        }
-
-        statusBtn.disabled = true;
-        setRequestStatus("Отправка заявки...");
-        fetchJson("/api/orders/requests/status", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            order_id: Number(order.id),
-            status: nextStatus,
-            login: account.login || null,
-            device_id: account.device_id || null,
-          }),
-        })
-          .then(function (result) {
-            var requestId = result && result.request_id ? String(result.request_id) : "-";
-            setRequestStatus("Заявка #" + requestId + " отправлена. Ожидается подтверждение в WPF.");
-            if (typeof onSubmitted === "function") {
-              onSubmitted();
-            }
-          })
-          .catch(function (error) {
-            var message = error && error.message ? error.message : "REQUEST_FAILED";
-            setRequestStatus("Ошибка отправки: " + message);
-          })
-          .finally(function () {
-            statusBtn.disabled = false;
-          });
-      });
     }
 
     var linesPromise = isPending

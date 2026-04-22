@@ -63,7 +63,6 @@ public static class OrderUpdateEndpoint
             return Results.BadRequest(new ApiResult(false, "ORDER_TYPE_MISMATCH"));
         }
 
-        var status = existing.Status;
         if (!string.IsNullOrWhiteSpace(updateRequest.Status))
         {
             var parsedStatus = OrderStatusMapper.StatusFromString(updateRequest.Status);
@@ -76,8 +75,6 @@ public static class OrderUpdateEndpoint
             {
                 return Results.BadRequest(new ApiResult(false, "SHIPPED_STATUS_FORBIDDEN"));
             }
-
-            status = parsedStatus.Value;
         }
 
         DateTime? dueDate = null;
@@ -181,7 +178,6 @@ public static class OrderUpdateEndpoint
                 authoritativeOrderRef,
                 partnerId,
                 dueDate,
-                status,
                 updateRequest.Comment,
                 lines,
                 orderType.Value);

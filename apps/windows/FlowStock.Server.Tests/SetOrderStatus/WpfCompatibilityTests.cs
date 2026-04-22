@@ -9,7 +9,7 @@ namespace FlowStock.Server.Tests.SetOrderStatus;
 public sealed class WpfCompatibilityTests
 {
     [Fact]
-    public async Task WpfSetOrderStatus_FeatureFlagRoutesToCanonicalPostApiOrdersStatus()
+    public async Task WpfSetOrderStatus_FeatureFlagReportsManualStatusDisabled()
     {
         var (harness, apiStore, orderId) = SetOrderStatusHttpScenario.CreateDraftCustomerScenario();
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
@@ -18,9 +18,9 @@ public sealed class WpfCompatibilityTests
 
         var result = await service.SetStatusAsync(orderId, OrderStatus.Accepted);
 
-        Assert.True(result.IsSuccess);
-        Assert.Equal(WpfSetOrderStatusResultKind.StatusChanged, result.Kind);
-        Assert.Equal(OrderStatus.Accepted, harness.GetOrder(orderId).Status);
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WpfSetOrderStatusResultKind.ValidationFailed, result.Kind);
+        Assert.Equal(OrderStatus.Draft, harness.GetOrder(orderId).Status);
     }
 
     [Fact]
@@ -39,7 +39,7 @@ public sealed class WpfCompatibilityTests
     }
 
     [Fact]
-    public async Task WpfSetOrderStatus_IgnoresLegacyFlagAndStillUsesCanonicalApi()
+    public async Task WpfSetOrderStatus_IgnoresLegacyFlag_AndStillReportsManualStatusDisabled()
     {
         var (harness, apiStore, orderId) = SetOrderStatusHttpScenario.CreateDraftCustomerScenario();
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
@@ -48,9 +48,9 @@ public sealed class WpfCompatibilityTests
 
         var result = await service.SetStatusAsync(orderId, OrderStatus.Accepted);
 
-        Assert.True(result.IsSuccess);
-        Assert.Equal(WpfSetOrderStatusResultKind.StatusChanged, result.Kind);
-        Assert.Equal(OrderStatus.Accepted, harness.GetOrder(orderId).Status);
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WpfSetOrderStatusResultKind.ValidationFailed, result.Kind);
+        Assert.Equal(OrderStatus.Draft, harness.GetOrder(orderId).Status);
     }
 
     private sealed class TempSettingsScope : IDisposable

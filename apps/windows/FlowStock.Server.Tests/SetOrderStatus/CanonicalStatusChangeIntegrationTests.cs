@@ -1,6 +1,8 @@
 using FlowStock.Core.Models;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
 using FlowStock.Server.Tests.SetOrderStatus.Infrastructure;
+using System.Net;
+using System.Net.Http.Json;
 
 namespace FlowStock.Server.Tests.SetOrderStatus;
 
@@ -8,17 +10,16 @@ namespace FlowStock.Server.Tests.SetOrderStatus;
 public sealed class CanonicalStatusChangeIntegrationTests
 {
     [Fact]
-    public async Task SuccessfulStatusChangeForAllowedTransition()
+    public async Task ManualStatusChange_IsDisabled()
     {
         var (harness, apiStore, orderId) = SetOrderStatusHttpScenario.CreateDraftCustomerScenario();
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
 
-        var payload = await SetOrderStatusHttpApi.ChangeAsync(host.Client, orderId, "ACCEPTED");
+        using var response = await host.Client.PostAsJsonAsync($"/api/orders/{orderId}/status", new { status = "ACCEPTED" });
+        var payload = await SetOrderStatusHttpApi.ReadApiResultAsync(response, HttpStatusCode.BadRequest);
 
-        Assert.True(payload.Ok);
-        Assert.Equal("STATUS_CHANGED", payload.Result);
-        Assert.Equal(orderId, payload.OrderId);
-        Assert.Equal("ACCEPTED", payload.Status);
-        Assert.Equal(OrderStatus.Accepted, harness.GetOrder(orderId).Status);
+        Assert.False(payload.Ok);
+        Assert.Equal("ORDER_STATUS_MANUAL_DISABLED", payload.Error);
+        Assert.Equal(OrderStatus.Draft, harness.GetOrder(orderId).Status);
     }
 }

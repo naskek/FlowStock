@@ -34,13 +34,13 @@ public sealed class CanonicalCreateIntegrationTests
         Assert.Equal("001", payload.OrderRef);
         Assert.False(payload.OrderRefChanged);
         Assert.Equal("CUSTOMER", payload.Type);
-        Assert.Equal("DRAFT", payload.Status);
+        Assert.Equal("IN_PROGRESS", payload.Status);
         Assert.Equal(1, harness.OrderCount);
         Assert.Equal(2, harness.TotalOrderLineCount);
 
         var order = harness.GetOrder(payload.OrderId);
         Assert.Equal(OrderType.Customer, order.Type);
-        Assert.Equal(OrderStatus.Draft, order.Status);
+        Assert.Equal(OrderStatus.InProgress, order.Status);
         Assert.Equal(200, order.PartnerId);
     }
 
@@ -66,14 +66,14 @@ public sealed class CanonicalCreateIntegrationTests
         Assert.Equal("CREATED", payload.Result);
         Assert.True(payload.OrderId > 0);
         Assert.Equal("INTERNAL", payload.Type);
-        Assert.Equal("ACCEPTED", payload.Status);
+        Assert.Equal("IN_PROGRESS", payload.Status);
         Assert.Equal(1, payload.LineCount);
         Assert.Equal(1, harness.OrderCount);
         Assert.Equal(1, harness.TotalOrderLineCount);
 
         var order = harness.GetOrder(payload.OrderId);
         Assert.Equal(OrderType.Internal, order.Type);
-        Assert.Equal(OrderStatus.Accepted, order.Status);
+        Assert.Equal(OrderStatus.InProgress, order.Status);
         Assert.Null(order.PartnerId);
     }
 }

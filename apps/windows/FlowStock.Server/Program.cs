@@ -1588,7 +1588,16 @@ app.MapPost("/api/docs/{docId:long}/production-receipt/auto-distribute-hus", asy
         .Distinct()
         .ToList();
 
-    var usedHuCount = docs.AutoDistributeProductionReceiptHus(docId, lineIds.Count > 0 ? lineIds : null);
+    int usedHuCount;
+    try
+    {
+        usedHuCount = docs.AutoDistributeProductionReceiptHus(docId, lineIds.Count > 0 ? lineIds : null);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+
     return Results.Ok(new
     {
         ok = true,
@@ -1942,81 +1951,9 @@ app.MapPost("/api/orders/requests/create", async (HttpRequest request, IDataStor
     });
 });
 
-app.MapPost("/api/orders/requests/status", async (HttpRequest request, IDataStore store) =>
+app.MapPost("/api/orders/requests/status", () =>
 {
-    var rawJson = await ReadBody(request);
-    if (string.IsNullOrWhiteSpace(rawJson))
-    {
-        return Results.BadRequest(new ApiResult(false, "EMPTY_BODY"));
-    }
-
-    OrderStatusChangeRequestCreateRequest? statusRequest;
-    try
-    {
-        statusRequest = JsonSerializer.Deserialize<OrderStatusChangeRequestCreateRequest>(
-            rawJson,
-            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-    }
-    catch (JsonException)
-    {
-        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
-    }
-
-    if (statusRequest == null)
-    {
-        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
-    }
-
-    if (!statusRequest.OrderId.HasValue || statusRequest.OrderId.Value <= 0)
-    {
-        return Results.BadRequest(new ApiResult(false, "MISSING_ORDER_ID"));
-    }
-
-    var order = store.GetOrder(statusRequest.OrderId.Value);
-    if (order == null)
-    {
-        return Results.BadRequest(new ApiResult(false, "ORDER_NOT_FOUND"));
-    }
-
-    if (!TryParseManualOrderStatus(statusRequest.Status, out var nextStatus))
-    {
-        return Results.BadRequest(new ApiResult(false, "INVALID_STATUS"));
-    }
-
-    var createdByLogin = string.IsNullOrWhiteSpace(statusRequest.Login) ? null : statusRequest.Login.Trim();
-    var createdByDeviceId = string.IsNullOrWhiteSpace(statusRequest.DeviceId) ? null : statusRequest.DeviceId.Trim();
-    if (string.IsNullOrWhiteSpace(createdByLogin) || string.IsNullOrWhiteSpace(createdByDeviceId))
-    {
-        return Results.Json(new ApiResult(false, "MISSING_ACCOUNT"), statusCode: StatusCodes.Status401Unauthorized);
-    }
-
-    if (!IsActivePcAccount(postgresConnectionString, createdByLogin, createdByDeviceId))
-    {
-        return Results.Json(new ApiResult(false, "INVALID_ACCOUNT"), statusCode: StatusCodes.Status401Unauthorized);
-    }
-
-    var payloadJson = JsonSerializer.Serialize(new
-    {
-        order_id = statusRequest.OrderId.Value,
-        status = OrderStatusMapper.StatusToString(nextStatus)
-    });
-
-    var requestId = store.AddOrderRequest(new OrderRequest
-    {
-        RequestType = OrderRequestType.SetOrderStatus,
-        PayloadJson = payloadJson,
-        Status = OrderRequestStatus.Pending,
-        CreatedAt = DateTime.Now,
-        CreatedByLogin = createdByLogin,
-        CreatedByDeviceId = createdByDeviceId
-    });
-
-    return Results.Ok(new
-    {
-        ok = true,
-        request_id = requestId,
-        status = OrderRequestStatus.Pending
-    });
+    return Results.BadRequest(new ApiResult(false, "ORDER_STATUS_MANUAL_DISABLED"));
 });
 
 app.MapGet("/api/orders/requests", (HttpRequest request, IDataStore store) =>
@@ -3360,30 +3297,6 @@ static string? NormalizeOrderRequestResolutionStatus(string? value)
         OrderRequestStatus.Rejected => OrderRequestStatus.Rejected,
         _ => null
     };
-}
-
-static bool TryParseManualOrderStatus(string? value, out OrderStatus status)
-{
-    status = OrderStatus.Accepted;
-    if (string.IsNullOrWhiteSpace(value))
-    {
-        return false;
-    }
-
-    var normalized = value.Trim().ToUpperInvariant();
-    switch (normalized)
-    {
-        case "ACCEPTED":
-        case "ПРИНЯТ":
-            status = OrderStatus.Accepted;
-            return true;
-        case "IN_PROGRESS":
-        case "В ПРОЦЕССЕ":
-            status = OrderStatus.InProgress;
-            return true;
-        default:
-            return false;
-    }
 }
 
 static DocType? ParseDocType(string? value)
