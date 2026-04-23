@@ -1346,6 +1346,23 @@ public sealed class DocumentService
         _data.DeleteDocLine(docLineId);
     }
 
+    public void DeleteEmptyDraftDoc(long docId)
+    {
+        var doc = _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
+        if (doc.Status != DocStatus.Draft)
+        {
+            throw new InvalidOperationException("Документ уже закрыт.");
+        }
+
+        var hasLines = _data.GetDocLines(docId).Any();
+        if (hasLines)
+        {
+            throw new InvalidOperationException("Нельзя удалить черновик со строками.");
+        }
+
+        _data.DeleteDoc(docId);
+    }
+
     public void DeleteDocLines(long docId, IReadOnlyCollection<long> docLineIds)
     {
         if (docLineIds == null || docLineIds.Count == 0)

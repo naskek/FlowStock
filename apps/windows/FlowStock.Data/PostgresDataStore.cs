@@ -1007,6 +1007,17 @@ RETURNING id;
         });
     }
 
+    public void DeleteDoc(long docId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "DELETE FROM docs WHERE id = @id");
+            command.Parameters.AddWithValue("@id", docId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
     public IReadOnlyList<DocLine> GetDocLines(long docId)
     {
         return WithConnection(connection =>

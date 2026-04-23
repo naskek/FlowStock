@@ -72,6 +72,7 @@ public interface IDataStore
     int GetMaxDocRefSequenceByYear(int year);
     bool IsDocRefSequenceTaken(int year, int sequence);
     long AddDoc(Doc doc);
+    void DeleteDoc(long docId);
     IReadOnlyList<DocLine> GetDocLines(long docId);
     IReadOnlyList<DocLineView> GetDocLineViews(long docId);
     long AddDocLine(DocLine line);

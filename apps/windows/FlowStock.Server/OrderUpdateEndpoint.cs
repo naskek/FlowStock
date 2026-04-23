@@ -58,11 +58,6 @@ public static class OrderUpdateEndpoint
             return Results.BadRequest(new ApiResult(false, "INVALID_TYPE"));
         }
 
-        if (orderType.Value != existing.Type)
-        {
-            return Results.BadRequest(new ApiResult(false, "ORDER_TYPE_MISMATCH"));
-        }
-
         if (!string.IsNullOrWhiteSpace(updateRequest.Status))
         {
             var parsedStatus = OrderStatusMapper.StatusFromString(updateRequest.Status);
@@ -237,6 +232,16 @@ public static class OrderUpdateEndpoint
         if (ex.Message.Contains("Тип существующего заказа", StringComparison.OrdinalIgnoreCase))
         {
             return "ORDER_TYPE_MISMATCH";
+        }
+
+        if (ex.Message.Contains("Смена типа заказа", StringComparison.OrdinalIgnoreCase))
+        {
+            return "ORDER_TYPE_CHANGE_FORBIDDEN";
+        }
+
+        if (ex.Message.Contains("Нельзя сменить тип заказа", StringComparison.OrdinalIgnoreCase))
+        {
+            return "ORDER_TYPE_CHANGE_FORBIDDEN";
         }
 
         return "ORDER_UPDATE_FAILED";

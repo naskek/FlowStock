@@ -597,7 +597,7 @@ public partial class OrderDetailsWindow : Window
         var type = GetSelectedOrderType();
         var canEdit = _order?.Status != OrderStatus.Shipped;
 
-        TypeCombo.IsEnabled = canEdit && !_orderId.HasValue;
+        TypeCombo.IsEnabled = canEdit;
         PartnerCombo.IsEnabled = canEdit && type == OrderType.Customer;
 
         if (type == OrderType.Internal)

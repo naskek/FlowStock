@@ -116,7 +116,21 @@ public sealed class OrderService
 
         if (existing.Type != type)
         {
-            throw new InvalidOperationException("Тип существующего заказа менять нельзя.");
+            if (existing.Type != OrderType.Customer || type != OrderType.Internal)
+            {
+                throw new InvalidOperationException("Смена типа заказа разрешена только с клиентского на внутренний.");
+            }
+
+            if (_data.HasOutboundDocs(orderId))
+            {
+                throw new InvalidOperationException("Нельзя сменить тип заказа: есть отгрузки или связанные документы.");
+            }
+
+            var shippedTotals = _data.GetShippedTotalsByOrderLine(orderId);
+            if (shippedTotals.Values.Any(qty => qty > QtyTolerance))
+            {
+                throw new InvalidOperationException("Нельзя сменить тип заказа: по заказу уже есть отгрузки.");
+            }
         }
 
         if (type == OrderType.Customer)
@@ -141,8 +155,8 @@ public sealed class OrderService
         {
             Id = orderId,
             OrderRef = orderRef.Trim(),
-            Type = existing.Type,
-            PartnerId = existing.Type == OrderType.Customer ? partnerId : null,
+            Type = type,
+            PartnerId = type == OrderType.Customer ? partnerId : null,
             DueDate = dueDate?.Date,
             Status = existing.Status == OrderStatus.Shipped ? OrderStatus.Shipped : OrderStatus.InProgress,
             Comment = string.IsNullOrWhiteSpace(comment) ? null : comment.Trim(),

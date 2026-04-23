@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Windows;
 using FlowStock.Core.Models;
 
@@ -9,6 +10,8 @@ public partial class NewDocWindow : Window
     private readonly AppServices _services;
     private readonly List<DocTypeOption> _types = new();
     private bool _createInProgress;
+    private bool _suppressTypeSelectionChanged;
+    private string? _fixedDocRefTail;
     private string? _pendingServerDocUid;
     private string? _pendingServerEventId;
     private string? _pendingServerFingerprint;
@@ -35,32 +38,23 @@ public partial class NewDocWindow : Window
         }
 
         TypeCombo.ItemsSource = _types;
+        _suppressTypeSelectionChanged = true;
         TypeCombo.SelectedIndex = 0;
+        _suppressTypeSelectionChanged = false;
 
-        UpdateDocRef();
-        DocRefBox.Focus();
+        InitializeDocRefTail();
+        UpdateDocRefDisplay();
+        CommentBox.Focus();
     }
 
     private void TypeCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
-        UpdateDocRef();
-    }
-
-    private void GenerateRef_Click(object sender, RoutedEventArgs e)
-    {
-        UpdateDocRef();
-    }
-
-    private void UpdateDocRef()
-    {
-        if (TypeCombo.SelectedItem is not DocTypeOption option)
+        if (_suppressTypeSelectionChanged)
         {
             return;
         }
 
-        DocRefBox.Text = _services.WpfReadApi.TryGenerateNextDocRef(option.Type, out var apiDocRef)
-            ? apiDocRef
-            : BuildPreviewDocRef(option.Type);
+        UpdateDocRefDisplay();
     }
 
     private async void Create_Click(object sender, RoutedEventArgs e)
@@ -79,18 +73,60 @@ public partial class NewDocWindow : Window
         await TryCreateViaServerAsync(option);
     }
 
+    private void InitializeDocRefTail()
+    {
+        if (TypeCombo.SelectedItem is not DocTypeOption option)
+        {
+            _fixedDocRefTail = null;
+            return;
+        }
+
+        if (_services.WpfReadApi.TryGenerateNextDocRef(option.Type, out var apiDocRef)
+            && TryExtractDocRefTail(apiDocRef, out var tail))
+        {
+            _fixedDocRefTail = tail;
+            return;
+        }
+
+        _fixedDocRefTail = $"{DateTime.Now:yyyy}-000001";
+    }
+
+    private void UpdateDocRefDisplay()
+    {
+        if (TypeCombo.SelectedItem is not DocTypeOption option)
+        {
+            DocRefText.Text = string.Empty;
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_fixedDocRefTail))
+        {
+            DocRefText.Text = "Не удалось получить номер";
+            return;
+        }
+
+        DocRefText.Text = $"{DocTypeMapper.ToOpString(option.Type)}-{_fixedDocRefTail}";
+    }
+
     private async Task TryCreateViaServerAsync(DocTypeOption option)
     {
+        var requestedDocRef = NormalizeValue(DocRefText.Text);
+        if (string.IsNullOrWhiteSpace(requestedDocRef))
+        {
+            MessageBox.Show("Не удалось определить номер документа.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
         SetCreateInProgress(true);
         try
         {
-            var requestIdentity = GetOrCreatePendingServerRequestIdentity(option);
+            var requestIdentity = GetOrCreatePendingServerRequestIdentity(option, requestedDocRef);
             var result = await _services.WpfCreateDocDrafts.CreateDraftAsync(
                 new WpfCreateDocDraftContext(
                     requestIdentity.DocUid,
                     requestIdentity.EventId,
                     option.Type,
-                    NormalizeValue(DocRefBox.Text),
+                    requestedDocRef,
                     NormalizeValue(CommentBox.Text)));
 
             if (result.IsSuccess)
@@ -108,7 +144,7 @@ public partial class NewDocWindow : Window
                 CreatedDocId = result.Response.Doc.Id;
                 if (!string.IsNullOrWhiteSpace(result.Response.Doc.DocRef))
                 {
-                    DocRefBox.Text = result.Response.Doc.DocRef;
+                    DocRefText.Text = result.Response.Doc.DocRef;
                 }
 
                 if (!string.IsNullOrWhiteSpace(result.Message))
@@ -140,9 +176,9 @@ public partial class NewDocWindow : Window
         }
     }
 
-    private (string DocUid, string EventId) GetOrCreatePendingServerRequestIdentity(DocTypeOption option)
+    private (string DocUid, string EventId) GetOrCreatePendingServerRequestIdentity(DocTypeOption option, string requestedDocRef)
     {
-        var fingerprint = BuildServerRequestFingerprint(option);
+        var fingerprint = BuildServerRequestFingerprint(option, requestedDocRef);
         if (string.IsNullOrWhiteSpace(_pendingServerDocUid)
             || string.IsNullOrWhiteSpace(_pendingServerEventId)
             || !string.Equals(_pendingServerFingerprint, fingerprint, StringComparison.Ordinal))
@@ -155,12 +191,12 @@ public partial class NewDocWindow : Window
         return (_pendingServerDocUid!, _pendingServerEventId!);
     }
 
-    private string BuildServerRequestFingerprint(DocTypeOption option)
+    private string BuildServerRequestFingerprint(DocTypeOption option, string requestedDocRef)
     {
         return string.Join(
             "|",
             option.Type.ToString(),
-            NormalizeValue(DocRefBox.Text) ?? "<null>",
+            requestedDocRef,
             NormalizeValue(CommentBox.Text) ?? "<null>");
     }
 
@@ -175,7 +211,26 @@ public partial class NewDocWindow : Window
     {
         _createInProgress = inProgress;
         CreateButton.IsEnabled = !inProgress;
-        GenerateRefButton.IsEnabled = !inProgress;
+        TypeCombo.IsEnabled = !inProgress;
+        CommentBox.IsEnabled = !inProgress;
+    }
+
+    private static bool TryExtractDocRefTail(string? docRef, out string tail)
+    {
+        tail = string.Empty;
+        if (string.IsNullOrWhiteSpace(docRef))
+        {
+            return false;
+        }
+
+        var parts = docRef.Trim().Split('-', 3, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 3)
+        {
+            return false;
+        }
+
+        tail = $"{parts[1]}-{parts[2]}";
+        return true;
     }
 
     private static MessageBoxImage ResolveServerCreateMessageImage(WpfCreateDocDraftResultKind kind)
@@ -197,11 +252,5 @@ public partial class NewDocWindow : Window
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
-    private static string BuildPreviewDocRef(DocType type)
-    {
-        return $"PREVIEW-{DocTypeMapper.ToOpString(type)}-{DateTime.Now:yyyyMMddHHmmss}";
-    }
-
     private sealed record DocTypeOption(DocType Type, string Name);
 }
-
