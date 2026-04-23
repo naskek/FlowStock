@@ -274,13 +274,23 @@ body.pc-body {
 }
 
 .pc-status-badge-success {
-  color: #18743a;
-  background: #e8f7ee;
+  color: #2d6a3d;
+  background: #e8f7ec;
 }
 
 .pc-status-badge-success .pc-status-badge-icon {
   color: #ffffff;
-  background: #1f8f46;
+  background: #6fc28a;
+}
+
+.pc-status-badge-ready {
+  color: #2d6a3d;
+  background: #e8f7ec;
+}
+
+.pc-status-badge-ready .pc-status-badge-icon {
+  color: #ffffff;
+  background: #6fc28a;
 }
 
 .pc-status-badge-warning {
@@ -294,23 +304,23 @@ body.pc-body {
 }
 
 .pc-status-badge-completed {
-  color: #52606d;
-  background: #eef2f5;
+  color: #ffffff;
+  background: #1f7a3e;
 }
 
 .pc-status-badge-completed .pc-status-badge-icon {
   color: #ffffff;
-  background: #73808c;
+  background: #166330;
 }
 
 .pc-status-badge-inprogress {
-  color: #0f4c81;
-  background: #e8f2fb;
+  color: #8a4b00;
+  background: #fdeacc;
 }
 
 .pc-status-badge-inprogress .pc-status-badge-icon {
   color: #ffffff;
-  background: #1c6db3;
+  background: #e3982e;
 }
 
 .pc-login-card {

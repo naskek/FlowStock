@@ -2108,6 +2108,15 @@ public partial class MainWindow : Window
         LoadStock(StatusSearchBox.Text);
     }
 
+    private void DocNumberingSettingsMenu_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new DocNumberingSettingsWindow(_services)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+    }
+
     private void ImportErrors_Click(object sender, RoutedEventArgs e)
     {
         SelectTab(TabDocsIndex);

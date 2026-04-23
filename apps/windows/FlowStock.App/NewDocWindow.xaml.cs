@@ -1,17 +1,24 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Text.RegularExpressions;
 using System.Windows;
 using FlowStock.Core.Models;
+using FlowStock.Core.Services;
 
 namespace FlowStock.App;
 
 public partial class NewDocWindow : Window
 {
+    private static readonly Regex YearRegex = new(@"^\d{4}$", RegexOptions.Compiled);
+
     private readonly AppServices _services;
     private readonly List<DocTypeOption> _types = new();
+    private readonly DocumentNumberingSettings _numberingSettings;
     private bool _createInProgress;
     private bool _suppressTypeSelectionChanged;
-    private string? _fixedDocRefTail;
+    private int _sequenceNumber = 1;
+    private string _docYear = DateTime.Now.Year.ToString(CultureInfo.InvariantCulture);
     private string? _pendingServerDocUid;
     private string? _pendingServerEventId;
     private string? _pendingServerFingerprint;
@@ -21,6 +28,7 @@ public partial class NewDocWindow : Window
     public NewDocWindow(AppServices services)
     {
         _services = services;
+        _numberingSettings = (_services.Settings.Load().DocumentNumbering ?? new DocumentNumberingSettings()).Normalize();
         InitializeComponent();
 
         var typeOrder = new[]
@@ -42,7 +50,7 @@ public partial class NewDocWindow : Window
         TypeCombo.SelectedIndex = 0;
         _suppressTypeSelectionChanged = false;
 
-        InitializeDocRefTail();
+        InitializeDocRefParts();
         UpdateDocRefDisplay();
         CommentBox.Focus();
     }
@@ -73,39 +81,51 @@ public partial class NewDocWindow : Window
         await TryCreateViaServerAsync(option);
     }
 
-    private void InitializeDocRefTail()
+    private void InitializeDocRefParts()
     {
         if (TypeCombo.SelectedItem is not DocTypeOption option)
         {
-            _fixedDocRefTail = null;
             return;
         }
 
         if (_services.WpfReadApi.TryGenerateNextDocRef(option.Type, out var apiDocRef)
-            && TryExtractDocRefTail(apiDocRef, out var tail))
+            && TryParseDocRef(apiDocRef, out var apiYear, out var sequence))
         {
-            _fixedDocRefTail = tail;
+            _docYear = ResolveDocYear(apiYear);
+            _sequenceNumber = sequence;
             return;
         }
 
-        _fixedDocRefTail = $"{DateTime.Now:yyyy}-000001";
+        _docYear = ResolveDocYear(DateTime.Now.Year.ToString(CultureInfo.InvariantCulture));
+        _sequenceNumber = 1;
     }
 
-    private void UpdateDocRefDisplay()
+    private void UpdateDocRefDisplay(string? forcedDocRef = null)
     {
+        if (!string.IsNullOrWhiteSpace(forcedDocRef))
+        {
+            DocRefText.Text = forcedDocRef.Trim();
+            return;
+        }
+
         if (TypeCombo.SelectedItem is not DocTypeOption option)
         {
             DocRefText.Text = string.Empty;
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(_fixedDocRefTail))
+        var sequenceText = FormatSequence(_sequenceNumber);
+        if (string.IsNullOrWhiteSpace(sequenceText))
         {
             DocRefText.Text = "Не удалось получить номер";
             return;
         }
 
-        DocRefText.Text = $"{DocTypeMapper.ToOpString(option.Type)}-{_fixedDocRefTail}";
+        var builtRef = _numberingSettings.Template
+            .Replace("{PREFIX}", DocRefGenerator.GetPrefix(option.Type), StringComparison.OrdinalIgnoreCase)
+            .Replace("{YYYY}", _docYear, StringComparison.OrdinalIgnoreCase)
+            .Replace("{SEQ}", sequenceText, StringComparison.OrdinalIgnoreCase);
+        DocRefText.Text = builtRef;
     }
 
     private async Task TryCreateViaServerAsync(DocTypeOption option)
@@ -144,7 +164,7 @@ public partial class NewDocWindow : Window
                 CreatedDocId = result.Response.Doc.Id;
                 if (!string.IsNullOrWhiteSpace(result.Response.Doc.DocRef))
                 {
-                    DocRefText.Text = result.Response.Doc.DocRef;
+                    UpdateDocRefDisplay(result.Response.Doc.DocRef);
                 }
 
                 if (!string.IsNullOrWhiteSpace(result.Message))
@@ -215,9 +235,34 @@ public partial class NewDocWindow : Window
         CommentBox.IsEnabled = !inProgress;
     }
 
-    private static bool TryExtractDocRefTail(string? docRef, out string tail)
+    private string ResolveDocYear(string defaultYear)
     {
-        tail = string.Empty;
+        return YearRegex.IsMatch(_numberingSettings.Year ?? string.Empty)
+            ? _numberingSettings.Year!
+            : defaultYear;
+    }
+
+    private string FormatSequence(int sequence)
+    {
+        if (sequence < 1)
+        {
+            return string.Empty;
+        }
+
+        return _numberingSettings.SequenceStyle.ToUpperInvariant() switch
+        {
+            "D6" => sequence.ToString("D6", CultureInfo.InvariantCulture),
+            "D5" => sequence.ToString("D5", CultureInfo.InvariantCulture),
+            "D4" => sequence.ToString("D4", CultureInfo.InvariantCulture),
+            "N" => sequence.ToString(CultureInfo.InvariantCulture),
+            _ => sequence.ToString("D6", CultureInfo.InvariantCulture)
+        };
+    }
+
+    private static bool TryParseDocRef(string? docRef, out string year, out int sequence)
+    {
+        year = string.Empty;
+        sequence = 0;
         if (string.IsNullOrWhiteSpace(docRef))
         {
             return false;
@@ -229,7 +274,19 @@ public partial class NewDocWindow : Window
             return false;
         }
 
-        tail = $"{parts[1]}-{parts[2]}";
+        if (!YearRegex.IsMatch(parts[1]))
+        {
+            return false;
+        }
+
+        if (!int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedSequence)
+            || parsedSequence < 1)
+        {
+            return false;
+        }
+
+        year = parts[1];
+        sequence = parsedSequence;
         return true;
     }
 

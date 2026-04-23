@@ -1,7 +1,7 @@
 <Window x:Class="FlowStock.App.NewDocWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Новый документ" Height="420" Width="520"
+        Title="Новый документ" Height="260" Width="520"
         WindowStartupLocation="CenterOwner">
     <Grid Margin="12">
         <StackPanel>

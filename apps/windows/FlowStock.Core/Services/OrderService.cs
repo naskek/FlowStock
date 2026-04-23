@@ -116,20 +116,37 @@ public sealed class OrderService
 
         if (existing.Type != type)
         {
-            if (existing.Type != OrderType.Customer || type != OrderType.Internal)
+            if ((existing.Type == OrderType.Customer && type == OrderType.Internal))
             {
-                throw new InvalidOperationException("Смена типа заказа разрешена только с клиентского на внутренний.");
-            }
+                if (_data.HasOutboundDocs(orderId))
+                {
+                    throw new InvalidOperationException("Нельзя сменить тип заказа: есть отгрузки или связанные документы.");
+                }
 
-            if (_data.HasOutboundDocs(orderId))
-            {
-                throw new InvalidOperationException("Нельзя сменить тип заказа: есть отгрузки или связанные документы.");
+                var shippedTotals = _data.GetShippedTotalsByOrderLine(orderId);
+                if (shippedTotals.Values.Any(qty => qty > QtyTolerance))
+                {
+                    throw new InvalidOperationException("Нельзя сменить тип заказа: по заказу уже есть отгрузки.");
+                }
             }
-
-            var shippedTotals = _data.GetShippedTotalsByOrderLine(orderId);
-            if (shippedTotals.Values.Any(qty => qty > QtyTolerance))
+            else if (existing.Type == OrderType.Internal && type == OrderType.Customer)
             {
-                throw new InvalidOperationException("Нельзя сменить тип заказа: по заказу уже есть отгрузки.");
+                var hasProductionReceipts = _data.GetDocsByOrder(orderId)
+                    .Any(doc => doc.Type == DocType.ProductionReceipt);
+                if (hasProductionReceipts)
+                {
+                    throw new InvalidOperationException("Нельзя сменить тип заказа: по внутреннему заказу уже есть выпуски продукции.");
+                }
+
+                var receiptRemaining = _data.GetOrderReceiptRemaining(orderId);
+                if (receiptRemaining.Any(line => line.QtyReceived > QtyTolerance))
+                {
+                    throw new InvalidOperationException("Нельзя сменить тип заказа: по внутреннему заказу уже есть выпуски продукции.");
+                }
+            }
+            else
+            {
+                throw new InvalidOperationException("Смена типа заказа разрешена только между клиентским и внутренним заказом.");
             }
         }
 
@@ -425,9 +442,9 @@ public sealed class OrderService
             };
         }
 
-        var hasOutbound = _data.HasOutboundDocs(order.Id);
         var lines = _data.GetOrderLines(order.Id);
         var shippedTotals = _data.GetShippedTotalsByOrderLine(order.Id);
+        var hasShipped = shippedTotals.Values.Any(qty => qty > QtyTolerance);
         var customerReceiptLines = _data.GetOrderReceiptRemaining(order.Id);
         var producedByLine = customerReceiptLines.ToDictionary(line => line.OrderLineId, line => line.QtyReceived);
         var hasProduced = customerReceiptLines.Any(line => line.QtyReceived > QtyTolerance);
@@ -438,7 +455,7 @@ public sealed class OrderService
             return shipped + QtyTolerance >= line.QtyOrdered;
         });
 
-        var nextStatus = order.Status;
+        var nextStatus = OrderStatus.InProgress;
         if (fullyShipped)
         {
             nextStatus = OrderStatus.Shipped;
@@ -455,7 +472,7 @@ public sealed class OrderService
                 nextStatus = OrderStatus.Accepted;
             }
 
-            if (hasOutbound && !fullyShipped)
+            if (hasShipped && !fullyShipped)
             {
                 nextStatus = OrderStatus.InProgress;
             }

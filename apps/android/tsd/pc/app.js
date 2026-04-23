@@ -1293,7 +1293,7 @@
 
   function toOrderStatusCode(display) {
     var normalized = String(display || "").trim().toLowerCase();
-    if (normalized === "готов к отгрузке" || normalized === "принят" || normalized === "accepted") {
+    if (normalized === "готов" || normalized === "готов к отгрузке" || normalized === "принят" || normalized === "accepted") {
       return "ACCEPTED";
     }
     if (normalized === "в процессе" || normalized === "в работе" || normalized === "in_progress") {
@@ -1302,7 +1302,10 @@
     if (normalized === "черновик" || normalized === "draft") {
       return "IN_PROGRESS";
     }
-    if (normalized === "отгружен" || normalized === "shipped") {
+    if (normalized === "выполнен" || normalized === "отгружен" || normalized === "shipped") {
+      return "SHIPPED";
+    }
+    if (normalized === "завершен") {
       return "SHIPPED";
     }
     return "";
@@ -1315,10 +1318,10 @@
 
     var statusCode = toOrderStatusCode(order && order.status);
     if (statusCode === "SHIPPED") {
-      return { label: "Отгружен", tone: "completed" };
+      return { label: "Выполнен", tone: "completed" };
     }
     if (statusCode === "ACCEPTED") {
-      return { label: "Готов к отгрузке", tone: "success" };
+      return { label: "Готов", tone: "ready" };
     }
 
     return { label: "В работе", tone: "inprogress" };
@@ -1399,16 +1402,11 @@
     return {
       ready: totalShortage <= 0.000001,
       shortage: totalShortage,
-      text: totalShortage <= 0.000001 ? "Готов к отгрузке" : "Не готов к отгрузке",
+      text: totalShortage <= 0.000001 ? "Готов" : "Не готов",
     };
   }
 
   function getOrderStatusHtml(order) {
-    var readiness = order && order.shipment_readiness;
-    if (readiness && readiness.text) {
-      return renderStatusBadge(readiness.text, readiness.ready ? "success" : "warning");
-    }
-
     var status = getOrderStatusPresentation(order);
     return renderStatusBadge(status.label, status.tone);
   }
@@ -1438,7 +1436,7 @@
   function renderStatusBadge(text, tone, extraClass) {
     var normalizedTone = tone || "neutral";
     var icon = "•";
-    if (normalizedTone === "success") {
+    if (normalizedTone === "success" || normalizedTone === "ready") {
       icon = "✓";
     } else if (normalizedTone === "warning") {
       icon = "!";

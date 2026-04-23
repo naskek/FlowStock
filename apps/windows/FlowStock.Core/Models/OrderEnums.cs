@@ -79,10 +79,10 @@ public static class OrderStatusMapper
     {
         return status switch
         {
-            OrderStatus.Draft => "Черновик",
-            OrderStatus.Accepted => "Готов к отгрузке",
+            OrderStatus.Draft => "В работе",
+            OrderStatus.Accepted => "Готов",
             OrderStatus.InProgress => "В работе",
-            OrderStatus.Shipped => type == OrderType.Internal ? "Завершен" : "Отгружен",
+            OrderStatus.Shipped => "Выполнен",
             _ => "Неизвестно"
         };
     }
