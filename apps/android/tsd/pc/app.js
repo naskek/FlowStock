@@ -7,6 +7,7 @@
   var accountLabel = document.getElementById("accountLabel");
 
   var currentView = "stock";
+  var LAST_VIEW_KEY = "flowstock_pc_last_view";
   var cachedItems = [];
   var cachedItemsById = {};
   var cachedItemTypes = [];
@@ -1309,6 +1310,33 @@
       return "SHIPPED";
     }
     return "";
+  }
+
+  function loadLastView() {
+    try {
+      var value = localStorage.getItem(LAST_VIEW_KEY);
+      if (!value) {
+        return "";
+      }
+      var normalized = String(value).trim().toLowerCase();
+      if (normalized === "stock" || normalized === "catalog" || normalized === "orders") {
+        return normalized;
+      }
+      return "";
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function saveLastView(view) {
+    try {
+      var normalized = String(view || "").trim().toLowerCase();
+      if (normalized === "stock" || normalized === "catalog" || normalized === "orders") {
+        localStorage.setItem(LAST_VIEW_KEY, normalized);
+      }
+    } catch (error) {
+      // ignore storage failures
+    }
   }
 
   function getOrderStatusPresentation(order) {
@@ -2682,6 +2710,7 @@
     }
 
     currentView = allowedView;
+    saveLastView(currentView);
     setActiveTab(allowedView);
 
     if (allowedView === "catalog") {
@@ -2708,6 +2737,11 @@
   }
 
   function init() {
+    var rememberedView = loadLastView();
+    if (rememberedView) {
+      currentView = rememberedView;
+    }
+
     var account = loadAccount();
     if (!hasPcAccess(account)) {
       applyClientBlocks(null);

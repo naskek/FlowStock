@@ -1284,8 +1284,85 @@
     return { name: parts[0] };
   }
 
+  var LAST_ROUTE_KEY = "flowstock_tsd_last_route";
+
+  function normalizeRouteForRestore(route) {
+    var value = String(route || "").trim();
+    if (!value) {
+      return "";
+    }
+
+    if (value.charAt(0) !== "/") {
+      value = "/" + value.replace(/^#+/, "");
+    }
+
+    var routeInfo = null;
+    if (value.charAt(0) === "/") {
+      routeInfo = getRouteFromPath(value);
+    }
+
+    if (!routeInfo || !routeInfo.name || routeInfo.name === "login") {
+      return "";
+    }
+
+    return value;
+  }
+
+  function getRouteFromPath(path) {
+    var cleanPath = String(path || "").trim();
+    if (cleanPath.charAt(0) === "#") {
+      cleanPath = cleanPath.slice(1);
+    }
+    if (cleanPath.indexOf("/") === 0) {
+      cleanPath = cleanPath.slice(1);
+    }
+    if (!cleanPath) {
+      return { name: "home" };
+    }
+
+    var parts = cleanPath.split("/");
+    if (parts[0] === "operations") {
+      return { name: "operations" };
+    }
+    if (parts[0] === "docs" && parts[1]) {
+      return { name: "docs", op: decodeURIComponent(parts[1]) };
+    }
+    if (parts[0] === "docs") {
+      return { name: "docs" };
+    }
+    if (parts[0] === "doc" && parts[1]) {
+      return { name: "doc", id: decodeURIComponent(parts[1]) };
+    }
+    if (parts[0] === "order" && parts[1]) {
+      return { name: "order", id: decodeURIComponent(parts[1]) };
+    }
+    return { name: parts[0] };
+  }
+
+  function loadLastRoute() {
+    try {
+      return normalizeRouteForRestore(localStorage.getItem(LAST_ROUTE_KEY));
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function saveLastRoute(route) {
+    var normalized = normalizeRouteForRestore(route);
+    if (!normalized) {
+      return;
+    }
+
+    try {
+      localStorage.setItem(LAST_ROUTE_KEY, normalized);
+    } catch (error) {
+      // ignore storage failures
+    }
+  }
+
   function navigate(route) {
     if (route) {
+      saveLastRoute(route);
       window.location.hash = route;
     }
   }
@@ -1319,10 +1396,11 @@
     setScanInputHandlers(null, null);
     setPreferredScanTarget(null);
     if (!window.location.hash || window.location.hash === "#") {
-      navigate("/home");
+      navigate(loadLastRoute() || "/home");
       return;
     }
     var route = getRoute();
+    saveLastRoute("/" + (window.location.hash || "").replace(/^#\/?/, ""));
     currentRoute = route;
     setCurrentClientBlockContext(resolveRouteBlockContext(route));
 
