@@ -11,6 +11,7 @@ using FlowStock.Core.Services;
 using FlowStock.Data;
 using FlowStock.Server;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.Extensions.FileProviders;
@@ -30,6 +31,7 @@ builder.Services.AddSingleton<DocumentService>();
 builder.Services.AddSingleton<CatalogService>();
 builder.Services.AddSingleton<ImportService>();
 builder.Services.AddSingleton<ItemPackagingService>();
+builder.Services.AddSingleton<LiveUpdateHub>();
 
 var app = builder.Build();
 var appVersion = ResolveAppVersion();
@@ -97,6 +99,20 @@ app.Use(async (context, next) =>
     }
 
     await next();
+});
+
+app.Use(async (context, next) =>
+{
+    await next();
+
+    if (!ShouldPublishLiveEvent(context))
+    {
+        return;
+    }
+
+    var liveHub = context.RequestServices.GetRequiredService<LiveUpdateHub>();
+    var path = context.Request.Path.HasValue ? context.Request.Path.Value! : "/api";
+    liveHub.Publish("api_write", path);
 });
 
 var tsdRoot = ServerPaths.TsdRoot;
@@ -172,6 +188,66 @@ app.MapGet("/api/ping", () =>
         server_time = DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture),
         version = typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown"
     });
+});
+
+app.MapGet("/api/live", async (HttpContext context, LiveUpdateHub liveHub) =>
+{
+    context.Response.Headers.ContentType = "text/event-stream";
+    context.Response.Headers.CacheControl = "no-cache";
+    context.Response.Headers.Connection = "keep-alive";
+    context.Response.Headers["X-Accel-Buffering"] = "no";
+    context.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+
+    var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+    var (subscriberId, reader) = liveHub.Subscribe();
+    var cancellationToken = context.RequestAborted;
+
+    try
+    {
+        await context.Response.WriteAsync("event: connected\ndata: {}\n\n", cancellationToken);
+        await context.Response.Body.FlushAsync(cancellationToken);
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var waitReadTask = reader.WaitToReadAsync(cancellationToken).AsTask();
+            var keepAliveTask = Task.Delay(TimeSpan.FromSeconds(20), cancellationToken);
+            var completed = await Task.WhenAny(waitReadTask, keepAliveTask);
+
+            if (completed == keepAliveTask)
+            {
+                await context.Response.WriteAsync(": ping\n\n", cancellationToken);
+                await context.Response.Body.FlushAsync(cancellationToken);
+                continue;
+            }
+
+            if (!waitReadTask.Result)
+            {
+                break;
+            }
+
+            while (reader.TryRead(out var evt))
+            {
+                var payload = JsonSerializer.Serialize(new
+                {
+                    event_id = evt.EventId,
+                    ts_utc = evt.TsUtc,
+                    reason = evt.Reason,
+                    path = evt.Path
+                }, jsonOptions);
+
+                await context.Response.WriteAsync($"event: changed\ndata: {payload}\n\n", cancellationToken);
+                await context.Response.Body.FlushAsync(cancellationToken);
+            }
+        }
+    }
+    catch (OperationCanceledException)
+    {
+        // client disconnected
+    }
+    finally
+    {
+        liveHub.Unsubscribe(subscriberId);
+    }
 });
 
 app.MapGet("/api/client-blocks", (IDataStore store) =>
@@ -1629,7 +1705,7 @@ app.MapPost("/api/docs/{docId:long}/production-receipt/auto-distribute-hus", asy
         return Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT"));
     }
 
-    if (doc.Type != DocType.ProductionReceipt)
+    if (doc.Type is not (DocType.ProductionReceipt or DocType.Inbound))
     {
         return Results.BadRequest(new ApiResult(false, "INVALID_DOC_TYPE"));
     }
@@ -1675,7 +1751,7 @@ app.MapPost("/api/docs/{docId:long}/lines/{lineId:long}/distribute-hu-capacity",
         return Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT"));
     }
 
-    if (doc.Type != DocType.ProductionReceipt)
+    if (doc.Type is not (DocType.ProductionReceipt or DocType.Inbound))
     {
         return Results.BadRequest(new ApiResult(false, "INVALID_DOC_TYPE"));
     }
@@ -1731,7 +1807,7 @@ app.MapPost("/api/docs/{docId:long}/lines/{lineId:long}/pack-single-hu", async (
         return Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT"));
     }
 
-    if (doc.Type != DocType.ProductionReceipt)
+    if (doc.Type is not (DocType.ProductionReceipt or DocType.Inbound))
     {
         return Results.BadRequest(new ApiResult(false, "INVALID_DOC_TYPE"));
     }
@@ -3568,6 +3644,30 @@ static string ResolveAppVersion()
     var assemblyVersion = assembly.GetName().Version?.ToString() ?? "0.0.0";
     var moduleVersionId = assembly.ManifestModule.ModuleVersionId.ToString("N");
     return $"{assemblyVersion}-{moduleVersionId}";
+}
+
+static bool ShouldPublishLiveEvent(HttpContext context)
+{
+    var path = context.Request.Path;
+    if (!path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase))
+    {
+        return false;
+    }
+
+    if (path.StartsWithSegments("/api/live", StringComparison.OrdinalIgnoreCase))
+    {
+        return false;
+    }
+
+    if (HttpMethods.IsGet(context.Request.Method)
+        || HttpMethods.IsHead(context.Request.Method)
+        || HttpMethods.IsOptions(context.Request.Method))
+    {
+        return false;
+    }
+
+    return context.Response.StatusCode >= StatusCodes.Status200OK
+           && context.Response.StatusCode < StatusCodes.Status400BadRequest;
 }
 
 enum PartnerRole

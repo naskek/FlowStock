@@ -822,9 +822,9 @@ public sealed class DocumentService
             throw new InvalidOperationException("Документ уже закрыт.");
         }
 
-        if (doc.Type != DocType.ProductionReceipt)
+        if (doc.Type is not (DocType.ProductionReceipt or DocType.Inbound))
         {
-            throw new InvalidOperationException("Признак \"в 1 HU\" доступен только для выпуска продукции.");
+            throw new InvalidOperationException("Признак \"в 1 HU\" доступен только для приемки и выпуска продукции.");
         }
 
         var line = EnsureOrderLineLinks(_data, doc, _data.GetDocLines(docId)).FirstOrDefault(entry => entry.Id == docLineId);

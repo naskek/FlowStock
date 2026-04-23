@@ -1353,16 +1353,76 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        if (_doc == null || _selectedDocLine == null)
+        if (_doc == null)
         {
-            MessageBox.Show("Выберите строку.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Документ не выбран.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        var line = FindCurrentDocLine(_selectedDocLine.Id);
-        if (line == null)
+        var selectedDisplays = GetSelectedDocLines();
+        if (_doc.Type == DocType.Inbound)
         {
-            MessageBox.Show("Строка не найдена.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+            if (selectedDisplays.Count > 0)
+            {
+                var selectedHuCode = GetSelectedHuCode(DocHuCombo);
+                var selectedInboundLines = selectedDisplays
+                    .Select(display => FindCurrentDocLine(display.Id))
+                    .Where(line => line != null)
+                    .Cast<DocLine>()
+                    .ToList();
+                if (selectedInboundLines.Count == 0)
+                {
+                    MessageBox.Show("Строки не найдены.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                if (!string.IsNullOrWhiteSpace(selectedHuCode))
+                {
+                    if (!TryEnsureHuExists(selectedHuCode))
+                    {
+                        return;
+                    }
+
+                    if (selectedInboundLines.Count == 1)
+                    {
+                        await TryAssignHuToSingleLineAsync(selectedInboundLines[0], selectedHuCode);
+                    }
+                    else
+                    {
+                        await TryAssignHuToMultipleLinesAsync(selectedInboundLines, selectedHuCode);
+                    }
+                    return;
+                }
+
+                await TryAutoAssignInboundHuToLinesAsync(selectedInboundLines);
+                return;
+            }
+
+            var inboundTargets = _docLines.ToList();
+            if (inboundTargets.Count == 0)
+            {
+                MessageBox.Show("В документе нет строк для назначения HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var inboundLines = inboundTargets
+                .Select(display => FindCurrentDocLine(display.Id))
+                .Where(line => line != null)
+                .Cast<DocLine>()
+                .ToList();
+            if (inboundLines.Count == 0)
+            {
+                MessageBox.Show("Строки не найдены.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            await TryAutoAssignInboundHuToLinesAsync(inboundLines);
+            return;
+        }
+
+        if (selectedDisplays.Count == 0)
+        {
+            MessageBox.Show("Выберите хотя бы одну строку.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -1378,6 +1438,24 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
+        var selectedLines = selectedDisplays
+            .Select(display => FindCurrentDocLine(display.Id))
+            .Where(line => line != null)
+            .Cast<DocLine>()
+            .ToList();
+        if (selectedLines.Count == 0)
+        {
+            MessageBox.Show("Строки не найдены.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (selectedLines.Count > 1)
+        {
+            await TryAssignHuToMultipleLinesAsync(selectedLines, selectedHu);
+            return;
+        }
+
+        var line = selectedLines[0];
         var item = FindItem(line.ItemId);
         if (_doc.Type == DocType.ProductionReceipt
             && item?.MaxQtyPerHu is double maxQtyPerHu
@@ -1394,6 +1472,131 @@ public partial class OperationDetailsWindow : Window
             {
                 MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
             }
+            return;
+        }
+
+        await TryAssignHuToSingleLineAsync(line, selectedHu);
+    }
+
+    private async Task TryAutoAssignInboundHuToLinesAsync(IReadOnlyList<DocLine> lines)
+    {
+        if (_doc == null || _doc.Type != DocType.Inbound || lines.Count == 0)
+        {
+            return;
+        }
+
+        var totalsByHu = GetHuTotals();
+        var targetLineIds = lines.Select(line => line.Id).ToHashSet();
+        var reservedInDoc = _docLines
+            .Where(line => !targetLineIds.Contains(line.Id))
+            .Select(line => NormalizeHuValue(line.ToHu))
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Cast<string>()
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var freeCodes = GetFreeHuCodes(totalsByHu)
+            .Where(code => !reservedInDoc.Contains(code))
+            .ToList();
+        if (freeCodes.Count == 0)
+        {
+            MessageBox.Show("Нет свободных HU для назначения.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var sharedLines = lines
+            .Where(line => line.PackSingleHu)
+            .OrderBy(line => line.Id)
+            .ToList();
+        var separateLines = lines
+            .Where(line => !line.PackSingleHu)
+            .OrderBy(line => line.Id)
+            .ToList();
+
+        var requiredHuCount = separateLines.Count + (sharedLines.Count > 0 ? 1 : 0);
+        if (freeCodes.Count < requiredHuCount)
+        {
+            MessageBox.Show(
+                $"Недостаточно свободных HU: нужно {requiredHuCount}, доступно {freeCodes.Count}.",
+                "Операция",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        var allocatedCodes = new Queue<string>(freeCodes);
+        var plannedByLineId = new Dictionary<long, string>();
+        if (sharedLines.Count > 0)
+        {
+            var sharedHu = allocatedCodes.Dequeue();
+            foreach (var line in sharedLines)
+            {
+                plannedByLineId[line.Id] = sharedHu;
+            }
+        }
+
+        foreach (var line in separateLines)
+        {
+            plannedByLineId[line.Id] = allocatedCodes.Dequeue();
+        }
+
+        var assigned = 0;
+        var failed = 0;
+        foreach (var line in lines.OrderBy(line => line.Id))
+        {
+            if (!plannedByLineId.TryGetValue(line.Id, out var targetHu) || string.IsNullOrWhiteSpace(targetHu))
+            {
+                break;
+            }
+
+            if (!TryEnsureHuExists(targetHu))
+            {
+                failed += 1;
+                continue;
+            }
+
+            var result = await _services.WpfDocumentRuntimeApi.TryAssignDocLineHuAsync(
+                _doc.Id,
+                line.Id,
+                line.Qty,
+                null,
+                targetHu);
+            if (!result.IsSuccess)
+            {
+                failed += 1;
+                continue;
+            }
+
+            assigned += 1;
+        }
+
+        LoadDoc();
+        if (assigned <= 0)
+        {
+            MessageBox.Show("Не удалось назначить HU выбранным строкам.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (assigned < lines.Count || failed > 0)
+        {
+            MessageBox.Show(
+                $"HU назначены частично: {assigned} из {lines.Count}.",
+                "Операция",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        MessageBox.Show(
+            $"Свободные HU назначены: {assigned} строк.",
+            "Операция",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
+    }
+
+    private async Task TryAssignHuToSingleLineAsync(DocLine line, string selectedHu)
+    {
+        if (_doc == null)
+        {
             return;
         }
 
@@ -1447,6 +1650,60 @@ public partial class OperationDetailsWindow : Window
         }
 
         LoadDoc();
+    }
+
+    private async Task TryAssignHuToMultipleLinesAsync(IReadOnlyList<DocLine> lines, string selectedHu)
+    {
+        if (_doc == null || lines.Count == 0)
+        {
+            return;
+        }
+
+        var failures = new List<string>();
+        foreach (var line in lines)
+        {
+            var targetFromHu = line.FromHu;
+            var targetToHu = line.ToHu;
+            ApplyLineHu(_doc.Type, selectedHu, ref targetFromHu, ref targetToHu);
+
+            if (_doc.Type == DocType.Outbound && IsFullServerLineLifecycleEnabled())
+            {
+                var ok = await TryApplyOutboundHuMutationViaServerAsync(
+                    line,
+                    line.Qty,
+                    line.FromLocationId,
+                    targetFromHu,
+                    targetToHu,
+                    "Операция",
+                    "assign-hu-bulk");
+                if (!ok)
+                {
+                    failures.Add(line.ItemId.ToString(CultureInfo.InvariantCulture));
+                }
+                continue;
+            }
+
+            var assignResult = await _services.WpfDocumentRuntimeApi.TryAssignDocLineHuAsync(
+                _doc.Id,
+                line.Id,
+                line.Qty,
+                targetFromHu,
+                targetToHu);
+            if (!assignResult.IsSuccess)
+            {
+                failures.Add(line.ItemId.ToString(CultureInfo.InvariantCulture));
+            }
+        }
+
+        LoadDoc();
+        if (failures.Count > 0)
+        {
+            MessageBox.Show(
+                "HU назначен не для всех выбранных строк. Обновите документ и проверьте строки с ошибкой.",
+                "Операция",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
     }
 
     private async void AutoHuButton_Click(object sender, RoutedEventArgs e)
@@ -1738,7 +1995,7 @@ public partial class OperationDetailsWindow : Window
 
     private async void PackSingleHuCheckBox_Click(object sender, RoutedEventArgs e)
     {
-        if (_doc == null || _doc.Type != DocType.ProductionReceipt)
+        if (_doc == null || _doc.Type is not (DocType.ProductionReceipt or DocType.Inbound))
         {
             return;
         }
@@ -1758,7 +2015,7 @@ public partial class OperationDetailsWindow : Window
         if (!result.IsSuccess)
         {
             LoadDocLines();
-            MessageBox.Show(result.Error ?? "Не удалось сохранить настройку Pack single HU через сервер.", "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(result.Error ?? "Не удалось сохранить настройку \"Общий HU\" через сервер.", "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
             return;
         }
 
@@ -2128,6 +2385,7 @@ public partial class OperationDetailsWindow : Window
                 showPartner = true;
                 partnerLabel = "Поставщик";
                 showTo = false;
+                showHuHeader = false;
                 toLabel = "Место хранения";
                 break;
             case DocType.Outbound:
@@ -2224,7 +2482,7 @@ public partial class OperationDetailsWindow : Window
             ? Visibility.Visible
             : Visibility.Collapsed;
         DocOrderLineColumn.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
-        DocPackSingleHuColumn.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
+        DocPackSingleHuColumn.Visibility = doc.Type is DocType.ProductionReceipt or DocType.Inbound ? Visibility.Visible : Visibility.Collapsed;
         DocFromColumn.Visibility = showFromColumn ? Visibility.Visible : Visibility.Collapsed;
         DocToEditColumn.Visibility = doc.Type is DocType.Inbound or DocType.ProductionReceipt
             ? Visibility.Visible
@@ -2236,7 +2494,7 @@ public partial class OperationDetailsWindow : Window
             ? Visibility.Visible
             : Visibility.Collapsed;
         AutoHuButton.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
-        AssignHuButton.Visibility = showHuHeader && doc.Type != DocType.Move && doc.Type != DocType.ProductionReceipt
+        AssignHuButton.Visibility = doc.Type is DocType.Inbound or DocType.Inventory or DocType.ProductionReceipt or DocType.Outbound
             ? Visibility.Visible
             : Visibility.Collapsed;
         DocFromColumn.Header = fromLabel;
@@ -2287,7 +2545,11 @@ public partial class OperationDetailsWindow : Window
         AddItemButton.IsEnabled = isEditable;
         AutoHuButton.IsEnabled = isEditable && _doc?.Type == DocType.ProductionReceipt && _docLines.Count > 0;
         EditLineButton.IsEnabled = isEditable && hasSingleSelection;
-        AssignHuButton.IsEnabled = isEditable && hasSingleSelection && SupportsLineHuAssignment();
+        AssignHuButton.IsEnabled = isEditable
+                                  && SupportsLineHuAssignment()
+                                  && (_doc?.Type == DocType.Inbound
+                                      ? _docLines.Count > 0
+                                      : hasSelection);
         DeleteLineButton.IsEnabled = isEditable && hasSelection;
         DocPartialCheck.IsEnabled = isEditable && _doc?.Type == DocType.Outbound && hasOrder;
         KmCodesButton.IsEnabled = KmUiEnabled
@@ -3103,7 +3365,7 @@ public partial class OperationDetailsWindow : Window
         var saved = await TryPersistHeaderViaServerAsync(
             partnerId,
             null,
-            _doc.Type is DocType.ProductionReceipt or DocType.WriteOff ? null : GetSelectedHuCode(DocHuCombo),
+            _doc.Type is DocType.Inbound or DocType.ProductionReceipt or DocType.WriteOff ? null : GetSelectedHuCode(DocHuCombo),
             _doc.Type == DocType.WriteOff ? (DocReasonCombo.SelectedItem as WriteOffReason)?.Code : null,
             _doc.Type == DocType.ProductionReceipt ? DocBatchBox.Text : null,
             _doc.Type == DocType.ProductionReceipt ? DocCommentBox.Text : null,
@@ -3142,7 +3404,7 @@ public partial class OperationDetailsWindow : Window
         }
 
         var partnerId = ResolveDocPartnerFromInput()?.Id;
-        var huCode = _doc.Type is DocType.ProductionReceipt or DocType.WriteOff
+        var huCode = _doc.Type is DocType.Inbound or DocType.ProductionReceipt or DocType.WriteOff
             ? null
             : GetSelectedHuCode(DocHuCombo);
         var reasonCode = (DocReasonCombo.SelectedItem as WriteOffReason)?.Code;
@@ -4410,6 +4672,11 @@ public partial class OperationDetailsWindow : Window
             toHu = null;
         }
         else if (_doc.Type == DocType.ProductionReceipt)
+        {
+            fromHu = null;
+            toHu = null;
+        }
+        else if (_doc.Type == DocType.Inbound)
         {
             fromHu = null;
             toHu = null;

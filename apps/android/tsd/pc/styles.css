@@ -253,6 +253,59 @@ body.pc-body {
   background: #f5f9fc;
 }
 
+.pc-stock-parent-row {
+  cursor: pointer;
+}
+
+.pc-stock-parent-row:focus-visible {
+  outline: 2px solid #1f6f8b;
+  outline-offset: -2px;
+}
+
+.pc-stock-item-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pc-stock-item-name {
+  font-weight: 600;
+}
+
+.pc-stock-caret {
+  display: inline-block;
+  width: 12px;
+  color: #52606d;
+  transition: transform 0.15s ease;
+}
+
+.pc-stock-caret.is-expanded {
+  transform: rotate(90deg);
+}
+
+.pc-stock-detail-row td {
+  background: #f8fafc;
+}
+
+.pc-stock-detail-cell {
+  padding: 0 !important;
+}
+
+.pc-stock-details-table {
+  margin: 0;
+}
+
+.pc-stock-details-table th,
+.pc-stock-details-table td {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.pc-stock-details-empty {
+  color: #52606d;
+  font-style: italic;
+}
+
 .pc-availability,
 .pc-status-badge {
   font-weight: 700;

@@ -27,6 +27,12 @@
   var VERSION_CHECK_INTERVAL = 600000;
   var versionCheckTimerId = 0;
   var knownServerVersion = "";
+  var liveEventSource = null;
+  var liveReconnectTimerId = 0;
+  var liveRefreshTimerId = 0;
+  var LIVE_RECONNECT_DELAY_MS = 2500;
+  var LIVE_REFRESH_DEBOUNCE_MS = 300;
+  var activeLiveRefreshHandler = null;
   var serverStatus = { ok: null, checkedAt: 0 };
   var scanDebug = {
     enabled: false,
@@ -662,6 +668,92 @@
     versionCheckTimerId = window.setInterval(function () {
       checkServerVersionAndReloadIfNeeded();
     }, VERSION_CHECK_INTERVAL);
+  }
+
+  function clearLiveReconnectTimer() {
+    if (liveReconnectTimerId) {
+      clearTimeout(liveReconnectTimerId);
+      liveReconnectTimerId = 0;
+    }
+  }
+
+  function setLiveRefreshHandler(handler) {
+    activeLiveRefreshHandler = typeof handler === "function" ? handler : null;
+  }
+
+  function scheduleLiveRefresh() {
+    if (!activeLiveRefreshHandler) {
+      return;
+    }
+    if (liveRefreshTimerId) {
+      clearTimeout(liveRefreshTimerId);
+    }
+    liveRefreshTimerId = window.setTimeout(function () {
+      liveRefreshTimerId = 0;
+      if (!activeLiveRefreshHandler) {
+        return;
+      }
+      activeLiveRefreshHandler();
+    }, LIVE_REFRESH_DEBOUNCE_MS);
+  }
+
+  function stopLiveUpdates() {
+    clearLiveReconnectTimer();
+    if (liveRefreshTimerId) {
+      clearTimeout(liveRefreshTimerId);
+      liveRefreshTimerId = 0;
+    }
+    if (liveEventSource) {
+      try {
+        liveEventSource.close();
+      } catch (error) {
+        // ignore close errors
+      }
+      liveEventSource = null;
+    }
+  }
+
+  function startLiveUpdates() {
+    stopLiveUpdates();
+    if (typeof EventSource === "undefined") {
+      return;
+    }
+
+    getServerBaseUrl()
+      .then(function (baseUrl) {
+        var source = new EventSource(baseUrl + "/api/live");
+        liveEventSource = source;
+
+        source.addEventListener("changed", function () {
+          scheduleLiveRefresh();
+        });
+        source.onmessage = function () {
+          scheduleLiveRefresh();
+        };
+        source.onerror = function () {
+          if (liveEventSource !== source) {
+            return;
+          }
+          try {
+            source.close();
+          } catch (error) {
+            // ignore close errors
+          }
+          liveEventSource = null;
+          clearLiveReconnectTimer();
+          liveReconnectTimerId = window.setTimeout(function () {
+            liveReconnectTimerId = 0;
+            startLiveUpdates();
+          }, LIVE_RECONNECT_DELAY_MS);
+        };
+      })
+      .catch(function () {
+        clearLiveReconnectTimer();
+        liveReconnectTimerId = window.setTimeout(function () {
+          liveReconnectTimerId = 0;
+          startLiveUpdates();
+        }, LIVE_RECONNECT_DELAY_MS);
+      });
   }
 
   function ensureServerAvailable() {
@@ -1464,6 +1556,7 @@
     setScanHandler(null);
     setScanInputHandlers(null, null);
     setPreferredScanTarget(null);
+    setLiveRefreshHandler(null);
     if (!window.location.hash || window.location.hash === "#") {
       navigate(loadLastRoute() || "/home");
       return;
@@ -3206,6 +3299,12 @@
     }
 
     updateDataStatus();
+    setLiveRefreshHandler(function () {
+      if (!currentRoute || currentRoute.name !== "stock") {
+        return;
+      }
+      updateDataStatus();
+    });
     ensureScanFocus();
   }
 
@@ -4495,14 +4594,18 @@
       });
     });
 
-    if (homeLowStockWrap && isClientBlockEnabled("tsd_stock")) {
+    function refreshHomeLowStock() {
+      var requestId = ++homeLowStockRequestSeq;
+      if (!homeLowStockWrap || !isClientBlockEnabled("tsd_stock")) {
+        return;
+      }
       homeLowStockWrap.innerHTML = '<div class="status">Загрузка позиций ниже минимума...</div>';
       loadHomeLowStockRows()
         .then(function (rows) {
           if (!homeLowStockWrap || !currentRoute || currentRoute.name !== "home") {
             return;
           }
-          if (homeLowStockRequestId !== homeLowStockRequestSeq) {
+          if (requestId !== homeLowStockRequestSeq) {
             return;
           }
           homeLowStockWrap.innerHTML = renderHomeLowStockRows(rows || []);
@@ -4512,9 +4615,23 @@
             homeLowStockWrap.innerHTML = '<div class="status">Не удалось загрузить позиции ниже минимума.</div>';
           }
         });
+    }
+
+    if (homeLowStockWrap && isClientBlockEnabled("tsd_stock")) {
+      if (homeLowStockRequestId !== homeLowStockRequestSeq) {
+        return;
+      }
+      refreshHomeLowStock();
     } else if (homeLowStockWrap) {
       homeLowStockWrap.innerHTML = "";
     }
+
+    setLiveRefreshHandler(function () {
+      if (!currentRoute || currentRoute.name !== "home") {
+        return;
+      }
+      refreshHomeLowStock();
+    });
   }
 
   function wireDocsList() {
@@ -4638,6 +4755,12 @@
       });
     }
 
+    setLiveRefreshHandler(function () {
+      if (!currentRoute || currentRoute.name !== "orders") {
+        return;
+      }
+      loadOrders(searchInput ? searchInput.value : "");
+    });
     loadOrders("");
   }
 
@@ -4736,6 +4859,12 @@
       });
     }
 
+    setLiveRefreshHandler(function () {
+      if (!currentRoute || currentRoute.name !== "items") {
+        return;
+      }
+      loadItems(searchInput ? searchInput.value : "");
+    });
     loadItems("");
   }
 
@@ -9350,6 +9479,7 @@
           pingServer(false);
         }, SERVER_PING_INTERVAL);
         startVersionWatcher();
+        startLiveUpdates();
         window.addEventListener("online", function () {
           pingServer(true);
         });
@@ -9462,6 +9592,7 @@
         window.addEventListener("hashchange", renderRoute);
         window.addEventListener("beforeunload", function () {
           stopVersionWatcher();
+          stopLiveUpdates();
         });
         renderRoute();
       })
