@@ -32,7 +32,7 @@ public sealed class CatalogService
         return _data.GetPartners();
     }
 
-    public long CreateItem(string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked, double? maxQtyPerHu = null, long? itemTypeId = null, double? minStockQty = null)
+    public long CreateItem(string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked, bool isActive = true, double? maxQtyPerHu = null, long? itemTypeId = null, double? minStockQty = null)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -53,6 +53,7 @@ public sealed class CatalogService
             MaxQtyPerHu = maxQtyPerHu,
             TaraId = taraId,
             IsMarked = isMarked,
+            IsActive = isActive,
             ItemTypeId = itemTypeId,
             MinStockQty = normalizedMinStock
         };
@@ -60,7 +61,7 @@ public sealed class CatalogService
         return _data.AddItem(item);
     }
 
-    public long CreateLocation(string code, string name)
+    public long CreateLocation(string code, string name, int? maxHuSlots, bool? autoHuDistributionEnabled)
     {
         if (string.IsNullOrWhiteSpace(code))
         {
@@ -71,11 +72,17 @@ public sealed class CatalogService
         {
             throw new ArgumentException("Наименование обязательно.", nameof(name));
         }
+        if (maxHuSlots.HasValue && maxHuSlots.Value <= 0)
+        {
+            throw new ArgumentException("Лимит HU должен быть больше 0.", nameof(maxHuSlots));
+        }
 
         var location = new Location
         {
             Code = code.Trim(),
-            Name = name.Trim()
+            Name = name.Trim(),
+            MaxHuSlots = maxHuSlots,
+            AutoHuDistributionEnabled = autoHuDistributionEnabled ?? true
         };
 
         return _data.AddLocation(location);
@@ -94,6 +101,42 @@ public sealed class CatalogService
         };
 
         return _data.AddUom(uom);
+    }
+
+    public IReadOnlyList<WriteOffReason> GetWriteOffReasons()
+    {
+        return _data.GetWriteOffReasons();
+    }
+
+    public long CreateWriteOffReason(string code, string name)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            throw new ArgumentException("Код причины обязателен.", nameof(code));
+        }
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new ArgumentException("Наименование причины обязательно.", nameof(name));
+        }
+
+        var reason = new WriteOffReason
+        {
+            Code = code.Trim().ToUpperInvariant(),
+            Name = name.Trim()
+        };
+
+        return _data.AddWriteOffReason(reason);
+    }
+
+    public void DeleteWriteOffReason(long reasonId)
+    {
+        if (reasonId <= 0)
+        {
+            throw new ArgumentException("Некорректная причина списания.", nameof(reasonId));
+        }
+
+        _data.DeleteWriteOffReason(reasonId);
     }
 
     public void DeleteUom(long uomId)
@@ -133,7 +176,7 @@ public sealed class CatalogService
         _data.UpdateItemBarcode(itemId, barcode.Trim());
     }
 
-    public void UpdateItem(long itemId, string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked, double? maxQtyPerHu = null, long? itemTypeId = null, double? minStockQty = null)
+    public void UpdateItem(long itemId, string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked, bool? isActive = null, double? maxQtyPerHu = null, long? itemTypeId = null, double? minStockQty = null)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -162,6 +205,7 @@ public sealed class CatalogService
             MaxQtyPerHu = maxQtyPerHu,
             TaraId = taraId,
             IsMarked = isMarked,
+            IsActive = isActive ?? existing.IsActive,
             ItemTypeId = itemTypeId,
             MinStockQty = normalizedMinStock
         };
@@ -185,7 +229,7 @@ public sealed class CatalogService
         _data.DeleteItem(itemId);
     }
 
-    public void UpdateLocation(long locationId, string code, string name)
+    public void UpdateLocation(long locationId, string code, string name, int? maxHuSlots, bool? autoHuDistributionEnabled)
     {
         if (string.IsNullOrWhiteSpace(code))
         {
@@ -195,6 +239,10 @@ public sealed class CatalogService
         if (string.IsNullOrWhiteSpace(name))
         {
             throw new ArgumentException("Наименование обязательно.", nameof(name));
+        }
+        if (maxHuSlots.HasValue && maxHuSlots.Value <= 0)
+        {
+            throw new ArgumentException("Лимит HU должен быть больше 0.", nameof(maxHuSlots));
         }
 
         var existing = _data.FindLocationById(locationId);
@@ -207,7 +255,9 @@ public sealed class CatalogService
         {
             Id = locationId,
             Code = code.Trim(),
-            Name = name.Trim()
+            Name = name.Trim(),
+            MaxHuSlots = maxHuSlots,
+            AutoHuDistributionEnabled = autoHuDistributionEnabled ?? existing.AutoHuDistributionEnabled
         };
 
         _data.UpdateLocation(location);

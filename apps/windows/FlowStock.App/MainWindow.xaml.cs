@@ -109,7 +109,7 @@ public partial class MainWindow : Window
         {
             var hasSelection = _selectedItem != null
                                || (ItemsGrid?.SelectedItems?.Count ?? 0) > 0;
-            ItemDeleteButton.IsEnabled = _adminDeleteModeEnabled && hasSelection;
+            ItemDeleteButton.IsEnabled = hasSelection;
         }
 
         if (ItemEditButton != null)
@@ -124,7 +124,7 @@ public partial class MainWindow : Window
 
         if (LocationDeleteButton != null)
         {
-            LocationDeleteButton.IsEnabled = _adminDeleteModeEnabled && _selectedLocation != null;
+            LocationDeleteButton.IsEnabled = _selectedLocation != null;
         }
 
         if (LocationEditButton != null)
@@ -144,7 +144,7 @@ public partial class MainWindow : Window
 
         if (OrdersDeleteButton != null)
         {
-            OrdersDeleteButton.IsEnabled = _adminDeleteModeEnabled && OrdersGrid.SelectedItem is Order;
+            OrdersDeleteButton.IsEnabled = OrdersGrid.SelectedItem is Order;
         }
 
         if (KmDeleteBatchButton != null)
@@ -289,8 +289,7 @@ public partial class MainWindow : Window
         {
             if (MainTabs.SelectedIndex == TabItemsIndex
                 && ItemsGrid.IsKeyboardFocusWithin
-                && ItemsGrid.SelectedItems.Count > 0
-                && _adminDeleteModeEnabled)
+                && ItemsGrid.SelectedItems.Count > 0)
             {
                 e.Handled = true;
                 DeleteItem_Click(ItemsGrid, new RoutedEventArgs());
@@ -617,6 +616,10 @@ public partial class MainWindow : Window
 
     private Dictionary<long, LowStockSnapshot> BuildLowStockByItem(IReadOnlyList<StockRow> rows, IReadOnlyList<Item> allItems)
     {
+        var itemsPresentInStock = rows
+            .Select(row => row.ItemId)
+            .ToHashSet();
+
         var snapshots = rows
             .GroupBy(row => row.ItemId)
             .Select(group =>
@@ -641,6 +644,11 @@ public partial class MainWindow : Window
 
         foreach (var item in allItems)
         {
+            if (itemsPresentInStock.Contains(item.Id))
+            {
+                continue;
+            }
+
             if (snapshots.ContainsKey(item.Id))
             {
                 continue;
@@ -876,11 +884,6 @@ public partial class MainWindow : Window
 
     private void OrdersDelete_Click(object sender, RoutedEventArgs e)
     {
-        if (!EnsureDeleteModeEnabled("Заказы"))
-        {
-            return;
-        }
-
         if (OrdersGrid.SelectedItem is not Order order)
         {
             MessageBox.Show("Выберите заказ.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -1254,7 +1257,7 @@ public partial class MainWindow : Window
 
     private void ItemsGrid_KeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key != Key.Delete || !_adminDeleteModeEnabled)
+        if (e.Key != Key.Delete)
         {
             return;
         }
@@ -1517,11 +1520,6 @@ public partial class MainWindow : Window
 
     private async void DeleteItem_Click(object sender, RoutedEventArgs e)
     {
-        if (!EnsureDeleteModeEnabled("Товары"))
-        {
-            return;
-        }
-
         var itemsToDelete = GetSelectedItemsForDelete();
         if (itemsToDelete.Count == 0)
         {
@@ -1605,13 +1603,18 @@ public partial class MainWindow : Window
         LocationsGrid.ScrollIntoView(location);
     }
 
-    private async void DeleteLocation_Click(object sender, RoutedEventArgs e)
+    private void LocationsGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
-        if (!EnsureDeleteModeEnabled("Места хранения"))
+        if (LocationsGrid.SelectedItem is not Location)
         {
             return;
         }
 
+        EditLocation_Click(sender, new RoutedEventArgs());
+    }
+
+    private async void DeleteLocation_Click(object sender, RoutedEventArgs e)
+    {
         if (_selectedLocation == null)
         {
             MessageBox.Show("Выберите место хранения.", "Места хранения", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -1663,6 +1666,16 @@ public partial class MainWindow : Window
 
         PartnersGrid.SelectedItem = row;
         PartnersGrid.ScrollIntoView(row);
+    }
+
+    private void PartnersGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (PartnersGrid.SelectedItem is not PartnerRow)
+        {
+            return;
+        }
+
+        EditPartner_Click(sender, new RoutedEventArgs());
     }
 
     private void RestoreDocSelection(long? docId)
@@ -2045,6 +2058,15 @@ public partial class MainWindow : Window
         LoadUoms();
     }
 
+    private void WriteOffReasonsMenu_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new WriteOffReasonWindow(_services, null)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+    }
+
     private void ItemTypesMenu_Click(object sender, RoutedEventArgs e)
     {
         var window = new ItemTypeWindow(_services, () =>
@@ -2084,6 +2106,15 @@ public partial class MainWindow : Window
 
         LoadItems();
         LoadStock(StatusSearchBox.Text);
+    }
+
+    private void DocNumberingSettingsMenu_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new DocNumberingSettingsWindow(_services)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
     }
 
     private void ImportErrors_Click(object sender, RoutedEventArgs e)

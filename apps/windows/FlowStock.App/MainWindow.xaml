@@ -11,16 +11,16 @@
             </Grid.ColumnDefinitions>
             <Menu Grid.Column="0">
                 <MenuItem Header="Справочники">
-                    <MenuItem Header="Каталог" Click="ViewItems_Click" />
                     <MenuItem Header="Типы номенклатуры..." Click="ItemTypesMenu_Click" />
                     <MenuItem Header="Места хранения" Click="ViewLocations_Click" />
-                    <MenuItem Header="Контрагенты" Click="ViewPartners_Click" />
                     <MenuItem Header="Тара..." Click="TaraMenu_Click" />
                     <Separator />
                     <MenuItem Header="HU Реестр..." Click="OpenHuRegistry_Click" />
                     <Separator />
                     <MenuItem Header="Ед. измерения..." Click="UomMenu_Click" />
+                    <MenuItem Header="Причины списания..." Click="WriteOffReasonsMenu_Click" />
                     <MenuItem Header="Упаковки..." Click="PackagingManager_Click" />
+                    <MenuItem Header="Нумерация документов..." Click="DocNumberingSettingsMenu_Click" />
                 </MenuItem>
                 <MenuItem Header="Сервис">
                     <MenuItem Header="Входящие запросы..." Click="OpenIncomingRequests_Click" />
@@ -205,7 +205,50 @@
                             <DataGridTextColumn Header="Тип" Binding="{Binding TypeDisplay}" Width="Auto" MaxWidth="220" />
                             <DataGridTextColumn Header="Контрагент" Binding="{Binding PartnerDisplay}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="Плановая дата" Binding="{Binding DueDate, StringFormat={}{0:dd'/'MM'/'yyyy}}" Width="Auto" MaxWidth="320" />
-                            <DataGridTextColumn Header="Статус" Binding="{Binding StatusDisplay}" Width="Auto" MaxWidth="320" />
+                            <DataGridTemplateColumn Header="Статус" Width="Auto" MinWidth="130" MaxWidth="220">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Border Padding="8,2"
+                                                CornerRadius="999"
+                                                BorderThickness="1"
+                                                HorizontalAlignment="Left">
+                                            <Border.Style>
+                                                <Style TargetType="Border">
+                                                    <Setter Property="Background" Value="#FDEACC" />
+                                                    <Setter Property="BorderBrush" Value="#F5B14C" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding StatusDisplay}" Value="Готов">
+                                                            <Setter Property="Background" Value="#E8F7EC" />
+                                                            <Setter Property="BorderBrush" Value="#9EDDB0" />
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding StatusDisplay}" Value="Выполнен">
+                                                            <Setter Property="Background" Value="#1F7A3E" />
+                                                            <Setter Property="BorderBrush" Value="#166330" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Border.Style>
+                                            <TextBlock Text="{Binding StatusDisplay}"
+                                                       FontWeight="SemiBold"
+                                                       TextTrimming="CharacterEllipsis">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Foreground" Value="#8A4B00" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding StatusDisplay}" Value="Готов">
+                                                                <Setter Property="Foreground" Value="#2D6A3D" />
+                                                            </DataTrigger>
+                                                            <DataTrigger Binding="{Binding StatusDisplay}" Value="Выполнен">
+                                                                <Setter Property="Foreground" Value="White" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+                                        </Border>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
                             <DataGridTextColumn Header="Завершен" Binding="{Binding ShippedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="Auto" MaxWidth="320" />
                         </DataGrid.Columns>
@@ -252,6 +295,7 @@
                             <DataGridTextColumn Header="Макс. шт/HU" Binding="{Binding MaxQtyPerHu, StringFormat={}{0:0.###}}" Width="Auto" MaxWidth="160" />
                             <DataGridTextColumn Header="Тара" Binding="{Binding TaraName}" Width="Auto" MaxWidth="200" />
                             <DataGridTextColumn Header="Базовая единица" Binding="{Binding BaseUom}" Width="Auto" MaxWidth="320" />
+                            <DataGridCheckBoxColumn Header="Активно" Binding="{Binding IsActive}" Width="Auto" MaxWidth="100" />
                             <DataGridCheckBoxColumn Header="КМ" Binding="{Binding IsMarked}" Width="Auto" MaxWidth="80" Visibility="Collapsed" />
                         </DataGrid.Columns>
                     </DataGrid>
@@ -269,11 +313,15 @@
                         <Button x:Name="LocationDeleteButton" Content="Удалить" Click="DeleteLocation_Click" Margin="8,0,0,0" TabIndex="3" />
                     </StackPanel>
                     <DataGrid x:Name="LocationsGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
-                              SelectionChanged="LocationsGrid_SelectionChanged" TabIndex="20">
+                              SelectionChanged="LocationsGrid_SelectionChanged"
+                              MouseDoubleClick="LocationsGrid_MouseDoubleClick"
+                              TabIndex="20">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="ID" Binding="{Binding Id}" Width="Auto" MaxWidth="120" />
                             <DataGridTextColumn Header="Код" Binding="{Binding Code}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Макс. HU мест" Binding="{Binding MaxHuSlots}" Width="Auto" MaxWidth="180" />
+                            <DataGridCheckBoxColumn Header="Авто HU" Binding="{Binding AutoHuDistributionEnabled}" Width="Auto" MaxWidth="120" />
                         </DataGrid.Columns>
                     </DataGrid>
                 </Grid>
@@ -290,7 +338,9 @@
                         <Button x:Name="PartnerDeleteButton" Content="Удалить" Click="DeletePartner_Click" Margin="8,0,0,0" TabIndex="3" />
                     </StackPanel>
                     <DataGrid x:Name="PartnersGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
-                              SelectionChanged="PartnersGrid_SelectionChanged" TabIndex="20">
+                              SelectionChanged="PartnersGrid_SelectionChanged"
+                              MouseDoubleClick="PartnersGrid_MouseDoubleClick"
+                              TabIndex="20">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="ID" Binding="{Binding Id}" Width="Auto" MaxWidth="120" />
                             <DataGridTextColumn Header="ИНН" Binding="{Binding Code}" Width="Auto" MaxWidth="320" />

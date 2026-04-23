@@ -4,6 +4,7 @@ public sealed class Item
 {
     public long Id { get; init; }
     public string Name { get; init; } = string.Empty;
+    public bool IsActive { get; init; } = true;
     public string? Barcode { get; init; }
     public string? Gtin { get; init; }
     public string BaseUom { get; init; } = "èâ";

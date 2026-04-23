@@ -102,6 +102,38 @@ public sealed class ValidationTests
     }
 
     [Fact]
+    public async Task InactiveItem_Fails()
+    {
+        var (harness, apiStore) = CreateDocLineHttpScenario.CreateInboundScenario();
+        harness.SeedItem(new FlowStock.Core.Models.Item
+        {
+            Id = 100,
+            Name = "Mustard",
+            Barcode = "4660011933641",
+            IsActive = false
+        });
+
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+        var created = await CreateDocLineHttpScenario.CreateInboundDraftAsync(host.Client, "line-val-006", "evt-line-val-create-006");
+
+        using var response = await host.Client.PostAsJsonAsync(
+            "/api/docs/line-val-006/lines",
+            new AddDocLineRequest
+            {
+                EventId = "evt-line-val-006",
+                DeviceId = "API-01",
+                ItemId = 100,
+                Qty = 5
+            });
+
+        var payload = await CreateDocLineHttpApi.ReadApiResultAsync(response, HttpStatusCode.BadRequest);
+        Assert.False(payload.Ok);
+        Assert.Equal("ITEM_INACTIVE", payload.Error);
+        Assert.Empty(harness.GetDocLines(created.Doc!.Id));
+        Assert.Equal(0, apiStore.CountEvents("DOC_LINE", "line-val-006"));
+    }
+
+    [Fact]
     public async Task QtyLessOrEqualZero_Fails()
     {
         var (harness, apiStore) = CreateDocLineHttpScenario.CreateInboundScenario();

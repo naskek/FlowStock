@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Globalization;
 using System.Linq;
 using System.Windows;
 using System.Windows.Data;
@@ -11,7 +12,8 @@ namespace FlowStock.App;
 public partial class ItemPickerWindow : Window
 {
     private readonly AppServices _services;
-    private readonly ObservableCollection<Item> _items = new();
+    private readonly IReadOnlyDictionary<long, double>? _availabilityByItem;
+    private readonly ObservableCollection<ItemPickerRow> _items = new();
     private readonly ObservableCollection<FilterOption> _brandFilters = new();
     private readonly ObservableCollection<FilterOption> _volumeFilters = new();
     private readonly ObservableCollection<FilterOption> _uomFilters = new();
@@ -21,12 +23,17 @@ public partial class ItemPickerWindow : Window
     public bool KeepOpenOnSelect { get; set; }
     public event EventHandler<Item>? ItemPicked;
 
-    public ItemPickerWindow(AppServices services, IEnumerable<Item>? items = null)
+    public ItemPickerWindow(
+        AppServices services,
+        IEnumerable<Item>? items = null,
+        IReadOnlyDictionary<long, double>? availabilityByItem = null)
     {
         _services = services;
+        _availabilityByItem = availabilityByItem;
         InitializeComponent();
 
         ItemsGrid.ItemsSource = _items;
+        AvailableQtyColumn.Visibility = availabilityByItem == null ? Visibility.Collapsed : Visibility.Visible;
         LoadItems(items);
 
         _view = CollectionViewSource.GetDefaultView(_items);
@@ -53,7 +60,10 @@ public partial class ItemPickerWindow : Window
                 : Array.Empty<Item>());
         foreach (var item in source)
         {
-            _items.Add(item);
+            var availableQty = _availabilityByItem != null && _availabilityByItem.TryGetValue(item.Id, out var qty)
+                ? qty
+                : (double?)null;
+            _items.Add(new ItemPickerRow(item, availableQty));
         }
     }
 
@@ -64,22 +74,22 @@ public partial class ItemPickerWindow : Window
 
     private bool FilterItem(object? obj)
     {
-        if (obj is not Item item)
+        if (obj is not ItemPickerRow row)
         {
             return false;
         }
 
-        if (!MatchesFilter(item.Brand, _brandFilters))
+        if (!MatchesFilter(row.Brand, _brandFilters))
         {
             return false;
         }
 
-        if (!MatchesFilter(item.Volume, _volumeFilters))
+        if (!MatchesFilter(row.Volume, _volumeFilters))
         {
             return false;
         }
 
-        if (!MatchesFilter(item.BaseUom, _uomFilters))
+        if (!MatchesFilter(row.BaseUom, _uomFilters))
         {
             return false;
         }
@@ -90,9 +100,9 @@ public partial class ItemPickerWindow : Window
             return true;
         }
 
-        return Contains(item.Name, query)
-               || Contains(item.Barcode, query)
-               || Contains(item.Gtin, query);
+        return Contains(row.Name, query)
+               || Contains(row.Barcode, query)
+               || Contains(row.Gtin, query);
     }
 
     private static bool Contains(string? source, string query)
@@ -124,7 +134,7 @@ public partial class ItemPickerWindow : Window
             return;
         }
 
-        if (e.Key == Key.Enter && ItemsGrid.SelectedItem is Item)
+        if (e.Key == Key.Enter && ItemsGrid.SelectedItem is ItemPickerRow)
         {
             e.Handled = true;
             CommitSelection();
@@ -133,11 +143,12 @@ public partial class ItemPickerWindow : Window
 
     private void CommitSelection()
     {
-        if (ItemsGrid.SelectedItem is not Item item)
+        if (ItemsGrid.SelectedItem is not ItemPickerRow row)
         {
             return;
         }
 
+        var item = row.Item;
         SelectedItem = item;
         ItemPicked?.Invoke(this, item);
         if (KeepOpenOnSelect)
@@ -315,6 +326,27 @@ public partial class ItemPickerWindow : Window
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;
+    }
+
+    private sealed class ItemPickerRow
+    {
+        public ItemPickerRow(Item item, double? availableQty)
+        {
+            Item = item;
+            AvailableQty = availableQty;
+        }
+
+        public Item Item { get; }
+        public string Name => Item.Name;
+        public string? Brand => Item.Brand;
+        public string? Volume => Item.Volume;
+        public string? Barcode => Item.Barcode;
+        public string? Gtin => Item.Gtin;
+        public string BaseUom => Item.BaseUom;
+        public double? AvailableQty { get; }
+        public string AvailableQtyDisplay => AvailableQty.HasValue
+            ? $"{AvailableQty.Value.ToString("0.###", CultureInfo.CurrentCulture)} {BaseUom}"
+            : string.Empty;
     }
 }
 

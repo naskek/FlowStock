@@ -121,6 +121,21 @@ public sealed class WpfDocumentRuntimeApiService
         return (result.IsSuccess, result.Error);
     }
 
+    public async Task<(bool IsSuccess, string? Error)> TryDiscardDraftByDocUidAsync(
+        string docUid,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(docUid))
+        {
+            return (false, "DocUid is required.");
+        }
+
+        return await TryDeleteAsync(
+            $"/api/docs/{Uri.EscapeDataString(docUid.Trim())}/draft",
+            "doc-discard-draft",
+            cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<(bool IsSuccess, string? Error)> TrySetProductionLinePackSingleHuAsync(
         long docId,
         long lineId,
@@ -178,6 +193,41 @@ public sealed class WpfDocumentRuntimeApiService
         {
             _logger.Error($"Document runtime API failed for {operationName}", ex);
             return (false, default!, null);
+        }
+    }
+
+    private async Task<(bool IsSuccess, string? Error)> TryDeleteAsync(
+        string relativePath,
+        string operationName,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (!TryLoadConfiguration(out var configuration))
+            {
+                _logger.Info($"Document runtime API skipped for {operationName}: server base URL is not configured.");
+                return (false, "Server base URL is not configured.");
+            }
+
+            using var handler = CreateHandler(configuration);
+            using var client = new HttpClient(handler)
+            {
+                BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
+                Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
+            };
+            using var request = new HttpRequestMessage(HttpMethod.Delete, relativePath);
+            using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return (false, await ReadApiErrorAsync(response).ConfigureAwait(false));
+            }
+
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"Document runtime API failed for {operationName}", ex);
+            return (false, null);
         }
     }
 

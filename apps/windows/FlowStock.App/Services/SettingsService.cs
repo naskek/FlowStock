@@ -174,6 +174,8 @@ public sealed class BackupSettings
     public int BackupIfOlderThanHours { get; set; } = 24;
     public int KeepLastNBackups { get; set; } = 30;
     public int HuNextSequence { get; set; } = 1;
+    [JsonPropertyName("document_numbering")]
+    public DocumentNumberingSettings DocumentNumbering { get; set; } = new();
     [JsonPropertyName("postgres")]
     public PostgresSettings Postgres { get; set; } = new();
     [JsonPropertyName("server")]
@@ -203,6 +205,7 @@ public sealed class BackupSettings
             HuNextSequence = 1;
         }
 
+        DocumentNumbering = (DocumentNumbering ?? new DocumentNumberingSettings()).Normalize();
         Postgres = (Postgres ?? new PostgresSettings()).Normalize();
         Server = (Server ?? new ServerSettings()).Normalize();
         RecentPostgres = (RecentPostgres ?? new List<PostgresConnectionProfile>())
@@ -213,6 +216,53 @@ public sealed class BackupSettings
                               && !string.IsNullOrWhiteSpace(profile.Database)
                               && !string.IsNullOrWhiteSpace(profile.Username))
             .ToList();
+
+        return this;
+    }
+}
+
+public sealed class DocumentNumberingSettings
+{
+    private static readonly HashSet<string> AllowedStyles = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "D6",
+        "D5",
+        "D4",
+        "N"
+    };
+
+    [JsonPropertyName("template")]
+    public string Template { get; set; } = "{PREFIX}-{YYYY}-{SEQ}";
+
+    [JsonPropertyName("year")]
+    public string? Year { get; set; }
+
+    [JsonPropertyName("sequence_style")]
+    public string SequenceStyle { get; set; } = "D6";
+
+    public DocumentNumberingSettings Normalize()
+    {
+        Template = string.IsNullOrWhiteSpace(Template)
+            ? "{PREFIX}-{YYYY}-{SEQ}"
+            : Template.Trim();
+
+        if (string.IsNullOrWhiteSpace(Year))
+        {
+            Year = null;
+        }
+        else
+        {
+            var trimmed = Year.Trim();
+            Year = trimmed.Length == 4 && int.TryParse(trimmed, out _) ? trimmed : null;
+        }
+
+        SequenceStyle = string.IsNullOrWhiteSpace(SequenceStyle)
+            ? "D6"
+            : SequenceStyle.Trim().ToUpperInvariant();
+        if (!AllowedStyles.Contains(SequenceStyle))
+        {
+            SequenceStyle = "D6";
+        }
 
         return this;
     }

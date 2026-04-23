@@ -76,11 +76,14 @@ public sealed class IncomingRequestOrderApiBridgeService
                 ex);
         }
 
+        var normalizedOrderType = NormalizeOrderType(payload.OrderType);
         var createRequest = new CreateOrderApiRequest
         {
             OrderRef = NormalizeValue(payload.OrderRef),
-            Type = "CUSTOMER",
-            PartnerId = payload.PartnerId > 0 ? payload.PartnerId : null,
+            Type = normalizedOrderType,
+            PartnerId = string.Equals(normalizedOrderType, "INTERNAL", StringComparison.OrdinalIgnoreCase)
+                ? null
+                : (payload.PartnerId.HasValue && payload.PartnerId.Value > 0 ? payload.PartnerId.Value : null),
             DueDate = NormalizeValue(payload.DueDate),
             Status = "ACCEPTED",
             Comment = NormalizeValue(payload.Comment),
@@ -446,13 +449,23 @@ public sealed class IncomingRequestOrderApiBridgeService
         PropertyNameCaseInsensitive = true
     };
 
+    private static string NormalizeOrderType(string? raw)
+    {
+        return string.Equals(raw?.Trim(), "INTERNAL", StringComparison.OrdinalIgnoreCase)
+            ? "INTERNAL"
+            : "CUSTOMER";
+    }
+
     private sealed record CreateOrderPayload
     {
         [JsonPropertyName("order_ref")]
         public string? OrderRef { get; init; }
 
+        [JsonPropertyName("order_type")]
+        public string? OrderType { get; init; }
+
         [JsonPropertyName("partner_id")]
-        public long PartnerId { get; init; }
+        public long? PartnerId { get; init; }
 
         [JsonPropertyName("due_date")]
         public string? DueDate { get; init; }

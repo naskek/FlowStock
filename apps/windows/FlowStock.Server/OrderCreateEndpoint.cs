@@ -47,7 +47,6 @@ public static class OrderCreateEndpoint
             return Results.BadRequest(new ApiResult(false, "INVALID_TYPE"));
         }
 
-        var status = OrderStatus.Draft;
         if (!string.IsNullOrWhiteSpace(createRequest.Status))
         {
             var parsedStatus = OrderStatusMapper.StatusFromString(createRequest.Status);
@@ -60,8 +59,6 @@ public static class OrderCreateEndpoint
             {
                 return Results.BadRequest(new ApiResult(false, "SHIPPED_STATUS_FORBIDDEN"));
             }
-
-            status = parsedStatus.Value;
         }
 
         DateTime? dueDate = null;
@@ -157,7 +154,6 @@ public static class OrderCreateEndpoint
             authoritativeOrderRef!,
             partnerId,
             dueDate,
-            status,
             createRequest.Comment,
             lines,
             orderType.Value);

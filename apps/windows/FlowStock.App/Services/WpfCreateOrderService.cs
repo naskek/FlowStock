@@ -33,7 +33,7 @@ public sealed class WpfCreateOrderService
             Type = OrderStatusMapper.TypeToString(context.OrderType),
             PartnerId = context.OrderType == OrderType.Customer ? context.PartnerId : null,
             DueDate = context.DueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-            Status = OrderStatusMapper.StatusToString(context.Status),
+            Status = string.Empty,
             Comment = NormalizeValue(context.Comment),
             Lines = context.Lines
                 .Select(line => new CreateOrderApiLineRequest

@@ -33,7 +33,7 @@ public sealed class WpfUpdateOrderService
             Type = OrderStatusMapper.TypeToString(context.OrderType),
             PartnerId = context.OrderType == OrderType.Customer ? context.PartnerId : null,
             DueDate = context.DueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-            Status = OrderStatusMapper.StatusToString(context.Status),
+            Status = string.Empty,
             Comment = NormalizeValue(context.Comment),
             Lines = context.Lines
                 .Select(line => new UpdateOrderApiLineRequest
@@ -169,7 +169,8 @@ public sealed class WpfUpdateOrderService
         {
             "ORDER_NOT_FOUND" => "Сервер не нашел указанный заказ.",
             "ORDER_NOT_EDITABLE" => "Сервер не разрешает редактировать этот заказ.",
-            "ORDER_TYPE_MISMATCH" => "Тип существующего заказа менять нельзя.",
+            "ORDER_TYPE_MISMATCH" => "Смена типа заказа разрешена только между клиентским и внутренним заказом.",
+            "ORDER_TYPE_CHANGE_FORBIDDEN" => "Смена типа запрещена: по заказу уже есть проведенные документы текущего типа.",
             "INVALID_TYPE" => "Сервер отклонил тип заказа.",
             "INVALID_STATUS" => "Сервер отклонил статус заказа.",
             "SHIPPED_STATUS_FORBIDDEN" => "Статус \"Отгружен/Завершен\" нельзя задавать вручную.",
@@ -192,6 +193,7 @@ public sealed class WpfUpdateOrderService
             "ORDER_NOT_FOUND" => WpfUpdateOrderResultKind.NotFound,
             "ORDER_NOT_EDITABLE" => WpfUpdateOrderResultKind.ValidationFailed,
             "ORDER_TYPE_MISMATCH" => WpfUpdateOrderResultKind.ValidationFailed,
+            "ORDER_TYPE_CHANGE_FORBIDDEN" => WpfUpdateOrderResultKind.ValidationFailed,
             "INVALID_TYPE" => WpfUpdateOrderResultKind.ValidationFailed,
             "INVALID_STATUS" => WpfUpdateOrderResultKind.ValidationFailed,
             "SHIPPED_STATUS_FORBIDDEN" => WpfUpdateOrderResultKind.ValidationFailed,

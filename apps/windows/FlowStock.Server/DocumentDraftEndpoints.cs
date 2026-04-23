@@ -5,6 +5,7 @@ using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 using FlowStock.Core.Services;
 using Microsoft.AspNetCore.Http;
+using Npgsql;
 
 namespace FlowStock.Server;
 
@@ -13,6 +14,7 @@ public static class DocumentDraftEndpoints
     public static void Map(WebApplication app)
     {
         app.MapPost("/api/docs", HandleCreateAsync);
+        app.MapDelete("/api/docs/{docUid}/draft", HandleDiscardDraftAsync);
         app.MapPost("/api/docs/{docUid}/lines", HandleAddLineAsync);
         app.MapPost("/api/docs/{docUid}/lines/update", HandleUpdateLineAsync);
         app.MapPost("/api/docs/{docUid}/lines/delete", HandleDeleteLineAsync);
@@ -875,31 +877,40 @@ public static class DocumentDraftEndpoints
         var comment = string.IsNullOrWhiteSpace(createRequest.Comment) ? null : createRequest.Comment.Trim();
         var reasonCode = string.IsNullOrWhiteSpace(createRequest.ReasonCode) ? null : createRequest.ReasonCode.Trim();
 
-        long docId;
-        try
+        const int maxDocRefAttempts = 8;
+        var created = false;
+        long docId = 0;
+        for (var attempt = 1; attempt <= maxDocRefAttempts; attempt++)
         {
-            docId = docs.CreateDoc(docType.Value, docRef, comment, partnerIdValue, requestedOrderRef, resolvedShippingRefNew, requestedOrderId);
-        }
-        catch (ArgumentException ex) when (string.Equals(ex.ParamName, "docRef", StringComparison.Ordinal))
-        {
-            docRef = docs.GenerateDocRef(docType.Value, DateTime.Now);
             try
             {
                 docId = docs.CreateDoc(docType.Value, docRef, comment, partnerIdValue, requestedOrderRef, resolvedShippingRefNew, requestedOrderId);
+                created = true;
+                break;
             }
-            catch (ArgumentException)
+            catch (Exception ex) when (IsDocRefConflict(ex))
             {
-                return LogCreateAndReturn(
-                    Results.BadRequest(new ApiResult(false, "DOC_REF_EXISTS")),
-                    LogLevel.Warning,
-                    outcome: "VALIDATION_FAILED",
-                    docUid: docUid,
-                    docRef: docRef,
-                    docType: docTypeValue,
-                    errors: ["DOC_REF_EXISTS"],
-                    eventId: createRequest.EventId,
-                    deviceId: createRequest.DeviceId);
+                if (attempt == maxDocRefAttempts)
+                {
+                    break;
+                }
+
+                docRef = docs.GenerateDocRef(docType.Value, DateTime.Now);
             }
+        }
+
+        if (!created)
+        {
+            return LogCreateAndReturn(
+                Results.BadRequest(new ApiResult(false, "DOC_REF_EXISTS")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docUid: docUid,
+                docRef: docRef,
+                docType: docTypeValue,
+                errors: ["DOC_REF_EXISTS"],
+                eventId: createRequest.EventId,
+                deviceId: createRequest.DeviceId);
         }
 
         if (docType == DocType.WriteOff && !string.IsNullOrWhiteSpace(reasonCode))
@@ -907,18 +918,66 @@ public static class DocumentDraftEndpoints
             docs.UpdateDocReason(docId, reasonCode);
         }
 
-        apiStore.AddApiDoc(
-            docUid,
-            docId,
-            "DRAFT",
-            DocTypeMapper.ToOpString(docType.Value),
-            docRef,
-            partnerIdValue,
-            fromLocationIdValue,
-            toLocationIdValue,
-            normalizedFromHu,
-            normalizedToHu,
-            createRequest.DeviceId);
+        try
+        {
+            apiStore.AddApiDoc(
+                docUid,
+                docId,
+                "DRAFT",
+                DocTypeMapper.ToOpString(docType.Value),
+                docRef,
+                partnerIdValue,
+                fromLocationIdValue,
+                toLocationIdValue,
+                normalizedFromHu,
+                normalizedToHu,
+                createRequest.DeviceId);
+        }
+        catch (PostgresException ex) when (IsApiDocUidConflict(ex))
+        {
+            var concurrentDocInfo = apiStore.GetApiDoc(docUid);
+            if (concurrentDocInfo != null)
+            {
+                var replayDoc = store.GetDoc(concurrentDocInfo.DocId);
+                return LogCreateAndReturn(
+                    Results.Ok(new
+                    {
+                        ok = true,
+                        doc = new
+                        {
+                            id = concurrentDocInfo.DocId,
+                            doc_uid = docUid,
+                            doc_ref = concurrentDocInfo.DocRef,
+                            status = concurrentDocInfo.Status,
+                            type = concurrentDocInfo.DocType
+                        }
+                    }),
+                    LogLevel.Information,
+                    outcome: "IDEMPOTENT_REPLAY",
+                    docUid: docUid,
+                    docId: concurrentDocInfo.DocId,
+                    docRef: concurrentDocInfo.DocRef,
+                    docType: concurrentDocInfo.DocType,
+                    docStatusBefore: replayDoc == null ? concurrentDocInfo.Status : DocTypeMapper.StatusToString(replayDoc.Status),
+                    docStatusAfter: replayDoc == null ? concurrentDocInfo.Status : DocTypeMapper.StatusToString(replayDoc.Status),
+                    lineCount: replayDoc?.LineCount,
+                    apiEventWritten: false,
+                    idempotentReplay: true,
+                    eventId: createRequest.EventId,
+                    deviceId: createRequest.DeviceId);
+            }
+
+            return LogCreateAndReturn(
+                Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docUid: docUid,
+                docRef: docRef,
+                docType: docTypeValue,
+                errors: ["DUPLICATE_DOC_UID"],
+                eventId: createRequest.EventId,
+                deviceId: createRequest.DeviceId);
+        }
 
         apiStore.RecordEvent(createRequest.EventId, "DOC_CREATE", docUid, createRequest.DeviceId, rawJson);
 
@@ -952,6 +1011,66 @@ public static class DocumentDraftEndpoints
             idempotentReplay: false,
             eventId: createRequest.EventId,
             deviceId: createRequest.DeviceId);
+    }
+
+    public static IResult HandleDiscardDraftAsync(
+        string docUid,
+        IDataStore store,
+        DocumentService docs,
+        IApiDocStore apiStore,
+        ILoggerFactory loggerFactory)
+    {
+        var logger = loggerFactory.CreateLogger("FlowStock.Server.DocumentLifecycle");
+        var normalizedDocUid = string.IsNullOrWhiteSpace(docUid) ? null : docUid.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedDocUid))
+        {
+            return Results.BadRequest(new ApiResult(false, "MISSING_DOC_UID"));
+        }
+
+        var docInfo = apiStore.GetApiDoc(normalizedDocUid);
+        if (docInfo == null)
+        {
+            return Results.Ok(new { ok = true, result = "NOT_FOUND" });
+        }
+
+        var doc = store.GetDoc(docInfo.DocId);
+        if (doc == null)
+        {
+            apiStore.DeleteDraftDocMetadata(normalizedDocUid);
+            return Results.Ok(new { ok = true, result = "NOT_FOUND" });
+        }
+
+        if (doc.Status != DocStatus.Draft)
+        {
+            return Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT"));
+        }
+
+        try
+        {
+            docs.DeleteEmptyDraftDoc(doc.Id);
+            apiStore.DeleteDraftDocMetadata(normalizedDocUid);
+            ServerOperationLogging.LogDocumentLifecycleOperation(
+                logger,
+                LogLevel.Information,
+                operation: "DiscardDraftDoc",
+                path: $"/api/docs/{normalizedDocUid}/draft",
+                result: "DELETED",
+                docUid: normalizedDocUid,
+                docId: doc.Id,
+                docRef: doc.DocRef,
+                docType: DocTypeMapper.ToOpString(doc.Type),
+                docStatusBefore: DocTypeMapper.StatusToString(doc.Status),
+                docStatusAfter: "(deleted)",
+                lineCount: 0,
+                ledgerRowsWritten: 0,
+                errors: null);
+
+            return Results.Ok(new { ok = true, result = "DELETED" });
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("со строками", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.BadRequest(new ApiResult(false, "DOC_HAS_LINES"));
+        }
     }
 
     public static async Task<IResult> HandleAddLineAsync(
@@ -1315,6 +1434,21 @@ public static class DocumentDraftEndpoints
                 docType: docTypeValue,
                 docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
                 errors: ["UNKNOWN_ITEM"],
+                eventId: lineRequest.EventId,
+                deviceId: lineRequest.DeviceId);
+        }
+
+        if (!item.IsActive)
+        {
+            return LogLineAndReturn(
+                Results.BadRequest(new ApiResult(false, "ITEM_INACTIVE")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docId: docInfo.DocId,
+                docRef: docInfo.DocRef,
+                docType: docTypeValue,
+                docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                errors: ["ITEM_INACTIVE"],
                 eventId: lineRequest.EventId,
                 deviceId: lineRequest.DeviceId);
         }
@@ -2347,6 +2481,30 @@ public static class DocumentDraftEndpoints
     {
         return !string.IsNullOrWhiteSpace(comment)
                && comment.IndexOf("RECOUNT", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private static bool IsDocRefConflict(Exception ex)
+    {
+        if (ex is ArgumentException argEx
+            && string.Equals(argEx.ParamName, "docRef", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (ex is PostgresException pgEx
+            && string.Equals(pgEx.SqlState, "23505", StringComparison.Ordinal)
+            && string.Equals(pgEx.ConstraintName, "ix_docs_ref", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return ex.InnerException != null && IsDocRefConflict(ex.InnerException);
+    }
+
+    private static bool IsApiDocUidConflict(PostgresException ex)
+    {
+        return string.Equals(ex.SqlState, "23505", StringComparison.Ordinal)
+               && string.Equals(ex.ConstraintName, "api_docs_pkey", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsHuAllowed(HuRecord record)

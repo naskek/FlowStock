@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
+using System.Windows.Input;
 using FlowStock.Core.Models;
 
 namespace FlowStock.App;
@@ -60,7 +61,6 @@ public partial class OrderDetailsWindow : Window
         PartnerCombo.SelectionChanged += OrderHeaderChanged;
         PartnerCombo.AddHandler(System.Windows.Controls.Primitives.TextBoxBase.TextChangedEvent, new TextChangedEventHandler(PartnerCombo_TextChanged));
         DueDatePicker.SelectedDateChanged += OrderHeaderChanged;
-        StatusCombo.SelectionChanged += OrderHeaderChanged;
         CommentBox.TextChanged += OrderHeaderChanged;
     }
 
@@ -144,7 +144,7 @@ public partial class OrderDetailsWindow : Window
         PartnerCombo.SelectedItem = null;
         DueDatePicker.SelectedDate = null;
         CommentBox.Text = string.Empty;
-        RebuildStatusOptions(OrderType.Customer, includeFinal: false);
+        OrderStatusText.Text = OrderStatusMapper.StatusToDisplayName(OrderStatus.Draft, OrderType.Customer);
         _lines.Clear();
         UpdateTypeUi();
         RefreshLineMetrics();
@@ -184,9 +184,7 @@ public partial class OrderDetailsWindow : Window
         CommentBox.Text = _order.Comment ?? string.Empty;
 
         var isShipped = _order.Status == OrderStatus.Shipped;
-        RebuildStatusOptions(_order.Type, isShipped);
-        StatusCombo.SelectedItem = (StatusCombo.ItemsSource as IEnumerable<OrderStatusOption>)?
-            .FirstOrDefault(option => option.Status == _order.Status);
+        OrderStatusText.Text = OrderStatusMapper.StatusToDisplayName(_order.Status, _order.Type);
 
         _lines.Clear();
         var lines = _services.WpfReadApi.TryGetOrderLines(_order.Id, out var apiLines)
@@ -217,7 +215,7 @@ public partial class OrderDetailsWindow : Window
 
     private bool TrySaveOrder(bool showFeedback)
     {
-        if (!TryGetHeaderValues(allowBlankOrderRef: false, out var orderRef, out var type, out var partnerId, out var dueDate, out var status, out var comment))
+        if (!TryGetHeaderValues(allowBlankOrderRef: false, out var orderRef, out var type, out var partnerId, out var dueDate, out var comment))
         {
             return false;
         }
@@ -226,15 +224,10 @@ public partial class OrderDetailsWindow : Window
         {
             if (_orderId.HasValue)
             {
-                if (CanUseDirectStatusChangeFlow(orderRef, type, partnerId, dueDate, status, comment))
-                {
-                    return TrySetOrderStatusViaServer(_orderId.Value, status, showFeedback);
-                }
-
-                return TryUpdateOrderViaServer(_orderId.Value, orderRef, type, partnerId, dueDate, status, comment, showFeedback);
+                return TryUpdateOrderViaServer(_orderId.Value, orderRef, type, partnerId, dueDate, comment, showFeedback);
             }
 
-            return TryCreateOrderViaServer(orderRef, type, partnerId, dueDate, status, comment, showFeedback);
+            return TryCreateOrderViaServer(orderRef, type, partnerId, dueDate, comment, showFeedback);
         }
         catch (ArgumentException ex)
         {
@@ -248,44 +241,12 @@ public partial class OrderDetailsWindow : Window
         }
     }
 
-    private bool TrySetOrderStatusViaServer(long orderId, OrderStatus status, bool showFeedback)
-    {
-        var result = _services.WpfSetOrderStatuses.SetStatusAsync(orderId, status)
-            .ConfigureAwait(false)
-            .GetAwaiter()
-            .GetResult();
-
-        if (!result.IsSuccess)
-        {
-            var icon = result.Kind is WpfSetOrderStatusResultKind.Timeout or WpfSetOrderStatusResultKind.ServerUnavailable
-                ? MessageBoxImage.Error
-                : MessageBoxImage.Warning;
-            MessageBox.Show(result.Message, "Заказы", MessageBoxButton.OK, icon);
-            return false;
-        }
-
-        if (result.Response == null || result.Response.OrderId <= 0 || string.IsNullOrWhiteSpace(result.Response.Status))
-        {
-            MessageBox.Show("Сервер вернул неполный ответ при смене статуса заказа.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return false;
-        }
-
-        LoadOrder();
-        if (showFeedback)
-        {
-            SaveStatusText.Text = "Сохранено";
-        }
-
-        return true;
-    }
-
     private bool TryUpdateOrderViaServer(
         long orderId,
         string orderRef,
         OrderType type,
         long? partnerId,
         DateTime? dueDate,
-        OrderStatus status,
         string? comment,
         bool showFeedback)
     {
@@ -296,7 +257,7 @@ public partial class OrderDetailsWindow : Window
                     type,
                     partnerId,
                     dueDate,
-                    status,
+                    OrderStatus.InProgress,
                     comment,
                     _lines.ToList()))
             .ConfigureAwait(false)
@@ -339,7 +300,6 @@ public partial class OrderDetailsWindow : Window
         OrderType type,
         long? partnerId,
         DateTime? dueDate,
-        OrderStatus status,
         string? comment,
         bool showFeedback)
     {
@@ -349,7 +309,7 @@ public partial class OrderDetailsWindow : Window
                     type,
                     partnerId,
                     dueDate,
-                    status,
+                    OrderStatus.InProgress,
                     comment,
                     _lines.ToList()))
             .ConfigureAwait(false)
@@ -505,6 +465,16 @@ public partial class OrderDetailsWindow : Window
         EditLineButton.IsEnabled = _selectedLine != null && EnsureEditable(false);
     }
 
+    private void OrderLinesGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (_selectedLine == null || !EnsureEditable(false))
+        {
+            return;
+        }
+
+        EditLine_Click(sender, new RoutedEventArgs());
+    }
+
     private void RefreshLineMetrics()
     {
         var type = GetSelectedOrderType();
@@ -612,9 +582,8 @@ public partial class OrderDetailsWindow : Window
 
     private void SetEditingEnabled(bool enabled)
     {
-        OrderRefBox.IsEnabled = enabled;
+        OrderRefBox.IsEnabled = false;
         DueDatePicker.IsEnabled = enabled;
-        StatusCombo.IsEnabled = enabled;
         CommentBox.IsEnabled = enabled;
         AddItemButton.IsEnabled = enabled;
         EditLineButton.IsEnabled = enabled && _selectedLine != null;
@@ -623,33 +592,12 @@ public partial class OrderDetailsWindow : Window
         UpdateTypeUi();
     }
 
-    private void RebuildStatusOptions(OrderType type, bool includeFinal)
-    {
-        var currentStatus = (StatusCombo.SelectedItem as OrderStatusOption)?.Status
-                            ?? _order?.Status
-                            ?? OrderStatus.Draft;
-        var options = new List<OrderStatusOption>
-        {
-            new(OrderStatus.Draft, OrderStatusMapper.StatusToDisplayName(OrderStatus.Draft, type)),
-            new(OrderStatus.Accepted, OrderStatusMapper.StatusToDisplayName(OrderStatus.Accepted, type)),
-            new(OrderStatus.InProgress, OrderStatusMapper.StatusToDisplayName(OrderStatus.InProgress, type))
-        };
-        if (includeFinal)
-        {
-            options.Add(new OrderStatusOption(OrderStatus.Shipped, OrderStatusMapper.StatusToDisplayName(OrderStatus.Shipped, type)));
-        }
-
-        StatusCombo.ItemsSource = options;
-        StatusCombo.SelectedItem = options.FirstOrDefault(option => option.Status == currentStatus)
-                                   ?? options.First();
-    }
-
     private void UpdateTypeUi()
     {
         var type = GetSelectedOrderType();
         var canEdit = _order?.Status != OrderStatus.Shipped;
 
-        TypeCombo.IsEnabled = canEdit && !_orderId.HasValue;
+        TypeCombo.IsEnabled = canEdit;
         PartnerCombo.IsEnabled = canEdit && type == OrderType.Customer;
 
         if (type == OrderType.Internal)
@@ -689,8 +637,14 @@ public partial class OrderDetailsWindow : Window
 
     private void TypeCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
-        var includeFinal = _order?.Status == OrderStatus.Shipped;
-        RebuildStatusOptions(GetSelectedOrderType(), includeFinal);
+        if (_order == null)
+        {
+            OrderStatusText.Text = OrderStatusMapper.StatusToDisplayName(OrderStatus.Draft, GetSelectedOrderType());
+        }
+        else
+        {
+            OrderStatusText.Text = OrderStatusMapper.StatusToDisplayName(_order.Status, GetSelectedOrderType());
+        }
         UpdateTypeUi();
         RefreshLineMetrics();
         MarkDirty();
@@ -718,14 +672,13 @@ public partial class OrderDetailsWindow : Window
         SaveStatusText.Text = string.Empty;
     }
 
-    private bool TryGetHeaderValues(bool allowBlankOrderRef, out string orderRef, out OrderType type, out long? partnerId, out DateTime? dueDate, out OrderStatus status, out string? comment)
+    private bool TryGetHeaderValues(bool allowBlankOrderRef, out string orderRef, out OrderType type, out long? partnerId, out DateTime? dueDate, out string? comment)
     {
         orderRef = OrderRefBox.Text ?? string.Empty;
         type = GetSelectedOrderType();
         partnerId = null;
         dueDate = DueDatePicker.SelectedDate;
         comment = CommentBox.Text;
-        status = OrderStatus.Draft;
 
         if (!allowBlankOrderRef && string.IsNullOrWhiteSpace(orderRef))
         {
@@ -757,17 +710,6 @@ public partial class OrderDetailsWindow : Window
             }
 
             partnerId = partner.Id;
-        }
-
-        if (StatusCombo.SelectedItem is OrderStatusOption option)
-        {
-            status = option.Status;
-        }
-
-        if (status == OrderStatus.Shipped)
-        {
-            MessageBox.Show($"Статус \"{OrderStatusMapper.StatusToDisplayName(OrderStatus.Shipped, type)}\" ставится автоматически.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return false;
         }
 
         return true;
@@ -948,111 +890,6 @@ public partial class OrderDetailsWindow : Window
         return true;
     }
 
-    private bool CanUseDirectStatusChangeFlow(
-        string orderRef,
-        OrderType type,
-        long? partnerId,
-        DateTime? dueDate,
-        OrderStatus status,
-        string? comment)
-    {
-        if (!_orderId.HasValue || _order == null)
-        {
-            return false;
-        }
-
-        if (status == _order.Status)
-        {
-            return false;
-        }
-
-        if (!string.Equals(orderRef.Trim(), _order.OrderRef, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        if (type != _order.Type)
-        {
-            return false;
-        }
-
-        if (partnerId != _order.PartnerId)
-        {
-            return false;
-        }
-
-        if (dueDate?.Date != _order.DueDate?.Date)
-        {
-            return false;
-        }
-
-        if (!string.Equals(NormalizeOptional(comment), NormalizeOptional(_order.Comment), StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        if (!_services.WpfReadApi.TryGetOrderLines(_orderId.Value, out var persistedLines))
-        {
-            return false;
-        }
-        return HaveEquivalentLineSnapshot(_lines, persistedLines);
-    }
-
-    private static bool HaveEquivalentLineSnapshot(
-        IReadOnlyCollection<OrderLineView> current,
-        IReadOnlyCollection<OrderLineView> persisted)
-    {
-        var currentMap = NormalizeLineSnapshot(current);
-        var persistedMap = NormalizeLineSnapshot(persisted);
-        if (currentMap.Count != persistedMap.Count)
-        {
-            return false;
-        }
-
-        foreach (var pair in currentMap)
-        {
-            if (!persistedMap.TryGetValue(pair.Key, out var persistedQty))
-            {
-                return false;
-            }
-
-            if (Math.Abs(pair.Value - persistedQty) > 0.000001)
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private static Dictionary<long, double> NormalizeLineSnapshot(IEnumerable<OrderLineView> lines)
-    {
-        var map = new Dictionary<long, double>();
-        foreach (var line in lines)
-        {
-            if (line.ItemId <= 0)
-            {
-                continue;
-            }
-
-            if (map.TryGetValue(line.ItemId, out var qty))
-            {
-                map[line.ItemId] = qty + line.QtyOrdered;
-            }
-            else
-            {
-                map[line.ItemId] = line.QtyOrdered;
-            }
-        }
-
-        return map;
-    }
-
-    private static string? NormalizeOptional(string? value)
-    {
-        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-    }
-
     private static string ResolveDefaultUomCode(Item item, IReadOnlyList<ItemPackaging> packagings)
     {
         if (item.DefaultPackagingId.HasValue)
@@ -1065,18 +902,6 @@ public partial class OrderDetailsWindow : Window
         }
 
         return "BASE";
-    }
-
-    private sealed class OrderStatusOption
-    {
-        public OrderStatusOption(OrderStatus status, string name)
-        {
-            Status = status;
-            Name = name;
-        }
-
-        public OrderStatus Status { get; }
-        public string Name { get; }
     }
 
     private sealed class OrderTypeOption

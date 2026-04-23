@@ -1,5 +1,7 @@
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
 using FlowStock.Server.Tests.SetOrderStatus.Infrastructure;
+using System.Net;
+using System.Net.Http.Json;
 
 namespace FlowStock.Server.Tests.SetOrderStatus;
 
@@ -15,7 +17,10 @@ public sealed class StateGuaranteeTests
         var docsBefore = harness.DocCount;
         var ledgerBefore = harness.LedgerEntries.Count;
 
-        await SetOrderStatusHttpApi.ChangeAsync(host.Client, orderId, "IN_PROGRESS");
+        using var response = await host.Client.PostAsJsonAsync($"/api/orders/{orderId}/status", new { status = "IN_PROGRESS" });
+        var payload = await SetOrderStatusHttpApi.ReadApiResultAsync(response, HttpStatusCode.BadRequest);
+        Assert.False(payload.Ok);
+        Assert.Equal("ORDER_STATUS_MANUAL_DISABLED", payload.Error);
 
         Assert.Equal(docsBefore, harness.DocCount);
         Assert.Equal(ledgerBefore, harness.LedgerEntries.Count);

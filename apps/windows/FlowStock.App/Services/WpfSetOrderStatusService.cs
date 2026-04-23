@@ -129,6 +129,7 @@ public sealed class WpfSetOrderStatusService
             "ORDER_STATUS_SHIPPED_FORBIDDEN" => "Статус \"Отгружен/Завершен\" ставится автоматически.",
             "ORDER_STATUS_INVALID_TARGET" => "Допустимы только статусы \"Принят\" и \"В процессе\".",
             "ORDER_STATUS_CHANGE_FORBIDDEN" => "Заказ в конечном статусе нельзя менять вручную.",
+            "ORDER_STATUS_MANUAL_DISABLED" => "Ручная смена статуса отключена. Статус считается автоматически по выпуску и отгрузке.",
             _ => string.IsNullOrWhiteSpace(errorCode)
                 ? $"Сервер вернул ошибку {(int?)apiCall.StatusCode ?? 0}."
                 : $"Сервер вернул ошибку: {errorCode}"
@@ -141,6 +142,7 @@ public sealed class WpfSetOrderStatusService
             "ORDER_STATUS_SHIPPED_FORBIDDEN" => WpfSetOrderStatusResultKind.ValidationFailed,
             "ORDER_STATUS_INVALID_TARGET" => WpfSetOrderStatusResultKind.ValidationFailed,
             "ORDER_STATUS_CHANGE_FORBIDDEN" => WpfSetOrderStatusResultKind.ValidationFailed,
+            "ORDER_STATUS_MANUAL_DISABLED" => WpfSetOrderStatusResultKind.ValidationFailed,
             _ => WpfSetOrderStatusResultKind.ServerRejected
         };
 

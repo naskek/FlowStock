@@ -50,7 +50,7 @@
                 <StackPanel x:Name="DocReasonPanel" Margin="0,0,12,0">
                     <TextBlock Text="Причина" />
                     <ComboBox x:Name="DocReasonCombo" Width="220" Margin="0,4,0,0"
-                              DisplayMemberPath="Label"
+                              DisplayMemberPath="Name"
                               SelectionChanged="DocReasonCombo_SelectionChanged" />
                 </StackPanel>
                 <StackPanel x:Name="DocToPanel" Margin="0,0,12,0">
@@ -97,7 +97,7 @@
         </StackPanel>
         <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
             <Button x:Name="AddItemButton" Content="+ Товар" Click="DocAddLine_Click" />
-            <Button x:Name="FillFromOrderButton" Content="Заполнить из заказа" Click="DocFillFromOrder_Click" Margin="8,0,0,0" />
+            <Button x:Name="FillFromOrderButton" Content="Заполнить из заказа" Click="DocFillFromOrder_Click" Margin="8,0,0,0" Visibility="Collapsed" />
             <Button x:Name="AutoHuButton" Content="Распределить по HU" Click="AutoHuButton_Click" Margin="8,0,0,0" />
             <Button x:Name="EditLineButton" Content="Изменить количество..." Click="DocEditLine_Click" Margin="8,0,0,0" />
             <Button x:Name="AssignHuButton" Content="Назначить HU..." Click="AssignHuButton_Click" Margin="8,0,0,0" />
@@ -108,6 +108,7 @@
                   SelectionMode="Extended"
                   SelectionUnit="FullRow"
                   SelectionChanged="DocLines_SelectionChanged"
+                  MouseDoubleClick="DocLinesGrid_MouseDoubleClick"
                   KeyDown="DocLinesGrid_KeyDown">
             <DataGrid.RowStyle>
                 <Style TargetType="DataGridRow">
@@ -159,6 +160,18 @@
                 </DataGridTemplateColumn>
                 <DataGridTextColumn x:Name="DocHuColumn" Header="HU" Binding="{Binding HuDisplay}" Width="180" />
                 <DataGridTextColumn x:Name="DocFromColumn" Header="Откуда" Binding="{Binding FromLocation}" Width="220" />
+                <DataGridTemplateColumn x:Name="DocToEditColumn" Header="Куда" Width="220">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <ComboBox ItemsSource="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=RowLocationOptions}"
+                                      DisplayMemberPath="DisplayName"
+                                      SelectedValuePath="Id"
+                                      SelectedValue="{Binding ToLocationId}"
+                                      SelectionChanged="DocToLocationCombo_SelectionChanged"
+                                      IsEnabled="{Binding RelativeSource={RelativeSource AncestorType=DataGrid}, Path=Tag}" />
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
                 <DataGridTextColumn x:Name="DocToColumn" Header="Куда" Binding="{Binding ToLocation}" Width="220" />
             </DataGrid.Columns>
         </DataGrid>
@@ -173,7 +186,7 @@
                 </DataGrid.Columns>
             </DataGrid>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,6,0,0">
-                <Button x:Name="OutboundHuApplyButton" Content="Добавить HU" Click="OutboundHuApply_Click" />
+                <Button x:Name="OutboundHuApplyButton" Content="Назначить HU" Click="OutboundHuApply_Click" />
             </StackPanel>
         </StackPanel>
         <TextBlock x:Name="DocShortageText" Grid.Row="4" Margin="0,6,0,0" Foreground="DarkRed" Visibility="Collapsed" />

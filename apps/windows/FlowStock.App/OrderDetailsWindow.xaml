@@ -26,7 +26,7 @@
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
                 <TextBlock Text="Номер" Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,0" />
-                <TextBox x:Name="OrderRefBox" Grid.Row="0" Grid.Column="1" Margin="0,0,16,6" TabIndex="1" />
+                <TextBox x:Name="OrderRefBox" Grid.Row="0" Grid.Column="1" Margin="0,0,16,6" TabIndex="1" IsReadOnly="True" />
                 <TextBlock Text="Тип" Grid.Row="0" Grid.Column="2" VerticalAlignment="Center" Margin="0,0,8,0" />
                 <ComboBox x:Name="TypeCombo" Grid.Row="0" Grid.Column="3" DisplayMemberPath="Name" Margin="0,0,0,6" TabIndex="2" />
 
@@ -35,7 +35,46 @@
                           IsEditable="True" IsTextSearchEnabled="False" TextSearch.TextPath="DisplayName"
                           StaysOpenOnEdit="True" Margin="0,0,16,6" TabIndex="3" />
                 <TextBlock Text="Статус" Grid.Row="1" Grid.Column="2" VerticalAlignment="Center" Margin="0,0,8,0" />
-                <ComboBox x:Name="StatusCombo" Grid.Row="1" Grid.Column="3" DisplayMemberPath="Name" Margin="0,0,0,6" TabIndex="4" />
+                <Border x:Name="OrderStatusBadge"
+                        Grid.Row="1" Grid.Column="3"
+                        HorizontalAlignment="Left"
+                        VerticalAlignment="Center"
+                        Margin="0,0,0,6"
+                        Padding="8,2"
+                        CornerRadius="999"
+                        BorderThickness="1">
+                    <Border.Style>
+                        <Style TargetType="Border">
+                            <Setter Property="Background" Value="#FDEACC" />
+                            <Setter Property="BorderBrush" Value="#F5B14C" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding Text, ElementName=OrderStatusText}" Value="Готов">
+                                    <Setter Property="Background" Value="#E8F7EC" />
+                                    <Setter Property="BorderBrush" Value="#9EDDB0" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding Text, ElementName=OrderStatusText}" Value="Выполнен">
+                                    <Setter Property="Background" Value="#1F7A3E" />
+                                    <Setter Property="BorderBrush" Value="#166330" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Border.Style>
+                    <TextBlock x:Name="OrderStatusText" VerticalAlignment="Center" FontWeight="SemiBold">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Foreground" Value="#8A4B00" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Text, ElementName=OrderStatusText}" Value="Готов">
+                                        <Setter Property="Foreground" Value="#2D6A3D" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Text, ElementName=OrderStatusText}" Value="Выполнен">
+                                        <Setter Property="Foreground" Value="White" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </Border>
 
                 <TextBlock Text="Плановая дата" Grid.Row="2" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,0" />
                 <DatePicker x:Name="DueDatePicker" Grid.Row="2" Grid.Column="1" Margin="0,0,16,6"
@@ -60,7 +99,9 @@
         </StackPanel>
             <Grid Grid.Row="1">
                 <DataGrid x:Name="OrderLinesGrid" AutoGenerateColumns="False" IsReadOnly="True"
-                          SelectionChanged="OrderLinesGrid_SelectionChanged" TabIndex="10">
+                          SelectionChanged="OrderLinesGrid_SelectionChanged"
+                          MouseDoubleClick="OrderLinesGrid_MouseDoubleClick"
+                          TabIndex="10">
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
                         <DataGridTextColumn Header="SKU / ШК" Binding="{Binding Barcode}" Width="150" />

@@ -77,6 +77,7 @@
                     <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="*" />
                     <DataGridTextColumn Header="Бренд" Binding="{Binding Brand}" Width="140" />
                     <DataGridTextColumn Header="Объем" Binding="{Binding Volume}" Width="120" />
+                    <DataGridTextColumn x:Name="AvailableQtyColumn" Header="Доступно" Binding="{Binding AvailableQtyDisplay}" Width="130" />
                     <DataGridTextColumn Header="SKU / штрихкод" Binding="{Binding Barcode}" Width="180" />
                     <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="140" />
                     <DataGridTextColumn Header="Базовая единица" Binding="{Binding BaseUom}" Width="140" />

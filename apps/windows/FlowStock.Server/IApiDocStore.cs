@@ -31,5 +31,6 @@ public interface IApiDocStore
     void AddReservationLine(string docUid, long itemId, long locationId, double qty);
     double GetReservedQty(long itemId, long locationId, string? excludeDocUid);
     void ClearReservations(string docUid);
+    void DeleteDraftDocMetadata(string docUid);
 }
 

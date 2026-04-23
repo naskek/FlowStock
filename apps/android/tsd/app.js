@@ -1159,12 +1159,14 @@
       return { label: raw, className: "order-status-pill order-status-accepted" };
     }
     if (
+      normalized.indexOf("черновик") !== -1 ||
+      normalized.indexOf("draft") !== -1 ||
       normalized.indexOf("процесс") !== -1 ||
       normalized.indexOf("в работе") !== -1 ||
       normalized.indexOf("processing") !== -1 ||
       normalized.indexOf("picking") !== -1
     ) {
-      return { label: raw, className: "order-status-pill order-status-progress" };
+      return { label: "В работе", className: "order-status-pill order-status-progress" };
     }
     if (
       normalized.indexOf("отгруж") !== -1 ||
@@ -1282,8 +1284,85 @@
     return { name: parts[0] };
   }
 
+  var LAST_ROUTE_KEY = "flowstock_tsd_last_route";
+
+  function normalizeRouteForRestore(route) {
+    var value = String(route || "").trim();
+    if (!value) {
+      return "";
+    }
+
+    if (value.charAt(0) !== "/") {
+      value = "/" + value.replace(/^#+/, "");
+    }
+
+    var routeInfo = null;
+    if (value.charAt(0) === "/") {
+      routeInfo = getRouteFromPath(value);
+    }
+
+    if (!routeInfo || !routeInfo.name || routeInfo.name === "login") {
+      return "";
+    }
+
+    return value;
+  }
+
+  function getRouteFromPath(path) {
+    var cleanPath = String(path || "").trim();
+    if (cleanPath.charAt(0) === "#") {
+      cleanPath = cleanPath.slice(1);
+    }
+    if (cleanPath.indexOf("/") === 0) {
+      cleanPath = cleanPath.slice(1);
+    }
+    if (!cleanPath) {
+      return { name: "home" };
+    }
+
+    var parts = cleanPath.split("/");
+    if (parts[0] === "operations") {
+      return { name: "operations" };
+    }
+    if (parts[0] === "docs" && parts[1]) {
+      return { name: "docs", op: decodeURIComponent(parts[1]) };
+    }
+    if (parts[0] === "docs") {
+      return { name: "docs" };
+    }
+    if (parts[0] === "doc" && parts[1]) {
+      return { name: "doc", id: decodeURIComponent(parts[1]) };
+    }
+    if (parts[0] === "order" && parts[1]) {
+      return { name: "order", id: decodeURIComponent(parts[1]) };
+    }
+    return { name: parts[0] };
+  }
+
+  function loadLastRoute() {
+    try {
+      return normalizeRouteForRestore(localStorage.getItem(LAST_ROUTE_KEY));
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function saveLastRoute(route) {
+    var normalized = normalizeRouteForRestore(route);
+    if (!normalized) {
+      return;
+    }
+
+    try {
+      localStorage.setItem(LAST_ROUTE_KEY, normalized);
+    } catch (error) {
+      // ignore storage failures
+    }
+  }
+
   function navigate(route) {
     if (route) {
+      saveLastRoute(route);
       window.location.hash = route;
     }
   }
@@ -1317,10 +1396,11 @@
     setScanInputHandlers(null, null);
     setPreferredScanTarget(null);
     if (!window.location.hash || window.location.hash === "#") {
-      navigate("/home");
+      navigate(loadLastRoute() || "/home");
       return;
     }
     var route = getRoute();
+    saveLastRoute("/" + (window.location.hash || "").replace(/^#\/?/, ""));
     currentRoute = route;
     setCurrentClientBlockContext(resolveRouteBlockContext(route));
 
@@ -5503,8 +5583,13 @@
             setScanInfo("Неизвестный код", true);
           }
         })
-        .catch(function () {
+        .catch(function (error) {
           if (token === lookupToken) {
+            var code = error && error.message ? error.message : "";
+            if (code === "ITEM_INACTIVE") {
+              setScanInfo("Карточка товара заблокирована", true);
+              return;
+            }
             setScanInfo("", false);
           }
         });
@@ -5798,7 +5883,12 @@
             focusBarcode();
           });
         })
-        .catch(function () {
+        .catch(function (error) {
+          var code = error && error.message ? error.message : "";
+          if (code === "ITEM_INACTIVE") {
+            setScanInfo("Карточка товара заблокирована", true);
+            return;
+          }
           setScanInfo("Товар не найден", true);
         });
 
@@ -6138,7 +6228,12 @@
             }
             addLineWithQuantity(barcode, qtyStep);
           })
-          .catch(function () {
+          .catch(function (error) {
+            var code = error && error.message ? error.message : "";
+            if (code === "ITEM_INACTIVE") {
+              setScanInfo("Карточка товара заблокирована", true);
+              return;
+            }
             addLineWithQuantity(barcode, qtyStep);
           });
         return;
@@ -8414,6 +8509,9 @@
       }
       if (code === "UNKNOWN_ITEM") {
         return "Товар не найден.";
+      }
+      if (code === "ITEM_INACTIVE") {
+        return "Карточка товара заблокирована.";
       }
       if (code === "DOC_REF_EXISTS") {
         return "Документ с таким номером уже существует.";

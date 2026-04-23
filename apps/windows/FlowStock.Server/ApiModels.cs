@@ -457,6 +457,9 @@ public sealed class OrderCreateRequestCreateRequest
     [JsonPropertyName("order_ref")]
     public string? OrderRef { get; set; }
 
+    [JsonPropertyName("order_type")]
+    public string? OrderType { get; set; }
+
     [JsonPropertyName("partner_id")]
     public long? PartnerId { get; set; }
 
@@ -541,6 +544,9 @@ public sealed class UpsertItemRequest
     [JsonPropertyName("name")]
     public string? Name { get; set; }
 
+    [JsonPropertyName("is_active")]
+    public bool? IsActive { get; set; }
+
     [JsonPropertyName("barcode")]
     public string? Barcode { get; set; }
 
@@ -603,10 +609,25 @@ public sealed class UpsertLocationRequest
 
     [JsonPropertyName("name")]
     public string? Name { get; set; }
+
+    [JsonPropertyName("max_hu_slots")]
+    public int? MaxHuSlots { get; set; }
+
+    [JsonPropertyName("auto_hu_distribution_enabled")]
+    public bool? AutoHuDistributionEnabled { get; set; }
 }
 
 public sealed class CreateNamedEntityRequest
 {
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+}
+
+public sealed class CreateWriteOffReasonRequest
+{
+    [JsonPropertyName("code")]
+    public string? Code { get; set; }
+
     [JsonPropertyName("name")]
     public string? Name { get; set; }
 }

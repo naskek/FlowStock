@@ -258,6 +258,38 @@ WHERE item_id = @item_id AND location_id = @location_id";
         command.ExecuteNonQuery();
     }
 
+    public void DeleteDraftDocMetadata(string docUid)
+    {
+        using var connection = OpenConnection();
+        using var transaction = connection.BeginTransaction();
+
+        using (var deleteReservations = connection.CreateCommand())
+        {
+            deleteReservations.Transaction = transaction;
+            deleteReservations.CommandText = "DELETE FROM stock_reservation_lines WHERE doc_uid = @doc_uid;";
+            deleteReservations.Parameters.AddWithValue("@doc_uid", docUid);
+            deleteReservations.ExecuteNonQuery();
+        }
+
+        using (var deleteEvents = connection.CreateCommand())
+        {
+            deleteEvents.Transaction = transaction;
+            deleteEvents.CommandText = "DELETE FROM api_events WHERE doc_uid = @doc_uid;";
+            deleteEvents.Parameters.AddWithValue("@doc_uid", docUid);
+            deleteEvents.ExecuteNonQuery();
+        }
+
+        using (var deleteDoc = connection.CreateCommand())
+        {
+            deleteDoc.Transaction = transaction;
+            deleteDoc.CommandText = "DELETE FROM api_docs WHERE doc_uid = @doc_uid;";
+            deleteDoc.Parameters.AddWithValue("@doc_uid", docUid);
+            deleteDoc.ExecuteNonQuery();
+        }
+
+        transaction.Commit();
+    }
+
     private NpgsqlConnection OpenConnection()
     {
         var connection = new NpgsqlConnection(_connectionString);

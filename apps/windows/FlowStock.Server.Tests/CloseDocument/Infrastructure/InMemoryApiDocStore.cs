@@ -127,6 +127,17 @@ internal sealed class InMemoryApiDocStore : IApiDocStore
         _reservations.RemoveAll(line => string.Equals(line.DocUid, docUid, StringComparison.OrdinalIgnoreCase));
     }
 
+    public void DeleteDraftDocMetadata(string docUid)
+    {
+        _docs.Remove(docUid);
+        _events
+            .Where(pair => string.Equals(pair.Value.DocUid, docUid, StringComparison.OrdinalIgnoreCase))
+            .Select(pair => pair.Key)
+            .ToList()
+            .ForEach(eventId => _events.Remove(eventId));
+        ClearReservations(docUid);
+    }
+
     private static string? NormalizeHu(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();

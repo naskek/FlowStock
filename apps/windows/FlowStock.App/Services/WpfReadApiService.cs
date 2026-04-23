@@ -422,11 +422,26 @@ public sealed class WpfReadApiService
 
     private static Location MapLocation(JsonElement element)
     {
+        var autoHuDistributionEnabled = true;
+        if (element.TryGetProperty("auto_hu_distribution_enabled", out var autoProperty))
+        {
+            if (autoProperty.ValueKind == JsonValueKind.True || autoProperty.ValueKind == JsonValueKind.False)
+            {
+                autoHuDistributionEnabled = autoProperty.GetBoolean();
+            }
+            else if (!bool.TryParse(autoProperty.ToString(), out autoHuDistributionEnabled))
+            {
+                autoHuDistributionEnabled = true;
+            }
+        }
+
         return new Location
         {
             Id = ReadInt64(element, "id"),
             Code = ReadString(element, "code") ?? string.Empty,
-            Name = ReadString(element, "name") ?? string.Empty
+            Name = ReadString(element, "name") ?? string.Empty,
+            MaxHuSlots = ReadNullableInt32(element, "max_hu_slots"),
+            AutoHuDistributionEnabled = autoHuDistributionEnabled
         };
     }
 
@@ -516,6 +531,9 @@ public sealed class WpfReadApiService
         {
             Id = ReadInt64(element, "id"),
             Name = ReadString(element, "name") ?? string.Empty,
+            IsActive = !element.TryGetProperty("is_active", out var isActiveProperty)
+                       || isActiveProperty.ValueKind == JsonValueKind.Null
+                       || ReadBool(element, "is_active"),
             Barcode = ReadString(element, "barcode"),
             Gtin = ReadString(element, "gtin"),
             BaseUom = ReadString(element, "base_uom_code") ?? ReadString(element, "base_uom") ?? "шт",

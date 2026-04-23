@@ -39,6 +39,10 @@ public interface IDataStore
     void DeleteUom(long uomId);
     bool IsUomUsed(long uomId);
 
+    IReadOnlyList<WriteOffReason> GetWriteOffReasons();
+    long AddWriteOffReason(WriteOffReason reason);
+    void DeleteWriteOffReason(long reasonId);
+
     IReadOnlyList<Tara> GetTaras();
     long AddTara(Tara tara);
     void UpdateTara(Tara tara);
@@ -68,6 +72,7 @@ public interface IDataStore
     int GetMaxDocRefSequenceByYear(int year);
     bool IsDocRefSequenceTaken(int year, int sequence);
     long AddDoc(Doc doc);
+    void DeleteDoc(long docId);
     IReadOnlyList<DocLine> GetDocLines(long docId);
     IReadOnlyList<DocLineView> GetDocLineViews(long docId);
     long AddDocLine(DocLine line);

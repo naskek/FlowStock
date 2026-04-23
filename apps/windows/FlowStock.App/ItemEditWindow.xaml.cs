@@ -68,6 +68,7 @@ public partial class ItemEditWindow : Window
             TaraCombo.SelectedItem = TaraOption.Empty;
             ItemTypeCombo.SelectedItem = _itemTypes.FirstOrDefault(t => t.Id.HasValue) ?? _itemTypes.FirstOrDefault();
             MinStockQtyBox.Text = string.Empty;
+            IsActiveCheck.IsChecked = true;
             UpdateMinStockControls();
             return;
         }
@@ -93,6 +94,7 @@ public partial class ItemEditWindow : Window
         MinStockQtyBox.Text = _item.MinStockQty.HasValue
             ? _item.MinStockQty.Value.ToString("0.###", CultureInfo.InvariantCulture)
             : string.Empty;
+        IsActiveCheck.IsChecked = _item.IsActive;
         UpdateMinStockControls();
     }
 
@@ -145,6 +147,7 @@ public partial class ItemEditWindow : Window
         var itemType = ItemTypeCombo.SelectedItem as ItemTypeOption;
         var itemTypeId = itemType?.Id;
         var isMarked = _item?.IsMarked ?? false;
+        var isActive = IsActiveCheck.IsChecked != false;
 
         if (itemType?.EnableMinStockControl != true)
         {
@@ -166,6 +169,7 @@ public partial class ItemEditWindow : Window
                 MaxQtyPerHu = maxQtyPerHu,
                 TaraId = taraId,
                 IsMarked = isMarked,
+                IsActive = isActive,
                 ItemTypeId = itemTypeId,
                 MinStockQty = minStockQty
             };
@@ -202,6 +206,7 @@ public partial class ItemEditWindow : Window
                     MaxQtyPerHu = candidate.MaxQtyPerHu,
                     TaraId = candidate.TaraId,
                     IsMarked = candidate.IsMarked,
+                    IsActive = candidate.IsActive,
                     ItemTypeId = candidate.ItemTypeId,
                     MinStockQty = candidate.MinStockQty
                 };
