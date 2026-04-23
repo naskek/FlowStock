@@ -24,6 +24,9 @@
   var softKeyboardEnabled = false;
   var SOFT_KEYBOARD_KEY = "softKeyboardEnabled";
   var SERVER_PING_INTERVAL = 15000;
+  var VERSION_CHECK_INTERVAL = 600000;
+  var versionCheckTimerId = 0;
+  var knownServerVersion = "";
   var serverStatus = { ok: null, checkedAt: 0 };
   var scanDebug = {
     enabled: false,
@@ -593,6 +596,72 @@
         updateNetworkStatus();
         return false;
       });
+  }
+
+  function fetchServerVersion() {
+    return getServerBaseUrl()
+      .then(function (baseUrl) {
+        return fetch(baseUrl + "/api/version", {
+          method: "GET",
+          cache: "no-store",
+          headers: { "Cache-Control": "no-cache" },
+        })
+          .then(function (response) {
+            if (!response.ok) {
+              return "";
+            }
+            return response
+              .json()
+              .then(function (payload) {
+                return payload && payload.version ? String(payload.version).trim() : "";
+              })
+              .catch(function () {
+                return "";
+              });
+          })
+          .catch(function () {
+            return "";
+          });
+      })
+      .catch(function () {
+        return "";
+      });
+  }
+
+  function checkServerVersionAndReloadIfNeeded() {
+    return fetchServerVersion().then(function (version) {
+      if (!version) {
+        return false;
+      }
+
+      if (!knownServerVersion) {
+        knownServerVersion = version;
+        return false;
+      }
+
+      if (version !== knownServerVersion) {
+        knownServerVersion = version;
+        window.location.reload();
+        return true;
+      }
+
+      return false;
+    });
+  }
+
+  function stopVersionWatcher() {
+    if (versionCheckTimerId) {
+      clearInterval(versionCheckTimerId);
+      versionCheckTimerId = 0;
+    }
+  }
+
+  function startVersionWatcher() {
+    stopVersionWatcher();
+    checkServerVersionAndReloadIfNeeded();
+    versionCheckTimerId = window.setInterval(function () {
+      checkServerVersionAndReloadIfNeeded();
+    }, VERSION_CHECK_INTERVAL);
   }
 
   function ensureServerAvailable() {
@@ -9280,6 +9349,7 @@
         window.setInterval(function () {
           pingServer(false);
         }, SERVER_PING_INTERVAL);
+        startVersionWatcher();
         window.addEventListener("online", function () {
           pingServer(true);
         });
@@ -9390,6 +9460,9 @@
         }
 
         window.addEventListener("hashchange", renderRoute);
+        window.addEventListener("beforeunload", function () {
+          stopVersionWatcher();
+        });
         renderRoute();
       })
       .catch(function () {

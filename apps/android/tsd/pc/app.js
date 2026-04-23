@@ -8,6 +8,14 @@
 
   var currentView = "stock";
   var LAST_VIEW_KEY = "flowstock_pc_last_view";
+  var VERSION_CHECK_INTERVAL_MS = 600000;
+  var versionCheckTimerId = 0;
+  var knownServerVersion = "";
+  var tableSortState = {
+    stock: { key: "", direction: "asc" },
+    catalog: { key: "", direction: "asc" },
+    orders: { key: "", direction: "asc" },
+  };
   var cachedItems = [];
   var cachedItemsById = {};
   var cachedItemTypes = [];
@@ -456,6 +464,7 @@
           saveAccount(account);
           setAccountLabel(account);
           setLoginState(true);
+          startVersionWatcher();
           currentView = resolveAllowedView(currentView) || "stock";
           syncTabsVisibility();
           renderView(currentView);
@@ -544,7 +553,6 @@
       "    </div>" +
       '    <div id="catalogStatus" class="pc-status"></div>' +
       "  </div>" +
-      '  <div class="pc-note">Поиск работает по тем же полям, что и в остатках: название, бренд, объем, SKU, GTIN и штрихкод.</div>' +
       '  <div id="catalogTableWrap"></div>' +
       "</section>"
     );
@@ -597,13 +605,13 @@
     return (
       '<table class="pc-table">' +
       "<thead><tr>" +
-      "<th>Товар</th>" +
-      "<th>Бренд</th>" +
-      "<th>Объем</th>" +
-      "<th>SKU / ШК</th>" +
-      "<th>Место</th>" +
-      "<th>HU</th>" +
-      "<th>Кол-во</th>" +
+      renderSortableHeader("stock", "itemName", "Товар") +
+      renderSortableHeader("stock", "brand", "Бренд") +
+      renderSortableHeader("stock", "volume", "Объем") +
+      renderSortableHeader("stock", "barcode", "SKU / ШК") +
+      renderSortableHeader("stock", "locationCode", "Место") +
+      renderSortableHeader("stock", "hu", "HU") +
+      renderSortableHeader("stock", "qty", "Кол-во") +
       "</tr></thead>" +
       "<tbody>" +
       body +
@@ -650,13 +658,13 @@
     return (
       '<table class="pc-table">' +
       "<thead><tr>" +
-      "<th>ID</th>" +
-      "<th>Товар</th>" +
-      "<th>Бренд</th>" +
-      "<th>Объем</th>" +
-      "<th>SKU / ШК</th>" +
-      "<th>GTIN</th>" +
-      "<th>Ед.</th>" +
+      renderSortableHeader("catalog", "itemId", "ID") +
+      renderSortableHeader("catalog", "itemName", "Товар") +
+      renderSortableHeader("catalog", "brand", "Бренд") +
+      renderSortableHeader("catalog", "volume", "Объем") +
+      renderSortableHeader("catalog", "barcode", "SKU / ШК") +
+      renderSortableHeader("catalog", "gtin", "GTIN") +
+      renderSortableHeader("catalog", "baseUom", "Ед.") +
       "</tr></thead>" +
       "<tbody>" +
       body +
@@ -963,10 +971,20 @@
         }
         return matchesItemSearch(row, query, true);
       });
+      rows = sortRows(rows, "stock", {
+        itemName: { type: "string", getValue: function (row) { return row.itemName; } },
+        brand: { type: "string", getValue: function (row) { return row.brand; } },
+        volume: { type: "string", getValue: function (row) { return row.volume; } },
+        barcode: { type: "string", getValue: function (row) { return row.barcode; } },
+        locationCode: { type: "string", getValue: function (row) { return row.locationCode; } },
+        hu: { type: "string", getValue: function (row) { return row.hu; } },
+        qty: { type: "number", getValue: function (row) { return row.qty; } },
+      });
 
       setStatus("Строк: " + rows.length);
       renderLowStock();
       tableWrap.innerHTML = renderStockTable(rows);
+      bindTableSorting(tableWrap, "stock", renderRows);
     }
 
     function fillTypeFilter() {
@@ -1115,9 +1133,19 @@
         }
         return matchesItemSearch(row, query, false);
       });
+      rows = sortRows(rows, "catalog", {
+        itemId: { type: "number", getValue: function (row) { return row.itemId; } },
+        itemName: { type: "string", getValue: function (row) { return row.itemName; } },
+        brand: { type: "string", getValue: function (row) { return row.brand; } },
+        volume: { type: "string", getValue: function (row) { return row.volume; } },
+        barcode: { type: "string", getValue: function (row) { return row.barcode; } },
+        gtin: { type: "string", getValue: function (row) { return row.gtin; } },
+        baseUom: { type: "string", getValue: function (row) { return row.baseUom; } },
+      });
 
       setStatus("Товаров: " + rows.length);
       tableWrap.innerHTML = renderCatalogTable(rows);
+      bindTableSorting(tableWrap, "catalog", renderRows);
     }
 
     function fillTypeFilter() {
@@ -1208,7 +1236,6 @@
       "    </div>" +
       '    <div id="ordersStatus" class="pc-status"></div>' +
       "  </div>" +
-      '  <div class="pc-note">Создание и смена статуса отправляются как заявки. Применение происходит после подтверждения в WPF.</div>' +
       '  <div id="ordersTableWrap"></div>' +
       "</section>"
     );
@@ -1258,12 +1285,12 @@
     return (
       '<table class="pc-table">' +
       "<thead><tr>" +
-      "<th>Номер</th>" +
-      "<th>Тип</th>" +
-      "<th>Контрагент</th>" +
-      "<th>План</th>" +
-      "<th>Факт</th>" +
-      "<th>Статус</th>" +
+      renderSortableHeader("orders", "orderRef", "Номер") +
+      renderSortableHeader("orders", "orderType", "Тип") +
+      renderSortableHeader("orders", "partnerName", "Контрагент") +
+      renderSortableHeader("orders", "dueDate", "План") +
+      renderSortableHeader("orders", "shippedAt", "Факт") +
+      renderSortableHeader("orders", "status", "Статус") +
       "</tr></thead>" +
       "<tbody>" +
       body +
@@ -1337,6 +1364,197 @@
     } catch (error) {
       // ignore storage failures
     }
+  }
+
+  function getSortDirectionMark(view, key) {
+    var state = tableSortState[view];
+    if (!state || state.key !== key) {
+      return " ⇅";
+    }
+    return state.direction === "desc" ? " ▼" : " ▲";
+  }
+
+  function renderSortableHeader(view, key, label) {
+    var state = tableSortState[view];
+    var isActive = !!(state && state.key === key);
+    return (
+      '<th><button class="pc-table-sort' +
+      (isActive ? " is-active" : "") +
+      '" type="button" data-sort-view="' +
+      escapeHtml(view) +
+      '" data-sort-key="' +
+      escapeHtml(key) +
+      '" aria-label="Сортировать по столбцу ' +
+      escapeHtml(label) +
+      '">' +
+      escapeHtml(label) +
+      '<span class="pc-table-sort-mark">' +
+      escapeHtml(getSortDirectionMark(view, key)) +
+      "</span></button></th>"
+    );
+  }
+
+  function toggleTableSort(view, key) {
+    var state = tableSortState[view];
+    if (!state) {
+      return;
+    }
+    if (state.key === key) {
+      state.direction = state.direction === "asc" ? "desc" : "asc";
+      return;
+    }
+    state.key = key;
+    state.direction = "asc";
+  }
+
+  function compareSortValues(left, right, valueType) {
+    if (valueType === "number") {
+      var leftNum = Number(left);
+      var rightNum = Number(right);
+      var leftValid = isFinite(leftNum);
+      var rightValid = isFinite(rightNum);
+      if (!leftValid && !rightValid) {
+        return 0;
+      }
+      if (!leftValid) {
+        return 1;
+      }
+      if (!rightValid) {
+        return -1;
+      }
+      if (leftNum === rightNum) {
+        return 0;
+      }
+      return leftNum < rightNum ? -1 : 1;
+    }
+
+    if (valueType === "date") {
+      var leftDate = left ? Date.parse(String(left)) : NaN;
+      var rightDate = right ? Date.parse(String(right)) : NaN;
+      var leftDateValid = isFinite(leftDate);
+      var rightDateValid = isFinite(rightDate);
+      if (!leftDateValid && !rightDateValid) {
+        return 0;
+      }
+      if (!leftDateValid) {
+        return 1;
+      }
+      if (!rightDateValid) {
+        return -1;
+      }
+      if (leftDate === rightDate) {
+        return 0;
+      }
+      return leftDate < rightDate ? -1 : 1;
+    }
+
+    var leftText = String(left || "");
+    var rightText = String(right || "");
+    return leftText.localeCompare(rightText, "ru", { sensitivity: "base", numeric: true });
+  }
+
+  function sortRows(rows, view, columns) {
+    var source = Array.isArray(rows) ? rows.slice() : [];
+    var state = tableSortState[view];
+    if (!state || !state.key || !columns || !columns[state.key]) {
+      return source;
+    }
+
+    var column = columns[state.key];
+    var direction = state.direction === "desc" ? -1 : 1;
+    return source
+      .map(function (row, index) {
+        return { row: row, index: index };
+      })
+      .sort(function (left, right) {
+        var leftValue = column.getValue(left.row);
+        var rightValue = column.getValue(right.row);
+        var compared = compareSortValues(leftValue, rightValue, column.type);
+        if (compared !== 0) {
+          return compared * direction;
+        }
+        return left.index - right.index;
+      })
+      .map(function (entry) {
+        return entry.row;
+      });
+  }
+
+  function bindTableSorting(tableWrap, view, rerender) {
+    if (!tableWrap || typeof rerender !== "function") {
+      return;
+    }
+    var buttons = tableWrap.querySelectorAll('.pc-table-sort[data-sort-view="' + view + '"]');
+    buttons.forEach(function (button) {
+      button.addEventListener("click", function () {
+        var key = String(button.getAttribute("data-sort-key") || "");
+        if (!key) {
+          return;
+        }
+        toggleTableSort(view, key);
+        rerender();
+      });
+    });
+  }
+
+  function fetchServerVersion() {
+    return fetch("/api/version", {
+      method: "GET",
+      cache: "no-store",
+      headers: { "Cache-Control": "no-cache" },
+    })
+      .then(function (response) {
+        if (!response.ok) {
+          return "";
+        }
+        return response
+          .json()
+          .then(function (payload) {
+            return payload && payload.version ? String(payload.version).trim() : "";
+          })
+          .catch(function () {
+            return "";
+          });
+      })
+      .catch(function () {
+        return "";
+      });
+  }
+
+  function checkServerVersionAndReloadIfNeeded() {
+    return fetchServerVersion().then(function (version) {
+      if (!version) {
+        return false;
+      }
+
+      if (!knownServerVersion) {
+        knownServerVersion = version;
+        return false;
+      }
+
+      if (version !== knownServerVersion) {
+        knownServerVersion = version;
+        window.location.reload();
+        return true;
+      }
+
+      return false;
+    });
+  }
+
+  function stopVersionWatcher() {
+    if (versionCheckTimerId) {
+      clearInterval(versionCheckTimerId);
+      versionCheckTimerId = 0;
+    }
+  }
+
+  function startVersionWatcher() {
+    stopVersionWatcher();
+    checkServerVersionAndReloadIfNeeded();
+    versionCheckTimerId = window.setInterval(function () {
+      checkServerVersionAndReloadIfNeeded();
+    }, VERSION_CHECK_INTERVAL_MS);
   }
 
   function getOrderStatusPresentation(order) {
@@ -1569,7 +1787,10 @@
     };
     var items = [];
     var partners = [];
-    var linesState = [{ item_id: 0, qty_ordered: 1, query: "" }];
+    function createEmptyLine() {
+      return { item_id: 0, qty_ordered: 1, query: "", locked: false };
+    }
+    var linesState = [createEmptyLine()];
     var activeLineIndex = 0;
     var selectedPartnerId = 0;
     var activeSuggestIndex = -1;
@@ -1716,14 +1937,18 @@
       if (selectedItem) {
         linesState[index].query = buildItemLabel(selectedItem);
       }
-
-      var queryEl = refs.linesWrap.querySelector('.line-item-query[data-index="' + index + '"]');
-      if (queryEl) {
-        queryEl.value = linesState[index].query;
-        queryEl.focus();
+      linesState[index].locked = true;
+      if (index === linesState.length - 1) {
+        linesState.push(createEmptyLine());
       }
-
-      updateLineControls(index);
+      activeLineIndex = Math.min(index + 1, linesState.length - 1);
+      renderLines();
+      var nextInput = refs.linesWrap
+        ? refs.linesWrap.querySelector('.line-item-query[data-index="' + activeLineIndex + '"]')
+        : null;
+      if (nextInput) {
+        nextInput.focus();
+      }
     }
 
     function close() {
@@ -2123,6 +2348,15 @@
       var line = linesState[index];
       var queryEl = refs.linesWrap.querySelector('.line-item-query[data-index="' + index + '"]');
       var hintEl = refs.linesWrap.querySelector('.line-item-hint[data-index="' + index + '"]');
+      if (line.locked) {
+        if (activeSuggestIndex === index) {
+          hideSuggestionOverlay();
+        }
+        if (hintEl) {
+          hintEl.textContent = "";
+        }
+        return;
+      }
       if (!queryEl) {
         return;
       }
@@ -2158,7 +2392,7 @@
         return;
       }
       if (!linesState.length) {
-        linesState.push({ item_id: 0, qty_ordered: 1, query: "" });
+        linesState.push(createEmptyLine());
       }
       if (activeLineIndex < 0 || activeLineIndex >= linesState.length) {
         activeLineIndex = linesState.length - 1;
@@ -2168,19 +2402,31 @@
       refs.linesWrap.innerHTML = linesState
         .map(function (line, index) {
           var query = String(line.query || "");
+          var itemCellHtml = "";
+          if (line.locked && Number(line.item_id) > 0) {
+            itemCellHtml =
+              '<div class="pc-order-line-selected" title="' +
+              escapeHtml(query) +
+              '">' +
+              escapeHtml(query) +
+              "</div>";
+          } else {
+            itemCellHtml =
+              '<div class="pc-order-line-autocomplete">' +
+              '<input class="form-input line-item-query" data-index="' +
+              index +
+              '" type="text" autocomplete="off" placeholder="Введите GTIN/SKU или название" value="' +
+              escapeHtml(query) +
+              '" />' +
+              "</div>" +
+              '<div class="pc-order-line-hint line-item-hint" data-index="' +
+              index +
+              '"></div>';
+          }
           var rowHtml =
             '<div class="pc-order-line-row">' +
             '<div class="pc-order-line-item-cell">' +
-            '<div class="pc-order-line-autocomplete">' +
-            '<input class="form-input line-item-query" data-index="' +
-            index +
-            '" type="text" autocomplete="off" placeholder="Введите GTIN/SKU или название" value="' +
-            escapeHtml(query) +
-            '" />' +
-            "</div>" +
-            '<div class="pc-order-line-hint line-item-hint" data-index="' +
-            index +
-            '"></div>' +
+            itemCellHtml +
             "</div>" +
             '<input class="form-input line-qty" data-index="' +
             index +
@@ -2191,14 +2437,6 @@
             index +
             '">🗑</button>' +
             "</div>";
-          if (index === activeLineIndex) {
-            rowHtml +=
-              '<div class="pc-order-line-add-row">' +
-              '<button class="btn btn-ghost line-add-btn" type="button" data-after-index="' +
-              index +
-              '"><span class="pc-plus-circle-icon">+</span>Добавить строку</button>' +
-              "</div>";
-          }
           return rowHtml;
         })
         .join("");
@@ -2216,6 +2454,7 @@
           }
 
           linesState[index].query = String(inputEl.value || "");
+          linesState[index].locked = false;
           var exactItem = findExactItem(linesState[index].query);
           if (exactItem) {
             linesState[index].item_id = Number(exactItem.id) || 0;
@@ -2282,24 +2521,17 @@
         btn.addEventListener("click", function () {
           var index = Number(btn.getAttribute("data-index"));
           if (linesState.length <= 1) {
-            linesState = [{ item_id: 0, qty_ordered: 1, query: "" }];
+            linesState = [createEmptyLine()];
             activeLineIndex = 0;
             renderLines();
             return;
           }
           linesState.splice(index, 1);
+          var lastLine = linesState[linesState.length - 1];
+          if (!lastLine || Number(lastLine.item_id) > 0 || normalizeText(lastLine.query)) {
+            linesState.push(createEmptyLine());
+          }
           activeLineIndex = Math.max(0, Math.min(index, linesState.length - 1));
-          renderLines();
-        });
-      });
-
-      var addButtons = refs.linesWrap.querySelectorAll(".line-add-btn");
-      addButtons.forEach(function (btn) {
-        btn.addEventListener("click", function () {
-          var afterIndex = Number(btn.getAttribute("data-after-index"));
-          var insertAt = Number.isFinite(afterIndex) ? afterIndex + 1 : linesState.length;
-          linesState.splice(insertAt, 0, { item_id: 0, qty_ordered: 1, query: "" });
-          activeLineIndex = insertAt;
           renderLines();
         });
       });
@@ -2319,14 +2551,16 @@
       var unresolvedLines = [];
 
       linesState.forEach(function (line, index) {
-        var qty = Number(line.qty_ordered) || 0;
-        if (qty <= 0) {
-          return;
-        }
-
         var itemId = Number(line.item_id) || 0;
         if (!itemId) {
+          if (!normalizeText(line.query)) {
+            return;
+          }
           unresolvedLines.push(index + 1);
+          return;
+        }
+        var qty = Number(line.qty_ordered) || 0;
+        if (qty <= 0) {
           return;
         }
 
@@ -2475,7 +2709,7 @@
           refs.internalInput.checked = false;
         }
         syncInternalOrderState();
-        linesState = [{ item_id: 0, qty_ordered: 1, query: "" }];
+        linesState = [createEmptyLine()];
         activeLineIndex = 0;
         renderLines();
         setStatus("");
@@ -2623,6 +2857,7 @@
     var newBtn = document.getElementById("ordersNewBtn");
     var refreshBtn = document.getElementById("ordersRefreshBtn");
     var debounce = null;
+    var currentRows = [];
 
     function setStatus(text) {
       if (statusEl) {
@@ -2630,16 +2865,32 @@
       }
     }
 
+    function sortOrderRows(rows) {
+      return sortRows(rows, "orders", {
+        orderRef: { type: "string", getValue: function (row) { return row.order_ref; } },
+        orderType: { type: "string", getValue: function (row) { return getOrderTypeLabel(row.order_type); } },
+        partnerName: { type: "string", getValue: function (row) { return row.partner_name; } },
+        dueDate: { type: "date", getValue: function (row) { return row.due_date; } },
+        shippedAt: { type: "date", getValue: function (row) { return row.shipped_at; } },
+        status: { type: "string", getValue: function (row) { return getOrderStatusPresentation(row).label; } },
+      });
+    }
+
     function renderTable(rows) {
       if (!tableWrap) {
         return;
       }
-      tableWrap.innerHTML = renderOrdersTable(rows);
+      currentRows = Array.isArray(rows) ? rows.slice() : [];
+      var sortedRows = sortOrderRows(currentRows);
+      tableWrap.innerHTML = renderOrdersTable(sortedRows);
+      bindTableSorting(tableWrap, "orders", function () {
+        renderTable(currentRows);
+      });
       var items = tableWrap.querySelectorAll("[data-order]");
       items.forEach(function (item) {
         item.addEventListener("click", function () {
           var id = item.getAttribute("data-order");
-          var target = rows.find(function (entry) {
+          var target = sortedRows.find(function (entry) {
             return String(entry.id) === String(id);
           });
           if (target) {
@@ -2744,6 +2995,7 @@
 
     var account = loadAccount();
     if (!hasPcAccess(account)) {
+      stopVersionWatcher();
       applyClientBlocks(null);
       syncTabsVisibility();
       setLoginState(false);
@@ -2757,6 +3009,7 @@
 
     setLoginState(true);
     setAccountLabel(account);
+    startVersionWatcher();
     syncTabsVisibility();
     if (app) {
       app.innerHTML = '<section class="pc-card"><div class="pc-status">Загрузка...</div></section>';
@@ -2781,6 +3034,8 @@
   if (logoutBtn) {
     logoutBtn.addEventListener("click", function () {
       clearAccount();
+      stopVersionWatcher();
+      knownServerVersion = "";
       applyClientBlocks(null);
       syncTabsVisibility();
       setAccountLabel(null);

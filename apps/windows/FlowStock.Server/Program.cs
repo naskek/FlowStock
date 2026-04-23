@@ -32,11 +32,13 @@ builder.Services.AddSingleton<ImportService>();
 builder.Services.AddSingleton<ItemPackagingService>();
 
 var app = builder.Build();
+var appVersion = ResolveAppVersion();
 
 OrderCreateEndpoint.Map(app);
 OrderUpdateEndpoint.Map(app);
 OrderDeleteEndpoint.Map(app);
 OrderStatusEndpoint.Map(app);
+app.MapGet("/api/version", () => Results.Ok(new { version = appVersion }));
 
 app.MapGet("/health/live", () => Results.Ok(new { status = "alive" }));
 app.MapGet("/health/ready", async (CancellationToken cancellationToken) =>
@@ -2731,7 +2733,8 @@ static bool IsClientBlockBypassPath(PathString path)
 {
     if (path.StartsWithSegments("/api/client-blocks")
         || path.StartsWithSegments("/api/tsd/login")
-        || path.StartsWithSegments("/api/ping"))
+        || path.StartsWithSegments("/api/ping")
+        || path.StartsWithSegments("/api/version"))
     {
         return true;
     }
@@ -3557,6 +3560,14 @@ LIMIT 1;";
     AddParam(command, "@login", login);
     AddParam(command, "@device_id", deviceId);
     return command.ExecuteScalar() != null;
+}
+
+static string ResolveAppVersion()
+{
+    var assembly = typeof(Program).Assembly;
+    var assemblyVersion = assembly.GetName().Version?.ToString() ?? "0.0.0";
+    var moduleVersionId = assembly.ManifestModule.ModuleVersionId.ToString("N");
+    return $"{assemblyVersion}-{moduleVersionId}";
 }
 
 enum PartnerRole
