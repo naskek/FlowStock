@@ -1271,6 +1271,29 @@ body {
   color: #486581;
 }
 
+.line-prd-hu {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #1b3a57;
+  font-weight: 600;
+}
+
+.line-prd-loc {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #486581;
+}
+
+.line-prd-pack {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: #1b3a57;
+}
+
 .actions-bar {
   display: grid;
   gap: 8px;
@@ -1429,6 +1452,49 @@ body {
   display: flex;
   gap: 12px;
   justify-content: center;
+}
+
+.hu-confirm-card {
+  max-width: 360px;
+}
+
+.hu-confirm-body {
+  display: grid;
+  gap: 10px;
+}
+
+.hu-confirm-hint {
+  font-size: 13px;
+  color: #486581;
+}
+
+.hu-confirm-progress {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1b3a57;
+}
+
+.hu-confirm-list {
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.hu-confirm-item {
+  border: 1px solid #d9e7ee;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1b3a57;
+  background: #fff;
+}
+
+.hu-confirm-item.is-done {
+  border-color: #87c38f;
+  background: #e9f8eb;
+  color: #1f6d2d;
 }
 
 .notice {

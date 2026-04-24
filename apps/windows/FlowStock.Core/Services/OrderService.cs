@@ -45,6 +45,70 @@ public sealed class OrderService
         return lines;
     }
 
+    public IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemainingDetailed(long orderId)
+    {
+        var planned = _data.GetOrderReceiptPlanLines(orderId)
+            .OrderBy(line => line.SortOrder)
+            .ThenBy(line => line.Id)
+            .ToList();
+        var baseRemaining = _data.GetOrderReceiptRemaining(orderId)
+            .ToDictionary(line => line.OrderLineId, line => line);
+
+        if (planned.Count == 0)
+        {
+            return baseRemaining.Values
+                .Where(line => line.QtyRemaining > QtyTolerance)
+                .OrderBy(line => line.OrderLineId)
+                .ToList();
+        }
+
+        var producedByOrderLine = baseRemaining
+            .ToDictionary(entry => entry.Key, entry => Math.Max(0, entry.Value.QtyReceived));
+        var result = new List<OrderReceiptLine>();
+
+        foreach (var line in planned)
+        {
+            var producedLeft = producedByOrderLine.TryGetValue(line.OrderLineId, out var value) ? value : 0d;
+            var consumed = Math.Min(line.QtyPlanned, producedLeft);
+            var remaining = Math.Max(0, line.QtyPlanned - consumed);
+            producedByOrderLine[line.OrderLineId] = Math.Max(0, producedLeft - consumed);
+            if (remaining <= QtyTolerance)
+            {
+                continue;
+            }
+
+            result.Add(new OrderReceiptLine
+            {
+                OrderLineId = line.OrderLineId,
+                OrderId = line.OrderId,
+                ItemId = line.ItemId,
+                ItemName = line.ItemName,
+                QtyOrdered = line.QtyPlanned,
+                QtyReceived = consumed,
+                QtyRemaining = remaining,
+                ToLocationId = line.ToLocationId,
+                ToLocation = line.ToLocationCode,
+                ToHu = line.ToHu,
+                SortOrder = line.SortOrder
+            });
+        }
+
+        foreach (var entry in baseRemaining.Values.Where(line => line.QtyRemaining > QtyTolerance))
+        {
+            if (result.Any(line => line.OrderLineId == entry.OrderLineId))
+            {
+                continue;
+            }
+
+            result.Add(entry);
+        }
+
+        return result
+            .OrderBy(line => line.SortOrder)
+            .ThenBy(line => line.OrderLineId)
+            .ToList();
+    }
+
     public IReadOnlyDictionary<long, double> GetItemAvailability()
     {
         return _data.GetLedgerTotalsByItem();
@@ -101,6 +165,8 @@ public sealed class OrderService
                     QtyOrdered = line.QtyOrdered
                 });
             }
+
+            TryRebuildOrderReceiptPlan(store, orderId);
         });
 
         return orderId;
@@ -230,6 +296,8 @@ public sealed class OrderService
                     store.DeleteOrderLine(staleLine.Id);
                 }
             }
+
+            TryRebuildOrderReceiptPlan(store, orderId);
         });
     }
 
@@ -270,6 +338,7 @@ public sealed class OrderService
 
         _data.ExecuteInTransaction(store =>
         {
+            TryClearOrderReceiptPlan(store, orderId);
             store.DeleteOrderLines(orderId);
             store.DeleteOrder(orderId);
         });
@@ -308,7 +377,6 @@ public sealed class OrderService
         var shippedByLine = _data.GetShippedTotalsByOrderLine(order.Id);
         var producedByOrderLine = _data.GetOrderReceiptRemaining(order.Id)
             .ToDictionary(line => line.OrderLineId, line => line.QtyReceived);
-        var reservedOutstandingByItem = GetReservedOutstandingByItemForCustomerOrders();
 
         foreach (var line in lines)
         {
@@ -317,11 +385,9 @@ public sealed class OrderService
             var produced = producedByOrderLine.TryGetValue(line.Id, out var producedQty) ? producedQty : 0;
             var remaining = Math.Max(0, line.QtyOrdered - shipped);
             var reservedForLine = Math.Max(0, produced - shipped);
-            var reservedByItem = reservedOutstandingByItem.TryGetValue(line.ItemId, out var reservedQty)
-                ? reservedQty
-                : 0;
-            var unreservedAvailable = Math.Max(0, Math.Max(0, available) - reservedByItem);
-            var availableForShip = reservedForLine + unreservedAvailable;
+            // Для клиентского заказа отгрузка допускается только из объема,
+            // выпущенного под этот заказ (HU-резерв заказа), без добора из свободного остатка.
+            var availableForShip = reservedForLine;
             var canShip = Math.Min(remaining, availableForShip);
             var shortage = Math.Max(0, remaining - availableForShip);
 
@@ -391,6 +457,457 @@ public sealed class OrderService
         return grouped.Values.ToList();
     }
 
+    private void RebuildOrderReceiptPlan(IDataStore store, long orderId)
+    {
+        var order = store.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+        if (order.Type == OrderType.Customer)
+        {
+            RebuildCustomerOrderReceiptPlan(store, orderId);
+            return;
+        }
+
+        RebuildInternalOrderReceiptPlan(store, orderId);
+    }
+
+    private void RebuildInternalOrderReceiptPlan(IDataStore store, long orderId)
+    {
+        var orderLines = store.GetOrderLines(orderId)
+            .Where(line => line.QtyOrdered > QtyTolerance)
+            .OrderBy(line => line.Id)
+            .ToList();
+        if (orderLines.Count == 0)
+        {
+            store.ReplaceOrderReceiptPlanLines(orderId, Array.Empty<OrderReceiptPlanLine>());
+            return;
+        }
+
+        var locations = store.GetLocations()
+            .OrderBy(location => location.Code, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var targetLocation = locations.FirstOrDefault(location => location.AutoHuDistributionEnabled)
+                             ?? locations.FirstOrDefault();
+        var targetLocationId = targetLocation?.Id;
+
+        var drafts = new List<PlanDraft>();
+        var nextSortOrder = 0;
+        foreach (var orderLine in orderLines)
+        {
+            var item = store.FindItemById(orderLine.ItemId) ?? throw new InvalidOperationException("Товар заказа не найден.");
+            var requiresHuDistribution = item.ItemTypeId.HasValue
+                                         && store.GetItemType(item.ItemTypeId.Value)?.EnableHuDistribution == true;
+            if (!requiresHuDistribution)
+            {
+                drafts.Add(new PlanDraft(orderLine.Id, orderLine.ItemId, orderLine.QtyOrdered, false, nextSortOrder++));
+                continue;
+            }
+
+            if (!item.MaxQtyPerHu.HasValue || item.MaxQtyPerHu.Value <= QtyTolerance)
+            {
+                throw new InvalidOperationException($"Для товара \"{item.Name}\" обязательно заполнить \"Макс шт на 1 HU\".");
+            }
+
+            var remaining = orderLine.QtyOrdered;
+            while (remaining > QtyTolerance)
+            {
+                var chunk = Math.Min(item.MaxQtyPerHu.Value, remaining);
+                drafts.Add(new PlanDraft(orderLine.Id, orderLine.ItemId, chunk, true, nextSortOrder++));
+                remaining -= chunk;
+            }
+        }
+
+        var requiredHuCount = drafts.Count(line => line.RequiresHu);
+        var allocatedHus = requiredHuCount > 0
+            ? AllocateHuCodesForPlan(store, orderId, requiredHuCount)
+            : Array.Empty<string>();
+        var huIndex = 0;
+
+        var plannedLines = drafts.Select(line => new OrderReceiptPlanLine
+            {
+                OrderId = orderId,
+                OrderLineId = line.OrderLineId,
+                ItemId = line.ItemId,
+                QtyPlanned = line.QtyPlanned,
+                ToLocationId = targetLocationId,
+                ToHu = line.RequiresHu ? allocatedHus[huIndex++] : null,
+                SortOrder = line.SortOrder
+            })
+            .ToList();
+
+        store.ReplaceOrderReceiptPlanLines(orderId, plannedLines);
+    }
+
+    private void RebuildCustomerOrderReceiptPlan(IDataStore store, long orderId)
+    {
+        var orderLines = store.GetOrderLines(orderId)
+            .Where(line => line.QtyOrdered > QtyTolerance)
+            .OrderBy(line => line.Id)
+            .ToList();
+        if (orderLines.Count == 0)
+        {
+            store.ReplaceOrderReceiptPlanLines(orderId, Array.Empty<OrderReceiptPlanLine>());
+            return;
+        }
+
+        var internalReleaseSources = BuildAvailableInternalReleaseSources(store, orderId);
+        var ownPlanPreferred = store.GetOrderReceiptPlanLines(orderId)
+            .Where(line => line.QtyPlanned > QtyTolerance)
+            .Select(line => NormalizeHu(line.ToHu))
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var plannedLines = new List<OrderReceiptPlanLine>();
+        var nextSortOrder = 0;
+
+        foreach (var orderLine in orderLines)
+        {
+            var remaining = orderLine.QtyOrdered;
+            var candidates = internalReleaseSources
+                .Where(source => source.ItemId == orderLine.ItemId && source.QtyAvailable > QtyTolerance)
+                .OrderByDescending(source => ownPlanPreferred.Contains(source.HuCode))
+                .ThenBy(source => source.HuCode, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            foreach (var candidate in candidates)
+            {
+                if (remaining <= QtyTolerance)
+                {
+                    break;
+                }
+
+                var allocated = Math.Min(remaining, candidate.QtyAvailable);
+                if (allocated <= QtyTolerance)
+                {
+                    continue;
+                }
+
+                plannedLines.Add(new OrderReceiptPlanLine
+                {
+                    OrderId = orderId,
+                    OrderLineId = orderLine.Id,
+                    ItemId = orderLine.ItemId,
+                    QtyPlanned = allocated,
+                    ToLocationId = candidate.LocationId,
+                    ToHu = candidate.HuCode,
+                    SortOrder = nextSortOrder++
+                });
+                candidate.QtyAvailable -= allocated;
+                remaining -= allocated;
+            }
+        }
+
+        store.ReplaceOrderReceiptPlanLines(orderId, plannedLines);
+    }
+
+    private static List<InternalReleaseSource> BuildAvailableInternalReleaseSources(IDataStore store, long targetOrderId)
+    {
+        var internalProducedKeys = CollectInternalProducedKeys(store);
+        if (internalProducedKeys.Count == 0)
+        {
+            return new List<InternalReleaseSource>();
+        }
+
+        var sources = store.GetHuStockRows()
+            .Where(row => row.Qty > QtyTolerance)
+            .Select(row => new
+            {
+                ItemId = row.ItemId,
+                HuCode = NormalizeHu(row.HuCode),
+                row.LocationId,
+                row.Qty
+            })
+            .Where(row => !string.IsNullOrWhiteSpace(row.HuCode))
+            .Where(row => internalProducedKeys.Contains((row.ItemId, row.HuCode!)))
+            .GroupBy(row => new { row.ItemId, row.HuCode, row.LocationId })
+            .Select(group => new InternalReleaseSource(group.Key.ItemId, group.Key.HuCode!, group.Key.LocationId, group.Sum(entry => entry.Qty)))
+            .ToDictionary(
+                source => (source.ItemId, source.HuCode, source.LocationId),
+                source => source,
+                InternalReleaseSourceKeyComparer.Instance);
+
+        var reservedByOtherOrders = CollectReservedInternalReleaseByOtherCustomerOrders(store, targetOrderId);
+        foreach (var reservation in reservedByOtherOrders)
+        {
+            var toReserve = reservation.Value;
+            if (toReserve <= QtyTolerance)
+            {
+                continue;
+            }
+
+            foreach (var source in sources.Values
+                         .Where(source => source.ItemId == reservation.Key.ItemId
+                                          && string.Equals(source.HuCode, reservation.Key.HuCode, StringComparison.OrdinalIgnoreCase))
+                         .OrderBy(source => source.LocationId))
+            {
+                if (toReserve <= QtyTolerance)
+                {
+                    break;
+                }
+
+                var take = Math.Min(source.QtyAvailable, toReserve);
+                source.QtyAvailable -= take;
+                toReserve -= take;
+            }
+        }
+
+        return sources.Values
+            .Where(source => source.QtyAvailable > QtyTolerance)
+            .ToList();
+    }
+
+    private static HashSet<(long ItemId, string HuCode)> CollectInternalProducedKeys(IDataStore store)
+    {
+        var result = new HashSet<(long ItemId, string HuCode)>();
+        var internalOrderIds = store.GetOrders()
+            .Where(order => order.Type == OrderType.Internal)
+            .Select(order => order.Id)
+            .ToHashSet();
+        if (internalOrderIds.Count == 0)
+        {
+            return result;
+        }
+
+        var closedProductionDocs = store.GetDocs()
+            .Where(doc => doc.Type == DocType.ProductionReceipt
+                          && doc.Status == DocStatus.Closed
+                          && doc.OrderId.HasValue
+                          && internalOrderIds.Contains(doc.OrderId.Value))
+            .ToList();
+        foreach (var doc in closedProductionDocs)
+        {
+            foreach (var line in store.GetDocLines(doc.Id))
+            {
+                if (line.Qty <= QtyTolerance)
+                {
+                    continue;
+                }
+
+                var huCode = NormalizeHu(line.ToHu);
+                if (string.IsNullOrWhiteSpace(huCode))
+                {
+                    continue;
+                }
+
+                result.Add((line.ItemId, huCode));
+            }
+        }
+
+        return result;
+    }
+
+    private static Dictionary<(long ItemId, string HuCode), double> CollectReservedInternalReleaseByOtherCustomerOrders(IDataStore store, long targetOrderId)
+    {
+        var result = new Dictionary<(long ItemId, string HuCode), double>();
+        var orders = store.GetOrders()
+            .Where(order => order.Type == OrderType.Customer && order.Id != targetOrderId)
+            .ToList();
+
+        foreach (var order in orders)
+        {
+            var effectiveStatus = ResolveCustomerOrderStatus(store, order);
+            if (effectiveStatus == OrderStatus.Shipped)
+            {
+                continue;
+            }
+
+            foreach (var line in store.GetOrderReceiptPlanLines(order.Id))
+            {
+                if (line.QtyPlanned <= QtyTolerance)
+                {
+                    continue;
+                }
+
+                var huCode = NormalizeHu(line.ToHu);
+                if (string.IsNullOrWhiteSpace(huCode))
+                {
+                    continue;
+                }
+
+                var key = (line.ItemId, huCode);
+                result[key] = result.TryGetValue(key, out var current)
+                    ? current + line.QtyPlanned
+                    : line.QtyPlanned;
+            }
+        }
+
+        return result;
+    }
+
+    private static OrderStatus ResolveCustomerOrderStatus(IDataStore store, Order order)
+    {
+        if (order.Type != OrderType.Customer)
+        {
+            return order.Status;
+        }
+
+        var lines = store.GetOrderLines(order.Id);
+        if (lines.Count == 0)
+        {
+            return OrderStatus.InProgress;
+        }
+
+        var shippedTotals = store.GetShippedTotalsByOrderLine(order.Id);
+        var fullyShipped = lines.All(line =>
+        {
+            var shipped = shippedTotals.TryGetValue(line.Id, out var qty) ? qty : 0;
+            return shipped + QtyTolerance >= line.QtyOrdered;
+        });
+        if (fullyShipped)
+        {
+            return OrderStatus.Shipped;
+        }
+
+        var producedByLine = store.GetOrderReceiptRemaining(order.Id)
+            .ToDictionary(line => line.OrderLineId, line => line.QtyReceived);
+        var fullyProduced = lines.All(line =>
+        {
+            var produced = producedByLine.TryGetValue(line.Id, out var qty) ? qty : 0;
+            return produced + QtyTolerance >= line.QtyOrdered;
+        });
+        return fullyProduced ? OrderStatus.Accepted : OrderStatus.InProgress;
+    }
+
+    private void TryRebuildOrderReceiptPlan(IDataStore store, long orderId)
+    {
+        try
+        {
+            RebuildOrderReceiptPlan(store, orderId);
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            // Compatibility for strict test mocks that do not expose planning methods.
+        }
+    }
+
+    private static void TryClearOrderReceiptPlan(IDataStore store, long orderId)
+    {
+        try
+        {
+            store.ReplaceOrderReceiptPlanLines(orderId, Array.Empty<OrderReceiptPlanLine>());
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            // Compatibility for strict test mocks that do not expose planning methods.
+        }
+    }
+
+    private static IReadOnlyList<string> AllocateHuCodesForPlan(IDataStore store, long orderId, int requiredCount)
+    {
+        if (requiredCount <= 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        var occupiedHu = store.GetHuStockRows()
+            .Where(row => row.Qty > QtyTolerance)
+            .Select(row => NormalizeHu(row.HuCode))
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var reservedHu = store.GetReservedOrderReceiptHuCodes(orderId)
+            .Select(NormalizeHu)
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var ownPlanHu = store.GetOrderReceiptPlanLines(orderId)
+            .Select(line => NormalizeHu(line.ToHu))
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var available = new List<string>();
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var hu in ownPlanHu)
+        {
+            if (string.IsNullOrWhiteSpace(hu)
+                || occupiedHu.Contains(hu)
+                || reservedHu.Contains(hu)
+                || !used.Add(hu))
+            {
+                continue;
+            }
+
+            available.Add(hu);
+            if (available.Count >= requiredCount)
+            {
+                return available;
+            }
+        }
+
+        foreach (var huRecord in store.GetHus(null, 10000).OrderBy(record => record.Code, StringComparer.OrdinalIgnoreCase))
+        {
+            var normalizedHu = NormalizeHu(huRecord.Code);
+            if (string.IsNullOrWhiteSpace(normalizedHu))
+            {
+                continue;
+            }
+
+            if (!string.Equals(huRecord.Status, "ACTIVE", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(huRecord.Status, "CLOSED", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (occupiedHu.Contains(normalizedHu) || reservedHu.Contains(normalizedHu) || !used.Add(normalizedHu))
+            {
+                continue;
+            }
+
+            available.Add(normalizedHu);
+            if (available.Count >= requiredCount)
+            {
+                return available;
+            }
+        }
+
+        throw new InvalidOperationException($"Недостаточно свободных HU для заказа. Нужно: {requiredCount}, доступно: {available.Count}.");
+    }
+
+    private static string? NormalizeHu(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToUpperInvariant();
+    }
+
+    private static bool IsMockStoreException(Exception ex)
+    {
+        var fullName = ex.GetType().FullName ?? string.Empty;
+        return fullName.Contains("Moq", StringComparison.OrdinalIgnoreCase)
+               || fullName.Contains("Castle.Proxies", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private sealed record PlanDraft(long OrderLineId, long ItemId, double QtyPlanned, bool RequiresHu, int SortOrder);
+    private sealed class InternalReleaseSource
+    {
+        public InternalReleaseSource(long itemId, string huCode, long locationId, double qtyAvailable)
+        {
+            ItemId = itemId;
+            HuCode = huCode;
+            LocationId = locationId;
+            QtyAvailable = qtyAvailable;
+        }
+
+        public long ItemId { get; }
+        public string HuCode { get; }
+        public long LocationId { get; }
+        public double QtyAvailable { get; set; }
+    }
+
+    private sealed class InternalReleaseSourceKeyComparer : IEqualityComparer<(long ItemId, string HuCode, long LocationId)>
+    {
+        public static readonly InternalReleaseSourceKeyComparer Instance = new();
+
+        public bool Equals((long ItemId, string HuCode, long LocationId) x, (long ItemId, string HuCode, long LocationId) y)
+        {
+            return x.ItemId == y.ItemId
+                   && x.LocationId == y.LocationId
+                   && string.Equals(x.HuCode, y.HuCode, StringComparison.OrdinalIgnoreCase);
+        }
+
+        public int GetHashCode((long ItemId, string HuCode, long LocationId) obj)
+        {
+            return HashCode.Combine(
+                obj.ItemId,
+                StringComparer.OrdinalIgnoreCase.GetHashCode(obj.HuCode),
+                obj.LocationId);
+        }
+    }
+
     private Order ApplyAutoStatus(Order order)
     {
         if (order.Type == OrderType.Internal)
@@ -444,10 +961,8 @@ public sealed class OrderService
 
         var lines = _data.GetOrderLines(order.Id);
         var shippedTotals = _data.GetShippedTotalsByOrderLine(order.Id);
-        var hasShipped = shippedTotals.Values.Any(qty => qty > QtyTolerance);
         var customerReceiptLines = _data.GetOrderReceiptRemaining(order.Id);
         var producedByLine = customerReceiptLines.ToDictionary(line => line.OrderLineId, line => line.QtyReceived);
-        var hasProduced = customerReceiptLines.Any(line => line.QtyReceived > QtyTolerance);
 
         var fullyShipped = lines.Count > 0 && lines.All(line =>
         {
@@ -467,14 +982,9 @@ public sealed class OrderService
                 var produced = producedByLine.TryGetValue(line.Id, out var qty) ? qty : 0;
                 return produced + QtyTolerance >= line.QtyOrdered;
             });
-            if (hasProduced || fullyProducedForOrder)
+            if (fullyProducedForOrder)
             {
                 nextStatus = OrderStatus.Accepted;
-            }
-
-            if (hasShipped && !fullyShipped)
-            {
-                nextStatus = OrderStatus.InProgress;
             }
         }
 

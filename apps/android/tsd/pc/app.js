@@ -2116,8 +2116,8 @@
       }
 
       var query = String(refs.partnerInput.value || "").trim();
-      var filtered = query ? filterPartners(query) : [];
-      if (!query || !filtered.length || findPartnerByQuery(query)) {
+      var filtered = filterPartners(query);
+      if (!filtered.length) {
         hidePartnerSuggestionOverlay();
         return;
       }
@@ -2139,13 +2139,16 @@
       if (index === linesState.length - 1) {
         linesState.push(createEmptyLine());
       }
-      activeLineIndex = Math.min(index + 1, linesState.length - 1);
+      activeLineIndex = Math.max(0, Math.min(index, linesState.length - 1));
       renderLines();
-      var nextInput = refs.linesWrap
-        ? refs.linesWrap.querySelector('.line-item-query[data-index="' + activeLineIndex + '"]')
+      var qtyInput = refs.linesWrap
+        ? refs.linesWrap.querySelector('.line-qty[data-index="' + index + '"]')
         : null;
-      if (nextInput) {
-        nextInput.focus();
+      if (qtyInput) {
+        qtyInput.focus();
+        if (typeof qtyInput.select === "function") {
+          qtyInput.select();
+        }
       }
     }
 
@@ -2297,14 +2300,16 @@
       var value = String(refs.partnerInput.value || "").trim();
       if (!value) {
         selectedPartnerId = 0;
-        hidePartnerSuggestionOverlay();
+        if (document.activeElement === refs.partnerInput) {
+          showPartnerSuggestionOverlay(refs.partnerInput, filterPartners(""));
+        } else {
+          hidePartnerSuggestionOverlay();
+        }
         return;
       }
       var partner = findPartnerByQuery(value);
       if (partner) {
         selectedPartnerId = Number(partner.id) || 0;
-        hidePartnerSuggestionOverlay();
-        return;
       }
 
       var filtered = filterPartners(value);

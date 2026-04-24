@@ -621,7 +621,7 @@ RETURNING id;");
         return WithConnection(connection =>
         {
             var sql = @"
-SELECT id, name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control
+SELECT id, name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control, enable_hu_distribution
 FROM item_types";
             if (!includeInactive)
             {
@@ -646,7 +646,7 @@ FROM item_types";
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT id, name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control
+SELECT id, name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control, enable_hu_distribution
 FROM item_types
 WHERE id = @id
 LIMIT 1;");
@@ -661,8 +661,8 @@ LIMIT 1;");
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO item_types(name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control)
-VALUES(@name, @code, @sort_order, @is_active, @is_visible_in_product_catalog, @enable_min_stock_control)
+INSERT INTO item_types(name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control, enable_hu_distribution)
+VALUES(@name, @code, @sort_order, @is_active, @is_visible_in_product_catalog, @enable_min_stock_control, @enable_hu_distribution)
 RETURNING id;");
             command.Parameters.AddWithValue("@name", itemType.Name);
             command.Parameters.AddWithValue("@code", string.IsNullOrWhiteSpace(itemType.Code) ? DBNull.Value : itemType.Code.Trim());
@@ -670,6 +670,7 @@ RETURNING id;");
             command.Parameters.AddWithValue("@is_active", itemType.IsActive);
             command.Parameters.AddWithValue("@is_visible_in_product_catalog", itemType.IsVisibleInProductCatalog);
             command.Parameters.AddWithValue("@enable_min_stock_control", itemType.EnableMinStockControl);
+            command.Parameters.AddWithValue("@enable_hu_distribution", itemType.EnableHuDistribution);
             return (long)(command.ExecuteScalar() ?? 0L);
         });
     }
@@ -685,7 +686,8 @@ SET name = @name,
     sort_order = @sort_order,
     is_active = @is_active,
     is_visible_in_product_catalog = @is_visible_in_product_catalog,
-    enable_min_stock_control = @enable_min_stock_control
+    enable_min_stock_control = @enable_min_stock_control,
+    enable_hu_distribution = @enable_hu_distribution
 WHERE id = @id;");
             command.Parameters.AddWithValue("@name", itemType.Name);
             command.Parameters.AddWithValue("@code", string.IsNullOrWhiteSpace(itemType.Code) ? DBNull.Value : itemType.Code.Trim());
@@ -693,6 +695,7 @@ WHERE id = @id;");
             command.Parameters.AddWithValue("@is_active", itemType.IsActive);
             command.Parameters.AddWithValue("@is_visible_in_product_catalog", itemType.IsVisibleInProductCatalog);
             command.Parameters.AddWithValue("@enable_min_stock_control", itemType.EnableMinStockControl);
+            command.Parameters.AddWithValue("@enable_hu_distribution", itemType.EnableHuDistribution);
             command.Parameters.AddWithValue("@id", itemType.Id);
             command.ExecuteNonQuery();
             return 0;
@@ -1458,9 +1461,19 @@ SELECT ol.id,
        ol.item_id,
        i.name,
        ol.qty_ordered,
-       COALESCE(r.sum_qty, 0) AS received_qty,
-       (ol.qty_ordered - COALESCE(r.sum_qty, 0)) AS remaining
+       (COALESCE(r.sum_qty, 0)
+        + CASE
+              WHEN o.order_type = @customer_order_type THEN COALESCE(p.sum_qty, 0)
+              ELSE 0
+          END) AS received_qty,
+       (ol.qty_ordered
+        - (COALESCE(r.sum_qty, 0)
+           + CASE
+                 WHEN o.order_type = @customer_order_type THEN COALESCE(p.sum_qty, 0)
+                 ELSE 0
+             END)) AS remaining
 FROM order_lines ol
+INNER JOIN orders o ON o.id = ol.order_id
 INNER JOIN items i ON i.id = ol.item_id
 LEFT JOIN (
     SELECT dl.order_line_id, SUM(dl.qty) AS sum_qty
@@ -1477,12 +1490,21 @@ LEFT JOIN (
       )
     GROUP BY dl.order_line_id
 ) r ON r.order_line_id = ol.id
+LEFT JOIN (
+    SELECT p.order_line_id, SUM(p.qty_planned) AS sum_qty
+    FROM order_receipt_plan_lines p
+    WHERE p.qty_planned > 0
+      AND p.to_hu IS NOT NULL
+      AND p.to_hu <> ''
+    GROUP BY p.order_line_id
+) p ON p.order_line_id = ol.id
 WHERE ol.order_id = @order_id
 ORDER BY ol.id;
 ");
             command.Parameters.AddWithValue("@order_id", orderId);
             command.Parameters.AddWithValue("@status", DocTypeMapper.StatusToString(DocStatus.Closed));
             command.Parameters.AddWithValue("@doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+            command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
             using var reader = command.ExecuteReader();
             var lines = new List<OrderReceiptLine>();
             while (reader.Read())
@@ -1500,6 +1522,124 @@ ORDER BY ol.id;
             }
 
             return lines;
+        });
+    }
+
+    public IReadOnlyList<OrderReceiptPlanLine> GetOrderReceiptPlanLines(long orderId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT p.id,
+       p.order_id,
+       p.order_line_id,
+       p.item_id,
+       i.name,
+       p.qty_planned,
+       p.to_location_id,
+       l.code,
+       l.name,
+       p.to_hu,
+       p.sort_order
+FROM order_receipt_plan_lines p
+INNER JOIN items i ON i.id = p.item_id
+LEFT JOIN locations l ON l.id = p.to_location_id
+WHERE p.order_id = @order_id
+ORDER BY p.sort_order, p.id;
+");
+            command.Parameters.AddWithValue("@order_id", orderId);
+            using var reader = command.ExecuteReader();
+            var lines = new List<OrderReceiptPlanLine>();
+            while (reader.Read())
+            {
+                lines.Add(new OrderReceiptPlanLine
+                {
+                    Id = reader.GetInt64(0),
+                    OrderId = reader.GetInt64(1),
+                    OrderLineId = reader.GetInt64(2),
+                    ItemId = reader.GetInt64(3),
+                    ItemName = reader.GetString(4),
+                    QtyPlanned = reader.GetDouble(5),
+                    ToLocationId = reader.IsDBNull(6) ? null : reader.GetInt64(6),
+                    ToLocationCode = reader.IsDBNull(7) ? null : reader.GetString(7),
+                    ToLocationName = reader.IsDBNull(8) ? null : reader.GetString(8),
+                    ToHu = reader.IsDBNull(9) ? null : reader.GetString(9),
+                    SortOrder = reader.IsDBNull(10) ? 0 : reader.GetInt32(10)
+                });
+            }
+
+            return lines;
+        });
+    }
+
+    public IReadOnlyCollection<string> GetReservedOrderReceiptHuCodes(long? excludeOrderId = null)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT DISTINCT p.to_hu
+FROM order_receipt_plan_lines p
+INNER JOIN orders o ON o.id = p.order_id
+WHERE p.to_hu IS NOT NULL
+  AND p.to_hu <> ''
+  AND o.status <> @shipped_status
+  AND (@exclude_order_id IS NULL OR p.order_id <> @exclude_order_id);
+");
+            command.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+            command.Parameters.AddWithValue("@exclude_order_id", excludeOrderId.HasValue ? excludeOrderId.Value : DBNull.Value);
+            using var reader = command.ExecuteReader();
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            while (reader.Read())
+            {
+                if (reader.IsDBNull(0))
+                {
+                    continue;
+                }
+
+                var hu = reader.GetString(0).Trim();
+                if (!string.IsNullOrWhiteSpace(hu))
+                {
+                    result.Add(hu);
+                }
+            }
+
+            return result.ToList();
+        });
+    }
+
+    public void ReplaceOrderReceiptPlanLines(long orderId, IReadOnlyList<OrderReceiptPlanLine> lines)
+    {
+        WithConnection(connection =>
+        {
+            using (var deleteCommand = CreateCommand(connection, "DELETE FROM order_receipt_plan_lines WHERE order_id = @order_id"))
+            {
+                deleteCommand.Parameters.AddWithValue("@order_id", orderId);
+                deleteCommand.ExecuteNonQuery();
+            }
+
+            if (lines == null || lines.Count == 0)
+            {
+                return 0;
+            }
+
+            using var insertCommand = CreateCommand(connection, @"
+INSERT INTO order_receipt_plan_lines(order_id, order_line_id, item_id, qty_planned, to_location_id, to_hu, sort_order)
+VALUES(@order_id, @order_line_id, @item_id, @qty_planned, @to_location_id, @to_hu, @sort_order);
+");
+            foreach (var line in lines)
+            {
+                insertCommand.Parameters.Clear();
+                insertCommand.Parameters.AddWithValue("@order_id", orderId);
+                insertCommand.Parameters.AddWithValue("@order_line_id", line.OrderLineId);
+                insertCommand.Parameters.AddWithValue("@item_id", line.ItemId);
+                insertCommand.Parameters.AddWithValue("@qty_planned", line.QtyPlanned);
+                insertCommand.Parameters.AddWithValue("@to_location_id", line.ToLocationId.HasValue ? line.ToLocationId.Value : DBNull.Value);
+                insertCommand.Parameters.AddWithValue("@to_hu", string.IsNullOrWhiteSpace(line.ToHu) ? DBNull.Value : line.ToHu.Trim());
+                insertCommand.Parameters.AddWithValue("@sort_order", line.SortOrder);
+                insertCommand.ExecuteNonQuery();
+            }
+
+            return 0;
         });
     }
 
@@ -2360,7 +2500,8 @@ RETURNING id;
             SortOrder = reader.IsDBNull(3) ? 0 : reader.GetInt32(3),
             IsActive = !reader.IsDBNull(4) && reader.GetBoolean(4),
             IsVisibleInProductCatalog = !reader.IsDBNull(5) && reader.GetBoolean(5),
-            EnableMinStockControl = !reader.IsDBNull(6) && reader.GetBoolean(6)
+            EnableMinStockControl = !reader.IsDBNull(6) && reader.GetBoolean(6),
+            EnableHuDistribution = !reader.IsDBNull(7) && reader.GetBoolean(7)
         };
     }
 
@@ -2699,6 +2840,7 @@ LIMIT 1;";
             "write_off_reasons",
             "orders",
             "order_lines",
+            "order_receipt_plan_lines",
             "docs",
             "doc_lines",
             "ledger",
@@ -2724,7 +2866,8 @@ LIMIT 1;";
             || !ColumnExists(connection, "items", "min_stock_qty")
             || !ColumnExists(connection, "locations", "auto_hu_distribution_enabled")
             || !ColumnExists(connection, "item_types", "is_visible_in_product_catalog")
-            || !ColumnExists(connection, "item_types", "enable_min_stock_control"))
+            || !ColumnExists(connection, "item_types", "enable_min_stock_control")
+            || !ColumnExists(connection, "item_types", "enable_hu_distribution"))
         {
             throw new InvalidOperationException("Database schema is outdated. Run deploy/scripts/migrate.sh before starting FlowStock.");
         }

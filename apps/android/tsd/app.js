@@ -1045,7 +1045,7 @@
   }
 
   var STATUS_LABELS = {
-    DRAFT: "Черновик",
+    DRAFT: "В работе",
     RECOUNT: "На пересчет",
     READY: "Наполнен",
     CLOSED: "Закрыт",
@@ -1082,7 +1082,7 @@
 
   var REQUIRED_FIELDS = {
     INBOUND: ["to"],
-    PRODUCTION_RECEIPT: ["to"],
+    PRODUCTION_RECEIPT: [],
     OUTBOUND: ["from"],
     MOVE: ["from", "to"],
     WRITE_OFF: ["from", "reason_code"],
@@ -1338,6 +1338,61 @@
       return { label: raw, className: "order-status-pill order-status-shipped" };
     }
     return { label: raw, className: "order-status-pill order-status-neutral" };
+  }
+
+  function getOrderTypeValue(order) {
+    return String((order && (order.orderType || order.order_type)) || "")
+      .trim()
+      .toUpperCase();
+  }
+
+  function isInternalOrder(order) {
+    var orderType = getOrderTypeValue(order);
+    if (orderType === "INTERNAL" || orderType.indexOf("ВНУТР") !== -1) {
+      return true;
+    }
+    var partnerName = String((order && order.partnerName) || "").trim();
+    var partnerId = Number(order && order.partnerId);
+    return !partnerName && !partnerId;
+  }
+
+  function getOrderPartnerLabel(order) {
+    if (isInternalOrder(order)) {
+      return "Внутренний заказ";
+    }
+    var partnerLabel = (order && order.partnerName) || "—";
+    if (order && order.partnerInn) {
+      partnerLabel += " · ИНН: " + order.partnerInn;
+    }
+    return partnerLabel;
+  }
+
+  function normalizeOrderStatusCode(status) {
+    var raw = String(status || "").trim().toUpperCase();
+    if (!raw) {
+      return "";
+    }
+    if (
+      raw === "IN_PROGRESS" ||
+      raw === "DRAFT" ||
+      raw.indexOf("РАБОТ") >= 0 ||
+      raw.indexOf("PROGRESS") >= 0 ||
+      raw.indexOf("PROCESS") >= 0
+    ) {
+      return "IN_PROGRESS";
+    }
+    if (raw === "ACCEPTED" || raw.indexOf("ГОТОВ") >= 0 || raw.indexOf("READY") >= 0) {
+      return "ACCEPTED";
+    }
+    if (
+      raw === "SHIPPED" ||
+      raw.indexOf("ВЫПОЛН") >= 0 ||
+      raw.indexOf("ОТГРУЖ") >= 0 ||
+      raw.indexOf("SHIPP") >= 0
+    ) {
+      return "SHIPPED";
+    }
+    return raw;
   }
 
   function getDateKey(date) {
@@ -2043,7 +2098,6 @@
     var rows = list
       .map(function (doc) {
         var opLabel = OPS[doc.op] ? OPS[doc.op].label : doc.op;
-        var statusLabel = STATUS_LABELS[doc.status] || doc.status;
         var createdLabel = formatDocCreatedAt(doc);
         return (
           '<button class="doc-item" data-doc="' +
@@ -2060,9 +2114,6 @@
           escapeHtml(createdLabel) +
           "</div>" +
           "  </div>" +
-          '  <div class="doc-status">' +
-          escapeHtml(statusLabel) +
-          "</div>" +
           "</button>"
         );
       })
@@ -2111,6 +2162,10 @@
       '    <input class="form-input" id="ordersSearchInput" type="text" autocomplete="off" placeholder="Поиск по номеру или контрагенту" />' +
       '    <div id="ordersStatus" class="status"></div>' +
       '    <div id="ordersList" class="doc-list order-list"></div>' +
+      '    <div id="ordersFilterActions" class="actions-row">' +
+      '      <button class="btn btn-outline" id="ordersToggleReadyBtn" type="button">Показать готовые</button>' +
+      '      <button class="btn btn-outline" id="ordersToggleDoneBtn" type="button">Показать выполненные</button>' +
+      "    </div>" +
       "  </div>" +
       "</section>"
     );
@@ -2120,10 +2175,7 @@
     var statusInfo = getOrderStatusInfo(order.status);
     var orderNumber =
       order.number || order.orderNumber || order.order_ref || order.orderRef || "—";
-    var partnerLabel = order.partnerName || "—";
-    if (order.partnerInn) {
-      partnerLabel += " · ИНН: " + order.partnerInn;
-    }
+    var partnerLabel = getOrderPartnerLabel(order);
     var plannedDate = formatDate(order.plannedDate || order.planned_date);
     var shippedDate = formatDate(order.shippedAt || order.shipped_at);
     var createdAt = formatDateTime(order.createdAt || order.created_at);
@@ -3335,8 +3387,6 @@
       totals.qty +
       "</span> шт</div>" +
       "    </div>";
-    var statusLabel = STATUS_LABELS[doc.status] || doc.status;
-    var statusClass = "status-" + String(doc.status || "").toLowerCase();
     var isDraft = doc.status === "DRAFT";
     var isReady = doc.status === "READY";
     var isExported = doc.status === "EXPORTED";
@@ -3358,11 +3408,6 @@
       docRefInputHtml +
       "</div>" +
       "        </div>" +
-      '        <div class="status-pill ' +
-      escapeHtml(statusClass) +
-      '">' +
-      escapeHtml(statusLabel) +
-      "</div>" +
       "      </div>" +
       "    </div>" +
       '    <div class="form-grid doc-form-grid">' +
@@ -3371,8 +3416,9 @@
       (isExported
         ? '<div class="notice">Документ экспортирован, редактирование недоступно.</div>'
         : "") +
-      '    <div class="section-subtitle">Сканирование</div>' +
-      renderScanBlock(doc, isDraft) +
+      (doc.op === "PRODUCTION_RECEIPT"
+        ? ""
+        : '    <div class="section-subtitle">Сканирование</div>' + renderScanBlock(doc, isDraft)) +
       '    <div class="section-subtitle">Строки</div>' +
       '    <div class="lines-section">' +
       linesHtml +
@@ -3743,18 +3789,22 @@
     }
 
     if (doc.op === "PRODUCTION_RECEIPT") {
-      var receiptToValue = formatLocationLabel(header.to, header.to_name);
+      var receiptOrderValue = formatOrderLabel(header.order_ref);
+      var receiptOrderId = header.order_id || null;
       return (
         '<div class="header-fields">' +
-        renderPickerRow({
-          label: "Куда",
-          value: receiptToValue,
-          valueId: "toValue",
-          pickId: "toPickBtn",
-          disabled: !isDraft,
-        }) +
-        '  <div class="field-error" id="toError"></div>' +
-        renderHuField(header, isDraft) +
+        '  <div class="field-row field-row-4">' +
+        '    <div class="field-label">Заказ</div>' +
+        '    <div class="field-value" id="orderValue">' +
+        escapeHtml(receiptOrderValue) +
+        "</div>" +
+        '    <button class="btn btn-outline field-info-btn" id="orderInfoBtn" type="button" ' +
+        (receiptOrderId ? "" : "disabled") +
+        '>i</button>' +
+        '    <button class="btn btn-outline field-pick" id="orderPickBtn" type="button" ' +
+        (isDraft ? "" : "disabled") +
+        ">+</button>" +
+        "  </div>" +
         "</div>"
       );
     }
@@ -3873,6 +3923,9 @@
   }
 
   function renderScanBlock(doc, isDraft) {
+    if (doc && doc.op === "PRODUCTION_RECEIPT") {
+      return "";
+    }
     var qtyMode = doc.header && doc.header.qtyMode === "INC1" ? "INC1" : "ASK";
     return (
       '<div class="scan-card">' +
@@ -3907,6 +3960,8 @@
       return '<div class="empty-state">Добавьте товары сканированием.</div>';
     }
     var showInventoryHu = doc.op === "INVENTORY";
+    var showProductionReceiptControls = doc.op === "PRODUCTION_RECEIPT";
+    var isDraft = doc.status === "DRAFT";
     var selectedIndex =
       typeof doc.selectedLineIndex === "number" ? doc.selectedLineIndex : -1;
 
@@ -3917,6 +3972,37 @@
         var minusDisabledAttr = qtyValue <= 1 ? ' disabled' : "";
         var minusClassDisabled = qtyValue <= 1 ? " is-disabled" : "";
         var lineHu = showInventoryHu ? normalizeHuCode(line.to_hu) : null;
+        var productionLineHu = showProductionReceiptControls
+          ? normalizeHuCode(line.to_hu) || extractHuCode(line.to_hu) || normalizeValue(line.to_hu)
+          : "";
+        var productionLineLocation = showProductionReceiptControls
+          ? normalizeValue(line.to || "")
+          : "";
+        var productionPackSingleHu = !!(line && (line.pack_single_hu || line.packSingleHu));
+        var productionHuBadge = showProductionReceiptControls
+          ? '<div class="line-prd-hu">HU: ' +
+            escapeHtml(productionLineHu || "не назначен") +
+            "</div>"
+          : "";
+        var productionLocationBadge = showProductionReceiptControls
+          ? '<div class="line-prd-loc">Куда: ' +
+            escapeHtml(productionLineLocation || "не назначено") +
+            "</div>"
+          : "";
+        var productionToggleHtml = showProductionReceiptControls
+          ? '<label class="line-prd-pack">' +
+            "  <span>Общий HU</span>" +
+            '  <span class="toggle-switch">' +
+            '    <input type="checkbox" class="line-pack-toggle-input" data-index="' +
+            index +
+            '"' +
+            (productionPackSingleHu ? " checked" : "") +
+            (isDraft ? "" : " disabled") +
+            " />" +
+            '    <span class="toggle-slider"></span>' +
+            "  </span>" +
+            "</label>"
+          : "";
         var rowClass = "lines-row" + (index === selectedIndex ? " is-selected" : "");
         return (
           '<div class="' +
@@ -3932,6 +4018,9 @@
           escapeHtml(line.barcode) +
           "</div>" +
           (lineHu ? '    <div class="line-barcode">HU: ' + escapeHtml(lineHu) + "</div>" : "") +
+          productionHuBadge +
+          productionLocationBadge +
+          productionToggleHtml +
           "</div>" +
           '  <div class="lines-cell line-actions">' +
           '    <div class="line-qty">' +
@@ -4309,12 +4398,14 @@
       header.hu = toHu || "";
       header.order_id = orderId;
       header.order_ref = doc.order_ref || "";
+      header.order_type = getOrderTypeValue(doc) || null;
     } else if (op === "OUTBOUND") {
       header.from = fromLocation;
       header.hu = fromHu || "";
       header.partner_id = partnerId;
       header.order_id = orderId;
       header.order_ref = doc.order_ref || "";
+      header.order_type = getOrderTypeValue(doc) || null;
       if (doc.partnerName || doc.partnerCode) {
         header.partner = formatPartnerLabel({
           name: doc.partnerName || "",
@@ -4354,6 +4445,7 @@
           itemId: line.itemId || null,
           itemName: line.itemName || null,
           orderLineId: line.orderLineId || null,
+          pack_single_hu: !!(line.packSingleHu || line.pack_single_hu),
         };
       })
       .filter(function (line) {
@@ -4501,6 +4593,7 @@
           itemId: line.itemId || null,
           itemName: line.itemName || null,
           orderLineId: line.orderLineId || null,
+          pack_single_hu: !!(line.packSingleHu || line.pack_single_hu),
         };
       })
       .filter(function (line) {
@@ -4663,11 +4756,96 @@
     var searchInput = document.getElementById("ordersSearchInput");
     var listEl = document.getElementById("ordersList");
     var statusEl = document.getElementById("ordersStatus");
+    var toggleReadyBtn = document.getElementById("ordersToggleReadyBtn");
+    var toggleDoneBtn = document.getElementById("ordersToggleDoneBtn");
+    var showReady = false;
+    var showDone = false;
+    var allOrders = [];
 
     function setStatus(text) {
       if (statusEl) {
         statusEl.textContent = text || "";
       }
+    }
+
+    function classifyOrderStatus(order) {
+      var status = order && order.status;
+      var raw = String(status || "").trim().toLowerCase();
+      var internalOrder = isInternalOrder(order);
+      if (!raw) {
+        return "in_work";
+      }
+      if (
+        raw.indexOf("черновик") !== -1 ||
+        raw.indexOf("draft") !== -1 ||
+        raw.indexOf("процесс") !== -1 ||
+        raw.indexOf("в работе") !== -1 ||
+        raw.indexOf("processing") !== -1 ||
+        raw.indexOf("picking") !== -1
+      ) {
+        return "in_work";
+      }
+      if (
+        raw.indexOf("готов") !== -1 ||
+        raw.indexOf("ready") !== -1 ||
+        raw.indexOf("accepted") !== -1 ||
+        raw.indexOf("new") !== -1 ||
+        raw.indexOf("принят") !== -1
+      ) {
+        if (internalOrder) {
+          return "in_work";
+        }
+        return "ready";
+      }
+      if (
+        raw.indexOf("выполн") !== -1 ||
+        raw.indexOf("отгруж") !== -1 ||
+        raw.indexOf("shipped") !== -1 ||
+        raw.indexOf("done") !== -1 ||
+        raw.indexOf("closed") !== -1
+      ) {
+        return "done";
+      }
+      return "in_work";
+    }
+
+    function getOrdersStats(orders) {
+      var stats = { ready: 0, done: 0 };
+      (orders || []).forEach(function (order) {
+        var bucket = classifyOrderStatus(order);
+        if (bucket === "ready") {
+          stats.ready += 1;
+        } else if (bucket === "done") {
+          stats.done += 1;
+        }
+      });
+      return stats;
+    }
+
+    function updateFilterButtons(stats) {
+      if (toggleReadyBtn) {
+        toggleReadyBtn.textContent =
+          (showReady ? "Скрыть готовые" : "Показать готовые") +
+          (stats.ready > 0 ? " (" + stats.ready + ")" : "");
+      }
+      if (toggleDoneBtn) {
+        toggleDoneBtn.textContent =
+          (showDone ? "Скрыть выполненные" : "Показать выполненные") +
+          (stats.done > 0 ? " (" + stats.done + ")" : "");
+      }
+    }
+
+    function getFilteredOrders(orders) {
+      return (orders || []).filter(function (order) {
+        var bucket = classifyOrderStatus(order);
+        if (bucket === "ready") {
+          return showReady;
+        }
+        if (bucket === "done") {
+          return showDone;
+        }
+        return true;
+      });
     }
 
     function renderList(orders) {
@@ -4679,10 +4857,7 @@
           var statusInfo = getOrderStatusInfo(order.status);
           var orderNumber =
             order.number || order.orderNumber || order.order_ref || order.orderRef || "—";
-          var partnerLabel = order.partnerName || "—";
-          if (order.partnerInn) {
-            partnerLabel += " · ИНН: " + order.partnerInn;
-          }
+          var partnerLabel = getOrderPartnerLabel(order);
           var plannedDate = formatDate(order.plannedDate || order.planned_date);
           var shippedDate = formatDate(order.shippedAt || order.shipped_at);
           var createdAt = formatDateTime(order.createdAt || order.created_at);
@@ -4732,19 +4907,33 @@
       });
     }
 
+    function applyOrdersView() {
+      var stats = getOrdersStats(allOrders);
+      var filteredOrders = getFilteredOrders(allOrders);
+      updateFilterButtons(stats);
+      renderList(filteredOrders);
+      if (!allOrders || !allOrders.length) {
+        setStatus("Заказов нет");
+        return;
+      }
+      if (!filteredOrders.length) {
+        setStatus("Нет заказов по выбранным фильтрам");
+        return;
+      }
+      setStatus("Данные с сервера");
+    }
+
     function loadOrders(query) {
       setStatus("Загрузка...");
       TsdStorage.listOrders({ q: query })
         .then(function (orders) {
-          renderList(orders);
-          if (!orders || !orders.length) {
-            setStatus("Заказов нет");
-          } else {
-            setStatus("Данные с сервера");
-          }
+          allOrders = Array.isArray(orders) ? orders : [];
+          applyOrdersView();
         })
         .catch(function () {
           setStatus("Ошибка загрузки заказов");
+          allOrders = [];
+          updateFilterButtons({ ready: 0, done: 0 });
           renderList([]);
         });
     }
@@ -4755,6 +4944,21 @@
       });
     }
 
+    if (toggleReadyBtn) {
+      toggleReadyBtn.addEventListener("click", function () {
+        showReady = !showReady;
+        applyOrdersView();
+      });
+    }
+
+    if (toggleDoneBtn) {
+      toggleDoneBtn.addEventListener("click", function () {
+        showDone = !showDone;
+        applyOrdersView();
+      });
+    }
+
+    updateFilterButtons({ ready: 0, done: 0 });
     setLiveRefreshHandler(function () {
       if (!currentRoute || currentRoute.name !== "orders") {
         return;
@@ -5229,8 +5433,11 @@
     focusOverlay(overlay);
   }
 
-  function openOrderPicker(onSelect) {
+  function openOrderPicker(onSelect, options) {
     setScanHighlight(false);
+    var pickerOptions = options || {};
+    var allowInternal = pickerOptions.allowInternal !== false;
+    var onlyInProgress = pickerOptions.onlyInProgress === true;
     var overlay = buildOverlay("Заказы");
     var input = overlay.querySelector(".overlay-search");
     var recentsEl = overlay.querySelector(".overlay-recents");
@@ -5257,10 +5464,26 @@
     }
 
     function runSearch(query) {
-      TsdStorage.searchOrders(query)
+      TsdStorage.listOrders({ q: query })
         .then(function (orders) {
-          var list = orders.map(function (order) {
+          var filteredOrders = (orders || []).filter(function (order) {
+            if (onlyInProgress && normalizeOrderStatusCode(order && order.status) !== "IN_PROGRESS") {
+              return false;
+            }
+            if (allowInternal) {
+              return true;
+            }
+            return !isInternalOrder(order);
+          });
+
+          var list = filteredOrders.map(function (order) {
             var meta = [];
+            var orderType = getOrderTypeValue(order);
+            if (orderType === "INTERNAL") {
+              meta.push("Тип: Внутренний");
+            } else {
+              meta.push("Тип: Клиентский");
+            }
             if (order.plannedDate) {
               meta.push("Дата: " + order.plannedDate);
             }
@@ -5682,6 +5905,7 @@
     var headerInputs = document.querySelectorAll("[data-header]");
     var deleteButtons = document.querySelectorAll(".line-delete");
     var manualInputButtons = document.querySelectorAll(".kbd-btn");
+    var productionLinePackToggleInputs = document.querySelectorAll(".line-pack-toggle-input");
     var partnerPickBtn = document.getElementById("partnerPickBtn");
     var toPickBtn = document.getElementById("toPickBtn");
     var fromPickBtn = document.getElementById("fromPickBtn");
@@ -5737,6 +5961,13 @@
     var lastScanHandledValue = "";
     var outboundPickToken = 0;
     var outboundPickCandidates = [];
+
+    function isProductionReceiptOrderLocked() {
+      return (
+        doc.op === "PRODUCTION_RECEIPT" &&
+        !!(doc.header.order_id || normalizeValue(doc.header.order_ref))
+      );
+    }
 
     function clearBarcodeInput(keepScanInfo) {
       if (barcodeInput) {
@@ -5813,6 +6044,9 @@
       if (toPickBtn) {
         var toDisabled = !hasLocations || !isDraft;
         if (doc.op === "MOVE" && doc.header.move_internal) {
+          toDisabled = true;
+        }
+        if (isProductionReceiptOrderLocked()) {
           toDisabled = true;
         }
         toPickBtn.disabled = toDisabled;
@@ -6090,29 +6324,47 @@
           setScanInfo("Товар не найден", true);
         });
 
-      function maybeValidateMoveQty(itemId, nextQty) {
-        if (doc.op !== "MOVE" || !doc.header.move_internal) {
+      function maybeValidateMoveQty(item, nextQty) {
+        if (doc.op !== "MOVE" && doc.op !== "OUTBOUND" && doc.op !== "WRITE_OFF") {
           return Promise.resolve(true);
         }
         if (!doc.header.from_id) {
           return Promise.resolve(true);
         }
-        var fromHu = normalizeHuCode(lineData.from_hu);
-        if (!fromHu) {
+        var sourceHu = normalizeHuCode(lineData.from_hu);
+        if (doc.op === "MOVE" && doc.header.move_internal && !sourceHu) {
           return Promise.resolve(true);
         }
-        return TsdStorage.apiGetStockByBarcode(barcode)
+        var stockLookupCode =
+          (item && (item.barcode || item.gtin || item.sku)) || barcode;
+        if (!normalizeValue(stockLookupCode)) {
+          return Promise.resolve(true);
+        }
+        return TsdStorage.apiGetStockByBarcode(stockLookupCode)
           .then(function (stock) {
-            var rows = stock && Array.isArray(stock.byHu) ? stock.byHu : [];
             var available = 0;
-            rows.forEach(function (row) {
-              if (row.locationId === doc.header.from_id && normalizeHuCode(row.hu) === fromHu) {
-                available += Number(row.qty) || 0;
-              }
-            });
+            if (sourceHu) {
+              var rows = stock && Array.isArray(stock.byHu) ? stock.byHu : [];
+              rows.forEach(function (row) {
+                if (row.locationId === doc.header.from_id && normalizeHuCode(row.hu) === sourceHu) {
+                  available += Number(row.qty) || 0;
+                }
+              });
+            } else {
+              var totals = stock && Array.isArray(stock.totalsByLocation) ? stock.totalsByLocation : [];
+              totals.forEach(function (row) {
+                if (row.locationId === doc.header.from_id) {
+                  available += Number(row.qty) || 0;
+                }
+              });
+            }
 
             if (nextQty > available) {
-              alert("Недостаточно остатка на выбранном HU.");
+              if (sourceHu) {
+                alert("Недостаточно остатка на выбранном HU.");
+              } else {
+                alert("Недостаточно остатка на выбранном месте хранения.");
+              }
               return false;
             }
 
@@ -6135,7 +6387,7 @@
           nextQty = (Number(doc.lines[lineIndex].qty) || 0) + qtyValue;
         }
 
-        maybeValidateMoveQty(itemId, nextQty).then(function (ok) {
+        maybeValidateMoveQty(item, nextQty).then(function (ok) {
           if (!ok) {
             focusBarcode();
             return;
@@ -6154,20 +6406,21 @@
               doc.lines[lineIndex].to_id = lineData.to_id;
             }
           } else {
-            doc.lines.push({
-              barcode: barcode,
-              qty: qtyValue,
-              from: lineData.from,
+              doc.lines.push({
+                barcode: barcode,
+                qty: qtyValue,
+                from: lineData.from,
               to: lineData.to,
               from_id: lineData.from_id || null,
               to_id: lineData.to_id || null,
               from_hu: lineData.from_hu,
               to_hu: lineData.to_hu,
-              reason_code: lineData.reason_code,
-              itemId: itemId,
-              itemName: itemName,
-            });
-          }
+                reason_code: lineData.reason_code,
+                itemId: itemId,
+                itemName: itemName,
+                pack_single_hu: false,
+              });
+            }
 
           doc.undoStack.push({
             barcode: barcode,
@@ -6321,11 +6574,20 @@
         );
       }
 
-      if (doc.header.order_id && !doc.header.order_ref) {
+      if (
+        doc.header.order_id &&
+        (!doc.header.order_ref || !normalizeValue(doc.header.order_type))
+      ) {
         updates.push(
           TsdStorage.getOrderById(doc.header.order_id).then(function (order) {
             if (order) {
-              doc.header.order_ref = order.number || order.orderNumber || "";
+              if (!doc.header.order_ref) {
+                doc.header.order_ref = order.number || order.orderNumber || "";
+              }
+              var orderType = getOrderTypeValue(order);
+              if (orderType) {
+                doc.header.order_type = orderType;
+              }
               changed = true;
             }
           })
@@ -6449,7 +6711,7 @@
       setLocationError("to", "");
       setLocationError("location", "");
       if (doc.op !== "MOVE") {
-        if (!validateHuHeader(true)) {
+        if (doc.op !== "PRODUCTION_RECEIPT" && !validateHuHeader(true)) {
           valid = false;
         }
       } else {
@@ -6469,14 +6731,14 @@
           setLocationError("to", "Для приемки выберите место хранения (Куда).");
           valid = false;
         }
-      } else if (doc.op === "PRODUCTION_RECEIPT") {
-        if (!normalizeValue(doc.header.to) && !doc.header.to_id) {
-          setLocationError("to", "Для выпуска продукции выберите место хранения (Куда).");
-          valid = false;
-        }
       } else if (doc.op === "OUTBOUND") {
         if (!doc.header.partner_id) {
           setPartnerError("Выберите покупателя");
+          valid = false;
+        }
+        var selectedOrderType = String(doc.header.order_type || "").trim().toUpperCase();
+        if (selectedOrderType === "INTERNAL") {
+          setPartnerError("Внутренний заказ нельзя использовать в отгрузке.");
           valid = false;
         }
         if (!normalizeValue(doc.header.from) && !doc.header.from_id) {
@@ -6890,6 +7152,116 @@
       }
     }
 
+    function isProductionLineSharedHu(line) {
+      return !!(line && (line.pack_single_hu || line.packSingleHu));
+    }
+
+    function setProductionLineSharedHu(line, value) {
+      if (!line) {
+        return;
+      }
+      var normalizedValue = !!value;
+      line.pack_single_hu = normalizedValue;
+      line.packSingleHu = normalizedValue;
+    }
+
+    function getProductionLineIndexForAssignment() {
+      if (!Array.isArray(doc.lines) || !doc.lines.length) {
+        return -1;
+      }
+      var selected =
+        typeof doc.selectedLineIndex === "number" ? doc.selectedLineIndex : -1;
+      if (selected >= 0 && selected < doc.lines.length) {
+        return selected;
+      }
+      return 0;
+    }
+
+    function applyProductionHuToLine(index, huCode, clearValue) {
+      if (doc.op !== "PRODUCTION_RECEIPT") {
+        return;
+      }
+      if (!Array.isArray(doc.lines) || !doc.lines.length) {
+        return;
+      }
+      if (index < 0 || index >= doc.lines.length) {
+        return;
+      }
+      var line = doc.lines[index];
+      var normalizedHu = clearValue ? "" : normalizeHuCode(huCode) || extractHuCode(huCode) || "";
+      if (!clearValue && !normalizedHu) {
+        alert("Это не HU-код. HU должен начинаться с HU-.");
+        return;
+      }
+
+      var targetIndexes = [index];
+      if (isProductionLineSharedHu(line)) {
+        targetIndexes = doc.lines
+          .map(function (entry, idx) {
+            return isProductionLineSharedHu(entry) ? idx : -1;
+          })
+          .filter(function (idx) {
+            return idx >= 0;
+          });
+      }
+
+      targetIndexes.forEach(function (targetIndex) {
+        var targetLine = doc.lines[targetIndex];
+        targetLine.to_hu = normalizedHu || null;
+      });
+      doc.selectedLineIndex = index;
+      doc.updatedAt = new Date().toISOString();
+      setDocStatus(
+        normalizedHu
+          ? "HU " + normalizedHu + " назначен строке."
+          : "HU в строке сброшен."
+      );
+      saveDocState().then(refreshDocView);
+    }
+
+    function toggleProductionLineSharedHu(index, nextValue) {
+      if (doc.op !== "PRODUCTION_RECEIPT") {
+        return;
+      }
+      if (!Array.isArray(doc.lines) || !doc.lines.length) {
+        return;
+      }
+      if (index < 0 || index >= doc.lines.length) {
+        return;
+      }
+
+      var line = doc.lines[index];
+      setProductionLineSharedHu(line, nextValue);
+      if (nextValue) {
+        var sharedHu = normalizeHuCode(line.to_hu) || "";
+        if (!sharedHu) {
+          for (var i = 0; i < doc.lines.length; i += 1) {
+            if (i === index) {
+              continue;
+            }
+            if (!isProductionLineSharedHu(doc.lines[i])) {
+              continue;
+            }
+            sharedHu = normalizeHuCode(doc.lines[i].to_hu) || "";
+            if (sharedHu) {
+              break;
+            }
+          }
+        }
+        if (sharedHu) {
+          doc.lines.forEach(function (entry) {
+            if (isProductionLineSharedHu(entry)) {
+              entry.to_hu = sharedHu;
+            }
+          });
+        }
+      }
+
+      doc.selectedLineIndex = index;
+      doc.updatedAt = new Date().toISOString();
+      saveDocState().then(refreshDocView);
+    }
+
     function getLocationFieldForHu(target) {
       if (doc.op === "MOVE") {
         if (target === "from_hu") {
@@ -6900,8 +7272,11 @@
         }
         return null;
       }
-      if (doc.op === "INBOUND" || doc.op === "PRODUCTION_RECEIPT") {
+      if (doc.op === "INBOUND") {
         return "to";
+      }
+      if (doc.op === "PRODUCTION_RECEIPT") {
+        return null;
       }
       if (doc.op === "OUTBOUND" || doc.op === "WRITE_OFF") {
         return "from";
@@ -6957,13 +7332,15 @@
       setLocationError("to", "");
       setLocationError("location", "");
 
-      if (doc.op === "INBOUND" || doc.op === "PRODUCTION_RECEIPT") {
+      if (doc.op === "INBOUND") {
         if (!hasSelectedLocation("to")) {
           var inboundMessage = getLocationErrorMessage("to");
           setLocationError("to", inboundMessage);
           valid = false;
           alertMessage = alertMessage || inboundMessage;
         }
+      } else if (doc.op === "PRODUCTION_RECEIPT") {
+        valid = true;
       } else if (doc.op === "OUTBOUND" || doc.op === "WRITE_OFF") {
         if (!hasSelectedLocation("from")) {
           var fromMessage = getLocationErrorMessage("from");
@@ -7323,6 +7700,17 @@
       }
       var normalized = normalizeHuCode(huCode) || extractHuCode(huCode);
       if (!normalized) {
+        return;
+      }
+      if (doc.op === "PRODUCTION_RECEIPT") {
+        var productionLineIndex = getProductionLineIndexForAssignment();
+        if (productionLineIndex < 0) {
+          setDocStatus("Нет строк для назначения HU.");
+          focusBarcode();
+          return;
+        }
+        applyProductionHuToLine(productionLineIndex, normalized, false);
+        focusBarcode();
         return;
       }
       var targetField = "hu";
@@ -7780,11 +8168,20 @@
       if (!order) {
         return;
       }
+      if (doc.op === "OUTBOUND" && isInternalOrder(order)) {
+        alert("Внутренний заказ нельзя использовать в отгрузке.");
+        return;
+      }
       doc.header.order_id = order.orderId || order.order_id || order.id || null;
       doc.header.order_ref =
         order.number || order.orderNumber || order.order_id || order.orderId || "";
+      doc.header.order_type = getOrderTypeValue(order) || null;
       if (doc.op === "OUTBOUND") {
         applyOutboundOrderLines(order);
+        return;
+      }
+      if (doc.op === "PRODUCTION_RECEIPT") {
+        applyProductionReceiptOrderLines(order);
         return;
       }
       saveDocState().then(refreshDocView);
@@ -7844,6 +8241,90 @@
           })
           .catch(function () {
             alert("Не удалось загрузить строки заказа.");
+            refreshDocView();
+          });
+      }
+
+      if (doc.lines && doc.lines.length) {
+        openConfirmOverlay(
+          "Заменить строки?",
+          "Заменить текущие строки данными из заказа?",
+          "Заменить",
+          applyLines
+        );
+        return;
+      }
+
+      applyLines();
+    }
+
+    function applyProductionReceiptOrderLines(order) {
+      var orderId = order.orderId || order.order_id || order.id || null;
+      if (!orderId) {
+        saveDocState().then(refreshDocView);
+        return;
+      }
+
+      function applyLines() {
+        setDocStatus("Загрузка строк заказа...");
+        TsdStorage.apiGetOrderReceiptRemaining(orderId)
+          .then(function (receiptLines) {
+            var sourceLines = Array.isArray(receiptLines) ? receiptLines : [];
+            var activeLines = sourceLines.filter(function (line) {
+              return (Number(line.remainingQty) || 0) > 0;
+            });
+            if (!activeLines.length) {
+              doc.lines = [];
+              doc.selectedLineIndex = null;
+              doc.updatedAt = new Date().toISOString();
+              saveDocState().then(refreshDocView);
+              alert("По заказу нет позиций для выпуска.");
+              return;
+            }
+            activeLines.sort(function (left, right) {
+              var leftOrder = Number(left && left.sortOrder) || 0;
+              var rightOrder = Number(right && right.sortOrder) || 0;
+              return leftOrder - rightOrder;
+            });
+            var nextLines = activeLines.map(function (line) {
+              var assignedHu =
+                normalizeHuCode(line && line.toHu) ||
+                extractHuCode(line && line.toHu) ||
+                normalizeValue(line && line.toHu) ||
+                null;
+              var lineLocationId = Number(line && line.toLocationId) || null;
+              var lineLocationCode = normalizeValue(line && line.toLocation);
+              return {
+                barcode: "",
+                qty: Number(line.remainingQty) || 0,
+                from: null,
+                to: lineLocationCode || "",
+                from_id: null,
+                to_id: lineLocationId,
+                from_hu: null,
+                to_hu: assignedHu,
+                reason_code: null,
+                itemId: line.itemId || null,
+                itemName: line.itemName || "",
+                orderLineId: line.orderLineId || null,
+                pack_single_hu: false,
+              };
+            });
+
+            var firstWithLocation = nextLines.find(function (line) {
+              return !!(line && line.to_id && line.to);
+            });
+            doc.header.to = firstWithLocation ? firstWithLocation.to : "";
+            doc.header.to_name = null;
+            doc.header.to_id = firstWithLocation ? firstWithLocation.to_id : null;
+            doc.lines = nextLines;
+            doc.selectedLineIndex = nextLines.length ? 0 : null;
+            doc.updatedAt = new Date().toISOString();
+            return saveDocState().then(refreshDocView);
+          })
+          .catch(function (error) {
+            var message = error && error.message ? error.message : "";
+            alert(message || "Не удалось загрузить строки заказа для выпуска.");
             refreshDocView();
           });
       }
@@ -7921,7 +8402,10 @@
         if (doc.status !== "DRAFT") {
           return;
         }
-        openOrderPicker(applyOrderSelection);
+        openOrderPicker(applyOrderSelection, {
+          allowInternal: doc.op !== "OUTBOUND",
+          onlyInProgress: doc.op === "PRODUCTION_RECEIPT",
+        });
       });
     }
 
@@ -7963,11 +8447,9 @@
         }
         if (!validateBeforeFinish()) {
           var missingFields = getMissingLocationFields(doc);
-          if ((doc.op === "INBOUND" || doc.op === "PRODUCTION_RECEIPT") && missingFields.indexOf("to") >= 0) {
+          if (doc.op === "INBOUND" && missingFields.indexOf("to") >= 0) {
             alert(
-              doc.op === "PRODUCTION_RECEIPT"
-                ? "Для выпуска продукции выберите место хранения (Куда)."
-                : "Для приемки выберите место хранения (Куда)."
+              "Для приемки выберите место хранения (Куда)."
             );
           }
           return;
@@ -8067,6 +8549,9 @@
     if (huClearBtn) {
       huClearBtn.addEventListener("click", function () {
         if (!isDraftDoc) {
+          return;
+        }
+        if (isProductionReceiptOrderLocked()) {
           return;
         }
         doc.header.hu = "";
@@ -8179,6 +8664,19 @@
         if (action === "plus") {
           adjustLineAt(index, normalizeQtyStep(qtyStep));
         }
+      });
+    });
+
+    Array.prototype.forEach.call(productionLinePackToggleInputs, function (input) {
+      input.addEventListener("change", function () {
+        if (!isDraftDoc || doc.op !== "PRODUCTION_RECEIPT") {
+          return;
+        }
+        var index = parseInt(input.getAttribute("data-index"), 10);
+        if (isNaN(index) || index < 0 || index >= doc.lines.length) {
+          return;
+        }
+        toggleProductionLineSharedHu(index, !!input.checked);
       });
     });
 
@@ -8434,18 +8932,13 @@
     }
 
     var docId = createUuid();
-    var eventId = createUuid();
 
     ensureServerAvailable()
       .then(function () {
-        return TsdStorage.getSetting("device_id");
+        return TsdStorage.apiGetNextDocRef(op);
       })
-      .then(function (deviceId) {
-        return TsdStorage.apiCreateDocDraft(op, docId, eventId, deviceId || null);
-      })
-      .then(function (payload) {
-        var docInfo = payload && payload.doc ? payload.doc : payload;
-        var docRef = docInfo && docInfo.doc_ref ? String(docInfo.doc_ref) : "";
+      .then(function (docRef) {
+        docRef = String(docRef || "");
         if (!docRef) {
           throw new Error("INVALID_DOC_REF");
         }
@@ -8470,7 +8963,7 @@
         });
       })
       .catch(function () {
-        alert("Не удалось создать документ. Проверьте связь с сервером.");
+        alert("Не удалось зарезервировать номер документа. Проверьте связь с сервером.");
         return false;
       });
   }
@@ -8490,6 +8983,9 @@
     if (op === "PRODUCTION_RECEIPT") {
       return {
         hu: "",
+        order_id: null,
+        order_ref: "",
+        order_type: null,
         to: "",
         to_name: null,
         to_id: null,
@@ -8503,6 +8999,7 @@
         hu: "",
         order_id: null,
         order_ref: "",
+        order_type: null,
         from: "",
         from_name: null,
         from_id: null,
@@ -8614,10 +9111,14 @@
     var header = (doc && doc.header) || {};
     var missing = [];
 
-    if (doc.op === "INBOUND" || doc.op === "PRODUCTION_RECEIPT") {
+    if (doc.op === "INBOUND") {
       if (!normalizeValue(header.to) && !header.to_id) {
         missing.push("to");
       }
+      return missing;
+    }
+
+    if (doc.op === "PRODUCTION_RECEIPT") {
       return missing;
     }
 
@@ -8668,6 +9169,222 @@
         missing: missingFields,
       });
     }
+  }
+
+  function pickDefaultProductionReceiptLocation(locations) {
+    var source = Array.isArray(locations) ? locations.slice() : [];
+    if (!source.length) {
+      return null;
+    }
+    source.sort(function (left, right) {
+      var leftCode = String((left && left.code) || "");
+      var rightCode = String((right && right.code) || "");
+      return leftCode.localeCompare(rightCode, "ru", { sensitivity: "base" });
+    });
+    for (var i = 0; i < source.length; i += 1) {
+      if (source[i] && source[i].autoHuDistributionEnabled) {
+        return source[i];
+      }
+    }
+    return source[0];
+  }
+
+  function requestProductionHuScanConfirmation(huCodes) {
+    var expected = (huCodes || [])
+      .map(function (value) {
+        return normalizeHuCode(value) || extractHuCode(value);
+      })
+      .filter(function (value) {
+        return !!value;
+      });
+    var uniqueMap = {};
+    expected.forEach(function (value) {
+      uniqueMap[value] = true;
+    });
+    var pending = Object.keys(uniqueMap);
+    if (!pending.length) {
+      return Promise.resolve(true);
+    }
+
+    return new Promise(function (resolve, reject) {
+      var previousScanHandler = activeScanHandler;
+      var previousScanTarget = getPreferredScanTarget();
+      var scannedMap = {};
+      var closed = false;
+      var overlay = document.createElement("div");
+      overlay.className = "overlay hu-confirm-overlay";
+      overlay.setAttribute("data-scan-allow", "1");
+      overlay.innerHTML =
+        '<div class="overlay-card hu-confirm-card">' +
+        '  <div class="overlay-header">' +
+        '    <div class="overlay-title">Подтверждение HU</div>' +
+        '    <button class="btn btn-ghost overlay-close" type="button">Закрыть</button>' +
+        "  </div>" +
+        '  <div class="hu-confirm-body">' +
+        '    <div class="hu-confirm-hint">Отсканируйте нанесенные HU перед проведением.</div>' +
+        '    <div class="field-error hu-confirm-error"></div>' +
+        '    <div class="hu-confirm-progress"></div>' +
+        '    <div class="hu-confirm-list"></div>' +
+        '    <div class="overlay-actions">' +
+        '      <button class="btn btn-outline hu-confirm-cancel" type="button">Отмена</button>' +
+        '      <button class="btn primary-btn hu-confirm-submit" type="button" disabled>Подтвердить</button>' +
+        "    </div>" +
+        "  </div>" +
+        "</div>";
+
+      function cleanup() {
+        if (closed) {
+          return;
+        }
+        closed = true;
+        setScanHandler(previousScanHandler);
+        setPreferredScanTarget(previousScanTarget);
+        if (overlay.parentNode) {
+          unlockOverlayScroll();
+          overlay.parentNode.removeChild(overlay);
+        }
+      }
+
+      function renderState() {
+        if (closed) {
+          return;
+        }
+        var progressEl = overlay.querySelector(".hu-confirm-progress");
+        var listEl = overlay.querySelector(".hu-confirm-list");
+        var confirmBtn = overlay.querySelector(".hu-confirm-submit");
+        var done = pending.filter(function (hu) {
+          return !!scannedMap[hu];
+        }).length;
+        var left = pending.length - done;
+        if (progressEl) {
+          progressEl.textContent = "Подтверждено: " + done + " из " + pending.length + ". Осталось: " + left + ".";
+        }
+        if (confirmBtn) {
+          confirmBtn.disabled = left > 0;
+        }
+        if (listEl) {
+          listEl.innerHTML = pending
+            .map(function (hu) {
+              return (
+                '<div class="hu-confirm-item' +
+                (scannedMap[hu] ? " is-done" : "") +
+                '">' +
+                escapeHtml(hu) +
+                "</div>"
+              );
+            })
+            .join("");
+        }
+      }
+
+      function setOverlayError(message) {
+        var errorEl = overlay.querySelector(".hu-confirm-error");
+        if (errorEl) {
+          errorEl.textContent = message || "";
+        }
+      }
+
+      function closeAsReject(message) {
+        cleanup();
+        reject(new Error(message));
+      }
+
+      function closeAsResolve() {
+        cleanup();
+        resolve(true);
+      }
+
+      var lastAcceptedHu = "";
+      var lastAcceptedAt = 0;
+
+      function resolveScannedHu(raw) {
+        var directHu = normalizeHuCode(raw) || extractHuCode(raw);
+        if (directHu && uniqueMap[directHu]) {
+          return directHu;
+        }
+        var normalizedRaw = normalizeValue(raw)
+          .toUpperCase()
+          .replace(/\u041D/g, "H")
+          .replace(/\u0423/g, "U");
+        if (!normalizedRaw) {
+          return "";
+        }
+        var compactRaw = normalizedRaw.replace(/\s+/g, "");
+        var directMatches = compactRaw.match(/HU-[A-Z0-9-]+/g) || [];
+        for (var i = 0; i < directMatches.length; i += 1) {
+          if (uniqueMap[directMatches[i]]) {
+            return directMatches[i];
+          }
+        }
+        var cleanedRaw = normalizedRaw.replace(/[^A-Z0-9-]/g, "");
+        for (var p = 0; p < pending.length; p += 1) {
+          if (cleanedRaw.indexOf(pending[p]) >= 0) {
+            return pending[p];
+          }
+        }
+        return "";
+      }
+
+      function handleScan(scan) {
+        if (closed) {
+          return;
+        }
+        var raw = scan && scan.value ? scan.value : scan;
+        var hu = resolveScannedHu(raw);
+        if (!hu) {
+          setOverlayError("Отсканированное значение не является HU.");
+          return;
+        }
+        var now = Date.now();
+        if (hu === lastAcceptedHu && now - lastAcceptedAt < 120) {
+          return;
+        }
+        if (!uniqueMap[hu]) {
+          setOverlayError("HU " + hu + " не относится к этому документу.");
+          return;
+        }
+        lastAcceptedHu = hu;
+        lastAcceptedAt = now;
+        scannedMap[hu] = true;
+        setOverlayError("");
+        renderState();
+      }
+
+      var closeBtn = overlay.querySelector(".overlay-close");
+      var cancelBtn = overlay.querySelector(".hu-confirm-cancel");
+      var submitBtn = overlay.querySelector(".hu-confirm-submit");
+      if (closeBtn) {
+        closeBtn.addEventListener("click", function () {
+          closeAsReject("Подтверждение HU отменено.");
+        });
+      }
+      if (cancelBtn) {
+        cancelBtn.addEventListener("click", function () {
+          closeAsReject("Подтверждение HU отменено.");
+        });
+      }
+      if (submitBtn) {
+        submitBtn.addEventListener("click", function () {
+          if (submitBtn.disabled) {
+            return;
+          }
+          closeAsResolve();
+        });
+      }
+      overlay.addEventListener("click", function (event) {
+        if (event.target === overlay) {
+          closeAsReject("Подтверждение HU отменено.");
+        }
+      });
+
+      document.body.appendChild(overlay);
+      lockOverlayScroll();
+      focusOverlay(overlay);
+      setPreferredScanTarget(null);
+      setScanHandler(handleScan);
+      enterScanMode();
+      renderState();
+    });
   }
 
   function submitDocToServer(doc) {
@@ -8756,6 +9473,27 @@
         });
     }
 
+    function fetchJson(url) {
+      var blockKey = getOperationBlockKey(doc.op) || currentClientBlockContext;
+      return fetch(url, {
+        method: "GET",
+        headers: createBlockHeaders({}, blockKey),
+      }).then(function (response) {
+        return response
+          .json()
+          .catch(function () {
+            return null;
+          })
+          .then(function (payload) {
+            if (!response.ok) {
+              var errorText = (payload && payload.error) || "SERVER_ERROR";
+              throw new Error(mapApiError(errorText));
+            }
+            return payload;
+          });
+      });
+    }
+
     function validateHuLocationsForSubmit(currentDoc) {
       var header = (currentDoc && currentDoc.header) || {};
       var fromLocationId = header.from_id || null;
@@ -8771,7 +9509,7 @@
         toHu = null;
       }
 
-      if (currentDoc.op === "INBOUND" || currentDoc.op === "PRODUCTION_RECEIPT") {
+      if (currentDoc.op === "INBOUND") {
         toHu = mainHu || toHu;
       } else if (currentDoc.op === "OUTBOUND" || currentDoc.op === "WRITE_OFF") {
         fromHu = mainHu || fromHu;
@@ -8842,80 +9580,181 @@
           toHu = null;
         }
 
-        if (doc.op === "INBOUND" || doc.op === "PRODUCTION_RECEIPT") {
+        if (doc.op === "INBOUND") {
           toHu = mainHu || toHu;
         } else if (doc.op === "OUTBOUND" || doc.op === "WRITE_OFF") {
           fromHu = mainHu || fromHu;
         }
 
-        var docPayload = {
-          doc_uid: docUid,
-          event_id: createUuid(),
-          device_id: deviceId,
-          type: doc.op,
-          doc_ref: doc.doc_ref || null,
-          comment: "TSD",
-          reason_code: doc.op === "WRITE_OFF" ? normalizeValue(header.reason_code) || null : null,
-          partner_id: header.partner_id || null,
-          order_id: header.order_id || null,
-          order_ref: header.order_ref ? header.order_ref : null,
-          from_location_id: fromLocationId,
-          to_location_id: toLocationId,
-          from_hu: fromHu || null,
-          to_hu: toHu || null,
-        };
+        function collectProductionHuCodesFromLocalLines() {
+          var huMap = {};
+          (doc.lines || []).forEach(function (line) {
+            var hu =
+              normalizeHuCode(line && line.to_hu) ||
+              extractHuCode(line && line.to_hu) ||
+              normalizeValue(line && line.to_hu) ||
+              "";
+            if (hu) {
+              huMap[hu] = true;
+            }
+          });
+          return Object.keys(huMap);
+        }
 
-        return postJson(baseUrl + "/api/docs", docPayload).then(function (createResult) {
-          var docInfo = createResult && createResult.doc ? createResult.doc : null;
-          if (docInfo && docInfo.doc_ref) {
-            var resolvedRef = String(docInfo.doc_ref);
-            if (resolvedRef) {
-              doc.doc_ref = resolvedRef;
-            }
-            if (docInfo.doc_ref_changed) {
-              alert("Номер документа занят. Присвоен новый: " + resolvedRef);
-            }
+        function ensureProductionReceiptAssignmentsConfirmed() {
+          if (doc.op !== "PRODUCTION_RECEIPT") {
+            return Promise.resolve(true);
           }
-          return doc.lines.reduce(function (chain, line) {
+          var lines = Array.isArray(doc.lines) ? doc.lines : [];
+          if (!lines.length) {
+            throw new Error("Нет строк для выпуска продукции.");
+          }
+          var hasInvalidLine = lines.some(function (line) {
+            var lineToId = line && line.to_id != null ? Number(line.to_id) : null;
+            var lineToHu = normalizeHuCode(line && line.to_hu) || extractHuCode(line && line.to_hu);
+            return !lineToId || !lineToHu;
+          });
+          if (hasInvalidLine) {
+            throw new Error("Для выпуска продукции должны быть назначены локация приемки и HU в каждой строке.");
+          }
+          var firstLineLocationId = Number(lines[0] && lines[0].to_id) || null;
+          if (!toLocationId && firstLineLocationId) {
+            toLocationId = firstLineLocationId;
+            header.to_id = firstLineLocationId;
+          }
+
+          var huCodes = collectProductionHuCodesFromLocalLines();
+          if (!huCodes.length) {
+            throw new Error("Не найдены HU для подтверждения.");
+          }
+
+          return requestProductionHuScanConfirmation(huCodes);
+        }
+
+        function applyProductionPackFlags(serverDocId, postedLines) {
+          if (doc.op !== "PRODUCTION_RECEIPT" || !serverDocId) {
+            return Promise.resolve(true);
+          }
+          var targets = (postedLines || []).filter(function (entry) {
+            return (
+              entry &&
+              entry.serverLineId &&
+              entry.localLine &&
+              !!(entry.localLine.pack_single_hu || entry.localLine.packSingleHu)
+            );
+          });
+          if (!targets.length) {
+            return Promise.resolve(true);
+          }
+          return targets.reduce(function (chain, entry) {
             return chain.then(function () {
-              var qty = Number(line.qty) || 0;
-              var linePayload = {
-                event_id: createUuid(),
-                device_id: deviceId,
-                qty: qty,
-              };
-              var lineFromHu = normalizeHuCode(line.from_hu);
-              var lineToHu = normalizeHuCode(line.to_hu);
-              if (line.itemId) {
-                linePayload.item_id = line.itemId;
-              } else {
-                linePayload.barcode = line.barcode || "";
-              }
-              var lineOrderId = line.orderLineId != null ? Number(line.orderLineId) : null;
-              if (lineOrderId && !isNaN(lineOrderId)) {
-                linePayload.order_line_id = lineOrderId;
-              }
-              var lineFromId = line.from_id != null ? Number(line.from_id) : null;
-              if (lineFromId && !isNaN(lineFromId)) {
-                linePayload.from_location_id = lineFromId;
-              }
-              var lineToId = line.to_id != null ? Number(line.to_id) : null;
-              if (lineToId && !isNaN(lineToId)) {
-                linePayload.to_location_id = lineToId;
-              }
-              if (lineFromHu) {
-                linePayload.from_hu = lineFromHu;
-              }
-              if (lineToHu) {
-                linePayload.to_hu = lineToHu;
-              }
-              return postJson(baseUrl + "/api/docs/" + encodeURIComponent(docUid) + "/lines", linePayload);
+              return postJson(
+                baseUrl +
+                  "/api/docs/" +
+                  encodeURIComponent(serverDocId) +
+                  "/lines/" +
+                  encodeURIComponent(entry.serverLineId) +
+                  "/pack-single-hu",
+                { pack_single_hu: true }
+              );
             });
-          }, Promise.resolve(true)).then(function () {
-            return postJson(baseUrl + "/api/docs/" + encodeURIComponent(docUid) + "/close", {
-              event_id: createUuid(),
-              device_id: deviceId,
-            });
+          }, Promise.resolve(true));
+        }
+
+        return ensureProductionReceiptAssignmentsConfirmed().then(function () {
+          var docPayload = {
+            doc_uid: docUid,
+            event_id: createUuid(),
+            device_id: deviceId,
+            type: doc.op,
+            doc_ref: doc.doc_ref || null,
+            comment: "TSD",
+            reason_code: doc.op === "WRITE_OFF" ? normalizeValue(header.reason_code) || null : null,
+            partner_id: header.partner_id || null,
+            order_id: header.order_id || null,
+            order_ref: header.order_ref ? header.order_ref : null,
+            from_location_id: fromLocationId,
+            to_location_id: toLocationId,
+            from_hu: fromHu || null,
+            to_hu: toHu || null,
+          };
+
+          return postJson(baseUrl + "/api/docs", docPayload).then(function (createResult) {
+            var docInfo = createResult && createResult.doc ? createResult.doc : null;
+            var serverDocId = docInfo && docInfo.id != null ? Number(docInfo.id) : null;
+            if (serverDocId != null && isNaN(serverDocId)) {
+              serverDocId = null;
+            }
+            if (docInfo && docInfo.doc_ref) {
+              var resolvedRef = String(docInfo.doc_ref);
+              if (resolvedRef) {
+                doc.doc_ref = resolvedRef;
+              }
+              if (docInfo.doc_ref_changed) {
+                alert("Номер документа занят. Присвоен новый: " + resolvedRef);
+              }
+            }
+
+            var postedLines = [];
+            return doc.lines
+              .reduce(function (chain, line) {
+                return chain.then(function () {
+                  var qty = Number(line.qty) || 0;
+                  var linePayload = {
+                    event_id: createUuid(),
+                    device_id: deviceId,
+                    qty: qty,
+                  };
+                  var lineFromHu = normalizeHuCode(line.from_hu);
+                  var lineToHu = normalizeHuCode(line.to_hu);
+                  if (line.itemId) {
+                    linePayload.item_id = line.itemId;
+                  } else {
+                    linePayload.barcode = line.barcode || "";
+                  }
+                  var lineOrderId = line.orderLineId != null ? Number(line.orderLineId) : null;
+                  if (lineOrderId && !isNaN(lineOrderId)) {
+                    linePayload.order_line_id = lineOrderId;
+                  }
+                  var lineFromId = line.from_id != null ? Number(line.from_id) : null;
+                  if (lineFromId && !isNaN(lineFromId)) {
+                    linePayload.from_location_id = lineFromId;
+                  }
+                  var lineToId = line.to_id != null ? Number(line.to_id) : null;
+                  if (lineToId && !isNaN(lineToId)) {
+                    linePayload.to_location_id = lineToId;
+                  }
+                  if (lineFromHu) {
+                    linePayload.from_hu = lineFromHu;
+                  }
+                  if (lineToHu) {
+                    linePayload.to_hu = lineToHu;
+                  }
+                  return postJson(baseUrl + "/api/docs/" + encodeURIComponent(docUid) + "/lines", linePayload).then(
+                    function (lineResult) {
+                      var lineInfo = lineResult && lineResult.line ? lineResult.line : null;
+                      var serverLineId = lineInfo && lineInfo.id != null ? Number(lineInfo.id) : null;
+                      if (serverLineId != null && isNaN(serverLineId)) {
+                        serverLineId = null;
+                      }
+                      postedLines.push({
+                        localLine: line,
+                        serverLineId: serverLineId,
+                      });
+                      return true;
+                    }
+                  );
+                });
+              }, Promise.resolve(true))
+              .then(function () {
+                return applyProductionPackFlags(serverDocId, postedLines);
+              })
+              .then(function () {
+                return postJson(baseUrl + "/api/docs/" + encodeURIComponent(docUid) + "/close", {
+                  event_id: createUuid(),
+                  device_id: deviceId,
+                });
+              });
           });
         });
       });
@@ -8967,10 +9806,10 @@
   function buildLineKey(op, barcode, lineData) {
     var safeBarcode = normalizeValue(barcode);
     if (op === "INBOUND" || op === "PRODUCTION_RECEIPT") {
-      return safeBarcode + "|" + (lineData.to || "");
+      return safeBarcode + "|" + (lineData.to || "") + "|" + (lineData.to_hu || "");
     }
     if (op === "OUTBOUND") {
-      return safeBarcode + "|" + (lineData.from || "");
+      return safeBarcode + "|" + (lineData.from || "") + "|" + (lineData.from_hu || "");
     }
     if (op === "MOVE") {
       return (
@@ -8986,7 +9825,15 @@
       );
     }
     if (op === "WRITE_OFF") {
-      return safeBarcode + "|" + (lineData.from || "") + "|" + (lineData.reason_code || "");
+      return (
+        safeBarcode +
+        "|" +
+        (lineData.from || "") +
+        "|" +
+        (lineData.from_hu || "") +
+        "|" +
+        (lineData.reason_code || "")
+      );
     }
     if (op === "INVENTORY") {
       return safeBarcode + "|" + (lineData.to || "") + "|" + (lineData.to_hu || "");
@@ -9603,5 +10450,3 @@
       });
   });
 })();
-
-

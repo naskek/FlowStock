@@ -40,6 +40,7 @@
                 <CheckBox x:Name="IsActiveCheck" Grid.Row="1" Grid.Column="3" Margin="8,0,12,8" Content="Активен" IsChecked="True" />
                 <CheckBox x:Name="VisibleInCatalogCheck" Grid.Row="2" Grid.Column="1" Margin="8,0,12,0" Content="Показывать в каталоге продукции" />
                 <CheckBox x:Name="EnableMinStockCheck" Grid.Row="2" Grid.Column="3" Margin="8,0,12,0" Content="Контроль минимального остатка" />
+                <CheckBox x:Name="EnableHuDistributionCheck" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="1" Margin="0,0,8,0" Content="HU распределение" VerticalAlignment="Center" />
 
                 <StackPanel Grid.Row="0" Grid.RowSpan="3" Grid.Column="4" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
                     <Button x:Name="SaveButton" Content="Добавить" Width="100" Click="Save_Click" />
@@ -63,6 +64,7 @@
                 <DataGridCheckBoxColumn Header="Активен" Binding="{Binding IsActive}" Width="80" />
                 <DataGridCheckBoxColumn Header="Каталог" Binding="{Binding IsVisibleInProductCatalog}" Width="90" />
                 <DataGridCheckBoxColumn Header="Мин.остаток" Binding="{Binding EnableMinStockControl}" Width="110" />
+                <DataGridCheckBoxColumn Header="HU распр." Binding="{Binding EnableHuDistribution}" Width="90" />
             </DataGrid.Columns>
         </DataGrid>
     </Grid>

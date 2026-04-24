@@ -51,7 +51,7 @@ public partial class ItemEditWindow : Window
             : Array.Empty<ItemType>();
         foreach (var itemType in itemTypes)
         {
-            _itemTypes.Add(new ItemTypeOption(itemType.Id, itemType.Name, itemType.EnableMinStockControl));
+            _itemTypes.Add(new ItemTypeOption(itemType.Id, itemType.Name, itemType.EnableMinStockControl, itemType.EnableHuDistribution));
         }
         ItemTypeCombo.ItemsSource = _itemTypes;
     }
@@ -152,6 +152,12 @@ public partial class ItemEditWindow : Window
         if (itemType?.EnableMinStockControl != true)
         {
             minStockQty = null;
+        }
+
+        if (itemType?.EnableHuDistribution == true && !maxQtyPerHu.HasValue)
+        {
+            MessageBox.Show("Для выбранного типа номенклатуры обязательно заполнить поле \"Макс на 1 HU\".", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
         }
 
         try
@@ -397,8 +403,8 @@ public partial class ItemEditWindow : Window
         public static TaraOption Empty { get; } = new(null, "Не выбрана");
     }
 
-    private sealed record ItemTypeOption(long? Id, string Name, bool EnableMinStockControl)
+    private sealed record ItemTypeOption(long? Id, string Name, bool EnableMinStockControl, bool EnableHuDistribution)
     {
-        public static ItemTypeOption Empty { get; } = new(null, "Не выбран", false);
+        public static ItemTypeOption Empty { get; } = new(null, "Не выбран", false, false);
     }
 }

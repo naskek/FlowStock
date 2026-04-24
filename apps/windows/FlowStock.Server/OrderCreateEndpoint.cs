@@ -150,13 +150,25 @@ public static class OrderCreateEndpoint
         }
 
         var orderService = new OrderService(store);
-        var orderId = orderService.CreateOrder(
-            authoritativeOrderRef!,
-            partnerId,
-            dueDate,
-            createRequest.Comment,
-            lines,
-            orderType.Value);
+        long orderId;
+        try
+        {
+            orderId = orderService.CreateOrder(
+                authoritativeOrderRef!,
+                partnerId,
+                dueDate,
+                createRequest.Comment,
+                lines,
+                orderType.Value);
+        }
+        catch (ArgumentException ex)
+        {
+            return Results.BadRequest(new ApiResult(false, MapKnownArgumentError(ex)));
+        }
+        catch (InvalidOperationException)
+        {
+            return Results.BadRequest(new ApiResult(false, "ORDER_CREATE_FAILED"));
+        }
 
         var created = store.GetOrder(orderId);
         if (created == null)
@@ -220,6 +232,17 @@ public static class OrderCreateEndpoint
         }
 
         return value.Length > 0;
+    }
+
+    private static string MapKnownArgumentError(ArgumentException ex)
+    {
+        return ex.ParamName switch
+        {
+            "partnerId" when ex.Message.Contains("обязателен", StringComparison.OrdinalIgnoreCase) => "MISSING_PARTNER_ID",
+            "partnerId" when ex.Message.Contains("не найден", StringComparison.OrdinalIgnoreCase) => "PARTNER_NOT_FOUND",
+            "orderRef" => "MISSING_ORDER_REF",
+            _ => "ORDER_CREATE_VALIDATION_FAILED"
+        };
     }
 
     private static IReadOnlyDictionary<long, LocalPartnerRole> LoadPartnerStatuses()

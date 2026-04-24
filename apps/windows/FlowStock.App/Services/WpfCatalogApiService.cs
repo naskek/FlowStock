@@ -94,7 +94,8 @@ public sealed class WpfCatalogApiService
                         SortOrder = ReadInt32(element, "sort_order"),
                         IsActive = ReadBool(element, "is_active"),
                         IsVisibleInProductCatalog = ReadBool(element, "is_visible_in_product_catalog"),
-                        EnableMinStockControl = ReadBool(element, "enable_min_stock_control")
+                        EnableMinStockControl = ReadBool(element, "enable_min_stock_control"),
+                        EnableHuDistribution = ReadBool(element, "enable_hu_distribution")
                     })
                     .ToList()
                 : new List<ItemType>(),
@@ -269,7 +270,8 @@ public sealed class WpfCatalogApiService
                     sort_order = itemType.SortOrder,
                     is_active = itemType.IsActive,
                     is_visible_in_product_catalog = itemType.IsVisibleInProductCatalog,
-                    enable_min_stock_control = itemType.EnableMinStockControl
+                    enable_min_stock_control = itemType.EnableMinStockControl,
+                    enable_hu_distribution = itemType.EnableHuDistribution
                 },
                 "item_type_id",
                 "catalog-create-item-type",
@@ -288,7 +290,8 @@ public sealed class WpfCatalogApiService
                     sort_order = itemType.SortOrder,
                     is_active = itemType.IsActive,
                     is_visible_in_product_catalog = itemType.IsVisibleInProductCatalog,
-                    enable_min_stock_control = itemType.EnableMinStockControl
+                    enable_min_stock_control = itemType.EnableMinStockControl,
+                    enable_hu_distribution = itemType.EnableHuDistribution
                 },
                 "catalog-update-item-type",
                 cancellationToken)

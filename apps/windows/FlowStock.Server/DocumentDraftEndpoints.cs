@@ -884,7 +884,15 @@ public static class DocumentDraftEndpoints
         {
             try
             {
-                docId = docs.CreateDoc(docType.Value, docRef, comment, partnerIdValue, requestedOrderRef, resolvedShippingRefNew, requestedOrderId);
+                docId = docs.CreateDoc(
+                    docType.Value,
+                    docRef,
+                    comment,
+                    partnerIdValue,
+                    requestedOrderRef,
+                    resolvedShippingRefNew,
+                    requestedOrderId,
+                    hydrateOrderLines: false);
                 created = true;
                 break;
             }

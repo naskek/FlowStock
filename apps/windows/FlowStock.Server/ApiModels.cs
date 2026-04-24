@@ -600,6 +600,9 @@ public sealed class UpsertItemTypeRequest
 
     [JsonPropertyName("enable_min_stock_control")]
     public bool EnableMinStockControl { get; set; }
+
+    [JsonPropertyName("enable_hu_distribution")]
+    public bool EnableHuDistribution { get; set; }
 }
 
 public sealed class UpsertLocationRequest

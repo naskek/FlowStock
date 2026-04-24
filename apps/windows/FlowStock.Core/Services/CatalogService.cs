@@ -40,6 +40,7 @@ public sealed class CatalogService
         }
 
         var normalizedUom = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom.Trim();
+        var normalizedMaxQtyPerHu = NormalizeMaxQtyPerHu(itemTypeId, maxQtyPerHu);
         var normalizedMinStock = NormalizeMinStock(itemTypeId, minStockQty);
         var item = new Item
         {
@@ -50,7 +51,7 @@ public sealed class CatalogService
             Brand = string.IsNullOrWhiteSpace(brand) ? null : brand.Trim(),
             Volume = string.IsNullOrWhiteSpace(volume) ? null : volume.Trim(),
             ShelfLifeMonths = shelfLifeMonths,
-            MaxQtyPerHu = maxQtyPerHu,
+            MaxQtyPerHu = normalizedMaxQtyPerHu,
             TaraId = taraId,
             IsMarked = isMarked,
             IsActive = isActive,
@@ -190,6 +191,7 @@ public sealed class CatalogService
         }
 
         var normalizedUom = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom.Trim();
+        var normalizedMaxQtyPerHu = NormalizeMaxQtyPerHu(itemTypeId, maxQtyPerHu);
         var normalizedMinStock = NormalizeMinStock(itemTypeId, minStockQty);
         var item = new Item
         {
@@ -202,7 +204,7 @@ public sealed class CatalogService
             Brand = string.IsNullOrWhiteSpace(brand) ? null : brand.Trim(),
             Volume = string.IsNullOrWhiteSpace(volume) ? null : volume.Trim(),
             ShelfLifeMonths = shelfLifeMonths,
-            MaxQtyPerHu = maxQtyPerHu,
+            MaxQtyPerHu = normalizedMaxQtyPerHu,
             TaraId = taraId,
             IsMarked = isMarked,
             IsActive = isActive ?? existing.IsActive,
@@ -330,7 +332,7 @@ public sealed class CatalogService
         _data.DeleteTara(taraId);
     }
 
-    public long CreateItemType(string name, string? code, int sortOrder, bool isActive, bool isVisibleInProductCatalog, bool enableMinStockControl)
+    public long CreateItemType(string name, string? code, int sortOrder, bool isActive, bool isVisibleInProductCatalog, bool enableMinStockControl, bool enableHuDistribution)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -344,11 +346,12 @@ public sealed class CatalogService
             SortOrder = sortOrder,
             IsActive = isActive,
             IsVisibleInProductCatalog = isVisibleInProductCatalog,
-            EnableMinStockControl = enableMinStockControl
+            EnableMinStockControl = enableMinStockControl,
+            EnableHuDistribution = enableHuDistribution
         });
     }
 
-    public void UpdateItemType(long itemTypeId, string name, string? code, int sortOrder, bool isActive, bool isVisibleInProductCatalog, bool enableMinStockControl)
+    public void UpdateItemType(long itemTypeId, string name, string? code, int sortOrder, bool isActive, bool isVisibleInProductCatalog, bool enableMinStockControl, bool enableHuDistribution)
     {
         if (itemTypeId <= 0)
         {
@@ -373,7 +376,8 @@ public sealed class CatalogService
             SortOrder = sortOrder,
             IsActive = isActive,
             IsVisibleInProductCatalog = isVisibleInProductCatalog,
-            EnableMinStockControl = enableMinStockControl
+            EnableMinStockControl = enableMinStockControl,
+            EnableHuDistribution = enableHuDistribution
         });
     }
 
@@ -467,6 +471,37 @@ public sealed class CatalogService
         }
 
         return minStockQty.Value;
+    }
+
+    private double? NormalizeMaxQtyPerHu(long? itemTypeId, double? maxQtyPerHu)
+    {
+        if (maxQtyPerHu.HasValue && maxQtyPerHu.Value <= 0)
+        {
+            throw new ArgumentException("Лимит HU должен быть больше 0.", nameof(maxQtyPerHu));
+        }
+
+        if (!itemTypeId.HasValue || itemTypeId.Value <= 0)
+        {
+            return maxQtyPerHu;
+        }
+
+        var itemType = _data.GetItemType(itemTypeId.Value);
+        if (itemType == null)
+        {
+            throw new ArgumentException("Выбранный тип номенклатуры не найден.", nameof(itemTypeId));
+        }
+
+        if (!itemType.IsActive)
+        {
+            throw new ArgumentException("Выбранный тип номенклатуры неактивен.", nameof(itemTypeId));
+        }
+
+        if (itemType.EnableHuDistribution && !maxQtyPerHu.HasValue)
+        {
+            throw new ArgumentException("Для выбранного типа номенклатуры обязательно заполнить \"Макс шт на 1 HU\".", nameof(maxQtyPerHu));
+        }
+
+        return maxQtyPerHu;
     }
 }
 

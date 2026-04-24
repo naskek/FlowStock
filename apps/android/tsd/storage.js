@@ -225,6 +225,12 @@
       item_type_name: String(item.item_type_name || "").trim(),
       item_type_is_visible_in_product_catalog: item.item_type_is_visible_in_product_catalog === true,
       item_type_enable_min_stock_control: item.item_type_enable_min_stock_control === true,
+      max_qty_per_hu:
+        item.max_qty_per_hu != null
+          ? Number(item.max_qty_per_hu)
+          : item.maxQtyPerHu != null
+            ? Number(item.maxQtyPerHu)
+            : null,
       min_stock_qty: item.min_stock_qty != null ? Number(item.min_stock_qty) : null,
     };
   }
@@ -241,6 +247,9 @@
       locationId: id,
       code: String(location.code || "").trim(),
       name: String(location.name || "").trim(),
+      autoHuDistributionEnabled:
+        location.auto_hu_distribution_enabled === true ||
+        location.autoHuDistributionEnabled === true,
     };
   }
 
@@ -256,6 +265,7 @@
     return {
       orderId: id,
       number: orderRef,
+      orderType: String(order.order_type || order.orderType || "").trim(),
       partnerId: order.partner_id != null ? Number(order.partner_id) : null,
       partnerName: String(order.partner_name || order.partnerName || "").trim(),
       partnerInn: String(order.partner_code || order.partnerInn || order.partnerCode || "").trim(),
@@ -351,6 +361,7 @@
       return null;
     }
     return {
+      id: line.id != null ? Number(line.id) : null,
       orderLineId: line.order_line_id != null ? Number(line.order_line_id) : null,
       itemId: Number(line.item_id),
       itemName: String(line.item_name || line.itemName || ""),
@@ -362,6 +373,7 @@
       toLocation: line.to_location || null,
       fromHu: line.from_hu || null,
       toHu: line.to_hu || null,
+      packSingleHu: !!line.pack_single_hu,
     };
   }
 
@@ -632,10 +644,11 @@
     var q = String(query || "").trim();
     return getBaseUrl()
       .then(function (baseUrl) {
-        var url = baseUrl + "/api/orders";
+        var queryParts = ["include_internal=1"];
         if (q) {
-          url += "?q=" + encodeURIComponent(q);
+          queryParts.push("q=" + encodeURIComponent(q));
         }
+        var url = baseUrl + "/api/orders?" + queryParts.join("&");
         return fetchJsonWithTimeout(url, { method: "GET" });
       })
       .then(function (payload) {
@@ -691,6 +704,52 @@
         }
         return payload
           .map(normalizeApiOrderLine)
+          .filter(function (line) {
+            return !!line;
+          });
+      });
+  }
+
+  function apiGetOrderReceiptRemaining(orderId) {
+    var target = Number(orderId);
+    if (!target) {
+      return Promise.resolve([]);
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(
+          baseUrl + "/api/orders/" + encodeURIComponent(target) + "/receipt-remaining?detailed=1",
+          { method: "GET" }
+        );
+      })
+      .then(function (payload) {
+        if (!Array.isArray(payload)) {
+          throw new Error("INVALID_ORDER_RECEIPT_LINES");
+        }
+        return payload
+          .map(function (line) {
+            if (!line || line.item_id == null || line.order_line_id == null) {
+              return null;
+            }
+            var itemId = Number(line.item_id);
+            var orderLineId = Number(line.order_line_id);
+            if (!itemId || !orderLineId) {
+              return null;
+            }
+            return {
+              orderLineId: orderLineId,
+              orderId: Number(line.order_id) || target,
+              itemId: itemId,
+              itemName: String(line.item_name || ""),
+              orderedQty: Number(line.qty_ordered) || 0,
+              receivedQty: Number(line.qty_received) || 0,
+              remainingQty: Number(line.qty_remaining) || 0,
+              toLocationId: line.to_location_id != null ? Number(line.to_location_id) || null : null,
+              toLocation: String(line.to_location || ""),
+              toHu: String(line.to_hu || "").trim(),
+              sortOrder: Number(line.sort_order) || 0,
+            };
+          })
           .filter(function (line) {
             return !!line;
           });
@@ -791,24 +850,6 @@
     };
     return getBaseUrl().then(function (baseUrl) {
       return fetchJsonWithTimeout(baseUrl + "/api/tsd/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-    });
-  }
-
-  function apiCreateDocDraft(op, docUid, eventId, deviceId) {
-    var payload = {
-      doc_uid: String(docUid || ""),
-      event_id: String(eventId || ""),
-      device_id: deviceId ? String(deviceId) : null,
-      type: String(op || ""),
-      draft_only: true,
-      comment: "TSD",
-    };
-    return getBaseUrl().then(function (baseUrl) {
-      return fetchJsonWithTimeout(baseUrl + "/api/docs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -934,6 +975,45 @@
             qty: qty,
           };
         });
+      });
+  }
+
+  function apiGetHus(options) {
+    var opts = options || {};
+    var take = Number(opts.take);
+    if (!take || take < 1) {
+      take = 200;
+    }
+    if (take > 1000) {
+      take = 1000;
+    }
+    var q = String(opts.q || "").trim();
+    var query = "take=" + encodeURIComponent(String(take));
+    if (q) {
+      query += "&q=" + encodeURIComponent(q);
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/hus?" + query, { method: "GET" });
+      })
+      .then(function (payload) {
+        if (!Array.isArray(payload)) {
+          throw new Error("INVALID_HUS");
+        }
+        return payload
+          .map(function (row) {
+            if (!row || !row.hu_code) {
+              return null;
+            }
+            return {
+              id: row.id != null ? Number(row.id) : null,
+              hu: String(row.hu_code || "").trim().toUpperCase(),
+              status: String(row.status || "").trim().toUpperCase(),
+            };
+          })
+          .filter(function (row) {
+            return !!row && !!row.hu;
+          });
       });
   }
 
@@ -2176,13 +2256,14 @@
     apiGetStockRows: apiGetStockRows,
     apiGetStockByBarcode: apiGetStockByBarcode,
     apiGetHuStockRows: apiGetHuStockRows,
+    apiGetHus: apiGetHus,
     apiGetPartners: apiGetPartners,
     apiGetDocs: apiGetDocs,
     apiGetNextDocRef: apiGetNextDocRef,
     apiGetDocById: apiGetDocById,
     apiGetDocLines: apiGetDocLines,
-    apiCreateDocDraft: apiCreateDocDraft,
     apiGetOrderLines: apiGetOrderLines,
+    apiGetOrderReceiptRemaining: apiGetOrderReceiptRemaining,
     apiLogin: apiLogin,
   };
 

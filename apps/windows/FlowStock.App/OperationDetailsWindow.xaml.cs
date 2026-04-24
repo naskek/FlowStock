@@ -3165,6 +3165,7 @@ public partial class OperationDetailsWindow : Window
     private IReadOnlyList<WpfAddDocLineContext> BuildOutboundOrderBatchContexts(long orderId, long? fromLocationId)
     {
         var requestedHu = NormalizeHuValue(GetSelectedHuCode(DocHuCombo));
+        var orderBoundHuByItem = GetOrderBoundHuByItem(orderId);
         var locationsByCode = _locations
             .Where(location => !string.IsNullOrWhiteSpace(location.Code))
             .ToDictionary(location => location.Code, location => location.Id, StringComparer.OrdinalIgnoreCase);
@@ -3197,6 +3198,15 @@ public partial class OperationDetailsWindow : Window
             var hu = NormalizeHuValue(row.Hu);
             if (!string.IsNullOrWhiteSpace(requestedHu)
                 && !string.Equals(hu, requestedHu, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            // Для отгрузки по заказу учитываем только HU, выпущенные под этот заказ.
+            if (!orderBoundHuByItem.TryGetValue(row.ItemId, out var allowedHuCodes)
+                || allowedHuCodes.Count == 0
+                || string.IsNullOrWhiteSpace(hu)
+                || !allowedHuCodes.Contains(hu))
             {
                 continue;
             }
@@ -3263,23 +3273,50 @@ public partial class OperationDetailsWindow : Window
                 }
             }
 
-            if (qtyRemaining > 0.000001)
-            {
-                contexts.Add(new WpfAddDocLineContext(
-                    line.ItemId,
-                    null,
-                    line.OrderLineId,
-                    qtyRemaining,
-                    null,
-                    null,
-                    null,
-                    null,
-                    null,
-                    null));
-            }
         }
 
         return contexts;
+    }
+
+    private IReadOnlyDictionary<long, HashSet<string>> GetOrderBoundHuByItem(long orderId)
+    {
+        var result = new Dictionary<long, HashSet<string>>();
+        if (!_services.WpfReadApi.TryGetDocs(DocType.ProductionReceipt, DocStatus.Closed, out var docs))
+        {
+            return result;
+        }
+
+        foreach (var doc in docs.Where(doc => doc.OrderId == orderId))
+        {
+            if (!_services.WpfReadApi.TryGetDocLines(doc.Id, out var docLines))
+            {
+                continue;
+            }
+
+            foreach (var line in docLines)
+            {
+                if (line.Qty <= QtyTolerance)
+                {
+                    continue;
+                }
+
+                var huCode = NormalizeHuValue(line.ToHu);
+                if (string.IsNullOrWhiteSpace(huCode))
+                {
+                    continue;
+                }
+
+                if (!result.TryGetValue(line.ItemId, out var set))
+                {
+                    set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    result[line.ItemId] = set;
+                }
+
+                set.Add(huCode);
+            }
+        }
+
+        return result;
     }
 
     private IReadOnlyList<WpfAddDocLineContext> BuildProductionReceiptBatchContexts(long orderId, long? toLocationId, string? toHu)

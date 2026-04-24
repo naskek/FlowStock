@@ -220,7 +220,17 @@ app.MapGet("/api/live", async (HttpContext context, LiveUpdateHub liveHub) =>
                 continue;
             }
 
-            if (!waitReadTask.Result)
+            bool canRead;
+            try
+            {
+                canRead = await waitReadTask;
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+
+            if (!canRead)
             {
                 break;
             }
@@ -1212,7 +1222,8 @@ app.MapGet("/api/item-types", (HttpRequest request, CatalogService catalog) =>
             sort_order = itemType.SortOrder,
             is_active = itemType.IsActive,
             is_visible_in_product_catalog = itemType.IsVisibleInProductCatalog,
-            enable_min_stock_control = itemType.EnableMinStockControl
+            enable_min_stock_control = itemType.EnableMinStockControl,
+            enable_hu_distribution = itemType.EnableHuDistribution
         })
         .ToList();
     return Results.Ok(itemTypes);
@@ -1234,7 +1245,8 @@ app.MapPost("/api/item-types", async (HttpRequest request, CatalogService catalo
             parsed.Value?.SortOrder ?? 0,
             parsed.Value?.IsActive ?? true,
             parsed.Value?.IsVisibleInProductCatalog ?? true,
-            parsed.Value?.EnableMinStockControl ?? false);
+            parsed.Value?.EnableMinStockControl ?? false,
+            parsed.Value?.EnableHuDistribution ?? false);
         return Results.Ok(new { ok = true, item_type_id = itemTypeId });
     }
     catch (ArgumentException ex)
@@ -1264,7 +1276,8 @@ app.MapPost("/api/item-types/{itemTypeId:long}", async (long itemTypeId, HttpReq
             parsed.Value?.SortOrder ?? 0,
             parsed.Value?.IsActive ?? true,
             parsed.Value?.IsVisibleInProductCatalog ?? true,
-            parsed.Value?.EnableMinStockControl ?? false);
+            parsed.Value?.EnableMinStockControl ?? false,
+            parsed.Value?.EnableHuDistribution ?? false);
         return Results.Ok(new ApiResult(true));
     }
     catch (ArgumentException ex)
@@ -1931,7 +1944,7 @@ app.MapGet("/api/orders/{orderId:long}/shipment-remaining", (long orderId, IData
     return Results.Ok(lines);
 });
 
-app.MapGet("/api/orders/{orderId:long}/receipt-remaining", (long orderId, IDataStore store) =>
+app.MapGet("/api/orders/{orderId:long}/receipt-remaining", (long orderId, HttpRequest request, IDataStore store) =>
 {
     var orderService = new OrderService(store);
     var order = orderService.GetOrder(orderId);
@@ -1941,7 +1954,11 @@ app.MapGet("/api/orders/{orderId:long}/receipt-remaining", (long orderId, IDataS
     }
 
     var documentService = new DocumentService(store);
-    var lines = documentService.GetOrderReceiptRemaining(orderId)
+    var detailed = string.Equals(request.Query["detailed"], "1", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(request.Query["detailed"], "true", StringComparison.OrdinalIgnoreCase);
+    var lines = (detailed
+            ? orderService.GetOrderReceiptRemainingDetailed(orderId)
+            : documentService.GetOrderReceiptRemaining(orderId))
         .Select(MapOrderReceiptRemaining)
         .ToList();
     return Results.Ok(lines);
@@ -3276,7 +3293,11 @@ static object MapOrderReceiptRemaining(OrderReceiptLine line)
         item_name = line.ItemName,
         qty_ordered = line.QtyOrdered,
         qty_received = line.QtyReceived,
-        qty_remaining = line.QtyRemaining
+        qty_remaining = line.QtyRemaining,
+        to_location_id = line.ToLocationId,
+        to_location = line.ToLocation,
+        to_hu = line.ToHu,
+        sort_order = line.SortOrder
     };
 }
 

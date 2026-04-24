@@ -18,6 +18,16 @@
 - `item_id` INTEGER NOT NULL (FK -> `items.id`)
 - `qty_ordered` REAL NOT NULL
 
+Таблица `order_receipt_plan_lines`:
+- `id` INTEGER PRIMARY KEY
+- `order_id` INTEGER NOT NULL (FK -> `orders.id`)
+- `order_line_id` INTEGER NOT NULL (FK -> `order_lines.id`)
+- `item_id` INTEGER NOT NULL (FK -> `items.id`)
+- `qty_planned` REAL NOT NULL
+- `to_location_id` INTEGER NULL (FK -> `locations.id`)
+- `to_hu` TEXT NULL
+- `sort_order` INTEGER NOT NULL
+
 Связь с отгрузками:
 - В `docs` добавлено поле `order_id` (NULL, FK -> `orders.id`)
 - OUTBOUND, созданные из заказа, получают `order_id` и `order_ref`.
@@ -28,7 +38,9 @@
 - PRD (`docs.type = PRODUCTION_RECEIPT`) также может быть связан с заказом через `order_id` / `order_ref`.
 - В `doc_lines.order_line_id` хранится связь строки выпуска с позицией заказа.
 - Для `INTERNAL`-заказа PRD является документом исполнения заказа.
-- В WPF автозаполнение PRD из заказа берет только незакрытый остаток `receipt_remaining`.
+- На этапе создания/обновления заказа сервер формирует план выпуска `order_receipt_plan_lines` (HU и локации хранения).
+- Для `CUSTOMER`-заказа на этапе создания/обновления сервер пытается зарезервировать в `order_receipt_plan_lines` доступные HU/локации из уже выпущенной ГП по прошлым `INTERNAL`-заказам (по совпадающим SKU).
+- В WPF/TSD автозаполнение PRD из заказа берет только незакрытый остаток `receipt_remaining`; для TSD в режиме `?detailed=1` возвращаются заранее назначенные `to_location` и `to_hu`.
 - Повторный выпуск по одному и тому же заказу запрещен: если `receipt_remaining = 0`, строки заказа в PRD не подставляются и операция блокируется.
 
 Индексы:
@@ -59,8 +71,9 @@
 - `available_qty` = сумма `ledger.qty_delta` по `item_id` (по всем местам хранения)
 - `shipped_qty` = сумма `doc_lines.qty` по закрытым OUTBOUND, где `doc_lines.order_line_id = order_lines.id`
 - `remaining_qty` = max(0, `qty_ordered` - `shipped_qty`)
-- `can_ship_now` = min(`remaining_qty`, max(0, `available_qty`))
-- `shortage` = max(0, `remaining_qty` - max(0, `available_qty`))
+- `can_ship_now` = min(`remaining_qty`, max(0, `produced_qty_for_order` - `shipped_qty`))
+- `shortage` = max(0, `remaining_qty` - max(0, `produced_qty_for_order` - `shipped_qty`))
+  - где `produced_qty_for_order` = объем, выпущенный по строке этого же заказа (`PRD`) + объем, заранее присвоенный из прошлых внутренних выпусков (`order_receipt_plan_lines` для `CUSTOMER`).
 
 Для `INTERNAL`:
 - `produced_qty` = сумма `doc_lines.qty` по закрытым PRD, где `doc_lines.order_line_id = order_lines.id`
@@ -80,13 +93,21 @@
    - `from_location`:
      - если есть локация с кодом `01` -> она
      - иначе первая доступная локация
-   - `from_hu` не заполняется автоматически; при проведении система сама распределяет списание по доступным остаткам выбранной локации, включая несколько HU.
+   - `from_hu` выбирается только из HU, выпущенных под этот заказ (`PRD` с тем же `order_id`); отгрузка из "чужих" HU блокируется.
+   - если заказу заранее присвоены HU из прошлых внутренних выпусков, эти HU также входят в разрешенный набор источников для отгрузки.
 3. Документ открывается в окне деталей операции.
 
 Для `INTERNAL` создается/заполняется PRD:
 - документ `PRODUCTION_RECEIPT` может быть привязан к заказу
-- строки подставляются по `remaining_qty` из еще не выпущенного остатка заказа
+- строки подставляются по `remaining_qty` из еще не выпущенного остатка заказа, с серверными назначениями `to_location/to_hu`
 - после полного выпуска повторное создание PRD по этому заказу запрещено
+
+## Планирование HU для выпуска
+
+- В типе номенклатуры используется флаг `enable_hu_distribution`.
+- Если у типа включен `enable_hu_distribution`, в карточке товара обязательно должен быть заполнен `max_qty_per_hu > 0`.
+- При создании/обновлении заказа сервер дробит строки по `max_qty_per_hu` и резервирует серверные HU в `order_receipt_plan_lines`.
+- TSD не генерирует HU локально: используются только серверные номера HU.
 
 ## Правила статусов
 
@@ -99,9 +120,10 @@
 - Для `CUSTOMER`:
   - после создания/сохранения заказа статус автоматически `IN_PROGRESS` (UI: `В работе`)
   - `DRAFT` используется только локально в WPF для нового, еще не сохраненного заказа, и в UI нормализуется как `В работе`
-  - после выпуска PRD (с привязкой к заказу) статус автоматически становится `ACCEPTED` (UI: `Готов`)
+  - после частичного выпуска PRD (с привязкой к заказу) статус остается `IN_PROGRESS` (UI: `В работе`)
+  - статус `ACCEPTED` (UI: `Готов`) выставляется только после полного комплекта по заказу: `produced >= qty_ordered` по всем строкам
   - при частичной отгрузке статус возвращается в `IN_PROGRESS` (UI: `В работе`)
-  - `SHIPPED` выставляется автоматически, если по всем позициям `remaining_qty == 0` по OUTBOUND
+  - `SHIPPED` выставляется автоматически, если по всем позициям `remaining_qty == 0` по OUTBOUND (заказ закрывается сразу после проведения полного объема)
   - `shipped_at` = MAX(`closed_at`) по закрытым OUTBOUND
 - Для `INTERNAL`:
   - после создания/сохранения заказа статус автоматически `IN_PROGRESS` (UI: `В работе`)
