@@ -13,6 +13,7 @@ public sealed class Order
     public DateTime? ShippedAt { get; init; }
     public string? PartnerName { get; init; }
     public string? PartnerCode { get; init; }
+    public bool UseReservedStock { get; init; }
 
     public string TypeDisplay => OrderStatusMapper.TypeToDisplayName(Type);
     public string StatusDisplay => OrderStatusMapper.StatusToDisplayName(Status, Type);

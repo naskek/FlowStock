@@ -159,7 +159,8 @@ public static class OrderCreateEndpoint
                 dueDate,
                 createRequest.Comment,
                 lines,
-                orderType.Value);
+                orderType.Value,
+                createRequest.BindReservedStock);
         }
         catch (ArgumentException ex)
         {

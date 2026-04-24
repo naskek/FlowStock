@@ -97,6 +97,7 @@ public interface IDataStore
     IReadOnlyList<OrderLine> GetOrderLines(long orderId);
     IReadOnlyList<OrderLineView> GetOrderLineViews(long orderId);
     IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemaining(long orderId);
+    IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemainingWithoutReservedStock(long orderId);
     IReadOnlyList<OrderReceiptPlanLine> GetOrderReceiptPlanLines(long orderId);
     IReadOnlyCollection<string> GetReservedOrderReceiptHuCodes(long? excludeOrderId = null);
     void ReplaceOrderReceiptPlanLines(long orderId, IReadOnlyList<OrderReceiptPlanLine> lines);

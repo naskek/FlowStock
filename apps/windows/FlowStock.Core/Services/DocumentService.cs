@@ -194,7 +194,14 @@ public sealed class DocumentService
 
     public IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemaining(long orderId)
     {
-        return _data.GetOrderReceiptRemaining(orderId);
+        return GetOrderReceiptRemaining(orderId, includeReservedStock: true);
+    }
+
+    public IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemaining(long orderId, bool includeReservedStock)
+    {
+        return includeReservedStock
+            ? _data.GetOrderReceiptRemaining(orderId)
+            : _data.GetOrderReceiptRemainingWithoutReservedStock(orderId);
     }
 
     public IReadOnlyList<OrderShipmentLine> GetOrderShipmentRemaining(long orderId)
@@ -2123,7 +2130,23 @@ public sealed class DocumentService
 
         try
         {
-            _ = new OrderService(store).GetOrder(doc.OrderId.Value);
+            var orderService = new OrderService(store);
+            var linkedOrder = orderService.GetOrder(doc.OrderId.Value);
+            if (linkedOrder == null)
+            {
+                return;
+            }
+
+            if (doc.Type == DocType.ProductionReceipt && linkedOrder.Type == OrderType.Internal)
+            {
+                OrderService.RefreshCustomerReceiptPlansCore(store);
+                return;
+            }
+
+            if (doc.Type == DocType.Outbound && linkedOrder.Type == OrderType.Customer)
+            {
+                OrderService.RefreshCustomerReceiptPlansCore(store);
+            }
         }
         catch (Exception ex) when (IsMockStoreException(ex))
         {

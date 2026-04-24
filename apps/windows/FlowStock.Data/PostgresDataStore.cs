@@ -19,7 +19,7 @@ public sealed class PostgresDataStore : IDataStore
         "LEFT JOIN partners p ON p.id = d.partner_id " +
         "LEFT JOIN (SELECT dl.doc_id, COUNT(*) AS line_count FROM doc_lines dl WHERE dl.qty > 0 AND NOT EXISTS (SELECT 1 FROM doc_lines newer WHERE newer.replaces_line_id = dl.id) GROUP BY dl.doc_id) dl ON dl.doc_id = d.id " +
         "LEFT JOIN (SELECT doc_id, MAX(device_id) AS device_id, MAX(doc_uid) AS doc_uid FROM api_docs GROUP BY doc_id) ad ON ad.doc_id = d.id";
-    private const string OrderSelectBase = "SELECT o.id, o.order_ref, o.order_type, o.partner_id, o.due_date, o.status, o.comment, o.created_at, p.name, p.code FROM orders o LEFT JOIN partners p ON p.id = o.partner_id";
+    private const string OrderSelectBase = "SELECT o.id, o.order_ref, o.order_type, o.partner_id, o.due_date, o.status, o.comment, o.created_at, p.name, p.code, COALESCE(o.bind_reserved_stock, FALSE) FROM orders o LEFT JOIN partners p ON p.id = o.partner_id";
 
     public PostgresDataStore(string connectionString)
     {
@@ -1349,8 +1349,8 @@ WHERE id = @id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO orders(order_ref, order_type, partner_id, due_date, status, comment, created_at)
-VALUES(@order_ref, @order_type, @partner_id, @due_date, @status, @comment, @created_at)
+INSERT INTO orders(order_ref, order_type, partner_id, due_date, status, comment, created_at, bind_reserved_stock)
+VALUES(@order_ref, @order_type, @partner_id, @due_date, @status, @comment, @created_at, @bind_reserved_stock)
 RETURNING id;
 ");
             command.Parameters.AddWithValue("@order_ref", order.OrderRef);
@@ -1360,6 +1360,7 @@ RETURNING id;
             command.Parameters.AddWithValue("@status", OrderStatusMapper.StatusToString(order.Status));
             command.Parameters.AddWithValue("@comment", string.IsNullOrWhiteSpace(order.Comment) ? DBNull.Value : order.Comment);
             command.Parameters.AddWithValue("@created_at", ToDbDate(order.CreatedAt));
+            command.Parameters.AddWithValue("@bind_reserved_stock", order.UseReservedStock);
             return (long)(command.ExecuteScalar() ?? 0L);
         });
     }
@@ -1375,7 +1376,8 @@ SET order_ref = @order_ref,
     partner_id = @partner_id,
     due_date = @due_date,
     status = @status,
-    comment = @comment
+    comment = @comment,
+    bind_reserved_stock = @bind_reserved_stock
 WHERE id = @id;
 ");
             command.Parameters.AddWithValue("@order_ref", order.OrderRef);
@@ -1384,6 +1386,7 @@ WHERE id = @id;
             command.Parameters.AddWithValue("@due_date", order.DueDate.HasValue ? ToDbDateOnly(order.DueDate.Value) : DBNull.Value);
             command.Parameters.AddWithValue("@status", OrderStatusMapper.StatusToString(order.Status));
             command.Parameters.AddWithValue("@comment", string.IsNullOrWhiteSpace(order.Comment) ? DBNull.Value : order.Comment);
+            command.Parameters.AddWithValue("@bind_reserved_stock", order.UseReservedStock);
             command.Parameters.AddWithValue("@id", order.Id);
             command.ExecuteNonQuery();
             return 0;
@@ -1453,6 +1456,16 @@ ORDER BY i.name;
 
     public IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemaining(long orderId)
     {
+        return GetOrderReceiptRemainingCore(orderId, includeReservedStock: true);
+    }
+
+    public IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemainingWithoutReservedStock(long orderId)
+    {
+        return GetOrderReceiptRemainingCore(orderId, includeReservedStock: false);
+    }
+
+    private IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemainingCore(long orderId, bool includeReservedStock)
+    {
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
@@ -1463,13 +1476,15 @@ SELECT ol.id,
        ol.qty_ordered,
        (COALESCE(r.sum_qty, 0)
         + CASE
-              WHEN o.order_type = @customer_order_type THEN COALESCE(p.sum_qty, 0)
+              WHEN @include_reserved_stock = 1
+                   AND o.order_type = @customer_order_type THEN COALESCE(p.sum_qty, 0)
               ELSE 0
           END) AS received_qty,
        (ol.qty_ordered
         - (COALESCE(r.sum_qty, 0)
            + CASE
-                 WHEN o.order_type = @customer_order_type THEN COALESCE(p.sum_qty, 0)
+                 WHEN @include_reserved_stock = 1
+                      AND o.order_type = @customer_order_type THEN COALESCE(p.sum_qty, 0)
                  ELSE 0
              END)) AS remaining
 FROM order_lines ol
@@ -1505,6 +1520,7 @@ ORDER BY ol.id;
             command.Parameters.AddWithValue("@status", DocTypeMapper.StatusToString(DocStatus.Closed));
             command.Parameters.AddWithValue("@doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
             command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+            command.Parameters.AddWithValue("@include_reserved_stock", includeReservedStock ? 1 : 0);
             using var reader = command.ExecuteReader();
             var lines = new List<OrderReceiptLine>();
             while (reader.Read())
@@ -2700,6 +2716,7 @@ RETURNING id;
         var comment = reader.IsDBNull(6) ? null : reader.GetString(6);
         var partnerName = reader.IsDBNull(8) ? null : reader.GetString(8);
         var partnerCode = reader.IsDBNull(9) ? null : reader.GetString(9);
+        var useReservedStock = reader.FieldCount > 10 && !reader.IsDBNull(10) && reader.GetBoolean(10);
 
         return new Order
         {
@@ -2712,7 +2729,8 @@ RETURNING id;
             Comment = comment,
             CreatedAt = FromDbDate(reader.GetString(7)) ?? DateTime.MinValue,
             PartnerName = partnerName,
-            PartnerCode = partnerCode
+            PartnerCode = partnerCode,
+            UseReservedStock = useReservedStock
         };
     }
 
@@ -2858,6 +2876,7 @@ LIMIT 1;";
         }
 
         if (!ColumnExists(connection, "orders", "order_type")
+            || !ColumnExists(connection, "orders", "bind_reserved_stock")
             || !ColumnExists(connection, "doc_lines", "replaces_line_id")
             || !ColumnExists(connection, "doc_lines", "pack_single_hu")
             || !ColumnExists(connection, "ledger", "hu_code")

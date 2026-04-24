@@ -3280,6 +3280,17 @@ public partial class OperationDetailsWindow : Window
 
     private IReadOnlyDictionary<long, HashSet<string>> GetOrderBoundHuByItem(long orderId)
     {
+        if (_services.WpfReadApi.TryGetOrderBoundHuByItem(orderId, out var fromServer)
+            && fromServer.Count > 0)
+        {
+            return fromServer;
+        }
+
+        return CollectOrderBoundHuFromClosedProductionDocs(orderId);
+    }
+
+    private IReadOnlyDictionary<long, HashSet<string>> CollectOrderBoundHuFromClosedProductionDocs(long orderId)
+    {
         var result = new Dictionary<long, HashSet<string>>();
         if (!_services.WpfReadApi.TryGetDocs(DocType.ProductionReceipt, DocStatus.Closed, out var docs))
         {
@@ -3322,23 +3333,25 @@ public partial class OperationDetailsWindow : Window
     private IReadOnlyList<WpfAddDocLineContext> BuildProductionReceiptBatchContexts(long orderId, long? toLocationId, string? toHu)
     {
         var effectiveToLocationId = toLocationId ?? ResolveDefaultReceiptLocation(preferAutoEnabled: true)?.Id;
-        var orderLines = _services.WpfReadApi.TryGetOrderLines(orderId, out var apiOrderLines)
-            ? apiOrderLines
-            : Array.Empty<OrderLineView>();
+        var receiptLines = _services.WpfReadApi.TryGetOrderReceiptRemainingDetailed(orderId, out var apiReceiptLines)
+            ? apiReceiptLines
+            : Array.Empty<OrderReceiptLine>();
 
-        return orderLines
-            .Where(line => line.QtyOrdered > 0)
+        return receiptLines
+            .Where(line => line.QtyRemaining > QtyTolerance)
+            .OrderBy(line => line.SortOrder)
+            .ThenBy(line => line.OrderLineId)
             .Select(line => new WpfAddDocLineContext(
                 line.ItemId,
                 null,
-                line.Id,
-                line.QtyOrdered,
+                line.OrderLineId,
+                line.QtyRemaining,
                 null,
                 null,
                 null,
-                effectiveToLocationId,
+                line.ToLocationId ?? effectiveToLocationId,
                 null,
-                NormalizeHuValue(toHu)))
+                NormalizeHuValue(line.ToHu) ?? NormalizeHuValue(toHu)))
             .ToList();
     }
 

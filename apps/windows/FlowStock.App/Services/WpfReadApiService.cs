@@ -185,6 +185,63 @@ public sealed class WpfReadApiService
             out lines);
     }
 
+    public bool TryGetOrderReceiptRemainingDetailed(long orderId, out IReadOnlyList<OrderReceiptLine> lines)
+    {
+        return TryGetOrderReceiptRemainingDetailed(orderId, includeReservedStock: true, out lines);
+    }
+
+    public bool TryGetOrderReceiptRemainingDetailed(long orderId, bool includeReservedStock, out IReadOnlyList<OrderReceiptLine> lines)
+    {
+        lines = Array.Empty<OrderReceiptLine>();
+        var includeReservedQuery = includeReservedStock ? "1" : "0";
+        return TryRead(
+            $"/api/orders/{orderId}/receipt-remaining?detailed=1&include_reserved_stock={includeReservedQuery}",
+            root => root.ValueKind == JsonValueKind.Array
+                ? root.EnumerateArray()
+                    .Select(MapOrderReceiptLine)
+                    .ToList()
+                : new List<OrderReceiptLine>(),
+            "order-receipt-remaining-detailed",
+            out lines);
+    }
+
+    public bool TryGetOrderBoundHuByItem(long orderId, out IReadOnlyDictionary<long, HashSet<string>> boundHuByItem)
+    {
+        boundHuByItem = new Dictionary<long, HashSet<string>>();
+        return TryRead(
+            $"/api/orders/{orderId}/bound-hu",
+            root =>
+            {
+                var result = new Dictionary<long, HashSet<string>>();
+                if (root.ValueKind != JsonValueKind.Array)
+                {
+                    return result;
+                }
+
+                foreach (var element in root.EnumerateArray())
+                {
+                    var itemId = ReadInt64(element, "item_id");
+                    var hu = NormalizeHuCode(ReadString(element, "hu"));
+                    if (itemId <= 0 || string.IsNullOrWhiteSpace(hu))
+                    {
+                        continue;
+                    }
+
+                    if (!result.TryGetValue(itemId, out var set))
+                    {
+                        set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        result[itemId] = set;
+                    }
+
+                    set.Add(hu);
+                }
+
+                return result;
+            },
+            "order-bound-hu",
+            out boundHuByItem);
+    }
+
     public bool TryGetStockRows(string? search, out IReadOnlyList<StockRow> rows)
     {
         rows = Array.Empty<StockRow>();
@@ -500,6 +557,7 @@ public sealed class WpfReadApiService
             DueDate = ReadDateOnly(element, "due_date"),
             Status = status,
             Comment = ReadString(element, "comment"),
+            UseReservedStock = ReadBool(element, "bind_reserved_stock"),
             CreatedAt = ReadDateTime(element, "created_at") ?? DateTime.MinValue,
             ShippedAt = ReadDateTime(element, "shipped_at")
         };
@@ -616,7 +674,11 @@ public sealed class WpfReadApiService
             ItemName = ReadString(element, "item_name") ?? string.Empty,
             QtyOrdered = ReadDouble(element, "qty_ordered"),
             QtyReceived = ReadDouble(element, "qty_received"),
-            QtyRemaining = ReadDouble(element, "qty_remaining")
+            QtyRemaining = ReadDouble(element, "qty_remaining"),
+            ToLocationId = ReadNullableInt64(element, "to_location_id"),
+            ToLocation = ReadString(element, "to_location"),
+            ToHu = ReadString(element, "to_hu"),
+            SortOrder = ReadInt32(element, "sort_order")
         };
     }
 
@@ -762,6 +824,11 @@ public sealed class WpfReadApiService
         return DateTime.TryParseExact(raw, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var value)
             ? value
             : null;
+    }
+
+    private static string? NormalizeHuCode(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToUpperInvariant();
     }
 }
 

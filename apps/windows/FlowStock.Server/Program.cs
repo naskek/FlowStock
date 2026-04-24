@@ -1956,12 +1956,36 @@ app.MapGet("/api/orders/{orderId:long}/receipt-remaining", (long orderId, HttpRe
     var documentService = new DocumentService(store);
     var detailed = string.Equals(request.Query["detailed"], "1", StringComparison.OrdinalIgnoreCase)
                    || string.Equals(request.Query["detailed"], "true", StringComparison.OrdinalIgnoreCase);
+    var includeReservedStock = !string.Equals(request.Query["include_reserved_stock"], "0", StringComparison.OrdinalIgnoreCase)
+                               && !string.Equals(request.Query["include_reserved_stock"], "false", StringComparison.OrdinalIgnoreCase);
     var lines = (detailed
-            ? orderService.GetOrderReceiptRemainingDetailed(orderId)
-            : documentService.GetOrderReceiptRemaining(orderId))
+            ? orderService.GetOrderReceiptRemainingDetailed(orderId, includeReservedStock)
+            : documentService.GetOrderReceiptRemaining(orderId, includeReservedStock))
         .Select(MapOrderReceiptRemaining)
         .ToList();
     return Results.Ok(lines);
+});
+
+app.MapGet("/api/orders/{orderId:long}/bound-hu", (long orderId, IDataStore store) =>
+{
+    var orderService = new OrderService(store);
+    var order = orderService.GetOrder(orderId);
+    if (order == null)
+    {
+        return Results.NotFound(new ApiResult(false, "ORDER_NOT_FOUND"));
+    }
+
+    var rows = orderService.GetOrderBoundHuByItem(orderId)
+        .SelectMany(
+            pair => pair.Value.Select(hu => new
+            {
+                item_id = pair.Key,
+                hu
+            }))
+        .OrderBy(row => row.item_id)
+        .ThenBy(row => row.hu, StringComparer.OrdinalIgnoreCase)
+        .ToList();
+    return Results.Ok(rows);
 });
 
 app.MapPost("/api/orders/requests/create", async (HttpRequest request, IDataStore store) =>
@@ -2909,6 +2933,7 @@ static object MapOrder(Order order)
         due_date = order.DueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
         status = OrderStatusMapper.StatusToDisplayName(order.Status, order.Type),
         comment = order.Comment,
+        bind_reserved_stock = order.UseReservedStock,
         created_at = order.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
         shipped_at = order.ShippedAt?.ToString("O", CultureInfo.InvariantCulture)
     };

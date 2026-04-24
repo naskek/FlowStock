@@ -175,7 +175,8 @@ public static class OrderUpdateEndpoint
                 dueDate,
                 updateRequest.Comment,
                 lines,
-                orderType.Value);
+                orderType.Value,
+                updateRequest.BindReservedStock);
         }
         catch (ArgumentException ex)
         {

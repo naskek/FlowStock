@@ -107,6 +107,9 @@ public sealed class CreateOrderApiRequest
     [JsonPropertyName("comment")]
     public string? Comment { get; init; }
 
+    [JsonPropertyName("bind_reserved_stock")]
+    public bool? BindReservedStock { get; init; }
+
     [JsonPropertyName("lines")]
     public List<CreateOrderApiLineRequest> Lines { get; init; } = new();
 }

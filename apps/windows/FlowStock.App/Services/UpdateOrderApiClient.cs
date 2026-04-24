@@ -108,6 +108,9 @@ public sealed class UpdateOrderApiRequest
     [JsonPropertyName("comment")]
     public string? Comment { get; init; }
 
+    [JsonPropertyName("bind_reserved_stock")]
+    public bool? BindReservedStock { get; init; }
+
     [JsonPropertyName("lines")]
     public List<UpdateOrderApiLineRequest> Lines { get; init; } = new();
 }

@@ -35,6 +35,9 @@ public sealed class WpfUpdateOrderService
             DueDate = context.DueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             Status = string.Empty,
             Comment = NormalizeValue(context.Comment),
+            BindReservedStock = context.OrderType == OrderType.Customer
+                ? context.BindReservedStockForCustomer
+                : null,
             Lines = context.Lines
                 .Select(line => new UpdateOrderApiLineRequest
                 {
@@ -297,7 +300,8 @@ public sealed record WpfUpdateOrderContext(
     DateTime? DueDate,
     OrderStatus Status,
     string? Comment,
-    IReadOnlyList<OrderLineView> Lines);
+    IReadOnlyList<OrderLineView> Lines,
+    bool? BindReservedStockForCustomer = null);
 
 public sealed record WpfServerUpdateOrderConfiguration(
     string BaseUrl,

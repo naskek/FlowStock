@@ -35,6 +35,9 @@ public sealed class WpfCreateOrderService
             DueDate = context.DueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             Status = string.Empty,
             Comment = NormalizeValue(context.Comment),
+            BindReservedStock = context.OrderType == OrderType.Customer
+                ? context.BindReservedStockForCustomer
+                : null,
             Lines = context.Lines
                 .Select(line => new CreateOrderApiLineRequest
                 {
@@ -285,7 +288,8 @@ public sealed record WpfCreateOrderContext(
     DateTime? DueDate,
     OrderStatus Status,
     string? Comment,
-    IReadOnlyList<OrderLineView> Lines);
+    IReadOnlyList<OrderLineView> Lines,
+    bool? BindReservedStockForCustomer = null);
 
 public sealed record WpfServerCreateOrderConfiguration(
     string BaseUrl,
