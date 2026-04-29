@@ -35,6 +35,9 @@ public sealed class WpfCreateOrderService
             DueDate = context.DueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             Status = string.Empty,
             Comment = NormalizeValue(context.Comment),
+            BindReservedStock = context.OrderType == OrderType.Customer
+                ? context.BindReservedStockForCustomer
+                : null,
             Lines = context.Lines
                 .Select(line => new CreateOrderApiLineRequest
                 {
@@ -164,8 +167,18 @@ public sealed class WpfCreateOrderService
     private static WpfCreateOrderResult MapHttpError(CreateOrderApiCallResult apiCall)
     {
         var errorCode = apiCall.Error?.Error;
+        if (IsHuReservationConflict(errorCode))
+        {
+            return WpfCreateOrderResult.Failure(
+                WpfCreateOrderResultKind.ValidationFailed,
+                "Конфликт резерва HU: выбранный HU уже закреплен за другим активным клиентским заказом. Обновите заказ и повторите." +
+                Environment.NewLine +
+                errorCode);
+        }
+
         var message = errorCode switch
         {
+            "HU_RESERVATION_CONFLICT" => "Конфликт резерва HU: выбранный HU уже закреплен за другим активным клиентским заказом. Обновите заказ и повторите.",
             "INVALID_TYPE" => "Сервер отклонил тип заказа.",
             "INVALID_STATUS" => "Сервер отклонил статус заказа.",
             "SHIPPED_STATUS_FORBIDDEN" => "Статус \"Отгружен/Завершен\" нельзя задавать при создании заказа.",
@@ -184,6 +197,7 @@ public sealed class WpfCreateOrderService
 
         var kind = errorCode switch
         {
+            "HU_RESERVATION_CONFLICT" => WpfCreateOrderResultKind.ValidationFailed,
             "INVALID_TYPE" => WpfCreateOrderResultKind.ValidationFailed,
             "INVALID_STATUS" => WpfCreateOrderResultKind.ValidationFailed,
             "SHIPPED_STATUS_FORBIDDEN" => WpfCreateOrderResultKind.ValidationFailed,
@@ -199,6 +213,13 @@ public sealed class WpfCreateOrderService
         };
 
         return WpfCreateOrderResult.Failure(kind, message);
+    }
+
+    private static bool IsHuReservationConflict(string? errorCode)
+    {
+        return !string.IsNullOrWhiteSpace(errorCode)
+               && (string.Equals(errorCode, "HU_RESERVATION_CONFLICT", StringComparison.OrdinalIgnoreCase)
+                   || errorCode.Contains("уже зарезервирован", StringComparison.OrdinalIgnoreCase));
     }
 
     private WpfServerCreateOrderConfiguration LoadConfiguration()
@@ -285,7 +306,8 @@ public sealed record WpfCreateOrderContext(
     DateTime? DueDate,
     OrderStatus Status,
     string? Comment,
-    IReadOnlyList<OrderLineView> Lines);
+    IReadOnlyList<OrderLineView> Lines,
+    bool? BindReservedStockForCustomer = null);
 
 public sealed record WpfServerCreateOrderConfiguration(
     string BaseUrl,

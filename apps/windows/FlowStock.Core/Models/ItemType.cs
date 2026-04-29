@@ -9,5 +9,6 @@ public sealed class ItemType
     public bool IsActive { get; init; } = true;
     public bool IsVisibleInProductCatalog { get; init; }
     public bool EnableMinStockControl { get; init; }
+    public bool MinStockUsesOrderBinding { get; init; }
     public bool EnableHuDistribution { get; init; }
 }

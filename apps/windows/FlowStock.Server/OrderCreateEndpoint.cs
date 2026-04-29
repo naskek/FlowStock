@@ -159,15 +159,16 @@ public static class OrderCreateEndpoint
                 dueDate,
                 createRequest.Comment,
                 lines,
-                orderType.Value);
+                orderType.Value,
+                createRequest.BindReservedStock);
         }
         catch (ArgumentException ex)
         {
             return Results.BadRequest(new ApiResult(false, MapKnownArgumentError(ex)));
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException ex)
         {
-            return Results.BadRequest(new ApiResult(false, "ORDER_CREATE_FAILED"));
+            return Results.BadRequest(new ApiResult(false, MapKnownInvalidOperationError(ex)));
         }
 
         var created = store.GetOrder(orderId);
@@ -243,6 +244,16 @@ public static class OrderCreateEndpoint
             "orderRef" => "MISSING_ORDER_REF",
             _ => "ORDER_CREATE_VALIDATION_FAILED"
         };
+    }
+
+    private static string MapKnownInvalidOperationError(InvalidOperationException ex)
+    {
+        if (ex.Message.Contains("уже зарезервирован", StringComparison.OrdinalIgnoreCase))
+        {
+            return "HU_RESERVATION_CONFLICT";
+        }
+
+        return "ORDER_CREATE_FAILED";
     }
 
     private static IReadOnlyDictionary<long, LocalPartnerRole> LoadPartnerStatuses()

@@ -31,7 +31,9 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<StockItemTypeFilterOption> _stockItemTypeFilters = new();
     private readonly ObservableCollection<KmCodeBatch> _kmBatches = new();
     private readonly DispatcherTimer _autoRefreshTimer;
+    private readonly HashSet<long> _expandedStockItemIds = new();
     private bool _autoRefreshInProgress;
+    private bool _suppressStockFilterSelectionChanged;
     private static bool _excelEncodingRegistered;
     private static readonly TimeSpan AutoRefreshInterval = TimeSpan.FromSeconds(20);
     private readonly List<DocTypeFilterOption> _docTypeFilters = new()
@@ -248,7 +250,6 @@ public partial class MainWindow : Window
             {
                 case TabStatusIndex:
                     LoadItemTypes();
-                    LoadStockHuFilters();
                     LoadStock(StatusSearchBox.Text);
                     break;
                 case TabDocsIndex:
@@ -363,20 +364,28 @@ public partial class MainWindow : Window
     private void LoadItemTypes()
     {
         var selectedId = GetSelectedStockItemTypeId();
-        _stockItemTypeFilters.Clear();
-        _stockItemTypeFilters.Add(new StockItemTypeFilterOption(null, "Все типы"));
-
-        var itemTypes = _services.WpfCatalogApi.TryGetItemTypes(includeInactive: false, out var apiItemTypes)
-            ? apiItemTypes
-            : Array.Empty<ItemType>();
-        foreach (var itemType in itemTypes.OrderBy(type => type.SortOrder).ThenBy(type => type.Name))
+        _suppressStockFilterSelectionChanged = true;
+        try
         {
-            _stockItemTypeFilters.Add(new StockItemTypeFilterOption(itemType.Id, itemType.Name));
-        }
+            _stockItemTypeFilters.Clear();
+            _stockItemTypeFilters.Add(new StockItemTypeFilterOption(null, "Все типы"));
 
-        var selected = _stockItemTypeFilters.FirstOrDefault(option => option.Id == selectedId)
-                       ?? _stockItemTypeFilters.FirstOrDefault();
-        StockItemTypeFilter.SelectedItem = selected;
+            var itemTypes = _services.WpfCatalogApi.TryGetItemTypes(includeInactive: false, out var apiItemTypes)
+                ? apiItemTypes
+                : Array.Empty<ItemType>();
+            foreach (var itemType in itemTypes.OrderBy(type => type.SortOrder).ThenBy(type => type.Name))
+            {
+                _stockItemTypeFilters.Add(new StockItemTypeFilterOption(itemType.Id, itemType.Name));
+            }
+
+            var selected = _stockItemTypeFilters.FirstOrDefault(option => option.Id == selectedId)
+                           ?? _stockItemTypeFilters.FirstOrDefault();
+            StockItemTypeFilter.SelectedItem = selected;
+        }
+        finally
+        {
+            _suppressStockFilterSelectionChanged = false;
+        }
     }
 
     private void LoadLocations()
@@ -399,41 +408,57 @@ public partial class MainWindow : Window
     private void LoadStockLocationFilters()
     {
         var selectedCode = GetSelectedStockLocationCode();
-        _stockLocationFilters.Clear();
-        _stockLocationFilters.Add(new StockLocationFilterOption(null, "Все места"));
-        foreach (var location in _locations)
+        _suppressStockFilterSelectionChanged = true;
+        try
         {
-            _stockLocationFilters.Add(new StockLocationFilterOption(location.Code, location.DisplayName));
-        }
+            _stockLocationFilters.Clear();
+            _stockLocationFilters.Add(new StockLocationFilterOption(null, "Все места"));
+            foreach (var location in _locations)
+            {
+                _stockLocationFilters.Add(new StockLocationFilterOption(location.Code, location.DisplayName));
+            }
 
-        var selected = _stockLocationFilters.FirstOrDefault(option => string.Equals(option.Code, selectedCode, StringComparison.OrdinalIgnoreCase))
-                       ?? _stockLocationFilters.FirstOrDefault();
-        StockLocationFilter.SelectedItem = selected;
+            var selected = _stockLocationFilters.FirstOrDefault(option => string.Equals(option.Code, selectedCode, StringComparison.OrdinalIgnoreCase))
+                           ?? _stockLocationFilters.FirstOrDefault();
+            StockLocationFilter.SelectedItem = selected;
+        }
+        finally
+        {
+            _suppressStockFilterSelectionChanged = false;
+        }
     }
 
-    private void LoadStockHuFilters()
+    private void LoadStockHuFilters(IReadOnlyList<StockRow>? sourceRows = null)
     {
         var selectedCode = GetSelectedStockHuCode();
-        _stockHuFilters.Clear();
-        _stockHuFilters.Add(new StockHuFilterOption(null, "Все HU"));
-
-        var availableHuCodes = GetAvailableHuCodesForFilter();
-        foreach (var hu in availableHuCodes)
+        _suppressStockFilterSelectionChanged = true;
+        try
         {
-            _stockHuFilters.Add(new StockHuFilterOption(hu, hu));
-        }
+            _stockHuFilters.Clear();
+            _stockHuFilters.Add(new StockHuFilterOption(null, "Все HU"));
 
-        var selected = _stockHuFilters.FirstOrDefault(option => string.Equals(option.Code, selectedCode, StringComparison.OrdinalIgnoreCase))
-                       ?? _stockHuFilters.FirstOrDefault();
-        StockHuFilter.SelectedItem = selected;
+            var availableHuCodes = GetAvailableHuCodesForFilter(sourceRows);
+            foreach (var hu in availableHuCodes)
+            {
+                _stockHuFilters.Add(new StockHuFilterOption(hu, hu));
+            }
+
+            var selected = _stockHuFilters.FirstOrDefault(option => string.Equals(option.Code, selectedCode, StringComparison.OrdinalIgnoreCase))
+                           ?? _stockHuFilters.FirstOrDefault();
+            StockHuFilter.SelectedItem = selected;
+        }
+        finally
+        {
+            _suppressStockFilterSelectionChanged = false;
+        }
     }
 
-    private IEnumerable<string> GetAvailableHuCodesForFilter()
+    private IEnumerable<string> GetAvailableHuCodesForFilter(IReadOnlyList<StockRow>? sourceRows = null)
     {
         var locationCode = GetSelectedStockLocationCode();
-        var rows = _services.WpfReadApi.TryGetStockRows(null, out var apiRows)
+        var rows = sourceRows ?? (_services.WpfReadApi.TryGetStockRows(null, out var apiRows)
             ? apiRows
-            : Array.Empty<StockRow>();
+            : Array.Empty<StockRow>());
         return (string.IsNullOrWhiteSpace(locationCode)
                 ? rows
                 : rows.Where(row => string.Equals(row.LocationCode, locationCode, StringComparison.OrdinalIgnoreCase)))
@@ -554,48 +579,118 @@ public partial class MainWindow : Window
         var allItems = _services.WpfReadApi.TryGetItems(null, out var apiItems)
             ? apiItems
             : Array.Empty<Item>();
+        var huContextMap = BuildHuContextMap();
+        LoadStockHuFilters(rows);
         var lowStockByItem = BuildLowStockByItem(rows, allItems);
-        foreach (var row in rows)
-        {
-            if (!string.IsNullOrWhiteSpace(locationCode)
-                && !string.Equals(row.LocationCode, locationCode, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-            if (!string.IsNullOrWhiteSpace(huCode)
-                && !string.Equals(row.Hu, huCode, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-            if (itemTypeId.HasValue && row.ItemTypeId != itemTypeId.Value)
-            {
-                continue;
-            }
+        var filteredRows = rows
+            .Where(row => string.IsNullOrWhiteSpace(locationCode)
+                          || string.Equals(row.LocationCode, locationCode, StringComparison.OrdinalIgnoreCase))
+            .Where(row => string.IsNullOrWhiteSpace(huCode)
+                          || string.Equals(row.Hu, huCode, StringComparison.OrdinalIgnoreCase))
+            .Where(row => !itemTypeId.HasValue || row.ItemTypeId == itemTypeId.Value)
+            .ToList();
 
-            var isBelowMin = lowStockByItem.ContainsKey(row.ItemId);
+        var groupedRows = filteredRows
+            .GroupBy(row => row.ItemId)
+            .OrderBy(group => group.First().ItemName, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+
+        foreach (var group in groupedRows)
+        {
+            var first = group.First();
+            var isBelowMin = lowStockByItem.ContainsKey(group.Key);
             if (belowMinOnly && !isBelowMin)
             {
                 continue;
             }
 
-            var packaging = _services.Packagings.FormatAsPackaging(row.ItemId, row.Qty);
-            var baseDisplay = $"{FormatQty(row.Qty)} {row.BaseUom}";
+            var totalQty = group.Sum(row => row.Qty);
+            var packaging = _services.Packagings.FormatAsPackaging(group.Key, totalQty);
+            var details = group
+                .OrderBy(row => row.LocationCode ?? string.Empty, StringComparer.CurrentCultureIgnoreCase)
+                .ThenBy(row => row.Hu ?? string.Empty, StringComparer.CurrentCultureIgnoreCase)
+                .ThenBy(row => row.Qty)
+                .Select(row => new StockDetailDisplayRow
+                {
+                    LocationCode = string.IsNullOrWhiteSpace(row.LocationCode) ? "-" : row.LocationCode,
+                    HuDisplay = string.IsNullOrWhiteSpace(row.Hu) ? "Без HU" : row.Hu!,
+                    BaseDisplay = FormatQtyWithUom(row.Qty, row.BaseUom),
+                    OriginOrderDisplay = ResolveOriginOrderDisplay(row, huContextMap),
+                    ReservedOrderDisplay = ResolveReservedOrderDisplay(row, huContextMap),
+                    ReservedCustomerDisplay = ResolveReservedCustomerDisplay(row, huContextMap)
+                })
+                .ToList();
+
             _stock.Add(new StockDisplayRow
             {
-                ItemId = row.ItemId,
-                ItemName = row.ItemName,
-                ItemTypeName = row.ItemTypeName ?? "Без типа",
-                Barcode = row.Barcode,
-                LocationCode = row.LocationCode,
-                HuDisplay = row.Hu ?? string.Empty,
+                ItemId = group.Key,
+                ItemName = first.ItemName,
+                ItemTypeName = first.ItemTypeName ?? "Без типа",
+                Barcode = first.Barcode,
                 PackagingDisplay = packaging,
-                BaseDisplay = baseDisplay,
-                IsBelowMin = isBelowMin
+                BaseDisplay = FormatQtyWithUom(totalQty, first.BaseUom),
+                IsBelowMin = isBelowMin,
+                IsExpanded = _expandedStockItemIds.Contains(group.Key),
+                ExpandMarker = _expandedStockItemIds.Contains(group.Key) ? "▼" : "▶",
+                Details = details
             });
         }
 
         UpdateStockEmptyState(search);
-        LoadLowStockView();
+        LoadLowStockView(lowStockByItem);
+        ApplyExpandedStockRowDetailsVisibility();
+    }
+
+    private Dictionary<string, HuStockContextRow> BuildHuContextMap()
+    {
+        if (!_services.WpfReadApi.TryGetHuStockRows(out var rows))
+        {
+            return new Dictionary<string, HuStockContextRow>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return rows
+            .Where(row => row.ItemId > 0 && !string.IsNullOrWhiteSpace(row.Hu))
+            .GroupBy(row => BuildHuContextKey(row.ItemId, row.Hu))
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string ResolveOriginOrderDisplay(StockRow row, IReadOnlyDictionary<string, HuStockContextRow> contextMap)
+    {
+        var context = TryGetHuContext(row, contextMap);
+        return string.IsNullOrWhiteSpace(context?.OriginInternalOrderRef)
+            ? "—"
+            : context.OriginInternalOrderRef!;
+    }
+
+    private static string ResolveReservedOrderDisplay(StockRow row, IReadOnlyDictionary<string, HuStockContextRow> contextMap)
+    {
+        var context = TryGetHuContext(row, contextMap);
+        return string.IsNullOrWhiteSpace(context?.ReservedCustomerOrderRef)
+            ? "не зарезервировано"
+            : context.ReservedCustomerOrderRef!;
+    }
+
+    private static string ResolveReservedCustomerDisplay(StockRow row, IReadOnlyDictionary<string, HuStockContextRow> contextMap)
+    {
+        var context = TryGetHuContext(row, contextMap);
+        return string.IsNullOrWhiteSpace(context?.ReservedCustomerName)
+            ? "не зарезервировано"
+            : context.ReservedCustomerName!;
+    }
+
+    private static HuStockContextRow? TryGetHuContext(StockRow row, IReadOnlyDictionary<string, HuStockContextRow> contextMap)
+    {
+        if (string.IsNullOrWhiteSpace(row.Hu))
+        {
+            return null;
+        }
+
+        return contextMap.TryGetValue(BuildHuContextKey(row.ItemId, row.Hu), out var context) ? context : null;
+    }
+
+    private static string BuildHuContextKey(long itemId, string huCode)
+    {
+        return $"{itemId}|{huCode.Trim().ToUpperInvariant()}";
     }
 
     private void UpdateStockEmptyState(string? search)
@@ -626,16 +721,19 @@ public partial class MainWindow : Window
             {
                 var first = group.First();
                 var totalQty = group.Sum(row => row.Qty);
+                var qtyForMinControl = first.ItemTypeMinStockUsesOrderBinding
+                    ? first.AvailableForMinStockQty
+                    : totalQty;
                 var minStockQty = first.MinStockQty;
                 var isBelow = first.ItemTypeEnableMinStockControl
                               && minStockQty.HasValue
-                              && totalQty < minStockQty.Value;
+                              && qtyForMinControl < minStockQty.Value;
                 return new LowStockSnapshot(
                     group.Key,
                     first.ItemName,
                     first.ItemTypeName ?? "Без типа",
                     first.BaseUom,
-                    totalQty,
+                    qtyForMinControl,
                     minStockQty,
                     isBelow);
             })
@@ -676,16 +774,20 @@ public partial class MainWindow : Window
         return snapshots;
     }
 
-    private void LoadLowStockView()
+    private void LoadLowStockView(Dictionary<long, LowStockSnapshot>? precomputed = null)
     {
         _lowStock.Clear();
-        var rows = _services.WpfReadApi.TryGetStockRows(null, out var apiRows)
-            ? apiRows
-            : Array.Empty<StockRow>();
-        var allItems = _services.WpfReadApi.TryGetItems(null, out var apiItems)
-            ? apiItems
-            : Array.Empty<Item>();
-        var lowStockByItem = BuildLowStockByItem(rows, allItems);
+        var lowStockByItem = precomputed;
+        if (lowStockByItem == null)
+        {
+            var rows = _services.WpfReadApi.TryGetStockRows(null, out var apiRows)
+                ? apiRows
+                : Array.Empty<StockRow>();
+            var allItems = _services.WpfReadApi.TryGetItems(null, out var apiItems)
+                ? apiItems
+                : Array.Empty<Item>();
+            lowStockByItem = BuildLowStockByItem(rows, allItems);
+        }
         var belowMinRows = lowStockByItem
             .Values
             .OrderBy(snapshot => snapshot.ItemName, StringComparer.OrdinalIgnoreCase)
@@ -759,17 +861,32 @@ public partial class MainWindow : Window
 
     private void StockLocationFilter_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        if (_suppressStockFilterSelectionChanged)
+        {
+            return;
+        }
+
         LoadStockHuFilters();
         LoadStock(StatusSearchBox.Text);
     }
 
     private void StockHuFilter_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        if (_suppressStockFilterSelectionChanged)
+        {
+            return;
+        }
+
         LoadStock(StatusSearchBox.Text);
     }
 
     private void StockItemTypeFilter_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        if (_suppressStockFilterSelectionChanged)
+        {
+            return;
+        }
+
         LoadStock(StatusSearchBox.Text);
     }
 
@@ -786,6 +903,46 @@ public partial class MainWindow : Window
     private string? GetSelectedStockHuCode()
     {
         return (StockHuFilter.SelectedItem as StockHuFilterOption)?.Code;
+    }
+
+    private void StockGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (StockGrid.SelectedItem is not StockDisplayRow row)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        var nextExpanded = !row.IsExpanded;
+        if (nextExpanded)
+        {
+            _expandedStockItemIds.Add(row.ItemId);
+        }
+        else
+        {
+            _expandedStockItemIds.Remove(row.ItemId);
+        }
+
+        row.IsExpanded = nextExpanded;
+        row.ExpandMarker = nextExpanded ? "▼" : "▶";
+        StockGrid.Items.Refresh();
+        ApplyExpandedStockRowDetailsVisibility();
+    }
+
+    private void ApplyExpandedStockRowDetailsVisibility()
+    {
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            foreach (var row in _stock)
+            {
+                if (StockGrid.ItemContainerGenerator.ContainerFromItem(row) is not System.Windows.Controls.DataGridRow gridRow)
+                {
+                    continue;
+                }
+
+                gridRow.DetailsVisibility = row.IsExpanded ? Visibility.Visible : Visibility.Collapsed;
+            }
+        }), DispatcherPriority.Background);
     }
 
     private long? GetSelectedStockItemTypeId()
@@ -2251,11 +2408,22 @@ public partial class MainWindow : Window
         public string ItemName { get; init; } = string.Empty;
         public string ItemTypeName { get; init; } = string.Empty;
         public string? Barcode { get; init; }
-        public string LocationCode { get; init; } = string.Empty;
-        public string HuDisplay { get; init; } = string.Empty;
         public string PackagingDisplay { get; init; } = string.Empty;
         public string BaseDisplay { get; init; } = string.Empty;
         public bool IsBelowMin { get; init; }
+        public bool IsExpanded { get; set; }
+        public string ExpandMarker { get; set; } = "▶";
+        public IReadOnlyList<StockDetailDisplayRow> Details { get; init; } = Array.Empty<StockDetailDisplayRow>();
+    }
+
+    private sealed record StockDetailDisplayRow
+    {
+        public string LocationCode { get; init; } = string.Empty;
+        public string HuDisplay { get; init; } = string.Empty;
+        public string BaseDisplay { get; init; } = string.Empty;
+        public string OriginOrderDisplay { get; init; } = "—";
+        public string ReservedOrderDisplay { get; init; } = "не зарезервировано";
+        public string ReservedCustomerDisplay { get; init; } = "не зарезервировано";
     }
 
     private sealed record StockLocationFilterOption(string? Code, string Name);

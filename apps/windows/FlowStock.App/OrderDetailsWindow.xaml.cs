@@ -13,6 +13,7 @@ namespace FlowStock.App;
 
 public partial class OrderDetailsWindow : Window
 {
+    private const double QtyTolerance = 0.000001;
     private readonly AppServices _services;
     private readonly ObservableCollection<Partner> _partners = new();
     private readonly List<Partner> _partnersAll = new();
@@ -220,14 +221,19 @@ public partial class OrderDetailsWindow : Window
             return false;
         }
 
+        if (!TryResolveBindReservedStockForSave(orderRef, type, partnerId, out var bindReservedStockForCustomer))
+        {
+            return false;
+        }
+
         try
         {
             if (_orderId.HasValue)
             {
-                return TryUpdateOrderViaServer(_orderId.Value, orderRef, type, partnerId, dueDate, comment, showFeedback);
+                return TryUpdateOrderViaServer(_orderId.Value, orderRef, type, partnerId, dueDate, comment, bindReservedStockForCustomer, showFeedback);
             }
 
-            return TryCreateOrderViaServer(orderRef, type, partnerId, dueDate, comment, showFeedback);
+            return TryCreateOrderViaServer(orderRef, type, partnerId, dueDate, comment, bindReservedStockForCustomer, showFeedback);
         }
         catch (ArgumentException ex)
         {
@@ -248,6 +254,7 @@ public partial class OrderDetailsWindow : Window
         long? partnerId,
         DateTime? dueDate,
         string? comment,
+        bool? bindReservedStockForCustomer,
         bool showFeedback)
     {
         var result = _services.WpfUpdateOrders.UpdateOrderAsync(
@@ -259,7 +266,8 @@ public partial class OrderDetailsWindow : Window
                     dueDate,
                     OrderStatus.InProgress,
                     comment,
-                    _lines.ToList()))
+                    _lines.ToList(),
+                    bindReservedStockForCustomer))
             .ConfigureAwait(false)
             .GetAwaiter()
             .GetResult();
@@ -301,6 +309,7 @@ public partial class OrderDetailsWindow : Window
         long? partnerId,
         DateTime? dueDate,
         string? comment,
+        bool? bindReservedStockForCustomer,
         bool showFeedback)
     {
         var result = _services.WpfCreateOrders.CreateOrderAsync(
@@ -311,7 +320,8 @@ public partial class OrderDetailsWindow : Window
                     dueDate,
                     OrderStatus.InProgress,
                     comment,
-                    _lines.ToList()))
+                    _lines.ToList(),
+                    bindReservedStockForCustomer))
             .ConfigureAwait(false)
             .GetAwaiter()
             .GetResult();
@@ -344,6 +354,130 @@ public partial class OrderDetailsWindow : Window
             SaveStatusText.Text = "Сохранено";
         }
 
+        return true;
+    }
+
+    private bool TryResolveBindReservedStockForSave(
+        string orderRef,
+        OrderType type,
+        long? partnerId,
+        out bool? bindReservedStockForCustomer)
+    {
+        bindReservedStockForCustomer = null;
+        if (type != OrderType.Customer)
+        {
+            return true;
+        }
+
+        var currentValue = _order?.Type == OrderType.Customer
+            ? _order.UseReservedStock
+            : false;
+        bindReservedStockForCustomer = currentValue;
+
+        if (!TryBuildReservationPreview(orderRef, partnerId, out var previewText))
+        {
+            return true;
+        }
+
+        var confirm = MessageBox.Show(
+            previewText,
+            "Заказы",
+            MessageBoxButton.YesNoCancel,
+            MessageBoxImage.Question,
+            currentValue ? MessageBoxResult.Yes : MessageBoxResult.No);
+        if (confirm == MessageBoxResult.Cancel)
+        {
+            return false;
+        }
+
+        bindReservedStockForCustomer = confirm == MessageBoxResult.Yes;
+        return true;
+    }
+
+    private bool TryBuildReservationPreview(string orderRef, long? partnerId, out string previewText)
+    {
+        previewText = string.Empty;
+        if (_lines.Count == 0)
+        {
+            return false;
+        }
+
+        if (!_services.WpfReadApi.TryGetHuStockRows(out var huStockRows))
+        {
+            if (!TryHasStockForCurrentOrderLines(out var hasStock) || !hasStock)
+            {
+                return false;
+            }
+
+            var partnerFallback = !partnerId.HasValue
+                ? "контрагента"
+                : (_partnersAll.FirstOrDefault(partner => partner.Id == partnerId.Value)?.DisplayName ?? $"ID {partnerId.Value}");
+            previewText = $"Найден складской остаток. Закрепить его для заказа №{orderRef.Trim()} для контрагента {partnerFallback}?";
+            return true;
+        }
+
+        var requiredByItem = _lines
+            .GroupBy(line => line.ItemId)
+            .ToDictionary(group => group.Key, group => group.Sum(line => line.QtyOrdered));
+        if (requiredByItem.Count == 0)
+        {
+            return false;
+        }
+
+        var orderId = _orderId;
+        var candidateRows = huStockRows
+            .Where(row => requiredByItem.ContainsKey(row.ItemId))
+            .Where(row => row.Qty > QtyTolerance)
+            .Where(row => !string.IsNullOrWhiteSpace(row.Hu))
+            .Where(row => !row.ReservedCustomerOrderId.HasValue
+                          || (orderId.HasValue && row.ReservedCustomerOrderId.Value == orderId.Value))
+            .OrderBy(row => row.ItemId)
+            .ThenBy(row => row.Hu, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.LocationId)
+            .ToList();
+        if (candidateRows.Count == 0)
+        {
+            return false;
+        }
+
+        var partnerName = partnerId.HasValue
+            ? _partnersAll.FirstOrDefault(partner => partner.Id == partnerId.Value)?.DisplayName
+            : null;
+
+        var huList = candidateRows
+            .Select(row => row.Hu.Trim())
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (huList.Count == 0)
+        {
+            return false;
+        }
+
+        var partnerDisplay = !string.IsNullOrWhiteSpace(partnerName) ? partnerName : "контрагента";
+        previewText =
+            $"Найдены остатки {string.Join(", ", huList)}. " +
+            $"Закрепить их для заказа №{orderRef.Trim()} для контрагента {partnerDisplay}?";
+        return true;
+    }
+
+    private bool TryHasStockForCurrentOrderLines(out bool hasStock)
+    {
+        hasStock = false;
+        if (_lines.Count == 0)
+        {
+            return true;
+        }
+
+        if (!_services.WpfReadApi.TryGetItemAvailability(out var availability))
+        {
+            return false;
+        }
+
+        hasStock = _lines
+            .GroupBy(line => line.ItemId)
+            .Any(group => availability.TryGetValue(group.Key, out var qty) && qty > QtyTolerance);
         return true;
     }
 

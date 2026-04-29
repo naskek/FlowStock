@@ -316,6 +316,9 @@ public sealed class CreateOrderRequest
     [JsonPropertyName("comment")]
     public string? Comment { get; set; }
 
+    [JsonPropertyName("bind_reserved_stock")]
+    public bool? BindReservedStock { get; set; }
+
     [JsonPropertyName("lines")]
     public List<CreateOrderLineRequest>? Lines { get; set; }
 }
@@ -375,6 +378,9 @@ public sealed class UpdateOrderRequest
 
     [JsonPropertyName("comment")]
     public string? Comment { get; set; }
+
+    [JsonPropertyName("bind_reserved_stock")]
+    public bool? BindReservedStock { get; set; }
 
     [JsonPropertyName("lines")]
     public List<UpdateOrderLineRequest>? Lines { get; set; }
@@ -600,6 +606,9 @@ public sealed class UpsertItemTypeRequest
 
     [JsonPropertyName("enable_min_stock_control")]
     public bool EnableMinStockControl { get; set; }
+
+    [JsonPropertyName("min_stock_uses_order_binding")]
+    public bool MinStockUsesOrderBinding { get; set; }
 
     [JsonPropertyName("enable_hu_distribution")]
     public bool EnableHuDistribution { get; set; }

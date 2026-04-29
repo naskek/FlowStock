@@ -38,14 +38,14 @@
 
 ## Модель данных (server DB)
 - `items(id, name, is_active, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, max_qty_per_hu, tara_id, is_marked, item_type_id, min_stock_qty)`
-- `item_types(id, name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control, enable_hu_distribution)`
+- `item_types(id, name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control, min_stock_uses_order_binding, enable_hu_distribution)`
 - `taras(id, name)`
 - `item_requests(id, barcode, comment, device_id, login, status, created_at, resolved_at)`
 - `write_off_reasons(id, code, name)`
 - `order_requests(id, request_type, payload_json, status, created_at, created_by_login, created_by_device_id, resolved_at, resolved_by, resolution_note, applied_order_id)`
 - `locations(id, code, name)`
 - `partners(id, name, inn, ... )`
-- `orders(id, order_ref, order_type, partner_id NULL, due_date, status, comment, created_at)`
+- `orders(id, order_ref, order_type, partner_id NULL, due_date, status, comment, created_at, bind_reserved_stock)`
 - `order_lines(id, order_id, item_id, qty_ordered)`
 - `order_receipt_plan_lines(id, order_id, order_line_id, item_id, qty_planned, to_location_id, to_hu, sort_order)` // серверный план выпуска по заказу
 - `docs(id, doc_ref, type, status, created_at, closed_at, partner_id, order_id, order_ref, shipping_ref, reason_code, comment, production_batch_no)`
@@ -57,7 +57,12 @@
 
 ## Инварианты
 - Остатки рассчитываются только из `ledger`.
-- Контроль минимального остатка рассчитывается только из `ledger` (суммарно по всем локациям и HU для товара).
+- Контроль минимального остатка включается флагом типа номенклатуры `enable_min_stock_control`.
+  - Если `item_types.min_stock_uses_order_binding = FALSE`, контроль работает по физическому остатку из `ledger` (суммарно по всем локациям и HU для товара).
+  - Если `item_types.min_stock_uses_order_binding = TRUE`, контроль работает по свободному остатку:
+    - `available_for_min_stock = physical_ledger_stock - reserved_customer_order_qty`;
+    - `reserved_customer_order_qty` берется из активных клиентских резервов `order_receipt_plan_lines` (`orders.order_type = CUSTOMER`, `orders.status <> SHIPPED`);
+    - резерв не создает складских движений и не меняет физический остаток `ledger`.
 - Закрытые документы неизменяемы.
 - Исправления оформляются отдельными документами.
 - Один HU-code может иметь остаток только в одной локации одновременно.
@@ -91,7 +96,7 @@
   - Ручной поиск по отдельному полю убран, вместо него используются встроенные фильтры.
 - Documents: список + детали + проведение.
 - Items: список с ID + modal create/edit (`name`, `is_active`, `barcode/SKU`, `gtin`, `brand`, `volume`, `shelf life months`, `max qty per HU`, `tara`, `uom`, `item_type`, `min_stock_qty`, `is_marked`) + Excel import с preview и column mapping.
-- Item types: редактор справочника типов номенклатуры (создание, редактирование, удаление/деактивация при использовании, настройка флагов `is_visible_in_product_catalog` и `enable_min_stock_control`).
+- Item types: редактор справочника типов номенклатуры (создание, редактирование, удаление/деактивация при использовании, настройка флагов `is_visible_in_product_catalog`, `enable_min_stock_control`, `min_stock_uses_order_binding`).
   - Для новых типов `is_visible_in_product_catalog` по умолчанию включен; после миграции V0005 тип `Без типа` (`GENERAL`) автоматически помечается видимым в PC каталоге.
 - Item packagings: редактор упаковок в карточке товара и общий packaging manager используют server API для list/create/update/deactivate/set-default.
 - Tara: редактор справочника в разделе `Справочники`.
@@ -139,12 +144,21 @@
   - после автоназначения оператор может вручную менять HU построчно.
 - `doc_lines.replaces_line_id` используется для append-only semantics черновиков (`UpdateDocLine` / `DeleteDocLine`). Историческая строка остается в БД; удаление строки создает tombstone-row с `qty = 0` и `replaces_line_id = deleted_line_id`. В document read-model и в расчетах заказов/проведения учитываются только активные строки с `qty > 0`, на которые не ссылается более новая запись.
 - Выпуск продукции: приемка готовой продукции на склад (плюс в `ledger`), HU обязателен на момент проведения по каждой строке, партия производства хранится в `production_batch_no`, документ может быть связан с заказом (`order_id/order_ref`).
+  - Для HU разделяются два независимых контекста:
+    - `origin/internal order` (происхождение HU): определяется по закрытому `PRODUCTION_RECEIPT` внутреннего заказа через `docs.order_id` + `docs.type=PRODUCTION_RECEIPT` + `doc_lines.to_hu`.
+    - `reserved/customer order` (текущий резерв HU под клиентский заказ): хранится отдельно в `order_receipt_plan_lines` и не затирает происхождение HU.
   - План распределения выпуска формируется на этапе заказа:
     - если у типа номенклатуры включен флаг `enable_hu_distribution`, для товара обязателен `items.max_qty_per_hu`;
     - для `INTERNAL` сервер заранее дробит строки заказа по HU и резервирует локацию/ HU в `order_receipt_plan_lines`;
     - для `CUSTOMER` сервер на этапе создания/обновления пытается привязать к строкам заказа доступные HU из прошлых внутренних выпусков (`INTERNAL`), сохраняя привязку в `order_receipt_plan_lines`.
+  - После закрытия внутреннего `PRD` сервер пересчитывает распределение `order_receipt_plan_lines` по всем клиентским заказам, чтобы новый внутренний выпуск сразу учитывался в клиентских заказах.
+  - Один HU/объем может быть зарезервирован только за одним клиентским заказом одновременно.
   - Поле `Партия производства` в WPF временно скрыто из UI; значение колонки сохраняется для совместимости API/БД.
-  - При выборе заказа автоматически подставляются только незакрытые строки заказа (`order_line_id`) с количеством `receipt_remaining`, включая заранее назначенные `to_location/to_hu` из серверного плана.
+  - Привязка складского остатка выполняется на этапе создания/редактирования клиентского заказа (`bind_reserved_stock`):
+    - если флаг включен, сервер резервирует доступные HU/локации из прошлых внутренних выпусков в `order_receipt_plan_lines`;
+    - если флаг выключен, строки заказа не резервируются из складского остатка.
+  - В WPF при сохранении клиентского заказа подтверждение привязки запрашивается только если по позициям заказа есть остаток на складе.
+  - Автозаполнение PRD из заказа не задает отдельный вопрос про складской остаток и использует уже рассчитанный план заказа (`receipt_remaining?detailed=1` + `to_location/to_hu`).
   - Повторный выпуск по одному и тому же заказу запрещен: если остаток `receipt_remaining` равен нулю, автозаполнение PRD не выполняется и оператор получает ошибку.
   - После частичного закрытия PRD, привязанного к заказу клиента (`CUSTOMER`), заказ остается в статусе `IN_PROGRESS` (UI: `В работе`).
   - В `ACCEPTED` (UI: `Готов`) заказ `CUSTOMER` переходит только после полного комплекта по всем строкам (`produced >= qty_ordered`), и только после этого ожидает фактическую отгрузку.
@@ -171,7 +185,7 @@
     - HU, выпущенных под этот же заказ (`PRD` по `order_id`);
     - HU, заранее присвоенных заказу из прошлых внутренних выпусков через `order_receipt_plan_lines`.
   - Добор из свободного/чужого остатка не допускается.
-  - После проведения `OUTBOUND` статус связанного заказа пересчитывается сразу; при полном объеме отгрузки заказ автоматически закрывается (`SHIPPED` / UI `Выполнен`).
+  - После проведения `OUTBOUND` статус связанного заказа пересчитывается сразу; при полном объеме отгрузки заказ автоматически закрывается (`SHIPPED` / UI `Выполнен`), а резервы по клиентским заказам пересчитываются.
   - TSD показывает `pick list` HU/локаций по выбранной строке и позволяет привязать HU/локацию к строке отгрузки.
   - Для маркируемых SKU `pick list` строится по `km_code` (`status=OnHand`) с фильтром по заказу; для немаркируемых — по `ledger`.
   - В ручном `OUTBOUND` выбор товара фильтруется по остаткам источника (выбранные `location/HU`), чтобы показывать только реально отгружаемые позиции.

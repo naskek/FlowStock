@@ -589,6 +589,12 @@
               .map(function (detail) {
                 var huLabel = detail.hu ? detail.hu : "Без HU";
                 var detailQty = detail.qtyDisplay || detail.qty || 0;
+                var detailClient = detail.reservationPartnerName
+                  ? detail.reservationPartnerName
+                  : "не зарезервировано";
+                var detailOrder = detail.reservationOrderRef
+                  ? detail.reservationOrderRef
+                  : "не зарезервировано";
                 return (
                   "<tr>" +
                   "<td>" +
@@ -596,6 +602,12 @@
                   "</td>" +
                   "<td>" +
                   escapeHtml(huLabel) +
+                  "</td>" +
+                  "<td>" +
+                  escapeHtml(detailClient) +
+                  "</td>" +
+                  "<td>" +
+                  escapeHtml(detailOrder) +
                   "</td>" +
                   "<td><span class=\"pc-qty\">" +
                   escapeHtml(String(detailQty)) +
@@ -611,7 +623,7 @@
             '<tr class="pc-stock-detail-row">' +
             '<td colspan="5" class="pc-stock-detail-cell">' +
             '<table class="pc-table pc-stock-details-table">' +
-            "<thead><tr><th>Место</th><th>HU</th><th>Кол-во</th></tr></thead>" +
+            "<thead><tr><th>Место</th><th>HU</th><th>Клиент</th><th>Заказ</th><th>Кол-во</th></tr></thead>" +
             "<tbody>" +
             detailsHtml +
             "</tbody>" +
@@ -850,6 +862,9 @@
           itemTypeName: item.itemTypeName || "",
           locationCode: loc.code || "",
           hu: row.hu || "",
+          reservationPartnerName: String(row.reserved_customer_name || "").trim(),
+          reservationOrderRef: String(row.reserved_customer_order_ref || "").trim(),
+          originInternalOrderRef: String(row.origin_internal_order_ref || "").trim(),
         };
       });
 
@@ -1047,6 +1062,8 @@
           hu: row.hu || "",
           qty: Number(row.qty) || 0,
           qtyDisplay: row.qtyDisplay || formatQtyDisplay(row.qty, row.itemId),
+          reservationPartnerName: row.reservationPartnerName || "",
+          reservationOrderRef: row.reservationOrderRef || "",
         });
       });
 
@@ -1864,17 +1881,52 @@
 
   function sortOrdersNewestFirst(rows) {
     var source = Array.isArray(rows) ? rows.slice() : [];
-    source.sort(function (left, right) {
-      var leftTime = Date.parse(left && left.created_at ? String(left.created_at) : "") || 0;
-      var rightTime = Date.parse(right && right.created_at ? String(right.created_at) : "") || 0;
-      if (leftTime !== rightTime) {
-        return rightTime - leftTime;
+
+    function getDefaultStatusRank(order) {
+      var statusCode = toOrderStatusCode(order && order.status);
+      if (statusCode === "IN_PROGRESS") {
+        return 1; // В работе
       }
-      var leftId = Number(left && left.id) || 0;
-      var rightId = Number(right && right.id) || 0;
-      return rightId - leftId;
-    });
-    return source;
+      if (statusCode === "ACCEPTED") {
+        return 2; // Готов
+      }
+      if (statusCode === "SHIPPED") {
+        return 3; // Выполнен
+      }
+      return 99; // Неизвестные/старые статусы
+    }
+
+    return source
+      .map(function (row, index) {
+        return { row: row, index: index };
+      })
+      .sort(function (leftEntry, rightEntry) {
+        var left = leftEntry.row;
+        var right = rightEntry.row;
+
+        var leftRank = getDefaultStatusRank(left);
+        var rightRank = getDefaultStatusRank(right);
+        if (leftRank !== rightRank) {
+          return leftRank - rightRank;
+        }
+
+        var leftTime = Date.parse(left && left.created_at ? String(left.created_at) : "") || 0;
+        var rightTime = Date.parse(right && right.created_at ? String(right.created_at) : "") || 0;
+        if (leftTime !== rightTime) {
+          return rightTime - leftTime;
+        }
+
+        var leftId = Number(left && left.id) || 0;
+        var rightId = Number(right && right.id) || 0;
+        if (leftId !== rightId) {
+          return rightId - leftId;
+        }
+
+        return leftEntry.index - rightEntry.index;
+      })
+      .map(function (entry) {
+        return entry.row;
+      });
   }
 
   function renderStatusBadge(text, tone, extraClass) {
@@ -2602,7 +2654,7 @@
       }
 
       hideSuggestionOverlay();
-      refs.linesWrap.innerHTML = linesState
+      var linesHtml = linesState
         .map(function (line, index) {
           var query = String(line.query || "");
           var itemCellHtml = "";
@@ -2643,6 +2695,13 @@
           return rowHtml;
         })
         .join("");
+      refs.linesWrap.innerHTML =
+        linesHtml +
+        '<div class="pc-order-line-add-row">' +
+        '  <button class="btn btn-outline line-add-btn" type="button" id="newOrderAddLineBtn">' +
+        '    <span class="pc-plus-circle-icon" aria-hidden="true">+</span> Добавить строку' +
+        "  </button>" +
+        "</div>";
 
       linesState.forEach(function (_line, index) {
         updateLineControls(index);
@@ -2738,6 +2797,15 @@
           renderLines();
         });
       });
+
+      var addLineBtn = refs.linesWrap.querySelector("#newOrderAddLineBtn");
+      if (addLineBtn) {
+        addLineBtn.addEventListener("click", function () {
+          linesState.push(createEmptyLine());
+          activeLineIndex = linesState.length - 1;
+          renderLines();
+        });
+      }
     }
 
     function submit() {
@@ -2947,6 +3015,9 @@
       escapeHtml(formatDate(order.due_date)) +
       " · Факт: " +
       escapeHtml(formatDate(order.shipped_at)) +
+      "</div>" +
+      '  <div class="pc-status">Комментарий: ' +
+      escapeHtml(order && order.comment ? order.comment : "-") +
       "</div>" +
       '  <div class="pc-order-status-box">' +
       '    <div class="pc-status">' +

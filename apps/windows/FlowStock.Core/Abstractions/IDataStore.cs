@@ -97,6 +97,7 @@ public interface IDataStore
     IReadOnlyList<OrderLine> GetOrderLines(long orderId);
     IReadOnlyList<OrderLineView> GetOrderLineViews(long orderId);
     IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemaining(long orderId);
+    IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemainingWithoutReservedStock(long orderId);
     IReadOnlyList<OrderReceiptPlanLine> GetOrderReceiptPlanLines(long orderId);
     IReadOnlyCollection<string> GetReservedOrderReceiptHuCodes(long? excludeOrderId = null);
     void ReplaceOrderReceiptPlanLines(long orderId, IReadOnlyList<OrderReceiptPlanLine> lines);
@@ -122,6 +123,7 @@ public interface IDataStore
     double GetAvailableQty(long itemId, long locationId, string? huCode);
     IReadOnlyDictionary<string, double> GetLedgerTotalsByHu();
     IReadOnlyList<HuStockRow> GetHuStockRows();
+    IReadOnlyList<HuOrderContextRow> GetHuOrderContextRows();
 
     HuRecord CreateHuRecord(string? createdBy);
     HuRecord CreateHuRecord(string code, string? createdBy);

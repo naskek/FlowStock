@@ -77,10 +77,16 @@
                                   Checked="StockBelowMinOnlyCheckBox_Changed"
                                   Unchecked="StockBelowMinOnlyCheckBox_Changed" />
                     </StackPanel>
-                    <DataGrid x:Name="StockGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True">
+                    <DataGrid x:Name="StockGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True" RowDetailsVisibilityMode="Collapsed"
+                              SelectionMode="Single" SelectionUnit="FullRow"
+                              MouseDoubleClick="StockGrid_MouseDoubleClick">
                         <DataGrid.RowStyle>
                             <Style TargetType="DataGridRow">
+                                <Setter Property="DetailsVisibility" Value="Collapsed" />
                                 <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsExpanded}" Value="True">
+                                        <Setter Property="DetailsVisibility" Value="Visible" />
+                                    </DataTrigger>
                                     <DataTrigger Binding="{Binding IsBelowMin}" Value="True">
                                         <Setter Property="Foreground" Value="#B71C1C" />
                                         <Setter Property="FontWeight" Value="SemiBold" />
@@ -88,12 +94,37 @@
                                 </Style.Triggers>
                             </Style>
                         </DataGrid.RowStyle>
+                        <DataGrid.RowDetailsTemplate>
+                            <DataTemplate>
+                                <Border Margin="8,4,8,8"
+                                        Padding="8"
+                                        BorderBrush="#E0E0E0"
+                                        BorderThickness="1"
+                                        Background="#FAFAFA"
+                                        CornerRadius="4">
+                                    <DataGrid AutoGenerateColumns="False"
+                                              IsReadOnly="True"
+                                              CanUserAddRows="False"
+                                              CanUserDeleteRows="False"
+                                              HeadersVisibility="Column"
+                                              ItemsSource="{Binding Details}">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="Место хранения" Binding="{Binding LocationCode}" Width="*" />
+                                            <DataGridTextColumn Header="HU" Binding="{Binding HuDisplay}" Width="220" />
+                                            <DataGridTextColumn Header="В базе" Binding="{Binding BaseDisplay}" Width="140" />
+                                            <DataGridTextColumn Header="Origin заказ" Binding="{Binding OriginOrderDisplay}" Width="150" />
+                                            <DataGridTextColumn Header="Reserved заказ" Binding="{Binding ReservedOrderDisplay}" Width="170" />
+                                            <DataGridTextColumn Header="Reserved клиент" Binding="{Binding ReservedCustomerDisplay}" Width="200" />
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                </Border>
+                            </DataTemplate>
+                        </DataGrid.RowDetailsTemplate>
                         <DataGrid.Columns>
+                            <DataGridTextColumn Header="" Binding="{Binding ExpandMarker}" Width="40" />
                             <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="Тип" Binding="{Binding ItemTypeName}" Width="Auto" MaxWidth="220" />
                             <DataGridTextColumn Header="SKU / штрихкод" Binding="{Binding Barcode}" Width="Auto" MaxWidth="320" />
-                            <DataGridTextColumn Header="Место хранения" Binding="{Binding LocationCode}" Width="Auto" MaxWidth="320" />
-                            <DataGridTextColumn Header="HU" Binding="{Binding HuDisplay}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="В базе" Binding="{Binding BaseDisplay}" Width="Auto" MaxWidth="320" />
                         </DataGrid.Columns>
                     </DataGrid>
@@ -179,7 +210,6 @@
                             </DataGridTextColumn>
                         <DataGridTextColumn Header="Контрагент" Binding="{Binding PartnerDisplay}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="Заказ" Binding="{Binding OrderRef}" Width="Auto" MaxWidth="320" />
-                            <DataGridTextColumn Header="HU" Binding="{Binding HuDisplay}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="Закрыт" Binding="{Binding ClosedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="Auto" MaxWidth="320" />
                         </DataGrid.Columns>

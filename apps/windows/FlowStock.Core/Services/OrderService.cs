@@ -45,14 +45,26 @@ public sealed class OrderService
         return lines;
     }
 
-    public IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemainingDetailed(long orderId)
+    public IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemainingDetailed(long orderId, bool includeReservedStock = true)
     {
+        var order = _data.GetOrder(orderId);
+        var isCustomerOrder = order?.Type == OrderType.Customer;
         var planned = _data.GetOrderReceiptPlanLines(orderId)
             .OrderBy(line => line.SortOrder)
             .ThenBy(line => line.Id)
             .ToList();
-        var baseRemaining = _data.GetOrderReceiptRemaining(orderId)
+        var baseRemaining = (includeReservedStock
+                ? _data.GetOrderReceiptRemaining(orderId)
+                : _data.GetOrderReceiptRemainingWithoutReservedStock(orderId))
             .ToDictionary(line => line.OrderLineId, line => line);
+
+        if (!includeReservedStock && isCustomerOrder)
+        {
+            return baseRemaining.Values
+                .Where(line => line.QtyRemaining > QtyTolerance)
+                .OrderBy(line => line.OrderLineId)
+                .ToList();
+        }
 
         if (planned.Count == 0)
         {
@@ -119,7 +131,71 @@ public sealed class OrderService
         return _data.GetShippedTotalsByOrderLine(orderId);
     }
 
-    public long CreateOrder(string orderRef, long? partnerId, DateTime? dueDate, string? comment, IReadOnlyList<OrderLineView> lines, OrderType type = OrderType.Customer)
+    public IReadOnlyDictionary<long, HashSet<string>> GetOrderBoundHuByItem(long orderId)
+    {
+        var result = new Dictionary<long, HashSet<string>>();
+
+        var productionDocs = _data.GetDocsByOrder(orderId)
+            .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status == DocStatus.Closed)
+            .ToList();
+        foreach (var doc in productionDocs)
+        {
+            foreach (var line in _data.GetDocLines(doc.Id))
+            {
+                if (line.Qty <= QtyTolerance)
+                {
+                    continue;
+                }
+
+                var huCode = NormalizeHu(line.ToHu);
+                if (string.IsNullOrWhiteSpace(huCode))
+                {
+                    continue;
+                }
+
+                if (!result.TryGetValue(line.ItemId, out var set))
+                {
+                    set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    result[line.ItemId] = set;
+                }
+
+                set.Add(huCode);
+            }
+        }
+
+        foreach (var line in _data.GetOrderReceiptPlanLines(orderId))
+        {
+            if (line.QtyPlanned <= QtyTolerance)
+            {
+                continue;
+            }
+
+            var huCode = NormalizeHu(line.ToHu);
+            if (string.IsNullOrWhiteSpace(huCode))
+            {
+                continue;
+            }
+
+            if (!result.TryGetValue(line.ItemId, out var set))
+            {
+                set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                result[line.ItemId] = set;
+            }
+
+            set.Add(huCode);
+        }
+
+        return result;
+    }
+
+    public long CreateOrder(
+        string orderRef,
+        long? partnerId,
+        DateTime? dueDate,
+        string? comment,
+        IReadOnlyList<OrderLineView> lines,
+        OrderType type = OrderType.Customer,
+        bool? bindReservedStockForCustomer = null)
     {
         if (string.IsNullOrWhiteSpace(orderRef))
         {
@@ -139,6 +215,7 @@ public sealed class OrderService
             }
         }
 
+        var useReservedStock = type == OrderType.Customer && (bindReservedStockForCustomer ?? false);
         var order = new Order
         {
             OrderRef = orderRef.Trim(),
@@ -147,7 +224,8 @@ public sealed class OrderService
             DueDate = dueDate?.Date,
             Status = OrderStatus.InProgress,
             Comment = string.IsNullOrWhiteSpace(comment) ? null : comment.Trim(),
-            CreatedAt = DateTime.Now
+            CreatedAt = DateTime.Now,
+            UseReservedStock = useReservedStock
         };
 
         var normalized = NormalizeLines(lines);
@@ -166,13 +244,28 @@ public sealed class OrderService
                 });
             }
 
-            TryRebuildOrderReceiptPlan(store, orderId);
+            if (type == OrderType.Customer)
+            {
+                TryRefreshCustomerReceiptPlans(store);
+            }
+            else
+            {
+                TryRebuildOrderReceiptPlan(store, orderId);
+            }
         });
 
         return orderId;
     }
 
-    public void UpdateOrder(long orderId, string orderRef, long? partnerId, DateTime? dueDate, string? comment, IReadOnlyList<OrderLineView> lines, OrderType type = OrderType.Customer)
+    public void UpdateOrder(
+        long orderId,
+        string orderRef,
+        long? partnerId,
+        DateTime? dueDate,
+        string? comment,
+        IReadOnlyList<OrderLineView> lines,
+        OrderType type = OrderType.Customer,
+        bool? bindReservedStockForCustomer = null)
     {
         var existing = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
         if (existing.Status == OrderStatus.Shipped)
@@ -234,6 +327,9 @@ public sealed class OrderService
             throw new ArgumentException("Номер заказа обязателен.", nameof(orderRef));
         }
 
+        var useReservedStock = type == OrderType.Customer
+            ? bindReservedStockForCustomer ?? (existing.Type == OrderType.Customer ? existing.UseReservedStock : false)
+            : false;
         var updated = new Order
         {
             Id = orderId,
@@ -243,7 +339,8 @@ public sealed class OrderService
             DueDate = dueDate?.Date,
             Status = existing.Status == OrderStatus.Shipped ? OrderStatus.Shipped : OrderStatus.InProgress,
             Comment = string.IsNullOrWhiteSpace(comment) ? null : comment.Trim(),
-            CreatedAt = existing.CreatedAt
+            CreatedAt = existing.CreatedAt,
+            UseReservedStock = useReservedStock
         };
 
         var normalized = NormalizeLines(lines);
@@ -297,7 +394,18 @@ public sealed class OrderService
                 }
             }
 
-            TryRebuildOrderReceiptPlan(store, orderId);
+            if (type == OrderType.Customer)
+            {
+                TryRefreshCustomerReceiptPlans(store);
+            }
+            else
+            {
+                TryRebuildOrderReceiptPlan(store, orderId);
+                if (existing.Type == OrderType.Customer && existing.UseReservedStock)
+                {
+                    TryRefreshCustomerReceiptPlans(store);
+                }
+            }
         });
     }
 
@@ -341,12 +449,21 @@ public sealed class OrderService
             TryClearOrderReceiptPlan(store, orderId);
             store.DeleteOrderLines(orderId);
             store.DeleteOrder(orderId);
+            if (existing.Type == OrderType.Customer)
+            {
+                TryRefreshCustomerReceiptPlans(store);
+            }
         });
     }
 
     public void ChangeOrderStatus(long orderId, OrderStatus status)
     {
         throw new InvalidOperationException("Ручное изменение статуса заказа отключено. Статус определяется автоматически по выпуску и отгрузке.");
+    }
+
+    public void RefreshCustomerReceiptPlans()
+    {
+        _data.ExecuteInTransaction(TryRefreshCustomerReceiptPlans);
     }
 
     private void ApplyLineMetrics(Order order, IReadOnlyList<OrderLineView> lines)
@@ -538,6 +655,13 @@ public sealed class OrderService
 
     private void RebuildCustomerOrderReceiptPlan(IDataStore store, long orderId)
     {
+        var order = store.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+        if (!order.UseReservedStock)
+        {
+            store.ReplaceOrderReceiptPlanLines(orderId, Array.Empty<OrderReceiptPlanLine>());
+            return;
+        }
+
         var orderLines = store.GetOrderLines(orderId)
             .Where(line => line.QtyOrdered > QtyTolerance)
             .OrderBy(line => line.Id)
@@ -765,6 +889,48 @@ public sealed class OrderService
         return fullyProduced ? OrderStatus.Accepted : OrderStatus.InProgress;
     }
 
+    internal static void RefreshCustomerReceiptPlansCore(IDataStore store)
+    {
+        var service = new OrderService(store);
+        var customerOrders = store.GetOrders()
+            .Where(order => order.Type == OrderType.Customer)
+            .OrderBy(order => order.CreatedAt)
+            .ThenBy(order => order.Id)
+            .ToList();
+        if (customerOrders.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var order in customerOrders)
+        {
+            TryClearOrderReceiptPlan(store, order.Id);
+        }
+
+        foreach (var order in customerOrders.Where(order => order.UseReservedStock))
+        {
+            var effectiveStatus = ResolveCustomerOrderStatus(store, order);
+            if (effectiveStatus == OrderStatus.Shipped)
+            {
+                continue;
+            }
+
+            service.TryRebuildOrderReceiptPlan(store, order.Id);
+        }
+    }
+
+    private static void TryRefreshCustomerReceiptPlans(IDataStore store)
+    {
+        try
+        {
+            RefreshCustomerReceiptPlansCore(store);
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            // Compatibility for strict test mocks that do not expose planning methods.
+        }
+    }
+
     private void TryRebuildOrderReceiptPlan(IDataStore store, long orderId)
     {
         try
@@ -955,7 +1121,8 @@ public sealed class OrderService
                 CreatedAt = order.CreatedAt,
                 ShippedAt = completedAt == DateTime.MinValue ? null : completedAt,
                 PartnerName = order.PartnerName,
-                PartnerCode = order.PartnerCode
+                PartnerCode = order.PartnerCode,
+                UseReservedStock = order.UseReservedStock
             };
         }
 
@@ -1006,7 +1173,8 @@ public sealed class OrderService
             CreatedAt = order.CreatedAt,
             ShippedAt = shippedAt,
             PartnerName = order.PartnerName,
-            PartnerCode = order.PartnerCode
+            PartnerCode = order.PartnerCode,
+            UseReservedStock = order.UseReservedStock
         };
     }
 }

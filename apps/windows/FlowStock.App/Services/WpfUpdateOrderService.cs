@@ -35,6 +35,9 @@ public sealed class WpfUpdateOrderService
             DueDate = context.DueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             Status = string.Empty,
             Comment = NormalizeValue(context.Comment),
+            BindReservedStock = context.OrderType == OrderType.Customer
+                ? context.BindReservedStockForCustomer
+                : null,
             Lines = context.Lines
                 .Select(line => new UpdateOrderApiLineRequest
                 {
@@ -165,8 +168,18 @@ public sealed class WpfUpdateOrderService
     private static WpfUpdateOrderResult MapHttpError(UpdateOrderApiCallResult apiCall)
     {
         var errorCode = apiCall.Error?.Error;
+        if (IsHuReservationConflict(errorCode))
+        {
+            return WpfUpdateOrderResult.Failure(
+                WpfUpdateOrderResultKind.ValidationFailed,
+                "Конфликт резерва HU: выбранный HU уже закреплен за другим активным клиентским заказом. Обновите заказ и повторите." +
+                Environment.NewLine +
+                errorCode);
+        }
+
         var message = errorCode switch
         {
+            "HU_RESERVATION_CONFLICT" => "Конфликт резерва HU: выбранный HU уже закреплен за другим активным клиентским заказом. Обновите заказ и повторите.",
             "ORDER_NOT_FOUND" => "Сервер не нашел указанный заказ.",
             "ORDER_NOT_EDITABLE" => "Сервер не разрешает редактировать этот заказ.",
             "ORDER_TYPE_MISMATCH" => "Смена типа заказа разрешена только между клиентским и внутренним заказом.",
@@ -190,6 +203,7 @@ public sealed class WpfUpdateOrderService
 
         var kind = errorCode switch
         {
+            "HU_RESERVATION_CONFLICT" => WpfUpdateOrderResultKind.ValidationFailed,
             "ORDER_NOT_FOUND" => WpfUpdateOrderResultKind.NotFound,
             "ORDER_NOT_EDITABLE" => WpfUpdateOrderResultKind.ValidationFailed,
             "ORDER_TYPE_MISMATCH" => WpfUpdateOrderResultKind.ValidationFailed,
@@ -210,6 +224,13 @@ public sealed class WpfUpdateOrderService
         };
 
         return WpfUpdateOrderResult.Failure(kind, message);
+    }
+
+    private static bool IsHuReservationConflict(string? errorCode)
+    {
+        return !string.IsNullOrWhiteSpace(errorCode)
+               && (string.Equals(errorCode, "HU_RESERVATION_CONFLICT", StringComparison.OrdinalIgnoreCase)
+                   || errorCode.Contains("уже зарезервирован", StringComparison.OrdinalIgnoreCase));
     }
 
     private WpfServerUpdateOrderConfiguration LoadConfiguration()
@@ -297,7 +318,8 @@ public sealed record WpfUpdateOrderContext(
     DateTime? DueDate,
     OrderStatus Status,
     string? Comment,
-    IReadOnlyList<OrderLineView> Lines);
+    IReadOnlyList<OrderLineView> Lines,
+    bool? BindReservedStockForCustomer = null);
 
 public sealed record WpfServerUpdateOrderConfiguration(
     string BaseUrl,

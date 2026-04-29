@@ -175,7 +175,8 @@ public static class OrderUpdateEndpoint
                 dueDate,
                 updateRequest.Comment,
                 lines,
-                orderType.Value);
+                orderType.Value,
+                updateRequest.BindReservedStock);
         }
         catch (ArgumentException ex)
         {
@@ -242,6 +243,11 @@ public static class OrderUpdateEndpoint
         if (ex.Message.Contains("Нельзя сменить тип заказа", StringComparison.OrdinalIgnoreCase))
         {
             return "ORDER_TYPE_CHANGE_FORBIDDEN";
+        }
+
+        if (ex.Message.Contains("уже зарезервирован", StringComparison.OrdinalIgnoreCase))
+        {
+            return "HU_RESERVATION_CONFLICT";
         }
 
         return "ORDER_UPDATE_FAILED";
