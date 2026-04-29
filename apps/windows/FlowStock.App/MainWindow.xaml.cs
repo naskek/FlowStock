@@ -31,6 +31,7 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<StockItemTypeFilterOption> _stockItemTypeFilters = new();
     private readonly ObservableCollection<KmCodeBatch> _kmBatches = new();
     private readonly DispatcherTimer _autoRefreshTimer;
+    private readonly HashSet<long> _expandedStockItemIds = new();
     private bool _autoRefreshInProgress;
     private static bool _excelEncodingRegistered;
     private static readonly TimeSpan AutoRefreshInterval = TimeSpan.FromSeconds(20);
@@ -248,7 +249,6 @@ public partial class MainWindow : Window
             {
                 case TabStatusIndex:
                     LoadItemTypes();
-                    LoadStockHuFilters();
                     LoadStock(StatusSearchBox.Text);
                     break;
                 case TabDocsIndex:
@@ -411,13 +411,13 @@ public partial class MainWindow : Window
         StockLocationFilter.SelectedItem = selected;
     }
 
-    private void LoadStockHuFilters()
+    private void LoadStockHuFilters(IReadOnlyList<StockRow>? sourceRows = null)
     {
         var selectedCode = GetSelectedStockHuCode();
         _stockHuFilters.Clear();
         _stockHuFilters.Add(new StockHuFilterOption(null, "Все HU"));
 
-        var availableHuCodes = GetAvailableHuCodesForFilter();
+        var availableHuCodes = GetAvailableHuCodesForFilter(sourceRows);
         foreach (var hu in availableHuCodes)
         {
             _stockHuFilters.Add(new StockHuFilterOption(hu, hu));
@@ -428,12 +428,12 @@ public partial class MainWindow : Window
         StockHuFilter.SelectedItem = selected;
     }
 
-    private IEnumerable<string> GetAvailableHuCodesForFilter()
+    private IEnumerable<string> GetAvailableHuCodesForFilter(IReadOnlyList<StockRow>? sourceRows = null)
     {
         var locationCode = GetSelectedStockLocationCode();
-        var rows = _services.WpfReadApi.TryGetStockRows(null, out var apiRows)
+        var rows = sourceRows ?? (_services.WpfReadApi.TryGetStockRows(null, out var apiRows)
             ? apiRows
-            : Array.Empty<StockRow>();
+            : Array.Empty<StockRow>());
         return (string.IsNullOrWhiteSpace(locationCode)
                 ? rows
                 : rows.Where(row => string.Equals(row.LocationCode, locationCode, StringComparison.OrdinalIgnoreCase)))
@@ -554,6 +554,7 @@ public partial class MainWindow : Window
         var allItems = _services.WpfReadApi.TryGetItems(null, out var apiItems)
             ? apiItems
             : Array.Empty<Item>();
+        LoadStockHuFilters(rows);
         var lowStockByItem = BuildLowStockByItem(rows, allItems);
         var filteredRows = rows
             .Where(row => string.IsNullOrWhiteSpace(locationCode)
@@ -600,12 +601,14 @@ public partial class MainWindow : Window
                 PackagingDisplay = packaging,
                 BaseDisplay = FormatQtyWithUom(totalQty, first.BaseUom),
                 IsBelowMin = isBelowMin,
+                IsExpanded = _expandedStockItemIds.Contains(group.Key),
+                ExpandMarker = _expandedStockItemIds.Contains(group.Key) ? "▼" : "▶",
                 Details = details
             });
         }
 
         UpdateStockEmptyState(search);
-        LoadLowStockView();
+        LoadLowStockView(lowStockByItem);
     }
 
     private void UpdateStockEmptyState(string? search)
@@ -686,16 +689,20 @@ public partial class MainWindow : Window
         return snapshots;
     }
 
-    private void LoadLowStockView()
+    private void LoadLowStockView(Dictionary<long, LowStockSnapshot>? precomputed = null)
     {
         _lowStock.Clear();
-        var rows = _services.WpfReadApi.TryGetStockRows(null, out var apiRows)
-            ? apiRows
-            : Array.Empty<StockRow>();
-        var allItems = _services.WpfReadApi.TryGetItems(null, out var apiItems)
-            ? apiItems
-            : Array.Empty<Item>();
-        var lowStockByItem = BuildLowStockByItem(rows, allItems);
+        var lowStockByItem = precomputed;
+        if (lowStockByItem == null)
+        {
+            var rows = _services.WpfReadApi.TryGetStockRows(null, out var apiRows)
+                ? apiRows
+                : Array.Empty<StockRow>();
+            var allItems = _services.WpfReadApi.TryGetItems(null, out var apiItems)
+                ? apiItems
+                : Array.Empty<Item>();
+            lowStockByItem = BuildLowStockByItem(rows, allItems);
+        }
         var belowMinRows = lowStockByItem
             .Values
             .OrderBy(snapshot => snapshot.ItemName, StringComparer.OrdinalIgnoreCase)
@@ -796,6 +803,28 @@ public partial class MainWindow : Window
     private string? GetSelectedStockHuCode()
     {
         return (StockHuFilter.SelectedItem as StockHuFilterOption)?.Code;
+    }
+
+    private void StockGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (StockGrid.SelectedItem is not StockDisplayRow row)
+        {
+            return;
+        }
+
+        var nextExpanded = !row.IsExpanded;
+        if (nextExpanded)
+        {
+            _expandedStockItemIds.Add(row.ItemId);
+        }
+        else
+        {
+            _expandedStockItemIds.Remove(row.ItemId);
+        }
+
+        row.IsExpanded = nextExpanded;
+        row.ExpandMarker = nextExpanded ? "▼" : "▶";
+        StockGrid.Items.Refresh();
     }
 
     private long? GetSelectedStockItemTypeId()
@@ -2264,6 +2293,8 @@ public partial class MainWindow : Window
         public string PackagingDisplay { get; init; } = string.Empty;
         public string BaseDisplay { get; init; } = string.Empty;
         public bool IsBelowMin { get; init; }
+        public bool IsExpanded { get; set; }
+        public string ExpandMarker { get; set; } = "▶";
         public IReadOnlyList<StockDetailDisplayRow> Details { get; init; } = Array.Empty<StockDetailDisplayRow>();
     }
 

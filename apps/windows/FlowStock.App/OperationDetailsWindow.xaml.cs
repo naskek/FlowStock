@@ -2371,6 +2371,7 @@ public partial class OperationDetailsWindow : Window
         var showFromColumn = false;
         var showTo = false;
         var showHuHeader = true;
+        var showHuColumn = true;
         var showReason = false;
         var showBatch = false;
         var showComment = false;
@@ -2415,6 +2416,7 @@ public partial class OperationDetailsWindow : Window
                 showBatch = false;
                 showComment = true;
                 showHuHeader = false;
+                showHuColumn = true;
                 toLabel = "Локация приёмки";
                 break;
         }
@@ -2473,7 +2475,9 @@ public partial class OperationDetailsWindow : Window
         DocLinesGrid.Tag = isEditable;
         DocInventoryDbColumn.Visibility = showInventory ? Visibility.Visible : Visibility.Collapsed;
         DocInventoryDiffColumn.Visibility = showInventory ? Visibility.Visible : Visibility.Collapsed;
-        DocHuColumn.Visibility = Visibility.Collapsed;
+        DocHuColumn.Visibility = doc.Type == DocType.ProductionReceipt || showHuColumn
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         DocKmColumn.Visibility = KmUiEnabled && (doc.Type is DocType.ProductionReceipt or DocType.Outbound)
             ? Visibility.Visible
             : Visibility.Collapsed;
