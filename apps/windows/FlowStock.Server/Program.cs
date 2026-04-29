@@ -10,6 +10,7 @@ using FlowStock.Core.Models;
 using FlowStock.Core.Services;
 using FlowStock.Data;
 using FlowStock.Server;
+using FlowStock.Server.Maintenance;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Routing;
@@ -20,6 +21,11 @@ using Npgsql;
 var builder = WebApplication.CreateBuilder(args);
 
 var postgresConnectionString = BuildPostgresConnectionString(builder.Configuration);
+if (OrderReservationBackfillCommand.TryRun(args, postgresConnectionString, out var maintenanceExitCode))
+{
+    Environment.ExitCode = maintenanceExitCode;
+    return;
+}
 
 builder.Services.AddSingleton<PostgresDataStore>(_ =>
 {

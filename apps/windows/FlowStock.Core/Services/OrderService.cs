@@ -599,7 +599,6 @@ public sealed class OrderService
     {
         var orderLines = store.GetOrderLines(orderId)
             .Where(line => line.QtyOrdered > QtyTolerance)
-            .Where(line => ItemTypeUsesOrderReservation(store, line.ItemId))
             .OrderBy(line => line.Id)
             .ToList();
         if (orderLines.Count == 0)
@@ -672,7 +671,22 @@ public sealed class OrderService
             return;
         }
 
+        var shippedByLine = store.GetShippedTotalsByOrderLine(orderId);
         var orderLines = store.GetOrderLines(orderId)
+            .Where(line => line.QtyOrdered > QtyTolerance)
+            .Where(line => ItemTypeUsesOrderReservation(store, line.ItemId))
+            .Select(line =>
+            {
+                var shipped = shippedByLine.TryGetValue(line.Id, out var shippedQty) ? shippedQty : 0;
+                var remaining = Math.Max(0, line.QtyOrdered - shipped);
+                return new OrderLine
+                {
+                    Id = line.Id,
+                    OrderId = line.OrderId,
+                    ItemId = line.ItemId,
+                    QtyOrdered = remaining
+                };
+            })
             .Where(line => line.QtyOrdered > QtyTolerance)
             .OrderBy(line => line.Id)
             .ToList();
@@ -881,6 +895,11 @@ public sealed class OrderService
         if (order.Type != OrderType.Customer)
         {
             return order.Status;
+        }
+
+        if (order.Status == OrderStatus.Shipped)
+        {
+            return OrderStatus.Shipped;
         }
 
         var lines = store.GetOrderLines(order.Id);

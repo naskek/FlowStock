@@ -53,6 +53,15 @@ public sealed class PostgresDataStore : IDataStore
         transaction.Commit();
     }
 
+    public long CountLedgerEntries()
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "SELECT COUNT(*) FROM ledger;");
+            return Convert.ToInt64(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
+        });
+    }
+
     public Item? FindItemByBarcode(string barcode)
     {
         return WithConnection(connection =>

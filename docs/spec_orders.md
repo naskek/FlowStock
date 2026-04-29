@@ -55,6 +55,24 @@
 - WPF/TSD автозаполнение PRD из заказа берет только незакрытый остаток `receipt_remaining` (режим `?detailed=1`), включая заранее назначенные `to_location` и `to_hu` из уже сохраненного серверного плана заказа.
 - Повторный выпуск по одному и тому же заказу запрещен: если `receipt_remaining = 0`, строки заказа в PRD не подставляются и операция блокируется.
 
+## Maintenance: backfill HU reservation-layer
+
+После обновления production-БД, где уже есть исторические заказы, внутренние выпуски, HU и `ledger`, reservation/read-model слой можно пересобрать отдельной maintenance-командой. Команда не запускается автоматически при старте приложения.
+
+Команда:
+- dry-run по умолчанию: `dotnet FlowStock.Server.dll maintenance backfill-reservations`
+- явное применение: `dotnet FlowStock.Server.dll maintenance backfill-reservations --apply`
+- docker/deploy wrapper: `bash deploy/scripts/backfill_order_reservations.sh` или `bash deploy/scripts/backfill_order_reservations.sh --apply`
+
+Правила backfill:
+- перед `--apply` обязателен свежий backup БД;
+- изменяется только `order_receipt_plan_lines`;
+- `ledger`, `docs` и `doc_lines` не изменяются;
+- активными для резерва считаются только `CUSTOMER`-заказы с `bind_reserved_stock = true`, которые фактически еще не отгружены полностью;
+- `SHIPPED`/выполненные клиентские заказы не получают активный reserve, их исторические customer reservation lines очищаются;
+- количество к резерву считается как `qty_ordered - shipped_qty`, чтобы уже отгруженный объем не вычитался повторно из свободного остатка;
+- если один HU уже заявлен несколькими активными customer orders, такой HU исключается из нового плана и выводится в отчете как конфликт для ручного разбора.
+
 Индексы:
 - `orders(order_ref)`
 - `orders(partner_id)`

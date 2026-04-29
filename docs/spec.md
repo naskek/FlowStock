@@ -7,6 +7,11 @@
 - PostgreSQL является единственным поддерживаемым хранилищем.
 - Изменения production schema применяются через версионируемые SQL-миграции; `postgres init`-скрипты используются только для bootstrap пустого каталога данных.
 - Остатки рассчитываются только из `ledger`.
+- Исторический reservation/read-model слой HU пересобирается только явной maintenance-командой, не при старте приложения:
+  - dry-run: `dotnet FlowStock.Server.dll maintenance backfill-reservations`;
+  - apply: `dotnet FlowStock.Server.dll maintenance backfill-reservations --apply`;
+  - deploy wrapper: `bash deploy/scripts/backfill_order_reservations.sh [--apply]`.
+  - Команда меняет только `order_receipt_plan_lines`, не пишет в `ledger` и не редактирует закрытые документы.
 
 ## Компоненты
 - `FlowStock.Server`: ASP.NET Core Minimal API, доступ к БД, диагностика, раздача TSD/PC web clients.
