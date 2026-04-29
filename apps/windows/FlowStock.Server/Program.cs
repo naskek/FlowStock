@@ -43,7 +43,7 @@ OrderStatusEndpoint.Map(app);
 app.MapGet("/api/version", () => Results.Ok(new { version = appVersion }));
 
 app.MapGet("/health/live", () => Results.Ok(new { status = "alive" }));
-app.MapGet("/health/ready", async (CancellationToken cancellationToken) =>
+app.MapMethods("/health/ready", ["GET", "HEAD"], async (CancellationToken cancellationToken) =>
 {
     try
     {
@@ -3719,5 +3719,4 @@ enum PartnerRoleFilter
     Both,
     Unknown
 }
-
 
