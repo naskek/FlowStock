@@ -77,7 +77,7 @@
                                   Checked="StockBelowMinOnlyCheckBox_Changed"
                                   Unchecked="StockBelowMinOnlyCheckBox_Changed" />
                     </StackPanel>
-                    <DataGrid x:Name="StockGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True">
+                    <DataGrid x:Name="StockGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True" RowDetailsVisibilityMode="VisibleWhenSelected">
                         <DataGrid.RowStyle>
                             <Style TargetType="DataGridRow">
                                 <Style.Triggers>
@@ -88,12 +88,33 @@
                                 </Style.Triggers>
                             </Style>
                         </DataGrid.RowStyle>
+                        <DataGrid.RowDetailsTemplate>
+                            <DataTemplate>
+                                <Border Margin="8,4,8,8"
+                                        Padding="8"
+                                        BorderBrush="#E0E0E0"
+                                        BorderThickness="1"
+                                        Background="#FAFAFA"
+                                        CornerRadius="4">
+                                    <DataGrid AutoGenerateColumns="False"
+                                              IsReadOnly="True"
+                                              CanUserAddRows="False"
+                                              CanUserDeleteRows="False"
+                                              HeadersVisibility="Column"
+                                              ItemsSource="{Binding Details}">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="Место хранения" Binding="{Binding LocationCode}" Width="*" />
+                                            <DataGridTextColumn Header="HU" Binding="{Binding HuDisplay}" Width="220" />
+                                            <DataGridTextColumn Header="В базе" Binding="{Binding BaseDisplay}" Width="140" />
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                </Border>
+                            </DataTemplate>
+                        </DataGrid.RowDetailsTemplate>
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="Тип" Binding="{Binding ItemTypeName}" Width="Auto" MaxWidth="220" />
                             <DataGridTextColumn Header="SKU / штрихкод" Binding="{Binding Barcode}" Width="Auto" MaxWidth="320" />
-                            <DataGridTextColumn Header="Место хранения" Binding="{Binding LocationCode}" Width="Auto" MaxWidth="320" />
-                            <DataGridTextColumn Header="HU" Binding="{Binding HuDisplay}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="В базе" Binding="{Binding BaseDisplay}" Width="Auto" MaxWidth="320" />
                         </DataGrid.Columns>
                     </DataGrid>

@@ -555,42 +555,52 @@ public partial class MainWindow : Window
             ? apiItems
             : Array.Empty<Item>();
         var lowStockByItem = BuildLowStockByItem(rows, allItems);
-        foreach (var row in rows)
-        {
-            if (!string.IsNullOrWhiteSpace(locationCode)
-                && !string.Equals(row.LocationCode, locationCode, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-            if (!string.IsNullOrWhiteSpace(huCode)
-                && !string.Equals(row.Hu, huCode, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-            if (itemTypeId.HasValue && row.ItemTypeId != itemTypeId.Value)
-            {
-                continue;
-            }
+        var filteredRows = rows
+            .Where(row => string.IsNullOrWhiteSpace(locationCode)
+                          || string.Equals(row.LocationCode, locationCode, StringComparison.OrdinalIgnoreCase))
+            .Where(row => string.IsNullOrWhiteSpace(huCode)
+                          || string.Equals(row.Hu, huCode, StringComparison.OrdinalIgnoreCase))
+            .Where(row => !itemTypeId.HasValue || row.ItemTypeId == itemTypeId.Value)
+            .ToList();
 
-            var isBelowMin = lowStockByItem.ContainsKey(row.ItemId);
+        var groupedRows = filteredRows
+            .GroupBy(row => row.ItemId)
+            .OrderBy(group => group.First().ItemName, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+
+        foreach (var group in groupedRows)
+        {
+            var first = group.First();
+            var isBelowMin = lowStockByItem.ContainsKey(group.Key);
             if (belowMinOnly && !isBelowMin)
             {
                 continue;
             }
 
-            var packaging = _services.Packagings.FormatAsPackaging(row.ItemId, row.Qty);
-            var baseDisplay = $"{FormatQty(row.Qty)} {row.BaseUom}";
+            var totalQty = group.Sum(row => row.Qty);
+            var packaging = _services.Packagings.FormatAsPackaging(group.Key, totalQty);
+            var details = group
+                .OrderBy(row => row.LocationCode ?? string.Empty, StringComparer.CurrentCultureIgnoreCase)
+                .ThenBy(row => row.Hu ?? string.Empty, StringComparer.CurrentCultureIgnoreCase)
+                .ThenBy(row => row.Qty)
+                .Select(row => new StockDetailDisplayRow
+                {
+                    LocationCode = string.IsNullOrWhiteSpace(row.LocationCode) ? "-" : row.LocationCode,
+                    HuDisplay = string.IsNullOrWhiteSpace(row.Hu) ? "Без HU" : row.Hu!,
+                    BaseDisplay = FormatQtyWithUom(row.Qty, row.BaseUom)
+                })
+                .ToList();
+
             _stock.Add(new StockDisplayRow
             {
-                ItemId = row.ItemId,
-                ItemName = row.ItemName,
-                ItemTypeName = row.ItemTypeName ?? "Без типа",
-                Barcode = row.Barcode,
-                LocationCode = row.LocationCode,
-                HuDisplay = row.Hu ?? string.Empty,
+                ItemId = group.Key,
+                ItemName = first.ItemName,
+                ItemTypeName = first.ItemTypeName ?? "Без типа",
+                Barcode = first.Barcode,
                 PackagingDisplay = packaging,
-                BaseDisplay = baseDisplay,
-                IsBelowMin = isBelowMin
+                BaseDisplay = FormatQtyWithUom(totalQty, first.BaseUom),
+                IsBelowMin = isBelowMin,
+                Details = details
             });
         }
 
@@ -2251,11 +2261,17 @@ public partial class MainWindow : Window
         public string ItemName { get; init; } = string.Empty;
         public string ItemTypeName { get; init; } = string.Empty;
         public string? Barcode { get; init; }
-        public string LocationCode { get; init; } = string.Empty;
-        public string HuDisplay { get; init; } = string.Empty;
         public string PackagingDisplay { get; init; } = string.Empty;
         public string BaseDisplay { get; init; } = string.Empty;
         public bool IsBelowMin { get; init; }
+        public IReadOnlyList<StockDetailDisplayRow> Details { get; init; } = Array.Empty<StockDetailDisplayRow>();
+    }
+
+    private sealed record StockDetailDisplayRow
+    {
+        public string LocationCode { get; init; } = string.Empty;
+        public string HuDisplay { get; init; } = string.Empty;
+        public string BaseDisplay { get; init; } = string.Empty;
     }
 
     private sealed record StockLocationFilterOption(string? Code, string Name);
