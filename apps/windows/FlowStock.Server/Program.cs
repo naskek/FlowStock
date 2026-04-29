@@ -2253,6 +2253,17 @@ app.MapGet("/api/stock/rows", (HttpRequest request, IDataStore store) =>
     return Results.Ok(rows);
 });
 
+app.MapGet("/api/reports/production-need", (HttpRequest request, IDataStore store) =>
+{
+    var includeZeroNeed = string.Equals(request.Query["include_zero"], "1", StringComparison.OrdinalIgnoreCase)
+                          || string.Equals(request.Query["include_zero"], "true", StringComparison.OrdinalIgnoreCase);
+    var rows = new ProductionNeedService(store)
+        .GetRows(includeZeroNeed)
+        .Select(MapProductionNeedRow)
+        .ToList();
+    return Results.Ok(rows);
+});
+
 app.MapGet("/api/stock/by-barcode/{barcode}", (string barcode, IDataStore store) =>
 {
     if (string.IsNullOrWhiteSpace(barcode))
@@ -3346,6 +3357,22 @@ static object MapStockRow(StockRow row)
         min_stock_qty = row.MinStockQty,
         reserved_customer_order_qty = row.ReservedCustomerOrderQty,
         available_for_min_stock_qty = row.AvailableForMinStockQty
+    };
+}
+
+static object MapProductionNeedRow(ProductionNeedRow row)
+{
+    return new
+    {
+        item_id = row.ItemId,
+        item_name = row.ItemName,
+        item_type = row.ItemTypeName,
+        physical_stock_qty = row.PhysicalStockQty,
+        active_customer_order_open_qty = row.ActiveCustomerOrderOpenQty,
+        reserved_customer_order_qty = row.ReservedCustomerOrderQty,
+        free_stock_qty = row.FreeStockQty,
+        min_stock_qty = row.MinStockQty,
+        production_need_qty = row.ProductionNeedQty
     };
 }
 

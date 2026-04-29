@@ -262,6 +262,24 @@ public sealed class WpfReadApiService
             out rows);
     }
 
+    public bool TryGetProductionNeedRows(bool includeZeroNeed, out IReadOnlyList<ProductionNeedRow> rows)
+    {
+        rows = Array.Empty<ProductionNeedRow>();
+        var path = includeZeroNeed
+            ? "/api/reports/production-need?include_zero=1"
+            : "/api/reports/production-need";
+
+        return TryRead(
+            path,
+            root => root.ValueKind == JsonValueKind.Array
+                ? root.EnumerateArray()
+                    .Select(MapProductionNeedRow)
+                    .ToList()
+                : new List<ProductionNeedRow>(),
+            "production-need-rows",
+            out rows);
+    }
+
     public bool TryGetHuStockRows(out IReadOnlyList<HuStockContextRow> rows)
     {
         rows = Array.Empty<HuStockContextRow>();
@@ -644,6 +662,22 @@ public sealed class WpfReadApiService
             MinStockQty = ReadNullableDouble(element, "min_stock_qty"),
             ReservedCustomerOrderQty = ReadDouble(element, "reserved_customer_order_qty"),
             AvailableForMinStockQty = ReadDouble(element, "available_for_min_stock_qty")
+        };
+    }
+
+    private static ProductionNeedRow MapProductionNeedRow(JsonElement element)
+    {
+        return new ProductionNeedRow
+        {
+            ItemId = ReadInt64(element, "item_id"),
+            ItemName = ReadString(element, "item_name") ?? string.Empty,
+            ItemTypeName = ReadString(element, "item_type"),
+            PhysicalStockQty = ReadDouble(element, "physical_stock_qty"),
+            ActiveCustomerOrderOpenQty = ReadDouble(element, "active_customer_order_open_qty"),
+            ReservedCustomerOrderQty = ReadDouble(element, "reserved_customer_order_qty"),
+            FreeStockQty = ReadDouble(element, "free_stock_qty"),
+            MinStockQty = ReadDouble(element, "min_stock_qty"),
+            ProductionNeedQty = ReadDouble(element, "production_need_qty")
         };
     }
 

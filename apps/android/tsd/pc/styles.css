@@ -138,6 +138,21 @@ body.pc-body {
   align-items: flex-end;
 }
 
+.pc-check-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  color: var(--pc-muted);
+  font-size: 13px;
+  font-weight: 600;
+  user-select: none;
+}
+
+.pc-check-inline input[type="checkbox"] {
+  margin: 0;
+}
+
 .pc-status {
   font-size: 12px;
   color: var(--pc-muted);
@@ -204,6 +219,11 @@ body.pc-body {
   font-size: 13px;
 }
 
+.pc-table-scroll {
+  width: 100%;
+  overflow-x: auto;
+}
+
 .pc-table th,
 .pc-table td {
   border-bottom: 1px solid #e5edf2;
@@ -214,6 +234,24 @@ body.pc-body {
 
 .pc-qty {
   font-weight: 700;
+}
+
+.pc-num {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.pc-production-need-table {
+  min-width: 980px;
+}
+
+.pc-production-need-table th,
+.pc-production-need-table td {
+  vertical-align: middle;
+}
+
+.pc-production-need-qty {
+  color: #a62525;
 }
 
 .pc-table th {

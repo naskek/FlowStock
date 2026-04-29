@@ -23,6 +23,8 @@
                     <MenuItem Header="Нумерация документов..." Click="DocNumberingSettingsMenu_Click" />
                 </MenuItem>
                 <MenuItem Header="Сервис">
+                    <MenuItem Header="Потребность производства..." Click="OpenProductionNeed_Click" />
+                    <Separator />
                     <MenuItem Header="Входящие запросы..." Click="OpenIncomingRequests_Click" />
                     <Separator />
                     <MenuItem Header="Резервные копии..." Click="OpenBackupManager_Click" />

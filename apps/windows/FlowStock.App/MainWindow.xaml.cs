@@ -2326,6 +2326,15 @@ public partial class MainWindow : Window
         window.ShowDialog();
     }
 
+    private void OpenProductionNeed_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new ProductionNeedWindow(_services)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+    }
+
     private void OpenAdmin_Click(object sender, RoutedEventArgs e)
     {
         var window = new AdminWindow(
