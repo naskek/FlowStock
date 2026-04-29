@@ -28,6 +28,7 @@
   var cachedLocations = [];
   var cachedLocationsById = {};
   var cachedStockRows = [];
+  var cachedStockRowsForMin = [];
   var cachedHuRows = [];
   var cachedCombinedRows = [];
   var clientBlocks = getDefaultClientBlocks();
@@ -401,6 +402,7 @@
         itemTypeId: Number(item.item_type_id) || 0,
         itemTypeName: item.item_type_name || "",
         itemTypeEnableMinStockControl: item.item_type_enable_min_stock_control === true,
+        itemTypeMinStockUsesOrderBinding: item.item_type_min_stock_uses_order_binding === true,
         minStockQty: minStockQty,
       };
     });
@@ -814,13 +816,15 @@
       fetchJson("/api/locations"),
       fetchJson("/api/stock"),
       fetchJson("/api/hu-stock"),
+      fetchJson("/api/stock/rows"),
       fetchJson("/api/item-types?include_inactive=0"),
     ]).then(function (payloads) {
       setCachedItems(payloads[0]);
       setCachedLocations(payloads[1]);
-      cachedItemTypes = Array.isArray(payloads[4]) ? payloads[4] : [];
+      cachedItemTypes = Array.isArray(payloads[5]) ? payloads[5] : [];
       var stockRows = Array.isArray(payloads[2]) ? payloads[2] : [];
       var huRows = Array.isArray(payloads[3]) ? payloads[3] : [];
+      var stockRowsForMin = Array.isArray(payloads[4]) ? payloads[4] : [];
 
       cachedStockRows = stockRows.map(function (row) {
         var item = cachedItemsById[Number(row.item_id)] || {};
@@ -865,6 +869,14 @@
           reservationPartnerName: String(row.reserved_customer_name || "").trim(),
           reservationOrderRef: String(row.reserved_customer_order_ref || "").trim(),
           originInternalOrderRef: String(row.origin_internal_order_ref || "").trim(),
+        };
+      });
+
+      cachedStockRowsForMin = stockRowsForMin.map(function (row) {
+        return {
+          itemId: Number(row.item_id) || 0,
+          itemTypeMinStockUsesOrderBinding: row.item_type_min_stock_uses_order_binding === true,
+          availableForMinStockQty: Number(row.available_for_min_stock_qty),
         };
       });
 
@@ -957,13 +969,26 @@
     }
 
     function buildLowStockRows(typeId) {
-      var totalsByItem = {};
+      var physicalTotalsByItem = {};
       cachedStockRows.forEach(function (row) {
         var itemId = Number(row.itemId) || 0;
         if (!itemId) {
           return;
         }
-        totalsByItem[itemId] = (totalsByItem[itemId] || 0) + (Number(row.qty) || 0);
+        physicalTotalsByItem[itemId] = (physicalTotalsByItem[itemId] || 0) + (Number(row.qty) || 0);
+      });
+      var availableForMinByItem = {};
+      var usesOrderBindingByItem = {};
+      cachedStockRowsForMin.forEach(function (row) {
+        var itemId = Number(row.itemId) || 0;
+        if (!itemId) {
+          return;
+        }
+        var availableQty = Number(row.availableForMinStockQty);
+        if (isFinite(availableQty)) {
+          availableForMinByItem[itemId] = availableQty;
+        }
+        usesOrderBindingByItem[itemId] = row.itemTypeMinStockUsesOrderBinding === true;
       });
 
       return cachedItems
@@ -979,7 +1004,13 @@
             return null;
           }
 
-          var qty = Number(totalsByItem[itemId] || 0);
+          var qty = Number(physicalTotalsByItem[itemId] || 0);
+          var usesOrderBindingForMin =
+            cached.itemTypeMinStockUsesOrderBinding === true ||
+            usesOrderBindingByItem[itemId] === true;
+          if (usesOrderBindingForMin && isFinite(Number(availableForMinByItem[itemId]))) {
+            qty = Number(availableForMinByItem[itemId]);
+          }
           if (qty >= minStockQty) {
             return null;
           }

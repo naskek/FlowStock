@@ -1224,6 +1224,7 @@ app.MapGet("/api/item-types", (HttpRequest request, CatalogService catalog) =>
             is_visible_in_product_catalog = itemType.IsVisibleInProductCatalog,
             enable_min_stock_control = itemType.EnableMinStockControl,
             min_stock_uses_order_binding = itemType.MinStockUsesOrderBinding,
+            enable_order_reservation = itemType.EnableOrderReservation,
             enable_hu_distribution = itemType.EnableHuDistribution
         })
         .ToList();
@@ -1248,6 +1249,7 @@ app.MapPost("/api/item-types", async (HttpRequest request, CatalogService catalo
             parsed.Value?.IsVisibleInProductCatalog ?? true,
             parsed.Value?.EnableMinStockControl ?? false,
             parsed.Value?.MinStockUsesOrderBinding ?? false,
+            parsed.Value?.EnableOrderReservation ?? false,
             parsed.Value?.EnableHuDistribution ?? false);
         return Results.Ok(new { ok = true, item_type_id = itemTypeId });
     }
@@ -1280,6 +1282,7 @@ app.MapPost("/api/item-types/{itemTypeId:long}", async (long itemTypeId, HttpReq
             parsed.Value?.IsVisibleInProductCatalog ?? true,
             parsed.Value?.EnableMinStockControl ?? false,
             parsed.Value?.MinStockUsesOrderBinding ?? false,
+            parsed.Value?.EnableOrderReservation ?? false,
             parsed.Value?.EnableHuDistribution ?? false);
         return Results.Ok(new ApiResult(true));
     }
@@ -3333,6 +3336,7 @@ static object MapStockRow(StockRow row)
         item_type_name = row.ItemTypeName,
         item_type_enable_min_stock_control = row.ItemTypeEnableMinStockControl,
         item_type_min_stock_uses_order_binding = row.ItemTypeMinStockUsesOrderBinding,
+        item_type_enable_order_reservation = row.ItemTypeEnableOrderReservation,
         min_stock_qty = row.MinStockQty,
         reserved_customer_order_qty = row.ReservedCustomerOrderQty,
         available_for_min_stock_qty = row.AvailableForMinStockQty

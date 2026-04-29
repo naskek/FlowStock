@@ -38,7 +38,7 @@
 
 ## Модель данных (server DB)
 - `items(id, name, is_active, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, max_qty_per_hu, tara_id, is_marked, item_type_id, min_stock_qty)`
-- `item_types(id, name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control, min_stock_uses_order_binding, enable_hu_distribution)`
+- `item_types(id, name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control, min_stock_uses_order_binding, enable_order_reservation, enable_hu_distribution)`
 - `taras(id, name)`
 - `item_requests(id, barcode, comment, device_id, login, status, created_at, resolved_at)`
 - `write_off_reasons(id, code, name)`
@@ -96,7 +96,7 @@
   - Ручной поиск по отдельному полю убран, вместо него используются встроенные фильтры.
 - Documents: список + детали + проведение.
 - Items: список с ID + modal create/edit (`name`, `is_active`, `barcode/SKU`, `gtin`, `brand`, `volume`, `shelf life months`, `max qty per HU`, `tara`, `uom`, `item_type`, `min_stock_qty`, `is_marked`) + Excel import с preview и column mapping.
-- Item types: редактор справочника типов номенклатуры (создание, редактирование, удаление/деактивация при использовании, настройка флагов `is_visible_in_product_catalog`, `enable_min_stock_control`, `min_stock_uses_order_binding`).
+- Item types: редактор справочника типов номенклатуры (создание, редактирование, удаление/деактивация при использовании, настройка флагов `is_visible_in_product_catalog`, `enable_min_stock_control`, `min_stock_uses_order_binding`, `enable_order_reservation`).
   - Для новых типов `is_visible_in_product_catalog` по умолчанию включен; после миграции V0005 тип `Без типа` (`GENERAL`) автоматически помечается видимым в PC каталоге.
 - Item packagings: редактор упаковок в карточке товара и общий packaging manager используют server API для list/create/update/deactivate/set-default.
 - Tara: редактор справочника в разделе `Справочники`.
