@@ -1627,6 +1627,55 @@ WHERE p.to_hu IS NOT NULL
     {
         WithConnection(connection =>
         {
+            var normalizedHuCodes = (lines ?? Array.Empty<OrderReceiptPlanLine>())
+                .Where(line => line.QtyPlanned > 0 && !string.IsNullOrWhiteSpace(line.ToHu))
+                .Select(line => line.ToHu!.Trim().ToUpperInvariant())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            if (normalizedHuCodes.Length > 0)
+            {
+                using var orderTypeCommand = CreateCommand(connection, @"
+SELECT order_type
+FROM orders
+WHERE id = @order_id
+LIMIT 1;
+");
+                orderTypeCommand.Parameters.AddWithValue("@order_id", orderId);
+                var orderTypeValue = orderTypeCommand.ExecuteScalar() as string;
+                if (string.IsNullOrWhiteSpace(orderTypeValue))
+                {
+                    throw new InvalidOperationException("Заказ не найден.");
+                }
+
+                if (string.Equals(orderTypeValue, OrderStatusMapper.TypeToString(OrderType.Customer), StringComparison.OrdinalIgnoreCase))
+                {
+                    using var conflictCommand = CreateCommand(connection, @"
+SELECT p.to_hu, o.order_ref
+FROM order_receipt_plan_lines p
+INNER JOIN orders o ON o.id = p.order_id
+WHERE p.order_id <> @order_id
+  AND p.to_hu IS NOT NULL
+  AND p.to_hu <> ''
+  AND o.order_type = @customer_order_type
+  AND o.status <> @shipped_status
+  AND UPPER(TRIM(p.to_hu)) = ANY(@hu_codes)
+LIMIT 1;
+");
+                    conflictCommand.Parameters.AddWithValue("@order_id", orderId);
+                    conflictCommand.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+                    conflictCommand.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+                    conflictCommand.Parameters.AddWithValue("@hu_codes", normalizedHuCodes);
+                    using var conflictReader = conflictCommand.ExecuteReader();
+                    if (conflictReader.Read())
+                    {
+                        var huCode = conflictReader.IsDBNull(0) ? string.Empty : conflictReader.GetString(0);
+                        var orderRef = conflictReader.IsDBNull(1) ? string.Empty : conflictReader.GetString(1);
+                        throw new InvalidOperationException($"HU '{huCode}' уже зарезервирован за активным клиентским заказом '{orderRef}'.");
+                    }
+                }
+            }
+
             using (var deleteCommand = CreateCommand(connection, "DELETE FROM order_receipt_plan_lines WHERE order_id = @order_id"))
             {
                 deleteCommand.Parameters.AddWithValue("@order_id", orderId);
@@ -2139,6 +2188,127 @@ HAVING COALESCE(SUM(qty_delta), 0) != 0;
                     ItemId = reader.GetInt64(1),
                     LocationId = reader.GetInt64(2),
                     Qty = reader.GetDouble(3)
+                });
+            }
+
+            return rows;
+        });
+    }
+
+    public IReadOnlyList<HuOrderContextRow> GetHuOrderContextRows()
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH hu_stock AS (
+    SELECT UPPER(TRIM(COALESCE(hu_code, hu))) AS hu_code,
+           item_id
+    FROM ledger
+    WHERE COALESCE(hu_code, hu) IS NOT NULL
+      AND COALESCE(hu_code, hu) <> ''
+    GROUP BY UPPER(TRIM(COALESCE(hu_code, hu))), item_id
+    HAVING COALESCE(SUM(qty_delta), 0) <> 0
+),
+origin_candidates AS (
+    SELECT dl.item_id,
+           UPPER(TRIM(dl.to_hu)) AS hu_code,
+           d.order_id AS origin_internal_order_id,
+           COALESCE(d.order_ref, o.order_ref) AS origin_internal_order_ref,
+           ROW_NUMBER() OVER (
+               PARTITION BY dl.item_id, UPPER(TRIM(dl.to_hu))
+               ORDER BY COALESCE(d.closed_at, d.created_at), d.id
+           ) AS rn
+    FROM doc_lines dl
+    INNER JOIN docs d ON d.id = dl.doc_id
+    INNER JOIN orders o ON o.id = d.order_id
+    WHERE d.type = @prd_type
+      AND d.status = @closed_status
+      AND d.order_id IS NOT NULL
+      AND o.order_type = @internal_order_type
+      AND dl.qty > 0
+      AND dl.to_hu IS NOT NULL
+      AND dl.to_hu <> ''
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+),
+origin_map AS (
+    SELECT item_id,
+           hu_code,
+           origin_internal_order_id,
+           origin_internal_order_ref
+    FROM origin_candidates
+    WHERE rn = 1
+),
+reserved_candidates AS (
+    SELECT p.item_id,
+           UPPER(TRIM(p.to_hu)) AS hu_code,
+           p.order_id AS reserved_customer_order_id,
+           o.order_ref AS reserved_customer_order_ref,
+           o.partner_id AS reserved_customer_id,
+           partner.name AS reserved_customer_name,
+           ROW_NUMBER() OVER (
+               PARTITION BY p.item_id, UPPER(TRIM(p.to_hu))
+               ORDER BY o.created_at, o.id, p.id
+           ) AS rn
+    FROM order_receipt_plan_lines p
+    INNER JOIN orders o ON o.id = p.order_id
+    LEFT JOIN partners partner ON partner.id = o.partner_id
+    WHERE p.qty_planned > 0
+      AND p.to_hu IS NOT NULL
+      AND p.to_hu <> ''
+      AND o.order_type = @customer_order_type
+      AND o.status <> @shipped_status
+),
+reserved_map AS (
+    SELECT item_id,
+           hu_code,
+           reserved_customer_order_id,
+           reserved_customer_order_ref,
+           reserved_customer_id,
+           reserved_customer_name
+    FROM reserved_candidates
+    WHERE rn = 1
+)
+SELECT hs.hu_code,
+       hs.item_id,
+       om.origin_internal_order_id,
+       om.origin_internal_order_ref,
+       rm.reserved_customer_order_id,
+       rm.reserved_customer_order_ref,
+       rm.reserved_customer_id,
+       rm.reserved_customer_name
+FROM hu_stock hs
+LEFT JOIN origin_map om ON om.item_id = hs.item_id AND om.hu_code = hs.hu_code
+LEFT JOIN reserved_map rm ON rm.item_id = hs.item_id AND rm.hu_code = hs.hu_code;
+");
+            command.Parameters.AddWithValue("@prd_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+            command.Parameters.AddWithValue("@closed_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+            command.Parameters.AddWithValue("@internal_order_type", OrderStatusMapper.TypeToString(OrderType.Internal));
+            command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+            command.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+
+            using var reader = command.ExecuteReader();
+            var rows = new List<HuOrderContextRow>();
+            while (reader.Read())
+            {
+                if (reader.IsDBNull(0))
+                {
+                    continue;
+                }
+
+                rows.Add(new HuOrderContextRow
+                {
+                    HuCode = reader.GetString(0),
+                    ItemId = reader.GetInt64(1),
+                    OriginInternalOrderId = reader.IsDBNull(2) ? null : reader.GetInt64(2),
+                    OriginInternalOrderRef = reader.IsDBNull(3) ? null : reader.GetString(3),
+                    ReservedCustomerOrderId = reader.IsDBNull(4) ? null : reader.GetInt64(4),
+                    ReservedCustomerOrderRef = reader.IsDBNull(5) ? null : reader.GetString(5),
+                    ReservedCustomerId = reader.IsDBNull(6) ? null : reader.GetInt64(6),
+                    ReservedCustomerName = reader.IsDBNull(7) ? null : reader.GetString(7)
                 });
             }
 

@@ -112,6 +112,9 @@
                                             <DataGridTextColumn Header="Место хранения" Binding="{Binding LocationCode}" Width="*" />
                                             <DataGridTextColumn Header="HU" Binding="{Binding HuDisplay}" Width="220" />
                                             <DataGridTextColumn Header="В базе" Binding="{Binding BaseDisplay}" Width="140" />
+                                            <DataGridTextColumn Header="Origin заказ" Binding="{Binding OriginOrderDisplay}" Width="150" />
+                                            <DataGridTextColumn Header="Reserved заказ" Binding="{Binding ReservedOrderDisplay}" Width="170" />
+                                            <DataGridTextColumn Header="Reserved клиент" Binding="{Binding ReservedCustomerDisplay}" Width="200" />
                                         </DataGrid.Columns>
                                     </DataGrid>
                                 </Border>

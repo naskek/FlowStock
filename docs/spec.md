@@ -139,6 +139,9 @@
   - после автоназначения оператор может вручную менять HU построчно.
 - `doc_lines.replaces_line_id` используется для append-only semantics черновиков (`UpdateDocLine` / `DeleteDocLine`). Историческая строка остается в БД; удаление строки создает tombstone-row с `qty = 0` и `replaces_line_id = deleted_line_id`. В document read-model и в расчетах заказов/проведения учитываются только активные строки с `qty > 0`, на которые не ссылается более новая запись.
 - Выпуск продукции: приемка готовой продукции на склад (плюс в `ledger`), HU обязателен на момент проведения по каждой строке, партия производства хранится в `production_batch_no`, документ может быть связан с заказом (`order_id/order_ref`).
+  - Для HU разделяются два независимых контекста:
+    - `origin/internal order` (происхождение HU): определяется по закрытому `PRODUCTION_RECEIPT` внутреннего заказа через `docs.order_id` + `docs.type=PRODUCTION_RECEIPT` + `doc_lines.to_hu`.
+    - `reserved/customer order` (текущий резерв HU под клиентский заказ): хранится отдельно в `order_receipt_plan_lines` и не затирает происхождение HU.
   - План распределения выпуска формируется на этапе заказа:
     - если у типа номенклатуры включен флаг `enable_hu_distribution`, для товара обязателен `items.max_qty_per_hu`;
     - для `INTERNAL` сервер заранее дробит строки заказа по HU и резервирует локацию/ HU в `order_receipt_plan_lines`;

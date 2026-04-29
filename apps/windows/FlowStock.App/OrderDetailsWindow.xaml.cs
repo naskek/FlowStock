@@ -221,7 +221,7 @@ public partial class OrderDetailsWindow : Window
             return false;
         }
 
-        if (!TryResolveBindReservedStockForSave(type, out var bindReservedStockForCustomer))
+        if (!TryResolveBindReservedStockForSave(orderRef, type, partnerId, out var bindReservedStockForCustomer))
         {
             return false;
         }
@@ -357,7 +357,11 @@ public partial class OrderDetailsWindow : Window
         return true;
     }
 
-    private bool TryResolveBindReservedStockForSave(OrderType type, out bool? bindReservedStockForCustomer)
+    private bool TryResolveBindReservedStockForSave(
+        string orderRef,
+        OrderType type,
+        long? partnerId,
+        out bool? bindReservedStockForCustomer)
     {
         bindReservedStockForCustomer = null;
         if (type != OrderType.Customer)
@@ -370,13 +374,13 @@ public partial class OrderDetailsWindow : Window
             : false;
         bindReservedStockForCustomer = currentValue;
 
-        if (!TryHasStockForCurrentOrderLines(out var hasStock) || !hasStock)
+        if (!TryBuildReservationPreview(orderRef, partnerId, out var previewText))
         {
             return true;
         }
 
         var confirm = MessageBox.Show(
-            "По позициям заказа есть складской остаток. Привязать этот остаток к заказу?",
+            previewText,
             "Заказы",
             MessageBoxButton.YesNoCancel,
             MessageBoxImage.Question,
@@ -387,6 +391,74 @@ public partial class OrderDetailsWindow : Window
         }
 
         bindReservedStockForCustomer = confirm == MessageBoxResult.Yes;
+        return true;
+    }
+
+    private bool TryBuildReservationPreview(string orderRef, long? partnerId, out string previewText)
+    {
+        previewText = string.Empty;
+        if (_lines.Count == 0)
+        {
+            return false;
+        }
+
+        if (!_services.WpfReadApi.TryGetHuStockRows(out var huStockRows))
+        {
+            if (!TryHasStockForCurrentOrderLines(out var hasStock) || !hasStock)
+            {
+                return false;
+            }
+
+            var partnerFallback = !partnerId.HasValue
+                ? "контрагента"
+                : (_partnersAll.FirstOrDefault(partner => partner.Id == partnerId.Value)?.DisplayName ?? $"ID {partnerId.Value}");
+            previewText = $"Найден складской остаток. Закрепить его для заказа №{orderRef.Trim()} для контрагента {partnerFallback}?";
+            return true;
+        }
+
+        var requiredByItem = _lines
+            .GroupBy(line => line.ItemId)
+            .ToDictionary(group => group.Key, group => group.Sum(line => line.QtyOrdered));
+        if (requiredByItem.Count == 0)
+        {
+            return false;
+        }
+
+        var orderId = _orderId;
+        var candidateRows = huStockRows
+            .Where(row => requiredByItem.ContainsKey(row.ItemId))
+            .Where(row => row.Qty > QtyTolerance)
+            .Where(row => !string.IsNullOrWhiteSpace(row.Hu))
+            .Where(row => !row.ReservedCustomerOrderId.HasValue
+                          || (orderId.HasValue && row.ReservedCustomerOrderId.Value == orderId.Value))
+            .OrderBy(row => row.ItemId)
+            .ThenBy(row => row.Hu, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.LocationId)
+            .ToList();
+        if (candidateRows.Count == 0)
+        {
+            return false;
+        }
+
+        var partnerName = partnerId.HasValue
+            ? _partnersAll.FirstOrDefault(partner => partner.Id == partnerId.Value)?.DisplayName
+            : null;
+
+        var huList = candidateRows
+            .Select(row => row.Hu.Trim())
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (huList.Count == 0)
+        {
+            return false;
+        }
+
+        var partnerDisplay = !string.IsNullOrWhiteSpace(partnerName) ? partnerName : "контрагента";
+        previewText =
+            $"Найдены остатки {string.Join(", ", huList)}. " +
+            $"Закрепить их для заказа №{orderRef.Trim()} для контрагента {partnerDisplay}?";
         return true;
     }
 

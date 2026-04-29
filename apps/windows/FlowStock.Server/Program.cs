@@ -2316,6 +2316,8 @@ ORDER BY COALESCE(led.hu_code, led.hu), l.code;";
 
 app.MapGet("/api/hu-stock", (HttpRequest request, IDataStore store) =>
 {
+    var contextByKey = HuStockReadModelMapper.BuildContextMap(store.GetHuOrderContextRows());
+
     var orderIdText = request.Query["order_id"].ToString();
     var itemIdText = request.Query["item_id"].ToString();
     if (long.TryParse(orderIdText, out var orderId)
@@ -2365,13 +2367,12 @@ ORDER BY h.hu_code;";
                     continue;
                 }
 
-                list.Add(new
-                {
-                    hu = reader.GetString(0),
-                    item_id = itemId,
-                    location_id = reader.GetInt64(1),
-                    qty = reader.GetDouble(2)
-                });
+                list.Add(HuStockReadModelMapper.Map(
+                    itemId,
+                    reader.GetInt64(1),
+                    reader.GetString(0),
+                    reader.GetDouble(2),
+                    contextByKey));
             }
 
             return Results.Ok(list);
@@ -2379,26 +2380,14 @@ ORDER BY h.hu_code;";
 
         var filtered = store.GetHuStockRows()
             .Where(row => row.ItemId == itemId)
-            .Select(row => new
-            {
-                hu = row.HuCode,
-                item_id = row.ItemId,
-                location_id = row.LocationId,
-                qty = row.Qty
-            })
+            .Select(row => HuStockReadModelMapper.Map(row.ItemId, row.LocationId, row.HuCode, row.Qty, contextByKey))
             .ToList();
 
         return Results.Ok(filtered);
     }
 
     var rows = store.GetHuStockRows()
-        .Select(row => new
-        {
-            hu = row.HuCode,
-            item_id = row.ItemId,
-            location_id = row.LocationId,
-            qty = row.Qty
-        })
+        .Select(row => HuStockReadModelMapper.Map(row.ItemId, row.LocationId, row.HuCode, row.Qty, contextByKey))
         .ToList();
 
     return Results.Ok(rows);

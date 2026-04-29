@@ -123,6 +123,7 @@ public interface IDataStore
     double GetAvailableQty(long itemId, long locationId, string? huCode);
     IReadOnlyDictionary<string, double> GetLedgerTotalsByHu();
     IReadOnlyList<HuStockRow> GetHuStockRows();
+    IReadOnlyList<HuOrderContextRow> GetHuOrderContextRows();
 
     HuRecord CreateHuRecord(string? createdBy);
     HuRecord CreateHuRecord(string code, string? createdBy);

@@ -245,6 +245,11 @@ public static class OrderUpdateEndpoint
             return "ORDER_TYPE_CHANGE_FORBIDDEN";
         }
 
+        if (ex.Message.Contains("уже зарезервирован", StringComparison.OrdinalIgnoreCase))
+        {
+            return "HU_RESERVATION_CONFLICT";
+        }
+
         return "ORDER_UPDATE_FAILED";
     }
 

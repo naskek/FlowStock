@@ -262,6 +262,20 @@ public sealed class WpfReadApiService
             out rows);
     }
 
+    public bool TryGetHuStockRows(out IReadOnlyList<HuStockContextRow> rows)
+    {
+        rows = Array.Empty<HuStockContextRow>();
+        return TryRead(
+            "/api/hu-stock",
+            root => root.ValueKind == JsonValueKind.Array
+                ? root.EnumerateArray()
+                    .Select(MapHuStockContextRow)
+                    .ToList()
+                : new List<HuStockContextRow>(),
+            "hu-stock",
+            out rows);
+    }
+
     public bool TryGetItemAvailability(out IReadOnlyDictionary<long, double> availability)
     {
         availability = new Dictionary<long, double>();
@@ -626,6 +640,23 @@ public sealed class WpfReadApiService
             ItemTypeName = ReadString(element, "item_type_name"),
             ItemTypeEnableMinStockControl = ReadBool(element, "item_type_enable_min_stock_control"),
             MinStockQty = ReadNullableDouble(element, "min_stock_qty")
+        };
+    }
+
+    private static HuStockContextRow MapHuStockContextRow(JsonElement element)
+    {
+        return new HuStockContextRow
+        {
+            Hu = ReadString(element, "hu") ?? string.Empty,
+            ItemId = ReadInt64(element, "item_id"),
+            LocationId = ReadInt64(element, "location_id"),
+            Qty = ReadDouble(element, "qty"),
+            OriginInternalOrderId = ReadNullableInt64(element, "origin_internal_order_id"),
+            OriginInternalOrderRef = ReadString(element, "origin_internal_order_ref"),
+            ReservedCustomerOrderId = ReadNullableInt64(element, "reserved_customer_order_id"),
+            ReservedCustomerOrderRef = ReadString(element, "reserved_customer_order_ref"),
+            ReservedCustomerId = ReadNullableInt64(element, "reserved_customer_id"),
+            ReservedCustomerName = ReadString(element, "reserved_customer_name")
         };
     }
 
