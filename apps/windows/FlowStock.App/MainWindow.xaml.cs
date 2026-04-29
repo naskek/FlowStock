@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 using ExcelDataReader;
 using FlowStock.Core.Models;
@@ -656,6 +657,11 @@ public partial class MainWindow : Window
 
     private static string ResolveOriginOrderDisplay(StockRow row, IReadOnlyDictionary<string, HuStockContextRow> contextMap)
     {
+        if (!row.ItemTypeEnableOrderReservation)
+        {
+            return "—";
+        }
+
         var context = TryGetHuContext(row, contextMap);
         return string.IsNullOrWhiteSpace(context?.OriginInternalOrderRef)
             ? "—"
@@ -664,6 +670,11 @@ public partial class MainWindow : Window
 
     private static string ResolveReservedOrderDisplay(StockRow row, IReadOnlyDictionary<string, HuStockContextRow> contextMap)
     {
+        if (!row.ItemTypeEnableOrderReservation)
+        {
+            return "—";
+        }
+
         var context = TryGetHuContext(row, contextMap);
         return string.IsNullOrWhiteSpace(context?.ReservedCustomerOrderRef)
             ? "не зарезервировано"
@@ -672,6 +683,11 @@ public partial class MainWindow : Window
 
     private static string ResolveReservedCustomerDisplay(StockRow row, IReadOnlyDictionary<string, HuStockContextRow> contextMap)
     {
+        if (!row.ItemTypeEnableOrderReservation)
+        {
+            return "—";
+        }
+
         var context = TryGetHuContext(row, contextMap);
         return string.IsNullOrWhiteSpace(context?.ReservedCustomerName)
             ? "не зарезервировано"
@@ -907,7 +923,20 @@ public partial class MainWindow : Window
 
     private void StockGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
-        if (StockGrid.SelectedItem is not StockDisplayRow row)
+        if (e.OriginalSource is not DependencyObject source)
+        {
+            return;
+        }
+
+        var sourceGrid = FindVisualParent<System.Windows.Controls.DataGrid>(source);
+        if (!ReferenceEquals(sourceGrid, StockGrid))
+        {
+            // Ignore double-clicks inside row details nested grids.
+            return;
+        }
+
+        var clickedRow = FindVisualParent<System.Windows.Controls.DataGridRow>(source);
+        if (clickedRow?.DataContext is not StockDisplayRow row)
         {
             return;
         }
@@ -927,6 +956,23 @@ public partial class MainWindow : Window
         row.ExpandMarker = nextExpanded ? "▼" : "▶";
         StockGrid.Items.Refresh();
         ApplyExpandedStockRowDetailsVisibility();
+    }
+
+    private static T? FindVisualParent<T>(DependencyObject? source)
+        where T : DependencyObject
+    {
+        var current = source;
+        while (current != null)
+        {
+            if (current is T matched)
+            {
+                return matched;
+            }
+
+            current = VisualTreeHelper.GetParent(current);
+        }
+
+        return null;
     }
 
     private void ApplyExpandedStockRowDetailsVisibility()

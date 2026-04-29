@@ -332,7 +332,7 @@ public sealed class CatalogService
         _data.DeleteTara(taraId);
     }
 
-    public long CreateItemType(string name, string? code, int sortOrder, bool isActive, bool isVisibleInProductCatalog, bool enableMinStockControl, bool minStockUsesOrderBinding, bool enableHuDistribution)
+    public long CreateItemType(string name, string? code, int sortOrder, bool isActive, bool isVisibleInProductCatalog, bool enableMinStockControl, bool minStockUsesOrderBinding, bool enableOrderReservation, bool enableHuDistribution)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -348,11 +348,12 @@ public sealed class CatalogService
             IsVisibleInProductCatalog = isVisibleInProductCatalog,
             EnableMinStockControl = enableMinStockControl,
             MinStockUsesOrderBinding = minStockUsesOrderBinding,
+            EnableOrderReservation = enableOrderReservation,
             EnableHuDistribution = enableHuDistribution
         });
     }
 
-    public void UpdateItemType(long itemTypeId, string name, string? code, int sortOrder, bool isActive, bool isVisibleInProductCatalog, bool enableMinStockControl, bool minStockUsesOrderBinding, bool enableHuDistribution)
+    public void UpdateItemType(long itemTypeId, string name, string? code, int sortOrder, bool isActive, bool isVisibleInProductCatalog, bool enableMinStockControl, bool minStockUsesOrderBinding, bool enableOrderReservation, bool enableHuDistribution)
     {
         if (itemTypeId <= 0)
         {
@@ -379,6 +380,7 @@ public sealed class CatalogService
             IsVisibleInProductCatalog = isVisibleInProductCatalog,
             EnableMinStockControl = enableMinStockControl,
             MinStockUsesOrderBinding = minStockUsesOrderBinding,
+            EnableOrderReservation = enableOrderReservation,
             EnableHuDistribution = enableHuDistribution
         });
     }

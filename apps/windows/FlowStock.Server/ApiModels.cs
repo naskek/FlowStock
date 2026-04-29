@@ -610,6 +610,9 @@ public sealed class UpsertItemTypeRequest
     [JsonPropertyName("min_stock_uses_order_binding")]
     public bool MinStockUsesOrderBinding { get; set; }
 
+    [JsonPropertyName("enable_order_reservation")]
+    public bool EnableOrderReservation { get; set; }
+
     [JsonPropertyName("enable_hu_distribution")]
     public bool EnableHuDistribution { get; set; }
 }

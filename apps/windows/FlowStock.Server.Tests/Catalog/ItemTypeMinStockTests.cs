@@ -120,6 +120,7 @@ public sealed class ItemTypeMinStockTests
             isVisibleInProductCatalog: true,
             enableMinStockControl: true,
             minStockUsesOrderBinding: true,
+            enableOrderReservation: true,
             enableHuDistribution: false);
 
         Assert.NotNull(captured);
@@ -145,6 +146,7 @@ public sealed class ItemTypeMinStockTests
             isVisibleInProductCatalog: true,
             enableMinStockControl: true,
             minStockUsesOrderBinding: true,
+            enableOrderReservation: true,
             enableHuDistribution: false);
 
         Assert.NotNull(captured);
