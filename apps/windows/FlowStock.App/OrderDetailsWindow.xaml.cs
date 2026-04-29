@@ -424,11 +424,18 @@ public partial class OrderDetailsWindow : Window
             return false;
         }
 
+        var reservationEnabledItems = GetOrderReservationEnabledItemIds(requiredByItem.Keys);
+        if (reservationEnabledItems.Count == 0)
+        {
+            return false;
+        }
+
         var orderId = _orderId;
         var candidateRows = huStockRows
-            .Where(row => requiredByItem.ContainsKey(row.ItemId))
+            .Where(row => reservationEnabledItems.Contains(row.ItemId))
             .Where(row => row.Qty > QtyTolerance)
             .Where(row => !string.IsNullOrWhiteSpace(row.Hu))
+            .Where(row => row.OriginInternalOrderId.HasValue)
             .Where(row => !row.ReservedCustomerOrderId.HasValue
                           || (orderId.HasValue && row.ReservedCustomerOrderId.Value == orderId.Value))
             .OrderBy(row => row.ItemId)
@@ -462,10 +469,42 @@ public partial class OrderDetailsWindow : Window
         return true;
     }
 
+    private HashSet<long> GetOrderReservationEnabledItemIds(IEnumerable<long> itemIds)
+    {
+        var targetItemIds = itemIds.ToHashSet();
+        if (targetItemIds.Count == 0)
+        {
+            return [];
+        }
+
+        if (!_services.WpfReadApi.TryGetItems(null, out var items)
+            || !_services.WpfCatalogApi.TryGetItemTypes(includeInactive: true, out var itemTypes))
+        {
+            return [];
+        }
+
+        var reservationTypeIds = itemTypes
+            .Where(type => type.EnableOrderReservation)
+            .Select(type => type.Id)
+            .ToHashSet();
+
+        return items
+            .Where(item => targetItemIds.Contains(item.Id))
+            .Where(item => item.ItemTypeId.HasValue && reservationTypeIds.Contains(item.ItemTypeId.Value))
+            .Select(item => item.Id)
+            .ToHashSet();
+    }
+
     private bool TryHasStockForCurrentOrderLines(out bool hasStock)
     {
         hasStock = false;
         if (_lines.Count == 0)
+        {
+            return true;
+        }
+
+        var reservationEnabledItems = GetOrderReservationEnabledItemIds(_lines.Select(line => line.ItemId));
+        if (reservationEnabledItems.Count == 0)
         {
             return true;
         }
@@ -477,6 +516,7 @@ public partial class OrderDetailsWindow : Window
 
         hasStock = _lines
             .GroupBy(line => line.ItemId)
+            .Where(group => reservationEnabledItems.Contains(group.Key))
             .Any(group => availability.TryGetValue(group.Key, out var qty) && qty > QtyTolerance);
         return true;
     }

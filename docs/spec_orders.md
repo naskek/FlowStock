@@ -49,7 +49,7 @@
 - После закрытия внутреннего выпуска (`PRD` по `INTERNAL`) сервер автоматически пересчитывает эти резервы по всем клиентским заказам (FIFO по дате создания заказа), чтобы новый складской объем сразу становился доступным к отгрузке/добору в выпуске.
 - Один и тот же HU/объем не может быть одновременно зарезервирован за несколькими клиентскими заказами.
 - Для клиентского заказа используется флаг `bind_reserved_stock`:
-  - `true`: сервер на этапе сохранения заказа резервирует доступные HU/локации из прошлых внутренних выпусков в `order_receipt_plan_lines`;
+  - `true`: сервер на этапе сохранения заказа резервирует доступные HU/локации из прошлых внутренних выпусков в `order_receipt_plan_lines` только для товаров, тип которых имеет `item_types.enable_order_reservation = true`;
   - `false`: привязка складского остатка к заказу не выполняется.
 - В WPF подтверждение привязки складского остатка запрашивается при сохранении клиентского заказа и только если по его позициям есть остаток на складе.
 - WPF/TSD автозаполнение PRD из заказа берет только незакрытый остаток `receipt_remaining` (режим `?detailed=1`), включая заранее назначенные `to_location` и `to_hu` из уже сохраненного серверного плана заказа.
@@ -83,8 +83,9 @@
 - `available_qty` = сумма `ledger.qty_delta` по `item_id` (по всем местам хранения)
 - `shipped_qty` = сумма `doc_lines.qty` по закрытым OUTBOUND, где `doc_lines.order_line_id = order_lines.id`
 - `remaining_qty` = max(0, `qty_ordered` - `shipped_qty`)
-- `can_ship_now` = min(`remaining_qty`, max(0, `produced_qty_for_order` - `shipped_qty`))
-- `shortage` = max(0, `remaining_qty` - max(0, `produced_qty_for_order` - `shipped_qty`))
+- если `bind_reserved_stock = true` и тип товара имеет `enable_order_reservation = true`, `can_ship_now` = min(`remaining_qty`, max(0, `produced_qty_for_order` - `shipped_qty`))
+- иначе `can_ship_now` = min(`remaining_qty`, max(0, `available_qty`))
+- `shortage` считается от того же доступного объема, который использован для `can_ship_now`
   - где `produced_qty_for_order` = объем, выпущенный по строке этого же заказа (`PRD`) + объем, заранее присвоенный из прошлых внутренних выпусков (`order_receipt_plan_lines` для `CUSTOMER`).
 
 Для `INTERNAL`:

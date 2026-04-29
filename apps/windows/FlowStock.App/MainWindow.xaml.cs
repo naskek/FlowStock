@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -954,7 +955,7 @@ public partial class MainWindow : Window
 
         row.IsExpanded = nextExpanded;
         row.ExpandMarker = nextExpanded ? "▼" : "▶";
-        StockGrid.Items.Refresh();
+        clickedRow.DetailsVisibility = nextExpanded ? Visibility.Visible : Visibility.Collapsed;
         ApplyExpandedStockRowDetailsVisibility();
     }
 
@@ -2448,8 +2449,13 @@ public partial class MainWindow : Window
         public DateTime CreatedAt => Partner.CreatedAt;
     }
 
-    private sealed record StockDisplayRow
+    private sealed class StockDisplayRow : INotifyPropertyChanged
     {
+        private bool _isExpanded;
+        private string _expandMarker = "▶";
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+
         public long ItemId { get; init; }
         public string ItemName { get; init; } = string.Empty;
         public string ItemTypeName { get; init; } = string.Empty;
@@ -2457,12 +2463,40 @@ public partial class MainWindow : Window
         public string PackagingDisplay { get; init; } = string.Empty;
         public string BaseDisplay { get; init; } = string.Empty;
         public bool IsBelowMin { get; init; }
-        public bool IsExpanded { get; set; }
-        public string ExpandMarker { get; set; } = "▶";
+        public bool IsExpanded
+        {
+            get => _isExpanded;
+            set
+            {
+                if (_isExpanded == value)
+                {
+                    return;
+                }
+
+                _isExpanded = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsExpanded)));
+            }
+        }
+
+        public string ExpandMarker
+        {
+            get => _expandMarker;
+            set
+            {
+                if (string.Equals(_expandMarker, value, StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                _expandMarker = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ExpandMarker)));
+            }
+        }
+
         public IReadOnlyList<StockDetailDisplayRow> Details { get; init; } = Array.Empty<StockDetailDisplayRow>();
     }
 
-    private sealed record StockDetailDisplayRow
+    private sealed class StockDetailDisplayRow
     {
         public string LocationCode { get; init; } = string.Empty;
         public string HuDisplay { get; init; } = string.Empty;

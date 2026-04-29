@@ -494,6 +494,12 @@ public sealed class OrderService
         var shippedByLine = _data.GetShippedTotalsByOrderLine(order.Id);
         var producedByOrderLine = _data.GetOrderReceiptRemaining(order.Id)
             .ToDictionary(line => line.OrderLineId, line => line.QtyReceived);
+        var useOrderReservationByItem = order.UseReservedStock
+            ? lines
+                .Select(line => line.ItemId)
+                .Distinct()
+                .ToDictionary(itemId => itemId, itemId => ItemTypeUsesOrderReservation(_data, itemId))
+            : new Dictionary<long, bool>();
 
         foreach (var line in lines)
         {
@@ -502,9 +508,12 @@ public sealed class OrderService
             var produced = producedByOrderLine.TryGetValue(line.Id, out var producedQty) ? producedQty : 0;
             var remaining = Math.Max(0, line.QtyOrdered - shipped);
             var reservedForLine = Math.Max(0, produced - shipped);
-            // Для клиентского заказа отгрузка допускается только из объема,
-            // выпущенного под этот заказ (HU-резерв заказа), без добора из свободного остатка.
-            var availableForShip = reservedForLine;
+            var useOrderReservation = order.UseReservedStock
+                                      && useOrderReservationByItem.TryGetValue(line.ItemId, out var enabled)
+                                      && enabled;
+            var availableForShip = useOrderReservation
+                ? reservedForLine
+                : Math.Max(0, available);
             var canShip = Math.Min(remaining, availableForShip);
             var shortage = Math.Max(0, remaining - availableForShip);
 
@@ -590,6 +599,7 @@ public sealed class OrderService
     {
         var orderLines = store.GetOrderLines(orderId)
             .Where(line => line.QtyOrdered > QtyTolerance)
+            .Where(line => ItemTypeUsesOrderReservation(store, line.ItemId))
             .OrderBy(line => line.Id)
             .ToList();
         if (orderLines.Count == 0)
@@ -719,6 +729,17 @@ public sealed class OrderService
         }
 
         store.ReplaceOrderReceiptPlanLines(orderId, plannedLines);
+    }
+
+    private static bool ItemTypeUsesOrderReservation(IDataStore store, long itemId)
+    {
+        var item = store.FindItemById(itemId);
+        if (item?.ItemTypeId is not long itemTypeId)
+        {
+            return false;
+        }
+
+        return store.GetItemType(itemTypeId)?.EnableOrderReservation == true;
     }
 
     private static List<InternalReleaseSource> BuildAvailableInternalReleaseSources(IDataStore store, long targetOrderId)
