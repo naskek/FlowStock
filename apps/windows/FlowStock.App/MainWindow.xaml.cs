@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Text;
 using System.Windows;
 using System.Windows.Input;
@@ -35,6 +36,7 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _autoRefreshTimer;
     private readonly HashSet<long> _expandedStockItemIds = new();
     private bool _autoRefreshInProgress;
+    private bool _serverApiUnavailableAtStartup;
     private bool _suppressStockFilterSelectionChanged;
     private static bool _excelEncodingRegistered;
     private static readonly TimeSpan AutoRefreshInterval = TimeSpan.FromSeconds(20);
@@ -176,6 +178,25 @@ public partial class MainWindow : Window
     {
         try
         {
+            if (!TryCheckServerApiAvailable(out var serverApiError))
+            {
+                _serverApiUnavailableAtStartup = true;
+                _services.AppLogger.Warn($"FlowStock Server API unavailable at startup: {serverApiError}");
+                LoadLowStockView(new Dictionary<long, LowStockSnapshot>());
+                UpdateStockEmptyState(null);
+                MessageBox.Show(
+                    "FlowStock Server API недоступен, поэтому данные не загружены." +
+                    Environment.NewLine +
+                    Environment.NewLine +
+                    $"Проверьте адрес сервера в настройках: {GetConfiguredServerBaseUrl()}" +
+                    Environment.NewLine +
+                    $"Техническая ошибка: {serverApiError}",
+                    "FlowStock",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
             LoadAll();
         }
         catch (Exception ex)
@@ -210,7 +231,84 @@ public partial class MainWindow : Window
 
     private void MainWindow_Loaded(object? sender, RoutedEventArgs e)
     {
+        if (_serverApiUnavailableAtStartup)
+        {
+            return;
+        }
+
         _autoRefreshTimer.Start();
+    }
+
+    private bool TryCheckServerApiAvailable(out string error)
+    {
+        error = string.Empty;
+        try
+        {
+            using var handler = new HttpClientHandler();
+            if (IsInvalidTlsAllowed())
+            {
+                handler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
+            }
+
+            using var client = new HttpClient(handler)
+            {
+                BaseAddress = new Uri(GetConfiguredServerBaseUrl(), UriKind.Absolute),
+                Timeout = TimeSpan.FromSeconds(2)
+            };
+            using var response = client.GetAsync("/api/version", HttpCompletionOption.ResponseHeadersRead)
+                .ConfigureAwait(false)
+                .GetAwaiter()
+                .GetResult();
+
+            if (response.IsSuccessStatusCode)
+            {
+                return true;
+            }
+
+            error = $"{(int)response.StatusCode} {response.ReasonPhrase}";
+            return false;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    private string GetConfiguredServerBaseUrl()
+    {
+        var env = Environment.GetEnvironmentVariable("FLOWSTOCK_SERVER_BASE_URL");
+        if (!string.IsNullOrWhiteSpace(env))
+        {
+            return FlowStockUrlHelper.NormalizeRootUrlOrDefault(
+                env,
+                FlowStockEndpointDefaults.ServerBaseUrl,
+                Uri.UriSchemeHttps);
+        }
+
+        return _services.Settings.Load().Server.GetServerBaseUrlOrDefault();
+    }
+
+    private bool IsInvalidTlsAllowed()
+    {
+        var env = Environment.GetEnvironmentVariable("FLOWSTOCK_SERVER_ALLOW_INVALID_TLS");
+        if (!string.IsNullOrWhiteSpace(env))
+        {
+            return env.Trim().ToLowerInvariant() switch
+            {
+                "1" => true,
+                "true" => true,
+                "yes" => true,
+                "on" => true,
+                "0" => false,
+                "false" => false,
+                "no" => false,
+                "off" => false,
+                _ => _services.Settings.Load().Server.AllowInvalidTls
+            };
+        }
+
+        return _services.Settings.Load().Server.AllowInvalidTls;
     }
 
     private void MainWindow_Closed(object? sender, EventArgs e)
