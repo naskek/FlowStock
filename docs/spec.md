@@ -11,6 +11,7 @@
   - dry-run: `dotnet FlowStock.Server.dll maintenance backfill-reservations`;
   - apply: `dotnet FlowStock.Server.dll maintenance backfill-reservations --apply`;
   - deploy wrapper: `bash deploy/scripts/backfill_order_reservations.sh [--apply]`.
+  - WPF может запускать dry-run/apply только через server API `/api/admin/maintenance/backfill-reservations/*`; apply требует `confirm = "APPLY"`.
   - Команда меняет только `order_receipt_plan_lines`, не пишет в `ledger` и не редактирует закрытые документы.
 
 ## Компоненты

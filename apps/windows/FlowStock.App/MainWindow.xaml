@@ -23,8 +23,6 @@
                     <MenuItem Header="Нумерация документов..." Click="DocNumberingSettingsMenu_Click" />
                 </MenuItem>
                 <MenuItem Header="Сервис">
-                    <MenuItem Header="Потребность производства..." Click="OpenProductionNeed_Click" />
-                    <Separator />
                     <MenuItem Header="Входящие запросы..." Click="OpenIncomingRequests_Click" />
                     <Separator />
                     <MenuItem Header="Резервные копии..." Click="OpenBackupManager_Click" />
@@ -174,6 +172,45 @@
                         </Grid>
                     </Border>
                 </Grid>
+            </TabItem>
+            <TabItem Header="Потребность производства">
+                <DockPanel Margin="8">
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+                        <CheckBox x:Name="ProductionNeedShowAllRowsCheckBox"
+                                  Content="Показать все строки"
+                                  VerticalAlignment="Center"
+                                  Checked="ProductionNeedShowAllRowsCheckBox_Changed"
+                                  Unchecked="ProductionNeedShowAllRowsCheckBox_Changed" />
+                        <Button Content="Обновить"
+                                Margin="12,0,0,0"
+                                Padding="12,4"
+                                Click="ProductionNeedRefresh_Click" />
+                        <TextBlock x:Name="ProductionNeedSummaryText"
+                                   Margin="16,0,0,0"
+                                   VerticalAlignment="Center"
+                                   FontWeight="SemiBold" />
+                    </StackPanel>
+                    <DataGrid x:Name="ProductionNeedGrid"
+                              AutoGenerateColumns="False"
+                              IsReadOnly="True"
+                              CanUserAddRows="False"
+                              CanUserDeleteRows="False"
+                              SelectionMode="Single"
+                              HeadersVisibility="Column"
+                              GridLinesVisibility="Horizontal">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="ID" Binding="{Binding ItemId}" Width="80" />
+                            <DataGridTextColumn Header="Номенклатура" Binding="{Binding ItemName}" Width="2*" />
+                            <DataGridTextColumn Header="Тип" Binding="{Binding ItemTypeName}" Width="1.3*" />
+                            <DataGridTextColumn Header="Физ. остаток" Binding="{Binding PhysicalStockQty, StringFormat={}{0:0.###}}" Width="120" />
+                            <DataGridTextColumn Header="Открытый спрос" Binding="{Binding ActiveCustomerOrderOpenQty, StringFormat={}{0:0.###}}" Width="130" />
+                            <DataGridTextColumn Header="Резерв" Binding="{Binding ReservedCustomerOrderQty, StringFormat={}{0:0.###}}" Width="110" />
+                            <DataGridTextColumn Header="Свободный остаток" Binding="{Binding FreeStockQty, StringFormat={}{0:0.###}}" Width="130" />
+                            <DataGridTextColumn Header="Мин. остаток" Binding="{Binding MinStockQty, StringFormat={}{0:0.###}}" Width="120" />
+                            <DataGridTextColumn Header="Потребность" Binding="{Binding ProductionNeedQty, StringFormat={}{0:0.###}}" Width="120" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
             </TabItem>
             <TabItem Header="Операции">
                 <Grid>

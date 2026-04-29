@@ -29,6 +29,7 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<Order> _orders = new();
     private readonly ObservableCollection<StockDisplayRow> _stock = new();
     private readonly ObservableCollection<LowStockDisplayRow> _lowStock = new();
+    private readonly ObservableCollection<ProductionNeedDisplayRow> _productionNeedRows = new();
     private readonly ObservableCollection<StockLocationFilterOption> _stockLocationFilters = new();
     private readonly ObservableCollection<StockHuFilterOption> _stockHuFilters = new();
     private readonly ObservableCollection<StockItemTypeFilterOption> _stockItemTypeFilters = new();
@@ -61,12 +62,13 @@ public partial class MainWindow : Window
     private Partner? _selectedPartner;
     private bool _adminDeleteModeEnabled = false;
     private const int TabStatusIndex = 0;
-    private const int TabDocsIndex = 1;
-    private const int TabOrdersIndex = 2;
-    private const int TabItemsIndex = 3;
-    private const int TabLocationsIndex = 4;
-    private const int TabPartnersIndex = 5;
-    private const int TabKmIndex = 6;
+    private const int TabProductionNeedIndex = 1;
+    private const int TabDocsIndex = 2;
+    private const int TabOrdersIndex = 3;
+    private const int TabItemsIndex = 4;
+    private const int TabLocationsIndex = 5;
+    private const int TabPartnersIndex = 6;
+    private const int TabKmIndex = 7;
 
     public MainWindow(AppServices services)
     {
@@ -80,6 +82,7 @@ public partial class MainWindow : Window
         OrdersGrid.ItemsSource = _orders;
         StockGrid.ItemsSource = _stock;
         LowStockGrid.ItemsSource = _lowStock;
+        ProductionNeedGrid.ItemsSource = _productionNeedRows;
         StockLocationFilter.ItemsSource = _stockLocationFilters;
         StockHuFilter.ItemsSource = _stockHuFilters;
         StockItemTypeFilter.ItemsSource = _stockItemTypeFilters;
@@ -351,6 +354,9 @@ public partial class MainWindow : Window
                 case TabStatusIndex:
                     LoadItemTypes();
                     LoadStock(StatusSearchBox.Text);
+                    break;
+                case TabProductionNeedIndex:
+                    LoadProductionNeedRows();
                     break;
                 case TabDocsIndex:
                     LoadDocs();
@@ -1010,6 +1016,64 @@ public partial class MainWindow : Window
         LoadStock(StatusSearchBox.Text);
     }
 
+    private void ProductionNeedRefresh_Click(object sender, RoutedEventArgs e)
+    {
+        LoadProductionNeedRows(showErrorMessage: true);
+    }
+
+    private void ProductionNeedShowAllRowsCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded)
+        {
+            return;
+        }
+
+        LoadProductionNeedRows();
+    }
+
+    private void LoadProductionNeedRows(bool showErrorMessage = false)
+    {
+        if (!_services.WpfReadApi.TryGetProductionNeedRows(
+                includeZeroNeed: ProductionNeedShowAllRowsCheckBox.IsChecked == true,
+                out var rows))
+        {
+            _productionNeedRows.Clear();
+            ProductionNeedSummaryText.Text = "Не удалось загрузить отчет. Проверьте доступность FlowStock Server API.";
+            if (showErrorMessage)
+            {
+                MessageBox.Show(
+                    "Не удалось загрузить отчет потребности производства. Проверьте доступность FlowStock Server API.",
+                    "Потребность производства",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+
+            return;
+        }
+
+        _productionNeedRows.Clear();
+        foreach (var row in rows)
+        {
+            _productionNeedRows.Add(new ProductionNeedDisplayRow
+            {
+                ItemId = row.ItemId,
+                ItemName = row.ItemName,
+                ItemTypeName = string.IsNullOrWhiteSpace(row.ItemTypeName) ? "—" : row.ItemTypeName,
+                PhysicalStockQty = row.PhysicalStockQty,
+                ActiveCustomerOrderOpenQty = row.ActiveCustomerOrderOpenQty,
+                ReservedCustomerOrderQty = row.ReservedCustomerOrderQty,
+                FreeStockQty = row.FreeStockQty,
+                MinStockQty = row.MinStockQty,
+                ProductionNeedQty = row.ProductionNeedQty
+            });
+        }
+
+        var modeText = ProductionNeedShowAllRowsCheckBox.IsChecked == true
+            ? "Все строки"
+            : "Только строки с потребностью";
+        ProductionNeedSummaryText.Text = $"Позиций: {_productionNeedRows.Count}. {modeText}.";
+    }
+
     private string? GetSelectedStockLocationCode()
     {
         return (StockLocationFilter.SelectedItem as StockLocationFilterOption)?.Code;
@@ -1133,12 +1197,12 @@ public partial class MainWindow : Window
         OpenDocDetails(doc);
     }
 
-    private void OpenDocDetails(Doc doc)
+    private void OpenDocDetails(Doc doc, string? createdDraftDocUid = null)
     {
         try
         {
             var wasClosed = doc.Status == DocStatus.Closed;
-            var window = new OperationDetailsWindow(_services, doc.Id)
+            var window = new OperationDetailsWindow(_services, doc.Id, createdDraftDocUid)
             {
                 Owner = this
             };
@@ -2064,7 +2128,7 @@ public partial class MainWindow : Window
                       ?? (_services.WpfReadApi.TryGetDoc(window.CreatedDocId.Value, out var apiDoc) ? apiDoc : null);
         if (created != null)
         {
-            OpenDocDetails(created);
+            OpenDocDetails(created, window.CreatedDocUid);
         }
     }
 
@@ -2326,15 +2390,6 @@ public partial class MainWindow : Window
         window.ShowDialog();
     }
 
-    private void OpenProductionNeed_Click(object sender, RoutedEventArgs e)
-    {
-        var window = new ProductionNeedWindow(_services)
-        {
-            Owner = this
-        };
-        window.ShowDialog();
-    }
-
     private void OpenAdmin_Click(object sender, RoutedEventArgs e)
     {
         var window = new AdminWindow(
@@ -2554,6 +2609,19 @@ public partial class MainWindow : Window
         public string Name => Partner.Name;
         public string? Code => Partner.Code;
         public DateTime CreatedAt => Partner.CreatedAt;
+    }
+
+    private sealed record ProductionNeedDisplayRow
+    {
+        public long ItemId { get; init; }
+        public string ItemName { get; init; } = string.Empty;
+        public string ItemTypeName { get; init; } = string.Empty;
+        public double PhysicalStockQty { get; init; }
+        public double ActiveCustomerOrderOpenQty { get; init; }
+        public double ReservedCustomerOrderQty { get; init; }
+        public double FreeStockQty { get; init; }
+        public double MinStockQty { get; init; }
+        public double ProductionNeedQty { get; init; }
     }
 
     private sealed class StockDisplayRow : INotifyPropertyChanged

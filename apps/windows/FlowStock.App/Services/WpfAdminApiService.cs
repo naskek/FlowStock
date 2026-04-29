@@ -63,6 +63,26 @@ public sealed class WpfAdminApiService
             .ConfigureAwait(false);
     }
 
+    public async Task<WpfMaintenanceBackfillReportResult> RunReservationBackfillDryRunAsync(CancellationToken cancellationToken = default)
+    {
+        return await TryPostForReportAsync(
+                "/api/admin/maintenance/backfill-reservations/dry-run",
+                new { },
+                "admin-backfill-reservations-dry-run",
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    public async Task<WpfMaintenanceBackfillReportResult> RunReservationBackfillApplyAsync(string? confirm, CancellationToken cancellationToken = default)
+    {
+        return await TryPostForReportAsync(
+                "/api/admin/maintenance/backfill-reservations/apply",
+                new { confirm },
+                "admin-backfill-reservations-apply",
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     public bool TryGetTsdDevices(out IReadOnlyList<TsdDeviceInfo> devices)
     {
         devices = Array.Empty<TsdDeviceInfo>();
@@ -175,6 +195,47 @@ public sealed class WpfAdminApiService
         }
     }
 
+    private async Task<WpfMaintenanceBackfillReportResult> TryPostForReportAsync(
+        string relativePath,
+        object payload,
+        string operationName,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (!TryLoadConfiguration(out var configuration))
+            {
+                _logger.Info($"Admin API skipped for {operationName}: server base URL is not configured.");
+                return WpfMaintenanceBackfillReportResult.Failure("Server API не настроен.");
+            }
+
+            using var handler = CreateHandler(configuration);
+            using var client = new HttpClient(handler)
+            {
+                BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
+                Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
+            };
+            using var request = new HttpRequestMessage(HttpMethod.Post, relativePath)
+            {
+                Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+            };
+            using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return WpfMaintenanceBackfillReportResult.Failure(await TryReadApiErrorAsync(response).ConfigureAwait(false));
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+            return WpfMaintenanceBackfillReportResult.Success(MapBackfillReport(document.RootElement));
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"Admin API failed for {operationName}", ex);
+            return WpfMaintenanceBackfillReportResult.Failure(ex.Message);
+        }
+    }
+
     private JsonDocument? SendGet(string relativePath, WpfAdminApiConfiguration configuration)
     {
         using var handler = CreateHandler(configuration);
@@ -247,6 +308,8 @@ public sealed class WpfAdminApiService
                 "MISSING_PASSWORD" => "Пароль не задан.",
                 "DEVICE_NOT_FOUND" => "Аккаунт не найден на сервере.",
                 "LOGIN_ALREADY_EXISTS" => "Логин уже используется другим аккаунтом ПК/ТСД.",
+                "CONFIRM_REQUIRED" => "Для apply нужно ввести подтверждение APPLY.",
+                "BACKFILL_ALREADY_RUNNING" => "Backfill резервов уже выполняется на сервере.",
                 _ => $"Server returned error: {errorCode}"
             };
         }
@@ -361,6 +424,169 @@ public sealed class WpfAdminApiService
     {
         return element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.True;
     }
+
+    private static WpfMaintenanceBackfillReport MapBackfillReport(JsonElement element)
+    {
+        return new WpfMaintenanceBackfillReport
+        {
+            Mode = ReadString(element, "mode") ?? string.Empty,
+            CustomerOrders = ReadInt32(element, "customer_orders"),
+            ActiveCustomerOrders = ReadInt32(element, "active_customer_orders"),
+            InactiveSkippedCustomerOrders = ReadInt32(element, "inactive_skipped_customer_orders"),
+            PlanLinesBefore = ReadInt32(element, "plan_lines_before"),
+            PlanLinesAfter = ReadInt32(element, "plan_lines_after"),
+            QtyBefore = ReadDouble(element, "qty_before"),
+            QtyAfter = ReadDouble(element, "qty_after"),
+            OrdersWithChanges = ReadInt32(element, "orders_with_changes"),
+            ConflictingHu = ReadInt32(element, "conflicting_hu"),
+            LedgerRowsBefore = ReadInt64(element, "ledger_rows_before"),
+            LedgerRowsAfter = ReadInt64(element, "ledger_rows_after"),
+            Messages = ReadArray(element, "messages")
+                .Select(item => item.ValueKind == JsonValueKind.String ? item.GetString() ?? string.Empty : item.ToString())
+                .Where(message => !string.IsNullOrWhiteSpace(message))
+                .ToList(),
+            Conflicts = ReadArray(element, "conflicts").Select(MapBackfillConflict).ToList(),
+            Details = ReadArray(element, "details").Select(MapBackfillDetail).ToList()
+        };
+    }
+
+    private static WpfMaintenanceBackfillConflict MapBackfillConflict(JsonElement element)
+    {
+        return new WpfMaintenanceBackfillConflict
+        {
+            HuCode = ReadString(element, "hu_code") ?? string.Empty,
+            ItemId = ReadInt64(element, "item_id"),
+            Claims = ReadArray(element, "claims").Select(claim => new WpfMaintenanceBackfillConflictClaim
+            {
+                OrderId = ReadInt64(claim, "order_id"),
+                OrderRef = ReadString(claim, "order_ref") ?? string.Empty,
+                QtyPlanned = ReadDouble(claim, "qty_planned")
+            }).ToList()
+        };
+    }
+
+    private static WpfMaintenanceBackfillOrderDetail MapBackfillDetail(JsonElement element)
+    {
+        return new WpfMaintenanceBackfillOrderDetail
+        {
+            OrderId = ReadInt64(element, "order_id"),
+            OrderRef = ReadString(element, "order_ref") ?? string.Empty,
+            EffectiveStatus = ReadString(element, "effective_status") ?? string.Empty,
+            Active = ReadBool(element, "active"),
+            PlanLinesBefore = ReadInt32(element, "plan_lines_before"),
+            PlanLinesAfter = ReadInt32(element, "plan_lines_after"),
+            QtyBefore = ReadDouble(element, "qty_before"),
+            QtyAfter = ReadDouble(element, "qty_after"),
+            WillChange = ReadBool(element, "will_change"),
+            SkipReason = ReadString(element, "skip_reason"),
+            Lines = ReadArray(element, "lines").Select(line => new WpfMaintenanceBackfillLineDetail
+            {
+                OrderLineId = ReadInt64(line, "order_line_id"),
+                ItemId = ReadInt64(line, "item_id"),
+                RequestedQty = ReadDouble(line, "requested_qty"),
+                PlannedQty = ReadDouble(line, "planned_qty"),
+                SkipReason = ReadString(line, "skip_reason")
+            }).ToList()
+        };
+    }
+
+    private static IReadOnlyList<JsonElement> ReadArray(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var value) || value.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<JsonElement>();
+        }
+
+        return value.EnumerateArray().ToList();
+    }
+
+    private static int ReadInt32(JsonElement element, string propertyName)
+    {
+        return element.TryGetProperty(propertyName, out var value) && value.TryGetInt32(out var parsed)
+            ? parsed
+            : 0;
+    }
+
+    private static double ReadDouble(JsonElement element, string propertyName)
+    {
+        return element.TryGetProperty(propertyName, out var value) && value.TryGetDouble(out var parsed)
+            ? parsed
+            : 0d;
+    }
 }
 
 internal sealed record WpfAdminApiConfiguration(string? BaseUrl, int TimeoutSeconds, bool AllowInvalidTls);
+
+public sealed class WpfMaintenanceBackfillReportResult
+{
+    public bool IsSuccess { get; init; }
+    public WpfMaintenanceBackfillReport? Report { get; init; }
+    public string? Error { get; init; }
+
+    public static WpfMaintenanceBackfillReportResult Success(WpfMaintenanceBackfillReport report)
+    {
+        return new WpfMaintenanceBackfillReportResult { IsSuccess = true, Report = report };
+    }
+
+    public static WpfMaintenanceBackfillReportResult Failure(string? error)
+    {
+        return new WpfMaintenanceBackfillReportResult { IsSuccess = false, Error = error };
+    }
+}
+
+public sealed class WpfMaintenanceBackfillReport
+{
+    public string Mode { get; init; } = string.Empty;
+    public int CustomerOrders { get; init; }
+    public int ActiveCustomerOrders { get; init; }
+    public int InactiveSkippedCustomerOrders { get; init; }
+    public int PlanLinesBefore { get; init; }
+    public int PlanLinesAfter { get; init; }
+    public double QtyBefore { get; init; }
+    public double QtyAfter { get; init; }
+    public int OrdersWithChanges { get; init; }
+    public int ConflictingHu { get; init; }
+    public long LedgerRowsBefore { get; init; }
+    public long LedgerRowsAfter { get; init; }
+    public IReadOnlyList<string> Messages { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<WpfMaintenanceBackfillConflict> Conflicts { get; init; } = Array.Empty<WpfMaintenanceBackfillConflict>();
+    public IReadOnlyList<WpfMaintenanceBackfillOrderDetail> Details { get; init; } = Array.Empty<WpfMaintenanceBackfillOrderDetail>();
+}
+
+public sealed class WpfMaintenanceBackfillConflict
+{
+    public string HuCode { get; init; } = string.Empty;
+    public long ItemId { get; init; }
+    public IReadOnlyList<WpfMaintenanceBackfillConflictClaim> Claims { get; init; } = Array.Empty<WpfMaintenanceBackfillConflictClaim>();
+}
+
+public sealed class WpfMaintenanceBackfillConflictClaim
+{
+    public long OrderId { get; init; }
+    public string OrderRef { get; init; } = string.Empty;
+    public double QtyPlanned { get; init; }
+}
+
+public sealed class WpfMaintenanceBackfillOrderDetail
+{
+    public long OrderId { get; init; }
+    public string OrderRef { get; init; } = string.Empty;
+    public string EffectiveStatus { get; init; } = string.Empty;
+    public bool Active { get; init; }
+    public int PlanLinesBefore { get; init; }
+    public int PlanLinesAfter { get; init; }
+    public double QtyBefore { get; init; }
+    public double QtyAfter { get; init; }
+    public bool WillChange { get; init; }
+    public string? SkipReason { get; init; }
+    public IReadOnlyList<WpfMaintenanceBackfillLineDetail> Lines { get; init; } = Array.Empty<WpfMaintenanceBackfillLineDetail>();
+}
+
+public sealed class WpfMaintenanceBackfillLineDetail
+{
+    public long OrderLineId { get; init; }
+    public long ItemId { get; init; }
+    public double RequestedQty { get; init; }
+    public double PlannedQty { get; init; }
+    public string? SkipReason { get; init; }
+}

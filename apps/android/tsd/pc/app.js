@@ -6,7 +6,7 @@
   var logoutBtn = document.getElementById("logoutBtn");
   var accountLabel = document.getElementById("accountLabel");
 
-  var currentView = "stock";
+  var currentView = "orders";
   var LAST_VIEW_KEY = "flowstock_pc_last_view";
   var VERSION_CHECK_INTERVAL_MS = 600000;
   var versionCheckTimerId = 0;
@@ -63,17 +63,17 @@
 
   function getEnabledViews() {
     var views = [];
-    if (isClientBlockEnabled("pc_stock")) {
-      views.push("stock");
-    }
-    if (isClientBlockEnabled("pc_catalog")) {
-      views.push("catalog");
-    }
     if (isClientBlockEnabled("pc_orders")) {
       views.push("orders");
     }
     if (isClientBlockEnabled("pc_stock")) {
+      views.push("stock");
+    }
+    if (isClientBlockEnabled("pc_stock")) {
       views.push("production-need");
+    }
+    if (isClientBlockEnabled("pc_catalog")) {
+      views.push("catalog");
     }
     return views;
   }
@@ -87,6 +87,10 @@
       return view;
     }
     return enabledViews[0];
+  }
+
+  function getDefaultView() {
+    return resolveAllowedView("orders") || resolveAllowedView("stock") || "orders";
   }
 
   function syncTabsVisibility() {
@@ -116,7 +120,7 @@
       syncTabsVisibility();
       var after = getClientBlocksSignature();
       if (before !== after) {
-        currentView = resolveAllowedView(currentView) || "stock";
+        currentView = resolveAllowedView(currentView) || getDefaultView();
         renderView(currentView);
       }
       return after !== before;
@@ -228,7 +232,7 @@
     loadClientBlocks()
       .then(function () {
         syncTabsVisibility();
-        currentView = resolveAllowedView(currentView) || "stock";
+        currentView = resolveAllowedView(currentView) || getDefaultView();
         renderView(currentView);
       })
       .finally(function () {
@@ -493,7 +497,7 @@
           setLoginState(true);
           startVersionWatcher();
           startLiveUpdates();
-          currentView = resolveAllowedView(currentView) || "stock";
+          currentView = resolveAllowedView(currentView) || getDefaultView();
           syncTabsVisibility();
           renderView(currentView);
         })
@@ -1611,7 +1615,6 @@
     }
     var body = rows
       .map(function (order) {
-        var isPending = order && order.is_pending_confirmation;
         return (
           "<tr" +
           ' data-order="' + escapeHtml(String(order.id)) + '"' +
@@ -2031,6 +2034,29 @@
     );
   }
 
+  function isPendingConfirmationOrder(order) {
+    return !!(order && order.is_pending_confirmation);
+  }
+
+  function sortPendingOrdersFirst(rows) {
+    var source = Array.isArray(rows) ? rows.slice() : [];
+    return source
+      .map(function (row, index) {
+        return { row: row, index: index };
+      })
+      .sort(function (leftEntry, rightEntry) {
+        var leftPending = isPendingConfirmationOrder(leftEntry.row);
+        var rightPending = isPendingConfirmationOrder(rightEntry.row);
+        if (leftPending !== rightPending) {
+          return leftPending ? -1 : 1;
+        }
+        return leftEntry.index - rightEntry.index;
+      })
+      .map(function (entry) {
+        return entry.row;
+      });
+  }
+
   function getLineRequiredQty(line) {
     var left = Number(line && (line.qty_left != null ? line.qty_left : line.qty_remaining));
     if (!isNaN(left)) {
@@ -2100,6 +2126,10 @@
     var source = Array.isArray(rows) ? rows.slice() : [];
 
     function getDefaultStatusRank(order) {
+      if (isPendingConfirmationOrder(order)) {
+        return 0; // Ожидает подтверждения
+      }
+
       var statusCode = toOrderStatusCode(order && order.status);
       if (statusCode === "IN_PROGRESS") {
         return 1; // В работе
@@ -2255,12 +2285,13 @@
     var items = [];
     var partners = [];
     function createEmptyLine() {
-      return { item_id: 0, qty_ordered: 1, query: "", locked: false };
+      return { item_id: 0, qty_ordered: "", query: "", locked: false };
     }
     var linesState = [createEmptyLine()];
     var activeLineIndex = 0;
     var selectedPartnerId = 0;
     var activeSuggestIndex = -1;
+    var duplicateWarningTimer = 0;
     var suggestionOverlay = document.createElement("div");
     suggestionOverlay.className = "pc-order-suggest pc-order-suggest-floating";
     document.body.appendChild(suggestionOverlay);
@@ -2270,8 +2301,45 @@
 
     function setStatus(text) {
       if (refs.statusEl) {
+        if (duplicateWarningTimer) {
+          window.clearTimeout(duplicateWarningTimer);
+          duplicateWarningTimer = 0;
+        }
+        refs.statusEl.classList.remove("is-warning");
         refs.statusEl.textContent = text || "";
       }
+    }
+
+    function setWarningStatus(text) {
+      if (refs.statusEl) {
+        if (duplicateWarningTimer) {
+          window.clearTimeout(duplicateWarningTimer);
+        }
+        refs.statusEl.classList.add("is-warning");
+        refs.statusEl.textContent = "⚠ " + (text || "");
+      }
+    }
+
+    function clearDuplicateWarning() {
+      if (duplicateWarningTimer) {
+        window.clearTimeout(duplicateWarningTimer);
+        duplicateWarningTimer = 0;
+      }
+      if (refs.statusEl) {
+        refs.statusEl.classList.remove("is-warning");
+        refs.statusEl.textContent = "";
+      }
+      linesState.forEach(function (line) {
+        line.isDuplicateTarget = false;
+      });
+      renderLines();
+    }
+
+    function scheduleDuplicateWarningClear() {
+      if (duplicateWarningTimer) {
+        window.clearTimeout(duplicateWarningTimer);
+      }
+      duplicateWarningTimer = window.setTimeout(clearDuplicateWarning, 5000);
     }
 
     function hideSuggestionOverlay() {
@@ -2399,15 +2467,42 @@
         return;
       }
 
+      var duplicateIndex = linesState.findIndex(function (line, lineIndex) {
+        return lineIndex !== index && Number(line.item_id) === Number(selectedId);
+      });
+      if (duplicateIndex >= 0) {
+        hideSuggestionOverlay();
+        setWarningStatus("Товар уже добавлен. Измените количество в существующей строке при необходимости.");
+        activeLineIndex = duplicateIndex;
+        linesState.forEach(function (line) {
+          line.isDuplicateTarget = false;
+        });
+        linesState[duplicateIndex].isDuplicateTarget = true;
+        if (!Number(linesState[index].item_id)) {
+          linesState[index].query = "";
+          linesState[index].locked = false;
+        }
+        renderLines();
+        scheduleDuplicateWarningClear();
+        var existingQtyInput = refs.linesWrap
+          ? refs.linesWrap.querySelector('.line-qty[data-index="' + duplicateIndex + '"]')
+          : null;
+        if (existingQtyInput) {
+          existingQtyInput.focus();
+          if (typeof existingQtyInput.select === "function") {
+            existingQtyInput.select();
+          }
+        }
+        return;
+      }
+
       linesState[index].item_id = selectedId;
       var selectedItem = getItemById(selectedId);
       if (selectedItem) {
         linesState[index].query = buildItemLabel(selectedItem);
       }
       linesState[index].locked = true;
-      if (index === linesState.length - 1) {
-        linesState.push(createEmptyLine());
-      }
+      linesState[index].isDuplicateTarget = false;
       activeLineIndex = Math.max(0, Math.min(index, linesState.length - 1));
       renderLines();
       var qtyInput = refs.linesWrap
@@ -2612,7 +2707,6 @@
       selectedPartnerId = Number(partner.id) || 0;
       refs.partnerInput.value = buildPartnerLabel(partner);
       hidePartnerSuggestionOverlay();
-      updatePartnerHint();
       refs.partnerInput.focus();
     }
 
@@ -2896,18 +2990,22 @@
               '"></div>';
           }
           var rowHtml =
-            '<div class="pc-order-line-row">' +
+            '<div class="pc-order-line-row' +
+            (line.isDuplicateTarget ? " is-duplicate-target" : "") +
+            '">' +
             '<div class="pc-order-line-item-cell">' +
             itemCellHtml +
             "</div>" +
             '<input class="form-input line-qty" data-index="' +
-            index +
-            '" type="number" min="0.001" step="0.001" value="' +
-            escapeHtml(String(line.qty_ordered || "")) +
-            '" />' +
-            '<button class="btn btn-ghost line-remove-btn line-remove-icon-btn" type="button" title="Удалить строку" aria-label="Удалить строку" data-index="' +
-            index +
-            '">🗑</button>' +
+              index +
+              '" type="number" min="0" step="1" placeholder="Кол-во" value="' +
+              escapeHtml(String(line.qty_ordered || "")) +
+              '" />' +
+            (linesState.length > 1
+              ? '<button class="btn btn-ghost line-remove-btn line-remove-icon-btn" type="button" title="Удалить строку" aria-label="Удалить строку" data-index="' +
+                index +
+                '">🗑</button>'
+              : "") +
             "</div>";
           return rowHtml;
         })
@@ -2934,6 +3032,7 @@
 
           linesState[index].query = String(inputEl.value || "");
           linesState[index].locked = false;
+          linesState[index].isDuplicateTarget = false;
           var exactItem = findExactItem(linesState[index].query);
           if (exactItem) {
             linesState[index].item_id = Number(exactItem.id) || 0;
@@ -2973,12 +3072,37 @@
 
       var qtyInputs = refs.linesWrap.querySelectorAll(".line-qty");
       qtyInputs.forEach(function (inputEl) {
+        inputEl.addEventListener("keydown", function (event) {
+          if (event.key !== "ArrowUp" && event.key !== "ArrowDown") {
+            return;
+          }
+
+          event.preventDefault();
+          var index = Number(inputEl.getAttribute("data-index"));
+          if (!linesState[index]) {
+            return;
+          }
+
+          var current = Number(inputEl.value);
+          if (!isFinite(current)) {
+            current = 0;
+          }
+
+          var next = event.key === "ArrowUp"
+            ? current + 1
+            : Math.max(0, current - 1);
+          inputEl.value = String(next);
+          linesState[index].qty_ordered = next;
+          linesState[index].isDuplicateTarget = false;
+        });
+
         inputEl.addEventListener("input", function () {
           var index = Number(inputEl.getAttribute("data-index"));
           if (!linesState[index]) {
             return;
           }
-          linesState[index].qty_ordered = Number(inputEl.value) || 0;
+          linesState[index].qty_ordered = String(inputEl.value || "").trim();
+          linesState[index].isDuplicateTarget = false;
         });
         inputEl.addEventListener("focus", function () {
           var index = Number(inputEl.getAttribute("data-index"));
@@ -3006,10 +3130,6 @@
             return;
           }
           linesState.splice(index, 1);
-          var lastLine = linesState[linesState.length - 1];
-          if (!lastLine || Number(lastLine.item_id) > 0 || normalizeText(lastLine.query)) {
-            linesState.push(createEmptyLine());
-          }
           activeLineIndex = Math.max(0, Math.min(index, linesState.length - 1));
           renderLines();
         });
@@ -3357,7 +3477,7 @@
     }
 
     function sortOrderRows(rows) {
-      return sortRows(rows, "orders", {
+      var sortedRows = sortRows(rows, "orders", {
         orderRef: { type: "string", getValue: function (row) { return row.order_ref; } },
         orderType: { type: "string", getValue: function (row) { return getOrderTypeLabel(row.order_type); } },
         partnerName: { type: "string", getValue: function (row) { return row.partner_name; } },
@@ -3365,6 +3485,7 @@
         shippedAt: { type: "date", getValue: function (row) { return row.shipped_at; } },
         status: { type: "string", getValue: function (row) { return getOrderStatusPresentation(row).label; } },
       });
+      return sortPendingOrdersFirst(sortedRows);
     }
 
     function renderTable(rows) {
@@ -3447,7 +3568,7 @@
     syncTabsVisibility();
     var allowedView = resolveAllowedView(view);
     if (!allowedView) {
-      currentView = "stock";
+      currentView = getDefaultView();
       setActiveTab("");
       app.innerHTML = renderNoAccess();
       return;
@@ -3516,14 +3637,14 @@
       app.innerHTML = '<section class="pc-card"><div class="pc-status">Загрузка...</div></section>';
     }
     loadClientBlocks().then(function () {
-      currentView = resolveAllowedView(currentView) || "stock";
+      currentView = resolveAllowedView(currentView) || getDefaultView();
       renderView(currentView);
     });
   }
 
   tabs.forEach(function (tab) {
     tab.addEventListener("click", function () {
-      var view = tab.getAttribute("data-view") || "stock";
+      var view = tab.getAttribute("data-view") || getDefaultView();
       if (resolveAllowedView(view) !== view) {
         return;
       }

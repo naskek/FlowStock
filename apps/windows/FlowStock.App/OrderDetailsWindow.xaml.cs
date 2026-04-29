@@ -539,6 +539,18 @@ public partial class OrderDetailsWindow : Window
 
     private void AddOrderLine(Item item, Window owner)
     {
+        var existing = _lines.FirstOrDefault(line => line.ItemId == item.Id);
+        if (existing != null)
+        {
+            SelectOrderLine(existing);
+            MessageBox.Show(
+                $"Строка с товаром \"{existing.ItemName}\" уже добавлена. Измените количество в существующей строке при необходимости.",
+                "Заказы",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
         var packagings = _services.WpfPackagingApi.TryGetPackagings(item.Id, includeInactive: false, out var apiPackagings)
             ? apiPackagings
             : Array.Empty<ItemPackaging>();
@@ -553,25 +565,25 @@ public partial class OrderDetailsWindow : Window
         }
 
         var qtyBase = qtyDialog.QtyBase;
-        var existing = _lines.FirstOrDefault(l => l.ItemId == item.Id);
-        if (existing != null)
+        _lines.Add(new OrderLineView
         {
-            existing.QtyOrdered += qtyBase;
-        }
-        else
-        {
-            _lines.Add(new OrderLineView
-            {
-                ItemId = item.Id,
-                ItemName = item.Name,
-                Barcode = item.Barcode,
-                Gtin = item.Gtin,
-                QtyOrdered = qtyBase
-            });
-        }
+            ItemId = item.Id,
+            ItemName = item.Name,
+            Barcode = item.Barcode,
+            Gtin = item.Gtin,
+            QtyOrdered = qtyBase
+        });
 
         RefreshLineMetrics();
         MarkDirty();
+    }
+
+    private void SelectOrderLine(OrderLineView line)
+    {
+        OrderLinesGrid.SelectedItem = line;
+        OrderLinesGrid.ScrollIntoView(line);
+        _selectedLine = line;
+        EditLineButton.IsEnabled = EnsureEditable(false);
     }
 
     private void EditLine_Click(object sender, RoutedEventArgs e)

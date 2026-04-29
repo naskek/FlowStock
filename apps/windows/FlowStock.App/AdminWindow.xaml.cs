@@ -41,6 +41,15 @@ public partial class AdminWindow : Window
         window.ShowDialog();
     }
 
+    private void OpenMaintenance_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new MaintenanceWindow(_services)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+    }
+
     private void ClearOperations_Click(object sender, RoutedEventArgs e)
     {
         var confirm = MessageBox.Show(

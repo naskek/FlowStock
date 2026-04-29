@@ -46,6 +46,7 @@ OrderCreateEndpoint.Map(app);
 OrderUpdateEndpoint.Map(app);
 OrderDeleteEndpoint.Map(app);
 OrderStatusEndpoint.Map(app);
+MaintenanceBackfillEndpoints.Map(app);
 app.MapGet("/api/version", () => Results.Ok(new { version = appVersion }));
 
 app.MapGet("/health/live", () => Results.Ok(new { status = "alive" }));

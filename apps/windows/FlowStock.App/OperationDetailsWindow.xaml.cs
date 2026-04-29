@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Globalization;
 using System.Linq;
 using System.Runtime.CompilerServices;
@@ -28,6 +29,7 @@ public partial class OperationDetailsWindow : Window
     private readonly ObservableCollection<WriteOffReason> _writeOffReasons = new();
     private readonly ObservableCollection<OutboundHuCandidate> _outboundHuCandidates = new();
     private readonly Dictionary<long, double> _orderedQtyByOrderLine = new();
+    private readonly string? _createdDraftDocUid;
     private readonly long _docId;
     private Doc? _doc;
     private DocLineDisplay? _selectedDocLine;
@@ -43,12 +45,16 @@ public partial class OperationDetailsWindow : Window
     private bool _hasOutboundShortage;
     private int _outboundShortageCount;
     private bool _isLoadingDocLines;
+    private bool _preserveEmptyDraftOnClose;
+    private bool _discardEmptyDraftInProgress;
+    private bool _discardEmptyDraftAttempted;
     private const double QtyTolerance = 0.000001;
 
-    public OperationDetailsWindow(AppServices services, long docId)
+    public OperationDetailsWindow(AppServices services, long docId, string? createdDraftDocUid = null)
     {
         _services = services;
         _docId = docId;
+        _createdDraftDocUid = string.IsNullOrWhiteSpace(createdDraftDocUid) ? null : createdDraftDocUid.Trim();
         InitializeComponent();
 
         DocLinesGrid.ItemsSource = _docLines;
@@ -64,6 +70,7 @@ public partial class OperationDetailsWindow : Window
         DocFromCombo.SelectionChanged += DocFromCombo_SelectionChanged;
         DocToCombo.SelectionChanged += DocToCombo_SelectionChanged;
         OutboundHuGrid.ItemsSource = _outboundHuCandidates;
+        Closing += OperationDetailsWindow_Closing;
 
         LoadWriteOffReasons();
         LoadCatalog();
@@ -93,6 +100,53 @@ public partial class OperationDetailsWindow : Window
             e.Handled = true;
             await TryCloseCurrentDocAsync();
         }
+    }
+
+    private async void OperationDetailsWindow_Closing(object? sender, CancelEventArgs e)
+    {
+        if (!ShouldDiscardEmptyDraftOnClose())
+        {
+            return;
+        }
+
+        e.Cancel = true;
+        _discardEmptyDraftInProgress = true;
+        IsEnabled = false;
+
+        try
+        {
+            var result = await _services.WpfDocumentRuntimeApi.TryDiscardDraftByDocUidAsync(_createdDraftDocUid!);
+            if (!result.IsSuccess)
+            {
+                MessageBox.Show(
+                    result.Error ?? "Не удалось удалить пустой черновик документа.",
+                    "Документ",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            _discardEmptyDraftAttempted = true;
+            _discardEmptyDraftInProgress = false;
+            IsEnabled = true;
+            Close();
+        }
+    }
+
+    private bool ShouldDiscardEmptyDraftOnClose()
+    {
+        return !_discardEmptyDraftAttempted
+               && !_discardEmptyDraftInProgress
+               && !_preserveEmptyDraftOnClose
+               && !string.IsNullOrWhiteSpace(_createdDraftDocUid)
+               && _doc?.Status == DocStatus.Draft
+               && _doc.LineCount == 0
+               && _docLines.Count == 0;
     }
 
     private void LoadWriteOffReasons()
@@ -802,6 +856,18 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
+        var existingLine = _docLines.FirstOrDefault(line => line.ItemId == item.Id);
+        if (existingLine != null)
+        {
+            SelectDocLine(existingLine);
+            MessageBox.Show(
+                $"Строка с товаром \"{existingLine.ItemName}\" уже добавлена. Измените количество в существующей строке при необходимости.",
+                "Операция",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
         var packagings = _services.WpfPackagingApi.TryGetPackagings(item.Id, includeInactive: false, out var apiPackagings)
             ? apiPackagings
             : Array.Empty<ItemPackaging>();
@@ -851,6 +917,14 @@ public partial class OperationDetailsWindow : Window
         }
 
         await TryAddLineViaServerAsync(item, qtyBase, qtyInput, uomCode, fromLocation, toLocation, fromHu, toHu);
+    }
+
+    private void SelectDocLine(DocLineDisplay line)
+    {
+        DocLinesGrid.SelectedItem = line;
+        DocLinesGrid.ScrollIntoView(line);
+        _selectedDocLine = line;
+        UpdateLineButtons();
     }
 
     private async Task TryAddWriteOffLinesByHuViaServerAsync(
@@ -3554,6 +3628,7 @@ public partial class OperationDetailsWindow : Window
             comment);
         if (result.IsSuccess)
         {
+            _preserveEmptyDraftOnClose = true;
             return true;
         }
 

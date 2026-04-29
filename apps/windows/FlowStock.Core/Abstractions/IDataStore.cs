@@ -107,6 +107,7 @@ public interface IDataStore
     void DeleteOrderLine(long orderLineId);
     void DeleteOrderLines(long orderId);
     void DeleteOrder(long orderId);
+    long CountLedgerEntries();
     IReadOnlyDictionary<long, double> GetLedgerTotalsByItem();
     IReadOnlyDictionary<long, double> GetShippedTotalsByOrder(long orderId);
     IReadOnlyDictionary<long, double> GetShippedTotalsByOrderLine(long orderId);

@@ -24,6 +24,7 @@ public partial class NewDocWindow : Window
     private string? _pendingServerFingerprint;
 
     public long? CreatedDocId { get; private set; }
+    public string? CreatedDocUid { get; private set; }
 
     public NewDocWindow(AppServices services)
     {
@@ -162,6 +163,9 @@ public partial class NewDocWindow : Window
                 }
 
                 CreatedDocId = result.Response.Doc.Id;
+                CreatedDocUid = string.IsNullOrWhiteSpace(result.Response.Doc.DocUid)
+                    ? requestIdentity.DocUid
+                    : result.Response.Doc.DocUid.Trim();
                 if (!string.IsNullOrWhiteSpace(result.Response.Doc.DocRef))
                 {
                     UpdateDocRefDisplay(result.Response.Doc.DocRef);
