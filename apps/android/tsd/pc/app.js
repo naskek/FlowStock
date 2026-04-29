@@ -29,7 +29,6 @@
   var cachedLocationsById = {};
   var cachedStockRows = [];
   var cachedHuRows = [];
-  var cachedHuOrderBindingsByKey = {};
   var cachedCombinedRows = [];
   var clientBlocks = getDefaultClientBlocks();
   var clientBlocksRefreshInFlight = false;
@@ -575,94 +574,6 @@
     );
   }
 
-  function buildHuOrderBindingKey(hu, itemId) {
-    var normalizedHu = String(hu || "").trim().toUpperCase();
-    var normalizedItemId = Number(itemId) || 0;
-    if (!normalizedHu || !normalizedItemId) {
-      return "";
-    }
-    return normalizedHu + "|" + normalizedItemId;
-  }
-
-  function loadHuOrderBindingsByKey() {
-    return loadOrders("")
-      .then(function (rows) {
-        var orders = Array.isArray(rows) ? rows : [];
-        var candidates = orders.filter(function (order) {
-          if (!order || order.is_pending_confirmation) {
-            return false;
-          }
-
-          var statusCode = toOrderStatusCode(order.status);
-          return statusCode === "IN_PROGRESS" || statusCode === "ACCEPTED";
-        });
-        if (!candidates.length) {
-          return {};
-        }
-
-        return Promise.all(
-          candidates.map(function (order) {
-            return fetchJson("/api/orders/" + encodeURIComponent(order.id) + "/bound-hu")
-              .then(function (boundRows) {
-                return {
-                  order: order,
-                  boundRows: Array.isArray(boundRows) ? boundRows : [],
-                };
-              })
-              .catch(function () {
-                return {
-                  order: order,
-                  boundRows: [],
-                };
-              });
-          })
-        ).then(function (payloads) {
-          var grouped = {};
-          payloads.forEach(function (payload) {
-            var order = payload.order || {};
-            var orderId = Number(order.id) || 0;
-            if (!orderId) {
-              return;
-            }
-
-            (payload.boundRows || []).forEach(function (boundRow) {
-              var key = buildHuOrderBindingKey(boundRow && boundRow.hu, boundRow && boundRow.item_id);
-              if (!key) {
-                return;
-              }
-
-              if (!grouped[key]) {
-                grouped[key] = {};
-              }
-
-              grouped[key][String(orderId)] = {
-                order_id: orderId,
-                order_ref: String(order.order_ref || "").trim(),
-                partner_name: String(order.partner_name || "").trim(),
-              };
-            });
-          });
-
-          var resolved = {};
-          Object.keys(grouped).forEach(function (key) {
-            var variants = grouped[key];
-            var orderIds = Object.keys(variants);
-            if (orderIds.length === 1) {
-              resolved[key] = variants[orderIds[0]];
-              return;
-            }
-            if (orderIds.length > 1) {
-              resolved[key] = { multiple: true };
-            }
-          });
-          return resolved;
-        });
-      })
-      .catch(function () {
-        return {};
-      });
-  }
-
   function renderStockTable(rows, expandedItemIds) {
     if (!rows || !rows.length) {
       return '<div class="empty-state">Нет данных по остаткам.</div>';
@@ -678,16 +589,12 @@
               .map(function (detail) {
                 var huLabel = detail.hu ? detail.hu : "Без HU";
                 var detailQty = detail.qtyDisplay || detail.qty || 0;
-                var detailClient = detail.reservationMultiple
-                  ? "Несколько клиентов"
-                  : detail.reservationPartnerName
-                    ? detail.reservationPartnerName
-                    : "—";
-                var detailOrder = detail.reservationMultiple
-                  ? "Несколько заказов"
-                  : detail.reservationOrderRef
-                    ? detail.reservationOrderRef
-                    : "—";
+                var detailClient = detail.reservationPartnerName
+                  ? detail.reservationPartnerName
+                  : "не зарезервировано";
+                var detailOrder = detail.reservationOrderRef
+                  ? detail.reservationOrderRef
+                  : "не зарезервировано";
                 return (
                   "<tr>" +
                   "<td>" +
@@ -908,12 +815,10 @@
       fetchJson("/api/stock"),
       fetchJson("/api/hu-stock"),
       fetchJson("/api/item-types?include_inactive=0"),
-      loadHuOrderBindingsByKey(),
     ]).then(function (payloads) {
       setCachedItems(payloads[0]);
       setCachedLocations(payloads[1]);
       cachedItemTypes = Array.isArray(payloads[4]) ? payloads[4] : [];
-      cachedHuOrderBindingsByKey = payloads[5] && typeof payloads[5] === "object" ? payloads[5] : {};
       var stockRows = Array.isArray(payloads[2]) ? payloads[2] : [];
       var huRows = Array.isArray(payloads[3]) ? payloads[3] : [];
 
@@ -943,8 +848,6 @@
         var loc = cachedLocationsById[Number(row.location_id)] || {};
         var qty = Number(row.qty) || 0;
         var qtyLabel = qty + (item.base_uom ? " " + item.base_uom : "");
-        var bindingKey = buildHuOrderBindingKey(row.hu, row.item_id);
-        var binding = bindingKey ? cachedHuOrderBindingsByKey[bindingKey] : null;
         return {
           itemId: Number(row.item_id),
           locationId: Number(row.location_id),
@@ -959,9 +862,9 @@
           itemTypeName: item.itemTypeName || "",
           locationCode: loc.code || "",
           hu: row.hu || "",
-          reservationPartnerName: binding && !binding.multiple ? String(binding.partner_name || "") : "",
-          reservationOrderRef: binding && !binding.multiple ? String(binding.order_ref || "") : "",
-          reservationMultiple: !!(binding && binding.multiple),
+          reservationPartnerName: String(row.reserved_customer_name || "").trim(),
+          reservationOrderRef: String(row.reserved_customer_order_ref || "").trim(),
+          originInternalOrderRef: String(row.origin_internal_order_ref || "").trim(),
         };
       });
 
@@ -1161,7 +1064,6 @@
           qtyDisplay: row.qtyDisplay || formatQtyDisplay(row.qty, row.itemId),
           reservationPartnerName: row.reservationPartnerName || "",
           reservationOrderRef: row.reservationOrderRef || "",
-          reservationMultiple: row.reservationMultiple === true,
         });
       });
 

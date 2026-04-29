@@ -95,6 +95,7 @@ public sealed class WpfCatalogApiService
                         IsActive = ReadBool(element, "is_active"),
                         IsVisibleInProductCatalog = ReadBool(element, "is_visible_in_product_catalog"),
                         EnableMinStockControl = ReadBool(element, "enable_min_stock_control"),
+                        MinStockUsesOrderBinding = ReadBool(element, "min_stock_uses_order_binding"),
                         EnableHuDistribution = ReadBool(element, "enable_hu_distribution")
                     })
                     .ToList()
@@ -271,6 +272,7 @@ public sealed class WpfCatalogApiService
                     is_active = itemType.IsActive,
                     is_visible_in_product_catalog = itemType.IsVisibleInProductCatalog,
                     enable_min_stock_control = itemType.EnableMinStockControl,
+                    min_stock_uses_order_binding = itemType.MinStockUsesOrderBinding,
                     enable_hu_distribution = itemType.EnableHuDistribution
                 },
                 "item_type_id",
@@ -291,6 +293,7 @@ public sealed class WpfCatalogApiService
                     is_active = itemType.IsActive,
                     is_visible_in_product_catalog = itemType.IsVisibleInProductCatalog,
                     enable_min_stock_control = itemType.EnableMinStockControl,
+                    min_stock_uses_order_binding = itemType.MinStockUsesOrderBinding,
                     enable_hu_distribution = itemType.EnableHuDistribution
                 },
                 "catalog-update-item-type",

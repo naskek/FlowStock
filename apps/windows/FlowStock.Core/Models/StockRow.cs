@@ -12,6 +12,9 @@ public sealed class StockRow
     public long? ItemTypeId { get; init; }
     public string? ItemTypeName { get; init; }
     public bool ItemTypeEnableMinStockControl { get; init; }
+    public bool ItemTypeMinStockUsesOrderBinding { get; init; }
     public double? MinStockQty { get; init; }
+    public double ReservedCustomerOrderQty { get; init; }
+    public double AvailableForMinStockQty { get; init; }
 }
 

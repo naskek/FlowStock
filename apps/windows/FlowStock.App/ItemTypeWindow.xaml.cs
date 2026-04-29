@@ -63,6 +63,7 @@ public partial class ItemTypeWindow : Window
             IsActive = IsActiveCheck.IsChecked == true,
             IsVisibleInProductCatalog = VisibleInCatalogCheck.IsChecked == true,
             EnableMinStockControl = EnableMinStockCheck.IsChecked == true,
+            MinStockUsesOrderBinding = MinStockUsesOrderBindingCheck.IsChecked == true,
             EnableHuDistribution = EnableHuDistributionCheck.IsChecked == true
         };
 
@@ -156,6 +157,7 @@ public partial class ItemTypeWindow : Window
         IsActiveCheck.IsChecked = _selectedItemType.IsActive;
         VisibleInCatalogCheck.IsChecked = _selectedItemType.IsVisibleInProductCatalog;
         EnableMinStockCheck.IsChecked = _selectedItemType.EnableMinStockControl;
+        MinStockUsesOrderBindingCheck.IsChecked = _selectedItemType.MinStockUsesOrderBinding;
         EnableHuDistributionCheck.IsChecked = _selectedItemType.EnableHuDistribution;
         SaveButton.Content = "Сохранить";
         UpdateDeleteButton();
@@ -171,6 +173,7 @@ public partial class ItemTypeWindow : Window
         IsActiveCheck.IsChecked = true;
         VisibleInCatalogCheck.IsChecked = true;
         EnableMinStockCheck.IsChecked = false;
+        MinStockUsesOrderBindingCheck.IsChecked = false;
         EnableHuDistributionCheck.IsChecked = false;
         SaveButton.Content = "Добавить";
         UpdateDeleteButton();

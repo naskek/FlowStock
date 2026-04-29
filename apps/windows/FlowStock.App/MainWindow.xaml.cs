@@ -638,6 +638,7 @@ public partial class MainWindow : Window
 
         UpdateStockEmptyState(search);
         LoadLowStockView(lowStockByItem);
+        ApplyExpandedStockRowDetailsVisibility();
     }
 
     private Dictionary<string, HuStockContextRow> BuildHuContextMap()
@@ -720,16 +721,19 @@ public partial class MainWindow : Window
             {
                 var first = group.First();
                 var totalQty = group.Sum(row => row.Qty);
+                var qtyForMinControl = first.ItemTypeMinStockUsesOrderBinding
+                    ? first.AvailableForMinStockQty
+                    : totalQty;
                 var minStockQty = first.MinStockQty;
                 var isBelow = first.ItemTypeEnableMinStockControl
                               && minStockQty.HasValue
-                              && totalQty < minStockQty.Value;
+                              && qtyForMinControl < minStockQty.Value;
                 return new LowStockSnapshot(
                     group.Key,
                     first.ItemName,
                     first.ItemTypeName ?? "Без типа",
                     first.BaseUom,
-                    totalQty,
+                    qtyForMinControl,
                     minStockQty,
                     isBelow);
             })
@@ -922,12 +926,21 @@ public partial class MainWindow : Window
         row.IsExpanded = nextExpanded;
         row.ExpandMarker = nextExpanded ? "▼" : "▶";
         StockGrid.Items.Refresh();
+        ApplyExpandedStockRowDetailsVisibility();
+    }
 
+    private void ApplyExpandedStockRowDetailsVisibility()
+    {
         Dispatcher.BeginInvoke(new Action(() =>
         {
-            if (StockGrid.ItemContainerGenerator.ContainerFromItem(row) is System.Windows.Controls.DataGridRow gridRow)
+            foreach (var row in _stock)
             {
-                gridRow.DetailsVisibility = nextExpanded ? Visibility.Visible : Visibility.Collapsed;
+                if (StockGrid.ItemContainerGenerator.ContainerFromItem(row) is not System.Windows.Controls.DataGridRow gridRow)
+                {
+                    continue;
+                }
+
+                gridRow.DetailsVisibility = row.IsExpanded ? Visibility.Visible : Visibility.Collapsed;
             }
         }), DispatcherPriority.Background);
     }

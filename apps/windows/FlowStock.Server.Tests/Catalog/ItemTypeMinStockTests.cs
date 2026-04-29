@@ -101,4 +101,53 @@ public sealed class ItemTypeMinStockTests
         store.Verify(x => x.DeleteItemType(4), Times.Once);
         store.Verify(x => x.DeactivateItemType(4), Times.Never);
     }
+
+    [Fact]
+    public void CreateItemType_PersistsMinStockUsesOrderBindingFlag()
+    {
+        var store = new Mock<IDataStore>();
+        ItemType? captured = null;
+        store.Setup(x => x.AddItemType(It.IsAny<ItemType>()))
+            .Callback<ItemType>(itemType => captured = itemType)
+            .Returns(11);
+
+        var service = new CatalogService(store.Object);
+        service.CreateItemType(
+            name: "Тип",
+            code: "T1",
+            sortOrder: 1,
+            isActive: true,
+            isVisibleInProductCatalog: true,
+            enableMinStockControl: true,
+            minStockUsesOrderBinding: true,
+            enableHuDistribution: false);
+
+        Assert.NotNull(captured);
+        Assert.True(captured!.MinStockUsesOrderBinding);
+    }
+
+    [Fact]
+    public void UpdateItemType_PersistsMinStockUsesOrderBindingFlag()
+    {
+        var store = new Mock<IDataStore>();
+        store.Setup(x => x.GetItemType(5)).Returns(new ItemType { Id = 5, Name = "Тип", IsActive = true });
+        ItemType? captured = null;
+        store.Setup(x => x.UpdateItemType(It.IsAny<ItemType>()))
+            .Callback<ItemType>(itemType => captured = itemType);
+
+        var service = new CatalogService(store.Object);
+        service.UpdateItemType(
+            itemTypeId: 5,
+            name: "Тип",
+            code: "T1",
+            sortOrder: 1,
+            isActive: true,
+            isVisibleInProductCatalog: true,
+            enableMinStockControl: true,
+            minStockUsesOrderBinding: true,
+            enableHuDistribution: false);
+
+        Assert.NotNull(captured);
+        Assert.True(captured!.MinStockUsesOrderBinding);
+    }
 }

@@ -3,6 +3,7 @@ using System.Linq;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 using FlowStock.Core.Models.Marking;
+using FlowStock.Core.Services;
 using Npgsql;
 
 namespace FlowStock.Data;
@@ -621,7 +622,7 @@ RETURNING id;");
         return WithConnection(connection =>
         {
             var sql = @"
-SELECT id, name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control, enable_hu_distribution
+SELECT id, name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control, min_stock_uses_order_binding, enable_hu_distribution
 FROM item_types";
             if (!includeInactive)
             {
@@ -646,7 +647,7 @@ FROM item_types";
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT id, name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control, enable_hu_distribution
+SELECT id, name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control, min_stock_uses_order_binding, enable_hu_distribution
 FROM item_types
 WHERE id = @id
 LIMIT 1;");
@@ -661,8 +662,8 @@ LIMIT 1;");
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO item_types(name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control, enable_hu_distribution)
-VALUES(@name, @code, @sort_order, @is_active, @is_visible_in_product_catalog, @enable_min_stock_control, @enable_hu_distribution)
+INSERT INTO item_types(name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control, min_stock_uses_order_binding, enable_hu_distribution)
+VALUES(@name, @code, @sort_order, @is_active, @is_visible_in_product_catalog, @enable_min_stock_control, @min_stock_uses_order_binding, @enable_hu_distribution)
 RETURNING id;");
             command.Parameters.AddWithValue("@name", itemType.Name);
             command.Parameters.AddWithValue("@code", string.IsNullOrWhiteSpace(itemType.Code) ? DBNull.Value : itemType.Code.Trim());
@@ -670,6 +671,7 @@ RETURNING id;");
             command.Parameters.AddWithValue("@is_active", itemType.IsActive);
             command.Parameters.AddWithValue("@is_visible_in_product_catalog", itemType.IsVisibleInProductCatalog);
             command.Parameters.AddWithValue("@enable_min_stock_control", itemType.EnableMinStockControl);
+            command.Parameters.AddWithValue("@min_stock_uses_order_binding", itemType.MinStockUsesOrderBinding);
             command.Parameters.AddWithValue("@enable_hu_distribution", itemType.EnableHuDistribution);
             return (long)(command.ExecuteScalar() ?? 0L);
         });
@@ -687,6 +689,7 @@ SET name = @name,
     is_active = @is_active,
     is_visible_in_product_catalog = @is_visible_in_product_catalog,
     enable_min_stock_control = @enable_min_stock_control,
+    min_stock_uses_order_binding = @min_stock_uses_order_binding,
     enable_hu_distribution = @enable_hu_distribution
 WHERE id = @id;");
             command.Parameters.AddWithValue("@name", itemType.Name);
@@ -695,6 +698,7 @@ WHERE id = @id;");
             command.Parameters.AddWithValue("@is_active", itemType.IsActive);
             command.Parameters.AddWithValue("@is_visible_in_product_catalog", itemType.IsVisibleInProductCatalog);
             command.Parameters.AddWithValue("@enable_min_stock_control", itemType.EnableMinStockControl);
+            command.Parameters.AddWithValue("@min_stock_uses_order_binding", itemType.MinStockUsesOrderBinding);
             command.Parameters.AddWithValue("@enable_hu_distribution", itemType.EnableHuDistribution);
             command.Parameters.AddWithValue("@id", itemType.Id);
             command.ExecuteNonQuery();
@@ -1971,24 +1975,84 @@ VALUES(@ts, @doc_id, @item_id, @location_id, @qty_delta, @hu_code, @hu);
             }
 
             using var reader = command.ExecuteReader();
-            var rows = new List<StockRow>();
+            var rawRows = new List<(
+                long ItemId,
+                string ItemName,
+                string? Barcode,
+                string LocationCode,
+                string? Hu,
+                double Qty,
+                string BaseUom,
+                long? ItemTypeId,
+                string? ItemTypeName,
+                bool ItemTypeEnableMinStockControl,
+                bool ItemTypeMinStockUsesOrderBinding,
+                double? MinStockQty)>();
             while (reader.Read())
             {
-                rows.Add(new StockRow
-                {
-                    ItemId = reader.GetInt64(0),
-                    ItemName = reader.GetString(1),
-                    Barcode = reader.IsDBNull(2) ? null : reader.GetString(2),
-                    LocationCode = reader.GetString(3),
-                    Hu = reader.IsDBNull(4) ? null : reader.GetString(4),
-                    Qty = reader.GetDouble(5),
-                    BaseUom = reader.IsDBNull(6) ? "шт" : reader.GetString(6),
-                    ItemTypeId = reader.IsDBNull(7) ? null : reader.GetInt64(7),
-                    ItemTypeName = reader.IsDBNull(8) ? null : reader.GetString(8),
-                    ItemTypeEnableMinStockControl = !reader.IsDBNull(9) && reader.GetBoolean(9),
-                    MinStockQty = reader.IsDBNull(10) ? null : reader.GetDouble(10)
-                });
+                rawRows.Add((
+                    ItemId: reader.GetInt64(0),
+                    ItemName: reader.GetString(1),
+                    Barcode: reader.IsDBNull(2) ? null : reader.GetString(2),
+                    LocationCode: reader.GetString(3),
+                    Hu: reader.IsDBNull(4) ? null : reader.GetString(4),
+                    Qty: reader.GetDouble(5),
+                    BaseUom: reader.IsDBNull(6) ? "шт" : reader.GetString(6),
+                    ItemTypeId: reader.IsDBNull(7) ? null : reader.GetInt64(7),
+                    ItemTypeName: reader.IsDBNull(8) ? null : reader.GetString(8),
+                    ItemTypeEnableMinStockControl: !reader.IsDBNull(9) && reader.GetBoolean(9),
+                    ItemTypeMinStockUsesOrderBinding: !reader.IsDBNull(10) && reader.GetBoolean(10),
+                    MinStockQty: reader.IsDBNull(11) ? null : reader.GetDouble(11)));
             }
+
+            var physicalLedgerStockByItem = rawRows
+                .GroupBy(row => row.ItemId)
+                .ToDictionary(group => group.Key, group => group.Sum(x => x.Qty));
+            var reservedHuKeys = GetHuOrderContextRows()
+                .Where(row => row.ItemId > 0
+                              && row.ReservedCustomerOrderId.HasValue
+                              && !string.IsNullOrWhiteSpace(row.HuCode))
+                .Select(row => (row.ItemId, HuCode: row.HuCode.Trim().ToUpperInvariant()))
+                .ToHashSet();
+            var reservedCustomerQtyByItem = rawRows
+                .Where(row => !string.IsNullOrWhiteSpace(row.Hu))
+                .GroupBy(row => (row.ItemId, HuCode: row.Hu!.Trim().ToUpperInvariant()))
+                .Where(group => reservedHuKeys.Contains(group.Key))
+                .GroupBy(group => group.Key.ItemId)
+                .ToDictionary(group => group.Key, group => group.Sum(entry => entry.Sum(x => x.Qty)));
+
+            var rows = rawRows
+                .Select(row =>
+                {
+                    var physicalLedgerStockQty = physicalLedgerStockByItem.TryGetValue(row.ItemId, out var physicalQty)
+                        ? physicalQty
+                        : 0;
+                    var reservedCustomerOrderQty = reservedCustomerQtyByItem.TryGetValue(row.ItemId, out var reservedQty)
+                        ? reservedQty
+                        : 0;
+                    var availableForMinStockQty = MinStockControlCalculator.CalculateAvailableForMinStock(
+                        physicalLedgerStockQty,
+                        reservedCustomerOrderQty,
+                        row.ItemTypeMinStockUsesOrderBinding);
+                    return new StockRow
+                    {
+                        ItemId = row.ItemId,
+                        ItemName = row.ItemName,
+                        Barcode = row.Barcode,
+                        LocationCode = row.LocationCode,
+                        Hu = row.Hu,
+                        Qty = row.Qty,
+                        BaseUom = row.BaseUom,
+                        ItemTypeId = row.ItemTypeId,
+                        ItemTypeName = row.ItemTypeName,
+                        ItemTypeEnableMinStockControl = row.ItemTypeEnableMinStockControl,
+                        ItemTypeMinStockUsesOrderBinding = row.ItemTypeMinStockUsesOrderBinding,
+                        MinStockQty = row.MinStockQty,
+                        ReservedCustomerOrderQty = reservedCustomerOrderQty,
+                        AvailableForMinStockQty = availableForMinStockQty
+                    };
+                })
+                .ToList();
 
             return rows;
         });
@@ -2249,10 +2313,9 @@ reserved_candidates AS (
            o.order_ref AS reserved_customer_order_ref,
            o.partner_id AS reserved_customer_id,
            partner.name AS reserved_customer_name,
-           ROW_NUMBER() OVER (
-               PARTITION BY p.item_id, UPPER(TRIM(p.to_hu))
-               ORDER BY o.created_at, o.id, p.id
-           ) AS rn
+           0 AS source_priority,
+           o.created_at AS source_order_created_at,
+           p.id AS source_id
     FROM order_receipt_plan_lines p
     INNER JOIN orders o ON o.id = p.order_id
     LEFT JOIN partners partner ON partner.id = o.partner_id
@@ -2261,6 +2324,48 @@ reserved_candidates AS (
       AND p.to_hu <> ''
       AND o.order_type = @customer_order_type
       AND o.status <> @shipped_status
+
+    UNION ALL
+
+    SELECT dl.item_id,
+           UPPER(TRIM(dl.to_hu)) AS hu_code,
+           d.order_id AS reserved_customer_order_id,
+           COALESCE(d.order_ref, o.order_ref) AS reserved_customer_order_ref,
+           o.partner_id AS reserved_customer_id,
+           partner.name AS reserved_customer_name,
+           1 AS source_priority,
+           o.created_at AS source_order_created_at,
+           dl.id AS source_id
+    FROM doc_lines dl
+    INNER JOIN docs d ON d.id = dl.doc_id
+    INNER JOIN orders o ON o.id = d.order_id
+    LEFT JOIN partners partner ON partner.id = o.partner_id
+    WHERE d.type = @prd_type
+      AND d.status = @closed_status
+      AND d.order_id IS NOT NULL
+      AND o.order_type = @customer_order_type
+      AND o.status <> @shipped_status
+      AND dl.qty > 0
+      AND dl.to_hu IS NOT NULL
+      AND dl.to_hu <> ''
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+),
+reserved_ranked AS (
+    SELECT item_id,
+           hu_code,
+           reserved_customer_order_id,
+           reserved_customer_order_ref,
+           reserved_customer_id,
+           reserved_customer_name,
+           ROW_NUMBER() OVER (
+               PARTITION BY item_id, hu_code
+               ORDER BY source_priority, source_order_created_at, reserved_customer_order_id, source_id
+           ) AS rn
+    FROM reserved_candidates
 ),
 reserved_map AS (
     SELECT item_id,
@@ -2269,7 +2374,7 @@ reserved_map AS (
            reserved_customer_order_ref,
            reserved_customer_id,
            reserved_customer_name
-    FROM reserved_candidates
+    FROM reserved_ranked
     WHERE rn = 1
 )
 SELECT hs.hu_code,
@@ -2687,7 +2792,8 @@ RETURNING id;
             IsActive = !reader.IsDBNull(4) && reader.GetBoolean(4),
             IsVisibleInProductCatalog = !reader.IsDBNull(5) && reader.GetBoolean(5),
             EnableMinStockControl = !reader.IsDBNull(6) && reader.GetBoolean(6),
-            EnableHuDistribution = !reader.IsDBNull(7) && reader.GetBoolean(7)
+            MinStockUsesOrderBinding = !reader.IsDBNull(7) && reader.GetBoolean(7),
+            EnableHuDistribution = !reader.IsDBNull(8) && reader.GetBoolean(8)
         };
     }
 
@@ -3045,6 +3151,8 @@ LIMIT 1;";
             }
         }
 
+        EnsureColumn(connection, "item_types", "min_stock_uses_order_binding", "BOOLEAN NOT NULL DEFAULT FALSE");
+
         if (!ColumnExists(connection, "orders", "order_type")
             || !ColumnExists(connection, "orders", "bind_reserved_stock")
             || !ColumnExists(connection, "doc_lines", "replaces_line_id")
@@ -3056,6 +3164,7 @@ LIMIT 1;";
             || !ColumnExists(connection, "locations", "auto_hu_distribution_enabled")
             || !ColumnExists(connection, "item_types", "is_visible_in_product_catalog")
             || !ColumnExists(connection, "item_types", "enable_min_stock_control")
+            || !ColumnExists(connection, "item_types", "min_stock_uses_order_binding")
             || !ColumnExists(connection, "item_types", "enable_hu_distribution"))
         {
             throw new InvalidOperationException("Database schema is outdated. Run deploy/scripts/migrate.sh before starting FlowStock.");
@@ -3196,7 +3305,18 @@ WHERE COALESCE(i.is_marked, 0) = 0
     private static string BuildStockQuery(string? search)
     {
         var baseQuery = @"
-SELECT i.id, i.name, i.barcode, l.code, COALESCE(led.hu_code, led.hu), SUM(led.qty_delta) AS qty, i.base_uom, i.item_type_id, it.name, COALESCE(it.enable_min_stock_control, FALSE), i.min_stock_qty
+SELECT i.id,
+       i.name,
+       i.barcode,
+       l.code,
+       COALESCE(led.hu_code, led.hu),
+       SUM(led.qty_delta) AS qty,
+       i.base_uom,
+       i.item_type_id,
+       it.name,
+       COALESCE(it.enable_min_stock_control, FALSE),
+       COALESCE(it.min_stock_uses_order_binding, FALSE),
+       i.min_stock_qty
 FROM ledger led
 INNER JOIN items i ON i.id = led.item_id
 INNER JOIN locations l ON l.id = led.location_id
@@ -3208,7 +3328,7 @@ LEFT JOIN item_types it ON it.id = i.item_type_id
             baseQuery += "WHERE i.name ILIKE @search OR i.barcode ILIKE @search OR l.code ILIKE @search\n";
         }
 
-        baseQuery += "GROUP BY i.id, i.name, i.barcode, i.base_uom, i.item_type_id, it.name, it.enable_min_stock_control, i.min_stock_qty, l.id, COALESCE(led.hu_code, led.hu) HAVING SUM(led.qty_delta) != 0 ORDER BY i.name, l.code, COALESCE(led.hu_code, led.hu)";
+        baseQuery += "GROUP BY i.id, i.name, i.barcode, i.base_uom, i.item_type_id, it.name, it.enable_min_stock_control, it.min_stock_uses_order_binding, i.min_stock_qty, l.id, COALESCE(led.hu_code, led.hu) HAVING SUM(led.qty_delta) != 0 ORDER BY i.name, l.code, COALESCE(led.hu_code, led.hu)";
         return baseQuery;
     }
 

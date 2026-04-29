@@ -639,7 +639,10 @@ public sealed class WpfReadApiService
             ItemTypeId = ReadNullableInt64(element, "item_type_id"),
             ItemTypeName = ReadString(element, "item_type_name"),
             ItemTypeEnableMinStockControl = ReadBool(element, "item_type_enable_min_stock_control"),
-            MinStockQty = ReadNullableDouble(element, "min_stock_qty")
+            ItemTypeMinStockUsesOrderBinding = ReadBool(element, "item_type_min_stock_uses_order_binding"),
+            MinStockQty = ReadNullableDouble(element, "min_stock_qty"),
+            ReservedCustomerOrderQty = ReadDouble(element, "reserved_customer_order_qty"),
+            AvailableForMinStockQty = ReadDouble(element, "available_for_min_stock_qty")
         };
     }
 
