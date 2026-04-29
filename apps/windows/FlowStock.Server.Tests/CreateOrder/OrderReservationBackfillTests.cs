@@ -39,6 +39,83 @@ public sealed class OrderReservationBackfillTests
     }
 
     [Fact]
+    public void Apply_ReservesHuFromClosedProductionReceiptWithoutOrderId()
+    {
+        var scenario = BuildScenario();
+        AddProductionReceiptWithoutOrder(scenario, itemId: 100, huCode: "HU-ORPHAN", qty: 10);
+        AddCustomerOrder(scenario, orderId: 10, orderRef: "C-10", itemId: 100, qty: 10, useReservedStock: true);
+        var docCountBefore = scenario.Docs.Count;
+        var docLineCountBefore = scenario.DocLines.Values.Sum(lines => lines.Count);
+
+        var report = new OrderReservationBackfillService(scenario.Store.Object)
+            .Run(new OrderReservationBackfillOptions(Apply: true));
+
+        var line = Assert.Single(scenario.Plans[10]);
+        Assert.Equal("HU-ORPHAN", line.ToHu);
+        Assert.Equal(10, line.QtyPlanned);
+        Assert.Equal(docCountBefore, scenario.Docs.Count);
+        Assert.Equal(docLineCountBefore, scenario.DocLines.Values.Sum(lines => lines.Count));
+        Assert.Null(Assert.Single(report.Orders).Lines.Single().SkipReason);
+    }
+
+    [Fact]
+    public void Apply_RebuildsPlanForAllOrderLinesWithFreeHuStock()
+    {
+        var scenario = BuildScenario();
+        AddCustomerOrder(scenario, orderId: 10, orderRef: "C-10", itemId: 100, qty: 10, useReservedStock: true);
+
+        for (var i = 1; i < 5; i++)
+        {
+            AddCustomerOrderLine(scenario, orderId: 10, itemId: 100 + i, qty: 10);
+        }
+
+        for (var i = 0; i < 5; i++)
+        {
+            AddProductionReceiptWithoutOrder(scenario, itemId: 100 + i, huCode: $"HU-{i + 1}", qty: 10);
+        }
+
+        new OrderReservationBackfillService(scenario.Store.Object)
+            .Run(new OrderReservationBackfillOptions(Apply: true));
+
+        Assert.Equal(5, scenario.Plans[10].Count);
+        Assert.Equal(
+            new[] { 100L, 101L, 102L, 103L, 104L },
+            scenario.Plans[10].OrderBy(line => line.ItemId).Select(line => line.ItemId).ToArray());
+    }
+
+    [Fact]
+    public void Apply_ReservesMultipleHuForSingleOrderLine()
+    {
+        var scenario = BuildScenario();
+        AddProductionReceiptWithoutOrder(scenario, itemId: 100, huCode: "HU-1", qty: 10);
+        AddProductionReceiptWithoutOrder(scenario, itemId: 100, huCode: "HU-2", qty: 5);
+        AddCustomerOrder(scenario, orderId: 10, orderRef: "C-10", itemId: 100, qty: 15, useReservedStock: true);
+
+        new OrderReservationBackfillService(scenario.Store.Object)
+            .Run(new OrderReservationBackfillOptions(Apply: true));
+
+        Assert.Equal(2, scenario.Plans[10].Count);
+        Assert.Equal(15, scenario.Plans[10].Sum(line => line.QtyPlanned));
+        Assert.Equal(new[] { "HU-1", "HU-2" }, scenario.Plans[10].Select(line => line.ToHu).OrderBy(value => value).ToArray());
+    }
+
+    [Fact]
+    public void Apply_DoesNotSplitSingleHuBetweenActiveCustomerOrders()
+    {
+        var scenario = BuildScenario();
+        AddProductionReceiptWithoutOrder(scenario, itemId: 100, huCode: "HU-1", qty: 10);
+        AddCustomerOrder(scenario, orderId: 10, orderRef: "C-10", itemId: 100, qty: 5, useReservedStock: true);
+        AddCustomerOrder(scenario, orderId: 11, orderRef: "C-11", itemId: 100, qty: 5, useReservedStock: true);
+
+        var report = new OrderReservationBackfillService(scenario.Store.Object)
+            .Run(new OrderReservationBackfillOptions(Apply: true));
+
+        Assert.Single(scenario.Plans[10]);
+        Assert.Empty(scenario.Plans[11]);
+        Assert.Equal("no free HU", Assert.Single(report.Orders.Single(order => order.OrderId == 11).Lines).SkipReason);
+    }
+
+    [Fact]
     public void Apply_DoesNotReserveShippedCustomerOrder()
     {
         var scenario = BuildScenario();
@@ -58,6 +135,7 @@ public sealed class OrderReservationBackfillTests
 
         Assert.Equal(0, report.ActiveCustomerOrderCount);
         Assert.Empty(scenario.Plans[10]);
+        Assert.StartsWith("inactive order", Assert.Single(report.Orders).SkipReason);
     }
 
     [Fact]
@@ -75,6 +153,26 @@ public sealed class OrderReservationBackfillTests
         Assert.Equal("HU-1", conflict.HuCode);
         Assert.Equal(100, conflict.ItemId);
         Assert.Equal(new List<long> { 10L, 11L }, conflict.Claims.Select(claim => claim.OrderId).ToList());
+        Assert.All(report.Orders.SelectMany(order => order.Lines), line => Assert.Equal("conflict", line.SkipReason));
+    }
+
+    [Fact]
+    public void DryRun_ReportsNoStockNoFreeHuAndDisabledItemType()
+    {
+        var scenario = BuildScenario();
+        AddProductionReceiptWithoutOrder(scenario, itemId: 100, huCode: "HU-1", qty: 10);
+        AddCustomerOrder(scenario, orderId: 10, orderRef: "C-10", itemId: 100, qty: 10, useReservedStock: true);
+        AddCustomerOrder(scenario, orderId: 11, orderRef: "C-11", itemId: 100, qty: 10, useReservedStock: true);
+        AddCustomerOrderLine(scenario, orderId: 11, itemId: 200, qty: 10);
+        AddCustomerOrderLine(scenario, orderId: 11, itemId: 300, qty: 10, enableOrderReservation: false);
+
+        var report = new OrderReservationBackfillService(scenario.Store.Object)
+            .Run(new OrderReservationBackfillOptions(Apply: false));
+
+        var secondOrderLines = report.Orders.Single(order => order.OrderId == 11).Lines;
+        Assert.Contains(secondOrderLines, line => line.ItemId == 100 && line.SkipReason == "no free HU");
+        Assert.Contains(secondOrderLines, line => line.ItemId == 200 && line.SkipReason == "no stock");
+        Assert.Contains(secondOrderLines, line => line.ItemId == 300 && line.SkipReason == "disabled item type");
     }
 
     [Fact]
@@ -210,6 +308,41 @@ public sealed class OrderReservationBackfillTests
         });
     }
 
+    private static void AddProductionReceiptWithoutOrder(BackfillScenario scenario, long itemId, string huCode, double qty)
+    {
+        var docId = 2000 + scenario.Docs.Count;
+        scenario.Docs.Add(new Doc
+        {
+            Id = docId,
+            DocRef = $"PRD-{docId}",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Closed,
+            OrderId = null,
+            OrderRef = null,
+            CreatedAt = new DateTime(2026, 1, 1),
+            ClosedAt = new DateTime(2026, 1, 1, 1, 0, 0)
+        });
+        scenario.DocLines[docId] =
+        [
+            new DocLine
+            {
+                Id = docId + 10000,
+                DocId = docId,
+                ItemId = itemId,
+                Qty = qty,
+                ToLocationId = 5,
+                ToHu = huCode
+            }
+        ];
+        scenario.HuStockRows.Add(new HuStockRow
+        {
+            HuCode = huCode,
+            ItemId = itemId,
+            LocationId = 5,
+            Qty = qty
+        });
+    }
+
     private static void AddCustomerOrder(
         BackfillScenario scenario,
         long orderId,
@@ -220,18 +353,7 @@ public sealed class OrderReservationBackfillTests
         OrderStatus status = OrderStatus.InProgress,
         string? existingPlanHu = null)
     {
-        scenario.ItemTypes[50] = new ItemType
-        {
-            Id = 50,
-            Name = "Reserved type",
-            EnableOrderReservation = true
-        };
-        scenario.Items[itemId] = new Item
-        {
-            Id = itemId,
-            Name = "Item",
-            ItemTypeId = 50
-        };
+        AddItem(scenario, itemId, enableOrderReservation: true);
         scenario.Orders[orderId] = new Order
         {
             Id = orderId,
@@ -241,16 +363,8 @@ public sealed class OrderReservationBackfillTests
             UseReservedStock = useReservedStock,
             CreatedAt = new DateTime(2026, 1, 2).AddMinutes(orderId)
         };
-        scenario.OrderLines[orderId] =
-        [
-            new OrderLine
-            {
-                Id = orderId * 100,
-                OrderId = orderId,
-                ItemId = itemId,
-                QtyOrdered = qty
-            }
-        ];
+        scenario.OrderLines[orderId] = [];
+        AddCustomerOrderLine(scenario, orderId, itemId, qty);
         scenario.Plans[orderId] = string.IsNullOrWhiteSpace(existingPlanHu)
             ? new List<OrderReceiptPlanLine>()
             :
@@ -266,6 +380,46 @@ public sealed class OrderReservationBackfillTests
                     SortOrder = 0
                 }
             ];
+    }
+
+    private static void AddCustomerOrderLine(
+        BackfillScenario scenario,
+        long orderId,
+        long itemId,
+        double qty,
+        bool enableOrderReservation = true)
+    {
+        AddItem(scenario, itemId, enableOrderReservation);
+        if (!scenario.OrderLines.TryGetValue(orderId, out var lines))
+        {
+            lines = [];
+            scenario.OrderLines[orderId] = lines;
+        }
+
+        lines.Add(new OrderLine
+        {
+            Id = orderId * 100 + lines.Count,
+            OrderId = orderId,
+            ItemId = itemId,
+            QtyOrdered = qty
+        });
+    }
+
+    private static void AddItem(BackfillScenario scenario, long itemId, bool enableOrderReservation)
+    {
+        var typeId = enableOrderReservation ? 50 : 51;
+        scenario.ItemTypes[typeId] = new ItemType
+        {
+            Id = typeId,
+            Name = enableOrderReservation ? "Reserved type" : "Plain type",
+            EnableOrderReservation = enableOrderReservation
+        };
+        scenario.Items[itemId] = new Item
+        {
+            Id = itemId,
+            Name = "Item",
+            ItemTypeId = typeId
+        };
     }
 
     private static OrderReceiptPlanLine ClonePlanLine(OrderReceiptPlanLine line)

@@ -47,7 +47,7 @@ public sealed class OrderReservationBackfillService
             .Select(conflict => (conflict.ItemId, HuCode: NormalizeHu(conflict.HuCode)!))
             .ToHashSet();
 
-        var sources = BuildAvailableInternalReleaseSources(store, conflictKeys);
+        var sources = BuildAvailableReservationSources(store, conflictKeys);
         var desiredByOrder = new Dictionary<long, List<OrderReceiptPlanLine>>();
         var orderReports = new List<OrderReservationBackfillOrderReport>();
         var activeCount = 0;
@@ -59,6 +59,7 @@ public sealed class OrderReservationBackfillService
             var effectiveStatus = ResolveCustomerOrderStatus(store, order);
             var active = order.UseReservedStock && effectiveStatus != OrderStatus.Shipped;
             List<OrderReceiptPlanLine> desired;
+            IReadOnlyList<OrderReservationBackfillLineReport> lineReports;
             string? skipReason = null;
 
             if (!active)
@@ -66,13 +67,16 @@ public sealed class OrderReservationBackfillService
                 inactiveCount++;
                 desired = new List<OrderReceiptPlanLine>();
                 skipReason = order.UseReservedStock
-                    ? $"status={OrderStatusMapper.StatusToString(effectiveStatus)}"
-                    : "bind_reserved_stock=false";
+                    ? $"inactive order: status={OrderStatusMapper.StatusToString(effectiveStatus)}"
+                    : "inactive order: bind_reserved_stock=false";
+                lineReports = BuildInactiveLineReports(store, order, skipReason);
             }
             else
             {
                 activeCount++;
-                desired = BuildPlanForOrder(store, order, existing, sources);
+                var result = BuildPlanForOrder(store, order, existing, sources, conflictKeys);
+                desired = result.PlanLines;
+                lineReports = result.LineReports;
             }
 
             desiredByOrder[order.Id] = desired;
@@ -86,7 +90,8 @@ public sealed class OrderReservationBackfillService
                 existing.Sum(line => line.QtyPlanned),
                 desired.Sum(line => line.QtyPlanned),
                 !PlanSignaturesEqual(existing, desired),
-                skipReason));
+                skipReason,
+                lineReports));
         }
 
         if (apply)
@@ -121,23 +126,28 @@ public sealed class OrderReservationBackfillService
             orderReports);
     }
 
-    private static List<OrderReceiptPlanLine> BuildPlanForOrder(
+    private static PlanBuildResult BuildPlanForOrder(
         IDataStore store,
         Order order,
         IReadOnlyList<OrderReceiptPlanLine> existing,
-        List<ReservationSource> sources)
+        List<ReservationSource> sources,
+        IReadOnlySet<(long ItemId, string HuCode)> conflictKeys)
     {
         var shippedByLine = store.GetShippedTotalsByOrderLine(order.Id);
         var ownPlanPreferred = existing
             .Select(line => NormalizeHu(line.ToHu))
             .Where(code => !string.IsNullOrWhiteSpace(code))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var stockQtyByItem = BuildHuStockQtyByItem(store);
+        var conflictItems = conflictKeys
+            .Select(key => key.ItemId)
+            .ToHashSet();
         var planned = new List<OrderReceiptPlanLine>();
+        var lineReports = new List<OrderReservationBackfillLineReport>();
         var nextSortOrder = 0;
 
         var orderLines = store.GetOrderLines(order.Id)
             .Where(line => line.QtyOrdered > QtyTolerance)
-            .Where(line => ItemTypeUsesOrderReservation(store, line.ItemId))
             .OrderBy(line => line.Id)
             .ToList();
 
@@ -147,6 +157,23 @@ public sealed class OrderReservationBackfillService
             var remaining = Math.Max(0, orderLine.QtyOrdered - shipped);
             if (remaining <= QtyTolerance)
             {
+                lineReports.Add(new OrderReservationBackfillLineReport(
+                    orderLine.Id,
+                    orderLine.ItemId,
+                    0,
+                    0,
+                    null));
+                continue;
+            }
+
+            if (!ItemTypeUsesOrderReservation(store, orderLine.ItemId))
+            {
+                lineReports.Add(new OrderReservationBackfillLineReport(
+                    orderLine.Id,
+                    orderLine.ItemId,
+                    remaining,
+                    0,
+                    "disabled item type"));
                 continue;
             }
 
@@ -156,6 +183,8 @@ public sealed class OrderReservationBackfillService
                 .ThenBy(source => source.HuCode, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(source => source.LocationId)
                 .ToList();
+            var plannedBefore = planned.Count;
+            var requested = remaining;
 
             foreach (var candidate in candidates)
             {
@@ -181,12 +210,76 @@ public sealed class OrderReservationBackfillService
                     SortOrder = nextSortOrder++
                 });
 
-                candidate.QtyAvailable -= allocated;
+                ExhaustHuSource(sources, candidate.ItemId, candidate.HuCode);
                 remaining -= allocated;
             }
+
+            var plannedQty = planned.Skip(plannedBefore).Sum(line => line.QtyPlanned);
+            lineReports.Add(new OrderReservationBackfillLineReport(
+                orderLine.Id,
+                orderLine.ItemId,
+                requested,
+                plannedQty,
+                ResolveLineSkipReason(orderLine.ItemId, requested, plannedQty, stockQtyByItem, conflictItems)));
         }
 
-        return planned;
+        return new PlanBuildResult(planned, lineReports);
+    }
+
+    private static void ExhaustHuSource(List<ReservationSource> sources, long itemId, string huCode)
+    {
+        foreach (var source in sources.Where(source => source.ItemId == itemId
+                                                       && string.Equals(source.HuCode, huCode, StringComparison.OrdinalIgnoreCase)))
+        {
+            source.QtyAvailable = 0;
+        }
+    }
+
+    private static IReadOnlyList<OrderReservationBackfillLineReport> BuildInactiveLineReports(
+        IDataStore store,
+        Order order,
+        string skipReason)
+    {
+        return store.GetOrderLines(order.Id)
+            .Where(line => line.QtyOrdered > QtyTolerance)
+            .OrderBy(line => line.Id)
+            .Select(line => new OrderReservationBackfillLineReport(
+                line.Id,
+                line.ItemId,
+                line.QtyOrdered,
+                0,
+                skipReason))
+            .ToList();
+    }
+
+    private static Dictionary<long, double> BuildHuStockQtyByItem(IDataStore store)
+    {
+        return store.GetHuStockRows()
+            .Where(row => row.Qty > QtyTolerance)
+            .Select(row => new { row.ItemId, HuCode = NormalizeHu(row.HuCode), row.Qty })
+            .Where(row => !string.IsNullOrWhiteSpace(row.HuCode))
+            .GroupBy(row => row.ItemId)
+            .ToDictionary(group => group.Key, group => group.Sum(row => row.Qty));
+    }
+
+    private static string? ResolveLineSkipReason(
+        long itemId,
+        double requestedQty,
+        double plannedQty,
+        IReadOnlyDictionary<long, double> stockQtyByItem,
+        IReadOnlySet<long> conflictItems)
+    {
+        if (plannedQty + QtyTolerance >= requestedQty)
+        {
+            return null;
+        }
+
+        if (!stockQtyByItem.TryGetValue(itemId, out var stockQty) || stockQty <= QtyTolerance)
+        {
+            return "no stock";
+        }
+
+        return conflictItems.Contains(itemId) ? "conflict" : "no free HU";
     }
 
     private static IReadOnlyList<OrderReservationBackfillConflict> DetectCurrentConflicts(
@@ -229,16 +322,10 @@ public sealed class OrderReservationBackfillService
             .ToList();
     }
 
-    private static List<ReservationSource> BuildAvailableInternalReleaseSources(
+    private static List<ReservationSource> BuildAvailableReservationSources(
         IDataStore store,
         IReadOnlySet<(long ItemId, string HuCode)> excludedHuKeys)
     {
-        var internalProducedKeys = CollectInternalProducedKeys(store);
-        if (internalProducedKeys.Count == 0)
-        {
-            return new List<ReservationSource>();
-        }
-
         return store.GetHuStockRows()
             .Where(row => row.Qty > QtyTolerance)
             .Select(row => new
@@ -249,7 +336,6 @@ public sealed class OrderReservationBackfillService
                 row.Qty
             })
             .Where(row => !string.IsNullOrWhiteSpace(row.HuCode))
-            .Where(row => internalProducedKeys.Contains((row.ItemId, row.HuCode!)))
             .Where(row => !excludedHuKeys.Contains((row.ItemId, row.HuCode!)))
             .GroupBy(row => new { row.ItemId, row.HuCode, row.LocationId })
             .Select(group => new ReservationSource(
@@ -259,44 +345,6 @@ public sealed class OrderReservationBackfillService
                 group.Sum(entry => entry.Qty)))
             .Where(source => source.QtyAvailable > QtyTolerance)
             .ToList();
-    }
-
-    private static HashSet<(long ItemId, string HuCode)> CollectInternalProducedKeys(IDataStore store)
-    {
-        var result = new HashSet<(long ItemId, string HuCode)>();
-        var internalOrderIds = store.GetOrders()
-            .Where(order => order.Type == OrderType.Internal)
-            .Select(order => order.Id)
-            .ToHashSet();
-        if (internalOrderIds.Count == 0)
-        {
-            return result;
-        }
-
-        foreach (var doc in store.GetDocs()
-                     .Where(doc => doc.Type == DocType.ProductionReceipt
-                                   && doc.Status == DocStatus.Closed
-                                   && doc.OrderId.HasValue
-                                   && internalOrderIds.Contains(doc.OrderId.Value)))
-        {
-            foreach (var line in store.GetDocLines(doc.Id))
-            {
-                if (line.Qty <= QtyTolerance)
-                {
-                    continue;
-                }
-
-                var huCode = NormalizeHu(line.ToHu);
-                if (string.IsNullOrWhiteSpace(huCode))
-                {
-                    continue;
-                }
-
-                result.Add((line.ItemId, huCode));
-            }
-        }
-
-        return result;
     }
 
     private static bool ItemTypeUsesOrderReservation(IDataStore store, long itemId)
@@ -402,6 +450,10 @@ public sealed class OrderReservationBackfillService
             return HashCode.Combine(obj.ItemId, StringComparer.OrdinalIgnoreCase.GetHashCode(obj.HuCode));
         }
     }
+
+    private sealed record PlanBuildResult(
+        List<OrderReceiptPlanLine> PlanLines,
+        IReadOnlyList<OrderReservationBackfillLineReport> LineReports);
 }
 
 public sealed record OrderReservationBackfillOptions(bool Apply = false);
@@ -429,6 +481,14 @@ public sealed record OrderReservationBackfillOrderReport(
     double ExistingPlannedQty,
     double PlannedQty,
     bool WillChange,
+    string? SkipReason,
+    IReadOnlyList<OrderReservationBackfillLineReport> Lines);
+
+public sealed record OrderReservationBackfillLineReport(
+    long OrderLineId,
+    long ItemId,
+    double RequestedQty,
+    double PlannedQty,
     string? SkipReason);
 
 public sealed record OrderReservationBackfillConflict(

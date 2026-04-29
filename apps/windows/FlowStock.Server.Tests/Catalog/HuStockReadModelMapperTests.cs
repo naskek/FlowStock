@@ -53,4 +53,28 @@ public sealed class HuStockReadModelMapperTests
         Assert.Null(row.ReservedCustomerId);
         Assert.Null(row.ReservedCustomerName);
     }
+
+    [Fact]
+    public void Map_ReturnsReservedCustomerContext_WhenOriginIsMissing()
+    {
+        var context = new HuOrderContextRow
+        {
+            HuCode = "HU-1",
+            ItemId = 1001,
+            ReservedCustomerOrderId = 22,
+            ReservedCustomerOrderRef = "CUST-22",
+            ReservedCustomerId = 33,
+            ReservedCustomerName = "ООО Клиент"
+        };
+        var map = HuStockReadModelMapper.BuildContextMap([context]);
+
+        var row = HuStockReadModelMapper.Map(1001, 5, "HU-1", 12, map);
+
+        Assert.Null(row.OriginInternalOrderId);
+        Assert.Null(row.OriginInternalOrderRef);
+        Assert.Equal(22, row.ReservedCustomerOrderId);
+        Assert.Equal("CUST-22", row.ReservedCustomerOrderRef);
+        Assert.Equal(33, row.ReservedCustomerId);
+        Assert.Equal("ООО Клиент", row.ReservedCustomerName);
+    }
 }

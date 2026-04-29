@@ -101,6 +101,16 @@ public static class OrderReservationBackfillCommand
                 $"{order.ExistingPlanLineCount}/{FormatQty(order.ExistingPlannedQty)} -> " +
                 $"{order.PlannedPlanLineCount}/{FormatQty(order.PlannedQty)}");
         }
+
+        foreach (var order in report.Orders)
+        {
+            foreach (var line in order.Lines.Where(line => !string.IsNullOrWhiteSpace(line.SkipReason)))
+            {
+                Console.WriteLine(
+                    $"SKIP order {order.OrderRef} ({order.OrderId}), line {line.OrderLineId}, item {line.ItemId}: " +
+                    $"{line.SkipReason}, requested {FormatQty(line.RequestedQty)}, planned {FormatQty(line.PlannedQty)}");
+            }
+        }
     }
 
     private static string FormatQty(double value)

@@ -696,7 +696,7 @@ public sealed class OrderService
             return;
         }
 
-        var internalReleaseSources = BuildAvailableInternalReleaseSources(store, orderId);
+        var reservationSources = BuildAvailableReservationSources(store, orderId);
         var ownPlanPreferred = store.GetOrderReceiptPlanLines(orderId)
             .Where(line => line.QtyPlanned > QtyTolerance)
             .Select(line => NormalizeHu(line.ToHu))
@@ -708,7 +708,7 @@ public sealed class OrderService
         foreach (var orderLine in orderLines)
         {
             var remaining = orderLine.QtyOrdered;
-            var candidates = internalReleaseSources
+            var candidates = reservationSources
                 .Where(source => source.ItemId == orderLine.ItemId && source.QtyAvailable > QtyTolerance)
                 .OrderByDescending(source => ownPlanPreferred.Contains(source.HuCode))
                 .ThenBy(source => source.HuCode, StringComparer.OrdinalIgnoreCase)
@@ -737,12 +737,21 @@ public sealed class OrderService
                     ToHu = candidate.HuCode,
                     SortOrder = nextSortOrder++
                 });
-                candidate.QtyAvailable -= allocated;
+                ExhaustHuSource(reservationSources, candidate.ItemId, candidate.HuCode);
                 remaining -= allocated;
             }
         }
 
         store.ReplaceOrderReceiptPlanLines(orderId, plannedLines);
+    }
+
+    private static void ExhaustHuSource(List<ReservationSource> sources, long itemId, string huCode)
+    {
+        foreach (var source in sources.Where(source => source.ItemId == itemId
+                                                       && string.Equals(source.HuCode, huCode, StringComparison.OrdinalIgnoreCase)))
+        {
+            source.QtyAvailable = 0;
+        }
     }
 
     private static bool ItemTypeUsesOrderReservation(IDataStore store, long itemId)
@@ -756,14 +765,8 @@ public sealed class OrderService
         return store.GetItemType(itemTypeId)?.EnableOrderReservation == true;
     }
 
-    private static List<InternalReleaseSource> BuildAvailableInternalReleaseSources(IDataStore store, long targetOrderId)
+    private static List<ReservationSource> BuildAvailableReservationSources(IDataStore store, long targetOrderId)
     {
-        var internalProducedKeys = CollectInternalProducedKeys(store);
-        if (internalProducedKeys.Count == 0)
-        {
-            return new List<InternalReleaseSource>();
-        }
-
         var sources = store.GetHuStockRows()
             .Where(row => row.Qty > QtyTolerance)
             .Select(row => new
@@ -774,36 +777,22 @@ public sealed class OrderService
                 row.Qty
             })
             .Where(row => !string.IsNullOrWhiteSpace(row.HuCode))
-            .Where(row => internalProducedKeys.Contains((row.ItemId, row.HuCode!)))
             .GroupBy(row => new { row.ItemId, row.HuCode, row.LocationId })
-            .Select(group => new InternalReleaseSource(group.Key.ItemId, group.Key.HuCode!, group.Key.LocationId, group.Sum(entry => entry.Qty)))
+            .Select(group => new ReservationSource(group.Key.ItemId, group.Key.HuCode!, group.Key.LocationId, group.Sum(entry => entry.Qty)))
             .ToDictionary(
                 source => (source.ItemId, source.HuCode, source.LocationId),
                 source => source,
-                InternalReleaseSourceKeyComparer.Instance);
+                ReservationSourceKeyComparer.Instance);
 
-        var reservedByOtherOrders = CollectReservedInternalReleaseByOtherCustomerOrders(store, targetOrderId);
+        var reservedByOtherOrders = CollectReservedHuByOtherCustomerOrders(store, targetOrderId);
         foreach (var reservation in reservedByOtherOrders)
         {
-            var toReserve = reservation.Value;
-            if (toReserve <= QtyTolerance)
+            foreach (var key in sources.Keys
+                         .Where(key => key.ItemId == reservation.ItemId
+                                       && string.Equals(key.HuCode, reservation.HuCode, StringComparison.OrdinalIgnoreCase))
+                         .ToList())
             {
-                continue;
-            }
-
-            foreach (var source in sources.Values
-                         .Where(source => source.ItemId == reservation.Key.ItemId
-                                          && string.Equals(source.HuCode, reservation.Key.HuCode, StringComparison.OrdinalIgnoreCase))
-                         .OrderBy(source => source.LocationId))
-            {
-                if (toReserve <= QtyTolerance)
-                {
-                    break;
-                }
-
-                var take = Math.Min(source.QtyAvailable, toReserve);
-                source.QtyAvailable -= take;
-                toReserve -= take;
+                sources.Remove(key);
             }
         }
 
@@ -812,51 +801,11 @@ public sealed class OrderService
             .ToList();
     }
 
-    private static HashSet<(long ItemId, string HuCode)> CollectInternalProducedKeys(IDataStore store)
+    private static HashSet<(long ItemId, string HuCode)> CollectReservedHuByOtherCustomerOrders(IDataStore store, long targetOrderId)
     {
         var result = new HashSet<(long ItemId, string HuCode)>();
-        var internalOrderIds = store.GetOrders()
-            .Where(order => order.Type == OrderType.Internal)
-            .Select(order => order.Id)
-            .ToHashSet();
-        if (internalOrderIds.Count == 0)
-        {
-            return result;
-        }
-
-        var closedProductionDocs = store.GetDocs()
-            .Where(doc => doc.Type == DocType.ProductionReceipt
-                          && doc.Status == DocStatus.Closed
-                          && doc.OrderId.HasValue
-                          && internalOrderIds.Contains(doc.OrderId.Value))
-            .ToList();
-        foreach (var doc in closedProductionDocs)
-        {
-            foreach (var line in store.GetDocLines(doc.Id))
-            {
-                if (line.Qty <= QtyTolerance)
-                {
-                    continue;
-                }
-
-                var huCode = NormalizeHu(line.ToHu);
-                if (string.IsNullOrWhiteSpace(huCode))
-                {
-                    continue;
-                }
-
-                result.Add((line.ItemId, huCode));
-            }
-        }
-
-        return result;
-    }
-
-    private static Dictionary<(long ItemId, string HuCode), double> CollectReservedInternalReleaseByOtherCustomerOrders(IDataStore store, long targetOrderId)
-    {
-        var result = new Dictionary<(long ItemId, string HuCode), double>();
         var orders = store.GetOrders()
-            .Where(order => order.Type == OrderType.Customer && order.Id != targetOrderId)
+            .Where(order => order.Type == OrderType.Customer && order.Id != targetOrderId && order.UseReservedStock)
             .ToList();
 
         foreach (var order in orders)
@@ -881,9 +830,7 @@ public sealed class OrderService
                 }
 
                 var key = (line.ItemId, huCode);
-                result[key] = result.TryGetValue(key, out var current)
-                    ? current + line.QtyPlanned
-                    : line.QtyPlanned;
+                result.Add(key);
             }
         }
 
@@ -1078,9 +1025,9 @@ public sealed class OrderService
     }
 
     private sealed record PlanDraft(long OrderLineId, long ItemId, double QtyPlanned, bool RequiresHu, int SortOrder);
-    private sealed class InternalReleaseSource
+    private sealed class ReservationSource
     {
-        public InternalReleaseSource(long itemId, string huCode, long locationId, double qtyAvailable)
+        public ReservationSource(long itemId, string huCode, long locationId, double qtyAvailable)
         {
             ItemId = itemId;
             HuCode = huCode;
@@ -1094,9 +1041,9 @@ public sealed class OrderService
         public double QtyAvailable { get; set; }
     }
 
-    private sealed class InternalReleaseSourceKeyComparer : IEqualityComparer<(long ItemId, string HuCode, long LocationId)>
+    private sealed class ReservationSourceKeyComparer : IEqualityComparer<(long ItemId, string HuCode, long LocationId)>
     {
-        public static readonly InternalReleaseSourceKeyComparer Instance = new();
+        public static readonly ReservationSourceKeyComparer Instance = new();
 
         public bool Equals((long ItemId, string HuCode, long LocationId) x, (long ItemId, string HuCode, long LocationId) y)
         {
