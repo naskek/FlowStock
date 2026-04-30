@@ -5168,7 +5168,7 @@ public partial class OperationDetailsWindow : Window
         private string ProductionReceiptMarkingLabel => MarkingStatus switch
         {
             MarkingStatus.Printed => "проведена",
-            MarkingStatus.ExcelGenerated => "отпечатана",
+            MarkingStatus.ExcelGenerated => "файл сформирован",
             MarkingStatus.NotRequired => "не требуется",
             _ => "требуется"
         };
