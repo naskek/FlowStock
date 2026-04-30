@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Xml.Linq;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 using FlowStock.Core.Services;
@@ -8,6 +9,18 @@ namespace FlowStock.Server.Tests.Marking;
 
 public sealed class SimpleMarkingExcelServiceTests
 {
+    [Theory]
+    [InlineData(MarkingStatus.NotRequired, "Не требуется")]
+    [InlineData(MarkingStatus.Required, "Требуется")]
+    [InlineData(MarkingStatus.ExcelGenerated, "Файл сформирован")]
+    [InlineData(MarkingStatus.Printed, "Проведена")]
+    public void OrderList_UsesShortMarkingStatusLabels(MarkingStatus status, string expected)
+    {
+        var order = new Order { MarkingStatus = status };
+
+        Assert.Equal(expected, order.MarkingStatusShortDisplay);
+    }
+
     [Fact]
     public void Export_UsesEnableMarkingAndGtinAsEligibility()
     {
@@ -127,6 +140,32 @@ public sealed class SimpleMarkingExcelServiceTests
     }
 
     [Fact]
+    public void Export_ExcelHasNoHeaderRowAndStartsWithData()
+    {
+        var store = CreateStore(new MarkingOrderLineCandidate
+        {
+            OrderId = 1,
+            OrderLineId = 10,
+            ItemName = "Крем",
+            Gtin = "04601234567890",
+            ItemTypeEnableMarking = true,
+            QtyOrdered = 4
+        });
+
+        var result = new MarkingExcelService(store.Object).Export(new[] { 1L }, DateTime.Now);
+
+        Assert.True(result.IsSuccess);
+        var cells = ReadWorksheetCells(result.FileBytes!);
+        Assert.Equal("Крем", cells["A1"]);
+        Assert.Equal("04601234567890", cells["B1"]);
+        Assert.Equal("4", cells["C1"]);
+        Assert.DoesNotContain("Наименование", cells.Values);
+        Assert.DoesNotContain("GTIN", cells.Values);
+        Assert.DoesNotContain("Кол-во", cells.Values);
+        Assert.False(cells.ContainsKey("D1"));
+    }
+
+    [Fact]
     public void Export_OrderWithoutRowsDoesNotBlockOtherOrdersAndIsNotMarkedPrinted()
     {
         var store = CreateStore(new MarkingOrderLineCandidate
@@ -226,18 +265,34 @@ public sealed class SimpleMarkingExcelServiceTests
 
     private static void AssertExcelHasOnlyThreeColumns(byte[] bytes)
     {
+        var cells = ReadWorksheetCells(bytes);
+        Assert.Contains("A1", cells.Keys);
+        Assert.Contains("B1", cells.Keys);
+        Assert.Contains("C1", cells.Keys);
+        Assert.All(cells.Keys, cellRef => Assert.DoesNotMatch(@"^D\d+$", cellRef));
+    }
+
+    private static Dictionary<string, string> ReadWorksheetCells(byte[] bytes)
+    {
         using var stream = new MemoryStream(bytes);
         using var archive = new ZipArchive(stream, ZipArchiveMode.Read);
         var sheet = archive.GetEntry("xl/worksheets/sheet1.xml");
         Assert.NotNull(sheet);
         using var reader = new StreamReader(sheet.Open());
-        var xml = reader.ReadToEnd();
-        Assert.Contains("Наименование", xml);
-        Assert.Contains("GTIN", xml);
-        Assert.Contains("Кол-во", xml);
-        Assert.Contains("A1", xml);
-        Assert.Contains("B1", xml);
-        Assert.Contains("C1", xml);
-        Assert.DoesNotContain("D1", xml);
+        var document = XDocument.Load(reader);
+        XNamespace ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+        return document
+            .Descendants(ns + "c")
+            .ToDictionary(
+                cell => cell.Attribute("r")?.Value ?? string.Empty,
+                cell =>
+                {
+                    if (string.Equals(cell.Attribute("t")?.Value, "inlineStr", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return cell.Element(ns + "is")?.Element(ns + "t")?.Value ?? string.Empty;
+                    }
+
+                    return cell.Element(ns + "v")?.Value ?? string.Empty;
+                });
     }
 }

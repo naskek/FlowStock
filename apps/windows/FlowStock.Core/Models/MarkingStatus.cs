@@ -42,4 +42,15 @@ public static class MarkingStatusMapper
             _ => "Маркировка не требуется"
         };
     }
+
+    public static string ToShortDisplayName(MarkingStatus status)
+    {
+        return status switch
+        {
+            MarkingStatus.Required => "Требуется",
+            MarkingStatus.ExcelGenerated => "Файл сформирован",
+            MarkingStatus.Printed => "Проведена",
+            _ => "Не требуется"
+        };
+    }
 }

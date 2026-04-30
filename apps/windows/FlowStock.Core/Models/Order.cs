@@ -21,6 +21,7 @@ public sealed class Order
     public string TypeDisplay => OrderStatusMapper.TypeToDisplayName(Type);
     public string StatusDisplay => OrderStatusMapper.StatusToDisplayName(Status, Type);
     public string MarkingStatusDisplay => MarkingStatusMapper.ToDisplayName(MarkingStatus);
+    public string MarkingStatusShortDisplay => MarkingStatusMapper.ToShortDisplayName(MarkingStatus);
 
     public string PartnerDisplay
     {

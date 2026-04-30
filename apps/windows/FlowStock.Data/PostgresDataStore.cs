@@ -1628,6 +1628,40 @@ WHERE id = ANY(@order_ids::bigint[]);
         });
     }
 
+    public void UpdateOrderMarkingStatusForBackfill(long orderId, MarkingStatus status, DateTime timestamp)
+    {
+        WithConnection(connection =>
+        {
+            var statusText = MarkingStatusMapper.ToString(status);
+            var sql = status == MarkingStatus.Printed
+                ? @"
+UPDATE orders
+SET marking_status = @status,
+    marking_excel_generated_at = COALESCE(marking_excel_generated_at, @timestamp),
+    marking_printed_at = COALESCE(marking_printed_at, @timestamp)
+WHERE id = @id
+  AND COALESCE(marking_status, 'NOT_REQUIRED') <> @printed_status;
+"
+                : @"
+UPDATE orders
+SET marking_status = @status
+WHERE id = @id
+  AND COALESCE(marking_status, 'NOT_REQUIRED') <> @printed_status;
+";
+
+            using var command = CreateCommand(connection, sql);
+            command.Parameters.AddWithValue("@id", orderId);
+            command.Parameters.AddWithValue("@status", statusText);
+            if (status == MarkingStatus.Printed)
+            {
+                command.Parameters.AddWithValue("@timestamp", ToDbDate(timestamp));
+            }
+            command.Parameters.AddWithValue("@printed_status", MarkingStatusMapper.ToString(MarkingStatus.Printed));
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
     public IReadOnlyList<OrderLine> GetOrderLines(long orderId)
     {
         return WithConnection(connection =>

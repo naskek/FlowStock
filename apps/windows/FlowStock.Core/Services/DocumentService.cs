@@ -1540,6 +1540,22 @@ public sealed class DocumentService
         var locations = _data.GetLocations();
         var locationsById = locations.ToDictionary(location => location.Id, location => location.Code);
 
+        if (doc.Type == DocType.ProductionReceipt && HasChestnyZnakMarkableLines(lines, itemsById))
+        {
+            if (!doc.OrderId.HasValue)
+            {
+                check.Errors.Add("Нельзя закрыть выпуск маркируемой продукции без связанного заказа ЧЗ.");
+            }
+            else
+            {
+                var order = _data.GetOrder(doc.OrderId.Value);
+                if (order?.MarkingStatus != MarkingStatus.Printed)
+                {
+                    check.Errors.Add("Нельзя закрыть выпуск маркируемой продукции: по заказу не проведена маркировка ЧЗ.");
+                }
+            }
+        }
+
         var outgoingBySource = new Dictionary<StockKey, double>();
         var outboundByLocation = new Dictionary<ItemLocationKey, double>();
         var outboundByItem = new Dictionary<long, double>();
@@ -1888,6 +1904,15 @@ public sealed class DocumentService
             check.Errors.Add("Для отгрузки требуется контрагент.");
         }
         return check;
+    }
+
+    private static bool HasChestnyZnakMarkableLines(
+        IReadOnlyList<DocLine> lines,
+        IReadOnlyDictionary<long, Item> itemsById)
+    {
+        return lines.Any(line =>
+            itemsById.TryGetValue(line.ItemId, out var item)
+            && item.IsChestnyZnakMarkingRequired);
     }
 
     private IEnumerable<string> BuildHuLocationErrors(

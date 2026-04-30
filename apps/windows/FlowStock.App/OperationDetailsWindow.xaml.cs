@@ -228,7 +228,15 @@ public partial class OperationDetailsWindow : Window
                 }
             }
 
-            _ordersAll.Add(new OrderOption(order.Id, order.OrderRef, order.Type, order.Status, order.PartnerId, order.PartnerDisplay));
+            _ordersAll.Add(new OrderOption(
+                order.Id,
+                order.OrderRef,
+                order.Type,
+                order.Status,
+                order.PartnerId,
+                order.PartnerDisplay,
+                order.MarkingStatus,
+                isProductionReceipt));
         }
 
         RefreshOrderList();
@@ -5137,13 +5145,36 @@ public partial class OperationDetailsWindow : Window
         public double Qty { get; set; }
     }
 
-    private sealed record OrderOption(long Id, string OrderRef, OrderType Type, OrderStatus Status, long? PartnerId, string PartnerDisplay)
+    private sealed record OrderOption(
+        long Id,
+        string OrderRef,
+        OrderType Type,
+        OrderStatus Status,
+        long? PartnerId,
+        string PartnerDisplay,
+        MarkingStatus MarkingStatus,
+        bool ShowMarkingStatus)
     {
-        public string DisplayName => Type == OrderType.Internal
+        public string DisplayName => ShowMarkingStatus
+            ? $"{BaseDisplayName} - Маркировка ЧЗ: {ProductionReceiptMarkingLabel}{ProblemMarker}"
+            : BaseDisplayName;
+
+        private string BaseDisplayName => Type == OrderType.Internal
             ? $"{OrderRef} - Внутренний выпуск"
             : string.IsNullOrWhiteSpace(PartnerDisplay)
                 ? OrderRef
                 : $"{OrderRef} - {PartnerDisplay}";
+
+        private string ProductionReceiptMarkingLabel => MarkingStatus switch
+        {
+            MarkingStatus.Printed => "проведена",
+            MarkingStatus.NotRequired => "не требуется",
+            _ => "требуется"
+        };
+
+        private string ProblemMarker => MarkingStatus is MarkingStatus.Required or MarkingStatus.ExcelGenerated
+            ? " [ЧЗ не проведена]"
+            : string.Empty;
     }
 }
 

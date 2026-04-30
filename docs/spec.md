@@ -13,6 +13,10 @@
   - deploy wrapper: `bash deploy/scripts/backfill_order_reservations.sh [--apply]`.
   - WPF может запускать dry-run/apply только через server API `/api/admin/maintenance/backfill-reservations/*`; apply требует `confirm = "APPLY"`.
   - Команда меняет только `order_receipt_plan_lines`, не пишет в `ledger` и не редактирует закрытые документы.
+- Исторические статусы ЧЗ для заказов, по которым маркировка была проведена до появления новой модели, заполняются только явной maintenance-командой после backup БД:
+  - dry-run: `dotnet FlowStock.Server.dll maintenance backfill-marking-status --created-before YYYY-MM-DD --dry-run`;
+  - apply: `dotnet FlowStock.Server.dll maintenance backfill-marking-status --created-before YYYY-MM-DD --apply --confirm APPLY`.
+  - Команда меняет только поля `orders.marking_status`, `orders.marking_excel_generated_at`, `orders.marking_printed_at`; `ledger`, `docs` и `doc_lines` не изменяются.
 
 ## Компоненты
 - `FlowStock.Server`: ASP.NET Core Minimal API, доступ к БД, диагностика, раздача TSD/PC web clients.
@@ -147,14 +151,16 @@
   - `Маркировка ЧЗ: нет, GTIN не заполнен`, если тип поддерживает ЧЗ, но GTIN пустой;
   - `Маркировка ЧЗ: нет, тип не маркируется`, если тип не поддерживает ЧЗ.
 - Окно `Маркировка` показывает очередь заказов со статусами `IN_PROGRESS`/`ACCEPTED`, где есть строки ЧЗ и заказ еще не обработан (`marking_status` не `PRINTED`/`EXCEL_GENERATED`).
+- Основной список заказов WPF показывает короткий статус `Маркировка ЧЗ`: `Не требуется`, `Требуется`, `Файл сформирован`, `Проведена`.
 - `marking_status`: `NOT_REQUIRED` (`Маркировка не требуется`), `REQUIRED` (`Требуется файл ЧЗ`), `EXCEL_GENERATED` (`Файл ЧЗ сформирован`), `PRINTED` (`Маркировка проведена`).
 - После успешного формирования Excel заказ переводится в `PRINTED`, заполняются `marking_printed_at` и `marking_excel_generated_at`; заказ скрывается из обычной очереди.
 - Повторное формирование доступно через чекбокс `Показать выполненные`, который возвращает ранее обработанные `EXCEL_GENERATED`/`PRINTED` заказы.
-- Excel ЧЗ содержит только основной лист с колонками `Наименование`, `GTIN`, `Кол-во`.
+- Excel ЧЗ содержит только основной лист без строки заголовков: первая строка файла является первой строкой данных. Формат фиксированно состоит из 3 колонок в порядке `Наименование`, `GTIN`, `Кол-во`.
 - Количество ЧЗ по строке заказа: `qty_for_marking = max(0, qty_ordered - shipped_qty - reserved_qty)`, где `reserved_qty` берется из `order_receipt_plan_lines.qty_planned`.
 - Зарезервированный готовый товар не требует новых кодов ЧЗ, потому что физически уже находится на складе.
 - Excel ЧЗ считает только потребность производства под выбранные заказы и не включает минимальный остаток; минимальный остаток остается в отдельном отчете `Потребность производства`.
 - Формирование Excel ЧЗ не меняет `ledger`, `docs` и `doc_lines`, не редактирует закрытые документы и не запускает backfill.
+- Закрытие `PRODUCTION_RECEIPT` с маркируемыми позициями (`item_types.enable_marking = true` и непустой `items.gtin`) разрешено только при связанном заказе с `marking_status = PRINTED`. Если связанный заказ отсутствует или маркировка по нему не проведена, сервер отклоняет закрытие до записи `ledger`.
 
 ## Документы (дополнительно)
 - Неактивный товар (`items.is_active = false`) не может участвовать в операциях: сервер отклоняет добавление строк с ошибкой `ITEM_INACTIVE`, а TSD при сканировании показывает сообщение о блокировке карточки товара.

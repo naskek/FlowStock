@@ -2514,6 +2514,7 @@ public partial class MainWindow : Window
             Owner = this
         };
         window.ShowDialog();
+        LoadOrders();
     }
 
     private void ImportErrors_Click(object sender, RoutedEventArgs e)

@@ -167,10 +167,9 @@ public sealed class MarkingExcelService
         builder.AppendLine("""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>""");
         builder.AppendLine("""<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">""");
         builder.AppendLine("""  <sheetData>""");
-        AppendTextRow(builder, 1, "Наименование", "GTIN", "Кол-во");
         for (var i = 0; i < rows.Count; i++)
         {
-            var rowNumber = i + 2;
+            var rowNumber = i + 1;
             var row = rows[i];
             builder.Append("    <row r=\"").Append(rowNumber.ToString(CultureInfo.InvariantCulture)).AppendLine("\">");
             AppendTextCell(builder, "A", rowNumber, row.ItemName);
@@ -182,15 +181,6 @@ public sealed class MarkingExcelService
         builder.AppendLine("""  </sheetData>""");
         builder.AppendLine("""</worksheet>""");
         return builder.ToString();
-    }
-
-    private static void AppendTextRow(StringBuilder builder, int rowNumber, string first, string second, string third)
-    {
-        builder.Append("    <row r=\"").Append(rowNumber.ToString(CultureInfo.InvariantCulture)).AppendLine("\">");
-        AppendTextCell(builder, "A", rowNumber, first);
-        AppendTextCell(builder, "B", rowNumber, second);
-        AppendTextCell(builder, "C", rowNumber, third);
-        builder.AppendLine("    </row>");
     }
 
     private static void AppendTextCell(StringBuilder builder, string column, int rowNumber, string value)

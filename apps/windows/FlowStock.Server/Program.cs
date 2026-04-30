@@ -21,6 +21,12 @@ using Npgsql;
 var builder = WebApplication.CreateBuilder(args);
 
 var postgresConnectionString = BuildPostgresConnectionString(builder.Configuration);
+if (MarkingStatusBackfillCommand.TryRun(args, postgresConnectionString, out var markingMaintenanceExitCode))
+{
+    Environment.ExitCode = markingMaintenanceExitCode;
+    return;
+}
+
 if (OrderReservationBackfillCommand.TryRun(args, postgresConnectionString, out var maintenanceExitCode))
 {
     Environment.ExitCode = maintenanceExitCode;
