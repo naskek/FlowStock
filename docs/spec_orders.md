@@ -98,6 +98,10 @@ Server API/WPF:
 - dry-run по умолчанию: `dotnet FlowStock.Server.dll maintenance backfill-marking-status --created-before YYYY-MM-DD --dry-run`
 - явное применение: `dotnet FlowStock.Server.dll maintenance backfill-marking-status --created-before YYYY-MM-DD --apply --confirm APPLY`
 
+Production Docker Compose wrapper:
+- dry-run: `bash deploy/scripts/backfill_marking_status.sh --created-before YYYY-MM-DD --dry-run`
+- apply: `bash deploy/scripts/backfill_marking_status.sh --created-before YYYY-MM-DD --apply --confirm APPLY`
+
 Правила:
 - без `--apply --confirm APPLY` данные не изменяются;
 - cutoff `--created-before` обязателен, команда обрабатывает только заказы, созданные раньше этой даты;
