@@ -58,7 +58,7 @@ public sealed class OrderService
                 : _data.GetOrderReceiptRemainingWithoutReservedStock(orderId))
             .ToDictionary(line => line.OrderLineId, line => line);
 
-        if (!includeReservedStock && isCustomerOrder)
+        if (isCustomerOrder)
         {
             return baseRemaining.Values
                 .Where(line => line.QtyRemaining > QtyTolerance)
@@ -268,9 +268,9 @@ public sealed class OrderService
         bool? bindReservedStockForCustomer = null)
     {
         var existing = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
-        if (existing.Status == OrderStatus.Shipped)
+        if (existing.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
         {
-            throw new InvalidOperationException($"{OrderStatusMapper.StatusToDisplayName(OrderStatus.Shipped, existing.Type)} заказ нельзя редактировать.");
+            throw new InvalidOperationException($"{OrderStatusMapper.StatusToDisplayName(existing.Status, existing.Type)} заказ нельзя редактировать.");
         }
 
         if (existing.Type != type)
@@ -458,7 +458,36 @@ public sealed class OrderService
 
     public void ChangeOrderStatus(long orderId, OrderStatus status)
     {
-        throw new InvalidOperationException("Ручное изменение статуса заказа отключено. Статус определяется автоматически по выпуску и отгрузке.");
+        if (status != OrderStatus.Cancelled)
+        {
+            throw new InvalidOperationException("Ручное изменение статуса заказа отключено. Статус определяется автоматически по выпуску и отгрузке.");
+        }
+
+        CancelOrder(orderId);
+    }
+
+    public void CancelOrder(long orderId)
+    {
+        var existing = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+        if (existing.Status == OrderStatus.Shipped)
+        {
+            throw new InvalidOperationException($"{OrderStatusMapper.StatusToDisplayName(OrderStatus.Shipped, existing.Type)} заказ нельзя отменить.");
+        }
+
+        if (existing.Status == OrderStatus.Cancelled)
+        {
+            return;
+        }
+
+        _data.ExecuteInTransaction(store =>
+        {
+            TryClearOrderReceiptPlan(store, orderId);
+            store.UpdateOrderStatus(orderId, OrderStatus.Cancelled);
+            if (existing.Type == OrderType.Customer)
+            {
+                TryRefreshCustomerReceiptPlans(store);
+            }
+        });
     }
 
     public void RefreshCustomerReceiptPlans()
@@ -811,7 +840,7 @@ public sealed class OrderService
         foreach (var order in orders)
         {
             var effectiveStatus = ResolveCustomerOrderStatus(store, order);
-            if (effectiveStatus == OrderStatus.Shipped)
+            if (effectiveStatus is OrderStatus.Shipped or OrderStatus.Cancelled)
             {
                 continue;
             }
@@ -844,9 +873,9 @@ public sealed class OrderService
             return order.Status;
         }
 
-        if (order.Status == OrderStatus.Shipped)
+        if (order.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
         {
-            return OrderStatus.Shipped;
+            return order.Status;
         }
 
         var lines = store.GetOrderLines(order.Id);
@@ -897,7 +926,7 @@ public sealed class OrderService
         foreach (var order in customerOrders.Where(order => order.UseReservedStock))
         {
             var effectiveStatus = ResolveCustomerOrderStatus(store, order);
-            if (effectiveStatus == OrderStatus.Shipped)
+            if (effectiveStatus is OrderStatus.Shipped or OrderStatus.Cancelled)
             {
                 continue;
             }
@@ -1063,6 +1092,11 @@ public sealed class OrderService
 
     private Order ApplyAutoStatus(Order order)
     {
+        if (order.Status == OrderStatus.Cancelled)
+        {
+            return order;
+        }
+
         if (order.Type == OrderType.Internal)
         {
             var receiptLines = _data.GetOrderReceiptRemaining(order.Id);

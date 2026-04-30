@@ -24,7 +24,7 @@ public static class OrderUpdateEndpoint
             return Results.NotFound(new ApiResult(false, "ORDER_NOT_FOUND"));
         }
 
-        if (existing.Status == OrderStatus.Shipped)
+        if (existing.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
         {
             return Results.BadRequest(new ApiResult(false, "ORDER_NOT_EDITABLE"));
         }
@@ -69,6 +69,11 @@ public static class OrderUpdateEndpoint
             if (parsedStatus.Value == OrderStatus.Shipped)
             {
                 return Results.BadRequest(new ApiResult(false, "SHIPPED_STATUS_FORBIDDEN"));
+            }
+
+            if (parsedStatus.Value == OrderStatus.Cancelled)
+            {
+                return Results.BadRequest(new ApiResult(false, "ORDER_CANCEL_USE_STATUS_ENDPOINT"));
             }
         }
 

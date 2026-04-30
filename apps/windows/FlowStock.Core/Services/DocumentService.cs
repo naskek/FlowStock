@@ -1531,6 +1531,11 @@ public sealed class DocumentService
                 .ToDictionary(entry => entry.OrderLineId, entry => entry.QtyRemaining)
             : new Dictionary<long, double>();
         var shipmentRequested = new Dictionary<long, double>();
+        var productionReceiptRemaining = doc.Type == DocType.ProductionReceipt && doc.OrderId.HasValue
+            ? _data.GetOrderReceiptRemaining(doc.OrderId.Value)
+                .ToDictionary(entry => entry.OrderLineId, entry => entry.QtyRemaining)
+            : new Dictionary<long, double>();
+        var productionReceiptRequested = new Dictionary<long, double>();
         var itemsById = _data.GetItems(null).ToDictionary(item => item.Id, item => item);
         var locations = _data.GetLocations();
         var locationsById = locations.ToDictionary(location => location.Id, location => location.Code);
@@ -1684,6 +1689,21 @@ public sealed class DocumentService
                 }
             }
 
+            if (doc.Type == DocType.ProductionReceipt && line.OrderLineId.HasValue)
+            {
+                if (!doc.OrderId.HasValue)
+                {
+                    check.Errors.Add($"{rowLabel}: не указан заказ документа.");
+                }
+                else
+                {
+                    var orderLineId = line.OrderLineId.Value;
+                    productionReceiptRequested[orderLineId] = productionReceiptRequested.TryGetValue(orderLineId, out var current)
+                        ? current + line.Qty
+                        : line.Qty;
+                }
+            }
+
             if (doc.Type == DocType.Outbound && doc.OrderId.HasValue)
             {
                 var normalizedFromHu = NormalizeHuValue(fromHu);
@@ -1832,6 +1852,23 @@ public sealed class DocumentService
                 if (entry.Value > remaining + 0.000001)
                 {
                     check.Errors.Add($"Строка заказа {entry.Key}: превышен остаток {FormatQty(remaining)}.");
+                }
+            }
+        }
+
+        if (doc.Type == DocType.ProductionReceipt && productionReceiptRequested.Count > 0)
+        {
+            foreach (var entry in productionReceiptRequested)
+            {
+                if (!productionReceiptRemaining.TryGetValue(entry.Key, out var remaining))
+                {
+                    check.Errors.Add($"Строка заказа {entry.Key}: нет доступного остатка к выпуску.");
+                    continue;
+                }
+
+                if (entry.Value > remaining + 0.000001)
+                {
+                    check.Errors.Add($"Строка заказа {entry.Key}: превышен остаток к выпуску {FormatQty(remaining)}.");
                 }
             }
         }

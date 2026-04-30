@@ -3366,6 +3366,7 @@ static object MapProductionNeedRow(ProductionNeedRow row)
     return new
     {
         item_id = row.ItemId,
+        gtin = row.Gtin,
         item_name = row.ItemName,
         item_type = row.ItemTypeName,
         physical_stock_qty = row.PhysicalStockQty,

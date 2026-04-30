@@ -213,7 +213,7 @@ public partial class OperationDetailsWindow : Window
             : Array.Empty<Order>();
         foreach (var order in orders)
         {
-            if (order.Status == OrderStatus.Shipped)
+            if (order.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
             {
                 continue;
             }
@@ -228,7 +228,7 @@ public partial class OperationDetailsWindow : Window
                 }
             }
 
-            _ordersAll.Add(new OrderOption(order.Id, order.OrderRef, order.Type, order.PartnerId, order.PartnerDisplay));
+            _ordersAll.Add(new OrderOption(order.Id, order.OrderRef, order.Type, order.Status, order.PartnerId, order.PartnerDisplay));
         }
 
         RefreshOrderList();
@@ -240,7 +240,7 @@ public partial class OperationDetailsWindow : Window
         var partnerId = ResolveDocPartnerFromInput()?.Id;
         foreach (var order in _ordersAll)
         {
-            if (_doc?.Type == DocType.Outbound && order.Type != OrderType.Customer)
+            if (!IsOrderAllowedForCurrentDoc(order))
             {
                 continue;
             }
@@ -252,6 +252,16 @@ public partial class OperationDetailsWindow : Window
 
             _orders.Add(order);
         }
+    }
+
+    private bool IsOrderAllowedForCurrentDoc(OrderOption order)
+    {
+        if (_doc?.Type == DocType.Outbound)
+        {
+            return order.Type == OrderType.Customer && order.Status == OrderStatus.Accepted;
+        }
+
+        return true;
     }
 
     private void LoadDoc()
@@ -3844,7 +3854,12 @@ public partial class OperationDetailsWindow : Window
 
     private IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemaining(long orderId)
     {
-        return _services.WpfReadApi.TryGetOrderReceiptRemaining(orderId, out var lines)
+        return GetOrderReceiptRemaining(orderId, includeReservedStock: true);
+    }
+
+    private IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemaining(long orderId, bool includeReservedStock)
+    {
+        return _services.WpfReadApi.TryGetOrderReceiptRemaining(orderId, includeReservedStock, out var lines)
             ? lines
             : Array.Empty<OrderReceiptLine>();
     }
@@ -4924,9 +4939,22 @@ public partial class OperationDetailsWindow : Window
             return true;
         }
 
-        var match = _ordersAll.FirstOrDefault(order => string.Equals(order.OrderRef, text, StringComparison.OrdinalIgnoreCase));
+        var match = _orders.FirstOrDefault(order => string.Equals(order.OrderRef, text, StringComparison.OrdinalIgnoreCase));
         if (match == null)
         {
+            var blockedOrder = _ordersAll.FirstOrDefault(order => string.Equals(order.OrderRef, text, StringComparison.OrdinalIgnoreCase));
+            if (_doc?.Type == DocType.Outbound
+                && blockedOrder is { Type: OrderType.Customer }
+                && blockedOrder.Status != OrderStatus.Accepted)
+            {
+                MessageBox.Show(
+                    "К отгрузке доступны только заказы в статусе \"Готов\".",
+                    "Операция",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return false;
+            }
+
             MessageBox.Show("Выберите заказ из списка.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
@@ -5109,7 +5137,7 @@ public partial class OperationDetailsWindow : Window
         public double Qty { get; set; }
     }
 
-    private sealed record OrderOption(long Id, string OrderRef, OrderType Type, long? PartnerId, string PartnerDisplay)
+    private sealed record OrderOption(long Id, string OrderRef, OrderType Type, OrderStatus Status, long? PartnerId, string PartnerDisplay)
     {
         public string DisplayName => Type == OrderType.Internal
             ? $"{OrderRef} - Внутренний выпуск"

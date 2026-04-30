@@ -1615,9 +1615,11 @@ INNER JOIN orders o ON o.id = p.order_id
 WHERE p.to_hu IS NOT NULL
   AND p.to_hu <> ''
   AND o.status <> @shipped_status
+  AND o.status <> @cancelled_status
   AND (@exclude_order_id IS NULL OR p.order_id <> @exclude_order_id);
 ");
             command.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+            command.Parameters.AddWithValue("@cancelled_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
             command.Parameters.AddWithValue("@exclude_order_id", excludeOrderId.HasValue ? excludeOrderId.Value : DBNull.Value);
             using var reader = command.ExecuteReader();
             var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -1675,12 +1677,14 @@ WHERE p.order_id <> @order_id
   AND p.to_hu <> ''
   AND o.order_type = @customer_order_type
   AND o.status <> @shipped_status
+  AND o.status <> @cancelled_status
   AND UPPER(TRIM(p.to_hu)) = ANY(@hu_codes)
 LIMIT 1;
 ");
                     conflictCommand.Parameters.AddWithValue("@order_id", orderId);
                     conflictCommand.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
                     conflictCommand.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+                    conflictCommand.Parameters.AddWithValue("@cancelled_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
                     conflictCommand.Parameters.AddWithValue("@hu_codes", normalizedHuCodes);
                     using var conflictReader = conflictCommand.ExecuteReader();
                     if (conflictReader.Read())
@@ -2339,6 +2343,7 @@ reserved_candidates AS (
       AND p.to_hu <> ''
       AND o.order_type = @customer_order_type
       AND o.status <> @shipped_status
+      AND o.status <> @cancelled_status
 
     UNION ALL
 
@@ -2360,6 +2365,7 @@ reserved_candidates AS (
       AND d.order_id IS NOT NULL
       AND o.order_type = @customer_order_type
       AND o.status <> @shipped_status
+      AND o.status <> @cancelled_status
       AND dl.qty > 0
       AND dl.to_hu IS NOT NULL
       AND dl.to_hu <> ''
@@ -2409,6 +2415,7 @@ LEFT JOIN reserved_map rm ON rm.item_id = hs.item_id AND rm.hu_code = hs.hu_code
             command.Parameters.AddWithValue("@internal_order_type", OrderStatusMapper.TypeToString(OrderType.Internal));
             command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
             command.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+            command.Parameters.AddWithValue("@cancelled_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
 
             using var reader = command.ExecuteReader();
             var rows = new List<HuOrderContextRow>();

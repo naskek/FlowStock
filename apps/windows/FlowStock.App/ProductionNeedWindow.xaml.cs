@@ -57,6 +57,7 @@ public partial class ProductionNeedWindow : Window
             _rows.Add(new ProductionNeedDisplayRow
             {
                 ItemId = row.ItemId,
+                Gtin = string.IsNullOrWhiteSpace(row.Gtin) ? "-" : row.Gtin,
                 ItemName = row.ItemName,
                 ItemTypeName = string.IsNullOrWhiteSpace(row.ItemTypeName) ? "—" : row.ItemTypeName,
                 PhysicalStockQty = row.PhysicalStockQty,
@@ -77,6 +78,7 @@ public partial class ProductionNeedWindow : Window
     private sealed record ProductionNeedDisplayRow
     {
         public long ItemId { get; init; }
+        public string Gtin { get; init; } = string.Empty;
         public string ItemName { get; init; } = string.Empty;
         public string ItemTypeName { get; init; } = string.Empty;
         public double PhysicalStockQty { get; init; }

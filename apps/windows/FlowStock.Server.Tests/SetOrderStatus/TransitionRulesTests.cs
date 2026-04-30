@@ -50,4 +50,18 @@ public sealed class TransitionRulesTests
         Assert.Equal("ORDER_STATUS_MANUAL_DISABLED", payload.Error);
         Assert.Equal(OrderStatus.Shipped, harness.GetOrder(orderId).Status);
     }
+
+    [Fact]
+    public async Task ExistingShippedOrder_CannotBeCancelled()
+    {
+        var (harness, apiStore, orderId) = SetOrderStatusHttpScenario.CreateShippedCustomerScenario();
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        using var response = await host.Client.PostAsJsonAsync($"/api/orders/{orderId}/status", new { status = "CANCELLED" });
+        var payload = await SetOrderStatusHttpApi.ReadApiResultAsync(response, HttpStatusCode.BadRequest);
+
+        Assert.False(payload.Ok);
+        Assert.Equal("ORDER_CANCEL_FORBIDDEN", payload.Error);
+        Assert.Equal(OrderStatus.Shipped, harness.GetOrder(orderId).Status);
+    }
 }

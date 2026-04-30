@@ -56,6 +56,10 @@
                                     <Setter Property="Background" Value="#1F7A3E" />
                                     <Setter Property="BorderBrush" Value="#166330" />
                                 </DataTrigger>
+                                <DataTrigger Binding="{Binding Text, ElementName=OrderStatusText}" Value="Отменён">
+                                    <Setter Property="Background" Value="#F2F4F7" />
+                                    <Setter Property="BorderBrush" Value="#98A2B3" />
+                                </DataTrigger>
                             </Style.Triggers>
                         </Style>
                     </Border.Style>
@@ -69,6 +73,9 @@
                                     </DataTrigger>
                                     <DataTrigger Binding="{Binding Text, ElementName=OrderStatusText}" Value="Выполнен">
                                         <Setter Property="Foreground" Value="White" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Text, ElementName=OrderStatusText}" Value="Отменён">
+                                        <Setter Property="Foreground" Value="#475467" />
                                     </DataTrigger>
                                 </Style.Triggers>
                             </Style>

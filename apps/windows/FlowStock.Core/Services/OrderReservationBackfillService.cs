@@ -57,7 +57,8 @@ public sealed class OrderReservationBackfillService
         {
             var existing = existingByOrder[order.Id];
             var effectiveStatus = ResolveCustomerOrderStatus(store, order);
-            var active = order.UseReservedStock && effectiveStatus != OrderStatus.Shipped;
+            var active = order.UseReservedStock
+                         && effectiveStatus is not OrderStatus.Shipped and not OrderStatus.Cancelled;
             List<OrderReceiptPlanLine> desired;
             IReadOnlyList<OrderReservationBackfillLineReport> lineReports;
             string? skipReason = null;
@@ -287,7 +288,8 @@ public sealed class OrderReservationBackfillService
         IReadOnlyList<Order> customerOrders)
     {
         var activeOrders = customerOrders
-            .Where(order => order.UseReservedStock && ResolveCustomerOrderStatus(store, order) != OrderStatus.Shipped)
+            .Where(order => order.UseReservedStock
+                            && ResolveCustomerOrderStatus(store, order) is not OrderStatus.Shipped and not OrderStatus.Cancelled)
             .ToDictionary(order => order.Id);
 
         return activeOrders.Values
@@ -365,9 +367,9 @@ public sealed class OrderReservationBackfillService
             return order.Status;
         }
 
-        if (order.Status == OrderStatus.Shipped)
+        if (order.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
         {
-            return OrderStatus.Shipped;
+            return order.Status;
         }
 
         var lines = store.GetOrderLines(order.Id);

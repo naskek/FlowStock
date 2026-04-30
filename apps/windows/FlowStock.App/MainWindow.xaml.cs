@@ -151,9 +151,16 @@ public partial class MainWindow : Window
             PartnerEditButton.IsEnabled = _selectedPartner != null;
         }
 
-        if (OrdersDeleteButton != null)
+        var selectedOrder = OrdersGrid.SelectedItem as Order;
+        var canChangeOrder = selectedOrder is { Status: not OrderStatus.Shipped and not OrderStatus.Cancelled };
+        if (OrdersEditButton != null)
         {
-            OrdersDeleteButton.IsEnabled = OrdersGrid.SelectedItem is Order;
+            OrdersEditButton.IsEnabled = canChangeOrder;
+        }
+
+        if (OrdersCancelButton != null)
+        {
+            OrdersCancelButton.IsEnabled = canChangeOrder;
         }
 
         if (KmDeleteBatchButton != null)
@@ -1057,6 +1064,7 @@ public partial class MainWindow : Window
             _productionNeedRows.Add(new ProductionNeedDisplayRow
             {
                 ItemId = row.ItemId,
+                Gtin = string.IsNullOrWhiteSpace(row.Gtin) ? "-" : row.Gtin,
                 ItemName = row.ItemName,
                 ItemTypeName = string.IsNullOrWhiteSpace(row.ItemTypeName) ? "—" : row.ItemTypeName,
                 PhysicalStockQty = row.PhysicalStockQty,
@@ -1248,7 +1256,12 @@ public partial class MainWindow : Window
         LoadOrders();
     }
 
-    private void OrdersDelete_Click(object sender, RoutedEventArgs e)
+    private void OrdersEdit_Click(object sender, RoutedEventArgs e)
+    {
+        OpenSelectedOrder();
+    }
+
+    private void OrdersCancel_Click(object sender, RoutedEventArgs e)
     {
         if (OrdersGrid.SelectedItem is not Order order)
         {
@@ -1256,7 +1269,18 @@ public partial class MainWindow : Window
             return;
         }
 
-        var confirm = MessageBox.Show("Удалить выбранный заказ?", "Заказы", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+        if (order.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
+        {
+            MessageBox.Show("Этот заказ уже находится в конечном статусе.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            $"Отменить заказ {order.OrderRef}? Резерв по заказу будет снят, сам заказ останется в истории.",
+            "Заказы",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
         if (confirm != MessageBoxResult.Yes)
         {
             return;
@@ -1264,13 +1288,13 @@ public partial class MainWindow : Window
 
         try
         {
-            var result = _services.WpfDeleteOrders.DeleteOrderAsync(order.Id)
+            var result = _services.WpfSetOrderStatuses.SetStatusAsync(order.Id, OrderStatus.Cancelled)
                 .ConfigureAwait(false)
                 .GetAwaiter()
                 .GetResult();
             if (!result.IsSuccess)
             {
-                var icon = result.Kind is WpfDeleteOrderResultKind.Timeout or WpfDeleteOrderResultKind.ServerUnavailable
+                var icon = result.Kind is WpfSetOrderStatusResultKind.Timeout or WpfSetOrderStatusResultKind.ServerUnavailable
                     ? MessageBoxImage.Error
                     : MessageBoxImage.Warning;
                 MessageBox.Show(result.Message, "Заказы", MessageBoxButton.OK, icon);
@@ -2614,6 +2638,7 @@ public partial class MainWindow : Window
     private sealed record ProductionNeedDisplayRow
     {
         public long ItemId { get; init; }
+        public string Gtin { get; init; } = string.Empty;
         public string ItemName { get; init; } = string.Empty;
         public string ItemTypeName { get; init; } = string.Empty;
         public double PhysicalStockQty { get; init; }

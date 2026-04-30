@@ -240,4 +240,115 @@ public sealed class ValidationTests
         Assert.Empty(harness.LedgerEntries);
         Assert.Equal(DocStatus.Draft, harness.GetDoc(6).Status);
     }
+
+    [Fact]
+    public void ProductionReceiptReservedOnlyOrderRemaining_FailsWithoutLedger()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedDoc(new Doc
+        {
+            Id = 7,
+            DocRef = "PRD-2026-000005",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 10,
+            OrderRef = "CO-2026-000001",
+            CreatedAt = new DateTime(2026, 3, 10, 12, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedItem(new Item { Id = 100, Name = "Горчица" });
+        harness.SeedLocation(new Location { Id = 10, Code = "01", Name = "Склад 01" });
+        harness.SeedOrder(new Order
+        {
+            Id = 10,
+            OrderRef = "CO-2026-000001",
+            Type = OrderType.Customer,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 3, 10, 11, 0, 0, DateTimeKind.Utc),
+            UseReservedStock = true
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 1000,
+            OrderId = 10,
+            ItemId = 100,
+            QtyOrdered = 20
+        });
+        harness.SeedOrderReceiptRemaining(10, new OrderReceiptLine
+        {
+            OrderLineId = 1000,
+            OrderId = 10,
+            ItemId = 100,
+            ItemName = "Горчица",
+            QtyOrdered = 20,
+            QtyReceived = 20,
+            QtyRemaining = 0
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 71,
+            DocId = 7,
+            OrderLineId = 1000,
+            ItemId = 100,
+            Qty = 20,
+            ToLocationId = 10,
+            ToHu = "HU-000007"
+        });
+
+        var service = harness.CreateService();
+        var result = service.TryCloseDoc(7, allowNegative: false);
+
+        Assert.False(result.Success);
+        Assert.Contains(result.Errors, error => error.Contains("остаток к выпуску 0", StringComparison.OrdinalIgnoreCase));
+        Assert.Empty(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Draft, harness.GetDoc(7).Status);
+    }
+
+    [Fact]
+    public void ApplyOrderToProductionReceipt_BlocksReservedOnlyCustomerOrder()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedDoc(new Doc
+        {
+            Id = 8,
+            DocRef = "PRD-2026-000006",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            CreatedAt = new DateTime(2026, 3, 10, 12, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedItem(new Item { Id = 100, Name = "Горчица" });
+        harness.SeedLocation(new Location { Id = 10, Code = "01", Name = "Склад 01" });
+        harness.SeedOrder(new Order
+        {
+            Id = 11,
+            OrderRef = "CO-2026-000002",
+            Type = OrderType.Customer,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 3, 10, 11, 0, 0, DateTimeKind.Utc),
+            UseReservedStock = true
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 1100,
+            OrderId = 11,
+            ItemId = 100,
+            QtyOrdered = 20
+        });
+        harness.SeedOrderReceiptRemaining(11, new OrderReceiptLine
+        {
+            OrderLineId = 1100,
+            OrderId = 11,
+            ItemId = 100,
+            ItemName = "Горчица",
+            QtyOrdered = 20,
+            QtyReceived = 20,
+            QtyRemaining = 0
+        });
+
+        var service = harness.CreateService();
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            service.ApplyOrderToProductionReceipt(8, 11, toLocationId: 10, toHu: "HU-000008", replaceLines: true));
+
+        Assert.Contains("Нет позиций для приемки", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(harness.GetDocLines(8));
+    }
 }

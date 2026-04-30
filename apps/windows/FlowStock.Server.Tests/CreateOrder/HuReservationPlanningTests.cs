@@ -285,4 +285,57 @@ public sealed class HuReservationPlanningTests
         Assert.Contains(huSet!, hu => string.Equals(hu, originHu, StringComparison.OrdinalIgnoreCase));
         Assert.Contains(huSet!, hu => string.Equals(hu, reservedHu, StringComparison.OrdinalIgnoreCase));
     }
+
+    [Fact]
+    public void GetOrderReceiptRemainingDetailed_ForCustomerOrder_DoesNotTurnReservationPlanIntoProductionNeed()
+    {
+        const long orderId = 20;
+        const long orderLineId = 200;
+        const long itemId = 1001;
+
+        var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(s => s.GetOrder(orderId))
+            .Returns(new Order
+            {
+                Id = orderId,
+                OrderRef = "CUST-20",
+                Type = OrderType.Customer,
+                Status = OrderStatus.InProgress,
+                CreatedAt = new DateTime(2026, 1, 1),
+                UseReservedStock = true
+            });
+        store.Setup(s => s.GetOrderReceiptPlanLines(orderId))
+            .Returns([
+                new OrderReceiptPlanLine
+                {
+                    Id = 500,
+                    OrderId = orderId,
+                    OrderLineId = orderLineId,
+                    ItemId = itemId,
+                    ItemName = "Item 1",
+                    QtyPlanned = 20,
+                    ToLocationId = 10,
+                    ToLocationCode = "01",
+                    ToHu = "HU-RESERVED",
+                    SortOrder = 1
+                }
+            ]);
+        store.Setup(s => s.GetOrderReceiptRemaining(orderId))
+            .Returns([
+                new OrderReceiptLine
+                {
+                    OrderLineId = orderLineId,
+                    OrderId = orderId,
+                    ItemId = itemId,
+                    ItemName = "Item 1",
+                    QtyOrdered = 20,
+                    QtyReceived = 20,
+                    QtyRemaining = 0
+                }
+            ]);
+
+        var result = new OrderService(store.Object).GetOrderReceiptRemainingDetailed(orderId);
+
+        Assert.Empty(result);
+    }
 }

@@ -48,6 +48,7 @@ public sealed class ProductionNeedService(IDataStore dataStore)
                 return new ProductionNeedRow
                 {
                     ItemId = itemId,
+                    Gtin = item?.Gtin,
                     ItemName = item?.Name ?? $"#{itemId}",
                     ItemTypeName = item?.ItemTypeName,
                     PhysicalStockQty = physicalStockQty,
@@ -71,7 +72,8 @@ public sealed class ProductionNeedService(IDataStore dataStore)
     {
         var result = new Dictionary<long, double>();
         var activeCustomerOrders = _dataStore.GetOrders()
-            .Where(order => order.Type == OrderType.Customer && order.Status != OrderStatus.Shipped);
+            .Where(order => order.Type == OrderType.Customer
+                            && order.Status is not OrderStatus.Shipped and not OrderStatus.Cancelled);
 
         foreach (var order in activeCustomerOrders)
         {

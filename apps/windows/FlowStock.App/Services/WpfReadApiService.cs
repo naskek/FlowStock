@@ -173,9 +173,15 @@ public sealed class WpfReadApiService
 
     public bool TryGetOrderReceiptRemaining(long orderId, out IReadOnlyList<OrderReceiptLine> lines)
     {
+        return TryGetOrderReceiptRemaining(orderId, includeReservedStock: true, out lines);
+    }
+
+    public bool TryGetOrderReceiptRemaining(long orderId, bool includeReservedStock, out IReadOnlyList<OrderReceiptLine> lines)
+    {
         lines = Array.Empty<OrderReceiptLine>();
+        var includeReservedQuery = includeReservedStock ? "1" : "0";
         return TryRead(
-            $"/api/orders/{orderId}/receipt-remaining",
+            $"/api/orders/{orderId}/receipt-remaining?include_reserved_stock={includeReservedQuery}",
             root => root.ValueKind == JsonValueKind.Array
                 ? root.EnumerateArray()
                     .Select(MapOrderReceiptLine)
@@ -670,6 +676,7 @@ public sealed class WpfReadApiService
         return new ProductionNeedRow
         {
             ItemId = ReadInt64(element, "item_id"),
+            Gtin = ReadString(element, "gtin"),
             ItemName = ReadString(element, "item_name") ?? string.Empty,
             ItemTypeName = ReadString(element, "item_type"),
             PhysicalStockQty = ReadDouble(element, "physical_stock_qty"),

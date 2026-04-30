@@ -199,15 +199,20 @@
                               HeadersVisibility="Column"
                               GridLinesVisibility="Horizontal">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="ID" Binding="{Binding ItemId}" Width="80" />
-                            <DataGridTextColumn Header="Номенклатура" Binding="{Binding ItemName}" Width="2*" />
-                            <DataGridTextColumn Header="Тип" Binding="{Binding ItemTypeName}" Width="1.3*" />
-                            <DataGridTextColumn Header="Физ. остаток" Binding="{Binding PhysicalStockQty, StringFormat={}{0:0.###}}" Width="120" />
-                            <DataGridTextColumn Header="Открытый спрос" Binding="{Binding ActiveCustomerOrderOpenQty, StringFormat={}{0:0.###}}" Width="130" />
-                            <DataGridTextColumn Header="Резерв" Binding="{Binding ReservedCustomerOrderQty, StringFormat={}{0:0.###}}" Width="110" />
+                            <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="Auto" />
+                            <DataGridTextColumn Header="Наименование" Binding="{Binding ItemName}" Width="Auto" />
+                            <DataGridTextColumn Header="На складе" Binding="{Binding PhysicalStockQty, StringFormat={}{0:0.###}}" Width="120" />
+                            <DataGridTextColumn Header="В заказах" Binding="{Binding ActiveCustomerOrderOpenQty, StringFormat={}{0:0.###}}" Width="120" />
+                            <DataGridTextColumn Header="Зарезервировано" Binding="{Binding ReservedCustomerOrderQty, StringFormat={}{0:0.###}}" Width="130" />
                             <DataGridTextColumn Header="Свободный остаток" Binding="{Binding FreeStockQty, StringFormat={}{0:0.###}}" Width="130" />
                             <DataGridTextColumn Header="Мин. остаток" Binding="{Binding MinStockQty, StringFormat={}{0:0.###}}" Width="120" />
-                            <DataGridTextColumn Header="Потребность" Binding="{Binding ProductionNeedQty, StringFormat={}{0:0.###}}" Width="120" />
+                            <DataGridTextColumn Header="Необходимо произвести" Binding="{Binding ProductionNeedQty, StringFormat={}{0:0.###}}" Width="160">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="FontWeight" Value="Bold" />
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
                         </DataGrid.Columns>
                     </DataGrid>
                 </DockPanel>
@@ -263,7 +268,8 @@
                     </Grid.RowDefinitions>
                     <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
                         <Button Content="Новый" Click="OrdersNew_Click" />
-                        <Button x:Name="OrdersDeleteButton" Content="Удалить" Click="OrdersDelete_Click" Margin="8,0,0,0" />
+                        <Button x:Name="OrdersEditButton" Content="Изменить" Click="OrdersEdit_Click" Margin="8,0,0,0" />
+                        <Button x:Name="OrdersCancelButton" Content="Отменить" Click="OrdersCancel_Click" Margin="8,0,0,0" />
                     </StackPanel>
                     <DataGrid x:Name="OrdersGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
                               SelectionChanged="OrdersGrid_SelectionChanged"
@@ -294,6 +300,10 @@
                                                             <Setter Property="Background" Value="#1F7A3E" />
                                                             <Setter Property="BorderBrush" Value="#166330" />
                                                         </DataTrigger>
+                                                        <DataTrigger Binding="{Binding StatusDisplay}" Value="Отменён">
+                                                            <Setter Property="Background" Value="#F2F4F7" />
+                                                            <Setter Property="BorderBrush" Value="#98A2B3" />
+                                                        </DataTrigger>
                                                     </Style.Triggers>
                                                 </Style>
                                             </Border.Style>
@@ -309,6 +319,9 @@
                                                             </DataTrigger>
                                                             <DataTrigger Binding="{Binding StatusDisplay}" Value="Выполнен">
                                                                 <Setter Property="Foreground" Value="White" />
+                                                            </DataTrigger>
+                                                            <DataTrigger Binding="{Binding StatusDisplay}" Value="Отменён">
+                                                                <Setter Property="Foreground" Value="#475467" />
                                                             </DataTrigger>
                                                         </Style.Triggers>
                                                     </Style>

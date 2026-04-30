@@ -55,7 +55,7 @@ public static class OrderCreateEndpoint
                 return Results.BadRequest(new ApiResult(false, "INVALID_STATUS"));
             }
 
-            if (parsedStatus.Value == OrderStatus.Shipped)
+            if (parsedStatus.Value is OrderStatus.Shipped or OrderStatus.Cancelled)
             {
                 return Results.BadRequest(new ApiResult(false, "SHIPPED_STATUS_FORBIDDEN"));
             }

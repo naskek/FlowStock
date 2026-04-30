@@ -92,6 +92,39 @@ public sealed class ProductionNeedServiceTests
     }
 
     [Fact]
+    public void CancelledOrders_DoNotCreateProductionNeed()
+    {
+        var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(s => s.GetItems(null)).Returns([
+            new Item
+            {
+                Id = 10,
+                Name = "Товар",
+                ItemTypeEnableMinStockControl = false
+            }
+        ]);
+        store.Setup(s => s.GetStock(null)).Returns(Array.Empty<StockRow>());
+        store.Setup(s => s.GetOrders()).Returns([
+            new Order
+            {
+                Id = 1,
+                OrderRef = "001",
+                Type = OrderType.Customer,
+                Status = OrderStatus.Cancelled
+            }
+        ]);
+
+        var row = new ProductionNeedService(store.Object).GetRows(includeZeroNeed: true).Single();
+
+        Assert.Equal(0, row.ActiveCustomerOrderOpenQty);
+        Assert.Equal(0, row.ProductionNeedQty);
+        store.Verify(s => s.GetItems(null), Times.Once);
+        store.Verify(s => s.GetStock(null), Times.Once);
+        store.Verify(s => s.GetOrders(), Times.Once);
+        store.VerifyNoOtherCalls();
+    }
+
+    [Fact]
     public void PartialReserve_DoesNotReduceActiveCustomerOrderOpenQty()
     {
         var service = BuildService(

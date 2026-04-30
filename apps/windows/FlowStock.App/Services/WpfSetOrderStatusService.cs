@@ -126,6 +126,7 @@ public sealed class WpfSetOrderStatusService
         {
             "ORDER_NOT_FOUND" => "Сервер не нашел указанный заказ.",
             "INVALID_STATUS" => "Сервер отклонил статус заказа.",
+            "ORDER_CANCEL_FORBIDDEN" => "Выполненный заказ нельзя отменить.",
             "ORDER_STATUS_SHIPPED_FORBIDDEN" => "Статус \"Отгружен/Завершен\" ставится автоматически.",
             "ORDER_STATUS_INVALID_TARGET" => "Допустимы только статусы \"Принят\" и \"В процессе\".",
             "ORDER_STATUS_CHANGE_FORBIDDEN" => "Заказ в конечном статусе нельзя менять вручную.",
@@ -139,6 +140,7 @@ public sealed class WpfSetOrderStatusService
         {
             "ORDER_NOT_FOUND" => WpfSetOrderStatusResultKind.NotFound,
             "INVALID_STATUS" => WpfSetOrderStatusResultKind.ValidationFailed,
+            "ORDER_CANCEL_FORBIDDEN" => WpfSetOrderStatusResultKind.ValidationFailed,
             "ORDER_STATUS_SHIPPED_FORBIDDEN" => WpfSetOrderStatusResultKind.ValidationFailed,
             "ORDER_STATUS_INVALID_TARGET" => WpfSetOrderStatusResultKind.ValidationFailed,
             "ORDER_STATUS_CHANGE_FORBIDDEN" => WpfSetOrderStatusResultKind.ValidationFailed,

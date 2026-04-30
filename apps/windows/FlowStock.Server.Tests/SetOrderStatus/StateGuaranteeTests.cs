@@ -17,12 +17,12 @@ public sealed class StateGuaranteeTests
         var docsBefore = harness.DocCount;
         var ledgerBefore = harness.LedgerEntries.Count;
 
-        using var response = await host.Client.PostAsJsonAsync($"/api/orders/{orderId}/status", new { status = "IN_PROGRESS" });
-        var payload = await SetOrderStatusHttpApi.ReadApiResultAsync(response, HttpStatusCode.BadRequest);
-        Assert.False(payload.Ok);
-        Assert.Equal("ORDER_STATUS_MANUAL_DISABLED", payload.Error);
+        var payload = await SetOrderStatusHttpApi.ChangeAsync(host.Client, orderId, "CANCELLED");
+        Assert.True(payload.Ok);
+        Assert.Equal("STATUS_CHANGED", payload.Result);
 
         Assert.Equal(docsBefore, harness.DocCount);
         Assert.Equal(ledgerBefore, harness.LedgerEntries.Count);
+        Assert.Equal(FlowStock.Core.Models.OrderStatus.Cancelled, harness.GetOrder(orderId).Status);
     }
 }

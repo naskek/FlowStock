@@ -24,14 +24,29 @@ public sealed class WpfCompatibilityTests
     }
 
     [Fact]
-    public async Task WpfSetOrderStatus_ForbiddenTransitionReturnsValidationError()
+    public async Task WpfSetOrderStatus_Cancel_ChangesStatus()
+    {
+        var (harness, apiStore, orderId) = SetOrderStatusHttpScenario.CreateDraftCustomerScenario();
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+        using var temp = new TempSettingsScope(host.Client.BaseAddress!, useServerSetOrderStatus: true);
+        var service = new WpfSetOrderStatusService(new SettingsService(temp.SettingsPath), new FileLogger(temp.LogPath));
+
+        var result = await service.SetStatusAsync(orderId, OrderStatus.Cancelled);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(WpfSetOrderStatusResultKind.StatusChanged, result.Kind);
+        Assert.Equal(OrderStatus.Cancelled, harness.GetOrder(orderId).Status);
+    }
+
+    [Fact]
+    public async Task WpfSetOrderStatus_CancelShippedReturnsValidationError()
     {
         var (harness, apiStore, orderId) = SetOrderStatusHttpScenario.CreateShippedCustomerScenario();
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
         using var temp = new TempSettingsScope(host.Client.BaseAddress!, useServerSetOrderStatus: true);
         var service = new WpfSetOrderStatusService(new SettingsService(temp.SettingsPath), new FileLogger(temp.LogPath));
 
-        var result = await service.SetStatusAsync(orderId, OrderStatus.Accepted);
+        var result = await service.SetStatusAsync(orderId, OrderStatus.Cancelled);
 
         Assert.False(result.IsSuccess);
         Assert.Equal(WpfSetOrderStatusResultKind.ValidationFailed, result.Kind);
@@ -39,18 +54,18 @@ public sealed class WpfCompatibilityTests
     }
 
     [Fact]
-    public async Task WpfSetOrderStatus_IgnoresLegacyFlag_AndStillReportsManualStatusDisabled()
+    public async Task WpfSetOrderStatus_IgnoresLegacyFlag_AndStillCancels()
     {
         var (harness, apiStore, orderId) = SetOrderStatusHttpScenario.CreateDraftCustomerScenario();
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
         using var temp = new TempSettingsScope(host.Client.BaseAddress!, useServerSetOrderStatus: false);
         var service = new WpfSetOrderStatusService(new SettingsService(temp.SettingsPath), new FileLogger(temp.LogPath));
 
-        var result = await service.SetStatusAsync(orderId, OrderStatus.Accepted);
+        var result = await service.SetStatusAsync(orderId, OrderStatus.Cancelled);
 
-        Assert.False(result.IsSuccess);
-        Assert.Equal(WpfSetOrderStatusResultKind.ValidationFailed, result.Kind);
-        Assert.Equal(OrderStatus.Draft, harness.GetOrder(orderId).Status);
+        Assert.True(result.IsSuccess);
+        Assert.Equal(WpfSetOrderStatusResultKind.StatusChanged, result.Kind);
+        Assert.Equal(OrderStatus.Cancelled, harness.GetOrder(orderId).Status);
     }
 
     private sealed class TempSettingsScope : IDisposable

@@ -252,6 +252,7 @@ body.pc-body {
 
 .pc-production-need-qty {
   color: #a62525;
+  font-weight: 800;
 }
 
 .pc-table th {

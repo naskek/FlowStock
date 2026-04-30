@@ -9,20 +9,20 @@ namespace FlowStock.Server.Tests.SetOrderStatus;
 public sealed class ValidationTests
 {
     [Fact]
-    public async Task UnknownOrderId_ReturnsManualStatusDisabled()
+    public async Task UnknownOrderId_ReturnsNotFound()
     {
         var (harness, apiStore, _) = SetOrderStatusHttpScenario.CreateDraftCustomerScenario();
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
 
         using var response = await host.Client.PostAsJsonAsync("/api/orders/999/status", new { status = "ACCEPTED" });
-        var payload = await SetOrderStatusHttpApi.ReadApiResultAsync(response, HttpStatusCode.BadRequest);
+        var payload = await SetOrderStatusHttpApi.ReadApiResultAsync(response, HttpStatusCode.NotFound);
 
         Assert.False(payload.Ok);
-        Assert.Equal("ORDER_STATUS_MANUAL_DISABLED", payload.Error);
+        Assert.Equal("ORDER_NOT_FOUND", payload.Error);
     }
 
     [Fact]
-    public async Task InvalidStatus_ReturnsManualStatusDisabled()
+    public async Task InvalidStatus_ReturnsInvalidStatus()
     {
         var (harness, apiStore, orderId) = SetOrderStatusHttpScenario.CreateDraftCustomerScenario();
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
@@ -31,6 +31,6 @@ public sealed class ValidationTests
         var payload = await SetOrderStatusHttpApi.ReadApiResultAsync(response, HttpStatusCode.BadRequest);
 
         Assert.False(payload.Ok);
-        Assert.Equal("ORDER_STATUS_MANUAL_DISABLED", payload.Error);
+        Assert.Equal("INVALID_STATUS", payload.Error);
     }
 }

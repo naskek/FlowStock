@@ -184,7 +184,7 @@ public partial class OrderDetailsWindow : Window
         DueDatePicker.SelectedDate = _order.DueDate;
         CommentBox.Text = _order.Comment ?? string.Empty;
 
-        var isShipped = _order.Status == OrderStatus.Shipped;
+        var isFinalStatus = _order.Status is OrderStatus.Shipped or OrderStatus.Cancelled;
         OrderStatusText.Text = OrderStatusMapper.StatusToDisplayName(_order.Status, _order.Type);
 
         _lines.Clear();
@@ -199,7 +199,7 @@ public partial class OrderDetailsWindow : Window
         SaveStatusText.Text = string.Empty;
         UpdateTypeUi();
         RefreshLineMetrics();
-        SetEditingEnabled(!isShipped);
+        SetEditingEnabled(!isFinalStatus);
         EndLoad();
     }
 
@@ -754,11 +754,11 @@ public partial class OrderDetailsWindow : Window
 
     private bool EnsureEditable(bool showMessage = true)
     {
-        if (_order != null && _order.Status == OrderStatus.Shipped)
+        if (_order != null && _order.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
         {
             if (showMessage)
             {
-                MessageBox.Show($"{OrderStatusMapper.StatusToDisplayName(OrderStatus.Shipped, _order.Type)} заказ нельзя редактировать.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show($"{OrderStatusMapper.StatusToDisplayName(_order.Status, _order.Type)} заказ нельзя редактировать.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             return false;
         }
@@ -781,7 +781,7 @@ public partial class OrderDetailsWindow : Window
     private void UpdateTypeUi()
     {
         var type = GetSelectedOrderType();
-        var canEdit = _order?.Status != OrderStatus.Shipped;
+        var canEdit = _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled);
 
         TypeCombo.IsEnabled = canEdit;
         PartnerCombo.IsEnabled = canEdit && type == OrderType.Customer;

@@ -18,6 +18,7 @@ internal sealed class CloseDocumentHarness
     private readonly Dictionary<long, ItemRequest> _itemRequests = new();
     private readonly Dictionary<long, OrderRequest> _orderRequests = new();
     private readonly Dictionary<long, IReadOnlyList<OrderReceiptLine>> _orderReceiptRemaining = new();
+    private readonly Dictionary<long, IReadOnlyList<OrderReceiptLine>> _orderReceiptRemainingWithoutReservedStock = new();
     private readonly Dictionary<long, IReadOnlyDictionary<long, double>> _shippedTotalsByOrderLine = new();
     private readonly HashSet<long> _ordersWithOutboundDocs = new();
     private readonly Dictionary<string, HuRecord> _hus = new(StringComparer.OrdinalIgnoreCase);
@@ -156,6 +157,24 @@ internal sealed class CloseDocumentHarness
         };
     }
 
+    private static OrderReceiptLine CloneOrderReceiptLine(OrderReceiptLine line)
+    {
+        return new OrderReceiptLine
+        {
+            OrderLineId = line.OrderLineId,
+            OrderId = line.OrderId,
+            ItemId = line.ItemId,
+            ItemName = line.ItemName,
+            QtyOrdered = line.QtyOrdered,
+            QtyReceived = line.QtyReceived,
+            QtyRemaining = line.QtyRemaining,
+            ToLocationId = line.ToLocationId,
+            ToLocation = line.ToLocation,
+            ToHu = line.ToHu,
+            SortOrder = line.SortOrder
+        };
+    }
+
     private static ItemRequest CloneItemRequest(ItemRequest request)
     {
         return new ItemRequest
@@ -258,14 +277,15 @@ internal sealed class CloseDocumentHarness
     public void SeedOrderReceiptRemaining(long orderId, params OrderReceiptLine[] lines)
     {
         _orderReceiptRemaining[orderId] = (lines ?? Array.Empty<OrderReceiptLine>())
-            .Select(line => new OrderReceiptLine
-            {
-                OrderLineId = line.OrderLineId,
-                ItemId = line.ItemId,
-                ItemName = line.ItemName,
-                QtyOrdered = line.QtyOrdered,
-                QtyReceived = line.QtyReceived
-            })
+            .Select(CloneOrderReceiptLine)
+            .ToArray();
+        _orderReceiptRemainingWithoutReservedStock[orderId] = _orderReceiptRemaining[orderId];
+    }
+
+    public void SeedOrderReceiptRemainingWithoutReservedStock(long orderId, params OrderReceiptLine[] lines)
+    {
+        _orderReceiptRemainingWithoutReservedStock[orderId] = (lines ?? Array.Empty<OrderReceiptLine>())
+            .Select(CloneOrderReceiptLine)
             .ToArray();
     }
 
@@ -361,7 +381,8 @@ internal sealed class CloseDocumentHarness
                     CreatedAt = order.CreatedAt,
                     ShippedAt = order.ShippedAt,
                     PartnerName = order.PartnerName,
-                    PartnerCode = order.PartnerCode
+                    PartnerCode = order.PartnerCode,
+                    UseReservedStock = order.UseReservedStock
                 };
                 _orderLinesByOrder.TryAdd(orderId, new List<OrderLine>());
                 return orderId;
@@ -387,7 +408,8 @@ internal sealed class CloseDocumentHarness
                     CreatedAt = current.CreatedAt,
                     ShippedAt = current.ShippedAt,
                     PartnerName = current.PartnerName,
-                    PartnerCode = current.PartnerCode
+                    PartnerCode = current.PartnerCode,
+                    UseReservedStock = order.UseReservedStock
                 };
             });
 
@@ -411,7 +433,8 @@ internal sealed class CloseDocumentHarness
                     CreatedAt = current.CreatedAt,
                     ShippedAt = current.ShippedAt,
                     PartnerName = current.PartnerName,
-                    PartnerCode = current.PartnerCode
+                    PartnerCode = current.PartnerCode,
+                    UseReservedStock = current.UseReservedStock
                 };
             });
 
@@ -448,14 +471,14 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.GetOrderReceiptRemaining(It.IsAny<long>()))
             .Returns<long>(orderId => _orderReceiptRemaining.TryGetValue(orderId, out var lines)
                 ? lines
-                    .Select(line => new OrderReceiptLine
-                    {
-                        OrderLineId = line.OrderLineId,
-                        ItemId = line.ItemId,
-                        ItemName = line.ItemName,
-                        QtyOrdered = line.QtyOrdered,
-                        QtyReceived = line.QtyReceived
-                    })
+                    .Select(CloneOrderReceiptLine)
+                    .ToArray()
+                : Array.Empty<OrderReceiptLine>());
+
+        _store.Setup(store => store.GetOrderReceiptRemainingWithoutReservedStock(It.IsAny<long>()))
+            .Returns<long>(orderId => _orderReceiptRemainingWithoutReservedStock.TryGetValue(orderId, out var lines)
+                ? lines
+                    .Select(CloneOrderReceiptLine)
                     .ToArray()
                 : Array.Empty<OrderReceiptLine>());
 

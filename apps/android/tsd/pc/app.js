@@ -781,6 +781,7 @@
   function mapProductionNeedRow(row) {
     return {
       itemId: Number(row && row.item_id) || 0,
+      gtin: String((row && row.gtin) || ""),
       itemName: String((row && row.item_name) || ""),
       itemType: String((row && (row.item_type || row.item_type_name)) || ""),
       physicalStockQty: Number(row && row.physical_stock_qty) || 0,
@@ -802,10 +803,10 @@
         return (
           "<tr>" +
           "<td>" +
-          escapeHtml(row.itemName || "-") +
+          escapeHtml(row.gtin || "-") +
           "</td>" +
           "<td>" +
-          escapeHtml(row.itemType || "-") +
+          escapeHtml(row.itemName || "-") +
           "</td>" +
           '<td class="pc-num"><span class="pc-qty">' +
           escapeHtml(formatReportQty(row.physicalStockQty)) +
@@ -834,14 +835,14 @@
       '<div class="pc-table-scroll">' +
       '<table class="pc-table pc-production-need-table">' +
       "<thead><tr>" +
-      renderSortableHeader("productionNeed", "itemName", "Товар") +
-      renderSortableHeader("productionNeed", "itemType", "Тип") +
-      renderSortableHeader("productionNeed", "physicalStockQty", "Физический остаток") +
-      renderSortableHeader("productionNeed", "activeCustomerOrderOpenQty", "Активные заказы") +
+      renderSortableHeader("productionNeed", "gtin", "GTIN") +
+      renderSortableHeader("productionNeed", "itemName", "Наименование") +
+      renderSortableHeader("productionNeed", "physicalStockQty", "На складе") +
+      renderSortableHeader("productionNeed", "activeCustomerOrderOpenQty", "В заказах") +
       renderSortableHeader("productionNeed", "reservedCustomerOrderQty", "Зарезервировано") +
       renderSortableHeader("productionNeed", "freeStockQty", "Свободно") +
-      renderSortableHeader("productionNeed", "minStockQty", "Минимум") +
-      renderSortableHeader("productionNeed", "productionNeedQty", "Нужно произвести") +
+      renderSortableHeader("productionNeed", "minStockQty", "Мин. остаток") +
+      renderSortableHeader("productionNeed", "productionNeedQty", "Необходимо произвести") +
       "</tr></thead>" +
       "<tbody>" +
       body +
@@ -881,8 +882,8 @@
         });
       }
       rows = sortRows(rows, "productionNeed", {
+        gtin: { type: "text", getValue: function (row) { return row.gtin; } },
         itemName: { type: "text", getValue: function (row) { return row.itemName; } },
-        itemType: { type: "text", getValue: function (row) { return row.itemType; } },
         physicalStockQty: { type: "number", getValue: function (row) { return row.physicalStockQty; } },
         activeCustomerOrderOpenQty: { type: "number", getValue: function (row) { return row.activeCustomerOrderOpenQty; } },
         reservedCustomerOrderQty: { type: "number", getValue: function (row) { return row.reservedCustomerOrderQty; } },
