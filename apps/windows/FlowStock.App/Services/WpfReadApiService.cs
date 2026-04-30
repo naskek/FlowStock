@@ -766,7 +766,7 @@ public sealed class WpfReadApiService
             return parsed.Value;
         }
 
-        foreach (var candidate in new[] { OrderStatus.Draft, OrderStatus.Accepted, OrderStatus.InProgress, OrderStatus.Shipped })
+        foreach (var candidate in new[] { OrderStatus.Draft, OrderStatus.Accepted, OrderStatus.InProgress, OrderStatus.Shipped, OrderStatus.Cancelled })
         {
             if (string.Equals(value, OrderStatusMapper.StatusToDisplayName(candidate, type), StringComparison.OrdinalIgnoreCase))
             {
