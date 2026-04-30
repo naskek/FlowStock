@@ -1865,7 +1865,7 @@ app.MapPost("/api/docs/{docId:long}/lines/{lineId:long}/pack-single-hu", async (
     return Results.Ok(new ApiResult(true));
 });
 
-app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>
+app.MapGet("/api/orders", (HttpRequest request, IDataStore store, MarkingExcelService marking) =>
 {
     var query = request.Query["q"].ToString();
     var normalized = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
@@ -1893,7 +1893,14 @@ app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>
             .ToList();
     }
 
-    var list = orders.Select(MapOrder).ToList();
+    var markingByOrderId = marking.GetOrderQueue(includeCompleted: true)
+        .ToDictionary(row => row.OrderId);
+
+    var list = orders
+        .Select(order => MapOrder(
+            order,
+            markingByOrderId.TryGetValue(order.Id, out var markingRow) ? markingRow : null))
+        .ToList();
     if (includePendingRequests)
     {
         var pendingCreateOrders = GetPendingCreateOrderRows(store, normalized);
@@ -1910,7 +1917,7 @@ app.MapGet("/api/orders/next-ref", (IDataStore store) =>
     });
 });
 
-app.MapGet("/api/orders/{orderId:long}", (long orderId, IDataStore store) =>
+app.MapGet("/api/orders/{orderId:long}", (long orderId, IDataStore store, MarkingExcelService marking) =>
 {
     var orderService = new OrderService(store);
     var order = orderService.GetOrder(orderId);
@@ -1919,7 +1926,10 @@ app.MapGet("/api/orders/{orderId:long}", (long orderId, IDataStore store) =>
         return Results.NotFound(new ApiResult(false, "ORDER_NOT_FOUND"));
     }
 
-    return Results.Ok(MapOrder(order));
+    var markingRow = marking.GetOrderQueue(includeCompleted: true)
+        .FirstOrDefault(row => row.OrderId == order.Id);
+
+    return Results.Ok(MapOrder(order, markingRow));
 });
 
 app.MapGet("/api/orders/{orderId:long}/lines", (long orderId, IDataStore store) =>
@@ -2991,8 +3001,21 @@ static Item? FindItemByBarcodeVariant(IDataStore store, string barcode)
     return null;
 }
 
-static object MapOrder(Order order)
+static object MapOrder(Order order, MarkingOrderQueueRow? markingRow = null)
 {
+    var markingStatus = markingRow?.MarkingStatus ?? order.EffectiveMarkingStatus;
+    var markingRequired = markingRow != null
+        ? markingRow.MarkingLineCount > 0
+        : order.MarkingRequired;
+    var markingStatusDisplay = markingRow != null
+        ? MarkingStatusMapper.ToDisplayName(markingStatus)
+        : order.MarkingStatusDisplay;
+
+    var markingExcelGeneratedAt = markingRow?.LastGeneratedAt ?? order.MarkingExcelGeneratedAt;
+    var markingPrintedAt = markingStatus == MarkingStatus.Printed
+        ? markingRow?.LastGeneratedAt ?? order.MarkingPrintedAt
+        : order.MarkingPrintedAt;
+
     return new
     {
         id = order.Id,
@@ -3005,18 +3028,17 @@ static object MapOrder(Order order)
         status = OrderStatusMapper.StatusToDisplayName(order.Status, order.Type),
         comment = order.Comment,
         bind_reserved_stock = order.UseReservedStock,
-        marking_status = MarkingStatusMapper.ToString(order.MarkingStatus),
-        marking_required = order.MarkingRequired,
-        marking_effective_status = MarkingStatusMapper.ToString(order.EffectiveMarkingStatus),
-        marking_status_display = order.MarkingStatusDisplay,
-        marking_status_label = order.MarkingStatusDisplay,
-        marking_excel_generated_at = order.MarkingExcelGeneratedAt?.ToString("O", CultureInfo.InvariantCulture),
-        marking_printed_at = order.MarkingPrintedAt?.ToString("O", CultureInfo.InvariantCulture),
+        marking_status = MarkingStatusMapper.ToString(markingStatus),
+        marking_required = markingRequired,
+        marking_effective_status = MarkingStatusMapper.ToString(markingStatus),
+        marking_status_display = markingStatusDisplay,
+        marking_status_label = markingStatusDisplay,
+        marking_excel_generated_at = markingExcelGeneratedAt?.ToString("O", CultureInfo.InvariantCulture),
+        marking_printed_at = markingPrintedAt?.ToString("O", CultureInfo.InvariantCulture),
         created_at = order.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
         shipped_at = order.ShippedAt?.ToString("O", CultureInfo.InvariantCulture)
     };
 }
-
 static object MapItem(Item item)
 {
     return new
