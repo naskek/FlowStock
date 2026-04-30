@@ -94,6 +94,10 @@ public interface IDataStore
     long AddOrder(Order order);
     void UpdateOrder(Order order);
     void UpdateOrderStatus(long orderId, OrderStatus status);
+    IReadOnlyList<MarkingOrderQueueRow> GetMarkingOrderQueue(bool includeCompleted);
+    IReadOnlyList<MarkingOrderLineCandidate> GetMarkingOrderLineCandidates(IReadOnlyCollection<long> orderIds);
+    void MarkOrdersPrinted(IReadOnlyCollection<long> orderIds, DateTime printedAt);
+    void UpdateOrderMarkingStatusForBackfill(long orderId, MarkingStatus status, DateTime timestamp);
     IReadOnlyList<OrderLine> GetOrderLines(long orderId);
     IReadOnlyList<OrderLineView> GetOrderLineViews(long orderId);
     IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemaining(long orderId);

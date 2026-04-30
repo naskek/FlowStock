@@ -20,5 +20,9 @@ public sealed class Item
     public string? ItemTypeName { get; init; }
     public bool ItemTypeIsVisibleInProductCatalog { get; init; }
     public bool ItemTypeEnableMinStockControl { get; init; }
+    public bool ItemTypeEnableMarking { get; init; }
     public double? MinStockQty { get; init; }
+
+    public bool IsChestnyZnakMarkingRequired =>
+        ItemTypeEnableMarking && !string.IsNullOrWhiteSpace(Gtin);
 }

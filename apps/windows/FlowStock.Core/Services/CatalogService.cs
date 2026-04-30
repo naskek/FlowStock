@@ -53,7 +53,7 @@ public sealed class CatalogService
             ShelfLifeMonths = shelfLifeMonths,
             MaxQtyPerHu = normalizedMaxQtyPerHu,
             TaraId = taraId,
-            IsMarked = isMarked,
+            IsMarked = false,
             IsActive = isActive,
             ItemTypeId = itemTypeId,
             MinStockQty = normalizedMinStock
@@ -206,7 +206,7 @@ public sealed class CatalogService
             ShelfLifeMonths = shelfLifeMonths,
             MaxQtyPerHu = normalizedMaxQtyPerHu,
             TaraId = taraId,
-            IsMarked = isMarked,
+            IsMarked = existing.IsMarked,
             IsActive = isActive ?? existing.IsActive,
             ItemTypeId = itemTypeId,
             MinStockQty = normalizedMinStock
@@ -332,7 +332,7 @@ public sealed class CatalogService
         _data.DeleteTara(taraId);
     }
 
-    public long CreateItemType(string name, string? code, int sortOrder, bool isActive, bool isVisibleInProductCatalog, bool enableMinStockControl, bool minStockUsesOrderBinding, bool enableOrderReservation, bool enableHuDistribution)
+    public long CreateItemType(string name, string? code, int sortOrder, bool isActive, bool isVisibleInProductCatalog, bool enableMinStockControl, bool minStockUsesOrderBinding, bool enableOrderReservation, bool enableHuDistribution, bool enableMarking = false)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -349,11 +349,12 @@ public sealed class CatalogService
             EnableMinStockControl = enableMinStockControl,
             MinStockUsesOrderBinding = minStockUsesOrderBinding,
             EnableOrderReservation = enableOrderReservation,
-            EnableHuDistribution = enableHuDistribution
+            EnableHuDistribution = enableHuDistribution,
+            EnableMarking = enableMarking
         });
     }
 
-    public void UpdateItemType(long itemTypeId, string name, string? code, int sortOrder, bool isActive, bool isVisibleInProductCatalog, bool enableMinStockControl, bool minStockUsesOrderBinding, bool enableOrderReservation, bool enableHuDistribution)
+    public void UpdateItemType(long itemTypeId, string name, string? code, int sortOrder, bool isActive, bool isVisibleInProductCatalog, bool enableMinStockControl, bool minStockUsesOrderBinding, bool enableOrderReservation, bool enableHuDistribution, bool enableMarking = false)
     {
         if (itemTypeId <= 0)
         {
@@ -381,7 +382,8 @@ public sealed class CatalogService
             EnableMinStockControl = enableMinStockControl,
             MinStockUsesOrderBinding = minStockUsesOrderBinding,
             EnableOrderReservation = enableOrderReservation,
-            EnableHuDistribution = enableHuDistribution
+            EnableHuDistribution = enableHuDistribution,
+            EnableMarking = enableMarking
         });
     }
 

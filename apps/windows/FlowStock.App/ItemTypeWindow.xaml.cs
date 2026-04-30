@@ -65,7 +65,8 @@ public partial class ItemTypeWindow : Window
             EnableMinStockControl = EnableMinStockCheck.IsChecked == true,
             MinStockUsesOrderBinding = MinStockUsesOrderBindingCheck.IsChecked == true,
             EnableOrderReservation = EnableOrderReservationCheck.IsChecked == true,
-            EnableHuDistribution = EnableHuDistributionCheck.IsChecked == true
+            EnableHuDistribution = EnableHuDistributionCheck.IsChecked == true,
+            EnableMarking = EnableMarkingCheck.IsChecked == true
         };
 
         try
@@ -161,6 +162,7 @@ public partial class ItemTypeWindow : Window
         MinStockUsesOrderBindingCheck.IsChecked = _selectedItemType.MinStockUsesOrderBinding;
         EnableOrderReservationCheck.IsChecked = _selectedItemType.EnableOrderReservation;
         EnableHuDistributionCheck.IsChecked = _selectedItemType.EnableHuDistribution;
+        EnableMarkingCheck.IsChecked = _selectedItemType.EnableMarking;
         SaveButton.Content = "Сохранить";
         UpdateDeleteButton();
     }
@@ -178,6 +180,7 @@ public partial class ItemTypeWindow : Window
         MinStockUsesOrderBindingCheck.IsChecked = false;
         EnableOrderReservationCheck.IsChecked = false;
         EnableHuDistributionCheck.IsChecked = false;
+        EnableMarkingCheck.IsChecked = false;
         SaveButton.Content = "Добавить";
         UpdateDeleteButton();
     }

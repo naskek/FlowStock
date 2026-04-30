@@ -20,7 +20,57 @@ public sealed class PostgresDataStore : IDataStore
         "LEFT JOIN partners p ON p.id = d.partner_id " +
         "LEFT JOIN (SELECT dl.doc_id, COUNT(*) AS line_count FROM doc_lines dl WHERE dl.qty > 0 AND NOT EXISTS (SELECT 1 FROM doc_lines newer WHERE newer.replaces_line_id = dl.id) GROUP BY dl.doc_id) dl ON dl.doc_id = d.id " +
         "LEFT JOIN (SELECT doc_id, MAX(device_id) AS device_id, MAX(doc_uid) AS doc_uid FROM api_docs GROUP BY doc_id) ad ON ad.doc_id = d.id";
-    private const string OrderSelectBase = "SELECT o.id, o.order_ref, o.order_type, o.partner_id, o.due_date, o.status, o.comment, o.created_at, p.name, p.code, COALESCE(o.bind_reserved_stock, FALSE) FROM orders o LEFT JOIN partners p ON p.id = o.partner_id";
+    private const string OrderSelectBase = @"
+SELECT o.id,
+       o.order_ref,
+       o.order_type,
+       o.partner_id,
+       o.due_date,
+       o.status,
+       o.comment,
+       o.created_at,
+       p.name,
+       p.code,
+       COALESCE(o.bind_reserved_stock, FALSE),
+       COALESCE(o.marking_status, 'NOT_REQUIRED'),
+       o.marking_excel_generated_at,
+       o.marking_printed_at,
+       COALESCE(marking_need.marking_required, FALSE)
+FROM orders o
+LEFT JOIN partners p ON p.id = o.partner_id
+LEFT JOIN LATERAL (
+    SELECT EXISTS (
+        SELECT 1
+        FROM order_lines ol
+        INNER JOIN items i ON i.id = ol.item_id
+        INNER JOIN item_types it ON it.id = i.item_type_id
+        LEFT JOIN (
+            SELECT dl.order_line_id, SUM(dl.qty) AS qty_shipped
+            FROM doc_lines dl
+            INNER JOIN docs d ON d.id = dl.doc_id
+            WHERE d.status = 'CLOSED'
+              AND d.type = 'OUTBOUND'
+              AND dl.order_line_id IS NOT NULL
+              AND dl.qty > 0
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM doc_lines newer
+                  WHERE newer.replaces_line_id = dl.id
+              )
+            GROUP BY dl.order_line_id
+        ) shipped ON shipped.order_line_id = ol.id
+        LEFT JOIN (
+            SELECT order_line_id, SUM(qty_planned) AS qty_reserved
+            FROM order_receipt_plan_lines
+            WHERE qty_planned > 0
+            GROUP BY order_line_id
+        ) reserved ON reserved.order_line_id = ol.id
+        WHERE ol.order_id = o.id
+          AND COALESCE(it.enable_marking, FALSE) = TRUE
+          AND NULLIF(BTRIM(i.gtin), '') IS NOT NULL
+          AND GREATEST(0, ol.qty_ordered - COALESCE(shipped.qty_shipped, 0) - COALESCE(reserved.qty_reserved, 0)) > 0
+    ) AS marking_required
+) marking_need ON TRUE";
 
     public PostgresDataStore(string connectionString)
     {
@@ -66,7 +116,7 @@ public sealed class PostgresDataStore : IDataStore
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, i.min_stock_qty FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id WHERE i.barcode = @barcode OR i.gtin = @barcode");
+            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id WHERE i.barcode = @barcode OR i.gtin = @barcode");
             command.Parameters.AddWithValue("@barcode", barcode);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
@@ -77,7 +127,7 @@ public sealed class PostgresDataStore : IDataStore
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, i.min_stock_qty FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id WHERE i.gtin = @gtin");
+            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id WHERE i.gtin = @gtin");
             command.Parameters.AddWithValue("@gtin", gtin);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
@@ -88,7 +138,7 @@ public sealed class PostgresDataStore : IDataStore
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, i.min_stock_qty FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id WHERE i.id = @id");
+            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id WHERE i.id = @id");
             command.Parameters.AddWithValue("@id", id);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
@@ -631,7 +681,7 @@ RETURNING id;");
         return WithConnection(connection =>
         {
             var sql = @"
-SELECT id, name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control, min_stock_uses_order_binding, enable_order_reservation, enable_hu_distribution
+SELECT id, name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control, min_stock_uses_order_binding, enable_order_reservation, enable_hu_distribution, COALESCE(enable_marking, FALSE)
 FROM item_types";
             if (!includeInactive)
             {
@@ -656,7 +706,7 @@ FROM item_types";
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT id, name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control, min_stock_uses_order_binding, enable_order_reservation, enable_hu_distribution
+SELECT id, name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control, min_stock_uses_order_binding, enable_order_reservation, enable_hu_distribution, COALESCE(enable_marking, FALSE)
 FROM item_types
 WHERE id = @id
 LIMIT 1;");
@@ -671,8 +721,8 @@ LIMIT 1;");
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO item_types(name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control, min_stock_uses_order_binding, enable_order_reservation, enable_hu_distribution)
-VALUES(@name, @code, @sort_order, @is_active, @is_visible_in_product_catalog, @enable_min_stock_control, @min_stock_uses_order_binding, @enable_order_reservation, @enable_hu_distribution)
+INSERT INTO item_types(name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control, min_stock_uses_order_binding, enable_order_reservation, enable_hu_distribution, enable_marking)
+VALUES(@name, @code, @sort_order, @is_active, @is_visible_in_product_catalog, @enable_min_stock_control, @min_stock_uses_order_binding, @enable_order_reservation, @enable_hu_distribution, @enable_marking)
 RETURNING id;");
             command.Parameters.AddWithValue("@name", itemType.Name);
             command.Parameters.AddWithValue("@code", string.IsNullOrWhiteSpace(itemType.Code) ? DBNull.Value : itemType.Code.Trim());
@@ -683,6 +733,7 @@ RETURNING id;");
             command.Parameters.AddWithValue("@min_stock_uses_order_binding", itemType.MinStockUsesOrderBinding);
             command.Parameters.AddWithValue("@enable_order_reservation", itemType.EnableOrderReservation);
             command.Parameters.AddWithValue("@enable_hu_distribution", itemType.EnableHuDistribution);
+            command.Parameters.AddWithValue("@enable_marking", itemType.EnableMarking);
             return (long)(command.ExecuteScalar() ?? 0L);
         });
     }
@@ -701,7 +752,8 @@ SET name = @name,
     enable_min_stock_control = @enable_min_stock_control,
     min_stock_uses_order_binding = @min_stock_uses_order_binding,
     enable_order_reservation = @enable_order_reservation,
-    enable_hu_distribution = @enable_hu_distribution
+    enable_hu_distribution = @enable_hu_distribution,
+    enable_marking = @enable_marking
 WHERE id = @id;");
             command.Parameters.AddWithValue("@name", itemType.Name);
             command.Parameters.AddWithValue("@code", string.IsNullOrWhiteSpace(itemType.Code) ? DBNull.Value : itemType.Code.Trim());
@@ -712,6 +764,7 @@ WHERE id = @id;");
             command.Parameters.AddWithValue("@min_stock_uses_order_binding", itemType.MinStockUsesOrderBinding);
             command.Parameters.AddWithValue("@enable_order_reservation", itemType.EnableOrderReservation);
             command.Parameters.AddWithValue("@enable_hu_distribution", itemType.EnableHuDistribution);
+            command.Parameters.AddWithValue("@enable_marking", itemType.EnableMarking);
             command.Parameters.AddWithValue("@id", itemType.Id);
             command.ExecuteNonQuery();
             return 0;
@@ -1416,6 +1469,244 @@ WHERE id = @id;
             using var command = CreateCommand(connection, "UPDATE orders SET status = @status WHERE id = @id");
             command.Parameters.AddWithValue("@status", OrderStatusMapper.StatusToString(status));
             command.Parameters.AddWithValue("@id", orderId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public IReadOnlyList<MarkingOrderQueueRow> GetMarkingOrderQueue(bool includeCompleted)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH shipped AS (
+    SELECT dl.order_line_id, SUM(dl.qty) AS qty_shipped
+    FROM doc_lines dl
+    INNER JOIN docs d ON d.id = dl.doc_id
+    WHERE d.status = @closed_status
+      AND d.type = @outbound_type
+      AND dl.order_line_id IS NOT NULL
+      AND dl.qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+    GROUP BY dl.order_line_id
+),
+reserved AS (
+    SELECT order_line_id, SUM(qty_planned) AS qty_reserved
+    FROM order_receipt_plan_lines
+    WHERE qty_planned > 0
+    GROUP BY order_line_id
+),
+line_need AS (
+    SELECT ol.order_id,
+           ol.id AS order_line_id,
+           GREATEST(0, ol.qty_ordered - COALESCE(shipped.qty_shipped, 0) - COALESCE(reserved.qty_reserved, 0)) AS qty_for_marking
+    FROM order_lines ol
+    INNER JOIN items i ON i.id = ol.item_id
+    INNER JOIN item_types it ON it.id = i.item_type_id
+    LEFT JOIN shipped ON shipped.order_line_id = ol.id
+    LEFT JOIN reserved ON reserved.order_line_id = ol.id
+    WHERE COALESCE(it.enable_marking, FALSE) = TRUE
+      AND NULLIF(BTRIM(i.gtin), '') IS NOT NULL
+),
+order_need AS (
+    SELECT order_id,
+           COUNT(*) FILTER (WHERE qty_for_marking > 0) AS line_count,
+           COALESCE(SUM(qty_for_marking) FILTER (WHERE qty_for_marking > 0), 0) AS code_count
+    FROM line_need
+    GROUP BY order_id
+)
+SELECT o.id,
+       o.order_ref,
+       o.partner_id,
+       p.name,
+       p.code,
+       o.due_date,
+       o.status,
+       COALESCE(o.marking_status, 'NOT_REQUIRED') AS marking_status,
+       COALESCE(order_need.line_count, 0) AS line_count,
+       COALESCE(order_need.code_count, 0) AS code_count,
+       COALESCE(o.marking_printed_at, o.marking_excel_generated_at) AS last_generated_at
+FROM orders o
+LEFT JOIN partners p ON p.id = o.partner_id
+LEFT JOIN order_need ON order_need.order_id = o.id
+WHERE COALESCE(order_need.line_count, 0) > 0
+  AND (
+      (o.status IN (@in_progress_status, @accepted_status)
+       AND COALESCE(o.marking_status, 'NOT_REQUIRED') NOT IN (@printed_status, @excel_generated_status))
+      OR (@include_completed = TRUE
+          AND COALESCE(o.marking_status, 'NOT_REQUIRED') IN (@printed_status, @excel_generated_status))
+  )
+ORDER BY o.due_date NULLS LAST, o.created_at, o.id;
+");
+            command.Parameters.AddWithValue("@closed_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+            command.Parameters.AddWithValue("@outbound_type", DocTypeMapper.ToOpString(DocType.Outbound));
+            command.Parameters.AddWithValue("@in_progress_status", OrderStatusMapper.StatusToString(OrderStatus.InProgress));
+            command.Parameters.AddWithValue("@accepted_status", OrderStatusMapper.StatusToString(OrderStatus.Accepted));
+            command.Parameters.AddWithValue("@printed_status", MarkingStatusMapper.ToString(MarkingStatus.Printed));
+            command.Parameters.AddWithValue("@excel_generated_status", MarkingStatusMapper.ToString(MarkingStatus.ExcelGenerated));
+            command.Parameters.AddWithValue("@include_completed", includeCompleted);
+            using var reader = command.ExecuteReader();
+            var rows = new List<MarkingOrderQueueRow>();
+            while (reader.Read())
+            {
+                rows.Add(new MarkingOrderQueueRow
+                {
+                    OrderId = reader.GetInt64(0),
+                    OrderRef = reader.GetString(1),
+                    PartnerName = reader.IsDBNull(3) ? null : reader.GetString(3),
+                    PartnerCode = reader.IsDBNull(4) ? null : reader.GetString(4),
+                    DueDate = reader.IsDBNull(5) ? null : FromDbDate(reader.GetString(5)),
+                    OrderStatus = OrderStatusMapper.StatusFromString(reader.GetString(6)) ?? OrderStatus.InProgress,
+                    MarkingStatus = MarkingStatusMapper.FromString(reader.GetString(7)),
+                    MarkingLineCount = reader.GetInt32(8),
+                    MarkingCodeCount = Convert.ToDouble(reader.GetValue(9), CultureInfo.InvariantCulture),
+                    LastGeneratedAt = FromDbDate(reader.IsDBNull(10) ? null : reader.GetString(10))
+                });
+            }
+
+            return rows;
+        });
+    }
+
+    public IReadOnlyList<MarkingOrderLineCandidate> GetMarkingOrderLineCandidates(IReadOnlyCollection<long> orderIds)
+    {
+        if (orderIds.Count == 0)
+        {
+            return Array.Empty<MarkingOrderLineCandidate>();
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH selected_orders AS (
+    SELECT UNNEST(@order_ids::bigint[]) AS order_id
+),
+shipped AS (
+    SELECT dl.order_line_id, SUM(dl.qty) AS qty_shipped
+    FROM doc_lines dl
+    INNER JOIN docs d ON d.id = dl.doc_id
+    WHERE d.status = @closed_status
+      AND d.type = @outbound_type
+      AND dl.order_line_id IS NOT NULL
+      AND dl.qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+    GROUP BY dl.order_line_id
+),
+reserved AS (
+    SELECT order_line_id, SUM(qty_planned) AS qty_reserved
+    FROM order_receipt_plan_lines
+    WHERE qty_planned > 0
+    GROUP BY order_line_id
+)
+SELECT ol.order_id,
+       ol.id,
+       i.name,
+       BTRIM(i.gtin) AS gtin,
+       ol.qty_ordered,
+       COALESCE(shipped.qty_shipped, 0) AS qty_shipped,
+       COALESCE(reserved.qty_reserved, 0) AS qty_reserved,
+       GREATEST(0, ol.qty_ordered - COALESCE(shipped.qty_shipped, 0) - COALESCE(reserved.qty_reserved, 0)) AS qty_for_marking
+FROM order_lines ol
+INNER JOIN selected_orders so ON so.order_id = ol.order_id
+INNER JOIN orders o ON o.id = ol.order_id
+INNER JOIN items i ON i.id = ol.item_id
+INNER JOIN item_types it ON it.id = i.item_type_id
+LEFT JOIN shipped ON shipped.order_line_id = ol.id
+LEFT JOIN reserved ON reserved.order_line_id = ol.id
+WHERE o.status IN (@in_progress_status, @accepted_status)
+  AND COALESCE(it.enable_marking, FALSE) = TRUE
+  AND NULLIF(BTRIM(i.gtin), '') IS NOT NULL
+ORDER BY i.name, BTRIM(i.gtin), ol.id;
+");
+            command.Parameters.AddWithValue("@order_ids", orderIds.Distinct().ToArray());
+            command.Parameters.AddWithValue("@closed_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+            command.Parameters.AddWithValue("@outbound_type", DocTypeMapper.ToOpString(DocType.Outbound));
+            command.Parameters.AddWithValue("@in_progress_status", OrderStatusMapper.StatusToString(OrderStatus.InProgress));
+            command.Parameters.AddWithValue("@accepted_status", OrderStatusMapper.StatusToString(OrderStatus.Accepted));
+            using var reader = command.ExecuteReader();
+            var rows = new List<MarkingOrderLineCandidate>();
+            while (reader.Read())
+            {
+                rows.Add(new MarkingOrderLineCandidate
+                {
+                    OrderId = reader.GetInt64(0),
+                    OrderLineId = reader.GetInt64(1),
+                    ItemName = reader.GetString(2),
+                    Gtin = reader.GetString(3),
+                    ItemTypeEnableMarking = true,
+                    QtyOrdered = Convert.ToDouble(reader.GetValue(4), CultureInfo.InvariantCulture),
+                    ShippedQty = Convert.ToDouble(reader.GetValue(5), CultureInfo.InvariantCulture),
+                    ReservedQty = Convert.ToDouble(reader.GetValue(6), CultureInfo.InvariantCulture),
+                    QtyForMarking = Convert.ToDouble(reader.GetValue(7), CultureInfo.InvariantCulture)
+                });
+            }
+
+            return rows;
+        });
+    }
+
+    public void MarkOrdersPrinted(IReadOnlyCollection<long> orderIds, DateTime printedAt)
+    {
+        if (orderIds.Count == 0)
+        {
+            return;
+        }
+
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE orders
+SET marking_status = @status,
+    marking_excel_generated_at = @generated_at,
+    marking_printed_at = @printed_at
+WHERE id = ANY(@order_ids::bigint[]);
+");
+            command.Parameters.AddWithValue("@status", MarkingStatusMapper.ToString(MarkingStatus.Printed));
+            command.Parameters.AddWithValue("@generated_at", ToDbDate(printedAt));
+            command.Parameters.AddWithValue("@printed_at", ToDbDate(printedAt));
+            command.Parameters.AddWithValue("@order_ids", orderIds.Distinct().ToArray());
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void UpdateOrderMarkingStatusForBackfill(long orderId, MarkingStatus status, DateTime timestamp)
+    {
+        WithConnection(connection =>
+        {
+            var statusText = MarkingStatusMapper.ToString(status);
+            var sql = status == MarkingStatus.Printed
+                ? @"
+UPDATE orders
+SET marking_status = @status,
+    marking_excel_generated_at = COALESCE(marking_excel_generated_at, @timestamp),
+    marking_printed_at = COALESCE(marking_printed_at, @timestamp)
+WHERE id = @id
+  AND COALESCE(marking_status, 'NOT_REQUIRED') <> @printed_status;
+"
+                : @"
+UPDATE orders
+SET marking_status = @status
+WHERE id = @id
+  AND COALESCE(marking_status, 'NOT_REQUIRED') <> @printed_status;
+";
+
+            using var command = CreateCommand(connection, sql);
+            command.Parameters.AddWithValue("@id", orderId);
+            command.Parameters.AddWithValue("@status", statusText);
+            if (status == MarkingStatus.Printed)
+            {
+                command.Parameters.AddWithValue("@timestamp", ToDbDate(timestamp));
+            }
+            command.Parameters.AddWithValue("@printed_status", MarkingStatusMapper.ToString(MarkingStatus.Printed));
             command.ExecuteNonQuery();
             return 0;
         });
@@ -2165,7 +2456,7 @@ ORDER BY COALESCE(hu_code, hu);
         return WithConnection(connection =>
         {
             var sql = @"
-SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, NULL::bigint, NULL::text, FALSE, FALSE, NULL::double precision
+SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, NULL::bigint, NULL::text, FALSE, FALSE, FALSE, NULL::double precision
 FROM ledger l
 INNER JOIN items i ON i.id = l.item_id
 LEFT JOIN taras t ON t.id = i.tara_id
@@ -2799,7 +3090,8 @@ RETURNING id;
             ItemTypeName = reader.IsDBNull(15) ? null : reader.GetString(15),
             ItemTypeIsVisibleInProductCatalog = !reader.IsDBNull(16) && reader.GetBoolean(16),
             ItemTypeEnableMinStockControl = !reader.IsDBNull(17) && reader.GetBoolean(17),
-            MinStockQty = reader.IsDBNull(18) ? null : Convert.ToDouble(reader.GetValue(18), CultureInfo.InvariantCulture)
+            ItemTypeEnableMarking = !reader.IsDBNull(18) && reader.GetBoolean(18),
+            MinStockQty = reader.IsDBNull(19) ? null : Convert.ToDouble(reader.GetValue(19), CultureInfo.InvariantCulture)
         };
     }
 
@@ -2816,7 +3108,8 @@ RETURNING id;
             EnableMinStockControl = !reader.IsDBNull(6) && reader.GetBoolean(6),
             MinStockUsesOrderBinding = !reader.IsDBNull(7) && reader.GetBoolean(7),
             EnableOrderReservation = !reader.IsDBNull(8) && reader.GetBoolean(8),
-            EnableHuDistribution = !reader.IsDBNull(9) && reader.GetBoolean(9)
+            EnableHuDistribution = !reader.IsDBNull(9) && reader.GetBoolean(9),
+            EnableMarking = reader.FieldCount > 10 && !reader.IsDBNull(10) && reader.GetBoolean(10)
         };
     }
 
@@ -3016,6 +3309,10 @@ RETURNING id;
         var partnerName = reader.IsDBNull(8) ? null : reader.GetString(8);
         var partnerCode = reader.IsDBNull(9) ? null : reader.GetString(9);
         var useReservedStock = reader.FieldCount > 10 && !reader.IsDBNull(10) && reader.GetBoolean(10);
+        var markingStatus = reader.FieldCount > 11 ? MarkingStatusMapper.FromString(reader.IsDBNull(11) ? null : reader.GetString(11)) : MarkingStatus.NotRequired;
+        var markingExcelGeneratedAt = reader.FieldCount > 12 ? FromDbDate(reader.IsDBNull(12) ? null : reader.GetString(12)) : null;
+        var markingPrintedAt = reader.FieldCount > 13 ? FromDbDate(reader.IsDBNull(13) ? null : reader.GetString(13)) : null;
+        var markingRequired = reader.FieldCount > 14 && !reader.IsDBNull(14) && reader.GetBoolean(14);
 
         return new Order
         {
@@ -3029,7 +3326,11 @@ RETURNING id;
             CreatedAt = FromDbDate(reader.GetString(7)) ?? DateTime.MinValue,
             PartnerName = partnerName,
             PartnerCode = partnerCode,
-            UseReservedStock = useReservedStock
+            UseReservedStock = useReservedStock,
+            MarkingStatus = markingStatus,
+            MarkingRequired = markingRequired,
+            MarkingExcelGeneratedAt = markingExcelGeneratedAt,
+            MarkingPrintedAt = markingPrintedAt
         };
     }
 
@@ -3176,6 +3477,10 @@ LIMIT 1;";
 
         EnsureColumn(connection, "item_types", "min_stock_uses_order_binding", "BOOLEAN NOT NULL DEFAULT FALSE");
         EnsureColumn(connection, "item_types", "enable_order_reservation", "BOOLEAN NOT NULL DEFAULT FALSE");
+        EnsureColumn(connection, "item_types", "enable_marking", "BOOLEAN NOT NULL DEFAULT FALSE");
+        EnsureColumn(connection, "orders", "marking_status", "TEXT NOT NULL DEFAULT 'NOT_REQUIRED'");
+        EnsureColumn(connection, "orders", "marking_excel_generated_at", "TEXT NULL");
+        EnsureColumn(connection, "orders", "marking_printed_at", "TEXT NULL");
 
         if (!ColumnExists(connection, "orders", "order_type")
             || !ColumnExists(connection, "orders", "bind_reserved_stock")
@@ -3190,7 +3495,11 @@ LIMIT 1;";
             || !ColumnExists(connection, "item_types", "enable_min_stock_control")
             || !ColumnExists(connection, "item_types", "min_stock_uses_order_binding")
             || !ColumnExists(connection, "item_types", "enable_order_reservation")
-            || !ColumnExists(connection, "item_types", "enable_hu_distribution"))
+            || !ColumnExists(connection, "item_types", "enable_hu_distribution")
+            || !ColumnExists(connection, "item_types", "enable_marking")
+            || !ColumnExists(connection, "orders", "marking_status")
+            || !ColumnExists(connection, "orders", "marking_excel_generated_at")
+            || !ColumnExists(connection, "orders", "marking_printed_at"))
         {
             throw new InvalidOperationException("Database schema is outdated. Run deploy/scripts/migrate.sh before starting FlowStock.");
         }
@@ -3321,10 +3630,10 @@ WHERE COALESCE(i.is_marked, 0) = 0
     {
         if (string.IsNullOrWhiteSpace(search))
         {
-            return "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, i.min_stock_qty FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id ORDER BY i.name";
+            return "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id ORDER BY i.name";
         }
 
-        return "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, i.min_stock_qty FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id WHERE i.name ILIKE @search OR i.barcode ILIKE @search OR i.gtin ILIKE @search ORDER BY i.name";
+        return "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id WHERE i.name ILIKE @search OR i.barcode ILIKE @search OR i.gtin ILIKE @search ORDER BY i.name";
     }
 
     private static string BuildStockQuery(string? search)
