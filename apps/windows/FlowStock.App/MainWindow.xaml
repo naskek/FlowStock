@@ -30,6 +30,7 @@
                     <MenuItem Header="Открыть папку данных" Click="OpenDataFolder_Click" />
                     <MenuItem Header="Открыть папку логов" Click="OpenLogsFolder_Click" />
                 </MenuItem>
+                <MenuItem Header="Маркировка" Click="OpenMarking_Click" />
             </Menu>
             <Button Grid.Column="1" x:Name="ItemRequestsButton" Margin="6,0,6,0" Padding="8,2"
                     VerticalAlignment="Center" Click="OpenIncomingRequests_Click">

@@ -37,6 +37,7 @@ builder.Services.AddSingleton<DocumentService>();
 builder.Services.AddSingleton<CatalogService>();
 builder.Services.AddSingleton<ImportService>();
 builder.Services.AddSingleton<ItemPackagingService>();
+builder.Services.AddSingleton<MarkingExcelService>();
 builder.Services.AddSingleton<LiveUpdateHub>();
 
 var app = builder.Build();
@@ -813,6 +814,7 @@ SELECT i.id,
        it.name,
        COALESCE(it.is_visible_in_product_catalog, FALSE),
        COALESCE(it.enable_min_stock_control, FALSE),
+       COALESCE(it.enable_marking, FALSE),
        i.min_stock_qty
 FROM items i
 LEFT JOIN taras t ON t.id = i.tara_id
@@ -873,7 +875,8 @@ ORDER BY i.name;"
             item_type_name = reader.IsDBNull(16) ? null : reader.GetString(16),
             item_type_is_visible_in_product_catalog = !reader.IsDBNull(17) && reader.GetBoolean(17),
             item_type_enable_min_stock_control = !reader.IsDBNull(18) && reader.GetBoolean(18),
-            min_stock_qty = reader.IsDBNull(19) ? (double?)null : Convert.ToDouble(reader.GetValue(19), CultureInfo.InvariantCulture)
+            item_type_enable_marking = !reader.IsDBNull(19) && reader.GetBoolean(19),
+            min_stock_qty = reader.IsDBNull(20) ? (double?)null : Convert.ToDouble(reader.GetValue(20), CultureInfo.InvariantCulture)
         });
     }
 
@@ -1232,7 +1235,8 @@ app.MapGet("/api/item-types", (HttpRequest request, CatalogService catalog) =>
             enable_min_stock_control = itemType.EnableMinStockControl,
             min_stock_uses_order_binding = itemType.MinStockUsesOrderBinding,
             enable_order_reservation = itemType.EnableOrderReservation,
-            enable_hu_distribution = itemType.EnableHuDistribution
+            enable_hu_distribution = itemType.EnableHuDistribution,
+            enable_marking = itemType.EnableMarking
         })
         .ToList();
     return Results.Ok(itemTypes);
@@ -1257,7 +1261,8 @@ app.MapPost("/api/item-types", async (HttpRequest request, CatalogService catalo
             parsed.Value?.EnableMinStockControl ?? false,
             parsed.Value?.MinStockUsesOrderBinding ?? false,
             parsed.Value?.EnableOrderReservation ?? false,
-            parsed.Value?.EnableHuDistribution ?? false);
+            parsed.Value?.EnableHuDistribution ?? false,
+            parsed.Value?.EnableMarking ?? false);
         return Results.Ok(new { ok = true, item_type_id = itemTypeId });
     }
     catch (ArgumentException ex)
@@ -1290,7 +1295,8 @@ app.MapPost("/api/item-types/{itemTypeId:long}", async (long itemTypeId, HttpReq
             parsed.Value?.EnableMinStockControl ?? false,
             parsed.Value?.MinStockUsesOrderBinding ?? false,
             parsed.Value?.EnableOrderReservation ?? false,
-            parsed.Value?.EnableHuDistribution ?? false);
+            parsed.Value?.EnableHuDistribution ?? false,
+            parsed.Value?.EnableMarking ?? false);
         return Results.Ok(new ApiResult(true));
     }
     catch (ArgumentException ex)
@@ -2265,6 +2271,52 @@ app.MapGet("/api/reports/production-need", (HttpRequest request, IDataStore stor
     return Results.Ok(rows);
 });
 
+app.MapGet("/api/marking/orders", (HttpRequest request, MarkingExcelService marking) =>
+{
+    var includeCompleted = string.Equals(request.Query["include_completed"], "1", StringComparison.OrdinalIgnoreCase)
+                           || string.Equals(request.Query["include_completed"], "true", StringComparison.OrdinalIgnoreCase);
+    var rows = marking.GetOrderQueue(includeCompleted)
+        .Select(row => new
+        {
+            order_id = row.OrderId,
+            order_ref = row.OrderRef,
+            partner_name = row.PartnerName,
+            partner_code = row.PartnerCode,
+            partner_display = row.PartnerDisplay,
+            order_status = OrderStatusMapper.StatusToString(row.OrderStatus),
+            order_status_display = OrderStatusMapper.StatusToDisplayName(row.OrderStatus),
+            due_date = row.DueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            marking_status = MarkingStatusMapper.ToString(row.MarkingStatus),
+            marking_status_display = MarkingStatusMapper.ToDisplayName(row.MarkingStatus),
+            marking_line_count = row.MarkingLineCount,
+            marking_code_count = row.MarkingCodeCount,
+            last_generated_at = row.LastGeneratedAt?.ToString("O", CultureInfo.InvariantCulture)
+        })
+        .ToList();
+    return Results.Ok(rows);
+});
+
+app.MapPost("/api/marking/export", async (HttpRequest request, MarkingExcelService marking) =>
+{
+    var parsed = await ParseJsonBody<MarkingExportRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    var result = marking.Export(parsed.Value?.OrderIds ?? (IReadOnlyCollection<long>)Array.Empty<long>(), DateTime.Now);
+    if (!result.IsSuccess || result.FileBytes == null)
+    {
+        return Results.BadRequest(new ApiResult(false, result.Error ?? "Нет строк для формирования файла ЧЗ."));
+    }
+
+    var fileName = $"chestny_znak_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx";
+    return Results.File(
+        result.FileBytes,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        fileName);
+});
+
 app.MapGet("/api/stock/by-barcode/{barcode}", (string barcode, IDataStore store) =>
 {
     if (string.IsNullOrWhiteSpace(barcode))
@@ -2947,6 +2999,10 @@ static object MapOrder(Order order)
         status = OrderStatusMapper.StatusToDisplayName(order.Status, order.Type),
         comment = order.Comment,
         bind_reserved_stock = order.UseReservedStock,
+        marking_status = MarkingStatusMapper.ToString(order.MarkingStatus),
+        marking_status_display = MarkingStatusMapper.ToDisplayName(order.MarkingStatus),
+        marking_excel_generated_at = order.MarkingExcelGeneratedAt?.ToString("O", CultureInfo.InvariantCulture),
+        marking_printed_at = order.MarkingPrintedAt?.ToString("O", CultureInfo.InvariantCulture),
         created_at = order.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
         shipped_at = order.ShippedAt?.ToString("O", CultureInfo.InvariantCulture)
     };
@@ -2975,6 +3031,8 @@ static object MapItem(Item item)
         item_type_name = item.ItemTypeName,
         item_type_is_visible_in_product_catalog = item.ItemTypeIsVisibleInProductCatalog,
         item_type_enable_min_stock_control = item.ItemTypeEnableMinStockControl,
+        item_type_enable_marking = item.ItemTypeEnableMarking,
+        cz_marking_required = item.IsChestnyZnakMarkingRequired,
         min_stock_qty = item.MinStockQty
     };
 }

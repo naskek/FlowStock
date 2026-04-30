@@ -12,4 +12,5 @@ public sealed class ItemType
     public bool MinStockUsesOrderBinding { get; init; }
     public bool EnableOrderReservation { get; init; }
     public bool EnableHuDistribution { get; init; }
+    public bool EnableMarking { get; init; }
 }

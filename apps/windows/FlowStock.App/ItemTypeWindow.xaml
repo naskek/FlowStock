@@ -50,6 +50,7 @@
                     <CheckBox x:Name="EnableOrderReservationCheck" Margin="0,0,14,0" Content="Резервация под заказ" VerticalAlignment="Center" />
                     <CheckBox x:Name="EnableMinStockCheck" Margin="0,0,14,0" Content="Контроль минимума" VerticalAlignment="Center" />
                     <CheckBox x:Name="MinStockUsesOrderBindingCheck" Margin="0,0,14,0" Content="Мин. остаток с учетом привязки к заказу" VerticalAlignment="Center" />
+                    <CheckBox x:Name="EnableMarkingCheck" Margin="0,0,14,0" Content="Тип поддерживает маркировку ЧЗ" VerticalAlignment="Center" />
                 </WrapPanel>
 
                 <StackPanel Grid.Row="0" Grid.RowSpan="3" Grid.Column="4" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
@@ -77,6 +78,7 @@
                 <DataGridCheckBoxColumn Header="Мин. с привязкой" Binding="{Binding MinStockUsesOrderBinding}" Width="130" />
                 <DataGridCheckBoxColumn Header="Резерв. заказ" Binding="{Binding EnableOrderReservation}" Width="120" />
                 <DataGridCheckBoxColumn Header="HU распр." Binding="{Binding EnableHuDistribution}" Width="90" />
+                <DataGridCheckBoxColumn Header="ЧЗ" Binding="{Binding EnableMarking}" Width="80" />
             </DataGrid.Columns>
         </DataGrid>
     </Grid>

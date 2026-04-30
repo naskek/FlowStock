@@ -97,7 +97,8 @@ public sealed class WpfCatalogApiService
                         EnableMinStockControl = ReadBool(element, "enable_min_stock_control"),
                         MinStockUsesOrderBinding = ReadBool(element, "min_stock_uses_order_binding"),
                         EnableOrderReservation = ReadBool(element, "enable_order_reservation"),
-                        EnableHuDistribution = ReadBool(element, "enable_hu_distribution")
+                        EnableHuDistribution = ReadBool(element, "enable_hu_distribution"),
+                        EnableMarking = ReadBool(element, "enable_marking")
                     })
                     .ToList()
                 : new List<ItemType>(),
@@ -120,7 +121,6 @@ public sealed class WpfCatalogApiService
                     volume = item.Volume,
                     shelf_life_months = item.ShelfLifeMonths,
                     tara_id = item.TaraId,
-                    is_marked = item.IsMarked,
                     max_qty_per_hu = item.MaxQtyPerHu,
                     item_type_id = item.ItemTypeId,
                     min_stock_qty = item.MinStockQty
@@ -146,7 +146,6 @@ public sealed class WpfCatalogApiService
                     volume = item.Volume,
                     shelf_life_months = item.ShelfLifeMonths,
                     tara_id = item.TaraId,
-                    is_marked = item.IsMarked,
                     max_qty_per_hu = item.MaxQtyPerHu,
                     item_type_id = item.ItemTypeId,
                     min_stock_qty = item.MinStockQty
@@ -275,7 +274,8 @@ public sealed class WpfCatalogApiService
                     enable_min_stock_control = itemType.EnableMinStockControl,
                     min_stock_uses_order_binding = itemType.MinStockUsesOrderBinding,
                     enable_order_reservation = itemType.EnableOrderReservation,
-                    enable_hu_distribution = itemType.EnableHuDistribution
+                    enable_hu_distribution = itemType.EnableHuDistribution,
+                    enable_marking = itemType.EnableMarking
                 },
                 "item_type_id",
                 "catalog-create-item-type",
@@ -297,7 +297,8 @@ public sealed class WpfCatalogApiService
                     enable_min_stock_control = itemType.EnableMinStockControl,
                     min_stock_uses_order_binding = itemType.MinStockUsesOrderBinding,
                     enable_order_reservation = itemType.EnableOrderReservation,
-                    enable_hu_distribution = itemType.EnableHuDistribution
+                    enable_hu_distribution = itemType.EnableHuDistribution,
+                    enable_marking = itemType.EnableMarking
                 },
                 "catalog-update-item-type",
                 cancellationToken)

@@ -1,0 +1,25 @@
+BEGIN;
+
+ALTER TABLE IF EXISTS item_types
+    ADD COLUMN IF NOT EXISTS enable_marking BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE IF EXISTS orders
+    ADD COLUMN IF NOT EXISTS marking_status TEXT NOT NULL DEFAULT 'NOT_REQUIRED';
+
+ALTER TABLE IF EXISTS orders
+    ADD COLUMN IF NOT EXISTS marking_excel_generated_at TEXT NULL;
+
+ALTER TABLE IF EXISTS orders
+    ADD COLUMN IF NOT EXISTS marking_printed_at TEXT NULL;
+
+UPDATE orders
+SET marking_status = 'NOT_REQUIRED'
+WHERE marking_status IS NULL OR marking_status = '';
+
+ALTER TABLE IF EXISTS orders
+    ALTER COLUMN marking_status SET DEFAULT 'NOT_REQUIRED';
+
+ALTER TABLE IF EXISTS orders
+    ALTER COLUMN marking_status SET NOT NULL;
+
+COMMIT;

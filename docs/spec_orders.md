@@ -12,6 +12,9 @@
 - `comment` TEXT NULL
 - `created_at` TEXT NOT NULL
 - `bind_reserved_stock` BOOLEAN NOT NULL DEFAULT `FALSE` // резервировать свободные HU под клиентский заказ
+- `marking_status` TEXT NOT NULL DEFAULT `NOT_REQUIRED` // `NOT_REQUIRED` | `REQUIRED` | `EXCEL_GENERATED` | `PRINTED`
+- `marking_excel_generated_at` TEXT NULL
+- `marking_printed_at` TEXT NULL
 
 Таблица `order_lines`:
 - `id` INTEGER PRIMARY KEY
@@ -86,6 +89,41 @@ Server API/WPF:
 - количество к резерву считается как `qty_ordered - shipped_qty`, чтобы уже отгруженный объем не вычитался повторно из свободного остатка;
 - кандидаты для резерва берутся из текущего положительного HU stock; наличие `docs.order_id` у origin PRD не требуется;
 - если один HU уже заявлен несколькими активными customer orders, такой HU исключается из нового плана и выводится в отчете как конфликт для ручного разбора.
+
+## Маркировка ЧЗ по заказам
+
+Новая ЧЗ-модель не использует старый ручной флаг `items.is_marked`. Позиция заказа попадает в расчет только если тип номенклатуры имеет `item_types.enable_marking = true`, а у товара заполнен непустой `items.gtin`.
+
+Статусы маркировки заказа:
+- `NOT_REQUIRED` = `Маркировка не требуется`
+- `REQUIRED` = `Требуется файл ЧЗ`
+- `EXCEL_GENERATED` = `Файл ЧЗ сформирован`
+- `PRINTED` = `Маркировка проведена`
+
+Очередь WPF `Маркировка` по умолчанию показывает только заказы:
+- `IN_PROGRESS` (`В работе`)
+- `ACCEPTED` (`Готов`)
+
+В обычную очередь не попадают:
+- `SHIPPED` (`Выполнен`)
+- `CANCELLED` (`Отменён`)
+- pending-заявки / ожидающие подтверждения
+- заказы с `marking_status IN (EXCEL_GENERATED, PRINTED)`
+
+Расчет строки Excel ЧЗ:
+- `open_qty = qty_ordered - shipped_qty`
+- `reserved_qty = SUM(order_receipt_plan_lines.qty_planned по order_line_id)`
+- `qty_for_marking = max(0, open_qty - reserved_qty)`
+
+Зарезервированный готовый stock не требует новых кодов ЧЗ, потому что этот товар уже физически есть на складе. Минимальный остаток в Excel ЧЗ не включается; это отдельный отчет `Потребность производства`.
+
+При выборе нескольких заказов сервер формирует один Excel-файл и агрегирует строки с одинаковыми GTIN и наименованием. Основной лист Excel содержит строго три колонки: `Наименование`, `GTIN`, `Кол-во`.
+
+После успешного формирования файла заказы, по которым реально были строки ЧЗ, получают `marking_status = PRINTED`, `marking_printed_at` и `marking_excel_generated_at`. Заказы без строк ЧЗ не блокируют формирование по другим выбранным заказам и не переводятся в `PRINTED`. Если строк ЧЗ нет по всем выбранным заказам, файл не создается и данные не мутируют.
+
+Повторное формирование доступно в WPF через `Показать выполненные`, где отображаются ранее обработанные `EXCEL_GENERATED`/`PRINTED` заказы.
+
+Формирование Excel ЧЗ не меняет `ledger`, `docs`, `doc_lines`, не редактирует закрытые документы и не запускает автоматический backfill.
 
 Индексы:
 - `orders(order_ref)`

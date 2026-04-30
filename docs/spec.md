@@ -43,15 +43,15 @@
 - `https://SERVER_IP:7154/tsd/` открывает TSD web client.
 
 ## Модель данных (server DB)
-- `items(id, name, is_active, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, max_qty_per_hu, tara_id, is_marked, item_type_id, min_stock_qty)`
-- `item_types(id, name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control, min_stock_uses_order_binding, enable_order_reservation, enable_hu_distribution)`
+- `items(id, name, is_active, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, max_qty_per_hu, tara_id, is_marked, item_type_id, min_stock_qty)`; `is_marked` является legacy-полем старой KM-модели и не участвует в новой ЧЗ-логике.
+- `item_types(id, name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control, min_stock_uses_order_binding, enable_order_reservation, enable_hu_distribution, enable_marking)`
 - `taras(id, name)`
 - `item_requests(id, barcode, comment, device_id, login, status, created_at, resolved_at)`
 - `write_off_reasons(id, code, name)`
 - `order_requests(id, request_type, payload_json, status, created_at, created_by_login, created_by_device_id, resolved_at, resolved_by, resolution_note, applied_order_id)`
 - `locations(id, code, name)`
 - `partners(id, name, inn, ... )`
-- `orders(id, order_ref, order_type, partner_id NULL, due_date, status, comment, created_at, bind_reserved_stock)`
+- `orders(id, order_ref, order_type, partner_id NULL, due_date, status, comment, created_at, bind_reserved_stock, marking_status, marking_excel_generated_at, marking_printed_at)`
 - `order_lines(id, order_id, item_id, qty_ordered)`
 - `order_receipt_plan_lines(id, order_id, order_line_id, item_id, qty_planned, to_location_id, to_hu, sort_order)` // серверный план выпуска по заказу
 - `docs(id, doc_ref, type, status, created_at, closed_at, partner_id, order_id, order_ref, shipping_ref, reason_code, comment, production_batch_no)`
@@ -101,8 +101,8 @@
   - Добавлен блок позиций ниже минимума над основным списком.
   - Ручной поиск по отдельному полю убран, вместо него используются встроенные фильтры.
 - Documents: список + детали + проведение.
-- Items: список с ID + modal create/edit (`name`, `is_active`, `barcode/SKU`, `gtin`, `brand`, `volume`, `shelf life months`, `max qty per HU`, `tara`, `uom`, `item_type`, `min_stock_qty`, `is_marked`) + Excel import с preview и column mapping.
-- Item types: редактор справочника типов номенклатуры (создание, редактирование, удаление/деактивация при использовании, настройка флагов `is_visible_in_product_catalog`, `enable_min_stock_control`, `min_stock_uses_order_binding`, `enable_order_reservation`).
+- Items: список с ID + modal create/edit (`name`, `is_active`, `barcode/SKU`, `gtin`, `brand`, `volume`, `shelf life months`, `max qty per HU`, `tara`, `uom`, `item_type`, `min_stock_qty`) + вычисляемый статус ЧЗ + Excel import с preview и column mapping. Ручной чекбокс маркировки в карточке товара не используется.
+- Item types: редактор справочника типов номенклатуры (создание, редактирование, удаление/деактивация при использовании, настройка флагов `is_visible_in_product_catalog`, `enable_min_stock_control`, `min_stock_uses_order_binding`, `enable_order_reservation`, `enable_marking`).
   - Для новых типов `is_visible_in_product_catalog` по умолчанию включен; после миграции V0005 тип `Без типа` (`GENERAL`) автоматически помечается видимым в PC каталоге.
 - Item packagings: редактор упаковок в карточке товара и общий packaging manager используют server API для list/create/update/deactivate/set-default.
 - Tara: редактор справочника в разделе `Справочники`.
@@ -136,6 +136,25 @@
   - TSD main blocks: `Операции`, `Состояние склада`, `Каталог`, `Заказы`.
   - TSD operation blocks: `Приемка`, `Выпуск продукции`, `Отгрузка`, `Перемещение`, `Списание`, `Инвентаризация`.
 - KM в WPF временно заморожен: вкладка KM, KM-действия в окнах документов и KM edit-control в карточках товара скрыты из клиента. Во время freeze document validation/close не требует назначения KM и не делает auto-ship KM codes.
+- В WPF доступно отдельное окно `Маркировка` для новой упрощенной ЧЗ-модели. PC web и TSD не имеют UX ЧЗ в этом сценарии.
+
+## Маркировка ЧЗ
+- Новая ЧЗ-маркировка вычисляется без ручного флага товара: позиция считается маркируемой, если `item_types.enable_marking = true` и `items.gtin` заполнен непустым значением.
+- Если тип поддерживает маркировку, но у товара пустой GTIN, это не ошибка: товар считается немаркируемым и не попадает в Excel ЧЗ.
+- `items.is_marked` остается legacy-полем старой KM-модели. Новая очередь, Excel ЧЗ и WPF-статус товара его не используют.
+- В карточке товара WPF показывает вычисляемый статус:
+  - `Маркировка ЧЗ: да`, если тип поддерживает ЧЗ и GTIN заполнен;
+  - `Маркировка ЧЗ: нет, GTIN не заполнен`, если тип поддерживает ЧЗ, но GTIN пустой;
+  - `Маркировка ЧЗ: нет, тип не маркируется`, если тип не поддерживает ЧЗ.
+- Окно `Маркировка` показывает очередь заказов со статусами `IN_PROGRESS`/`ACCEPTED`, где есть строки ЧЗ и заказ еще не обработан (`marking_status` не `PRINTED`/`EXCEL_GENERATED`).
+- `marking_status`: `NOT_REQUIRED` (`Маркировка не требуется`), `REQUIRED` (`Требуется файл ЧЗ`), `EXCEL_GENERATED` (`Файл ЧЗ сформирован`), `PRINTED` (`Маркировка проведена`).
+- После успешного формирования Excel заказ переводится в `PRINTED`, заполняются `marking_printed_at` и `marking_excel_generated_at`; заказ скрывается из обычной очереди.
+- Повторное формирование доступно через чекбокс `Показать выполненные`, который возвращает ранее обработанные `EXCEL_GENERATED`/`PRINTED` заказы.
+- Excel ЧЗ содержит только основной лист с колонками `Наименование`, `GTIN`, `Кол-во`.
+- Количество ЧЗ по строке заказа: `qty_for_marking = max(0, qty_ordered - shipped_qty - reserved_qty)`, где `reserved_qty` берется из `order_receipt_plan_lines.qty_planned`.
+- Зарезервированный готовый товар не требует новых кодов ЧЗ, потому что физически уже находится на складе.
+- Excel ЧЗ считает только потребность производства под выбранные заказы и не включает минимальный остаток; минимальный остаток остается в отдельном отчете `Потребность производства`.
+- Формирование Excel ЧЗ не меняет `ledger`, `docs` и `doc_lines`, не редактирует закрытые документы и не запускает backfill.
 
 ## Документы (дополнительно)
 - Неактивный товар (`items.is_active = false`) не может участвовать в операциях: сервер отклоняет добавление строк с ошибкой `ITEM_INACTIVE`, а TSD при сканировании показывает сообщение о блокировке карточки товара.
@@ -203,7 +222,7 @@
   - Добор из свободного/чужого остатка не допускается.
   - После проведения `OUTBOUND` статус связанного заказа пересчитывается сразу; при полном объеме отгрузки заказ автоматически закрывается (`SHIPPED` / UI `Выполнен`), а резервы по клиентским заказам пересчитываются.
   - TSD показывает `pick list` HU/локаций по выбранной строке и позволяет привязать HU/локацию к строке отгрузки.
-  - Для маркируемых SKU `pick list` строится по `km_code` (`status=OnHand`) с фильтром по заказу; для немаркируемых — по `ledger`.
+  - Pick list строится по `ledger`/HU-остаткам. Старый KM pick list по `km_code` относится к замороженной legacy-модели и не используется новой ЧЗ-очередью.
   - В ручном `OUTBOUND` выбор товара фильтруется по остаткам источника (выбранные `location/HU`), чтобы показывать только реально отгружаемые позиции.
 - Списание: в WPF источник строки задается на уровне строки документа, а не в шапке. Шапочный HU для `WRITE_OFF` не используется.
   - При добавлении строки `WRITE_OFF` выбор товара показывает только товары с положительным доступным остатком и отдельную колонку доступного количества.
@@ -212,17 +231,9 @@
   - Введенное количество автоматически раскладывается в строки документа по фактическим источникам `from_location_id/from_hu`; нижняя панель `Где лежит (HU)` для списания не используется.
   - Оператор вручную выбирает только `reason_code` из отдельного справочника причин списания.
 
-## Marking (KM) MVP
-- Domain logic и хранение данных KM пока остаются в backend/DB, но клиентский workflow временно заморожен: WPF UI выключен, а validation/close документов не требует назначения KM.
-- Импорт CSV/TSV кодов в `km_code_batch` + `km_code` (защита по hash файла и `UNIQUE(code_raw)`).
-- Во время импорта KM проверки duplicate code выполняются внутри файла и против БД (без учета регистра), с нормализацией обернутых кавычек.
-- При сопоставлении GTIN в КМ поддерживаются 13 и 14 цифр: 13-значный GTIN нормализуется до 14-значного добавлением ведущего `0`.
-- При импорте КМ и при старте приложения выполняется auto-mark `items.is_marked=1` для SKU, найденных в `km_code` (включая сопоставление по GTIN), чтобы KM-товары не выпадали из сценариев выпуска/отгрузки.
-- Привязка пакета к заказу через `order_id`.
-- Коды в пуле имеют статус `InPool`; стандартный перевод в `OnHand` выполняется через документ `Выпуск продукции`.
-- Для маркируемых SKU (`items.is_marked = true`) требуется привязать ровно `Qty` кодов к строке документа (`receipt_line_id`, `hu_id`, `location_id`).
-- Распределение кодов в выпуске выполняется по строке (`HU+SKU+Qty`) из пула `InPool` по заказу или выбранному пакету.
-- Отгрузка переводит коды в статус `Shipped` и связывает их с документом отгрузки.
-- Для отгрузки ручной ввод KM не требуется: при проведении `OUTBOUND` коды `OnHand` подбираются и списываются автоматически по SKU, заказу (если указан) и источнику строки (`location/HU`, если заданы).
-- В окне `OUTBOUND` для маркируемых строк доступны действия `Коды КМ...` и `Распределить`: можно открыть привязку кодов вручную (скан/ввод) или выполнить автоподбор из остатков.
-- Если для `OUTBOUND` не хватает кодов `OnHand`, система добирает недостающее из пула `InPool` (по SKU/GTIN и заказу, если он указан), чтобы завершить распределение в отгрузке.
+## Legacy Marking (KM)
+- Старые таблицы и модели `km_code_batch`, `km_code`, `marking_order`, `marking_code_import`, `marking_code`, `marking_print_batch`, `marking_print_batch_code` остаются в production schema как legacy-слой.
+- Старый WPF KM workflow заморожен: вкладка `Маркировка (КМ)` и KM-действия в документах скрыты, validation/close документов не требует назначения KM и не делает auto-ship KM codes.
+- Новая ЧЗ-модель не развивает старый импорт CSV/TSV кодов, не использует `km_code`, `marking_order` и не пишет `items.is_marked`.
+- `items.is_marked` сохраняется только для совместимости старой схемы и исторических данных; новая логика ЧЗ использует `item_types.enable_marking + items.gtin`.
+- Будущая destructive cleanup migration может удалить legacy KM-таблицы/поля только отдельным согласованным батчем после проверки production-совместимости.

@@ -2507,6 +2507,15 @@ public partial class MainWindow : Window
         window.ShowDialog();
     }
 
+    private void OpenMarking_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new MarkingWindow(_services)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+    }
+
     private void ImportErrors_Click(object sender, RoutedEventArgs e)
     {
         SelectTab(TabDocsIndex);
