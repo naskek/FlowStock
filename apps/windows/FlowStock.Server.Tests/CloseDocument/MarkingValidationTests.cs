@@ -134,7 +134,8 @@ public sealed class MarkingValidationTests
             Type = OrderType.Customer,
             Status = OrderStatus.InProgress,
             CreatedAt = new DateTime(2026, 4, 1, 10, 0, 0, DateTimeKind.Utc),
-            MarkingStatus = markingStatus
+            MarkingStatus = markingStatus,
+            MarkingRequired = true
         });
         harness.SeedOrderLine(new OrderLine
         {

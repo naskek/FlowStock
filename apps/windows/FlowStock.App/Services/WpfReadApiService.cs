@@ -597,6 +597,7 @@ public sealed class WpfReadApiService
             Comment = ReadString(element, "comment"),
             UseReservedStock = ReadBool(element, "bind_reserved_stock"),
             MarkingStatus = MarkingStatusMapper.FromString(ReadString(element, "marking_status")),
+            MarkingRequired = ReadBool(element, "marking_required"),
             MarkingExcelGeneratedAt = ReadDateTime(element, "marking_excel_generated_at"),
             MarkingPrintedAt = ReadDateTime(element, "marking_printed_at"),
             CreatedAt = ReadDateTime(element, "created_at") ?? DateTime.MinValue,

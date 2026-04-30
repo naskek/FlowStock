@@ -384,6 +384,7 @@ internal sealed class CloseDocumentHarness
                     PartnerCode = order.PartnerCode,
                     UseReservedStock = order.UseReservedStock,
                     MarkingStatus = order.MarkingStatus,
+                    MarkingRequired = order.MarkingRequired,
                     MarkingExcelGeneratedAt = order.MarkingExcelGeneratedAt,
                     MarkingPrintedAt = order.MarkingPrintedAt
                 };
@@ -414,6 +415,7 @@ internal sealed class CloseDocumentHarness
                     PartnerCode = current.PartnerCode,
                     UseReservedStock = order.UseReservedStock,
                     MarkingStatus = current.MarkingStatus,
+                    MarkingRequired = current.MarkingRequired,
                     MarkingExcelGeneratedAt = current.MarkingExcelGeneratedAt,
                     MarkingPrintedAt = current.MarkingPrintedAt
                 };
@@ -442,6 +444,7 @@ internal sealed class CloseDocumentHarness
                     PartnerCode = current.PartnerCode,
                     UseReservedStock = current.UseReservedStock,
                     MarkingStatus = current.MarkingStatus,
+                    MarkingRequired = current.MarkingRequired,
                     MarkingExcelGeneratedAt = current.MarkingExcelGeneratedAt,
                     MarkingPrintedAt = current.MarkingPrintedAt
                 };

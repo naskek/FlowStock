@@ -235,7 +235,7 @@ public partial class OperationDetailsWindow : Window
                 order.Status,
                 order.PartnerId,
                 order.PartnerDisplay,
-                order.MarkingStatus,
+                order.EffectiveMarkingStatus,
                 isProductionReceipt));
         }
 
@@ -5168,11 +5168,12 @@ public partial class OperationDetailsWindow : Window
         private string ProductionReceiptMarkingLabel => MarkingStatus switch
         {
             MarkingStatus.Printed => "проведена",
+            MarkingStatus.ExcelGenerated => "отпечатана",
             MarkingStatus.NotRequired => "не требуется",
             _ => "требуется"
         };
 
-        private string ProblemMarker => MarkingStatus is MarkingStatus.Required or MarkingStatus.ExcelGenerated
+        private string ProblemMarker => MarkingStatus == MarkingStatus.Required
             ? " [ЧЗ не проведена]"
             : string.Empty;
     }

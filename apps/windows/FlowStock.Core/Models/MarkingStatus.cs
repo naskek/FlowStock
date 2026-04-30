@@ -43,6 +43,18 @@ public static class MarkingStatusMapper
         };
     }
 
+    public static MarkingStatus ToEffectiveStatus(MarkingStatus storedStatus, bool markingRequired)
+    {
+        if (!markingRequired)
+        {
+            return MarkingStatus.NotRequired;
+        }
+
+        return storedStatus is MarkingStatus.Printed or MarkingStatus.ExcelGenerated
+            ? storedStatus
+            : MarkingStatus.Required;
+    }
+
     public static string ToShortDisplayName(MarkingStatus status)
     {
         return status switch

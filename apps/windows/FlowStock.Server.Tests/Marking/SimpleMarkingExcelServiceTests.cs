@@ -10,15 +10,47 @@ namespace FlowStock.Server.Tests.Marking;
 public sealed class SimpleMarkingExcelServiceTests
 {
     [Theory]
-    [InlineData(MarkingStatus.NotRequired, "Не требуется")]
-    [InlineData(MarkingStatus.Required, "Требуется")]
-    [InlineData(MarkingStatus.ExcelGenerated, "Файл сформирован")]
-    [InlineData(MarkingStatus.Printed, "Проведена")]
-    public void OrderList_UsesShortMarkingStatusLabels(MarkingStatus status, string expected)
+    [InlineData(false, MarkingStatus.NotRequired, "Не требуется")]
+    [InlineData(true, MarkingStatus.NotRequired, "Требуется")]
+    [InlineData(true, MarkingStatus.Required, "Требуется")]
+    [InlineData(true, MarkingStatus.ExcelGenerated, "Файл сформирован")]
+    [InlineData(true, MarkingStatus.Printed, "Проведена")]
+    [InlineData(false, MarkingStatus.Printed, "Не требуется")]
+    public void OrderList_UsesEffectiveShortMarkingStatusLabels(bool markingRequired, MarkingStatus status, string expected)
     {
-        var order = new Order { MarkingStatus = status };
+        var order = new Order
+        {
+            MarkingRequired = markingRequired,
+            MarkingStatus = status
+        };
 
         Assert.Equal(expected, order.MarkingStatusShortDisplay);
+    }
+
+    [Theory]
+    [InlineData(true, "04601234567890", true, MarkingStatus.NotRequired, "Требуется файл ЧЗ")]
+    [InlineData(true, "04601234567890", true, MarkingStatus.Printed, "Маркировка проведена")]
+    [InlineData(true, "", false, MarkingStatus.NotRequired, "Маркировка не требуется")]
+    [InlineData(false, "04601234567890", false, MarkingStatus.NotRequired, "Маркировка не требуется")]
+    public void OrderLabel_UsesMarkableOrderLinesRequirement(
+        bool itemTypeEnableMarking,
+        string? gtin,
+        bool markingRequired,
+        MarkingStatus status,
+        string expected)
+    {
+        var item = new Item
+        {
+            ItemTypeEnableMarking = itemTypeEnableMarking,
+            Gtin = gtin
+        };
+        var order = new Order
+        {
+            MarkingRequired = item.IsChestnyZnakMarkingRequired && markingRequired,
+            MarkingStatus = status
+        };
+
+        Assert.Equal(expected, order.MarkingStatusDisplay);
     }
 
     [Fact]

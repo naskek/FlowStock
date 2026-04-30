@@ -20,7 +20,57 @@ public sealed class PostgresDataStore : IDataStore
         "LEFT JOIN partners p ON p.id = d.partner_id " +
         "LEFT JOIN (SELECT dl.doc_id, COUNT(*) AS line_count FROM doc_lines dl WHERE dl.qty > 0 AND NOT EXISTS (SELECT 1 FROM doc_lines newer WHERE newer.replaces_line_id = dl.id) GROUP BY dl.doc_id) dl ON dl.doc_id = d.id " +
         "LEFT JOIN (SELECT doc_id, MAX(device_id) AS device_id, MAX(doc_uid) AS doc_uid FROM api_docs GROUP BY doc_id) ad ON ad.doc_id = d.id";
-    private const string OrderSelectBase = "SELECT o.id, o.order_ref, o.order_type, o.partner_id, o.due_date, o.status, o.comment, o.created_at, p.name, p.code, COALESCE(o.bind_reserved_stock, FALSE), COALESCE(o.marking_status, 'NOT_REQUIRED'), o.marking_excel_generated_at, o.marking_printed_at FROM orders o LEFT JOIN partners p ON p.id = o.partner_id";
+    private const string OrderSelectBase = @"
+SELECT o.id,
+       o.order_ref,
+       o.order_type,
+       o.partner_id,
+       o.due_date,
+       o.status,
+       o.comment,
+       o.created_at,
+       p.name,
+       p.code,
+       COALESCE(o.bind_reserved_stock, FALSE),
+       COALESCE(o.marking_status, 'NOT_REQUIRED'),
+       o.marking_excel_generated_at,
+       o.marking_printed_at,
+       COALESCE(marking_need.marking_required, FALSE)
+FROM orders o
+LEFT JOIN partners p ON p.id = o.partner_id
+LEFT JOIN LATERAL (
+    SELECT EXISTS (
+        SELECT 1
+        FROM order_lines ol
+        INNER JOIN items i ON i.id = ol.item_id
+        INNER JOIN item_types it ON it.id = i.item_type_id
+        LEFT JOIN (
+            SELECT dl.order_line_id, SUM(dl.qty) AS qty_shipped
+            FROM doc_lines dl
+            INNER JOIN docs d ON d.id = dl.doc_id
+            WHERE d.status = 'CLOSED'
+              AND d.type = 'OUTBOUND'
+              AND dl.order_line_id IS NOT NULL
+              AND dl.qty > 0
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM doc_lines newer
+                  WHERE newer.replaces_line_id = dl.id
+              )
+            GROUP BY dl.order_line_id
+        ) shipped ON shipped.order_line_id = ol.id
+        LEFT JOIN (
+            SELECT order_line_id, SUM(qty_planned) AS qty_reserved
+            FROM order_receipt_plan_lines
+            WHERE qty_planned > 0
+            GROUP BY order_line_id
+        ) reserved ON reserved.order_line_id = ol.id
+        WHERE ol.order_id = o.id
+          AND COALESCE(it.enable_marking, FALSE) = TRUE
+          AND NULLIF(BTRIM(i.gtin), '') IS NOT NULL
+          AND GREATEST(0, ol.qty_ordered - COALESCE(shipped.qty_shipped, 0) - COALESCE(reserved.qty_reserved, 0)) > 0
+    ) AS marking_required
+) marking_need ON TRUE";
 
     public PostgresDataStore(string connectionString)
     {
@@ -3262,6 +3312,7 @@ RETURNING id;
         var markingStatus = reader.FieldCount > 11 ? MarkingStatusMapper.FromString(reader.IsDBNull(11) ? null : reader.GetString(11)) : MarkingStatus.NotRequired;
         var markingExcelGeneratedAt = reader.FieldCount > 12 ? FromDbDate(reader.IsDBNull(12) ? null : reader.GetString(12)) : null;
         var markingPrintedAt = reader.FieldCount > 13 ? FromDbDate(reader.IsDBNull(13) ? null : reader.GetString(13)) : null;
+        var markingRequired = reader.FieldCount > 14 && !reader.IsDBNull(14) && reader.GetBoolean(14);
 
         return new Order
         {
@@ -3277,6 +3328,7 @@ RETURNING id;
             PartnerCode = partnerCode,
             UseReservedStock = useReservedStock,
             MarkingStatus = markingStatus,
+            MarkingRequired = markingRequired,
             MarkingExcelGeneratedAt = markingExcelGeneratedAt,
             MarkingPrintedAt = markingPrintedAt
         };

@@ -1549,7 +1549,7 @@ public sealed class DocumentService
             else
             {
                 var order = _data.GetOrder(doc.OrderId.Value);
-                if (order?.MarkingStatus != MarkingStatus.Printed)
+                if (order == null || (order.MarkingRequired && order.MarkingStatus != MarkingStatus.Printed))
                 {
                     check.Errors.Add("Нельзя закрыть выпуск маркируемой продукции: по заказу не проведена маркировка ЧЗ.");
                 }
