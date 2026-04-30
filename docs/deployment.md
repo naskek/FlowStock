@@ -99,6 +99,10 @@ cd /opt/FlowStock
 cp deploy/.env.example deploy/.env
 ```
 2. Отредактируйте `deploy/.env`, указав реальный пароль PostgreSQL и нужные порты.
+   Для прямого доступа WPF к PostgreSQL из LAN задайте `FLOWSTOCK_PG_BIND_HOST`:
+   - безопасный default: `127.0.0.1` (доступ только с хоста сервера)
+   - пример для production LAN: `FLOWSTOCK_PG_BIND_HOST=192.168.1.3`
+   - не требуется `docker-compose.override.yml`
 3. Один раз выполните bootstrap локального CA:
 ```bash
 mkdir -p /opt/flowstock-secrets/ca
