@@ -1873,8 +1873,33 @@ app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>
                           || string.Equals(request.Query["include_internal"], "true", StringComparison.OrdinalIgnoreCase);
     var includePendingRequests = string.Equals(request.Query["include_pending_requests"], "1", StringComparison.OrdinalIgnoreCase)
                                  || string.Equals(request.Query["include_pending_requests"], "true", StringComparison.OrdinalIgnoreCase);
+    var limit = TryReadNonNegativeInt(request.Query["limit"]);
+    var offset = TryReadNonNegativeInt(request.Query["offset"]) ?? 0;
 
     var orderService = new OrderService(store);
+    if (limit.HasValue)
+    {
+        var page = new List<object>(limit.Value);
+        var pendingRows = includePendingRequests
+            ? GetPendingCreateOrderRows(store, normalized)
+            : new List<object>();
+
+        if (offset < pendingRows.Count)
+        {
+            page.AddRange(pendingRows.Skip(offset).Take(limit.Value));
+        }
+
+        var remainingLimit = limit.Value - page.Count;
+        if (remainingLimit > 0)
+        {
+            var realOffset = Math.Max(0, offset - pendingRows.Count);
+            page.AddRange(orderService.GetOrdersPage(includeInternal, normalized, remainingLimit, realOffset)
+                .Select(OrderApiMapper.MapOrder));
+        }
+
+        return Results.Ok(page);
+    }
+
     var orders = orderService.GetOrders();
     if (!includeInternal)
     {
@@ -3150,6 +3175,21 @@ static List<object> GetPendingCreateOrderRows(IDataStore store, string? normaliz
     }
 
     return rows;
+}
+
+static int? TryReadNonNegativeInt(string? raw)
+{
+    if (string.IsNullOrWhiteSpace(raw))
+    {
+        return null;
+    }
+
+    if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) || value < 0)
+    {
+        return null;
+    }
+
+    return value;
 }
 
 static List<object> TryReadPendingCreateOrderLines(IDataStore store, string json)

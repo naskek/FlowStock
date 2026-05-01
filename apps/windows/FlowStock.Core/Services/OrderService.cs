@@ -26,6 +26,18 @@ public sealed class OrderService
         return result;
     }
 
+    public IReadOnlyList<Order> GetOrdersPage(bool includeInternal, string? query, int limit, int offset)
+    {
+        var orders = _data.GetOrdersPage(includeInternal, query, limit, offset);
+        var result = new List<Order>(orders.Count);
+        foreach (var order in orders)
+        {
+            result.Add(ApplyAutoStatus(order));
+        }
+
+        return result;
+    }
+
     public Order? GetOrder(long id)
     {
         var order = _data.GetOrder(id);

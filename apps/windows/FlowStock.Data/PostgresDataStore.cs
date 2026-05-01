@@ -5,6 +5,7 @@ using FlowStock.Core.Models;
 using FlowStock.Core.Models.Marking;
 using FlowStock.Core.Services;
 using Npgsql;
+using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
@@ -1402,6 +1403,48 @@ WHERE id = @id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, $"{OrderSelectBase} ORDER BY o.created_at DESC");
+            using var reader = command.ExecuteReader();
+            var orders = new List<Order>();
+            while (reader.Read())
+            {
+                orders.Add(ReadOrder(reader));
+            }
+
+            return orders;
+        });
+    }
+
+    public IReadOnlyList<Order> GetOrdersPage(bool includeInternal, string? query, int limit, int offset)
+    {
+        return WithConnection(connection =>
+        {
+            var normalized = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
+            using var command = CreateCommand(connection, $@"
+{OrderSelectBase}
+WHERE (@include_internal OR o.order_type = @customer_order_type)
+  AND (
+      @query IS NULL
+      OR o.order_ref ILIKE @query_pattern
+      OR p.name ILIKE @query_pattern
+      OR p.code ILIKE @query_pattern
+  )
+ORDER BY CASE o.status
+    WHEN 'IN_PROGRESS' THEN 1
+    WHEN 'DRAFT' THEN 1
+    WHEN 'ACCEPTED' THEN 2
+    WHEN 'SHIPPED' THEN 3
+    WHEN 'CANCELLED' THEN 4
+    ELSE 99
+END,
+o.created_at DESC,
+o.id DESC
+LIMIT @limit OFFSET @offset");
+            command.Parameters.AddWithValue("@include_internal", includeInternal);
+            command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+            command.Parameters.Add("@query", NpgsqlDbType.Text).Value = string.IsNullOrWhiteSpace(normalized) ? DBNull.Value : normalized;
+            command.Parameters.Add("@query_pattern", NpgsqlDbType.Text).Value = string.IsNullOrWhiteSpace(normalized) ? DBNull.Value : $"%{normalized}%";
+            command.Parameters.AddWithValue("@limit", limit);
+            command.Parameters.AddWithValue("@offset", offset);
             using var reader = command.ExecuteReader();
             var orders = new List<Order>();
             while (reader.Read())

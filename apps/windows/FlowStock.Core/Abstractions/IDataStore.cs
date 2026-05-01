@@ -91,6 +91,7 @@ public interface IDataStore
 
     Order? GetOrder(long id);
     IReadOnlyList<Order> GetOrders();
+    IReadOnlyList<Order> GetOrdersPage(bool includeInternal, string? query, int limit, int offset);
     long AddOrder(Order order);
     void UpdateOrder(Order order);
     void UpdateOrderStatus(long orderId, OrderStatus status);

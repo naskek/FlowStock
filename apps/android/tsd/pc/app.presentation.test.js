@@ -73,3 +73,20 @@ const printedHtml = pc.renderOrderMarkingIndicator({
 assert.match(printedHtml, /pc-status-badge/);
 assert.match(printedHtml, /pc-marking-badge/);
 assert.match(printedHtml, /ЧЗ готов к нанесению/);
+
+const page = pc.trimOrdersPage(Array.from({ length: 21 }, function (_, index) {
+  return { id: index + 1 };
+}));
+assert.strictEqual(page.rows.length, 20);
+assert.strictEqual(page.hasMore, true);
+
+const lastPage = pc.trimOrdersPage(Array.from({ length: 20 }, function (_, index) {
+  return { id: index + 1 };
+}));
+assert.strictEqual(lastPage.rows.length, 20);
+assert.strictEqual(lastPage.hasMore, false);
+
+assert.strictEqual(
+  pc.buildOrdersUrl("abc 001", 21, 20),
+  "/api/orders?include_internal=1&include_pending_requests=1&limit=21&offset=20&q=abc%20001"
+);
