@@ -1143,7 +1143,12 @@ public sealed class OrderService
                 ShippedAt = completedAt == DateTime.MinValue ? null : completedAt,
                 PartnerName = order.PartnerName,
                 PartnerCode = order.PartnerCode,
-                UseReservedStock = order.UseReservedStock
+                UseReservedStock = order.UseReservedStock,
+                MarkingStatus = order.MarkingStatus,
+                IsLegacyExcelGeneratedMarkingStatus = order.IsLegacyExcelGeneratedMarkingStatus,
+                MarkingRequired = order.MarkingRequired,
+                MarkingExcelGeneratedAt = order.MarkingExcelGeneratedAt,
+                MarkingPrintedAt = order.MarkingPrintedAt
             };
         }
 
@@ -1195,7 +1200,12 @@ public sealed class OrderService
             ShippedAt = shippedAt,
             PartnerName = order.PartnerName,
             PartnerCode = order.PartnerCode,
-            UseReservedStock = order.UseReservedStock
+            UseReservedStock = order.UseReservedStock,
+            MarkingStatus = order.MarkingStatus,
+            IsLegacyExcelGeneratedMarkingStatus = order.IsLegacyExcelGeneratedMarkingStatus,
+            MarkingRequired = order.MarkingRequired,
+            MarkingExcelGeneratedAt = order.MarkingExcelGeneratedAt,
+            MarkingPrintedAt = order.MarkingPrintedAt
         };
     }
 }
