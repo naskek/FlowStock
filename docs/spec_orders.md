@@ -12,6 +12,9 @@
 - `comment` TEXT NULL
 - `created_at` TEXT NOT NULL
 - `bind_reserved_stock` BOOLEAN NOT NULL DEFAULT `FALSE` // резервировать свободные HU под клиентский заказ
+- `marking_status` TEXT NOT NULL DEFAULT `NOT_REQUIRED` // `NOT_REQUIRED` | `REQUIRED` | `EXCEL_GENERATED` | `PRINTED`
+- `marking_excel_generated_at` TEXT NULL
+- `marking_printed_at` TEXT NULL
 
 Таблица `order_lines`:
 - `id` INTEGER PRIMARY KEY
@@ -86,6 +89,80 @@ Server API/WPF:
 - количество к резерву считается как `qty_ordered - shipped_qty`, чтобы уже отгруженный объем не вычитался повторно из свободного остатка;
 - кандидаты для резерва берутся из текущего положительного HU stock; наличие `docs.order_id` у origin PRD не требуется;
 - если один HU уже заявлен несколькими активными customer orders, такой HU исключается из нового плана и выводится в отчете как конфликт для ручного разбора.
+
+## Maintenance: backfill статусов ЧЗ
+
+Для production-БД, где уже есть старые выполненные и активные заказы с фактически напечатанными этикетками, статус ЧЗ заполняется только явной maintenance-командой после резервной копии БД. Команда не запускается автоматически при старте приложения.
+
+Команда:
+- dry-run по умолчанию: `dotnet FlowStock.Server.dll maintenance backfill-marking-status --created-before YYYY-MM-DD --dry-run`
+- явное применение: `dotnet FlowStock.Server.dll maintenance backfill-marking-status --created-before YYYY-MM-DD --apply --confirm APPLY`
+
+Production Docker Compose wrapper:
+- dry-run: `bash deploy/scripts/backfill_marking_status.sh --created-before YYYY-MM-DD --dry-run`
+- apply: `bash deploy/scripts/backfill_marking_status.sh --created-before YYYY-MM-DD --apply --confirm APPLY`
+
+Правила:
+- без `--apply --confirm APPLY` данные не изменяются;
+- cutoff `--created-before` обязателен, команда обрабатывает только заказы, созданные раньше этой даты;
+- `ledger`, `docs` и `doc_lines` не изменяются;
+- `CANCELLED` и pending/ожидающие подтверждения не переводятся в `PRINTED`;
+- для старых `IN_PROGRESS`, `ACCEPTED`, `SHIPPED` заказов с маркируемыми строками выставляется `PRINTED`, а пустые `marking_excel_generated_at` и `marking_printed_at` заполняются текущим временем;
+- для таких же заказов без маркируемых строк выставляется `NOT_REQUIRED`;
+- существующие `PRINTED` заказы не понижаются.
+
+Отчет команды содержит: всего просмотрено, переведено в `PRINTED`, переведено в `NOT_REQUIRED`, пропущено отмененных, пропущено pending/ожидающих подтверждения, уже `PRINTED`, количество строк `ledger` до/после. При `--apply` команда проверяет, что количество строк `ledger` не изменилось.
+
+## Маркировка ЧЗ по заказам
+
+Новая ЧЗ-модель не использует старый ручной флаг `items.is_marked`. Позиция заказа попадает в расчет только если тип номенклатуры имеет `item_types.enable_marking = true`, а у товара заполнен непустой `items.gtin`.
+
+Статусы маркировки заказа:
+- `NOT_REQUIRED` = `Маркировка не требуется`
+- `REQUIRED` = `Требуется файл ЧЗ`
+- `EXCEL_GENERATED` = `Файл ЧЗ сформирован`
+- `PRINTED` = `Маркировка проведена`
+
+В основном списке заказов WPF и в выборе заказа для `PRODUCTION_RECEIPT` показывается effective-статус ЧЗ. Он считается не только из сохраненного `orders.marking_status`, но и из наличия строк заказа с ЧЗ-потребностью: `item_types.enable_marking = true`, непустой `items.gtin` и `qty_ordered - shipped_qty - reserved_qty > 0`.
+
+Короткая колонка `Маркировка ЧЗ`:
+- `NOT_REQUIRED` = `Не требуется`
+- `REQUIRED` = `Требуется`
+- `EXCEL_GENERATED` = `Файл сформирован`
+- `PRINTED` = `Проведена`
+
+Очередь WPF `Маркировка` по умолчанию показывает только заказы:
+- `IN_PROGRESS` (`В работе`)
+- `ACCEPTED` (`Готов`)
+
+В обычную очередь не попадают:
+- `SHIPPED` (`Выполнен`)
+- `CANCELLED` (`Отменён`)
+- pending-заявки / ожидающие подтверждения
+- заказы с `marking_status IN (EXCEL_GENERATED, PRINTED)`
+
+Расчет строки Excel ЧЗ:
+- `open_qty = qty_ordered - shipped_qty`
+- `reserved_qty = SUM(order_receipt_plan_lines.qty_planned по order_line_id)`
+- `qty_for_marking = max(0, open_qty - reserved_qty)`
+
+Зарезервированный готовый stock не требует новых кодов ЧЗ, потому что этот товар уже физически есть на складе. Минимальный остаток в Excel ЧЗ не включается; это отдельный отчет `Потребность производства`.
+
+При выборе нескольких заказов сервер формирует один Excel-файл и агрегирует строки с одинаковыми GTIN и наименованием. Основной лист Excel не содержит строку заголовков: первая строка является первой строкой данных. Формат строго состоит из трех колонок в фиксированном порядке: `Наименование`, `GTIN`, `Кол-во`.
+
+После успешного формирования файла заказы, по которым реально были строки ЧЗ, получают `marking_status = PRINTED`, `marking_printed_at` и `marking_excel_generated_at`. Заказы без строк ЧЗ не блокируют формирование по другим выбранным заказам и не переводятся в `PRINTED`. Если строк ЧЗ нет по всем выбранным заказам, файл не создается и данные не мутируют.
+
+Повторное формирование доступно в WPF через `Показать выполненные`, где отображаются ранее обработанные `EXCEL_GENERATED`/`PRINTED` заказы.
+
+Формирование Excel ЧЗ не меняет `ledger`, `docs`, `doc_lines`, не редактирует закрытые документы и не запускает автоматический backfill.
+
+Закрытие `PRODUCTION_RECEIPT` с фактическими строками маркируемой продукции разрешено только после проведения ЧЗ по связанному заказу:
+- если в строках нет маркируемых товаров, документ закрывается по прежним правилам;
+- если маркируемые товары есть, у документа должен быть `order_id`;
+- связанный заказ должен иметь `marking_status = PRINTED`;
+- проверка выполняется на сервере до записи `ledger` и до изменения статуса документа.
+
+В WPF при выборе заказа для `PRODUCTION_RECEIPT` заказ не скрывается, но в списке показывается подсказка `Маркировка ЧЗ: проведена/отпечатана/требуется/не требуется`; заказы со статусом ЧЗ, требующим действий, помечаются как `[ЧЗ не проведена]`.
 
 Индексы:
 - `orders(order_ref)`

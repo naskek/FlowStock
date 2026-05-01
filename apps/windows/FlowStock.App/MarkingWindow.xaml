@@ -1,0 +1,46 @@
+<Window x:Class="FlowStock.App.MarkingWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Маркировка"
+        Width="1120" Height="620"
+        MinWidth="900" MinHeight="480"
+        WindowStartupLocation="CenterOwner">
+    <DockPanel Margin="12">
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+            <Button x:Name="ExportButton"
+                    Content="Сформировать Excel ЧЗ"
+                    Width="180"
+                    Click="Export_Click" />
+            <CheckBox x:Name="IncludeCompletedCheck"
+                      Margin="16,0,0,0"
+                      VerticalAlignment="Center"
+                      Content="Показать выполненные"
+                      Checked="IncludeCompletedCheck_Changed"
+                      Unchecked="IncludeCompletedCheck_Changed" />
+            <Button Content="Обновить"
+                    Width="100"
+                    Margin="16,0,0,0"
+                    Click="Refresh_Click" />
+            <TextBlock x:Name="SummaryText"
+                       Margin="16,0,0,0"
+                       VerticalAlignment="Center" />
+        </StackPanel>
+
+        <DataGrid x:Name="OrdersGrid"
+                  AutoGenerateColumns="False"
+                  IsReadOnly="True"
+                  SelectionMode="Extended"
+                  SelectionUnit="FullRow">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Номер заказа" Binding="{Binding OrderRef}" Width="130" />
+                <DataGridTextColumn Header="Клиент" Binding="{Binding PartnerDisplay}" Width="220" />
+                <DataGridTextColumn Header="Статус заказа" Binding="{Binding OrderStatusDisplay}" Width="130" />
+                <DataGridTextColumn Header="Дата/срок" Binding="{Binding DueDateDisplay}" Width="120" />
+                <DataGridTextColumn Header="Статус маркировки" Binding="{Binding MarkingStatusDisplay}" Width="180" />
+                <DataGridTextColumn Header="Количество строк ЧЗ" Binding="{Binding MarkingLineCount}" Width="140" />
+                <DataGridTextColumn Header="Количество кодов ЧЗ" Binding="{Binding MarkingCodeCountDisplay}" Width="150" />
+                <DataGridTextColumn Header="Дата последнего формирования файла" Binding="{Binding LastGeneratedAtDisplay}" Width="220" />
+            </DataGrid.Columns>
+        </DataGrid>
+    </DockPanel>
+</Window>

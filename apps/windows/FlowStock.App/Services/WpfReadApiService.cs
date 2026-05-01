@@ -596,6 +596,10 @@ public sealed class WpfReadApiService
             Status = status,
             Comment = ReadString(element, "comment"),
             UseReservedStock = ReadBool(element, "bind_reserved_stock"),
+            MarkingStatus = MarkingStatusMapper.FromString(ReadString(element, "marking_status")),
+            MarkingRequired = ReadBool(element, "marking_required"),
+            MarkingExcelGeneratedAt = ReadDateTime(element, "marking_excel_generated_at"),
+            MarkingPrintedAt = ReadDateTime(element, "marking_printed_at"),
             CreatedAt = ReadDateTime(element, "created_at") ?? DateTime.MinValue,
             ShippedAt = ReadDateTime(element, "shipped_at")
         };
@@ -645,6 +649,7 @@ public sealed class WpfReadApiService
             ItemTypeName = ReadString(element, "item_type_name"),
             ItemTypeIsVisibleInProductCatalog = ReadBool(element, "item_type_is_visible_in_product_catalog"),
             ItemTypeEnableMinStockControl = ReadBool(element, "item_type_enable_min_stock_control"),
+            ItemTypeEnableMarking = ReadBool(element, "item_type_enable_marking"),
             MinStockQty = ReadNullableDouble(element, "min_stock_qty")
         };
     }

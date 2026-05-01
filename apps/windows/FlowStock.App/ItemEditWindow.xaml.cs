@@ -51,7 +51,7 @@ public partial class ItemEditWindow : Window
             : Array.Empty<ItemType>();
         foreach (var itemType in itemTypes)
         {
-            _itemTypes.Add(new ItemTypeOption(itemType.Id, itemType.Name, itemType.EnableMinStockControl, itemType.EnableHuDistribution));
+            _itemTypes.Add(new ItemTypeOption(itemType.Id, itemType.Name, itemType.EnableMinStockControl, itemType.EnableHuDistribution, itemType.EnableMarking));
         }
         ItemTypeCombo.ItemsSource = _itemTypes;
     }
@@ -70,6 +70,7 @@ public partial class ItemEditWindow : Window
             MinStockQtyBox.Text = string.Empty;
             IsActiveCheck.IsChecked = true;
             UpdateMinStockControls();
+            UpdateMarkingStatusText();
             return;
         }
 
@@ -86,7 +87,6 @@ public partial class ItemEditWindow : Window
         MaxQtyPerHuBox.Text = _item.MaxQtyPerHu.HasValue
             ? _item.MaxQtyPerHu.Value.ToString("0.###", CultureInfo.InvariantCulture)
             : string.Empty;
-        MarkedCheck.IsChecked = _item.IsMarked;
         UomCombo.SelectedItem = _uoms.FirstOrDefault(u => string.Equals(u.Name, _item.BaseUom, StringComparison.OrdinalIgnoreCase))
                                 ?? _uoms.FirstOrDefault();
         TaraCombo.SelectedItem = _taras.FirstOrDefault(t => t.Id == _item.TaraId) ?? TaraOption.Empty;
@@ -96,6 +96,7 @@ public partial class ItemEditWindow : Window
             : string.Empty;
         IsActiveCheck.IsChecked = _item.IsActive;
         UpdateMinStockControls();
+        UpdateMarkingStatusText();
     }
 
     private async void Save_Click(object sender, RoutedEventArgs e)
@@ -146,7 +147,6 @@ public partial class ItemEditWindow : Window
         var taraId = (TaraCombo.SelectedItem as TaraOption)?.Id;
         var itemType = ItemTypeCombo.SelectedItem as ItemTypeOption;
         var itemTypeId = itemType?.Id;
-        var isMarked = _item?.IsMarked ?? false;
         var isActive = IsActiveCheck.IsChecked != false;
 
         if (itemType?.EnableMinStockControl != true)
@@ -174,7 +174,7 @@ public partial class ItemEditWindow : Window
                 ShelfLifeMonths = shelfLifeMonths,
                 MaxQtyPerHu = maxQtyPerHu,
                 TaraId = taraId,
-                IsMarked = isMarked,
+                IsMarked = false,
                 IsActive = isActive,
                 ItemTypeId = itemTypeId,
                 MinStockQty = minStockQty
@@ -211,7 +211,7 @@ public partial class ItemEditWindow : Window
                     ShelfLifeMonths = candidate.ShelfLifeMonths,
                     MaxQtyPerHu = candidate.MaxQtyPerHu,
                     TaraId = candidate.TaraId,
-                    IsMarked = candidate.IsMarked,
+                    IsMarked = _item.IsMarked,
                     IsActive = candidate.IsActive,
                     ItemTypeId = candidate.ItemTypeId,
                     MinStockQty = candidate.MinStockQty
@@ -385,6 +385,12 @@ public partial class ItemEditWindow : Window
     private void ItemTypeCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
         UpdateMinStockControls();
+        UpdateMarkingStatusText();
+    }
+
+    private void GtinBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    {
+        UpdateMarkingStatusText();
     }
 
     private void UpdateMinStockControls()
@@ -398,13 +404,32 @@ public partial class ItemEditWindow : Window
         }
     }
 
+    private void UpdateMarkingStatusText()
+    {
+        if (MarkingStatusText == null)
+        {
+            return;
+        }
+
+        var selectedType = ItemTypeCombo.SelectedItem as ItemTypeOption;
+        if (selectedType?.EnableMarking == true)
+        {
+            MarkingStatusText.Text = string.IsNullOrWhiteSpace(GtinBox.Text)
+                ? "нет, GTIN не заполнен"
+                : "да";
+            return;
+        }
+
+        MarkingStatusText.Text = "нет, тип не маркируется";
+    }
+
     private sealed record TaraOption(long? Id, string Name)
     {
         public static TaraOption Empty { get; } = new(null, "Не выбрана");
     }
 
-    private sealed record ItemTypeOption(long? Id, string Name, bool EnableMinStockControl, bool EnableHuDistribution)
+    private sealed record ItemTypeOption(long? Id, string Name, bool EnableMinStockControl, bool EnableHuDistribution, bool EnableMarking)
     {
-        public static ItemTypeOption Empty { get; } = new(null, "Не выбран", false, false);
+        public static ItemTypeOption Empty { get; } = new(null, "Не выбран", false, false, false);
     }
 }

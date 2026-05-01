@@ -615,6 +615,15 @@ public sealed class UpsertItemTypeRequest
 
     [JsonPropertyName("enable_hu_distribution")]
     public bool EnableHuDistribution { get; set; }
+
+    [JsonPropertyName("enable_marking")]
+    public bool EnableMarking { get; set; }
+}
+
+public sealed class MarkingExportRequest
+{
+    [JsonPropertyName("order_ids")]
+    public List<long>? OrderIds { get; set; }
 }
 
 public sealed class UpsertLocationRequest

@@ -99,6 +99,10 @@ cd /opt/FlowStock
 cp deploy/.env.example deploy/.env
 ```
 2. Отредактируйте `deploy/.env`, указав реальный пароль PostgreSQL и нужные порты.
+   Для прямого доступа WPF к PostgreSQL из LAN задайте `FLOWSTOCK_PG_BIND_HOST`:
+   - безопасный default: `127.0.0.1` (доступ только с хоста сервера)
+   - пример для production LAN: `FLOWSTOCK_PG_BIND_HOST=192.168.1.3`
+   - не требуется `docker-compose.override.yml`
 3. Один раз выполните bootstrap локального CA:
 ```bash
 mkdir -p /opt/flowstock-secrets/ca
@@ -212,6 +216,35 @@ bash deploy/scripts/migrate.sh
 docker compose --project-name flowstock --env-file deploy/.env -f deploy/docker-compose.yml exec -T postgres \
   sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT version, filename, applied_at FROM schema_migrations ORDER BY version;"'
 ```
+
+## Production backfill статусов ЧЗ
+Для production-БД, где этикетки ЧЗ уже были напечатаны до появления новой модели, используйте Docker Compose wrapper. Host `dotnet` на Debian-сервере не требуется: команда выполняется внутри контейнера `flowstock`.
+
+Перед применением обязательно сделайте свежий backup БД:
+```bash
+cd /opt/FlowStock
+bash deploy/scripts/backup_now.sh
+```
+
+Dry-run, без изменения данных:
+```bash
+cd /opt/FlowStock
+bash deploy/scripts/backfill_marking_status.sh --created-before 2026-04-30 --dry-run
+```
+
+Apply только с явным подтверждением:
+```bash
+cd /opt/FlowStock
+bash deploy/scripts/backfill_marking_status.sh --created-before 2026-04-30 --apply --confirm APPLY
+```
+
+Скрипт:
+- проверяет `docker compose config -q`;
+- поднимает `postgres`;
+- запускает SQL-миграции через `migrator`;
+- собирает/использует maintenance image `flowstock`;
+- обновляет только поля статуса маркировки в `orders`: `marking_status`, `marking_excel_generated_at`, `marking_printed_at`;
+- не изменяет `ledger`, `docs`, `doc_lines` и не удаляет volumes.
 
 ## Восстановление из dump
 Восстановить `.dump`-файл:

@@ -382,7 +382,11 @@ internal sealed class CloseDocumentHarness
                     ShippedAt = order.ShippedAt,
                     PartnerName = order.PartnerName,
                     PartnerCode = order.PartnerCode,
-                    UseReservedStock = order.UseReservedStock
+                    UseReservedStock = order.UseReservedStock,
+                    MarkingStatus = order.MarkingStatus,
+                    MarkingRequired = order.MarkingRequired,
+                    MarkingExcelGeneratedAt = order.MarkingExcelGeneratedAt,
+                    MarkingPrintedAt = order.MarkingPrintedAt
                 };
                 _orderLinesByOrder.TryAdd(orderId, new List<OrderLine>());
                 return orderId;
@@ -409,7 +413,11 @@ internal sealed class CloseDocumentHarness
                     ShippedAt = current.ShippedAt,
                     PartnerName = current.PartnerName,
                     PartnerCode = current.PartnerCode,
-                    UseReservedStock = order.UseReservedStock
+                    UseReservedStock = order.UseReservedStock,
+                    MarkingStatus = current.MarkingStatus,
+                    MarkingRequired = current.MarkingRequired,
+                    MarkingExcelGeneratedAt = current.MarkingExcelGeneratedAt,
+                    MarkingPrintedAt = current.MarkingPrintedAt
                 };
             });
 
@@ -434,7 +442,11 @@ internal sealed class CloseDocumentHarness
                     ShippedAt = current.ShippedAt,
                     PartnerName = current.PartnerName,
                     PartnerCode = current.PartnerCode,
-                    UseReservedStock = current.UseReservedStock
+                    UseReservedStock = current.UseReservedStock,
+                    MarkingStatus = current.MarkingStatus,
+                    MarkingRequired = current.MarkingRequired,
+                    MarkingExcelGeneratedAt = current.MarkingExcelGeneratedAt,
+                    MarkingPrintedAt = current.MarkingPrintedAt
                 };
             });
 

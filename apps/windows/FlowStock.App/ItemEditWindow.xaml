@@ -43,7 +43,7 @@
             <TextBox x:Name="BarcodeBox" Grid.Row="2" Grid.Column="1" Margin="8,0,0,8" />
 
             <TextBlock Grid.Row="3" Grid.Column="0" Text="GTIN" VerticalAlignment="Center" />
-            <TextBox x:Name="GtinBox" Grid.Row="3" Grid.Column="1" Margin="8,0,0,8" />
+            <TextBox x:Name="GtinBox" Grid.Row="3" Grid.Column="1" Margin="8,0,0,8" TextChanged="GtinBox_TextChanged" />
 
             <TextBlock Grid.Row="4" Grid.Column="0" Text="Бренд" VerticalAlignment="Center" />
             <TextBox x:Name="BrandBox" Grid.Row="4" Grid.Column="1" Margin="8,0,0,8" />
@@ -74,11 +74,12 @@
                       Margin="8,0,0,8"
                       Content="Активно" />
 
-            <CheckBox x:Name="MarkedCheck"
-                      Grid.Row="13" Grid.Column="1"
-                      Margin="8,0,0,0"
-                      Content="Маркируемый (КМ)"
-                      Visibility="Collapsed" />
+            <TextBlock Grid.Row="13" Grid.Column="0" Text="Маркировка ЧЗ" VerticalAlignment="Center" />
+            <TextBlock x:Name="MarkingStatusText"
+                       Grid.Row="13" Grid.Column="1"
+                       Margin="8,0,0,0"
+                       VerticalAlignment="Center"
+                       FontWeight="SemiBold" />
 
             <StackPanel Grid.Row="14" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="8,12,0,0">
                 <Button Content="Сохранить" Width="120" IsDefault="True" Click="Save_Click" />

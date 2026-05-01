@@ -28,6 +28,7 @@ public sealed class AppServices
     public WpfHuApiService WpfHuApi { get; }
     public WpfImportApiService WpfImportApi { get; }
     public WpfPackagingApiService WpfPackagingApi { get; }
+    public WpfMarkingApiService WpfMarkingApi { get; }
     public WpfReadApiService WpfReadApi { get; }
     public WpfDocumentRuntimeApiService WpfDocumentRuntimeApi { get; }
     public WpfIncomingRequestsApiService WpfIncomingRequestsApi { get; }
@@ -92,6 +93,7 @@ public sealed class AppServices
         WpfHuApi = new WpfHuApiService(Settings, appLogger);
         WpfImportApi = new WpfImportApiService(Settings, appLogger);
         WpfPackagingApi = new WpfPackagingApiService(Settings, appLogger);
+        WpfMarkingApi = new WpfMarkingApiService(Settings, appLogger);
         WpfReadApi = new WpfReadApiService(Settings, appLogger);
         WpfDocumentRuntimeApi = new WpfDocumentRuntimeApiService(Settings, appLogger);
         WpfIncomingRequestsApi = new WpfIncomingRequestsApiService(Settings, appLogger);
