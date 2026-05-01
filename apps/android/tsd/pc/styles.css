@@ -420,6 +420,17 @@ body.pc-body {
   background: #d18414;
 }
 
+.pc-status-badge-neutral {
+  color: #52606d;
+  background: #eef2f5;
+  border: 1px solid #d7e0e7;
+}
+
+.pc-status-badge-neutral .pc-status-badge-icon {
+  color: #ffffff;
+  background: #8a97a3;
+}
+
 .pc-status-badge-completed {
   color: #ffffff;
   background: #1f7a3e;
@@ -440,39 +451,25 @@ body.pc-body {
   background: #e3982e;
 }
 
-.pc-order-marking-cell {
-  text-align: center;
-  vertical-align: middle;
-  white-space: nowrap;
-}
-
-.pc-marking-indicator {
-  display: inline-grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 999px;
-  font-size: 13px;
-  font-weight: 800;
-  line-height: 1;
-}
-
-.pc-marking-indicator-neutral {
+.pc-status-badge-cancelled {
   color: #52606d;
   background: #eef2f5;
   border: 1px solid #d7e0e7;
 }
 
-.pc-marking-indicator-warning {
+.pc-status-badge-cancelled .pc-status-badge-icon {
   color: #ffffff;
-  background: #d18414;
-  border: 1px solid #b66c0d;
+  background: #8a97a3;
 }
 
-.pc-marking-indicator-success {
-  color: #ffffff;
-  background: #2d8a4d;
-  border: 1px solid #1f713b;
+.pc-order-marking-cell {
+  text-align: left;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.pc-marking-badge {
+  max-width: 180px;
 }
 
 .pc-login-card {

@@ -6,6 +6,25 @@ namespace FlowStock.Server.Tests.Marking;
 
 public sealed class OrderApiMapperTests
 {
+    [Fact]
+    public void MapOrder_ReturnsCanonicalCancelledOrderStatus()
+    {
+        var order = new Order
+        {
+            Id = 1,
+            OrderRef = "CO-1",
+            Type = OrderType.Customer,
+            Status = OrderStatus.Cancelled,
+            CreatedAt = new DateTime(2026, 4, 30, 10, 0, 0, DateTimeKind.Utc)
+        };
+
+        var json = JsonSerializer.SerializeToElement(OrderApiMapper.MapOrder(order));
+
+        Assert.Equal("CANCELLED", json.GetProperty("order_status").GetString());
+        Assert.Equal("Отменён", json.GetProperty("order_status_display").GetString());
+        Assert.Equal("Отменён", json.GetProperty("status").GetString());
+    }
+
     [Theory]
     [InlineData(OrderStatus.InProgress, MarkingStatus.Printed, false, "PRINTED", "ЧЗ готов к нанесению")]
     [InlineData(OrderStatus.InProgress, MarkingStatus.NotRequired, true, "REQUIRED", "Требуется файл ЧЗ")]

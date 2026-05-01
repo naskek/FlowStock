@@ -18,6 +18,8 @@ public static class OrderApiMapper
             partner_name = order.PartnerName,
             partner_code = order.PartnerCode,
             due_date = order.DueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            order_status = OrderStatusMapper.StatusToString(order.Status),
+            order_status_display = OrderStatusMapper.StatusToDisplayName(order.Status, order.Type),
             status = OrderStatusMapper.StatusToDisplayName(order.Status, order.Type),
             comment = order.Comment,
             bind_reserved_stock = order.UseReservedStock,

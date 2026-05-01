@@ -1700,6 +1700,9 @@
     if (normalized === "завершен") {
       return "SHIPPED";
     }
+    if (normalized === "отменен" || normalized === "отменён" || normalized === "cancelled" || normalized === "canceled") {
+      return "CANCELLED";
+    }
     return "";
   }
 
@@ -2002,15 +2005,47 @@
       return { label: "Ожидает подтверждения", tone: "warning" };
     }
 
-    var statusCode = toOrderStatusCode(order && order.status);
+    var statusCode = getOrderStatusCode(order);
+    var label = getOrderStatusDisplay(order, statusCode);
     if (statusCode === "SHIPPED") {
-      return { label: "Выполнен", tone: "completed" };
+      return { label: label, tone: "completed" };
     }
     if (statusCode === "ACCEPTED") {
-      return { label: "Готов", tone: "ready" };
+      return { label: label, tone: "ready" };
+    }
+    if (statusCode === "CANCELLED") {
+      return { label: label, tone: "cancelled" };
     }
 
-    return { label: "В работе", tone: "inprogress" };
+    return { label: label || "В работе", tone: "inprogress" };
+  }
+
+  function getOrderStatusCode(order) {
+    var raw = String((order && order.order_status) || "").trim().toUpperCase();
+    if (raw === "CANCELED") {
+      return "CANCELLED";
+    }
+    if (raw === "DRAFT" || raw === "ACCEPTED" || raw === "IN_PROGRESS" || raw === "SHIPPED" || raw === "CANCELLED") {
+      return raw;
+    }
+    return toOrderStatusCode(order && order.status);
+  }
+
+  function getOrderStatusDisplay(order, statusCode) {
+    var label = String((order && (order.status || order.order_status_display)) || "").trim();
+    if (!label || label.toUpperCase() === statusCode) {
+      if (statusCode === "SHIPPED") {
+        return "Выполнен";
+      }
+      if (statusCode === "ACCEPTED") {
+        return "Готов";
+      }
+      if (statusCode === "CANCELLED") {
+        return "Отменён";
+      }
+      return "В работе";
+    }
+    return label;
   }
 
   function formatQuantity(value) {
@@ -2026,11 +2061,11 @@
   }
 
   function isShippedOrder(order) {
-    return toOrderStatusCode(order && order.status) === "SHIPPED";
+    return getOrderStatusCode(order) === "SHIPPED";
   }
 
   function isActiveShipmentOrder(order) {
-    var status = toOrderStatusCode(order && order.status);
+    var status = getOrderStatusCode(order);
     return (
       order &&
       !order.is_pending_confirmation &&
@@ -2121,9 +2156,11 @@
   }
 
   function getOrderMarkingPresentation(order) {
-    var effectiveStatus = String((order && order.marking_effective_status) || "")
+    var rawEffectiveStatus = String((order && order.marking_effective_status) || "")
       .trim()
       .toUpperCase();
+    var effectiveStatus = rawEffectiveStatus;
+    var legacyExcelGenerated = effectiveStatus === "EXCEL_GENERATED";
     if (effectiveStatus === "EXCEL_GENERATED") {
       effectiveStatus = "PRINTED";
     }
@@ -2132,7 +2169,7 @@
     if (effectiveStatus === "PRINTED") {
       return {
         tone: "success",
-        icon: "✓",
+        label: legacyExcelGenerated ? "ЧЗ готов к нанесению" : display || "ЧЗ готов к нанесению",
         title: display || "ЧЗ готов к нанесению",
       };
     }
@@ -2140,31 +2177,21 @@
     if (effectiveStatus === "REQUIRED") {
       return {
         tone: "warning",
-        icon: "!",
-        title: "Требуется ЧЗ",
+        label: "Требуется ЧЗ",
+        title: display || "Требуется ЧЗ",
       };
     }
 
     return {
       tone: "neutral",
-      icon: "•",
+      label: display || "Маркировка не требуется",
       title: display || "Маркировка не требуется",
     };
   }
 
   function renderOrderMarkingIndicator(order) {
     var marking = getOrderMarkingPresentation(order);
-    return (
-      '<span class="pc-marking-indicator pc-marking-indicator-' +
-      escapeHtml(marking.tone) +
-      '" title="' +
-      escapeHtml(marking.title) +
-      '" aria-label="' +
-      escapeHtml(marking.title) +
-      '">' +
-      escapeHtml(marking.icon) +
-      "</span>"
-    );
+    return renderStatusBadge(marking.label, marking.tone, "pc-marking-badge", marking.title);
   }
 
   function renderReadinessBadge(readiness) {
@@ -2182,7 +2209,7 @@
         return 0; // Ожидает подтверждения
       }
 
-      var statusCode = toOrderStatusCode(order && order.status);
+      var statusCode = getOrderStatusCode(order);
       if (statusCode === "IN_PROGRESS") {
         return 1; // В работе
       }
@@ -2191,6 +2218,9 @@
       }
       if (statusCode === "SHIPPED") {
         return 3; // Выполнен
+      }
+      if (statusCode === "CANCELLED") {
+        return 4; // Отменен
       }
       return 99; // Неизвестные/старые статусы
     }
@@ -2228,7 +2258,7 @@
       });
   }
 
-  function renderStatusBadge(text, tone, extraClass) {
+  function renderStatusBadge(text, tone, extraClass, title) {
     var normalizedTone = tone || "neutral";
     var icon = "•";
     if (normalizedTone === "success" || normalizedTone === "ready") {
@@ -2239,22 +2269,30 @@
       icon = "✓";
     } else if (normalizedTone === "inprogress") {
       icon = "•";
+    } else if (normalizedTone === "cancelled") {
+      icon = "×";
     }
 
     var className = "pc-status-badge pc-status-badge-" + normalizedTone;
     if (extraClass) {
       className += " " + extraClass;
     }
+    var label = text || "-";
+    var tooltip = title || label;
 
     return (
       '<span class="' +
       className +
+      '" title="' +
+      escapeHtml(tooltip) +
+      '" aria-label="' +
+      escapeHtml(tooltip) +
       '">' +
       '<span class="pc-status-badge-icon" aria-hidden="true">' +
       escapeHtml(icon) +
       "</span>" +
       "<span>" +
-      escapeHtml(text || "-") +
+      escapeHtml(label) +
       "</span>" +
       "</span>"
     );
@@ -3692,6 +3730,13 @@
       currentView = resolveAllowedView(currentView) || getDefaultView();
       renderView(currentView);
     });
+  }
+
+  if (window.FlowStockPcTestHooks) {
+    window.FlowStockPcTestHooks.getOrderStatusPresentation = getOrderStatusPresentation;
+    window.FlowStockPcTestHooks.getOrderMarkingPresentation = getOrderMarkingPresentation;
+    window.FlowStockPcTestHooks.renderOrderMarkingIndicator = renderOrderMarkingIndicator;
+    return;
   }
 
   tabs.forEach(function (tab) {
