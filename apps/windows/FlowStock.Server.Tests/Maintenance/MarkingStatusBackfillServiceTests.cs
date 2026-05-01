@@ -136,6 +136,39 @@ public sealed class MarkingStatusBackfillServiceTests
     }
 
     [Fact]
+    public void Apply_RestoresPrintedFromHistoricalLifecycleEvenWithoutCurrentMarkingNeed()
+    {
+        var timestamp = new DateTime(2026, 4, 30, 12, 0, 0, DateTimeKind.Utc);
+        var generatedAt = new DateTime(2026, 4, 20, 9, 0, 0, DateTimeKind.Utc);
+        var (store, updates) = CreateStore(
+            orders: new[]
+            {
+                CreateOrder(
+                    1,
+                    OrderStatus.Shipped,
+                    MarkingStatus.NotRequired,
+                    markingExcelGeneratedAt: generatedAt)
+            },
+            orderLines: new Dictionary<long, IReadOnlyList<OrderLine>>
+            {
+                [1] = Array.Empty<OrderLine>()
+            });
+
+        var report = new MarkingStatusBackfillService(store.Object).Run(new MarkingStatusBackfillOptions(
+            new DateTime(2026, 4, 30),
+            Apply: true,
+            Confirm: "APPLY",
+            Timestamp: timestamp));
+
+        Assert.Equal(1, report.ChangedToPrinted);
+        var update = Assert.Single(updates);
+        Assert.Equal(1, update.OrderId);
+        Assert.Equal(MarkingStatus.Printed, update.Status);
+        Assert.Equal(timestamp, update.Timestamp);
+        store.Verify(s => s.GetOrderLines(1), Times.Never);
+    }
+
+    [Fact]
     public void Apply_DoesNotTouchLedgerDocsOrDocLines()
     {
         var (store, _) = CreateStore(
@@ -219,7 +252,12 @@ public sealed class MarkingStatusBackfillServiceTests
         return (store, updates);
     }
 
-    private static Order CreateOrder(long id, OrderStatus status, MarkingStatus markingStatus)
+    private static Order CreateOrder(
+        long id,
+        OrderStatus status,
+        MarkingStatus markingStatus,
+        DateTime? markingExcelGeneratedAt = null,
+        DateTime? markingPrintedAt = null)
     {
         return new Order
         {
@@ -228,7 +266,9 @@ public sealed class MarkingStatusBackfillServiceTests
             Type = OrderType.Customer,
             Status = status,
             CreatedAt = new DateTime(2026, 4, 1, 10, 0, 0, DateTimeKind.Utc),
-            MarkingStatus = markingStatus
+            MarkingStatus = markingStatus,
+            MarkingExcelGeneratedAt = markingExcelGeneratedAt,
+            MarkingPrintedAt = markingPrintedAt
         };
     }
 

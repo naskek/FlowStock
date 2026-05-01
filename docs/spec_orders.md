@@ -108,6 +108,7 @@ Production Docker Compose wrapper:
 - `ledger`, `docs` и `doc_lines` не изменяются;
 - `CANCELLED` и pending/ожидающие подтверждения не переводятся в `PRINTED`;
 - для старых `IN_PROGRESS`, `ACCEPTED`, `SHIPPED` заказов с маркируемыми строками выставляется `PRINTED`, а пустые `marking_excel_generated_at` и `marking_printed_at` заполняются текущим временем;
+- для старых `IN_PROGRESS`, `ACCEPTED`, `SHIPPED` заказов с историческим lifecycle-признаком ЧЗ (`marking_status = EXCEL_GENERATED`, `marking_excel_generated_at` или `marking_printed_at` заполнены) выставляется `PRINTED`, даже если текущий `qty_for_marking` уже стал `0`;
 - для таких же заказов без маркируемых строк выставляется `NOT_REQUIRED`;
 - существующие `PRINTED` заказы не понижаются.
 
@@ -124,6 +125,7 @@ Production Docker Compose wrapper:
 - `PRINTED` = `Маркировка проведена`
 
 В основном списке заказов WPF и в выборе заказа для `PRODUCTION_RECEIPT` показывается effective-статус ЧЗ. Он считается не только из сохраненного `orders.marking_status`, но и из наличия строк заказа с ЧЗ-потребностью: `item_types.enable_marking = true`, непустой `items.gtin` и `qty_ordered - shipped_qty - reserved_qty > 0`.
+Сохраненный lifecycle-статус `PRINTED` или `EXCEL_GENERATED` имеет приоритет над текущей вычисленной потребностью: текущий `marking_required = false` не должен превращать такой заказ в `NOT_REQUIRED`.
 
 Короткая колонка `Маркировка ЧЗ`:
 - `NOT_REQUIRED` = `Не требуется`

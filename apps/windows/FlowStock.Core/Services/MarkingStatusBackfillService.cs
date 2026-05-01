@@ -81,6 +81,17 @@ public sealed class MarkingStatusBackfillService
                 continue;
             }
 
+            if (HasCompletedLifecycleEvidence(order))
+            {
+                report.ChangedToPrinted++;
+                if (options.Apply)
+                {
+                    _data.UpdateOrderMarkingStatusForBackfill(order.Id, MarkingStatus.Printed, timestamp);
+                }
+
+                continue;
+            }
+
             var hasMarkableLines = _data.GetOrderLines(order.Id)
                 .Any(line => itemsById.TryGetValue(line.ItemId, out var item)
                              && item.IsChestnyZnakMarkingRequired);
@@ -107,5 +118,12 @@ public sealed class MarkingStatusBackfillService
         }
 
         return report;
+    }
+
+    private static bool HasCompletedLifecycleEvidence(Order order)
+    {
+        return order.MarkingStatus == MarkingStatus.ExcelGenerated
+               || order.MarkingExcelGeneratedAt.HasValue
+               || order.MarkingPrintedAt.HasValue;
     }
 }

@@ -15,7 +15,8 @@ public sealed class SimpleMarkingExcelServiceTests
     [InlineData(true, MarkingStatus.Required, "Требуется")]
     [InlineData(true, MarkingStatus.ExcelGenerated, "Файл сформирован")]
     [InlineData(true, MarkingStatus.Printed, "Проведена")]
-    [InlineData(false, MarkingStatus.Printed, "Не требуется")]
+    [InlineData(false, MarkingStatus.ExcelGenerated, "Файл сформирован")]
+    [InlineData(false, MarkingStatus.Printed, "Проведена")]
     public void OrderList_UsesEffectiveShortMarkingStatusLabels(bool markingRequired, MarkingStatus status, string expected)
     {
         var order = new Order
