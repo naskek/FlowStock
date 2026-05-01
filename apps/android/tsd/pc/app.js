@@ -1638,6 +1638,9 @@
           "<td>" +
           getOrderStatusHtml(order) +
           "</td>" +
+          '<td class="pc-order-marking-cell">' +
+          renderOrderMarkingIndicator(order) +
+          "</td>" +
           "</tr>"
         );
       })
@@ -1651,6 +1654,7 @@
       renderSortableHeader("orders", "dueDate", "План") +
       renderSortableHeader("orders", "shippedAt", "Факт") +
       renderSortableHeader("orders", "status", "Статус") +
+      "<th>ЧЗ</th>" +
       "</tr></thead>" +
       "<tbody>" +
       body +
@@ -2114,6 +2118,52 @@
   function getOrderStatusHtml(order) {
     var status = getOrderStatusPresentation(order);
     return renderStatusBadge(status.label, status.tone);
+  }
+
+  function getOrderMarkingPresentation(order) {
+    var effectiveStatus = String(
+      (order && (order.marking_effective_status || order.marking_status)) || ""
+    )
+      .trim()
+      .toUpperCase();
+    var markingRequired = order && order.marking_required === true;
+
+    if (effectiveStatus === "PRINTED") {
+      return {
+        tone: "success",
+        icon: "✓",
+        title: "ЧЗ готов к нанесению",
+      };
+    }
+
+    if (markingRequired || effectiveStatus === "REQUIRED") {
+      return {
+        tone: "warning",
+        icon: "!",
+        title: "Требуется ЧЗ",
+      };
+    }
+
+    return {
+      tone: "neutral",
+      icon: "•",
+      title: "ЧЗ не требуется",
+    };
+  }
+
+  function renderOrderMarkingIndicator(order) {
+    var marking = getOrderMarkingPresentation(order);
+    return (
+      '<span class="pc-marking-indicator pc-marking-indicator-' +
+      escapeHtml(marking.tone) +
+      '" title="' +
+      escapeHtml(marking.title) +
+      '" aria-label="' +
+      escapeHtml(marking.title) +
+      '">' +
+      escapeHtml(marking.icon) +
+      "</span>"
+    );
   }
 
   function renderReadinessBadge(readiness) {

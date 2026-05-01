@@ -440,6 +440,41 @@ body.pc-body {
   background: #e3982e;
 }
 
+.pc-order-marking-cell {
+  text-align: center;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.pc-marking-indicator {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.pc-marking-indicator-neutral {
+  color: #52606d;
+  background: #eef2f5;
+  border: 1px solid #d7e0e7;
+}
+
+.pc-marking-indicator-warning {
+  color: #ffffff;
+  background: #d18414;
+  border: 1px solid #b66c0d;
+}
+
+.pc-marking-indicator-success {
+  color: #ffffff;
+  background: #2d8a4d;
+  border: 1px solid #1f713b;
+}
+
 .pc-login-card {
   max-width: 420px;
   margin: 80px auto;
