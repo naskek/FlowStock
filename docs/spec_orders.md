@@ -12,7 +12,7 @@
 - `comment` TEXT NULL
 - `created_at` TEXT NOT NULL
 - `bind_reserved_stock` BOOLEAN NOT NULL DEFAULT `FALSE` // резервировать свободные HU под клиентский заказ
-- `marking_status` TEXT NOT NULL DEFAULT `NOT_REQUIRED` // `NOT_REQUIRED` | `REQUIRED` | `EXCEL_GENERATED` | `PRINTED`
+- `marking_status` TEXT NOT NULL DEFAULT `NOT_REQUIRED` // `NOT_REQUIRED` | `REQUIRED` | `PRINTED`
 - `marking_excel_generated_at` TEXT NULL
 - `marking_printed_at` TEXT NULL
 
@@ -108,7 +108,7 @@ Production Docker Compose wrapper:
 - `ledger`, `docs` и `doc_lines` не изменяются;
 - `CANCELLED` и pending/ожидающие подтверждения не переводятся в `PRINTED`;
 - для старых `IN_PROGRESS`, `ACCEPTED`, `SHIPPED` заказов с маркируемыми строками выставляется `PRINTED`, а пустые `marking_excel_generated_at` и `marking_printed_at` заполняются текущим временем;
-- для старых `IN_PROGRESS`, `ACCEPTED`, `SHIPPED` заказов с историческим lifecycle-признаком ЧЗ (`marking_status = EXCEL_GENERATED`, `marking_excel_generated_at` или `marking_printed_at` заполнены) выставляется `PRINTED`, даже если текущий `qty_for_marking` уже стал `0`;
+- для старых `IN_PROGRESS`, `ACCEPTED`, `SHIPPED` заказов с историческим lifecycle-признаком ЧЗ (legacy `marking_status = EXCEL_GENERATED`, `marking_excel_generated_at` или `marking_printed_at` заполнены) выставляется `PRINTED`, даже если текущий `qty_for_marking` уже стал `0`;
 - для таких же заказов без маркируемых строк выставляется `NOT_REQUIRED`;
 - существующие `PRINTED` заказы не понижаются.
 
@@ -121,17 +121,15 @@ Production Docker Compose wrapper:
 Статусы маркировки заказа:
 - `NOT_REQUIRED` = `Маркировка не требуется`
 - `REQUIRED` = `Требуется файл ЧЗ`
-- `EXCEL_GENERATED` = `Файл ЧЗ сформирован`
-- `PRINTED` = `Маркировка проведена`
+- `PRINTED` = `ЧЗ готов к нанесению`
 
 В основном списке заказов WPF и в выборе заказа для `PRODUCTION_RECEIPT` показывается effective-статус ЧЗ. Он считается не только из сохраненного `orders.marking_status`, но и из наличия строк заказа с ЧЗ-потребностью: `item_types.enable_marking = true`, непустой `items.gtin` и `qty_ordered - shipped_qty - reserved_qty > 0`.
-Сохраненный lifecycle-статус `PRINTED` или `EXCEL_GENERATED` имеет приоритет над текущей вычисленной потребностью: текущий `marking_required = false` не должен превращать такой заказ в `NOT_REQUIRED`.
+Сохраненный lifecycle-статус `PRINTED` имеет приоритет над текущей вычисленной потребностью: текущий `marking_required = false` не должен превращать такой заказ в `NOT_REQUIRED`. Старое значение БД/API `EXCEL_GENERATED` читается как `PRINTED` и не записывается новыми операциями.
 
 Короткая колонка `Маркировка ЧЗ`:
 - `NOT_REQUIRED` = `Не требуется`
 - `REQUIRED` = `Требуется`
-- `EXCEL_GENERATED` = `Файл сформирован`
-- `PRINTED` = `Проведена`
+- `PRINTED` = `Готов к нанесению`
 
 Очередь WPF `Маркировка` по умолчанию показывает только заказы:
 - `IN_PROGRESS` (`В работе`)
@@ -141,7 +139,7 @@ Production Docker Compose wrapper:
 - `SHIPPED` (`Выполнен`)
 - `CANCELLED` (`Отменён`)
 - pending-заявки / ожидающие подтверждения
-- заказы с `marking_status IN (EXCEL_GENERATED, PRINTED)`
+- заказы с `marking_status = PRINTED` или legacy `EXCEL_GENERATED`
 
 Расчет строки Excel ЧЗ:
 - `open_qty = qty_ordered - shipped_qty`
@@ -154,7 +152,7 @@ Production Docker Compose wrapper:
 
 После успешного формирования файла заказы, по которым реально были строки ЧЗ, получают `marking_status = PRINTED`, `marking_printed_at` и `marking_excel_generated_at`. Заказы без строк ЧЗ не блокируют формирование по другим выбранным заказам и не переводятся в `PRINTED`. Если строк ЧЗ нет по всем выбранным заказам, файл не создается и данные не мутируют.
 
-Повторное формирование доступно в WPF через `Показать выполненные`, где отображаются ранее обработанные `EXCEL_GENERATED`/`PRINTED` заказы.
+Повторное формирование доступно в WPF через `Показать выполненные`, где отображаются ранее обработанные `PRINTED` заказы. Legacy `EXCEL_GENERATED` отображается в этом режиме как `PRINTED`.
 
 Формирование Excel ЧЗ не меняет `ledger`, `docs`, `doc_lines`, не редактирует закрытые документы и не запускает автоматический backfill.
 
@@ -164,7 +162,7 @@ Production Docker Compose wrapper:
 - связанный заказ должен иметь `marking_status = PRINTED`;
 - проверка выполняется на сервере до записи `ledger` и до изменения статуса документа.
 
-В WPF при выборе заказа для `PRODUCTION_RECEIPT` заказ не скрывается, но в списке показывается подсказка `Маркировка ЧЗ: проведена/отпечатана/требуется/не требуется`; заказы со статусом ЧЗ, требующим действий, помечаются как `[ЧЗ не проведена]`.
+В WPF при выборе заказа для `PRODUCTION_RECEIPT` заказ не скрывается, но в списке показывается подсказка `Маркировка ЧЗ: готов к нанесению/требуется/не требуется`; заказы со статусом ЧЗ, требующим действий, помечаются как `[ЧЗ не проведена]`.
 
 Индексы:
 - `orders(order_ref)`

@@ -39,7 +39,12 @@ public sealed class MarkingStatusBackfillServiceTests
             {
                 CreateOrder(1, OrderStatus.InProgress, MarkingStatus.NotRequired),
                 CreateOrder(2, OrderStatus.Accepted, MarkingStatus.Required),
-                CreateOrder(3, OrderStatus.Shipped, MarkingStatus.ExcelGenerated)
+                CreateOrder(
+                    3,
+                    OrderStatus.Shipped,
+                    MarkingStatusMapper.FromString("EXCEL_GENERATED"),
+                    isLegacyExcelGeneratedMarkingStatus: true,
+                    markingExcelGeneratedAt: new DateTime(2026, 4, 20, 9, 0, 0, DateTimeKind.Utc))
             },
             orderLines: new Dictionary<long, IReadOnlyList<OrderLine>>
             {
@@ -133,6 +138,37 @@ public sealed class MarkingStatusBackfillServiceTests
 
         Assert.Equal(1, report.AlreadyPrinted);
         Assert.Empty(updates);
+    }
+
+    [Fact]
+    public void Apply_RewritesLegacyExcelGeneratedRawStatusToPrinted()
+    {
+        var timestamp = new DateTime(2026, 4, 30, 12, 0, 0, DateTimeKind.Utc);
+        var (store, updates) = CreateStore(
+            orders: new[]
+            {
+                CreateOrder(
+                    1,
+                    OrderStatus.Accepted,
+                    MarkingStatusMapper.FromString("EXCEL_GENERATED"),
+                    isLegacyExcelGeneratedMarkingStatus: true)
+            },
+            orderLines: new Dictionary<long, IReadOnlyList<OrderLine>>
+            {
+                [1] = Array.Empty<OrderLine>()
+            });
+
+        var report = new MarkingStatusBackfillService(store.Object).Run(new MarkingStatusBackfillOptions(
+            new DateTime(2026, 4, 30),
+            Apply: true,
+            Confirm: "APPLY",
+            Timestamp: timestamp));
+
+        Assert.Equal(1, report.ChangedToPrinted);
+        Assert.Equal(0, report.AlreadyPrinted);
+        var update = Assert.Single(updates);
+        Assert.Equal(1, update.OrderId);
+        Assert.Equal(MarkingStatus.Printed, update.Status);
     }
 
     [Fact]
@@ -256,6 +292,7 @@ public sealed class MarkingStatusBackfillServiceTests
         long id,
         OrderStatus status,
         MarkingStatus markingStatus,
+        bool isLegacyExcelGeneratedMarkingStatus = false,
         DateTime? markingExcelGeneratedAt = null,
         DateTime? markingPrintedAt = null)
     {
@@ -267,6 +304,7 @@ public sealed class MarkingStatusBackfillServiceTests
             Status = status,
             CreatedAt = new DateTime(2026, 4, 1, 10, 0, 0, DateTimeKind.Utc),
             MarkingStatus = markingStatus,
+            IsLegacyExcelGeneratedMarkingStatus = isLegacyExcelGeneratedMarkingStatus,
             MarkingExcelGeneratedAt = markingExcelGeneratedAt,
             MarkingPrintedAt = markingPrintedAt
         };

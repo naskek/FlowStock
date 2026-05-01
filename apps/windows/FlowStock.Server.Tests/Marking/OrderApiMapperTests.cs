@@ -8,8 +8,7 @@ public sealed class OrderApiMapperTests
 {
     [Theory]
     [InlineData(MarkingStatus.NotRequired, true, "REQUIRED", "Требуется файл ЧЗ")]
-    [InlineData(MarkingStatus.Printed, false, "PRINTED", "Маркировка проведена")]
-    [InlineData(MarkingStatus.ExcelGenerated, false, "EXCEL_GENERATED", "Файл ЧЗ сформирован")]
+    [InlineData(MarkingStatus.Printed, false, "PRINTED", "ЧЗ готов к нанесению")]
     [InlineData(MarkingStatus.NotRequired, false, "NOT_REQUIRED", "Маркировка не требуется")]
     public void MapOrder_ReturnsEffectiveMarkingStatusForOrderApi(
         MarkingStatus storedStatus,
@@ -34,5 +33,26 @@ public sealed class OrderApiMapperTests
         Assert.Equal(expectedStatus, json.GetProperty("marking_effective_status").GetString());
         Assert.Equal(markingRequired, json.GetProperty("marking_required").GetBoolean());
         Assert.Equal(expectedDisplay, json.GetProperty("marking_status_display").GetString());
+    }
+
+    [Fact]
+    public void MapOrder_ReturnsPrintedForLegacyExcelGeneratedRawStatus()
+    {
+        var order = new Order
+        {
+            Id = 1,
+            OrderRef = "CO-1",
+            Type = OrderType.Customer,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 4, 30, 10, 0, 0, DateTimeKind.Utc),
+            MarkingStatus = MarkingStatusMapper.FromString("EXCEL_GENERATED"),
+            MarkingRequired = false
+        };
+
+        var json = JsonSerializer.SerializeToElement(OrderApiMapper.MapOrder(order));
+
+        Assert.Equal("PRINTED", json.GetProperty("marking_status").GetString());
+        Assert.Equal("PRINTED", json.GetProperty("marking_effective_status").GetString());
+        Assert.Equal("ЧЗ готов к нанесению", json.GetProperty("marking_status_display").GetString());
     }
 }

@@ -13,10 +13,8 @@ public sealed class SimpleMarkingExcelServiceTests
     [InlineData(false, MarkingStatus.NotRequired, "Не требуется")]
     [InlineData(true, MarkingStatus.NotRequired, "Требуется")]
     [InlineData(true, MarkingStatus.Required, "Требуется")]
-    [InlineData(true, MarkingStatus.ExcelGenerated, "Файл сформирован")]
-    [InlineData(true, MarkingStatus.Printed, "Проведена")]
-    [InlineData(false, MarkingStatus.ExcelGenerated, "Файл сформирован")]
-    [InlineData(false, MarkingStatus.Printed, "Проведена")]
+    [InlineData(true, MarkingStatus.Printed, "Готов к нанесению")]
+    [InlineData(false, MarkingStatus.Printed, "Готов к нанесению")]
     public void OrderList_UsesEffectiveShortMarkingStatusLabels(bool markingRequired, MarkingStatus status, string expected)
     {
         var order = new Order
@@ -30,7 +28,7 @@ public sealed class SimpleMarkingExcelServiceTests
 
     [Theory]
     [InlineData(true, "04601234567890", true, MarkingStatus.NotRequired, "Требуется файл ЧЗ")]
-    [InlineData(true, "04601234567890", true, MarkingStatus.Printed, "Маркировка проведена")]
+    [InlineData(true, "04601234567890", true, MarkingStatus.Printed, "ЧЗ готов к нанесению")]
     [InlineData(true, "", false, MarkingStatus.NotRequired, "Маркировка не требуется")]
     [InlineData(false, "04601234567890", false, MarkingStatus.NotRequired, "Маркировка не требуется")]
     public void OrderLabel_UsesMarkableOrderLinesRequirement(
@@ -52,6 +50,14 @@ public sealed class SimpleMarkingExcelServiceTests
         };
 
         Assert.Equal(expected, order.MarkingStatusDisplay);
+    }
+
+    [Fact]
+    public void LegacyExcelGeneratedRawStatus_ParsesAsPrinted()
+    {
+        Assert.Equal(MarkingStatus.Printed, MarkingStatusMapper.FromString("EXCEL_GENERATED"));
+        Assert.Equal("PRINTED", MarkingStatusMapper.ToString(MarkingStatusMapper.FromString("EXCEL_GENERATED")));
+        Assert.Equal("ЧЗ готов к нанесению", MarkingStatusMapper.ToDisplayName(MarkingStatusMapper.FromString("EXCEL_GENERATED")));
     }
 
     [Fact]

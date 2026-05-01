@@ -57,12 +57,6 @@ public sealed class MarkingStatusBackfillService
         {
             report.TotalScanned++;
 
-            if (order.MarkingStatus == MarkingStatus.Printed)
-            {
-                report.AlreadyPrinted++;
-                continue;
-            }
-
             if (order.Status == OrderStatus.Cancelled)
             {
                 report.SkippedCancelled++;
@@ -78,6 +72,23 @@ public sealed class MarkingStatusBackfillService
             if (order.Status is not (OrderStatus.InProgress or OrderStatus.Accepted or OrderStatus.Shipped))
             {
                 report.SkippedPending++;
+                continue;
+            }
+
+            if (order.IsLegacyExcelGeneratedMarkingStatus)
+            {
+                report.ChangedToPrinted++;
+                if (options.Apply)
+                {
+                    _data.UpdateOrderMarkingStatusForBackfill(order.Id, MarkingStatus.Printed, timestamp);
+                }
+
+                continue;
+            }
+
+            if (order.MarkingStatus == MarkingStatus.Printed)
+            {
+                report.AlreadyPrinted++;
                 continue;
             }
 
@@ -122,8 +133,7 @@ public sealed class MarkingStatusBackfillService
 
     private static bool HasCompletedLifecycleEvidence(Order order)
     {
-        return order.MarkingStatus == MarkingStatus.ExcelGenerated
-               || order.MarkingExcelGeneratedAt.HasValue
+        return order.MarkingExcelGeneratedAt.HasValue
                || order.MarkingPrintedAt.HasValue;
     }
 }

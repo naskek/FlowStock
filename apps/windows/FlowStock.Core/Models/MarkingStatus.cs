@@ -4,7 +4,6 @@ public enum MarkingStatus
 {
     NotRequired,
     Required,
-    ExcelGenerated,
     Printed
 }
 
@@ -15,7 +14,7 @@ public static class MarkingStatusMapper
         return status?.Trim().ToUpperInvariant() switch
         {
             "REQUIRED" => MarkingStatus.Required,
-            "EXCEL_GENERATED" => MarkingStatus.ExcelGenerated,
+            "EXCEL_GENERATED" => MarkingStatus.Printed,
             "PRINTED" => MarkingStatus.Printed,
             _ => MarkingStatus.NotRequired
         };
@@ -26,7 +25,6 @@ public static class MarkingStatusMapper
         return status switch
         {
             MarkingStatus.Required => "REQUIRED",
-            MarkingStatus.ExcelGenerated => "EXCEL_GENERATED",
             MarkingStatus.Printed => "PRINTED",
             _ => "NOT_REQUIRED"
         };
@@ -37,15 +35,14 @@ public static class MarkingStatusMapper
         return status switch
         {
             MarkingStatus.Required => "Требуется файл ЧЗ",
-            MarkingStatus.ExcelGenerated => "Файл ЧЗ сформирован",
-            MarkingStatus.Printed => "Маркировка проведена",
+            MarkingStatus.Printed => "ЧЗ готов к нанесению",
             _ => "Маркировка не требуется"
         };
     }
 
     public static MarkingStatus ToEffectiveStatus(MarkingStatus storedStatus, bool markingRequired)
     {
-        if (storedStatus is MarkingStatus.Printed or MarkingStatus.ExcelGenerated)
+        if (storedStatus == MarkingStatus.Printed)
         {
             return storedStatus;
         }
@@ -63,8 +60,7 @@ public static class MarkingStatusMapper
         return status switch
         {
             MarkingStatus.Required => "Требуется",
-            MarkingStatus.ExcelGenerated => "Файл сформирован",
-            MarkingStatus.Printed => "Проведена",
+            MarkingStatus.Printed => "Готов к нанесению",
             _ => "Не требуется"
         };
     }

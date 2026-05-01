@@ -63,7 +63,7 @@ public partial class MarkingWindow : Window
             if (dialog.ShowDialog(this) == true)
             {
                 File.WriteAllBytes(dialog.FileName, result.FileBytes);
-                MessageBox.Show("Файл ЧЗ сформирован. Заказы помечены как обработанные.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show("Файл ЧЗ сформирован. ЧЗ готов к нанесению.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
             }
 
             LoadOrders(showErrorMessage: false);

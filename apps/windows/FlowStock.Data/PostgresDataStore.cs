@@ -1534,11 +1534,11 @@ FROM orders o
 LEFT JOIN partners p ON p.id = o.partner_id
 LEFT JOIN order_need ON order_need.order_id = o.id
 WHERE COALESCE(order_need.line_count, 0) > 0
-  AND (
+      AND (
       (o.status IN (@in_progress_status, @accepted_status)
-       AND COALESCE(o.marking_status, 'NOT_REQUIRED') NOT IN (@printed_status, @excel_generated_status))
+       AND COALESCE(o.marking_status, 'NOT_REQUIRED') NOT IN (@printed_status, @legacy_excel_generated_status))
       OR (@include_completed = TRUE
-          AND COALESCE(o.marking_status, 'NOT_REQUIRED') IN (@printed_status, @excel_generated_status))
+          AND COALESCE(o.marking_status, 'NOT_REQUIRED') IN (@printed_status, @legacy_excel_generated_status))
   )
 ORDER BY o.due_date NULLS LAST, o.created_at, o.id;
 ");
@@ -1547,7 +1547,7 @@ ORDER BY o.due_date NULLS LAST, o.created_at, o.id;
             command.Parameters.AddWithValue("@in_progress_status", OrderStatusMapper.StatusToString(OrderStatus.InProgress));
             command.Parameters.AddWithValue("@accepted_status", OrderStatusMapper.StatusToString(OrderStatus.Accepted));
             command.Parameters.AddWithValue("@printed_status", MarkingStatusMapper.ToString(MarkingStatus.Printed));
-            command.Parameters.AddWithValue("@excel_generated_status", MarkingStatusMapper.ToString(MarkingStatus.ExcelGenerated));
+            command.Parameters.AddWithValue("@legacy_excel_generated_status", "EXCEL_GENERATED");
             command.Parameters.AddWithValue("@include_completed", includeCompleted);
             using var reader = command.ExecuteReader();
             var rows = new List<MarkingOrderQueueRow>();
@@ -3309,7 +3309,8 @@ RETURNING id;
         var partnerName = reader.IsDBNull(8) ? null : reader.GetString(8);
         var partnerCode = reader.IsDBNull(9) ? null : reader.GetString(9);
         var useReservedStock = reader.FieldCount > 10 && !reader.IsDBNull(10) && reader.GetBoolean(10);
-        var markingStatus = reader.FieldCount > 11 ? MarkingStatusMapper.FromString(reader.IsDBNull(11) ? null : reader.GetString(11)) : MarkingStatus.NotRequired;
+        var rawMarkingStatus = reader.FieldCount > 11 && !reader.IsDBNull(11) ? reader.GetString(11) : null;
+        var markingStatus = MarkingStatusMapper.FromString(rawMarkingStatus);
         var markingExcelGeneratedAt = reader.FieldCount > 12 ? FromDbDate(reader.IsDBNull(12) ? null : reader.GetString(12)) : null;
         var markingPrintedAt = reader.FieldCount > 13 ? FromDbDate(reader.IsDBNull(13) ? null : reader.GetString(13)) : null;
         var markingRequired = reader.FieldCount > 14 && !reader.IsDBNull(14) && reader.GetBoolean(14);
@@ -3328,6 +3329,7 @@ RETURNING id;
             PartnerCode = partnerCode,
             UseReservedStock = useReservedStock,
             MarkingStatus = markingStatus,
+            IsLegacyExcelGeneratedMarkingStatus = string.Equals(rawMarkingStatus, "EXCEL_GENERATED", StringComparison.OrdinalIgnoreCase),
             MarkingRequired = markingRequired,
             MarkingExcelGeneratedAt = markingExcelGeneratedAt,
             MarkingPrintedAt = markingPrintedAt
