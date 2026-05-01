@@ -7,10 +7,13 @@ namespace FlowStock.Server.Tests.Marking;
 public sealed class OrderApiMapperTests
 {
     [Theory]
-    [InlineData(MarkingStatus.NotRequired, true, "REQUIRED", "Требуется файл ЧЗ")]
-    [InlineData(MarkingStatus.Printed, false, "PRINTED", "ЧЗ готов к нанесению")]
-    [InlineData(MarkingStatus.NotRequired, false, "NOT_REQUIRED", "Маркировка не требуется")]
+    [InlineData(OrderStatus.InProgress, MarkingStatus.Printed, false, "PRINTED", "ЧЗ готов к нанесению")]
+    [InlineData(OrderStatus.InProgress, MarkingStatus.NotRequired, true, "REQUIRED", "Требуется файл ЧЗ")]
+    [InlineData(OrderStatus.InProgress, MarkingStatus.NotRequired, false, "NOT_REQUIRED", "Маркировка не требуется")]
+    [InlineData(OrderStatus.Cancelled, MarkingStatus.NotRequired, true, "NOT_REQUIRED", "Маркировка не требуется")]
+    [InlineData(OrderStatus.Cancelled, MarkingStatus.Printed, true, "PRINTED", "ЧЗ готов к нанесению")]
     public void MapOrder_ReturnsEffectiveMarkingStatusForOrderApi(
+        OrderStatus orderStatus,
         MarkingStatus storedStatus,
         bool markingRequired,
         string expectedStatus,
@@ -21,7 +24,7 @@ public sealed class OrderApiMapperTests
             Id = 1,
             OrderRef = "CO-1",
             Type = OrderType.Customer,
-            Status = OrderStatus.InProgress,
+            Status = orderStatus,
             CreatedAt = new DateTime(2026, 4, 30, 10, 0, 0, DateTimeKind.Utc),
             MarkingStatus = storedStatus,
             MarkingRequired = markingRequired

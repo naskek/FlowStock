@@ -42,17 +42,7 @@ public static class MarkingStatusMapper
 
     public static MarkingStatus ToEffectiveStatus(MarkingStatus storedStatus, bool markingRequired)
     {
-        if (storedStatus == MarkingStatus.Printed)
-        {
-            return storedStatus;
-        }
-
-        if (!markingRequired)
-        {
-            return MarkingStatus.NotRequired;
-        }
-
-        return MarkingStatus.Required;
+        return MarkingStatusResolver.Resolve(storedStatus, markingRequired, OrderStatus.InProgress);
     }
 
     public static string ToShortDisplayName(MarkingStatus status)

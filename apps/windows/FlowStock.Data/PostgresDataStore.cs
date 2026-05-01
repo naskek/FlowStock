@@ -39,7 +39,7 @@ SELECT o.id,
 FROM orders o
 LEFT JOIN partners p ON p.id = o.partner_id
 LEFT JOIN LATERAL (
-    SELECT EXISTS (
+    SELECT o.status <> 'CANCELLED' AND EXISTS (
         SELECT 1
         FROM order_lines ol
         INNER JOIN items i ON i.id = ol.item_id

@@ -22,7 +22,7 @@ public sealed class Order
 
     public string TypeDisplay => OrderStatusMapper.TypeToDisplayName(Type);
     public string StatusDisplay => OrderStatusMapper.StatusToDisplayName(Status, Type);
-    public MarkingStatus EffectiveMarkingStatus => MarkingStatusMapper.ToEffectiveStatus(MarkingStatus, MarkingRequired);
+    public MarkingStatus EffectiveMarkingStatus => MarkingStatusResolver.Resolve(MarkingStatus, MarkingRequired, Status);
     public string MarkingStatusDisplay => MarkingStatusMapper.ToDisplayName(EffectiveMarkingStatus);
     public string MarkingStatusShortDisplay => MarkingStatusMapper.ToShortDisplayName(EffectiveMarkingStatus);
 
