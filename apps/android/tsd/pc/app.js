@@ -2121,22 +2121,23 @@
   }
 
   function getOrderMarkingPresentation(order) {
-    var effectiveStatus = String(
-      (order && (order.marking_effective_status || order.marking_status)) || ""
-    )
+    var effectiveStatus = String((order && order.marking_effective_status) || "")
       .trim()
       .toUpperCase();
-    var markingRequired = order && order.marking_required === true;
+    if (effectiveStatus === "EXCEL_GENERATED") {
+      effectiveStatus = "PRINTED";
+    }
+    var display = String((order && order.marking_status_display) || "").trim();
 
     if (effectiveStatus === "PRINTED") {
       return {
         tone: "success",
         icon: "✓",
-        title: "ЧЗ готов к нанесению",
+        title: display || "ЧЗ готов к нанесению",
       };
     }
 
-    if (markingRequired || effectiveStatus === "REQUIRED") {
+    if (effectiveStatus === "REQUIRED") {
       return {
         tone: "warning",
         icon: "!",
@@ -2147,7 +2148,7 @@
     return {
       tone: "neutral",
       icon: "•",
-      title: "ЧЗ не требуется",
+      title: display || "Маркировка не требуется",
     };
   }
 
