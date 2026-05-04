@@ -5,6 +5,7 @@ using FlowStock.Core.Models;
 using FlowStock.Core.Models.Marking;
 using FlowStock.Core.Services;
 using Npgsql;
+using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
@@ -39,7 +40,7 @@ SELECT o.id,
 FROM orders o
 LEFT JOIN partners p ON p.id = o.partner_id
 LEFT JOIN LATERAL (
-    SELECT EXISTS (
+    SELECT o.status <> 'CANCELLED' AND EXISTS (
         SELECT 1
         FROM order_lines ol
         INNER JOIN items i ON i.id = ol.item_id
@@ -1413,6 +1414,48 @@ WHERE id = @id;
         });
     }
 
+    public IReadOnlyList<Order> GetOrdersPage(bool includeInternal, string? query, int limit, int offset)
+    {
+        return WithConnection(connection =>
+        {
+            var normalized = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
+            using var command = CreateCommand(connection, $@"
+{OrderSelectBase}
+WHERE (@include_internal OR o.order_type = @customer_order_type)
+  AND (
+      @query IS NULL
+      OR o.order_ref ILIKE @query_pattern
+      OR p.name ILIKE @query_pattern
+      OR p.code ILIKE @query_pattern
+  )
+ORDER BY CASE o.status
+    WHEN 'IN_PROGRESS' THEN 1
+    WHEN 'DRAFT' THEN 1
+    WHEN 'ACCEPTED' THEN 2
+    WHEN 'SHIPPED' THEN 3
+    WHEN 'CANCELLED' THEN 4
+    ELSE 99
+END,
+o.created_at DESC,
+o.id DESC
+LIMIT @limit OFFSET @offset");
+            command.Parameters.AddWithValue("@include_internal", includeInternal);
+            command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+            command.Parameters.Add("@query", NpgsqlDbType.Text).Value = string.IsNullOrWhiteSpace(normalized) ? DBNull.Value : normalized;
+            command.Parameters.Add("@query_pattern", NpgsqlDbType.Text).Value = string.IsNullOrWhiteSpace(normalized) ? DBNull.Value : $"%{normalized}%";
+            command.Parameters.AddWithValue("@limit", limit);
+            command.Parameters.AddWithValue("@offset", offset);
+            using var reader = command.ExecuteReader();
+            var orders = new List<Order>();
+            while (reader.Read())
+            {
+                orders.Add(ReadOrder(reader));
+            }
+
+            return orders;
+        });
+    }
+
     public long AddOrder(Order order)
     {
         return WithConnection(connection =>
@@ -1534,11 +1577,11 @@ FROM orders o
 LEFT JOIN partners p ON p.id = o.partner_id
 LEFT JOIN order_need ON order_need.order_id = o.id
 WHERE COALESCE(order_need.line_count, 0) > 0
-  AND (
+      AND (
       (o.status IN (@in_progress_status, @accepted_status)
-       AND COALESCE(o.marking_status, 'NOT_REQUIRED') NOT IN (@printed_status, @excel_generated_status))
+       AND COALESCE(o.marking_status, 'NOT_REQUIRED') NOT IN (@printed_status, @legacy_excel_generated_status))
       OR (@include_completed = TRUE
-          AND COALESCE(o.marking_status, 'NOT_REQUIRED') IN (@printed_status, @excel_generated_status))
+          AND COALESCE(o.marking_status, 'NOT_REQUIRED') IN (@printed_status, @legacy_excel_generated_status))
   )
 ORDER BY o.due_date NULLS LAST, o.created_at, o.id;
 ");
@@ -1547,7 +1590,7 @@ ORDER BY o.due_date NULLS LAST, o.created_at, o.id;
             command.Parameters.AddWithValue("@in_progress_status", OrderStatusMapper.StatusToString(OrderStatus.InProgress));
             command.Parameters.AddWithValue("@accepted_status", OrderStatusMapper.StatusToString(OrderStatus.Accepted));
             command.Parameters.AddWithValue("@printed_status", MarkingStatusMapper.ToString(MarkingStatus.Printed));
-            command.Parameters.AddWithValue("@excel_generated_status", MarkingStatusMapper.ToString(MarkingStatus.ExcelGenerated));
+            command.Parameters.AddWithValue("@legacy_excel_generated_status", "EXCEL_GENERATED");
             command.Parameters.AddWithValue("@include_completed", includeCompleted);
             using var reader = command.ExecuteReader();
             var rows = new List<MarkingOrderQueueRow>();
@@ -3309,7 +3352,8 @@ RETURNING id;
         var partnerName = reader.IsDBNull(8) ? null : reader.GetString(8);
         var partnerCode = reader.IsDBNull(9) ? null : reader.GetString(9);
         var useReservedStock = reader.FieldCount > 10 && !reader.IsDBNull(10) && reader.GetBoolean(10);
-        var markingStatus = reader.FieldCount > 11 ? MarkingStatusMapper.FromString(reader.IsDBNull(11) ? null : reader.GetString(11)) : MarkingStatus.NotRequired;
+        var rawMarkingStatus = reader.FieldCount > 11 && !reader.IsDBNull(11) ? reader.GetString(11) : null;
+        var markingStatus = MarkingStatusMapper.FromString(rawMarkingStatus);
         var markingExcelGeneratedAt = reader.FieldCount > 12 ? FromDbDate(reader.IsDBNull(12) ? null : reader.GetString(12)) : null;
         var markingPrintedAt = reader.FieldCount > 13 ? FromDbDate(reader.IsDBNull(13) ? null : reader.GetString(13)) : null;
         var markingRequired = reader.FieldCount > 14 && !reader.IsDBNull(14) && reader.GetBoolean(14);
@@ -3328,6 +3372,7 @@ RETURNING id;
             PartnerCode = partnerCode,
             UseReservedStock = useReservedStock,
             MarkingStatus = markingStatus,
+            IsLegacyExcelGeneratedMarkingStatus = string.Equals(rawMarkingStatus, "EXCEL_GENERATED", StringComparison.OrdinalIgnoreCase),
             MarkingRequired = markingRequired,
             MarkingExcelGeneratedAt = markingExcelGeneratedAt,
             MarkingPrintedAt = markingPrintedAt

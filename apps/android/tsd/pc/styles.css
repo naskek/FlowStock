@@ -420,6 +420,17 @@ body.pc-body {
   background: #d18414;
 }
 
+.pc-status-badge-neutral {
+  color: #52606d;
+  background: #eef2f5;
+  border: 1px solid #d7e0e7;
+}
+
+.pc-status-badge-neutral .pc-status-badge-icon {
+  color: #ffffff;
+  background: #8a97a3;
+}
+
 .pc-status-badge-completed {
   color: #ffffff;
   background: #1f7a3e;
@@ -438,6 +449,37 @@ body.pc-body {
 .pc-status-badge-inprogress .pc-status-badge-icon {
   color: #ffffff;
   background: #e3982e;
+}
+
+.pc-status-badge-cancelled {
+  color: #52606d;
+  background: #eef2f5;
+  border: 1px solid #d7e0e7;
+}
+
+.pc-status-badge-cancelled .pc-status-badge-icon {
+  color: #ffffff;
+  background: #8a97a3;
+}
+
+.pc-order-marking-cell {
+  text-align: left;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.pc-marking-badge {
+  max-width: 180px;
+}
+
+.pc-load-more-row {
+  display: flex;
+  justify-content: center;
+  margin-top: 14px;
+}
+
+.pc-load-more-row[hidden] {
+  display: none;
 }
 
 .pc-login-card {

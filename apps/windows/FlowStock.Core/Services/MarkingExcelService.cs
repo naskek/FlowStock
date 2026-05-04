@@ -91,9 +91,10 @@ public sealed class MarkingExcelService
 
     private static MarkingOrderQueueRow NormalizeQueueRow(MarkingOrderQueueRow row)
     {
-        var status = row.MarkingStatus == MarkingStatus.NotRequired && row.MarkingLineCount > 0
-            ? MarkingStatus.Required
-            : row.MarkingStatus;
+        var status = MarkingStatusResolver.Resolve(
+            row.MarkingStatus,
+            row.MarkingLineCount > 0,
+            row.OrderStatus);
         return new MarkingOrderQueueRow
         {
             OrderId = row.OrderId,

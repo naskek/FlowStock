@@ -13,9 +13,8 @@ public sealed class SimpleMarkingExcelServiceTests
     [InlineData(false, MarkingStatus.NotRequired, "Не требуется")]
     [InlineData(true, MarkingStatus.NotRequired, "Требуется")]
     [InlineData(true, MarkingStatus.Required, "Требуется")]
-    [InlineData(true, MarkingStatus.ExcelGenerated, "Файл сформирован")]
-    [InlineData(true, MarkingStatus.Printed, "Проведена")]
-    [InlineData(false, MarkingStatus.Printed, "Не требуется")]
+    [InlineData(true, MarkingStatus.Printed, "Готов к нанесению")]
+    [InlineData(false, MarkingStatus.Printed, "Готов к нанесению")]
     public void OrderList_UsesEffectiveShortMarkingStatusLabels(bool markingRequired, MarkingStatus status, string expected)
     {
         var order = new Order
@@ -29,7 +28,7 @@ public sealed class SimpleMarkingExcelServiceTests
 
     [Theory]
     [InlineData(true, "04601234567890", true, MarkingStatus.NotRequired, "Требуется файл ЧЗ")]
-    [InlineData(true, "04601234567890", true, MarkingStatus.Printed, "Маркировка проведена")]
+    [InlineData(true, "04601234567890", true, MarkingStatus.Printed, "ЧЗ готов к нанесению")]
     [InlineData(true, "", false, MarkingStatus.NotRequired, "Маркировка не требуется")]
     [InlineData(false, "04601234567890", false, MarkingStatus.NotRequired, "Маркировка не требуется")]
     public void OrderLabel_UsesMarkableOrderLinesRequirement(
@@ -51,6 +50,14 @@ public sealed class SimpleMarkingExcelServiceTests
         };
 
         Assert.Equal(expected, order.MarkingStatusDisplay);
+    }
+
+    [Fact]
+    public void LegacyExcelGeneratedRawStatus_ParsesAsPrinted()
+    {
+        Assert.Equal(MarkingStatus.Printed, MarkingStatusMapper.FromString("EXCEL_GENERATED"));
+        Assert.Equal("PRINTED", MarkingStatusMapper.ToString(MarkingStatusMapper.FromString("EXCEL_GENERATED")));
+        Assert.Equal("ЧЗ готов к нанесению", MarkingStatusMapper.ToDisplayName(MarkingStatusMapper.FromString("EXCEL_GENERATED")));
     }
 
     [Fact]
@@ -263,6 +270,61 @@ public sealed class SimpleMarkingExcelServiceTests
         var row = Assert.Single(new MarkingExcelService(store.Object).GetOrderQueue(includeCompleted: false));
 
         Assert.Equal(MarkingStatus.Required, row.MarkingStatus);
+    }
+
+    [Fact]
+    public void Queue_UsesSameDisplayLabelAsOrderApiForRequiredStatus()
+    {
+        var store = CreateStore();
+        store.Setup(s => s.GetMarkingOrderQueue(false))
+            .Returns(new[]
+            {
+                new MarkingOrderQueueRow
+                {
+                    OrderId = 1,
+                    OrderRef = "38",
+                    OrderStatus = OrderStatus.InProgress,
+                    MarkingStatus = MarkingStatus.NotRequired,
+                    MarkingLineCount = 1,
+                    MarkingCodeCount = 2
+                }
+            });
+
+        var queueRow = Assert.Single(new MarkingExcelService(store.Object).GetOrderQueue(includeCompleted: false));
+        var order = new Order
+        {
+            Id = queueRow.OrderId,
+            OrderRef = queueRow.OrderRef,
+            Status = queueRow.OrderStatus,
+            MarkingStatus = MarkingStatus.NotRequired,
+            MarkingRequired = true,
+            CreatedAt = new DateTime(2026, 4, 30, 10, 0, 0, DateTimeKind.Utc)
+        };
+
+        Assert.Equal(order.MarkingStatusDisplay, MarkingStatusMapper.ToDisplayName(queueRow.MarkingStatus));
+    }
+
+    [Fact]
+    public void Queue_KeepsPrintedPriorityWhenCurrentNeedIsZero()
+    {
+        var store = CreateStore();
+        store.Setup(s => s.GetMarkingOrderQueue(true))
+            .Returns(new[]
+            {
+                new MarkingOrderQueueRow
+                {
+                    OrderId = 1,
+                    OrderRef = "38",
+                    OrderStatus = OrderStatus.Shipped,
+                    MarkingStatus = MarkingStatus.Printed,
+                    MarkingLineCount = 0
+                }
+            });
+
+        var row = Assert.Single(new MarkingExcelService(store.Object).GetOrderQueue(includeCompleted: true));
+
+        Assert.Equal(MarkingStatus.Printed, row.MarkingStatus);
+        Assert.Equal("ЧЗ готов к нанесению", MarkingStatusMapper.ToDisplayName(row.MarkingStatus));
     }
 
     [Fact]

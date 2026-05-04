@@ -16,6 +16,8 @@
   var liveRefreshTimerId = 0;
   var LIVE_RECONNECT_DELAY_MS = 2500;
   var LIVE_REFRESH_DEBOUNCE_MS = 300;
+  var ORDERS_PAGE_SIZE = 20;
+  var ORDERS_FETCH_LIMIT = ORDERS_PAGE_SIZE + 1;
   var activeLiveRefreshHandler = null;
   var tableSortState = {
     stock: { key: "", direction: "asc" },
@@ -1598,6 +1600,9 @@
       '    <div id="ordersStatus" class="pc-status"></div>' +
       "  </div>" +
       '  <div id="ordersTableWrap"></div>' +
+      '  <div class="pc-load-more-row">' +
+      '    <button id="ordersLoadMoreBtn" class="btn btn-outline" type="button">Загрузить еще</button>' +
+      "  </div>" +
       "</section>"
     );
   }
@@ -1638,6 +1643,9 @@
           "<td>" +
           getOrderStatusHtml(order) +
           "</td>" +
+          '<td class="pc-order-marking-cell">' +
+          renderOrderMarkingIndicator(order) +
+          "</td>" +
           "</tr>"
         );
       })
@@ -1651,6 +1659,7 @@
       renderSortableHeader("orders", "dueDate", "План") +
       renderSortableHeader("orders", "shippedAt", "Факт") +
       renderSortableHeader("orders", "status", "Статус") +
+      "<th>ЧЗ</th>" +
       "</tr></thead>" +
       "<tbody>" +
       body +
@@ -1659,13 +1668,29 @@
     );
   }
 
-  function loadOrders(query) {
+  function buildOrdersUrl(query, limit, offset) {
     var q = String(query || "").trim();
-    var url = "/api/orders?include_internal=1&include_pending_requests=1";
+    var url =
+      "/api/orders?include_internal=1&include_pending_requests=1&limit=" +
+      encodeURIComponent(String(limit)) +
+      "&offset=" +
+      encodeURIComponent(String(offset));
     if (q) {
       url += "&q=" + encodeURIComponent(q);
     }
-    return fetchJson(url);
+    return url;
+  }
+
+  function trimOrdersPage(rows) {
+    var source = Array.isArray(rows) ? rows : [];
+    return {
+      rows: source.slice(0, ORDERS_PAGE_SIZE),
+      hasMore: source.length > ORDERS_PAGE_SIZE,
+    };
+  }
+
+  function loadOrders(query, offset) {
+    return fetchJson(buildOrdersUrl(query, ORDERS_FETCH_LIMIT, offset || 0)).then(trimOrdersPage);
   }
 
   function loadOrderReferenceData() {
@@ -1695,6 +1720,9 @@
     }
     if (normalized === "завершен") {
       return "SHIPPED";
+    }
+    if (normalized === "отменен" || normalized === "отменён" || normalized === "cancelled" || normalized === "canceled") {
+      return "CANCELLED";
     }
     return "";
   }
@@ -1998,15 +2026,47 @@
       return { label: "Ожидает подтверждения", tone: "warning" };
     }
 
-    var statusCode = toOrderStatusCode(order && order.status);
+    var statusCode = getOrderStatusCode(order);
+    var label = getOrderStatusDisplay(order, statusCode);
     if (statusCode === "SHIPPED") {
-      return { label: "Выполнен", tone: "completed" };
+      return { label: label, tone: "completed" };
     }
     if (statusCode === "ACCEPTED") {
-      return { label: "Готов", tone: "ready" };
+      return { label: label, tone: "ready" };
+    }
+    if (statusCode === "CANCELLED") {
+      return { label: label, tone: "cancelled" };
     }
 
-    return { label: "В работе", tone: "inprogress" };
+    return { label: label || "В работе", tone: "inprogress" };
+  }
+
+  function getOrderStatusCode(order) {
+    var raw = String((order && order.order_status) || "").trim().toUpperCase();
+    if (raw === "CANCELED") {
+      return "CANCELLED";
+    }
+    if (raw === "DRAFT" || raw === "ACCEPTED" || raw === "IN_PROGRESS" || raw === "SHIPPED" || raw === "CANCELLED") {
+      return raw;
+    }
+    return toOrderStatusCode(order && order.status);
+  }
+
+  function getOrderStatusDisplay(order, statusCode) {
+    var label = String((order && (order.status || order.order_status_display)) || "").trim();
+    if (!label || label.toUpperCase() === statusCode) {
+      if (statusCode === "SHIPPED") {
+        return "Выполнен";
+      }
+      if (statusCode === "ACCEPTED") {
+        return "Готов";
+      }
+      if (statusCode === "CANCELLED") {
+        return "Отменён";
+      }
+      return "В работе";
+    }
+    return label;
   }
 
   function formatQuantity(value) {
@@ -2022,11 +2082,11 @@
   }
 
   function isShippedOrder(order) {
-    return toOrderStatusCode(order && order.status) === "SHIPPED";
+    return getOrderStatusCode(order) === "SHIPPED";
   }
 
   function isActiveShipmentOrder(order) {
-    var status = toOrderStatusCode(order && order.status);
+    var status = getOrderStatusCode(order);
     return (
       order &&
       !order.is_pending_confirmation &&
@@ -2116,6 +2176,45 @@
     return renderStatusBadge(status.label, status.tone);
   }
 
+  function getOrderMarkingPresentation(order) {
+    var rawEffectiveStatus = String((order && order.marking_effective_status) || "")
+      .trim()
+      .toUpperCase();
+    var effectiveStatus = rawEffectiveStatus;
+    var legacyExcelGenerated = effectiveStatus === "EXCEL_GENERATED";
+    if (effectiveStatus === "EXCEL_GENERATED") {
+      effectiveStatus = "PRINTED";
+    }
+    var display = String((order && order.marking_status_display) || "").trim();
+
+    if (effectiveStatus === "PRINTED") {
+      return {
+        tone: "success",
+        label: legacyExcelGenerated ? "ЧЗ готов к нанесению" : display || "ЧЗ готов к нанесению",
+        title: display || "ЧЗ готов к нанесению",
+      };
+    }
+
+    if (effectiveStatus === "REQUIRED") {
+      return {
+        tone: "warning",
+        label: "Требуется ЧЗ",
+        title: display || "Требуется ЧЗ",
+      };
+    }
+
+    return {
+      tone: "neutral",
+      label: display || "Маркировка не требуется",
+      title: display || "Маркировка не требуется",
+    };
+  }
+
+  function renderOrderMarkingIndicator(order) {
+    var marking = getOrderMarkingPresentation(order);
+    return renderStatusBadge(marking.label, marking.tone, "pc-marking-badge", marking.title);
+  }
+
   function renderReadinessBadge(readiness) {
     if (!readiness || !readiness.text) {
       return "";
@@ -2131,7 +2230,7 @@
         return 0; // Ожидает подтверждения
       }
 
-      var statusCode = toOrderStatusCode(order && order.status);
+      var statusCode = getOrderStatusCode(order);
       if (statusCode === "IN_PROGRESS") {
         return 1; // В работе
       }
@@ -2140,6 +2239,9 @@
       }
       if (statusCode === "SHIPPED") {
         return 3; // Выполнен
+      }
+      if (statusCode === "CANCELLED") {
+        return 4; // Отменен
       }
       return 99; // Неизвестные/старые статусы
     }
@@ -2177,7 +2279,7 @@
       });
   }
 
-  function renderStatusBadge(text, tone, extraClass) {
+  function renderStatusBadge(text, tone, extraClass, title) {
     var normalizedTone = tone || "neutral";
     var icon = "•";
     if (normalizedTone === "success" || normalizedTone === "ready") {
@@ -2188,22 +2290,30 @@
       icon = "✓";
     } else if (normalizedTone === "inprogress") {
       icon = "•";
+    } else if (normalizedTone === "cancelled") {
+      icon = "×";
     }
 
     var className = "pc-status-badge pc-status-badge-" + normalizedTone;
     if (extraClass) {
       className += " " + extraClass;
     }
+    var label = text || "-";
+    var tooltip = title || label;
 
     return (
       '<span class="' +
       className +
+      '" title="' +
+      escapeHtml(tooltip) +
+      '" aria-label="' +
+      escapeHtml(tooltip) +
       '">' +
       '<span class="pc-status-badge-icon" aria-hidden="true">' +
       escapeHtml(icon) +
       "</span>" +
       "<span>" +
-      escapeHtml(text || "-") +
+      escapeHtml(label) +
       "</span>" +
       "</span>"
     );
@@ -3468,8 +3578,13 @@
     var tableWrap = document.getElementById("ordersTableWrap");
     var newBtn = document.getElementById("ordersNewBtn");
     var refreshBtn = document.getElementById("ordersRefreshBtn");
+    var loadMoreBtn = document.getElementById("ordersLoadMoreBtn");
     var debounce = null;
     var currentRows = [];
+    var currentQuery = "";
+    var ordersHasMore = false;
+    var ordersLoading = false;
+    var ordersLoadingMore = false;
 
     function setStatus(text) {
       if (statusEl) {
@@ -3513,12 +3628,27 @@
       });
     }
 
+    function updateLoadMoreButton() {
+      if (!loadMoreBtn) {
+        return;
+      }
+      loadMoreBtn.hidden = !ordersHasMore && !ordersLoadingMore;
+      loadMoreBtn.disabled = ordersLoading || ordersLoadingMore;
+      loadMoreBtn.textContent = ordersLoadingMore ? "Загрузка..." : "Загрузить еще";
+    }
+
     function runSearch() {
-      var query = searchInput ? searchInput.value.trim() : "";
+      currentQuery = searchInput ? searchInput.value.trim() : "";
+      currentRows = [];
+      ordersHasMore = false;
+      ordersLoading = true;
+      ordersLoadingMore = false;
+      updateLoadMoreButton();
       setStatus("Загрузка...");
-      loadOrders(query)
-        .then(function (rows) {
-          var source = sortOrdersNewestFirst(rows);
+      loadOrders(currentQuery, 0)
+        .then(function (page) {
+          ordersHasMore = page.hasMore;
+          var source = sortOrdersNewestFirst(page.rows);
           renderTable(source);
           if (!source.length) {
             setStatus("Заказов нет");
@@ -3532,8 +3662,54 @@
           });
         })
         .catch(function () {
+          ordersHasMore = false;
           renderTable([]);
           setStatus("Ошибка загрузки заказов");
+        })
+        .finally(function () {
+          ordersLoading = false;
+          updateLoadMoreButton();
+        });
+    }
+
+    function loadMoreOrders() {
+      if (ordersLoading || ordersLoadingMore || !ordersHasMore) {
+        return;
+      }
+
+      ordersLoadingMore = true;
+      updateLoadMoreButton();
+      setStatus("Загрузка...");
+      loadOrders(currentQuery, currentRows.length)
+        .then(function (page) {
+          ordersHasMore = page.hasMore;
+          var appendedRows = currentRows.concat(page.rows);
+          renderTable(sortOrdersNewestFirst(appendedRows));
+          setStatus(page.rows.length ? "Данные с сервера" : "Больше заказов нет");
+          if (!page.rows.length) {
+            ordersHasMore = false;
+          }
+          return enrichOrdersWithReadiness(page.rows).then(function (enrichedRows) {
+            if (!enrichedRows.length) {
+              return appendedRows;
+            }
+            var enrichedById = {};
+            enrichedRows.forEach(function (row) {
+              enrichedById[String(row.id)] = row;
+            });
+            var mergedRows = currentRows.map(function (row) {
+              return enrichedById[String(row.id)] || row;
+            });
+            renderTable(sortOrdersNewestFirst(mergedRows));
+            return mergedRows;
+          });
+        })
+        .catch(function () {
+          setStatus("Ошибка загрузки заказов");
+        })
+        .finally(function () {
+          ordersLoadingMore = false;
+          updateLoadMoreButton();
         });
     }
 
@@ -3555,8 +3731,12 @@
     if (refreshBtn) {
       refreshBtn.addEventListener("click", runSearch);
     }
+    if (loadMoreBtn) {
+      loadMoreBtn.addEventListener("click", loadMoreOrders);
+    }
 
     setActiveLiveRefreshHandler(runSearch);
+    updateLoadMoreButton();
     runSearch();
   }
 
@@ -3641,6 +3821,15 @@
       currentView = resolveAllowedView(currentView) || getDefaultView();
       renderView(currentView);
     });
+  }
+
+  if (window.FlowStockPcTestHooks) {
+    window.FlowStockPcTestHooks.getOrderStatusPresentation = getOrderStatusPresentation;
+    window.FlowStockPcTestHooks.getOrderMarkingPresentation = getOrderMarkingPresentation;
+    window.FlowStockPcTestHooks.renderOrderMarkingIndicator = renderOrderMarkingIndicator;
+    window.FlowStockPcTestHooks.buildOrdersUrl = buildOrdersUrl;
+    window.FlowStockPcTestHooks.trimOrdersPage = trimOrdersPage;
+    return;
   }
 
   tabs.forEach(function (tab) {

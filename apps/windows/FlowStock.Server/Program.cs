@@ -1865,7 +1865,7 @@ app.MapPost("/api/docs/{docId:long}/lines/{lineId:long}/pack-single-hu", async (
     return Results.Ok(new ApiResult(true));
 });
 
-app.MapGet("/api/orders", (HttpRequest request, IDataStore store, MarkingExcelService marking) =>
+app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>
 {
     var query = request.Query["q"].ToString();
     var normalized = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
@@ -1873,8 +1873,33 @@ app.MapGet("/api/orders", (HttpRequest request, IDataStore store, MarkingExcelSe
                           || string.Equals(request.Query["include_internal"], "true", StringComparison.OrdinalIgnoreCase);
     var includePendingRequests = string.Equals(request.Query["include_pending_requests"], "1", StringComparison.OrdinalIgnoreCase)
                                  || string.Equals(request.Query["include_pending_requests"], "true", StringComparison.OrdinalIgnoreCase);
+    var limit = TryReadNonNegativeInt(request.Query["limit"]);
+    var offset = TryReadNonNegativeInt(request.Query["offset"]) ?? 0;
 
     var orderService = new OrderService(store);
+    if (limit.HasValue)
+    {
+        var page = new List<object>(limit.Value);
+        var pendingRows = includePendingRequests
+            ? GetPendingCreateOrderRows(store, normalized)
+            : new List<object>();
+
+        if (offset < pendingRows.Count)
+        {
+            page.AddRange(pendingRows.Skip(offset).Take(limit.Value));
+        }
+
+        var remainingLimit = limit.Value - page.Count;
+        if (remainingLimit > 0)
+        {
+            var realOffset = Math.Max(0, offset - pendingRows.Count);
+            page.AddRange(orderService.GetOrdersPage(includeInternal, normalized, remainingLimit, realOffset)
+                .Select(OrderApiMapper.MapOrder));
+        }
+
+        return Results.Ok(page);
+    }
+
     var orders = orderService.GetOrders();
     if (!includeInternal)
     {
@@ -1893,13 +1918,8 @@ app.MapGet("/api/orders", (HttpRequest request, IDataStore store, MarkingExcelSe
             .ToList();
     }
 
-    var markingByOrderId = marking.GetOrderQueue(includeCompleted: true)
-        .ToDictionary(row => row.OrderId);
-
     var list = orders
-        .Select(order => MapOrder(
-            order,
-            markingByOrderId.TryGetValue(order.Id, out var markingRow) ? markingRow : null))
+        .Select(OrderApiMapper.MapOrder)
         .ToList();
     if (includePendingRequests)
     {
@@ -1917,7 +1937,7 @@ app.MapGet("/api/orders/next-ref", (IDataStore store) =>
     });
 });
 
-app.MapGet("/api/orders/{orderId:long}", (long orderId, IDataStore store, MarkingExcelService marking) =>
+app.MapGet("/api/orders/{orderId:long}", (long orderId, IDataStore store) =>
 {
     var orderService = new OrderService(store);
     var order = orderService.GetOrder(orderId);
@@ -1926,10 +1946,7 @@ app.MapGet("/api/orders/{orderId:long}", (long orderId, IDataStore store, Markin
         return Results.NotFound(new ApiResult(false, "ORDER_NOT_FOUND"));
     }
 
-    var markingRow = marking.GetOrderQueue(includeCompleted: true)
-        .FirstOrDefault(row => row.OrderId == order.Id);
-
-    return Results.Ok(MapOrder(order, markingRow));
+    return Results.Ok(OrderApiMapper.MapOrder(order));
 });
 
 app.MapGet("/api/orders/{orderId:long}/lines", (long orderId, IDataStore store) =>
@@ -3001,44 +3018,6 @@ static Item? FindItemByBarcodeVariant(IDataStore store, string barcode)
     return null;
 }
 
-static object MapOrder(Order order, MarkingOrderQueueRow? markingRow = null)
-{
-    var markingStatus = markingRow?.MarkingStatus ?? order.EffectiveMarkingStatus;
-    var markingRequired = markingRow != null
-        ? markingRow.MarkingLineCount > 0
-        : order.MarkingRequired;
-    var markingStatusDisplay = markingRow != null
-        ? MarkingStatusMapper.ToDisplayName(markingStatus)
-        : order.MarkingStatusDisplay;
-
-    var markingExcelGeneratedAt = markingRow?.LastGeneratedAt ?? order.MarkingExcelGeneratedAt;
-    var markingPrintedAt = markingStatus == MarkingStatus.Printed
-        ? markingRow?.LastGeneratedAt ?? order.MarkingPrintedAt
-        : order.MarkingPrintedAt;
-
-    return new
-    {
-        id = order.Id,
-        order_ref = order.OrderRef,
-        order_type = OrderStatusMapper.TypeToString(order.Type),
-        partner_id = order.PartnerId,
-        partner_name = order.PartnerName,
-        partner_code = order.PartnerCode,
-        due_date = order.DueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-        status = OrderStatusMapper.StatusToDisplayName(order.Status, order.Type),
-        comment = order.Comment,
-        bind_reserved_stock = order.UseReservedStock,
-        marking_status = MarkingStatusMapper.ToString(markingStatus),
-        marking_required = markingRequired,
-        marking_effective_status = MarkingStatusMapper.ToString(markingStatus),
-        marking_status_display = markingStatusDisplay,
-        marking_status_label = markingStatusDisplay,
-        marking_excel_generated_at = markingExcelGeneratedAt?.ToString("O", CultureInfo.InvariantCulture),
-        marking_printed_at = markingPrintedAt?.ToString("O", CultureInfo.InvariantCulture),
-        created_at = order.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
-        shipped_at = order.ShippedAt?.ToString("O", CultureInfo.InvariantCulture)
-    };
-}
 static object MapItem(Item item)
 {
     return new
@@ -3196,6 +3175,21 @@ static List<object> GetPendingCreateOrderRows(IDataStore store, string? normaliz
     }
 
     return rows;
+}
+
+static int? TryReadNonNegativeInt(string? raw)
+{
+    if (string.IsNullOrWhiteSpace(raw))
+    {
+        return null;
+    }
+
+    if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) || value < 0)
+    {
+        return null;
+    }
+
+    return value;
 }
 
 static List<object> TryReadPendingCreateOrderLines(IDataStore store, string json)

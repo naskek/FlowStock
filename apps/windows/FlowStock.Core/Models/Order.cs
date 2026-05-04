@@ -15,13 +15,14 @@ public sealed class Order
     public string? PartnerCode { get; init; }
     public bool UseReservedStock { get; init; }
     public MarkingStatus MarkingStatus { get; init; } = MarkingStatus.NotRequired;
+    public bool IsLegacyExcelGeneratedMarkingStatus { get; init; }
     public bool MarkingRequired { get; init; }
     public DateTime? MarkingExcelGeneratedAt { get; init; }
     public DateTime? MarkingPrintedAt { get; init; }
 
     public string TypeDisplay => OrderStatusMapper.TypeToDisplayName(Type);
     public string StatusDisplay => OrderStatusMapper.StatusToDisplayName(Status, Type);
-    public MarkingStatus EffectiveMarkingStatus => MarkingStatusMapper.ToEffectiveStatus(MarkingStatus, MarkingRequired);
+    public MarkingStatus EffectiveMarkingStatus => MarkingStatusResolver.Resolve(MarkingStatus, MarkingRequired, Status);
     public string MarkingStatusDisplay => MarkingStatusMapper.ToDisplayName(EffectiveMarkingStatus);
     public string MarkingStatusShortDisplay => MarkingStatusMapper.ToShortDisplayName(EffectiveMarkingStatus);
 

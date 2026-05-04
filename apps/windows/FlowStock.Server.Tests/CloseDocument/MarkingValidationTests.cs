@@ -42,7 +42,6 @@ public sealed class MarkingValidationTests
 
     [Theory]
     [InlineData(MarkingStatus.Required)]
-    [InlineData(MarkingStatus.ExcelGenerated)]
     [InlineData(MarkingStatus.NotRequired)]
     public void ProductionReceiptWithMarkableItems_RejectsUntilOrderMarkingPrinted(MarkingStatus markingStatus)
     {
