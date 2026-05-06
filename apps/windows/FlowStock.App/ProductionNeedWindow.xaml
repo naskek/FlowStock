@@ -10,7 +10,7 @@
     <DockPanel Margin="12">
         <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,10">
             <CheckBox x:Name="ShowAllRowsCheckBox"
-                      Content="Показать все строки"
+                      Content="Показать все даты и строки"
                       VerticalAlignment="Center"
                       Checked="ShowAllRowsCheckBox_Changed"
                       Unchecked="ShowAllRowsCheckBox_Changed" />
@@ -32,15 +32,43 @@
                   SelectionMode="Single"
                   HeadersVisibility="Column"
                   GridLinesVisibility="Horizontal">
+            <DataGrid.GroupStyle>
+                <GroupStyle>
+                    <GroupStyle.ContainerStyle>
+                        <Style TargetType="{x:Type GroupItem}">
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="{x:Type GroupItem}">
+                                        <Expander IsExpanded="True" Margin="0,2,0,2">
+                                            <Expander.Header>
+                                                <TextBlock Text="{Binding Name}"
+                                                           FontWeight="SemiBold"
+                                                           Foreground="#1F3C4D" />
+                                            </Expander.Header>
+                                            <ItemsPresenter />
+                                        </Expander>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </GroupStyle.ContainerStyle>
+                </GroupStyle>
+            </DataGrid.GroupStyle>
             <DataGrid.Columns>
-                <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="Auto" />
-                <DataGridTextColumn Header="Наименование" Binding="{Binding ItemName}" Width="Auto" />
-                <DataGridTextColumn Header="На складе" Binding="{Binding PhysicalStockQty, StringFormat={}{0:0.###}}" Width="120" />
-                <DataGridTextColumn Header="В заказах" Binding="{Binding ActiveCustomerOrderOpenQty, StringFormat={}{0:0.###}}" Width="120" />
-                <DataGridTextColumn Header="Зарезервировано" Binding="{Binding ReservedCustomerOrderQty, StringFormat={}{0:0.###}}" Width="130" />
-                <DataGridTextColumn Header="Свободный остаток" Binding="{Binding FreeStockQty, StringFormat={}{0:0.###}}" Width="130" />
-                <DataGridTextColumn Header="Мин. остаток" Binding="{Binding MinStockQty, StringFormat={}{0:0.###}}" Width="120" />
-                <DataGridTextColumn Header="Необходимо произвести" Binding="{Binding ProductionNeedQty, StringFormat={}{0:0.###}}" Width="160">
+                <DataGridTemplateColumn Header="Номенклатура" Width="*">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <StackPanel Margin="0,2,0,2">
+                                <TextBlock Text="{Binding ItemName}" TextWrapping="Wrap" />
+                                <TextBlock Text="{Binding Gtin}" Foreground="#667784" FontSize="11" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTextColumn Header="Остаток" Binding="{Binding StockDisplay}" Width="120" />
+                <DataGridTextColumn Header="До закрытия заказов" Binding="{Binding ToCloseOrdersQty, StringFormat={}{0:0.###}}" Width="150" />
+                <DataGridTextColumn Header="На склад до мин." Binding="{Binding ToMinStockQty, StringFormat={}{0:0.###}}" Width="140" />
+                <DataGridTextColumn Header="Всего сформировать" Binding="{Binding TotalToMakeQty, StringFormat={}{0:0.###}}" Width="150">
                     <DataGridTextColumn.ElementStyle>
                         <Style TargetType="TextBlock">
                             <Setter Property="FontWeight" Value="Bold" />

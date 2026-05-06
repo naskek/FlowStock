@@ -23,7 +23,7 @@
     stock: { key: "", direction: "asc" },
     catalog: { key: "", direction: "asc" },
     orders: { key: "", direction: "asc" },
-    productionNeed: { key: "productionNeedQty", direction: "desc" },
+    productionNeed: { key: "", direction: "asc" },
   };
   var cachedItems = [];
   var cachedItemsById = {};
@@ -315,6 +315,19 @@
       pad2(date.getMonth() + 1) +
       "." +
       date.getFullYear()
+    );
+  }
+
+  function getLocalIsoDate(date) {
+    if (!date || isNaN(date.getTime())) {
+      return "";
+    }
+    return (
+      date.getFullYear() +
+      "-" +
+      pad2(date.getMonth() + 1) +
+      "-" +
+      pad2(date.getDate())
     );
   }
 
@@ -768,7 +781,7 @@
       '  <div class="pc-toolbar">' +
       '    <label class="pc-check-inline">' +
       '      <input id="productionNeedShowAll" type="checkbox" />' +
-      "      <span>Показать все</span>" +
+      "      <span>Показать все даты и строки</span>" +
       "    </label>" +
       '    <div class="pc-toolbar-actions">' +
       '      <button id="productionNeedRefreshBtn" class="btn btn-outline" type="button">Обновить</button>' +
@@ -782,16 +795,16 @@
 
   function mapProductionNeedRow(row) {
     return {
+      needDate: String((row && row.need_date) || ""),
       itemId: Number(row && row.item_id) || 0,
       gtin: String((row && row.gtin) || ""),
       itemName: String((row && row.item_name) || ""),
-      itemType: String((row && (row.item_type || row.item_type_name)) || ""),
-      physicalStockQty: Number(row && row.physical_stock_qty) || 0,
-      activeCustomerOrderOpenQty: Number(row && row.active_customer_order_open_qty) || 0,
-      reservedCustomerOrderQty: Number(row && row.reserved_customer_order_qty) || 0,
+      itemType: String((row && (row.item_type || row.item_type_name)) || "Без типа"),
       freeStockQty: Number(row && row.free_stock_qty) || 0,
       minStockQty: Number(row && row.min_stock_qty) || 0,
-      productionNeedQty: Number(row && row.production_need_qty) || 0,
+      toCloseOrdersQty: Number(row && row.to_close_orders_qty) || 0,
+      toMinStockQty: Number(row && row.to_min_stock_qty) || 0,
+      totalToMakeQty: Number(row && row.total_to_make_qty) || 0,
     };
   }
 
@@ -800,51 +813,64 @@
       return '<div class="empty-state">Потребности производства нет.</div>';
     }
 
-    var body = rows
-      .map(function (row) {
-        return (
-          "<tr>" +
-          "<td>" +
-          escapeHtml(row.gtin || "-") +
-          "</td>" +
-          "<td>" +
-          escapeHtml(row.itemName || "-") +
-          "</td>" +
-          '<td class="pc-num"><span class="pc-qty">' +
-          escapeHtml(formatReportQty(row.physicalStockQty)) +
-          "</span></td>" +
-          '<td class="pc-num">' +
-          escapeHtml(formatReportQty(row.activeCustomerOrderOpenQty)) +
-          "</td>" +
-          '<td class="pc-num">' +
-          escapeHtml(formatReportQty(row.reservedCustomerOrderQty)) +
-          "</td>" +
-          '<td class="pc-num">' +
-          escapeHtml(formatReportQty(row.freeStockQty)) +
-          "</td>" +
-          '<td class="pc-num">' +
-          escapeHtml(formatReportQty(row.minStockQty)) +
-          "</td>" +
-          '<td class="pc-num"><span class="pc-qty pc-production-need-qty">' +
-          escapeHtml(formatReportQty(row.productionNeedQty)) +
-          "</span></td>" +
-          "</tr>"
-        );
-      })
-      .join("");
+    var body = "";
+    var currentDate = "";
+    var currentType = "";
+    rows.forEach(function (row) {
+      var dateKey = row.needDate || "";
+      var typeKey = row.itemType || "Без типа";
+      if (dateKey !== currentDate) {
+        currentDate = dateKey;
+        currentType = "";
+        body +=
+          '<tr class="pc-production-need-date-row"><td colspan="5">' +
+          escapeHtml(formatDate(dateKey) || dateKey || "Сегодня") +
+          "</td></tr>";
+      }
+      if (typeKey !== currentType) {
+        currentType = typeKey;
+        body +=
+          '<tr class="pc-production-need-type-row"><td colspan="5">' +
+          escapeHtml(typeKey) +
+          "</td></tr>";
+      }
+
+      body +=
+        "<tr>" +
+        "<td>" +
+        '<div class="pc-production-need-item-name">' +
+        escapeHtml(row.itemName || "-") +
+        "</div>" +
+        '<div class="pc-production-need-item-gtin">' +
+        escapeHtml(row.gtin || "-") +
+        "</div>" +
+        "</td>" +
+        '<td class="pc-num">' +
+        escapeHtml(formatReportQty(row.freeStockQty)) +
+        " / " +
+        escapeHtml(formatReportQty(row.minStockQty)) +
+        "</td>" +
+        '<td class="pc-num">' +
+        escapeHtml(formatReportQty(row.toCloseOrdersQty)) +
+        "</td>" +
+        '<td class="pc-num">' +
+        escapeHtml(formatReportQty(row.toMinStockQty)) +
+        "</td>" +
+        '<td class="pc-num"><span class="pc-qty pc-production-need-qty">' +
+        escapeHtml(formatReportQty(row.totalToMakeQty)) +
+        "</span></td>" +
+        "</tr>";
+    });
 
     return (
       '<div class="pc-table-scroll">' +
       '<table class="pc-table pc-production-need-table">' +
       "<thead><tr>" +
-      renderSortableHeader("productionNeed", "gtin", "GTIN") +
-      renderSortableHeader("productionNeed", "itemName", "Наименование") +
-      renderSortableHeader("productionNeed", "physicalStockQty", "На складе") +
-      renderSortableHeader("productionNeed", "activeCustomerOrderOpenQty", "В заказах") +
-      renderSortableHeader("productionNeed", "reservedCustomerOrderQty", "Зарезервировано") +
-      renderSortableHeader("productionNeed", "freeStockQty", "Свободно") +
-      renderSortableHeader("productionNeed", "minStockQty", "Мин. остаток") +
-      renderSortableHeader("productionNeed", "productionNeedQty", "Необходимо произвести") +
+      "<th>Номенклатура</th>" +
+      '<th class="pc-num">Остаток</th>' +
+      '<th class="pc-num">До закрытия заказов</th>' +
+      '<th class="pc-num">На склад до мин.</th>' +
+      '<th class="pc-num">Всего сформировать</th>' +
       "</tr></thead>" +
       "<tbody>" +
       body +
@@ -880,26 +906,32 @@
       var rows = Array.isArray(sourceRows) ? sourceRows.slice() : [];
       if (!showAllInput || showAllInput.checked !== true) {
         rows = rows.filter(function (row) {
-          return Number(row.productionNeedQty) > 0;
+          var todayKey = getLocalIsoDate(new Date());
+          return row.needDate === todayKey && Number(row.totalToMakeQty) > 0;
         });
       }
-      rows = sortRows(rows, "productionNeed", {
-        gtin: { type: "text", getValue: function (row) { return row.gtin; } },
-        itemName: { type: "text", getValue: function (row) { return row.itemName; } },
-        physicalStockQty: { type: "number", getValue: function (row) { return row.physicalStockQty; } },
-        activeCustomerOrderOpenQty: { type: "number", getValue: function (row) { return row.activeCustomerOrderOpenQty; } },
-        reservedCustomerOrderQty: { type: "number", getValue: function (row) { return row.reservedCustomerOrderQty; } },
-        freeStockQty: { type: "number", getValue: function (row) { return row.freeStockQty; } },
-        minStockQty: { type: "number", getValue: function (row) { return row.minStockQty; } },
-        productionNeedQty: { type: "number", getValue: function (row) { return row.productionNeedQty; } },
+      rows.sort(function (left, right) {
+        var dateCompare = String(left.needDate || "").localeCompare(String(right.needDate || ""), "ru");
+        if (dateCompare !== 0) {
+          return dateCompare;
+        }
+
+        var typeCompare = String(left.itemType || "").localeCompare(String(right.itemType || ""), "ru");
+        if (typeCompare !== 0) {
+          return typeCompare;
+        }
+
+        var totalCompare = Number(right.totalToMakeQty) - Number(left.totalToMakeQty);
+        if (totalCompare !== 0) {
+          return totalCompare;
+        }
+
+        return String(left.itemName || "").localeCompare(String(right.itemName || ""), "ru");
       });
       if (!tableWrap) {
         return;
       }
       tableWrap.innerHTML = renderProductionNeedTable(rows);
-      bindTableSorting(tableWrap, "productionNeed", function () {
-        renderRows(sourceRows);
-      });
     }
 
     function loadAndRender() {

@@ -682,16 +682,16 @@ public sealed class WpfReadApiService
     {
         return new ProductionNeedRow
         {
+            NeedDate = ReadDateOnly(element, "need_date") ?? DateTime.Today,
             ItemId = ReadInt64(element, "item_id"),
             Gtin = ReadString(element, "gtin"),
             ItemName = ReadString(element, "item_name") ?? string.Empty,
             ItemTypeName = ReadString(element, "item_type"),
-            PhysicalStockQty = ReadDouble(element, "physical_stock_qty"),
-            ActiveCustomerOrderOpenQty = ReadDouble(element, "active_customer_order_open_qty"),
-            ReservedCustomerOrderQty = ReadDouble(element, "reserved_customer_order_qty"),
             FreeStockQty = ReadDouble(element, "free_stock_qty"),
             MinStockQty = ReadDouble(element, "min_stock_qty"),
-            ProductionNeedQty = ReadDouble(element, "production_need_qty")
+            ToCloseOrdersQty = ReadDouble(element, "to_close_orders_qty"),
+            ToMinStockQty = ReadDouble(element, "to_min_stock_qty"),
+            TotalToMakeQty = ReadDouble(element, "total_to_make_qty")
         };
     }
 

@@ -192,11 +192,13 @@
     - если флаг выключен, строки заказа не резервируются из складского остатка.
   - В WPF доступен отдельный read-only отчет `Потребность производства`.
     - Отчет не меняет `ledger`, документы и заказы; это отдельная read-model поверх текущих данных.
-    - `physical_stock_qty` считается из текущего физического остатка `ledger/HU stock`.
-    - `active_customer_order_open_qty` считается по активным `CUSTOMER`-заказам (`status NOT IN (SHIPPED, CANCELLED)`) как сумма `order_lines.qty_ordered - shipped_qty`, где `shipped_qty` определяется только по уже закрытым `OUTBOUND`.
-    - `reserved_customer_order_qty` показывается отдельно по текущим резервам из `order_receipt_plan_lines` и не уменьшает `active_customer_order_open_qty`.
+    - По умолчанию отчет показывает потребность на текущую дату; для заказа используется его `due_date`, а если дата не задана, строка относится к сегодняшнему дню.
+    - `free_stock_qty` считается как свободный остаток после резервов под клиентские заказы: `physical_stock_qty - reserved_customer_order_qty`.
+    - `to_close_orders_qty` считается по активным `CUSTOMER`-заказам (`status NOT IN (SHIPPED, CANCELLED)`) как `max(0, qty_in_accepted_customer_orders - qty_reserved_for_customer_orders)`, где резерв берется из `order_receipt_plan_lines`.
     - `min_stock_qty` учитывается только если у товара/его типа включен контроль минимального остатка; иначе для отчета он считается равным `0`.
-    - `production_need_qty = max(0, active_customer_order_open_qty + min_stock_qty - physical_stock_qty)`.
+    - `to_min_stock_qty = max(0, min_stock_qty - free_stock_qty)`.
+    - `total_to_make_qty = to_close_orders_qty + to_min_stock_qty`.
+    - Строки группируются по `Дата потребности -> Тип товара -> Номенклатура`; если тип не задан, в UI показывается `Без типа`.
   - В WPF при сохранении клиентского заказа подтверждение привязки запрашивается только если по позициям заказа есть остаток на складе.
   - В WPF заказ можно отменить без удаления из истории: сервер ставит `CANCELLED`, очищает резерв заказа в `order_receipt_plan_lines` и пересчитывает резервы остальных активных клиентских заказов. `ledger`, документы и строки документов не изменяются.
   - Автозаполнение PRD из `INTERNAL`-заказа не задает отдельный вопрос про складской остаток и использует уже рассчитанный план заказа (`receipt_remaining?detailed=1` + `to_location/to_hu`).

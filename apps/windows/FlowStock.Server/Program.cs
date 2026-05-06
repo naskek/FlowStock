@@ -3448,16 +3448,16 @@ static object MapProductionNeedRow(ProductionNeedRow row)
 {
     return new
     {
+        need_date = row.NeedDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
         item_id = row.ItemId,
         gtin = row.Gtin,
         item_name = row.ItemName,
         item_type = row.ItemTypeName,
-        physical_stock_qty = row.PhysicalStockQty,
-        active_customer_order_open_qty = row.ActiveCustomerOrderOpenQty,
-        reserved_customer_order_qty = row.ReservedCustomerOrderQty,
         free_stock_qty = row.FreeStockQty,
         min_stock_qty = row.MinStockQty,
-        production_need_qty = row.ProductionNeedQty
+        to_close_orders_qty = row.ToCloseOrdersQty,
+        to_min_stock_qty = row.ToMinStockQty,
+        total_to_make_qty = row.TotalToMakeQty
     };
 }
 
