@@ -78,7 +78,7 @@ public sealed class ProductionNeedServiceTests
     }
 
     [Fact]
-    public void ProductionNeed_GroupsOrdersByDueDate_AndFallsBackToTodayForMinStock()
+    public void ProductionNeed_AggregatesCurrentNeed_WithoutDateSplit()
     {
         var tomorrow = DateTime.Today.AddDays(1);
         var service = BuildService(
@@ -96,21 +96,12 @@ public sealed class ProductionNeedServiceTests
             ],
             store: out var store);
 
-        var rows = service.GetRows(includeZeroNeed: true).OrderBy(row => row.NeedDate).ToList();
+        var row = service.GetRows(includeZeroNeed: true).Single();
 
-        Assert.Equal(2, rows.Count);
-
-        var todayRow = rows[0];
-        Assert.Equal(DateTime.Today, todayRow.NeedDate);
-        Assert.Equal(0, todayRow.ToCloseOrdersQty);
-        Assert.Equal(190, todayRow.ToMinStockQty);
-        Assert.Equal(190, todayRow.TotalToMakeQty);
-
-        var tomorrowRow = rows[1];
-        Assert.Equal(tomorrow, tomorrowRow.NeedDate);
-        Assert.Equal(60, tomorrowRow.ToCloseOrdersQty);
-        Assert.Equal(0, tomorrowRow.ToMinStockQty);
-        Assert.Equal(60, tomorrowRow.TotalToMakeQty);
+        Assert.Equal(DateTime.Today, row.NeedDate);
+        Assert.Equal(60, row.ToCloseOrdersQty);
+        Assert.Equal(190, row.ToMinStockQty);
+        Assert.Equal(250, row.TotalToMakeQty);
 
         store.Verify(s => s.GetItems(null), Times.Once);
         store.Verify(s => s.GetStock(null), Times.Once);

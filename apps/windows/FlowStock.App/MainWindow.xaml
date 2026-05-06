@@ -177,17 +177,11 @@
             <TabItem Header="Потребность производства">
                 <DockPanel Margin="8">
                     <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
-                        <CheckBox x:Name="ProductionNeedShowAllRowsCheckBox"
-                                  Content="Показать все даты и строки"
-                                  VerticalAlignment="Center"
-                                  Checked="ProductionNeedShowAllRowsCheckBox_Changed"
-                                  Unchecked="ProductionNeedShowAllRowsCheckBox_Changed" />
                         <Button Content="Обновить"
-                                Margin="12,0,0,0"
                                 Padding="12,4"
                                 Click="ProductionNeedRefresh_Click" />
                         <TextBlock x:Name="ProductionNeedSummaryText"
-                                   Margin="16,0,0,0"
+                                   Margin="12,0,0,0"
                                    VerticalAlignment="Center"
                                    FontWeight="SemiBold" />
                     </StackPanel>
@@ -199,28 +193,6 @@
                               SelectionMode="Single"
                               HeadersVisibility="Column"
                               GridLinesVisibility="Horizontal">
-                        <DataGrid.GroupStyle>
-                            <GroupStyle>
-                                <GroupStyle.ContainerStyle>
-                                    <Style TargetType="{x:Type GroupItem}">
-                                        <Setter Property="Template">
-                                            <Setter.Value>
-                                                <ControlTemplate TargetType="{x:Type GroupItem}">
-                                                    <Expander IsExpanded="True" Margin="0,2,0,2">
-                                                        <Expander.Header>
-                                                            <TextBlock Text="{Binding Name}"
-                                                                       FontWeight="SemiBold"
-                                                                       Foreground="#1F3C4D" />
-                                                        </Expander.Header>
-                                                        <ItemsPresenter />
-                                                    </Expander>
-                                                </ControlTemplate>
-                                            </Setter.Value>
-                                        </Setter>
-                                    </Style>
-                                </GroupStyle.ContainerStyle>
-                            </GroupStyle>
-                        </DataGrid.GroupStyle>
                         <DataGrid.Columns>
                             <DataGridTemplateColumn Header="Номенклатура" Width="*">
                                 <DataGridTemplateColumn.CellTemplate>

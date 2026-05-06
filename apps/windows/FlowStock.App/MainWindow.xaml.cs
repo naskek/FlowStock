@@ -8,7 +8,6 @@ using System.Net.Http;
 using System.Text;
 using System.Windows;
 using System.Windows.Input;
-using System.Windows.Data;
 using System.Windows.Media;
 using System.Windows.Threading;
 using ExcelDataReader;
@@ -84,7 +83,6 @@ public partial class MainWindow : Window
         StockGrid.ItemsSource = _stock;
         LowStockGrid.ItemsSource = _lowStock;
         ProductionNeedGrid.ItemsSource = _productionNeedRows;
-        ConfigureProductionNeedGrouping();
         StockLocationFilter.ItemsSource = _stockLocationFilters;
         StockHuFilter.ItemsSource = _stockHuFilters;
         StockItemTypeFilter.ItemsSource = _stockItemTypeFilters;
@@ -1030,20 +1028,10 @@ public partial class MainWindow : Window
         LoadProductionNeedRows(showErrorMessage: true);
     }
 
-    private void ProductionNeedShowAllRowsCheckBox_Changed(object sender, RoutedEventArgs e)
-    {
-        if (!IsLoaded)
-        {
-            return;
-        }
-
-        LoadProductionNeedRows();
-    }
-
     private void LoadProductionNeedRows(bool showErrorMessage = false)
     {
         if (!_services.WpfReadApi.TryGetProductionNeedRows(
-                includeZeroNeed: ProductionNeedShowAllRowsCheckBox.IsChecked == true,
+                includeZeroNeed: false,
                 out var rows))
         {
             _productionNeedRows.Clear();
@@ -1061,19 +1049,10 @@ public partial class MainWindow : Window
         }
 
         _productionNeedRows.Clear();
-        var showAllRows = ProductionNeedShowAllRowsCheckBox.IsChecked == true;
-        var today = DateTime.Today;
         foreach (var row in rows)
         {
-            if (!showAllRows
-                && (row.NeedDate.Date != today || row.TotalToMakeQty <= 0))
-            {
-                continue;
-            }
-
             _productionNeedRows.Add(new ProductionNeedDisplayRow
             {
-                NeedDate = row.NeedDate.Date,
                 ItemId = row.ItemId,
                 Gtin = string.IsNullOrWhiteSpace(row.Gtin) ? "-" : row.Gtin,
                 ItemName = row.ItemName,
@@ -1086,22 +1065,7 @@ public partial class MainWindow : Window
             });
         }
 
-        var modeText = showAllRows
-            ? "Все даты и строки"
-            : "Сегодня, только строки с потребностью";
-        ProductionNeedSummaryText.Text = $"Позиций: {_productionNeedRows.Count}. {modeText}.";
-    }
-
-    private void ConfigureProductionNeedGrouping()
-    {
-        if (CollectionViewSource.GetDefaultView(_productionNeedRows) is not ListCollectionView view)
-        {
-            return;
-        }
-
-        view.GroupDescriptions.Clear();
-        view.GroupDescriptions.Add(new PropertyGroupDescription(nameof(ProductionNeedDisplayRow.NeedDateGroupLabel)));
-        view.GroupDescriptions.Add(new PropertyGroupDescription(nameof(ProductionNeedDisplayRow.ItemTypeGroupName)));
+        ProductionNeedSummaryText.Text = $"Позиций: {_productionNeedRows.Count}.";
     }
 
     private string? GetSelectedStockLocationCode()
@@ -2669,7 +2633,6 @@ public partial class MainWindow : Window
 
     private sealed record ProductionNeedDisplayRow
     {
-        public DateTime NeedDate { get; init; }
         public long ItemId { get; init; }
         public string Gtin { get; init; } = string.Empty;
         public string ItemName { get; init; } = string.Empty;
@@ -2679,8 +2642,6 @@ public partial class MainWindow : Window
         public double ToCloseOrdersQty { get; init; }
         public double ToMinStockQty { get; init; }
         public double TotalToMakeQty { get; init; }
-        public string NeedDateGroupLabel => NeedDate.ToString("dd.MM.yyyy", CultureInfo.CurrentCulture);
-        public string ItemTypeGroupName => string.IsNullOrWhiteSpace(ItemTypeName) ? "Без типа" : ItemTypeName;
         public string StockDisplay => $"{FormatQty(FreeStockQty)} / {FormatQty(MinStockQty)}";
     }
 

@@ -318,19 +318,6 @@
     );
   }
 
-  function getLocalIsoDate(date) {
-    if (!date || isNaN(date.getTime())) {
-      return "";
-    }
-    return (
-      date.getFullYear() +
-      "-" +
-      pad2(date.getMonth() + 1) +
-      "-" +
-      pad2(date.getDate())
-    );
-  }
-
   function formatDateTime(value) {
     if (!value) {
       return "-";
@@ -779,10 +766,6 @@
       '<section class="pc-card">' +
       '  <div class="section-title">Потребность производства</div>' +
       '  <div class="pc-toolbar">' +
-      '    <label class="pc-check-inline">' +
-      '      <input id="productionNeedShowAll" type="checkbox" />' +
-      "      <span>Показать все даты и строки</span>" +
-      "    </label>" +
       '    <div class="pc-toolbar-actions">' +
       '      <button id="productionNeedRefreshBtn" class="btn btn-outline" type="button">Обновить</button>' +
       "    </div>" +
@@ -813,29 +796,9 @@
       return '<div class="empty-state">Потребности производства нет.</div>';
     }
 
-    var body = "";
-    var currentDate = "";
-    var currentType = "";
-    rows.forEach(function (row) {
-      var dateKey = row.needDate || "";
-      var typeKey = row.itemType || "Без типа";
-      if (dateKey !== currentDate) {
-        currentDate = dateKey;
-        currentType = "";
-        body +=
-          '<tr class="pc-production-need-date-row"><td colspan="5">' +
-          escapeHtml(formatDate(dateKey) || dateKey || "Сегодня") +
-          "</td></tr>";
-      }
-      if (typeKey !== currentType) {
-        currentType = typeKey;
-        body +=
-          '<tr class="pc-production-need-type-row"><td colspan="5">' +
-          escapeHtml(typeKey) +
-          "</td></tr>";
-      }
-
-      body +=
+    var body = rows
+      .map(function (row) {
+        return (
         "<tr>" +
         "<td>" +
         '<div class="pc-production-need-item-name">' +
@@ -859,8 +822,10 @@
         '<td class="pc-num"><span class="pc-qty pc-production-need-qty">' +
         escapeHtml(formatReportQty(row.totalToMakeQty)) +
         "</span></td>" +
-        "</tr>";
-    });
+        "</tr>"
+        );
+      })
+      .join("");
 
     return (
       '<div class="pc-table-scroll">' +
@@ -891,7 +856,6 @@
   }
 
   function wireProductionNeed() {
-    var showAllInput = document.getElementById("productionNeedShowAll");
     var refreshBtn = document.getElementById("productionNeedRefreshBtn");
     var statusEl = document.getElementById("productionNeedStatus");
     var tableWrap = document.getElementById("productionNeedTableWrap");
@@ -904,23 +868,7 @@
 
     function renderRows(sourceRows) {
       var rows = Array.isArray(sourceRows) ? sourceRows.slice() : [];
-      if (!showAllInput || showAllInput.checked !== true) {
-        rows = rows.filter(function (row) {
-          var todayKey = getLocalIsoDate(new Date());
-          return row.needDate === todayKey && Number(row.totalToMakeQty) > 0;
-        });
-      }
       rows.sort(function (left, right) {
-        var dateCompare = String(left.needDate || "").localeCompare(String(right.needDate || ""), "ru");
-        if (dateCompare !== 0) {
-          return dateCompare;
-        }
-
-        var typeCompare = String(left.itemType || "").localeCompare(String(right.itemType || ""), "ru");
-        if (typeCompare !== 0) {
-          return typeCompare;
-        }
-
         var totalCompare = Number(right.totalToMakeQty) - Number(left.totalToMakeQty);
         if (totalCompare !== 0) {
           return totalCompare;
@@ -935,9 +883,8 @@
     }
 
     function loadAndRender() {
-      var includeZero = !!(showAllInput && showAllInput.checked);
       setStatus("Загрузка...");
-      return loadProductionNeedData(includeZero)
+      return loadProductionNeedData(false)
         .then(function (rows) {
           renderRows(rows);
           setStatus("Обновлено: " + formatDateTime(new Date()));
@@ -952,9 +899,6 @@
 
     if (refreshBtn) {
       refreshBtn.addEventListener("click", loadAndRender);
-    }
-    if (showAllInput) {
-      showAllInput.addEventListener("change", loadAndRender);
     }
 
     setActiveLiveRefreshHandler(loadAndRender);

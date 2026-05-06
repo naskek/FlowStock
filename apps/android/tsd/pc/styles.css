@@ -260,18 +260,6 @@ body.pc-body {
   color: #667784;
 }
 
-.pc-production-need-date-row td {
-  background: #eef5f8;
-  font-weight: 700;
-  color: #1d3f56;
-}
-
-.pc-production-need-type-row td {
-  background: #f8fafc;
-  font-weight: 600;
-  color: #445462;
-}
-
 .pc-production-need-qty {
   color: #a62525;
   font-weight: 800;
