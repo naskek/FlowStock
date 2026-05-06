@@ -1100,6 +1100,7 @@ SELECT dl.id,
        dl.doc_id,
        dl.replaces_line_id,
        dl.order_line_id,
+       dl.production_purpose,
        dl.item_id,
        dl.qty,
        dl.qty_input,
@@ -1148,7 +1149,7 @@ ORDER BY dl.id");
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT dl.id, dl.order_line_id, dl.item_id, i.name, i.barcode, dl.qty, dl.qty_input, dl.uom_code, i.base_uom, lf.code, lt.code, dl.from_hu, dl.to_hu, dl.pack_single_hu
+SELECT dl.id, dl.order_line_id, dl.production_purpose, dl.item_id, i.name, i.barcode, dl.qty, dl.qty_input, dl.uom_code, i.base_uom, lf.code, lt.code, dl.from_hu, dl.to_hu, dl.pack_single_hu
 FROM doc_lines dl
 INNER JOIN items i ON i.id = dl.item_id
 LEFT JOIN locations lf ON lf.id = dl.from_location_id
@@ -1171,18 +1172,19 @@ ORDER BY dl.id;
                 {
                     Id = reader.GetInt64(0),
                     OrderLineId = reader.IsDBNull(1) ? null : reader.GetInt64(1),
-                    ItemId = reader.GetInt64(2),
-                    ItemName = reader.GetString(3),
-                    Barcode = reader.IsDBNull(4) ? null : reader.GetString(4),
-                    Qty = reader.GetDouble(5),
-                    QtyInput = reader.IsDBNull(6) ? null : reader.GetDouble(6),
-                    UomCode = reader.IsDBNull(7) ? null : reader.GetString(7),
-                    BaseUom = reader.IsDBNull(8) ? "èâ" : reader.GetString(8),
-                    FromLocation = reader.IsDBNull(9) ? null : reader.GetString(9),
-                    ToLocation = reader.IsDBNull(10) ? null : reader.GetString(10),
-                    FromHu = reader.IsDBNull(11) ? null : reader.GetString(11),
-                    ToHu = reader.IsDBNull(12) ? null : reader.GetString(12),
-                    PackSingleHu = !reader.IsDBNull(13) && reader.GetBoolean(13)
+                    ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(reader.IsDBNull(2) ? null : reader.GetString(2), reader.IsDBNull(1) ? null : reader.GetInt64(1)),
+                    ItemId = reader.GetInt64(3),
+                    ItemName = reader.GetString(4),
+                    Barcode = reader.IsDBNull(5) ? null : reader.GetString(5),
+                    Qty = reader.GetDouble(6),
+                    QtyInput = reader.IsDBNull(7) ? null : reader.GetDouble(7),
+                    UomCode = reader.IsDBNull(8) ? null : reader.GetString(8),
+                    BaseUom = reader.IsDBNull(9) ? "èâ" : reader.GetString(9),
+                    FromLocation = reader.IsDBNull(10) ? null : reader.GetString(10),
+                    ToLocation = reader.IsDBNull(11) ? null : reader.GetString(11),
+                    FromHu = reader.IsDBNull(12) ? null : reader.GetString(12),
+                    ToHu = reader.IsDBNull(13) ? null : reader.GetString(13),
+                    PackSingleHu = !reader.IsDBNull(14) && reader.GetBoolean(14)
                 });
             }
 
@@ -1195,13 +1197,14 @@ ORDER BY dl.id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO doc_lines(doc_id, replaces_line_id, order_line_id, item_id, qty, qty_input, uom_code, from_location_id, to_location_id, from_hu, to_hu, pack_single_hu)
-VALUES(@doc_id, @replaces_line_id, @order_line_id, @item_id, @qty, @qty_input, @uom_code, @from_location_id, @to_location_id, @from_hu, @to_hu, @pack_single_hu)
+INSERT INTO doc_lines(doc_id, replaces_line_id, order_line_id, production_purpose, item_id, qty, qty_input, uom_code, from_location_id, to_location_id, from_hu, to_hu, pack_single_hu)
+VALUES(@doc_id, @replaces_line_id, @order_line_id, @production_purpose, @item_id, @qty, @qty_input, @uom_code, @from_location_id, @to_location_id, @from_hu, @to_hu, @pack_single_hu)
 RETURNING id;
 ");
             command.Parameters.AddWithValue("@doc_id", line.DocId);
             command.Parameters.AddWithValue("@replaces_line_id", line.ReplacesLineId.HasValue ? line.ReplacesLineId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@order_line_id", line.OrderLineId.HasValue ? line.OrderLineId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@production_purpose", ProductionLinePurposeMapper.ToDbValue(line.ProductionPurpose));
             command.Parameters.AddWithValue("@item_id", line.ItemId);
             command.Parameters.AddWithValue("@qty", line.Qty);
             command.Parameters.AddWithValue("@qty_input", line.QtyInput.HasValue ? line.QtyInput.Value : DBNull.Value);
@@ -1759,7 +1762,7 @@ WHERE id = @id
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT id, order_id, item_id, qty_ordered FROM order_lines WHERE order_id = @order_id ORDER BY id");
+            using var command = CreateCommand(connection, "SELECT id, order_id, item_id, qty_ordered, production_purpose FROM order_lines WHERE order_id = @order_id ORDER BY id");
             command.Parameters.AddWithValue("@order_id", orderId);
             using var reader = command.ExecuteReader();
             var lines = new List<OrderLine>();
@@ -1777,11 +1780,11 @@ WHERE id = @id
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT ol.id, ol.order_id, ol.item_id, i.name, i.barcode, i.gtin, ol.qty_ordered
+SELECT ol.id, ol.order_id, ol.item_id, i.name, i.barcode, i.gtin, ol.qty_ordered, ol.production_purpose
 FROM order_lines ol
 INNER JOIN items i ON i.id = ol.item_id
 WHERE ol.order_id = @order_id
-ORDER BY i.name;
+ORDER BY i.name, ol.id;
 ");
             command.Parameters.AddWithValue("@order_id", orderId);
             using var reader = command.ExecuteReader();
@@ -1796,7 +1799,8 @@ ORDER BY i.name;
                     ItemName = reader.GetString(3),
                     Barcode = reader.IsDBNull(4) ? null : reader.GetString(4),
                     Gtin = reader.IsDBNull(5) ? null : reader.GetString(5),
-                    QtyOrdered = reader.GetDouble(6)
+                    QtyOrdered = reader.GetDouble(6),
+                    ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(reader.IsDBNull(7) ? null : reader.GetString(7))
                 });
             }
 
@@ -1824,6 +1828,7 @@ SELECT ol.id,
        ol.item_id,
        i.name,
        ol.qty_ordered,
+       ol.production_purpose,
        (COALESCE(r.sum_qty, 0)
         + CASE
               WHEN @include_reserved_stock = 1
@@ -1882,8 +1887,9 @@ ORDER BY ol.id;
                     ItemId = reader.GetInt64(2),
                     ItemName = reader.GetString(3),
                     QtyOrdered = reader.GetDouble(4),
-                    QtyReceived = reader.GetDouble(5),
-                    QtyRemaining = reader.GetDouble(6)
+                    ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(reader.IsDBNull(5) ? null : reader.GetString(5)),
+                    QtyReceived = reader.GetDouble(6),
+                    QtyRemaining = reader.GetDouble(7)
                 });
             }
 
@@ -2122,13 +2128,14 @@ ORDER BY ol.id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO order_lines(order_id, item_id, qty_ordered)
-VALUES(@order_id, @item_id, @qty_ordered)
+INSERT INTO order_lines(order_id, item_id, qty_ordered, production_purpose)
+VALUES(@order_id, @item_id, @qty_ordered, @production_purpose)
 RETURNING id;
 ");
             command.Parameters.AddWithValue("@order_id", line.OrderId);
             command.Parameters.AddWithValue("@item_id", line.ItemId);
             command.Parameters.AddWithValue("@qty_ordered", line.QtyOrdered);
+            command.Parameters.AddWithValue("@production_purpose", ProductionLinePurposeMapper.ToDbValue(line.ProductionPurpose));
             return (long)(command.ExecuteScalar() ?? 0L);
         });
     }
@@ -2139,6 +2146,18 @@ RETURNING id;
         {
             using var command = CreateCommand(connection, "UPDATE order_lines SET qty_ordered = @qty_ordered WHERE id = @id");
             command.Parameters.AddWithValue("@qty_ordered", qtyOrdered);
+            command.Parameters.AddWithValue("@id", orderLineId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void UpdateOrderLinePurpose(long orderLineId, ProductionLinePurpose purpose)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "UPDATE order_lines SET production_purpose = @production_purpose WHERE id = @id");
+            command.Parameters.AddWithValue("@production_purpose", ProductionLinePurposeMapper.ToDbValue(purpose));
             command.Parameters.AddWithValue("@id", orderLineId);
             command.ExecuteNonQuery();
             return 0;
@@ -3330,15 +3349,16 @@ RETURNING id;
             DocId = reader.GetInt64(1),
             ReplacesLineId = reader.IsDBNull(2) ? null : reader.GetInt64(2),
             OrderLineId = reader.IsDBNull(3) ? null : reader.GetInt64(3),
-            ItemId = reader.GetInt64(4),
-            Qty = reader.GetDouble(5),
-            QtyInput = reader.IsDBNull(6) ? null : reader.GetDouble(6),
-            UomCode = reader.IsDBNull(7) ? null : reader.GetString(7),
-            FromLocationId = reader.IsDBNull(8) ? null : reader.GetInt64(8),
-            ToLocationId = reader.IsDBNull(9) ? null : reader.GetInt64(9),
-            FromHu = reader.FieldCount > 10 && !reader.IsDBNull(10) ? reader.GetString(10) : null,
-            ToHu = reader.FieldCount > 11 && !reader.IsDBNull(11) ? reader.GetString(11) : null,
-            PackSingleHu = reader.FieldCount > 12 && !reader.IsDBNull(12) && reader.GetBoolean(12)
+            ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(reader.FieldCount > 4 && !reader.IsDBNull(4) ? reader.GetString(4) : null, reader.IsDBNull(3) ? null : reader.GetInt64(3)),
+            ItemId = reader.GetInt64(5),
+            Qty = reader.GetDouble(6),
+            QtyInput = reader.IsDBNull(7) ? null : reader.GetDouble(7),
+            UomCode = reader.IsDBNull(8) ? null : reader.GetString(8),
+            FromLocationId = reader.IsDBNull(9) ? null : reader.GetInt64(9),
+            ToLocationId = reader.IsDBNull(10) ? null : reader.GetInt64(10),
+            FromHu = reader.FieldCount > 11 && !reader.IsDBNull(11) ? reader.GetString(11) : null,
+            ToHu = reader.FieldCount > 12 && !reader.IsDBNull(12) ? reader.GetString(12) : null,
+            PackSingleHu = reader.FieldCount > 13 && !reader.IsDBNull(13) && reader.GetBoolean(13)
         };
     }
 
@@ -3386,7 +3406,8 @@ RETURNING id;
             Id = reader.GetInt64(0),
             OrderId = reader.GetInt64(1),
             ItemId = reader.GetInt64(2),
-            QtyOrdered = reader.GetDouble(3)
+            QtyOrdered = reader.GetDouble(3),
+            ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(reader.IsDBNull(4) ? null : reader.GetString(4))
         };
     }
 
@@ -3526,6 +3547,8 @@ LIMIT 1;";
         EnsureColumn(connection, "orders", "marking_status", "TEXT NOT NULL DEFAULT 'NOT_REQUIRED'");
         EnsureColumn(connection, "orders", "marking_excel_generated_at", "TEXT NULL");
         EnsureColumn(connection, "orders", "marking_printed_at", "TEXT NULL");
+        EnsureColumn(connection, "order_lines", "production_purpose", "TEXT NOT NULL DEFAULT 'INTERNAL_STOCK'");
+        EnsureColumn(connection, "doc_lines", "production_purpose", "TEXT NOT NULL DEFAULT 'INTERNAL_STOCK'");
 
         if (!ColumnExists(connection, "orders", "order_type")
             || !ColumnExists(connection, "orders", "bind_reserved_stock")
@@ -3544,7 +3567,9 @@ LIMIT 1;";
             || !ColumnExists(connection, "item_types", "enable_marking")
             || !ColumnExists(connection, "orders", "marking_status")
             || !ColumnExists(connection, "orders", "marking_excel_generated_at")
-            || !ColumnExists(connection, "orders", "marking_printed_at"))
+            || !ColumnExists(connection, "orders", "marking_printed_at")
+            || !ColumnExists(connection, "order_lines", "production_purpose")
+            || !ColumnExists(connection, "doc_lines", "production_purpose"))
         {
             throw new InvalidOperationException("Database schema is outdated. Run deploy/scripts/migrate.sh before starting FlowStock.");
         }

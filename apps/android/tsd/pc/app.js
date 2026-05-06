@@ -2372,7 +2372,7 @@
     var items = [];
     var partners = [];
     function createEmptyLine() {
-      return { item_id: 0, qty_ordered: "", query: "", locked: false };
+      return { item_id: 0, qty_ordered: "", production_purpose: "INTERNAL_STOCK", query: "", locked: false };
     }
     var linesState = [createEmptyLine()];
     var activeLineIndex = 0;
@@ -2554,12 +2554,15 @@
         return;
       }
 
+      var selectedPurpose = String(linesState[index].production_purpose || "INTERNAL_STOCK");
       var duplicateIndex = linesState.findIndex(function (line, lineIndex) {
-        return lineIndex !== index && Number(line.item_id) === Number(selectedId);
+        return lineIndex !== index &&
+          Number(line.item_id) === Number(selectedId) &&
+          String(line.production_purpose || "INTERNAL_STOCK") === selectedPurpose;
       });
       if (duplicateIndex >= 0) {
         hideSuggestionOverlay();
-        setWarningStatus("Товар уже добавлен. Измените количество в существующей строке при необходимости.");
+        setWarningStatus("Товар с таким назначением уже добавлен. Измените количество в существующей строке при необходимости.");
         activeLineIndex = duplicateIndex;
         linesState.forEach(function (line) {
           line.isDuplicateTarget = false;
@@ -2813,8 +2816,12 @@
         refs.partnerInput.value = "";
         hidePartnerSuggestionOverlay();
       } else {
+        linesState.forEach(function (line) {
+          line.production_purpose = "CUSTOMER_ORDER";
+        });
         updatePartnerHint();
       }
+      renderLines();
     }
 
     function buildItemLabel(item) {
@@ -3083,6 +3090,18 @@
             '<div class="pc-order-line-item-cell">' +
             itemCellHtml +
             "</div>" +
+            '<select class="form-input line-purpose" data-index="' +
+              index +
+              '"' +
+              (isInternalOrderRequested() ? "" : " disabled") +
+              ">" +
+              '<option value="CUSTOMER_ORDER"' +
+              (String(line.production_purpose || "") === "CUSTOMER_ORDER" ? " selected" : "") +
+              ">Под заказ</option>" +
+              '<option value="INTERNAL_STOCK"' +
+              (String(line.production_purpose || "INTERNAL_STOCK") === "INTERNAL_STOCK" ? " selected" : "") +
+              ">На склад</option>" +
+              "</select>" +
             '<input class="form-input line-qty" data-index="' +
               index +
               '" type="number" min="0" step="1" placeholder="Кол-во" value="' +
@@ -3206,6 +3225,18 @@
         });
       });
 
+      var purposeInputs = refs.linesWrap.querySelectorAll(".line-purpose");
+      purposeInputs.forEach(function (selectEl) {
+        selectEl.addEventListener("change", function () {
+          var index = Number(selectEl.getAttribute("data-index"));
+          if (!linesState[index]) {
+            return;
+          }
+          linesState[index].production_purpose = String(selectEl.value || "INTERNAL_STOCK");
+          linesState[index].isDuplicateTarget = false;
+        });
+      });
+
       var removeButtons = refs.linesWrap.querySelectorAll(".line-remove-btn");
       removeButtons.forEach(function (btn) {
         btn.addEventListener("click", function () {
@@ -3262,6 +3293,9 @@
         lines.push({
           item_id: itemId,
           qty_ordered: qty,
+          production_purpose: internalOrder
+            ? String(line.production_purpose || "INTERNAL_STOCK")
+            : "CUSTOMER_ORDER",
         });
       });
 
@@ -3503,6 +3537,9 @@
               escapeHtml(line.gtin || "-") +
               "</td>" +
               "<td>" +
+              escapeHtml(String(line.production_purpose_display || (line.production_purpose === "CUSTOMER_ORDER" ? "Под заказ" : "На склад"))) +
+              "</td>" +
+              "<td>" +
               escapeHtml(String(line.qty_ordered || 0)) +
               "</td>" +
               "<td>" +
@@ -3529,6 +3566,7 @@
           "<th>Товар</th>" +
           "<th>SKU / ШК</th>" +
           "<th>GTIN</th>" +
+          "<th>Назначение</th>" +
           "<th>Заказано</th>" +
           "<th>" +
           escapeHtml(processedHeader) +

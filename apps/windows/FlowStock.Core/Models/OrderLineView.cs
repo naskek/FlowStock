@@ -9,11 +9,13 @@ public sealed class OrderLineView
     public string? Barcode { get; init; }
     public string? Gtin { get; init; }
     public double QtyOrdered { get; set; }
+    public ProductionLinePurpose ProductionPurpose { get; set; } = ProductionLinePurpose.InternalStock;
     public double QtyShipped { get; set; }
     public double QtyProduced { get; set; }
     public double QtyRemaining { get; set; }
     public double QtyAvailable { get; set; }
     public double CanShipNow { get; set; }
     public double Shortage { get; set; }
+    public string ProductionPurposeDisplay => ProductionLinePurposeMapper.ToDisplayName(ProductionPurpose);
 }
 

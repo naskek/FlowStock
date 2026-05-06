@@ -183,6 +183,7 @@ Production Docker Compose wrapper:
   - используется как внутренняя потребность на выпуск продукции
   - закрывается выпусками PRD
   - не участвует в клиентской отгрузке и по умолчанию не отдается в `/api/orders` для TSD/PC web
+  - строки могут иметь назначение `CUSTOMER_ORDER` (`Под заказ`) или `INTERNAL_STOCK` (`На склад`); один товар можно добавить несколькими строками, если назначение отличается
 - В WPF разрешена смена типа сохраненного заказа в обе стороны (`CUSTOMER <-> INTERNAL`):
   - `CUSTOMER -> INTERNAL` разрешена только если по заказу еще нет отгрузок/связанных OUTBOUND-документов.
   - `INTERNAL -> CUSTOMER` разрешена только если по заказу еще нет выпусков продукции/связанных PRD-документов.
@@ -202,6 +203,8 @@ Production Docker Compose wrapper:
 - `produced_qty` = сумма `doc_lines.qty` по закрытым PRD, где `doc_lines.order_line_id = order_lines.id`
 - `remaining_qty` = max(0, `qty_ordered` - `produced_qty`)
 - `available_qty` = текущий остаток ГП по `ledger` для `item_id` (информационно)
+- `production_purpose` хранит назначение строки: `CUSTOMER_ORDER` уменьшает текущую потребность до закрытия клиентских заказов, `INTERNAL_STOCK` уменьшает потребность пополнения склада до минимального остатка.
+- Историческая строка без `production_purpose` считается `CUSTOMER_ORDER`, если у связанной строки выпуска есть `order_line_id`, иначе `INTERNAL_STOCK`.
 
 ## Создание отгрузки из наличия
 

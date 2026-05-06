@@ -618,6 +618,7 @@ public sealed class WpfReadApiService
             Barcode = ReadString(element, "barcode"),
             Gtin = ReadString(element, "gtin"),
             QtyOrdered = ReadDouble(element, "qty_ordered"),
+            ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(ReadString(element, "production_purpose")),
             QtyShipped = ReadDouble(element, "qty_shipped"),
             QtyProduced = ReadDouble(element, "qty_produced"),
             QtyRemaining = ReadDouble(element, "qty_left"),
@@ -718,6 +719,7 @@ public sealed class WpfReadApiService
         {
             Id = ReadInt64(element, "id"),
             OrderLineId = ReadNullableInt64(element, "order_line_id"),
+            ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(ReadString(element, "production_purpose"), ReadNullableInt64(element, "order_line_id")),
             ItemId = ReadInt64(element, "item_id"),
             ItemName = ReadString(element, "item_name") ?? string.Empty,
             Barcode = ReadString(element, "barcode"),
@@ -756,6 +758,7 @@ public sealed class WpfReadApiService
             ItemId = ReadInt64(element, "item_id"),
             ItemName = ReadString(element, "item_name") ?? string.Empty,
             QtyOrdered = ReadDouble(element, "qty_ordered"),
+            ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(ReadString(element, "production_purpose")),
             QtyReceived = ReadDouble(element, "qty_received"),
             QtyRemaining = ReadDouble(element, "qty_remaining"),
             ToLocationId = ReadNullableInt64(element, "to_location_id"),

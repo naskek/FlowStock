@@ -109,6 +109,7 @@ public sealed class WpfBatchAddDocLineService
             ItemId = context.ItemId,
             Barcode = context.Barcode,
             OrderLineId = context.OrderLineId,
+            ProductionPurpose = ProductionLinePurposeMapper.ToDbValue(context.ProductionPurpose),
             Qty = context.QtyBase,
             UomCode = context.UomCode,
             FromLocationId = context.FromLocationId,

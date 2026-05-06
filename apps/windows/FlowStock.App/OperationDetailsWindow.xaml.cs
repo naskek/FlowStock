@@ -416,6 +416,7 @@ public partial class OperationDetailsWindow : Window
                 InventoryDiffQtyDisplay = inventoryDiffQty.HasValue ? FormatQty(inventoryDiffQty.Value) : string.Empty,
                 HasInventoryDiff = hasInventoryDiff,
                 IsMarked = isMarked,
+                ProductionPurpose = line.ProductionPurpose,
                 OrderLineDisplay = orderLineDisplay,
                 OrderLineHint = orderLineHint,
                 PackSingleHu = line.PackSingleHu,
@@ -993,6 +994,7 @@ public partial class OperationDetailsWindow : Window
                 item.Id,
                 item.Barcode,
                 null,
+                ProductionLinePurpose.InternalStock,
                 take,
                 null,
                 uomCode,
@@ -1050,6 +1052,7 @@ public partial class OperationDetailsWindow : Window
                 item.Id,
                 item.Barcode,
                 null,
+                ProductionLinePurpose.InternalStock,
                 qtyBase,
                 qtyInput,
                 uomCode,
@@ -2573,6 +2576,7 @@ public partial class OperationDetailsWindow : Window
         DocKmColumn.Visibility = KmUiEnabled && (doc.Type is DocType.ProductionReceipt or DocType.Outbound)
             ? Visibility.Visible
             : Visibility.Collapsed;
+        DocProductionPurposeColumn.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
         DocOrderLineColumn.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
         DocPackSingleHuColumn.Visibility = doc.Type is DocType.ProductionReceipt or DocType.Inbound ? Visibility.Visible : Visibility.Collapsed;
         DocFromColumn.Visibility = showFromColumn ? Visibility.Visible : Visibility.Collapsed;
@@ -2907,6 +2911,7 @@ public partial class OperationDetailsWindow : Window
                 line.ItemId,
                 null,
                 line.OrderLineId,
+                line.ProductionPurpose,
                 allocatedQty,
                 null,
                 line.UomCode,
@@ -3352,6 +3357,7 @@ public partial class OperationDetailsWindow : Window
                         line.ItemId,
                         null,
                         line.OrderLineId,
+                        ProductionLinePurpose.CustomerOrder,
                         allocatedQty,
                         null,
                         null,
@@ -3437,6 +3443,7 @@ public partial class OperationDetailsWindow : Window
                 line.ItemId,
                 null,
                 line.OrderLineId,
+                line.ProductionPurpose,
                 line.QtyRemaining,
                 null,
                 null,
@@ -5104,6 +5111,8 @@ public partial class OperationDetailsWindow : Window
         public string InventoryDiffQtyDisplay { get; init; } = string.Empty;
         public bool HasInventoryDiff { get; init; }
         public bool IsMarked { get; init; }
+        public ProductionLinePurpose ProductionPurpose { get; init; }
+        public string ProductionPurposeDisplay => ProductionLinePurposeMapper.ToDisplayName(ProductionPurpose);
         public string OrderLineDisplay { get; init; } = string.Empty;
         public string OrderLineHint { get; init; } = string.Empty;
         public bool PackSingleHu { get; init; }

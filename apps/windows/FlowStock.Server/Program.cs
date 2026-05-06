@@ -1968,6 +1968,8 @@ app.MapGet("/api/orders/{orderId:long}/lines", (long orderId, IDataStore store) 
             barcode = line.Barcode,
             gtin = line.Gtin,
             qty_ordered = line.QtyOrdered,
+            production_purpose = ProductionLinePurposeMapper.ToDbValue(line.ProductionPurpose),
+            production_purpose_display = line.ProductionPurposeDisplay,
             qty_shipped = line.QtyShipped,
             qty_produced = line.QtyProduced,
             qty_left = line.QtyRemaining,
@@ -2128,7 +2130,11 @@ app.MapPost("/api/orders/requests/create", async (HttpRequest request, IDataStor
         normalizedLines.Add(new
         {
             item_id = line.ItemId.Value,
-            qty_ordered = line.QtyOrdered
+            qty_ordered = line.QtyOrdered,
+            production_purpose = ProductionLinePurposeMapper.ToDbValue(
+                orderType == OrderType.Internal
+                    ? ProductionLinePurposeMapper.FromDbValue(line.ProductionPurpose)
+                    : ProductionLinePurpose.CustomerOrder)
         });
     }
 
@@ -3222,6 +3228,9 @@ static List<object> TryReadPendingCreateOrderLines(IDataStore store, string json
                 barcode = item?.Barcode,
                 gtin = item?.Gtin,
                 qty_ordered = TryReadJsonElementDouble(lineElement, "qty_ordered") ?? 0d,
+                production_purpose = TryReadJsonElementString(lineElement, "production_purpose") ?? ProductionLinePurposeMapper.InternalStockValue,
+                production_purpose_display = ProductionLinePurposeMapper.ToDisplayName(
+                    ProductionLinePurposeMapper.FromDbValue(TryReadJsonElementString(lineElement, "production_purpose"))),
                 qty_shipped = 0d,
                 qty_produced = 0d,
                 qty_left = TryReadJsonElementDouble(lineElement, "qty_ordered") ?? 0d,
@@ -3326,6 +3335,18 @@ static double? TryReadJsonElementDouble(JsonElement element, string propertyName
     return null;
 }
 
+static string? TryReadJsonElementString(JsonElement element, string propertyName)
+{
+    if (!element.TryGetProperty(propertyName, out var property))
+    {
+        return null;
+    }
+
+    return property.ValueKind == JsonValueKind.String
+        ? property.GetString()
+        : null;
+}
+
 static bool IsDigitsOnly(string value)
 {
     if (string.IsNullOrEmpty(value))
@@ -3375,6 +3396,8 @@ static object MapDocLine(DocLineView line)
     {
         id = line.Id,
         order_line_id = line.OrderLineId,
+        production_purpose = ProductionLinePurposeMapper.ToDbValue(line.ProductionPurpose),
+        production_purpose_display = line.ProductionPurposeDisplay,
         item_id = line.ItemId,
         item_name = line.ItemName,
         barcode = line.Barcode,
@@ -3413,6 +3436,8 @@ static object MapOrderReceiptRemaining(OrderReceiptLine line)
         item_id = line.ItemId,
         item_name = line.ItemName,
         qty_ordered = line.QtyOrdered,
+        production_purpose = ProductionLinePurposeMapper.ToDbValue(line.ProductionPurpose),
+        production_purpose_display = ProductionLinePurposeMapper.ToDisplayName(line.ProductionPurpose),
         qty_received = line.QtyReceived,
         qty_remaining = line.QtyRemaining,
         to_location_id = line.ToLocationId,

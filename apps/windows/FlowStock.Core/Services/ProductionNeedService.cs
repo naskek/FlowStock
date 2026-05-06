@@ -13,6 +13,7 @@ public sealed class ProductionNeedService(IDataStore dataStore)
         var items = _dataStore.GetItems(null);
         var stockRows = _dataStore.GetStock(null);
         var needByItem = BuildNeedByItem(today);
+        var plannedByItem = BuildPlannedProductionByItem();
 
         var stockByItem = stockRows
             .GroupBy(row => row.ItemId)
@@ -37,6 +38,7 @@ public sealed class ProductionNeedService(IDataStore dataStore)
                 itemsById.TryGetValue(itemId, out var item);
                 stockByItem.TryGetValue(itemId, out var stockSnapshot);
                 needByItem.TryGetValue(itemId, out var currentNeed);
+                plannedByItem.TryGetValue(itemId, out var planned);
 
                 var physicalStockQty = stockSnapshot?.PhysicalStockQty ?? 0;
                 var reservedCustomerOrderQty = stockSnapshot?.ReservedCustomerOrderQty ?? 0;
@@ -44,8 +46,8 @@ public sealed class ProductionNeedService(IDataStore dataStore)
                 var minStockQty = item?.ItemTypeEnableMinStockControl == true
                     ? Math.Max(0, item.MinStockQty ?? 0)
                     : 0;
-                var toCloseOrdersQty = Math.Max(0, currentNeed.OrderQty - currentNeed.ReservedQty);
-                var toMinStockQty = Math.Max(0, minStockQty - freeStockQty);
+                var toCloseOrdersQty = Math.Max(0, currentNeed.OrderQty - currentNeed.ReservedQty - planned.CustomerOrderQty);
+                var toMinStockQty = Math.Max(0, minStockQty - freeStockQty - planned.InternalStockQty);
                 var itemTypeName = string.IsNullOrWhiteSpace(item?.ItemTypeName) ? "Без типа" : item!.ItemTypeName!;
 
                 return new ProductionNeedRow
@@ -101,6 +103,33 @@ public sealed class ProductionNeedService(IDataStore dataStore)
 
                 result.TryGetValue(line.ItemId, out var current);
                 result[line.ItemId] = (current.OrderQty + openQty, current.ReservedQty + reservedQty);
+            }
+        }
+
+        return result;
+    }
+
+    private Dictionary<long, (double CustomerOrderQty, double InternalStockQty)> BuildPlannedProductionByItem()
+    {
+        var result = new Dictionary<long, (double CustomerOrderQty, double InternalStockQty)>();
+        var activeInternalOrders = _dataStore.GetOrders()
+            .Where(order => order.Type == OrderType.Internal
+                            && order.Status is not OrderStatus.Shipped and not OrderStatus.Cancelled);
+
+        foreach (var order in activeInternalOrders)
+        {
+            foreach (var line in _dataStore.GetOrderReceiptRemaining(order.Id))
+            {
+                var remainingQty = Math.Max(0, line.QtyRemaining);
+                if (remainingQty <= 0)
+                {
+                    continue;
+                }
+
+                result.TryGetValue(line.ItemId, out var current);
+                result[line.ItemId] = line.ProductionPurpose == ProductionLinePurpose.CustomerOrder
+                    ? (current.CustomerOrderQty + remainingQty, current.InternalStockQty)
+                    : (current.CustomerOrderQty, current.InternalStockQty + remainingQty);
             }
         }
 

@@ -6,5 +6,6 @@ public sealed class OrderLine
     public long OrderId { get; init; }
     public long ItemId { get; init; }
     public double QtyOrdered { get; init; }
+    public ProductionLinePurpose ProductionPurpose { get; init; } = ProductionLinePurpose.InternalStock;
 }
 

@@ -115,6 +115,7 @@ public sealed class DocumentService
                     {
                         DocId = docId,
                         OrderLineId = line.OrderLineId,
+                        ProductionPurpose = ProductionLinePurpose.CustomerOrder,
                         ItemId = line.ItemId,
                         Qty = line.QtyRemaining,
                         QtyInput = null,
@@ -144,6 +145,7 @@ public sealed class DocumentService
                     {
                         DocId = docId,
                         OrderLineId = line.OrderLineId,
+                        ProductionPurpose = line.ProductionPurpose,
                         ItemId = line.ItemId,
                         Qty = line.QtyRemaining,
                         QtyInput = null,
@@ -167,6 +169,7 @@ public sealed class DocumentService
                 store.AddDocLine(new DocLine
                 {
                     DocId = docId,
+                    ProductionPurpose = line.ProductionPurpose,
                     ItemId = line.ItemId,
                     Qty = line.QtyOrdered,
                     QtyInput = null,
@@ -614,6 +617,7 @@ public sealed class DocumentService
                 {
                     DocId = docId,
                     OrderLineId = line.OrderLineId,
+                    ProductionPurpose = ProductionLinePurpose.CustomerOrder,
                     ItemId = line.ItemId,
                     Qty = line.QtyRemaining,
                     QtyInput = null,
@@ -675,6 +679,7 @@ public sealed class DocumentService
                 {
                     DocId = docId,
                     OrderLineId = line.OrderLineId,
+                    ProductionPurpose = line.ProductionPurpose,
                     ItemId = line.ItemId,
                     Qty = line.QtyRemaining,
                     QtyInput = null,
@@ -729,7 +734,7 @@ public sealed class DocumentService
         _data.UpdateDocOrder(docId, order.Id, cleanedOrderRef);
     }
 
-    public long AddDocLine(long docId, long itemId, double qty, long? fromLocationId, long? toLocationId, double? qtyInput = null, string? uomCode = null, string? fromHu = null, string? toHu = null, long? orderLineId = null, long? replacesLineId = null)
+    public long AddDocLine(long docId, long itemId, double qty, long? fromLocationId, long? toLocationId, double? qtyInput = null, string? uomCode = null, string? fromHu = null, string? toHu = null, long? orderLineId = null, long? replacesLineId = null, ProductionLinePurpose? productionPurpose = null)
     {
         if (qty <= 0)
         {
@@ -760,6 +765,7 @@ public sealed class DocumentService
             DocId = docId,
             ReplacesLineId = replacesLineId,
             OrderLineId = orderLineId,
+            ProductionPurpose = productionPurpose ?? ResolveDocLinePurpose(orderLineId),
             ItemId = itemId,
             Qty = qty,
             QtyInput = qtyInput,
@@ -924,6 +930,7 @@ public sealed class DocumentService
             {
                 DocId = docId,
                 OrderLineId = line.OrderLineId,
+                ProductionPurpose = line.ProductionPurpose,
                 ItemId = line.ItemId,
                 Qty = qty,
                 QtyInput = allocatedInput,
@@ -1264,6 +1271,7 @@ public sealed class DocumentService
                     {
                         DocId = docId,
                         OrderLineId = line.OrderLineId,
+                        ProductionPurpose = line.ProductionPurpose,
                         ItemId = line.ItemId,
                         Qty = line.Qty,
                         QtyInput = line.QtyInput,
@@ -1286,6 +1294,7 @@ public sealed class DocumentService
                     {
                         DocId = docId,
                         OrderLineId = line.OrderLineId,
+                        ProductionPurpose = line.ProductionPurpose,
                         ItemId = line.ItemId,
                         Qty = line.Qty,
                         QtyInput = line.QtyInput,
@@ -1325,6 +1334,7 @@ public sealed class DocumentService
                     {
                         DocId = docId,
                         OrderLineId = line.OrderLineId,
+                        ProductionPurpose = line.ProductionPurpose,
                         ItemId = line.ItemId,
                         Qty = chunkQty,
                         QtyInput = chunkInput,
@@ -1486,6 +1496,7 @@ public sealed class DocumentService
             Id = line.Id,
             DocId = line.DocId,
             OrderLineId = orderLineId,
+            ProductionPurpose = line.ProductionPurpose,
             ItemId = line.ItemId,
             Qty = line.Qty,
             QtyInput = line.QtyInput,
@@ -1496,6 +1507,13 @@ public sealed class DocumentService
             ToHu = line.ToHu,
             PackSingleHu = line.PackSingleHu
         };
+    }
+
+    private static ProductionLinePurpose ResolveDocLinePurpose(long? orderLineId)
+    {
+        return orderLineId.HasValue
+            ? ProductionLinePurpose.CustomerOrder
+            : ProductionLinePurpose.InternalStock;
     }
 
     private CloseDocCheck BuildCloseDocCheck(long docId)

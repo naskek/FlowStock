@@ -134,6 +134,7 @@ internal sealed class CloseDocumentHarness
             DocId = line.DocId,
             ReplacesLineId = line.ReplacesLineId,
             OrderLineId = line.OrderLineId,
+            ProductionPurpose = line.ProductionPurpose,
             ItemId = line.ItemId,
             Qty = line.Qty,
             QtyInput = line.QtyInput,
@@ -153,7 +154,8 @@ internal sealed class CloseDocumentHarness
             Id = line.Id,
             OrderId = line.OrderId,
             ItemId = line.ItemId,
-            QtyOrdered = line.QtyOrdered
+            QtyOrdered = line.QtyOrdered,
+            ProductionPurpose = line.ProductionPurpose
         };
     }
 
@@ -171,7 +173,8 @@ internal sealed class CloseDocumentHarness
             ToLocationId = line.ToLocationId,
             ToLocation = line.ToLocation,
             ToHu = line.ToHu,
-            SortOrder = line.SortOrder
+            SortOrder = line.SortOrder,
+            ProductionPurpose = line.ProductionPurpose
         };
     }
 
@@ -475,7 +478,8 @@ internal sealed class CloseDocumentHarness
                         OrderId = line.OrderId,
                         ItemId = line.ItemId,
                         ItemName = _items.TryGetValue(line.ItemId, out var item) ? item.Name : string.Empty,
-                        QtyOrdered = line.QtyOrdered
+                        QtyOrdered = line.QtyOrdered,
+                        ProductionPurpose = line.ProductionPurpose
                     })
                     .ToArray();
             });
@@ -512,7 +516,8 @@ internal sealed class CloseDocumentHarness
                     Id = orderLineId,
                     OrderId = line.OrderId,
                     ItemId = line.ItemId,
-                    QtyOrdered = line.QtyOrdered
+                    QtyOrdered = line.QtyOrdered,
+                    ProductionPurpose = line.ProductionPurpose
                 });
 
                 return orderLineId;
@@ -536,7 +541,34 @@ internal sealed class CloseDocumentHarness
                             Id = current.Id,
                             OrderId = current.OrderId,
                             ItemId = current.ItemId,
-                            QtyOrdered = qtyOrdered
+                            QtyOrdered = qtyOrdered,
+                            ProductionPurpose = current.ProductionPurpose
+                        };
+                        return;
+                    }
+                }
+            });
+
+        _store.Setup(store => store.UpdateOrderLinePurpose(It.IsAny<long>(), It.IsAny<ProductionLinePurpose>()))
+            .Callback<long, ProductionLinePurpose>((orderLineId, purpose) =>
+            {
+                foreach (var pair in _orderLinesByOrder)
+                {
+                    for (var index = 0; index < pair.Value.Count; index++)
+                    {
+                        if (pair.Value[index].Id != orderLineId)
+                        {
+                            continue;
+                        }
+
+                        var current = pair.Value[index];
+                        pair.Value[index] = new OrderLine
+                        {
+                            Id = current.Id,
+                            OrderId = current.OrderId,
+                            ItemId = current.ItemId,
+                            QtyOrdered = current.QtyOrdered,
+                            ProductionPurpose = purpose
                         };
                         return;
                     }

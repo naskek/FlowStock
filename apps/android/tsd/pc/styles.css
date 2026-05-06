@@ -573,7 +573,7 @@ body.pc-body {
   position: relative;
   z-index: 0;
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) 130px auto;
+  grid-template-columns: minmax(220px, 1fr) 130px 130px auto;
   gap: 8px;
   align-items: start;
   padding: 8px 0;

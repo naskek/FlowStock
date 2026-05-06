@@ -109,6 +109,7 @@ public interface IDataStore
     IReadOnlyList<OrderShipmentLine> GetOrderShipmentRemaining(long orderId);
     long AddOrderLine(OrderLine line);
     void UpdateOrderLineQty(long orderLineId, double qtyOrdered);
+    void UpdateOrderLinePurpose(long orderLineId, ProductionLinePurpose purpose);
     void DeleteOrderLine(long orderLineId);
     void DeleteOrderLines(long orderId);
     void DeleteOrder(long orderId);

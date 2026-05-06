@@ -91,7 +91,8 @@ public sealed class IncomingRequestOrderApiBridgeService
                 .Select(line => new CreateOrderApiLineRequest
                 {
                     ItemId = line.ItemId,
-                    QtyOrdered = line.QtyOrdered
+                    QtyOrdered = line.QtyOrdered,
+                    ProductionPurpose = line.ProductionPurpose
                 })
                 .ToList()
                 ?? new List<CreateOrderApiLineRequest>()
@@ -484,6 +485,9 @@ public sealed class IncomingRequestOrderApiBridgeService
 
         [JsonPropertyName("qty_ordered")]
         public double QtyOrdered { get; init; }
+
+        [JsonPropertyName("production_purpose")]
+        public string? ProductionPurpose { get; init; }
     }
 
     private sealed record SetOrderStatusPayload

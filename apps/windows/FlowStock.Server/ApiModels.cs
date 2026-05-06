@@ -74,6 +74,9 @@ public sealed class AddDocLineRequest
     [JsonPropertyName("order_line_id")]
     public long? OrderLineId { get; set; }
 
+    [JsonPropertyName("production_purpose")]
+    public string? ProductionPurpose { get; set; }
+
     [JsonPropertyName("qty")]
     public double Qty { get; set; }
 
@@ -294,6 +297,9 @@ public sealed class CreateOrderLineRequest
 
     [JsonPropertyName("qty_ordered")]
     public double QtyOrdered { get; set; }
+
+    [JsonPropertyName("production_purpose")]
+    public string? ProductionPurpose { get; set; }
 }
 
 public sealed class CreateOrderRequest
@@ -357,6 +363,9 @@ public sealed class UpdateOrderLineRequest
 
     [JsonPropertyName("qty_ordered")]
     public double QtyOrdered { get; set; }
+
+    [JsonPropertyName("production_purpose")]
+    public string? ProductionPurpose { get; set; }
 }
 
 public sealed class UpdateOrderRequest
@@ -456,6 +465,9 @@ public sealed class OrderRequestLineCreateRequest
 
     [JsonPropertyName("qty_ordered")]
     public double QtyOrdered { get; set; }
+
+    [JsonPropertyName("production_purpose")]
+    public string? ProductionPurpose { get; set; }
 }
 
 public sealed class OrderCreateRequestCreateRequest
