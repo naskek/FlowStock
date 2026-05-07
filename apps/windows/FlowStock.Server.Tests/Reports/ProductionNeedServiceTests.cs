@@ -237,6 +237,39 @@ public sealed class ProductionNeedServiceTests
         Assert.Equal(3600, row.TotalToMakeQty);
     }
 
+    [Fact]
+    public void ProductionNeed_CanRunInsideExecuteInTransaction()
+    {
+        _ = BuildService(
+            itemId: 10,
+            physicalStockQty: 1134,
+            minStockQty: 1134,
+            orderScenarios:
+            [
+                new OrderScenario(
+                    OrderId: 1,
+                    LineId: 100,
+                    QtyOrdered: 1890,
+                    QtyReserved: 1134,
+                    DueDate: DateTime.Today)
+            ],
+            store: out var store);
+        store.Setup(s => s.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
+            .Callback<Action<IDataStore>>(work => work(store.Object));
+
+        IReadOnlyList<ProductionNeedRow>? rows = null;
+        store.Object.ExecuteInTransaction(txStore =>
+        {
+            rows = new ProductionNeedService(txStore).GetRows(includeZeroNeed: true);
+        });
+
+        var row = Assert.Single(Assert.IsAssignableFrom<IReadOnlyList<ProductionNeedRow>>(rows));
+        Assert.Equal(756, row.ToCloseOrdersQty);
+        Assert.Equal(1134, row.ToMinStockQty);
+        Assert.Equal(1890, row.TotalToMakeQty);
+        store.Verify(s => s.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()), Times.Once);
+    }
+
     private static ProductionNeedService BuildService(
         long itemId,
         double physicalStockQty,

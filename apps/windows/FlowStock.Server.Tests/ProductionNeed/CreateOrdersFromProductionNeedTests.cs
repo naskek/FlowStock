@@ -215,7 +215,7 @@ public sealed class CreateOrdersFromProductionNeedTests
     }
 
     [Fact]
-    public async Task CreateOrdersFromProductionNeed_WithReservedMarkedStock_IgnoresStaleWebQty()
+    public async Task CreateOrdersFromProductionNeed_WithReservedMarkedStock_IgnoresStaleWebQty_AndRemainsIdempotent()
     {
         var (harness, apiStore) = CreateReservedMarkedCustomerNeedScenario();
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
@@ -225,6 +225,8 @@ public sealed class CreateOrdersFromProductionNeedTests
         Assert.Equal(0, freshNeed.ToMinStockQty);
         Assert.Equal(3600, freshNeed.TotalToMakeQty);
 
+        // Regression: Npgsql allows only one active reader/command per connection,
+        // so GetStock must not run nested commands while its stock reader is still open.
         var payload = await CreateOrdersAsync(host.Client, new
         {
             rows = new[]
@@ -247,6 +249,27 @@ public sealed class CreateOrdersFromProductionNeedTests
         Assert.Equal(3600, payload.CreatedMarkingQty);
         Assert.Equal(3600, Assert.Single(harness.MarkingOrders).RequestedQuantity);
         Assert.Contains(payload.DebugSummary, line => line.Contains("total_to_make=3600", StringComparison.Ordinal));
+
+        var secondPayload = await CreateOrdersAsync(host.Client, new
+        {
+            rows = new[]
+            {
+                new
+                {
+                    item_id = 1001,
+                    to_close_orders_qty = 7200,
+                    to_min_stock_qty = 0,
+                    total_to_make_qty = 7200
+                }
+            }
+        });
+
+        Assert.True(secondPayload.Ok);
+        Assert.Equal(0, secondPayload.InternalDraftCount);
+        Assert.Equal(0, secondPayload.CreatedLineCount);
+        Assert.Equal(0, secondPayload.CreatedMarkingTaskCount);
+        Assert.Equal(3600, Assert.Single(harness.MarkingOrders).RequestedQuantity);
+        Assert.Single(harness.MarkingOrders);
     }
 
     [Fact]

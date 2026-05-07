@@ -2595,13 +2595,6 @@ VALUES(@ts, @doc_id, @item_id, @location_id, @qty_delta, @hu_code, @hu);
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, BuildStockQuery(search));
-            if (!string.IsNullOrWhiteSpace(search))
-            {
-                command.Parameters.AddWithValue("@search", $"%{search.Trim()}%");
-            }
-
-            using var reader = command.ExecuteReader();
             var rawRows = new List<(
                 long ItemId,
                 string ItemName,
@@ -2616,28 +2609,37 @@ VALUES(@ts, @doc_id, @item_id, @location_id, @qty_delta, @hu_code, @hu);
                 bool ItemTypeMinStockUsesOrderBinding,
                 bool ItemTypeEnableOrderReservation,
                 double? MinStockQty)>();
-            while (reader.Read())
             {
-                rawRows.Add((
-                    ItemId: reader.GetInt64(0),
-                    ItemName: reader.GetString(1),
-                    Barcode: reader.IsDBNull(2) ? null : reader.GetString(2),
-                    LocationCode: reader.GetString(3),
-                    Hu: reader.IsDBNull(4) ? null : reader.GetString(4),
-                    Qty: reader.GetDouble(5),
-                    BaseUom: reader.IsDBNull(6) ? "шт" : reader.GetString(6),
-                    ItemTypeId: reader.IsDBNull(7) ? null : reader.GetInt64(7),
-                    ItemTypeName: reader.IsDBNull(8) ? null : reader.GetString(8),
-                    ItemTypeEnableMinStockControl: !reader.IsDBNull(9) && reader.GetBoolean(9),
-                    ItemTypeMinStockUsesOrderBinding: !reader.IsDBNull(10) && reader.GetBoolean(10),
-                    ItemTypeEnableOrderReservation: !reader.IsDBNull(11) && reader.GetBoolean(11),
-                    MinStockQty: reader.IsDBNull(12) ? null : reader.GetDouble(12)));
+                using var command = CreateCommand(connection, BuildStockQuery(search));
+                if (!string.IsNullOrWhiteSpace(search))
+                {
+                    command.Parameters.AddWithValue("@search", $"%{search.Trim()}%");
+                }
+
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    rawRows.Add((
+                        ItemId: reader.GetInt64(0),
+                        ItemName: reader.GetString(1),
+                        Barcode: reader.IsDBNull(2) ? null : reader.GetString(2),
+                        LocationCode: reader.GetString(3),
+                        Hu: reader.IsDBNull(4) ? null : reader.GetString(4),
+                        Qty: reader.GetDouble(5),
+                        BaseUom: reader.IsDBNull(6) ? "шт" : reader.GetString(6),
+                        ItemTypeId: reader.IsDBNull(7) ? null : reader.GetInt64(7),
+                        ItemTypeName: reader.IsDBNull(8) ? null : reader.GetString(8),
+                        ItemTypeEnableMinStockControl: !reader.IsDBNull(9) && reader.GetBoolean(9),
+                        ItemTypeMinStockUsesOrderBinding: !reader.IsDBNull(10) && reader.GetBoolean(10),
+                        ItemTypeEnableOrderReservation: !reader.IsDBNull(11) && reader.GetBoolean(11),
+                        MinStockQty: reader.IsDBNull(12) ? null : reader.GetDouble(12)));
+                }
             }
 
             var physicalLedgerStockByItem = rawRows
                 .GroupBy(row => row.ItemId)
                 .ToDictionary(group => group.Key, group => group.Sum(x => x.Qty));
-            var reservedHuKeys = GetHuOrderContextRows()
+            var reservedHuKeys = GetHuOrderContextRows(connection)
                 .Where(row => row.ItemId > 0
                               && row.ReservedCustomerOrderId.HasValue
                               && !string.IsNullOrWhiteSpace(row.HuCode))
@@ -2891,9 +2893,12 @@ HAVING COALESCE(SUM(qty_delta), 0) != 0;
 
     public IReadOnlyList<HuOrderContextRow> GetHuOrderContextRows()
     {
-        return WithConnection(connection =>
-        {
-            using var command = CreateCommand(connection, @"
+        return WithConnection(GetHuOrderContextRows);
+    }
+
+    private IReadOnlyList<HuOrderContextRow> GetHuOrderContextRows(NpgsqlConnection connection)
+    {
+        using var command = CreateCommand(connection, @"
 WITH hu_stock AS (
     SELECT UPPER(TRIM(COALESCE(hu_code, hu))) AS hu_code,
            item_id
@@ -3021,37 +3026,36 @@ FROM hu_stock hs
 LEFT JOIN origin_map om ON om.item_id = hs.item_id AND om.hu_code = hs.hu_code
 LEFT JOIN reserved_map rm ON rm.item_id = hs.item_id AND rm.hu_code = hs.hu_code;
 ");
-            command.Parameters.AddWithValue("@prd_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
-            command.Parameters.AddWithValue("@closed_status", DocTypeMapper.StatusToString(DocStatus.Closed));
-            command.Parameters.AddWithValue("@internal_order_type", OrderStatusMapper.TypeToString(OrderType.Internal));
-            command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
-            command.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
-            command.Parameters.AddWithValue("@cancelled_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+        command.Parameters.AddWithValue("@prd_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+        command.Parameters.AddWithValue("@closed_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+        command.Parameters.AddWithValue("@internal_order_type", OrderStatusMapper.TypeToString(OrderType.Internal));
+        command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+        command.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+        command.Parameters.AddWithValue("@cancelled_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
 
-            using var reader = command.ExecuteReader();
-            var rows = new List<HuOrderContextRow>();
-            while (reader.Read())
+        using var reader = command.ExecuteReader();
+        var rows = new List<HuOrderContextRow>();
+        while (reader.Read())
+        {
+            if (reader.IsDBNull(0))
             {
-                if (reader.IsDBNull(0))
-                {
-                    continue;
-                }
-
-                rows.Add(new HuOrderContextRow
-                {
-                    HuCode = reader.GetString(0),
-                    ItemId = reader.GetInt64(1),
-                    OriginInternalOrderId = reader.IsDBNull(2) ? null : reader.GetInt64(2),
-                    OriginInternalOrderRef = reader.IsDBNull(3) ? null : reader.GetString(3),
-                    ReservedCustomerOrderId = reader.IsDBNull(4) ? null : reader.GetInt64(4),
-                    ReservedCustomerOrderRef = reader.IsDBNull(5) ? null : reader.GetString(5),
-                    ReservedCustomerId = reader.IsDBNull(6) ? null : reader.GetInt64(6),
-                    ReservedCustomerName = reader.IsDBNull(7) ? null : reader.GetString(7)
-                });
+                continue;
             }
 
-            return rows;
-        });
+            rows.Add(new HuOrderContextRow
+            {
+                HuCode = reader.GetString(0),
+                ItemId = reader.GetInt64(1),
+                OriginInternalOrderId = reader.IsDBNull(2) ? null : reader.GetInt64(2),
+                OriginInternalOrderRef = reader.IsDBNull(3) ? null : reader.GetString(3),
+                ReservedCustomerOrderId = reader.IsDBNull(4) ? null : reader.GetInt64(4),
+                ReservedCustomerOrderRef = reader.IsDBNull(5) ? null : reader.GetString(5),
+                ReservedCustomerId = reader.IsDBNull(6) ? null : reader.GetInt64(6),
+                ReservedCustomerName = reader.IsDBNull(7) ? null : reader.GetString(7)
+            });
+        }
+
+        return rows;
     }
 
     public HuRecord CreateHuRecord(string? createdBy)
