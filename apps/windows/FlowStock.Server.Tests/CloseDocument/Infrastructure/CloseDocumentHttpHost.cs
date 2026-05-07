@@ -43,6 +43,7 @@ internal sealed class CloseDocumentHttpHost : IAsyncDisposable
         OrderUpdateEndpoint.Map(app);
         OrderDeleteEndpoint.Map(app);
         OrderStatusEndpoint.Map(app);
+        ProductionNeedCreateOrdersEndpoint.Map(app);
         DocumentDraftEndpoints.Map(app);
         CloseDocumentEndpoint.Map(app);
         OpsEndpoint.Map(app);

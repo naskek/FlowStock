@@ -146,6 +146,40 @@ public sealed class ProductionNeedServiceTests
     }
 
     [Fact]
+    public void CustomerDraftProduction_ReducesToCloseOrders_AndDoesNotReturnAsDemand()
+    {
+        var service = BuildService(
+            itemId: 10,
+            physicalStockQty: 0,
+            minStockQty: 0,
+            orderScenarios:
+            [
+                new OrderScenario(
+                    OrderId: 1,
+                    LineId: 100,
+                    QtyOrdered: 756,
+                    QtyReserved: 0,
+                    DueDate: DateTime.Today)
+            ],
+            plannedScenarios:
+            [
+                new PlannedScenario(
+                    OrderId: 2,
+                    LineId: 200,
+                    QtyRemaining: 756,
+                    Purpose: ProductionLinePurpose.CustomerOrder,
+                    OrderType: OrderType.Customer,
+                    Status: OrderStatus.Draft)
+            ],
+            store: out _);
+
+        var row = service.GetRows(includeZeroNeed: true).Single();
+
+        Assert.Equal(0, row.ToCloseOrdersQty);
+        Assert.Equal(0, row.TotalToMakeQty);
+    }
+
+    [Fact]
     public void PlannedInternalStockProduction_ReducesToMinStock()
     {
         var service = BuildService(
@@ -218,8 +252,8 @@ public sealed class ProductionNeedServiceTests
             {
                 Id = scenario.OrderId,
                 OrderRef = scenario.OrderId.ToString(),
-                Type = OrderType.Internal,
-                Status = OrderStatus.InProgress
+                Type = scenario.OrderType,
+                Status = scenario.Status
             }))
             .Cast<Order>()
             .ToArray();
@@ -260,6 +294,17 @@ public sealed class ProductionNeedServiceTests
 
         foreach (var scenario in planned)
         {
+            store.Setup(s => s.GetOrderLines(scenario.OrderId)).Returns(
+            [
+                new OrderLine
+                {
+                    Id = scenario.LineId,
+                    OrderId = scenario.OrderId,
+                    ItemId = itemId,
+                    QtyOrdered = scenario.QtyRemaining,
+                    ProductionPurpose = scenario.Purpose
+                }
+            ]);
             store.Setup(s => s.GetOrderReceiptRemaining(scenario.OrderId)).Returns(
             [
                 new OrderReceiptLine
@@ -301,5 +346,7 @@ public sealed class ProductionNeedServiceTests
         long OrderId,
         long LineId,
         double QtyRemaining,
-        ProductionLinePurpose Purpose);
+        ProductionLinePurpose Purpose,
+        OrderType OrderType = OrderType.Internal,
+        OrderStatus Status = OrderStatus.InProgress);
 }

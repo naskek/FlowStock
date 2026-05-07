@@ -77,6 +77,7 @@ public sealed class ProductionNeedService(IDataStore dataStore)
         var result = new Dictionary<long, (double OrderQty, double ReservedQty)>();
         var activeCustomerOrders = _dataStore.GetOrders()
             .Where(order => order.Type == OrderType.Customer
+                            && order.Status != OrderStatus.Draft
                             && order.Status is not OrderStatus.Shipped and not OrderStatus.Cancelled);
 
         foreach (var order in activeCustomerOrders)
@@ -112,22 +113,33 @@ public sealed class ProductionNeedService(IDataStore dataStore)
     private Dictionary<long, (double CustomerOrderQty, double InternalStockQty)> BuildPlannedProductionByItem()
     {
         var result = new Dictionary<long, (double CustomerOrderQty, double InternalStockQty)>();
-        var activeInternalOrders = _dataStore.GetOrders()
-            .Where(order => order.Type == OrderType.Internal
-                            && order.Status is not OrderStatus.Shipped and not OrderStatus.Cancelled);
+        var activePlannedOrders = _dataStore.GetOrders()
+            .Where(order =>
+                (order.Type == OrderType.Internal && order.Status is not OrderStatus.Shipped and not OrderStatus.Cancelled)
+                || (order.Type == OrderType.Customer && order.Status == OrderStatus.Draft));
 
-        foreach (var order in activeInternalOrders)
+        foreach (var order in activePlannedOrders)
         {
-            foreach (var line in _dataStore.GetOrderReceiptRemaining(order.Id))
+            var receiptRemainingByLine = _dataStore.GetOrderReceiptRemaining(order.Id)
+                .ToDictionary(line => line.OrderLineId);
+
+            foreach (var line in _dataStore.GetOrderLines(order.Id))
             {
-                var remainingQty = Math.Max(0, line.QtyRemaining);
+                var remainingQty = receiptRemainingByLine.TryGetValue(line.Id, out var receiptLine)
+                    ? Math.Max(0, receiptLine.QtyRemaining)
+                    : Math.Max(0, line.QtyOrdered);
                 if (remainingQty <= 0)
                 {
                     continue;
                 }
 
+                var purpose = order.Type == OrderType.Customer
+                    ? ProductionLinePurpose.CustomerOrder
+                    : receiptRemainingByLine.TryGetValue(line.Id, out var detailedLine)
+                        ? detailedLine.ProductionPurpose
+                        : line.ProductionPurpose;
                 result.TryGetValue(line.ItemId, out var current);
-                result[line.ItemId] = line.ProductionPurpose == ProductionLinePurpose.CustomerOrder
+                result[line.ItemId] = purpose == ProductionLinePurpose.CustomerOrder
                     ? (current.CustomerOrderQty + remainingQty, current.InternalStockQty)
                     : (current.CustomerOrderQty, current.InternalStockQty + remainingQty);
             }

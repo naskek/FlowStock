@@ -768,6 +768,7 @@
       '  <div class="pc-toolbar">' +
       '    <div class="pc-toolbar-actions">' +
       '      <button id="productionNeedRefreshBtn" class="btn btn-outline" type="button">Обновить</button>' +
+      '      <button id="productionNeedCreateOrdersBtn" class="btn btn-primary" type="button">Сформировать заказы</button>' +
       "    </div>" +
       '    <div id="productionNeedStatus" class="pc-status"></div>' +
       "  </div>" +
@@ -857,6 +858,7 @@
 
   function wireProductionNeed() {
     var refreshBtn = document.getElementById("productionNeedRefreshBtn");
+    var createOrdersBtn = document.getElementById("productionNeedCreateOrdersBtn");
     var statusEl = document.getElementById("productionNeedStatus");
     var tableWrap = document.getElementById("productionNeedTableWrap");
 
@@ -899,6 +901,31 @@
 
     if (refreshBtn) {
       refreshBtn.addEventListener("click", loadAndRender);
+    }
+
+    if (createOrdersBtn) {
+      createOrdersBtn.addEventListener("click", function () {
+        createOrdersBtn.disabled = true;
+        setStatus("Формирование черновиков...");
+        fetchJson("/api/production-needs/create-orders", {
+          method: "POST",
+          body: "{}",
+        })
+          .then(function (payload) {
+            var message = payload && payload.message
+              ? String(payload.message)
+              : "Черновики сформированы.";
+            window.alert(message);
+            return loadAndRender();
+          })
+          .catch(function (error) {
+            setStatus("Ошибка формирования черновиков");
+            window.alert(error && error.message ? error.message : "Не удалось сформировать черновики.");
+          })
+          .finally(function () {
+            createOrdersBtn.disabled = false;
+          });
+      });
     }
 
     setActiveLiveRefreshHandler(loadAndRender);

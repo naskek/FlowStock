@@ -395,6 +395,24 @@ public sealed class UpdateOrderRequest
     public List<UpdateOrderLineRequest>? Lines { get; set; }
 }
 
+public sealed class CreateProductionNeedOrdersResponse
+{
+    [JsonPropertyName("ok")]
+    public bool Ok { get; init; }
+
+    [JsonPropertyName("message")]
+    public string Message { get; init; } = string.Empty;
+
+    [JsonPropertyName("customer_draft_count")]
+    public int CustomerDraftCount { get; init; }
+
+    [JsonPropertyName("internal_draft_count")]
+    public int InternalDraftCount { get; init; }
+
+    [JsonPropertyName("created_line_count")]
+    public int CreatedLineCount { get; init; }
+}
+
 public sealed class UpdateOrderEnvelope
 {
     [JsonPropertyName("ok")]

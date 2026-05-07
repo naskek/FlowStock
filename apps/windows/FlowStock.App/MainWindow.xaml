@@ -180,6 +180,11 @@
                         <Button Content="Обновить"
                                 Padding="12,4"
                                 Click="ProductionNeedRefresh_Click" />
+                        <Button x:Name="ProductionNeedCreateOrdersButton"
+                                Content="Сформировать заказы"
+                                Padding="12,4"
+                                Margin="8,0,0,0"
+                                Click="ProductionNeedCreateOrders_Click" />
                         <TextBlock x:Name="ProductionNeedSummaryText"
                                    Margin="12,0,0,0"
                                    VerticalAlignment="Center"

@@ -1028,6 +1028,38 @@ public partial class MainWindow : Window
         LoadProductionNeedRows(showErrorMessage: true);
     }
 
+    private async void ProductionNeedCreateOrders_Click(object sender, RoutedEventArgs e)
+    {
+        ProductionNeedCreateOrdersButton.IsEnabled = false;
+        ProductionNeedSummaryText.Text = "Формирование черновиков...";
+
+        try
+        {
+            var result = await _services.WpfReadApi.CreateProductionNeedOrdersAsync();
+            if (!result.IsSuccess)
+            {
+                ProductionNeedSummaryText.Text = "Не удалось сформировать черновики.";
+                MessageBox.Show(
+                    result.ErrorMessage,
+                    "Потребность производства",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            MessageBox.Show(
+                result.Message,
+                "Потребность производства",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            LoadProductionNeedRows(showErrorMessage: true);
+        }
+        finally
+        {
+            ProductionNeedCreateOrdersButton.IsEnabled = true;
+        }
+    }
+
     private void LoadProductionNeedRows(bool showErrorMessage = false)
     {
         if (!_services.WpfReadApi.TryGetProductionNeedRows(

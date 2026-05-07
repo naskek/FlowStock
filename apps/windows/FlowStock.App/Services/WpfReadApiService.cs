@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Net.Http;
+using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using FlowStock.Core.Models;
@@ -284,6 +285,63 @@ public sealed class WpfReadApiService
                 : new List<ProductionNeedRow>(),
             "production-need-rows",
             out rows);
+    }
+
+    public async Task<WpfCreateProductionNeedOrdersResult> CreateProductionNeedOrdersAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var configuration = LoadConfiguration();
+            if (!configuration.IsConfigured)
+            {
+                return WpfCreateProductionNeedOrdersResult.Failure("Не настроен адрес FlowStock Server API.");
+            }
+
+            using var handler = CreateHandler(configuration);
+            using var client = new HttpClient(handler)
+            {
+                BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
+                Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
+            };
+            using var response = await client.PostAsJsonAsync(
+                "/api/production-needs/create-orders",
+                new { },
+                cancellationToken);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorPayload = await response.Content.ReadFromJsonAsync<ApiResultEnvelope>(JsonOptions, cancellationToken);
+                var message = string.IsNullOrWhiteSpace(errorPayload?.Error)
+                    ? $"Сервер вернул ошибку {(int)response.StatusCode}."
+                    : $"Сервер отклонил формирование черновиков: {errorPayload.Error}";
+                return WpfCreateProductionNeedOrdersResult.Failure(message);
+            }
+
+            var payload = await response.Content.ReadFromJsonAsync<CreateProductionNeedOrdersResponse>(JsonOptions, cancellationToken);
+            if (payload == null || !payload.Ok)
+            {
+                return WpfCreateProductionNeedOrdersResult.Failure("Сервер вернул неполный ответ при формировании черновиков.");
+            }
+
+            return WpfCreateProductionNeedOrdersResult.Success(payload.Message);
+        }
+        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.Warn("WPF production need create orders timed out");
+            return WpfCreateProductionNeedOrdersResult.Failure("Сервер не ответил вовремя при формировании черновиков.", ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.Error("WPF production need create orders request failed", ex);
+            return WpfCreateProductionNeedOrdersResult.Failure(
+                "Не удалось связаться с FlowStock Server API при формировании черновиков.",
+                ex);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Unexpected WPF production need create orders failure", ex);
+            return WpfCreateProductionNeedOrdersResult.Failure("Не удалось сформировать черновики. Подробности записаны в лог.", ex);
+        }
     }
 
     public bool TryGetHuStockRows(out IReadOnlyList<HuStockContextRow> rows)
@@ -924,4 +982,38 @@ public sealed record WpfReadApiConfiguration(
     bool AllowInvalidTls)
 {
     public bool IsConfigured => !string.IsNullOrWhiteSpace(BaseUrl);
+}
+
+public sealed class WpfCreateProductionNeedOrdersResult
+{
+    private WpfCreateProductionNeedOrdersResult(bool isSuccess, string message, Exception? exception = null)
+    {
+        IsSuccess = isSuccess;
+        Message = message;
+        ErrorMessage = isSuccess ? string.Empty : message;
+        Exception = exception;
+    }
+
+    public bool IsSuccess { get; }
+    public string Message { get; }
+    public string ErrorMessage { get; }
+    public Exception? Exception { get; }
+
+    public static WpfCreateProductionNeedOrdersResult Success(string message) => new(true, message);
+    public static WpfCreateProductionNeedOrdersResult Failure(string message, Exception? exception = null) => new(false, message, exception);
+}
+
+file sealed class ApiResultEnvelope
+{
+    [JsonPropertyName("error")]
+    public string? Error { get; init; }
+}
+
+file sealed class CreateProductionNeedOrdersResponse
+{
+    [JsonPropertyName("ok")]
+    public bool Ok { get; init; }
+
+    [JsonPropertyName("message")]
+    public string Message { get; init; } = string.Empty;
 }

@@ -11,6 +11,7 @@ internal sealed class CloseDocumentHarness
     private readonly Dictionary<long, Doc> _docs = new();
     private readonly Dictionary<long, List<DocLine>> _linesByDoc = new();
     private readonly Dictionary<long, Item> _items = new();
+    private readonly Dictionary<long, ItemType> _itemTypes = new();
     private readonly Dictionary<long, Location> _locations = new();
     private readonly Dictionary<long, Partner> _partners = new();
     private readonly Dictionary<long, Order> _orders = new();
@@ -19,6 +20,7 @@ internal sealed class CloseDocumentHarness
     private readonly Dictionary<long, OrderRequest> _orderRequests = new();
     private readonly Dictionary<long, IReadOnlyList<OrderReceiptLine>> _orderReceiptRemaining = new();
     private readonly Dictionary<long, IReadOnlyList<OrderReceiptLine>> _orderReceiptRemainingWithoutReservedStock = new();
+    private readonly Dictionary<long, IReadOnlyList<OrderReceiptPlanLine>> _orderReceiptPlanLines = new();
     private readonly Dictionary<long, IReadOnlyDictionary<long, double>> _shippedTotalsByOrderLine = new();
     private readonly HashSet<long> _ordersWithOutboundDocs = new();
     private readonly Dictionary<string, HuRecord> _hus = new(StringComparer.OrdinalIgnoreCase);
@@ -178,6 +180,23 @@ internal sealed class CloseDocumentHarness
         };
     }
 
+    private static OrderReceiptPlanLine CloneOrderReceiptPlanLine(OrderReceiptPlanLine line)
+    {
+        return new OrderReceiptPlanLine
+        {
+            Id = line.Id,
+            OrderId = line.OrderId,
+            OrderLineId = line.OrderLineId,
+            ItemId = line.ItemId,
+            ItemName = line.ItemName,
+            QtyPlanned = line.QtyPlanned,
+            ToLocationId = line.ToLocationId,
+            ToLocationCode = line.ToLocationCode,
+            ToHu = line.ToHu,
+            SortOrder = line.SortOrder
+        };
+    }
+
     private static ItemRequest CloneItemRequest(ItemRequest request)
     {
         return new ItemRequest
@@ -243,6 +262,11 @@ internal sealed class CloseDocumentHarness
         _locations[location.Id] = location;
     }
 
+    public void SeedItemType(ItemType itemType)
+    {
+        _itemTypes[itemType.Id] = itemType;
+    }
+
     public void SeedPartner(Partner partner)
     {
         _partners[partner.Id] = partner;
@@ -289,6 +313,13 @@ internal sealed class CloseDocumentHarness
     {
         _orderReceiptRemainingWithoutReservedStock[orderId] = (lines ?? Array.Empty<OrderReceiptLine>())
             .Select(CloneOrderReceiptLine)
+            .ToArray();
+    }
+
+    public void SeedOrderReceiptPlanLines(long orderId, params OrderReceiptPlanLine[] lines)
+    {
+        _orderReceiptPlanLines[orderId] = (lines ?? Array.Empty<OrderReceiptPlanLine>())
+            .Select(CloneOrderReceiptPlanLine)
             .ToArray();
     }
 
@@ -345,6 +376,12 @@ internal sealed class CloseDocumentHarness
 
         _store.Setup(store => store.GetItems(It.IsAny<string?>()))
             .Returns(() => _items.Values.ToArray());
+
+        _store.Setup(store => store.GetItemType(It.IsAny<long>()))
+            .Returns<long>(itemTypeId => _itemTypes.TryGetValue(itemTypeId, out var itemType) ? itemType : null);
+
+        _store.Setup(store => store.GetItemTypes(It.IsAny<bool>()))
+            .Returns(() => _itemTypes.Values.OrderBy(itemType => itemType.Id).ToArray());
 
         _store.Setup(store => store.FindLocationById(It.IsAny<long>()))
             .Returns<long>(locationId => _locations.TryGetValue(locationId, out var location) ? location : null);
@@ -485,18 +522,39 @@ internal sealed class CloseDocumentHarness
             });
 
         _store.Setup(store => store.GetOrderReceiptRemaining(It.IsAny<long>()))
-            .Returns<long>(orderId => _orderReceiptRemaining.TryGetValue(orderId, out var lines)
-                ? lines
-                    .Select(CloneOrderReceiptLine)
-                    .ToArray()
-                : Array.Empty<OrderReceiptLine>());
+            .Returns<long>(GetOrderReceiptRemainingLines);
 
         _store.Setup(store => store.GetOrderReceiptRemainingWithoutReservedStock(It.IsAny<long>()))
             .Returns<long>(orderId => _orderReceiptRemainingWithoutReservedStock.TryGetValue(orderId, out var lines)
                 ? lines
                     .Select(CloneOrderReceiptLine)
                     .ToArray()
-                : Array.Empty<OrderReceiptLine>());
+                : GetOrderReceiptRemainingLines(orderId));
+
+        _store.Setup(store => store.GetOrderReceiptPlanLines(It.IsAny<long>()))
+            .Returns<long>(orderId => _orderReceiptPlanLines.TryGetValue(orderId, out var lines)
+                ? lines
+                    .Select(CloneOrderReceiptPlanLine)
+                    .ToArray()
+                : Array.Empty<OrderReceiptPlanLine>());
+
+        _store.Setup(store => store.ReplaceOrderReceiptPlanLines(It.IsAny<long>(), It.IsAny<IReadOnlyList<OrderReceiptPlanLine>>()))
+            .Callback<long, IReadOnlyList<OrderReceiptPlanLine>>((orderId, lines) =>
+            {
+                _orderReceiptPlanLines[orderId] = (lines ?? Array.Empty<OrderReceiptPlanLine>())
+                    .Select(CloneOrderReceiptPlanLine)
+                    .ToArray();
+            });
+
+        _store.Setup(store => store.GetReservedOrderReceiptHuCodes(It.IsAny<long?>()))
+            .Returns<long?>(excludeOrderId => _orderReceiptPlanLines
+                .Where(pair => !excludeOrderId.HasValue || pair.Key != excludeOrderId.Value)
+                .SelectMany(pair => pair.Value)
+                .Select(line => NormalizeHu(line.ToHu))
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Cast<string>()
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray());
 
         _store.Setup(store => store.GetOrderShipmentRemaining(It.IsAny<long>()))
             .Returns(Array.Empty<OrderShipmentLine>());
@@ -721,6 +779,9 @@ internal sealed class CloseDocumentHarness
 
         _store.Setup(store => store.GetLedgerTotalsByItem())
             .Returns(() => BuildTotalsByItem());
+
+        _store.Setup(store => store.GetStock(It.IsAny<string?>()))
+            .Returns<string?>(search => BuildStockRows(search));
 
         _store.Setup(store => store.GetLedgerTotalsByHu())
             .Returns(() => BuildTotalsByHu());
@@ -1101,6 +1162,35 @@ internal sealed class CloseDocumentHarness
         return seed + delta;
     }
 
+    private IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemainingLines(long orderId)
+    {
+        if (_orderReceiptRemaining.TryGetValue(orderId, out var seeded))
+        {
+            return seeded.Select(CloneOrderReceiptLine).ToArray();
+        }
+
+        if (!_orderLinesByOrder.TryGetValue(orderId, out var orderLines))
+        {
+            return Array.Empty<OrderReceiptLine>();
+        }
+
+        return orderLines
+            .OrderBy(line => line.Id)
+            .Select(line => new OrderReceiptLine
+            {
+                OrderLineId = line.Id,
+                OrderId = orderId,
+                ItemId = line.ItemId,
+                ItemName = _items.TryGetValue(line.ItemId, out var item) ? item.Name : string.Empty,
+                QtyOrdered = line.QtyOrdered,
+                QtyReceived = 0,
+                QtyRemaining = line.QtyOrdered,
+                SortOrder = 0,
+                ProductionPurpose = line.ProductionPurpose
+            })
+            .ToArray();
+    }
+
     private IReadOnlyDictionary<long, double> BuildTotalsByItem()
     {
         var totals = new Dictionary<long, double>();
@@ -1120,6 +1210,66 @@ internal sealed class CloseDocumentHarness
         }
 
         return totals;
+    }
+
+    private IReadOnlyList<StockRow> BuildStockRows(string? search)
+    {
+        var normalized = string.IsNullOrWhiteSpace(search) ? null : search.Trim();
+        var reservedByItem = _orders.Values
+            .Where(order => order.Type == OrderType.Customer
+                            && order.Status is not OrderStatus.Draft and not OrderStatus.Shipped and not OrderStatus.Cancelled)
+            .SelectMany(order => (_orderReceiptPlanLines.TryGetValue(order.Id, out var lines) ? lines : Array.Empty<OrderReceiptPlanLine>())
+                .GroupBy(line => line.ItemId)
+                .Select(group => new { group.Key, Qty = group.Sum(line => line.QtyPlanned) }))
+            .GroupBy(entry => entry.Key)
+            .ToDictionary(group => group.Key, group => group.Sum(entry => entry.Qty));
+
+        var totals = new Dictionary<(long ItemId, long LocationId), double>();
+        foreach (var balance in _seedBalances)
+        {
+            var key = (balance.Key.ItemId, balance.Key.LocationId);
+            totals[key] = totals.TryGetValue(key, out var current)
+                ? current + balance.Value
+                : balance.Value;
+        }
+
+        foreach (var entry in _postedLedger)
+        {
+            var key = (entry.ItemId, entry.LocationId);
+            totals[key] = totals.TryGetValue(key, out var current)
+                ? current + entry.QtyDelta
+                : entry.QtyDelta;
+        }
+
+        return totals
+            .Select(entry =>
+            {
+                _items.TryGetValue(entry.Key.ItemId, out var item);
+                _locations.TryGetValue(entry.Key.LocationId, out var location);
+                return new StockRow
+                {
+                    ItemId = entry.Key.ItemId,
+                    ItemName = item?.Name ?? string.Empty,
+                    Barcode = item?.Barcode,
+                    LocationCode = location?.Code ?? string.Empty,
+                    Qty = entry.Value,
+                    ReservedCustomerOrderQty = reservedByItem.TryGetValue(entry.Key.ItemId, out var reservedQty) ? reservedQty : 0,
+                    ItemTypeId = item?.ItemTypeId,
+                    ItemTypeName = item?.ItemTypeId is long itemTypeId && _itemTypes.TryGetValue(itemTypeId, out var itemType)
+                        ? itemType.Name
+                        : item?.ItemTypeName,
+                    ItemTypeEnableMinStockControl = item?.ItemTypeEnableMinStockControl ?? false,
+                    MinStockQty = item?.MinStockQty,
+                    AvailableForMinStockQty = entry.Value
+                };
+            })
+            .Where(row => normalized == null
+                          || row.ItemName.Contains(normalized, StringComparison.OrdinalIgnoreCase)
+                          || (!string.IsNullOrWhiteSpace(row.Barcode)
+                              && row.Barcode.Contains(normalized, StringComparison.OrdinalIgnoreCase)))
+            .OrderBy(row => row.ItemId)
+            .ThenBy(row => row.LocationCode, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
     private IReadOnlyDictionary<string, double> BuildTotalsByHu()

@@ -209,6 +209,47 @@ public sealed class OrderService
         OrderType type = OrderType.Customer,
         bool? bindReservedStockForCustomer = null)
     {
+        return CreateOrderCore(
+            orderRef,
+            partnerId,
+            dueDate,
+            comment,
+            lines,
+            type,
+            OrderStatus.InProgress,
+            bindReservedStockForCustomer);
+    }
+
+    public long CreateDraftOrder(
+        string orderRef,
+        long? partnerId,
+        DateTime? dueDate,
+        string? comment,
+        IReadOnlyList<OrderLineView> lines,
+        OrderType type = OrderType.Customer,
+        bool? bindReservedStockForCustomer = null)
+    {
+        return CreateOrderCore(
+            orderRef,
+            partnerId,
+            dueDate,
+            comment,
+            lines,
+            type,
+            OrderStatus.Draft,
+            bindReservedStockForCustomer);
+    }
+
+    private long CreateOrderCore(
+        string orderRef,
+        long? partnerId,
+        DateTime? dueDate,
+        string? comment,
+        IReadOnlyList<OrderLineView> lines,
+        OrderType type,
+        OrderStatus initialStatus,
+        bool? bindReservedStockForCustomer)
+    {
         if (string.IsNullOrWhiteSpace(orderRef))
         {
             throw new ArgumentException("Номер заказа обязателен.", nameof(orderRef));
@@ -234,7 +275,7 @@ public sealed class OrderService
             Type = type,
             PartnerId = type == OrderType.Customer ? partnerId : null,
             DueDate = dueDate?.Date,
-            Status = OrderStatus.InProgress,
+            Status = initialStatus,
             Comment = string.IsNullOrWhiteSpace(comment) ? null : comment.Trim(),
             CreatedAt = DateTime.Now,
             UseReservedStock = useReservedStock
@@ -350,7 +391,11 @@ public sealed class OrderService
             Type = type,
             PartnerId = type == OrderType.Customer ? partnerId : null,
             DueDate = dueDate?.Date,
-            Status = existing.Status == OrderStatus.Shipped ? OrderStatus.Shipped : OrderStatus.InProgress,
+            Status = existing.Status == OrderStatus.Shipped
+                ? OrderStatus.Shipped
+                : existing.Status == OrderStatus.Draft
+                    ? OrderStatus.Draft
+                    : OrderStatus.InProgress,
             Comment = string.IsNullOrWhiteSpace(comment) ? null : comment.Trim(),
             CreatedAt = existing.CreatedAt,
             UseReservedStock = useReservedStock
@@ -1125,6 +1170,11 @@ public sealed class OrderService
 
     private Order ApplyAutoStatus(Order order)
     {
+        if (order.Status == OrderStatus.Draft)
+        {
+            return order;
+        }
+
         if (order.Status == OrderStatus.Cancelled)
         {
             return order;
