@@ -8,6 +8,8 @@ namespace FlowStock.Core.Services;
 public sealed class MarkingNeedCreationService(IDataStore dataStore)
 {
     private const double QtyTolerance = 0.000001;
+    public const string ProductionNeedSourceType = "PRODUCTION_NEED";
+    public const string ProductionOrderSourceType = "PRODUCTION_ORDER";
     private readonly IDataStore _dataStore = dataStore;
 
     public MarkingNeedCreationResult CreateFromProductionNeeds(DateTime createdAt)
@@ -22,7 +24,9 @@ public sealed class MarkingNeedCreationService(IDataStore dataStore)
         }
 
         var existingByItem = _dataStore.GetMarkingOrdersByItemIds(requiredByItem.Keys.ToArray())
-            .Where(order => order.ItemId.HasValue && IsCoveringStatus(order.Status))
+            .Where(order => order.ItemId.HasValue
+                            && IsCurrentProductionSource(order)
+                            && IsCoveringStatus(order.Status))
             .GroupBy(order => order.ItemId!.Value)
             .ToDictionary(
                 group => group.Key,
@@ -53,6 +57,7 @@ public sealed class MarkingNeedCreationService(IDataStore dataStore)
                 RequestNumber = BuildRequestNumber(itemId, createdAt, createdCount + 1),
                 Status = MarkingOrderStatus.WaitingForCodes,
                 Notes = "Автосформировано по производственной потребности.",
+                SourceType = ProductionNeedSourceType,
                 RequestedAt = createdAt,
                 CreatedAt = createdAt,
                 UpdatedAt = createdAt
@@ -152,6 +157,12 @@ public sealed class MarkingNeedCreationService(IDataStore dataStore)
     {
         return !string.Equals(status, MarkingOrderStatus.Cancelled, StringComparison.OrdinalIgnoreCase)
                && !string.Equals(status, MarkingOrderStatus.Failed, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsCurrentProductionSource(MarkingOrder order)
+    {
+        return string.Equals(order.SourceType, ProductionNeedSourceType, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(order.SourceType, ProductionOrderSourceType, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string BuildRequestNumber(long itemId, DateTime createdAt, int sequence)

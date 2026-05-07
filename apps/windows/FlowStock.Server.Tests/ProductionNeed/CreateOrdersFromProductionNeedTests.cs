@@ -163,7 +163,10 @@ public sealed class CreateOrdersFromProductionNeedTests
         Assert.Equal(3600, Assert.Single(harness.GetOrderLines(internalDraft.Id)).QtyOrdered);
         Assert.Equal(1, payload.CreatedMarkingTaskCount);
         Assert.Equal(4800, payload.CreatedMarkingQty);
-        Assert.Equal(4800, Assert.Single(harness.MarkingOrders).RequestedQuantity);
+        var markingOrder = Assert.Single(harness.MarkingOrders);
+        Assert.Null(markingOrder.OrderId);
+        Assert.Equal(MarkingNeedCreationService.ProductionNeedSourceType, markingOrder.SourceType);
+        Assert.Equal(4800, markingOrder.RequestedQuantity);
     }
 
     [Fact]
@@ -231,32 +234,63 @@ public sealed class CreateOrdersFromProductionNeedTests
     {
         var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 1200, minStockQty: 3600);
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
-        await CreateOrdersAsync(host.Client);
-        foreach (var order in harness.MarkingOrders)
+        harness.SeedOrder(new Order
         {
-            harness.SeedMarkingOrder(new MarkingOrder
-            {
-                Id = order.Id,
-                OrderId = order.OrderId,
-                ItemId = order.ItemId,
-                Gtin = order.Gtin,
-                RequestedQuantity = order.RequestedQuantity,
-                RequestNumber = order.RequestNumber,
-                Status = MarkingOrderStatus.Cancelled,
-                Notes = order.Notes,
-                RequestedAt = order.RequestedAt,
-                CodesBoundAt = order.CodesBoundAt,
-                CreatedAt = order.CreatedAt,
-                UpdatedAt = order.UpdatedAt
-            });
-        }
+            Id = 30,
+            OrderRef = "030",
+            Type = OrderType.Internal,
+            Status = OrderStatus.Draft,
+            CreatedAt = new DateTime(2026, 5, 7, 12, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 301,
+            OrderId = 30,
+            ItemId = 1001,
+            QtyOrdered = 3600,
+            ProductionPurpose = ProductionLinePurpose.InternalStock
+        });
+
+        var needRow = Assert.Single(new ProductionNeedService(harness.Store).GetRows(includeZeroNeed: true));
+        Assert.Equal(1200, needRow.ToCloseOrdersQty);
+        Assert.Equal(0, needRow.ToMinStockQty);
+        Assert.Equal(1200, needRow.TotalToMakeQty);
 
         var payload = await CreateMarkingAsync(host.Client);
 
         Assert.True(payload.Ok);
         Assert.Equal(1, payload.CreatedTaskCount);
+        Assert.Equal(4800, payload.CreatedQty);
+        Assert.Equal(4800, Assert.Single(harness.MarkingOrders).RequestedQuantity);
+    }
+
+    [Fact]
+    public async Task CreateMarkingFromProductionNeeds_OldCompletedGlobalMarking_DoesNotBlockCurrentNeed()
+    {
+        var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 1200, minStockQty: 3600);
+        harness.SeedMarkingOrder(new MarkingOrder
+        {
+            Id = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            OrderId = null,
+            ItemId = 1001,
+            Gtin = "04607186951520",
+            RequestedQuantity = 10000,
+            RequestNumber = "OLD-10000",
+            Status = MarkingOrderStatus.Completed,
+            CreatedAt = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAt = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+        });
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        var payload = await CreateMarkingAsync(host.Client);
+
+        Assert.True(payload.Ok);
+        Assert.Equal(1, payload.CreatedTaskCount);
+        Assert.Equal(4800, payload.CreatedQty);
         Assert.Equal(2, harness.MarkingOrders.Count);
-        Assert.Equal(4800, harness.MarkingOrders.Last().RequestedQuantity);
+        Assert.Contains(harness.MarkingOrders, order =>
+            order.SourceType == MarkingNeedCreationService.ProductionNeedSourceType
+            && order.RequestedQuantity == 4800);
     }
 
     [Fact]
@@ -331,6 +365,54 @@ public sealed class CreateOrdersFromProductionNeedTests
             "Строка 1 (Горчица): требуется привязать 1134 код(ов) КМ, сейчас 0.",
             result.Errors);
         Assert.Equal(DocStatus.Draft, harness.GetDoc(50).Status);
+    }
+
+    [Fact]
+    public async Task CreateOrdersFromProductionNeed_ForMarkableItem_WithEnoughKm_ClosesInternalReceipt()
+    {
+        var (harness, apiStore) = CreateMixedNeedScenario();
+        harness.SeedItem(new Item
+        {
+            Id = 1001,
+            Name = "Горчица",
+            Gtin = "04607186951520",
+            ItemTypeName = "Готовая продукция",
+            ItemTypeEnableMinStockControl = true,
+            ItemTypeEnableMarking = true,
+            MinStockQty = 1134
+        });
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        await CreateOrdersAsync(host.Client);
+
+        var internalDraft = Assert.Single(harness.Store.GetOrders().Where(order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft));
+        var internalLine = Assert.Single(harness.GetOrderLines(internalDraft.Id));
+        harness.SeedDoc(new Doc
+        {
+            Id = 51,
+            DocRef = "PRD-2026-000051",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = internalDraft.Id,
+            OrderRef = internalDraft.OrderRef,
+            CreatedAt = new DateTime(2026, 5, 7, 12, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 501,
+            DocId = 51,
+            OrderLineId = internalLine.Id,
+            ItemId = internalLine.ItemId,
+            Qty = internalLine.QtyOrdered,
+            ToLocationId = 1,
+            ToHu = "HU-PRD-051"
+        });
+        harness.SeedKmCodeCountByReceiptLine(501, (int)internalLine.QtyOrdered);
+
+        var result = harness.CreateService().TryCloseDoc(51, allowNegative: false);
+
+        Assert.True(result.Success);
+        Assert.Equal(DocStatus.Closed, harness.GetDoc(51).Status);
     }
 
     private static async Task<CreateProductionNeedOrdersResponse> CreateOrdersAsync(HttpClient client)

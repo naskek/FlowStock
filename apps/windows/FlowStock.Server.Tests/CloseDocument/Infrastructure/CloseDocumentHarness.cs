@@ -213,6 +213,8 @@ internal sealed class CloseDocumentHarness
             RequestNumber = order.RequestNumber,
             Status = order.Status,
             Notes = order.Notes,
+            SourceType = order.SourceType,
+            SourceOrderId = order.SourceOrderId,
             RequestedAt = order.RequestedAt,
             CodesBoundAt = order.CodesBoundAt,
             CreatedAt = order.CreatedAt,

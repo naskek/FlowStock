@@ -37,8 +37,8 @@
                   SelectionMode="Extended"
                   SelectionUnit="FullRow">
             <DataGrid.Columns>
-                <DataGridTextColumn Header="Номер заказа" Binding="{Binding OrderRef}" Width="130" />
-                <DataGridTextColumn Header="Клиент" Binding="{Binding PartnerDisplay}" Width="220" />
+                <DataGridTextColumn Header="Заказ/источник" Binding="{Binding OrderRef}" Width="150" />
+                <DataGridTextColumn Header="Источник" Binding="{Binding PartnerDisplay}" Width="220" />
                 <DataGridTextColumn Header="Статус заказа" Binding="{Binding OrderStatusDisplay}" Width="130" />
                 <DataGridTextColumn Header="Дата/срок" Binding="{Binding DueDateDisplay}" Width="120" />
                 <DataGridTextColumn Header="Статус маркировки" Binding="{Binding MarkingStatusDisplay}" Width="180" />

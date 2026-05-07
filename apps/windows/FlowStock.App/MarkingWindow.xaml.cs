@@ -63,7 +63,7 @@ public partial class MarkingWindow : Window
             if (dialog.ShowDialog(this) == true)
             {
                 File.WriteAllBytes(dialog.FileName, result.FileBytes);
-                MessageBox.Show("Файл ЧЗ сформирован. ЧЗ готов к нанесению.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show("Файл ЧЗ сформирован. Маркировка проведена.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
             }
 
             LoadOrders(showErrorMessage: false);
@@ -114,7 +114,7 @@ public partial class MarkingWindow : Window
             _orders.Add(new MarkingOrderDisplayRow(row));
         }
 
-        SummaryText.Text = $"Заказов: {_orders.Count}.";
+        SummaryText.Text = $"Задач: {_orders.Count}.";
     }
 
     private sealed class MarkingOrderDisplayRow

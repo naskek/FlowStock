@@ -10,6 +10,8 @@ public sealed class MarkingOrder
     public string RequestNumber { get; init; } = string.Empty;
     public string Status { get; init; } = MarkingOrderStatus.Draft;
     public string? Notes { get; init; }
+    public string? SourceType { get; init; }
+    public long? SourceOrderId { get; init; }
     public DateTime? RequestedAt { get; init; }
     public DateTime? CodesBoundAt { get; init; }
     public DateTime CreatedAt { get; init; }

@@ -1575,7 +1575,8 @@ SELECT o.id,
        COALESCE(o.marking_status, 'NOT_REQUIRED') AS marking_status,
        COALESCE(order_need.line_count, 0) AS line_count,
        COALESCE(order_need.code_count, 0) AS code_count,
-       COALESCE(o.marking_printed_at, o.marking_excel_generated_at) AS last_generated_at
+       COALESCE(o.marking_printed_at, o.marking_excel_generated_at) AS last_generated_at,
+       o.created_at AS sort_created_at
 FROM orders o
 LEFT JOIN partners p ON p.id = o.partner_id
 LEFT JOIN order_need ON order_need.order_id = o.id
@@ -1586,14 +1587,47 @@ WHERE COALESCE(order_need.line_count, 0) > 0
       OR (@include_completed = TRUE
           AND COALESCE(o.marking_status, 'NOT_REQUIRED') IN (@printed_status, @legacy_excel_generated_status))
   )
-ORDER BY o.due_date NULLS LAST, o.created_at, o.id;
+UNION ALL
+SELECT 0 AS id,
+       COALESCE(i.name, 'Потребность производства') AS order_ref,
+       NULL AS partner_id,
+       'Потребность производства' AS name,
+       NULL AS code,
+       NULL AS due_date,
+       @in_progress_status AS status,
+       CASE
+           WHEN mo.status IN (@marking_status_printed, @marking_status_completed, @marking_status_codes_bound, @marking_status_ready_for_print) THEN @printed_status
+           ELSE @required_status
+       END AS marking_status,
+       1 AS line_count,
+       mo.requested_quantity AS code_count,
+       COALESCE(mo.codes_bound_at, mo.requested_at, mo.created_at) AS last_generated_at,
+       mo.created_at AS sort_created_at
+FROM marking_order mo
+LEFT JOIN items i ON i.id = mo.item_id
+WHERE mo.source_type IN (@production_need_source_type, @production_order_source_type)
+  AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
+  AND (
+      mo.status NOT IN (@marking_status_printed, @marking_status_completed)
+      OR @include_completed = TRUE
+  )
+ORDER BY due_date NULLS LAST, sort_created_at, id;
 ");
             command.Parameters.AddWithValue("@closed_status", DocTypeMapper.StatusToString(DocStatus.Closed));
             command.Parameters.AddWithValue("@outbound_type", DocTypeMapper.ToOpString(DocType.Outbound));
             command.Parameters.AddWithValue("@in_progress_status", OrderStatusMapper.StatusToString(OrderStatus.InProgress));
             command.Parameters.AddWithValue("@accepted_status", OrderStatusMapper.StatusToString(OrderStatus.Accepted));
             command.Parameters.AddWithValue("@printed_status", MarkingStatusMapper.ToString(MarkingStatus.Printed));
+            command.Parameters.AddWithValue("@required_status", MarkingStatusMapper.ToString(MarkingStatus.Required));
             command.Parameters.AddWithValue("@legacy_excel_generated_status", "EXCEL_GENERATED");
+            command.Parameters.AddWithValue("@production_need_source_type", MarkingNeedCreationService.ProductionNeedSourceType);
+            command.Parameters.AddWithValue("@production_order_source_type", MarkingNeedCreationService.ProductionOrderSourceType);
+            command.Parameters.AddWithValue("@marking_status_codes_bound", MarkingOrderStatus.CodesBound);
+            command.Parameters.AddWithValue("@marking_status_ready_for_print", MarkingOrderStatus.ReadyForPrint);
+            command.Parameters.AddWithValue("@marking_status_printed", MarkingOrderStatus.Printed);
+            command.Parameters.AddWithValue("@marking_status_completed", MarkingOrderStatus.Completed);
+            command.Parameters.AddWithValue("@marking_status_cancelled", MarkingOrderStatus.Cancelled);
+            command.Parameters.AddWithValue("@marking_status_failed", MarkingOrderStatus.Failed);
             command.Parameters.AddWithValue("@include_completed", includeCompleted);
             using var reader = command.ExecuteReader();
             var rows = new List<MarkingOrderQueueRow>();
@@ -1735,6 +1769,8 @@ INSERT INTO marking_order(
     request_number,
     status,
     notes,
+    source_type,
+    source_order_id,
     requested_at,
     codes_bound_at,
     created_at,
@@ -1748,6 +1784,8 @@ VALUES(
     @request_number,
     @status,
     @notes,
+    @source_type,
+    @source_order_id,
     @requested_at,
     @codes_bound_at,
     @created_at,
@@ -1760,6 +1798,8 @@ VALUES(
             command.Parameters.AddWithValue("@request_number", order.RequestNumber);
             command.Parameters.AddWithValue("@status", string.IsNullOrWhiteSpace(order.Status) ? MarkingOrderStatus.Draft : order.Status.Trim());
             command.Parameters.AddWithValue("@notes", string.IsNullOrWhiteSpace(order.Notes) ? DBNull.Value : order.Notes.Trim());
+            command.Parameters.AddWithValue("@source_type", string.IsNullOrWhiteSpace(order.SourceType) ? DBNull.Value : order.SourceType.Trim());
+            command.Parameters.AddWithValue("@source_order_id", order.SourceOrderId.HasValue ? order.SourceOrderId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@requested_at", order.RequestedAt.HasValue ? ToDbDate(order.RequestedAt.Value) : DBNull.Value);
             command.Parameters.AddWithValue("@codes_bound_at", order.CodesBoundAt.HasValue ? ToDbDate(order.CodesBoundAt.Value) : DBNull.Value);
             command.Parameters.AddWithValue("@created_at", ToDbDate(order.CreatedAt));
@@ -3620,6 +3660,8 @@ LIMIT 1;";
         EnsureColumn(connection, "order_lines", "production_purpose", "TEXT NOT NULL DEFAULT 'INTERNAL_STOCK'");
         EnsureColumn(connection, "doc_lines", "production_purpose", "TEXT NOT NULL DEFAULT 'INTERNAL_STOCK'");
         EnsureNullable(connection, "marking_order", "order_id");
+        EnsureColumn(connection, "marking_order", "source_type", "TEXT NULL");
+        EnsureColumn(connection, "marking_order", "source_order_id", "BIGINT NULL");
 
         if (!ColumnExists(connection, "orders", "order_type")
             || !ColumnExists(connection, "orders", "bind_reserved_stock")
@@ -4750,6 +4792,8 @@ SELECT mo.id,
        mo.request_number,
        mo.status,
        mo.notes,
+       mo.source_type,
+       mo.source_order_id,
        mo.requested_at,
        mo.codes_bound_at,
        mo.created_at,
@@ -4906,10 +4950,12 @@ LEFT JOIN locations l ON l.id = c.location_id
             RequestNumber = reader.GetString(5),
             Status = reader.GetString(6),
             Notes = reader.IsDBNull(7) ? null : reader.GetString(7),
-            RequestedAt = reader.IsDBNull(8) ? null : FromDbDate(reader.GetString(8)),
-            CodesBoundAt = reader.IsDBNull(9) ? null : FromDbDate(reader.GetString(9)),
-            CreatedAt = FromDbDate(reader.GetString(10)) ?? DateTime.MinValue,
-            UpdatedAt = FromDbDate(reader.GetString(11)) ?? DateTime.MinValue
+            SourceType = reader.IsDBNull(8) ? null : reader.GetString(8),
+            SourceOrderId = reader.IsDBNull(9) ? null : reader.GetInt64(9),
+            RequestedAt = reader.IsDBNull(10) ? null : FromDbDate(reader.GetString(10)),
+            CodesBoundAt = reader.IsDBNull(11) ? null : FromDbDate(reader.GetString(11)),
+            CreatedAt = FromDbDate(reader.GetString(12)) ?? DateTime.MinValue,
+            UpdatedAt = FromDbDate(reader.GetString(13)) ?? DateTime.MinValue
         };
     }
 
