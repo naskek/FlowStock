@@ -187,11 +187,21 @@ public sealed class WpfMarkingApiService
         return new MarkingOrderQueueRow
         {
             MarkingOrderId = ReadGuid(element, "marking_order_id"),
-            OrderId = ReadInt64(element, "order_id"),
+            OrderId = ReadNullableInt64(element, "order_id"),
             OrderRef = ReadString(element, "order_ref") ?? string.Empty,
             PartnerName = ReadString(element, "partner_name"),
             PartnerCode = ReadString(element, "partner_code"),
             SourceType = ReadString(element, "source_type"),
+            SourceOrderId = ReadNullableInt64(element, "source_order_id"),
+            ItemId = ReadNullableInt64(element, "item_id"),
+            ItemName = ReadString(element, "item_name"),
+            Gtin = ReadString(element, "gtin"),
+            RequestedQuantity = ReadInt32(element, "requested_quantity"),
+            TaskStatus = ReadString(element, "status"),
+            CodesTotal = ReadInt32(element, "codes_total"),
+            CodesFree = ReadInt32(element, "codes_free"),
+            CodesBound = ReadInt32(element, "codes_bound"),
+            DisplaySource = ReadString(element, "display_source"),
             OrderStatus = OrderStatusMapper.StatusFromString(ReadString(element, "order_status")) ?? OrderStatus.InProgress,
             DueDate = ReadDateOnly(element, "due_date"),
             MarkingStatus = MarkingStatusMapper.FromString(ReadString(element, "marking_status")),
@@ -301,6 +311,16 @@ public sealed class WpfMarkingApiService
     private static long ReadInt64(JsonElement element, string propertyName)
     {
         return element.TryGetProperty(propertyName, out var property) && property.TryGetInt64(out var value) ? value : 0L;
+    }
+
+    private static long? ReadNullableInt64(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property) || property.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        return property.TryGetInt64(out var value) ? value : null;
     }
 
     private static Guid? ReadGuid(JsonElement element, string propertyName)

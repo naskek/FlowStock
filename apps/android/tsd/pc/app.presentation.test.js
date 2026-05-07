@@ -84,6 +84,17 @@ const markingLabels = [
 ].filter(Boolean);
 assert.deepStrictEqual(markingLabels.sort(), ["Маркировка не проведена", "Маркировка проведена"].sort());
 
+const markingRows = pc.normalizeMarkingTaskRows([
+  {
+    marking_order_id: "44444444-4444-4444-4444-444444444444",
+    order_id: null,
+    source_type: "PRODUCTION_NEED",
+    display_source: "Потребность производства",
+  },
+]);
+assert.strictEqual(markingRows.length, 1);
+assert.strictEqual(markingRows[0].source_type, "PRODUCTION_NEED");
+
 const page = pc.trimOrdersPage(Array.from({ length: 21 }, function (_, index) {
   return { id: index + 1 };
 }));

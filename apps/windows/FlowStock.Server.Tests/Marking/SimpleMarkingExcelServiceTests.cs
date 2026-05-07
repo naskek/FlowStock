@@ -383,7 +383,7 @@ public sealed class SimpleMarkingExcelServiceTests
         var queueRow = Assert.Single(new MarkingExcelService(store.Object).GetOrderQueue(includeCompleted: false));
         var order = new Order
         {
-            Id = queueRow.OrderId,
+            Id = queueRow.OrderId!.Value,
             OrderRef = queueRow.OrderRef,
             Status = queueRow.OrderStatus,
             MarkingStatus = MarkingStatus.NotRequired,
@@ -418,7 +418,7 @@ public sealed class SimpleMarkingExcelServiceTests
     }
 
     [Fact]
-    public void Queue_DoesNotHideProductionTaskWithoutOrderId()
+    public void Queue_DoesNotHidePrintedProductionNeedTaskWithoutOrderId()
     {
         var taskId = Guid.Parse("44444444-4444-4444-4444-444444444444");
         var store = CreateStore();
@@ -428,22 +428,99 @@ public sealed class SimpleMarkingExcelServiceTests
                 new MarkingOrderQueueRow
                 {
                     MarkingOrderId = taskId,
-                    OrderId = 0,
+                    OrderId = null,
                     OrderRef = "Потребность производства",
                     PartnerName = "Потребность производства",
                     SourceType = MarkingNeedCreationService.ProductionNeedSourceType,
+                    ItemId = 100,
+                    ItemName = "Горчица",
+                    Gtin = "04601234567890",
+                    RequestedQuantity = 600,
+                    TaskStatus = MarkingOrderStatus.Printed,
+                    CodesTotal = 0,
+                    CodesFree = 0,
+                    CodesBound = 0,
                     OrderStatus = OrderStatus.InProgress,
-                    MarkingStatus = MarkingStatus.Required,
+                    MarkingStatus = MarkingStatus.Printed,
                     MarkingLineCount = 1,
-                    MarkingCodeCount = 4800
+                    MarkingCodeCount = 600
                 }
             });
 
         var row = Assert.Single(new MarkingExcelService(store.Object).GetOrderQueue(includeCompleted: false));
 
         Assert.Equal(taskId, row.MarkingOrderId);
-        Assert.Equal(0, row.OrderId);
-        Assert.Equal(MarkingStatus.Required, row.MarkingStatus);
+        Assert.Null(row.OrderId);
+        Assert.Equal(MarkingNeedCreationService.ProductionNeedSourceType, row.SourceType);
+        Assert.Equal(100, row.ItemId);
+        Assert.Equal("Горчица", row.ItemName);
+        Assert.Equal("04601234567890", row.Gtin);
+        Assert.Equal(600, row.RequestedQuantity);
+        Assert.Equal(MarkingOrderStatus.Printed, row.TaskStatus);
+        Assert.Equal(0, row.CodesTotal);
+        Assert.Equal(0, row.CodesFree);
+        Assert.Equal(0, row.CodesBound);
+        Assert.Equal(MarkingStatus.Printed, row.MarkingStatus);
+    }
+
+    [Fact]
+    public void Queue_DoesNotHideProductionOrderTaskWithoutOrderId()
+    {
+        var taskId = Guid.Parse("55555555-5555-5555-5555-555555555555");
+        var store = CreateStore();
+        store.Setup(s => s.GetMarkingOrderQueue(false))
+            .Returns(new[]
+            {
+                new MarkingOrderQueueRow
+                {
+                    MarkingOrderId = taskId,
+                    OrderId = null,
+                    SourceOrderId = 77,
+                    OrderRef = "Производственный заказ",
+                    SourceType = MarkingNeedCreationService.ProductionOrderSourceType,
+                    DisplaySource = "Производственный заказ",
+                    OrderStatus = OrderStatus.InProgress,
+                    MarkingStatus = MarkingStatus.Required,
+                    MarkingLineCount = 1,
+                    MarkingCodeCount = 100
+                }
+            });
+
+        var row = Assert.Single(new MarkingExcelService(store.Object).GetOrderQueue(includeCompleted: false));
+
+        Assert.Equal(taskId, row.MarkingOrderId);
+        Assert.Null(row.OrderId);
+        Assert.Equal(77, row.SourceOrderId);
+        Assert.Equal(MarkingNeedCreationService.ProductionOrderSourceType, row.SourceType);
+        Assert.Equal("Производственный заказ", row.DisplaySource);
+    }
+
+    [Fact]
+    public void Queue_KeepsOrderBasedMarkingTaskVisible()
+    {
+        var taskId = Guid.Parse("66666666-6666-6666-6666-666666666666");
+        var store = CreateStore();
+        store.Setup(s => s.GetMarkingOrderQueue(false))
+            .Returns(new[]
+            {
+                new MarkingOrderQueueRow
+                {
+                    MarkingOrderId = taskId,
+                    OrderId = 10,
+                    OrderRef = "CO-10",
+                    SourceType = null,
+                    OrderStatus = OrderStatus.InProgress,
+                    MarkingStatus = MarkingStatus.Required,
+                    MarkingLineCount = 1,
+                    MarkingCodeCount = 50
+                }
+            });
+
+        var row = Assert.Single(new MarkingExcelService(store.Object).GetOrderQueue(includeCompleted: false));
+
+        Assert.Equal(taskId, row.MarkingOrderId);
+        Assert.Equal(10, row.OrderId);
+        Assert.Equal("CO-10", row.OrderRef);
     }
 
     [Fact]

@@ -1564,9 +1564,24 @@ order_need AS (
            COALESCE(SUM(qty_for_marking) FILTER (WHERE qty_for_marking > 0), 0) AS code_count
     FROM line_need
     GROUP BY order_id
+),
+task_code_stats AS (
+    SELECT marking_order_id,
+           COUNT(*) FILTER (WHERE status <> @marking_code_status_voided) AS codes_total,
+           COUNT(*) FILTER (
+               WHERE status IN (@marking_code_status_reserved, @marking_code_status_printed)
+                 AND receipt_line_id IS NULL
+                 AND receipt_doc_id IS NULL
+           ) AS codes_free,
+           COUNT(*) FILTER (
+               WHERE status <> @marking_code_status_voided
+                 AND (receipt_line_id IS NOT NULL OR receipt_doc_id IS NOT NULL)
+           ) AS codes_bound
+    FROM marking_code
+    GROUP BY marking_order_id
 )
 SELECT NULL::uuid AS marking_order_id,
-       o.id,
+       o.id::bigint AS order_id,
        o.order_ref,
        o.partner_id,
        p.name,
@@ -1579,9 +1594,16 @@ SELECT NULL::uuid AS marking_order_id,
        COALESCE(o.marking_printed_at, o.marking_excel_generated_at) AS last_generated_at,
        o.created_at AS sort_created_at,
        NULL::text AS source_type,
+       NULL::bigint AS source_order_id,
        NULL::bigint AS item_id,
        NULL::text AS item_name,
-       NULL::text AS gtin
+       NULL::text AS gtin,
+       COALESCE(order_need.code_count, 0)::integer AS requested_quantity,
+       COALESCE(o.marking_status, 'NOT_REQUIRED') AS task_status,
+       0::integer AS codes_total,
+       0::integer AS codes_free,
+       0::integer AS codes_bound,
+       NULL::text AS display_source
 FROM orders o
 LEFT JOIN partners p ON p.id = o.partner_id
 LEFT JOIN order_need ON order_need.order_id = o.id
@@ -1594,10 +1616,20 @@ WHERE COALESCE(order_need.line_count, 0) > 0
   )
 UNION ALL
 SELECT mo.id AS marking_order_id,
-       COALESCE(mo.order_id, 0) AS id,
-       COALESCE(mo_o.order_ref, i.name, 'Потребность производства') AS order_ref,
+       mo.order_id::bigint AS order_id,
+       CASE
+           WHEN mo.order_id IS NOT NULL THEN COALESCE(mo_o.order_ref, '')
+           WHEN mo.source_type = @production_need_source_type THEN 'Потребность производства'
+           WHEN mo.source_type = @production_order_source_type THEN 'Производственный заказ'
+           ELSE COALESCE(i.name, 'Задача маркировки')
+       END AS order_ref,
        NULL AS partner_id,
-       COALESCE(p_mo.name, 'Потребность производства') AS name,
+       CASE
+           WHEN mo.order_id IS NOT NULL THEN p_mo.name
+           WHEN mo.source_type = @production_need_source_type THEN 'Потребность производства'
+           WHEN mo.source_type = @production_order_source_type THEN 'Производственный заказ'
+           ELSE 'Задача маркировки'
+       END AS name,
        p_mo.code AS code,
        mo_o.due_date AS due_date,
        COALESCE(mo_o.status, @in_progress_status) AS status,
@@ -1610,21 +1642,29 @@ SELECT mo.id AS marking_order_id,
        COALESCE(mo.codes_bound_at, mo.requested_at, mo.created_at) AS last_generated_at,
        mo.created_at AS sort_created_at,
        mo.source_type AS source_type,
+       mo.source_order_id AS source_order_id,
        mo.item_id AS item_id,
        i.name AS item_name,
-       COALESCE(mo.gtin, i.gtin) AS gtin
+       COALESCE(mo.gtin, i.gtin) AS gtin,
+       mo.requested_quantity AS requested_quantity,
+       mo.status AS task_status,
+       COALESCE(task_code_stats.codes_total, 0)::integer AS codes_total,
+       COALESCE(task_code_stats.codes_free, 0)::integer AS codes_free,
+       COALESCE(task_code_stats.codes_bound, 0)::integer AS codes_bound,
+       CASE
+           WHEN mo.source_type = @production_need_source_type THEN 'Потребность производства'
+           WHEN mo.source_type = @production_order_source_type THEN 'Производственный заказ'
+           ELSE COALESCE(mo_o.order_ref, 'Задача маркировки')
+       END AS display_source
 FROM marking_order mo
 LEFT JOIN items i ON i.id = mo.item_id
 LEFT JOIN orders mo_o ON mo_o.id = mo.order_id
 LEFT JOIN partners p_mo ON p_mo.id = mo_o.partner_id
+LEFT JOIN task_code_stats ON task_code_stats.marking_order_id = mo.id
 WHERE (mo.source_type IN (@production_need_source_type, @production_order_source_type)
        OR mo.order_id IS NOT NULL)
   AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
-  AND (
-      mo.status NOT IN (@marking_status_printed, @marking_status_completed)
-      OR @include_completed = TRUE
-  )
-ORDER BY due_date NULLS LAST, sort_created_at, id;
+ORDER BY due_date NULLS LAST, sort_created_at, order_id NULLS LAST;
 ");
             command.Parameters.AddWithValue("@closed_status", DocTypeMapper.StatusToString(DocStatus.Closed));
             command.Parameters.AddWithValue("@outbound_type", DocTypeMapper.ToOpString(DocType.Outbound));
@@ -1641,6 +1681,9 @@ ORDER BY due_date NULLS LAST, sort_created_at, id;
             command.Parameters.AddWithValue("@marking_status_completed", MarkingOrderStatus.Completed);
             command.Parameters.AddWithValue("@marking_status_cancelled", MarkingOrderStatus.Cancelled);
             command.Parameters.AddWithValue("@marking_status_failed", MarkingOrderStatus.Failed);
+            command.Parameters.AddWithValue("@marking_code_status_reserved", MarkingCodeStatus.Reserved);
+            command.Parameters.AddWithValue("@marking_code_status_printed", MarkingCodeStatus.Printed);
+            command.Parameters.AddWithValue("@marking_code_status_voided", MarkingCodeStatus.Voided);
             command.Parameters.AddWithValue("@include_completed", includeCompleted);
             using var reader = command.ExecuteReader();
             var rows = new List<MarkingOrderQueueRow>();
@@ -1649,7 +1692,7 @@ ORDER BY due_date NULLS LAST, sort_created_at, id;
                 rows.Add(new MarkingOrderQueueRow
                 {
                     MarkingOrderId = reader.IsDBNull(0) ? null : reader.GetGuid(0),
-                    OrderId = reader.GetInt64(1),
+                    OrderId = reader.IsDBNull(1) ? null : reader.GetInt64(1),
                     OrderRef = reader.GetString(2),
                     PartnerName = reader.IsDBNull(4) ? null : reader.GetString(4),
                     PartnerCode = reader.IsDBNull(5) ? null : reader.GetString(5),
@@ -1660,9 +1703,16 @@ ORDER BY due_date NULLS LAST, sort_created_at, id;
                     MarkingCodeCount = Convert.ToDouble(reader.GetValue(10), CultureInfo.InvariantCulture),
                     LastGeneratedAt = FromDbDate(reader.IsDBNull(11) ? null : reader.GetString(11)),
                     SourceType = reader.IsDBNull(13) ? null : reader.GetString(13),
-                    ItemId = reader.IsDBNull(14) ? null : reader.GetInt64(14),
-                    ItemName = reader.IsDBNull(15) ? null : reader.GetString(15),
-                    Gtin = reader.IsDBNull(16) ? null : reader.GetString(16)
+                    SourceOrderId = reader.IsDBNull(14) ? null : reader.GetInt64(14),
+                    ItemId = reader.IsDBNull(15) ? null : reader.GetInt64(15),
+                    ItemName = reader.IsDBNull(16) ? null : reader.GetString(16),
+                    Gtin = reader.IsDBNull(17) ? null : reader.GetString(17),
+                    RequestedQuantity = reader.IsDBNull(18) ? 0 : reader.GetInt32(18),
+                    TaskStatus = reader.IsDBNull(19) ? null : reader.GetString(19),
+                    CodesTotal = reader.IsDBNull(20) ? 0 : reader.GetInt32(20),
+                    CodesFree = reader.IsDBNull(21) ? 0 : reader.GetInt32(21),
+                    CodesBound = reader.IsDBNull(22) ? 0 : reader.GetInt32(22),
+                    DisplaySource = reader.IsDBNull(23) ? null : reader.GetString(23)
                 });
             }
 

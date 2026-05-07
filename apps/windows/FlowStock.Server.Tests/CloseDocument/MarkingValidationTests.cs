@@ -106,6 +106,33 @@ public sealed class MarkingValidationTests
     }
 
     [Fact]
+    public void ProductionReceiptWithPrintedProductionNeedTaskButNoCodes_StillRejects()
+    {
+        var harness = CreateHarnessWithOrder(OrderType.Internal);
+        var markingOrderId = SeedProductionNeedMarkingOrder(harness, requestedQuantity: 5);
+        harness.SeedMarkingOrder(new FlowStock.Core.Models.Marking.MarkingOrder
+        {
+            Id = markingOrderId,
+            OrderId = null,
+            ItemId = 100,
+            Gtin = "04601234567890",
+            RequestedQuantity = 5,
+            RequestNumber = "PN-100-printed",
+            Status = FlowStock.Core.Models.Marking.MarkingOrderStatus.Printed,
+            SourceType = FlowStock.Core.Services.MarkingNeedCreationService.ProductionNeedSourceType,
+            CreatedAt = new DateTime(2026, 4, 1, 10, 0, 0, DateTimeKind.Utc),
+            UpdatedAt = new DateTime(2026, 4, 1, 10, 0, 0, DateTimeKind.Utc)
+        });
+
+        var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
+
+        Assert.False(result.Success);
+        Assert.Contains("Строка 1 (Маркируемый товар): требуется 5 код(ов) КМ, привязано 0, доступно свободных 0.", result.Errors);
+        Assert.Empty(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Draft, harness.GetDoc(1).Status);
+    }
+
+    [Fact]
     public void ProductionReceiptWithProductionNeedMarkingOrder_RejectsWhenCodesAreShort()
     {
         var harness = CreateHarnessWithOrder(OrderType.Internal);

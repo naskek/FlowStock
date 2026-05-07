@@ -140,6 +140,10 @@ Production Docker Compose wrapper:
 
 Excel ЧЗ формируется по выбранным задачам `marking_order`, а не по списку клиентских заказов. Задача с `order_id = NULL` и `source_type = PRODUCTION_NEED` или `PRODUCTION_ORDER` является валидным источником Excel: сервер берет `item_id`, GTIN, наименование товара и `requested_quantity` из задачи. Для order-based задач с `order_id != NULL` сохраняется прежнее поведение: после формирования Excel обновляется и задача, и связанный заказ.
 
+/api/marking/orders является списком задач маркировки, а не списком клиентских заказов. Production-based `marking_order` с `order_id = NULL` отображается в разделе `Маркировка`: `PRODUCTION_NEED` показывается как `Потребность производства`, `PRODUCTION_ORDER` как `Производственный заказ`. Задача не скрывается только из-за `status = Printed`.
+
+`status = Printed` у `marking_order` означает сформированный Excel/печать, но не гарантирует наличие КМ в `marking_code`. Для контроля выпуска используются счетчики реальных кодов: `codes_total`, `codes_free`, `codes_bound`.
+
 При закрытии `INTERNAL PRODUCTION_RECEIPT` маркируемой продукции сервер использует свободные ЧЗ/КМ-коды из production-based `marking_order`: товар и GTIN должны совпадать, код не должен быть уже привязан к другой строке выпуска, `PRODUCTION_ORDER` сопоставляется по `source_order_id`, а `PRODUCTION_NEED` без `source_order_id` может покрывать выпуск по `item_id`/GTIN. Недостающие коды автопривязываются к `doc_lines.id` в транзакции закрытия до записи `ledger`; при нехватке кодов закрытие блокируется.
 
 Статусы маркировки заказа:

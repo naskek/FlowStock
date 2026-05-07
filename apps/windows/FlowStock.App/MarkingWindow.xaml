@@ -41,9 +41,11 @@
                 <DataGridTextColumn Header="Источник" Binding="{Binding PartnerDisplay}" Width="220" />
                 <DataGridTextColumn Header="Статус заказа" Binding="{Binding OrderStatusDisplay}" Width="130" />
                 <DataGridTextColumn Header="Дата/срок" Binding="{Binding DueDateDisplay}" Width="120" />
+                <DataGridTextColumn Header="Товар / GTIN" Binding="{Binding ItemDisplay}" Width="220" />
                 <DataGridTextColumn Header="Статус маркировки" Binding="{Binding MarkingStatusDisplay}" Width="180" />
                 <DataGridTextColumn Header="Количество строк ЧЗ" Binding="{Binding MarkingLineCount}" Width="140" />
-                <DataGridTextColumn Header="Количество кодов ЧЗ" Binding="{Binding MarkingCodeCountDisplay}" Width="150" />
+                <DataGridTextColumn Header="Запрошено ЧЗ" Binding="{Binding RequestedQuantityDisplay}" Width="120" />
+                <DataGridTextColumn Header="Коды всего/своб./прив." Binding="{Binding CodesDisplay}" Width="160" />
                 <DataGridTextColumn Header="Дата последнего формирования файла" Binding="{Binding LastGeneratedAtDisplay}" Width="220" />
             </DataGrid.Columns>
         </DataGrid>

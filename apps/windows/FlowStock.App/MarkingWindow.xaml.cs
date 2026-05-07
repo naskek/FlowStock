@@ -44,7 +44,8 @@ public partial class MarkingWindow : Window
         var selectedOrders = selected
             .Where(row => !row.MarkingOrderId.HasValue)
             .Select(row => row.OrderId)
-            .Where(id => id > 0)
+            .Where(id => id.HasValue && id.Value > 0)
+            .Select(id => id!.Value)
             .Distinct()
             .ToArray();
         if (selectedTasks.Length == 0 && selectedOrders.Length == 0)
@@ -136,15 +137,23 @@ public partial class MarkingWindow : Window
             _row = row;
         }
 
-        public long OrderId => _row.OrderId;
+        public long? OrderId => _row.OrderId;
         public Guid? MarkingOrderId => _row.MarkingOrderId;
-        public string OrderRef => _row.OrderRef;
-        public string PartnerDisplay => string.IsNullOrWhiteSpace(_row.PartnerDisplay) ? "-" : _row.PartnerDisplay;
+        public string OrderRef => string.IsNullOrWhiteSpace(_row.OrderRef) ? SourceDisplay : _row.OrderRef;
+        public string PartnerDisplay => string.IsNullOrWhiteSpace(_row.PartnerDisplay) ? SourceDisplay : _row.PartnerDisplay;
+        public string SourceDisplay => string.IsNullOrWhiteSpace(_row.DisplaySource) ? "-" : _row.DisplaySource;
         public string OrderStatusDisplay => OrderStatusMapper.StatusToDisplayName(_row.OrderStatus);
         public string DueDateDisplay => _row.DueDate?.ToString("dd.MM.yyyy", CultureInfo.CurrentCulture) ?? "-";
-        public string MarkingStatusDisplay => MarkingStatusMapper.ToDisplayName(_row.MarkingStatus);
+        public string MarkingStatusDisplay => string.IsNullOrWhiteSpace(_row.TaskStatus)
+            ? MarkingStatusMapper.ToDisplayName(_row.MarkingStatus)
+            : _row.TaskStatus;
         public int MarkingLineCount => _row.MarkingLineCount;
         public string MarkingCodeCountDisplay => _row.MarkingCodeCount.ToString("0.###", CultureInfo.CurrentCulture);
+        public string RequestedQuantityDisplay => _row.RequestedQuantity.ToString(CultureInfo.CurrentCulture);
+        public string CodesDisplay => $"{_row.CodesTotal} / {_row.CodesFree} / {_row.CodesBound}";
+        public string ItemDisplay => string.IsNullOrWhiteSpace(_row.ItemName) && string.IsNullOrWhiteSpace(_row.Gtin)
+            ? "-"
+            : $"{_row.ItemName} {_row.Gtin}".Trim();
         public string LastGeneratedAtDisplay => _row.LastGeneratedAt?.ToString("dd.MM.yyyy HH:mm", CultureInfo.CurrentCulture) ?? "-";
     }
 }

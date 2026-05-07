@@ -2223,6 +2223,16 @@
     return renderStatusBadge(marking.label, marking.tone, "pc-marking-badge", marking.title);
   }
 
+  function normalizeMarkingTaskRows(rows) {
+    return (Array.isArray(rows) ? rows : []).filter(function (row) {
+      if (!row) {
+        return false;
+      }
+
+      return !!row.marking_order_id || Number(row.order_id) > 0;
+    });
+  }
+
   function renderReadinessBadge(readiness) {
     if (!readiness || !readiness.text) {
       return "";
@@ -3846,6 +3856,7 @@
     window.FlowStockPcTestHooks.getOrderStatusPresentation = getOrderStatusPresentation;
     window.FlowStockPcTestHooks.getOrderMarkingPresentation = getOrderMarkingPresentation;
     window.FlowStockPcTestHooks.renderOrderMarkingIndicator = renderOrderMarkingIndicator;
+    window.FlowStockPcTestHooks.normalizeMarkingTaskRows = normalizeMarkingTaskRows;
     window.FlowStockPcTestHooks.buildOrdersUrl = buildOrdersUrl;
     window.FlowStockPcTestHooks.trimOrdersPage = trimOrdersPage;
     return;
