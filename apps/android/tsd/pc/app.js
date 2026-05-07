@@ -768,7 +768,7 @@
       '  <div class="pc-toolbar">' +
       '    <div class="pc-toolbar-actions">' +
       '      <button id="productionNeedRefreshBtn" class="btn btn-outline" type="button">Обновить</button>' +
-      '      <button id="productionNeedCreateOrdersBtn" class="btn btn-primary" type="button">Сформировать заказы</button>' +
+      '      <button id="productionNeedCreateOrdersBtn" class="btn btn-primary" type="button">Сформировать заказ</button>' +
       "    </div>" +
       '    <div id="productionNeedStatus" class="pc-status"></div>' +
       "  </div>" +
@@ -836,7 +836,7 @@
       '<th class="pc-num">Остаток</th>' +
       '<th class="pc-num">До закрытия заказов</th>' +
       '<th class="pc-num">На склад до мин.</th>' +
-      '<th class="pc-num">Всего сформировать</th>' +
+      '<th class="pc-num">Всего произвести</th>' +
       "</tr></thead>" +
       "<tbody>" +
       body +

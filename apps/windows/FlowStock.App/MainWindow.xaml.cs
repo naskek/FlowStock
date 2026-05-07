@@ -1031,14 +1031,14 @@ public partial class MainWindow : Window
     private async void ProductionNeedCreateOrders_Click(object sender, RoutedEventArgs e)
     {
         ProductionNeedCreateOrdersButton.IsEnabled = false;
-        ProductionNeedSummaryText.Text = "Формирование черновиков...";
+        ProductionNeedSummaryText.Text = "Формирование производственного черновика...";
 
         try
         {
             var result = await _services.WpfReadApi.CreateProductionNeedOrdersAsync();
             if (!result.IsSuccess)
             {
-                ProductionNeedSummaryText.Text = "Не удалось сформировать черновики.";
+                ProductionNeedSummaryText.Text = "Не удалось сформировать производственный черновик.";
                 MessageBox.Show(
                     result.ErrorMessage,
                     "Потребность производства",

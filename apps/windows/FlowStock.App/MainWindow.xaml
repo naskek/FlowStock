@@ -181,7 +181,7 @@
                                 Padding="12,4"
                                 Click="ProductionNeedRefresh_Click" />
                         <Button x:Name="ProductionNeedCreateOrdersButton"
-                                Content="Сформировать заказы"
+                                Content="Сформировать заказ"
                                 Padding="12,4"
                                 Margin="8,0,0,0"
                                 Click="ProductionNeedCreateOrders_Click" />
@@ -212,7 +212,7 @@
                             <DataGridTextColumn Header="Остаток" Binding="{Binding StockDisplay}" Width="120" />
                             <DataGridTextColumn Header="До закрытия заказов" Binding="{Binding ToCloseOrdersQty, StringFormat={}{0:0.###}}" Width="150" />
                             <DataGridTextColumn Header="На склад до мин." Binding="{Binding ToMinStockQty, StringFormat={}{0:0.###}}" Width="140" />
-                            <DataGridTextColumn Header="Всего сформировать" Binding="{Binding TotalToMakeQty, StringFormat={}{0:0.###}}" Width="150">
+                            <DataGridTextColumn Header="Всего произвести" Binding="{Binding TotalToMakeQty, StringFormat={}{0:0.###}}" Width="150">
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="FontWeight" Value="Bold" />

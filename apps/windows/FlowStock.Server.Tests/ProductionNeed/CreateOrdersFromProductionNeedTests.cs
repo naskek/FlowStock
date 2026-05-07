@@ -11,7 +11,7 @@ namespace FlowStock.Server.Tests.ProductionNeed;
 public sealed class CreateOrdersFromProductionNeedTests
 {
     [Fact]
-    public async Task CreateOrdersFromProductionNeed_CreatesSeparateCustomerAndInternalDrafts_AndSecondCallDoesNotDuplicate()
+    public async Task CreateOrdersFromProductionNeed_CreatesSingleInternalDraft_AndSecondCallDoesNotDuplicate()
     {
         var (harness, apiStore) = CreateMixedNeedScenario();
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
@@ -19,23 +19,18 @@ public sealed class CreateOrdersFromProductionNeedTests
         var payload = await CreateOrdersAsync(host.Client);
 
         Assert.True(payload.Ok);
-        Assert.Equal(1, payload.CustomerDraftCount);
         Assert.Equal(1, payload.InternalDraftCount);
-        Assert.Equal(2, payload.CreatedLineCount);
+        Assert.Equal(0, payload.CustomerDraftCount);
+        Assert.Equal(1, payload.CreatedLineCount);
 
         var draftOrders = harness.Store.GetOrders().Where(order => order.Status == OrderStatus.Draft).OrderBy(order => order.Id).ToArray();
-        Assert.Equal(2, draftOrders.Length);
-
-        var customerDraft = Assert.Single(draftOrders.Where(order => order.Type == OrderType.Customer));
-        Assert.Equal(200, customerDraft.PartnerId);
-        var customerDraftLine = Assert.Single(harness.GetOrderLines(customerDraft.Id));
-        Assert.Equal(756, customerDraftLine.QtyOrdered);
-        Assert.Equal(ProductionLinePurpose.CustomerOrder, customerDraftLine.ProductionPurpose);
+        Assert.Single(draftOrders);
+        Assert.DoesNotContain(draftOrders, order => order.Type == OrderType.Customer);
 
         var internalDraft = Assert.Single(draftOrders.Where(order => order.Type == OrderType.Internal));
         Assert.Null(internalDraft.PartnerId);
         var internalDraftLine = Assert.Single(harness.GetOrderLines(internalDraft.Id));
-        Assert.Equal(1134, internalDraftLine.QtyOrdered);
+        Assert.Equal(1890, internalDraftLine.QtyOrdered);
         Assert.Equal(ProductionLinePurpose.InternalStock, internalDraftLine.ProductionPurpose);
 
         var needRow = Assert.Single(new ProductionNeedService(harness.Store).GetRows(includeZeroNeed: true));
@@ -48,11 +43,11 @@ public sealed class CreateOrdersFromProductionNeedTests
         Assert.Equal(0, secondPayload.CustomerDraftCount);
         Assert.Equal(0, secondPayload.InternalDraftCount);
         Assert.Equal(0, secondPayload.CreatedLineCount);
-        Assert.Equal(3, harness.OrderCount);
+        Assert.Equal(2, harness.OrderCount);
     }
 
     [Fact]
-    public async Task CreateOrdersFromProductionNeed_AfterNewCustomerDemand_CreatesOnlyIncrementalCustomerDraft()
+    public async Task CreateOrdersFromProductionNeed_AfterNewCustomerDemand_CreatesOnlyIncrementalInternalDraft()
     {
         var (harness, apiStore) = CreateMixedNeedScenario();
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
@@ -81,20 +76,20 @@ public sealed class CreateOrdersFromProductionNeedTests
         var payload = await CreateOrdersAsync(host.Client);
 
         Assert.True(payload.Ok);
-        Assert.Equal(1, payload.CustomerDraftCount);
-        Assert.Equal(0, payload.InternalDraftCount);
+        Assert.Equal(0, payload.CustomerDraftCount);
+        Assert.Equal(1, payload.InternalDraftCount);
         Assert.Equal(1, payload.CreatedLineCount);
 
-        var customerDrafts = harness.Store.GetOrders()
-            .Where(order => order.Type == OrderType.Customer && order.Status == OrderStatus.Draft)
+        var internalDrafts = harness.Store.GetOrders()
+            .Where(order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft)
             .OrderBy(order => order.Id)
             .ToArray();
-        Assert.Equal(2, customerDrafts.Length);
+        Assert.Equal(2, internalDrafts.Length);
 
-        var incrementalDraft = customerDrafts.Last();
+        var incrementalDraft = internalDrafts.Last();
         var line = Assert.Single(harness.GetOrderLines(incrementalDraft.Id));
         Assert.Equal(100, line.QtyOrdered);
-        Assert.Equal(ProductionLinePurpose.CustomerOrder, line.ProductionPurpose);
+        Assert.Equal(ProductionLinePurpose.InternalStock, line.ProductionPurpose);
     }
 
     [Fact]
@@ -109,10 +104,13 @@ public sealed class CreateOrdersFromProductionNeedTests
         Assert.Equal(0, payload.CustomerDraftCount);
         Assert.Equal(1, payload.InternalDraftCount);
         Assert.Equal(1, payload.CreatedLineCount);
+
+        var internalDraft = Assert.Single(harness.Store.GetOrders().Where(order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft));
+        Assert.Equal(500, Assert.Single(harness.GetOrderLines(internalDraft.Id)).QtyOrdered);
     }
 
     [Fact]
-    public async Task CreateOrdersFromProductionNeed_WithOnlyCustomerNeed_CreatesOnlyCustomerDraft()
+    public async Task CreateOrdersFromProductionNeed_WithOnlyCustomerNeed_CreatesOnlyInternalDraft()
     {
         var (harness, apiStore) = CreateCustomerOnlyScenario();
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
@@ -120,9 +118,12 @@ public sealed class CreateOrdersFromProductionNeedTests
         var payload = await CreateOrdersAsync(host.Client);
 
         Assert.True(payload.Ok);
-        Assert.Equal(1, payload.CustomerDraftCount);
-        Assert.Equal(0, payload.InternalDraftCount);
+        Assert.Equal(0, payload.CustomerDraftCount);
+        Assert.Equal(1, payload.InternalDraftCount);
         Assert.Equal(1, payload.CreatedLineCount);
+
+        var internalDraft = Assert.Single(harness.Store.GetOrders().Where(order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft));
+        Assert.Equal(756, Assert.Single(harness.GetOrderLines(internalDraft.Id)).QtyOrdered);
     }
 
     private static async Task<CreateProductionNeedOrdersResponse> CreateOrdersAsync(HttpClient client)

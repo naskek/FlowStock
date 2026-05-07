@@ -50,10 +50,18 @@
 - Для типов номенклатуры с флагом `item_types.min_stock_uses_order_binding = true` этот резерв дополнительно участвует в контроле минимального остатка как `reserved_customer_order_qty` (только по активным клиентским заказам, `status NOT IN (SHIPPED, CANCELLED)`).
 - Отдельный отчет `Потребность производства` считается независимо от контроля минимума и не заменяет его.
   - Отчет показывает текущую суммарную потребность по товару, без календарного фильтра в UI.
+  - Клиентские заказы уже являются источником спроса и не создаются повторно из этого отчета.
   - `free_stock_qty = physical_stock_qty - reserved_customer_order_qty`.
-  - `to_close_orders_qty = max(0, qty_in_accepted_customer_orders - qty_reserved_for_customer_orders)`.
-  - `to_min_stock_qty = max(0, min_stock_qty - free_stock_qty)`.
+  - `raw_to_close_orders_qty = max(0, qty_in_accepted_customer_orders - qty_reserved_for_customer_orders)`.
+  - `raw_to_min_stock_qty = max(0, min_stock_qty - free_stock_qty)`.
+  - `planned_production_qty = сумма qty_remaining по открытым/незакрытым производственным заказам и черновикам INTERNAL`.
+  - `planned_for_orders = min(raw_to_close_orders_qty, planned_production_qty)`.
+  - `remaining_planned = planned_production_qty - planned_for_orders`.
+  - `to_close_orders_qty = raw_to_close_orders_qty - planned_for_orders`.
+  - `to_min_stock_qty = max(0, raw_to_min_stock_qty - remaining_planned)`.
   - `total_to_make_qty = to_close_orders_qty + to_min_stock_qty`.
+  - Колонка `Всего произвести` показывает `total_to_make_qty`.
+  - Кнопка `Сформировать заказ` вызывает `POST /api/production-needs/create-orders` и создает один черновик `INTERNAL` (`status = DRAFT`, `partner_id = null`) по всем строкам, где `total_to_make_qty > 0`.
 - На этапе создания/обновления заказа сервер формирует план выпуска `order_receipt_plan_lines` (HU и локации хранения).
 - Для `CUSTOMER`-заказа на этапе создания/обновления сервер пытается зарезервировать в `order_receipt_plan_lines` свободные HU/локации из текущего HU stock (по совпадающим SKU), независимо от наличия `origin/internal order`.
 - После закрытия внутреннего выпуска (`PRD` по `INTERNAL`) сервер автоматически пересчитывает эти резервы по всем клиентским заказам (FIFO по дате создания заказа), чтобы новый складской объем сразу становился доступным к отгрузке/добору в выпуске.
@@ -187,9 +195,8 @@ Production Docker Compose wrapper:
   - для ручного `CUSTOMER`-заказа все строки нормализуются в `CUSTOMER_ORDER`;
   - для ручного `INTERNAL`-заказа все строки нормализуются в `INTERNAL_STOCK`;
   - UI не позволяет вручную смешивать назначения строк в одном заказе;
-  - кнопка формирования заказов из `Потребности производства` создает отдельные черновики по назначению, а не смешанный заказ;
-  - клиентская часть формируется в `CUSTOMER`-черновики, сгруппированные по клиенту;
-  - складская часть формируется в один `INTERNAL`-черновик;
+  - кнопка формирования заказа из `Потребности производства` создает один `INTERNAL`-черновик без клиента;
+  - строки такого автосформированного черновика могут оставаться `INTERNAL_STOCK`;
   - повторный запуск опирается на planned-вычитание по открытым черновикам и не создает уже запланированный объем повторно.
 - В WPF разрешена смена типа сохраненного заказа в обе стороны (`CUSTOMER <-> INTERNAL`):
   - `CUSTOMER -> INTERNAL` разрешена только если по заказу еще нет отгрузок/связанных OUTBOUND-документов.
@@ -213,8 +220,8 @@ Production Docker Compose wrapper:
 - `production_purpose` хранит техническое назначение строки: `CUSTOMER_ORDER` уменьшает текущую потребность до закрытия клиентских заказов, `INTERNAL_STOCK` уменьшает потребность пополнения склада до минимального остатка.
 - Историческая строка без `production_purpose` считается `CUSTOMER_ORDER`, если у связанной строки выпуска есть `order_line_id`, иначе `INTERNAL_STOCK`.
 - Для отчета `Потребность производства` planned-вычитание работает так:
-  - открытые `CUSTOMER`-черновики производства уменьшают `До закрытия заказов`;
-  - открытые `INTERNAL`-черновики уменьшают `На склад до мин.`;
+  - открытые/незакрытые `INTERNAL`-заказы и черновики считаются как общий planned production;
+  - этот planned production сначала уменьшает `До закрытия заказов`, затем остаток planned уменьшает `На склад до мин.`;
   - закрытые документы в planned-вычитание не входят, потому что уже отражены через `ledger`.
 
 ## Создание отгрузки из наличия

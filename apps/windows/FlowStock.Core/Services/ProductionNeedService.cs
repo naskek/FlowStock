@@ -9,10 +9,9 @@ public sealed class ProductionNeedService(IDataStore dataStore)
 
     public IReadOnlyList<ProductionNeedRow> GetRows(bool includeZeroNeed = false)
     {
-        var today = DateTime.Today;
         var items = _dataStore.GetItems(null);
         var stockRows = _dataStore.GetStock(null);
-        var needByItem = BuildNeedByItem(today);
+        var needByItem = BuildNeedByItem();
         var plannedByItem = BuildPlannedProductionByItem();
 
         var stockByItem = stockRows
@@ -46,14 +45,19 @@ public sealed class ProductionNeedService(IDataStore dataStore)
                 var minStockQty = item?.ItemTypeEnableMinStockControl == true
                     ? Math.Max(0, item.MinStockQty ?? 0)
                     : 0;
-                var toCloseOrdersQty = Math.Max(0, currentNeed.OrderQty - currentNeed.ReservedQty - planned.CustomerOrderQty);
-                var toMinStockQty = Math.Max(0, minStockQty - freeStockQty - planned.InternalStockQty);
+                var rawToCloseOrdersQty = Math.Max(0, currentNeed.OrderQty - currentNeed.ReservedQty);
+                var rawToMinStockQty = Math.Max(0, minStockQty - freeStockQty);
+                var plannedProductionQty = Math.Max(0, planned);
+                var plannedForOrders = Math.Min(rawToCloseOrdersQty, plannedProductionQty);
+                var remainingPlannedQty = Math.Max(0, plannedProductionQty - plannedForOrders);
+                var toCloseOrdersQty = Math.Max(0, rawToCloseOrdersQty - plannedForOrders);
+                var toMinStockQty = Math.Max(0, rawToMinStockQty - remainingPlannedQty);
                 var itemTypeName = string.IsNullOrWhiteSpace(item?.ItemTypeName) ? "Без типа" : item!.ItemTypeName!;
 
                 return new ProductionNeedRow
                 {
                     ItemId = itemId,
-                    NeedDate = today,
+                    NeedDate = DateTime.Today,
                     Gtin = item?.Gtin,
                     ItemName = item?.Name ?? $"#{itemId}",
                     ItemTypeName = itemTypeName,
@@ -72,7 +76,7 @@ public sealed class ProductionNeedService(IDataStore dataStore)
             .ToList();
     }
 
-    private Dictionary<long, (double OrderQty, double ReservedQty)> BuildNeedByItem(DateTime today)
+    private Dictionary<long, (double OrderQty, double ReservedQty)> BuildNeedByItem()
     {
         var result = new Dictionary<long, (double OrderQty, double ReservedQty)>();
         var activeCustomerOrders = _dataStore.GetOrders()
@@ -110,13 +114,12 @@ public sealed class ProductionNeedService(IDataStore dataStore)
         return result;
     }
 
-    private Dictionary<long, (double CustomerOrderQty, double InternalStockQty)> BuildPlannedProductionByItem()
+    private Dictionary<long, double> BuildPlannedProductionByItem()
     {
-        var result = new Dictionary<long, (double CustomerOrderQty, double InternalStockQty)>();
+        var result = new Dictionary<long, double>();
         var activePlannedOrders = _dataStore.GetOrders()
-            .Where(order =>
-                (order.Type == OrderType.Internal && order.Status is not OrderStatus.Shipped and not OrderStatus.Cancelled)
-                || (order.Type == OrderType.Customer && order.Status == OrderStatus.Draft));
+            .Where(order => order.Type == OrderType.Internal
+                            && order.Status is not OrderStatus.Shipped and not OrderStatus.Cancelled);
 
         foreach (var order in activePlannedOrders)
         {
@@ -133,15 +136,9 @@ public sealed class ProductionNeedService(IDataStore dataStore)
                     continue;
                 }
 
-                var purpose = order.Type == OrderType.Customer
-                    ? ProductionLinePurpose.CustomerOrder
-                    : receiptRemainingByLine.TryGetValue(line.Id, out var detailedLine)
-                        ? detailedLine.ProductionPurpose
-                        : line.ProductionPurpose;
-                result.TryGetValue(line.ItemId, out var current);
-                result[line.ItemId] = purpose == ProductionLinePurpose.CustomerOrder
-                    ? (current.CustomerOrderQty + remainingQty, current.InternalStockQty)
-                    : (current.CustomerOrderQty, current.InternalStockQty + remainingQty);
+                result[line.ItemId] = result.TryGetValue(line.ItemId, out var current)
+                    ? current + remainingQty
+                    : remainingQty;
             }
         }
 

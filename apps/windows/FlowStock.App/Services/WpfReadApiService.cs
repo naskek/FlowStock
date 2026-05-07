@@ -313,14 +313,14 @@ public sealed class WpfReadApiService
                 var errorPayload = await response.Content.ReadFromJsonAsync<ApiResultEnvelope>(JsonOptions, cancellationToken);
                 var message = string.IsNullOrWhiteSpace(errorPayload?.Error)
                     ? $"Сервер вернул ошибку {(int)response.StatusCode}."
-                    : $"Сервер отклонил формирование черновиков: {errorPayload.Error}";
+                    : $"Сервер отклонил формирование производственного черновика: {errorPayload.Error}";
                 return WpfCreateProductionNeedOrdersResult.Failure(message);
             }
 
             var payload = await response.Content.ReadFromJsonAsync<CreateProductionNeedOrdersResponse>(JsonOptions, cancellationToken);
             if (payload == null || !payload.Ok)
             {
-                return WpfCreateProductionNeedOrdersResult.Failure("Сервер вернул неполный ответ при формировании черновиков.");
+                return WpfCreateProductionNeedOrdersResult.Failure("Сервер вернул неполный ответ при формировании производственного черновика.");
             }
 
             return WpfCreateProductionNeedOrdersResult.Success(payload.Message);
@@ -328,19 +328,19 @@ public sealed class WpfReadApiService
         catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
             _logger.Warn("WPF production need create orders timed out");
-            return WpfCreateProductionNeedOrdersResult.Failure("Сервер не ответил вовремя при формировании черновиков.", ex);
+            return WpfCreateProductionNeedOrdersResult.Failure("Сервер не ответил вовремя при формировании производственного черновика.", ex);
         }
         catch (HttpRequestException ex)
         {
             _logger.Error("WPF production need create orders request failed", ex);
             return WpfCreateProductionNeedOrdersResult.Failure(
-                "Не удалось связаться с FlowStock Server API при формировании черновиков.",
+                "Не удалось связаться с FlowStock Server API при формировании производственного черновика.",
                 ex);
         }
         catch (Exception ex)
         {
             _logger.Error("Unexpected WPF production need create orders failure", ex);
-            return WpfCreateProductionNeedOrdersResult.Failure("Не удалось сформировать черновики. Подробности записаны в лог.", ex);
+            return WpfCreateProductionNeedOrdersResult.Failure("Не удалось сформировать производственный черновик. Подробности записаны в лог.", ex);
         }
     }
 
