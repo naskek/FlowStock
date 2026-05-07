@@ -22,6 +22,7 @@ internal sealed class CloseDocumentHarness
     private readonly Dictionary<long, IReadOnlyList<OrderReceiptLine>> _orderReceiptRemainingWithoutReservedStock = new();
     private readonly Dictionary<long, IReadOnlyList<OrderReceiptPlanLine>> _orderReceiptPlanLines = new();
     private readonly Dictionary<long, IReadOnlyDictionary<long, double>> _shippedTotalsByOrderLine = new();
+    private readonly Dictionary<long, int> _kmCodeCountByReceiptLine = new();
     private readonly HashSet<long> _ordersWithOutboundDocs = new();
     private readonly Dictionary<string, HuRecord> _hus = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<(long ItemId, long LocationId, string? HuCode), double> _seedBalances = new();
@@ -338,6 +339,11 @@ internal sealed class CloseDocumentHarness
         {
             _ordersWithOutboundDocs.Remove(orderId);
         }
+    }
+
+    public void SeedKmCodeCountByReceiptLine(long docLineId, int count)
+    {
+        _kmCodeCountByReceiptLine[docLineId] = count;
     }
 
     public void SeedHu(HuRecord hu)
@@ -1140,7 +1146,7 @@ internal sealed class CloseDocumentHarness
             });
 
         _store.Setup(store => store.CountKmCodesByReceiptLine(It.IsAny<long>()))
-            .Returns(0);
+            .Returns<long>(docLineId => _kmCodeCountByReceiptLine.TryGetValue(docLineId, out var count) ? count : 0);
 
         _store.Setup(store => store.CountKmCodesByShipmentLine(It.IsAny<long>()))
             .Returns(0);

@@ -1558,22 +1558,6 @@ public sealed class DocumentService
         var locations = _data.GetLocations();
         var locationsById = locations.ToDictionary(location => location.Id, location => location.Code);
 
-        if (doc.Type == DocType.ProductionReceipt && HasChestnyZnakMarkableLines(lines, itemsById))
-        {
-            if (!doc.OrderId.HasValue)
-            {
-                check.Errors.Add("Нельзя закрыть выпуск маркируемой продукции без связанного заказа ЧЗ.");
-            }
-            else
-            {
-                var order = _data.GetOrder(doc.OrderId.Value);
-                if (order == null || (order.MarkingRequired && order.MarkingStatus != MarkingStatus.Printed))
-                {
-                    check.Errors.Add("Нельзя закрыть выпуск маркируемой продукции: по заказу не проведена маркировка ЧЗ.");
-                }
-            }
-        }
-
         var outgoingBySource = new Dictionary<StockKey, double>();
         var outboundByLocation = new Dictionary<ItemLocationKey, double>();
         var outboundByItem = new Dictionary<long, double>();
@@ -1662,9 +1646,7 @@ public sealed class DocumentService
                     $"{rowLabel}: количество {FormatQty(line.Qty)} превышает лимит {FormatQty(maxQtyPerHu)} на один HU. Разбейте строку на несколько HU.");
             }
 
-            if (KmWorkflowEnabled
-                && item?.IsMarked == true
-                && (doc.Type == DocType.ProductionReceipt || doc.Type == DocType.Outbound))
+            if (doc.Type == DocType.ProductionReceipt && item?.IsChestnyZnakMarkingRequired == true)
             {
                 var rounded = Math.Round(line.Qty);
                 if (Math.Abs(line.Qty - rounded) > 0.0001)
@@ -1674,35 +1656,44 @@ public sealed class DocumentService
                 else
                 {
                     var required = (int)rounded;
-                    if (doc.Type == DocType.ProductionReceipt)
+                    var assigned = _data.CountKmCodesByReceiptLine(line.Id);
+                    if (assigned < required)
                     {
-                        var assigned = _data.CountKmCodesByReceiptLine(line.Id);
-                        if (assigned != required)
-                        {
-                            check.Errors.Add($"{rowLabel}: требуется привязать {required} код(ов) КМ, сейчас {assigned}.");
-                        }
+                        check.Errors.Add($"{rowLabel}: требуется привязать {required} код(ов) КМ, сейчас {assigned}.");
                     }
-                    else
-                    {
-                        var assigned = _data.CountKmCodesByShipmentLine(line.Id);
-                        if (assigned > required)
-                        {
-                            check.Errors.Add($"{rowLabel}: привязано больше кодов КМ ({assigned}), чем количество в строке ({required}).");
-                            continue;
-                        }
+                }
+            }
 
-                        var missing = required - assigned;
-                        if (missing > 0)
+            if (KmWorkflowEnabled
+                && item?.IsChestnyZnakMarkingRequired == true
+                && doc.Type == DocType.Outbound)
+            {
+                var rounded = Math.Round(line.Qty);
+                if (Math.Abs(line.Qty - rounded) > 0.0001)
+                {
+                    check.Errors.Add($"{rowLabel}: количество для маркируемого товара должно быть целым.");
+                }
+                else
+                {
+                    var required = (int)rounded;
+                    var assigned = _data.CountKmCodesByShipmentLine(line.Id);
+                    if (assigned > required)
+                    {
+                        check.Errors.Add($"{rowLabel}: привязано больше кодов КМ ({assigned}), чем количество в строке ({required}).");
+                        continue;
+                    }
+
+                    var missing = required - assigned;
+                    if (missing > 0)
+                    {
+                        var gtin14 = NormalizeGtinForKm(item.Gtin);
+                        var huId = ResolveHuId(_data, fromHu);
+                        var availableForAuto = GetAvailableKmForOutbound(_data, doc.OrderId, line.ItemId, gtin14, line.FromLocationId, huId, missing).Count;
+                        if (availableForAuto < missing)
                         {
-                            var gtin14 = NormalizeGtinForKm(item.Gtin);
-                            var huId = ResolveHuId(_data, fromHu);
-                            var availableForAuto = GetAvailableKmForOutbound(_data, doc.OrderId, line.ItemId, gtin14, line.FromLocationId, huId, missing).Count;
-                            if (availableForAuto < missing)
-                            {
-                                check.Errors.Add(
-                                    $"{rowLabel}: недостаточно КМ для авто-отгрузки. " +
-                                    $"Нужно {required}, уже привязано {assigned}, доступно {assigned + availableForAuto}.");
-                            }
+                            check.Errors.Add(
+                                $"{rowLabel}: недостаточно КМ для авто-отгрузки. " +
+                                $"Нужно {required}, уже привязано {assigned}, доступно {assigned + availableForAuto}.");
                         }
                     }
                 }
@@ -1922,15 +1913,6 @@ public sealed class DocumentService
             check.Errors.Add("Для отгрузки требуется контрагент.");
         }
         return check;
-    }
-
-    private static bool HasChestnyZnakMarkableLines(
-        IReadOnlyList<DocLine> lines,
-        IReadOnlyDictionary<long, Item> itemsById)
-    {
-        return lines.Any(line =>
-            itemsById.TryGetValue(line.ItemId, out var item)
-            && item.IsChestnyZnakMarkingRequired);
     }
 
     private IEnumerable<string> BuildHuLocationErrors(

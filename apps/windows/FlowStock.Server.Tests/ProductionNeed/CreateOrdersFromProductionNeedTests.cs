@@ -126,6 +126,67 @@ public sealed class CreateOrdersFromProductionNeedTests
         Assert.Equal(756, Assert.Single(harness.GetOrderLines(internalDraft.Id)).QtyOrdered);
     }
 
+    [Fact]
+    public async Task CreateOrdersFromProductionNeed_ForMarkableItem_CreatesInternalDraftThatRequiresKmOnReceipt()
+    {
+        var (harness, apiStore) = CreateMixedNeedScenario();
+        harness.SeedItem(new Item
+        {
+            Id = 1001,
+            Name = "Горчица",
+            Gtin = "04607186951520",
+            ItemTypeName = "Готовая продукция",
+            ItemTypeEnableMinStockControl = true,
+            ItemTypeEnableMarking = true,
+            MinStockQty = 1134
+        });
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        await CreateOrdersAsync(host.Client);
+
+        var internalDraft = Assert.Single(harness.Store.GetOrders().Where(order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft));
+        var internalLine = Assert.Single(harness.GetOrderLines(internalDraft.Id));
+        harness.SeedOrderReceiptRemaining(internalDraft.Id, new OrderReceiptLine
+        {
+            OrderLineId = internalLine.Id,
+            OrderId = internalDraft.Id,
+            ItemId = internalLine.ItemId,
+            ItemName = "Горчица",
+            QtyOrdered = internalLine.QtyOrdered,
+            QtyReceived = 0,
+            QtyRemaining = internalLine.QtyOrdered,
+            ProductionPurpose = ProductionLinePurpose.InternalStock
+        });
+        harness.SeedDoc(new Doc
+        {
+            Id = 50,
+            DocRef = "PRD-2026-000050",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = internalDraft.Id,
+            OrderRef = internalDraft.OrderRef,
+            CreatedAt = new DateTime(2026, 5, 7, 12, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 500,
+            DocId = 50,
+            OrderLineId = internalLine.Id,
+            ItemId = internalLine.ItemId,
+            Qty = internalLine.QtyOrdered,
+            ToLocationId = 1,
+            ToHu = "HU-PRD-050"
+        });
+
+        var result = harness.CreateService().TryCloseDoc(50, allowNegative: false);
+
+        Assert.False(result.Success);
+        Assert.Contains(
+            "Строка 1 (Горчица): требуется привязать 1890 код(ов) КМ, сейчас 0.",
+            result.Errors);
+        Assert.Equal(DocStatus.Draft, harness.GetDoc(50).Status);
+    }
+
     private static async Task<CreateProductionNeedOrdersResponse> CreateOrdersAsync(HttpClient client)
     {
         using var response = await client.PostAsJsonAsync("/api/production-needs/create-orders", new { });

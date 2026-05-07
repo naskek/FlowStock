@@ -28,9 +28,44 @@ public sealed class MarkingValidationTests
     }
 
     [Fact]
-    public void ProductionReceiptWithMarkableItems_ClosesWhenOrderMarkingPrinted()
+    public void ProductionReceiptWithCustomerOrderMarkableItem_RejectsWithoutKmCodes()
     {
-        var harness = CreateHarnessWithOrder(MarkingStatus.Printed);
+        var harness = CreateHarnessWithOrder(OrderType.Customer);
+        var docCountBefore = harness.DocCount;
+        var docLineCountBefore = harness.TotalDocLineCount;
+
+        var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
+
+        Assert.False(result.Success);
+        Assert.Contains("Строка 1 (Маркируемый товар): требуется привязать 5 код(ов) КМ, сейчас 0.", result.Errors);
+        Assert.Empty(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Draft, harness.GetDoc(1).Status);
+        Assert.Equal(docCountBefore, harness.DocCount);
+        Assert.Equal(docLineCountBefore, harness.TotalDocLineCount);
+    }
+
+    [Fact]
+    public void ProductionReceiptWithInternalOrderMarkableItem_RejectsWithoutKmCodes()
+    {
+        var harness = CreateHarnessWithOrder(OrderType.Internal);
+        var docCountBefore = harness.DocCount;
+        var docLineCountBefore = harness.TotalDocLineCount;
+
+        var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
+
+        Assert.False(result.Success);
+        Assert.Contains("Строка 1 (Маркируемый товар): требуется привязать 5 код(ов) КМ, сейчас 0.", result.Errors);
+        Assert.Empty(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Draft, harness.GetDoc(1).Status);
+        Assert.Equal(docCountBefore, harness.DocCount);
+        Assert.Equal(docLineCountBefore, harness.TotalDocLineCount);
+    }
+
+    [Fact]
+    public void ProductionReceiptWithInternalOrderMarkableItem_ClosesWithEnoughKmCodes()
+    {
+        var harness = CreateHarnessWithOrder(OrderType.Internal);
+        harness.SeedKmCodeCountByReceiptLine(docLineId: 100, count: 5);
 
         var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
 
@@ -40,46 +75,31 @@ public sealed class MarkingValidationTests
         Assert.Equal(DocStatus.Closed, harness.GetDoc(1).Status);
     }
 
-    [Theory]
-    [InlineData(MarkingStatus.Required)]
-    [InlineData(MarkingStatus.NotRequired)]
-    public void ProductionReceiptWithMarkableItems_RejectsUntilOrderMarkingPrinted(MarkingStatus markingStatus)
+    [Fact]
+    public void ProductionReceiptWithInternalOrderNonMarkableItem_ClosesWithoutKmCodes()
     {
-        var harness = CreateHarnessWithOrder(markingStatus);
-        var docCountBefore = harness.DocCount;
-        var docLineCountBefore = harness.TotalDocLineCount;
+        var harness = CreateHarnessWithOrder(OrderType.Internal, markable: false);
 
         var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
 
-        Assert.False(result.Success);
-        Assert.Contains(
-            "Нельзя закрыть выпуск маркируемой продукции: по заказу не проведена маркировка ЧЗ.",
-            result.Errors);
-        Assert.Empty(harness.LedgerEntries);
-        Assert.Equal(DocStatus.Draft, harness.GetDoc(1).Status);
-        Assert.Equal(docCountBefore, harness.DocCount);
-        Assert.Equal(docLineCountBefore, harness.TotalDocLineCount);
+        Assert.True(result.Success);
+        Assert.Empty(result.Errors);
+        Assert.Single(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Closed, harness.GetDoc(1).Status);
     }
 
     [Fact]
-    public void ProductionReceiptWithMarkableItems_RejectsMissingOrderId()
+    public void ProductionReceiptMarkingValidation_DoesNotDependOnOrderOrOrderLine()
     {
         var harness = CreateHarnessWithDraftProductionReceipt(orderId: null);
         harness.SeedItem(CreateMarkableItem());
         harness.SeedLine(CreateReceiptLine(itemId: 100, orderLineId: null));
-        var docCountBefore = harness.DocCount;
-        var docLineCountBefore = harness.TotalDocLineCount;
 
         var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
 
         Assert.False(result.Success);
-        Assert.Contains(
-            "Нельзя закрыть выпуск маркируемой продукции без связанного заказа ЧЗ.",
-            result.Errors);
-        Assert.Empty(harness.LedgerEntries);
+        Assert.Contains("Строка 1 (Маркируемый товар): требуется привязать 5 код(ов) КМ, сейчас 0.", result.Errors);
         Assert.Equal(DocStatus.Draft, harness.GetDoc(1).Status);
-        Assert.Equal(docCountBefore, harness.DocCount);
-        Assert.Equal(docLineCountBefore, harness.TotalDocLineCount);
     }
 
     [Fact]
@@ -122,19 +142,27 @@ public sealed class MarkingValidationTests
         Assert.Single(harness.LedgerEntries);
     }
 
-    private static CloseDocumentHarness CreateHarnessWithOrder(MarkingStatus markingStatus)
+    private static CloseDocumentHarness CreateHarnessWithOrder(OrderType orderType, bool markable = true)
     {
         var harness = CreateHarnessWithDraftProductionReceipt(orderId: 10);
-        harness.SeedItem(CreateMarkableItem());
+        harness.SeedItem(markable
+            ? CreateMarkableItem()
+            : new Item
+            {
+                Id = 100,
+                Name = "Обычный товар",
+                Gtin = "04601234567890",
+                ItemTypeEnableMarking = false
+            });
         harness.SeedOrder(new Order
         {
             Id = 10,
             OrderRef = "CO-2026-000010",
-            Type = OrderType.Customer,
+            Type = orderType,
             Status = OrderStatus.InProgress,
             CreatedAt = new DateTime(2026, 4, 1, 10, 0, 0, DateTimeKind.Utc),
-            MarkingStatus = markingStatus,
-            MarkingRequired = true
+            MarkingStatus = MarkingStatus.NotRequired,
+            MarkingRequired = false
         });
         harness.SeedOrderLine(new OrderLine
         {
