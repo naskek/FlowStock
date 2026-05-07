@@ -43,7 +43,7 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
     {
         return new ProductionNeedService(_dataStore)
             .GetRows(includeZeroNeed: false)
-            .Where(row => row.TotalToMakeQty > QtyTolerance)
+            .Where(row => row.ToMinStockQty > QtyTolerance)
             .Select(row =>
             {
                 var item = _dataStore.FindItemById(row.ItemId) ?? throw new InvalidOperationException("Товар потребности не найден.");
@@ -51,7 +51,7 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
                 {
                     ItemId = row.ItemId,
                     ItemName = item.Name,
-                    QtyOrdered = row.TotalToMakeQty,
+                    QtyOrdered = row.ToMinStockQty,
                     ProductionPurpose = ProductionLinePurpose.InternalStock
                 };
             })
@@ -88,6 +88,6 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
     {
         return createdLineCount == 0
             ? "Новой потребности для формирования нет."
-            : $"Создан производственный черновик: строк {createdLineCount}.";
+            : $"Создан внутренний черновик на склад: строк {createdLineCount}.";
     }
 }

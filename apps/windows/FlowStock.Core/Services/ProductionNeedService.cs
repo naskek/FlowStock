@@ -48,10 +48,8 @@ public sealed class ProductionNeedService(IDataStore dataStore)
                 var rawToCloseOrdersQty = Math.Max(0, currentNeed.OrderQty - currentNeed.ReservedQty);
                 var rawToMinStockQty = Math.Max(0, minStockQty - freeStockQty);
                 var plannedProductionQty = Math.Max(0, planned);
-                var plannedForOrders = Math.Min(rawToCloseOrdersQty, plannedProductionQty);
-                var remainingPlannedQty = Math.Max(0, plannedProductionQty - plannedForOrders);
-                var toCloseOrdersQty = Math.Max(0, rawToCloseOrdersQty - plannedForOrders);
-                var toMinStockQty = Math.Max(0, rawToMinStockQty - remainingPlannedQty);
+                var toCloseOrdersQty = rawToCloseOrdersQty;
+                var toMinStockQty = Math.Max(0, rawToMinStockQty - plannedProductionQty);
                 var itemTypeName = string.IsNullOrWhiteSpace(item?.ItemTypeName) ? "Без типа" : item!.ItemTypeName!;
 
                 return new ProductionNeedRow

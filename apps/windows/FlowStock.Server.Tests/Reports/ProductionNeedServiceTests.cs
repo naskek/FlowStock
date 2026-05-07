@@ -113,7 +113,7 @@ public sealed class ProductionNeedServiceTests
     }
 
     [Fact]
-    public void PlannedProduction_CoversOrdersThenMinStock_WhenEnoughForAll()
+    public void PlannedInternalProduction_ReducesOnlyMinStock_WhenEnoughForAll()
     {
         var service = BuildService(
             itemId: 10,
@@ -140,13 +140,13 @@ public sealed class ProductionNeedServiceTests
 
         var row = service.GetRows(includeZeroNeed: true).Single();
 
-        Assert.Equal(0, row.ToCloseOrdersQty);
+        Assert.Equal(756, row.ToCloseOrdersQty);
         Assert.Equal(0, row.ToMinStockQty);
-        Assert.Equal(0, row.TotalToMakeQty);
+        Assert.Equal(756, row.TotalToMakeQty);
     }
 
     [Fact]
-    public void PlannedProduction_CoversOrdersFirst_WhenPlannedQtyIs500()
+    public void PlannedInternalProduction_ReducesOnlyMinStock_WhenPlannedQtyIs500()
     {
         var service = BuildService(
             itemId: 10,
@@ -173,13 +173,13 @@ public sealed class ProductionNeedServiceTests
 
         var row = service.GetRows(includeZeroNeed: true).Single();
 
-        Assert.Equal(256, row.ToCloseOrdersQty);
-        Assert.Equal(1134, row.ToMinStockQty);
+        Assert.Equal(756, row.ToCloseOrdersQty);
+        Assert.Equal(634, row.ToMinStockQty);
         Assert.Equal(1390, row.TotalToMakeQty);
     }
 
     [Fact]
-    public void PlannedProduction_CoversOrdersFirst_WhenPlannedQtyIs1000()
+    public void PlannedInternalProduction_ReducesOnlyMinStock_WhenPlannedQtyIs1000()
     {
         var service = BuildService(
             itemId: 10,
@@ -206,9 +206,35 @@ public sealed class ProductionNeedServiceTests
 
         var row = service.GetRows(includeZeroNeed: true).Single();
 
-        Assert.Equal(0, row.ToCloseOrdersQty);
-        Assert.Equal(890, row.ToMinStockQty);
+        Assert.Equal(756, row.ToCloseOrdersQty);
+        Assert.Equal(134, row.ToMinStockQty);
         Assert.Equal(890, row.TotalToMakeQty);
+    }
+
+    [Fact]
+    public void ProductionNeed_MinStockUsesFreeStockAfterCustomerReservation()
+    {
+        var service = BuildService(
+            itemId: 10,
+            physicalStockQty: 100000,
+            minStockQty: 3600,
+            orderScenarios:
+            [
+                new OrderScenario(
+                    OrderId: 1,
+                    LineId: 100,
+                    QtyOrdered: 100000,
+                    QtyReserved: 100000,
+                    DueDate: DateTime.Today)
+            ],
+            store: out _);
+
+        var row = service.GetRows(includeZeroNeed: true).Single();
+
+        Assert.Equal(0, row.FreeStockQty);
+        Assert.Equal(0, row.ToCloseOrdersQty);
+        Assert.Equal(3600, row.ToMinStockQty);
+        Assert.Equal(3600, row.TotalToMakeQty);
     }
 
     private static ProductionNeedService BuildService(
