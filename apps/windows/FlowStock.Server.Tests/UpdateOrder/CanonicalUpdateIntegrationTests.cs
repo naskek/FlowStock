@@ -51,7 +51,7 @@ public sealed class CanonicalUpdateIntegrationTests
     }
 
     [Fact]
-    public async Task SuccessfulUpdateInternal_PreservesProductionPurposePerLine()
+    public async Task SuccessfulUpdateInternal_NormalizesProductionPurposeToInternalStock()
     {
         var (harness, apiStore, orderId) = UpdateOrderHttpScenario.CreateInternalScenario();
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
@@ -83,15 +83,11 @@ public sealed class CanonicalUpdateIntegrationTests
 
         Assert.True(payload.Ok);
         Assert.Equal(orderId, payload.OrderId);
-        Assert.Equal(2, payload.LineCount);
+        Assert.Equal(1, payload.LineCount);
 
-        var lines = harness.GetOrderLines(orderId).OrderBy(line => line.ProductionPurpose).ToArray();
-        Assert.Equal(2, lines.Length);
-        Assert.Contains(lines, line => line.ItemId == 1001
-                                      && line.QtyOrdered == 756
-                                      && line.ProductionPurpose == ProductionLinePurpose.CustomerOrder);
-        Assert.Contains(lines, line => line.ItemId == 1001
-                                      && line.QtyOrdered == 1134
-                                      && line.ProductionPurpose == ProductionLinePurpose.InternalStock);
+        var lines = harness.GetOrderLines(orderId).ToArray();
+        Assert.Single(lines);
+        Assert.Equal(1890, lines[0].QtyOrdered);
+        Assert.Equal(ProductionLinePurpose.InternalStock, lines[0].ProductionPurpose);
     }
 }

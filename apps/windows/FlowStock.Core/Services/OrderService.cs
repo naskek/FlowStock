@@ -640,9 +640,9 @@ public sealed class OrderService
 
     private static ProductionLinePurpose ResolveLinePurpose(OrderType orderType, ProductionLinePurpose requested)
     {
-        return orderType == OrderType.Customer
-            ? ProductionLinePurpose.CustomerOrder
-            : requested;
+        return orderType == OrderType.Internal
+            ? ProductionLinePurpose.InternalStock
+            : ProductionLinePurpose.CustomerOrder;
     }
 
     private void RebuildOrderReceiptPlan(IDataStore store, long orderId)

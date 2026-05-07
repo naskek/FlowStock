@@ -7,10 +7,11 @@ namespace FlowStock.Server.Tests.CreateOrder;
 public sealed class ProductionLinePurposeTests
 {
     [Fact]
-    public void InternalOrder_AllowsSameItemWithDifferentProductionPurposes()
+    public void InternalOrder_NormalizesAllLinesToInternalStock()
     {
         var harness = new CloseDocumentHarness();
         harness.SeedItem(new Item { Id = 10, Name = "Хрен столовый, Печагин, 1 кг", Gtin = "04607186951520" });
+        harness.SeedItem(new Item { Id = 11, Name = "Хрен столовый, Печагин, 1 кг, запас", Gtin = "04607186951521" });
         var service = new OrderService(harness.Store);
 
         var orderId = service.CreateOrder(
@@ -29,27 +30,49 @@ public sealed class ProductionLinePurposeTests
                 },
                 new OrderLineView
                 {
-                    ItemId = 10,
-                    ItemName = "Хрен столовый, Печагин, 1 кг",
+                    ItemId = 11,
+                    ItemName = "Хрен столовый, Печагин, 1 кг, запас",
                     QtyOrdered = 1134,
                     ProductionPurpose = ProductionLinePurpose.InternalStock
                 }
             ],
             type: OrderType.Internal);
 
-        var lines = harness.GetOrderLines(orderId).OrderBy(line => line.ProductionPurpose).ToArray();
+        var lines = harness.GetOrderLines(orderId).ToArray();
 
         Assert.Equal(2, lines.Length);
-        Assert.Contains(lines, line => line.ItemId == 10
-                                      && line.QtyOrdered == 756
-                                      && line.ProductionPurpose == ProductionLinePurpose.CustomerOrder);
-        Assert.Contains(lines, line => line.ItemId == 10
-                                      && line.QtyOrdered == 1134
-                                      && line.ProductionPurpose == ProductionLinePurpose.InternalStock);
+        Assert.All(lines, line => Assert.Equal(ProductionLinePurpose.InternalStock, line.ProductionPurpose));
     }
 
     [Fact]
-    public void InternalOrder_MergesOnlySameItemAndSameProductionPurpose()
+    public void CustomerOrder_NormalizesAllLinesToCustomerOrder()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedPartner(new Partner { Id = 1, Name = "Клиент" });
+        harness.SeedItem(new Item { Id = 10, Name = "Товар 1" });
+        harness.SeedItem(new Item { Id = 11, Name = "Товар 2" });
+        var service = new OrderService(harness.Store);
+
+        var orderId = service.CreateOrder(
+            orderRef: "CUST-001",
+            partnerId: 1,
+            dueDate: null,
+            comment: null,
+            lines:
+            [
+                new OrderLineView { ItemId = 10, ItemName = "Товар 1", QtyOrdered = 100, ProductionPurpose = ProductionLinePurpose.InternalStock },
+                new OrderLineView { ItemId = 11, ItemName = "Товар 2", QtyOrdered = 200, ProductionPurpose = ProductionLinePurpose.CustomerOrder }
+            ],
+            type: OrderType.Customer);
+
+        var lines = harness.GetOrderLines(orderId).ToArray();
+
+        Assert.Equal(2, lines.Length);
+        Assert.All(lines, line => Assert.Equal(ProductionLinePurpose.CustomerOrder, line.ProductionPurpose));
+    }
+
+    [Fact]
+    public void InternalOrder_MergesSameItemAfterPurposeNormalization()
     {
         var harness = new CloseDocumentHarness();
         harness.SeedItem(new Item { Id = 10, Name = "Товар" });
@@ -63,16 +86,15 @@ public sealed class ProductionLinePurposeTests
             lines:
             [
                 new OrderLineView { ItemId = 10, ItemName = "Товар", QtyOrdered = 100, ProductionPurpose = ProductionLinePurpose.InternalStock },
-                new OrderLineView { ItemId = 10, ItemName = "Товар", QtyOrdered = 200, ProductionPurpose = ProductionLinePurpose.InternalStock },
-                new OrderLineView { ItemId = 10, ItemName = "Товар", QtyOrdered = 300, ProductionPurpose = ProductionLinePurpose.CustomerOrder }
+                new OrderLineView { ItemId = 10, ItemName = "Товар", QtyOrdered = 200, ProductionPurpose = ProductionLinePurpose.CustomerOrder }
             ],
             type: OrderType.Internal);
 
         var lines = harness.GetOrderLines(orderId);
 
-        Assert.Equal(2, lines.Count);
-        Assert.Contains(lines, line => line.QtyOrdered == 300 && line.ProductionPurpose == ProductionLinePurpose.InternalStock);
-        Assert.Contains(lines, line => line.QtyOrdered == 300 && line.ProductionPurpose == ProductionLinePurpose.CustomerOrder);
+        Assert.Single(lines);
+        Assert.Equal(300, lines[0].QtyOrdered);
+        Assert.Equal(ProductionLinePurpose.InternalStock, lines[0].ProductionPurpose);
     }
 
     [Fact]

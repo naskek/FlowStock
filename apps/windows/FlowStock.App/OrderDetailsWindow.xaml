@@ -1,7 +1,6 @@
 <Window x:Class="FlowStock.App.OrderDetailsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:core="clr-namespace:FlowStock.Core.Models;assembly=FlowStock.Core"
         Title="Заказ"
         Height="700" Width="1100"
         WindowStartupLocation="CenterOwner"
@@ -106,7 +105,7 @@
             <Button x:Name="DeleteLineButton" Content="Удалить строку" Click="DeleteLine_Click" Margin="8,0,0,0" TabIndex="9" />
         </StackPanel>
             <Grid Grid.Row="1">
-                <DataGrid x:Name="OrderLinesGrid" AutoGenerateColumns="False" IsReadOnly="False"
+                <DataGrid x:Name="OrderLinesGrid" AutoGenerateColumns="False" IsReadOnly="True"
                           SelectionChanged="OrderLinesGrid_SelectionChanged"
                           MouseDoubleClick="OrderLinesGrid_MouseDoubleClick"
                           TabIndex="10">
@@ -114,18 +113,6 @@
                         <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" IsReadOnly="True" />
                         <DataGridTextColumn Header="SKU / ШК" Binding="{Binding Barcode}" Width="150" IsReadOnly="True" />
                         <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="150" IsReadOnly="True" />
-                        <DataGridTemplateColumn x:Name="ProductionPurposeColumn" Header="Назначение" Width="140">
-                            <DataGridTemplateColumn.CellTemplate>
-                                <DataTemplate>
-                                    <ComboBox SelectedValue="{Binding ProductionPurpose, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                              SelectedValuePath="Tag"
-                                              SelectionChanged="ProductionPurposeCombo_SelectionChanged">
-                                        <ComboBoxItem Tag="{x:Static core:ProductionLinePurpose.CustomerOrder}" Content="Под заказ" />
-                                        <ComboBoxItem Tag="{x:Static core:ProductionLinePurpose.InternalStock}" Content="На склад" />
-                                    </ComboBox>
-                                </DataTemplate>
-                            </DataGridTemplateColumn.CellTemplate>
-                        </DataGridTemplateColumn>
                         <DataGridTextColumn Header="Заказано (база)" Binding="{Binding QtyOrdered}" Width="140" IsReadOnly="True" />
                         <DataGridTextColumn x:Name="ProcessedQtyColumn" Header="Отгружено" Binding="{Binding QtyShipped}" Width="120" IsReadOnly="True" />
                         <DataGridTextColumn Header="Осталось" Binding="{Binding QtyRemaining}" Width="120" IsReadOnly="True" />

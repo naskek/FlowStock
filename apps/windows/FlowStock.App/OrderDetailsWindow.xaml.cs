@@ -14,7 +14,6 @@ namespace FlowStock.App;
 public partial class OrderDetailsWindow : Window
 {
     private const double QtyTolerance = 0.000001;
-    private bool _isUpdatingProductionPurpose;
     private readonly AppServices _services;
     private readonly ObservableCollection<Partner> _partners = new();
     private readonly List<Partner> _partnersAll = new();
@@ -23,11 +22,6 @@ public partial class OrderDetailsWindow : Window
     {
         new OrderTypeOption(OrderType.Customer, "Клиентский заказ"),
         new OrderTypeOption(OrderType.Internal, "Внутренний заказ на выпуск")
-    };
-    private readonly List<ProductionPurposeOption> _purposeOptions = new()
-    {
-        new ProductionPurposeOption(ProductionLinePurpose.CustomerOrder, "Под заказ"),
-        new ProductionPurposeOption(ProductionLinePurpose.InternalStock, "На склад")
     };
 
     private Order? _order;
@@ -549,19 +543,16 @@ public partial class OrderDetailsWindow : Window
         var purpose = orderType == OrderType.Internal
             ? ProductionLinePurpose.InternalStock
             : ProductionLinePurpose.CustomerOrder;
-        if (orderType == OrderType.Customer)
+        var existingLine = _lines.FirstOrDefault(line => line.ItemId == item.Id);
+        if (existingLine != null)
         {
-            var existing = _lines.FirstOrDefault(line => line.ItemId == item.Id && line.ProductionPurpose == purpose);
-            if (existing != null)
-            {
-                SelectOrderLine(existing);
-                MessageBox.Show(
-                    $"Строка с товаром \"{existing.ItemName}\" уже добавлена. Измените количество в существующей строке при необходимости.",
-                    "Заказы",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information);
-                return;
-            }
+            SelectOrderLine(existingLine);
+            MessageBox.Show(
+                $"Строка с товаром \"{existingLine.ItemName}\" уже добавлена. Измените количество в существующей строке при необходимости.",
+                "Заказы",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
         }
 
         var packagings = _services.WpfPackagingApi.TryGetPackagings(item.Id, includeInactive: false, out var apiPackagings)
@@ -574,24 +565,6 @@ public partial class OrderDetailsWindow : Window
         };
         if (qtyDialog.ShowDialog() != true)
         {
-            return;
-        }
-
-        if (orderType == OrderType.Internal
-            && !TrySelectProductionPurpose(purpose, out purpose))
-        {
-            return;
-        }
-
-        var duplicate = _lines.FirstOrDefault(line => line.ItemId == item.Id && line.ProductionPurpose == purpose);
-        if (duplicate != null)
-        {
-            SelectOrderLine(duplicate);
-            MessageBox.Show(
-                $"Строка с товаром \"{duplicate.ItemName}\" и назначением \"{duplicate.ProductionPurposeDisplay}\" уже добавлена. Измените количество в существующей строке при необходимости.",
-                "Заказы",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
             return;
         }
 
@@ -652,156 +625,10 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        var purpose = _selectedLine.ProductionPurpose;
-        if (GetSelectedOrderType() == OrderType.Internal
-            && !TrySelectProductionPurpose(purpose, out purpose))
-        {
-            return;
-        }
-
-        var duplicate = _lines.FirstOrDefault(line =>
-            !ReferenceEquals(line, _selectedLine)
-            && line.ItemId == _selectedLine.ItemId
-            && line.ProductionPurpose == purpose);
-        if (duplicate != null)
-        {
-            MessageBox.Show(
-                $"Строка с товаром \"{duplicate.ItemName}\" и назначением \"{duplicate.ProductionPurposeDisplay}\" уже есть.",
-                "Заказы",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-            SelectOrderLine(duplicate);
-            return;
-        }
-
         _selectedLine.QtyOrdered = qtyDialog.QtyBase;
-        _selectedLine.ProductionPurpose = purpose;
         RefreshLineMetrics();
         MarkDirty();
         OrderLinesGrid.Items.Refresh();
-    }
-
-    private void ProductionPurposeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (_isUpdatingProductionPurpose
-            || sender is not System.Windows.Controls.ComboBox combo
-            || combo.DataContext is not OrderLineView line
-            || e.AddedItems.Count == 0
-            || e.AddedItems[0] is not System.Windows.Controls.ComboBoxItem addedItem
-            || !TryGetProductionPurpose(addedItem, out var newPurpose))
-        {
-            return;
-        }
-
-        var previousPurpose = e.RemovedItems.Count > 0
-            && e.RemovedItems[0] is System.Windows.Controls.ComboBoxItem removedItem
-            && TryGetProductionPurpose(removedItem, out var removedPurpose)
-            ? removedPurpose
-            : line.ProductionPurpose;
-
-        if (newPurpose == previousPurpose)
-        {
-            return;
-        }
-
-        if (!EnsureEditable(false) || GetSelectedOrderType() != OrderType.Internal)
-        {
-            RevertProductionPurpose(line, combo, previousPurpose);
-            return;
-        }
-
-        var duplicate = _lines.FirstOrDefault(candidate =>
-            !ReferenceEquals(candidate, line)
-            && candidate.ItemId == line.ItemId
-            && candidate.ProductionPurpose == newPurpose);
-        if (duplicate != null)
-        {
-            RevertProductionPurpose(line, combo, previousPurpose);
-            MessageBox.Show(
-                $"Строка с товаром \"{duplicate.ItemName}\" и назначением \"{duplicate.ProductionPurposeDisplay}\" уже есть.",
-                "Заказы",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-            SelectOrderLine(duplicate);
-            return;
-        }
-
-        line.ProductionPurpose = newPurpose;
-        RefreshLineMetrics();
-        MarkDirty();
-        OrderLinesGrid.Items.Refresh();
-    }
-
-    private bool TrySelectProductionPurpose(ProductionLinePurpose initialPurpose, out ProductionLinePurpose purpose)
-    {
-        purpose = initialPurpose;
-        var combo = new System.Windows.Controls.ComboBox
-        {
-            ItemsSource = _purposeOptions,
-            DisplayMemberPath = nameof(ProductionPurposeOption.DisplayName),
-            SelectedValuePath = nameof(ProductionPurposeOption.Purpose),
-            SelectedValue = initialPurpose,
-            Margin = new Thickness(0, 4, 0, 0),
-            MinWidth = 220
-        };
-        var okButton = new System.Windows.Controls.Button { Content = "OK", Width = 90, IsDefault = true, Margin = new Thickness(0, 0, 8, 0) };
-        var cancelButton = new System.Windows.Controls.Button { Content = "Отмена", Width = 90, IsCancel = true };
-        var dialog = new Window
-        {
-            Title = "Назначение строки",
-            Owner = this,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            SizeToContent = SizeToContent.WidthAndHeight,
-            ResizeMode = ResizeMode.NoResize
-        };
-        okButton.Click += (_, _) => dialog.DialogResult = true;
-        dialog.Content = new StackPanel
-        {
-            Margin = new Thickness(12),
-            Children =
-            {
-                new TextBlock { Text = "Назначение", Margin = new Thickness(0, 0, 0, 4) },
-                combo,
-                new StackPanel
-                {
-                    Orientation = System.Windows.Controls.Orientation.Horizontal,
-                    HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
-                    Margin = new Thickness(0, 12, 0, 0),
-                    Children = { okButton, cancelButton }
-                }
-            }
-        };
-
-        if (dialog.ShowDialog() != true)
-        {
-            return false;
-        }
-
-        purpose = combo.SelectedValue is ProductionLinePurpose selected
-            ? selected
-            : ProductionLinePurpose.InternalStock;
-        return true;
-    }
-
-    private void RevertProductionPurpose(OrderLineView line, System.Windows.Controls.ComboBox combo, ProductionLinePurpose purpose)
-    {
-        _isUpdatingProductionPurpose = true;
-        line.ProductionPurpose = purpose;
-        combo.SelectedValue = purpose;
-        _isUpdatingProductionPurpose = false;
-        OrderLinesGrid.Items.Refresh();
-    }
-
-    private static bool TryGetProductionPurpose(System.Windows.Controls.ComboBoxItem item, out ProductionLinePurpose purpose)
-    {
-        if (item.Tag is ProductionLinePurpose selectedPurpose)
-        {
-            purpose = selectedPurpose;
-            return true;
-        }
-
-        purpose = ProductionLinePurpose.InternalStock;
-        return false;
     }
 
     private void DeleteLine_Click(object sender, RoutedEventArgs e)
@@ -986,7 +813,6 @@ public partial class OrderDetailsWindow : Window
         AvailableQtyColumn.Header = type == OrderType.Internal ? "В наличии ГП" : "В наличии";
         CanShipNowColumn.Visibility = type == OrderType.Internal ? Visibility.Collapsed : Visibility.Visible;
         ShortageColumn.Visibility = type == OrderType.Internal ? Visibility.Collapsed : Visibility.Visible;
-        ProductionPurposeColumn.Visibility = type == OrderType.Internal ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private OrderType GetSelectedOrderType()
@@ -1282,16 +1108,5 @@ public partial class OrderDetailsWindow : Window
         public string Name { get; }
     }
 
-    private sealed class ProductionPurposeOption
-    {
-        public ProductionPurposeOption(ProductionLinePurpose purpose, string displayName)
-        {
-            Purpose = purpose;
-            DisplayName = displayName;
-        }
-
-        public ProductionLinePurpose Purpose { get; }
-        public string DisplayName { get; }
-    }
 }
 

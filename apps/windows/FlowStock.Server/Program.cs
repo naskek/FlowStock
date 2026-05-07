@@ -2133,7 +2133,7 @@ app.MapPost("/api/orders/requests/create", async (HttpRequest request, IDataStor
             qty_ordered = line.QtyOrdered,
             production_purpose = ProductionLinePurposeMapper.ToDbValue(
                 orderType == OrderType.Internal
-                    ? ProductionLinePurposeMapper.FromDbValue(line.ProductionPurpose)
+                    ? ProductionLinePurpose.InternalStock
                     : ProductionLinePurpose.CustomerOrder)
         });
     }
