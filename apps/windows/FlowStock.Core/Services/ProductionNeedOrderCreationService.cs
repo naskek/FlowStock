@@ -40,19 +40,14 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
                 OrderType.Internal);
         }
 
-        var markingResult = new MarkingNeedCreationService(dataStore)
-            .CreateFromProductionNeeds(DateTime.Now);
-
         return new ProductionNeedOrderCreationResult
         {
             CustomerDraftCount = 0,
             InternalDraftCount = internalOrderId.HasValue ? 1 : 0,
             CreatedLineCount = draftLines.Count,
-            CreatedMarkingTaskCount = markingResult.CreatedTaskCount,
-            CreatedMarkingQty = markingResult.CreatedQty,
             InternalDraftOrderId = internalOrderId,
-            DebugSummary = AppendMarkingDebug(debugSummary, markingResult),
-            Message = BuildMessage(draftLines.Count, markingResult)
+            DebugSummary = debugSummary,
+            Message = BuildMessage(draftLines.Count)
         };
     }
 
@@ -146,22 +141,10 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
             .ToArray();
     }
 
-    private static IReadOnlyList<string> AppendMarkingDebug(
-        IReadOnlyList<string> current,
-        MarkingNeedCreationResult markingResult)
+    private static string BuildMessage(int createdLineCount)
     {
-        return current
-            .Append(string.Create(
-                CultureInfo.InvariantCulture,
-                $"marking_created_tasks={markingResult.CreatedTaskCount}; marking_created_qty={markingResult.CreatedQty:0.###}"))
-            .ToArray();
-    }
-
-    private static string BuildMessage(int createdLineCount, MarkingNeedCreationResult markingResult)
-    {
-        var orderMessage = createdLineCount == 0
-            ? "Новой потребности для формирования нет."
+        return createdLineCount == 0
+            ? "Внутренний черновик не создан: по актуальной потребности нет строк \"На склад до мин.\"."
             : $"Создан внутренний черновик на склад: строк {createdLineCount}.";
-        return $"{orderMessage} {markingResult.Message}".Trim();
     }
 }

@@ -129,3 +129,12 @@ assert.strictEqual(
   pc.buildOrdersUrl("abc 001", 21, 20),
   "/api/orders?include_internal=1&include_pending_requests=1&limit=21&offset=20&q=abc%20001"
 );
+
+assert.strictEqual(
+  pc.getProductionNeedCreateOrdersRefreshUrl(),
+  "/api/orders?include_internal=1&include_pending_requests=1&limit=21&offset=0"
+);
+assert.ok(
+  !pc.getProductionNeedCreateOrdersRefreshUrl().includes("/api/marking/orders"),
+  "create-orders must refresh orders, not marking queue"
+);

@@ -856,6 +856,10 @@
     });
   }
 
+  function getProductionNeedCreateOrdersRefreshUrl() {
+    return buildOrdersUrl("", ORDERS_FETCH_LIMIT, 0);
+  }
+
   function wireProductionNeed() {
     var refreshBtn = document.getElementById("productionNeedRefreshBtn");
     var createOrdersBtn = document.getElementById("productionNeedCreateOrdersBtn");
@@ -906,25 +910,25 @@
     if (createOrdersBtn) {
       createOrdersBtn.addEventListener("click", function () {
         createOrdersBtn.disabled = true;
-        setStatus("Формирование черновиков...");
+        setStatus("Формирование производственного черновика...");
         fetchJson("/api/production-needs/create-orders", {
           method: "POST",
         })
           .then(function (payload) {
             var message = payload && payload.message
               ? String(payload.message)
-              : "Черновики сформированы.";
+              : "Производственный черновик сформирован.";
             window.alert(message);
             return Promise.all([
               loadAndRender(),
-              fetchJson("/api/marking/orders").catch(function () {
+              fetchJson(getProductionNeedCreateOrdersRefreshUrl()).catch(function () {
                 return null;
               }),
             ]);
           })
           .catch(function (error) {
-            setStatus("Ошибка формирования черновиков");
-            window.alert(error && error.message ? error.message : "Не удалось сформировать черновики.");
+            setStatus("Ошибка формирования производственного черновика");
+            window.alert(error && error.message ? error.message : "Не удалось сформировать производственный черновик.");
           })
           .finally(function () {
             createOrdersBtn.disabled = false;
@@ -3884,6 +3888,7 @@
     window.FlowStockPcTestHooks.renderOrderMarkingIndicator = renderOrderMarkingIndicator;
     window.FlowStockPcTestHooks.normalizeMarkingTaskRows = normalizeMarkingTaskRows;
     window.FlowStockPcTestHooks.buildOrdersUrl = buildOrdersUrl;
+    window.FlowStockPcTestHooks.getProductionNeedCreateOrdersRefreshUrl = getProductionNeedCreateOrdersRefreshUrl;
     window.FlowStockPcTestHooks.trimOrdersPage = trimOrdersPage;
     return;
   }
