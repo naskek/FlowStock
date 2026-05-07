@@ -485,6 +485,7 @@ internal sealed class CloseDocumentHarness
                     UseReservedStock = order.UseReservedStock,
                     MarkingStatus = order.MarkingStatus,
                     MarkingRequired = order.MarkingRequired,
+                    MarkingApplies = order.MarkingApplies,
                     MarkingExcelGeneratedAt = order.MarkingExcelGeneratedAt,
                     MarkingPrintedAt = order.MarkingPrintedAt
                 };
@@ -516,6 +517,7 @@ internal sealed class CloseDocumentHarness
                     UseReservedStock = order.UseReservedStock,
                     MarkingStatus = current.MarkingStatus,
                     MarkingRequired = current.MarkingRequired,
+                    MarkingApplies = current.MarkingApplies,
                     MarkingExcelGeneratedAt = current.MarkingExcelGeneratedAt,
                     MarkingPrintedAt = current.MarkingPrintedAt
                 };
@@ -545,6 +547,7 @@ internal sealed class CloseDocumentHarness
                     UseReservedStock = current.UseReservedStock,
                     MarkingStatus = current.MarkingStatus,
                     MarkingRequired = current.MarkingRequired,
+                    MarkingApplies = current.MarkingApplies,
                     MarkingExcelGeneratedAt = current.MarkingExcelGeneratedAt,
                     MarkingPrintedAt = current.MarkingPrintedAt
                 };

@@ -36,11 +36,21 @@ SELECT o.id,
        COALESCE(o.marking_status, 'NOT_REQUIRED'),
        o.marking_excel_generated_at,
        o.marking_printed_at,
-       COALESCE(marking_need.marking_required, FALSE)
+       COALESCE(marking_need.marking_required, FALSE),
+       COALESCE(marking_need.marking_applies, FALSE)
 FROM orders o
 LEFT JOIN partners p ON p.id = o.partner_id
 LEFT JOIN LATERAL (
-    SELECT o.status <> 'CANCELLED' AND EXISTS (
+    SELECT EXISTS (
+        SELECT 1
+        FROM order_lines ol
+        INNER JOIN items i ON i.id = ol.item_id
+        INNER JOIN item_types it ON it.id = i.item_type_id
+        WHERE ol.order_id = o.id
+          AND COALESCE(it.enable_marking, FALSE) = TRUE
+          AND NULLIF(BTRIM(i.gtin), '') IS NOT NULL
+    ) AS marking_applies,
+    o.status <> 'CANCELLED' AND EXISTS (
         SELECT 1
         FROM order_lines ol
         INNER JOIN items i ON i.id = ol.item_id
@@ -94,6 +104,12 @@ LEFT JOIN LATERAL (
 
     public void ExecuteInTransaction(Action<IDataStore> work)
     {
+        if (_connection != null && _transaction != null)
+        {
+            work(this);
+            return;
+        }
+
         using var connection = new NpgsqlConnection(_connectionString);
         connection.Open();
         using var transaction = connection.BeginTransaction();
@@ -3619,6 +3635,7 @@ RETURNING id;
         var markingExcelGeneratedAt = reader.FieldCount > 12 ? FromDbDate(reader.IsDBNull(12) ? null : reader.GetString(12)) : null;
         var markingPrintedAt = reader.FieldCount > 13 ? FromDbDate(reader.IsDBNull(13) ? null : reader.GetString(13)) : null;
         var markingRequired = reader.FieldCount > 14 && !reader.IsDBNull(14) && reader.GetBoolean(14);
+        var markingApplies = reader.FieldCount > 15 && !reader.IsDBNull(15) && reader.GetBoolean(15);
 
         return new Order
         {
@@ -3636,6 +3653,7 @@ RETURNING id;
             MarkingStatus = markingStatus,
             IsLegacyExcelGeneratedMarkingStatus = string.Equals(rawMarkingStatus, "EXCEL_GENERATED", StringComparison.OrdinalIgnoreCase),
             MarkingRequired = markingRequired,
+            MarkingApplies = markingApplies,
             MarkingExcelGeneratedAt = markingExcelGeneratedAt,
             MarkingPrintedAt = markingPrintedAt
         };

@@ -909,14 +909,18 @@
         setStatus("Формирование черновиков...");
         fetchJson("/api/production-needs/create-orders", {
           method: "POST",
-          body: "{}",
         })
           .then(function (payload) {
             var message = payload && payload.message
               ? String(payload.message)
               : "Черновики сформированы.";
             window.alert(message);
-            return loadAndRender();
+            return Promise.all([
+              loadAndRender(),
+              fetchJson("/api/marking/orders").catch(function () {
+                return null;
+              }),
+            ]);
           })
           .catch(function (error) {
             setStatus("Ошибка формирования черновиков");
@@ -2180,6 +2184,28 @@
   }
 
   function getOrderMarkingPresentation(order) {
+    var serverLabel = String((order && order.marking_label) || "").trim();
+    if (serverLabel === "Маркировка проведена") {
+      return {
+        tone: "success",
+        label: "Маркировка проведена",
+        title: "Маркировка проведена",
+      };
+    }
+    if (serverLabel === "Маркировка не проведена") {
+      return {
+        tone: "danger",
+        label: "Маркировка не проведена",
+        title: "Маркировка не проведена",
+      };
+    }
+    if (order && order.marking_completed === true) {
+      return {
+        tone: "success",
+        label: "Маркировка проведена",
+        title: "Маркировка проведена",
+      };
+    }
     var rawEffectiveStatus = String((order && (order.marking_effective_status || order.marking_status)) || "")
       .trim()
       .toUpperCase();

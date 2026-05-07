@@ -76,5 +76,53 @@ public sealed class OrderApiMapperTests
         Assert.Equal("PRINTED", json.GetProperty("marking_status").GetString());
         Assert.Equal("PRINTED", json.GetProperty("marking_effective_status").GetString());
         Assert.Equal("Маркировка проведена", json.GetProperty("marking_status_display").GetString());
+        Assert.True(json.GetProperty("marking_completed").GetBoolean());
+        Assert.Equal("Маркировка проведена", json.GetProperty("marking_label").GetString());
+    }
+
+    [Fact]
+    public void MapOrder_ReturnsBinaryCompletedLabel_WhenMarkableLinesAreCovered()
+    {
+        var order = new Order
+        {
+            Id = 1,
+            OrderRef = "CO-1",
+            Type = OrderType.Customer,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 4, 30, 10, 0, 0, DateTimeKind.Utc),
+            MarkingStatus = MarkingStatus.NotRequired,
+            MarkingRequired = false,
+            MarkingApplies = true
+        };
+
+        var json = JsonSerializer.SerializeToElement(OrderApiMapper.MapOrder(order));
+
+        Assert.True(json.GetProperty("marking_applies").GetBoolean());
+        Assert.True(json.GetProperty("marking_completed").GetBoolean());
+        Assert.Equal("PRINTED", json.GetProperty("marking_effective_status").GetString());
+        Assert.Equal("Маркировка проведена", json.GetProperty("marking_label").GetString());
+    }
+
+    [Fact]
+    public void MapOrder_ReturnsBinaryNotCompletedLabel_WhenMarkableLinesStillNeedMarking()
+    {
+        var order = new Order
+        {
+            Id = 1,
+            OrderRef = "CO-1",
+            Type = OrderType.Customer,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 4, 30, 10, 0, 0, DateTimeKind.Utc),
+            MarkingStatus = MarkingStatus.NotRequired,
+            MarkingRequired = true,
+            MarkingApplies = true
+        };
+
+        var json = JsonSerializer.SerializeToElement(OrderApiMapper.MapOrder(order));
+
+        Assert.True(json.GetProperty("marking_applies").GetBoolean());
+        Assert.False(json.GetProperty("marking_completed").GetBoolean());
+        Assert.Equal("REQUIRED", json.GetProperty("marking_effective_status").GetString());
+        Assert.Equal("Маркировка не проведена", json.GetProperty("marking_label").GetString());
     }
 }

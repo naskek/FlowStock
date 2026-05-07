@@ -11,13 +11,28 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
 
     public ProductionNeedOrderCreationResult CreateDraftOrders()
     {
-        var draftLines = BuildDraftLines();
+        ProductionNeedOrderCreationResult? result = null;
+        _dataStore.ExecuteInTransaction(store =>
+        {
+            result = CreateDraftOrdersInTransaction(store);
+        });
+
+        return result ?? throw new InvalidOperationException("Не удалось выполнить формирование производственной потребности.");
+    }
+
+    private static ProductionNeedOrderCreationResult CreateDraftOrdersInTransaction(IDataStore dataStore)
+    {
+        var currentRows = new ProductionNeedService(dataStore)
+            .GetRows(includeZeroNeed: false);
+        var openInternalByItem = BuildOpenInternalProductionByItem(dataStore);
+        var debugSummary = BuildDebugSummary(currentRows, openInternalByItem);
+        var draftLines = BuildDraftLines(dataStore, currentRows);
         long? internalOrderId = null;
         if (draftLines.Count > 0)
         {
-            var orderService = new OrderService(_dataStore);
+            var orderService = new OrderService(dataStore);
             internalOrderId = orderService.CreateDraftOrder(
-                GenerateNextOrderRef(),
+                GenerateNextOrderRef(dataStore),
                 null,
                 null,
                 "Автосформировано из потребности производства.",
@@ -25,7 +40,7 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
                 OrderType.Internal);
         }
 
-        var markingResult = new MarkingNeedCreationService(_dataStore)
+        var markingResult = new MarkingNeedCreationService(dataStore)
             .CreateFromProductionNeeds(DateTime.Now);
 
         return new ProductionNeedOrderCreationResult
@@ -36,18 +51,18 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
             CreatedMarkingTaskCount = markingResult.CreatedTaskCount,
             CreatedMarkingQty = markingResult.CreatedQty,
             InternalDraftOrderId = internalOrderId,
+            DebugSummary = AppendMarkingDebug(debugSummary, markingResult),
             Message = BuildMessage(draftLines.Count, markingResult)
         };
     }
 
-    private List<OrderLineView> BuildDraftLines()
+    private static List<OrderLineView> BuildDraftLines(IDataStore dataStore, IReadOnlyList<ProductionNeedRow> currentRows)
     {
-        return new ProductionNeedService(_dataStore)
-            .GetRows(includeZeroNeed: false)
+        return currentRows
             .Where(row => row.ToMinStockQty > QtyTolerance)
             .Select(row =>
             {
-                var item = _dataStore.FindItemById(row.ItemId) ?? throw new InvalidOperationException("Товар потребности не найден.");
+                var item = dataStore.FindItemById(row.ItemId) ?? throw new InvalidOperationException("Товар потребности не найден.");
                 return new OrderLineView
                 {
                     ItemId = row.ItemId,
@@ -59,10 +74,10 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
             .ToList();
     }
 
-    private string GenerateNextOrderRef()
+    private static string GenerateNextOrderRef(IDataStore dataStore)
     {
         long max = 0;
-        foreach (var order in _dataStore.GetOrders())
+        foreach (var order in dataStore.GetOrders())
         {
             var orderRef = order.OrderRef?.Trim();
             if (string.IsNullOrWhiteSpace(orderRef))
@@ -83,6 +98,63 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
         }
 
         return (max + 1).ToString("D3", CultureInfo.InvariantCulture);
+    }
+
+    private static Dictionary<long, double> BuildOpenInternalProductionByItem(IDataStore dataStore)
+    {
+        var result = new Dictionary<long, double>();
+        var activeOrders = dataStore.GetOrders()
+            .Where(order => order.Type == OrderType.Internal
+                            && order.Status is not OrderStatus.Shipped and not OrderStatus.Cancelled);
+
+        foreach (var order in activeOrders)
+        {
+            var remainingByLine = dataStore.GetOrderReceiptRemaining(order.Id)
+                .ToDictionary(line => line.OrderLineId);
+
+            foreach (var line in dataStore.GetOrderLines(order.Id))
+            {
+                var remainingQty = remainingByLine.TryGetValue(line.Id, out var receiptLine)
+                    ? Math.Max(0, receiptLine.QtyRemaining)
+                    : Math.Max(0, line.QtyOrdered);
+                if (remainingQty <= QtyTolerance)
+                {
+                    continue;
+                }
+
+                result[line.ItemId] = result.TryGetValue(line.ItemId, out var current)
+                    ? current + remainingQty
+                    : remainingQty;
+            }
+        }
+
+        return result;
+    }
+
+    private static IReadOnlyList<string> BuildDebugSummary(
+        IReadOnlyList<ProductionNeedRow> currentRows,
+        IReadOnlyDictionary<long, double> openInternalByItem)
+    {
+        return currentRows
+            .Select(row =>
+            {
+                openInternalByItem.TryGetValue(row.ItemId, out var openInternalPlanned);
+                return string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"item_id={row.ItemId}; gtin={row.Gtin ?? ""}; item={row.ItemName}; to_close_orders={row.ToCloseOrdersQty:0.###}; to_min_stock={row.ToMinStockQty:0.###}; total_to_make={row.TotalToMakeQty:0.###}; open_internal_planned={openInternalPlanned:0.###}; internal_draft_qty_to_create={row.ToMinStockQty:0.###}");
+            })
+            .ToArray();
+    }
+
+    private static IReadOnlyList<string> AppendMarkingDebug(
+        IReadOnlyList<string> current,
+        MarkingNeedCreationResult markingResult)
+    {
+        return current
+            .Append(string.Create(
+                CultureInfo.InvariantCulture,
+                $"marking_created_tasks={markingResult.CreatedTaskCount}; marking_created_qty={markingResult.CreatedQty:0.###}"))
+            .ToArray();
     }
 
     private static string BuildMessage(int createdLineCount, MarkingNeedCreationResult markingResult)

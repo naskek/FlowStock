@@ -17,12 +17,22 @@ public sealed class Order
     public MarkingStatus MarkingStatus { get; init; } = MarkingStatus.NotRequired;
     public bool IsLegacyExcelGeneratedMarkingStatus { get; init; }
     public bool MarkingRequired { get; init; }
+    public bool MarkingApplies { get; init; }
     public DateTime? MarkingExcelGeneratedAt { get; init; }
     public DateTime? MarkingPrintedAt { get; init; }
 
     public string TypeDisplay => OrderStatusMapper.TypeToDisplayName(Type);
     public string StatusDisplay => OrderStatusMapper.StatusToDisplayName(Status, Type);
     public MarkingStatus EffectiveMarkingStatus => MarkingStatusResolver.Resolve(MarkingStatus, MarkingRequired, Status);
+    public bool MarkingCompleted => EffectiveMarkingStatus == MarkingStatus.Printed
+                                    || (MarkingApplies
+                                        && Status != OrderStatus.Cancelled
+                                        && !MarkingRequired);
+    public string MarkingLabel => MarkingCompleted
+        ? "Маркировка проведена"
+        : Status != OrderStatus.Cancelled && (MarkingRequired || MarkingApplies)
+            ? "Маркировка не проведена"
+            : string.Empty;
     public string MarkingStatusDisplay => MarkingStatusMapper.ToDisplayName(EffectiveMarkingStatus);
     public string MarkingStatusShortDisplay => MarkingStatusMapper.ToShortDisplayName(EffectiveMarkingStatus);
 

@@ -25,7 +25,8 @@ public static class ProductionNeedCreateOrdersEndpoint
                 InternalDraftCount = result.InternalDraftCount,
                 CreatedLineCount = result.CreatedLineCount,
                 CreatedMarkingTaskCount = result.CreatedMarkingTaskCount,
-                CreatedMarkingQty = result.CreatedMarkingQty
+                CreatedMarkingQty = result.CreatedMarkingQty,
+                DebugSummary = result.DebugSummary
             });
         }
         catch (InvalidOperationException ex)

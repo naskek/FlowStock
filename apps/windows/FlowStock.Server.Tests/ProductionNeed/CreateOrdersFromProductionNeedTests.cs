@@ -215,6 +215,67 @@ public sealed class CreateOrdersFromProductionNeedTests
     }
 
     [Fact]
+    public async Task CreateOrdersFromProductionNeed_WithReservedMarkedStock_IgnoresStaleWebQty()
+    {
+        var (harness, apiStore) = CreateReservedMarkedCustomerNeedScenario();
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        var freshNeed = Assert.Single(new ProductionNeedService(harness.Store).GetRows(includeZeroNeed: false));
+        Assert.Equal(3600, freshNeed.ToCloseOrdersQty);
+        Assert.Equal(0, freshNeed.ToMinStockQty);
+        Assert.Equal(3600, freshNeed.TotalToMakeQty);
+
+        var payload = await CreateOrdersAsync(host.Client, new
+        {
+            rows = new[]
+            {
+                new
+                {
+                    item_id = 1001,
+                    to_close_orders_qty = 7200,
+                    to_min_stock_qty = 0,
+                    total_to_make_qty = 7200
+                }
+            }
+        });
+
+        Assert.True(payload.Ok);
+        Assert.Equal(0, payload.InternalDraftCount);
+        Assert.Equal(0, payload.CreatedLineCount);
+        Assert.DoesNotContain(harness.Store.GetOrders(), order => order.Type == OrderType.Internal);
+        Assert.Equal(1, payload.CreatedMarkingTaskCount);
+        Assert.Equal(3600, payload.CreatedMarkingQty);
+        Assert.Equal(3600, Assert.Single(harness.MarkingOrders).RequestedQuantity);
+        Assert.Contains(payload.DebugSummary, line => line.Contains("total_to_make=3600", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task CreateOrdersFromProductionNeed_WpfAndWebLikeRequests_ReturnSameServerResult()
+    {
+        var (wpfHarness, wpfApiStore) = CreateReservedMarkedCustomerNeedScenario();
+        await using var wpfHost = await CloseDocumentHttpHost.StartAsync(wpfHarness, wpfApiStore);
+
+        var (webHarness, webApiStore) = CreateReservedMarkedCustomerNeedScenario();
+        await using var webHost = await CloseDocumentHttpHost.StartAsync(webHarness, webApiStore);
+
+        var wpfPayload = await CreateOrdersAsync(wpfHost.Client);
+        var webPayload = await CreateOrdersAsync(webHost.Client, new
+        {
+            rows = new[]
+            {
+                new { item_id = 1001, total_to_make_qty = 7200 }
+            }
+        });
+
+        Assert.Equal(wpfPayload.InternalDraftCount, webPayload.InternalDraftCount);
+        Assert.Equal(wpfPayload.CreatedLineCount, webPayload.CreatedLineCount);
+        Assert.Equal(wpfPayload.CreatedMarkingTaskCount, webPayload.CreatedMarkingTaskCount);
+        Assert.Equal(wpfPayload.CreatedMarkingQty, webPayload.CreatedMarkingQty);
+        Assert.Equal(3600, Assert.Single(wpfHarness.MarkingOrders).RequestedQuantity);
+        Assert.Equal(3600, Assert.Single(webHarness.MarkingOrders).RequestedQuantity);
+    }
+
+    [Fact]
     public async Task CreateMarkingFromProductionNeeds_CreatesMarkingForCurrentNeed()
     {
         var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 1200, minStockQty: 3600);
@@ -506,9 +567,9 @@ public sealed class CreateOrdersFromProductionNeedTests
         Assert.Equal(DocStatus.Closed, harness.GetDoc(51).Status);
     }
 
-    private static async Task<CreateProductionNeedOrdersResponse> CreateOrdersAsync(HttpClient client)
+    private static async Task<CreateProductionNeedOrdersResponse> CreateOrdersAsync(HttpClient client, object? body = null)
     {
-        using var response = await client.PostAsJsonAsync("/api/production-needs/create-orders", new { });
+        using var response = await client.PostAsJsonAsync("/api/production-needs/create-orders", body ?? new { });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var payload = await response.Content.ReadFromJsonAsync<CreateProductionNeedOrdersResponse>();
         return Assert.IsType<CreateProductionNeedOrdersResponse>(payload);
@@ -715,6 +776,57 @@ public sealed class CreateOrdersFromProductionNeedTests
         return (harness, new InMemoryApiDocStore());
     }
 
+    private static (CloseDocumentHarness Harness, InMemoryApiDocStore ApiStore) CreateReservedMarkedCustomerNeedScenario()
+    {
+        var harness = CreateBaseHarness();
+        harness.SeedItem(new Item
+        {
+            Id = 1001,
+            Name = "Горчица",
+            Gtin = "04607186951520",
+            ItemTypeName = "Готовая продукция",
+            ItemTypeEnableMinStockControl = false,
+            ItemTypeEnableMarking = true,
+            MinStockQty = 0
+        });
+        harness.SeedBalance(itemId: 1001, locationId: 1, qty: 3600);
+        harness.SeedOrder(new Order
+        {
+            Id = 10,
+            OrderRef = "SO-7200",
+            Type = OrderType.Customer,
+            PartnerId = 200,
+            DueDate = new DateTime(2026, 5, 7),
+            Status = OrderStatus.InProgress,
+            UseReservedStock = true,
+            CreatedAt = new DateTime(2026, 5, 7, 10, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 101,
+            OrderId = 10,
+            ItemId = 1001,
+            QtyOrdered = 7200,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder
+        });
+        harness.SeedOrderReceiptPlanLines(
+            10,
+            new OrderReceiptPlanLine
+            {
+                Id = 10001,
+                OrderId = 10,
+                OrderLineId = 101,
+                ItemId = 1001,
+                ItemName = "Горчица",
+                QtyPlanned = 3600,
+                ToLocationId = 1,
+                ToLocationCode = "FG-01",
+                SortOrder = 0
+            });
+
+        return (harness, new InMemoryApiDocStore());
+    }
+
     private static CloseDocumentHarness CreateBaseHarness()
     {
         var harness = new CloseDocumentHarness();
@@ -763,6 +875,9 @@ public sealed class CreateOrdersFromProductionNeedTests
 
         [JsonPropertyName("created_marking_qty")]
         public double CreatedMarkingQty { get; init; }
+
+        [JsonPropertyName("debug_summary")]
+        public IReadOnlyList<string> DebugSummary { get; init; } = Array.Empty<string>();
     }
 
     private sealed class CreateMarkingFromProductionNeedsResponse

@@ -417,6 +417,9 @@ public sealed class CreateProductionNeedOrdersResponse
 
     [JsonPropertyName("created_marking_qty")]
     public double CreatedMarkingQty { get; init; }
+
+    [JsonPropertyName("debug_summary")]
+    public IReadOnlyList<string> DebugSummary { get; init; } = Array.Empty<string>();
 }
 
 public sealed class CreateMarkingFromProductionNeedsResponse

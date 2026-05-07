@@ -39,6 +39,24 @@ assert.strictEqual(
 
 assert.strictEqual(
   pc.getOrderMarkingPresentation({
+    marking_label: "Маркировка проведена",
+  }).label,
+  "Маркировка проведена"
+);
+assert.strictEqual(
+  pc.getOrderMarkingPresentation({
+    marking_label: "Маркировка не проведена",
+  }).label,
+  "Маркировка не проведена"
+);
+assert.strictEqual(
+  pc.getOrderMarkingPresentation({
+    marking_completed: true,
+  }).label,
+  "Маркировка проведена"
+);
+assert.strictEqual(
+  pc.getOrderMarkingPresentation({
     marking_effective_status: "PRINTED",
     marking_status_display: "Маркировка проведена",
   }).label,

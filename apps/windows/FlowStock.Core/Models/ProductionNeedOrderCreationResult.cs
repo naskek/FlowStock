@@ -9,5 +9,6 @@ public sealed class ProductionNeedOrderCreationResult
     public double CreatedMarkingQty { get; init; }
     public IReadOnlyList<long> CustomerDraftOrderIds { get; init; } = Array.Empty<long>();
     public long? InternalDraftOrderId { get; init; }
+    public IReadOnlyList<string> DebugSummary { get; init; } = Array.Empty<string>();
     public string Message { get; init; } = string.Empty;
 }
