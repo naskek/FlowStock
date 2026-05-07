@@ -105,7 +105,7 @@ public sealed class CloseDocumentHttpIntegrationTests
         Assert.False(payload.Ok);
         Assert.False(payload.Closed);
         Assert.Equal("VALIDATION_FAILED", payload.Result);
-        Assert.Contains("Строка 1 (Маркируемый товар): требуется привязать 5 код(ов) КМ, сейчас 0.", payload.Errors);
+        Assert.Contains("Строка 1 (Маркируемый товар): требуется 5 код(ов) КМ, привязано 0, доступно свободных 0.", payload.Errors);
         Assert.Empty(harness.LedgerEntries);
         Assert.Equal(DocStatus.Draft, harness.GetDoc(1).Status);
         Assert.Equal("DRAFT", apiStore.GetApiDoc(docUid)?.Status);

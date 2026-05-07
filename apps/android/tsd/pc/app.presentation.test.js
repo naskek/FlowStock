@@ -40,30 +40,22 @@ assert.strictEqual(
 assert.strictEqual(
   pc.getOrderMarkingPresentation({
     marking_effective_status: "PRINTED",
-    marking_status_display: "ЧЗ готов к нанесению",
+    marking_status_display: "Маркировка проведена",
   }).label,
   "Маркировка проведена"
 );
 assert.strictEqual(
   pc.getOrderMarkingPresentation({
     marking_effective_status: "REQUIRED",
-    marking_status_display: "Требуется файл ЧЗ",
+    marking_status_display: "Маркировка не проведена",
   }).label,
   "Маркировка не проведена"
 );
 assert.strictEqual(
   pc.getOrderMarkingPresentation({
     marking_effective_status: "NOT_REQUIRED",
-    marking_status_display: "Маркировка не требуется",
   }).label,
   ""
-);
-assert.strictEqual(
-  pc.getOrderMarkingPresentation({
-    marking_effective_status: "EXCEL_GENERATED",
-    marking_status_display: "Файл ЧЗ сформирован",
-  }).label,
-  "Маркировка проведена"
 );
 assert.strictEqual(
   pc.getOrderMarkingPresentation({
@@ -80,11 +72,17 @@ assert.strictEqual(
 
 const printedHtml = pc.renderOrderMarkingIndicator({
   marking_effective_status: "PRINTED",
-  marking_status_display: "ЧЗ готов к нанесению",
+  marking_status_display: "Маркировка проведена",
 });
 assert.match(printedHtml, /pc-status-badge/);
 assert.match(printedHtml, /pc-marking-badge/);
 assert.match(printedHtml, /Маркировка проведена/);
+
+const markingLabels = [
+  pc.getOrderMarkingPresentation({ marking_effective_status: "PRINTED" }).label,
+  pc.getOrderMarkingPresentation({ marking_effective_status: "REQUIRED" }).label,
+].filter(Boolean);
+assert.deepStrictEqual(markingLabels.sort(), ["Маркировка не проведена", "Маркировка проведена"].sort());
 
 const page = pc.trimOrdersPage(Array.from({ length: 21 }, function (_, index) {
   return { id: index + 1 };

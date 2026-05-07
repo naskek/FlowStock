@@ -8,6 +8,9 @@ public sealed class MarkingOrderQueueRow
     public string? PartnerName { get; init; }
     public string? PartnerCode { get; init; }
     public string? SourceType { get; init; }
+    public long? ItemId { get; init; }
+    public string? ItemName { get; init; }
+    public string? Gtin { get; init; }
     public OrderStatus OrderStatus { get; init; }
     public DateTime? DueDate { get; init; }
     public MarkingStatus MarkingStatus { get; init; }

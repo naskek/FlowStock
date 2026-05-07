@@ -362,7 +362,7 @@ public sealed class CreateOrdersFromProductionNeedTests
 
         Assert.False(result.Success);
         Assert.Contains(
-            "Строка 1 (Горчица): требуется привязать 1134 код(ов) КМ, сейчас 0.",
+            "Строка 1 (Горчица): требуется 1134 код(ов) КМ, привязано 0, доступно свободных 0.",
             result.Errors);
         Assert.Equal(DocStatus.Draft, harness.GetDoc(50).Status);
     }

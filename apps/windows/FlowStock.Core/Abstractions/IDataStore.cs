@@ -186,6 +186,10 @@ public interface IDataStore
     int CountKmCodesWithoutSku(long batchId);
     int CountKmCodesByReceiptLine(long receiptLineId);
     int CountKmCodesByShipmentLine(long shipLineId);
+    int CountProductionMarkingCodesByReceiptLine(long receiptLineId);
+    int CountAvailableProductionMarkingCodesForReceipt(long? sourceOrderId, long itemId, string? gtin);
+    IReadOnlyList<Guid> GetAvailableProductionMarkingCodeIdsForReceipt(long? sourceOrderId, long itemId, string? gtin, int take);
+    int AssignProductionMarkingCodesToReceipt(IReadOnlyList<Guid> codeIds, long docId, long lineId, DateTime appliedAt);
     IReadOnlyList<long> GetAvailableKmCodeIds(long? batchId, long? orderId, long skuId, string? gtin14, int take);
     IReadOnlyList<long> GetAvailableKmOnHandCodeIds(long? orderId, long skuId, string? gtin14, long? locationId, long? huId, int take);
     int AssignKmCodesToReceipt(IReadOnlyList<long> codeIds, long docId, long lineId, long? huId, long? locationId);

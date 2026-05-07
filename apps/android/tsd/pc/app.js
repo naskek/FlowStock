@@ -2191,8 +2191,6 @@
     if (!effectiveStatus && order && order.marking_required === true) {
       effectiveStatus = "REQUIRED";
     }
-    var display = String((order && order.marking_status_display) || "").trim();
-
     if (effectiveStatus === "PRINTED") {
       return {
         tone: "success",

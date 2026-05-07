@@ -268,6 +268,11 @@ public sealed class DocumentService
                 AutoAssignOutboundKmCodes(store, doc, lines, docHu, docId);
             }
 
+            if (doc.Type == DocType.ProductionReceipt)
+            {
+                AutoAssignProductionReceiptMarkingCodes(store, doc, lines, closedAt);
+            }
+
             var orderBoundHuByItem = doc.Type == DocType.Outbound && doc.OrderId.HasValue
                 ? BuildOrderBoundHuByItem(store, doc.OrderId.Value)
                 : null;
@@ -1656,10 +1661,18 @@ public sealed class DocumentService
                 else
                 {
                     var required = (int)rounded;
-                    var assigned = _data.CountKmCodesByReceiptLine(line.Id);
+                    var assigned = CountReceiptMarkingCodes(_data, line.Id);
                     if (assigned < required)
                     {
-                        check.Errors.Add($"{rowLabel}: требуется привязать {required} код(ов) КМ, сейчас {assigned}.");
+                        var available = _data.CountAvailableProductionMarkingCodesForReceipt(
+                            doc.OrderId,
+                            line.ItemId,
+                            item.Gtin);
+                        if (assigned + available < required)
+                        {
+                            check.Errors.Add(
+                                $"{rowLabel}: требуется {required} код(ов) КМ, привязано {assigned}, доступно свободных {available}.");
+                        }
                     }
                 }
             }
@@ -2642,6 +2655,58 @@ public sealed class DocumentService
         }
     }
 
+    private static void AutoAssignProductionReceiptMarkingCodes(
+        IDataStore store,
+        Doc doc,
+        IReadOnlyList<DocLine> lines,
+        DateTime appliedAt)
+    {
+        var itemsById = store.GetItems(null).ToDictionary(item => item.Id, item => item);
+        for (var index = 0; index < lines.Count; index++)
+        {
+            var line = lines[index];
+            if (!itemsById.TryGetValue(line.ItemId, out var item) || !item.IsChestnyZnakMarkingRequired)
+            {
+                continue;
+            }
+
+            var rounded = Math.Round(line.Qty);
+            if (Math.Abs(line.Qty - rounded) > 0.0001)
+            {
+                throw new InvalidOperationException($"Строка {index + 1} ({item.Name}): количество для маркируемого товара должно быть целым.");
+            }
+
+            var required = (int)rounded;
+            var assigned = CountReceiptMarkingCodes(store, line.Id);
+            var missing = required - assigned;
+            if (missing <= 0)
+            {
+                continue;
+            }
+
+            var ids = store.GetAvailableProductionMarkingCodeIdsForReceipt(
+                doc.OrderId,
+                line.ItemId,
+                item.Gtin,
+                missing);
+            if (ids.Count < missing)
+            {
+                throw new InvalidOperationException(
+                    $"Строка {index + 1} ({item.Name}): требуется {required} код(ов) КМ, " +
+                    $"привязано {assigned}, доступно свободных {ids.Count}.");
+            }
+
+            var bound = store.AssignProductionMarkingCodesToReceipt(ids, doc.Id, line.Id, appliedAt);
+            assigned = CountReceiptMarkingCodes(store, line.Id);
+            if (assigned < required)
+            {
+                throw new InvalidOperationException(
+                    $"Строка {index + 1} ({item.Name}): требуется {required} код(ов) КМ, " +
+                    $"привязано {assigned}, доступно свободных {Math.Max(0, ids.Count - bound)}.");
+            }
+        }
+    }
+
     private static void EnsureHuAssignmentAllowed(IDataStore store, DocType type, long docLineId)
     {
         if (!KmWorkflowEnabled)
@@ -2658,6 +2723,12 @@ public sealed class DocumentService
         {
             throw new InvalidOperationException("Нельзя менять HU строки после привязки КМ.");
         }
+    }
+
+    private static int CountReceiptMarkingCodes(IDataStore store, long receiptLineId)
+    {
+        return store.CountKmCodesByReceiptLine(receiptLineId)
+               + store.CountProductionMarkingCodesByReceiptLine(receiptLineId);
     }
 
     private static long? ResolveHuId(IDataStore store, string? huCode)

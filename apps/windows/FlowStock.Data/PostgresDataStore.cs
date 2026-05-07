@@ -1578,7 +1578,10 @@ SELECT NULL::uuid AS marking_order_id,
        COALESCE(order_need.code_count, 0) AS code_count,
        COALESCE(o.marking_printed_at, o.marking_excel_generated_at) AS last_generated_at,
        o.created_at AS sort_created_at,
-       NULL::text AS source_type
+       NULL::text AS source_type,
+       NULL::bigint AS item_id,
+       NULL::text AS item_name,
+       NULL::text AS gtin
 FROM orders o
 LEFT JOIN partners p ON p.id = o.partner_id
 LEFT JOIN order_need ON order_need.order_id = o.id
@@ -1606,7 +1609,10 @@ SELECT mo.id AS marking_order_id,
        mo.requested_quantity AS code_count,
        COALESCE(mo.codes_bound_at, mo.requested_at, mo.created_at) AS last_generated_at,
        mo.created_at AS sort_created_at,
-       mo.source_type AS source_type
+       mo.source_type AS source_type,
+       mo.item_id AS item_id,
+       i.name AS item_name,
+       COALESCE(mo.gtin, i.gtin) AS gtin
 FROM marking_order mo
 LEFT JOIN items i ON i.id = mo.item_id
 LEFT JOIN orders mo_o ON mo_o.id = mo.order_id
@@ -1653,7 +1659,10 @@ ORDER BY due_date NULLS LAST, sort_created_at, id;
                     MarkingLineCount = reader.GetInt32(9),
                     MarkingCodeCount = Convert.ToDouble(reader.GetValue(10), CultureInfo.InvariantCulture),
                     LastGeneratedAt = FromDbDate(reader.IsDBNull(11) ? null : reader.GetString(11)),
-                    SourceType = reader.IsDBNull(13) ? null : reader.GetString(13)
+                    SourceType = reader.IsDBNull(13) ? null : reader.GetString(13),
+                    ItemId = reader.IsDBNull(14) ? null : reader.GetInt64(14),
+                    ItemName = reader.IsDBNull(15) ? null : reader.GetString(15),
+                    Gtin = reader.IsDBNull(16) ? null : reader.GetString(16)
                 });
             }
 
@@ -3716,6 +3725,8 @@ LIMIT 1;";
         EnsureNullable(connection, "marking_order", "order_id");
         EnsureColumn(connection, "marking_order", "source_type", "TEXT NULL");
         EnsureColumn(connection, "marking_order", "source_order_id", "BIGINT NULL");
+        EnsureColumn(connection, "marking_code", "receipt_doc_id", "BIGINT NULL");
+        EnsureColumn(connection, "marking_code", "receipt_line_id", "BIGINT NULL");
 
         if (!ColumnExists(connection, "orders", "order_type")
             || !ColumnExists(connection, "orders", "bind_reserved_stock")
@@ -4225,6 +4236,97 @@ RETURNING id;");
         });
     }
 
+    public int CountProductionMarkingCodesByReceiptLine(long receiptLineId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT COUNT(*)
+FROM marking_code
+WHERE receipt_line_id = @line_id
+  AND status <> @voided_status;");
+            command.Parameters.AddWithValue("@line_id", receiptLineId);
+            command.Parameters.AddWithValue("@voided_status", MarkingCodeStatus.Voided);
+            return Convert.ToInt32(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public int CountAvailableProductionMarkingCodesForReceipt(long? sourceOrderId, long itemId, string? gtin)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildAvailableProductionMarkingCodeSql("COUNT(*)", null));
+            AddAvailableProductionMarkingCodeParameters(command, sourceOrderId, itemId, gtin, null);
+            return Convert.ToInt32(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public IReadOnlyList<Guid> GetAvailableProductionMarkingCodeIdsForReceipt(long? sourceOrderId, long itemId, string? gtin, int take)
+    {
+        if (take <= 0)
+        {
+            return Array.Empty<Guid>();
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildAvailableProductionMarkingCodeSql("c.id", @"
+ORDER BY
+  CASE
+    WHEN @source_order_id::bigint IS NOT NULL AND mo.source_order_id = @source_order_id::bigint THEN 0
+    WHEN @source_order_id::bigint IS NOT NULL AND mo.order_id = @source_order_id::bigint THEN 1
+    WHEN mo.source_type = @production_need_source_type AND mo.source_order_id IS NULL THEN 2
+    ELSE 3
+  END,
+  mo.created_at,
+  c.source_row_number NULLS LAST,
+  c.created_at,
+  c.id
+FOR UPDATE SKIP LOCKED
+LIMIT @take"));
+            AddAvailableProductionMarkingCodeParameters(command, sourceOrderId, itemId, gtin, take);
+            using var reader = command.ExecuteReader();
+            var list = new List<Guid>();
+            while (reader.Read())
+            {
+                list.Add(reader.GetGuid(0));
+            }
+
+            return list;
+        });
+    }
+
+    public int AssignProductionMarkingCodesToReceipt(IReadOnlyList<Guid> codeIds, long docId, long lineId, DateTime appliedAt)
+    {
+        if (codeIds.Count == 0)
+        {
+            return 0;
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE marking_code
+SET status = @applied_status,
+    receipt_doc_id = @doc_id,
+    receipt_line_id = @line_id,
+    applied_at = COALESCE(applied_at, @applied_at),
+    updated_at = @applied_at
+WHERE id = ANY(@ids::uuid[])
+  AND receipt_doc_id IS NULL
+  AND receipt_line_id IS NULL
+  AND status IN (@reserved_status, @printed_status);");
+            command.Parameters.AddWithValue("@applied_status", MarkingCodeStatus.Applied);
+            command.Parameters.AddWithValue("@doc_id", docId);
+            command.Parameters.AddWithValue("@line_id", lineId);
+            command.Parameters.AddWithValue("@applied_at", ToDbDate(appliedAt));
+            command.Parameters.AddWithValue("@ids", codeIds.ToArray());
+            command.Parameters.AddWithValue("@reserved_status", MarkingCodeStatus.Reserved);
+            command.Parameters.AddWithValue("@printed_status", MarkingCodeStatus.Printed);
+            return command.ExecuteNonQuery();
+        });
+    }
+
     public IReadOnlyList<long> GetAvailableKmCodeIds(long? batchId, long? orderId, long skuId, string? gtin14, int take)
     {
         return WithConnection(connection =>
@@ -4263,6 +4365,69 @@ LIMIT @take;";
 
             return list;
         });
+    }
+
+    private static string BuildAvailableProductionMarkingCodeSql(string selectExpression, string? suffix)
+    {
+        var sql = $@"
+SELECT {selectExpression}
+FROM marking_code c
+INNER JOIN marking_order mo ON mo.id = c.marking_order_id
+WHERE c.receipt_doc_id IS NULL
+  AND c.receipt_line_id IS NULL
+  AND c.status IN (@reserved_status, @printed_status)
+  AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
+  AND (
+      mo.item_id = @item_id
+      OR (@gtin::text IS NOT NULL AND NULLIF(BTRIM(mo.gtin), '') = @gtin::text)
+      OR (@gtin::text IS NOT NULL AND NULLIF(BTRIM(c.gtin), '') = @gtin::text)
+  )
+  AND (
+      (
+          mo.source_type = @production_order_source_type
+          AND @source_order_id::bigint IS NOT NULL
+          AND mo.source_order_id = @source_order_id::bigint
+      )
+      OR (
+          mo.source_type = @production_need_source_type
+          AND (
+              mo.source_order_id IS NULL
+              OR (@source_order_id::bigint IS NOT NULL AND mo.source_order_id = @source_order_id::bigint)
+          )
+      )
+      OR (
+          @source_order_id::bigint IS NOT NULL
+          AND mo.order_id = @source_order_id::bigint
+      )
+  )";
+        if (!string.IsNullOrWhiteSpace(suffix))
+        {
+            sql += "\n" + suffix;
+        }
+
+        return sql + ";";
+    }
+
+    private static void AddAvailableProductionMarkingCodeParameters(
+        NpgsqlCommand command,
+        long? sourceOrderId,
+        long itemId,
+        string? gtin,
+        int? take)
+    {
+        command.Parameters.AddWithValue("@reserved_status", MarkingCodeStatus.Reserved);
+        command.Parameters.AddWithValue("@printed_status", MarkingCodeStatus.Printed);
+        command.Parameters.AddWithValue("@marking_status_cancelled", MarkingOrderStatus.Cancelled);
+        command.Parameters.AddWithValue("@marking_status_failed", MarkingOrderStatus.Failed);
+        command.Parameters.AddWithValue("@production_need_source_type", MarkingNeedCreationService.ProductionNeedSourceType);
+        command.Parameters.AddWithValue("@production_order_source_type", MarkingNeedCreationService.ProductionOrderSourceType);
+        command.Parameters.AddWithValue("@source_order_id", sourceOrderId.HasValue ? sourceOrderId.Value : DBNull.Value);
+        command.Parameters.AddWithValue("@item_id", itemId);
+        command.Parameters.AddWithValue("@gtin", string.IsNullOrWhiteSpace(gtin) ? DBNull.Value : gtin.Trim());
+        if (take.HasValue)
+        {
+            command.Parameters.AddWithValue("@take", take.Value);
+        }
     }
 
     public IReadOnlyList<long> GetAvailableKmOnHandCodeIds(long? orderId, long skuId, string? gtin14, long? locationId, long? huId, int take)
@@ -4902,6 +5067,8 @@ SELECT c.id,
        c.marking_order_id,
        c.import_id,
        c.status,
+       c.receipt_doc_id,
+       c.receipt_line_id,
        c.source_row_number,
        c.printed_at,
        c.applied_at,
@@ -5073,13 +5240,15 @@ LEFT JOIN locations l ON l.id = c.location_id
             MarkingOrderId = reader.GetGuid(4),
             ImportId = reader.GetGuid(5),
             Status = reader.GetString(6),
-            SourceRowNumber = reader.IsDBNull(7) ? null : reader.GetInt32(7),
-            PrintedAt = reader.IsDBNull(8) ? null : FromDbDate(reader.GetString(8)),
-            AppliedAt = reader.IsDBNull(9) ? null : FromDbDate(reader.GetString(9)),
-            ReportedAt = reader.IsDBNull(10) ? null : FromDbDate(reader.GetString(10)),
-            IntroducedAt = reader.IsDBNull(11) ? null : FromDbDate(reader.GetString(11)),
-            CreatedAt = FromDbDate(reader.GetString(12)) ?? DateTime.MinValue,
-            UpdatedAt = FromDbDate(reader.GetString(13)) ?? DateTime.MinValue
+            ReceiptDocId = reader.IsDBNull(7) ? null : reader.GetInt64(7),
+            ReceiptLineId = reader.IsDBNull(8) ? null : reader.GetInt64(8),
+            SourceRowNumber = reader.IsDBNull(9) ? null : reader.GetInt32(9),
+            PrintedAt = reader.IsDBNull(10) ? null : FromDbDate(reader.GetString(10)),
+            AppliedAt = reader.IsDBNull(11) ? null : FromDbDate(reader.GetString(11)),
+            ReportedAt = reader.IsDBNull(12) ? null : FromDbDate(reader.GetString(12)),
+            IntroducedAt = reader.IsDBNull(13) ? null : FromDbDate(reader.GetString(13)),
+            CreatedAt = FromDbDate(reader.GetString(14)) ?? DateTime.MinValue,
+            UpdatedAt = FromDbDate(reader.GetString(15)) ?? DateTime.MinValue
         };
     }
 

@@ -9,6 +9,8 @@ public sealed class MarkingCode
     public Guid MarkingOrderId { get; init; }
     public Guid ImportId { get; init; }
     public string Status { get; init; } = MarkingCodeStatus.Imported;
+    public long? ReceiptDocId { get; init; }
+    public long? ReceiptLineId { get; init; }
     public int? SourceRowNumber { get; init; }
     public DateTime? PrintedAt { get; init; }
     public DateTime? AppliedAt { get; init; }

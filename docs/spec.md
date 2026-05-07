@@ -64,6 +64,7 @@
 - `km_code_batch(id, order_id, file_name, file_hash, imported_at, imported_by, total_codes, error_count)`
 - `km_code(id, batch_id, code_raw, gtin14, sku_id, product_name, status, receipt_doc_id, receipt_line_id, hu_id, location_id, ship_doc_id, ship_line_id, order_id)`
 - `marking_order(id, order_id NULL, item_id NULL, gtin, requested_quantity, request_number, status, notes, source_type, source_order_id NULL, requested_at, codes_bound_at, created_at, updated_at)`
+- `marking_code(..., marking_order_id, status, receipt_doc_id NULL, receipt_line_id NULL, ...)`: новые ЧЗ/КМ-коды хранят привязку к строке выпуска через `receipt_line_id`; один код может быть привязан только к одной строке.
 - `client_blocks(block_key, is_enabled, updated_at)`
 
 ## Инварианты
@@ -272,7 +273,9 @@
 ## Legacy Marking (KM)
 - Старые таблицы и модели `km_code_batch`, `km_code`, `marking_order`, `marking_code_import`, `marking_code`, `marking_print_batch`, `marking_print_batch_code` остаются в production schema как legacy-слой.
 - Старый WPF KM workflow заморожен: вкладка `Маркировка (КМ)` и KM-действия в документах скрыты, auto-ship KM codes не выполняется.
-- Новая ЧЗ-модель не развивает старый импорт CSV/TSV кодов, не использует legacy `km_code` как источник расчета потребности и не пишет `items.is_marked`. Таблица `marking_order` используется для новых задач маркировки по производственной потребности с явным `source_type`.
+- Новая ЧЗ-модель не развивает старый импорт CSV/TSV кодов, не использует legacy `km_code` как источник расчета потребности и не пишет `items.is_marked`. Таблица `marking_order` используется для новых задач маркировки по производственной потребности с явным `source_type`; `order_id = NULL` является валидным для production-based маркировки.
 - `items.is_marked` сохраняется только для совместимости старой схемы и исторических данных; новая логика ЧЗ использует `item_types.enable_marking + items.gtin`.
 - В заказах показывается только бинарный индикатор ЧЗ для заказов с маркируемыми товарами: `Маркировка не проведена` / `Маркировка проведена`.
+- Excel ЧЗ формируется по задачам `marking_order`, включая production-based задачи с `order_id = NULL`.
+- При закрытии `INTERNAL PRODUCTION_RECEIPT` сервер до записи `ledger` автопривязывает недостающие свободные ЧЗ/КМ-коды из production-based `marking_order` по `item_id`/GTIN. Для `PRODUCTION_ORDER` учитывается `source_order_id`; для `PRODUCTION_NEED` без `source_order_id` разрешена привязка по товару/GTIN. Если свободных кодов не хватает, закрытие блокируется и `ledger` не меняется.
 - Будущая destructive cleanup migration может удалить legacy KM-таблицы/поля только отдельным согласованным батчем после проверки production-совместимости.

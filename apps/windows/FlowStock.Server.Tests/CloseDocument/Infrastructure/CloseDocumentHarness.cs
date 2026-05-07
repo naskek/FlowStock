@@ -24,6 +24,7 @@ internal sealed class CloseDocumentHarness
     private readonly Dictionary<long, IReadOnlyList<OrderReceiptPlanLine>> _orderReceiptPlanLines = new();
     private readonly Dictionary<long, IReadOnlyDictionary<long, double>> _shippedTotalsByOrderLine = new();
     private readonly Dictionary<Guid, MarkingOrder> _markingOrders = new();
+    private readonly Dictionary<Guid, MarkingCode> _markingCodes = new();
     private readonly Dictionary<long, int> _kmCodeCountByReceiptLine = new();
     private readonly HashSet<long> _ordersWithOutboundDocs = new();
     private readonly Dictionary<string, HuRecord> _hus = new(StringComparer.OrdinalIgnoreCase);
@@ -47,6 +48,7 @@ internal sealed class CloseDocumentHarness
     public int OrderCount => _orders.Count;
     public int TotalOrderLineCount => _orderLinesByOrder.Values.Sum(lines => lines.Count);
     public IReadOnlyList<MarkingOrder> MarkingOrders => _markingOrders.Values.OrderBy(order => order.CreatedAt).ToArray();
+    public IReadOnlyList<MarkingCode> MarkingCodes => _markingCodes.Values.OrderBy(code => code.CreatedAt).ToArray();
 
     public DocumentService CreateService()
     {
@@ -373,6 +375,29 @@ internal sealed class CloseDocumentHarness
     public void SeedMarkingOrder(MarkingOrder order)
     {
         _markingOrders[order.Id] = CloneMarkingOrder(order);
+    }
+
+    public void SeedMarkingCodes(Guid markingOrderId, int count, string? gtin = null, long? receiptLineId = null)
+    {
+        for (var index = 0; index < count; index++)
+        {
+            var id = Guid.NewGuid();
+            _markingCodes[id] = new MarkingCode
+            {
+                Id = id,
+                Code = $"code-{markingOrderId:N}-{index + 1}",
+                CodeHash = $"hash-{markingOrderId:N}-{index + 1}",
+                Gtin = gtin,
+                MarkingOrderId = markingOrderId,
+                ImportId = Guid.NewGuid(),
+                Status = receiptLineId.HasValue ? MarkingCodeStatus.Applied : MarkingCodeStatus.Reserved,
+                ReceiptDocId = receiptLineId.HasValue ? 999 : null,
+                ReceiptLineId = receiptLineId,
+                SourceRowNumber = index + 1,
+                CreatedAt = new DateTime(2026, 4, 1, 12, 0, 0, DateTimeKind.Utc),
+                UpdatedAt = new DateTime(2026, 4, 1, 12, 0, 0, DateTimeKind.Utc)
+            };
+        }
     }
 
     public void SeedHu(HuRecord hu)
@@ -1195,6 +1220,58 @@ internal sealed class CloseDocumentHarness
 
         _store.Setup(store => store.CountKmCodesByShipmentLine(It.IsAny<long>()))
             .Returns(0);
+
+        _store.Setup(store => store.CountProductionMarkingCodesByReceiptLine(It.IsAny<long>()))
+            .Returns<long>(docLineId => _markingCodes.Values.Count(code => code.ReceiptLineId == docLineId));
+
+        _store.Setup(store => store.CountAvailableProductionMarkingCodesForReceipt(It.IsAny<long?>(), It.IsAny<long>(), It.IsAny<string?>()))
+            .Returns<long?, long, string?>((sourceOrderId, itemId, gtin) =>
+                GetAvailableProductionMarkingCodes(sourceOrderId, itemId, gtin, int.MaxValue).Count);
+
+        _store.Setup(store => store.GetAvailableProductionMarkingCodeIdsForReceipt(It.IsAny<long?>(), It.IsAny<long>(), It.IsAny<string?>(), It.IsAny<int>()))
+            .Returns<long?, long, string?, int>((sourceOrderId, itemId, gtin, take) =>
+                GetAvailableProductionMarkingCodes(sourceOrderId, itemId, gtin, take)
+                    .Select(code => code.Id)
+                    .ToArray());
+
+        _store.Setup(store => store.AssignProductionMarkingCodesToReceipt(It.IsAny<IReadOnlyList<Guid>>(), It.IsAny<long>(), It.IsAny<long>(), It.IsAny<DateTime>()))
+            .Returns<IReadOnlyList<Guid>, long, long, DateTime>((codeIds, docId, lineId, appliedAt) =>
+            {
+                var updated = 0;
+                foreach (var codeId in codeIds)
+                {
+                    if (!_markingCodes.TryGetValue(codeId, out var code)
+                        || code.ReceiptLineId.HasValue
+                        || code.ReceiptDocId.HasValue
+                        || code.Status is not MarkingCodeStatus.Reserved and not MarkingCodeStatus.Printed)
+                    {
+                        continue;
+                    }
+
+                    _markingCodes[codeId] = new MarkingCode
+                    {
+                        Id = code.Id,
+                        Code = code.Code,
+                        CodeHash = code.CodeHash,
+                        Gtin = code.Gtin,
+                        MarkingOrderId = code.MarkingOrderId,
+                        ImportId = code.ImportId,
+                        Status = MarkingCodeStatus.Applied,
+                        ReceiptDocId = docId,
+                        ReceiptLineId = lineId,
+                        SourceRowNumber = code.SourceRowNumber,
+                        PrintedAt = code.PrintedAt,
+                        AppliedAt = appliedAt,
+                        ReportedAt = code.ReportedAt,
+                        IntroducedAt = code.IntroducedAt,
+                        CreatedAt = code.CreatedAt,
+                        UpdatedAt = appliedAt
+                    };
+                    updated++;
+                }
+
+                return updated;
+            });
     }
 
     private double GetBalance(long itemId, long locationId, string? huCode)
@@ -1398,8 +1475,42 @@ internal sealed class CloseDocumentHarness
             .ToArray();
     }
 
+    private IReadOnlyList<MarkingCode> GetAvailableProductionMarkingCodes(long? sourceOrderId, long itemId, string? gtin, int take)
+    {
+        var normalizedGtin = NormalizeText(gtin);
+        return _markingCodes.Values
+            .Where(code => code.ReceiptDocId == null
+                           && code.ReceiptLineId == null
+                           && code.Status is MarkingCodeStatus.Reserved or MarkingCodeStatus.Printed)
+            .Select(code => (Code: code, Order: _markingOrders.TryGetValue(code.MarkingOrderId, out var order) ? order : null))
+            .Where(pair => pair.Order != null
+                           && pair.Order.Status is not MarkingOrderStatus.Cancelled and not MarkingOrderStatus.Failed)
+            .Where(pair => pair.Order!.ItemId == itemId
+                           || (!string.IsNullOrWhiteSpace(normalizedGtin)
+                               && (string.Equals(NormalizeText(pair.Order.Gtin), normalizedGtin, StringComparison.OrdinalIgnoreCase)
+                                   || string.Equals(NormalizeText(pair.Code.Gtin), normalizedGtin, StringComparison.OrdinalIgnoreCase))))
+            .Where(pair =>
+                string.Equals(pair.Order!.SourceType, MarkingNeedCreationService.ProductionNeedSourceType, StringComparison.OrdinalIgnoreCase)
+                && (!pair.Order.SourceOrderId.HasValue || (sourceOrderId.HasValue && pair.Order.SourceOrderId == sourceOrderId))
+                || string.Equals(pair.Order!.SourceType, MarkingNeedCreationService.ProductionOrderSourceType, StringComparison.OrdinalIgnoreCase)
+                && sourceOrderId.HasValue
+                && pair.Order.SourceOrderId == sourceOrderId
+                || sourceOrderId.HasValue
+                && pair.Order.OrderId == sourceOrderId)
+            .OrderBy(pair => pair.Order!.CreatedAt)
+            .ThenBy(pair => pair.Code.SourceRowNumber ?? int.MaxValue)
+            .Select(pair => pair.Code)
+            .Take(take)
+            .ToArray();
+    }
+
     private static string? NormalizeHu(string? huCode)
     {
         return string.IsNullOrWhiteSpace(huCode) ? null : huCode.Trim();
+    }
+
+    private static string? NormalizeText(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 }
