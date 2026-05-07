@@ -1231,7 +1231,9 @@ public sealed class OrderService
                 IsLegacyExcelGeneratedMarkingStatus = order.IsLegacyExcelGeneratedMarkingStatus,
                 MarkingRequired = order.MarkingRequired,
                 MarkingExcelGeneratedAt = order.MarkingExcelGeneratedAt,
-                MarkingPrintedAt = order.MarkingPrintedAt
+                MarkingPrintedAt = order.MarkingPrintedAt,
+                MarkingApplies = order.MarkingApplies,
+                MarkingCodeCovered = order.MarkingCodeCovered
             };
         }
 
@@ -1288,7 +1290,9 @@ public sealed class OrderService
             IsLegacyExcelGeneratedMarkingStatus = order.IsLegacyExcelGeneratedMarkingStatus,
             MarkingRequired = order.MarkingRequired,
             MarkingExcelGeneratedAt = order.MarkingExcelGeneratedAt,
-            MarkingPrintedAt = order.MarkingPrintedAt
+            MarkingPrintedAt = order.MarkingPrintedAt,
+            MarkingApplies = order.MarkingApplies,
+            MarkingCodeCovered = order.MarkingCodeCovered
         };
     }
 }

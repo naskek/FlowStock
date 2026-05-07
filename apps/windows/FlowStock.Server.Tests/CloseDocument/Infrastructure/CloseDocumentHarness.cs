@@ -67,7 +67,7 @@ internal sealed class CloseDocumentHarness
 
     public Order GetOrder(long orderId)
     {
-        return _orders[orderId];
+        return BuildOrderSnapshot(_orders[orderId]);
     }
 
     public IReadOnlyList<OrderLine> GetOrderLines(long orderId)
@@ -164,6 +164,32 @@ internal sealed class CloseDocumentHarness
             ItemId = line.ItemId,
             QtyOrdered = line.QtyOrdered,
             ProductionPurpose = line.ProductionPurpose
+        };
+    }
+
+    private static Order CloneOrder(Order order)
+    {
+        return new Order
+        {
+            Id = order.Id,
+            OrderRef = order.OrderRef,
+            Type = order.Type,
+            PartnerId = order.PartnerId,
+            DueDate = order.DueDate,
+            Status = order.Status,
+            Comment = order.Comment,
+            CreatedAt = order.CreatedAt,
+            ShippedAt = order.ShippedAt,
+            PartnerName = order.PartnerName,
+            PartnerCode = order.PartnerCode,
+            UseReservedStock = order.UseReservedStock,
+            MarkingStatus = order.MarkingStatus,
+            IsLegacyExcelGeneratedMarkingStatus = order.IsLegacyExcelGeneratedMarkingStatus,
+            MarkingRequired = order.MarkingRequired,
+            MarkingApplies = order.MarkingApplies,
+            MarkingCodeCovered = order.MarkingCodeCovered,
+            MarkingExcelGeneratedAt = order.MarkingExcelGeneratedAt,
+            MarkingPrintedAt = order.MarkingPrintedAt
         };
     }
 
@@ -301,7 +327,7 @@ internal sealed class CloseDocumentHarness
 
     public void SeedOrder(Order order)
     {
-        _orders[order.Id] = order;
+        _orders[order.Id] = CloneOrder(order);
         _nextOrderId = Math.Max(_nextOrderId, order.Id + 1);
         _orderLinesByOrder.TryAdd(order.Id, new List<OrderLine>());
     }
@@ -460,10 +486,10 @@ internal sealed class CloseDocumentHarness
             .Returns(() => _partners.Values.OrderBy(partner => partner.Id).ToArray());
 
         _store.Setup(store => store.GetOrder(It.IsAny<long>()))
-            .Returns<long>(orderId => _orders.TryGetValue(orderId, out var order) ? order : null);
+            .Returns<long>(orderId => _orders.TryGetValue(orderId, out var order) ? BuildOrderSnapshot(order) : null);
 
         _store.Setup(store => store.GetOrders())
-            .Returns(() => _orders.Values.OrderBy(order => order.Id).ToArray());
+            .Returns(() => _orders.Values.OrderBy(order => order.Id).Select(BuildOrderSnapshot).ToArray());
 
         _store.Setup(store => store.AddOrder(It.IsAny<Order>()))
             .Returns<Order>(order =>
@@ -486,6 +512,7 @@ internal sealed class CloseDocumentHarness
                     MarkingStatus = order.MarkingStatus,
                     MarkingRequired = order.MarkingRequired,
                     MarkingApplies = order.MarkingApplies,
+                    MarkingCodeCovered = order.MarkingCodeCovered,
                     MarkingExcelGeneratedAt = order.MarkingExcelGeneratedAt,
                     MarkingPrintedAt = order.MarkingPrintedAt
                 };
@@ -518,6 +545,7 @@ internal sealed class CloseDocumentHarness
                     MarkingStatus = current.MarkingStatus,
                     MarkingRequired = current.MarkingRequired,
                     MarkingApplies = current.MarkingApplies,
+                    MarkingCodeCovered = current.MarkingCodeCovered,
                     MarkingExcelGeneratedAt = current.MarkingExcelGeneratedAt,
                     MarkingPrintedAt = current.MarkingPrintedAt
                 };
@@ -548,6 +576,7 @@ internal sealed class CloseDocumentHarness
                     MarkingStatus = current.MarkingStatus,
                     MarkingRequired = current.MarkingRequired,
                     MarkingApplies = current.MarkingApplies,
+                    MarkingCodeCovered = current.MarkingCodeCovered,
                     MarkingExcelGeneratedAt = current.MarkingExcelGeneratedAt,
                     MarkingPrintedAt = current.MarkingPrintedAt
                 };
@@ -708,7 +737,7 @@ internal sealed class CloseDocumentHarness
                 .ToArray());
 
         _store.Setup(store => store.GetOrderShipmentRemaining(It.IsAny<long>()))
-            .Returns(Array.Empty<OrderShipmentLine>());
+            .Returns<long>(orderId => BuildOrderShipmentRemaining(orderId));
 
         _store.Setup(store => store.AddOrderLine(It.IsAny<OrderLine>()))
             .Returns<OrderLine>(line =>
@@ -909,15 +938,15 @@ internal sealed class CloseDocumentHarness
             });
 
         _store.Setup(store => store.GetShippedTotalsByOrder(It.IsAny<long>()))
-            .Returns(() => new Dictionary<long, double>());
+            .Returns<long>(orderId => BuildShippedTotalsByOrder(orderId));
 
         _store.Setup(store => store.GetShippedTotalsByOrderLine(It.IsAny<long>()))
             .Returns<long>(orderId => _shippedTotalsByOrderLine.TryGetValue(orderId, out var totals)
                 ? new Dictionary<long, double>(totals)
-                : new Dictionary<long, double>());
+                : BuildShippedTotalsByOrderLine(orderId));
 
         _store.Setup(store => store.GetOrderShippedAt(It.IsAny<long>()))
-            .Returns((DateTime?)null);
+            .Returns<long>(orderId => GetOrderShippedAtInternal(orderId));
 
         _store.Setup(store => store.HasOutboundDocs(It.IsAny<long>()))
             .Returns<long>(orderId => _ordersWithOutboundDocs.Contains(orderId));
@@ -1401,19 +1430,223 @@ internal sealed class CloseDocumentHarness
 
         return orderLines
             .OrderBy(line => line.Id)
-            .Select(line => new OrderReceiptLine
+            .Select(line =>
             {
-                OrderLineId = line.Id,
-                OrderId = orderId,
-                ItemId = line.ItemId,
-                ItemName = _items.TryGetValue(line.ItemId, out var item) ? item.Name : string.Empty,
-                QtyOrdered = line.QtyOrdered,
-                QtyReceived = 0,
-                QtyRemaining = line.QtyOrdered,
-                SortOrder = 0,
-                ProductionPurpose = line.ProductionPurpose
+                var producedQty = GetProducedQtyForOrderLine(line.Id);
+                var reservedQty = _orders.TryGetValue(orderId, out var order) && order.Type == OrderType.Customer
+                    ? GetReservedQtyForOrderLine(line.Id)
+                    : 0;
+                var receivedQty = producedQty + reservedQty;
+                return new OrderReceiptLine
+                {
+                    OrderLineId = line.Id,
+                    OrderId = orderId,
+                    ItemId = line.ItemId,
+                    ItemName = _items.TryGetValue(line.ItemId, out var item) ? item.Name : string.Empty,
+                    QtyOrdered = line.QtyOrdered,
+                    QtyReceived = receivedQty,
+                    QtyRemaining = Math.Max(0, line.QtyOrdered - receivedQty),
+                    SortOrder = 0,
+                    ProductionPurpose = line.ProductionPurpose
+                };
             })
             .ToArray();
+    }
+
+    private Order BuildOrderSnapshot(Order order)
+    {
+        var lines = GetOrderLines(order.Id);
+        var markableLines = lines
+            .Where(line => _items.TryGetValue(line.ItemId, out var item) && item.IsChestnyZnakMarkingRequired)
+            .ToArray();
+        var markingApplies = markableLines.Length > 0;
+        var markingCodeCovered = markingApplies && markableLines
+            .GroupBy(line => line.ItemId)
+            .All(group =>
+            {
+                var item = _items[group.Key];
+                var requiredQty = group.Sum(line => GetRequiredMarkingQty(order, line));
+                if (requiredQty <= 0.000001)
+                {
+                    return true;
+                }
+
+                var freeCodes = CountFreeMarkingCodesForItem(group.Key, item.Gtin);
+                var boundCodes = group.Sum(line => CountBoundMarkingCodesForOrderLine(line.Id));
+                return freeCodes + boundCodes + 0.000001 >= requiredQty;
+            });
+
+        return new Order
+        {
+            Id = order.Id,
+            OrderRef = order.OrderRef,
+            Type = order.Type,
+            PartnerId = order.PartnerId,
+            DueDate = order.DueDate,
+            Status = order.Status,
+            Comment = order.Comment,
+            CreatedAt = order.CreatedAt,
+            ShippedAt = order.ShippedAt,
+            PartnerName = order.PartnerName,
+            PartnerCode = order.PartnerCode,
+            UseReservedStock = order.UseReservedStock,
+            MarkingStatus = order.MarkingStatus,
+            IsLegacyExcelGeneratedMarkingStatus = order.IsLegacyExcelGeneratedMarkingStatus,
+            MarkingRequired = markingApplies && !markingCodeCovered,
+            MarkingApplies = markingApplies,
+            MarkingCodeCovered = markingCodeCovered,
+            MarkingExcelGeneratedAt = order.MarkingExcelGeneratedAt,
+            MarkingPrintedAt = order.MarkingPrintedAt
+        };
+    }
+
+    private double GetRequiredMarkingQty(Order order, OrderLine line)
+    {
+        if (order.Type == OrderType.Internal)
+        {
+            return Math.Max(0, line.QtyOrdered - GetProducedQtyForOrderLine(line.Id));
+        }
+
+        var shippedQty = BuildShippedTotalsByOrderLine(order.Id).TryGetValue(line.Id, out var shipped)
+            ? shipped
+            : 0;
+        return Math.Max(0, line.QtyOrdered - shipped - GetReservedQtyForOrderLine(line.Id));
+    }
+
+    private Dictionary<long, double> BuildShippedTotalsByOrder(long orderId)
+    {
+        var result = new Dictionary<long, double>();
+        foreach (var pair in BuildShippedTotalsByOrderLine(orderId))
+        {
+            var itemId = _orderLinesByOrder[orderId].First(line => line.Id == pair.Key).ItemId;
+            result[itemId] = result.TryGetValue(itemId, out var current)
+                ? current + pair.Value
+                : pair.Value;
+        }
+
+        return result;
+    }
+
+    private Dictionary<long, double> BuildShippedTotalsByOrderLine(long orderId)
+    {
+        var totals = new Dictionary<long, double>();
+        foreach (var doc in _docs.Values.Where(doc => doc.OrderId == orderId
+                                                      && doc.Type == DocType.Outbound
+                                                      && doc.Status == DocStatus.Closed))
+        {
+            foreach (var line in GetActiveDocLines(doc.Id).Where(line => line.OrderLineId.HasValue && line.Qty > 0))
+            {
+                var orderLineId = line.OrderLineId!.Value;
+                totals[orderLineId] = totals.TryGetValue(orderLineId, out var current)
+                    ? current + line.Qty
+                    : line.Qty;
+            }
+        }
+
+        return totals;
+    }
+
+    private DateTime? GetOrderShippedAtInternal(long orderId)
+    {
+        return _docs.Values
+            .Where(doc => doc.OrderId == orderId
+                          && doc.Type == DocType.Outbound
+                          && doc.Status == DocStatus.Closed
+                          && doc.ClosedAt.HasValue)
+            .Select(doc => doc.ClosedAt)
+            .OrderByDescending(value => value)
+            .FirstOrDefault();
+    }
+
+    private IReadOnlyList<OrderShipmentLine> BuildOrderShipmentRemaining(long orderId)
+    {
+        if (!_orderLinesByOrder.TryGetValue(orderId, out var lines))
+        {
+            return Array.Empty<OrderShipmentLine>();
+        }
+
+        var shippedTotals = BuildShippedTotalsByOrderLine(orderId);
+        return lines
+            .Select(line =>
+            {
+                var shippedQty = shippedTotals.TryGetValue(line.Id, out var shipped)
+                    ? shipped
+                    : 0d;
+                var remainingQty = Math.Max(0d, line.QtyOrdered - shippedQty);
+                var itemName = _items.TryGetValue(line.ItemId, out var item)
+                    ? item.Name
+                    : string.Empty;
+                return new OrderShipmentLine
+                {
+                    OrderLineId = line.Id,
+                    OrderId = orderId,
+                    ItemId = line.ItemId,
+                    ItemName = itemName,
+                    QtyOrdered = line.QtyOrdered,
+                    QtyShipped = shippedQty,
+                    QtyRemaining = remainingQty
+                };
+            })
+            .Where(line => line.QtyRemaining > 0.000001)
+            .ToArray();
+    }
+
+    private double GetProducedQtyForOrderLine(long orderLineId)
+    {
+        var total = 0d;
+        foreach (var doc in _docs.Values.Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status == DocStatus.Closed))
+        {
+            total += GetActiveDocLines(doc.Id)
+                .Where(line => line.OrderLineId == orderLineId && line.Qty > 0)
+                .Sum(line => line.Qty);
+        }
+
+        return total;
+    }
+
+    private double GetReservedQtyForOrderLine(long orderLineId)
+    {
+        return _orderReceiptPlanLines.Values
+            .SelectMany(lines => lines)
+            .Where(line => line.OrderLineId == orderLineId && line.QtyPlanned > 0)
+            .Sum(line => line.QtyPlanned);
+    }
+
+    private int CountFreeMarkingCodesForItem(long itemId, string? gtin)
+    {
+        var normalizedGtin = NormalizeText(gtin);
+        return _markingCodes.Values
+            .Where(code => code.ReceiptDocId == null
+                           && code.ReceiptLineId == null
+                           && code.Status is MarkingCodeStatus.Reserved or MarkingCodeStatus.Printed)
+            .Select(code => (Code: code, Order: _markingOrders.TryGetValue(code.MarkingOrderId, out var order) ? order : null))
+            .Count(pair => pair.Order != null
+                           && pair.Order.Status is not MarkingOrderStatus.Cancelled and not MarkingOrderStatus.Failed
+                           && (pair.Order.ItemId == itemId
+                               || (!string.IsNullOrWhiteSpace(normalizedGtin)
+                                   && (string.Equals(NormalizeText(pair.Order.Gtin), normalizedGtin, StringComparison.OrdinalIgnoreCase)
+                                       || string.Equals(NormalizeText(pair.Code.Gtin), normalizedGtin, StringComparison.OrdinalIgnoreCase)))));
+    }
+
+    private int CountBoundMarkingCodesForOrderLine(long orderLineId)
+    {
+        return _markingCodes.Values.Count(code => code.ReceiptLineId.HasValue
+                                                 && GetAllActiveOrderLineIdsForReceiptLine(code.ReceiptLineId.Value).Contains(orderLineId)
+                                                 && code.Status != MarkingCodeStatus.Voided);
+    }
+
+    private HashSet<long> GetAllActiveOrderLineIdsForReceiptLine(long receiptLineId)
+    {
+        foreach (var lines in _linesByDoc.Values)
+        {
+            var line = lines.FirstOrDefault(candidate => candidate.Id == receiptLineId);
+            if (line?.OrderLineId is long orderLineId)
+            {
+                return new HashSet<long> { orderLineId };
+            }
+        }
+
+        return new HashSet<long>();
     }
 
     private IReadOnlyDictionary<long, double> BuildTotalsByItem()

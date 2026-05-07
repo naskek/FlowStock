@@ -51,6 +51,15 @@ assert.strictEqual(
 );
 assert.strictEqual(
   pc.getOrderMarkingPresentation({
+    marking_order_id: "11111111-1111-1111-1111-111111111111",
+    marking_completed: false,
+    marking_effective_status: "REQUIRED",
+    marking_label: "Маркировка не проведена",
+  }).label,
+  "Маркировка не проведена"
+);
+assert.strictEqual(
+  pc.getOrderMarkingPresentation({
     marking_completed: true,
   }).label,
   "Маркировка проведена"
@@ -101,6 +110,36 @@ const markingLabels = [
   pc.getOrderMarkingPresentation({ marking_effective_status: "REQUIRED" }).label,
 ].filter(Boolean);
 assert.deepStrictEqual(markingLabels.sort(), ["Маркировка не проведена", "Маркировка проведена"].sort());
+
+const beforeExcelPresentation = pc.getOrderMarkingPresentation({
+  marking_order_id: "22222222-2222-2222-2222-222222222222",
+  codes_total: 0,
+  requested_quantity: 12,
+  marking_completed: false,
+  marking_effective_status: "REQUIRED",
+  marking_label: "Маркировка не проведена",
+});
+assert.strictEqual(beforeExcelPresentation.label, "Маркировка не проведена");
+
+const afterExcelPresentation = pc.getOrderMarkingPresentation({
+  marking_order_id: "33333333-3333-3333-3333-333333333333",
+  codes_total: 12,
+  requested_quantity: 12,
+  marking_completed: true,
+  marking_effective_status: "PRINTED",
+  marking_label: "Маркировка проведена",
+});
+assert.strictEqual(afterExcelPresentation.label, "Маркировка проведена");
+
+const forbiddenMarkingLabels = ["требуется", "в работе", "частично", "не требуется"];
+assert.ok(
+  !forbiddenMarkingLabels.includes(beforeExcelPresentation.label.toLowerCase()),
+  "до Excel список заказов должен показывать только серверный бинарный статус ЧЗ"
+);
+assert.ok(
+  !forbiddenMarkingLabels.includes(afterExcelPresentation.label.toLowerCase()),
+  "после Excel список заказов должен показывать только серверный бинарный статус ЧЗ"
+);
 
 const markingRows = pc.normalizeMarkingTaskRows([
   {

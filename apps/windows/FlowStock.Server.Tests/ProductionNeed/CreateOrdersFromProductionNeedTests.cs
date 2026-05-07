@@ -1,9 +1,11 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using FlowStock.Core.Models;
 using FlowStock.Core.Models.Marking;
 using FlowStock.Core.Services;
+using FlowStock.Server;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
 
 namespace FlowStock.Server.Tests.ProductionNeed;
@@ -356,6 +358,67 @@ public sealed class CreateOrdersFromProductionNeedTests
         Assert.Null(markingOrder.OrderId);
         Assert.Equal(MarkingNeedCreationService.ProductionNeedSourceType, markingOrder.SourceType);
         Assert.Equal(4800, markingOrder.RequestedQuantity);
+    }
+
+    [Fact]
+    public async Task CreateOrdersFromProductionNeed_BeforeManualMarking_OrderDtoShowsMarkingNotCompleted()
+    {
+        var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 1200, minStockQty: 3600);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        await CreateOrdersAsync(host.Client);
+
+        var internalDraft = Assert.Single(harness.Store.GetOrders().Where(order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft));
+        var json = SerializeOrderDto(new OrderService(harness.Store).GetOrder(internalDraft.Id));
+
+        Assert.True(json.GetProperty("marking_applies").GetBoolean());
+        Assert.False(json.GetProperty("marking_completed").GetBoolean());
+        Assert.Equal("REQUIRED", json.GetProperty("marking_effective_status").GetString());
+        Assert.Equal("Маркировка не проведена", json.GetProperty("marking_label").GetString());
+    }
+
+    [Fact]
+    public async Task CreateMarkingFromProductionNeeds_WithoutCodes_OrderDtoRemainsNotCompleted()
+    {
+        var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 1200, minStockQty: 3600);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        await CreateOrdersAsync(host.Client);
+        var payload = await CreateMarkingAsync(host.Client);
+
+        Assert.True(payload.Ok);
+        Assert.Single(harness.MarkingOrders);
+        Assert.Empty(harness.MarkingCodes);
+
+        var internalDraft = Assert.Single(harness.Store.GetOrders().Where(order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft));
+        var json = SerializeOrderDto(new OrderService(harness.Store).GetOrder(internalDraft.Id));
+
+        Assert.False(json.GetProperty("marking_completed").GetBoolean());
+        Assert.Equal("REQUIRED", json.GetProperty("marking_effective_status").GetString());
+        Assert.Equal("Маркировка не проведена", json.GetProperty("marking_label").GetString());
+    }
+
+    [Fact]
+    public async Task ExportMarkingExcel_CreatesSyntheticCodes_AndOrderDtoShowsCompleted()
+    {
+        var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 1200, minStockQty: 3600);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        await CreateOrdersAsync(host.Client);
+        await CreateMarkingAsync(host.Client);
+        var task = Assert.Single(harness.MarkingOrders);
+
+        var export = new MarkingExcelService(harness.Store).Export(new[] { task.Id }, Array.Empty<long>(), new DateTime(2026, 5, 8, 12, 0, 0, DateTimeKind.Utc));
+
+        Assert.True(export.IsSuccess);
+        Assert.True(harness.MarkingCodes.Count >= task.RequestedQuantity);
+
+        var internalDraft = Assert.Single(harness.Store.GetOrders().Where(order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft));
+        var json = SerializeOrderDto(new OrderService(harness.Store).GetOrder(internalDraft.Id));
+
+        Assert.True(json.GetProperty("marking_completed").GetBoolean());
+        Assert.Equal("PRINTED", json.GetProperty("marking_effective_status").GetString());
+        Assert.Equal("Маркировка проведена", json.GetProperty("marking_label").GetString());
     }
 
     [Fact]
@@ -893,6 +956,11 @@ public sealed class CreateOrdersFromProductionNeedTests
             });
 
         return (harness, new InMemoryApiDocStore());
+    }
+
+    private static JsonElement SerializeOrderDto(Order? order)
+    {
+        return JsonSerializer.SerializeToElement(OrderApiMapper.MapOrder(Assert.IsType<Order>(order)));
     }
 
     private static CloseDocumentHarness CreateBaseHarness()

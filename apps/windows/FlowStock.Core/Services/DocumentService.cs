@@ -510,7 +510,7 @@ public sealed class DocumentService
             }
 
             store.UpdateDocStatus(docId, DocStatus.Closed, closedAt);
-            TryRefreshLinkedOrderStatus(store, doc);
+            TryRefreshLinkedOrderStatus(store, doc, lines);
         });
 
         return new CloseDocResult { Success = true };
@@ -2191,13 +2191,8 @@ public sealed class DocumentService
         return result;
     }
 
-    private static void TryRefreshLinkedOrderStatus(IDataStore store, Doc doc)
+    private static void TryRefreshLinkedOrderStatus(IDataStore store, Doc doc, IReadOnlyList<DocLine> lines)
     {
-        if (!doc.OrderId.HasValue)
-        {
-            return;
-        }
-
         if (doc.Type is not (DocType.Outbound or DocType.ProductionReceipt))
         {
             return;
@@ -2206,27 +2201,51 @@ public sealed class DocumentService
         try
         {
             var orderService = new OrderService(store);
-            var linkedOrder = orderService.GetOrder(doc.OrderId.Value);
-            if (linkedOrder == null)
+            var affectedOrderIds = CollectAffectedOrderIds(store, doc, lines);
+            if (affectedOrderIds.Count == 0)
             {
                 return;
             }
 
-            if (doc.Type == DocType.ProductionReceipt && linkedOrder.Type == OrderType.Internal)
+            foreach (var orderId in affectedOrderIds)
             {
-                OrderService.RefreshCustomerReceiptPlansCore(store);
-                return;
+                orderService.GetOrder(orderId);
             }
 
-            if (doc.Type == DocType.Outbound && linkedOrder.Type == OrderType.Customer)
-            {
-                OrderService.RefreshCustomerReceiptPlansCore(store);
-            }
+            OrderService.RefreshCustomerReceiptPlansCore(store);
         }
         catch (Exception ex) when (IsMockStoreException(ex))
         {
             // Compatibility for strict test mocks that do not expect auto status refresh.
         }
+    }
+
+    private static HashSet<long> CollectAffectedOrderIds(IDataStore store, Doc doc, IReadOnlyList<DocLine> lines)
+    {
+        var result = new HashSet<long>();
+        if (doc.OrderId.HasValue)
+        {
+            result.Add(doc.OrderId.Value);
+        }
+
+        var orderLineIds = lines
+            .Where(line => line.OrderLineId.HasValue)
+            .Select(line => line.OrderLineId!.Value)
+            .ToHashSet();
+        if (orderLineIds.Count == 0)
+        {
+            return result;
+        }
+
+        foreach (var order in store.GetOrders())
+        {
+            if (store.GetOrderLines(order.Id).Any(line => orderLineIds.Contains(line.Id)))
+            {
+                result.Add(order.Id);
+            }
+        }
+
+        return result;
     }
 
     private static bool IsMockStoreException(Exception ex)

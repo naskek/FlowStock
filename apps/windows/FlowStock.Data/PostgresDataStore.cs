@@ -37,50 +37,128 @@ SELECT o.id,
        o.marking_excel_generated_at,
        o.marking_printed_at,
        COALESCE(marking_need.marking_required, FALSE),
-       COALESCE(marking_need.marking_applies, FALSE)
+       COALESCE(marking_need.marking_applies, FALSE),
+       COALESCE(marking_need.marking_completed, FALSE)
 FROM orders o
 LEFT JOIN partners p ON p.id = o.partner_id
 LEFT JOIN LATERAL (
+    WITH shipped AS (
+        SELECT dl.order_line_id, SUM(dl.qty) AS qty_shipped
+        FROM doc_lines dl
+        INNER JOIN docs d ON d.id = dl.doc_id
+        WHERE d.status = 'CLOSED'
+          AND d.type = 'OUTBOUND'
+          AND dl.order_line_id IS NOT NULL
+          AND dl.qty > 0
+          AND NOT EXISTS (
+              SELECT 1
+              FROM doc_lines newer
+              WHERE newer.replaces_line_id = dl.id
+          )
+        GROUP BY dl.order_line_id
+    ),
+    reserved AS (
+        SELECT order_line_id, SUM(qty_planned) AS qty_reserved
+        FROM order_receipt_plan_lines
+        WHERE qty_planned > 0
+        GROUP BY order_line_id
+    ),
+    produced AS (
+        SELECT dl.order_line_id, SUM(dl.qty) AS qty_received
+        FROM doc_lines dl
+        INNER JOIN docs d ON d.id = dl.doc_id
+        WHERE d.status = 'CLOSED'
+          AND d.type = 'PRODUCTION_RECEIPT'
+          AND dl.order_line_id IS NOT NULL
+          AND dl.qty > 0
+          AND NOT EXISTS (
+              SELECT 1
+              FROM doc_lines newer
+              WHERE newer.replaces_line_id = dl.id
+          )
+        GROUP BY dl.order_line_id
+    ),
+    markable_line_need AS (
+        SELECT ol.item_id,
+               NULLIF(BTRIM(i.gtin), '') AS gtin,
+               CASE
+                   WHEN o.order_type = 'INTERNAL' THEN GREATEST(0, ol.qty_ordered - COALESCE(produced.qty_received, 0))
+                   ELSE GREATEST(0, ol.qty_ordered - COALESCE(shipped.qty_shipped, 0) - COALESCE(reserved.qty_reserved, 0))
+               END AS qty_for_marking
+        FROM order_lines ol
+        INNER JOIN items i ON i.id = ol.item_id
+        INNER JOIN item_types it ON it.id = i.item_type_id
+        LEFT JOIN shipped ON shipped.order_line_id = ol.id
+        LEFT JOIN reserved ON reserved.order_line_id = ol.id
+        LEFT JOIN produced ON produced.order_line_id = ol.id
+        WHERE ol.order_id = o.id
+          AND COALESCE(it.enable_marking, FALSE) = TRUE
+          AND NULLIF(BTRIM(i.gtin), '') IS NOT NULL
+    ),
+    markable_item_need AS (
+        SELECT item_id,
+               gtin,
+               SUM(qty_for_marking) AS qty_for_marking
+        FROM markable_line_need
+        GROUP BY item_id, gtin
+    ),
+    free_code_stats AS (
+        SELECT COALESCE(mo.item_id, 0) AS item_id,
+               COALESCE(NULLIF(BTRIM(COALESCE(mo.gtin, c.gtin)), ''), '') AS gtin,
+               COUNT(*) AS codes_total
+        FROM marking_code c
+        INNER JOIN marking_order mo ON mo.id = c.marking_order_id
+        WHERE c.status IN (@marking_code_status_reserved, @marking_code_status_printed)
+          AND c.receipt_doc_id IS NULL
+          AND c.receipt_line_id IS NULL
+          AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
+          AND (mo.source_type IN (@production_need_source_type, @production_order_source_type)
+               OR mo.order_id IS NOT NULL)
+        GROUP BY COALESCE(mo.item_id, 0),
+                 COALESCE(NULLIF(BTRIM(COALESCE(mo.gtin, c.gtin)), ''), '')
+    ),
+    bound_code_stats AS (
+        SELECT ol.item_id,
+               COALESCE(NULLIF(BTRIM(i.gtin), ''), '') AS gtin,
+               COUNT(*) AS codes_total
+        FROM marking_code c
+        INNER JOIN doc_lines dl ON dl.id = c.receipt_line_id
+        INNER JOIN order_lines ol ON ol.id = dl.order_line_id
+        INNER JOIN items i ON i.id = ol.item_id
+        WHERE ol.order_id = o.id
+          AND c.status <> @marking_code_status_voided
+        GROUP BY ol.item_id,
+                 COALESCE(NULLIF(BTRIM(i.gtin), ''), '')
+    )
     SELECT EXISTS (
-        SELECT 1
-        FROM order_lines ol
-        INNER JOIN items i ON i.id = ol.item_id
-        INNER JOIN item_types it ON it.id = i.item_type_id
-        WHERE ol.order_id = o.id
-          AND COALESCE(it.enable_marking, FALSE) = TRUE
-          AND NULLIF(BTRIM(i.gtin), '') IS NOT NULL
-    ) AS marking_applies,
-    o.status <> 'CANCELLED' AND EXISTS (
-        SELECT 1
-        FROM order_lines ol
-        INNER JOIN items i ON i.id = ol.item_id
-        INNER JOIN item_types it ON it.id = i.item_type_id
-        LEFT JOIN (
-            SELECT dl.order_line_id, SUM(dl.qty) AS qty_shipped
-            FROM doc_lines dl
-            INNER JOIN docs d ON d.id = dl.doc_id
-            WHERE d.status = 'CLOSED'
-              AND d.type = 'OUTBOUND'
-              AND dl.order_line_id IS NOT NULL
-              AND dl.qty > 0
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM doc_lines newer
-                  WHERE newer.replaces_line_id = dl.id
-              )
-            GROUP BY dl.order_line_id
-        ) shipped ON shipped.order_line_id = ol.id
-        LEFT JOIN (
-            SELECT order_line_id, SUM(qty_planned) AS qty_reserved
-            FROM order_receipt_plan_lines
-            WHERE qty_planned > 0
-            GROUP BY order_line_id
-        ) reserved ON reserved.order_line_id = ol.id
-        WHERE ol.order_id = o.id
-          AND COALESCE(it.enable_marking, FALSE) = TRUE
-          AND NULLIF(BTRIM(i.gtin), '') IS NOT NULL
-          AND GREATEST(0, ol.qty_ordered - COALESCE(shipped.qty_shipped, 0) - COALESCE(reserved.qty_reserved, 0)) > 0
-    ) AS marking_required
+               SELECT 1
+               FROM markable_line_need
+           ) AS marking_applies,
+           EXISTS (
+               SELECT 1
+               FROM markable_line_need
+               WHERE qty_for_marking > 0
+           ) AS marking_required,
+           EXISTS (
+               SELECT 1
+               FROM markable_line_need
+           ) AND NOT EXISTS (
+               SELECT 1
+               FROM markable_item_need need
+               WHERE need.qty_for_marking > 0
+                 AND COALESCE((
+                     SELECT SUM(free.codes_total)
+                     FROM free_code_stats free
+                     WHERE free.item_id = need.item_id
+                        OR (need.gtin IS NOT NULL AND free.gtin = COALESCE(need.gtin, ''))
+                 ), 0)
+                 + COALESCE((
+                     SELECT SUM(bound.codes_total)
+                     FROM bound_code_stats bound
+                     WHERE bound.item_id = need.item_id
+                        OR (need.gtin IS NOT NULL AND bound.gtin = COALESCE(need.gtin, ''))
+                 ), 0) + 0.000001 < need.qty_for_marking
+           ) AS marking_completed
 ) marking_need ON TRUE";
 
     public PostgresDataStore(string connectionString)
@@ -1411,6 +1489,7 @@ WHERE id = @id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, $"{OrderSelectBase} WHERE o.id = @id");
+            AddOrderSelectParameters(command);
             command.Parameters.AddWithValue("@id", id);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadOrder(reader) : null;
@@ -1422,6 +1501,7 @@ WHERE id = @id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, $"{OrderSelectBase} ORDER BY o.created_at DESC");
+            AddOrderSelectParameters(command);
             using var reader = command.ExecuteReader();
             var orders = new List<Order>();
             while (reader.Read())
@@ -1458,6 +1538,7 @@ END,
 o.created_at DESC,
 o.id DESC
 LIMIT @limit OFFSET @offset");
+            AddOrderSelectParameters(command);
             command.Parameters.AddWithValue("@include_internal", includeInternal);
             command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
             command.Parameters.Add("@query", NpgsqlDbType.Text).Value = string.IsNullOrWhiteSpace(normalized) ? DBNull.Value : normalized;
@@ -3624,6 +3705,17 @@ RETURNING id;
         };
     }
 
+    private static void AddOrderSelectParameters(NpgsqlCommand command)
+    {
+        command.Parameters.AddWithValue("@marking_code_status_reserved", MarkingCodeStatus.Reserved);
+        command.Parameters.AddWithValue("@marking_code_status_printed", MarkingCodeStatus.Printed);
+        command.Parameters.AddWithValue("@marking_code_status_voided", MarkingCodeStatus.Voided);
+        command.Parameters.AddWithValue("@marking_status_cancelled", MarkingOrderStatus.Cancelled);
+        command.Parameters.AddWithValue("@marking_status_failed", MarkingOrderStatus.Failed);
+        command.Parameters.AddWithValue("@production_need_source_type", MarkingNeedCreationService.ProductionNeedSourceType);
+        command.Parameters.AddWithValue("@production_order_source_type", MarkingNeedCreationService.ProductionOrderSourceType);
+    }
+
     private static Order ReadOrder(NpgsqlDataReader reader)
     {
         var type = OrderStatusMapper.TypeFromString(reader.IsDBNull(2) ? null : reader.GetString(2)) ?? OrderType.Customer;
@@ -3640,6 +3732,7 @@ RETURNING id;
         var markingPrintedAt = reader.FieldCount > 13 ? FromDbDate(reader.IsDBNull(13) ? null : reader.GetString(13)) : null;
         var markingRequired = reader.FieldCount > 14 && !reader.IsDBNull(14) && reader.GetBoolean(14);
         var markingApplies = reader.FieldCount > 15 && !reader.IsDBNull(15) && reader.GetBoolean(15);
+        var markingCodeCovered = reader.FieldCount > 16 && !reader.IsDBNull(16) && reader.GetBoolean(16);
 
         return new Order
         {
@@ -3658,6 +3751,7 @@ RETURNING id;
             IsLegacyExcelGeneratedMarkingStatus = string.Equals(rawMarkingStatus, "EXCEL_GENERATED", StringComparison.OrdinalIgnoreCase),
             MarkingRequired = markingRequired,
             MarkingApplies = markingApplies,
+            MarkingCodeCovered = markingCodeCovered,
             MarkingExcelGeneratedAt = markingExcelGeneratedAt,
             MarkingPrintedAt = markingPrintedAt
         };
