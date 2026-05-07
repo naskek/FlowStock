@@ -560,10 +560,82 @@ internal sealed class CloseDocumentHarness
                     .ToArray();
             });
 
+        _store.Setup(store => store.GetMarkingOrdersByIds(It.IsAny<IReadOnlyCollection<Guid>>()))
+            .Returns<IReadOnlyCollection<Guid>>(markingOrderIds =>
+            {
+                var ids = markingOrderIds.ToHashSet();
+                return _markingOrders.Values
+                    .Where(order => ids.Contains(order.Id))
+                    .Select(CloneMarkingOrder)
+                    .ToArray();
+            });
+
         _store.Setup(store => store.AddMarkingOrder(It.IsAny<MarkingOrder>()))
             .Callback<MarkingOrder>(order =>
             {
                 _markingOrders[order.Id] = CloneMarkingOrder(order);
+            });
+
+        _store.Setup(store => store.MarkMarkingOrdersPrinted(It.IsAny<IReadOnlyCollection<Guid>>(), It.IsAny<DateTime>()))
+            .Callback<IReadOnlyCollection<Guid>, DateTime>((ids, printedAt) =>
+            {
+                foreach (var id in ids)
+                {
+                    if (!_markingOrders.TryGetValue(id, out var current))
+                    {
+                        continue;
+                    }
+
+                    _markingOrders[id] = new MarkingOrder
+                    {
+                        Id = current.Id,
+                        OrderId = current.OrderId,
+                        ItemId = current.ItemId,
+                        Gtin = current.Gtin,
+                        RequestedQuantity = current.RequestedQuantity,
+                        RequestNumber = current.RequestNumber,
+                        Status = MarkingOrderStatus.Printed,
+                        Notes = current.Notes,
+                        SourceType = current.SourceType,
+                        SourceOrderId = current.SourceOrderId,
+                        RequestedAt = current.RequestedAt,
+                        CodesBoundAt = printedAt,
+                        CreatedAt = current.CreatedAt,
+                        UpdatedAt = printedAt
+                    };
+                }
+            });
+
+        _store.Setup(store => store.MarkOrdersPrinted(It.IsAny<IReadOnlyCollection<long>>(), It.IsAny<DateTime>()));
+
+        _store.Setup(store => store.AddMarkingCodeImport(It.IsAny<MarkingCodeImport>()))
+            .Returns<MarkingCodeImport>(import => import.Id);
+
+        _store.Setup(store => store.AddMarkingCodes(It.IsAny<IReadOnlyList<MarkingCode>>()))
+            .Callback<IReadOnlyList<MarkingCode>>(codes =>
+            {
+                foreach (var code in codes)
+                {
+                    _markingCodes[code.Id] = new MarkingCode
+                    {
+                        Id = code.Id,
+                        Code = code.Code,
+                        CodeHash = code.CodeHash,
+                        Gtin = code.Gtin,
+                        MarkingOrderId = code.MarkingOrderId,
+                        ImportId = code.ImportId,
+                        Status = code.Status,
+                        ReceiptDocId = code.ReceiptDocId,
+                        ReceiptLineId = code.ReceiptLineId,
+                        SourceRowNumber = code.SourceRowNumber,
+                        PrintedAt = code.PrintedAt,
+                        AppliedAt = code.AppliedAt,
+                        ReportedAt = code.ReportedAt,
+                        IntroducedAt = code.IntroducedAt,
+                        CreatedAt = code.CreatedAt,
+                        UpdatedAt = code.UpdatedAt
+                    };
+                }
             });
 
         _store.Setup(store => store.GetDocs())
@@ -1223,6 +1295,11 @@ internal sealed class CloseDocumentHarness
 
         _store.Setup(store => store.CountProductionMarkingCodesByReceiptLine(It.IsAny<long>()))
             .Returns<long>(docLineId => _markingCodes.Values.Count(code => code.ReceiptLineId == docLineId));
+
+        _store.Setup(store => store.CountMarkingCodesByMarkingOrder(It.IsAny<Guid>()))
+            .Returns<Guid>(markingOrderId => _markingCodes.Values.Count(code =>
+                code.MarkingOrderId == markingOrderId
+                && code.Status != MarkingCodeStatus.Voided));
 
         _store.Setup(store => store.CountAvailableProductionMarkingCodesForReceipt(It.IsAny<long?>(), It.IsAny<long>(), It.IsAny<string?>()))
             .Returns<long?, long, string?>((sourceOrderId, itemId, gtin) =>

@@ -4875,6 +4875,21 @@ VALUES(
         });
     }
 
+    public int CountMarkingCodesByMarkingOrder(Guid markingOrderId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT COUNT(*)
+FROM marking_code
+WHERE marking_order_id = @marking_order_id
+  AND status <> @voided_status;");
+            command.Parameters.AddWithValue("@marking_order_id", markingOrderId);
+            command.Parameters.AddWithValue("@voided_status", MarkingCodeStatus.Voided);
+            return Convert.ToInt32(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
     public MarkingOrder? FindMarkingOrderByRequestNumber(string requestNumber)
     {
         return WithConnection(connection =>

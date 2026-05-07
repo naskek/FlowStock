@@ -164,6 +164,7 @@ public interface IDataStore
     void UpdateMarkingCodeImport(MarkingCodeImport import);
     bool ExistsMarkingCodeByRaw(string code);
     void AddMarkingCodes(IReadOnlyList<MarkingCode> codes);
+    int CountMarkingCodesByMarkingOrder(Guid markingOrderId);
     MarkingOrder? FindMarkingOrderByRequestNumber(string requestNumber);
     void UpdateMarkingOrderStatus(Guid id, string status, DateTime? codesBoundAt, DateTime updatedAt);
     IReadOnlyList<ClientBlockSetting> GetClientBlockSettings();

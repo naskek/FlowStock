@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.IO.Compression;
+using System.Security.Cryptography;
 using System.Security;
 using System.Text;
 using FlowStock.Core.Abstractions;
@@ -97,14 +98,21 @@ public sealed class MarkingExcelService
             .Distinct()
             .ToArray();
         var bytes = BuildWorkbook(rows);
-        if (orderIdsWithRows.Length > 0)
+        if (orderIdsWithRows.Length > 0 || markingOrderIdsWithRows.Length > 0)
         {
-            _data.MarkOrdersPrinted(orderIdsWithRows, generatedAt);
-        }
+            _data.ExecuteInTransaction(store =>
+            {
+                if (orderIdsWithRows.Length > 0)
+                {
+                    store.MarkOrdersPrinted(orderIdsWithRows, generatedAt);
+                }
 
-        if (markingOrderIdsWithRows.Length > 0)
-        {
-            _data.MarkMarkingOrdersPrinted(markingOrderIdsWithRows, generatedAt);
+                if (markingOrderIdsWithRows.Length > 0)
+                {
+                    store.MarkMarkingOrdersPrinted(markingOrderIdsWithRows, generatedAt);
+                    EnsureTemporaryMarkingCodes(store, taskRows, generatedAt);
+                }
+            });
         }
 
         return new MarkingExcelExportResult(
@@ -143,6 +151,69 @@ public sealed class MarkingExcelService
                     Qty: pair.Order.RequestedQuantity);
             })
             .ToList();
+    }
+
+    private static void EnsureTemporaryMarkingCodes(
+        IDataStore store,
+        IReadOnlyList<MarkingTaskExportRow> taskRows,
+        DateTime generatedAt)
+    {
+        foreach (var row in taskRows)
+        {
+            var requested = (int)Math.Ceiling(Math.Max(0, row.Qty));
+            if (requested <= 0)
+            {
+                continue;
+            }
+
+            var existing = store.CountMarkingCodesByMarkingOrder(row.MarkingOrderId);
+            var missing = requested - existing;
+            if (missing <= 0)
+            {
+                continue;
+            }
+
+            var importId = Guid.NewGuid();
+            store.AddMarkingCodeImport(new MarkingCodeImport
+            {
+                Id = importId,
+                OriginalFilename = $"TEMP-CHZ-{row.MarkingOrderId:D}.xlsx",
+                StoragePath = "<temporary-chz-export>",
+                FileHash = ComputeCodeHash($"TEMP-CHZ-IMPORT-{row.MarkingOrderId:D}-{generatedAt:O}-{existing}-{missing}"),
+                SourceType = "temporary-chz-export",
+                DetectedGtin = row.Gtin,
+                DetectedQuantity = missing,
+                MatchedMarkingOrderId = row.MarkingOrderId,
+                MatchConfidence = 1m,
+                Status = MarkingCodeImportStatus.Bound,
+                ImportedRows = missing,
+                ValidCodeRows = missing,
+                DuplicateCodeRows = 0,
+                CreatedAt = generatedAt,
+                ProcessedAt = generatedAt
+            });
+
+            var codes = Enumerable.Range(existing + 1, missing)
+                .Select(index =>
+                {
+                    var code = $"TEMP-CHZ-{row.MarkingOrderId:D}-{index:000000}";
+                    return new MarkingCode
+                    {
+                        Id = Guid.NewGuid(),
+                        Code = code,
+                        CodeHash = ComputeCodeHash(code),
+                        Gtin = row.Gtin,
+                        MarkingOrderId = row.MarkingOrderId,
+                        ImportId = importId,
+                        Status = MarkingCodeStatus.Reserved,
+                        SourceRowNumber = index,
+                        CreatedAt = generatedAt,
+                        UpdatedAt = generatedAt
+                    };
+                })
+                .ToArray();
+            store.AddMarkingCodes(codes);
+        }
     }
 
     private static bool IsTerminalFailed(string? status)
@@ -297,6 +368,12 @@ public sealed class MarkingExcelService
         var entry = archive.CreateEntry(name, CompressionLevel.Fastest);
         using var writer = new StreamWriter(entry.Open(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         writer.Write(content);
+    }
+
+    private static string ComputeCodeHash(string value)
+    {
+        using var sha256 = SHA256.Create();
+        return Convert.ToHexString(sha256.ComputeHash(Encoding.UTF8.GetBytes(value)));
     }
 }
 

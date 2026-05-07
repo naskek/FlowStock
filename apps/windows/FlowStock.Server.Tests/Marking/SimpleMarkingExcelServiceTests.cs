@@ -157,6 +157,110 @@ public sealed class SimpleMarkingExcelServiceTests
     }
 
     [Fact]
+    public void Export_ByProductionNeedMarkingTask_CreatesTemporaryCodesWhenMissing()
+    {
+        var taskId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        IReadOnlyList<MarkingCode>? createdCodes = null;
+        MarkingCodeImport? createdImport = null;
+        var store = CreateTaskStore(new MarkingOrder
+        {
+            Id = taskId,
+            OrderId = null,
+            ItemId = 1001,
+            Gtin = "04607186951520",
+            RequestedQuantity = 600,
+            RequestNumber = "PN-1001",
+            SourceType = MarkingNeedCreationService.ProductionNeedSourceType,
+            Status = MarkingOrderStatus.Printed,
+            CreatedAt = DateTime.Now,
+            UpdatedAt = DateTime.Now
+        });
+        store.Setup(s => s.CountMarkingCodesByMarkingOrder(taskId)).Returns(0);
+        store.Setup(s => s.AddMarkingCodeImport(It.IsAny<MarkingCodeImport>()))
+            .Callback<MarkingCodeImport>(import => createdImport = import)
+            .Returns<MarkingCodeImport>(import => import.Id);
+        store.Setup(s => s.AddMarkingCodes(It.IsAny<IReadOnlyList<MarkingCode>>()))
+            .Callback<IReadOnlyList<MarkingCode>>(codes => createdCodes = codes);
+
+        var result = new MarkingExcelService(store.Object).Export(new[] { taskId }, Array.Empty<long>(), DateTime.Parse("2026-05-01T10:00:00"));
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(createdImport);
+        Assert.Equal(MarkingCodeImportStatus.Bound, createdImport!.Status);
+        Assert.Equal(taskId, createdImport.MatchedMarkingOrderId);
+        Assert.NotNull(createdCodes);
+        Assert.Equal(600, createdCodes!.Count);
+        Assert.All(createdCodes, code =>
+        {
+            Assert.Equal(taskId, code.MarkingOrderId);
+            Assert.Equal(createdImport.Id, code.ImportId);
+            Assert.Equal("04607186951520", code.Gtin);
+            Assert.Equal(MarkingCodeStatus.Reserved, code.Status);
+            Assert.StartsWith($"TEMP-CHZ-{taskId:D}-", code.Code, StringComparison.Ordinal);
+            Assert.False(string.IsNullOrWhiteSpace(code.CodeHash));
+        });
+    }
+
+    [Fact]
+    public void Export_ByProductionNeedMarkingTask_DoesNotDuplicateTemporaryCodes()
+    {
+        var taskId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var store = CreateTaskStore(new MarkingOrder
+        {
+            Id = taskId,
+            OrderId = null,
+            ItemId = 1001,
+            Gtin = "04607186951520",
+            RequestedQuantity = 600,
+            RequestNumber = "PN-1001",
+            SourceType = MarkingNeedCreationService.ProductionNeedSourceType,
+            Status = MarkingOrderStatus.Printed,
+            CreatedAt = DateTime.Now,
+            UpdatedAt = DateTime.Now
+        });
+        store.Setup(s => s.CountMarkingCodesByMarkingOrder(taskId)).Returns(600);
+
+        var result = new MarkingExcelService(store.Object).Export(new[] { taskId }, Array.Empty<long>(), DateTime.Now);
+
+        Assert.True(result.IsSuccess);
+        store.Verify(s => s.AddMarkingCodeImport(It.IsAny<MarkingCodeImport>()), Times.Never);
+        store.Verify(s => s.AddMarkingCodes(It.IsAny<IReadOnlyList<MarkingCode>>()), Times.Never);
+    }
+
+    [Fact]
+    public void Export_ByProductionNeedMarkingTask_CreatesOnlyMissingTemporaryCodes()
+    {
+        var taskId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        IReadOnlyList<MarkingCode>? createdCodes = null;
+        var store = CreateTaskStore(new MarkingOrder
+        {
+            Id = taskId,
+            OrderId = null,
+            ItemId = 1001,
+            Gtin = "04607186951520",
+            RequestedQuantity = 600,
+            RequestNumber = "PN-1001",
+            SourceType = MarkingNeedCreationService.ProductionNeedSourceType,
+            Status = MarkingOrderStatus.Printed,
+            CreatedAt = DateTime.Now,
+            UpdatedAt = DateTime.Now
+        });
+        store.Setup(s => s.CountMarkingCodesByMarkingOrder(taskId)).Returns(300);
+        store.Setup(s => s.AddMarkingCodeImport(It.IsAny<MarkingCodeImport>()))
+            .Returns<MarkingCodeImport>(import => import.Id);
+        store.Setup(s => s.AddMarkingCodes(It.IsAny<IReadOnlyList<MarkingCode>>()))
+            .Callback<IReadOnlyList<MarkingCode>>(codes => createdCodes = codes);
+
+        var result = new MarkingExcelService(store.Object).Export(new[] { taskId }, Array.Empty<long>(), DateTime.Now);
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(createdCodes);
+        Assert.Equal(300, createdCodes!.Count);
+        Assert.Equal(301, createdCodes.First().SourceRowNumber);
+        Assert.Equal(600, createdCodes.Last().SourceRowNumber);
+    }
+
+    [Fact]
     public void Export_ByOrderBasedMarkingTask_MarksTaskAndOrderPrinted()
     {
         var taskId = Guid.Parse("33333333-3333-3333-3333-333333333333");
@@ -546,6 +650,8 @@ public sealed class SimpleMarkingExcelServiceTests
     private static Mock<IDataStore> CreateStore(params MarkingOrderLineCandidate[] lines)
     {
         var store = new Mock<IDataStore>(MockBehavior.Loose);
+        store.Setup(s => s.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
+            .Callback<Action<IDataStore>>(work => work(store.Object));
         store.Setup(s => s.GetMarkingOrderLineCandidates(It.IsAny<IReadOnlyCollection<long>>()))
             .Returns((IReadOnlyCollection<long> ids) => lines.Where(line => ids.Contains(line.OrderId)).ToList());
         store.Setup(s => s.GetMarkingOrderQueue(It.IsAny<bool>()))

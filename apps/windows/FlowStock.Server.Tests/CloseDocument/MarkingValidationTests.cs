@@ -92,6 +92,27 @@ public sealed class MarkingValidationTests
     }
 
     [Fact]
+    public void ProductionReceiptAfterChzExportWithTemporaryCodes_ClosesThroughRealClosePath()
+    {
+        var harness = CreateHarnessWithOrder(OrderType.Internal);
+        var markingOrderId = SeedProductionNeedMarkingOrder(harness, requestedQuantity: 5);
+        var export = new FlowStock.Core.Services.MarkingExcelService(harness.Store)
+            .Export(new[] { markingOrderId }, Array.Empty<long>(), DateTime.Parse("2026-05-01T10:00:00"));
+
+        Assert.True(export.IsSuccess);
+        Assert.Equal(5, harness.MarkingCodes.Count(code => code.MarkingOrderId == markingOrderId));
+        Assert.Equal(5, harness.MarkingCodes.Count(code => code.Status == FlowStock.Core.Models.Marking.MarkingCodeStatus.Reserved));
+
+        var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Errors);
+        Assert.Equal(5, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
+        Assert.Single(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Closed, harness.GetDoc(1).Status);
+    }
+
+    [Fact]
     public void ProductionReceiptWithProductionNeedMarkingOrder_RejectsWhenCodesAreMissing()
     {
         var harness = CreateHarnessWithOrder(OrderType.Internal);
