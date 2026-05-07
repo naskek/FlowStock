@@ -673,6 +673,9 @@ public sealed class UpsertItemTypeRequest
 
 public sealed class MarkingExportRequest
 {
+    [JsonPropertyName("marking_order_ids")]
+    public List<Guid>? MarkingOrderIds { get; set; }
+
     [JsonPropertyName("order_ids")]
     public List<long>? OrderIds { get; set; }
 }

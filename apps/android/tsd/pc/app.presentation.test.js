@@ -65,6 +65,18 @@ assert.strictEqual(
   }).label,
   "Маркировка проведена"
 );
+assert.strictEqual(
+  pc.getOrderMarkingPresentation({
+    marking_status: "REQUIRED",
+  }).label,
+  "Маркировка не проведена"
+);
+assert.strictEqual(
+  pc.getOrderMarkingPresentation({
+    marking_required: true,
+  }).label,
+  "Маркировка не проведена"
+);
 
 const printedHtml = pc.renderOrderMarkingIndicator({
   marking_effective_status: "PRINTED",

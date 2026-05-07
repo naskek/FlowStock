@@ -2318,11 +2318,13 @@ app.MapGet("/api/marking/orders", (HttpRequest request, MarkingExcelService mark
     var rows = marking.GetOrderQueue(includeCompleted)
         .Select(row => new
         {
+            marking_order_id = row.MarkingOrderId?.ToString("D"),
             order_id = row.OrderId,
             order_ref = row.OrderRef,
             partner_name = row.PartnerName,
             partner_code = row.PartnerCode,
             partner_display = row.PartnerDisplay,
+            source_type = row.SourceType,
             order_status = OrderStatusMapper.StatusToString(row.OrderStatus),
             order_status_display = OrderStatusMapper.StatusToDisplayName(row.OrderStatus),
             due_date = row.DueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
@@ -2346,7 +2348,10 @@ app.MapPost("/api/marking/export", async (HttpRequest request, MarkingExcelServi
         return parsed.Error!;
     }
 
-    var result = marking.Export(parsed.Value?.OrderIds ?? (IReadOnlyCollection<long>)Array.Empty<long>(), DateTime.Now);
+    var result = marking.Export(
+        parsed.Value?.MarkingOrderIds ?? (IReadOnlyCollection<Guid>)Array.Empty<Guid>(),
+        parsed.Value?.OrderIds ?? (IReadOnlyCollection<long>)Array.Empty<long>(),
+        DateTime.Now);
     if (!result.IsSuccess || result.FileBytes == null)
     {
         return Results.BadRequest(new ApiResult(false, result.Error ?? "Нет строк для формирования файла ЧЗ."));

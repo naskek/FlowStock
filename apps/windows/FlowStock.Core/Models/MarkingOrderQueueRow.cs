@@ -2,10 +2,12 @@ namespace FlowStock.Core.Models;
 
 public sealed class MarkingOrderQueueRow
 {
+    public Guid? MarkingOrderId { get; init; }
     public long OrderId { get; init; }
     public string OrderRef { get; init; } = string.Empty;
     public string? PartnerName { get; init; }
     public string? PartnerCode { get; init; }
+    public string? SourceType { get; init; }
     public OrderStatus OrderStatus { get; init; }
     public DateTime? DueDate { get; init; }
     public MarkingStatus MarkingStatus { get; init; }

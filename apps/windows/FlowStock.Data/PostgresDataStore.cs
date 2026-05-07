@@ -1565,7 +1565,8 @@ order_need AS (
     FROM line_need
     GROUP BY order_id
 )
-SELECT o.id,
+SELECT NULL::uuid AS marking_order_id,
+       o.id,
        o.order_ref,
        o.partner_id,
        p.name,
@@ -1576,7 +1577,8 @@ SELECT o.id,
        COALESCE(order_need.line_count, 0) AS line_count,
        COALESCE(order_need.code_count, 0) AS code_count,
        COALESCE(o.marking_printed_at, o.marking_excel_generated_at) AS last_generated_at,
-       o.created_at AS sort_created_at
+       o.created_at AS sort_created_at,
+       NULL::text AS source_type
 FROM orders o
 LEFT JOIN partners p ON p.id = o.partner_id
 LEFT JOIN order_need ON order_need.order_id = o.id
@@ -1588,13 +1590,14 @@ WHERE COALESCE(order_need.line_count, 0) > 0
           AND COALESCE(o.marking_status, 'NOT_REQUIRED') IN (@printed_status, @legacy_excel_generated_status))
   )
 UNION ALL
-SELECT 0 AS id,
-       COALESCE(i.name, 'Потребность производства') AS order_ref,
+SELECT mo.id AS marking_order_id,
+       COALESCE(mo.order_id, 0) AS id,
+       COALESCE(mo_o.order_ref, i.name, 'Потребность производства') AS order_ref,
        NULL AS partner_id,
-       'Потребность производства' AS name,
-       NULL AS code,
-       NULL AS due_date,
-       @in_progress_status AS status,
+       COALESCE(p_mo.name, 'Потребность производства') AS name,
+       p_mo.code AS code,
+       mo_o.due_date AS due_date,
+       COALESCE(mo_o.status, @in_progress_status) AS status,
        CASE
            WHEN mo.status IN (@marking_status_printed, @marking_status_completed, @marking_status_codes_bound, @marking_status_ready_for_print) THEN @printed_status
            ELSE @required_status
@@ -1602,10 +1605,14 @@ SELECT 0 AS id,
        1 AS line_count,
        mo.requested_quantity AS code_count,
        COALESCE(mo.codes_bound_at, mo.requested_at, mo.created_at) AS last_generated_at,
-       mo.created_at AS sort_created_at
+       mo.created_at AS sort_created_at,
+       mo.source_type AS source_type
 FROM marking_order mo
 LEFT JOIN items i ON i.id = mo.item_id
-WHERE mo.source_type IN (@production_need_source_type, @production_order_source_type)
+LEFT JOIN orders mo_o ON mo_o.id = mo.order_id
+LEFT JOIN partners p_mo ON p_mo.id = mo_o.partner_id
+WHERE (mo.source_type IN (@production_need_source_type, @production_order_source_type)
+       OR mo.order_id IS NOT NULL)
   AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
   AND (
       mo.status NOT IN (@marking_status_printed, @marking_status_completed)
@@ -1635,16 +1642,18 @@ ORDER BY due_date NULLS LAST, sort_created_at, id;
             {
                 rows.Add(new MarkingOrderQueueRow
                 {
-                    OrderId = reader.GetInt64(0),
-                    OrderRef = reader.GetString(1),
-                    PartnerName = reader.IsDBNull(3) ? null : reader.GetString(3),
-                    PartnerCode = reader.IsDBNull(4) ? null : reader.GetString(4),
-                    DueDate = reader.IsDBNull(5) ? null : FromDbDate(reader.GetString(5)),
-                    OrderStatus = OrderStatusMapper.StatusFromString(reader.GetString(6)) ?? OrderStatus.InProgress,
-                    MarkingStatus = MarkingStatusMapper.FromString(reader.GetString(7)),
-                    MarkingLineCount = reader.GetInt32(8),
-                    MarkingCodeCount = Convert.ToDouble(reader.GetValue(9), CultureInfo.InvariantCulture),
-                    LastGeneratedAt = FromDbDate(reader.IsDBNull(10) ? null : reader.GetString(10))
+                    MarkingOrderId = reader.IsDBNull(0) ? null : reader.GetGuid(0),
+                    OrderId = reader.GetInt64(1),
+                    OrderRef = reader.GetString(2),
+                    PartnerName = reader.IsDBNull(4) ? null : reader.GetString(4),
+                    PartnerCode = reader.IsDBNull(5) ? null : reader.GetString(5),
+                    DueDate = reader.IsDBNull(6) ? null : FromDbDate(reader.GetString(6)),
+                    OrderStatus = OrderStatusMapper.StatusFromString(reader.GetString(7)) ?? OrderStatus.InProgress,
+                    MarkingStatus = MarkingStatusMapper.FromString(reader.GetString(8)),
+                    MarkingLineCount = reader.GetInt32(9),
+                    MarkingCodeCount = Convert.ToDouble(reader.GetValue(10), CultureInfo.InvariantCulture),
+                    LastGeneratedAt = FromDbDate(reader.IsDBNull(11) ? null : reader.GetString(11)),
+                    SourceType = reader.IsDBNull(13) ? null : reader.GetString(13)
                 });
             }
 
@@ -1733,6 +1742,28 @@ ORDER BY i.name, BTRIM(i.gtin), ol.id;
         });
     }
 
+    public IReadOnlyList<MarkingOrder> GetMarkingOrdersByIds(IReadOnlyCollection<Guid> ids)
+    {
+        if (ids.Count == 0)
+        {
+            return Array.Empty<MarkingOrder>();
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildMarkingOrderQuery("WHERE mo.id = ANY(@ids::uuid[])"));
+            command.Parameters.AddWithValue("@ids", ids.Distinct().ToArray());
+            using var reader = command.ExecuteReader();
+            var rows = new List<MarkingOrder>();
+            while (reader.Read())
+            {
+                rows.Add(ReadMarkingOrder(reader));
+            }
+
+            return rows;
+        });
+    }
+
     public IReadOnlyList<MarkingOrder> GetMarkingOrdersByItemIds(IReadOnlyCollection<long> itemIds)
     {
         if (itemIds.Count == 0)
@@ -1804,6 +1835,29 @@ VALUES(
             command.Parameters.AddWithValue("@codes_bound_at", order.CodesBoundAt.HasValue ? ToDbDate(order.CodesBoundAt.Value) : DBNull.Value);
             command.Parameters.AddWithValue("@created_at", ToDbDate(order.CreatedAt));
             command.Parameters.AddWithValue("@updated_at", ToDbDate(order.UpdatedAt));
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void MarkMarkingOrdersPrinted(IReadOnlyCollection<Guid> ids, DateTime printedAt)
+    {
+        if (ids.Count == 0)
+        {
+            return;
+        }
+
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE marking_order
+SET status = @status,
+    codes_bound_at = COALESCE(codes_bound_at, @printed_at),
+    updated_at = @printed_at
+WHERE id = ANY(@ids::uuid[]);");
+            command.Parameters.AddWithValue("@ids", ids.Distinct().ToArray());
+            command.Parameters.AddWithValue("@status", MarkingOrderStatus.Printed);
+            command.Parameters.AddWithValue("@printed_at", ToDbDate(printedAt));
             command.ExecuteNonQuery();
             return 0;
         });

@@ -4,6 +4,7 @@ using System.Security;
 using System.Text;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
+using FlowStock.Core.Models.Marking;
 
 namespace FlowStock.Core.Services;
 
@@ -25,51 +26,129 @@ public sealed class MarkingExcelService
 
     public MarkingExcelExportResult Export(IReadOnlyCollection<long> orderIds, DateTime generatedAt)
     {
+        return Export(Array.Empty<Guid>(), orderIds, generatedAt);
+    }
+
+    public MarkingExcelExportResult Export(
+        IReadOnlyCollection<Guid> markingOrderIds,
+        IReadOnlyCollection<long> orderIds,
+        DateTime generatedAt)
+    {
         var normalizedOrderIds = orderIds
             .Where(id => id > 0)
             .Distinct()
             .ToArray();
-        if (normalizedOrderIds.Length == 0)
+        var normalizedMarkingOrderIds = markingOrderIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToArray();
+        if (normalizedOrderIds.Length == 0 && normalizedMarkingOrderIds.Length == 0)
         {
-            return MarkingExcelExportResult.Empty("Выберите хотя бы один заказ.");
+            return MarkingExcelExportResult.Empty("Выберите хотя бы одну задачу маркировки.");
         }
 
-        var candidates = _data.GetMarkingOrderLineCandidates(normalizedOrderIds)
-            .Select(NormalizeCandidate)
-            .Where(line => line.ItemTypeEnableMarking
-                           && !string.IsNullOrWhiteSpace(line.Gtin)
-                           && line.QtyForMarking > 0)
+        var orderRows = normalizedOrderIds.Length == 0
+            ? new List<MarkingOrderLineCandidate>()
+            : _data.GetMarkingOrderLineCandidates(normalizedOrderIds)
+                .Select(NormalizeCandidate)
+                .Where(line => line.ItemTypeEnableMarking
+                               && !string.IsNullOrWhiteSpace(line.Gtin)
+                               && line.QtyForMarking > 0)
+                .ToList();
+        var taskRows = BuildTaskRows(normalizedMarkingOrderIds);
+        var exportRows = orderRows
+            .Select(line => new MarkingExportRow
+            {
+                ItemName = line.ItemName,
+                Gtin = line.Gtin!,
+                Qty = line.QtyForMarking
+            })
+            .Concat(taskRows.Select(line => new MarkingExportRow
+            {
+                ItemName = line.ItemName,
+                Gtin = line.Gtin,
+                Qty = line.Qty
+            }))
             .ToList();
-        if (candidates.Count == 0)
+        if (exportRows.Count == 0)
         {
             return MarkingExcelExportResult.Empty("Нет строк для формирования файла ЧЗ.");
         }
 
-        var rows = candidates
-            .GroupBy(line => (Gtin: line.Gtin!.ToUpperInvariant(), ItemName: line.ItemName.ToUpperInvariant()))
+        var rows = exportRows
+            .GroupBy(line => (Gtin: line.Gtin.ToUpperInvariant(), ItemName: line.ItemName.ToUpperInvariant()))
             .Select(group => new MarkingExportRow
             {
                 ItemName = group.First().ItemName,
-                Gtin = group.First().Gtin!,
-                Qty = group.Sum(line => line.QtyForMarking)
+                Gtin = group.First().Gtin,
+                Qty = group.Sum(line => line.Qty)
             })
             .OrderBy(row => row.ItemName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(row => row.Gtin, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        var orderIdsWithRows = candidates
+        var markingOrderIdsWithRows = taskRows
+            .Select(line => line.MarkingOrderId)
+            .Distinct()
+            .ToArray();
+        var orderIdsWithRows = orderRows
             .Select(line => line.OrderId)
+            .Concat(taskRows.Where(line => line.OrderId.HasValue).Select(line => line.OrderId!.Value))
             .Distinct()
             .ToArray();
         var bytes = BuildWorkbook(rows);
-        _data.MarkOrdersPrinted(orderIdsWithRows, generatedAt);
+        if (orderIdsWithRows.Length > 0)
+        {
+            _data.MarkOrdersPrinted(orderIdsWithRows, generatedAt);
+        }
+
+        if (markingOrderIdsWithRows.Length > 0)
+        {
+            _data.MarkMarkingOrdersPrinted(markingOrderIdsWithRows, generatedAt);
+        }
 
         return new MarkingExcelExportResult(
             IsSuccess: true,
             Error: null,
             FileBytes: bytes,
             Rows: rows,
-            MarkedOrderIds: orderIdsWithRows);
+            MarkedOrderIds: orderIdsWithRows,
+            MarkedMarkingOrderIds: markingOrderIdsWithRows);
+    }
+
+    private IReadOnlyList<MarkingTaskExportRow> BuildTaskRows(IReadOnlyCollection<Guid> markingOrderIds)
+    {
+        if (markingOrderIds.Count == 0)
+        {
+            return Array.Empty<MarkingTaskExportRow>();
+        }
+
+        return _data.GetMarkingOrdersByIds(markingOrderIds)
+            .Where(order => !IsTerminalFailed(order.Status)
+                            && order.RequestedQuantity > 0
+                            && order.ItemId.HasValue)
+            .Select(order => (Order: order, Item: _data.FindItemById(order.ItemId!.Value)))
+            .Where(pair => pair.Item?.ItemTypeEnableMarking == true
+                           && !string.IsNullOrWhiteSpace(pair.Order.Gtin ?? pair.Item.Gtin))
+            .Select(pair =>
+            {
+                var gtin = string.IsNullOrWhiteSpace(pair.Order.Gtin)
+                    ? pair.Item!.Gtin!.Trim()
+                    : pair.Order.Gtin!.Trim();
+                return new MarkingTaskExportRow(
+                    MarkingOrderId: pair.Order.Id,
+                    OrderId: pair.Order.OrderId,
+                    ItemName: pair.Item!.Name,
+                    Gtin: gtin,
+                    Qty: pair.Order.RequestedQuantity);
+            })
+            .ToList();
+    }
+
+    private static bool IsTerminalFailed(string? status)
+    {
+        return string.Equals(status, MarkingOrderStatus.Cancelled, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(status, MarkingOrderStatus.Failed, StringComparison.OrdinalIgnoreCase);
     }
 
     private static MarkingOrderLineCandidate NormalizeCandidate(MarkingOrderLineCandidate line)
@@ -97,10 +176,12 @@ public sealed class MarkingExcelService
             row.OrderStatus);
         return new MarkingOrderQueueRow
         {
+            MarkingOrderId = row.MarkingOrderId,
             OrderId = row.OrderId,
             OrderRef = row.OrderRef,
             PartnerName = row.PartnerName,
             PartnerCode = row.PartnerCode,
+            SourceType = row.SourceType,
             OrderStatus = row.OrderStatus,
             DueDate = row.DueDate,
             MarkingStatus = status,
@@ -209,15 +290,23 @@ public sealed class MarkingExcelService
     }
 }
 
+internal sealed record MarkingTaskExportRow(
+    Guid MarkingOrderId,
+    long? OrderId,
+    string ItemName,
+    string Gtin,
+    double Qty);
+
 public sealed record MarkingExcelExportResult(
     bool IsSuccess,
     string? Error,
     byte[]? FileBytes,
     IReadOnlyList<MarkingExportRow> Rows,
-    IReadOnlyList<long> MarkedOrderIds)
+    IReadOnlyList<long> MarkedOrderIds,
+    IReadOnlyList<Guid> MarkedMarkingOrderIds)
 {
     public static MarkingExcelExportResult Empty(string error)
     {
-        return new MarkingExcelExportResult(false, error, null, Array.Empty<MarkingExportRow>(), Array.Empty<long>());
+        return new MarkingExcelExportResult(false, error, null, Array.Empty<MarkingExportRow>(), Array.Empty<long>(), Array.Empty<Guid>());
     }
 }

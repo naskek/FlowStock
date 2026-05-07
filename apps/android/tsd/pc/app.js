@@ -2180,13 +2180,16 @@
   }
 
   function getOrderMarkingPresentation(order) {
-    var rawEffectiveStatus = String((order && order.marking_effective_status) || "")
+    var rawEffectiveStatus = String((order && (order.marking_effective_status || order.marking_status)) || "")
       .trim()
       .toUpperCase();
     var effectiveStatus = rawEffectiveStatus;
     var legacyExcelGenerated = effectiveStatus === "EXCEL_GENERATED";
     if (effectiveStatus === "EXCEL_GENERATED") {
       effectiveStatus = "PRINTED";
+    }
+    if (!effectiveStatus && order && order.marking_required === true) {
+      effectiveStatus = "REQUIRED";
     }
     var display = String((order && order.marking_status_display) || "").trim();
 

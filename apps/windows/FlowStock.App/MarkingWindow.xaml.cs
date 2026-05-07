@@ -34,19 +34,29 @@ public partial class MarkingWindow : Window
     {
         var selected = OrdersGrid.SelectedItems
             .OfType<MarkingOrderDisplayRow>()
-            .Select(row => row.OrderId)
+            .ToArray();
+        var selectedTasks = selected
+            .Select(row => row.MarkingOrderId)
+            .Where(id => id.HasValue)
+            .Select(id => id!.Value)
             .Distinct()
             .ToArray();
-        if (selected.Length == 0)
+        var selectedOrders = selected
+            .Where(row => !row.MarkingOrderId.HasValue)
+            .Select(row => row.OrderId)
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
+        if (selectedTasks.Length == 0 && selectedOrders.Length == 0)
         {
-            MessageBox.Show("Выберите один или несколько заказов.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Выберите хотя бы одну задачу маркировки.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
         ExportButton.IsEnabled = false;
         try
         {
-            var result = await _services.WpfMarkingApi.TryExportAsync(selected).ConfigureAwait(true);
+            var result = await _services.WpfMarkingApi.TryExportAsync(selectedTasks, selectedOrders).ConfigureAwait(true);
             if (!result.IsSuccess || result.FileBytes == null)
             {
                 MessageBox.Show(result.Error ?? "Нет строк для формирования файла ЧЗ.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -127,6 +137,7 @@ public partial class MarkingWindow : Window
         }
 
         public long OrderId => _row.OrderId;
+        public Guid? MarkingOrderId => _row.MarkingOrderId;
         public string OrderRef => _row.OrderRef;
         public string PartnerDisplay => string.IsNullOrWhiteSpace(_row.PartnerDisplay) ? "-" : _row.PartnerDisplay;
         public string OrderStatusDisplay => OrderStatusMapper.StatusToDisplayName(_row.OrderStatus);

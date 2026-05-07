@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Xml.Linq;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
+using FlowStock.Core.Models.Marking;
 using FlowStock.Core.Services;
 using Moq;
 
@@ -100,6 +101,95 @@ public sealed class SimpleMarkingExcelServiceTests
         Assert.Equal("04601234567890", row.Gtin);
         Assert.Equal(5, row.Qty);
         store.Verify(s => s.MarkOrdersPrinted(It.Is<IReadOnlyCollection<long>>(ids => ids.SequenceEqual(new[] { 1L })), It.IsAny<DateTime>()), Times.Once);
+    }
+
+    [Fact]
+    public void Export_ByProductionNeedMarkingTask_CreatesExcelRows()
+    {
+        var taskId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var store = CreateTaskStore(new MarkingOrder
+        {
+            Id = taskId,
+            OrderId = null,
+            ItemId = 1001,
+            Gtin = "04607186951520",
+            RequestedQuantity = 4800,
+            RequestNumber = "PN-1001",
+            SourceType = MarkingNeedCreationService.ProductionNeedSourceType,
+            Status = MarkingOrderStatus.WaitingForCodes,
+            CreatedAt = DateTime.Now,
+            UpdatedAt = DateTime.Now
+        });
+
+        var result = new MarkingExcelService(store.Object).Export(new[] { taskId }, Array.Empty<long>(), DateTime.Now);
+
+        Assert.True(result.IsSuccess);
+        var row = Assert.Single(result.Rows);
+        Assert.Equal("Горчица", row.ItemName);
+        Assert.Equal("04607186951520", row.Gtin);
+        Assert.Equal(4800, row.Qty);
+        Assert.Contains(taskId, result.MarkedMarkingOrderIds);
+        store.Verify(s => s.MarkMarkingOrdersPrinted(It.Is<IReadOnlyCollection<Guid>>(ids => ids.SequenceEqual(new[] { taskId })), It.IsAny<DateTime>()), Times.Once);
+    }
+
+    [Fact]
+    public void Export_ByProductionOrderMarkingTask_CreatesExcelRows()
+    {
+        var taskId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+        var store = CreateTaskStore(new MarkingOrder
+        {
+            Id = taskId,
+            OrderId = null,
+            ItemId = 1001,
+            Gtin = "04607186951520",
+            RequestedQuantity = 3600,
+            RequestNumber = "PO-1001",
+            SourceType = MarkingNeedCreationService.ProductionOrderSourceType,
+            Status = MarkingOrderStatus.WaitingForCodes,
+            CreatedAt = DateTime.Now,
+            UpdatedAt = DateTime.Now
+        });
+
+        var result = new MarkingExcelService(store.Object).Export(new[] { taskId }, Array.Empty<long>(), DateTime.Now);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(3600, Assert.Single(result.Rows).Qty);
+    }
+
+    [Fact]
+    public void Export_ByOrderBasedMarkingTask_MarksTaskAndOrderPrinted()
+    {
+        var taskId = Guid.Parse("33333333-3333-3333-3333-333333333333");
+        var store = CreateTaskStore(new MarkingOrder
+        {
+            Id = taskId,
+            OrderId = 42,
+            ItemId = 1001,
+            Gtin = "04607186951520",
+            RequestedQuantity = 7,
+            RequestNumber = "SO-42",
+            Status = MarkingOrderStatus.WaitingForCodes,
+            CreatedAt = DateTime.Now,
+            UpdatedAt = DateTime.Now
+        });
+
+        var result = new MarkingExcelService(store.Object).Export(new[] { taskId }, Array.Empty<long>(), DateTime.Now);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(7, Assert.Single(result.Rows).Qty);
+        Assert.Contains(42, result.MarkedOrderIds);
+        store.Verify(s => s.MarkOrdersPrinted(It.Is<IReadOnlyCollection<long>>(ids => ids.SequenceEqual(new[] { 42L })), It.IsAny<DateTime>()), Times.Once);
+    }
+
+    [Fact]
+    public void Export_WithoutSelection_AsksToSelectMarkingTask()
+    {
+        var store = CreateStore();
+
+        var result = new MarkingExcelService(store.Object).Export(Array.Empty<Guid>(), Array.Empty<long>(), DateTime.Now);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("Выберите хотя бы одну задачу маркировки.", result.Error);
     }
 
     [Fact]
@@ -328,6 +418,35 @@ public sealed class SimpleMarkingExcelServiceTests
     }
 
     [Fact]
+    public void Queue_DoesNotHideProductionTaskWithoutOrderId()
+    {
+        var taskId = Guid.Parse("44444444-4444-4444-4444-444444444444");
+        var store = CreateStore();
+        store.Setup(s => s.GetMarkingOrderQueue(false))
+            .Returns(new[]
+            {
+                new MarkingOrderQueueRow
+                {
+                    MarkingOrderId = taskId,
+                    OrderId = 0,
+                    OrderRef = "Потребность производства",
+                    PartnerName = "Потребность производства",
+                    SourceType = MarkingNeedCreationService.ProductionNeedSourceType,
+                    OrderStatus = OrderStatus.InProgress,
+                    MarkingStatus = MarkingStatus.Required,
+                    MarkingLineCount = 1,
+                    MarkingCodeCount = 4800
+                }
+            });
+
+        var row = Assert.Single(new MarkingExcelService(store.Object).GetOrderQueue(includeCompleted: false));
+
+        Assert.Equal(taskId, row.MarkingOrderId);
+        Assert.Equal(0, row.OrderId);
+        Assert.Equal(MarkingStatus.Required, row.MarkingStatus);
+    }
+
+    [Fact]
     public void Export_DoesNotUseLegacyKmMethods()
     {
         var store = CreateStore(new MarkingOrderLineCandidate
@@ -354,6 +473,22 @@ public sealed class SimpleMarkingExcelServiceTests
             .Returns((IReadOnlyCollection<long> ids) => lines.Where(line => ids.Contains(line.OrderId)).ToList());
         store.Setup(s => s.GetMarkingOrderQueue(It.IsAny<bool>()))
             .Returns(Array.Empty<MarkingOrderQueueRow>());
+        return store;
+    }
+
+    private static Mock<IDataStore> CreateTaskStore(params MarkingOrder[] tasks)
+    {
+        var store = CreateStore();
+        store.Setup(s => s.GetMarkingOrdersByIds(It.IsAny<IReadOnlyCollection<Guid>>()))
+            .Returns((IReadOnlyCollection<Guid> ids) => tasks.Where(task => ids.Contains(task.Id)).ToList());
+        store.Setup(s => s.FindItemById(1001))
+            .Returns(new Item
+            {
+                Id = 1001,
+                Name = "Горчица",
+                Gtin = "04607186951520",
+                ItemTypeEnableMarking = true
+            });
         return store;
     }
 

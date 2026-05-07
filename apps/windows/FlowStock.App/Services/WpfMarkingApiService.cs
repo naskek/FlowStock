@@ -38,6 +38,7 @@ public sealed class WpfMarkingApiService
     }
 
     public async Task<(bool IsSuccess, byte[]? FileBytes, string? FileName, string? Error)> TryExportAsync(
+        IReadOnlyCollection<Guid> markingOrderIds,
         IReadOnlyCollection<long> orderIds,
         CancellationToken cancellationToken = default)
     {
@@ -58,7 +59,10 @@ public sealed class WpfMarkingApiService
             };
             using var request = new HttpRequestMessage(HttpMethod.Post, "/api/marking/export")
             {
-                Content = new StringContent(JsonSerializer.Serialize(new { order_ids = orderIds }), Encoding.UTF8, "application/json")
+                Content = new StringContent(
+                    JsonSerializer.Serialize(new { marking_order_ids = markingOrderIds, order_ids = orderIds }),
+                    Encoding.UTF8,
+                    "application/json")
             };
             using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
@@ -182,10 +186,12 @@ public sealed class WpfMarkingApiService
     {
         return new MarkingOrderQueueRow
         {
+            MarkingOrderId = ReadGuid(element, "marking_order_id"),
             OrderId = ReadInt64(element, "order_id"),
             OrderRef = ReadString(element, "order_ref") ?? string.Empty,
             PartnerName = ReadString(element, "partner_name"),
             PartnerCode = ReadString(element, "partner_code"),
+            SourceType = ReadString(element, "source_type"),
             OrderStatus = OrderStatusMapper.StatusFromString(ReadString(element, "order_status")) ?? OrderStatus.InProgress,
             DueDate = ReadDateOnly(element, "due_date"),
             MarkingStatus = MarkingStatusMapper.FromString(ReadString(element, "marking_status")),
@@ -295,6 +301,12 @@ public sealed class WpfMarkingApiService
     private static long ReadInt64(JsonElement element, string propertyName)
     {
         return element.TryGetProperty(propertyName, out var property) && property.TryGetInt64(out var value) ? value : 0L;
+    }
+
+    private static Guid? ReadGuid(JsonElement element, string propertyName)
+    {
+        var raw = ReadString(element, propertyName);
+        return Guid.TryParse(raw, out var value) ? value : null;
     }
 
     private static int ReadInt32(JsonElement element, string propertyName)
