@@ -208,6 +208,7 @@ public partial class OperationDetailsWindow : Window
     {
         _ordersAll.Clear();
         var isProductionReceipt = _doc?.Type == DocType.ProductionReceipt;
+        var isOutbound = _doc?.Type == DocType.Outbound;
         var orders = _services.WpfReadApi.TryGetOrders(includeInternal: true, search: null, out var apiOrders)
             ? apiOrders
             : Array.Empty<Order>();
@@ -228,6 +229,13 @@ public partial class OperationDetailsWindow : Window
                 }
             }
 
+            var hasShipmentRemaining = true;
+            if (isOutbound)
+            {
+                hasShipmentRemaining = GetOrderShipmentRemaining(order.Id)
+                    .Any(line => line.QtyRemaining > QtyTolerance);
+            }
+
             _ordersAll.Add(new OrderOption(
                 order.Id,
                 order.OrderRef,
@@ -236,7 +244,8 @@ public partial class OperationDetailsWindow : Window
                 order.PartnerId,
                 order.PartnerDisplay,
                 order.EffectiveMarkingStatus,
-                isProductionReceipt));
+                isProductionReceipt,
+                hasShipmentRemaining));
         }
 
         RefreshOrderList();
@@ -266,7 +275,7 @@ public partial class OperationDetailsWindow : Window
     {
         if (_doc?.Type == DocType.Outbound)
         {
-            return order.Type == OrderType.Customer && order.Status == OrderStatus.Accepted;
+            return OutboundOrderSelectionPolicy.IsCandidate(order.Type, order.Status, order.HasShipmentRemaining);
         }
 
         return true;
@@ -4959,11 +4968,11 @@ public partial class OperationDetailsWindow : Window
         {
             var blockedOrder = _ordersAll.FirstOrDefault(order => string.Equals(order.OrderRef, text, StringComparison.OrdinalIgnoreCase));
             if (_doc?.Type == DocType.Outbound
-                && blockedOrder is { Type: OrderType.Customer }
-                && blockedOrder.Status != OrderStatus.Accepted)
+                && blockedOrder != null
+                && !OutboundOrderSelectionPolicy.IsCandidate(blockedOrder.Type, blockedOrder.Status, blockedOrder.HasShipmentRemaining))
             {
                 MessageBox.Show(
-                    "К отгрузке доступны только заказы в статусе \"Готов\".",
+                    "К отгрузке доступны только клиентские заказы с остатком к отгрузке.",
                     "Операция",
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning);
@@ -5162,7 +5171,8 @@ public partial class OperationDetailsWindow : Window
         long? PartnerId,
         string PartnerDisplay,
         MarkingStatus MarkingStatus,
-        bool ShowMarkingStatus)
+        bool ShowMarkingStatus,
+        bool HasShipmentRemaining)
     {
         public string DisplayName => ShowMarkingStatus && MarkingStatus != MarkingStatus.NotRequired
             ? $"{BaseDisplayName} - Маркировка ЧЗ: {ProductionReceiptMarkingLabel}{ProblemMarker}"

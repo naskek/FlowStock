@@ -23,7 +23,7 @@ public sealed class MarkingNeedCreationService(IDataStore dataStore)
             };
         }
 
-        var existingByItem = BuildExistingCoverageByItem(requiredByItem);
+        var existingByItem = BuildExistingTaskQtyByItem(requiredByItem);
 
         var createdCount = 0;
         var createdQty = 0d;
@@ -146,11 +146,9 @@ public sealed class MarkingNeedCreationService(IDataStore dataStore)
         return result;
     }
 
-    private Dictionary<long, double> BuildExistingCoverageByItem(IReadOnlyDictionary<long, RequiredMarkingItem> requiredByItem)
+    private Dictionary<long, double> BuildExistingTaskQtyByItem(IReadOnlyDictionary<long, RequiredMarkingItem> requiredByItem)
     {
-        var result = requiredByItem.ToDictionary(
-            pair => pair.Key,
-            pair => (double)_dataStore.CountFreeProductionMarkingCodesByItem(pair.Key, pair.Value.Gtin));
+        var result = new Dictionary<long, double>();
 
         var ordersByItem = _dataStore.GetMarkingOrdersByItemIds(requiredByItem.Keys.ToArray())
             .Where(order => order.ItemId.HasValue
@@ -163,15 +161,14 @@ public sealed class MarkingNeedCreationService(IDataStore dataStore)
             var itemId = order.ItemId!.Value;
             var requestedQty = Math.Max(0, order.RequestedQuantity);
             var codesTotal = _dataStore.CountMarkingCodesByMarkingOrder(order.Id);
-            var pendingQty = Math.Max(0, requestedQty - codesTotal);
-            if (pendingQty <= QtyTolerance)
+            if (requestedQty <= QtyTolerance || codesTotal + QtyTolerance >= requestedQty)
             {
                 continue;
             }
 
             result[itemId] = result.TryGetValue(itemId, out var current)
-                ? current + pendingQty
-                : pendingQty;
+                ? current + requestedQty
+                : requestedQty;
         }
 
         return result;

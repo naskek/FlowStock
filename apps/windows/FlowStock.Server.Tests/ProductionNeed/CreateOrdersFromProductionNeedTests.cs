@@ -361,6 +361,25 @@ public sealed class CreateOrdersFromProductionNeedTests
     }
 
     [Fact]
+    public async Task CreateMarkingFromProductionNeeds_SecondPost_DoesNotDuplicateActiveTask()
+    {
+        var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 1200, minStockQty: 3600);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        var firstPayload = await CreateMarkingAsync(host.Client);
+        var secondPayload = await CreateMarkingAsync(host.Client);
+
+        Assert.True(firstPayload.Ok);
+        Assert.Equal(1, firstPayload.CreatedTaskCount);
+        Assert.Equal(4800, firstPayload.CreatedQty);
+        Assert.True(secondPayload.Ok);
+        Assert.Equal(0, secondPayload.CreatedTaskCount);
+        Assert.Equal(0, secondPayload.CreatedQty);
+        Assert.Single(harness.MarkingOrders);
+        Assert.Equal(4800, Assert.Single(harness.MarkingOrders).RequestedQuantity);
+    }
+
+    [Fact]
     public async Task CreateOrdersFromProductionNeed_BeforeManualMarking_OrderDtoShowsMarkingNotCompleted()
     {
         var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 1200, minStockQty: 3600);
@@ -519,9 +538,9 @@ public sealed class CreateOrdersFromProductionNeedTests
     }
 
     [Fact]
-    public async Task CreateMarkingFromProductionNeeds_FreeCodesCoverCurrentNeed()
+    public async Task CreateMarkingFromProductionNeeds_FreeCodesDoNotReduceRequestedQuantity()
     {
-        var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 600, minStockQty: 0);
+        var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 3600, minStockQty: 0);
         var oldTaskId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
         harness.SeedMarkingOrder(new MarkingOrder
         {
@@ -542,9 +561,13 @@ public sealed class CreateOrdersFromProductionNeedTests
         var payload = await CreateMarkingAsync(host.Client);
 
         Assert.True(payload.Ok);
-        Assert.Equal(0, payload.CreatedTaskCount);
-        Assert.Equal(0, payload.CreatedQty);
-        Assert.Single(harness.MarkingOrders);
+        Assert.Equal(1, payload.CreatedTaskCount);
+        Assert.Equal(3600, payload.CreatedQty);
+        Assert.Equal(2, harness.MarkingOrders.Count);
+        Assert.Contains(harness.MarkingOrders, order =>
+            order.Id != oldTaskId
+            && order.SourceType == MarkingNeedCreationService.ProductionNeedSourceType
+            && order.RequestedQuantity == 3600);
     }
 
     [Fact]
