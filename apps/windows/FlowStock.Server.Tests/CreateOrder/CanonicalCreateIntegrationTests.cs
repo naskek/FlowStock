@@ -76,4 +76,45 @@ public sealed class CanonicalCreateIntegrationTests
         Assert.Equal(OrderStatus.InProgress, order.Status);
         Assert.Null(order.PartnerId);
     }
+
+    [Fact]
+    public async Task SuccessfulCreateInternal_PreservesProductionPurposePerLine()
+    {
+        var (harness, apiStore) = CreateOrderHttpScenario.CreateInternalScenario();
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        var payload = await CreateOrderHttpApi.CreateAsync(
+            host.Client,
+            new CreateOrderHttpApi.CreateOrderRequest
+            {
+                Type = "INTERNAL",
+                Lines =
+                [
+                    new CreateOrderHttpApi.CreateOrderLineRequest
+                    {
+                        ItemId = 1001,
+                        QtyOrdered = 756,
+                        ProductionPurpose = "CUSTOMER_ORDER"
+                    },
+                    new CreateOrderHttpApi.CreateOrderLineRequest
+                    {
+                        ItemId = 1001,
+                        QtyOrdered = 1134,
+                        ProductionPurpose = "INTERNAL_STOCK"
+                    }
+                ]
+            });
+
+        Assert.True(payload.Ok);
+        Assert.Equal(2, payload.LineCount);
+
+        var lines = harness.GetOrderLines(payload.OrderId).OrderBy(line => line.ProductionPurpose).ToArray();
+        Assert.Equal(2, lines.Length);
+        Assert.Contains(lines, line => line.ItemId == 1001
+                                      && line.QtyOrdered == 756
+                                      && line.ProductionPurpose == ProductionLinePurpose.CustomerOrder);
+        Assert.Contains(lines, line => line.ItemId == 1001
+                                      && line.QtyOrdered == 1134
+                                      && line.ProductionPurpose == ProductionLinePurpose.InternalStock);
+    }
 }

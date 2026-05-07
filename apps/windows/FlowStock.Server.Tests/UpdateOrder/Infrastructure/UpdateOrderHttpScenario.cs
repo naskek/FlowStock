@@ -83,4 +83,32 @@ internal static class UpdateOrderHttpScenario
         harness.SeedOrderLine(new OrderLine { Id = 201, OrderId = 11, ItemId = 1003, QtyOrdered = 2 });
         return (harness, apiStore, orderId);
     }
+
+    public static (CloseDocumentHarness Harness, InMemoryApiDocStore ApiStore, long OrderId) CreateInternalScenario()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedItem(new Item { Id = 1001, Name = "Горчица", Barcode = "4660011933641", Gtin = "04607186951520" });
+        harness.SeedItem(new Item { Id = 1002, Name = "Кетчуп", Barcode = "4660011933642" });
+
+        const long orderId = 20;
+        harness.SeedOrder(new Order
+        {
+            Id = orderId,
+            OrderRef = "INT-001",
+            Type = OrderType.Internal,
+            Status = OrderStatus.InProgress,
+            Comment = "Исходный внутренний заказ",
+            CreatedAt = new DateTime(2026, 3, 10, 10, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 201,
+            OrderId = orderId,
+            ItemId = 1001,
+            QtyOrdered = 10,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder
+        });
+
+        return (harness, new InMemoryApiDocStore(), orderId);
+    }
 }

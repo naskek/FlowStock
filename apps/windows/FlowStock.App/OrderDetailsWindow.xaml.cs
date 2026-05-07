@@ -14,6 +14,7 @@ namespace FlowStock.App;
 public partial class OrderDetailsWindow : Window
 {
     private const double QtyTolerance = 0.000001;
+    private bool _isUpdatingProductionPurpose;
     private readonly AppServices _services;
     private readonly ObservableCollection<Partner> _partners = new();
     private readonly List<Partner> _partnersAll = new();
@@ -677,6 +678,58 @@ public partial class OrderDetailsWindow : Window
         _selectedLine.ProductionPurpose = purpose;
         RefreshLineMetrics();
         MarkDirty();
+        OrderLinesGrid.Items.Refresh();
+    }
+
+    private void ProductionPurposeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isUpdatingProductionPurpose
+            || sender is not System.Windows.Controls.ComboBox combo
+            || combo.DataContext is not OrderLineView line
+            || e.AddedItems.Count == 0
+            || e.AddedItems[0] is not System.Windows.Controls.ComboBoxItem addedItem
+            || !TryGetProductionPurpose(addedItem, out var newPurpose))
+        {
+            return;
+        }
+
+        var previousPurpose = e.RemovedItems.Count > 0
+            && e.RemovedItems[0] is System.Windows.Controls.ComboBoxItem removedItem
+            && TryGetProductionPurpose(removedItem, out var removedPurpose)
+            ? removedPurpose
+            : line.ProductionPurpose;
+
+        if (newPurpose == previousPurpose)
+        {
+            return;
+        }
+
+        if (!EnsureEditable(false) || GetSelectedOrderType() != OrderType.Internal)
+        {
+            RevertProductionPurpose(line, combo, previousPurpose);
+            return;
+        }
+
+        var duplicate = _lines.FirstOrDefault(candidate =>
+            !ReferenceEquals(candidate, line)
+            && candidate.ItemId == line.ItemId
+            && candidate.ProductionPurpose == newPurpose);
+        if (duplicate != null)
+        {
+            RevertProductionPurpose(line, combo, previousPurpose);
+            MessageBox.Show(
+                $"Строка с товаром \"{duplicate.ItemName}\" и назначением \"{duplicate.ProductionPurposeDisplay}\" уже есть.",
+                "Заказы",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            SelectOrderLine(duplicate);
+            return;
+        }
+
+        line.ProductionPurpose = newPurpose;
+        RefreshLineMetrics();
+        MarkDirty();
+        OrderLinesGrid.Items.Refresh();
     }
 
     private bool TrySelectProductionPurpose(ProductionLinePurpose initialPurpose, out ProductionLinePurpose purpose)
@@ -728,6 +781,27 @@ public partial class OrderDetailsWindow : Window
             ? selected
             : ProductionLinePurpose.InternalStock;
         return true;
+    }
+
+    private void RevertProductionPurpose(OrderLineView line, System.Windows.Controls.ComboBox combo, ProductionLinePurpose purpose)
+    {
+        _isUpdatingProductionPurpose = true;
+        line.ProductionPurpose = purpose;
+        combo.SelectedValue = purpose;
+        _isUpdatingProductionPurpose = false;
+        OrderLinesGrid.Items.Refresh();
+    }
+
+    private static bool TryGetProductionPurpose(System.Windows.Controls.ComboBoxItem item, out ProductionLinePurpose purpose)
+    {
+        if (item.Tag is ProductionLinePurpose selectedPurpose)
+        {
+            purpose = selectedPurpose;
+            return true;
+        }
+
+        purpose = ProductionLinePurpose.InternalStock;
+        return false;
     }
 
     private void DeleteLine_Click(object sender, RoutedEventArgs e)

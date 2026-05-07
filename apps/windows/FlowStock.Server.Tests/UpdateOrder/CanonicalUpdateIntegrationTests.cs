@@ -49,4 +49,49 @@ public sealed class CanonicalUpdateIntegrationTests
         Assert.Equal(OrderStatus.InProgress, order.Status);
         Assert.Equal("Обновлено через API", order.Comment);
     }
+
+    [Fact]
+    public async Task SuccessfulUpdateInternal_PreservesProductionPurposePerLine()
+    {
+        var (harness, apiStore, orderId) = UpdateOrderHttpScenario.CreateInternalScenario();
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        var payload = await UpdateOrderHttpApi.UpdateAsync(
+            host.Client,
+            orderId,
+            new UpdateOrderHttpApi.UpdateOrderRequest
+            {
+                OrderRef = "INT-002",
+                Type = "INTERNAL",
+                Comment = "Обновлено назначение строк",
+                Lines =
+                [
+                    new UpdateOrderHttpApi.UpdateOrderLineRequest
+                    {
+                        ItemId = 1001,
+                        QtyOrdered = 756,
+                        ProductionPurpose = "CUSTOMER_ORDER"
+                    },
+                    new UpdateOrderHttpApi.UpdateOrderLineRequest
+                    {
+                        ItemId = 1001,
+                        QtyOrdered = 1134,
+                        ProductionPurpose = "INTERNAL_STOCK"
+                    }
+                ]
+            });
+
+        Assert.True(payload.Ok);
+        Assert.Equal(orderId, payload.OrderId);
+        Assert.Equal(2, payload.LineCount);
+
+        var lines = harness.GetOrderLines(orderId).OrderBy(line => line.ProductionPurpose).ToArray();
+        Assert.Equal(2, lines.Length);
+        Assert.Contains(lines, line => line.ItemId == 1001
+                                      && line.QtyOrdered == 756
+                                      && line.ProductionPurpose == ProductionLinePurpose.CustomerOrder);
+        Assert.Contains(lines, line => line.ItemId == 1001
+                                      && line.QtyOrdered == 1134
+                                      && line.ProductionPurpose == ProductionLinePurpose.InternalStock);
+    }
 }

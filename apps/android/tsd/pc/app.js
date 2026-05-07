@@ -2372,7 +2372,7 @@
     var items = [];
     var partners = [];
     function createEmptyLine() {
-      return { item_id: 0, qty_ordered: "", production_purpose: "INTERNAL_STOCK", query: "", locked: false };
+      return { item_id: 0, qty_ordered: "", production_purpose: getDefaultProductionPurpose(), query: "", locked: false };
     }
     var linesState = [createEmptyLine()];
     var activeLineIndex = 0;
@@ -2804,6 +2804,10 @@
       return !!(refs.internalInput && refs.internalInput.checked);
     }
 
+    function getDefaultProductionPurpose() {
+      return isInternalOrderRequested() ? "INTERNAL_STOCK" : "CUSTOMER_ORDER";
+    }
+
     function syncInternalOrderState() {
       if (!refs.partnerInput) {
         return;
@@ -2816,9 +2820,6 @@
         refs.partnerInput.value = "";
         hidePartnerSuggestionOverlay();
       } else {
-        linesState.forEach(function (line) {
-          line.production_purpose = "CUSTOMER_ORDER";
-        });
         updatePartnerHint();
       }
       renderLines();
@@ -3092,9 +3093,7 @@
             "</div>" +
             '<select class="form-input line-purpose" data-index="' +
               index +
-              '"' +
-              (isInternalOrderRequested() ? "" : " disabled") +
-              ">" +
+              '">' +
               '<option value="CUSTOMER_ORDER"' +
               (String(line.production_purpose || "") === "CUSTOMER_ORDER" ? " selected" : "") +
               ">Под заказ</option>" +
@@ -3293,9 +3292,7 @@
         lines.push({
           item_id: itemId,
           qty_ordered: qty,
-          production_purpose: internalOrder
-            ? String(line.production_purpose || "INTERNAL_STOCK")
-            : "CUSTOMER_ORDER",
+          production_purpose: String(line.production_purpose || getDefaultProductionPurpose()),
         });
       });
 
