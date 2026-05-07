@@ -278,7 +278,7 @@ CREATE INDEX IF NOT EXISTS idx_km_code_order_id ON km_code(order_id);
 
 CREATE TABLE IF NOT EXISTS marking_order (
     id UUID PRIMARY KEY,
-    order_id BIGINT NOT NULL,
+    order_id BIGINT,
     item_id BIGINT,
     gtin TEXT,
     requested_quantity INTEGER NOT NULL,

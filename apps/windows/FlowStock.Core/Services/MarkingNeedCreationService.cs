@@ -1,0 +1,165 @@
+using System.Globalization;
+using FlowStock.Core.Abstractions;
+using FlowStock.Core.Models;
+using FlowStock.Core.Models.Marking;
+
+namespace FlowStock.Core.Services;
+
+public sealed class MarkingNeedCreationService(IDataStore dataStore)
+{
+    private const double QtyTolerance = 0.000001;
+    private readonly IDataStore _dataStore = dataStore;
+
+    public MarkingNeedCreationResult CreateFromProductionNeeds(DateTime createdAt)
+    {
+        var requiredByItem = BuildRequiredQtyByItem();
+        if (requiredByItem.Count == 0)
+        {
+            return new MarkingNeedCreationResult
+            {
+                Message = "Нет маркируемой производственной потребности."
+            };
+        }
+
+        var existingByItem = _dataStore.GetMarkingOrdersByItemIds(requiredByItem.Keys.ToArray())
+            .Where(order => order.ItemId.HasValue && IsCoveringStatus(order.Status))
+            .GroupBy(order => order.ItemId!.Value)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Sum(order => Math.Max(0, order.RequestedQuantity)));
+
+        var createdCount = 0;
+        var createdQty = 0d;
+        foreach (var pair in requiredByItem.OrderBy(pair => pair.Value.ItemName, StringComparer.CurrentCultureIgnoreCase))
+        {
+            var itemId = pair.Key;
+            var requiredQty = pair.Value.RequiredQty;
+            existingByItem.TryGetValue(itemId, out var existingQty);
+            var qtyToCreate = Math.Max(0, requiredQty - existingQty);
+            if (qtyToCreate <= QtyTolerance)
+            {
+                continue;
+            }
+
+            var item = pair.Value;
+            var requestedQuantity = (int)Math.Ceiling(qtyToCreate - QtyTolerance);
+            _dataStore.AddMarkingOrder(new MarkingOrder
+            {
+                Id = Guid.NewGuid(),
+                OrderId = null,
+                ItemId = itemId,
+                Gtin = item.Gtin,
+                RequestedQuantity = requestedQuantity,
+                RequestNumber = BuildRequestNumber(itemId, createdAt, createdCount + 1),
+                Status = MarkingOrderStatus.WaitingForCodes,
+                Notes = "Автосформировано по производственной потребности.",
+                RequestedAt = createdAt,
+                CreatedAt = createdAt,
+                UpdatedAt = createdAt
+            });
+
+            createdCount++;
+            createdQty += requestedQuantity;
+        }
+
+        return new MarkingNeedCreationResult
+        {
+            CreatedTaskCount = createdCount,
+            CreatedQty = createdQty,
+            Message = createdCount == 0
+                ? "Новой маркировки для формирования нет."
+                : $"Создано задач маркировки: {createdCount}, кодов: {createdQty:0.###}."
+        };
+    }
+
+    private Dictionary<long, RequiredMarkingItem> BuildRequiredQtyByItem()
+    {
+        var plannedByItem = BuildOpenInternalProductionByItem();
+        var rows = new ProductionNeedService(_dataStore).GetRows(includeZeroNeed: true);
+        var result = new Dictionary<long, RequiredMarkingItem>();
+
+        foreach (var row in rows)
+        {
+            plannedByItem.TryGetValue(row.ItemId, out var plannedQty);
+            var requiredQty = Math.Max(0, row.TotalToMakeQty + plannedQty);
+            AddRequiredItem(result, row.ItemId, requiredQty);
+        }
+
+        foreach (var pair in plannedByItem)
+        {
+            AddRequiredItem(result, pair.Key, pair.Value);
+        }
+
+        return result
+            .Where(pair => pair.Value.RequiredQty > QtyTolerance)
+            .ToDictionary(pair => pair.Key, pair => pair.Value);
+    }
+
+    private void AddRequiredItem(Dictionary<long, RequiredMarkingItem> result, long itemId, double requiredQty)
+    {
+        if (requiredQty <= QtyTolerance)
+        {
+            return;
+        }
+
+        var item = _dataStore.FindItemById(itemId);
+        if (item?.ItemTypeEnableMarking != true || string.IsNullOrWhiteSpace(item.Gtin))
+        {
+            return;
+        }
+
+        if (result.TryGetValue(itemId, out var current))
+        {
+            result[itemId] = current with { RequiredQty = Math.Max(current.RequiredQty, requiredQty) };
+            return;
+        }
+
+        result[itemId] = new RequiredMarkingItem(item.Name, item.Gtin.Trim(), requiredQty);
+    }
+
+    private Dictionary<long, double> BuildOpenInternalProductionByItem()
+    {
+        var result = new Dictionary<long, double>();
+        var activeOrders = _dataStore.GetOrders()
+            .Where(order => order.Type == OrderType.Internal
+                            && order.Status is not OrderStatus.Shipped and not OrderStatus.Cancelled);
+
+        foreach (var order in activeOrders)
+        {
+            var remainingByLine = _dataStore.GetOrderReceiptRemaining(order.Id)
+                .ToDictionary(line => line.OrderLineId);
+
+            foreach (var line in _dataStore.GetOrderLines(order.Id))
+            {
+                var remainingQty = remainingByLine.TryGetValue(line.Id, out var receiptLine)
+                    ? Math.Max(0, receiptLine.QtyRemaining)
+                    : Math.Max(0, line.QtyOrdered);
+                if (remainingQty <= QtyTolerance)
+                {
+                    continue;
+                }
+
+                result[line.ItemId] = result.TryGetValue(line.ItemId, out var current)
+                    ? current + remainingQty
+                    : remainingQty;
+            }
+        }
+
+        return result;
+    }
+
+    private static bool IsCoveringStatus(string? status)
+    {
+        return !string.Equals(status, MarkingOrderStatus.Cancelled, StringComparison.OrdinalIgnoreCase)
+               && !string.Equals(status, MarkingOrderStatus.Failed, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildRequestNumber(long itemId, DateTime createdAt, int sequence)
+    {
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"PN-{itemId}-{createdAt:yyyyMMddHHmmssfff}-{sequence:000}");
+    }
+
+    private sealed record RequiredMarkingItem(string ItemName, string Gtin, double RequiredQty);
+}

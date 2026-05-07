@@ -12,30 +12,31 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
     public ProductionNeedOrderCreationResult CreateDraftOrders()
     {
         var draftLines = BuildDraftLines();
-        if (draftLines.Count == 0)
+        long? internalOrderId = null;
+        if (draftLines.Count > 0)
         {
-            return new ProductionNeedOrderCreationResult
-            {
-                Message = "Новой потребности для формирования нет."
-            };
+            var orderService = new OrderService(_dataStore);
+            internalOrderId = orderService.CreateDraftOrder(
+                GenerateNextOrderRef(),
+                null,
+                null,
+                "Автосформировано из потребности производства.",
+                draftLines,
+                OrderType.Internal);
         }
 
-        var orderService = new OrderService(_dataStore);
-        var internalOrderId = orderService.CreateDraftOrder(
-            GenerateNextOrderRef(),
-            null,
-            null,
-            "Автосформировано из потребности производства.",
-            draftLines,
-            OrderType.Internal);
+        var markingResult = new MarkingNeedCreationService(_dataStore)
+            .CreateFromProductionNeeds(DateTime.Now);
 
         return new ProductionNeedOrderCreationResult
         {
             CustomerDraftCount = 0,
-            InternalDraftCount = 1,
+            InternalDraftCount = internalOrderId.HasValue ? 1 : 0,
             CreatedLineCount = draftLines.Count,
+            CreatedMarkingTaskCount = markingResult.CreatedTaskCount,
+            CreatedMarkingQty = markingResult.CreatedQty,
             InternalDraftOrderId = internalOrderId,
-            Message = BuildMessage(draftLines.Count)
+            Message = BuildMessage(draftLines.Count, markingResult)
         };
     }
 
@@ -84,10 +85,11 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
         return (max + 1).ToString("D3", CultureInfo.InvariantCulture);
     }
 
-    private static string BuildMessage(int createdLineCount)
+    private static string BuildMessage(int createdLineCount, MarkingNeedCreationResult markingResult)
     {
-        return createdLineCount == 0
+        var orderMessage = createdLineCount == 0
             ? "Новой потребности для формирования нет."
             : $"Создан внутренний черновик на склад: строк {createdLineCount}.";
+        return $"{orderMessage} {markingResult.Message}".Trim();
     }
 }

@@ -1699,6 +1699,76 @@ ORDER BY i.name, BTRIM(i.gtin), ol.id;
         });
     }
 
+    public IReadOnlyList<MarkingOrder> GetMarkingOrdersByItemIds(IReadOnlyCollection<long> itemIds)
+    {
+        if (itemIds.Count == 0)
+        {
+            return Array.Empty<MarkingOrder>();
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildMarkingOrderQuery("WHERE mo.item_id = ANY(@item_ids::bigint[])"));
+            command.Parameters.AddWithValue("@item_ids", itemIds.Distinct().ToArray());
+            using var reader = command.ExecuteReader();
+            var rows = new List<MarkingOrder>();
+            while (reader.Read())
+            {
+                rows.Add(ReadMarkingOrder(reader));
+            }
+
+            return rows;
+        });
+    }
+
+    public void AddMarkingOrder(MarkingOrder order)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO marking_order(
+    id,
+    order_id,
+    item_id,
+    gtin,
+    requested_quantity,
+    request_number,
+    status,
+    notes,
+    requested_at,
+    codes_bound_at,
+    created_at,
+    updated_at)
+VALUES(
+    @id,
+    @order_id,
+    @item_id,
+    @gtin,
+    @requested_quantity,
+    @request_number,
+    @status,
+    @notes,
+    @requested_at,
+    @codes_bound_at,
+    @created_at,
+    @updated_at);");
+            command.Parameters.AddWithValue("@id", order.Id);
+            command.Parameters.AddWithValue("@order_id", order.OrderId.HasValue ? order.OrderId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@item_id", order.ItemId.HasValue ? order.ItemId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@gtin", string.IsNullOrWhiteSpace(order.Gtin) ? DBNull.Value : order.Gtin.Trim());
+            command.Parameters.AddWithValue("@requested_quantity", order.RequestedQuantity);
+            command.Parameters.AddWithValue("@request_number", order.RequestNumber);
+            command.Parameters.AddWithValue("@status", string.IsNullOrWhiteSpace(order.Status) ? MarkingOrderStatus.Draft : order.Status.Trim());
+            command.Parameters.AddWithValue("@notes", string.IsNullOrWhiteSpace(order.Notes) ? DBNull.Value : order.Notes.Trim());
+            command.Parameters.AddWithValue("@requested_at", order.RequestedAt.HasValue ? ToDbDate(order.RequestedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@codes_bound_at", order.CodesBoundAt.HasValue ? ToDbDate(order.CodesBoundAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@created_at", ToDbDate(order.CreatedAt));
+            command.Parameters.AddWithValue("@updated_at", ToDbDate(order.UpdatedAt));
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
     public void MarkOrdersPrinted(IReadOnlyCollection<long> orderIds, DateTime printedAt)
     {
         if (orderIds.Count == 0)
@@ -3549,6 +3619,7 @@ LIMIT 1;";
         EnsureColumn(connection, "orders", "marking_printed_at", "TEXT NULL");
         EnsureColumn(connection, "order_lines", "production_purpose", "TEXT NOT NULL DEFAULT 'INTERNAL_STOCK'");
         EnsureColumn(connection, "doc_lines", "production_purpose", "TEXT NOT NULL DEFAULT 'INTERNAL_STOCK'");
+        EnsureNullable(connection, "marking_order", "order_id");
 
         if (!ColumnExists(connection, "orders", "order_type")
             || !ColumnExists(connection, "orders", "bind_reserved_stock")
@@ -4828,7 +4899,7 @@ LEFT JOIN locations l ON l.id = c.location_id
         return new MarkingOrder
         {
             Id = reader.GetGuid(0),
-            OrderId = reader.GetInt64(1),
+            OrderId = reader.IsDBNull(1) ? null : reader.GetInt64(1),
             ItemId = reader.IsDBNull(2) ? null : reader.GetInt64(2),
             Gtin = reader.IsDBNull(3) ? null : reader.GetString(3),
             RequestedQuantity = reader.IsDBNull(4) ? 0 : reader.GetInt32(4),

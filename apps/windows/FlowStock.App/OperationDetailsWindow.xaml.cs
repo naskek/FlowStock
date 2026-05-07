@@ -5164,7 +5164,7 @@ public partial class OperationDetailsWindow : Window
         MarkingStatus MarkingStatus,
         bool ShowMarkingStatus)
     {
-        public string DisplayName => ShowMarkingStatus
+        public string DisplayName => ShowMarkingStatus && MarkingStatus != MarkingStatus.NotRequired
             ? $"{BaseDisplayName} - Маркировка ЧЗ: {ProductionReceiptMarkingLabel}{ProblemMarker}"
             : BaseDisplayName;
 
@@ -5176,9 +5176,9 @@ public partial class OperationDetailsWindow : Window
 
         private string ProductionReceiptMarkingLabel => MarkingStatus switch
         {
-            MarkingStatus.Printed => "готов к нанесению",
-            MarkingStatus.NotRequired => "не требуется",
-            _ => "требуется"
+            MarkingStatus.Printed => "проведена",
+            MarkingStatus.NotRequired => string.Empty,
+            _ => "не проведена"
         };
 
         private string ProblemMarker => MarkingStatus == MarkingStatus.Required

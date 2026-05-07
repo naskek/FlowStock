@@ -11,6 +11,11 @@
                     Content="Сформировать Excel ЧЗ"
                     Width="180"
                     Click="Export_Click" />
+            <Button x:Name="CreateMarkingButton"
+                    Content="Создать маркировку"
+                    Width="160"
+                    Margin="12,0,0,0"
+                    Click="CreateMarking_Click" />
             <CheckBox x:Name="IncludeCompletedCheck"
                       Margin="16,0,0,0"
                       VerticalAlignment="Center"

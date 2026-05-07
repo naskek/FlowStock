@@ -411,6 +411,27 @@ public sealed class CreateProductionNeedOrdersResponse
 
     [JsonPropertyName("created_line_count")]
     public int CreatedLineCount { get; init; }
+
+    [JsonPropertyName("created_marking_task_count")]
+    public int CreatedMarkingTaskCount { get; init; }
+
+    [JsonPropertyName("created_marking_qty")]
+    public double CreatedMarkingQty { get; init; }
+}
+
+public sealed class CreateMarkingFromProductionNeedsResponse
+{
+    [JsonPropertyName("ok")]
+    public bool Ok { get; init; }
+
+    [JsonPropertyName("message")]
+    public string Message { get; init; } = string.Empty;
+
+    [JsonPropertyName("created_task_count")]
+    public int CreatedTaskCount { get; init; }
+
+    [JsonPropertyName("created_qty")]
+    public double CreatedQty { get; init; }
 }
 
 public sealed class UpdateOrderEnvelope

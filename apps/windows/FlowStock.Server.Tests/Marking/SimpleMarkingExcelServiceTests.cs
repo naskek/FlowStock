@@ -10,11 +10,11 @@ namespace FlowStock.Server.Tests.Marking;
 public sealed class SimpleMarkingExcelServiceTests
 {
     [Theory]
-    [InlineData(false, MarkingStatus.NotRequired, "Не требуется")]
-    [InlineData(true, MarkingStatus.NotRequired, "Требуется")]
-    [InlineData(true, MarkingStatus.Required, "Требуется")]
-    [InlineData(true, MarkingStatus.Printed, "Готов к нанесению")]
-    [InlineData(false, MarkingStatus.Printed, "Готов к нанесению")]
+    [InlineData(false, MarkingStatus.NotRequired, "")]
+    [InlineData(true, MarkingStatus.NotRequired, "Маркировка не проведена")]
+    [InlineData(true, MarkingStatus.Required, "Маркировка не проведена")]
+    [InlineData(true, MarkingStatus.Printed, "Маркировка проведена")]
+    [InlineData(false, MarkingStatus.Printed, "Маркировка проведена")]
     public void OrderList_UsesEffectiveShortMarkingStatusLabels(bool markingRequired, MarkingStatus status, string expected)
     {
         var order = new Order
@@ -27,10 +27,10 @@ public sealed class SimpleMarkingExcelServiceTests
     }
 
     [Theory]
-    [InlineData(true, "04601234567890", true, MarkingStatus.NotRequired, "Требуется файл ЧЗ")]
-    [InlineData(true, "04601234567890", true, MarkingStatus.Printed, "ЧЗ готов к нанесению")]
-    [InlineData(true, "", false, MarkingStatus.NotRequired, "Маркировка не требуется")]
-    [InlineData(false, "04601234567890", false, MarkingStatus.NotRequired, "Маркировка не требуется")]
+    [InlineData(true, "04601234567890", true, MarkingStatus.NotRequired, "Маркировка не проведена")]
+    [InlineData(true, "04601234567890", true, MarkingStatus.Printed, "Маркировка проведена")]
+    [InlineData(true, "", false, MarkingStatus.NotRequired, "")]
+    [InlineData(false, "04601234567890", false, MarkingStatus.NotRequired, "")]
     public void OrderLabel_UsesMarkableOrderLinesRequirement(
         bool itemTypeEnableMarking,
         string? gtin,
@@ -57,7 +57,7 @@ public sealed class SimpleMarkingExcelServiceTests
     {
         Assert.Equal(MarkingStatus.Printed, MarkingStatusMapper.FromString("EXCEL_GENERATED"));
         Assert.Equal("PRINTED", MarkingStatusMapper.ToString(MarkingStatusMapper.FromString("EXCEL_GENERATED")));
-        Assert.Equal("ЧЗ готов к нанесению", MarkingStatusMapper.ToDisplayName(MarkingStatusMapper.FromString("EXCEL_GENERATED")));
+        Assert.Equal("Маркировка проведена", MarkingStatusMapper.ToDisplayName(MarkingStatusMapper.FromString("EXCEL_GENERATED")));
     }
 
     [Fact]
@@ -324,7 +324,7 @@ public sealed class SimpleMarkingExcelServiceTests
         var row = Assert.Single(new MarkingExcelService(store.Object).GetOrderQueue(includeCompleted: true));
 
         Assert.Equal(MarkingStatus.Printed, row.MarkingStatus);
-        Assert.Equal("ЧЗ готов к нанесению", MarkingStatusMapper.ToDisplayName(row.MarkingStatus));
+        Assert.Equal("Маркировка проведена", MarkingStatusMapper.ToDisplayName(row.MarkingStatus));
     }
 
     [Fact]

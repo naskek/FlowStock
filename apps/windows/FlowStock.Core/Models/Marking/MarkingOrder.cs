@@ -3,7 +3,7 @@ namespace FlowStock.Core.Models.Marking;
 public sealed class MarkingOrder
 {
     public Guid Id { get; init; }
-    public long OrderId { get; init; }
+    public long? OrderId { get; init; }
     public long? ItemId { get; init; }
     public string? Gtin { get; init; }
     public int RequestedQuantity { get; init; }

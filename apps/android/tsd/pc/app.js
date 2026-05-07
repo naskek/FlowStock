@@ -2193,28 +2193,32 @@
     if (effectiveStatus === "PRINTED") {
       return {
         tone: "success",
-        label: legacyExcelGenerated ? "ЧЗ готов к нанесению" : display || "ЧЗ готов к нанесению",
-        title: display || "ЧЗ готов к нанесению",
+        label: "Маркировка проведена",
+        title: "Маркировка проведена",
       };
     }
 
     if (effectiveStatus === "REQUIRED") {
       return {
-        tone: "warning",
-        label: "Требуется ЧЗ",
-        title: display || "Требуется ЧЗ",
+        tone: "danger",
+        label: "Маркировка не проведена",
+        title: "Маркировка не проведена",
       };
     }
 
     return {
       tone: "neutral",
-      label: display || "Маркировка не требуется",
-      title: display || "Маркировка не требуется",
+      label: "",
+      title: "",
     };
   }
 
   function renderOrderMarkingIndicator(order) {
     var marking = getOrderMarkingPresentation(order);
+    if (!marking.label) {
+      return "";
+    }
+
     return renderStatusBadge(marking.label, marking.tone, "pc-marking-badge", marking.title);
   }
 

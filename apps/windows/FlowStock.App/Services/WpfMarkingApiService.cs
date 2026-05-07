@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using FlowStock.Core.Models;
 
 namespace FlowStock.App;
@@ -75,6 +76,46 @@ public sealed class WpfMarkingApiService
         {
             _logger.Error("Marking export failed", ex);
             return (false, null, null, ex.Message);
+        }
+    }
+
+    public async Task<(bool IsSuccess, string Message, int CreatedTaskCount, double CreatedQty)> TryCreateFromProductionNeedsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var configuration = LoadConfiguration();
+            if (!configuration.IsConfigured)
+            {
+                _logger.Info("Marking creation skipped: server base URL is not configured.");
+                return (false, "FlowStock Server API не настроен.", 0, 0);
+            }
+
+            using var handler = CreateHandler(configuration);
+            using var client = new HttpClient(handler)
+            {
+                BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
+                Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
+            };
+            using var response = await client.PostAsJsonAsync("/api/marking/create-from-production-needs", new { }, cancellationToken)
+                .ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return (false, await ReadApiErrorAsync(response).ConfigureAwait(false), 0, 0);
+            }
+
+            var payload = await response.Content.ReadFromJsonAsync<CreateMarkingResponse>(JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+            return (
+                true,
+                payload?.Message ?? "Маркировка создана.",
+                payload?.CreatedTaskCount ?? 0,
+                payload?.CreatedQty ?? 0);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Marking creation failed", ex);
+            return (false, ex.Message, 0, 0);
         }
     }
 
@@ -290,6 +331,18 @@ public sealed class WpfMarkingApiService
         return DateTime.TryParseExact(raw, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var value)
             ? value
             : null;
+    }
+
+    private sealed class CreateMarkingResponse
+    {
+        [JsonPropertyName("message")]
+        public string Message { get; init; } = string.Empty;
+
+        [JsonPropertyName("created_task_count")]
+        public int CreatedTaskCount { get; init; }
+
+        [JsonPropertyName("created_qty")]
+        public double CreatedQty { get; init; }
     }
 }
 

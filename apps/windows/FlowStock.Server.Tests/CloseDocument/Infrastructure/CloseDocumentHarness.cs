@@ -1,5 +1,6 @@
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
+using FlowStock.Core.Models.Marking;
 using FlowStock.Core.Services;
 using Moq;
 
@@ -22,6 +23,7 @@ internal sealed class CloseDocumentHarness
     private readonly Dictionary<long, IReadOnlyList<OrderReceiptLine>> _orderReceiptRemainingWithoutReservedStock = new();
     private readonly Dictionary<long, IReadOnlyList<OrderReceiptPlanLine>> _orderReceiptPlanLines = new();
     private readonly Dictionary<long, IReadOnlyDictionary<long, double>> _shippedTotalsByOrderLine = new();
+    private readonly Dictionary<Guid, MarkingOrder> _markingOrders = new();
     private readonly Dictionary<long, int> _kmCodeCountByReceiptLine = new();
     private readonly HashSet<long> _ordersWithOutboundDocs = new();
     private readonly Dictionary<string, HuRecord> _hus = new(StringComparer.OrdinalIgnoreCase);
@@ -44,6 +46,7 @@ internal sealed class CloseDocumentHarness
     public int TotalDocLineCount => _linesByDoc.Values.Sum(lines => lines.Count);
     public int OrderCount => _orders.Count;
     public int TotalOrderLineCount => _orderLinesByOrder.Values.Sum(lines => lines.Count);
+    public IReadOnlyList<MarkingOrder> MarkingOrders => _markingOrders.Values.OrderBy(order => order.CreatedAt).ToArray();
 
     public DocumentService CreateService()
     {
@@ -198,6 +201,25 @@ internal sealed class CloseDocumentHarness
         };
     }
 
+    private static MarkingOrder CloneMarkingOrder(MarkingOrder order)
+    {
+        return new MarkingOrder
+        {
+            Id = order.Id,
+            OrderId = order.OrderId,
+            ItemId = order.ItemId,
+            Gtin = order.Gtin,
+            RequestedQuantity = order.RequestedQuantity,
+            RequestNumber = order.RequestNumber,
+            Status = order.Status,
+            Notes = order.Notes,
+            RequestedAt = order.RequestedAt,
+            CodesBoundAt = order.CodesBoundAt,
+            CreatedAt = order.CreatedAt,
+            UpdatedAt = order.UpdatedAt
+        };
+    }
+
     private static ItemRequest CloneItemRequest(ItemRequest request)
     {
         return new ItemRequest
@@ -344,6 +366,11 @@ internal sealed class CloseDocumentHarness
     public void SeedKmCodeCountByReceiptLine(long docLineId, int count)
     {
         _kmCodeCountByReceiptLine[docLineId] = count;
+    }
+
+    public void SeedMarkingOrder(MarkingOrder order)
+    {
+        _markingOrders[order.Id] = CloneMarkingOrder(order);
     }
 
     public void SeedHu(HuRecord hu)
@@ -494,6 +521,22 @@ internal sealed class CloseDocumentHarness
                     MarkingExcelGeneratedAt = current.MarkingExcelGeneratedAt,
                     MarkingPrintedAt = current.MarkingPrintedAt
                 };
+            });
+
+        _store.Setup(store => store.GetMarkingOrdersByItemIds(It.IsAny<IReadOnlyCollection<long>>()))
+            .Returns<IReadOnlyCollection<long>>(itemIds =>
+            {
+                var ids = itemIds.ToHashSet();
+                return _markingOrders.Values
+                    .Where(order => order.ItemId.HasValue && ids.Contains(order.ItemId.Value))
+                    .Select(CloneMarkingOrder)
+                    .ToArray();
+            });
+
+        _store.Setup(store => store.AddMarkingOrder(It.IsAny<MarkingOrder>()))
+            .Callback<MarkingOrder>(order =>
+            {
+                _markingOrders[order.Id] = CloneMarkingOrder(order);
             });
 
         _store.Setup(store => store.GetDocs())

@@ -42,28 +42,28 @@ assert.strictEqual(
     marking_effective_status: "PRINTED",
     marking_status_display: "ЧЗ готов к нанесению",
   }).label,
-  "ЧЗ готов к нанесению"
+  "Маркировка проведена"
 );
 assert.strictEqual(
   pc.getOrderMarkingPresentation({
     marking_effective_status: "REQUIRED",
     marking_status_display: "Требуется файл ЧЗ",
   }).label,
-  "Требуется ЧЗ"
+  "Маркировка не проведена"
 );
 assert.strictEqual(
   pc.getOrderMarkingPresentation({
     marking_effective_status: "NOT_REQUIRED",
     marking_status_display: "Маркировка не требуется",
   }).label,
-  "Маркировка не требуется"
+  ""
 );
 assert.strictEqual(
   pc.getOrderMarkingPresentation({
     marking_effective_status: "EXCEL_GENERATED",
     marking_status_display: "Файл ЧЗ сформирован",
   }).label,
-  "ЧЗ готов к нанесению"
+  "Маркировка проведена"
 );
 
 const printedHtml = pc.renderOrderMarkingIndicator({
@@ -72,7 +72,7 @@ const printedHtml = pc.renderOrderMarkingIndicator({
 });
 assert.match(printedHtml, /pc-status-badge/);
 assert.match(printedHtml, /pc-marking-badge/);
-assert.match(printedHtml, /ЧЗ готов к нанесению/);
+assert.match(printedHtml, /Маркировка проведена/);
 
 const page = pc.trimOrdersPage(Array.from({ length: 21 }, function (_, index) {
   return { id: index + 1 };

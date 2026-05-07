@@ -2336,6 +2336,8 @@ app.MapGet("/api/marking/orders", (HttpRequest request, MarkingExcelService mark
     return Results.Ok(rows);
 });
 
+MarkingCreateFromProductionNeedsEndpoint.Map(app);
+
 app.MapPost("/api/marking/export", async (HttpRequest request, MarkingExcelService marking) =>
 {
     var parsed = await ParseJsonBody<MarkingExportRequest>(request);

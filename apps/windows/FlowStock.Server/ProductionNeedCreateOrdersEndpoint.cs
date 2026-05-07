@@ -23,7 +23,9 @@ public static class ProductionNeedCreateOrdersEndpoint
                 Message = result.Message,
                 CustomerDraftCount = result.CustomerDraftCount,
                 InternalDraftCount = result.InternalDraftCount,
-                CreatedLineCount = result.CreatedLineCount
+                CreatedLineCount = result.CreatedLineCount,
+                CreatedMarkingTaskCount = result.CreatedMarkingTaskCount,
+                CreatedMarkingQty = result.CreatedMarkingQty
             });
         }
         catch (InvalidOperationException ex)
