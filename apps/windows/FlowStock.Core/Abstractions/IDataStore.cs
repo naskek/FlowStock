@@ -165,6 +165,7 @@ public interface IDataStore
     bool ExistsMarkingCodeByRaw(string code);
     void AddMarkingCodes(IReadOnlyList<MarkingCode> codes);
     int CountMarkingCodesByMarkingOrder(Guid markingOrderId);
+    int CountFreeProductionMarkingCodesByItem(long itemId, string? gtin);
     MarkingOrder? FindMarkingOrderByRequestNumber(string requestNumber);
     void UpdateMarkingOrderStatus(Guid id, string status, DateTime? codesBoundAt, DateTime updatedAt);
     IReadOnlyList<ClientBlockSetting> GetClientBlockSettings();

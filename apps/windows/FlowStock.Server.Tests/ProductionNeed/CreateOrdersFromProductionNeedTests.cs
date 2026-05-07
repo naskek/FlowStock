@@ -294,6 +294,97 @@ public sealed class CreateOrdersFromProductionNeedTests
     }
 
     [Fact]
+    public async Task CreateMarkingFromProductionNeeds_BoundCodesDoNotCoverNewNeed()
+    {
+        var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 600, minStockQty: 0);
+        var oldTaskId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        harness.SeedMarkingOrder(new MarkingOrder
+        {
+            Id = oldTaskId,
+            OrderId = null,
+            ItemId = 1001,
+            Gtin = "04607186951520",
+            RequestedQuantity = 600,
+            RequestNumber = "OLD-BOUND-600",
+            Status = MarkingOrderStatus.Printed,
+            SourceType = MarkingNeedCreationService.ProductionNeedSourceType,
+            CreatedAt = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAt = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedMarkingCodes(oldTaskId, count: 600, gtin: "04607186951520", receiptLineId: 5000);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        var payload = await CreateMarkingAsync(host.Client);
+
+        Assert.True(payload.Ok);
+        Assert.Equal(1, payload.CreatedTaskCount);
+        Assert.Equal(600, payload.CreatedQty);
+        Assert.Equal(2, harness.MarkingOrders.Count);
+        Assert.Contains(harness.MarkingOrders, order =>
+            order.Id != oldTaskId
+            && order.SourceType == MarkingNeedCreationService.ProductionNeedSourceType
+            && order.RequestedQuantity == 600);
+    }
+
+    [Fact]
+    public async Task CreateMarkingFromProductionNeeds_FreeCodesCoverCurrentNeed()
+    {
+        var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 600, minStockQty: 0);
+        var oldTaskId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
+        harness.SeedMarkingOrder(new MarkingOrder
+        {
+            Id = oldTaskId,
+            OrderId = null,
+            ItemId = 1001,
+            Gtin = "04607186951520",
+            RequestedQuantity = 600,
+            RequestNumber = "OLD-FREE-600",
+            Status = MarkingOrderStatus.Printed,
+            SourceType = MarkingNeedCreationService.ProductionNeedSourceType,
+            CreatedAt = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAt = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedMarkingCodes(oldTaskId, count: 600, gtin: "04607186951520");
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        var payload = await CreateMarkingAsync(host.Client);
+
+        Assert.True(payload.Ok);
+        Assert.Equal(0, payload.CreatedTaskCount);
+        Assert.Equal(0, payload.CreatedQty);
+        Assert.Single(harness.MarkingOrders);
+    }
+
+    [Fact]
+    public async Task CreateMarkingFromProductionNeeds_AfterReceiptBoundCodes_CreatesNewTask()
+    {
+        var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 600, minStockQty: 0);
+        var oldTaskId = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
+        harness.SeedMarkingOrder(new MarkingOrder
+        {
+            Id = oldTaskId,
+            OrderId = null,
+            ItemId = 1001,
+            Gtin = "04607186951520",
+            RequestedQuantity = 600,
+            RequestNumber = "OLD-RECEIPT-600",
+            Status = MarkingOrderStatus.Printed,
+            SourceType = MarkingNeedCreationService.ProductionNeedSourceType,
+            CreatedAt = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAt = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedMarkingCodes(oldTaskId, count: 600, gtin: "04607186951520", receiptLineId: 6000);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        var payload = await CreateMarkingAsync(host.Client);
+
+        Assert.True(payload.Ok);
+        Assert.Equal(1, payload.CreatedTaskCount);
+        Assert.Equal(600, payload.CreatedQty);
+        Assert.Equal(2, harness.MarkingOrders.Count);
+    }
+
+    [Fact]
     public async Task CreateMarkingFromProductionNeeds_SkipsNonMarkableItems()
     {
         var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 1200, minStockQty: 3600, enableMarking: false);

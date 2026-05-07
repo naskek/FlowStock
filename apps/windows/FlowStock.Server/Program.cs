@@ -2336,6 +2336,8 @@ app.MapGet("/api/marking/orders", (HttpRequest request, MarkingExcelService mark
             codes_free = row.CodesFree,
             codes_bound = row.CodesBound,
             display_source = row.DisplaySource ?? row.PartnerDisplay,
+            effective_status = row.EffectiveStatus ?? row.TaskStatus ?? MarkingStatusMapper.ToString(row.MarkingStatus),
+            display_status = row.DisplayStatus ?? row.TaskStatus ?? MarkingStatusMapper.ToDisplayName(row.MarkingStatus),
             order_status = OrderStatusMapper.StatusToString(row.OrderStatus),
             order_status_display = OrderStatusMapper.StatusToDisplayName(row.OrderStatus),
             due_date = row.DueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),

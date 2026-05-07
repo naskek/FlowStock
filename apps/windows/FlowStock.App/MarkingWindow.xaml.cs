@@ -144,7 +144,9 @@ public partial class MarkingWindow : Window
         public string SourceDisplay => string.IsNullOrWhiteSpace(_row.DisplaySource) ? "-" : _row.DisplaySource;
         public string OrderStatusDisplay => OrderStatusMapper.StatusToDisplayName(_row.OrderStatus);
         public string DueDateDisplay => _row.DueDate?.ToString("dd.MM.yyyy", CultureInfo.CurrentCulture) ?? "-";
-        public string MarkingStatusDisplay => string.IsNullOrWhiteSpace(_row.TaskStatus)
+        public string MarkingStatusDisplay => !string.IsNullOrWhiteSpace(_row.DisplayStatus)
+            ? _row.DisplayStatus
+            : string.IsNullOrWhiteSpace(_row.TaskStatus)
             ? MarkingStatusMapper.ToDisplayName(_row.MarkingStatus)
             : _row.TaskStatus;
         public int MarkingLineCount => _row.MarkingLineCount;

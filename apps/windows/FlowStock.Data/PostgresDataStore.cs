@@ -1603,7 +1603,12 @@ SELECT NULL::uuid AS marking_order_id,
        0::integer AS codes_total,
        0::integer AS codes_free,
        0::integer AS codes_bound,
-       NULL::text AS display_source
+       NULL::text AS display_source,
+       COALESCE(o.marking_status, 'NOT_REQUIRED') AS effective_status,
+       CASE
+           WHEN COALESCE(o.marking_status, 'NOT_REQUIRED') IN (@printed_status, @legacy_excel_generated_status) THEN 'Маркировка проведена'
+           ELSE 'Маркировка не проведена'
+       END AS display_status
 FROM orders o
 LEFT JOIN partners p ON p.id = o.partner_id
 LEFT JOIN order_need ON order_need.order_id = o.id
@@ -1655,7 +1660,15 @@ SELECT mo.id AS marking_order_id,
            WHEN mo.source_type = @production_need_source_type THEN 'Потребность производства'
            WHEN mo.source_type = @production_order_source_type THEN 'Производственный заказ'
            ELSE COALESCE(mo_o.order_ref, 'Задача маркировки')
-       END AS display_source
+       END AS display_source,
+       CASE
+           WHEN COALESCE(task_code_stats.codes_total, 0) >= mo.requested_quantity THEN @marking_status_completed
+           ELSE mo.status
+       END AS effective_status,
+       CASE
+           WHEN COALESCE(task_code_stats.codes_total, 0) >= mo.requested_quantity THEN 'Выполнена'
+           ELSE mo.status
+       END AS display_status
 FROM marking_order mo
 LEFT JOIN items i ON i.id = mo.item_id
 LEFT JOIN orders mo_o ON mo_o.id = mo.order_id
@@ -1664,6 +1677,10 @@ LEFT JOIN task_code_stats ON task_code_stats.marking_order_id = mo.id
 WHERE (mo.source_type IN (@production_need_source_type, @production_order_source_type)
        OR mo.order_id IS NOT NULL)
   AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
+  AND (
+      @include_completed = TRUE
+      OR COALESCE(task_code_stats.codes_total, 0) < mo.requested_quantity
+  )
 ORDER BY due_date NULLS LAST, sort_created_at, order_id NULLS LAST;
 ");
             command.Parameters.AddWithValue("@closed_status", DocTypeMapper.StatusToString(DocStatus.Closed));
@@ -1712,7 +1729,9 @@ ORDER BY due_date NULLS LAST, sort_created_at, order_id NULLS LAST;
                     CodesTotal = reader.IsDBNull(20) ? 0 : reader.GetInt32(20),
                     CodesFree = reader.IsDBNull(21) ? 0 : reader.GetInt32(21),
                     CodesBound = reader.IsDBNull(22) ? 0 : reader.GetInt32(22),
-                    DisplaySource = reader.IsDBNull(23) ? null : reader.GetString(23)
+                    DisplaySource = reader.IsDBNull(23) ? null : reader.GetString(23),
+                    EffectiveStatus = reader.IsDBNull(24) ? null : reader.GetString(24),
+                    DisplayStatus = reader.IsDBNull(25) ? null : reader.GetString(25)
                 });
             }
 
@@ -4886,6 +4905,37 @@ WHERE marking_order_id = @marking_order_id
   AND status <> @voided_status;");
             command.Parameters.AddWithValue("@marking_order_id", markingOrderId);
             command.Parameters.AddWithValue("@voided_status", MarkingCodeStatus.Voided);
+            return Convert.ToInt32(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public int CountFreeProductionMarkingCodesByItem(long itemId, string? gtin)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT COUNT(*)
+FROM marking_code c
+INNER JOIN marking_order mo ON mo.id = c.marking_order_id
+WHERE c.status IN (@reserved_status, @printed_status)
+  AND c.receipt_doc_id IS NULL
+  AND c.receipt_line_id IS NULL
+  AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
+  AND (mo.source_type IN (@production_need_source_type, @production_order_source_type)
+       OR mo.order_id IS NOT NULL)
+  AND (
+      mo.item_id = @item_id
+      OR (@gtin::text IS NOT NULL AND NULLIF(BTRIM(mo.gtin), '') = @gtin::text)
+      OR (@gtin::text IS NOT NULL AND NULLIF(BTRIM(c.gtin), '') = @gtin::text)
+  );");
+            command.Parameters.AddWithValue("@reserved_status", MarkingCodeStatus.Reserved);
+            command.Parameters.AddWithValue("@printed_status", MarkingCodeStatus.Printed);
+            command.Parameters.AddWithValue("@marking_status_cancelled", MarkingOrderStatus.Cancelled);
+            command.Parameters.AddWithValue("@marking_status_failed", MarkingOrderStatus.Failed);
+            command.Parameters.AddWithValue("@production_need_source_type", MarkingNeedCreationService.ProductionNeedSourceType);
+            command.Parameters.AddWithValue("@production_order_source_type", MarkingNeedCreationService.ProductionOrderSourceType);
+            command.Parameters.AddWithValue("@item_id", itemId);
+            command.Parameters.AddWithValue("@gtin", string.IsNullOrWhiteSpace(gtin) ? DBNull.Value : gtin.Trim());
             return Convert.ToInt32(command.ExecuteScalar() ?? 0L);
         });
     }

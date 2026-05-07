@@ -202,6 +202,8 @@ public sealed class WpfMarkingApiService
             CodesFree = ReadInt32(element, "codes_free"),
             CodesBound = ReadInt32(element, "codes_bound"),
             DisplaySource = ReadString(element, "display_source"),
+            EffectiveStatus = ReadString(element, "effective_status"),
+            DisplayStatus = ReadString(element, "display_status"),
             OrderStatus = OrderStatusMapper.StatusFromString(ReadString(element, "order_status")) ?? OrderStatus.InProgress,
             DueDate = ReadDateOnly(element, "due_date"),
             MarkingStatus = MarkingStatusMapper.FromString(ReadString(element, "marking_status")),

@@ -522,6 +522,69 @@ public sealed class SimpleMarkingExcelServiceTests
     }
 
     [Fact]
+    public void Queue_HidesCodeCoveredTaskWithoutIncludeCompleted()
+    {
+        var taskId = Guid.Parse("77777777-7777-7777-7777-777777777777");
+        var store = CreateStore();
+        store.Setup(s => s.GetMarkingOrderQueue(false))
+            .Returns(new[]
+            {
+                new MarkingOrderQueueRow
+                {
+                    MarkingOrderId = taskId,
+                    OrderId = null,
+                    OrderRef = "Потребность производства",
+                    SourceType = MarkingNeedCreationService.ProductionNeedSourceType,
+                    RequestedQuantity = 600,
+                    CodesTotal = 600,
+                    CodesFree = 600,
+                    CodesBound = 0,
+                    OrderStatus = OrderStatus.InProgress,
+                    MarkingStatus = MarkingStatus.Printed,
+                    MarkingLineCount = 1,
+                    MarkingCodeCount = 600
+                }
+            });
+
+        var rows = new MarkingExcelService(store.Object).GetOrderQueue(includeCompleted: false);
+
+        Assert.Empty(rows);
+    }
+
+    [Fact]
+    public void Queue_ShowsCodeCoveredTaskWithIncludeCompleted()
+    {
+        var taskId = Guid.Parse("77777777-7777-7777-7777-777777777777");
+        var store = CreateStore();
+        store.Setup(s => s.GetMarkingOrderQueue(true))
+            .Returns(new[]
+            {
+                new MarkingOrderQueueRow
+                {
+                    MarkingOrderId = taskId,
+                    OrderId = null,
+                    OrderRef = "Потребность производства",
+                    SourceType = MarkingNeedCreationService.ProductionNeedSourceType,
+                    RequestedQuantity = 600,
+                    CodesTotal = 600,
+                    CodesFree = 600,
+                    CodesBound = 0,
+                    OrderStatus = OrderStatus.InProgress,
+                    MarkingStatus = MarkingStatus.Printed,
+                    MarkingLineCount = 1,
+                    MarkingCodeCount = 600
+                }
+            });
+
+        var row = Assert.Single(new MarkingExcelService(store.Object).GetOrderQueue(includeCompleted: true));
+
+        Assert.Equal(taskId, row.MarkingOrderId);
+        Assert.Equal(MarkingOrderStatus.Completed, row.EffectiveStatus);
+        Assert.Equal("Выполнена", row.DisplayStatus);
+        Assert.Equal(MarkingStatus.Printed, row.MarkingStatus);
+    }
+
+    [Fact]
     public void Queue_DoesNotHidePrintedProductionNeedTaskWithoutOrderId()
     {
         var taskId = Guid.Parse("44444444-4444-4444-4444-444444444444");

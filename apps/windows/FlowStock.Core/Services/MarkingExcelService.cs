@@ -22,6 +22,7 @@ public sealed class MarkingExcelService
     {
         return _data.GetMarkingOrderQueue(includeCompleted)
             .Select(NormalizeQueueRow)
+            .Where(row => includeCompleted || !IsTaskCodeCovered(row))
             .ToList();
     }
 
@@ -241,10 +242,13 @@ public sealed class MarkingExcelService
 
     private static MarkingOrderQueueRow NormalizeQueueRow(MarkingOrderQueueRow row)
     {
-        var status = MarkingStatusResolver.Resolve(
-            row.MarkingStatus,
-            row.MarkingLineCount > 0,
-            row.OrderStatus);
+        var isTaskCodeCovered = IsTaskCodeCovered(row);
+        var status = isTaskCodeCovered
+            ? MarkingStatus.Printed
+            : MarkingStatusResolver.Resolve(
+                row.MarkingStatus,
+                row.MarkingLineCount > 0,
+                row.OrderStatus);
         return new MarkingOrderQueueRow
         {
             MarkingOrderId = row.MarkingOrderId,
@@ -263,6 +267,8 @@ public sealed class MarkingExcelService
             CodesFree = row.CodesFree,
             CodesBound = row.CodesBound,
             DisplaySource = row.DisplaySource,
+            EffectiveStatus = isTaskCodeCovered ? MarkingOrderStatus.Completed : row.EffectiveStatus,
+            DisplayStatus = isTaskCodeCovered ? "Выполнена" : row.DisplayStatus,
             OrderStatus = row.OrderStatus,
             DueDate = row.DueDate,
             MarkingStatus = status,
@@ -270,6 +276,13 @@ public sealed class MarkingExcelService
             MarkingCodeCount = row.MarkingCodeCount,
             LastGeneratedAt = row.LastGeneratedAt
         };
+    }
+
+    private static bool IsTaskCodeCovered(MarkingOrderQueueRow row)
+    {
+        return row.MarkingOrderId.HasValue
+               && row.RequestedQuantity > 0
+               && row.CodesTotal >= row.RequestedQuantity;
     }
 
     private static byte[] BuildWorkbook(IReadOnlyList<MarkingExportRow> rows)

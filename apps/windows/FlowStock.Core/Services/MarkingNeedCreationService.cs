@@ -23,14 +23,7 @@ public sealed class MarkingNeedCreationService(IDataStore dataStore)
             };
         }
 
-        var existingByItem = _dataStore.GetMarkingOrdersByItemIds(requiredByItem.Keys.ToArray())
-            .Where(order => order.ItemId.HasValue
-                            && IsCurrentProductionSource(order)
-                            && IsCoveringStatus(order.Status))
-            .GroupBy(order => order.ItemId!.Value)
-            .ToDictionary(
-                group => group.Key,
-                group => group.Sum(order => Math.Max(0, order.RequestedQuantity)));
+        var existingByItem = BuildExistingCoverageByItem(requiredByItem);
 
         var createdCount = 0;
         var createdQty = 0d;
@@ -148,6 +141,37 @@ public sealed class MarkingNeedCreationService(IDataStore dataStore)
                     ? current + remainingQty
                     : remainingQty;
             }
+        }
+
+        return result;
+    }
+
+    private Dictionary<long, double> BuildExistingCoverageByItem(IReadOnlyDictionary<long, RequiredMarkingItem> requiredByItem)
+    {
+        var result = requiredByItem.ToDictionary(
+            pair => pair.Key,
+            pair => (double)_dataStore.CountFreeProductionMarkingCodesByItem(pair.Key, pair.Value.Gtin));
+
+        var ordersByItem = _dataStore.GetMarkingOrdersByItemIds(requiredByItem.Keys.ToArray())
+            .Where(order => order.ItemId.HasValue
+                            && requiredByItem.ContainsKey(order.ItemId.Value)
+                            && IsCurrentProductionSource(order)
+                            && IsCoveringStatus(order.Status));
+
+        foreach (var order in ordersByItem)
+        {
+            var itemId = order.ItemId!.Value;
+            var requestedQty = Math.Max(0, order.RequestedQuantity);
+            var codesTotal = _dataStore.CountMarkingCodesByMarkingOrder(order.Id);
+            var pendingQty = Math.Max(0, requestedQty - codesTotal);
+            if (pendingQty <= QtyTolerance)
+            {
+                continue;
+            }
+
+            result[itemId] = result.TryGetValue(itemId, out var current)
+                ? current + pendingQty
+                : pendingQty;
         }
 
         return result;

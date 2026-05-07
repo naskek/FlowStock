@@ -18,6 +18,8 @@ public sealed class MarkingOrderQueueRow
     public int CodesFree { get; init; }
     public int CodesBound { get; init; }
     public string? DisplaySource { get; init; }
+    public string? EffectiveStatus { get; init; }
+    public string? DisplayStatus { get; init; }
     public OrderStatus OrderStatus { get; init; }
     public DateTime? DueDate { get; init; }
     public MarkingStatus MarkingStatus { get; init; }

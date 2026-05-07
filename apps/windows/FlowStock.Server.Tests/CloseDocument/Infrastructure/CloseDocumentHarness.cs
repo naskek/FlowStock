@@ -1301,6 +1301,23 @@ internal sealed class CloseDocumentHarness
                 code.MarkingOrderId == markingOrderId
                 && code.Status != MarkingCodeStatus.Voided));
 
+        _store.Setup(store => store.CountFreeProductionMarkingCodesByItem(It.IsAny<long>(), It.IsAny<string?>()))
+            .Returns<long, string?>((itemId, gtin) =>
+            {
+                var normalizedGtin = NormalizeText(gtin);
+                return _markingCodes.Values
+                    .Where(code => code.ReceiptDocId == null
+                                   && code.ReceiptLineId == null
+                                   && code.Status is MarkingCodeStatus.Reserved or MarkingCodeStatus.Printed)
+                    .Select(code => (Code: code, Order: _markingOrders.TryGetValue(code.MarkingOrderId, out var order) ? order : null))
+                    .Count(pair => pair.Order != null
+                                   && pair.Order.Status is not MarkingOrderStatus.Cancelled and not MarkingOrderStatus.Failed
+                                   && (pair.Order.ItemId == itemId
+                                       || (!string.IsNullOrWhiteSpace(normalizedGtin)
+                                           && (string.Equals(NormalizeText(pair.Order.Gtin), normalizedGtin, StringComparison.OrdinalIgnoreCase)
+                                               || string.Equals(NormalizeText(pair.Code.Gtin), normalizedGtin, StringComparison.OrdinalIgnoreCase)))));
+            });
+
         _store.Setup(store => store.CountAvailableProductionMarkingCodesForReceipt(It.IsAny<long?>(), It.IsAny<long>(), It.IsAny<string?>()))
             .Returns<long?, long, string?>((sourceOrderId, itemId, gtin) =>
                 GetAvailableProductionMarkingCodes(sourceOrderId, itemId, gtin, int.MaxValue).Count);
