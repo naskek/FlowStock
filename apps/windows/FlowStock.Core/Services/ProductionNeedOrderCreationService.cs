@@ -24,7 +24,7 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
     {
         var currentRows = new ProductionNeedService(dataStore)
             .GetRows(includeZeroNeed: false);
-        var openInternalByItem = BuildOpenInternalProductionByItem(dataStore);
+        var openInternalByItem = BuildDebugOpenInternalProductionByItem(dataStore);
         var debugSummary = BuildDebugSummary(currentRows, openInternalByItem);
         var draftLines = BuildDraftLines(dataStore, currentRows);
         long? internalOrderId = null;
@@ -45,6 +45,7 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
             CustomerDraftCount = 0,
             InternalDraftCount = internalOrderId.HasValue ? 1 : 0,
             CreatedLineCount = draftLines.Count,
+            CreatedQty = draftLines.Sum(line => line.QtyOrdered),
             InternalDraftOrderId = internalOrderId,
             DebugSummary = debugSummary,
             Message = BuildMessage(draftLines.Count)
@@ -95,7 +96,8 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
         return (max + 1).ToString("D3", CultureInfo.InvariantCulture);
     }
 
-    private static Dictionary<long, double> BuildOpenInternalProductionByItem(IDataStore dataStore)
+    // Debug-only mirror for response diagnostics; ProductionNeedService owns the actual planned subtraction.
+    private static Dictionary<long, double> BuildDebugOpenInternalProductionByItem(IDataStore dataStore)
     {
         var result = new Dictionary<long, double>();
         var activeOrders = dataStore.GetOrders()

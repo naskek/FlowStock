@@ -412,11 +412,8 @@ public sealed class CreateProductionNeedOrdersResponse
     [JsonPropertyName("created_line_count")]
     public int CreatedLineCount { get; init; }
 
-    [JsonPropertyName("created_marking_task_count")]
-    public int CreatedMarkingTaskCount { get; init; }
-
-    [JsonPropertyName("created_marking_qty")]
-    public double CreatedMarkingQty { get; init; }
+    [JsonPropertyName("created_qty")]
+    public double CreatedQty { get; init; }
 
     [JsonPropertyName("debug_summary")]
     public IReadOnlyList<string> DebugSummary { get; init; } = Array.Empty<string>();

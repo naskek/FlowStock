@@ -24,8 +24,7 @@ public static class ProductionNeedCreateOrdersEndpoint
                 CustomerDraftCount = result.CustomerDraftCount,
                 InternalDraftCount = result.InternalDraftCount,
                 CreatedLineCount = result.CreatedLineCount,
-                CreatedMarkingTaskCount = result.CreatedMarkingTaskCount,
-                CreatedMarkingQty = result.CreatedMarkingQty,
+                CreatedQty = result.CreatedQty,
                 DebugSummary = result.DebugSummary
             });
         }

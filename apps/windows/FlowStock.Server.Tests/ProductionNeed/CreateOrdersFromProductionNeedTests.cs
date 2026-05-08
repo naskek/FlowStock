@@ -25,6 +25,7 @@ public sealed class CreateOrdersFromProductionNeedTests
         Assert.Equal(1, payload.InternalDraftCount);
         Assert.Equal(0, payload.CustomerDraftCount);
         Assert.Equal(1, payload.CreatedLineCount);
+        Assert.Equal(1134, payload.CreatedQty);
 
         var draftOrders = harness.Store.GetOrders().Where(order => order.Status == OrderStatus.Draft).OrderBy(order => order.Id).ToArray();
         Assert.Single(draftOrders);
@@ -35,8 +36,6 @@ public sealed class CreateOrdersFromProductionNeedTests
         var internalDraftLine = Assert.Single(harness.GetOrderLines(internalDraft.Id));
         Assert.Equal(1134, internalDraftLine.QtyOrdered);
         Assert.Equal(ProductionLinePurpose.InternalStock, internalDraftLine.ProductionPurpose);
-        Assert.Equal(0, payload.CreatedMarkingTaskCount);
-        Assert.Equal(0, payload.CreatedMarkingQty);
         Assert.Empty(harness.MarkingOrders);
 
         var needRow = Assert.Single(new ProductionNeedService(harness.Store).GetRows(includeZeroNeed: true));
@@ -49,8 +48,7 @@ public sealed class CreateOrdersFromProductionNeedTests
         Assert.Equal(0, secondPayload.CustomerDraftCount);
         Assert.Equal(0, secondPayload.InternalDraftCount);
         Assert.Equal(0, secondPayload.CreatedLineCount);
-        Assert.Equal(0, secondPayload.CreatedMarkingTaskCount);
-        Assert.Equal(0, secondPayload.CreatedMarkingQty);
+        Assert.Equal(0, secondPayload.CreatedQty);
         Assert.Equal(2, harness.OrderCount);
     }
 
@@ -87,8 +85,6 @@ public sealed class CreateOrdersFromProductionNeedTests
         Assert.Equal(0, payload.CustomerDraftCount);
         Assert.Equal(0, payload.InternalDraftCount);
         Assert.Equal(0, payload.CreatedLineCount);
-        Assert.Equal(0, payload.CreatedMarkingTaskCount);
-        Assert.Equal(0, payload.CreatedMarkingQty);
         Assert.Empty(harness.MarkingOrders);
 
         var internalDrafts = harness.Store.GetOrders()
@@ -110,8 +106,6 @@ public sealed class CreateOrdersFromProductionNeedTests
         Assert.Equal(0, payload.CustomerDraftCount);
         Assert.Equal(1, payload.InternalDraftCount);
         Assert.Equal(1, payload.CreatedLineCount);
-        Assert.Equal(0, payload.CreatedMarkingTaskCount);
-        Assert.Equal(0, payload.CreatedMarkingQty);
         Assert.Empty(harness.MarkingOrders);
 
         var internalDraft = Assert.Single(harness.Store.GetOrders().Where(order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft));
@@ -130,8 +124,6 @@ public sealed class CreateOrdersFromProductionNeedTests
         Assert.Equal(0, payload.CustomerDraftCount);
         Assert.Equal(0, payload.InternalDraftCount);
         Assert.Equal(0, payload.CreatedLineCount);
-        Assert.Equal(0, payload.CreatedMarkingTaskCount);
-        Assert.Equal(0, payload.CreatedMarkingQty);
         Assert.Empty(harness.MarkingOrders);
         Assert.DoesNotContain(harness.Store.GetOrders(), order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft);
     }
@@ -148,8 +140,7 @@ public sealed class CreateOrdersFromProductionNeedTests
         Assert.Equal(0, payload.CustomerDraftCount);
         Assert.Equal(1, payload.InternalDraftCount);
         Assert.Equal(2, payload.CreatedLineCount);
-        Assert.Equal(0, payload.CreatedMarkingTaskCount);
-        Assert.Equal(0, payload.CreatedMarkingQty);
+        Assert.Equal(4734, payload.CreatedQty);
         Assert.Empty(harness.MarkingOrders);
 
         var internalDraft = Assert.Single(harness.Store.GetOrders().Where(order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft));
@@ -178,10 +169,9 @@ public sealed class CreateOrdersFromProductionNeedTests
         Assert.True(payload.Ok);
         Assert.Equal(1, payload.InternalDraftCount);
         Assert.Equal(1, payload.CreatedLineCount);
+        Assert.Equal(3600, payload.CreatedQty);
         var internalDraft = Assert.Single(harness.Store.GetOrders().Where(order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft));
         Assert.Equal(3600, Assert.Single(harness.GetOrderLines(internalDraft.Id)).QtyOrdered);
-        Assert.Equal(0, payload.CreatedMarkingTaskCount);
-        Assert.Equal(0, payload.CreatedMarkingQty);
         Assert.Empty(harness.MarkingOrders);
     }
 
@@ -196,8 +186,6 @@ public sealed class CreateOrdersFromProductionNeedTests
         Assert.True(payload.Ok);
         Assert.Equal(0, payload.InternalDraftCount);
         Assert.DoesNotContain(harness.Store.GetOrders(), order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft);
-        Assert.Equal(0, payload.CreatedMarkingTaskCount);
-        Assert.Equal(0, payload.CreatedMarkingQty);
         Assert.Empty(harness.MarkingOrders);
     }
 
@@ -211,8 +199,6 @@ public sealed class CreateOrdersFromProductionNeedTests
 
         Assert.True(payload.Ok);
         Assert.Equal(1, payload.InternalDraftCount);
-        Assert.Equal(0, payload.CreatedMarkingTaskCount);
-        Assert.Equal(0, payload.CreatedMarkingQty);
         Assert.Empty(harness.MarkingOrders);
         var internalDraft = Assert.Single(harness.Store.GetOrders().Where(order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft));
         Assert.Equal(3600, Assert.Single(harness.GetOrderLines(internalDraft.Id)).QtyOrdered);
@@ -230,8 +216,6 @@ public sealed class CreateOrdersFromProductionNeedTests
         Assert.True(secondPayload.Ok);
         Assert.Equal(0, secondPayload.InternalDraftCount);
         Assert.Equal(0, secondPayload.CreatedLineCount);
-        Assert.Equal(0, secondPayload.CreatedMarkingTaskCount);
-        Assert.Equal(0, secondPayload.CreatedMarkingQty);
         Assert.Single(harness.Store.GetOrders().Where(order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft));
         Assert.Empty(harness.MarkingOrders);
     }
@@ -266,9 +250,8 @@ public sealed class CreateOrdersFromProductionNeedTests
         Assert.True(payload.Ok);
         Assert.Equal(0, payload.InternalDraftCount);
         Assert.Equal(0, payload.CreatedLineCount);
+        Assert.Equal(0, payload.CreatedQty);
         Assert.DoesNotContain(harness.Store.GetOrders(), order => order.Type == OrderType.Internal);
-        Assert.Equal(0, payload.CreatedMarkingTaskCount);
-        Assert.Equal(0, payload.CreatedMarkingQty);
         Assert.Empty(harness.MarkingOrders);
         Assert.Contains(payload.DebugSummary, line => line.Contains("total_to_make=3600", StringComparison.Ordinal));
 
@@ -289,8 +272,7 @@ public sealed class CreateOrdersFromProductionNeedTests
         Assert.True(secondPayload.Ok);
         Assert.Equal(0, secondPayload.InternalDraftCount);
         Assert.Equal(0, secondPayload.CreatedLineCount);
-        Assert.Equal(0, secondPayload.CreatedMarkingTaskCount);
-        Assert.Equal(0, secondPayload.CreatedMarkingQty);
+        Assert.Equal(0, secondPayload.CreatedQty);
         Assert.Empty(harness.MarkingOrders);
     }
 
@@ -314,10 +296,27 @@ public sealed class CreateOrdersFromProductionNeedTests
 
         Assert.Equal(wpfPayload.InternalDraftCount, webPayload.InternalDraftCount);
         Assert.Equal(wpfPayload.CreatedLineCount, webPayload.CreatedLineCount);
-        Assert.Equal(wpfPayload.CreatedMarkingTaskCount, webPayload.CreatedMarkingTaskCount);
-        Assert.Equal(wpfPayload.CreatedMarkingQty, webPayload.CreatedMarkingQty);
+        Assert.Equal(wpfPayload.CreatedQty, webPayload.CreatedQty);
         Assert.Empty(wpfHarness.MarkingOrders);
         Assert.Empty(webHarness.MarkingOrders);
+    }
+
+    [Fact]
+    public async Task CreateOrdersFromProductionNeed_ResponseIsProductionOnly()
+    {
+        var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 1200, minStockQty: 3600);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        using var json = await CreateOrdersJsonAsync(host.Client);
+        var root = json.RootElement;
+
+        Assert.True(root.GetProperty("ok").GetBoolean());
+        Assert.Equal(1, root.GetProperty("internal_draft_count").GetInt32());
+        Assert.Equal(1, root.GetProperty("created_line_count").GetInt32());
+        Assert.Equal(3600, root.GetProperty("created_qty").GetDouble());
+        Assert.False(root.TryGetProperty("created_marking_task_count", out _));
+        Assert.False(root.TryGetProperty("created_marking_qty", out _));
+        Assert.Empty(harness.MarkingOrders);
     }
 
     [Fact]
@@ -345,8 +344,6 @@ public sealed class CreateOrdersFromProductionNeedTests
 
         Assert.True(orderPayload.Ok);
         Assert.Equal(1, orderPayload.InternalDraftCount);
-        Assert.Equal(0, orderPayload.CreatedMarkingTaskCount);
-        Assert.Equal(0, orderPayload.CreatedMarkingQty);
         Assert.Empty(harness.MarkingOrders);
 
         var markingPayload = await CreateMarkingAsync(host.Client);
@@ -729,6 +726,14 @@ public sealed class CreateOrdersFromProductionNeedTests
         return Assert.IsType<CreateProductionNeedOrdersResponse>(payload);
     }
 
+    private static async Task<JsonDocument> CreateOrdersJsonAsync(HttpClient client, object? body = null)
+    {
+        using var response = await client.PostAsJsonAsync("/api/production-needs/create-orders", body ?? new { });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var stream = await response.Content.ReadAsStreamAsync();
+        return await JsonDocument.ParseAsync(stream);
+    }
+
     private static (CloseDocumentHarness Harness, InMemoryApiDocStore ApiStore) CreateMixedNeedScenario()
     {
         var harness = CreateBaseHarness();
@@ -1029,11 +1034,8 @@ public sealed class CreateOrdersFromProductionNeedTests
         [JsonPropertyName("created_line_count")]
         public int CreatedLineCount { get; init; }
 
-        [JsonPropertyName("created_marking_task_count")]
-        public int CreatedMarkingTaskCount { get; init; }
-
-        [JsonPropertyName("created_marking_qty")]
-        public double CreatedMarkingQty { get; init; }
+        [JsonPropertyName("created_qty")]
+        public double CreatedQty { get; init; }
 
         [JsonPropertyName("debug_summary")]
         public IReadOnlyList<string> DebugSummary { get; init; } = Array.Empty<string>();
