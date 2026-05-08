@@ -22,7 +22,8 @@ public static class MarkingCreateFromProductionNeedsEndpoint
                 Ok = true,
                 Message = result.Message,
                 CreatedTaskCount = result.CreatedTaskCount,
-                CreatedQty = result.CreatedQty
+                CreatedQty = result.CreatedQty,
+                DebugSummary = result.DebugSummary
             });
         }
         catch (InvalidOperationException ex)

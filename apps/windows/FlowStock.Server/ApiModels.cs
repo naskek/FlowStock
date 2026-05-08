@@ -432,6 +432,9 @@ public sealed class CreateMarkingFromProductionNeedsResponse
 
     [JsonPropertyName("created_qty")]
     public double CreatedQty { get; init; }
+
+    [JsonPropertyName("debug_summary")]
+    public IReadOnlyList<string> DebugSummary { get; init; } = Array.Empty<string>();
 }
 
 public sealed class UpdateOrderEnvelope

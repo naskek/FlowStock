@@ -19,26 +19,37 @@ public sealed class MarkingNeedCreationService(IDataStore dataStore)
         {
             return new MarkingNeedCreationResult
             {
+                DebugSummary = Array.Empty<string>(),
                 Message = "Нет маркируемой производственной потребности."
             };
         }
 
-        var existingByItem = BuildExistingTaskQtyByItem(requiredByItem);
+        var coverageByItem = BuildCoverageByItem(requiredByItem);
 
         var createdCount = 0;
         var createdQty = 0d;
+        var debugSummary = new List<string>();
         foreach (var pair in requiredByItem.OrderBy(pair => pair.Value.ItemName, StringComparer.CurrentCultureIgnoreCase))
         {
             var itemId = pair.Key;
-            var requiredQty = pair.Value.RequiredQty;
-            existingByItem.TryGetValue(itemId, out var existingQty);
-            var qtyToCreate = Math.Max(0, requiredQty - existingQty);
+            var item = pair.Value;
+            var requiredQty = item.RequiredQty;
+            coverageByItem.TryGetValue(itemId, out var coverage);
+            var existingActiveTaskQty = coverage?.ExistingActiveTaskQty ?? 0d;
+            var freeCodeQty = coverage?.FreeCodeQty ?? 0d;
+            var qtyToCreate = freeCodeQty + QtyTolerance >= requiredQty
+                ? 0d
+                : Math.Max(0, requiredQty - existingActiveTaskQty);
+
+            debugSummary.Add(string.Create(
+                CultureInfo.InvariantCulture,
+                $"item_id={itemId}; gtin={item.Gtin}; item={item.ItemName}; production_need_qty={item.ProductionNeedQty:0.###}; open_internal_remaining_qty={item.OpenInternalRemainingQty:0.###}; required_marking_qty={requiredQty:0.###}; existing_active_task_qty={existingActiveTaskQty:0.###}; free_code_qty={freeCodeQty:0.###}; created_qty={qtyToCreate:0.###}"));
+
             if (qtyToCreate <= QtyTolerance)
             {
                 continue;
             }
 
-            var item = pair.Value;
             var requestedQuantity = (int)Math.Ceiling(qtyToCreate - QtyTolerance);
             _dataStore.AddMarkingOrder(new MarkingOrder
             {
@@ -64,6 +75,7 @@ public sealed class MarkingNeedCreationService(IDataStore dataStore)
         {
             CreatedTaskCount = createdCount,
             CreatedQty = createdQty,
+            DebugSummary = debugSummary,
             Message = createdCount == 0
                 ? "Новой маркировки для формирования нет."
                 : $"Создано задач маркировки: {createdCount}, кодов: {createdQty:0.###}."
@@ -78,14 +90,15 @@ public sealed class MarkingNeedCreationService(IDataStore dataStore)
 
         foreach (var row in rows)
         {
-            plannedByItem.TryGetValue(row.ItemId, out var plannedQty);
-            var requiredQty = Math.Max(0, row.TotalToMakeQty + plannedQty);
-            AddRequiredItem(result, row.ItemId, requiredQty);
+            plannedByItem.TryGetValue(row.ItemId, out var openInternalRemainingQty);
+            var productionNeedQty = Math.Max(0, row.TotalToMakeQty);
+            var requiredQty = Math.Max(productionNeedQty, openInternalRemainingQty);
+            AddRequiredItem(result, row.ItemId, productionNeedQty, openInternalRemainingQty, requiredQty);
         }
 
         foreach (var pair in plannedByItem)
         {
-            AddRequiredItem(result, pair.Key, pair.Value);
+            AddRequiredItem(result, pair.Key, 0d, pair.Value, pair.Value);
         }
 
         return result
@@ -93,7 +106,12 @@ public sealed class MarkingNeedCreationService(IDataStore dataStore)
             .ToDictionary(pair => pair.Key, pair => pair.Value);
     }
 
-    private void AddRequiredItem(Dictionary<long, RequiredMarkingItem> result, long itemId, double requiredQty)
+    private void AddRequiredItem(
+        Dictionary<long, RequiredMarkingItem> result,
+        long itemId,
+        double productionNeedQty,
+        double openInternalRemainingQty,
+        double requiredQty)
     {
         if (requiredQty <= QtyTolerance)
         {
@@ -108,11 +126,21 @@ public sealed class MarkingNeedCreationService(IDataStore dataStore)
 
         if (result.TryGetValue(itemId, out var current))
         {
-            result[itemId] = current with { RequiredQty = Math.Max(current.RequiredQty, requiredQty) };
+            result[itemId] = current with
+            {
+                ProductionNeedQty = Math.Max(current.ProductionNeedQty, productionNeedQty),
+                OpenInternalRemainingQty = Math.Max(current.OpenInternalRemainingQty, openInternalRemainingQty),
+                RequiredQty = Math.Max(current.RequiredQty, requiredQty)
+            };
             return;
         }
 
-        result[itemId] = new RequiredMarkingItem(item.Name, item.Gtin.Trim(), requiredQty);
+        result[itemId] = new RequiredMarkingItem(
+            item.Name,
+            item.Gtin.Trim(),
+            productionNeedQty,
+            openInternalRemainingQty,
+            requiredQty);
     }
 
     private Dictionary<long, double> BuildOpenInternalProductionByItem()
@@ -146,9 +174,9 @@ public sealed class MarkingNeedCreationService(IDataStore dataStore)
         return result;
     }
 
-    private Dictionary<long, double> BuildExistingTaskQtyByItem(IReadOnlyDictionary<long, RequiredMarkingItem> requiredByItem)
+    private Dictionary<long, ExistingCoverage> BuildCoverageByItem(IReadOnlyDictionary<long, RequiredMarkingItem> requiredByItem)
     {
-        var result = new Dictionary<long, double>();
+        var result = new Dictionary<long, ExistingCoverage>();
 
         var ordersByItem = _dataStore.GetMarkingOrdersByItemIds(requiredByItem.Keys.ToArray())
             .Where(order => order.ItemId.HasValue
@@ -167,8 +195,16 @@ public sealed class MarkingNeedCreationService(IDataStore dataStore)
             }
 
             result[itemId] = result.TryGetValue(itemId, out var current)
-                ? current + requestedQty
-                : requestedQty;
+                ? current with { ExistingActiveTaskQty = current.ExistingActiveTaskQty + requestedQty }
+                : new ExistingCoverage(requestedQty, 0d);
+        }
+
+        foreach (var pair in requiredByItem)
+        {
+            var freeCodeQty = Math.Max(0, _dataStore.CountFreeProductionMarkingCodesByItem(pair.Key, pair.Value.Gtin));
+            result[pair.Key] = result.TryGetValue(pair.Key, out var current)
+                ? current with { FreeCodeQty = freeCodeQty }
+                : new ExistingCoverage(0d, freeCodeQty);
         }
 
         return result;
@@ -193,5 +229,12 @@ public sealed class MarkingNeedCreationService(IDataStore dataStore)
             $"PN-{itemId}-{createdAt:yyyyMMddHHmmssfff}-{sequence:000}");
     }
 
-    private sealed record RequiredMarkingItem(string ItemName, string Gtin, double RequiredQty);
+    private sealed record RequiredMarkingItem(
+        string ItemName,
+        string Gtin,
+        double ProductionNeedQty,
+        double OpenInternalRemainingQty,
+        double RequiredQty);
+
+    private sealed record ExistingCoverage(double ExistingActiveTaskQty, double FreeCodeQty);
 }
