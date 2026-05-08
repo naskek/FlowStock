@@ -1182,9 +1182,18 @@ public sealed class OrderService
 
         if (order.Type == OrderType.Internal)
         {
-            var receiptLines = _data.GetOrderReceiptRemaining(order.Id);
-            var fullyProduced = receiptLines.Count > 0 && receiptLines.All(line => line.QtyReceived + QtyTolerance >= line.QtyOrdered);
-            var anyProduced = receiptLines.Any(line => line.QtyReceived > QtyTolerance);
+            var orderLines = _data.GetOrderLines(order.Id);
+            var internalProducedByLine = BuildProducedTotalsByOrderLine(order.Id);
+            var fullyProduced = orderLines.Count > 0 && orderLines.All(line =>
+            {
+                var produced = internalProducedByLine.TryGetValue(line.Id, out var qty) ? qty : 0d;
+                return produced + QtyTolerance >= line.QtyOrdered;
+            });
+            var anyProduced = orderLines.Any(line =>
+            {
+                var produced = internalProducedByLine.TryGetValue(line.Id, out var qty) ? qty : 0d;
+                return produced > QtyTolerance;
+            });
 
             var internalStatus = order.Status;
             if (fullyProduced)
@@ -1294,6 +1303,24 @@ public sealed class OrderService
             MarkingApplies = order.MarkingApplies,
             MarkingCodeCovered = order.MarkingCodeCovered
         };
+    }
+
+    private IReadOnlyDictionary<long, double> BuildProducedTotalsByOrderLine(long orderId)
+    {
+        var totals = new Dictionary<long, double>();
+        foreach (var doc in _data.GetDocsByOrder(orderId)
+                     .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status == DocStatus.Closed))
+        {
+            foreach (var line in _data.GetDocLines(doc.Id).Where(line => line.OrderLineId.HasValue && line.Qty > 0))
+            {
+                var orderLineId = line.OrderLineId!.Value;
+                totals[orderLineId] = totals.TryGetValue(orderLineId, out var current)
+                    ? current + line.Qty
+                    : line.Qty;
+            }
+        }
+
+        return totals;
     }
 }
 

@@ -6,6 +6,111 @@ namespace FlowStock.Server.Tests.CloseDocument;
 public sealed class OrderStatusRefreshTests
 {
     [Fact]
+    public void CloseProductionReceipt_FullInternalOrder_BecomesShipped()
+    {
+        var harness = CreateInternalOrderHarness();
+        harness.SeedDoc(new Doc
+        {
+            Id = 100,
+            DocRef = "PRD-2026-000100",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 50,
+            OrderRef = "INT-001",
+            CreatedAt = new DateTime(2026, 5, 8, 10, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 101,
+            DocId = 100,
+            OrderLineId = 501,
+            ItemId = 1001,
+            Qty = 5,
+            ToLocationId = 1,
+            ToHu = "HU-INT-001"
+        });
+
+        var result = harness.CreateService().TryCloseDoc(100, allowNegative: false);
+
+        Assert.True(result.Success, string.Join("; ", result.Errors));
+        Assert.Equal(OrderStatus.Shipped, harness.GetOrder(50).Status);
+    }
+
+    [Fact]
+    public void CloseProductionReceipt_PartialInternalOrder_RemainsInProgress_UntilLastLineClosed()
+    {
+        var harness = CreateInternalOrderHarness();
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 502,
+            OrderId = 50,
+            ItemId = 1002,
+            QtyOrdered = 7,
+            ProductionPurpose = ProductionLinePurpose.InternalStock
+        });
+        harness.SeedItem(new Item
+        {
+            Id = 1002,
+            Name = "Кетчуп",
+            Gtin = "04607186951521",
+            ItemTypeName = "Готовая продукция",
+            ItemTypeEnableMarking = false
+        });
+
+        harness.SeedDoc(new Doc
+        {
+            Id = 100,
+            DocRef = "PRD-2026-000100",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 50,
+            OrderRef = "INT-001",
+            CreatedAt = new DateTime(2026, 5, 8, 10, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 101,
+            DocId = 100,
+            OrderLineId = 501,
+            ItemId = 1001,
+            Qty = 5,
+            ToLocationId = 1,
+            ToHu = "HU-INT-001"
+        });
+
+        var firstResult = harness.CreateService().TryCloseDoc(100, allowNegative: false);
+
+        Assert.True(firstResult.Success, string.Join("; ", firstResult.Errors));
+        Assert.Equal(OrderStatus.InProgress, harness.GetOrder(50).Status);
+
+        harness.SeedDoc(new Doc
+        {
+            Id = 200,
+            DocRef = "PRD-2026-000200",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 50,
+            OrderRef = "INT-001",
+            CreatedAt = new DateTime(2026, 5, 8, 11, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 201,
+            DocId = 200,
+            OrderLineId = 502,
+            ItemId = 1002,
+            Qty = 7,
+            ToLocationId = 1,
+            ToHu = "HU-INT-002"
+        });
+
+        var secondResult = harness.CreateService().TryCloseDoc(200, allowNegative: false);
+
+        Assert.True(secondResult.Success, string.Join("; ", secondResult.Errors));
+        Assert.Equal(OrderStatus.Shipped, harness.GetOrder(50).Status);
+    }
+
+    [Fact]
     public void CloseProductionReceipt_FullCustomerOrder_BecomesAccepted()
     {
         var harness = CreateCustomerOrderHarness();
@@ -215,6 +320,43 @@ public sealed class OrderStatusRefreshTests
             ItemId = 1001,
             QtyOrdered = 5,
             ProductionPurpose = ProductionLinePurpose.CustomerOrder
+        });
+
+        return harness;
+    }
+
+    private static CloseDocumentHarness CreateInternalOrderHarness()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedLocation(new Location
+        {
+            Id = 1,
+            Code = "FG-01",
+            Name = "Готовая продукция"
+        });
+        harness.SeedItem(new Item
+        {
+            Id = 1001,
+            Name = "Горчица",
+            Gtin = "04607186951520",
+            ItemTypeName = "Готовая продукция",
+            ItemTypeEnableMarking = false
+        });
+        harness.SeedOrder(new Order
+        {
+            Id = 50,
+            OrderRef = "INT-001",
+            Type = OrderType.Internal,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 5, 8, 9, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 501,
+            OrderId = 50,
+            ItemId = 1001,
+            QtyOrdered = 5,
+            ProductionPurpose = ProductionLinePurpose.InternalStock
         });
 
         return harness;
