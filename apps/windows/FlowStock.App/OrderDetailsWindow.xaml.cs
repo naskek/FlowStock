@@ -491,34 +491,16 @@ public partial class OrderDetailsWindow : Window
             return false;
         }
 
-        var orderId = _orderId;
-        var candidateRows = huStockRows
-            .Where(row => reservationEnabledItems.Contains(row.ItemId))
-            .Where(row => row.Qty > QtyTolerance)
-            .Where(row => !string.IsNullOrWhiteSpace(row.Hu))
-            .Where(row => row.OriginInternalOrderId.HasValue)
-            .Where(row => !row.ReservedCustomerOrderId.HasValue
-                          || (orderId.HasValue && row.ReservedCustomerOrderId.Value == orderId.Value))
-            .OrderBy(row => row.ItemId)
-            .ThenBy(row => row.Hu, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(row => row.LocationId)
-            .ToList();
-        if (candidateRows.Count == 0)
-        {
-            return false;
-        }
-
         var partnerName = partnerId.HasValue
             ? _partnersAll.FirstOrDefault(partner => partner.Id == partnerId.Value)?.DisplayName
             : null;
 
-        var huList = candidateRows
-            .Select(row => row.Hu.Trim())
-            .Where(code => !string.IsNullOrWhiteSpace(code))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        if (huList.Count == 0)
+        if (!OrderReservationPromptPolicy.ShouldPrompt(
+                _lines.ToList(),
+                huStockRows,
+                reservationEnabledItems,
+                _orderId,
+                out var huList))
         {
             return false;
         }
@@ -855,8 +837,7 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        ExportMarkingButton.IsEnabled = _order?.Status != OrderStatus.Cancelled
-                                        && HasMarkableLines();
+        ExportMarkingButton.IsEnabled = OrderMarkingExportUiPolicy.CanExport(_order, _lines.ToList());
     }
 
     private bool HasMarkableLines()

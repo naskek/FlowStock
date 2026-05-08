@@ -26,6 +26,11 @@ public sealed class OrderMarkingExportService
             return OrderMarkingExportResult.Failure("Заказ не найден.");
         }
 
+        if (order.Status == OrderStatus.Shipped)
+        {
+            return OrderMarkingExportResult.Failure("Нельзя формировать Excel ЧЗ для выполненного заказа.");
+        }
+
         var lines = BuildLineSummaries(order).ToList();
         if (lines.Count == 0)
         {

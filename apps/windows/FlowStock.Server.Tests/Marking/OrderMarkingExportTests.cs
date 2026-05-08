@@ -27,6 +27,45 @@ public sealed class OrderMarkingExportTests
     }
 
     [Fact]
+    public async Task ShippedOrderExport_IsRejectedAndCreatesNoMarkingData()
+    {
+        var harness = CreateOrderHarness(OrderType.Customer, qty: 3600, status: OrderStatus.Shipped);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        var response = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("Нельзя формировать Excel ЧЗ для выполненного заказа.", body, StringComparison.Ordinal);
+        Assert.Empty(harness.MarkingOrders);
+        Assert.Empty(harness.MarkingCodes);
+    }
+
+    [Fact]
+    public async Task AcceptedCustomerOrderExport_IsAllowed()
+    {
+        var harness = CreateOrderHarness(OrderType.Customer, qty: 3600, status: OrderStatus.Accepted);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        var response = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
+
+        Assert.True(response.IsSuccessStatusCode);
+        Assert.Single(harness.MarkingOrders);
+    }
+
+    [Fact]
+    public async Task InProgressInternalOrderExport_IsAllowed()
+    {
+        var harness = CreateOrderHarness(OrderType.Internal, qty: 3600, status: OrderStatus.InProgress);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        var response = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
+
+        Assert.True(response.IsSuccessStatusCode);
+        Assert.Single(harness.MarkingOrders);
+    }
+
+    [Fact]
     public async Task InternalOrderExport_IsIdempotent()
     {
         var harness = CreateOrderHarness(OrderType.Internal, qty: 3600);
@@ -163,7 +202,10 @@ public sealed class OrderMarkingExportTests
         Assert.Contains(result.Lines, line => line.OrderLineId == 100 && line.ExportQty == 0);
     }
 
-    private static CloseDocumentHarness CreateOrderHarness(OrderType orderType, double qty)
+    private static CloseDocumentHarness CreateOrderHarness(
+        OrderType orderType,
+        double qty,
+        OrderStatus status = OrderStatus.Draft)
     {
         var harness = new CloseDocumentHarness();
         harness.SeedLocation(new Location { Id = 1, Code = "01", Name = "Склад 01" });
@@ -173,7 +215,7 @@ public sealed class OrderMarkingExportTests
             Id = 10,
             OrderRef = orderType == OrderType.Internal ? "INT-010" : "CO-010",
             Type = orderType,
-            Status = OrderStatus.Draft,
+            Status = status,
             CreatedAt = new DateTime(2026, 5, 8, 10, 0, 0, DateTimeKind.Utc),
             MarkingStatus = MarkingStatus.NotRequired
         });
