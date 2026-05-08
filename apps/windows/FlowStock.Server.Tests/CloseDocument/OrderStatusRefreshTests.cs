@@ -7,9 +7,11 @@ namespace FlowStock.Server.Tests.CloseDocument;
 public sealed class OrderStatusRefreshTests
 {
     [Fact]
-    public void CloseProductionReceipt_FullInternalOrder_BecomesShipped()
+    public void CloseProductionReceipt_FullDraftInternalOrder_BecomesShipped()
     {
-        var harness = CreateInternalOrderHarness();
+        // Regression: INTERNAL orders created from production needs start as DRAFT;
+        // auto-status refresh must still complete them after full production receipt.
+        var harness = CreateInternalOrderHarness(status: OrderStatus.Draft);
         harness.SeedDoc(new Doc
         {
             Id = 100,
@@ -38,9 +40,40 @@ public sealed class OrderStatusRefreshTests
     }
 
     [Fact]
+    public void CloseProductionReceipt_PartialDraftInternalOrder_BecomesInProgress()
+    {
+        var harness = CreateInternalOrderHarness(status: OrderStatus.Draft);
+        harness.SeedDoc(new Doc
+        {
+            Id = 110,
+            DocRef = "PRD-2026-000110",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 50,
+            OrderRef = "INT-001",
+            CreatedAt = new DateTime(2026, 5, 8, 10, 30, 0, DateTimeKind.Utc)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 111,
+            DocId = 110,
+            OrderLineId = 501,
+            ItemId = 1001,
+            Qty = 3,
+            ToLocationId = 1,
+            ToHu = "HU-INT-001A"
+        });
+
+        var result = harness.CreateService().TryCloseDoc(110, allowNegative: false);
+
+        Assert.True(result.Success, string.Join("; ", result.Errors));
+        Assert.Equal(OrderStatus.InProgress, harness.GetOrder(50).Status);
+    }
+
+    [Fact]
     public void CloseProductionReceipt_PartialInternalOrder_RemainsInProgress_UntilLastLineClosed()
     {
-        var harness = CreateInternalOrderHarness();
+        var harness = CreateInternalOrderHarness(status: OrderStatus.Draft);
         harness.SeedOrderLine(new OrderLine
         {
             Id = 502,
@@ -114,7 +147,7 @@ public sealed class OrderStatusRefreshTests
     [Fact]
     public void CloseProductionReceipt_FullInternalOrder_WithDocOrderBindingOnly_BecomesShipped()
     {
-        var harness = CreateInternalOrderHarness();
+        var harness = CreateInternalOrderHarness(status: OrderStatus.Draft);
         harness.SeedDoc(new Doc
         {
             Id = 300,
@@ -146,7 +179,7 @@ public sealed class OrderStatusRefreshTests
     [Fact]
     public void CloseProductionReceipt_PartialInternalOrder_WithDocOrderBindingOnly_RemainsInProgress()
     {
-        var harness = CreateInternalOrderHarness();
+        var harness = CreateInternalOrderHarness(status: OrderStatus.Draft);
         harness.SeedDoc(new Doc
         {
             Id = 310,
@@ -176,7 +209,84 @@ public sealed class OrderStatusRefreshTests
     }
 
     [Fact]
-    public void CloseProductionReceipt_TwoLineInternalOrder_WithDocOrderBindingOnly_CompletesAfterBothItemsProduced()
+    public void CloseProductionReceipt_DraftInternalOrder_WithHuSplitLines_CompletesAfterFullProducedQty()
+    {
+        var harness = CreateInternalOrderHarness(status: OrderStatus.Draft);
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 502,
+            OrderId = 50,
+            ItemId = 1002,
+            QtyOrdered = 7,
+            ProductionPurpose = ProductionLinePurpose.InternalStock
+        });
+        harness.SeedItem(new Item
+        {
+            Id = 1002,
+            Name = "Кетчуп",
+            Gtin = "04607186951521",
+            ItemTypeName = "Готовая продукция",
+            ItemTypeEnableMarking = false
+        });
+        harness.SeedDoc(new Doc
+        {
+            Id = 315,
+            DocRef = "PRD-2026-000315",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 50,
+            OrderRef = "INT-001",
+            CreatedAt = new DateTime(2026, 5, 8, 12, 45, 0, DateTimeKind.Utc)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 3151,
+            DocId = 315,
+            OrderLineId = 501,
+            ItemId = 1001,
+            Qty = 2,
+            ToLocationId = 1,
+            ToHu = "HU-INT-005A"
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 3152,
+            DocId = 315,
+            OrderLineId = 501,
+            ItemId = 1001,
+            Qty = 3,
+            ToLocationId = 1,
+            ToHu = "HU-INT-005B"
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 3153,
+            DocId = 315,
+            OrderLineId = 502,
+            ItemId = 1002,
+            Qty = 4,
+            ToLocationId = 1,
+            ToHu = "HU-INT-006A"
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 3154,
+            DocId = 315,
+            OrderLineId = 502,
+            ItemId = 1002,
+            Qty = 3,
+            ToLocationId = 1,
+            ToHu = "HU-INT-006B"
+        });
+
+        var result = harness.CreateService().TryCloseDoc(315, allowNegative: false);
+
+        Assert.True(result.Success, string.Join("; ", result.Errors));
+        Assert.Equal(OrderStatus.Shipped, harness.GetOrder(50).Status);
+    }
+
+    [Fact]
+    public void CloseProductionReceipt_InProgressInternalOrder_BecomesShipped_WhenFullProduced()
     {
         var harness = CreateInternalOrderHarness();
         harness.SeedOrderLine(new OrderLine
@@ -462,7 +572,7 @@ public sealed class OrderStatusRefreshTests
         return harness;
     }
 
-    private static CloseDocumentHarness CreateInternalOrderHarness()
+    private static CloseDocumentHarness CreateInternalOrderHarness(OrderStatus status = OrderStatus.InProgress)
     {
         var harness = new CloseDocumentHarness();
         harness.SeedLocation(new Location
@@ -484,7 +594,7 @@ public sealed class OrderStatusRefreshTests
             Id = 50,
             OrderRef = "INT-001",
             Type = OrderType.Internal,
-            Status = OrderStatus.InProgress,
+            Status = status,
             CreatedAt = new DateTime(2026, 5, 8, 9, 0, 0, DateTimeKind.Utc)
         });
         harness.SeedOrderLine(new OrderLine

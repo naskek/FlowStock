@@ -1170,11 +1170,6 @@ public sealed class OrderService
 
     private Order ApplyAutoStatus(Order order)
     {
-        if (order.Status == OrderStatus.Draft)
-        {
-            return order;
-        }
-
         if (order.Status == OrderStatus.Cancelled)
         {
             return order;
@@ -1204,7 +1199,7 @@ public sealed class OrderService
             {
                 internalStatus = OrderStatus.InProgress;
             }
-            else
+            else if (order.Status != OrderStatus.Draft)
             {
                 internalStatus = OrderStatus.InProgress;
             }
@@ -1244,6 +1239,11 @@ public sealed class OrderService
                 MarkingApplies = order.MarkingApplies,
                 MarkingCodeCovered = order.MarkingCodeCovered
             };
+        }
+
+        if (order.Status == OrderStatus.Draft)
+        {
+            return order;
         }
 
         var lines = _data.GetOrderLines(order.Id);
