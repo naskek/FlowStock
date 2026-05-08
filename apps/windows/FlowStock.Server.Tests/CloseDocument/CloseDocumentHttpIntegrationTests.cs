@@ -89,9 +89,159 @@ public sealed class CloseDocumentHttpIntegrationTests
         Assert.Equal(1, apiStore.CountEvents("DOC_CLOSE", docUid));
     }
 
+    [Fact]
+    public async Task HttpClose_InternalProductionReceiptWithMarkableItemWithoutKmCodes_IsRejected()
+    {
+        var (harness, apiStore, docUid) = CreateInternalProductionReceiptScenario(markable: true, kmCodes: 0);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        using var response = await host.Client.PostAsJsonAsync(
+            $"/api/docs/{docUid}/close",
+            new CloseDocRequest { EventId = "evt-close-prd-marking-001", DeviceId = "WPF-01" });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var payload = await ReadCloseResponseAsync(response);
+        Assert.False(payload.Ok);
+        Assert.False(payload.Closed);
+        Assert.Equal("VALIDATION_FAILED", payload.Result);
+        Assert.Contains("Строка 1 (Маркируемый товар): требуется 5 код(ов) КМ, привязано 0, доступно свободных 0.", payload.Errors);
+        Assert.Empty(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Draft, harness.GetDoc(1).Status);
+        Assert.Equal("DRAFT", apiStore.GetApiDoc(docUid)?.Status);
+    }
+
+    [Fact]
+    public async Task HttpClose_InternalProductionReceiptWithMarkableItemWithEnoughKmCodes_Closes()
+    {
+        var (harness, apiStore, docUid) = CreateInternalProductionReceiptScenario(markable: true, kmCodes: 5);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        using var response = await host.Client.PostAsJsonAsync(
+            $"/api/docs/{docUid}/close",
+            new CloseDocRequest { EventId = "evt-close-prd-marking-002", DeviceId = "WPF-01" });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var payload = await ReadCloseResponseAsync(response);
+        Assert.True(payload.Ok);
+        Assert.True(payload.Closed);
+        Assert.Equal("CLOSED", payload.Result);
+        Assert.Empty(payload.Errors);
+        Assert.Single(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Closed, harness.GetDoc(1).Status);
+    }
+
+    [Fact]
+    public async Task HttpClose_InternalProductionReceiptWithNonMarkableItemWithoutKmCodes_Closes()
+    {
+        var (harness, apiStore, docUid) = CreateInternalProductionReceiptScenario(markable: false, kmCodes: 0);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        using var response = await host.Client.PostAsJsonAsync(
+            $"/api/docs/{docUid}/close",
+            new CloseDocRequest { EventId = "evt-close-prd-marking-003", DeviceId = "WPF-01" });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var payload = await ReadCloseResponseAsync(response);
+        Assert.True(payload.Ok);
+        Assert.True(payload.Closed);
+        Assert.Equal("CLOSED", payload.Result);
+        Assert.Empty(payload.Errors);
+        Assert.Single(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Closed, harness.GetDoc(1).Status);
+    }
+
     private static async Task<CloseDocResponse> ReadCloseResponseAsync(HttpResponseMessage response)
     {
         var payload = await response.Content.ReadFromJsonAsync<CloseDocResponse>();
         return Assert.IsType<CloseDocResponse>(payload);
+    }
+
+    private static (CloseDocumentHarness Harness, InMemoryApiDocStore ApiStore, string DocUid) CreateInternalProductionReceiptScenario(
+        bool markable,
+        int kmCodes)
+    {
+        const string docUid = "doc-http-prd-2026-000001";
+
+        var harness = new CloseDocumentHarness();
+        harness.SeedDoc(new Doc
+        {
+            Id = 1,
+            DocRef = "PRD-2026-000010",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 10,
+            OrderRef = "INT-2026-000010",
+            CreatedAt = new DateTime(2026, 5, 7, 10, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedItem(new Item
+        {
+            Id = 100,
+            Name = markable ? "Маркируемый товар" : "Обычный товар",
+            Gtin = "04601234567890",
+            ItemTypeEnableMarking = markable
+        });
+        harness.SeedLocation(new Location
+        {
+            Id = 10,
+            Code = "01",
+            Name = "Склад 01"
+        });
+        harness.SeedOrder(new Order
+        {
+            Id = 10,
+            OrderRef = "INT-2026-000010",
+            Type = OrderType.Internal,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 5, 7, 9, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 1000,
+            OrderId = 10,
+            ItemId = 100,
+            QtyOrdered = 5,
+            ProductionPurpose = ProductionLinePurpose.InternalStock
+        });
+        harness.SeedOrderReceiptRemaining(10, new OrderReceiptLine
+        {
+            OrderLineId = 1000,
+            OrderId = 10,
+            ItemId = 100,
+            ItemName = markable ? "Маркируемый товар" : "Обычный товар",
+            QtyOrdered = 5,
+            QtyReceived = 0,
+            QtyRemaining = 5,
+            ProductionPurpose = ProductionLinePurpose.InternalStock
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 11,
+            DocId = 1,
+            OrderLineId = 1000,
+            ItemId = 100,
+            Qty = 5,
+            ToLocationId = 10,
+            ToHu = "HU-PRD-001"
+        });
+        harness.SeedKmCodeCountByReceiptLine(docLineId: 11, count: kmCodes);
+
+        var apiStore = new InMemoryApiDocStore();
+        apiStore.AddApiDoc(
+            docUid,
+            docId: 1,
+            status: "DRAFT",
+            docType: "PRODUCTION_RECEIPT",
+            docRef: "PRD-2026-000010",
+            partnerId: null,
+            fromLocationId: null,
+            toLocationId: 10,
+            fromHu: null,
+            toHu: null,
+            deviceId: "WPF-01");
+
+        return (harness, apiStore, docUid);
     }
 }

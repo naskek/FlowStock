@@ -65,9 +65,9 @@ public sealed class OrderService
             .OrderBy(line => line.SortOrder)
             .ThenBy(line => line.Id)
             .ToList();
-        var baseRemaining = (includeReservedStock
-                ? _data.GetOrderReceiptRemaining(orderId)
-                : _data.GetOrderReceiptRemainingWithoutReservedStock(orderId))
+        var baseRemaining = (order == null
+                ? Array.Empty<OrderReceiptLine>()
+                : OrderReceiptRemainingCalculator.GetRemaining(_data, order, includeReservedStock))
             .ToDictionary(line => line.OrderLineId, line => line);
 
         if (isCustomerOrder)
@@ -209,6 +209,47 @@ public sealed class OrderService
         OrderType type = OrderType.Customer,
         bool? bindReservedStockForCustomer = null)
     {
+        return CreateOrderCore(
+            orderRef,
+            partnerId,
+            dueDate,
+            comment,
+            lines,
+            type,
+            OrderStatus.InProgress,
+            bindReservedStockForCustomer);
+    }
+
+    public long CreateDraftOrder(
+        string orderRef,
+        long? partnerId,
+        DateTime? dueDate,
+        string? comment,
+        IReadOnlyList<OrderLineView> lines,
+        OrderType type = OrderType.Customer,
+        bool? bindReservedStockForCustomer = null)
+    {
+        return CreateOrderCore(
+            orderRef,
+            partnerId,
+            dueDate,
+            comment,
+            lines,
+            type,
+            OrderStatus.Draft,
+            bindReservedStockForCustomer);
+    }
+
+    private long CreateOrderCore(
+        string orderRef,
+        long? partnerId,
+        DateTime? dueDate,
+        string? comment,
+        IReadOnlyList<OrderLineView> lines,
+        OrderType type,
+        OrderStatus initialStatus,
+        bool? bindReservedStockForCustomer)
+    {
         if (string.IsNullOrWhiteSpace(orderRef))
         {
             throw new ArgumentException("Номер заказа обязателен.", nameof(orderRef));
@@ -234,13 +275,13 @@ public sealed class OrderService
             Type = type,
             PartnerId = type == OrderType.Customer ? partnerId : null,
             DueDate = dueDate?.Date,
-            Status = OrderStatus.InProgress,
+            Status = initialStatus,
             Comment = string.IsNullOrWhiteSpace(comment) ? null : comment.Trim(),
             CreatedAt = DateTime.Now,
             UseReservedStock = useReservedStock
         };
 
-        var normalized = NormalizeLines(lines);
+        var normalized = NormalizeLines(lines, type);
         long orderId = 0;
 
         _data.ExecuteInTransaction(store =>
@@ -252,7 +293,8 @@ public sealed class OrderService
                 {
                     OrderId = orderId,
                     ItemId = line.ItemId,
-                    QtyOrdered = line.QtyOrdered
+                    QtyOrdered = line.QtyOrdered,
+                    ProductionPurpose = ResolveLinePurpose(type, line.ProductionPurpose)
                 });
             }
 
@@ -309,7 +351,7 @@ public sealed class OrderService
                     throw new InvalidOperationException("Нельзя сменить тип заказа: по внутреннему заказу уже есть выпуски продукции.");
                 }
 
-                var receiptRemaining = _data.GetOrderReceiptRemaining(orderId);
+                var receiptRemaining = OrderReceiptRemainingCalculator.GetRemaining(_data, existing);
                 if (receiptRemaining.Any(line => line.QtyReceived > QtyTolerance))
                 {
                     throw new InvalidOperationException("Нельзя сменить тип заказа: по внутреннему заказу уже есть выпуски продукции.");
@@ -349,13 +391,17 @@ public sealed class OrderService
             Type = type,
             PartnerId = type == OrderType.Customer ? partnerId : null,
             DueDate = dueDate?.Date,
-            Status = existing.Status == OrderStatus.Shipped ? OrderStatus.Shipped : OrderStatus.InProgress,
+            Status = existing.Status == OrderStatus.Shipped
+                ? OrderStatus.Shipped
+                : existing.Status == OrderStatus.Draft
+                    ? OrderStatus.Draft
+                    : OrderStatus.InProgress,
             Comment = string.IsNullOrWhiteSpace(comment) ? null : comment.Trim(),
             CreatedAt = existing.CreatedAt,
             UseReservedStock = useReservedStock
         };
 
-        var normalized = NormalizeLines(lines);
+        var normalized = NormalizeLines(lines, type);
 
         _data.ExecuteInTransaction(store =>
         {
@@ -363,13 +409,17 @@ public sealed class OrderService
 
             var existingLines = store.GetOrderLines(orderId);
             var existingByItem = existingLines
-                .GroupBy(line => line.ItemId)
+                .GroupBy(line => (line.ItemId, ProductionPurpose: ResolveLinePurpose(type, line.ProductionPurpose)))
                 .ToDictionary(group => group.Key, group => group.OrderBy(line => line.Id).ToList());
-            var incomingItemIds = normalized.Select(line => line.ItemId).ToHashSet();
+            var incomingKeys = normalized
+                .Select(line => (line.ItemId, ProductionPurpose: ResolveLinePurpose(type, line.ProductionPurpose)))
+                .ToHashSet();
 
             foreach (var line in normalized)
             {
-                if (existingByItem.TryGetValue(line.ItemId, out var matched) && matched.Count > 0)
+                var linePurpose = ResolveLinePurpose(type, line.ProductionPurpose);
+                var key = (line.ItemId, ProductionPurpose: linePurpose);
+                if (existingByItem.TryGetValue(key, out var matched) && matched.Count > 0)
                 {
                     var primary = matched[0];
                     if (Math.Abs(primary.QtyOrdered - line.QtyOrdered) > QtyTolerance)
@@ -377,7 +427,12 @@ public sealed class OrderService
                         store.UpdateOrderLineQty(primary.Id, line.QtyOrdered);
                     }
 
-                    // Legacy cleanup: keep one line per item, remove accidental duplicates.
+                    if (primary.ProductionPurpose != linePurpose)
+                    {
+                        store.UpdateOrderLinePurpose(primary.Id, linePurpose);
+                    }
+
+                    // Legacy cleanup: keep one line per item and purpose, remove accidental duplicates.
                     for (var i = 1; i < matched.Count; i++)
                     {
                         store.DeleteOrderLine(matched[i].Id);
@@ -389,13 +444,14 @@ public sealed class OrderService
                 {
                     OrderId = orderId,
                     ItemId = line.ItemId,
-                    QtyOrdered = line.QtyOrdered
+                    QtyOrdered = line.QtyOrdered,
+                    ProductionPurpose = linePurpose
                 });
             }
 
             foreach (var entry in existingByItem)
             {
-                if (incomingItemIds.Contains(entry.Key))
+                if (incomingKeys.Contains(entry.Key))
                 {
                     continue;
                 }
@@ -449,7 +505,7 @@ public sealed class OrderService
                 throw new InvalidOperationException("Нельзя удалить внутренний заказ: есть выпуски продукции или связанные документы.");
             }
 
-            var receiptRemaining = _data.GetOrderReceiptRemaining(orderId);
+            var receiptRemaining = OrderReceiptRemainingCalculator.GetRemaining(_data, existing);
             if (receiptRemaining.Any(line => line.QtyReceived > QtyTolerance))
             {
                 throw new InvalidOperationException("Нельзя удалить внутренний заказ: по нему уже был выпуск продукции.");
@@ -512,7 +568,7 @@ public sealed class OrderService
         var availableByItem = _data.GetLedgerTotalsByItem();
         if (order.Type == OrderType.Internal)
         {
-            var producedByLine = _data.GetOrderReceiptRemaining(order.Id)
+            var producedByLine = OrderReceiptRemainingCalculator.GetRemaining(_data, order)
                 .ToDictionary(line => line.OrderLineId, line => line.QtyReceived);
 
             foreach (var line in lines)
@@ -597,9 +653,9 @@ public sealed class OrderService
         return reserved;
     }
 
-    private static List<OrderLineView> NormalizeLines(IReadOnlyList<OrderLineView> lines)
+    private static List<OrderLineView> NormalizeLines(IReadOnlyList<OrderLineView> lines, OrderType orderType)
     {
-        var grouped = new Dictionary<long, OrderLineView>();
+        var grouped = new Dictionary<(long ItemId, ProductionLinePurpose Purpose), OrderLineView>();
         foreach (var line in lines)
         {
             if (line.QtyOrdered <= 0)
@@ -607,21 +663,31 @@ public sealed class OrderService
                 continue;
             }
 
-            if (grouped.TryGetValue(line.ItemId, out var existing))
+            var purpose = ResolveLinePurpose(orderType, line.ProductionPurpose);
+            var key = (line.ItemId, purpose);
+            if (grouped.TryGetValue(key, out var existing))
             {
                 existing.QtyOrdered += line.QtyOrdered;
                 continue;
             }
 
-            grouped[line.ItemId] = new OrderLineView
+            grouped[key] = new OrderLineView
             {
                 ItemId = line.ItemId,
                 ItemName = line.ItemName,
-                QtyOrdered = line.QtyOrdered
+                QtyOrdered = line.QtyOrdered,
+                ProductionPurpose = purpose
             };
         }
 
         return grouped.Values.ToList();
+    }
+
+    private static ProductionLinePurpose ResolveLinePurpose(OrderType orderType, ProductionLinePurpose requested)
+    {
+        return orderType == OrderType.Internal
+            ? ProductionLinePurpose.InternalStock
+            : ProductionLinePurpose.CustomerOrder;
     }
 
     private void RebuildOrderReceiptPlan(IDataStore store, long orderId)
@@ -1111,9 +1177,18 @@ public sealed class OrderService
 
         if (order.Type == OrderType.Internal)
         {
-            var receiptLines = _data.GetOrderReceiptRemaining(order.Id);
-            var fullyProduced = receiptLines.Count > 0 && receiptLines.All(line => line.QtyReceived + QtyTolerance >= line.QtyOrdered);
-            var anyProduced = receiptLines.Any(line => line.QtyReceived > QtyTolerance);
+            var orderLines = _data.GetOrderLines(order.Id);
+            var internalProducedByLine = OrderReceiptRemainingCalculator.BuildProducedTotalsByOrderLine(_data, order.Id, orderLines);
+            var fullyProduced = orderLines.Count > 0 && orderLines.All(line =>
+            {
+                var produced = internalProducedByLine.TryGetValue(line.Id, out var qty) ? qty : 0d;
+                return produced + QtyTolerance >= line.QtyOrdered;
+            });
+            var anyProduced = orderLines.Any(line =>
+            {
+                var produced = internalProducedByLine.TryGetValue(line.Id, out var qty) ? qty : 0d;
+                return produced > QtyTolerance;
+            });
 
             var internalStatus = order.Status;
             if (fullyProduced)
@@ -1124,7 +1199,7 @@ public sealed class OrderService
             {
                 internalStatus = OrderStatus.InProgress;
             }
-            else
+            else if (order.Status != OrderStatus.Draft)
             {
                 internalStatus = OrderStatus.InProgress;
             }
@@ -1160,8 +1235,15 @@ public sealed class OrderService
                 IsLegacyExcelGeneratedMarkingStatus = order.IsLegacyExcelGeneratedMarkingStatus,
                 MarkingRequired = order.MarkingRequired,
                 MarkingExcelGeneratedAt = order.MarkingExcelGeneratedAt,
-                MarkingPrintedAt = order.MarkingPrintedAt
+                MarkingPrintedAt = order.MarkingPrintedAt,
+                MarkingApplies = order.MarkingApplies,
+                MarkingCodeCovered = order.MarkingCodeCovered
             };
+        }
+
+        if (order.Status == OrderStatus.Draft)
+        {
+            return order;
         }
 
         var lines = _data.GetOrderLines(order.Id);
@@ -1217,7 +1299,9 @@ public sealed class OrderService
             IsLegacyExcelGeneratedMarkingStatus = order.IsLegacyExcelGeneratedMarkingStatus,
             MarkingRequired = order.MarkingRequired,
             MarkingExcelGeneratedAt = order.MarkingExcelGeneratedAt,
-            MarkingPrintedAt = order.MarkingPrintedAt
+            MarkingPrintedAt = order.MarkingPrintedAt,
+            MarkingApplies = order.MarkingApplies,
+            MarkingCodeCovered = order.MarkingCodeCovered
         };
     }
 }

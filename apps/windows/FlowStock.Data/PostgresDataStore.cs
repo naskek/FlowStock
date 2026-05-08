@@ -36,41 +36,129 @@ SELECT o.id,
        COALESCE(o.marking_status, 'NOT_REQUIRED'),
        o.marking_excel_generated_at,
        o.marking_printed_at,
-       COALESCE(marking_need.marking_required, FALSE)
+       COALESCE(marking_need.marking_required, FALSE),
+       COALESCE(marking_need.marking_applies, FALSE),
+       COALESCE(marking_need.marking_completed, FALSE)
 FROM orders o
 LEFT JOIN partners p ON p.id = o.partner_id
 LEFT JOIN LATERAL (
-    SELECT o.status <> 'CANCELLED' AND EXISTS (
-        SELECT 1
+    WITH shipped AS (
+        SELECT dl.order_line_id, SUM(dl.qty) AS qty_shipped
+        FROM doc_lines dl
+        INNER JOIN docs d ON d.id = dl.doc_id
+        WHERE d.status = 'CLOSED'
+          AND d.type = 'OUTBOUND'
+          AND dl.order_line_id IS NOT NULL
+          AND dl.qty > 0
+          AND NOT EXISTS (
+              SELECT 1
+              FROM doc_lines newer
+              WHERE newer.replaces_line_id = dl.id
+          )
+        GROUP BY dl.order_line_id
+    ),
+    reserved AS (
+        SELECT order_line_id, SUM(qty_planned) AS qty_reserved
+        FROM order_receipt_plan_lines
+        WHERE qty_planned > 0
+        GROUP BY order_line_id
+    ),
+    produced AS (
+        SELECT dl.order_line_id, SUM(dl.qty) AS qty_received
+        FROM doc_lines dl
+        INNER JOIN docs d ON d.id = dl.doc_id
+        WHERE d.status = 'CLOSED'
+          AND d.type = 'PRODUCTION_RECEIPT'
+          AND dl.order_line_id IS NOT NULL
+          AND dl.qty > 0
+          AND NOT EXISTS (
+              SELECT 1
+              FROM doc_lines newer
+              WHERE newer.replaces_line_id = dl.id
+          )
+        GROUP BY dl.order_line_id
+    ),
+    markable_line_need AS (
+        SELECT ol.item_id,
+               NULLIF(BTRIM(i.gtin), '') AS gtin,
+               CASE
+                   WHEN o.order_type = 'INTERNAL' THEN GREATEST(0, ol.qty_ordered)
+                   ELSE GREATEST(0, ol.qty_ordered - COALESCE(shipped.qty_shipped, 0) - COALESCE(reserved.qty_reserved, 0))
+               END AS qty_for_marking
         FROM order_lines ol
         INNER JOIN items i ON i.id = ol.item_id
         INNER JOIN item_types it ON it.id = i.item_type_id
-        LEFT JOIN (
-            SELECT dl.order_line_id, SUM(dl.qty) AS qty_shipped
-            FROM doc_lines dl
-            INNER JOIN docs d ON d.id = dl.doc_id
-            WHERE d.status = 'CLOSED'
-              AND d.type = 'OUTBOUND'
-              AND dl.order_line_id IS NOT NULL
-              AND dl.qty > 0
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM doc_lines newer
-                  WHERE newer.replaces_line_id = dl.id
-              )
-            GROUP BY dl.order_line_id
-        ) shipped ON shipped.order_line_id = ol.id
-        LEFT JOIN (
-            SELECT order_line_id, SUM(qty_planned) AS qty_reserved
-            FROM order_receipt_plan_lines
-            WHERE qty_planned > 0
-            GROUP BY order_line_id
-        ) reserved ON reserved.order_line_id = ol.id
+        LEFT JOIN shipped ON shipped.order_line_id = ol.id
+        LEFT JOIN reserved ON reserved.order_line_id = ol.id
+        LEFT JOIN produced ON produced.order_line_id = ol.id
         WHERE ol.order_id = o.id
           AND COALESCE(it.enable_marking, FALSE) = TRUE
           AND NULLIF(BTRIM(i.gtin), '') IS NOT NULL
-          AND GREATEST(0, ol.qty_ordered - COALESCE(shipped.qty_shipped, 0) - COALESCE(reserved.qty_reserved, 0)) > 0
-    ) AS marking_required
+    ),
+    markable_item_need AS (
+        SELECT item_id,
+               gtin,
+               SUM(qty_for_marking) AS qty_for_marking
+        FROM markable_line_need
+        GROUP BY item_id, gtin
+    ),
+    free_code_stats AS (
+        SELECT COALESCE(mo.item_id, 0) AS item_id,
+               COALESCE(NULLIF(BTRIM(COALESCE(mo.gtin, c.gtin)), ''), '') AS gtin,
+               COUNT(*) AS codes_total
+        FROM marking_code c
+        INNER JOIN marking_order mo ON mo.id = c.marking_order_id
+        WHERE c.status IN (@marking_code_status_reserved, @marking_code_status_printed)
+          AND c.receipt_doc_id IS NULL
+          AND c.receipt_line_id IS NULL
+          AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
+          AND (mo.source_type IN (@production_need_source_type, @production_order_source_type)
+               OR mo.order_id IS NOT NULL)
+        GROUP BY COALESCE(mo.item_id, 0),
+                 COALESCE(NULLIF(BTRIM(COALESCE(mo.gtin, c.gtin)), ''), '')
+    ),
+    bound_code_stats AS (
+        SELECT ol.item_id,
+               COALESCE(NULLIF(BTRIM(i.gtin), ''), '') AS gtin,
+               COUNT(*) AS codes_total
+        FROM marking_code c
+        INNER JOIN doc_lines dl ON dl.id = c.receipt_line_id
+        INNER JOIN order_lines ol ON ol.id = dl.order_line_id
+        INNER JOIN items i ON i.id = ol.item_id
+        WHERE ol.order_id = o.id
+          AND c.status <> @marking_code_status_voided
+        GROUP BY ol.item_id,
+                 COALESCE(NULLIF(BTRIM(i.gtin), ''), '')
+    )
+    SELECT EXISTS (
+               SELECT 1
+               FROM markable_line_need
+           ) AS marking_applies,
+           EXISTS (
+               SELECT 1
+               FROM markable_line_need
+               WHERE qty_for_marking > 0
+           ) AS marking_required,
+           EXISTS (
+               SELECT 1
+               FROM markable_line_need
+           ) AND NOT EXISTS (
+               SELECT 1
+               FROM markable_item_need need
+               WHERE need.qty_for_marking > 0
+                 AND COALESCE((
+                     SELECT SUM(free.codes_total)
+                     FROM free_code_stats free
+                     WHERE free.item_id = need.item_id
+                        OR (need.gtin IS NOT NULL AND free.gtin = COALESCE(need.gtin, ''))
+                 ), 0)
+                 + COALESCE((
+                     SELECT SUM(bound.codes_total)
+                     FROM bound_code_stats bound
+                     WHERE bound.item_id = need.item_id
+                        OR (need.gtin IS NOT NULL AND bound.gtin = COALESCE(need.gtin, ''))
+                 ), 0) + 0.000001 < need.qty_for_marking
+           ) AS marking_completed
 ) marking_need ON TRUE";
 
     public PostgresDataStore(string connectionString)
@@ -94,6 +182,12 @@ LEFT JOIN LATERAL (
 
     public void ExecuteInTransaction(Action<IDataStore> work)
     {
+        if (_connection != null && _transaction != null)
+        {
+            work(this);
+            return;
+        }
+
         using var connection = new NpgsqlConnection(_connectionString);
         connection.Open();
         using var transaction = connection.BeginTransaction();
@@ -1100,6 +1194,7 @@ SELECT dl.id,
        dl.doc_id,
        dl.replaces_line_id,
        dl.order_line_id,
+       dl.production_purpose,
        dl.item_id,
        dl.qty,
        dl.qty_input,
@@ -1148,7 +1243,7 @@ ORDER BY dl.id");
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT dl.id, dl.order_line_id, dl.item_id, i.name, i.barcode, dl.qty, dl.qty_input, dl.uom_code, i.base_uom, lf.code, lt.code, dl.from_hu, dl.to_hu, dl.pack_single_hu
+SELECT dl.id, dl.order_line_id, dl.production_purpose, dl.item_id, i.name, i.barcode, dl.qty, dl.qty_input, dl.uom_code, i.base_uom, lf.code, lt.code, dl.from_hu, dl.to_hu, dl.pack_single_hu
 FROM doc_lines dl
 INNER JOIN items i ON i.id = dl.item_id
 LEFT JOIN locations lf ON lf.id = dl.from_location_id
@@ -1171,18 +1266,19 @@ ORDER BY dl.id;
                 {
                     Id = reader.GetInt64(0),
                     OrderLineId = reader.IsDBNull(1) ? null : reader.GetInt64(1),
-                    ItemId = reader.GetInt64(2),
-                    ItemName = reader.GetString(3),
-                    Barcode = reader.IsDBNull(4) ? null : reader.GetString(4),
-                    Qty = reader.GetDouble(5),
-                    QtyInput = reader.IsDBNull(6) ? null : reader.GetDouble(6),
-                    UomCode = reader.IsDBNull(7) ? null : reader.GetString(7),
-                    BaseUom = reader.IsDBNull(8) ? "èâ" : reader.GetString(8),
-                    FromLocation = reader.IsDBNull(9) ? null : reader.GetString(9),
-                    ToLocation = reader.IsDBNull(10) ? null : reader.GetString(10),
-                    FromHu = reader.IsDBNull(11) ? null : reader.GetString(11),
-                    ToHu = reader.IsDBNull(12) ? null : reader.GetString(12),
-                    PackSingleHu = !reader.IsDBNull(13) && reader.GetBoolean(13)
+                    ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(reader.IsDBNull(2) ? null : reader.GetString(2), reader.IsDBNull(1) ? null : reader.GetInt64(1)),
+                    ItemId = reader.GetInt64(3),
+                    ItemName = reader.GetString(4),
+                    Barcode = reader.IsDBNull(5) ? null : reader.GetString(5),
+                    Qty = reader.GetDouble(6),
+                    QtyInput = reader.IsDBNull(7) ? null : reader.GetDouble(7),
+                    UomCode = reader.IsDBNull(8) ? null : reader.GetString(8),
+                    BaseUom = reader.IsDBNull(9) ? "èâ" : reader.GetString(9),
+                    FromLocation = reader.IsDBNull(10) ? null : reader.GetString(10),
+                    ToLocation = reader.IsDBNull(11) ? null : reader.GetString(11),
+                    FromHu = reader.IsDBNull(12) ? null : reader.GetString(12),
+                    ToHu = reader.IsDBNull(13) ? null : reader.GetString(13),
+                    PackSingleHu = !reader.IsDBNull(14) && reader.GetBoolean(14)
                 });
             }
 
@@ -1195,13 +1291,14 @@ ORDER BY dl.id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO doc_lines(doc_id, replaces_line_id, order_line_id, item_id, qty, qty_input, uom_code, from_location_id, to_location_id, from_hu, to_hu, pack_single_hu)
-VALUES(@doc_id, @replaces_line_id, @order_line_id, @item_id, @qty, @qty_input, @uom_code, @from_location_id, @to_location_id, @from_hu, @to_hu, @pack_single_hu)
+INSERT INTO doc_lines(doc_id, replaces_line_id, order_line_id, production_purpose, item_id, qty, qty_input, uom_code, from_location_id, to_location_id, from_hu, to_hu, pack_single_hu)
+VALUES(@doc_id, @replaces_line_id, @order_line_id, @production_purpose, @item_id, @qty, @qty_input, @uom_code, @from_location_id, @to_location_id, @from_hu, @to_hu, @pack_single_hu)
 RETURNING id;
 ");
             command.Parameters.AddWithValue("@doc_id", line.DocId);
             command.Parameters.AddWithValue("@replaces_line_id", line.ReplacesLineId.HasValue ? line.ReplacesLineId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@order_line_id", line.OrderLineId.HasValue ? line.OrderLineId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@production_purpose", ProductionLinePurposeMapper.ToDbValue(line.ProductionPurpose));
             command.Parameters.AddWithValue("@item_id", line.ItemId);
             command.Parameters.AddWithValue("@qty", line.Qty);
             command.Parameters.AddWithValue("@qty_input", line.QtyInput.HasValue ? line.QtyInput.Value : DBNull.Value);
@@ -1392,6 +1489,7 @@ WHERE id = @id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, $"{OrderSelectBase} WHERE o.id = @id");
+            AddOrderSelectParameters(command);
             command.Parameters.AddWithValue("@id", id);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadOrder(reader) : null;
@@ -1403,6 +1501,7 @@ WHERE id = @id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, $"{OrderSelectBase} ORDER BY o.created_at DESC");
+            AddOrderSelectParameters(command);
             using var reader = command.ExecuteReader();
             var orders = new List<Order>();
             while (reader.Read())
@@ -1439,6 +1538,7 @@ END,
 o.created_at DESC,
 o.id DESC
 LIMIT @limit OFFSET @offset");
+            AddOrderSelectParameters(command);
             command.Parameters.AddWithValue("@include_internal", includeInternal);
             command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
             command.Parameters.Add("@query", NpgsqlDbType.Text).Value = string.IsNullOrWhiteSpace(normalized) ? DBNull.Value : normalized;
@@ -1561,8 +1661,24 @@ order_need AS (
            COALESCE(SUM(qty_for_marking) FILTER (WHERE qty_for_marking > 0), 0) AS code_count
     FROM line_need
     GROUP BY order_id
+),
+task_code_stats AS (
+    SELECT marking_order_id,
+           COUNT(*) FILTER (WHERE status <> @marking_code_status_voided) AS codes_total,
+           COUNT(*) FILTER (
+               WHERE status IN (@marking_code_status_reserved, @marking_code_status_printed)
+                 AND receipt_line_id IS NULL
+                 AND receipt_doc_id IS NULL
+           ) AS codes_free,
+           COUNT(*) FILTER (
+               WHERE status <> @marking_code_status_voided
+                 AND (receipt_line_id IS NOT NULL OR receipt_doc_id IS NOT NULL)
+           ) AS codes_bound
+    FROM marking_code
+    GROUP BY marking_order_id
 )
-SELECT o.id,
+SELECT NULL::uuid AS marking_order_id,
+       o.id::bigint AS order_id,
        o.order_ref,
        o.partner_id,
        p.name,
@@ -1572,7 +1688,24 @@ SELECT o.id,
        COALESCE(o.marking_status, 'NOT_REQUIRED') AS marking_status,
        COALESCE(order_need.line_count, 0) AS line_count,
        COALESCE(order_need.code_count, 0) AS code_count,
-       COALESCE(o.marking_printed_at, o.marking_excel_generated_at) AS last_generated_at
+       COALESCE(o.marking_printed_at, o.marking_excel_generated_at) AS last_generated_at,
+       o.created_at AS sort_created_at,
+       NULL::text AS source_type,
+       NULL::bigint AS source_order_id,
+       NULL::bigint AS item_id,
+       NULL::text AS item_name,
+       NULL::text AS gtin,
+       COALESCE(order_need.code_count, 0)::integer AS requested_quantity,
+       COALESCE(o.marking_status, 'NOT_REQUIRED') AS task_status,
+       0::integer AS codes_total,
+       0::integer AS codes_free,
+       0::integer AS codes_bound,
+       NULL::text AS display_source,
+       COALESCE(o.marking_status, 'NOT_REQUIRED') AS effective_status,
+       CASE
+           WHEN COALESCE(o.marking_status, 'NOT_REQUIRED') IN (@printed_status, @legacy_excel_generated_status) THEN 'Маркировка проведена'
+           ELSE 'Маркировка не проведена'
+       END AS display_status
 FROM orders o
 LEFT JOIN partners p ON p.id = o.partner_id
 LEFT JOIN order_need ON order_need.order_id = o.id
@@ -1583,14 +1716,88 @@ WHERE COALESCE(order_need.line_count, 0) > 0
       OR (@include_completed = TRUE
           AND COALESCE(o.marking_status, 'NOT_REQUIRED') IN (@printed_status, @legacy_excel_generated_status))
   )
-ORDER BY o.due_date NULLS LAST, o.created_at, o.id;
+UNION ALL
+SELECT mo.id AS marking_order_id,
+       mo.order_id::bigint AS order_id,
+       CASE
+           WHEN mo.order_id IS NOT NULL THEN COALESCE(mo_o.order_ref, '')
+           WHEN mo.source_type = @production_need_source_type THEN 'Потребность производства'
+           WHEN mo.source_type = @production_order_source_type THEN 'Производственный заказ'
+           ELSE COALESCE(i.name, 'Задача маркировки')
+       END AS order_ref,
+       NULL AS partner_id,
+       CASE
+           WHEN mo.order_id IS NOT NULL THEN p_mo.name
+           WHEN mo.source_type = @production_need_source_type THEN 'Потребность производства'
+           WHEN mo.source_type = @production_order_source_type THEN 'Производственный заказ'
+           ELSE 'Задача маркировки'
+       END AS name,
+       p_mo.code AS code,
+       mo_o.due_date AS due_date,
+       COALESCE(mo_o.status, @in_progress_status) AS status,
+       CASE
+           WHEN mo.status IN (@marking_status_printed, @marking_status_completed, @marking_status_codes_bound, @marking_status_ready_for_print) THEN @printed_status
+           ELSE @required_status
+       END AS marking_status,
+       1 AS line_count,
+       mo.requested_quantity AS code_count,
+       COALESCE(mo.codes_bound_at, mo.requested_at, mo.created_at) AS last_generated_at,
+       mo.created_at AS sort_created_at,
+       mo.source_type AS source_type,
+       mo.source_order_id AS source_order_id,
+       mo.item_id AS item_id,
+       i.name AS item_name,
+       COALESCE(mo.gtin, i.gtin) AS gtin,
+       mo.requested_quantity AS requested_quantity,
+       mo.status AS task_status,
+       COALESCE(task_code_stats.codes_total, 0)::integer AS codes_total,
+       COALESCE(task_code_stats.codes_free, 0)::integer AS codes_free,
+       COALESCE(task_code_stats.codes_bound, 0)::integer AS codes_bound,
+       CASE
+           WHEN mo.source_type = @production_need_source_type THEN 'Потребность производства'
+           WHEN mo.source_type = @production_order_source_type THEN 'Производственный заказ'
+           ELSE COALESCE(mo_o.order_ref, 'Задача маркировки')
+       END AS display_source,
+       CASE
+           WHEN COALESCE(task_code_stats.codes_total, 0) >= mo.requested_quantity THEN @marking_status_completed
+           ELSE mo.status
+       END AS effective_status,
+       CASE
+           WHEN COALESCE(task_code_stats.codes_total, 0) >= mo.requested_quantity THEN 'Выполнена'
+           ELSE mo.status
+       END AS display_status
+FROM marking_order mo
+LEFT JOIN items i ON i.id = mo.item_id
+LEFT JOIN orders mo_o ON mo_o.id = mo.order_id
+LEFT JOIN partners p_mo ON p_mo.id = mo_o.partner_id
+LEFT JOIN task_code_stats ON task_code_stats.marking_order_id = mo.id
+WHERE (mo.source_type IN (@production_need_source_type, @production_order_source_type)
+       OR mo.order_id IS NOT NULL)
+  AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
+  AND (
+      @include_completed = TRUE
+      OR COALESCE(task_code_stats.codes_total, 0) < mo.requested_quantity
+  )
+ORDER BY due_date NULLS LAST, sort_created_at, order_id NULLS LAST;
 ");
             command.Parameters.AddWithValue("@closed_status", DocTypeMapper.StatusToString(DocStatus.Closed));
             command.Parameters.AddWithValue("@outbound_type", DocTypeMapper.ToOpString(DocType.Outbound));
             command.Parameters.AddWithValue("@in_progress_status", OrderStatusMapper.StatusToString(OrderStatus.InProgress));
             command.Parameters.AddWithValue("@accepted_status", OrderStatusMapper.StatusToString(OrderStatus.Accepted));
             command.Parameters.AddWithValue("@printed_status", MarkingStatusMapper.ToString(MarkingStatus.Printed));
+            command.Parameters.AddWithValue("@required_status", MarkingStatusMapper.ToString(MarkingStatus.Required));
             command.Parameters.AddWithValue("@legacy_excel_generated_status", "EXCEL_GENERATED");
+            command.Parameters.AddWithValue("@production_need_source_type", MarkingNeedCreationService.ProductionNeedSourceType);
+            command.Parameters.AddWithValue("@production_order_source_type", MarkingNeedCreationService.ProductionOrderSourceType);
+            command.Parameters.AddWithValue("@marking_status_codes_bound", MarkingOrderStatus.CodesBound);
+            command.Parameters.AddWithValue("@marking_status_ready_for_print", MarkingOrderStatus.ReadyForPrint);
+            command.Parameters.AddWithValue("@marking_status_printed", MarkingOrderStatus.Printed);
+            command.Parameters.AddWithValue("@marking_status_completed", MarkingOrderStatus.Completed);
+            command.Parameters.AddWithValue("@marking_status_cancelled", MarkingOrderStatus.Cancelled);
+            command.Parameters.AddWithValue("@marking_status_failed", MarkingOrderStatus.Failed);
+            command.Parameters.AddWithValue("@marking_code_status_reserved", MarkingCodeStatus.Reserved);
+            command.Parameters.AddWithValue("@marking_code_status_printed", MarkingCodeStatus.Printed);
+            command.Parameters.AddWithValue("@marking_code_status_voided", MarkingCodeStatus.Voided);
             command.Parameters.AddWithValue("@include_completed", includeCompleted);
             using var reader = command.ExecuteReader();
             var rows = new List<MarkingOrderQueueRow>();
@@ -1598,16 +1805,30 @@ ORDER BY o.due_date NULLS LAST, o.created_at, o.id;
             {
                 rows.Add(new MarkingOrderQueueRow
                 {
-                    OrderId = reader.GetInt64(0),
-                    OrderRef = reader.GetString(1),
-                    PartnerName = reader.IsDBNull(3) ? null : reader.GetString(3),
-                    PartnerCode = reader.IsDBNull(4) ? null : reader.GetString(4),
-                    DueDate = reader.IsDBNull(5) ? null : FromDbDate(reader.GetString(5)),
-                    OrderStatus = OrderStatusMapper.StatusFromString(reader.GetString(6)) ?? OrderStatus.InProgress,
-                    MarkingStatus = MarkingStatusMapper.FromString(reader.GetString(7)),
-                    MarkingLineCount = reader.GetInt32(8),
-                    MarkingCodeCount = Convert.ToDouble(reader.GetValue(9), CultureInfo.InvariantCulture),
-                    LastGeneratedAt = FromDbDate(reader.IsDBNull(10) ? null : reader.GetString(10))
+                    MarkingOrderId = reader.IsDBNull(0) ? null : reader.GetGuid(0),
+                    OrderId = reader.IsDBNull(1) ? null : reader.GetInt64(1),
+                    OrderRef = reader.GetString(2),
+                    PartnerName = reader.IsDBNull(4) ? null : reader.GetString(4),
+                    PartnerCode = reader.IsDBNull(5) ? null : reader.GetString(5),
+                    DueDate = reader.IsDBNull(6) ? null : FromDbDate(reader.GetString(6)),
+                    OrderStatus = OrderStatusMapper.StatusFromString(reader.GetString(7)) ?? OrderStatus.InProgress,
+                    MarkingStatus = MarkingStatusMapper.FromString(reader.GetString(8)),
+                    MarkingLineCount = reader.GetInt32(9),
+                    MarkingCodeCount = Convert.ToDouble(reader.GetValue(10), CultureInfo.InvariantCulture),
+                    LastGeneratedAt = FromDbDate(reader.IsDBNull(11) ? null : reader.GetString(11)),
+                    SourceType = reader.IsDBNull(13) ? null : reader.GetString(13),
+                    SourceOrderId = reader.IsDBNull(14) ? null : reader.GetInt64(14),
+                    ItemId = reader.IsDBNull(15) ? null : reader.GetInt64(15),
+                    ItemName = reader.IsDBNull(16) ? null : reader.GetString(16),
+                    Gtin = reader.IsDBNull(17) ? null : reader.GetString(17),
+                    RequestedQuantity = reader.IsDBNull(18) ? 0 : reader.GetInt32(18),
+                    TaskStatus = reader.IsDBNull(19) ? null : reader.GetString(19),
+                    CodesTotal = reader.IsDBNull(20) ? 0 : reader.GetInt32(20),
+                    CodesFree = reader.IsDBNull(21) ? 0 : reader.GetInt32(21),
+                    CodesBound = reader.IsDBNull(22) ? 0 : reader.GetInt32(22),
+                    DisplaySource = reader.IsDBNull(23) ? null : reader.GetString(23),
+                    EffectiveStatus = reader.IsDBNull(24) ? null : reader.GetString(24),
+                    DisplayStatus = reader.IsDBNull(25) ? null : reader.GetString(25)
                 });
             }
 
@@ -1696,6 +1917,127 @@ ORDER BY i.name, BTRIM(i.gtin), ol.id;
         });
     }
 
+    public IReadOnlyList<MarkingOrder> GetMarkingOrdersByIds(IReadOnlyCollection<Guid> ids)
+    {
+        if (ids.Count == 0)
+        {
+            return Array.Empty<MarkingOrder>();
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildMarkingOrderQuery("WHERE mo.id = ANY(@ids::uuid[])"));
+            command.Parameters.AddWithValue("@ids", ids.Distinct().ToArray());
+            using var reader = command.ExecuteReader();
+            var rows = new List<MarkingOrder>();
+            while (reader.Read())
+            {
+                rows.Add(ReadMarkingOrder(reader));
+            }
+
+            return rows;
+        });
+    }
+
+    public IReadOnlyList<MarkingOrder> GetMarkingOrdersByItemIds(IReadOnlyCollection<long> itemIds)
+    {
+        if (itemIds.Count == 0)
+        {
+            return Array.Empty<MarkingOrder>();
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildMarkingOrderQuery("WHERE mo.item_id = ANY(@item_ids::bigint[])"));
+            command.Parameters.AddWithValue("@item_ids", itemIds.Distinct().ToArray());
+            using var reader = command.ExecuteReader();
+            var rows = new List<MarkingOrder>();
+            while (reader.Read())
+            {
+                rows.Add(ReadMarkingOrder(reader));
+            }
+
+            return rows;
+        });
+    }
+
+    public void AddMarkingOrder(MarkingOrder order)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO marking_order(
+    id,
+    order_id,
+    item_id,
+    gtin,
+    requested_quantity,
+    request_number,
+    status,
+    notes,
+    source_type,
+    source_order_id,
+    requested_at,
+    codes_bound_at,
+    created_at,
+    updated_at)
+VALUES(
+    @id,
+    @order_id,
+    @item_id,
+    @gtin,
+    @requested_quantity,
+    @request_number,
+    @status,
+    @notes,
+    @source_type,
+    @source_order_id,
+    @requested_at,
+    @codes_bound_at,
+    @created_at,
+    @updated_at);");
+            command.Parameters.AddWithValue("@id", order.Id);
+            command.Parameters.AddWithValue("@order_id", order.OrderId.HasValue ? order.OrderId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@item_id", order.ItemId.HasValue ? order.ItemId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@gtin", string.IsNullOrWhiteSpace(order.Gtin) ? DBNull.Value : order.Gtin.Trim());
+            command.Parameters.AddWithValue("@requested_quantity", order.RequestedQuantity);
+            command.Parameters.AddWithValue("@request_number", order.RequestNumber);
+            command.Parameters.AddWithValue("@status", string.IsNullOrWhiteSpace(order.Status) ? MarkingOrderStatus.Draft : order.Status.Trim());
+            command.Parameters.AddWithValue("@notes", string.IsNullOrWhiteSpace(order.Notes) ? DBNull.Value : order.Notes.Trim());
+            command.Parameters.AddWithValue("@source_type", string.IsNullOrWhiteSpace(order.SourceType) ? DBNull.Value : order.SourceType.Trim());
+            command.Parameters.AddWithValue("@source_order_id", order.SourceOrderId.HasValue ? order.SourceOrderId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@requested_at", order.RequestedAt.HasValue ? ToDbDate(order.RequestedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@codes_bound_at", order.CodesBoundAt.HasValue ? ToDbDate(order.CodesBoundAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@created_at", ToDbDate(order.CreatedAt));
+            command.Parameters.AddWithValue("@updated_at", ToDbDate(order.UpdatedAt));
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void MarkMarkingOrdersPrinted(IReadOnlyCollection<Guid> ids, DateTime printedAt)
+    {
+        if (ids.Count == 0)
+        {
+            return;
+        }
+
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE marking_order
+SET status = @status,
+    codes_bound_at = COALESCE(codes_bound_at, @printed_at),
+    updated_at = @printed_at
+WHERE id = ANY(@ids::uuid[]);");
+            command.Parameters.AddWithValue("@ids", ids.Distinct().ToArray());
+            command.Parameters.AddWithValue("@status", MarkingOrderStatus.Printed);
+            command.Parameters.AddWithValue("@printed_at", ToDbDate(printedAt));
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
     public void MarkOrdersPrinted(IReadOnlyCollection<long> orderIds, DateTime printedAt)
     {
         if (orderIds.Count == 0)
@@ -1759,7 +2101,7 @@ WHERE id = @id
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT id, order_id, item_id, qty_ordered FROM order_lines WHERE order_id = @order_id ORDER BY id");
+            using var command = CreateCommand(connection, "SELECT id, order_id, item_id, qty_ordered, production_purpose FROM order_lines WHERE order_id = @order_id ORDER BY id");
             command.Parameters.AddWithValue("@order_id", orderId);
             using var reader = command.ExecuteReader();
             var lines = new List<OrderLine>();
@@ -1777,11 +2119,11 @@ WHERE id = @id
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT ol.id, ol.order_id, ol.item_id, i.name, i.barcode, i.gtin, ol.qty_ordered
+SELECT ol.id, ol.order_id, ol.item_id, i.name, i.barcode, i.gtin, ol.qty_ordered, ol.production_purpose
 FROM order_lines ol
 INNER JOIN items i ON i.id = ol.item_id
 WHERE ol.order_id = @order_id
-ORDER BY i.name;
+ORDER BY i.name, ol.id;
 ");
             command.Parameters.AddWithValue("@order_id", orderId);
             using var reader = command.ExecuteReader();
@@ -1796,7 +2138,8 @@ ORDER BY i.name;
                     ItemName = reader.GetString(3),
                     Barcode = reader.IsDBNull(4) ? null : reader.GetString(4),
                     Gtin = reader.IsDBNull(5) ? null : reader.GetString(5),
-                    QtyOrdered = reader.GetDouble(6)
+                    QtyOrdered = reader.GetDouble(6),
+                    ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(reader.IsDBNull(7) ? null : reader.GetString(7))
                 });
             }
 
@@ -1824,6 +2167,7 @@ SELECT ol.id,
        ol.item_id,
        i.name,
        ol.qty_ordered,
+       ol.production_purpose,
        (COALESCE(r.sum_qty, 0)
         + CASE
               WHEN @include_reserved_stock = 1
@@ -1882,8 +2226,9 @@ ORDER BY ol.id;
                     ItemId = reader.GetInt64(2),
                     ItemName = reader.GetString(3),
                     QtyOrdered = reader.GetDouble(4),
-                    QtyReceived = reader.GetDouble(5),
-                    QtyRemaining = reader.GetDouble(6)
+                    ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(reader.IsDBNull(5) ? null : reader.GetString(5)),
+                    QtyReceived = reader.GetDouble(6),
+                    QtyRemaining = reader.GetDouble(7)
                 });
             }
 
@@ -2122,13 +2467,14 @@ ORDER BY ol.id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO order_lines(order_id, item_id, qty_ordered)
-VALUES(@order_id, @item_id, @qty_ordered)
+INSERT INTO order_lines(order_id, item_id, qty_ordered, production_purpose)
+VALUES(@order_id, @item_id, @qty_ordered, @production_purpose)
 RETURNING id;
 ");
             command.Parameters.AddWithValue("@order_id", line.OrderId);
             command.Parameters.AddWithValue("@item_id", line.ItemId);
             command.Parameters.AddWithValue("@qty_ordered", line.QtyOrdered);
+            command.Parameters.AddWithValue("@production_purpose", ProductionLinePurposeMapper.ToDbValue(line.ProductionPurpose));
             return (long)(command.ExecuteScalar() ?? 0L);
         });
     }
@@ -2139,6 +2485,18 @@ RETURNING id;
         {
             using var command = CreateCommand(connection, "UPDATE order_lines SET qty_ordered = @qty_ordered WHERE id = @id");
             command.Parameters.AddWithValue("@qty_ordered", qtyOrdered);
+            command.Parameters.AddWithValue("@id", orderLineId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void UpdateOrderLinePurpose(long orderLineId, ProductionLinePurpose purpose)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "UPDATE order_lines SET production_purpose = @production_purpose WHERE id = @id");
+            command.Parameters.AddWithValue("@production_purpose", ProductionLinePurposeMapper.ToDbValue(purpose));
             command.Parameters.AddWithValue("@id", orderLineId);
             command.ExecuteNonQuery();
             return 0;
@@ -2318,13 +2676,6 @@ VALUES(@ts, @doc_id, @item_id, @location_id, @qty_delta, @hu_code, @hu);
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, BuildStockQuery(search));
-            if (!string.IsNullOrWhiteSpace(search))
-            {
-                command.Parameters.AddWithValue("@search", $"%{search.Trim()}%");
-            }
-
-            using var reader = command.ExecuteReader();
             var rawRows = new List<(
                 long ItemId,
                 string ItemName,
@@ -2339,28 +2690,37 @@ VALUES(@ts, @doc_id, @item_id, @location_id, @qty_delta, @hu_code, @hu);
                 bool ItemTypeMinStockUsesOrderBinding,
                 bool ItemTypeEnableOrderReservation,
                 double? MinStockQty)>();
-            while (reader.Read())
             {
-                rawRows.Add((
-                    ItemId: reader.GetInt64(0),
-                    ItemName: reader.GetString(1),
-                    Barcode: reader.IsDBNull(2) ? null : reader.GetString(2),
-                    LocationCode: reader.GetString(3),
-                    Hu: reader.IsDBNull(4) ? null : reader.GetString(4),
-                    Qty: reader.GetDouble(5),
-                    BaseUom: reader.IsDBNull(6) ? "шт" : reader.GetString(6),
-                    ItemTypeId: reader.IsDBNull(7) ? null : reader.GetInt64(7),
-                    ItemTypeName: reader.IsDBNull(8) ? null : reader.GetString(8),
-                    ItemTypeEnableMinStockControl: !reader.IsDBNull(9) && reader.GetBoolean(9),
-                    ItemTypeMinStockUsesOrderBinding: !reader.IsDBNull(10) && reader.GetBoolean(10),
-                    ItemTypeEnableOrderReservation: !reader.IsDBNull(11) && reader.GetBoolean(11),
-                    MinStockQty: reader.IsDBNull(12) ? null : reader.GetDouble(12)));
+                using var command = CreateCommand(connection, BuildStockQuery(search));
+                if (!string.IsNullOrWhiteSpace(search))
+                {
+                    command.Parameters.AddWithValue("@search", $"%{search.Trim()}%");
+                }
+
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    rawRows.Add((
+                        ItemId: reader.GetInt64(0),
+                        ItemName: reader.GetString(1),
+                        Barcode: reader.IsDBNull(2) ? null : reader.GetString(2),
+                        LocationCode: reader.GetString(3),
+                        Hu: reader.IsDBNull(4) ? null : reader.GetString(4),
+                        Qty: reader.GetDouble(5),
+                        BaseUom: reader.IsDBNull(6) ? "шт" : reader.GetString(6),
+                        ItemTypeId: reader.IsDBNull(7) ? null : reader.GetInt64(7),
+                        ItemTypeName: reader.IsDBNull(8) ? null : reader.GetString(8),
+                        ItemTypeEnableMinStockControl: !reader.IsDBNull(9) && reader.GetBoolean(9),
+                        ItemTypeMinStockUsesOrderBinding: !reader.IsDBNull(10) && reader.GetBoolean(10),
+                        ItemTypeEnableOrderReservation: !reader.IsDBNull(11) && reader.GetBoolean(11),
+                        MinStockQty: reader.IsDBNull(12) ? null : reader.GetDouble(12)));
+                }
             }
 
             var physicalLedgerStockByItem = rawRows
                 .GroupBy(row => row.ItemId)
                 .ToDictionary(group => group.Key, group => group.Sum(x => x.Qty));
-            var reservedHuKeys = GetHuOrderContextRows()
+            var reservedHuKeys = GetHuOrderContextRows(connection)
                 .Where(row => row.ItemId > 0
                               && row.ReservedCustomerOrderId.HasValue
                               && !string.IsNullOrWhiteSpace(row.HuCode))
@@ -2614,9 +2974,12 @@ HAVING COALESCE(SUM(qty_delta), 0) != 0;
 
     public IReadOnlyList<HuOrderContextRow> GetHuOrderContextRows()
     {
-        return WithConnection(connection =>
-        {
-            using var command = CreateCommand(connection, @"
+        return WithConnection(GetHuOrderContextRows);
+    }
+
+    private IReadOnlyList<HuOrderContextRow> GetHuOrderContextRows(NpgsqlConnection connection)
+    {
+        using var command = CreateCommand(connection, @"
 WITH hu_stock AS (
     SELECT UPPER(TRIM(COALESCE(hu_code, hu))) AS hu_code,
            item_id
@@ -2744,37 +3107,36 @@ FROM hu_stock hs
 LEFT JOIN origin_map om ON om.item_id = hs.item_id AND om.hu_code = hs.hu_code
 LEFT JOIN reserved_map rm ON rm.item_id = hs.item_id AND rm.hu_code = hs.hu_code;
 ");
-            command.Parameters.AddWithValue("@prd_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
-            command.Parameters.AddWithValue("@closed_status", DocTypeMapper.StatusToString(DocStatus.Closed));
-            command.Parameters.AddWithValue("@internal_order_type", OrderStatusMapper.TypeToString(OrderType.Internal));
-            command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
-            command.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
-            command.Parameters.AddWithValue("@cancelled_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+        command.Parameters.AddWithValue("@prd_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+        command.Parameters.AddWithValue("@closed_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+        command.Parameters.AddWithValue("@internal_order_type", OrderStatusMapper.TypeToString(OrderType.Internal));
+        command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+        command.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+        command.Parameters.AddWithValue("@cancelled_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
 
-            using var reader = command.ExecuteReader();
-            var rows = new List<HuOrderContextRow>();
-            while (reader.Read())
+        using var reader = command.ExecuteReader();
+        var rows = new List<HuOrderContextRow>();
+        while (reader.Read())
+        {
+            if (reader.IsDBNull(0))
             {
-                if (reader.IsDBNull(0))
-                {
-                    continue;
-                }
-
-                rows.Add(new HuOrderContextRow
-                {
-                    HuCode = reader.GetString(0),
-                    ItemId = reader.GetInt64(1),
-                    OriginInternalOrderId = reader.IsDBNull(2) ? null : reader.GetInt64(2),
-                    OriginInternalOrderRef = reader.IsDBNull(3) ? null : reader.GetString(3),
-                    ReservedCustomerOrderId = reader.IsDBNull(4) ? null : reader.GetInt64(4),
-                    ReservedCustomerOrderRef = reader.IsDBNull(5) ? null : reader.GetString(5),
-                    ReservedCustomerId = reader.IsDBNull(6) ? null : reader.GetInt64(6),
-                    ReservedCustomerName = reader.IsDBNull(7) ? null : reader.GetString(7)
-                });
+                continue;
             }
 
-            return rows;
-        });
+            rows.Add(new HuOrderContextRow
+            {
+                HuCode = reader.GetString(0),
+                ItemId = reader.GetInt64(1),
+                OriginInternalOrderId = reader.IsDBNull(2) ? null : reader.GetInt64(2),
+                OriginInternalOrderRef = reader.IsDBNull(3) ? null : reader.GetString(3),
+                ReservedCustomerOrderId = reader.IsDBNull(4) ? null : reader.GetInt64(4),
+                ReservedCustomerOrderRef = reader.IsDBNull(5) ? null : reader.GetString(5),
+                ReservedCustomerId = reader.IsDBNull(6) ? null : reader.GetInt64(6),
+                ReservedCustomerName = reader.IsDBNull(7) ? null : reader.GetString(7)
+            });
+        }
+
+        return rows;
     }
 
     public HuRecord CreateHuRecord(string? createdBy)
@@ -3330,16 +3692,28 @@ RETURNING id;
             DocId = reader.GetInt64(1),
             ReplacesLineId = reader.IsDBNull(2) ? null : reader.GetInt64(2),
             OrderLineId = reader.IsDBNull(3) ? null : reader.GetInt64(3),
-            ItemId = reader.GetInt64(4),
-            Qty = reader.GetDouble(5),
-            QtyInput = reader.IsDBNull(6) ? null : reader.GetDouble(6),
-            UomCode = reader.IsDBNull(7) ? null : reader.GetString(7),
-            FromLocationId = reader.IsDBNull(8) ? null : reader.GetInt64(8),
-            ToLocationId = reader.IsDBNull(9) ? null : reader.GetInt64(9),
-            FromHu = reader.FieldCount > 10 && !reader.IsDBNull(10) ? reader.GetString(10) : null,
-            ToHu = reader.FieldCount > 11 && !reader.IsDBNull(11) ? reader.GetString(11) : null,
-            PackSingleHu = reader.FieldCount > 12 && !reader.IsDBNull(12) && reader.GetBoolean(12)
+            ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(reader.FieldCount > 4 && !reader.IsDBNull(4) ? reader.GetString(4) : null, reader.IsDBNull(3) ? null : reader.GetInt64(3)),
+            ItemId = reader.GetInt64(5),
+            Qty = reader.GetDouble(6),
+            QtyInput = reader.IsDBNull(7) ? null : reader.GetDouble(7),
+            UomCode = reader.IsDBNull(8) ? null : reader.GetString(8),
+            FromLocationId = reader.IsDBNull(9) ? null : reader.GetInt64(9),
+            ToLocationId = reader.IsDBNull(10) ? null : reader.GetInt64(10),
+            FromHu = reader.FieldCount > 11 && !reader.IsDBNull(11) ? reader.GetString(11) : null,
+            ToHu = reader.FieldCount > 12 && !reader.IsDBNull(12) ? reader.GetString(12) : null,
+            PackSingleHu = reader.FieldCount > 13 && !reader.IsDBNull(13) && reader.GetBoolean(13)
         };
+    }
+
+    private static void AddOrderSelectParameters(NpgsqlCommand command)
+    {
+        command.Parameters.AddWithValue("@marking_code_status_reserved", MarkingCodeStatus.Reserved);
+        command.Parameters.AddWithValue("@marking_code_status_printed", MarkingCodeStatus.Printed);
+        command.Parameters.AddWithValue("@marking_code_status_voided", MarkingCodeStatus.Voided);
+        command.Parameters.AddWithValue("@marking_status_cancelled", MarkingOrderStatus.Cancelled);
+        command.Parameters.AddWithValue("@marking_status_failed", MarkingOrderStatus.Failed);
+        command.Parameters.AddWithValue("@production_need_source_type", MarkingNeedCreationService.ProductionNeedSourceType);
+        command.Parameters.AddWithValue("@production_order_source_type", MarkingNeedCreationService.ProductionOrderSourceType);
     }
 
     private static Order ReadOrder(NpgsqlDataReader reader)
@@ -3357,6 +3731,8 @@ RETURNING id;
         var markingExcelGeneratedAt = reader.FieldCount > 12 ? FromDbDate(reader.IsDBNull(12) ? null : reader.GetString(12)) : null;
         var markingPrintedAt = reader.FieldCount > 13 ? FromDbDate(reader.IsDBNull(13) ? null : reader.GetString(13)) : null;
         var markingRequired = reader.FieldCount > 14 && !reader.IsDBNull(14) && reader.GetBoolean(14);
+        var markingApplies = reader.FieldCount > 15 && !reader.IsDBNull(15) && reader.GetBoolean(15);
+        var markingCodeCovered = reader.FieldCount > 16 && !reader.IsDBNull(16) && reader.GetBoolean(16);
 
         return new Order
         {
@@ -3374,6 +3750,8 @@ RETURNING id;
             MarkingStatus = markingStatus,
             IsLegacyExcelGeneratedMarkingStatus = string.Equals(rawMarkingStatus, "EXCEL_GENERATED", StringComparison.OrdinalIgnoreCase),
             MarkingRequired = markingRequired,
+            MarkingApplies = markingApplies,
+            MarkingCodeCovered = markingCodeCovered,
             MarkingExcelGeneratedAt = markingExcelGeneratedAt,
             MarkingPrintedAt = markingPrintedAt
         };
@@ -3386,7 +3764,8 @@ RETURNING id;
             Id = reader.GetInt64(0),
             OrderId = reader.GetInt64(1),
             ItemId = reader.GetInt64(2),
-            QtyOrdered = reader.GetDouble(3)
+            QtyOrdered = reader.GetDouble(3),
+            ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(reader.IsDBNull(4) ? null : reader.GetString(4))
         };
     }
 
@@ -3526,6 +3905,13 @@ LIMIT 1;";
         EnsureColumn(connection, "orders", "marking_status", "TEXT NOT NULL DEFAULT 'NOT_REQUIRED'");
         EnsureColumn(connection, "orders", "marking_excel_generated_at", "TEXT NULL");
         EnsureColumn(connection, "orders", "marking_printed_at", "TEXT NULL");
+        EnsureColumn(connection, "order_lines", "production_purpose", "TEXT NOT NULL DEFAULT 'INTERNAL_STOCK'");
+        EnsureColumn(connection, "doc_lines", "production_purpose", "TEXT NOT NULL DEFAULT 'INTERNAL_STOCK'");
+        EnsureNullable(connection, "marking_order", "order_id");
+        EnsureColumn(connection, "marking_order", "source_type", "TEXT NULL");
+        EnsureColumn(connection, "marking_order", "source_order_id", "BIGINT NULL");
+        EnsureColumn(connection, "marking_code", "receipt_doc_id", "BIGINT NULL");
+        EnsureColumn(connection, "marking_code", "receipt_line_id", "BIGINT NULL");
 
         if (!ColumnExists(connection, "orders", "order_type")
             || !ColumnExists(connection, "orders", "bind_reserved_stock")
@@ -3544,7 +3930,9 @@ LIMIT 1;";
             || !ColumnExists(connection, "item_types", "enable_marking")
             || !ColumnExists(connection, "orders", "marking_status")
             || !ColumnExists(connection, "orders", "marking_excel_generated_at")
-            || !ColumnExists(connection, "orders", "marking_printed_at"))
+            || !ColumnExists(connection, "orders", "marking_printed_at")
+            || !ColumnExists(connection, "order_lines", "production_purpose")
+            || !ColumnExists(connection, "doc_lines", "production_purpose"))
         {
             throw new InvalidOperationException("Database schema is outdated. Run deploy/scripts/migrate.sh before starting FlowStock.");
         }
@@ -4033,6 +4421,97 @@ RETURNING id;");
         });
     }
 
+    public int CountProductionMarkingCodesByReceiptLine(long receiptLineId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT COUNT(*)
+FROM marking_code
+WHERE receipt_line_id = @line_id
+  AND status <> @voided_status;");
+            command.Parameters.AddWithValue("@line_id", receiptLineId);
+            command.Parameters.AddWithValue("@voided_status", MarkingCodeStatus.Voided);
+            return Convert.ToInt32(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public int CountAvailableProductionMarkingCodesForReceipt(long? sourceOrderId, long itemId, string? gtin)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildAvailableProductionMarkingCodeSql("COUNT(*)", null));
+            AddAvailableProductionMarkingCodeParameters(command, sourceOrderId, itemId, gtin, null);
+            return Convert.ToInt32(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public IReadOnlyList<Guid> GetAvailableProductionMarkingCodeIdsForReceipt(long? sourceOrderId, long itemId, string? gtin, int take)
+    {
+        if (take <= 0)
+        {
+            return Array.Empty<Guid>();
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildAvailableProductionMarkingCodeSql("c.id", @"
+ORDER BY
+  CASE
+    WHEN @source_order_id::bigint IS NOT NULL AND mo.source_order_id = @source_order_id::bigint THEN 0
+    WHEN @source_order_id::bigint IS NOT NULL AND mo.order_id = @source_order_id::bigint THEN 1
+    WHEN mo.source_type = @production_need_source_type AND mo.source_order_id IS NULL THEN 2
+    ELSE 3
+  END,
+  mo.created_at,
+  c.source_row_number NULLS LAST,
+  c.created_at,
+  c.id
+FOR UPDATE SKIP LOCKED
+LIMIT @take"));
+            AddAvailableProductionMarkingCodeParameters(command, sourceOrderId, itemId, gtin, take);
+            using var reader = command.ExecuteReader();
+            var list = new List<Guid>();
+            while (reader.Read())
+            {
+                list.Add(reader.GetGuid(0));
+            }
+
+            return list;
+        });
+    }
+
+    public int AssignProductionMarkingCodesToReceipt(IReadOnlyList<Guid> codeIds, long docId, long lineId, DateTime appliedAt)
+    {
+        if (codeIds.Count == 0)
+        {
+            return 0;
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE marking_code
+SET status = @applied_status,
+    receipt_doc_id = @doc_id,
+    receipt_line_id = @line_id,
+    applied_at = COALESCE(applied_at, @applied_at),
+    updated_at = @applied_at
+WHERE id = ANY(@ids::uuid[])
+  AND receipt_doc_id IS NULL
+  AND receipt_line_id IS NULL
+  AND status IN (@reserved_status, @printed_status);");
+            command.Parameters.AddWithValue("@applied_status", MarkingCodeStatus.Applied);
+            command.Parameters.AddWithValue("@doc_id", docId);
+            command.Parameters.AddWithValue("@line_id", lineId);
+            command.Parameters.AddWithValue("@applied_at", ToDbDate(appliedAt));
+            command.Parameters.AddWithValue("@ids", codeIds.ToArray());
+            command.Parameters.AddWithValue("@reserved_status", MarkingCodeStatus.Reserved);
+            command.Parameters.AddWithValue("@printed_status", MarkingCodeStatus.Printed);
+            return command.ExecuteNonQuery();
+        });
+    }
+
     public IReadOnlyList<long> GetAvailableKmCodeIds(long? batchId, long? orderId, long skuId, string? gtin14, int take)
     {
         return WithConnection(connection =>
@@ -4071,6 +4550,69 @@ LIMIT @take;";
 
             return list;
         });
+    }
+
+    private static string BuildAvailableProductionMarkingCodeSql(string selectExpression, string? suffix)
+    {
+        var sql = $@"
+SELECT {selectExpression}
+FROM marking_code c
+INNER JOIN marking_order mo ON mo.id = c.marking_order_id
+WHERE c.receipt_doc_id IS NULL
+  AND c.receipt_line_id IS NULL
+  AND c.status IN (@reserved_status, @printed_status)
+  AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
+  AND (
+      mo.item_id = @item_id
+      OR (@gtin::text IS NOT NULL AND NULLIF(BTRIM(mo.gtin), '') = @gtin::text)
+      OR (@gtin::text IS NOT NULL AND NULLIF(BTRIM(c.gtin), '') = @gtin::text)
+  )
+  AND (
+      (
+          mo.source_type = @production_order_source_type
+          AND @source_order_id::bigint IS NOT NULL
+          AND mo.source_order_id = @source_order_id::bigint
+      )
+      OR (
+          mo.source_type = @production_need_source_type
+          AND (
+              mo.source_order_id IS NULL
+              OR (@source_order_id::bigint IS NOT NULL AND mo.source_order_id = @source_order_id::bigint)
+          )
+      )
+      OR (
+          @source_order_id::bigint IS NOT NULL
+          AND mo.order_id = @source_order_id::bigint
+      )
+  )";
+        if (!string.IsNullOrWhiteSpace(suffix))
+        {
+            sql += "\n" + suffix;
+        }
+
+        return sql + ";";
+    }
+
+    private static void AddAvailableProductionMarkingCodeParameters(
+        NpgsqlCommand command,
+        long? sourceOrderId,
+        long itemId,
+        string? gtin,
+        int? take)
+    {
+        command.Parameters.AddWithValue("@reserved_status", MarkingCodeStatus.Reserved);
+        command.Parameters.AddWithValue("@printed_status", MarkingCodeStatus.Printed);
+        command.Parameters.AddWithValue("@marking_status_cancelled", MarkingOrderStatus.Cancelled);
+        command.Parameters.AddWithValue("@marking_status_failed", MarkingOrderStatus.Failed);
+        command.Parameters.AddWithValue("@production_need_source_type", MarkingNeedCreationService.ProductionNeedSourceType);
+        command.Parameters.AddWithValue("@production_order_source_type", MarkingNeedCreationService.ProductionOrderSourceType);
+        command.Parameters.AddWithValue("@source_order_id", sourceOrderId.HasValue ? sourceOrderId.Value : DBNull.Value);
+        command.Parameters.AddWithValue("@item_id", itemId);
+        command.Parameters.AddWithValue("@gtin", string.IsNullOrWhiteSpace(gtin) ? DBNull.Value : gtin.Trim());
+        if (take.HasValue)
+        {
+            command.Parameters.AddWithValue("@take", take.Value);
+        }
     }
 
     public IReadOnlyList<long> GetAvailableKmOnHandCodeIds(long? orderId, long skuId, string? gtin14, long? locationId, long? huId, int take)
@@ -4468,6 +5010,52 @@ VALUES(
         });
     }
 
+    public int CountMarkingCodesByMarkingOrder(Guid markingOrderId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT COUNT(*)
+FROM marking_code
+WHERE marking_order_id = @marking_order_id
+  AND status <> @voided_status;");
+            command.Parameters.AddWithValue("@marking_order_id", markingOrderId);
+            command.Parameters.AddWithValue("@voided_status", MarkingCodeStatus.Voided);
+            return Convert.ToInt32(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public int CountFreeProductionMarkingCodesByItem(long itemId, string? gtin)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT COUNT(*)
+FROM marking_code c
+INNER JOIN marking_order mo ON mo.id = c.marking_order_id
+WHERE c.status IN (@reserved_status, @printed_status)
+  AND c.receipt_doc_id IS NULL
+  AND c.receipt_line_id IS NULL
+  AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
+  AND (mo.source_type IN (@production_need_source_type, @production_order_source_type)
+       OR mo.order_id IS NOT NULL)
+  AND (
+      mo.item_id = @item_id
+      OR (@gtin::text IS NOT NULL AND NULLIF(BTRIM(mo.gtin), '') = @gtin::text)
+      OR (@gtin::text IS NOT NULL AND NULLIF(BTRIM(c.gtin), '') = @gtin::text)
+  );");
+            command.Parameters.AddWithValue("@reserved_status", MarkingCodeStatus.Reserved);
+            command.Parameters.AddWithValue("@printed_status", MarkingCodeStatus.Printed);
+            command.Parameters.AddWithValue("@marking_status_cancelled", MarkingOrderStatus.Cancelled);
+            command.Parameters.AddWithValue("@marking_status_failed", MarkingOrderStatus.Failed);
+            command.Parameters.AddWithValue("@production_need_source_type", MarkingNeedCreationService.ProductionNeedSourceType);
+            command.Parameters.AddWithValue("@production_order_source_type", MarkingNeedCreationService.ProductionOrderSourceType);
+            command.Parameters.AddWithValue("@item_id", itemId);
+            command.Parameters.AddWithValue("@gtin", string.IsNullOrWhiteSpace(gtin) ? DBNull.Value : gtin.Trim());
+            return Convert.ToInt32(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
     public MarkingOrder? FindMarkingOrderByRequestNumber(string requestNumber)
     {
         return WithConnection(connection =>
@@ -4654,6 +5242,8 @@ SELECT mo.id,
        mo.request_number,
        mo.status,
        mo.notes,
+       mo.source_type,
+       mo.source_order_id,
        mo.requested_at,
        mo.codes_bound_at,
        mo.created_at,
@@ -4708,6 +5298,8 @@ SELECT c.id,
        c.marking_order_id,
        c.import_id,
        c.status,
+       c.receipt_doc_id,
+       c.receipt_line_id,
        c.source_row_number,
        c.printed_at,
        c.applied_at,
@@ -4803,17 +5395,19 @@ LEFT JOIN locations l ON l.id = c.location_id
         return new MarkingOrder
         {
             Id = reader.GetGuid(0),
-            OrderId = reader.GetInt64(1),
+            OrderId = reader.IsDBNull(1) ? null : reader.GetInt64(1),
             ItemId = reader.IsDBNull(2) ? null : reader.GetInt64(2),
             Gtin = reader.IsDBNull(3) ? null : reader.GetString(3),
             RequestedQuantity = reader.IsDBNull(4) ? 0 : reader.GetInt32(4),
             RequestNumber = reader.GetString(5),
             Status = reader.GetString(6),
             Notes = reader.IsDBNull(7) ? null : reader.GetString(7),
-            RequestedAt = reader.IsDBNull(8) ? null : FromDbDate(reader.GetString(8)),
-            CodesBoundAt = reader.IsDBNull(9) ? null : FromDbDate(reader.GetString(9)),
-            CreatedAt = FromDbDate(reader.GetString(10)) ?? DateTime.MinValue,
-            UpdatedAt = FromDbDate(reader.GetString(11)) ?? DateTime.MinValue
+            SourceType = reader.IsDBNull(8) ? null : reader.GetString(8),
+            SourceOrderId = reader.IsDBNull(9) ? null : reader.GetInt64(9),
+            RequestedAt = reader.IsDBNull(10) ? null : FromDbDate(reader.GetString(10)),
+            CodesBoundAt = reader.IsDBNull(11) ? null : FromDbDate(reader.GetString(11)),
+            CreatedAt = FromDbDate(reader.GetString(12)) ?? DateTime.MinValue,
+            UpdatedAt = FromDbDate(reader.GetString(13)) ?? DateTime.MinValue
         };
     }
 
@@ -4877,13 +5471,15 @@ LEFT JOIN locations l ON l.id = c.location_id
             MarkingOrderId = reader.GetGuid(4),
             ImportId = reader.GetGuid(5),
             Status = reader.GetString(6),
-            SourceRowNumber = reader.IsDBNull(7) ? null : reader.GetInt32(7),
-            PrintedAt = reader.IsDBNull(8) ? null : FromDbDate(reader.GetString(8)),
-            AppliedAt = reader.IsDBNull(9) ? null : FromDbDate(reader.GetString(9)),
-            ReportedAt = reader.IsDBNull(10) ? null : FromDbDate(reader.GetString(10)),
-            IntroducedAt = reader.IsDBNull(11) ? null : FromDbDate(reader.GetString(11)),
-            CreatedAt = FromDbDate(reader.GetString(12)) ?? DateTime.MinValue,
-            UpdatedAt = FromDbDate(reader.GetString(13)) ?? DateTime.MinValue
+            ReceiptDocId = reader.IsDBNull(7) ? null : reader.GetInt64(7),
+            ReceiptLineId = reader.IsDBNull(8) ? null : reader.GetInt64(8),
+            SourceRowNumber = reader.IsDBNull(9) ? null : reader.GetInt32(9),
+            PrintedAt = reader.IsDBNull(10) ? null : FromDbDate(reader.GetString(10)),
+            AppliedAt = reader.IsDBNull(11) ? null : FromDbDate(reader.GetString(11)),
+            ReportedAt = reader.IsDBNull(12) ? null : FromDbDate(reader.GetString(12)),
+            IntroducedAt = reader.IsDBNull(13) ? null : FromDbDate(reader.GetString(13)),
+            CreatedAt = FromDbDate(reader.GetString(14)) ?? DateTime.MinValue,
+            UpdatedAt = FromDbDate(reader.GetString(15)) ?? DateTime.MinValue
         };
     }
 

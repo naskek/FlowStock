@@ -103,6 +103,7 @@
             <Button x:Name="AddItemButton" Content="+ Товар" Click="AddLine_Click" TabIndex="7" />
             <Button x:Name="EditLineButton" Content="Редактировать" Click="EditLine_Click" Margin="8,0,0,0" TabIndex="8" />
             <Button x:Name="DeleteLineButton" Content="Удалить строку" Click="DeleteLine_Click" Margin="8,0,0,0" TabIndex="9" />
+            <Button x:Name="ExportMarkingButton" Content="Сформировать Excel ЧЗ" Click="ExportMarking_Click" Margin="16,0,0,0" Width="180" TabIndex="10" />
         </StackPanel>
             <Grid Grid.Row="1">
                 <DataGrid x:Name="OrderLinesGrid" AutoGenerateColumns="False" IsReadOnly="True"
@@ -110,15 +111,15 @@
                           MouseDoubleClick="OrderLinesGrid_MouseDoubleClick"
                           TabIndex="10">
                     <DataGrid.Columns>
-                        <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
-                        <DataGridTextColumn Header="SKU / ШК" Binding="{Binding Barcode}" Width="150" />
-                        <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="150" />
-                        <DataGridTextColumn Header="Заказано (база)" Binding="{Binding QtyOrdered}" Width="140" />
-                        <DataGridTextColumn x:Name="ProcessedQtyColumn" Header="Отгружено" Binding="{Binding QtyShipped}" Width="120" />
-                        <DataGridTextColumn Header="Осталось" Binding="{Binding QtyRemaining}" Width="120" />
-                        <DataGridTextColumn x:Name="AvailableQtyColumn" Header="В наличии" Binding="{Binding QtyAvailable}" Width="120" />
-                        <DataGridTextColumn x:Name="CanShipNowColumn" Header="Можно отгрузить" Binding="{Binding CanShipNow}" Width="140" />
-                        <DataGridTextColumn x:Name="ShortageColumn" Header="Не хватает" Binding="{Binding Shortage}" Width="120" />
+                        <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" IsReadOnly="True" />
+                        <DataGridTextColumn Header="SKU / ШК" Binding="{Binding Barcode}" Width="150" IsReadOnly="True" />
+                        <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="150" IsReadOnly="True" />
+                        <DataGridTextColumn Header="Заказано (база)" Binding="{Binding QtyOrdered}" Width="140" IsReadOnly="True" />
+                        <DataGridTextColumn x:Name="ProcessedQtyColumn" Header="Отгружено" Binding="{Binding QtyShipped}" Width="120" IsReadOnly="True" />
+                        <DataGridTextColumn Header="Осталось" Binding="{Binding QtyRemaining}" Width="120" IsReadOnly="True" />
+                        <DataGridTextColumn x:Name="AvailableQtyColumn" Header="В наличии" Binding="{Binding QtyAvailable}" Width="120" IsReadOnly="True" />
+                        <DataGridTextColumn x:Name="CanShipNowColumn" Header="Можно отгрузить" Binding="{Binding CanShipNow}" Width="140" IsReadOnly="True" />
+                        <DataGridTextColumn x:Name="ShortageColumn" Header="Не хватает" Binding="{Binding Shortage}" Width="120" IsReadOnly="True" />
                     </DataGrid.Columns>
                 </DataGrid>
                 <TextBlock x:Name="OrderLinesEmptyText"
@@ -140,9 +141,9 @@
             </Grid.ColumnDefinitions>
             <TextBlock x:Name="SaveStatusText" VerticalAlignment="Center" Foreground="Gray" />
             <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
-                <Button x:Name="SaveButton" Content="Сохранить и закрыть" Width="160" Click="Save_Click" TabIndex="11" />
+                <Button x:Name="SaveButton" Content="Сохранить и закрыть" Width="160" Click="Save_Click" TabIndex="12" />
                 <Button x:Name="CloseButton" Content="Закрыть" Width="120" IsCancel="True" Margin="8,0,0,0"
-                        Click="Close_Click" TabIndex="12" />
+                        Click="Close_Click" TabIndex="13" />
             </StackPanel>
         </Grid>
     </Grid>

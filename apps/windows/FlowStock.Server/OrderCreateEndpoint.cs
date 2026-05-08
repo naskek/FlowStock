@@ -132,7 +132,10 @@ public static class OrderCreateEndpoint
             {
                 ItemId = item.Id,
                 ItemName = item.Name,
-                QtyOrdered = line.QtyOrdered
+                QtyOrdered = line.QtyOrdered,
+                ProductionPurpose = orderType.Value == OrderType.Customer
+                    ? ProductionLinePurpose.CustomerOrder
+                    : ProductionLinePurposeMapper.FromDbValue(line.ProductionPurpose)
             });
         }
 

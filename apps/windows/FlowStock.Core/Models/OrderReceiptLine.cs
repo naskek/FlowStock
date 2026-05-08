@@ -9,6 +9,7 @@ public sealed class OrderReceiptLine
     public double QtyOrdered { get; init; }
     public double QtyReceived { get; init; }
     public double QtyRemaining { get; init; }
+    public ProductionLinePurpose ProductionPurpose { get; init; } = ProductionLinePurpose.InternalStock;
     public long? ToLocationId { get; init; }
     public string? ToLocation { get; init; }
     public string? ToHu { get; init; }

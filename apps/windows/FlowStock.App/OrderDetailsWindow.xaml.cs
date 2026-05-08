@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
@@ -8,6 +9,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using System.Windows.Input;
 using FlowStock.Core.Models;
+using Microsoft.Win32;
 
 namespace FlowStock.App;
 
@@ -150,6 +152,7 @@ public partial class OrderDetailsWindow : Window
         UpdateTypeUi();
         RefreshLineMetrics();
         SetEditingEnabled(true);
+        UpdateMarkingExportButton();
         SaveStatusText.Text = string.Empty;
         EndLoad();
     }
@@ -200,6 +203,7 @@ public partial class OrderDetailsWindow : Window
         UpdateTypeUi();
         RefreshLineMetrics();
         SetEditingEnabled(!isFinalStatus);
+        UpdateMarkingExportButton();
         EndLoad();
     }
 
@@ -212,6 +216,63 @@ public partial class OrderDetailsWindow : Window
 
         _allowCloseWithoutPrompt = true;
         Close();
+    }
+
+    private async void ExportMarking_Click(object sender, RoutedEventArgs e)
+    {
+        if (!HasMarkableLines())
+        {
+            MessageBox.Show("В заказе нет маркируемых строк с GTIN.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!_orderId.HasValue || _hasUnsavedChanges)
+        {
+            if (!TrySaveOrder(showFeedback: false))
+            {
+                return;
+            }
+        }
+
+        if (!_orderId.HasValue)
+        {
+            MessageBox.Show("Сначала сохраните заказ.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        ExportMarkingButton.IsEnabled = false;
+        try
+        {
+            var result = await _services.WpfMarkingApi.TryExportOrderAsync(_orderId.Value).ConfigureAwait(true);
+            if (!result.IsSuccess)
+            {
+                MessageBox.Show(result.Message, "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            if (result.FileBytes != null)
+            {
+                var dialog = new SaveFileDialog
+                {
+                    Title = "Сохранить Excel ЧЗ",
+                    Filter = "Excel (*.xlsx)|*.xlsx",
+                    FileName = string.IsNullOrWhiteSpace(result.FileName)
+                        ? $"chestny_znak_order_{_orderId.Value}_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx"
+                        : result.FileName
+                };
+                if (dialog.ShowDialog(this) == true)
+                {
+                    File.WriteAllBytes(dialog.FileName, result.FileBytes);
+                }
+            }
+
+            MessageBox.Show(result.Message, "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+            LoadOrder();
+        }
+        finally
+        {
+            UpdateMarkingExportButton();
+        }
     }
 
     private bool TrySaveOrder(bool showFeedback)
@@ -430,34 +491,16 @@ public partial class OrderDetailsWindow : Window
             return false;
         }
 
-        var orderId = _orderId;
-        var candidateRows = huStockRows
-            .Where(row => reservationEnabledItems.Contains(row.ItemId))
-            .Where(row => row.Qty > QtyTolerance)
-            .Where(row => !string.IsNullOrWhiteSpace(row.Hu))
-            .Where(row => row.OriginInternalOrderId.HasValue)
-            .Where(row => !row.ReservedCustomerOrderId.HasValue
-                          || (orderId.HasValue && row.ReservedCustomerOrderId.Value == orderId.Value))
-            .OrderBy(row => row.ItemId)
-            .ThenBy(row => row.Hu, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(row => row.LocationId)
-            .ToList();
-        if (candidateRows.Count == 0)
-        {
-            return false;
-        }
-
         var partnerName = partnerId.HasValue
             ? _partnersAll.FirstOrDefault(partner => partner.Id == partnerId.Value)?.DisplayName
             : null;
 
-        var huList = candidateRows
-            .Select(row => row.Hu.Trim())
-            .Where(code => !string.IsNullOrWhiteSpace(code))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        if (huList.Count == 0)
+        if (!OrderReservationPromptPolicy.ShouldPrompt(
+                _lines.ToList(),
+                huStockRows,
+                reservationEnabledItems,
+                _orderId,
+                out var huList))
         {
             return false;
         }
@@ -539,12 +582,16 @@ public partial class OrderDetailsWindow : Window
 
     private void AddOrderLine(Item item, Window owner)
     {
-        var existing = _lines.FirstOrDefault(line => line.ItemId == item.Id);
-        if (existing != null)
+        var orderType = GetSelectedOrderType();
+        var purpose = orderType == OrderType.Internal
+            ? ProductionLinePurpose.InternalStock
+            : ProductionLinePurpose.CustomerOrder;
+        var existingLine = _lines.FirstOrDefault(line => line.ItemId == item.Id);
+        if (existingLine != null)
         {
-            SelectOrderLine(existing);
+            SelectOrderLine(existingLine);
             MessageBox.Show(
-                $"Строка с товаром \"{existing.ItemName}\" уже добавлена. Измените количество в существующей строке при необходимости.",
+                $"Строка с товаром \"{existingLine.ItemName}\" уже добавлена. Измените количество в существующей строке при необходимости.",
                 "Заказы",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
@@ -571,7 +618,8 @@ public partial class OrderDetailsWindow : Window
             ItemName = item.Name,
             Barcode = item.Barcode,
             Gtin = item.Gtin,
-            QtyOrdered = qtyBase
+            QtyOrdered = qtyBase,
+            ProductionPurpose = purpose
         });
 
         RefreshLineMetrics();
@@ -623,6 +671,7 @@ public partial class OrderDetailsWindow : Window
         _selectedLine.QtyOrdered = qtyDialog.QtyBase;
         RefreshLineMetrics();
         MarkDirty();
+        OrderLinesGrid.Items.Refresh();
     }
 
     private void DeleteLine_Click(object sender, RoutedEventArgs e)
@@ -649,6 +698,7 @@ public partial class OrderDetailsWindow : Window
         _selectedLine = OrderLinesGrid.SelectedItem as OrderLineView;
         DeleteLineButton.IsEnabled = _selectedLine != null && EnsureEditable(false);
         EditLineButton.IsEnabled = _selectedLine != null && EnsureEditable(false);
+        UpdateMarkingExportButton();
     }
 
     private void OrderLinesGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
@@ -717,6 +767,7 @@ public partial class OrderDetailsWindow : Window
 
         UpdateEmptyState();
         OrderLinesGrid.Items.Refresh();
+        UpdateMarkingExportButton();
     }
 
     private bool TryRefreshPersistedOrderLineMetricsFromApi(OrderType type)
@@ -775,7 +826,23 @@ public partial class OrderDetailsWindow : Window
         EditLineButton.IsEnabled = enabled && _selectedLine != null;
         DeleteLineButton.IsEnabled = enabled && _selectedLine != null;
         SaveButton.IsEnabled = enabled;
+        UpdateMarkingExportButton();
         UpdateTypeUi();
+    }
+
+    private void UpdateMarkingExportButton()
+    {
+        if (!IsInitialized)
+        {
+            return;
+        }
+
+        ExportMarkingButton.IsEnabled = OrderMarkingExportUiPolicy.CanExport(_order, _lines.ToList());
+    }
+
+    private bool HasMarkableLines()
+    {
+        return _lines.Any(line => !string.IsNullOrWhiteSpace(line.Gtin));
     }
 
     private void UpdateTypeUi()
@@ -1101,5 +1168,6 @@ public partial class OrderDetailsWindow : Window
         public OrderType Type { get; }
         public string Name { get; }
     }
+
 }
 

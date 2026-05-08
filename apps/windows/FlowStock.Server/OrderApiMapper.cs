@@ -7,7 +7,10 @@ public static class OrderApiMapper
 {
     public static object MapOrder(Order order)
     {
-        var markingStatus = order.EffectiveMarkingStatus;
+        var markingStatus = order.MarkingCompleted
+            ? MarkingStatus.Printed
+            : order.EffectiveMarkingStatus;
+        var markingLabel = order.MarkingLabel;
 
         return new
         {
@@ -25,9 +28,12 @@ public static class OrderApiMapper
             bind_reserved_stock = order.UseReservedStock,
             marking_status = MarkingStatusMapper.ToString(markingStatus),
             marking_required = order.MarkingRequired,
+            marking_applies = order.MarkingApplies,
+            marking_completed = order.MarkingCompleted,
+            marking_label = markingLabel,
             marking_effective_status = MarkingStatusMapper.ToString(markingStatus),
-            marking_status_display = order.MarkingStatusDisplay,
-            marking_status_label = order.MarkingStatusDisplay,
+            marking_status_display = markingLabel,
+            marking_status_label = markingLabel,
             marking_excel_generated_at = order.MarkingExcelGeneratedAt?.ToString("O", CultureInfo.InvariantCulture),
             marking_printed_at = order.MarkingPrintedAt?.ToString("O", CultureInfo.InvariantCulture),
             created_at = order.CreatedAt.ToString("O", CultureInfo.InvariantCulture),

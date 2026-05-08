@@ -100,6 +100,7 @@ public partial class OrderRequestDetailsWindow : Window
                 ItemName = item?.Name ?? $"ID={line.ItemId}",
                 Barcode = item?.Barcode ?? "-",
                 Gtin = item?.Gtin ?? "-",
+                ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(line.ProductionPurpose),
                 QtyOrdered = line.QtyOrdered
             });
         }
@@ -285,6 +286,9 @@ public partial class OrderRequestDetailsWindow : Window
 
         [JsonPropertyName("qty_ordered")]
         public double QtyOrdered { get; init; }
+
+        [JsonPropertyName("production_purpose")]
+        public string? ProductionPurpose { get; init; }
     }
 
     private sealed record SetOrderStatusPayload
@@ -302,6 +306,8 @@ public partial class OrderRequestDetailsWindow : Window
         public string ItemName { get; init; } = string.Empty;
         public string Barcode { get; init; } = "-";
         public string Gtin { get; init; } = "-";
+        public ProductionLinePurpose ProductionPurpose { get; init; } = ProductionLinePurpose.InternalStock;
+        public string ProductionPurposeDisplay => ProductionLinePurposeMapper.ToDisplayName(ProductionPurpose);
         public double QtyOrdered { get; init; }
     }
 }

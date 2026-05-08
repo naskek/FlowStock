@@ -1028,20 +1028,42 @@ public partial class MainWindow : Window
         LoadProductionNeedRows(showErrorMessage: true);
     }
 
-    private void ProductionNeedShowAllRowsCheckBox_Changed(object sender, RoutedEventArgs e)
+    private async void ProductionNeedCreateOrders_Click(object sender, RoutedEventArgs e)
     {
-        if (!IsLoaded)
-        {
-            return;
-        }
+        ProductionNeedCreateOrdersButton.IsEnabled = false;
+        ProductionNeedSummaryText.Text = "Формирование производственного черновика...";
 
-        LoadProductionNeedRows();
+        try
+        {
+            var result = await _services.WpfReadApi.CreateProductionNeedOrdersAsync();
+            if (!result.IsSuccess)
+            {
+                ProductionNeedSummaryText.Text = "Не удалось сформировать производственный черновик.";
+                MessageBox.Show(
+                    result.ErrorMessage,
+                    "Потребность производства",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            MessageBox.Show(
+                result.Message,
+                "Потребность производства",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            LoadProductionNeedRows(showErrorMessage: true);
+        }
+        finally
+        {
+            ProductionNeedCreateOrdersButton.IsEnabled = true;
+        }
     }
 
     private void LoadProductionNeedRows(bool showErrorMessage = false)
     {
         if (!_services.WpfReadApi.TryGetProductionNeedRows(
-                includeZeroNeed: ProductionNeedShowAllRowsCheckBox.IsChecked == true,
+                includeZeroNeed: false,
                 out var rows))
         {
             _productionNeedRows.Clear();
@@ -1066,20 +1088,16 @@ public partial class MainWindow : Window
                 ItemId = row.ItemId,
                 Gtin = string.IsNullOrWhiteSpace(row.Gtin) ? "-" : row.Gtin,
                 ItemName = row.ItemName,
-                ItemTypeName = string.IsNullOrWhiteSpace(row.ItemTypeName) ? "—" : row.ItemTypeName,
-                PhysicalStockQty = row.PhysicalStockQty,
-                ActiveCustomerOrderOpenQty = row.ActiveCustomerOrderOpenQty,
-                ReservedCustomerOrderQty = row.ReservedCustomerOrderQty,
+                ItemTypeName = string.IsNullOrWhiteSpace(row.ItemTypeName) ? "Без типа" : row.ItemTypeName,
                 FreeStockQty = row.FreeStockQty,
                 MinStockQty = row.MinStockQty,
-                ProductionNeedQty = row.ProductionNeedQty
+                ToCloseOrdersQty = row.ToCloseOrdersQty,
+                ToMinStockQty = row.ToMinStockQty,
+                TotalToMakeQty = row.TotalToMakeQty
             });
         }
 
-        var modeText = ProductionNeedShowAllRowsCheckBox.IsChecked == true
-            ? "Все строки"
-            : "Только строки с потребностью";
-        ProductionNeedSummaryText.Text = $"Позиций: {_productionNeedRows.Count}. {modeText}.";
+        ProductionNeedSummaryText.Text = $"Позиций: {_productionNeedRows.Count}.";
     }
 
     private string? GetSelectedStockLocationCode()
@@ -2651,12 +2669,12 @@ public partial class MainWindow : Window
         public string Gtin { get; init; } = string.Empty;
         public string ItemName { get; init; } = string.Empty;
         public string ItemTypeName { get; init; } = string.Empty;
-        public double PhysicalStockQty { get; init; }
-        public double ActiveCustomerOrderOpenQty { get; init; }
-        public double ReservedCustomerOrderQty { get; init; }
         public double FreeStockQty { get; init; }
         public double MinStockQty { get; init; }
-        public double ProductionNeedQty { get; init; }
+        public double ToCloseOrdersQty { get; init; }
+        public double ToMinStockQty { get; init; }
+        public double TotalToMakeQty { get; init; }
+        public string StockDisplay => $"{FormatQty(FreeStockQty)} / {FormatQty(MinStockQty)}";
     }
 
     private sealed class StockDisplayRow : INotifyPropertyChanged

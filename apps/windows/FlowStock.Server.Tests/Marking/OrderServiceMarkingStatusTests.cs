@@ -21,7 +21,7 @@ public sealed class OrderServiceMarkingStatusTests
         Assert.False(result.MarkingRequired);
         Assert.Equal(printedAt, result.MarkingExcelGeneratedAt);
         Assert.Equal(printedAt, result.MarkingPrintedAt);
-        Assert.Equal("ЧЗ готов к нанесению", result.MarkingStatusDisplay);
+        Assert.Equal("Маркировка проведена", result.MarkingStatusDisplay);
     }
 
     [Fact]
@@ -39,7 +39,7 @@ public sealed class OrderServiceMarkingStatusTests
         Assert.False(result.MarkingRequired);
         Assert.Equal(printedAt, result.MarkingExcelGeneratedAt);
         Assert.Equal(printedAt, result.MarkingPrintedAt);
-        Assert.Equal("ЧЗ готов к нанесению", result.MarkingStatusDisplay);
+        Assert.Equal("Маркировка проведена", result.MarkingStatusDisplay);
     }
 
     private static Mock<IDataStore> CreateStore(Order order)

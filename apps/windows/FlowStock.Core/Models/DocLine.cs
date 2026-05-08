@@ -6,6 +6,7 @@ public sealed class DocLine
     public long DocId { get; init; }
     public long? ReplacesLineId { get; init; }
     public long? OrderLineId { get; init; }
+    public ProductionLinePurpose ProductionPurpose { get; init; } = ProductionLinePurpose.InternalStock;
     public long ItemId { get; init; }
     public double Qty { get; init; }
     public double? QtyInput { get; init; }

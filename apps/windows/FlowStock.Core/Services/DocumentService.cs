@@ -115,6 +115,7 @@ public sealed class DocumentService
                     {
                         DocId = docId,
                         OrderLineId = line.OrderLineId,
+                        ProductionPurpose = ProductionLinePurpose.CustomerOrder,
                         ItemId = line.ItemId,
                         Qty = line.QtyRemaining,
                         QtyInput = null,
@@ -130,7 +131,8 @@ public sealed class DocumentService
 
             if (doc.Type == DocType.ProductionReceipt)
             {
-                var receiptLines = store.GetOrderReceiptRemaining(orderId.Value)
+                var order = store.GetOrder(orderId.Value) ?? throw new InvalidOperationException("Заказ не найден.");
+                var receiptLines = OrderReceiptRemainingCalculator.GetRemaining(store, order)
                     .Where(line => line.QtyRemaining > QtyTolerance)
                     .ToList();
                 if (receiptLines.Count == 0)
@@ -144,6 +146,7 @@ public sealed class DocumentService
                     {
                         DocId = docId,
                         OrderLineId = line.OrderLineId,
+                        ProductionPurpose = line.ProductionPurpose,
                         ItemId = line.ItemId,
                         Qty = line.QtyRemaining,
                         QtyInput = null,
@@ -167,6 +170,7 @@ public sealed class DocumentService
                 store.AddDocLine(new DocLine
                 {
                     DocId = docId,
+                    ProductionPurpose = line.ProductionPurpose,
                     ItemId = line.ItemId,
                     Qty = line.QtyOrdered,
                     QtyInput = null,
@@ -199,9 +203,13 @@ public sealed class DocumentService
 
     public IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemaining(long orderId, bool includeReservedStock)
     {
-        return includeReservedStock
-            ? _data.GetOrderReceiptRemaining(orderId)
-            : _data.GetOrderReceiptRemainingWithoutReservedStock(orderId);
+        var order = _data.GetOrder(orderId);
+        if (order == null)
+        {
+            return Array.Empty<OrderReceiptLine>();
+        }
+
+        return OrderReceiptRemainingCalculator.GetRemaining(_data, order, includeReservedStock);
     }
 
     public IReadOnlyList<OrderShipmentLine> GetOrderShipmentRemaining(long orderId)
@@ -263,6 +271,11 @@ public sealed class DocumentService
             if (KmWorkflowEnabled && doc.Type == DocType.Outbound)
             {
                 AutoAssignOutboundKmCodes(store, doc, lines, docHu, docId);
+            }
+
+            if (doc.Type == DocType.ProductionReceipt)
+            {
+                AutoAssignProductionReceiptMarkingCodes(store, doc, lines, closedAt);
             }
 
             var orderBoundHuByItem = doc.Type == DocType.Outbound && doc.OrderId.HasValue
@@ -502,7 +515,7 @@ public sealed class DocumentService
             }
 
             store.UpdateDocStatus(docId, DocStatus.Closed, closedAt);
-            TryRefreshLinkedOrderStatus(store, doc);
+            TryRefreshLinkedOrderStatus(store, doc, lines);
         });
 
         return new CloseDocResult { Success = true };
@@ -614,6 +627,7 @@ public sealed class DocumentService
                 {
                     DocId = docId,
                     OrderLineId = line.OrderLineId,
+                    ProductionPurpose = ProductionLinePurpose.CustomerOrder,
                     ItemId = line.ItemId,
                     Qty = line.QtyRemaining,
                     QtyInput = null,
@@ -655,7 +669,8 @@ public sealed class DocumentService
         var addedLines = 0;
         _data.ExecuteInTransaction(store =>
         {
-            var receiptLines = store.GetOrderReceiptRemaining(orderId)
+            var orderForReceipt = store.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+            var receiptLines = OrderReceiptRemainingCalculator.GetRemaining(store, orderForReceipt)
                 .Where(line => line.QtyRemaining > QtyTolerance)
                 .ToList();
             if (receiptLines.Count == 0)
@@ -675,6 +690,7 @@ public sealed class DocumentService
                 {
                     DocId = docId,
                     OrderLineId = line.OrderLineId,
+                    ProductionPurpose = line.ProductionPurpose,
                     ItemId = line.ItemId,
                     Qty = line.QtyRemaining,
                     QtyInput = null,
@@ -729,7 +745,7 @@ public sealed class DocumentService
         _data.UpdateDocOrder(docId, order.Id, cleanedOrderRef);
     }
 
-    public long AddDocLine(long docId, long itemId, double qty, long? fromLocationId, long? toLocationId, double? qtyInput = null, string? uomCode = null, string? fromHu = null, string? toHu = null, long? orderLineId = null, long? replacesLineId = null)
+    public long AddDocLine(long docId, long itemId, double qty, long? fromLocationId, long? toLocationId, double? qtyInput = null, string? uomCode = null, string? fromHu = null, string? toHu = null, long? orderLineId = null, long? replacesLineId = null, ProductionLinePurpose? productionPurpose = null)
     {
         if (qty <= 0)
         {
@@ -760,6 +776,7 @@ public sealed class DocumentService
             DocId = docId,
             ReplacesLineId = replacesLineId,
             OrderLineId = orderLineId,
+            ProductionPurpose = productionPurpose ?? ResolveDocLinePurpose(orderLineId),
             ItemId = itemId,
             Qty = qty,
             QtyInput = qtyInput,
@@ -798,7 +815,8 @@ public sealed class DocumentService
                 throw new InvalidOperationException("Для строки заказа требуется указать заказ в документе.");
             }
 
-            var remaining = _data.GetOrderReceiptRemaining(doc.OrderId.Value)
+            var orderForRemaining = _data.GetOrder(doc.OrderId.Value) ?? throw new InvalidOperationException("Заказ не найден.");
+            var remaining = OrderReceiptRemainingCalculator.GetRemaining(_data, orderForRemaining)
                 .ToDictionary(entry => entry.OrderLineId, entry => entry.QtyRemaining);
             if (!remaining.TryGetValue(line.OrderLineId.Value, out var limit))
             {
@@ -924,6 +942,7 @@ public sealed class DocumentService
             {
                 DocId = docId,
                 OrderLineId = line.OrderLineId,
+                ProductionPurpose = line.ProductionPurpose,
                 ItemId = line.ItemId,
                 Qty = qty,
                 QtyInput = allocatedInput,
@@ -1264,6 +1283,7 @@ public sealed class DocumentService
                     {
                         DocId = docId,
                         OrderLineId = line.OrderLineId,
+                        ProductionPurpose = line.ProductionPurpose,
                         ItemId = line.ItemId,
                         Qty = line.Qty,
                         QtyInput = line.QtyInput,
@@ -1286,6 +1306,7 @@ public sealed class DocumentService
                     {
                         DocId = docId,
                         OrderLineId = line.OrderLineId,
+                        ProductionPurpose = line.ProductionPurpose,
                         ItemId = line.ItemId,
                         Qty = line.Qty,
                         QtyInput = line.QtyInput,
@@ -1325,6 +1346,7 @@ public sealed class DocumentService
                     {
                         DocId = docId,
                         OrderLineId = line.OrderLineId,
+                        ProductionPurpose = line.ProductionPurpose,
                         ItemId = line.ItemId,
                         Qty = chunkQty,
                         QtyInput = chunkInput,
@@ -1486,6 +1508,7 @@ public sealed class DocumentService
             Id = line.Id,
             DocId = line.DocId,
             OrderLineId = orderLineId,
+            ProductionPurpose = line.ProductionPurpose,
             ItemId = line.ItemId,
             Qty = line.Qty,
             QtyInput = line.QtyInput,
@@ -1496,6 +1519,13 @@ public sealed class DocumentService
             ToHu = line.ToHu,
             PackSingleHu = line.PackSingleHu
         };
+    }
+
+    private static ProductionLinePurpose ResolveDocLinePurpose(long? orderLineId)
+    {
+        return orderLineId.HasValue
+            ? ProductionLinePurpose.CustomerOrder
+            : ProductionLinePurpose.InternalStock;
     }
 
     private CloseDocCheck BuildCloseDocCheck(long docId)
@@ -1532,29 +1562,15 @@ public sealed class DocumentService
             : new Dictionary<long, double>();
         var shipmentRequested = new Dictionary<long, double>();
         var productionReceiptRemaining = doc.Type == DocType.ProductionReceipt && doc.OrderId.HasValue
-            ? _data.GetOrderReceiptRemaining(doc.OrderId.Value)
+            ? OrderReceiptRemainingCalculator.GetRemaining(
+                    _data,
+                    _data.GetOrder(doc.OrderId.Value) ?? throw new InvalidOperationException("Заказ не найден."))
                 .ToDictionary(entry => entry.OrderLineId, entry => entry.QtyRemaining)
             : new Dictionary<long, double>();
         var productionReceiptRequested = new Dictionary<long, double>();
         var itemsById = _data.GetItems(null).ToDictionary(item => item.Id, item => item);
         var locations = _data.GetLocations();
         var locationsById = locations.ToDictionary(location => location.Id, location => location.Code);
-
-        if (doc.Type == DocType.ProductionReceipt && HasChestnyZnakMarkableLines(lines, itemsById))
-        {
-            if (!doc.OrderId.HasValue)
-            {
-                check.Errors.Add("Нельзя закрыть выпуск маркируемой продукции без связанного заказа ЧЗ.");
-            }
-            else
-            {
-                var order = _data.GetOrder(doc.OrderId.Value);
-                if (order == null || (order.MarkingRequired && order.MarkingStatus != MarkingStatus.Printed))
-                {
-                    check.Errors.Add("Нельзя закрыть выпуск маркируемой продукции: по заказу не проведена маркировка ЧЗ.");
-                }
-            }
-        }
 
         var outgoingBySource = new Dictionary<StockKey, double>();
         var outboundByLocation = new Dictionary<ItemLocationKey, double>();
@@ -1644,9 +1660,7 @@ public sealed class DocumentService
                     $"{rowLabel}: количество {FormatQty(line.Qty)} превышает лимит {FormatQty(maxQtyPerHu)} на один HU. Разбейте строку на несколько HU.");
             }
 
-            if (KmWorkflowEnabled
-                && item?.IsMarked == true
-                && (doc.Type == DocType.ProductionReceipt || doc.Type == DocType.Outbound))
+            if (doc.Type == DocType.ProductionReceipt && item?.IsChestnyZnakMarkingRequired == true)
             {
                 var rounded = Math.Round(line.Qty);
                 if (Math.Abs(line.Qty - rounded) > 0.0001)
@@ -1656,35 +1670,52 @@ public sealed class DocumentService
                 else
                 {
                     var required = (int)rounded;
-                    if (doc.Type == DocType.ProductionReceipt)
+                    var assigned = CountReceiptMarkingCodes(_data, line.Id);
+                    if (assigned < required)
                     {
-                        var assigned = _data.CountKmCodesByReceiptLine(line.Id);
-                        if (assigned != required)
+                        var available = _data.CountAvailableProductionMarkingCodesForReceipt(
+                            doc.OrderId,
+                            line.ItemId,
+                            item.Gtin);
+                        if (assigned + available < required)
                         {
-                            check.Errors.Add($"{rowLabel}: требуется привязать {required} код(ов) КМ, сейчас {assigned}.");
+                            check.Errors.Add(
+                                $"{rowLabel}: требуется {required} код(ов) КМ, привязано {assigned}, доступно свободных {available}.");
                         }
                     }
-                    else
-                    {
-                        var assigned = _data.CountKmCodesByShipmentLine(line.Id);
-                        if (assigned > required)
-                        {
-                            check.Errors.Add($"{rowLabel}: привязано больше кодов КМ ({assigned}), чем количество в строке ({required}).");
-                            continue;
-                        }
+                }
+            }
 
-                        var missing = required - assigned;
-                        if (missing > 0)
+            if (KmWorkflowEnabled
+                && item?.IsChestnyZnakMarkingRequired == true
+                && doc.Type == DocType.Outbound)
+            {
+                var rounded = Math.Round(line.Qty);
+                if (Math.Abs(line.Qty - rounded) > 0.0001)
+                {
+                    check.Errors.Add($"{rowLabel}: количество для маркируемого товара должно быть целым.");
+                }
+                else
+                {
+                    var required = (int)rounded;
+                    var assigned = _data.CountKmCodesByShipmentLine(line.Id);
+                    if (assigned > required)
+                    {
+                        check.Errors.Add($"{rowLabel}: привязано больше кодов КМ ({assigned}), чем количество в строке ({required}).");
+                        continue;
+                    }
+
+                    var missing = required - assigned;
+                    if (missing > 0)
+                    {
+                        var gtin14 = NormalizeGtinForKm(item.Gtin);
+                        var huId = ResolveHuId(_data, fromHu);
+                        var availableForAuto = GetAvailableKmForOutbound(_data, doc.OrderId, line.ItemId, gtin14, line.FromLocationId, huId, missing).Count;
+                        if (availableForAuto < missing)
                         {
-                            var gtin14 = NormalizeGtinForKm(item.Gtin);
-                            var huId = ResolveHuId(_data, fromHu);
-                            var availableForAuto = GetAvailableKmForOutbound(_data, doc.OrderId, line.ItemId, gtin14, line.FromLocationId, huId, missing).Count;
-                            if (availableForAuto < missing)
-                            {
-                                check.Errors.Add(
-                                    $"{rowLabel}: недостаточно КМ для авто-отгрузки. " +
-                                    $"Нужно {required}, уже привязано {assigned}, доступно {assigned + availableForAuto}.");
-                            }
+                            check.Errors.Add(
+                                $"{rowLabel}: недостаточно КМ для авто-отгрузки. " +
+                                $"Нужно {required}, уже привязано {assigned}, доступно {assigned + availableForAuto}.");
                         }
                     }
                 }
@@ -1904,15 +1935,6 @@ public sealed class DocumentService
             check.Errors.Add("Для отгрузки требуется контрагент.");
         }
         return check;
-    }
-
-    private static bool HasChestnyZnakMarkableLines(
-        IReadOnlyList<DocLine> lines,
-        IReadOnlyDictionary<long, Item> itemsById)
-    {
-        return lines.Any(line =>
-            itemsById.TryGetValue(line.ItemId, out var item)
-            && item.IsChestnyZnakMarkingRequired);
     }
 
     private IEnumerable<string> BuildHuLocationErrors(
@@ -2178,13 +2200,8 @@ public sealed class DocumentService
         return result;
     }
 
-    private static void TryRefreshLinkedOrderStatus(IDataStore store, Doc doc)
+    private static void TryRefreshLinkedOrderStatus(IDataStore store, Doc doc, IReadOnlyList<DocLine> lines)
     {
-        if (!doc.OrderId.HasValue)
-        {
-            return;
-        }
-
         if (doc.Type is not (DocType.Outbound or DocType.ProductionReceipt))
         {
             return;
@@ -2193,27 +2210,51 @@ public sealed class DocumentService
         try
         {
             var orderService = new OrderService(store);
-            var linkedOrder = orderService.GetOrder(doc.OrderId.Value);
-            if (linkedOrder == null)
+            var affectedOrderIds = CollectAffectedOrderIds(store, doc, lines);
+            if (affectedOrderIds.Count == 0)
             {
                 return;
             }
 
-            if (doc.Type == DocType.ProductionReceipt && linkedOrder.Type == OrderType.Internal)
+            foreach (var orderId in affectedOrderIds)
             {
-                OrderService.RefreshCustomerReceiptPlansCore(store);
-                return;
+                orderService.GetOrder(orderId);
             }
 
-            if (doc.Type == DocType.Outbound && linkedOrder.Type == OrderType.Customer)
-            {
-                OrderService.RefreshCustomerReceiptPlansCore(store);
-            }
+            OrderService.RefreshCustomerReceiptPlansCore(store);
         }
         catch (Exception ex) when (IsMockStoreException(ex))
         {
             // Compatibility for strict test mocks that do not expect auto status refresh.
         }
+    }
+
+    private static HashSet<long> CollectAffectedOrderIds(IDataStore store, Doc doc, IReadOnlyList<DocLine> lines)
+    {
+        var result = new HashSet<long>();
+        if (doc.OrderId.HasValue)
+        {
+            result.Add(doc.OrderId.Value);
+        }
+
+        var orderLineIds = lines
+            .Where(line => line.OrderLineId.HasValue)
+            .Select(line => line.OrderLineId!.Value)
+            .ToHashSet();
+        if (orderLineIds.Count == 0)
+        {
+            return result;
+        }
+
+        foreach (var order in store.GetOrders())
+        {
+            if (store.GetOrderLines(order.Id).Any(line => orderLineIds.Contains(line.Id)))
+            {
+                result.Add(order.Id);
+            }
+        }
+
+        return result;
     }
 
     private static bool IsMockStoreException(Exception ex)
@@ -2642,6 +2683,58 @@ public sealed class DocumentService
         }
     }
 
+    private static void AutoAssignProductionReceiptMarkingCodes(
+        IDataStore store,
+        Doc doc,
+        IReadOnlyList<DocLine> lines,
+        DateTime appliedAt)
+    {
+        var itemsById = store.GetItems(null).ToDictionary(item => item.Id, item => item);
+        for (var index = 0; index < lines.Count; index++)
+        {
+            var line = lines[index];
+            if (!itemsById.TryGetValue(line.ItemId, out var item) || !item.IsChestnyZnakMarkingRequired)
+            {
+                continue;
+            }
+
+            var rounded = Math.Round(line.Qty);
+            if (Math.Abs(line.Qty - rounded) > 0.0001)
+            {
+                throw new InvalidOperationException($"Строка {index + 1} ({item.Name}): количество для маркируемого товара должно быть целым.");
+            }
+
+            var required = (int)rounded;
+            var assigned = CountReceiptMarkingCodes(store, line.Id);
+            var missing = required - assigned;
+            if (missing <= 0)
+            {
+                continue;
+            }
+
+            var ids = store.GetAvailableProductionMarkingCodeIdsForReceipt(
+                doc.OrderId,
+                line.ItemId,
+                item.Gtin,
+                missing);
+            if (ids.Count < missing)
+            {
+                throw new InvalidOperationException(
+                    $"Строка {index + 1} ({item.Name}): требуется {required} код(ов) КМ, " +
+                    $"привязано {assigned}, доступно свободных {ids.Count}.");
+            }
+
+            var bound = store.AssignProductionMarkingCodesToReceipt(ids, doc.Id, line.Id, appliedAt);
+            assigned = CountReceiptMarkingCodes(store, line.Id);
+            if (assigned < required)
+            {
+                throw new InvalidOperationException(
+                    $"Строка {index + 1} ({item.Name}): требуется {required} код(ов) КМ, " +
+                    $"привязано {assigned}, доступно свободных {Math.Max(0, ids.Count - bound)}.");
+            }
+        }
+    }
+
     private static void EnsureHuAssignmentAllowed(IDataStore store, DocType type, long docLineId)
     {
         if (!KmWorkflowEnabled)
@@ -2658,6 +2751,12 @@ public sealed class DocumentService
         {
             throw new InvalidOperationException("Нельзя менять HU строки после привязки КМ.");
         }
+    }
+
+    private static int CountReceiptMarkingCodes(IDataStore store, long receiptLineId)
+    {
+        return store.CountKmCodesByReceiptLine(receiptLineId)
+               + store.CountProductionMarkingCodesByReceiptLine(receiptLineId);
     }
 
     private static long? ResolveHuId(IDataStore store, string? huCode)

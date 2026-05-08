@@ -34,9 +34,9 @@ public static class MarkingStatusMapper
     {
         return status switch
         {
-            MarkingStatus.Required => "Требуется файл ЧЗ",
-            MarkingStatus.Printed => "ЧЗ готов к нанесению",
-            _ => "Маркировка не требуется"
+            MarkingStatus.Required => "Маркировка не проведена",
+            MarkingStatus.Printed => "Маркировка проведена",
+            _ => string.Empty
         };
     }
 
@@ -49,9 +49,9 @@ public static class MarkingStatusMapper
     {
         return status switch
         {
-            MarkingStatus.Required => "Требуется",
-            MarkingStatus.Printed => "Готов к нанесению",
-            _ => "Не требуется"
+            MarkingStatus.Required => "Маркировка не проведена",
+            MarkingStatus.Printed => "Маркировка проведена",
+            _ => string.Empty
         };
     }
 }

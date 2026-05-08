@@ -5,6 +5,7 @@ public sealed class DocLineView
     public long Id { get; init; }
     public long ItemId { get; init; }
     public long? OrderLineId { get; init; }
+    public ProductionLinePurpose ProductionPurpose { get; init; } = ProductionLinePurpose.InternalStock;
     public string ItemName { get; init; } = string.Empty;
     public string? Barcode { get; init; }
     public double Qty { get; init; }
@@ -16,5 +17,6 @@ public sealed class DocLineView
     public string? FromHu { get; init; }
     public string? ToHu { get; init; }
     public bool PackSingleHu { get; init; }
+    public string ProductionPurposeDisplay => ProductionLinePurposeMapper.ToDisplayName(ProductionPurpose);
 }
 

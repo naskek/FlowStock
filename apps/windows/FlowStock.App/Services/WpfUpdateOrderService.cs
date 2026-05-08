@@ -42,7 +42,8 @@ public sealed class WpfUpdateOrderService
                 .Select(line => new UpdateOrderApiLineRequest
                 {
                     ItemId = line.ItemId,
-                    QtyOrdered = line.QtyOrdered
+                    QtyOrdered = line.QtyOrdered,
+                    ProductionPurpose = ProductionLinePurposeMapper.ToDbValue(line.ProductionPurpose)
                 })
                 .ToList()
         };

@@ -11,6 +11,12 @@
                     Content="Сформировать Excel ЧЗ"
                     Width="180"
                     Click="Export_Click" />
+            <Button x:Name="CreateMarkingButton"
+                    Content="Legacy/debug"
+                    Width="120"
+                    Margin="12,0,0,0"
+                    ToolTip="Маркировка формируется из окна заказа"
+                    Click="CreateMarking_Click" />
             <CheckBox x:Name="IncludeCompletedCheck"
                       Margin="16,0,0,0"
                       VerticalAlignment="Center"
@@ -32,13 +38,15 @@
                   SelectionMode="Extended"
                   SelectionUnit="FullRow">
             <DataGrid.Columns>
-                <DataGridTextColumn Header="Номер заказа" Binding="{Binding OrderRef}" Width="130" />
-                <DataGridTextColumn Header="Клиент" Binding="{Binding PartnerDisplay}" Width="220" />
+                <DataGridTextColumn Header="Заказ/источник" Binding="{Binding OrderRef}" Width="150" />
+                <DataGridTextColumn Header="Источник" Binding="{Binding PartnerDisplay}" Width="220" />
                 <DataGridTextColumn Header="Статус заказа" Binding="{Binding OrderStatusDisplay}" Width="130" />
                 <DataGridTextColumn Header="Дата/срок" Binding="{Binding DueDateDisplay}" Width="120" />
+                <DataGridTextColumn Header="Товар / GTIN" Binding="{Binding ItemDisplay}" Width="220" />
                 <DataGridTextColumn Header="Статус маркировки" Binding="{Binding MarkingStatusDisplay}" Width="180" />
                 <DataGridTextColumn Header="Количество строк ЧЗ" Binding="{Binding MarkingLineCount}" Width="140" />
-                <DataGridTextColumn Header="Количество кодов ЧЗ" Binding="{Binding MarkingCodeCountDisplay}" Width="150" />
+                <DataGridTextColumn Header="Запрошено ЧЗ" Binding="{Binding RequestedQuantityDisplay}" Width="120" />
+                <DataGridTextColumn Header="Коды всего/своб./прив." Binding="{Binding CodesDisplay}" Width="160" />
                 <DataGridTextColumn Header="Дата последнего формирования файла" Binding="{Binding LastGeneratedAtDisplay}" Width="220" />
             </DataGrid.Columns>
         </DataGrid>

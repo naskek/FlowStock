@@ -1,0 +1,6 @@
+BEGIN;
+
+ALTER TABLE IF EXISTS marking_order
+    ALTER COLUMN order_id DROP NOT NULL;
+
+COMMIT;

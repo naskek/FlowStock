@@ -97,6 +97,10 @@ public interface IDataStore
     void UpdateOrderStatus(long orderId, OrderStatus status);
     IReadOnlyList<MarkingOrderQueueRow> GetMarkingOrderQueue(bool includeCompleted);
     IReadOnlyList<MarkingOrderLineCandidate> GetMarkingOrderLineCandidates(IReadOnlyCollection<long> orderIds);
+    IReadOnlyList<MarkingOrder> GetMarkingOrdersByIds(IReadOnlyCollection<Guid> ids);
+    IReadOnlyList<MarkingOrder> GetMarkingOrdersByItemIds(IReadOnlyCollection<long> itemIds);
+    void AddMarkingOrder(MarkingOrder order);
+    void MarkMarkingOrdersPrinted(IReadOnlyCollection<Guid> ids, DateTime printedAt);
     void MarkOrdersPrinted(IReadOnlyCollection<long> orderIds, DateTime printedAt);
     void UpdateOrderMarkingStatusForBackfill(long orderId, MarkingStatus status, DateTime timestamp);
     IReadOnlyList<OrderLine> GetOrderLines(long orderId);
@@ -109,6 +113,7 @@ public interface IDataStore
     IReadOnlyList<OrderShipmentLine> GetOrderShipmentRemaining(long orderId);
     long AddOrderLine(OrderLine line);
     void UpdateOrderLineQty(long orderLineId, double qtyOrdered);
+    void UpdateOrderLinePurpose(long orderLineId, ProductionLinePurpose purpose);
     void DeleteOrderLine(long orderLineId);
     void DeleteOrderLines(long orderId);
     void DeleteOrder(long orderId);
@@ -159,6 +164,8 @@ public interface IDataStore
     void UpdateMarkingCodeImport(MarkingCodeImport import);
     bool ExistsMarkingCodeByRaw(string code);
     void AddMarkingCodes(IReadOnlyList<MarkingCode> codes);
+    int CountMarkingCodesByMarkingOrder(Guid markingOrderId);
+    int CountFreeProductionMarkingCodesByItem(long itemId, string? gtin);
     MarkingOrder? FindMarkingOrderByRequestNumber(string requestNumber);
     void UpdateMarkingOrderStatus(Guid id, string status, DateTime? codesBoundAt, DateTime updatedAt);
     IReadOnlyList<ClientBlockSetting> GetClientBlockSettings();
@@ -181,6 +188,10 @@ public interface IDataStore
     int CountKmCodesWithoutSku(long batchId);
     int CountKmCodesByReceiptLine(long receiptLineId);
     int CountKmCodesByShipmentLine(long shipLineId);
+    int CountProductionMarkingCodesByReceiptLine(long receiptLineId);
+    int CountAvailableProductionMarkingCodesForReceipt(long? sourceOrderId, long itemId, string? gtin);
+    IReadOnlyList<Guid> GetAvailableProductionMarkingCodeIdsForReceipt(long? sourceOrderId, long itemId, string? gtin, int take);
+    int AssignProductionMarkingCodesToReceipt(IReadOnlyList<Guid> codeIds, long docId, long lineId, DateTime appliedAt);
     IReadOnlyList<long> GetAvailableKmCodeIds(long? batchId, long? orderId, long skuId, string? gtin14, int take);
     IReadOnlyList<long> GetAvailableKmOnHandCodeIds(long? orderId, long skuId, string? gtin14, long? locationId, long? huId, int take);
     int AssignKmCodesToReceipt(IReadOnlyList<long> codeIds, long docId, long lineId, long? huId, long? locationId);

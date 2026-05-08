@@ -208,6 +208,7 @@ public partial class OperationDetailsWindow : Window
     {
         _ordersAll.Clear();
         var isProductionReceipt = _doc?.Type == DocType.ProductionReceipt;
+        var isOutbound = _doc?.Type == DocType.Outbound;
         var orders = _services.WpfReadApi.TryGetOrders(includeInternal: true, search: null, out var apiOrders)
             ? apiOrders
             : Array.Empty<Order>();
@@ -228,6 +229,13 @@ public partial class OperationDetailsWindow : Window
                 }
             }
 
+            var hasShipmentRemaining = true;
+            if (isOutbound)
+            {
+                hasShipmentRemaining = GetOrderShipmentRemaining(order.Id)
+                    .Any(line => line.QtyRemaining > QtyTolerance);
+            }
+
             _ordersAll.Add(new OrderOption(
                 order.Id,
                 order.OrderRef,
@@ -236,7 +244,8 @@ public partial class OperationDetailsWindow : Window
                 order.PartnerId,
                 order.PartnerDisplay,
                 order.EffectiveMarkingStatus,
-                isProductionReceipt));
+                isProductionReceipt,
+                hasShipmentRemaining));
         }
 
         RefreshOrderList();
@@ -266,7 +275,7 @@ public partial class OperationDetailsWindow : Window
     {
         if (_doc?.Type == DocType.Outbound)
         {
-            return order.Type == OrderType.Customer && order.Status == OrderStatus.Accepted;
+            return OutboundOrderSelectionPolicy.IsCandidate(order.Type, order.Status, order.HasShipmentRemaining);
         }
 
         return true;
@@ -416,6 +425,7 @@ public partial class OperationDetailsWindow : Window
                 InventoryDiffQtyDisplay = inventoryDiffQty.HasValue ? FormatQty(inventoryDiffQty.Value) : string.Empty,
                 HasInventoryDiff = hasInventoryDiff,
                 IsMarked = isMarked,
+                ProductionPurpose = line.ProductionPurpose,
                 OrderLineDisplay = orderLineDisplay,
                 OrderLineHint = orderLineHint,
                 PackSingleHu = line.PackSingleHu,
@@ -993,6 +1003,7 @@ public partial class OperationDetailsWindow : Window
                 item.Id,
                 item.Barcode,
                 null,
+                ProductionLinePurpose.InternalStock,
                 take,
                 null,
                 uomCode,
@@ -1050,6 +1061,7 @@ public partial class OperationDetailsWindow : Window
                 item.Id,
                 item.Barcode,
                 null,
+                ProductionLinePurpose.InternalStock,
                 qtyBase,
                 qtyInput,
                 uomCode,
@@ -2573,6 +2585,7 @@ public partial class OperationDetailsWindow : Window
         DocKmColumn.Visibility = KmUiEnabled && (doc.Type is DocType.ProductionReceipt or DocType.Outbound)
             ? Visibility.Visible
             : Visibility.Collapsed;
+        DocProductionPurposeColumn.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
         DocOrderLineColumn.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
         DocPackSingleHuColumn.Visibility = doc.Type is DocType.ProductionReceipt or DocType.Inbound ? Visibility.Visible : Visibility.Collapsed;
         DocFromColumn.Visibility = showFromColumn ? Visibility.Visible : Visibility.Collapsed;
@@ -2907,6 +2920,7 @@ public partial class OperationDetailsWindow : Window
                 line.ItemId,
                 null,
                 line.OrderLineId,
+                line.ProductionPurpose,
                 allocatedQty,
                 null,
                 line.UomCode,
@@ -3138,14 +3152,14 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        if (!TryGetLineLocations(out _, out var toLocation, out _, out var toHu))
+        if (!TryGetLineLocations(out _, out var toLocation, out _, out _))
         {
             return;
         }
 
         if (IsServerBatchRebuildEnabled())
         {
-            var contexts = BuildProductionReceiptBatchContexts(orderId, toLocation?.Id, toHu);
+            var contexts = BuildProductionReceiptBatchContexts(orderId, toLocation?.Id);
             if (!await TryPersistHeaderViaServerAsync(
                     ResolveDocPartnerFromInput()?.Id,
                     orderId,
@@ -3352,6 +3366,7 @@ public partial class OperationDetailsWindow : Window
                         line.ItemId,
                         null,
                         line.OrderLineId,
+                        ProductionLinePurpose.CustomerOrder,
                         allocatedQty,
                         null,
                         null,
@@ -3422,29 +3437,14 @@ public partial class OperationDetailsWindow : Window
         return result;
     }
 
-    private IReadOnlyList<WpfAddDocLineContext> BuildProductionReceiptBatchContexts(long orderId, long? toLocationId, string? toHu)
+    private IReadOnlyList<WpfAddDocLineContext> BuildProductionReceiptBatchContexts(long orderId, long? toLocationId)
     {
         var effectiveToLocationId = toLocationId ?? ResolveDefaultReceiptLocation(preferAutoEnabled: true)?.Id;
-        var receiptLines = _services.WpfReadApi.TryGetOrderReceiptRemainingDetailed(orderId, out var apiReceiptLines)
+        var receiptLines = _services.WpfReadApi.TryGetOrderReceiptRemaining(orderId, out var apiReceiptLines)
             ? apiReceiptLines
             : Array.Empty<OrderReceiptLine>();
 
-        return receiptLines
-            .Where(line => line.QtyRemaining > QtyTolerance)
-            .OrderBy(line => line.SortOrder)
-            .ThenBy(line => line.OrderLineId)
-            .Select(line => new WpfAddDocLineContext(
-                line.ItemId,
-                null,
-                line.OrderLineId,
-                line.QtyRemaining,
-                null,
-                null,
-                null,
-                line.ToLocationId ?? effectiveToLocationId,
-                null,
-                NormalizeHuValue(line.ToHu) ?? NormalizeHuValue(toHu)))
-            .ToList();
+        return ProductionReceiptTransferBuilder.BuildInitialContexts(receiptLines, effectiveToLocationId);
     }
 
     private bool IsServerBatchRebuildEnabled()
@@ -4952,11 +4952,11 @@ public partial class OperationDetailsWindow : Window
         {
             var blockedOrder = _ordersAll.FirstOrDefault(order => string.Equals(order.OrderRef, text, StringComparison.OrdinalIgnoreCase));
             if (_doc?.Type == DocType.Outbound
-                && blockedOrder is { Type: OrderType.Customer }
-                && blockedOrder.Status != OrderStatus.Accepted)
+                && blockedOrder != null
+                && !OutboundOrderSelectionPolicy.IsCandidate(blockedOrder.Type, blockedOrder.Status, blockedOrder.HasShipmentRemaining))
             {
                 MessageBox.Show(
-                    "К отгрузке доступны только заказы в статусе \"Готов\".",
+                    "К отгрузке доступны только клиентские заказы с остатком к отгрузке.",
                     "Операция",
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning);
@@ -5104,6 +5104,8 @@ public partial class OperationDetailsWindow : Window
         public string InventoryDiffQtyDisplay { get; init; } = string.Empty;
         public bool HasInventoryDiff { get; init; }
         public bool IsMarked { get; init; }
+        public ProductionLinePurpose ProductionPurpose { get; init; }
+        public string ProductionPurposeDisplay => ProductionLinePurposeMapper.ToDisplayName(ProductionPurpose);
         public string OrderLineDisplay { get; init; } = string.Empty;
         public string OrderLineHint { get; init; } = string.Empty;
         public bool PackSingleHu { get; init; }
@@ -5153,9 +5155,10 @@ public partial class OperationDetailsWindow : Window
         long? PartnerId,
         string PartnerDisplay,
         MarkingStatus MarkingStatus,
-        bool ShowMarkingStatus)
+        bool ShowMarkingStatus,
+        bool HasShipmentRemaining)
     {
-        public string DisplayName => ShowMarkingStatus
+        public string DisplayName => ShowMarkingStatus && MarkingStatus != MarkingStatus.NotRequired
             ? $"{BaseDisplayName} - Маркировка ЧЗ: {ProductionReceiptMarkingLabel}{ProblemMarker}"
             : BaseDisplayName;
 
@@ -5167,9 +5170,9 @@ public partial class OperationDetailsWindow : Window
 
         private string ProductionReceiptMarkingLabel => MarkingStatus switch
         {
-            MarkingStatus.Printed => "готов к нанесению",
-            MarkingStatus.NotRequired => "не требуется",
-            _ => "требуется"
+            MarkingStatus.Printed => "проведена",
+            MarkingStatus.NotRequired => string.Empty,
+            _ => "не проведена"
         };
 
         private string ProblemMarker => MarkingStatus == MarkingStatus.Required

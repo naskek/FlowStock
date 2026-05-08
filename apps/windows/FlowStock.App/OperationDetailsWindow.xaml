@@ -130,6 +130,7 @@
                 <DataGridTextColumn x:Name="DocInventoryDbColumn" Header="В базе" Binding="{Binding InventoryDbQtyDisplay}" Width="140" />
                 <DataGridTextColumn x:Name="DocInventoryDiffColumn" Header="Расхождение" Binding="{Binding InventoryDiffQtyDisplay}" Width="140" />
                 <DataGridTextColumn Header="Доступно" Binding="{Binding AvailableQty, StringFormat={}{0:0.###}}" Width="140" />
+                <DataGridTextColumn x:Name="DocProductionPurposeColumn" Header="Назначение" Binding="{Binding ProductionPurposeDisplay}" Width="120" />
                 <DataGridTextColumn x:Name="DocOrderLineColumn" Header="По заказу" Binding="{Binding OrderLineDisplay}" Width="160">
                     <DataGridTextColumn.ElementStyle>
                         <Style TargetType="TextBlock">

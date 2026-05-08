@@ -23,7 +23,7 @@
     stock: { key: "", direction: "asc" },
     catalog: { key: "", direction: "asc" },
     orders: { key: "", direction: "asc" },
-    productionNeed: { key: "productionNeedQty", direction: "desc" },
+    productionNeed: { key: "", direction: "asc" },
   };
   var cachedItems = [];
   var cachedItemsById = {};
@@ -766,12 +766,9 @@
       '<section class="pc-card">' +
       '  <div class="section-title">Потребность производства</div>' +
       '  <div class="pc-toolbar">' +
-      '    <label class="pc-check-inline">' +
-      '      <input id="productionNeedShowAll" type="checkbox" />' +
-      "      <span>Показать все</span>" +
-      "    </label>" +
       '    <div class="pc-toolbar-actions">' +
       '      <button id="productionNeedRefreshBtn" class="btn btn-outline" type="button">Обновить</button>' +
+      '      <button id="productionNeedCreateOrdersBtn" class="btn btn-primary" type="button">Сформировать заказ</button>' +
       "    </div>" +
       '    <div id="productionNeedStatus" class="pc-status"></div>' +
       "  </div>" +
@@ -782,16 +779,16 @@
 
   function mapProductionNeedRow(row) {
     return {
+      needDate: String((row && row.need_date) || ""),
       itemId: Number(row && row.item_id) || 0,
       gtin: String((row && row.gtin) || ""),
       itemName: String((row && row.item_name) || ""),
-      itemType: String((row && (row.item_type || row.item_type_name)) || ""),
-      physicalStockQty: Number(row && row.physical_stock_qty) || 0,
-      activeCustomerOrderOpenQty: Number(row && row.active_customer_order_open_qty) || 0,
-      reservedCustomerOrderQty: Number(row && row.reserved_customer_order_qty) || 0,
+      itemType: String((row && (row.item_type || row.item_type_name)) || "Без типа"),
       freeStockQty: Number(row && row.free_stock_qty) || 0,
       minStockQty: Number(row && row.min_stock_qty) || 0,
-      productionNeedQty: Number(row && row.production_need_qty) || 0,
+      toCloseOrdersQty: Number(row && row.to_close_orders_qty) || 0,
+      toMinStockQty: Number(row && row.to_min_stock_qty) || 0,
+      totalToMakeQty: Number(row && row.total_to_make_qty) || 0,
     };
   }
 
@@ -803,32 +800,30 @@
     var body = rows
       .map(function (row) {
         return (
-          "<tr>" +
-          "<td>" +
-          escapeHtml(row.gtin || "-") +
-          "</td>" +
-          "<td>" +
-          escapeHtml(row.itemName || "-") +
-          "</td>" +
-          '<td class="pc-num"><span class="pc-qty">' +
-          escapeHtml(formatReportQty(row.physicalStockQty)) +
-          "</span></td>" +
-          '<td class="pc-num">' +
-          escapeHtml(formatReportQty(row.activeCustomerOrderOpenQty)) +
-          "</td>" +
-          '<td class="pc-num">' +
-          escapeHtml(formatReportQty(row.reservedCustomerOrderQty)) +
-          "</td>" +
-          '<td class="pc-num">' +
-          escapeHtml(formatReportQty(row.freeStockQty)) +
-          "</td>" +
-          '<td class="pc-num">' +
-          escapeHtml(formatReportQty(row.minStockQty)) +
-          "</td>" +
-          '<td class="pc-num"><span class="pc-qty pc-production-need-qty">' +
-          escapeHtml(formatReportQty(row.productionNeedQty)) +
-          "</span></td>" +
-          "</tr>"
+        "<tr>" +
+        "<td>" +
+        '<div class="pc-production-need-item-name">' +
+        escapeHtml(row.itemName || "-") +
+        "</div>" +
+        '<div class="pc-production-need-item-gtin">' +
+        escapeHtml(row.gtin || "-") +
+        "</div>" +
+        "</td>" +
+        '<td class="pc-num">' +
+        escapeHtml(formatReportQty(row.freeStockQty)) +
+        " / " +
+        escapeHtml(formatReportQty(row.minStockQty)) +
+        "</td>" +
+        '<td class="pc-num">' +
+        escapeHtml(formatReportQty(row.toCloseOrdersQty)) +
+        "</td>" +
+        '<td class="pc-num">' +
+        escapeHtml(formatReportQty(row.toMinStockQty)) +
+        "</td>" +
+        '<td class="pc-num"><span class="pc-qty pc-production-need-qty">' +
+        escapeHtml(formatReportQty(row.totalToMakeQty)) +
+        "</span></td>" +
+        "</tr>"
         );
       })
       .join("");
@@ -837,14 +832,11 @@
       '<div class="pc-table-scroll">' +
       '<table class="pc-table pc-production-need-table">' +
       "<thead><tr>" +
-      renderSortableHeader("productionNeed", "gtin", "GTIN") +
-      renderSortableHeader("productionNeed", "itemName", "Наименование") +
-      renderSortableHeader("productionNeed", "physicalStockQty", "На складе") +
-      renderSortableHeader("productionNeed", "activeCustomerOrderOpenQty", "В заказах") +
-      renderSortableHeader("productionNeed", "reservedCustomerOrderQty", "Зарезервировано") +
-      renderSortableHeader("productionNeed", "freeStockQty", "Свободно") +
-      renderSortableHeader("productionNeed", "minStockQty", "Мин. остаток") +
-      renderSortableHeader("productionNeed", "productionNeedQty", "Необходимо произвести") +
+      "<th>Номенклатура</th>" +
+      '<th class="pc-num">Остаток</th>' +
+      '<th class="pc-num">До закрытия заказов</th>' +
+      '<th class="pc-num">На склад до мин.</th>' +
+      '<th class="pc-num">Всего произвести</th>' +
       "</tr></thead>" +
       "<tbody>" +
       body +
@@ -864,9 +856,13 @@
     });
   }
 
+  function getProductionNeedCreateOrdersRefreshUrl() {
+    return buildOrdersUrl("", ORDERS_FETCH_LIMIT, 0);
+  }
+
   function wireProductionNeed() {
-    var showAllInput = document.getElementById("productionNeedShowAll");
     var refreshBtn = document.getElementById("productionNeedRefreshBtn");
+    var createOrdersBtn = document.getElementById("productionNeedCreateOrdersBtn");
     var statusEl = document.getElementById("productionNeedStatus");
     var tableWrap = document.getElementById("productionNeedTableWrap");
 
@@ -878,34 +874,23 @@
 
     function renderRows(sourceRows) {
       var rows = Array.isArray(sourceRows) ? sourceRows.slice() : [];
-      if (!showAllInput || showAllInput.checked !== true) {
-        rows = rows.filter(function (row) {
-          return Number(row.productionNeedQty) > 0;
-        });
-      }
-      rows = sortRows(rows, "productionNeed", {
-        gtin: { type: "text", getValue: function (row) { return row.gtin; } },
-        itemName: { type: "text", getValue: function (row) { return row.itemName; } },
-        physicalStockQty: { type: "number", getValue: function (row) { return row.physicalStockQty; } },
-        activeCustomerOrderOpenQty: { type: "number", getValue: function (row) { return row.activeCustomerOrderOpenQty; } },
-        reservedCustomerOrderQty: { type: "number", getValue: function (row) { return row.reservedCustomerOrderQty; } },
-        freeStockQty: { type: "number", getValue: function (row) { return row.freeStockQty; } },
-        minStockQty: { type: "number", getValue: function (row) { return row.minStockQty; } },
-        productionNeedQty: { type: "number", getValue: function (row) { return row.productionNeedQty; } },
+      rows.sort(function (left, right) {
+        var totalCompare = Number(right.totalToMakeQty) - Number(left.totalToMakeQty);
+        if (totalCompare !== 0) {
+          return totalCompare;
+        }
+
+        return String(left.itemName || "").localeCompare(String(right.itemName || ""), "ru");
       });
       if (!tableWrap) {
         return;
       }
       tableWrap.innerHTML = renderProductionNeedTable(rows);
-      bindTableSorting(tableWrap, "productionNeed", function () {
-        renderRows(sourceRows);
-      });
     }
 
     function loadAndRender() {
-      var includeZero = !!(showAllInput && showAllInput.checked);
       setStatus("Загрузка...");
-      return loadProductionNeedData(includeZero)
+      return loadProductionNeedData(false)
         .then(function (rows) {
           renderRows(rows);
           setStatus("Обновлено: " + formatDateTime(new Date()));
@@ -921,8 +906,34 @@
     if (refreshBtn) {
       refreshBtn.addEventListener("click", loadAndRender);
     }
-    if (showAllInput) {
-      showAllInput.addEventListener("change", loadAndRender);
+
+    if (createOrdersBtn) {
+      createOrdersBtn.addEventListener("click", function () {
+        createOrdersBtn.disabled = true;
+        setStatus("Формирование производственного черновика...");
+        fetchJson("/api/production-needs/create-orders", {
+          method: "POST",
+        })
+          .then(function (payload) {
+            var message = payload && payload.message
+              ? String(payload.message)
+              : "Производственный черновик сформирован.";
+            window.alert(message);
+            return Promise.all([
+              loadAndRender(),
+              fetchJson(getProductionNeedCreateOrdersRefreshUrl()).catch(function () {
+                return null;
+              }),
+            ]);
+          })
+          .catch(function (error) {
+            setStatus("Ошибка формирования производственного черновика");
+            window.alert(error && error.message ? error.message : "Не удалось сформировать производственный черновик.");
+          })
+          .finally(function () {
+            createOrdersBtn.disabled = false;
+          });
+      });
     }
 
     setActiveLiveRefreshHandler(loadAndRender);
@@ -2177,7 +2188,29 @@
   }
 
   function getOrderMarkingPresentation(order) {
-    var rawEffectiveStatus = String((order && order.marking_effective_status) || "")
+    var serverLabel = String((order && order.marking_label) || "").trim();
+    if (serverLabel === "Маркировка проведена") {
+      return {
+        tone: "success",
+        label: "Маркировка проведена",
+        title: "Маркировка проведена",
+      };
+    }
+    if (serverLabel === "Маркировка не проведена") {
+      return {
+        tone: "danger",
+        label: "Маркировка не проведена",
+        title: "Маркировка не проведена",
+      };
+    }
+    if (order && order.marking_completed === true) {
+      return {
+        tone: "success",
+        label: "Маркировка проведена",
+        title: "Маркировка проведена",
+      };
+    }
+    var rawEffectiveStatus = String((order && (order.marking_effective_status || order.marking_status)) || "")
       .trim()
       .toUpperCase();
     var effectiveStatus = rawEffectiveStatus;
@@ -2185,34 +2218,49 @@
     if (effectiveStatus === "EXCEL_GENERATED") {
       effectiveStatus = "PRINTED";
     }
-    var display = String((order && order.marking_status_display) || "").trim();
-
+    if (!effectiveStatus && order && order.marking_required === true) {
+      effectiveStatus = "REQUIRED";
+    }
     if (effectiveStatus === "PRINTED") {
       return {
         tone: "success",
-        label: legacyExcelGenerated ? "ЧЗ готов к нанесению" : display || "ЧЗ готов к нанесению",
-        title: display || "ЧЗ готов к нанесению",
+        label: "Маркировка проведена",
+        title: "Маркировка проведена",
       };
     }
 
     if (effectiveStatus === "REQUIRED") {
       return {
-        tone: "warning",
-        label: "Требуется ЧЗ",
-        title: display || "Требуется ЧЗ",
+        tone: "danger",
+        label: "Маркировка не проведена",
+        title: "Маркировка не проведена",
       };
     }
 
     return {
       tone: "neutral",
-      label: display || "Маркировка не требуется",
-      title: display || "Маркировка не требуется",
+      label: "",
+      title: "",
     };
   }
 
   function renderOrderMarkingIndicator(order) {
     var marking = getOrderMarkingPresentation(order);
+    if (!marking.label) {
+      return "";
+    }
+
     return renderStatusBadge(marking.label, marking.tone, "pc-marking-badge", marking.title);
+  }
+
+  function normalizeMarkingTaskRows(rows) {
+    return (Array.isArray(rows) ? rows : []).filter(function (row) {
+      if (!row) {
+        return false;
+      }
+
+      return !!row.marking_order_id || Number(row.order_id) > 0;
+    });
   }
 
   function renderReadinessBadge(readiness) {
@@ -2579,7 +2627,8 @@
       }
 
       var duplicateIndex = linesState.findIndex(function (line, lineIndex) {
-        return lineIndex !== index && Number(line.item_id) === Number(selectedId);
+        return lineIndex !== index &&
+          Number(line.item_id) === Number(selectedId);
       });
       if (duplicateIndex >= 0) {
         hideSuggestionOverlay();
@@ -2825,6 +2874,10 @@
       return !!(refs.internalInput && refs.internalInput.checked);
     }
 
+    function getDefaultProductionPurpose() {
+      return isInternalOrderRequested() ? "INTERNAL_STOCK" : "CUSTOMER_ORDER";
+    }
+
     function syncInternalOrderState() {
       if (!refs.partnerInput) {
         return;
@@ -2839,6 +2892,7 @@
       } else {
         updatePartnerHint();
       }
+      renderLines();
     }
 
     function buildItemLabel(item) {
@@ -3286,6 +3340,7 @@
         lines.push({
           item_id: itemId,
           qty_ordered: qty,
+          production_purpose: internalOrder ? "INTERNAL_STOCK" : "CUSTOMER_ORDER",
         });
       });
 
@@ -3527,6 +3582,9 @@
               escapeHtml(line.gtin || "-") +
               "</td>" +
               "<td>" +
+              escapeHtml(String(line.production_purpose_display || (line.production_purpose === "CUSTOMER_ORDER" ? "Под заказ" : "На склад"))) +
+              "</td>" +
+              "<td>" +
               escapeHtml(String(line.qty_ordered || 0)) +
               "</td>" +
               "<td>" +
@@ -3553,6 +3611,7 @@
           "<th>Товар</th>" +
           "<th>SKU / ШК</th>" +
           "<th>GTIN</th>" +
+          "<th>Назначение</th>" +
           "<th>Заказано</th>" +
           "<th>" +
           escapeHtml(processedHeader) +
@@ -3827,7 +3886,9 @@
     window.FlowStockPcTestHooks.getOrderStatusPresentation = getOrderStatusPresentation;
     window.FlowStockPcTestHooks.getOrderMarkingPresentation = getOrderMarkingPresentation;
     window.FlowStockPcTestHooks.renderOrderMarkingIndicator = renderOrderMarkingIndicator;
+    window.FlowStockPcTestHooks.normalizeMarkingTaskRows = normalizeMarkingTaskRows;
     window.FlowStockPcTestHooks.buildOrdersUrl = buildOrdersUrl;
+    window.FlowStockPcTestHooks.getProductionNeedCreateOrdersRefreshUrl = getProductionNeedCreateOrdersRefreshUrl;
     window.FlowStockPcTestHooks.trimOrdersPage = trimOrdersPage;
     return;
   }

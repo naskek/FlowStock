@@ -61,5 +61,8 @@ internal static class UpdateOrderHttpApi
 
         [JsonPropertyName("qty_ordered")]
         public double QtyOrdered { get; init; }
+
+        [JsonPropertyName("production_purpose")]
+        public string? ProductionPurpose { get; init; }
     }
 }

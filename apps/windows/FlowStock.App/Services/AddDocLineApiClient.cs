@@ -102,6 +102,9 @@ public sealed class AddDocLineApiRequest
     [JsonPropertyName("order_line_id")]
     public long? OrderLineId { get; init; }
 
+    [JsonPropertyName("production_purpose")]
+    public string? ProductionPurpose { get; init; }
+
     [JsonPropertyName("qty")]
     public double Qty { get; init; }
 
@@ -161,6 +164,9 @@ public sealed class AddDocLineApiPayload
 
     [JsonPropertyName("order_line_id")]
     public long? OrderLineId { get; init; }
+
+    [JsonPropertyName("production_purpose")]
+    public string? ProductionPurpose { get; init; }
 
     [JsonPropertyName("from_location_id")]
     public long? FromLocationId { get; init; }

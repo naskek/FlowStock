@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Net.Http;
+using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using FlowStock.Core.Models;
@@ -284,6 +285,63 @@ public sealed class WpfReadApiService
                 : new List<ProductionNeedRow>(),
             "production-need-rows",
             out rows);
+    }
+
+    public async Task<WpfCreateProductionNeedOrdersResult> CreateProductionNeedOrdersAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var configuration = LoadConfiguration();
+            if (!configuration.IsConfigured)
+            {
+                return WpfCreateProductionNeedOrdersResult.Failure("Не настроен адрес FlowStock Server API.");
+            }
+
+            using var handler = CreateHandler(configuration);
+            using var client = new HttpClient(handler)
+            {
+                BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
+                Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
+            };
+            using var response = await client.PostAsJsonAsync(
+                "/api/production-needs/create-orders",
+                new { },
+                cancellationToken);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorPayload = await response.Content.ReadFromJsonAsync<ApiResultEnvelope>(JsonOptions, cancellationToken);
+                var message = string.IsNullOrWhiteSpace(errorPayload?.Error)
+                    ? $"Сервер вернул ошибку {(int)response.StatusCode}."
+                    : $"Сервер отклонил формирование производственного черновика: {errorPayload.Error}";
+                return WpfCreateProductionNeedOrdersResult.Failure(message);
+            }
+
+            var payload = await response.Content.ReadFromJsonAsync<CreateProductionNeedOrdersResponse>(JsonOptions, cancellationToken);
+            if (payload == null || !payload.Ok)
+            {
+                return WpfCreateProductionNeedOrdersResult.Failure("Сервер вернул неполный ответ при формировании производственного черновика.");
+            }
+
+            return WpfCreateProductionNeedOrdersResult.Success(payload.Message);
+        }
+        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.Warn("WPF production need create orders timed out");
+            return WpfCreateProductionNeedOrdersResult.Failure("Сервер не ответил вовремя при формировании производственного черновика.", ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.Error("WPF production need create orders request failed", ex);
+            return WpfCreateProductionNeedOrdersResult.Failure(
+                "Не удалось связаться с FlowStock Server API при формировании производственного черновика.",
+                ex);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Unexpected WPF production need create orders failure", ex);
+            return WpfCreateProductionNeedOrdersResult.Failure("Не удалось сформировать производственный черновик. Подробности записаны в лог.", ex);
+        }
     }
 
     public bool TryGetHuStockRows(out IReadOnlyList<HuStockContextRow> rows)
@@ -599,7 +657,9 @@ public sealed class WpfReadApiService
             MarkingStatus = MarkingStatusMapper.FromString(
                 ReadString(element, "marking_effective_status")
                 ?? ReadString(element, "marking_status")),
+            MarkingApplies = ReadBool(element, "marking_applies"),
             MarkingRequired = ReadBool(element, "marking_required"),
+            MarkingCodeCovered = ReadBool(element, "marking_completed"),
             MarkingExcelGeneratedAt = ReadDateTime(element, "marking_excel_generated_at"),
             MarkingPrintedAt = ReadDateTime(element, "marking_printed_at"),
             CreatedAt = ReadDateTime(element, "created_at") ?? DateTime.MinValue,
@@ -618,6 +678,7 @@ public sealed class WpfReadApiService
             Barcode = ReadString(element, "barcode"),
             Gtin = ReadString(element, "gtin"),
             QtyOrdered = ReadDouble(element, "qty_ordered"),
+            ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(ReadString(element, "production_purpose")),
             QtyShipped = ReadDouble(element, "qty_shipped"),
             QtyProduced = ReadDouble(element, "qty_produced"),
             QtyRemaining = ReadDouble(element, "qty_left"),
@@ -682,16 +743,16 @@ public sealed class WpfReadApiService
     {
         return new ProductionNeedRow
         {
+            NeedDate = ReadDateOnly(element, "need_date") ?? DateTime.Today,
             ItemId = ReadInt64(element, "item_id"),
             Gtin = ReadString(element, "gtin"),
             ItemName = ReadString(element, "item_name") ?? string.Empty,
             ItemTypeName = ReadString(element, "item_type"),
-            PhysicalStockQty = ReadDouble(element, "physical_stock_qty"),
-            ActiveCustomerOrderOpenQty = ReadDouble(element, "active_customer_order_open_qty"),
-            ReservedCustomerOrderQty = ReadDouble(element, "reserved_customer_order_qty"),
             FreeStockQty = ReadDouble(element, "free_stock_qty"),
             MinStockQty = ReadDouble(element, "min_stock_qty"),
-            ProductionNeedQty = ReadDouble(element, "production_need_qty")
+            ToCloseOrdersQty = ReadDouble(element, "to_close_orders_qty"),
+            ToMinStockQty = ReadDouble(element, "to_min_stock_qty"),
+            TotalToMakeQty = ReadDouble(element, "total_to_make_qty")
         };
     }
 
@@ -718,6 +779,7 @@ public sealed class WpfReadApiService
         {
             Id = ReadInt64(element, "id"),
             OrderLineId = ReadNullableInt64(element, "order_line_id"),
+            ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(ReadString(element, "production_purpose"), ReadNullableInt64(element, "order_line_id")),
             ItemId = ReadInt64(element, "item_id"),
             ItemName = ReadString(element, "item_name") ?? string.Empty,
             Barcode = ReadString(element, "barcode"),
@@ -756,6 +818,7 @@ public sealed class WpfReadApiService
             ItemId = ReadInt64(element, "item_id"),
             ItemName = ReadString(element, "item_name") ?? string.Empty,
             QtyOrdered = ReadDouble(element, "qty_ordered"),
+            ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(ReadString(element, "production_purpose")),
             QtyReceived = ReadDouble(element, "qty_received"),
             QtyRemaining = ReadDouble(element, "qty_remaining"),
             ToLocationId = ReadNullableInt64(element, "to_location_id"),
@@ -921,4 +984,38 @@ public sealed record WpfReadApiConfiguration(
     bool AllowInvalidTls)
 {
     public bool IsConfigured => !string.IsNullOrWhiteSpace(BaseUrl);
+}
+
+public sealed class WpfCreateProductionNeedOrdersResult
+{
+    private WpfCreateProductionNeedOrdersResult(bool isSuccess, string message, Exception? exception = null)
+    {
+        IsSuccess = isSuccess;
+        Message = message;
+        ErrorMessage = isSuccess ? string.Empty : message;
+        Exception = exception;
+    }
+
+    public bool IsSuccess { get; }
+    public string Message { get; }
+    public string ErrorMessage { get; }
+    public Exception? Exception { get; }
+
+    public static WpfCreateProductionNeedOrdersResult Success(string message) => new(true, message);
+    public static WpfCreateProductionNeedOrdersResult Failure(string message, Exception? exception = null) => new(false, message, exception);
+}
+
+file sealed class ApiResultEnvelope
+{
+    [JsonPropertyName("error")]
+    public string? Error { get; init; }
+}
+
+file sealed class CreateProductionNeedOrdersResponse
+{
+    [JsonPropertyName("ok")]
+    public bool Ok { get; init; }
+
+    [JsonPropertyName("message")]
+    public string Message { get; init; } = string.Empty;
 }

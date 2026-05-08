@@ -28,9 +28,44 @@ public sealed class MarkingValidationTests
     }
 
     [Fact]
-    public void ProductionReceiptWithMarkableItems_ClosesWhenOrderMarkingPrinted()
+    public void ProductionReceiptWithCustomerOrderMarkableItem_RejectsWithoutKmCodes()
     {
-        var harness = CreateHarnessWithOrder(MarkingStatus.Printed);
+        var harness = CreateHarnessWithOrder(OrderType.Customer);
+        var docCountBefore = harness.DocCount;
+        var docLineCountBefore = harness.TotalDocLineCount;
+
+        var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
+
+        Assert.False(result.Success);
+        Assert.Contains("Строка 1 (Маркируемый товар): требуется 5 код(ов) КМ, привязано 0, доступно свободных 0.", result.Errors);
+        Assert.Empty(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Draft, harness.GetDoc(1).Status);
+        Assert.Equal(docCountBefore, harness.DocCount);
+        Assert.Equal(docLineCountBefore, harness.TotalDocLineCount);
+    }
+
+    [Fact]
+    public void ProductionReceiptWithInternalOrderMarkableItem_RejectsWithoutKmCodes()
+    {
+        var harness = CreateHarnessWithOrder(OrderType.Internal);
+        var docCountBefore = harness.DocCount;
+        var docLineCountBefore = harness.TotalDocLineCount;
+
+        var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
+
+        Assert.False(result.Success);
+        Assert.Contains("Строка 1 (Маркируемый товар): требуется 5 код(ов) КМ, привязано 0, доступно свободных 0.", result.Errors);
+        Assert.Empty(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Draft, harness.GetDoc(1).Status);
+        Assert.Equal(docCountBefore, harness.DocCount);
+        Assert.Equal(docLineCountBefore, harness.TotalDocLineCount);
+    }
+
+    [Fact]
+    public void ProductionReceiptWithInternalOrderMarkableItem_ClosesWithEnoughKmCodes()
+    {
+        var harness = CreateHarnessWithOrder(OrderType.Internal);
+        harness.SeedKmCodeCountByReceiptLine(docLineId: 100, count: 5);
 
         var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
 
@@ -40,46 +75,181 @@ public sealed class MarkingValidationTests
         Assert.Equal(DocStatus.Closed, harness.GetDoc(1).Status);
     }
 
-    [Theory]
-    [InlineData(MarkingStatus.Required)]
-    [InlineData(MarkingStatus.NotRequired)]
-    public void ProductionReceiptWithMarkableItems_RejectsUntilOrderMarkingPrinted(MarkingStatus markingStatus)
+    [Fact]
+    public void ProductionReceiptWithProductionNeedMarkingOrder_AutoBindsCodesAndCloses()
     {
-        var harness = CreateHarnessWithOrder(markingStatus);
-        var docCountBefore = harness.DocCount;
-        var docLineCountBefore = harness.TotalDocLineCount;
+        var harness = CreateHarnessWithOrder(OrderType.Internal);
+        var markingOrderId = SeedProductionNeedMarkingOrder(harness, requestedQuantity: 5);
+        harness.SeedMarkingCodes(markingOrderId, count: 5, gtin: "04601234567890");
+
+        var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Errors);
+        Assert.Equal(5, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
+        Assert.Single(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Closed, harness.GetDoc(1).Status);
+    }
+
+    [Fact]
+    public void ProductionReceiptAfterChzExportWithTemporaryCodes_ClosesThroughRealClosePath()
+    {
+        var harness = CreateHarnessWithOrder(OrderType.Internal);
+        var markingOrderId = SeedProductionNeedMarkingOrder(harness, requestedQuantity: 5);
+        var export = new FlowStock.Core.Services.MarkingExcelService(harness.Store)
+            .Export(new[] { markingOrderId }, Array.Empty<long>(), DateTime.Parse("2026-05-01T10:00:00"));
+
+        Assert.True(export.IsSuccess);
+        Assert.Equal(5, harness.MarkingCodes.Count(code => code.MarkingOrderId == markingOrderId));
+        Assert.Equal(5, harness.MarkingCodes.Count(code => code.Status == FlowStock.Core.Models.Marking.MarkingCodeStatus.Reserved));
+
+        var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Errors);
+        Assert.Equal(5, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
+        Assert.Single(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Closed, harness.GetDoc(1).Status);
+    }
+
+    [Fact]
+    public void ProductionReceiptWithProductionNeedMarkingOrder_RejectsWhenCodesAreMissing()
+    {
+        var harness = CreateHarnessWithOrder(OrderType.Internal);
+        SeedProductionNeedMarkingOrder(harness, requestedQuantity: 5);
 
         var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
 
         Assert.False(result.Success);
-        Assert.Contains(
-            "Нельзя закрыть выпуск маркируемой продукции: по заказу не проведена маркировка ЧЗ.",
-            result.Errors);
+        Assert.Contains("Строка 1 (Маркируемый товар): требуется 5 код(ов) КМ, привязано 0, доступно свободных 0.", result.Errors);
         Assert.Empty(harness.LedgerEntries);
         Assert.Equal(DocStatus.Draft, harness.GetDoc(1).Status);
-        Assert.Equal(docCountBefore, harness.DocCount);
-        Assert.Equal(docLineCountBefore, harness.TotalDocLineCount);
     }
 
     [Fact]
-    public void ProductionReceiptWithMarkableItems_RejectsMissingOrderId()
+    public void ProductionReceiptWithPrintedProductionNeedTaskButNoCodes_StillRejects()
+    {
+        var harness = CreateHarnessWithOrder(OrderType.Internal);
+        var markingOrderId = SeedProductionNeedMarkingOrder(harness, requestedQuantity: 5);
+        harness.SeedMarkingOrder(new FlowStock.Core.Models.Marking.MarkingOrder
+        {
+            Id = markingOrderId,
+            OrderId = null,
+            ItemId = 100,
+            Gtin = "04601234567890",
+            RequestedQuantity = 5,
+            RequestNumber = "PN-100-printed",
+            Status = FlowStock.Core.Models.Marking.MarkingOrderStatus.Printed,
+            SourceType = FlowStock.Core.Services.MarkingNeedCreationService.ProductionNeedSourceType,
+            CreatedAt = new DateTime(2026, 4, 1, 10, 0, 0, DateTimeKind.Utc),
+            UpdatedAt = new DateTime(2026, 4, 1, 10, 0, 0, DateTimeKind.Utc)
+        });
+
+        var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
+
+        Assert.False(result.Success);
+        Assert.Contains("Строка 1 (Маркируемый товар): требуется 5 код(ов) КМ, привязано 0, доступно свободных 0.", result.Errors);
+        Assert.Empty(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Draft, harness.GetDoc(1).Status);
+    }
+
+    [Fact]
+    public void ProductionReceiptWithProductionNeedMarkingOrder_RejectsWhenCodesAreShort()
+    {
+        var harness = CreateHarnessWithOrder(OrderType.Internal);
+        var markingOrderId = SeedProductionNeedMarkingOrder(harness, requestedQuantity: 5);
+        harness.SeedMarkingCodes(markingOrderId, count: 3, gtin: "04601234567890");
+
+        var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
+
+        Assert.False(result.Success);
+        Assert.Contains("Строка 1 (Маркируемый товар): требуется 5 код(ов) КМ, привязано 0, доступно свободных 3.", result.Errors);
+        Assert.Equal(0, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void ProductionReceiptWithProductionNeedMarkingOrder_DoesNotReuseCodesBoundToAnotherLine()
+    {
+        var harness = CreateHarnessWithOrder(OrderType.Internal);
+        var markingOrderId = SeedProductionNeedMarkingOrder(harness, requestedQuantity: 5);
+        harness.SeedMarkingCodes(markingOrderId, count: 4, gtin: "04601234567890");
+        harness.SeedMarkingCodes(markingOrderId, count: 1, gtin: "04601234567890", receiptLineId: 777);
+
+        var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
+
+        Assert.False(result.Success);
+        Assert.Contains("Строка 1 (Маркируемый товар): требуется 5 код(ов) КМ, привязано 0, доступно свободных 4.", result.Errors);
+        Assert.Equal(1, harness.MarkingCodes.Count(code => code.ReceiptLineId == 777));
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void ProductionReceiptWithPartiallyBoundProductionCodes_BindsOnlyMissingCodes()
+    {
+        var harness = CreateHarnessWithOrder(OrderType.Internal);
+        var markingOrderId = SeedProductionNeedMarkingOrder(harness, requestedQuantity: 5);
+        harness.SeedMarkingCodes(markingOrderId, count: 2, gtin: "04601234567890", receiptLineId: 100);
+        harness.SeedMarkingCodes(markingOrderId, count: 3, gtin: "04601234567890");
+
+        var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
+
+        Assert.True(result.Success);
+        Assert.Equal(5, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
+        Assert.Single(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void ProductionReceiptWithOrderBasedMarkingOrder_StillCloses()
+    {
+        var harness = CreateHarnessWithOrder(OrderType.Internal);
+        var markingOrderId = Guid.NewGuid();
+        harness.SeedMarkingOrder(new FlowStock.Core.Models.Marking.MarkingOrder
+        {
+            Id = markingOrderId,
+            OrderId = 10,
+            ItemId = 100,
+            Gtin = "04601234567890",
+            RequestedQuantity = 5,
+            RequestNumber = "MO-10",
+            Status = FlowStock.Core.Models.Marking.MarkingOrderStatus.CodesBound,
+            CreatedAt = new DateTime(2026, 4, 1, 10, 0, 0, DateTimeKind.Utc),
+            UpdatedAt = new DateTime(2026, 4, 1, 10, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedMarkingCodes(markingOrderId, count: 5, gtin: "04601234567890");
+
+        var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
+
+        Assert.True(result.Success);
+        Assert.Equal(5, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
+        Assert.Single(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void ProductionReceiptWithInternalOrderNonMarkableItem_ClosesWithoutKmCodes()
+    {
+        var harness = CreateHarnessWithOrder(OrderType.Internal, markable: false);
+
+        var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Errors);
+        Assert.Single(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Closed, harness.GetDoc(1).Status);
+    }
+
+    [Fact]
+    public void ProductionReceiptMarkingValidation_DoesNotDependOnOrderOrOrderLine()
     {
         var harness = CreateHarnessWithDraftProductionReceipt(orderId: null);
         harness.SeedItem(CreateMarkableItem());
         harness.SeedLine(CreateReceiptLine(itemId: 100, orderLineId: null));
-        var docCountBefore = harness.DocCount;
-        var docLineCountBefore = harness.TotalDocLineCount;
 
         var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
 
         Assert.False(result.Success);
-        Assert.Contains(
-            "Нельзя закрыть выпуск маркируемой продукции без связанного заказа ЧЗ.",
-            result.Errors);
-        Assert.Empty(harness.LedgerEntries);
+        Assert.Contains("Строка 1 (Маркируемый товар): требуется 5 код(ов) КМ, привязано 0, доступно свободных 0.", result.Errors);
         Assert.Equal(DocStatus.Draft, harness.GetDoc(1).Status);
-        Assert.Equal(docCountBefore, harness.DocCount);
-        Assert.Equal(docLineCountBefore, harness.TotalDocLineCount);
     }
 
     [Fact]
@@ -122,19 +292,27 @@ public sealed class MarkingValidationTests
         Assert.Single(harness.LedgerEntries);
     }
 
-    private static CloseDocumentHarness CreateHarnessWithOrder(MarkingStatus markingStatus)
+    private static CloseDocumentHarness CreateHarnessWithOrder(OrderType orderType, bool markable = true)
     {
         var harness = CreateHarnessWithDraftProductionReceipt(orderId: 10);
-        harness.SeedItem(CreateMarkableItem());
+        harness.SeedItem(markable
+            ? CreateMarkableItem()
+            : new Item
+            {
+                Id = 100,
+                Name = "Обычный товар",
+                Gtin = "04601234567890",
+                ItemTypeEnableMarking = false
+            });
         harness.SeedOrder(new Order
         {
             Id = 10,
             OrderRef = "CO-2026-000010",
-            Type = OrderType.Customer,
+            Type = orderType,
             Status = OrderStatus.InProgress,
             CreatedAt = new DateTime(2026, 4, 1, 10, 0, 0, DateTimeKind.Utc),
-            MarkingStatus = markingStatus,
-            MarkingRequired = true
+            MarkingStatus = MarkingStatus.NotRequired,
+            MarkingRequired = false
         });
         harness.SeedOrderLine(new OrderLine
         {
@@ -198,5 +376,24 @@ public sealed class MarkingValidationTests
             ToLocationId = 10,
             ToHu = "HU-CZ-001"
         };
+    }
+
+    private static Guid SeedProductionNeedMarkingOrder(CloseDocumentHarness harness, int requestedQuantity)
+    {
+        var markingOrderId = Guid.NewGuid();
+        harness.SeedMarkingOrder(new FlowStock.Core.Models.Marking.MarkingOrder
+        {
+            Id = markingOrderId,
+            OrderId = null,
+            ItemId = 100,
+            Gtin = "04601234567890",
+            RequestedQuantity = requestedQuantity,
+            RequestNumber = $"PN-100-{requestedQuantity}",
+            Status = FlowStock.Core.Models.Marking.MarkingOrderStatus.CodesBound,
+            SourceType = FlowStock.Core.Services.MarkingNeedCreationService.ProductionNeedSourceType,
+            CreatedAt = new DateTime(2026, 4, 1, 10, 0, 0, DateTimeKind.Utc),
+            UpdatedAt = new DateTime(2026, 4, 1, 10, 0, 0, DateTimeKind.Utc)
+        });
+        return markingOrderId;
     }
 }

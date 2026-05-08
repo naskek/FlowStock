@@ -42,7 +42,8 @@ public sealed class WpfCreateOrderService
                 .Select(line => new CreateOrderApiLineRequest
                 {
                     ItemId = line.ItemId,
-                    QtyOrdered = line.QtyOrdered
+                    QtyOrdered = line.QtyOrdered,
+                    ProductionPurpose = ProductionLinePurposeMapper.ToDbValue(line.ProductionPurpose)
                 })
                 .ToList()
         };

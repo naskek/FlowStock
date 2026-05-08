@@ -80,6 +80,7 @@
                     <DataGridTextColumn Header="Наименование" Binding="{Binding ItemName}" Width="*" />
                     <DataGridTextColumn Header="SKU / ШК" Binding="{Binding Barcode}" Width="Auto" MaxWidth="220" />
                     <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="Auto" MaxWidth="180" />
+                    <DataGridTextColumn Header="Назначение" Binding="{Binding ProductionPurposeDisplay}" Width="Auto" MaxWidth="140" />
                     <DataGridTextColumn Header="Кол-во" Binding="{Binding QtyOrdered}" Width="Auto" MaxWidth="120" />
                 </DataGrid.Columns>
             </DataGrid>

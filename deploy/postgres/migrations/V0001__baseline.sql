@@ -278,13 +278,15 @@ CREATE INDEX IF NOT EXISTS idx_km_code_order_id ON km_code(order_id);
 
 CREATE TABLE IF NOT EXISTS marking_order (
     id UUID PRIMARY KEY,
-    order_id BIGINT NOT NULL,
+    order_id BIGINT,
     item_id BIGINT,
     gtin TEXT,
     requested_quantity INTEGER NOT NULL,
     request_number TEXT NOT NULL,
     status TEXT NOT NULL,
     notes TEXT,
+    source_type TEXT,
+    source_order_id BIGINT,
     requested_at TEXT,
     codes_bound_at TEXT,
     created_at TEXT NOT NULL,
@@ -296,6 +298,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_marking_order_request_number ON marking_ord
 CREATE INDEX IF NOT EXISTS ix_marking_order_order_id ON marking_order(order_id);
 CREATE INDEX IF NOT EXISTS ix_marking_order_status ON marking_order(status);
 CREATE INDEX IF NOT EXISTS ix_marking_order_gtin ON marking_order(gtin);
+CREATE INDEX IF NOT EXISTS ix_marking_order_source ON marking_order(source_type, source_order_id, item_id);
 
 CREATE TABLE IF NOT EXISTS marking_code_import (
     id UUID PRIMARY KEY,

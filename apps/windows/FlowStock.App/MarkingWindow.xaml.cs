@@ -34,19 +34,30 @@ public partial class MarkingWindow : Window
     {
         var selected = OrdersGrid.SelectedItems
             .OfType<MarkingOrderDisplayRow>()
-            .Select(row => row.OrderId)
+            .ToArray();
+        var selectedTasks = selected
+            .Select(row => row.MarkingOrderId)
+            .Where(id => id.HasValue)
+            .Select(id => id!.Value)
             .Distinct()
             .ToArray();
-        if (selected.Length == 0)
+        var selectedOrders = selected
+            .Where(row => !row.MarkingOrderId.HasValue)
+            .Select(row => row.OrderId)
+            .Where(id => id.HasValue && id.Value > 0)
+            .Select(id => id!.Value)
+            .Distinct()
+            .ToArray();
+        if (selectedTasks.Length == 0 && selectedOrders.Length == 0)
         {
-            MessageBox.Show("Выберите один или несколько заказов.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Выберите хотя бы одну задачу маркировки.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
         ExportButton.IsEnabled = false;
         try
         {
-            var result = await _services.WpfMarkingApi.TryExportAsync(selected).ConfigureAwait(true);
+            var result = await _services.WpfMarkingApi.TryExportAsync(selectedTasks, selectedOrders).ConfigureAwait(true);
             if (!result.IsSuccess || result.FileBytes == null)
             {
                 MessageBox.Show(result.Error ?? "Нет строк для формирования файла ЧЗ.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -63,7 +74,7 @@ public partial class MarkingWindow : Window
             if (dialog.ShowDialog(this) == true)
             {
                 File.WriteAllBytes(dialog.FileName, result.FileBytes);
-                MessageBox.Show("Файл ЧЗ сформирован. ЧЗ готов к нанесению.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show("Файл ЧЗ сформирован. Маркировка проведена.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
             }
 
             LoadOrders(showErrorMessage: false);
@@ -72,6 +83,15 @@ public partial class MarkingWindow : Window
         {
             ExportButton.IsEnabled = true;
         }
+    }
+
+    private void CreateMarking_Click(object sender, RoutedEventArgs e)
+    {
+        MessageBox.Show(
+            "Маркировка формируется из окна заказа. Этот раздел оставлен как журнал/legacy-view.",
+            "Маркировка",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
     }
 
     private void LoadOrders(bool showErrorMessage)
@@ -93,7 +113,7 @@ public partial class MarkingWindow : Window
             _orders.Add(new MarkingOrderDisplayRow(row));
         }
 
-        SummaryText.Text = $"Заказов: {_orders.Count}.";
+        SummaryText.Text = $"Задач: {_orders.Count}.";
     }
 
     private sealed class MarkingOrderDisplayRow
@@ -105,14 +125,25 @@ public partial class MarkingWindow : Window
             _row = row;
         }
 
-        public long OrderId => _row.OrderId;
-        public string OrderRef => _row.OrderRef;
-        public string PartnerDisplay => string.IsNullOrWhiteSpace(_row.PartnerDisplay) ? "-" : _row.PartnerDisplay;
+        public long? OrderId => _row.OrderId;
+        public Guid? MarkingOrderId => _row.MarkingOrderId;
+        public string OrderRef => string.IsNullOrWhiteSpace(_row.OrderRef) ? SourceDisplay : _row.OrderRef;
+        public string PartnerDisplay => string.IsNullOrWhiteSpace(_row.PartnerDisplay) ? SourceDisplay : _row.PartnerDisplay;
+        public string SourceDisplay => string.IsNullOrWhiteSpace(_row.DisplaySource) ? "-" : _row.DisplaySource;
         public string OrderStatusDisplay => OrderStatusMapper.StatusToDisplayName(_row.OrderStatus);
         public string DueDateDisplay => _row.DueDate?.ToString("dd.MM.yyyy", CultureInfo.CurrentCulture) ?? "-";
-        public string MarkingStatusDisplay => MarkingStatusMapper.ToDisplayName(_row.MarkingStatus);
+        public string MarkingStatusDisplay => !string.IsNullOrWhiteSpace(_row.DisplayStatus)
+            ? _row.DisplayStatus
+            : string.IsNullOrWhiteSpace(_row.TaskStatus)
+            ? MarkingStatusMapper.ToDisplayName(_row.MarkingStatus)
+            : _row.TaskStatus;
         public int MarkingLineCount => _row.MarkingLineCount;
         public string MarkingCodeCountDisplay => _row.MarkingCodeCount.ToString("0.###", CultureInfo.CurrentCulture);
+        public string RequestedQuantityDisplay => _row.RequestedQuantity.ToString(CultureInfo.CurrentCulture);
+        public string CodesDisplay => $"{_row.CodesTotal} / {_row.CodesFree} / {_row.CodesBound}";
+        public string ItemDisplay => string.IsNullOrWhiteSpace(_row.ItemName) && string.IsNullOrWhiteSpace(_row.Gtin)
+            ? "-"
+            : $"{_row.ItemName} {_row.Gtin}".Trim();
         public string LastGeneratedAtDisplay => _row.LastGeneratedAt?.ToString("dd.MM.yyyy HH:mm", CultureInfo.CurrentCulture) ?? "-";
     }
 }

@@ -74,6 +74,9 @@ public sealed class AddDocLineRequest
     [JsonPropertyName("order_line_id")]
     public long? OrderLineId { get; set; }
 
+    [JsonPropertyName("production_purpose")]
+    public string? ProductionPurpose { get; set; }
+
     [JsonPropertyName("qty")]
     public double Qty { get; set; }
 
@@ -294,6 +297,9 @@ public sealed class CreateOrderLineRequest
 
     [JsonPropertyName("qty_ordered")]
     public double QtyOrdered { get; set; }
+
+    [JsonPropertyName("production_purpose")]
+    public string? ProductionPurpose { get; set; }
 }
 
 public sealed class CreateOrderRequest
@@ -357,6 +363,9 @@ public sealed class UpdateOrderLineRequest
 
     [JsonPropertyName("qty_ordered")]
     public double QtyOrdered { get; set; }
+
+    [JsonPropertyName("production_purpose")]
+    public string? ProductionPurpose { get; set; }
 }
 
 public sealed class UpdateOrderRequest
@@ -384,6 +393,48 @@ public sealed class UpdateOrderRequest
 
     [JsonPropertyName("lines")]
     public List<UpdateOrderLineRequest>? Lines { get; set; }
+}
+
+public sealed class CreateProductionNeedOrdersResponse
+{
+    [JsonPropertyName("ok")]
+    public bool Ok { get; init; }
+
+    [JsonPropertyName("message")]
+    public string Message { get; init; } = string.Empty;
+
+    [JsonPropertyName("customer_draft_count")]
+    public int CustomerDraftCount { get; init; }
+
+    [JsonPropertyName("internal_draft_count")]
+    public int InternalDraftCount { get; init; }
+
+    [JsonPropertyName("created_line_count")]
+    public int CreatedLineCount { get; init; }
+
+    [JsonPropertyName("created_qty")]
+    public double CreatedQty { get; init; }
+
+    [JsonPropertyName("debug_summary")]
+    public IReadOnlyList<string> DebugSummary { get; init; } = Array.Empty<string>();
+}
+
+public sealed class CreateMarkingFromProductionNeedsResponse
+{
+    [JsonPropertyName("ok")]
+    public bool Ok { get; init; }
+
+    [JsonPropertyName("message")]
+    public string Message { get; init; } = string.Empty;
+
+    [JsonPropertyName("created_task_count")]
+    public int CreatedTaskCount { get; init; }
+
+    [JsonPropertyName("created_qty")]
+    public double CreatedQty { get; init; }
+
+    [JsonPropertyName("debug_summary")]
+    public IReadOnlyList<string> DebugSummary { get; init; } = Array.Empty<string>();
 }
 
 public sealed class UpdateOrderEnvelope
@@ -456,6 +507,9 @@ public sealed class OrderRequestLineCreateRequest
 
     [JsonPropertyName("qty_ordered")]
     public double QtyOrdered { get; set; }
+
+    [JsonPropertyName("production_purpose")]
+    public string? ProductionPurpose { get; set; }
 }
 
 public sealed class OrderCreateRequestCreateRequest
@@ -622,6 +676,9 @@ public sealed class UpsertItemTypeRequest
 
 public sealed class MarkingExportRequest
 {
+    [JsonPropertyName("marking_order_ids")]
+    public List<Guid>? MarkingOrderIds { get; set; }
+
     [JsonPropertyName("order_ids")]
     public List<long>? OrderIds { get; set; }
 }

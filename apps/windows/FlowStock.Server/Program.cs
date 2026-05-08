@@ -53,6 +53,8 @@ OrderCreateEndpoint.Map(app);
 OrderUpdateEndpoint.Map(app);
 OrderDeleteEndpoint.Map(app);
 OrderStatusEndpoint.Map(app);
+OrderMarkingExportEndpoint.Map(app);
+ProductionNeedCreateOrdersEndpoint.Map(app);
 MaintenanceBackfillEndpoints.Map(app);
 app.MapGet("/api/version", () => Results.Ok(new { version = appVersion }));
 
@@ -1968,6 +1970,8 @@ app.MapGet("/api/orders/{orderId:long}/lines", (long orderId, IDataStore store) 
             barcode = line.Barcode,
             gtin = line.Gtin,
             qty_ordered = line.QtyOrdered,
+            production_purpose = ProductionLinePurposeMapper.ToDbValue(line.ProductionPurpose),
+            production_purpose_display = line.ProductionPurposeDisplay,
             qty_shipped = line.QtyShipped,
             qty_produced = line.QtyProduced,
             qty_left = line.QtyRemaining,
@@ -2128,7 +2132,11 @@ app.MapPost("/api/orders/requests/create", async (HttpRequest request, IDataStor
         normalizedLines.Add(new
         {
             item_id = line.ItemId.Value,
-            qty_ordered = line.QtyOrdered
+            qty_ordered = line.QtyOrdered,
+            production_purpose = ProductionLinePurposeMapper.ToDbValue(
+                orderType == OrderType.Internal
+                    ? ProductionLinePurpose.InternalStock
+                    : ProductionLinePurpose.CustomerOrder)
         });
     }
 
@@ -2311,15 +2319,31 @@ app.MapGet("/api/marking/orders", (HttpRequest request, MarkingExcelService mark
     var rows = marking.GetOrderQueue(includeCompleted)
         .Select(row => new
         {
+            marking_order_id = row.MarkingOrderId?.ToString("D"),
             order_id = row.OrderId,
             order_ref = row.OrderRef,
             partner_name = row.PartnerName,
             partner_code = row.PartnerCode,
             partner_display = row.PartnerDisplay,
+            source_type = row.SourceType,
+            source_order_id = row.SourceOrderId,
+            item_id = row.ItemId,
+            item_name = row.ItemName,
+            gtin = row.Gtin,
+            item_display = row.ItemName,
+            requested_quantity = row.RequestedQuantity,
+            status = row.TaskStatus ?? MarkingStatusMapper.ToString(row.MarkingStatus),
+            codes_total = row.CodesTotal,
+            codes_free = row.CodesFree,
+            codes_bound = row.CodesBound,
+            display_source = row.DisplaySource ?? row.PartnerDisplay,
+            effective_status = row.EffectiveStatus ?? row.TaskStatus ?? MarkingStatusMapper.ToString(row.MarkingStatus),
+            display_status = row.DisplayStatus ?? row.TaskStatus ?? MarkingStatusMapper.ToDisplayName(row.MarkingStatus),
             order_status = OrderStatusMapper.StatusToString(row.OrderStatus),
             order_status_display = OrderStatusMapper.StatusToDisplayName(row.OrderStatus),
             due_date = row.DueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             marking_status = MarkingStatusMapper.ToString(row.MarkingStatus),
+            marking_effective_status = MarkingStatusMapper.ToString(row.MarkingStatus),
             marking_status_display = MarkingStatusMapper.ToDisplayName(row.MarkingStatus),
             marking_line_count = row.MarkingLineCount,
             marking_code_count = row.MarkingCodeCount,
@@ -2329,6 +2353,8 @@ app.MapGet("/api/marking/orders", (HttpRequest request, MarkingExcelService mark
     return Results.Ok(rows);
 });
 
+MarkingCreateFromProductionNeedsEndpoint.Map(app);
+
 app.MapPost("/api/marking/export", async (HttpRequest request, MarkingExcelService marking) =>
 {
     var parsed = await ParseJsonBody<MarkingExportRequest>(request);
@@ -2337,7 +2363,10 @@ app.MapPost("/api/marking/export", async (HttpRequest request, MarkingExcelServi
         return parsed.Error!;
     }
 
-    var result = marking.Export(parsed.Value?.OrderIds ?? (IReadOnlyCollection<long>)Array.Empty<long>(), DateTime.Now);
+    var result = marking.Export(
+        parsed.Value?.MarkingOrderIds ?? (IReadOnlyCollection<Guid>)Array.Empty<Guid>(),
+        parsed.Value?.OrderIds ?? (IReadOnlyCollection<long>)Array.Empty<long>(),
+        DateTime.Now);
     if (!result.IsSuccess || result.FileBytes == null)
     {
         return Results.BadRequest(new ApiResult(false, result.Error ?? "Нет строк для формирования файла ЧЗ."));
@@ -3222,6 +3251,9 @@ static List<object> TryReadPendingCreateOrderLines(IDataStore store, string json
                 barcode = item?.Barcode,
                 gtin = item?.Gtin,
                 qty_ordered = TryReadJsonElementDouble(lineElement, "qty_ordered") ?? 0d,
+                production_purpose = TryReadJsonElementString(lineElement, "production_purpose") ?? ProductionLinePurposeMapper.InternalStockValue,
+                production_purpose_display = ProductionLinePurposeMapper.ToDisplayName(
+                    ProductionLinePurposeMapper.FromDbValue(TryReadJsonElementString(lineElement, "production_purpose"))),
                 qty_shipped = 0d,
                 qty_produced = 0d,
                 qty_left = TryReadJsonElementDouble(lineElement, "qty_ordered") ?? 0d,
@@ -3326,6 +3358,18 @@ static double? TryReadJsonElementDouble(JsonElement element, string propertyName
     return null;
 }
 
+static string? TryReadJsonElementString(JsonElement element, string propertyName)
+{
+    if (!element.TryGetProperty(propertyName, out var property))
+    {
+        return null;
+    }
+
+    return property.ValueKind == JsonValueKind.String
+        ? property.GetString()
+        : null;
+}
+
 static bool IsDigitsOnly(string value)
 {
     if (string.IsNullOrEmpty(value))
@@ -3375,6 +3419,8 @@ static object MapDocLine(DocLineView line)
     {
         id = line.Id,
         order_line_id = line.OrderLineId,
+        production_purpose = ProductionLinePurposeMapper.ToDbValue(line.ProductionPurpose),
+        production_purpose_display = line.ProductionPurposeDisplay,
         item_id = line.ItemId,
         item_name = line.ItemName,
         barcode = line.Barcode,
@@ -3413,6 +3459,8 @@ static object MapOrderReceiptRemaining(OrderReceiptLine line)
         item_id = line.ItemId,
         item_name = line.ItemName,
         qty_ordered = line.QtyOrdered,
+        production_purpose = ProductionLinePurposeMapper.ToDbValue(line.ProductionPurpose),
+        production_purpose_display = ProductionLinePurposeMapper.ToDisplayName(line.ProductionPurpose),
         qty_received = line.QtyReceived,
         qty_remaining = line.QtyRemaining,
         to_location_id = line.ToLocationId,
@@ -3448,16 +3496,16 @@ static object MapProductionNeedRow(ProductionNeedRow row)
 {
     return new
     {
+        need_date = row.NeedDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
         item_id = row.ItemId,
         gtin = row.Gtin,
         item_name = row.ItemName,
         item_type = row.ItemTypeName,
-        physical_stock_qty = row.PhysicalStockQty,
-        active_customer_order_open_qty = row.ActiveCustomerOrderOpenQty,
-        reserved_customer_order_qty = row.ReservedCustomerOrderQty,
         free_stock_qty = row.FreeStockQty,
         min_stock_qty = row.MinStockQty,
-        production_need_qty = row.ProductionNeedQty
+        to_close_orders_qty = row.ToCloseOrdersQty,
+        to_min_stock_qty = row.ToMinStockQty,
+        total_to_make_qty = row.TotalToMakeQty
     };
 }
 

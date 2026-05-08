@@ -177,17 +177,16 @@
             <TabItem Header="Потребность производства">
                 <DockPanel Margin="8">
                     <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
-                        <CheckBox x:Name="ProductionNeedShowAllRowsCheckBox"
-                                  Content="Показать все строки"
-                                  VerticalAlignment="Center"
-                                  Checked="ProductionNeedShowAllRowsCheckBox_Changed"
-                                  Unchecked="ProductionNeedShowAllRowsCheckBox_Changed" />
                         <Button Content="Обновить"
-                                Margin="12,0,0,0"
                                 Padding="12,4"
                                 Click="ProductionNeedRefresh_Click" />
+                        <Button x:Name="ProductionNeedCreateOrdersButton"
+                                Content="Сформировать заказ"
+                                Padding="12,4"
+                                Margin="8,0,0,0"
+                                Click="ProductionNeedCreateOrders_Click" />
                         <TextBlock x:Name="ProductionNeedSummaryText"
-                                   Margin="16,0,0,0"
+                                   Margin="12,0,0,0"
                                    VerticalAlignment="Center"
                                    FontWeight="SemiBold" />
                     </StackPanel>
@@ -200,14 +199,20 @@
                               HeadersVisibility="Column"
                               GridLinesVisibility="Horizontal">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="Auto" />
-                            <DataGridTextColumn Header="Наименование" Binding="{Binding ItemName}" Width="Auto" />
-                            <DataGridTextColumn Header="На складе" Binding="{Binding PhysicalStockQty, StringFormat={}{0:0.###}}" Width="120" />
-                            <DataGridTextColumn Header="В заказах" Binding="{Binding ActiveCustomerOrderOpenQty, StringFormat={}{0:0.###}}" Width="120" />
-                            <DataGridTextColumn Header="Зарезервировано" Binding="{Binding ReservedCustomerOrderQty, StringFormat={}{0:0.###}}" Width="130" />
-                            <DataGridTextColumn Header="Свободный остаток" Binding="{Binding FreeStockQty, StringFormat={}{0:0.###}}" Width="130" />
-                            <DataGridTextColumn Header="Мин. остаток" Binding="{Binding MinStockQty, StringFormat={}{0:0.###}}" Width="120" />
-                            <DataGridTextColumn Header="Необходимо произвести" Binding="{Binding ProductionNeedQty, StringFormat={}{0:0.###}}" Width="160">
+                            <DataGridTemplateColumn Header="Номенклатура" Width="*">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Margin="0,2,0,2">
+                                            <TextBlock Text="{Binding ItemName}" TextWrapping="Wrap" />
+                                            <TextBlock Text="{Binding Gtin}" Foreground="#667784" FontSize="11" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="Остаток" Binding="{Binding StockDisplay}" Width="120" />
+                            <DataGridTextColumn Header="До закрытия заказов" Binding="{Binding ToCloseOrdersQty, StringFormat={}{0:0.###}}" Width="150" />
+                            <DataGridTextColumn Header="На склад до мин." Binding="{Binding ToMinStockQty, StringFormat={}{0:0.###}}" Width="140" />
+                            <DataGridTextColumn Header="Всего произвести" Binding="{Binding TotalToMakeQty, StringFormat={}{0:0.###}}" Width="150">
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="FontWeight" Value="Bold" />
@@ -281,7 +286,27 @@
                             <DataGridTextColumn Header="Тип" Binding="{Binding TypeDisplay}" Width="Auto" MaxWidth="220" />
                             <DataGridTextColumn Header="Контрагент" Binding="{Binding PartnerDisplay}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="Плановая дата" Binding="{Binding DueDate, StringFormat={}{0:dd'/'MM'/'yyyy}}" Width="Auto" MaxWidth="320" />
-                            <DataGridTextColumn Header="Маркировка ЧЗ" Binding="{Binding MarkingStatusShortDisplay}" Width="Auto" MaxWidth="220" />
+                            <DataGridTemplateColumn Header="Маркировка ЧЗ" Width="Auto" MaxWidth="220">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding MarkingStatusShortDisplay}">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Foreground" Value="Black" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding MarkingStatusShortDisplay}" Value="Маркировка не проведена">
+                                                            <Setter Property="Foreground" Value="#C62828" />
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding MarkingStatusShortDisplay}" Value="Маркировка проведена">
+                                                            <Setter Property="Foreground" Value="#2E7D32" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
                             <DataGridTemplateColumn Header="Статус" Width="Auto" MinWidth="130" MaxWidth="220">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>

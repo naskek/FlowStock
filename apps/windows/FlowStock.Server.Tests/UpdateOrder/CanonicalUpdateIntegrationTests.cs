@@ -49,4 +49,45 @@ public sealed class CanonicalUpdateIntegrationTests
         Assert.Equal(OrderStatus.InProgress, order.Status);
         Assert.Equal("Обновлено через API", order.Comment);
     }
+
+    [Fact]
+    public async Task SuccessfulUpdateInternal_NormalizesProductionPurposeToInternalStock()
+    {
+        var (harness, apiStore, orderId) = UpdateOrderHttpScenario.CreateInternalScenario();
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        var payload = await UpdateOrderHttpApi.UpdateAsync(
+            host.Client,
+            orderId,
+            new UpdateOrderHttpApi.UpdateOrderRequest
+            {
+                OrderRef = "INT-002",
+                Type = "INTERNAL",
+                Comment = "Обновлено назначение строк",
+                Lines =
+                [
+                    new UpdateOrderHttpApi.UpdateOrderLineRequest
+                    {
+                        ItemId = 1001,
+                        QtyOrdered = 756,
+                        ProductionPurpose = "CUSTOMER_ORDER"
+                    },
+                    new UpdateOrderHttpApi.UpdateOrderLineRequest
+                    {
+                        ItemId = 1001,
+                        QtyOrdered = 1134,
+                        ProductionPurpose = "INTERNAL_STOCK"
+                    }
+                ]
+            });
+
+        Assert.True(payload.Ok);
+        Assert.Equal(orderId, payload.OrderId);
+        Assert.Equal(1, payload.LineCount);
+
+        var lines = harness.GetOrderLines(orderId).ToArray();
+        Assert.Single(lines);
+        Assert.Equal(1890, lines[0].QtyOrdered);
+        Assert.Equal(ProductionLinePurpose.InternalStock, lines[0].ProductionPurpose);
+    }
 }

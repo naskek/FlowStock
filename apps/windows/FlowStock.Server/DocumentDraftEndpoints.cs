@@ -1676,7 +1676,8 @@ public static class DocumentDraftEndpoints
                 lineRequest.UomCode,
                 fromHu,
                 toHu,
-                lineRequest.OrderLineId);
+                lineRequest.OrderLineId,
+                productionPurpose: ProductionLinePurposeMapper.FromDbValue(lineRequest.ProductionPurpose, lineRequest.OrderLineId));
         }
         catch (Exception ex)
         {
@@ -1706,6 +1707,7 @@ public static class DocumentDraftEndpoints
                 Qty = lastLine.Qty,
                 UomCode = lastLine.UomCode,
                 OrderLineId = lastLine.OrderLineId,
+                ProductionPurpose = ProductionLinePurposeMapper.ToDbValue(lastLine.ProductionPurpose),
                 FromLocationId = lastLine.FromLocationId,
                 ToLocationId = lastLine.ToLocationId,
                 FromHu = NormalizeHu(lastLine.FromHu),
@@ -2054,7 +2056,8 @@ public static class DocumentDraftEndpoints
                 fromHu,
                 toHu,
                 existingLine.OrderLineId,
-                existingLine.Id);
+                existingLine.Id,
+                existingLine.ProductionPurpose);
         }
         catch (Exception ex)
         {
@@ -2084,6 +2087,7 @@ public static class DocumentDraftEndpoints
                 Qty = updatedLine.Qty,
                 UomCode = updatedLine.UomCode,
                 OrderLineId = updatedLine.OrderLineId,
+                ProductionPurpose = ProductionLinePurposeMapper.ToDbValue(updatedLine.ProductionPurpose),
                 FromLocationId = updatedLine.FromLocationId,
                 ToLocationId = updatedLine.ToLocationId,
                 FromHu = NormalizeHu(updatedLine.FromHu),
@@ -2387,6 +2391,7 @@ public static class DocumentDraftEndpoints
             DocId = docInfo.DocId,
             ReplacesLineId = existingLine.Id,
             OrderLineId = existingLine.OrderLineId,
+            ProductionPurpose = existingLine.ProductionPurpose,
             ItemId = existingLine.ItemId,
             Qty = 0,
             QtyInput = null,
@@ -2425,6 +2430,7 @@ public static class DocumentDraftEndpoints
             Qty = 0,
             UomCode = existingLine.UomCode,
             OrderLineId = existingLine.OrderLineId,
+            ProductionPurpose = ProductionLinePurposeMapper.ToDbValue(existingLine.ProductionPurpose),
             FromLocationId = existingLine.FromLocationId,
             ToLocationId = existingLine.ToLocationId,
             FromHu = NormalizeHu(existingLine.FromHu),
@@ -2630,6 +2636,7 @@ public static class DocumentDraftEndpoints
             Barcode = Normalize(request.Barcode),
             ItemId = request.ItemId,
             OrderLineId = request.OrderLineId,
+            ProductionPurpose = Normalize(request.ProductionPurpose),
             Qty = request.Qty,
             UomCode = Normalize(request.UomCode),
             FromLocationId = request.FromLocationId,
@@ -2895,6 +2902,7 @@ public static class DocumentDraftEndpoints
         public string? Barcode { get; init; }
         public long? ItemId { get; init; }
         public long? OrderLineId { get; init; }
+        public string? ProductionPurpose { get; init; }
         public double Qty { get; init; }
         public string? UomCode { get; init; }
         public long? FromLocationId { get; init; }
@@ -2922,6 +2930,9 @@ public static class DocumentDraftEndpoints
 
         [JsonPropertyName("order_line_id")]
         public long? OrderLineId { get; init; }
+
+        [JsonPropertyName("production_purpose")]
+        public string? ProductionPurpose { get; init; }
 
         [JsonPropertyName("from_location_id")]
         public long? FromLocationId { get; init; }
