@@ -124,7 +124,7 @@ public sealed class MarkingNeedCreationService(IDataStore dataStore)
 
         foreach (var order in activeOrders)
         {
-            var remainingByLine = _dataStore.GetOrderReceiptRemaining(order.Id)
+            var remainingByLine = OrderReceiptRemainingCalculator.GetRemaining(_dataStore, order)
                 .ToDictionary(line => line.OrderLineId);
 
             foreach (var line in _dataStore.GetOrderLines(order.Id))

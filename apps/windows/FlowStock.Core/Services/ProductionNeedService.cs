@@ -121,7 +121,7 @@ public sealed class ProductionNeedService(IDataStore dataStore)
 
         foreach (var order in activePlannedOrders)
         {
-            var receiptRemainingByLine = _dataStore.GetOrderReceiptRemaining(order.Id)
+            var receiptRemainingByLine = OrderReceiptRemainingCalculator.GetRemaining(_dataStore, order)
                 .ToDictionary(line => line.OrderLineId);
 
             foreach (var line in _dataStore.GetOrderLines(order.Id))

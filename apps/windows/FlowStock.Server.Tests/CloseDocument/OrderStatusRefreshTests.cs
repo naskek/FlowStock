@@ -1,4 +1,5 @@
 using FlowStock.Core.Models;
+using FlowStock.Core.Services;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
 
 namespace FlowStock.Server.Tests.CloseDocument;
@@ -105,6 +106,142 @@ public sealed class OrderStatusRefreshTests
         });
 
         var secondResult = harness.CreateService().TryCloseDoc(200, allowNegative: false);
+
+        Assert.True(secondResult.Success, string.Join("; ", secondResult.Errors));
+        Assert.Equal(OrderStatus.Shipped, harness.GetOrder(50).Status);
+    }
+
+    [Fact]
+    public void CloseProductionReceipt_FullInternalOrder_WithDocOrderBindingOnly_BecomesShipped()
+    {
+        var harness = CreateInternalOrderHarness();
+        harness.SeedDoc(new Doc
+        {
+            Id = 300,
+            DocRef = "PRD-2026-000300",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 50,
+            OrderRef = "INT-001",
+            CreatedAt = new DateTime(2026, 5, 8, 12, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 301,
+            DocId = 300,
+            ItemId = 1001,
+            Qty = 5,
+            ToLocationId = 1,
+            ToHu = "HU-INT-003"
+        });
+
+        var result = harness.CreateService().TryCloseDoc(300, allowNegative: false);
+
+        Assert.True(result.Success, string.Join("; ", result.Errors));
+        Assert.Equal(OrderStatus.Shipped, harness.GetOrder(50).Status);
+        var remaining = Assert.Single(new DocumentService(harness.Store).GetOrderReceiptRemaining(50));
+        Assert.Equal(0, remaining.QtyRemaining);
+    }
+
+    [Fact]
+    public void CloseProductionReceipt_PartialInternalOrder_WithDocOrderBindingOnly_RemainsInProgress()
+    {
+        var harness = CreateInternalOrderHarness();
+        harness.SeedDoc(new Doc
+        {
+            Id = 310,
+            DocRef = "PRD-2026-000310",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 50,
+            OrderRef = "INT-001",
+            CreatedAt = new DateTime(2026, 5, 8, 12, 30, 0, DateTimeKind.Utc)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 311,
+            DocId = 310,
+            ItemId = 1001,
+            Qty = 4,
+            ToLocationId = 1,
+            ToHu = "HU-INT-004"
+        });
+
+        var result = harness.CreateService().TryCloseDoc(310, allowNegative: false);
+
+        Assert.True(result.Success, string.Join("; ", result.Errors));
+        Assert.Equal(OrderStatus.InProgress, harness.GetOrder(50).Status);
+        var remaining = Assert.Single(new DocumentService(harness.Store).GetOrderReceiptRemaining(50));
+        Assert.Equal(1, remaining.QtyRemaining);
+    }
+
+    [Fact]
+    public void CloseProductionReceipt_TwoLineInternalOrder_WithDocOrderBindingOnly_CompletesAfterBothItemsProduced()
+    {
+        var harness = CreateInternalOrderHarness();
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 502,
+            OrderId = 50,
+            ItemId = 1002,
+            QtyOrdered = 7,
+            ProductionPurpose = ProductionLinePurpose.InternalStock
+        });
+        harness.SeedItem(new Item
+        {
+            Id = 1002,
+            Name = "Кетчуп",
+            Gtin = "04607186951521",
+            ItemTypeName = "Готовая продукция",
+            ItemTypeEnableMarking = false
+        });
+
+        harness.SeedDoc(new Doc
+        {
+            Id = 320,
+            DocRef = "PRD-2026-000320",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 50,
+            OrderRef = "INT-001",
+            CreatedAt = new DateTime(2026, 5, 8, 13, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 321,
+            DocId = 320,
+            ItemId = 1001,
+            Qty = 5,
+            ToLocationId = 1,
+            ToHu = "HU-INT-005"
+        });
+
+        var firstResult = harness.CreateService().TryCloseDoc(320, allowNegative: false);
+
+        Assert.True(firstResult.Success, string.Join("; ", firstResult.Errors));
+        Assert.Equal(OrderStatus.InProgress, harness.GetOrder(50).Status);
+
+        harness.SeedDoc(new Doc
+        {
+            Id = 330,
+            DocRef = "PRD-2026-000330",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 50,
+            OrderRef = "INT-001",
+            CreatedAt = new DateTime(2026, 5, 8, 14, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 331,
+            DocId = 330,
+            ItemId = 1002,
+            Qty = 7,
+            ToLocationId = 1,
+            ToHu = "HU-INT-006"
+        });
+
+        var secondResult = harness.CreateService().TryCloseDoc(330, allowNegative: false);
 
         Assert.True(secondResult.Success, string.Join("; ", secondResult.Errors));
         Assert.Equal(OrderStatus.Shipped, harness.GetOrder(50).Status);

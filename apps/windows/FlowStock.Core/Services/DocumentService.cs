@@ -131,7 +131,8 @@ public sealed class DocumentService
 
             if (doc.Type == DocType.ProductionReceipt)
             {
-                var receiptLines = store.GetOrderReceiptRemaining(orderId.Value)
+                var order = store.GetOrder(orderId.Value) ?? throw new InvalidOperationException("Заказ не найден.");
+                var receiptLines = OrderReceiptRemainingCalculator.GetRemaining(store, order)
                     .Where(line => line.QtyRemaining > QtyTolerance)
                     .ToList();
                 if (receiptLines.Count == 0)
@@ -202,9 +203,13 @@ public sealed class DocumentService
 
     public IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemaining(long orderId, bool includeReservedStock)
     {
-        return includeReservedStock
-            ? _data.GetOrderReceiptRemaining(orderId)
-            : _data.GetOrderReceiptRemainingWithoutReservedStock(orderId);
+        var order = _data.GetOrder(orderId);
+        if (order == null)
+        {
+            return Array.Empty<OrderReceiptLine>();
+        }
+
+        return OrderReceiptRemainingCalculator.GetRemaining(_data, order, includeReservedStock);
     }
 
     public IReadOnlyList<OrderShipmentLine> GetOrderShipmentRemaining(long orderId)
@@ -664,7 +669,8 @@ public sealed class DocumentService
         var addedLines = 0;
         _data.ExecuteInTransaction(store =>
         {
-            var receiptLines = store.GetOrderReceiptRemaining(orderId)
+            var orderForReceipt = store.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+            var receiptLines = OrderReceiptRemainingCalculator.GetRemaining(store, orderForReceipt)
                 .Where(line => line.QtyRemaining > QtyTolerance)
                 .ToList();
             if (receiptLines.Count == 0)
@@ -809,7 +815,8 @@ public sealed class DocumentService
                 throw new InvalidOperationException("Для строки заказа требуется указать заказ в документе.");
             }
 
-            var remaining = _data.GetOrderReceiptRemaining(doc.OrderId.Value)
+            var orderForRemaining = _data.GetOrder(doc.OrderId.Value) ?? throw new InvalidOperationException("Заказ не найден.");
+            var remaining = OrderReceiptRemainingCalculator.GetRemaining(_data, orderForRemaining)
                 .ToDictionary(entry => entry.OrderLineId, entry => entry.QtyRemaining);
             if (!remaining.TryGetValue(line.OrderLineId.Value, out var limit))
             {
@@ -1555,7 +1562,9 @@ public sealed class DocumentService
             : new Dictionary<long, double>();
         var shipmentRequested = new Dictionary<long, double>();
         var productionReceiptRemaining = doc.Type == DocType.ProductionReceipt && doc.OrderId.HasValue
-            ? _data.GetOrderReceiptRemaining(doc.OrderId.Value)
+            ? OrderReceiptRemainingCalculator.GetRemaining(
+                    _data,
+                    _data.GetOrder(doc.OrderId.Value) ?? throw new InvalidOperationException("Заказ не найден."))
                 .ToDictionary(entry => entry.OrderLineId, entry => entry.QtyRemaining)
             : new Dictionary<long, double>();
         var productionReceiptRequested = new Dictionary<long, double>();

@@ -58,4 +58,42 @@ public sealed class AutoDistributionTests
         Assert.All(lines, line => Assert.False(string.IsNullOrWhiteSpace(line.ToHu)));
         Assert.Equal(lines[0].ToHu, lines[1].ToHu, ignoreCase: true);
     }
+
+    [Fact]
+    public void AutoDistributeProductionReceipt_SplitLinesReceiveRealHuAndPreserveTotalQty()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedDoc(new Doc
+        {
+            Id = 2,
+            DocRef = "PRD-2026-000020",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            CreatedAt = new DateTime(2026, 3, 10, 13, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedItem(new Item
+        {
+            Id = 200,
+            Name = "Кетчуп",
+            MaxQtyPerHu = 600
+        });
+        harness.SeedLocation(new Location { Id = 20, Code = "02", Name = "Склад 02" });
+        harness.SeedLine(new DocLine
+        {
+            Id = 21,
+            DocId = 2,
+            ItemId = 200,
+            Qty = 1300,
+            ToLocationId = 20
+        });
+
+        var service = harness.CreateService();
+        var usedHuCount = service.AutoDistributeProductionReceiptHus(2);
+        var lines = harness.GetDocLines(2);
+
+        Assert.True(usedHuCount >= 3);
+        Assert.True(lines.Count >= 3);
+        Assert.Equal(1300, lines.Sum(line => line.Qty), 6);
+        Assert.All(lines, line => Assert.False(string.IsNullOrWhiteSpace(line.ToHu)));
+    }
 }

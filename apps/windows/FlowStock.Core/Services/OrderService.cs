@@ -65,9 +65,9 @@ public sealed class OrderService
             .OrderBy(line => line.SortOrder)
             .ThenBy(line => line.Id)
             .ToList();
-        var baseRemaining = (includeReservedStock
-                ? _data.GetOrderReceiptRemaining(orderId)
-                : _data.GetOrderReceiptRemainingWithoutReservedStock(orderId))
+        var baseRemaining = (order == null
+                ? Array.Empty<OrderReceiptLine>()
+                : OrderReceiptRemainingCalculator.GetRemaining(_data, order, includeReservedStock))
             .ToDictionary(line => line.OrderLineId, line => line);
 
         if (isCustomerOrder)
@@ -351,7 +351,7 @@ public sealed class OrderService
                     throw new InvalidOperationException("Нельзя сменить тип заказа: по внутреннему заказу уже есть выпуски продукции.");
                 }
 
-                var receiptRemaining = _data.GetOrderReceiptRemaining(orderId);
+                var receiptRemaining = OrderReceiptRemainingCalculator.GetRemaining(_data, existing);
                 if (receiptRemaining.Any(line => line.QtyReceived > QtyTolerance))
                 {
                     throw new InvalidOperationException("Нельзя сменить тип заказа: по внутреннему заказу уже есть выпуски продукции.");
@@ -505,7 +505,7 @@ public sealed class OrderService
                 throw new InvalidOperationException("Нельзя удалить внутренний заказ: есть выпуски продукции или связанные документы.");
             }
 
-            var receiptRemaining = _data.GetOrderReceiptRemaining(orderId);
+            var receiptRemaining = OrderReceiptRemainingCalculator.GetRemaining(_data, existing);
             if (receiptRemaining.Any(line => line.QtyReceived > QtyTolerance))
             {
                 throw new InvalidOperationException("Нельзя удалить внутренний заказ: по нему уже был выпуск продукции.");
@@ -568,7 +568,7 @@ public sealed class OrderService
         var availableByItem = _data.GetLedgerTotalsByItem();
         if (order.Type == OrderType.Internal)
         {
-            var producedByLine = _data.GetOrderReceiptRemaining(order.Id)
+            var producedByLine = OrderReceiptRemainingCalculator.GetRemaining(_data, order)
                 .ToDictionary(line => line.OrderLineId, line => line.QtyReceived);
 
             foreach (var line in lines)
@@ -1183,7 +1183,7 @@ public sealed class OrderService
         if (order.Type == OrderType.Internal)
         {
             var orderLines = _data.GetOrderLines(order.Id);
-            var internalProducedByLine = BuildProducedTotalsByOrderLine(order.Id);
+            var internalProducedByLine = OrderReceiptRemainingCalculator.BuildProducedTotalsByOrderLine(_data, order.Id, orderLines);
             var fullyProduced = orderLines.Count > 0 && orderLines.All(line =>
             {
                 var produced = internalProducedByLine.TryGetValue(line.Id, out var qty) ? qty : 0d;
@@ -1303,24 +1303,6 @@ public sealed class OrderService
             MarkingApplies = order.MarkingApplies,
             MarkingCodeCovered = order.MarkingCodeCovered
         };
-    }
-
-    private IReadOnlyDictionary<long, double> BuildProducedTotalsByOrderLine(long orderId)
-    {
-        var totals = new Dictionary<long, double>();
-        foreach (var doc in _data.GetDocsByOrder(orderId)
-                     .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status == DocStatus.Closed))
-        {
-            foreach (var line in _data.GetDocLines(doc.Id).Where(line => line.OrderLineId.HasValue && line.Qty > 0))
-            {
-                var orderLineId = line.OrderLineId!.Value;
-                totals[orderLineId] = totals.TryGetValue(orderLineId, out var current)
-                    ? current + line.Qty
-                    : line.Qty;
-            }
-        }
-
-        return totals;
     }
 }
 

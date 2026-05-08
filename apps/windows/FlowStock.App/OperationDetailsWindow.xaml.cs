@@ -3152,14 +3152,14 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        if (!TryGetLineLocations(out _, out var toLocation, out _, out var toHu))
+        if (!TryGetLineLocations(out _, out var toLocation, out _, out _))
         {
             return;
         }
 
         if (IsServerBatchRebuildEnabled())
         {
-            var contexts = BuildProductionReceiptBatchContexts(orderId, toLocation?.Id, toHu);
+            var contexts = BuildProductionReceiptBatchContexts(orderId, toLocation?.Id);
             if (!await TryPersistHeaderViaServerAsync(
                     ResolveDocPartnerFromInput()?.Id,
                     orderId,
@@ -3437,30 +3437,14 @@ public partial class OperationDetailsWindow : Window
         return result;
     }
 
-    private IReadOnlyList<WpfAddDocLineContext> BuildProductionReceiptBatchContexts(long orderId, long? toLocationId, string? toHu)
+    private IReadOnlyList<WpfAddDocLineContext> BuildProductionReceiptBatchContexts(long orderId, long? toLocationId)
     {
         var effectiveToLocationId = toLocationId ?? ResolveDefaultReceiptLocation(preferAutoEnabled: true)?.Id;
-        var receiptLines = _services.WpfReadApi.TryGetOrderReceiptRemainingDetailed(orderId, out var apiReceiptLines)
+        var receiptLines = _services.WpfReadApi.TryGetOrderReceiptRemaining(orderId, out var apiReceiptLines)
             ? apiReceiptLines
             : Array.Empty<OrderReceiptLine>();
 
-        return receiptLines
-            .Where(line => line.QtyRemaining > QtyTolerance)
-            .OrderBy(line => line.SortOrder)
-            .ThenBy(line => line.OrderLineId)
-            .Select(line => new WpfAddDocLineContext(
-                line.ItemId,
-                null,
-                line.OrderLineId,
-                line.ProductionPurpose,
-                line.QtyRemaining,
-                null,
-                null,
-                null,
-                line.ToLocationId ?? effectiveToLocationId,
-                null,
-                NormalizeHuValue(line.ToHu) ?? NormalizeHuValue(toHu)))
-            .ToList();
+        return ProductionReceiptTransferBuilder.BuildInitialContexts(receiptLines, effectiveToLocationId);
     }
 
     private bool IsServerBatchRebuildEnabled()
