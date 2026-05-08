@@ -83,6 +83,69 @@ public sealed class WpfMarkingApiService
         }
     }
 
+    public async Task<OrderMarkingExportApiResult> TryExportOrderAsync(
+        long orderId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var configuration = LoadConfiguration();
+            if (!configuration.IsConfigured)
+            {
+                _logger.Info("Order marking export skipped: server base URL is not configured.");
+                return OrderMarkingExportApiResult.Failure("FlowStock Server API не настроен.");
+            }
+
+            using var handler = CreateHandler(configuration);
+            using var client = new HttpClient(handler)
+            {
+                BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
+                Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
+            };
+            using var response = await client.PostAsJsonAsync($"/api/orders/{orderId}/marking/export", new { }, cancellationToken)
+                .ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return OrderMarkingExportApiResult.Failure(await ReadApiErrorAsync(response).ConfigureAwait(false));
+            }
+
+            var contentType = response.Content.Headers.ContentType?.MediaType;
+            if (string.Equals(contentType, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", StringComparison.OrdinalIgnoreCase))
+            {
+                var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+                var fileName = response.Content.Headers.ContentDisposition?.FileNameStar
+                               ?? response.Content.Headers.ContentDisposition?.FileName?.Trim('"')
+                               ?? $"chestny_znak_order_{orderId}_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx";
+                return new OrderMarkingExportApiResult(
+                    true,
+                    "Excel ЧЗ сформирован из заказа.",
+                    bytes,
+                    fileName,
+                    ReadIntHeader(response, "X-FlowStock-Marking-Line-Count"),
+                    ReadIntHeader(response, "X-FlowStock-Marking-Export-Line-Count"),
+                    ReadDoubleHeader(response, "X-FlowStock-Marking-Created-Qty"),
+                    ReadDoubleHeader(response, "X-FlowStock-Marking-Reused-Qty"));
+            }
+
+            var payload = await response.Content.ReadFromJsonAsync<OrderMarkingExportResponse>(JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+            return new OrderMarkingExportApiResult(
+                true,
+                payload?.Message ?? "Маркировка по заказу уже проведена.",
+                null,
+                null,
+                payload?.LineCount ?? 0,
+                payload?.ExportLineCount ?? 0,
+                payload?.CreatedCodeQty ?? 0,
+                payload?.ReusedCodeQty ?? 0);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Order marking export failed", ex);
+            return OrderMarkingExportApiResult.Failure(ex.Message);
+        }
+    }
+
     public async Task<(bool IsSuccess, string Message, int CreatedTaskCount, double CreatedQty)> TryCreateFromProductionNeedsAsync(
         CancellationToken cancellationToken = default)
     {
@@ -367,6 +430,25 @@ public sealed class WpfMarkingApiService
             : null;
     }
 
+    private static string? ReadHeader(HttpResponseMessage response, string name)
+    {
+        return response.Headers.TryGetValues(name, out var values)
+            ? values.FirstOrDefault()
+            : null;
+    }
+
+    private static int ReadIntHeader(HttpResponseMessage response, string name)
+    {
+        var raw = ReadHeader(response, name);
+        return int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ? value : 0;
+    }
+
+    private static double ReadDoubleHeader(HttpResponseMessage response, string name)
+    {
+        var raw = ReadHeader(response, name);
+        return double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) ? value : 0;
+    }
+
     private sealed class CreateMarkingResponse
     {
         [JsonPropertyName("message")]
@@ -378,9 +460,43 @@ public sealed class WpfMarkingApiService
         [JsonPropertyName("created_qty")]
         public double CreatedQty { get; init; }
     }
+
+    private sealed class OrderMarkingExportResponse
+    {
+        [JsonPropertyName("message")]
+        public string Message { get; init; } = string.Empty;
+
+        [JsonPropertyName("line_count")]
+        public int LineCount { get; init; }
+
+        [JsonPropertyName("export_line_count")]
+        public int ExportLineCount { get; init; }
+
+        [JsonPropertyName("created_code_qty")]
+        public double CreatedCodeQty { get; init; }
+
+        [JsonPropertyName("reused_code_qty")]
+        public double ReusedCodeQty { get; init; }
+    }
 }
 
 public sealed record WpfMarkingApiConfiguration(string? BaseUrl, int TimeoutSeconds, bool AllowInvalidTls)
 {
     public bool IsConfigured => !string.IsNullOrWhiteSpace(BaseUrl);
+}
+
+public sealed record OrderMarkingExportApiResult(
+    bool IsSuccess,
+    string Message,
+    byte[]? FileBytes,
+    string? FileName,
+    int LineCount,
+    int ExportLineCount,
+    double CreatedCodeQty,
+    double ReusedCodeQty)
+{
+    public static OrderMarkingExportApiResult Failure(string message)
+    {
+        return new OrderMarkingExportApiResult(false, message, null, null, 0, 0, 0, 0);
+    }
 }

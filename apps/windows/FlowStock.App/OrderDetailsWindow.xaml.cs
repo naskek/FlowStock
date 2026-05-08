@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
@@ -8,6 +9,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using System.Windows.Input;
 using FlowStock.Core.Models;
+using Microsoft.Win32;
 
 namespace FlowStock.App;
 
@@ -150,6 +152,7 @@ public partial class OrderDetailsWindow : Window
         UpdateTypeUi();
         RefreshLineMetrics();
         SetEditingEnabled(true);
+        UpdateMarkingExportButton();
         SaveStatusText.Text = string.Empty;
         EndLoad();
     }
@@ -200,6 +203,7 @@ public partial class OrderDetailsWindow : Window
         UpdateTypeUi();
         RefreshLineMetrics();
         SetEditingEnabled(!isFinalStatus);
+        UpdateMarkingExportButton();
         EndLoad();
     }
 
@@ -212,6 +216,63 @@ public partial class OrderDetailsWindow : Window
 
         _allowCloseWithoutPrompt = true;
         Close();
+    }
+
+    private async void ExportMarking_Click(object sender, RoutedEventArgs e)
+    {
+        if (!HasMarkableLines())
+        {
+            MessageBox.Show("В заказе нет маркируемых строк с GTIN.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!_orderId.HasValue || _hasUnsavedChanges)
+        {
+            if (!TrySaveOrder(showFeedback: false))
+            {
+                return;
+            }
+        }
+
+        if (!_orderId.HasValue)
+        {
+            MessageBox.Show("Сначала сохраните заказ.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        ExportMarkingButton.IsEnabled = false;
+        try
+        {
+            var result = await _services.WpfMarkingApi.TryExportOrderAsync(_orderId.Value).ConfigureAwait(true);
+            if (!result.IsSuccess)
+            {
+                MessageBox.Show(result.Message, "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            if (result.FileBytes != null)
+            {
+                var dialog = new SaveFileDialog
+                {
+                    Title = "Сохранить Excel ЧЗ",
+                    Filter = "Excel (*.xlsx)|*.xlsx",
+                    FileName = string.IsNullOrWhiteSpace(result.FileName)
+                        ? $"chestny_znak_order_{_orderId.Value}_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx"
+                        : result.FileName
+                };
+                if (dialog.ShowDialog(this) == true)
+                {
+                    File.WriteAllBytes(dialog.FileName, result.FileBytes);
+                }
+            }
+
+            MessageBox.Show(result.Message, "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+            LoadOrder();
+        }
+        finally
+        {
+            UpdateMarkingExportButton();
+        }
     }
 
     private bool TrySaveOrder(bool showFeedback)
@@ -655,6 +716,7 @@ public partial class OrderDetailsWindow : Window
         _selectedLine = OrderLinesGrid.SelectedItem as OrderLineView;
         DeleteLineButton.IsEnabled = _selectedLine != null && EnsureEditable(false);
         EditLineButton.IsEnabled = _selectedLine != null && EnsureEditable(false);
+        UpdateMarkingExportButton();
     }
 
     private void OrderLinesGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
@@ -723,6 +785,7 @@ public partial class OrderDetailsWindow : Window
 
         UpdateEmptyState();
         OrderLinesGrid.Items.Refresh();
+        UpdateMarkingExportButton();
     }
 
     private bool TryRefreshPersistedOrderLineMetricsFromApi(OrderType type)
@@ -781,7 +844,24 @@ public partial class OrderDetailsWindow : Window
         EditLineButton.IsEnabled = enabled && _selectedLine != null;
         DeleteLineButton.IsEnabled = enabled && _selectedLine != null;
         SaveButton.IsEnabled = enabled;
+        UpdateMarkingExportButton();
         UpdateTypeUi();
+    }
+
+    private void UpdateMarkingExportButton()
+    {
+        if (!IsInitialized)
+        {
+            return;
+        }
+
+        ExportMarkingButton.IsEnabled = _order?.Status != OrderStatus.Cancelled
+                                        && HasMarkableLines();
+    }
+
+    private bool HasMarkableLines()
+    {
+        return _lines.Any(line => !string.IsNullOrWhiteSpace(line.Gtin));
     }
 
     private void UpdateTypeUi()

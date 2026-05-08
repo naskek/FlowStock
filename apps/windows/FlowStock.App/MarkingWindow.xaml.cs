@@ -85,25 +85,13 @@ public partial class MarkingWindow : Window
         }
     }
 
-    private async void CreateMarking_Click(object sender, RoutedEventArgs e)
+    private void CreateMarking_Click(object sender, RoutedEventArgs e)
     {
-        CreateMarkingButton.IsEnabled = false;
-        try
-        {
-            var result = await _services.WpfMarkingApi.TryCreateFromProductionNeedsAsync().ConfigureAwait(true);
-            if (!result.IsSuccess)
-            {
-                MessageBox.Show(result.Message, "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-
-            MessageBox.Show(result.Message, "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
-            LoadOrders(showErrorMessage: false);
-        }
-        finally
-        {
-            CreateMarkingButton.IsEnabled = true;
-        }
+        MessageBox.Show(
+            "Маркировка формируется из окна заказа. Этот раздел оставлен как журнал/legacy-view.",
+            "Маркировка",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
     }
 
     private void LoadOrders(bool showErrorMessage)

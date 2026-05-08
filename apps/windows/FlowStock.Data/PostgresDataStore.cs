@@ -82,7 +82,7 @@ LEFT JOIN LATERAL (
         SELECT ol.item_id,
                NULLIF(BTRIM(i.gtin), '') AS gtin,
                CASE
-                   WHEN o.order_type = 'INTERNAL' THEN GREATEST(0, ol.qty_ordered - COALESCE(produced.qty_received, 0))
+                   WHEN o.order_type = 'INTERNAL' THEN GREATEST(0, ol.qty_ordered)
                    ELSE GREATEST(0, ol.qty_ordered - COALESCE(shipped.qty_shipped, 0) - COALESCE(reserved.qty_reserved, 0))
                END AS qty_for_marking
         FROM order_lines ol

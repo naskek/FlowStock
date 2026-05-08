@@ -1504,7 +1504,7 @@ internal sealed class CloseDocumentHarness
     {
         if (order.Type == OrderType.Internal)
         {
-            return Math.Max(0, line.QtyOrdered - GetProducedQtyForOrderLine(line.Id));
+            return Math.Max(0, line.QtyOrdered);
         }
 
         var shippedQty = BuildShippedTotalsByOrderLine(order.Id).TryGetValue(line.Id, out var shipped)

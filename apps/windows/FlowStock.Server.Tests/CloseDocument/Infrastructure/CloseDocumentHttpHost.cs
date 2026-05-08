@@ -37,12 +37,14 @@ internal sealed class CloseDocumentHttpHost : IAsyncDisposable
         builder.Services.AddSingleton(harness.Store);
         builder.Services.AddSingleton<IApiDocStore>(apiStore);
         builder.Services.AddSingleton<DocumentService>();
+        builder.Services.AddSingleton<MarkingExcelService>();
 
         var app = builder.Build();
         OrderCreateEndpoint.Map(app);
         OrderUpdateEndpoint.Map(app);
         OrderDeleteEndpoint.Map(app);
         OrderStatusEndpoint.Map(app);
+        OrderMarkingExportEndpoint.Map(app);
         ProductionNeedCreateOrdersEndpoint.Map(app);
         MarkingCreateFromProductionNeedsEndpoint.Map(app);
         DocumentDraftEndpoints.Map(app);

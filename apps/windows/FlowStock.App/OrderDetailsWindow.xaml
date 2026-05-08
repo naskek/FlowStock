@@ -103,6 +103,7 @@
             <Button x:Name="AddItemButton" Content="+ Товар" Click="AddLine_Click" TabIndex="7" />
             <Button x:Name="EditLineButton" Content="Редактировать" Click="EditLine_Click" Margin="8,0,0,0" TabIndex="8" />
             <Button x:Name="DeleteLineButton" Content="Удалить строку" Click="DeleteLine_Click" Margin="8,0,0,0" TabIndex="9" />
+            <Button x:Name="ExportMarkingButton" Content="Сформировать Excel ЧЗ" Click="ExportMarking_Click" Margin="16,0,0,0" Width="180" TabIndex="10" />
         </StackPanel>
             <Grid Grid.Row="1">
                 <DataGrid x:Name="OrderLinesGrid" AutoGenerateColumns="False" IsReadOnly="True"
@@ -140,9 +141,9 @@
             </Grid.ColumnDefinitions>
             <TextBlock x:Name="SaveStatusText" VerticalAlignment="Center" Foreground="Gray" />
             <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
-                <Button x:Name="SaveButton" Content="Сохранить и закрыть" Width="160" Click="Save_Click" TabIndex="11" />
+                <Button x:Name="SaveButton" Content="Сохранить и закрыть" Width="160" Click="Save_Click" TabIndex="12" />
                 <Button x:Name="CloseButton" Content="Закрыть" Width="120" IsCancel="True" Margin="8,0,0,0"
-                        Click="Close_Click" TabIndex="12" />
+                        Click="Close_Click" TabIndex="13" />
             </StackPanel>
         </Grid>
     </Grid>
