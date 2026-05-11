@@ -1529,12 +1529,14 @@ WHERE (@include_internal OR o.order_type = @customer_order_type)
   )
 ORDER BY CASE o.status
     WHEN 'IN_PROGRESS' THEN 1
-    WHEN 'DRAFT' THEN 1
     WHEN 'ACCEPTED' THEN 2
-    WHEN 'SHIPPED' THEN 3
-    WHEN 'CANCELLED' THEN 4
+    WHEN 'DRAFT' THEN 3
+    WHEN 'SHIPPED' THEN 4
+    WHEN 'CANCELLED' THEN 5
     ELSE 99
 END,
+o.due_date IS NULL,
+o.due_date ASC,
 o.created_at DESC,
 o.id DESC
 LIMIT @limit OFFSET @offset");

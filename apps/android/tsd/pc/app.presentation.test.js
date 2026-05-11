@@ -164,6 +164,85 @@ const lastPage = pc.trimOrdersPage(Array.from({ length: 20 }, function (_, index
 assert.strictEqual(lastPage.rows.length, 20);
 assert.strictEqual(lastPage.hasMore, false);
 
+const expandedStockHtml = pc.renderStockTable(
+  [
+    {
+      itemId: 10,
+      itemName: "Товар 1",
+      barcode: "SKU-001",
+      brand: "Бренд",
+      volume: "1 л",
+      qtyDisplay: "12",
+      details: [
+        {
+          locationCode: "01",
+          hu: "HU-000001",
+          reservationPartnerName: "Очень длинное имя клиента для проверки стабильной сетки",
+          reservationOrderRef: "ORD-2026-000001/Сверхдлинный суффикс",
+          qtyDisplay: "7"
+        }
+      ]
+    }
+  ],
+  { 10: true }
+);
+assert.match(expandedStockHtml, /pc-stock-shared-grid/);
+assert.match(expandedStockHtml, /pc-stock-detail-block/);
+assert.match(expandedStockHtml, /pc-stock-detail-entry/);
+assert.match(expandedStockHtml, /pc-stock-detail-col-client/);
+assert.match(expandedStockHtml, /pc-stock-detail-col-order/);
+assert.match(expandedStockHtml, /pc-stock-detail-col-qty/);
+assert.match(expandedStockHtml, /pc-stock-detail-text/);
+assert.match(expandedStockHtml, /pc-stock-item-meta/);
+assert.match(expandedStockHtml, /Номенклатура/);
+assert.match(expandedStockHtml, /colspan="4" class="pc-stock-detail-cell"/);
+assert.match(
+  expandedStockHtml,
+  /pc-stock-detail-head[^>]*>.*Место.*HU.*Заказ.*Клиент.*Кол-во/s
+);
+assert.match(
+  expandedStockHtml,
+  /pc-stock-detail-col-order[\s\S]*pc-stock-detail-col-client[\s\S]*pc-stock-detail-col-qty/s,
+  "в detail row порядок должен быть Заказ -> Клиент -> Кол-во"
+);
+assert.doesNotMatch(
+  expandedStockHtml,
+  /pc-stock-detail-col-client[\s\S]*pc-stock-detail-col-qty[\s\S]*pc-stock-detail-col-order/s,
+  "qty cell не должна попадать внутрь блока клиент/заказ"
+);
+
+const canonicalSortedOrders = pc.sortOrdersNewestFirst([
+  {
+    id: 3,
+    order_ref: "CUST-003",
+    order_type: "CUSTOMER",
+    order_status: "SHIPPED",
+    due_date: "2026-05-14",
+    created_at: "2026-05-10T10:00:00Z"
+  },
+  {
+    id: 2,
+    order_ref: "INT-002",
+    order_type: "INTERNAL",
+    order_status: "IN_PROGRESS",
+    due_date: "2026-05-15",
+    created_at: "2026-05-09T10:00:00Z"
+  },
+  {
+    id: 1,
+    order_ref: "CUST-001",
+    order_type: "CUSTOMER",
+    order_status: "IN_PROGRESS",
+    due_date: "2026-05-12",
+    created_at: "2026-05-08T10:00:00Z"
+  }
+]);
+assert.deepStrictEqual(
+  canonicalSortedOrders.map(function (row) { return row.order_ref; }),
+  ["CUST-001", "INT-002", "CUST-003"],
+  "INTERNAL IN_PROGRESS должен оставаться выше SHIPPED и сортироваться внутри статуса по плановой дате"
+);
+
 assert.strictEqual(
   pc.buildOrdersUrl("abc 001", 21, 20),
   "/api/orders?include_internal=1&include_pending_requests=1&limit=21&offset=20&q=abc%20001"
