@@ -2,6 +2,7 @@
   "use strict";
 
   var app = document.getElementById("app");
+  var header = document.querySelector ? document.querySelector(".pc-header") : null;
   var tabs = document.querySelectorAll(".pc-tab");
   var logoutBtn = document.getElementById("logoutBtn");
   var accountLabel = document.getElementById("accountLabel");
@@ -459,6 +460,22 @@
     );
   }
 
+  function renderPageShell(content) {
+    return '<div class="pc-page-shell">' + String(content || "") + "</div>";
+  }
+
+  function ensureHeaderShell() {
+    if (!header || header.querySelector(".pc-header-inner")) {
+      return;
+    }
+    var inner = document.createElement("div");
+    inner.className = "pc-header-inner";
+    while (header.firstChild) {
+      inner.appendChild(header.firstChild);
+    }
+    header.appendChild(inner);
+  }
+
   function wireLogin() {
     var loginInput = document.getElementById("pcLoginInput");
     var passwordInput = document.getElementById("pcPasswordInput");
@@ -537,7 +554,7 @@
   }
 
   function renderStock() {
-    return (
+    return renderPageShell(
       '<section class="pc-card">' +
       '  <div class="section-title">Состояние склада</div>' +
       '  <div class="pc-toolbar">' +
@@ -570,7 +587,7 @@
   }
 
   function renderCatalog() {
-    return (
+    return renderPageShell(
       '<section class="pc-card">' +
       '  <div class="section-title">Каталог товаров</div>' +
       '  <div class="pc-toolbar">' +
@@ -593,7 +610,7 @@
   }
 
   function renderNoAccess() {
-    return (
+    return renderPageShell(
       '<section class="pc-card">' +
       '  <div class="section-title">Доступ ограничен</div>' +
       '  <div class="pc-note">Все блоки ПК-клиента сейчас временно отключены администратором.</div>' +
@@ -605,11 +622,26 @@
     if (!rows || !rows.length) {
       return '<div class="empty-state">Нет данных по остаткам.</div>';
     }
+
+    function formatStockItemMeta(row) {
+      var parts = [];
+      var barcode = String((row && row.barcode) || "").trim();
+      var gtin = String((row && row.gtin) || "").trim();
+      if (barcode) {
+        parts.push(barcode);
+      }
+      if (gtin && gtin !== barcode) {
+        parts.push("GTIN: " + gtin);
+      }
+      return parts.join(" · ");
+    }
+
     var body = rows
       .map(function (row) {
         var itemId = Number(row.itemId) || 0;
         var qtyLabel = row.qtyDisplay || row.totalQty || 0;
         var isExpanded = !!(expandedItemIds && expandedItemIds[itemId]);
+        var itemMeta = formatStockItemMeta(row);
         var details = Array.isArray(row.details) ? row.details : [];
         var detailsHtml = details.length
           ? details
@@ -623,38 +655,44 @@
                   ? detail.reservationOrderRef
                   : "не зарезервировано";
                 return (
-                  "<tr>" +
-                  "<td>" +
+                  '<div class="pc-stock-shared-grid pc-stock-detail-entry" role="row">' +
+                  '<div class="pc-stock-detail-col pc-stock-detail-col-location" role="cell">' +
                   escapeHtml(detail.locationCode || "-") +
-                  "</td>" +
-                  "<td>" +
+                  "</div>" +
+                  '<div class="pc-stock-detail-col pc-stock-detail-col-hu" role="cell">' +
                   escapeHtml(huLabel) +
-                  "</td>" +
-                  "<td>" +
-                  escapeHtml(detailClient) +
-                  "</td>" +
-                  "<td>" +
+                  "</div>" +
+                  '<div class="pc-stock-detail-col pc-stock-detail-col-order" role="cell"><span class="pc-stock-detail-text">' +
                   escapeHtml(detailOrder) +
-                  "</td>" +
-                  "<td><span class=\"pc-qty\">" +
+                  "</span></div>" +
+                  '<div class="pc-stock-detail-col pc-stock-detail-col-client" role="cell"><span class="pc-stock-detail-text">' +
+                  escapeHtml(detailClient) +
+                  "</span></div>" +
+                  '<div class="pc-stock-detail-col pc-stock-detail-col-qty pc-stock-detail-qty-col" role="cell"><span class="pc-qty pc-stock-detail-qty">' +
                   escapeHtml(String(detailQty)) +
-                  "</span></td>" +
-                  "</tr>"
+                  "</span></div>" +
+                  "</div>"
                 );
               })
               .join("")
-          : '<tr><td colspan="3" class="pc-stock-details-empty">Нет детальных строк.</td></tr>';
+          : '<div class="pc-stock-details-empty">Нет детальных строк.</div>';
         var detailRow = "";
         if (isExpanded) {
           detailRow =
             '<tr class="pc-stock-detail-row">' +
-            '<td colspan="5" class="pc-stock-detail-cell">' +
-            '<table class="pc-table pc-stock-details-table">' +
-            "<thead><tr><th>Место</th><th>HU</th><th>Клиент</th><th>Заказ</th><th>Кол-во</th></tr></thead>" +
-            "<tbody>" +
+            '<td colspan="4" class="pc-stock-detail-cell">' +
+            '<div class="pc-stock-detail-block">' +
+            '<div class="pc-stock-shared-grid pc-stock-detail-head" role="row">' +
+            '<div class="pc-stock-detail-head-cell" role="columnheader">Место</div>' +
+            '<div class="pc-stock-detail-head-cell" role="columnheader">HU</div>' +
+            '<div class="pc-stock-detail-head-cell" role="columnheader">Заказ</div>' +
+            '<div class="pc-stock-detail-head-cell" role="columnheader">Клиент</div>' +
+            '<div class="pc-stock-detail-head-cell pc-stock-detail-col-qty pc-stock-detail-qty-col" role="columnheader">Кол-во</div>' +
+            "</div>" +
+            '<div class="pc-stock-detail-list">' +
             detailsHtml +
-            "</tbody>" +
-            "</table>" +
+            "</div>" +
+            "</div>" +
             "</td>" +
             "</tr>";
         }
@@ -665,18 +703,18 @@
           '" tabindex="0" role="button" aria-expanded="' +
           (isExpanded ? "true" : "false") +
           '">' +
-          "<td>" +
+          '<td class="pc-stock-nomenclature-cell">' +
           '<div class="pc-stock-item-cell">' +
           '<span class="pc-stock-caret' +
           (isExpanded ? " is-expanded" : "") +
           '">▸</span>' +
+          '<div class="pc-stock-item-copy">' +
           '<span class="pc-stock-item-name">' +
           escapeHtml(row.itemName || "-") +
           "</span>" +
+          (itemMeta ? '<span class="pc-stock-item-meta">' + escapeHtml(itemMeta) + "</span>" : "") +
           "</div>" +
-          "</td>" +
-          "<td>" +
-          escapeHtml(row.barcode || "-") +
+          "</div>" +
           "</td>" +
           "<td>" +
           escapeHtml(row.brand || "-") +
@@ -684,7 +722,7 @@
           "<td>" +
           escapeHtml(row.volume || "-") +
           "</td>" +
-          '<td><span class="pc-qty">' +
+          '<td><span class="pc-qty pc-stock-parent-qty">' +
           escapeHtml(String(qtyLabel)) +
           "</span></td>" +
           "</tr>" +
@@ -693,10 +731,15 @@
       })
       .join("");
     return (
-      '<table class="pc-table">' +
+      '<table class="pc-table pc-stock-table">' +
+      "<colgroup>" +
+      '<col class="pc-stock-col-nomenclature" />' +
+      '<col class="pc-stock-col-brand" />' +
+      '<col class="pc-stock-col-volume" />' +
+      '<col class="pc-stock-col-qty" />' +
+      "</colgroup>" +
       "<thead><tr>" +
-      renderSortableHeader("stock", "itemName", "Товар") +
-      renderSortableHeader("stock", "barcode", "SKU / ШК") +
+      renderSortableHeader("stock", "itemName", "Номенклатура") +
       renderSortableHeader("stock", "brand", "Бренд") +
       renderSortableHeader("stock", "volume", "Объем") +
       renderSortableHeader("stock", "qty", "Кол-во") +
@@ -762,7 +805,7 @@
   }
 
   function renderProductionNeed() {
-    return (
+    return renderPageShell(
       '<section class="pc-card">' +
       '  <div class="section-title">Потребность производства</div>' +
       '  <div class="pc-toolbar">' +
@@ -997,7 +1040,14 @@
       rows.length +
       "</div>" +
       '  <div class="pc-low-stock-table-wrap">' +
-      '    <table class="pc-table">' +
+      '    <table class="pc-table pc-low-stock-table">' +
+      "      <colgroup>" +
+      '        <col class="pc-low-stock-col-item" />' +
+      '        <col class="pc-low-stock-col-type" />' +
+      '        <col class="pc-low-stock-col-qty" />' +
+      '        <col class="pc-low-stock-col-min" />' +
+      '        <col class="pc-low-stock-col-shortage" />' +
+      "      </colgroup>" +
       "      <thead><tr>" +
       "        <th>Товар</th>" +
       "        <th>Тип</th>" +
@@ -1285,6 +1335,7 @@
             brand: row.brand || "",
             volume: row.volume || "",
             barcode: row.barcode || "",
+            gtin: row.gtin || "",
             totalQty: 0,
             qtyDisplay: "",
             details: [],
@@ -1596,7 +1647,7 @@
   }
 
   function renderOrders() {
-    return (
+    return renderPageShell(
       '<section class="pc-card">' +
       '  <div class="section-title">Заказы</div>' +
       '  <div class="pc-toolbar">' +
@@ -2273,7 +2324,7 @@
   function sortOrdersNewestFirst(rows) {
     var source = Array.isArray(rows) ? rows.slice() : [];
 
-    function getDefaultStatusRank(order) {
+    function getCanonicalStatusRank(order) {
       if (isPendingConfirmationOrder(order)) {
         return 0; // Ожидает подтверждения
       }
@@ -2285,13 +2336,21 @@
       if (statusCode === "ACCEPTED") {
         return 2; // Готов
       }
+      if (statusCode === "DRAFT") {
+        return 3; // Черновик
+      }
       if (statusCode === "SHIPPED") {
-        return 3; // Выполнен
+        return 4; // Выполнен
       }
       if (statusCode === "CANCELLED") {
-        return 4; // Отменен
+        return 5; // Отменен
       }
       return 99; // Неизвестные/старые статусы
+    }
+
+    function getDueDateSortValue(order) {
+      var parsed = Date.parse(order && order.due_date ? String(order.due_date) : "");
+      return isNaN(parsed) ? Number.POSITIVE_INFINITY : parsed;
     }
 
     return source
@@ -2302,10 +2361,16 @@
         var left = leftEntry.row;
         var right = rightEntry.row;
 
-        var leftRank = getDefaultStatusRank(left);
-        var rightRank = getDefaultStatusRank(right);
+        var leftRank = getCanonicalStatusRank(left);
+        var rightRank = getCanonicalStatusRank(right);
         if (leftRank !== rightRank) {
           return leftRank - rightRank;
+        }
+
+        var leftDueDate = getDueDateSortValue(left);
+        var rightDueDate = getDueDateSortValue(right);
+        if (leftDueDate !== rightDueDate) {
+          return leftDueDate - rightDueDate;
         }
 
         var leftTime = Date.parse(left && left.created_at ? String(left.created_at) : "") || 0;
@@ -3848,6 +3913,7 @@
   }
 
   function init() {
+    ensureHeaderShell();
     var rememberedView = loadLastView();
     if (rememberedView) {
       currentView = rememberedView;
@@ -3874,7 +3940,7 @@
     startLiveUpdates();
     syncTabsVisibility();
     if (app) {
-      app.innerHTML = '<section class="pc-card"><div class="pc-status">Загрузка...</div></section>';
+      app.innerHTML = renderPageShell('<section class="pc-card"><div class="pc-status">Загрузка...</div></section>');
     }
     loadClientBlocks().then(function () {
       currentView = resolveAllowedView(currentView) || getDefaultView();
@@ -3887,6 +3953,8 @@
     window.FlowStockPcTestHooks.getOrderMarkingPresentation = getOrderMarkingPresentation;
     window.FlowStockPcTestHooks.renderOrderMarkingIndicator = renderOrderMarkingIndicator;
     window.FlowStockPcTestHooks.normalizeMarkingTaskRows = normalizeMarkingTaskRows;
+    window.FlowStockPcTestHooks.renderStockTable = renderStockTable;
+    window.FlowStockPcTestHooks.sortOrdersNewestFirst = sortOrdersNewestFirst;
     window.FlowStockPcTestHooks.buildOrdersUrl = buildOrdersUrl;
     window.FlowStockPcTestHooks.getProductionNeedCreateOrdersRefreshUrl = getProductionNeedCreateOrdersRefreshUrl;
     window.FlowStockPcTestHooks.trimOrdersPage = trimOrdersPage;
