@@ -58,6 +58,16 @@ internal static class OrderReceiptRemainingCalculator
 
         try
         {
+            if (dataStore is IOptimizedOrderReadModelStore optimizedStore)
+            {
+                foreach (var itemTotals in optimizedStore.GetUnlinkedProductionTotalsByItem(orderId))
+                {
+                    DistributeUnlinkedQtyByItem(totals, linesByItem, itemTotals.Key, itemTotals.Value);
+                }
+
+                return totals;
+            }
+
             foreach (var doc in dataStore.GetDocsByOrder(orderId)
                          .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status == DocStatus.Closed))
             {

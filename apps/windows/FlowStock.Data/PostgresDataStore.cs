@@ -9,7 +9,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed class PostgresDataStore : IDataStore
+public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore
 {
     private readonly string _connectionString;
     private readonly NpgsqlConnection? _connection;
@@ -22,144 +22,314 @@ public sealed class PostgresDataStore : IDataStore
         "LEFT JOIN (SELECT dl.doc_id, COUNT(*) AS line_count FROM doc_lines dl WHERE dl.qty > 0 AND NOT EXISTS (SELECT 1 FROM doc_lines newer WHERE newer.replaces_line_id = dl.id) GROUP BY dl.doc_id) dl ON dl.doc_id = d.id " +
         "LEFT JOIN (SELECT doc_id, MAX(device_id) AS device_id, MAX(doc_uid) AS doc_uid FROM api_docs GROUP BY doc_id) ad ON ad.doc_id = d.id";
     private const string OrderSelectBase = @"
-SELECT o.id,
-       o.order_ref,
-       o.order_type,
-       o.partner_id,
-       o.due_date,
-       o.status,
-       o.comment,
-       o.created_at,
-       p.name,
-       p.code,
-       COALESCE(o.bind_reserved_stock, FALSE),
-       COALESCE(o.marking_status, 'NOT_REQUIRED'),
-       o.marking_excel_generated_at,
-       o.marking_printed_at,
-       COALESCE(marking_need.marking_required, FALSE),
-       COALESCE(marking_need.marking_applies, FALSE),
-       COALESCE(marking_need.marking_completed, FALSE)
-FROM orders o
-LEFT JOIN partners p ON p.id = o.partner_id
-LEFT JOIN LATERAL (
-    WITH shipped AS (
-        SELECT dl.order_line_id, SUM(dl.qty) AS qty_shipped
-        FROM doc_lines dl
-        INNER JOIN docs d ON d.id = dl.doc_id
-        WHERE d.status = 'CLOSED'
-          AND d.type = 'OUTBOUND'
-          AND dl.order_line_id IS NOT NULL
-          AND dl.qty > 0
-          AND NOT EXISTS (
-              SELECT 1
-              FROM doc_lines newer
-              WHERE newer.replaces_line_id = dl.id
-          )
-        GROUP BY dl.order_line_id
-    ),
-    reserved AS (
-        SELECT order_line_id, SUM(qty_planned) AS qty_reserved
-        FROM order_receipt_plan_lines
-        WHERE qty_planned > 0
-        GROUP BY order_line_id
-    ),
-    produced AS (
-        SELECT dl.order_line_id, SUM(dl.qty) AS qty_received
-        FROM doc_lines dl
-        INNER JOIN docs d ON d.id = dl.doc_id
-        WHERE d.status = 'CLOSED'
-          AND d.type = 'PRODUCTION_RECEIPT'
-          AND dl.order_line_id IS NOT NULL
-          AND dl.qty > 0
-          AND NOT EXISTS (
-              SELECT 1
-              FROM doc_lines newer
-              WHERE newer.replaces_line_id = dl.id
-          )
-        GROUP BY dl.order_line_id
-    ),
-    markable_line_need AS (
-        SELECT ol.item_id,
-               NULLIF(BTRIM(i.gtin), '') AS gtin,
-               CASE
-                   WHEN o.order_type = 'INTERNAL' THEN GREATEST(0, ol.qty_ordered)
-                   ELSE GREATEST(0, ol.qty_ordered - COALESCE(shipped.qty_shipped, 0) - COALESCE(reserved.qty_reserved, 0))
-               END AS qty_for_marking
-        FROM order_lines ol
-        INNER JOIN items i ON i.id = ol.item_id
-        INNER JOIN item_types it ON it.id = i.item_type_id
-        LEFT JOIN shipped ON shipped.order_line_id = ol.id
-        LEFT JOIN reserved ON reserved.order_line_id = ol.id
-        LEFT JOIN produced ON produced.order_line_id = ol.id
-        WHERE ol.order_id = o.id
-          AND COALESCE(it.enable_marking, FALSE) = TRUE
-          AND NULLIF(BTRIM(i.gtin), '') IS NOT NULL
-    ),
-    markable_item_need AS (
-        SELECT item_id,
-               gtin,
-               SUM(qty_for_marking) AS qty_for_marking
-        FROM markable_line_need
-        GROUP BY item_id, gtin
-    ),
-    free_code_stats AS (
-        SELECT COALESCE(mo.item_id, 0) AS item_id,
-               COALESCE(NULLIF(BTRIM(COALESCE(mo.gtin, c.gtin)), ''), '') AS gtin,
-               COUNT(*) AS codes_total
-        FROM marking_code c
-        INNER JOIN marking_order mo ON mo.id = c.marking_order_id
-        WHERE c.status IN (@marking_code_status_reserved, @marking_code_status_printed)
-          AND c.receipt_doc_id IS NULL
-          AND c.receipt_line_id IS NULL
-          AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
-          AND (mo.source_type IN (@production_need_source_type, @production_order_source_type)
-               OR mo.order_id IS NOT NULL)
-        GROUP BY COALESCE(mo.item_id, 0),
-                 COALESCE(NULLIF(BTRIM(COALESCE(mo.gtin, c.gtin)), ''), '')
-    ),
-    bound_code_stats AS (
-        SELECT ol.item_id,
-               COALESCE(NULLIF(BTRIM(i.gtin), ''), '') AS gtin,
-               COUNT(*) AS codes_total
-        FROM marking_code c
-        INNER JOIN doc_lines dl ON dl.id = c.receipt_line_id
-        INNER JOIN order_lines ol ON ol.id = dl.order_line_id
-        INNER JOIN items i ON i.id = ol.item_id
-        WHERE ol.order_id = o.id
-          AND c.status <> @marking_code_status_voided
-        GROUP BY ol.item_id,
-                 COALESCE(NULLIF(BTRIM(i.gtin), ''), '')
-    )
-    SELECT EXISTS (
+WITH order_scope AS (
+    {ORDER_SCOPE}
+),
+order_base AS (
+    SELECT o.id,
+           o.order_ref,
+           o.order_type,
+           o.partner_id,
+           o.due_date,
+           o.status AS persisted_status,
+           o.comment,
+           o.created_at,
+           p.name AS partner_name,
+           p.code AS partner_code,
+           COALESCE(o.bind_reserved_stock, FALSE) AS bind_reserved_stock,
+           COALESCE(o.marking_status, 'NOT_REQUIRED') AS marking_status,
+           o.marking_excel_generated_at,
+           o.marking_printed_at
+    FROM orders o
+    INNER JOIN order_scope os ON os.id = o.id
+    LEFT JOIN partners p ON p.id = o.partner_id
+),
+order_lines_scope AS (
+    SELECT ol.id,
+           ol.order_id,
+           ol.item_id,
+           ol.qty_ordered
+    FROM order_lines ol
+    INNER JOIN order_scope os ON os.id = ol.order_id
+),
+active_doc_lines AS (
+    SELECT dl.id,
+           dl.doc_id,
+           dl.order_line_id,
+           dl.item_id,
+           dl.qty
+    FROM doc_lines dl
+    WHERE dl.qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+),
+shipped_by_line AS (
+    SELECT dl.order_line_id,
+           SUM(dl.qty) AS qty_shipped
+    FROM active_doc_lines dl
+    INNER JOIN docs d ON d.id = dl.doc_id
+    INNER JOIN order_lines_scope ols ON ols.id = dl.order_line_id
+    WHERE d.status = 'CLOSED'
+      AND d.type = 'OUTBOUND'
+    GROUP BY dl.order_line_id
+),
+reserved_by_line AS (
+    SELECT p.order_line_id,
+           SUM(p.qty_planned) AS qty_reserved
+    FROM order_receipt_plan_lines p
+    INNER JOIN order_lines_scope ols ON ols.id = p.order_line_id
+    WHERE p.qty_planned > 0
+    GROUP BY p.order_line_id
+),
+direct_produced_by_line AS (
+    SELECT dl.order_line_id,
+           SUM(dl.qty) AS qty_received
+    FROM active_doc_lines dl
+    INNER JOIN docs d ON d.id = dl.doc_id
+    INNER JOIN order_lines_scope ols ON ols.id = dl.order_line_id
+    WHERE d.status = 'CLOSED'
+      AND d.type = 'PRODUCTION_RECEIPT'
+    GROUP BY dl.order_line_id
+),
+unlinked_produced_by_item AS (
+    SELECT d.order_id,
+           dl.item_id,
+           SUM(dl.qty) AS qty_received
+    FROM docs d
+    INNER JOIN active_doc_lines dl ON dl.doc_id = d.id
+    INNER JOIN order_scope os ON os.id = d.order_id
+    WHERE d.status = 'CLOSED'
+      AND d.type = 'PRODUCTION_RECEIPT'
+      AND dl.order_line_id IS NULL
+    GROUP BY d.order_id,
+             dl.item_id
+),
+production_totals_by_order AS (
+    SELECT d.order_id,
+           SUM(dl.qty) AS qty_received
+    FROM docs d
+    INNER JOIN active_doc_lines dl ON dl.doc_id = d.id
+    INNER JOIN order_scope os ON os.id = d.order_id
+    WHERE d.status = 'CLOSED'
+      AND d.type = 'PRODUCTION_RECEIPT'
+    GROUP BY d.order_id
+),
+line_metrics_seed AS (
+    SELECT ob.id AS order_id,
+           ob.order_type,
+           ob.persisted_status,
+           ols.id AS order_line_id,
+           ols.item_id,
+           ols.qty_ordered,
+           COALESCE(shipped.qty_shipped, 0) AS qty_shipped,
+           COALESCE(reserved.qty_reserved, 0) AS qty_reserved,
+           COALESCE(direct_produced.qty_received, 0) AS qty_direct_received,
+           COALESCE(unlinked.qty_received, 0) AS qty_unlinked_item_received,
+           GREATEST(0, ols.qty_ordered - COALESCE(direct_produced.qty_received, 0)) AS qty_direct_unfilled,
+           ROW_NUMBER() OVER (
+               PARTITION BY ob.id, ols.item_id
+               ORDER BY ols.id DESC
+           ) AS item_line_desc_rank,
+           COALESCE(SUM(GREATEST(0, ols.qty_ordered - COALESCE(direct_produced.qty_received, 0))) OVER (
+               PARTITION BY ob.id, ols.item_id
+               ORDER BY ols.id
+               ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+           ), 0) AS qty_direct_unfilled_before
+    FROM order_base ob
+    LEFT JOIN order_lines_scope ols ON ols.order_id = ob.id
+    LEFT JOIN shipped_by_line shipped ON shipped.order_line_id = ols.id
+    LEFT JOIN reserved_by_line reserved ON reserved.order_line_id = ols.id
+    LEFT JOIN direct_produced_by_line direct_produced ON direct_produced.order_line_id = ols.id
+    LEFT JOIN unlinked_produced_by_item unlinked ON unlinked.order_id = ob.id
+                                                 AND unlinked.item_id = ols.item_id
+),
+order_line_metrics AS (
+    SELECT order_id,
+           order_type,
+           persisted_status,
+           order_line_id,
+           item_id,
+           qty_ordered,
+           qty_shipped,
+           qty_reserved,
+           qty_direct_received,
+           qty_direct_received
+           + CASE
+                 WHEN qty_unlinked_item_received <= 0 THEN 0
+                 WHEN item_line_desc_rank = 1 THEN GREATEST(0, qty_unlinked_item_received - qty_direct_unfilled_before)
+                 ELSE GREATEST(0, LEAST(qty_unlinked_item_received - qty_direct_unfilled_before, qty_direct_unfilled))
+             END AS qty_produced_total,
+           CASE
+               WHEN order_type = 'CUSTOMER' THEN qty_direct_received + qty_reserved
+               ELSE qty_direct_received
+           END AS qty_customer_ready
+    FROM line_metrics_seed
+),
+status_summary AS (
+    SELECT ob.id AS order_id,
+           COUNT(olm.order_line_id) AS line_count,
+           COALESCE(BOOL_AND(olm.qty_shipped + 0.000001 >= olm.qty_ordered), FALSE) AS fully_shipped,
+           COALESCE(BOOL_AND(olm.qty_customer_ready + 0.000001 >= olm.qty_ordered), FALSE) AS fully_customer_ready,
+           COALESCE(BOOL_AND(olm.qty_produced_total + 0.000001 >= olm.qty_ordered), FALSE) AS fully_produced,
+           COALESCE(BOOL_OR(olm.qty_produced_total > 0.000001), FALSE) AS any_produced,
+           COALESCE(MAX(production_totals.qty_received), 0) > 0.000001 AS any_posted_production
+    FROM order_base ob
+    LEFT JOIN order_line_metrics olm ON olm.order_id = ob.id
+    LEFT JOIN production_totals_by_order production_totals ON production_totals.order_id = ob.id
+    GROUP BY ob.id
+),
+doc_summary AS (
+    SELECT d.order_id,
+           MAX(CASE
+               WHEN d.type = 'OUTBOUND' AND d.status = 'CLOSED' THEN d.closed_at
+               ELSE NULL
+           END) AS outbound_closed_at,
+           MAX(CASE
+               WHEN d.type = 'PRODUCTION_RECEIPT' AND d.status = 'CLOSED' THEN d.closed_at
+               ELSE NULL
+           END) AS production_closed_at
+    FROM docs d
+    INNER JOIN order_scope os ON os.id = d.order_id
+    GROUP BY d.order_id
+),
+markable_line_need AS (
+    SELECT olm.order_id,
+           olm.item_id,
+           NULLIF(BTRIM(i.gtin), '') AS gtin,
+           CASE
+               WHEN olm.order_type = 'INTERNAL' THEN GREATEST(0, olm.qty_ordered)
+               ELSE GREATEST(0, olm.qty_ordered - olm.qty_shipped - olm.qty_reserved)
+           END AS qty_for_marking
+    FROM order_line_metrics olm
+    INNER JOIN items i ON i.id = olm.item_id
+    INNER JOIN item_types it ON it.id = i.item_type_id
+    WHERE COALESCE(it.enable_marking, FALSE) = TRUE
+      AND NULLIF(BTRIM(i.gtin), '') IS NOT NULL
+),
+markable_item_need AS (
+    SELECT order_id,
+           item_id,
+           gtin,
+           SUM(qty_for_marking) AS qty_for_marking
+    FROM markable_line_need
+    GROUP BY order_id, item_id, gtin
+),
+free_code_stats AS (
+    SELECT COALESCE(mo.item_id, 0) AS item_id,
+           COALESCE(NULLIF(BTRIM(COALESCE(mo.gtin, c.gtin)), ''), '') AS gtin,
+           COUNT(*) AS codes_total
+    FROM marking_code c
+    INNER JOIN marking_order mo ON mo.id = c.marking_order_id
+    WHERE c.status IN (@marking_code_status_reserved, @marking_code_status_printed)
+      AND c.receipt_doc_id IS NULL
+      AND c.receipt_line_id IS NULL
+      AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
+      AND (mo.source_type IN (@production_need_source_type, @production_order_source_type)
+           OR mo.order_id IS NOT NULL)
+    GROUP BY COALESCE(mo.item_id, 0),
+             COALESCE(NULLIF(BTRIM(COALESCE(mo.gtin, c.gtin)), ''), '')
+),
+bound_code_stats AS (
+    SELECT ols.order_id,
+           ols.item_id,
+           COALESCE(NULLIF(BTRIM(i.gtin), ''), '') AS gtin,
+           COUNT(*) AS codes_total
+    FROM marking_code c
+    INNER JOIN doc_lines dl ON dl.id = c.receipt_line_id
+    INNER JOIN order_lines_scope ols ON ols.id = dl.order_line_id
+    INNER JOIN items i ON i.id = ols.item_id
+    WHERE c.status <> @marking_code_status_voided
+    GROUP BY ols.order_id,
+             ols.item_id,
+             COALESCE(NULLIF(BTRIM(i.gtin), ''), '')
+),
+marking_rollup AS (
+    SELECT ob.id AS order_id,
+           EXISTS (
                SELECT 1
-               FROM markable_line_need
+               FROM markable_line_need mln
+               WHERE mln.order_id = ob.id
            ) AS marking_applies,
            EXISTS (
                SELECT 1
-               FROM markable_line_need
-               WHERE qty_for_marking > 0
+               FROM markable_line_need mln
+               WHERE mln.order_id = ob.id
+                 AND mln.qty_for_marking > 0
            ) AS marking_required,
            EXISTS (
                SELECT 1
-               FROM markable_line_need
-           ) AND NOT EXISTS (
+               FROM markable_line_need mln
+               WHERE mln.order_id = ob.id
+           )
+           AND NOT EXISTS (
                SELECT 1
                FROM markable_item_need need
-               WHERE need.qty_for_marking > 0
-                 AND COALESCE((
-                     SELECT SUM(free.codes_total)
-                     FROM free_code_stats free
-                     WHERE free.item_id = need.item_id
-                        OR (need.gtin IS NOT NULL AND free.gtin = COALESCE(need.gtin, ''))
-                 ), 0)
-                 + COALESCE((
-                     SELECT SUM(bound.codes_total)
-                     FROM bound_code_stats bound
-                     WHERE bound.item_id = need.item_id
-                        OR (need.gtin IS NOT NULL AND bound.gtin = COALESCE(need.gtin, ''))
-                 ), 0) + 0.000001 < need.qty_for_marking
+               LEFT JOIN LATERAL (
+                   SELECT COALESCE(SUM(free.codes_total), 0) AS total
+                   FROM free_code_stats free
+                   WHERE free.item_id = need.item_id
+                      OR (need.gtin IS NOT NULL AND free.gtin = COALESCE(need.gtin, ''))
+               ) free_total ON TRUE
+               LEFT JOIN LATERAL (
+                   SELECT COALESCE(SUM(bound.codes_total), 0) AS total
+                   FROM bound_code_stats bound
+                   WHERE bound.order_id = need.order_id
+                     AND (bound.item_id = need.item_id
+                          OR (need.gtin IS NOT NULL AND bound.gtin = COALESCE(need.gtin, '')))
+               ) bound_total ON TRUE
+               WHERE need.order_id = ob.id
+                 AND need.qty_for_marking > 0
+                 AND COALESCE(free_total.total, 0) + COALESCE(bound_total.total, 0) + 0.000001 < need.qty_for_marking
            ) AS marking_completed
-) marking_need ON TRUE";
+    FROM order_base ob
+)
+SELECT ob.id,
+       ob.order_ref,
+       ob.order_type,
+       ob.partner_id,
+       ob.due_date,
+       CASE
+           WHEN ob.persisted_status = 'CANCELLED' THEN 'CANCELLED'
+           WHEN ob.order_type = 'INTERNAL' THEN CASE
+               WHEN ob.persisted_status = 'SHIPPED' THEN 'SHIPPED'
+               WHEN COALESCE(ss.line_count, 0) > 0 AND COALESCE(ss.fully_produced, FALSE) THEN 'SHIPPED'
+               ELSE 'IN_PROGRESS'
+           END
+           ELSE CASE
+               WHEN ob.persisted_status = 'DRAFT' THEN 'DRAFT'
+               WHEN COALESCE(ss.line_count, 0) > 0 AND COALESCE(ss.fully_shipped, FALSE) THEN 'SHIPPED'
+               WHEN COALESCE(ss.line_count, 0) > 0 AND COALESCE(ss.fully_customer_ready, FALSE) THEN 'ACCEPTED'
+               ELSE 'IN_PROGRESS'
+           END
+       END AS status,
+       ob.comment,
+       ob.created_at,
+       ob.partner_name,
+       ob.partner_code,
+       ob.bind_reserved_stock,
+       ob.marking_status,
+       ob.marking_excel_generated_at,
+       ob.marking_printed_at,
+       COALESCE(mr.marking_required, FALSE),
+       COALESCE(mr.marking_applies, FALSE),
+       COALESCE(mr.marking_completed, FALSE),
+       CASE
+           WHEN ob.persisted_status = 'CANCELLED' THEN NULL
+           WHEN ob.order_type = 'INTERNAL'
+                AND COALESCE(ss.line_count, 0) > 0
+                AND COALESCE(ss.fully_produced, FALSE) THEN ds.production_closed_at
+           WHEN ob.order_type <> 'INTERNAL'
+                AND COALESCE(ss.line_count, 0) > 0
+                AND COALESCE(ss.fully_shipped, FALSE) THEN ds.outbound_closed_at
+           ELSE NULL
+       END AS shipped_at
+FROM order_base ob
+LEFT JOIN status_summary ss ON ss.order_id = ob.id
+LEFT JOIN doc_summary ds ON ds.order_id = ob.id
+LEFT JOIN marking_rollup mr ON mr.order_id = ob.id";
 
     public PostgresDataStore(string connectionString)
     {
@@ -1488,7 +1658,9 @@ WHERE id = @id;
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, $"{OrderSelectBase} WHERE o.id = @id");
+            using var command = CreateCommand(connection, $@"
+{BuildOrderSelectSql("SELECT @id::bigint AS id")}
+");
             AddOrderSelectParameters(command);
             command.Parameters.AddWithValue("@id", id);
             using var reader = command.ExecuteReader();
@@ -1500,7 +1672,9 @@ WHERE id = @id;
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, $"{OrderSelectBase} ORDER BY o.created_at DESC");
+            using var command = CreateCommand(connection, $@"
+{BuildOrderSelectSql("SELECT o.id FROM orders o")}
+ORDER BY created_at DESC");
             AddOrderSelectParameters(command);
             using var reader = command.ExecuteReader();
             var orders = new List<Order>();
@@ -1518,16 +1692,181 @@ WHERE id = @id;
         return WithConnection(connection =>
         {
             var normalized = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
-            using var command = CreateCommand(connection, $@"
-{OrderSelectBase}
-WHERE (@include_internal OR o.order_type = @customer_order_type)
-  AND (
-      @query IS NULL
-      OR o.order_ref ILIKE @query_pattern
-      OR p.name ILIKE @query_pattern
-      OR p.code ILIKE @query_pattern
-  )
-ORDER BY CASE o.status
+            const string pageOrderScopeSql = @"
+WITH candidate_orders AS (
+    SELECT o.id,
+           o.order_ref,
+           o.order_type,
+           o.status AS persisted_status
+    FROM orders o
+    LEFT JOIN partners p ON p.id = o.partner_id
+    WHERE (@include_internal OR o.order_type = @customer_order_type)
+      AND (
+          @query IS NULL
+          OR o.order_ref ILIKE @query_pattern
+          OR p.name ILIKE @query_pattern
+          OR p.code ILIKE @query_pattern
+      )
+),
+candidate_order_lines AS (
+    SELECT ol.id,
+           ol.order_id,
+           ol.item_id,
+           ol.qty_ordered
+    FROM order_lines ol
+    INNER JOIN candidate_orders co ON co.id = ol.order_id
+),
+active_doc_lines AS (
+    SELECT dl.id,
+           dl.doc_id,
+           dl.order_line_id,
+           dl.item_id,
+           dl.qty
+    FROM doc_lines dl
+    WHERE dl.qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+),
+shipped_by_line AS (
+    SELECT dl.order_line_id,
+           SUM(dl.qty) AS qty_shipped
+    FROM active_doc_lines dl
+    INNER JOIN docs d ON d.id = dl.doc_id
+    INNER JOIN candidate_order_lines col ON col.id = dl.order_line_id
+    WHERE d.status = 'CLOSED'
+      AND d.type = 'OUTBOUND'
+    GROUP BY dl.order_line_id
+),
+reserved_by_line AS (
+    SELECT p.order_line_id,
+           SUM(p.qty_planned) AS qty_reserved
+    FROM order_receipt_plan_lines p
+    INNER JOIN candidate_order_lines col ON col.id = p.order_line_id
+    WHERE p.qty_planned > 0
+    GROUP BY p.order_line_id
+),
+direct_produced_by_line AS (
+    SELECT dl.order_line_id,
+           SUM(dl.qty) AS qty_received
+    FROM active_doc_lines dl
+    INNER JOIN docs d ON d.id = dl.doc_id
+    INNER JOIN candidate_order_lines col ON col.id = dl.order_line_id
+    WHERE d.status = 'CLOSED'
+      AND d.type = 'PRODUCTION_RECEIPT'
+    GROUP BY dl.order_line_id
+),
+unlinked_produced_by_item AS (
+    SELECT d.order_id,
+           dl.item_id,
+           SUM(dl.qty) AS qty_received
+    FROM docs d
+    INNER JOIN active_doc_lines dl ON dl.doc_id = d.id
+    INNER JOIN candidate_orders co ON co.id = d.order_id
+    WHERE d.status = 'CLOSED'
+      AND d.type = 'PRODUCTION_RECEIPT'
+      AND dl.order_line_id IS NULL
+    GROUP BY d.order_id,
+             dl.item_id
+),
+production_totals_by_order AS (
+    SELECT d.order_id,
+           SUM(dl.qty) AS qty_received
+    FROM docs d
+    INNER JOIN active_doc_lines dl ON dl.doc_id = d.id
+    INNER JOIN candidate_orders co ON co.id = d.order_id
+    WHERE d.status = 'CLOSED'
+      AND d.type = 'PRODUCTION_RECEIPT'
+    GROUP BY d.order_id
+),
+line_metrics_seed AS (
+    SELECT co.id AS order_id,
+           co.order_type,
+           co.persisted_status,
+           col.id AS order_line_id,
+           col.item_id,
+           col.qty_ordered,
+           COALESCE(shipped.qty_shipped, 0) AS qty_shipped,
+           COALESCE(reserved.qty_reserved, 0) AS qty_reserved,
+           COALESCE(direct_produced.qty_received, 0) AS qty_direct_received,
+           COALESCE(unlinked.qty_received, 0) AS qty_unlinked_item_received,
+           GREATEST(0, col.qty_ordered - COALESCE(direct_produced.qty_received, 0)) AS qty_direct_unfilled,
+           ROW_NUMBER() OVER (
+               PARTITION BY co.id, col.item_id
+               ORDER BY col.id DESC
+           ) AS item_line_desc_rank,
+           COALESCE(SUM(GREATEST(0, col.qty_ordered - COALESCE(direct_produced.qty_received, 0))) OVER (
+               PARTITION BY co.id, col.item_id
+               ORDER BY col.id
+               ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+           ), 0) AS qty_direct_unfilled_before
+    FROM candidate_orders co
+    LEFT JOIN candidate_order_lines col ON col.order_id = co.id
+    LEFT JOIN shipped_by_line shipped ON shipped.order_line_id = col.id
+    LEFT JOIN reserved_by_line reserved ON reserved.order_line_id = col.id
+    LEFT JOIN direct_produced_by_line direct_produced ON direct_produced.order_line_id = col.id
+    LEFT JOIN unlinked_produced_by_item unlinked ON unlinked.order_id = co.id
+                                                 AND unlinked.item_id = col.item_id
+),
+order_line_metrics AS (
+    SELECT order_id,
+           order_type,
+           persisted_status,
+           order_line_id,
+           qty_ordered,
+           qty_shipped,
+           qty_reserved,
+           qty_direct_received,
+           qty_direct_received
+           + CASE
+                 WHEN qty_unlinked_item_received <= 0 THEN 0
+                 WHEN item_line_desc_rank = 1 THEN GREATEST(0, qty_unlinked_item_received - qty_direct_unfilled_before)
+                 ELSE GREATEST(0, LEAST(qty_unlinked_item_received - qty_direct_unfilled_before, qty_direct_unfilled))
+             END AS qty_produced_total,
+           CASE
+               WHEN order_type = 'CUSTOMER' THEN qty_direct_received + qty_reserved
+               ELSE qty_direct_received
+           END AS qty_customer_ready
+    FROM line_metrics_seed
+),
+status_summary AS (
+    SELECT co.id AS order_id,
+           COUNT(olm.order_line_id) AS line_count,
+           COALESCE(BOOL_AND(olm.qty_shipped + 0.000001 >= olm.qty_ordered), FALSE) AS fully_shipped,
+           COALESCE(BOOL_AND(olm.qty_customer_ready + 0.000001 >= olm.qty_ordered), FALSE) AS fully_customer_ready,
+           COALESCE(BOOL_AND(olm.qty_produced_total + 0.000001 >= olm.qty_ordered), FALSE) AS fully_produced,
+           COALESCE(BOOL_OR(olm.qty_produced_total > 0.000001), FALSE) AS any_produced,
+           COALESCE(MAX(production_totals.qty_received), 0) > 0.000001 AS any_posted_production
+    FROM candidate_orders co
+    LEFT JOIN order_line_metrics olm ON olm.order_id = co.id
+    LEFT JOIN production_totals_by_order production_totals ON production_totals.order_id = co.id
+    GROUP BY co.id
+),
+effective_orders AS (
+    SELECT co.id,
+           co.order_ref,
+           CASE
+               WHEN co.persisted_status = 'CANCELLED' THEN 'CANCELLED'
+               WHEN co.order_type = 'INTERNAL' THEN CASE
+                   WHEN co.persisted_status = 'SHIPPED' THEN 'SHIPPED'
+                   WHEN COALESCE(ss.line_count, 0) > 0 AND COALESCE(ss.fully_produced, FALSE) THEN 'SHIPPED'
+                   ELSE 'IN_PROGRESS'
+               END
+               ELSE CASE
+                   WHEN co.persisted_status = 'DRAFT' THEN 'DRAFT'
+                   WHEN COALESCE(ss.line_count, 0) > 0 AND COALESCE(ss.fully_shipped, FALSE) THEN 'SHIPPED'
+                   WHEN COALESCE(ss.line_count, 0) > 0 AND COALESCE(ss.fully_customer_ready, FALSE) THEN 'ACCEPTED'
+                   ELSE 'IN_PROGRESS'
+               END
+           END AS effective_status
+    FROM candidate_orders co
+    LEFT JOIN status_summary ss ON ss.order_id = co.id
+)
+SELECT eo.id
+FROM effective_orders eo
+ORDER BY CASE eo.effective_status
     WHEN 'IN_PROGRESS' THEN 1
     WHEN 'ACCEPTED' THEN 2
     WHEN 'DRAFT' THEN 3
@@ -1535,11 +1874,22 @@ ORDER BY CASE o.status
     WHEN 'CANCELLED' THEN 5
     ELSE 99
 END,
-o.due_date IS NULL,
-o.due_date ASC,
-o.created_at DESC,
-o.id DESC
-LIMIT @limit OFFSET @offset");
+eo.order_ref DESC
+LIMIT @limit OFFSET @offset";
+            using var command = CreateCommand(connection, $@"
+SELECT *
+FROM (
+{BuildOrderSelectSql(pageOrderScopeSql)}
+) paged_orders
+ORDER BY CASE paged_orders.status
+    WHEN 'IN_PROGRESS' THEN 1
+    WHEN 'ACCEPTED' THEN 2
+    WHEN 'DRAFT' THEN 3
+    WHEN 'SHIPPED' THEN 4
+    WHEN 'CANCELLED' THEN 5
+    ELSE 99
+END,
+paged_orders.order_ref DESC");
             AddOrderSelectParameters(command);
             command.Parameters.AddWithValue("@include_internal", includeInternal);
             command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
@@ -2164,32 +2514,21 @@ ORDER BY i.name, ol.id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT ol.id,
-       ol.order_id,
-       ol.item_id,
-       i.name,
-       ol.qty_ordered,
-       ol.production_purpose,
-       (COALESCE(r.sum_qty, 0)
-        + CASE
-              WHEN @include_reserved_stock = 1
-                   AND o.order_type = @customer_order_type THEN COALESCE(p.sum_qty, 0)
-              ELSE 0
-          END) AS received_qty,
-       (ol.qty_ordered
-        - (COALESCE(r.sum_qty, 0)
-           + CASE
-                 WHEN @include_reserved_stock = 1
-                      AND o.order_type = @customer_order_type THEN COALESCE(p.sum_qty, 0)
-                 ELSE 0
-             END)) AS remaining
-FROM order_lines ol
-INNER JOIN orders o ON o.id = ol.order_id
-INNER JOIN items i ON i.id = ol.item_id
-LEFT JOIN (
-    SELECT dl.order_line_id, SUM(dl.qty) AS sum_qty
+WITH order_line_scope AS (
+    SELECT ol.id,
+           ol.order_id,
+           ol.item_id,
+           ol.qty_ordered,
+           ol.production_purpose
+    FROM order_lines ol
+    WHERE ol.order_id = @order_id
+),
+receipt_totals AS (
+    SELECT dl.order_line_id,
+           SUM(dl.qty) AS sum_qty
     FROM doc_lines dl
     INNER JOIN docs d ON d.id = dl.doc_id
+    INNER JOIN order_line_scope ols ON ols.id = dl.order_line_id
     WHERE d.status = @status
       AND d.type = @doc_type
       AND dl.order_line_id IS NOT NULL
@@ -2200,17 +2539,42 @@ LEFT JOIN (
           WHERE newer.replaces_line_id = dl.id
       )
     GROUP BY dl.order_line_id
-) r ON r.order_line_id = ol.id
-LEFT JOIN (
-    SELECT p.order_line_id, SUM(p.qty_planned) AS sum_qty
+),
+reserved_totals AS (
+    SELECT p.order_line_id,
+           SUM(p.qty_planned) AS sum_qty
     FROM order_receipt_plan_lines p
+    INNER JOIN order_line_scope ols ON ols.id = p.order_line_id
     WHERE p.qty_planned > 0
       AND p.to_hu IS NOT NULL
       AND p.to_hu <> ''
     GROUP BY p.order_line_id
-) p ON p.order_line_id = ol.id
-WHERE ol.order_id = @order_id
-ORDER BY ol.id;
+)
+SELECT ols.id,
+       ols.order_id,
+       ols.item_id,
+       i.name,
+       ols.qty_ordered,
+       ols.production_purpose,
+       (COALESCE(receipt.sum_qty, 0)
+        + CASE
+              WHEN @include_reserved_stock = 1
+                   AND o.order_type = @customer_order_type THEN COALESCE(reserved.sum_qty, 0)
+              ELSE 0
+          END) AS received_qty,
+       (ols.qty_ordered
+        - (COALESCE(receipt.sum_qty, 0)
+           + CASE
+                 WHEN @include_reserved_stock = 1
+                      AND o.order_type = @customer_order_type THEN COALESCE(reserved.sum_qty, 0)
+                 ELSE 0
+             END)) AS remaining
+FROM order_line_scope ols
+INNER JOIN orders o ON o.id = ols.order_id
+INNER JOIN items i ON i.id = ols.item_id
+LEFT JOIN receipt_totals receipt ON receipt.order_line_id = ols.id
+LEFT JOIN reserved_totals reserved ON reserved.order_line_id = ols.id
+ORDER BY ols.id;
 ");
             command.Parameters.AddWithValue("@order_id", orderId);
             command.Parameters.AddWithValue("@status", DocTypeMapper.StatusToString(DocStatus.Closed));
@@ -2235,6 +2599,294 @@ ORDER BY ol.id;
             }
 
             return lines;
+        });
+    }
+
+    public IReadOnlyDictionary<long, double> GetUnlinkedProductionTotalsByItem(long orderId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT dl.item_id,
+       SUM(dl.qty) AS qty_received
+FROM docs d
+INNER JOIN doc_lines dl ON dl.doc_id = d.id
+WHERE d.order_id = @order_id
+  AND d.status = @status
+  AND d.type = @doc_type
+  AND dl.order_line_id IS NULL
+  AND dl.qty > 0
+  AND NOT EXISTS (
+      SELECT 1
+      FROM doc_lines newer
+      WHERE newer.replaces_line_id = dl.id
+  )
+GROUP BY dl.item_id;
+");
+            command.Parameters.AddWithValue("@order_id", orderId);
+            command.Parameters.AddWithValue("@status", DocTypeMapper.StatusToString(DocStatus.Closed));
+            command.Parameters.AddWithValue("@doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+            using var reader = command.ExecuteReader();
+            var totals = new Dictionary<long, double>();
+            while (reader.Read())
+            {
+                totals[reader.GetInt64(0)] = reader.GetDouble(1);
+            }
+
+            return totals;
+        });
+    }
+
+    public IReadOnlyList<ProductionNeedRow> GetProductionNeedRows(bool includeZeroNeed)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH item_snapshot AS (
+    SELECT i.id AS item_id,
+           i.name AS item_name,
+           i.gtin,
+           COALESCE(it.name, 'Без типа') AS item_type_name,
+           COALESCE(it.enable_min_stock_control, FALSE) AS enable_min_stock_control,
+           COALESCE(i.min_stock_qty, 0) AS min_stock_qty
+    FROM items i
+    LEFT JOIN item_types it ON it.id = i.item_type_id
+),
+stock_by_item AS (
+    SELECT l.item_id,
+           SUM(l.qty_delta) AS physical_stock_qty
+    FROM ledger l
+    GROUP BY l.item_id
+),
+reserved_hu AS (
+    SELECT DISTINCT p.item_id,
+           UPPER(BTRIM(p.to_hu)) AS hu_code
+    FROM order_receipt_plan_lines p
+    INNER JOIN orders o ON o.id = p.order_id
+    INNER JOIN item_types it ON it.id = (SELECT item_type_id FROM items WHERE id = p.item_id)
+    WHERE o.order_type = @customer_order_type
+      AND o.status NOT IN (@shipped_order_status, @cancelled_order_status)
+      AND p.qty_planned > 0
+      AND p.to_hu IS NOT NULL
+      AND BTRIM(p.to_hu) <> ''
+),
+reserved_customer_stock AS (
+    SELECT l.item_id,
+           SUM(l.qty_delta) AS reserved_customer_order_qty
+    FROM ledger l
+    INNER JOIN reserved_hu rh ON rh.item_id = l.item_id
+                              AND rh.hu_code = UPPER(BTRIM(COALESCE(l.hu_code, l.hu)))
+    GROUP BY l.item_id
+),
+active_doc_lines AS (
+    SELECT dl.id,
+           dl.doc_id,
+           dl.order_line_id,
+           dl.item_id,
+           dl.qty
+    FROM doc_lines dl
+    WHERE dl.qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+),
+customer_order_lines AS (
+    SELECT ol.id,
+           ol.order_id,
+           ol.item_id,
+           ol.qty_ordered
+    FROM order_lines ol
+    INNER JOIN orders o ON o.id = ol.order_id
+    WHERE o.order_type = @customer_order_type
+      AND o.status NOT IN (@draft_order_status, @shipped_order_status, @cancelled_order_status)
+),
+customer_shipped_by_line AS (
+    SELECT dl.order_line_id,
+           SUM(dl.qty) AS qty_shipped
+    FROM active_doc_lines dl
+    INNER JOIN docs d ON d.id = dl.doc_id
+    INNER JOIN customer_order_lines col ON col.id = dl.order_line_id
+    WHERE d.status = @closed_doc_status
+      AND d.type = @outbound_doc_type
+    GROUP BY dl.order_line_id
+),
+customer_reserved_by_line AS (
+    SELECT p.order_line_id,
+           SUM(p.qty_planned) AS qty_reserved
+    FROM order_receipt_plan_lines p
+    INNER JOIN customer_order_lines col ON col.id = p.order_line_id
+    WHERE p.qty_planned > 0
+    GROUP BY p.order_line_id
+),
+need_by_item AS (
+    SELECT col.item_id,
+           SUM(GREATEST(0, col.qty_ordered - COALESCE(shipped.qty_shipped, 0))) AS order_qty,
+           SUM(GREATEST(0, COALESCE(reserved.qty_reserved, 0))) AS reserved_qty
+    FROM customer_order_lines col
+    LEFT JOIN customer_shipped_by_line shipped ON shipped.order_line_id = col.id
+    LEFT JOIN customer_reserved_by_line reserved ON reserved.order_line_id = col.id
+    GROUP BY col.item_id
+),
+internal_order_lines AS (
+    SELECT ol.id,
+           ol.order_id,
+           ol.item_id,
+           ol.qty_ordered
+    FROM order_lines ol
+    INNER JOIN orders o ON o.id = ol.order_id
+    WHERE o.order_type = @internal_order_type
+      AND o.status NOT IN (@shipped_order_status, @cancelled_order_status)
+),
+internal_direct_by_line AS (
+    SELECT dl.order_line_id,
+           SUM(dl.qty) AS qty_received
+    FROM active_doc_lines dl
+    INNER JOIN docs d ON d.id = dl.doc_id
+    INNER JOIN internal_order_lines iol ON iol.id = dl.order_line_id
+    WHERE d.status = @closed_doc_status
+      AND d.type = @production_doc_type
+    GROUP BY dl.order_line_id
+),
+internal_unlinked_by_item AS (
+    SELECT d.order_id,
+           dl.item_id,
+           SUM(dl.qty) AS qty_received
+    FROM docs d
+    INNER JOIN active_doc_lines dl ON dl.doc_id = d.id
+    INNER JOIN orders o ON o.id = d.order_id
+    WHERE o.order_type = @internal_order_type
+      AND o.status NOT IN (@shipped_order_status, @cancelled_order_status)
+      AND d.status = @closed_doc_status
+      AND d.type = @production_doc_type
+      AND dl.order_line_id IS NULL
+    GROUP BY d.order_id,
+             dl.item_id
+),
+internal_line_seed AS (
+    SELECT iol.order_id,
+           iol.id AS order_line_id,
+           iol.item_id,
+           iol.qty_ordered,
+           COALESCE(direct.qty_received, 0) AS qty_direct_received,
+           COALESCE(unlinked.qty_received, 0) AS qty_unlinked_item_received,
+           GREATEST(0, iol.qty_ordered - COALESCE(direct.qty_received, 0)) AS qty_direct_unfilled,
+           ROW_NUMBER() OVER (
+               PARTITION BY iol.order_id, iol.item_id
+               ORDER BY iol.id DESC
+           ) AS item_line_desc_rank,
+           COALESCE(SUM(GREATEST(0, iol.qty_ordered - COALESCE(direct.qty_received, 0))) OVER (
+               PARTITION BY iol.order_id, iol.item_id
+               ORDER BY iol.id
+               ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+           ), 0) AS qty_direct_unfilled_before
+    FROM internal_order_lines iol
+    LEFT JOIN internal_direct_by_line direct ON direct.order_line_id = iol.id
+    LEFT JOIN internal_unlinked_by_item unlinked ON unlinked.order_id = iol.order_id
+                                                 AND unlinked.item_id = iol.item_id
+),
+planned_internal_by_line AS (
+    SELECT item_id,
+           GREATEST(0, qty_ordered - (
+               qty_direct_received
+               + CASE
+                     WHEN qty_unlinked_item_received <= 0 THEN 0
+                     WHEN item_line_desc_rank = 1 THEN GREATEST(0, qty_unlinked_item_received - qty_direct_unfilled_before)
+                     ELSE GREATEST(0, LEAST(qty_unlinked_item_received - qty_direct_unfilled_before, qty_direct_unfilled))
+                 END
+           )) AS qty_remaining
+    FROM internal_line_seed
+),
+planned_internal_by_item AS (
+    SELECT item_id,
+           SUM(qty_remaining) AS planned_internal_stock_qty
+    FROM planned_internal_by_line
+    WHERE qty_remaining > 0
+    GROUP BY item_id
+),
+item_ids AS (
+    SELECT item_id FROM item_snapshot
+    UNION
+    SELECT item_id FROM stock_by_item
+    UNION
+    SELECT item_id FROM need_by_item
+    UNION
+    SELECT item_id FROM planned_internal_by_item
+    UNION
+    SELECT item_id FROM reserved_customer_stock
+)
+SELECT ids.item_id,
+       CURRENT_DATE::text,
+       snapshot.gtin,
+       COALESCE(snapshot.item_name, '#' || ids.item_id::text) AS item_name,
+       COALESCE(snapshot.item_type_name, 'Без типа') AS item_type_name,
+       COALESCE(stock.physical_stock_qty, 0) - COALESCE(reserved_stock.reserved_customer_order_qty, 0) AS free_stock_qty,
+       CASE
+           WHEN COALESCE(snapshot.enable_min_stock_control, FALSE) THEN GREATEST(0, COALESCE(snapshot.min_stock_qty, 0))
+           ELSE 0
+       END AS min_stock_qty,
+       GREATEST(0, COALESCE(need.order_qty, 0) - COALESCE(need.reserved_qty, 0)) AS to_close_orders_qty,
+       GREATEST(0, CASE
+           WHEN COALESCE(snapshot.enable_min_stock_control, FALSE)
+               THEN COALESCE(snapshot.min_stock_qty, 0) - (COALESCE(stock.physical_stock_qty, 0) - COALESCE(reserved_stock.reserved_customer_order_qty, 0))
+           ELSE 0
+       END - COALESCE(planned.planned_internal_stock_qty, 0)) AS to_min_stock_qty
+FROM item_ids ids
+LEFT JOIN item_snapshot snapshot ON snapshot.item_id = ids.item_id
+LEFT JOIN stock_by_item stock ON stock.item_id = ids.item_id
+LEFT JOIN reserved_customer_stock reserved_stock ON reserved_stock.item_id = ids.item_id
+LEFT JOIN need_by_item need ON need.item_id = ids.item_id
+LEFT JOIN planned_internal_by_item planned ON planned.item_id = ids.item_id
+WHERE @include_zero = TRUE
+   OR GREATEST(0, COALESCE(need.order_qty, 0) - COALESCE(need.reserved_qty, 0))
+      + GREATEST(0, CASE
+          WHEN COALESCE(snapshot.enable_min_stock_control, FALSE)
+              THEN COALESCE(snapshot.min_stock_qty, 0) - (COALESCE(stock.physical_stock_qty, 0) - COALESCE(reserved_stock.reserved_customer_order_qty, 0))
+          ELSE 0
+      END - COALESCE(planned.planned_internal_stock_qty, 0)) > 0
+ORDER BY
+    (GREATEST(0, COALESCE(need.order_qty, 0) - COALESCE(need.reserved_qty, 0))
+     + GREATEST(0, CASE
+         WHEN COALESCE(snapshot.enable_min_stock_control, FALSE)
+             THEN COALESCE(snapshot.min_stock_qty, 0) - (COALESCE(stock.physical_stock_qty, 0) - COALESCE(reserved_stock.reserved_customer_order_qty, 0))
+         ELSE 0
+     END - COALESCE(planned.planned_internal_stock_qty, 0))) DESC,
+    COALESCE(snapshot.item_type_name, 'Без типа'),
+    COALESCE(snapshot.item_name, '#' || ids.item_id::text),
+    ids.item_id;
+");
+            command.Parameters.AddWithValue("@include_zero", includeZeroNeed);
+            command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+            command.Parameters.AddWithValue("@internal_order_type", OrderStatusMapper.TypeToString(OrderType.Internal));
+            command.Parameters.AddWithValue("@draft_order_status", OrderStatusMapper.StatusToString(OrderStatus.Draft));
+            command.Parameters.AddWithValue("@shipped_order_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+            command.Parameters.AddWithValue("@cancelled_order_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+            command.Parameters.AddWithValue("@closed_doc_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+            command.Parameters.AddWithValue("@outbound_doc_type", DocTypeMapper.ToOpString(DocType.Outbound));
+            command.Parameters.AddWithValue("@production_doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+            using var reader = command.ExecuteReader();
+            var rows = new List<ProductionNeedRow>();
+            while (reader.Read())
+            {
+                var toCloseOrdersQty = reader.GetDouble(6);
+                var toMinStockQty = reader.GetDouble(7);
+                rows.Add(new ProductionNeedRow
+                {
+                    ItemId = reader.GetInt64(0),
+                    NeedDate = DateTime.Today,
+                    Gtin = reader.IsDBNull(2) ? null : reader.GetString(2),
+                    ItemName = reader.GetString(3),
+                    ItemTypeName = reader.GetString(4),
+                    FreeStockQty = reader.GetDouble(5),
+                    MinStockQty = reader.GetDouble(6),
+                    ToCloseOrdersQty = toCloseOrdersQty,
+                    ToMinStockQty = toMinStockQty,
+                    TotalToMakeQty = toCloseOrdersQty + toMinStockQty
+                });
+            }
+
+            return rows;
         });
     }
 
@@ -3718,6 +4370,11 @@ RETURNING id;
         command.Parameters.AddWithValue("@production_order_source_type", MarkingNeedCreationService.ProductionOrderSourceType);
     }
 
+    private static string BuildOrderSelectSql(string orderScopeSql)
+    {
+        return OrderSelectBase.Replace("{ORDER_SCOPE}", orderScopeSql, StringComparison.Ordinal);
+    }
+
     private static Order ReadOrder(NpgsqlDataReader reader)
     {
         var type = OrderStatusMapper.TypeFromString(reader.IsDBNull(2) ? null : reader.GetString(2)) ?? OrderType.Customer;
@@ -3735,6 +4392,7 @@ RETURNING id;
         var markingRequired = reader.FieldCount > 14 && !reader.IsDBNull(14) && reader.GetBoolean(14);
         var markingApplies = reader.FieldCount > 15 && !reader.IsDBNull(15) && reader.GetBoolean(15);
         var markingCodeCovered = reader.FieldCount > 16 && !reader.IsDBNull(16) && reader.GetBoolean(16);
+        var shippedAt = reader.FieldCount > 17 ? FromDbDate(reader.IsDBNull(17) ? null : reader.GetString(17)) : null;
 
         return new Order
         {
@@ -3746,6 +4404,7 @@ RETURNING id;
             Status = status,
             Comment = comment,
             CreatedAt = FromDbDate(reader.GetString(7)) ?? DateTime.MinValue,
+            ShippedAt = shippedAt,
             PartnerName = partnerName,
             PartnerCode = partnerCode,
             UseReservedStock = useReservedStock,

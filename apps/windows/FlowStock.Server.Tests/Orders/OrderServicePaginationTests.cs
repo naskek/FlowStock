@@ -52,41 +52,119 @@ public sealed class OrderServicePaginationTests
     public void GetOrdersPage_PreservesCanonicalServerOrder_ForMixedTypesAndStatuses()
     {
         var store = new Mock<IDataStore>(MockBehavior.Strict);
-        store.Setup(data => data.GetOrdersPage(true, null, 3, 0))
+        store.Setup(data => data.GetOrdersPage(true, null, 4, 0))
             .Returns(new[]
             {
-                CreateOrder(10, "CUST-001", OrderStatus.InProgress, OrderType.Customer, dueDate: new DateTime(2026, 5, 12, 0, 0, 0, DateTimeKind.Utc)),
                 CreateOrder(11, "INT-002", OrderStatus.InProgress, OrderType.Internal, dueDate: new DateTime(2026, 5, 15, 0, 0, 0, DateTimeKind.Utc)),
+                CreateOrder(10, "CUST-001", OrderStatus.InProgress, OrderType.Customer, dueDate: new DateTime(2026, 5, 12, 0, 0, 0, DateTimeKind.Utc)),
+                CreateOrder(13, "CUST-010", OrderStatus.Accepted, OrderType.Customer, dueDate: new DateTime(2026, 5, 11, 0, 0, 0, DateTimeKind.Utc)),
                 CreateOrder(12, "CUST-003", OrderStatus.Shipped, OrderType.Customer, dueDate: new DateTime(2026, 5, 14, 0, 0, 0, DateTimeKind.Utc))
             });
         SetupStableStatus(store, orderId: 10, qtyOrdered: 10, shippedQty: 0, receivedQty: 0, expectedStatus: null);
         SetupStableStatus(store, orderId: 11, qtyOrdered: 10, shippedQty: 0, receivedQty: 0, expectedStatus: null);
+        SetupStableStatus(store, orderId: 13, qtyOrdered: 10, shippedQty: 0, receivedQty: 10, expectedStatus: null);
         SetupStableStatus(store, orderId: 12, qtyOrdered: 10, shippedQty: 10, receivedQty: 0, expectedStatus: null);
         store.Setup(data => data.GetOrderShippedAt(12))
             .Returns(new DateTime(2026, 5, 16, 10, 0, 0, DateTimeKind.Utc));
 
-        var result = new OrderService(store.Object).GetOrdersPage(true, null, 3, 0);
+        var result = new OrderService(store.Object).GetOrdersPage(true, null, 4, 0);
 
         Assert.Collection(
             result,
             first =>
             {
-                Assert.Equal("CUST-001", first.OrderRef);
+                Assert.Equal("INT-002", first.OrderRef);
                 Assert.Equal(OrderStatus.InProgress, first.Status);
             },
             second =>
             {
-                Assert.Equal("INT-002", second.OrderRef);
-                Assert.Equal(OrderType.Internal, second.Type);
+                Assert.Equal("CUST-001", second.OrderRef);
+                Assert.Equal(OrderType.Customer, second.Type);
                 Assert.Equal(OrderStatus.InProgress, second.Status);
             },
             third =>
             {
-                Assert.Equal("CUST-003", third.OrderRef);
-                Assert.Equal(OrderStatus.Shipped, third.Status);
+                Assert.Equal("CUST-010", third.OrderRef);
+                Assert.Equal(OrderStatus.Accepted, third.Status);
+            },
+            fourth =>
+            {
+                Assert.Equal("CUST-003", fourth.OrderRef);
+                Assert.Equal(OrderStatus.Shipped, fourth.Status);
             });
-        store.Verify(data => data.GetOrdersPage(true, null, 3, 0), Times.Once);
+        store.Verify(data => data.GetOrdersPage(true, null, 4, 0), Times.Once);
         store.Verify(data => data.GetOrders(), Times.Never);
+    }
+
+    [Fact]
+    public void GetOrdersPage_FastPathForWebPaging_UsesPagedStoreCallWithoutLegacyStatusReads()
+    {
+        var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.As<IOptimizedOrderReadModelStore>();
+        store.Setup(data => data.GetOrdersPage(true, null, 21, 0))
+            .Returns(new[]
+            {
+                CreateOrder(10, "CUST-010", OrderStatus.InProgress, OrderType.Customer),
+                CreateOrder(11, "INT-011", OrderStatus.InProgress, OrderType.Internal)
+            });
+
+        var result = new OrderService(store.Object).GetOrdersPage(true, null, 21, 0);
+
+        Assert.Equal(2, result.Count);
+        Assert.Collection(
+            result,
+            first => Assert.Equal("CUST-010", first.OrderRef),
+            second =>
+            {
+                Assert.Equal("INT-011", second.OrderRef);
+                Assert.Equal(OrderType.Internal, second.Type);
+                Assert.Equal(OrderStatus.InProgress, second.Status);
+            });
+        store.Verify(data => data.GetOrdersPage(true, null, 21, 0), Times.Once);
+        store.Verify(data => data.GetOrders(), Times.Never);
+        store.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public void GetOrdersPage_FastPathPreservesEffectiveStatusesForPagedSorting()
+    {
+        var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.As<IOptimizedOrderReadModelStore>();
+        store.Setup(data => data.GetOrdersPage(true, null, 21, 0))
+            .Returns(new[]
+            {
+                CreateOrder(56, "056", OrderStatus.InProgress, OrderType.Internal),
+                CreateOrder(53, "053", OrderStatus.Accepted, OrderType.Customer),
+                CreateOrder(30, "030", OrderStatus.Draft, OrderType.Customer),
+                CreateOrder(45, "045", OrderStatus.Shipped, OrderType.Internal)
+            });
+
+        var result = new OrderService(store.Object).GetOrdersPage(true, null, 21, 0);
+
+        Assert.Collection(
+            result,
+            first =>
+            {
+                Assert.Equal("056", first.OrderRef);
+                Assert.Equal(OrderStatus.InProgress, first.Status);
+                Assert.Equal(OrderType.Internal, first.Type);
+            },
+            second =>
+            {
+                Assert.Equal("053", second.OrderRef);
+                Assert.Equal(OrderStatus.Accepted, second.Status);
+            },
+            third =>
+            {
+                Assert.Equal("030", third.OrderRef);
+                Assert.Equal(OrderStatus.Draft, third.Status);
+                Assert.Equal(OrderType.Customer, third.Type);
+            },
+            fourth =>
+            {
+                Assert.Equal("045", fourth.OrderRef);
+                Assert.Equal(OrderStatus.Shipped, fourth.Status);
+            });
     }
 
     private static void SetupStableStatus(
