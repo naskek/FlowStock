@@ -213,34 +213,47 @@ assert.doesNotMatch(
 
 const canonicalSortedOrders = pc.sortOrdersNewestFirst([
   {
-    id: 3,
-    order_ref: "CUST-003",
+    id: 58,
+    order_ref: "058",
     order_type: "CUSTOMER",
-    order_status: "SHIPPED",
-    due_date: "2026-05-14",
+    order_status: "IN_PROGRESS",
+    created_at: "2026-05-12T10:00:00Z"
+  },
+  {
+    id: 56,
+    order_ref: "056",
+    order_type: "INTERNAL",
+    order_status: "IN_PROGRESS",
+    created_at: "2026-05-11T10:00:00Z"
+  },
+  {
+    id: 57,
+    order_ref: "057",
+    order_type: "CUSTOMER",
+    order_status: "ACCEPTED",
+    due_date: "2026-05-15",
     created_at: "2026-05-10T10:00:00Z"
   },
   {
-    id: 2,
-    order_ref: "INT-002",
-    order_type: "INTERNAL",
-    order_status: "IN_PROGRESS",
-    due_date: "2026-05-15",
+    id: 53,
+    order_ref: "053",
+    order_type: "CUSTOMER",
+    order_status: "ACCEPTED",
+    due_date: "2026-05-14",
     created_at: "2026-05-09T10:00:00Z"
   },
   {
-    id: 1,
-    order_ref: "CUST-001",
+    id: 55,
+    order_ref: "055",
     order_type: "CUSTOMER",
-    order_status: "IN_PROGRESS",
-    due_date: "2026-05-12",
+    order_status: "SHIPPED",
     created_at: "2026-05-08T10:00:00Z"
   }
 ]);
 assert.deepStrictEqual(
   canonicalSortedOrders.map(function (row) { return row.order_ref; }),
-  ["CUST-001", "INT-002", "CUST-003"],
-  "INTERNAL IN_PROGRESS должен оставаться выше SHIPPED и сортироваться внутри статуса по плановой дате"
+  ["058", "056", "057", "053", "055"],
+  "fallback client-side sort должен совпадать с серверным правилом: status, затем order_ref DESC"
 );
 
 assert.strictEqual(

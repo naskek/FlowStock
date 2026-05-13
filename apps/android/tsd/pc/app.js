@@ -2353,6 +2353,27 @@
       return isNaN(parsed) ? Number.POSITIVE_INFINITY : parsed;
     }
 
+    function compareOrderRefDescending(leftOrder, rightOrder) {
+      var leftRef = leftOrder && leftOrder.order_ref != null ? String(leftOrder.order_ref).trim() : "";
+      var rightRef = rightOrder && rightOrder.order_ref != null ? String(rightOrder.order_ref).trim() : "";
+      var leftIsNumeric = /^\d+$/.test(leftRef);
+      var rightIsNumeric = /^\d+$/.test(rightRef);
+      if (leftIsNumeric && rightIsNumeric) {
+        var leftValue = Number(leftRef);
+        var rightValue = Number(rightRef);
+        if (leftValue !== rightValue) {
+          return rightValue - leftValue;
+        }
+      }
+
+      var compared = rightRef.localeCompare(leftRef, "ru", { sensitivity: "base", numeric: true });
+      if (compared !== 0) {
+        return compared;
+      }
+
+      return 0;
+    }
+
     return source
       .map(function (row, index) {
         return { row: row, index: index };
@@ -2365,6 +2386,11 @@
         var rightRank = getCanonicalStatusRank(right);
         if (leftRank !== rightRank) {
           return leftRank - rightRank;
+        }
+
+        var byOrderRef = compareOrderRefDescending(left, right);
+        if (byOrderRef !== 0) {
+          return byOrderRef;
         }
 
         var leftDueDate = getDueDateSortValue(left);
@@ -3728,12 +3754,13 @@
       return sortPendingOrdersFirst(sortedRows);
     }
 
-    function renderTable(rows) {
+    function renderTable(rows, options) {
       if (!tableWrap) {
         return;
       }
+      var preserveServerOrder = !!(options && options.preserveServerOrder);
       currentRows = Array.isArray(rows) ? rows.slice() : [];
-      var sortedRows = sortOrderRows(currentRows);
+      var sortedRows = preserveServerOrder ? currentRows.slice() : sortOrderRows(currentRows);
       tableWrap.innerHTML = renderOrdersTable(sortedRows);
       bindTableSorting(tableWrap, "orders", function () {
         renderTable(currentRows);
@@ -3772,15 +3799,15 @@
       loadOrders(currentQuery, 0)
         .then(function (page) {
           ordersHasMore = page.hasMore;
-          var source = sortOrdersNewestFirst(page.rows);
-          renderTable(source);
+          var source = Array.isArray(page.rows) ? page.rows.slice() : [];
+          renderTable(source, { preserveServerOrder: true });
           if (!source.length) {
             setStatus("Заказов нет");
             return source;
           }
           setStatus("Загрузка готовности...");
           return enrichOrdersWithReadiness(source).then(function (enrichedRows) {
-            renderTable(sortOrdersNewestFirst(enrichedRows));
+            renderTable(enrichedRows, { preserveServerOrder: true });
             setStatus("Данные с сервера");
             return enrichedRows;
           });
@@ -3808,7 +3835,7 @@
         .then(function (page) {
           ordersHasMore = page.hasMore;
           var appendedRows = currentRows.concat(page.rows);
-          renderTable(sortOrdersNewestFirst(appendedRows));
+          renderTable(appendedRows, { preserveServerOrder: true });
           setStatus(page.rows.length ? "Данные с сервера" : "Больше заказов нет");
           if (!page.rows.length) {
             ordersHasMore = false;
@@ -3824,7 +3851,7 @@
             var mergedRows = currentRows.map(function (row) {
               return enrichedById[String(row.id)] || row;
             });
-            renderTable(sortOrdersNewestFirst(mergedRows));
+            renderTable(mergedRows, { preserveServerOrder: true });
             return mergedRows;
           });
         })
