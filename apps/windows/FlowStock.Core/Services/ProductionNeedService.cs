@@ -9,6 +9,11 @@ public sealed class ProductionNeedService(IDataStore dataStore)
 
     public IReadOnlyList<ProductionNeedRow> GetRows(bool includeZeroNeed = false)
     {
+        if (_dataStore is IOptimizedOrderReadModelStore optimizedStore)
+        {
+            return optimizedStore.GetProductionNeedRows(includeZeroNeed);
+        }
+
         var items = _dataStore.GetItems(null);
         var stockRows = _dataStore.GetStock(null);
         var needByItem = BuildNeedByItem();

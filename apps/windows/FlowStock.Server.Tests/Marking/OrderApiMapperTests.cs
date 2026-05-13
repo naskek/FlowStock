@@ -152,4 +152,55 @@ public sealed class OrderApiMapperTests
         Assert.Equal("REQUIRED", json.GetProperty("marking_effective_status").GetString());
         Assert.Equal("Маркировка не проведена", json.GetProperty("marking_label").GetString());
     }
+
+    [Theory]
+    [InlineData(OrderStatus.InProgress, "IN_PROGRESS", "В работе")]
+    [InlineData(OrderStatus.Shipped, "SHIPPED", "Выполнен")]
+    [InlineData(OrderStatus.Cancelled, "CANCELLED", "Отменён")]
+    public void MapOrder_ReturnsConsistentOrderStatusFields_ForInternalOrders(
+        OrderStatus status,
+        string expectedStatusCode,
+        string expectedDisplay)
+    {
+        var order = new Order
+        {
+            Id = 56,
+            OrderRef = "056",
+            Type = OrderType.Internal,
+            Status = status,
+            CreatedAt = new DateTime(2026, 5, 13, 10, 0, 0, DateTimeKind.Utc)
+        };
+
+        var json = JsonSerializer.SerializeToElement(OrderApiMapper.MapOrder(order));
+
+        Assert.Equal(expectedStatusCode, json.GetProperty("order_status").GetString());
+        Assert.Equal(expectedDisplay, json.GetProperty("order_status_display").GetString());
+        Assert.Equal(expectedDisplay, json.GetProperty("status").GetString());
+    }
+
+    [Theory]
+    [InlineData(OrderStatus.InProgress, "IN_PROGRESS", "В работе")]
+    [InlineData(OrderStatus.Accepted, "ACCEPTED", "Готов")]
+    [InlineData(OrderStatus.Shipped, "SHIPPED", "Выполнен")]
+    [InlineData(OrderStatus.Cancelled, "CANCELLED", "Отменён")]
+    public void MapOrder_ReturnsConsistentOrderStatusFields_ForCustomerOrders(
+        OrderStatus status,
+        string expectedStatusCode,
+        string expectedDisplay)
+    {
+        var order = new Order
+        {
+            Id = 57,
+            OrderRef = "057",
+            Type = OrderType.Customer,
+            Status = status,
+            CreatedAt = new DateTime(2026, 5, 13, 10, 0, 0, DateTimeKind.Utc)
+        };
+
+        var json = JsonSerializer.SerializeToElement(OrderApiMapper.MapOrder(order));
+
+        Assert.Equal(expectedStatusCode, json.GetProperty("order_status").GetString());
+        Assert.Equal(expectedDisplay, json.GetProperty("order_status_display").GetString());
+        Assert.Equal(expectedDisplay, json.GetProperty("status").GetString());
+    }
 }

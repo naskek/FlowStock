@@ -16,6 +16,11 @@ public sealed class OrderService
 
     public IReadOnlyList<Order> GetOrders()
     {
+        if (_data is IOptimizedOrderReadModelStore)
+        {
+            return _data.GetOrders();
+        }
+
         var orders = _data.GetOrders();
         var result = new List<Order>(orders.Count);
         foreach (var order in orders)
@@ -28,6 +33,11 @@ public sealed class OrderService
 
     public IReadOnlyList<Order> GetOrdersPage(bool includeInternal, string? query, int limit, int offset)
     {
+        if (_data is IOptimizedOrderReadModelStore)
+        {
+            return _data.GetOrdersPage(includeInternal, query, limit, offset);
+        }
+
         var orders = _data.GetOrdersPage(includeInternal, query, limit, offset);
         var result = new List<Order>(orders.Count);
         foreach (var order in orders)
@@ -41,7 +51,14 @@ public sealed class OrderService
     public Order? GetOrder(long id)
     {
         var order = _data.GetOrder(id);
-        return order == null ? null : ApplyAutoStatus(order);
+        if (order == null)
+        {
+            return null;
+        }
+
+        return _data is IOptimizedOrderReadModelStore
+            ? order
+            : ApplyAutoStatus(order);
     }
 
     public IReadOnlyList<OrderLineView> GetOrderLineViews(long orderId)
