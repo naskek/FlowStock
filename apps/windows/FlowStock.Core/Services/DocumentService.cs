@@ -8,6 +8,7 @@ public sealed class DocumentService
 {
     private readonly IDataStore _data;
     private const string AutoHuCreatedBy = "WINDOWS-AUTO";
+    private const string ProductionPalletHuDistributionMessage = "Для выпуска с планом паллет распределение HU выполняется через план паллет";
     private const double QtyTolerance = 0.000001;
     private static readonly HashSet<string> EmptyHuSet = new(StringComparer.OrdinalIgnoreCase);
     private static bool KmWorkflowEnabled => false;
@@ -801,6 +802,7 @@ public sealed class DocumentService
         {
             throw new InvalidOperationException("Документ уже закрыт.");
         }
+        EnsureNoProductionPalletPlanForHuDistribution(_data, doc);
 
         var lines = EnsureOrderLineLinks(_data, doc, _data.GetDocLines(docId));
         var line = lines.FirstOrDefault(l => l.Id == docLineId);
@@ -989,6 +991,7 @@ public sealed class DocumentService
         {
             throw new InvalidOperationException("Распределение по вместимости доступно только для выпуска продукции.");
         }
+        EnsureNoProductionPalletPlanForHuDistribution(_data, doc);
 
         var lines = EnsureOrderLineLinks(_data, doc, _data.GetDocLines(docId));
         var line = lines.FirstOrDefault(l => l.Id == docLineId);
@@ -1110,6 +1113,7 @@ public sealed class DocumentService
             {
                 throw new InvalidOperationException("Автораспределение HU доступно только для выпуска продукции.");
             }
+            EnsureNoProductionPalletPlanForHuDistribution(store, doc);
 
             var allLines = EnsureOrderLineLinks(store, doc, store.GetDocLines(docId))
                 .OrderBy(line => line.Id)
@@ -2763,6 +2767,14 @@ public sealed class DocumentService
         if (type == DocType.Outbound && store.CountKmCodesByShipmentLine(docLineId) > 0)
         {
             throw new InvalidOperationException("Нельзя менять HU строки после привязки КМ.");
+        }
+    }
+
+    private static void EnsureNoProductionPalletPlanForHuDistribution(IDataStore store, Doc doc)
+    {
+        if (doc.Type == DocType.ProductionReceipt && store.HasProductionPallets(doc.Id))
+        {
+            throw new InvalidOperationException(ProductionPalletHuDistributionMessage);
         }
     }
 

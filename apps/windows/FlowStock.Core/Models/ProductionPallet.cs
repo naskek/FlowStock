@@ -69,6 +69,66 @@ public sealed class ProductionPalletWorkItem
     public ProductionPalletSummary Summary { get; init; } = new();
 }
 
+public sealed class ProductionFillingOrder
+{
+    public long OrderId { get; init; }
+    public string OrderRef { get; init; } = string.Empty;
+    public string OrderType { get; init; } = string.Empty;
+    public string OrderTypeDisplay { get; init; } = string.Empty;
+    public string OrderStatus { get; init; } = string.Empty;
+    public string OrderStatusDisplay { get; init; } = string.Empty;
+    public string? PartnerName { get; init; }
+    public long? PrdDocId { get; init; }
+    public string? PrdDocRef { get; init; }
+    public ProductionPalletSummary Summary { get; init; } = new();
+}
+
+public sealed class ProductionFillingContext
+{
+    public long OrderId { get; init; }
+    public string OrderRef { get; init; } = string.Empty;
+    public string OrderType { get; init; } = string.Empty;
+    public string OrderTypeDisplay { get; init; } = string.Empty;
+    public string OrderStatus { get; init; } = string.Empty;
+    public string OrderStatusDisplay { get; init; } = string.Empty;
+    public string? PartnerName { get; init; }
+    public long PrdDocId { get; init; }
+    public string PrdDocRef { get; init; } = string.Empty;
+    public ProductionPalletDocument Document { get; init; } = new();
+}
+
+public sealed class ProductionPalletOrderPlanResult
+{
+    public long OrderId { get; init; }
+    public string OrderRef { get; init; } = string.Empty;
+    public long PrdDocId { get; init; }
+    public string PrdDocRef { get; init; } = string.Empty;
+    public bool WasExisting { get; init; }
+    public ProductionPalletSummary Summary { get; init; } = new();
+    public ProductionPalletDocument Document { get; init; } = new();
+}
+
+public sealed class ProductionPalletPrintRow
+{
+    public long PalletId { get; init; }
+    public long OrderId { get; init; }
+    public string OrderRef { get; init; } = string.Empty;
+    public long PrdDocId { get; init; }
+    public string PrdRef { get; init; } = string.Empty;
+    public string HuCode { get; init; } = string.Empty;
+    public long ItemId { get; init; }
+    public string ItemName { get; init; } = string.Empty;
+    public string Brand { get; init; } = string.Empty;
+    public double Qty { get; init; }
+    public string Uom { get; init; } = "шт";
+    public int PalletNo { get; init; }
+    public int PalletCount { get; init; }
+    public string StoragePlace { get; init; } = string.Empty;
+    public DateTime? ProductionDate { get; init; }
+    public string Comment { get; init; } = string.Empty;
+    public string Status { get; init; } = ProductionPalletStatus.Planned;
+}
+
 public sealed class ProductionPalletScanResult
 {
     public bool Success { get; init; }

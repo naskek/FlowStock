@@ -2669,6 +2669,7 @@ app.MapPost("/api/hus/{huCode}/close", async (string huCode, HttpRequest request
     return Results.Ok(new ApiResult(true));
 });
 
+// Legacy/manual HU registry endpoint. Normal production pallet planning uses hu_code_seq via ProductionPalletService.
 app.MapPost("/api/hus/generate", (HuGenerateRequest request) =>
 {
     var count = request.Count;

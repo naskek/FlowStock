@@ -38,7 +38,116 @@ public sealed class ProductionPalletCloseTests
         Assert.Equal(OrderStatus.Shipped, harness.GetOrder(10).Status);
     }
 
-    private static CloseDocumentHarness CreateHarness()
+    [Fact]
+    public void FillPallet_UsesPlannedHuOnly()
+    {
+        var harness = CreateTwoPalletHarness();
+        var palletService = new ProductionPalletService(harness.Store);
+
+        var fill = palletService.Fill("HU-PLAN-001", "TSD-01");
+
+        Assert.True(fill.Success);
+        var entry = Assert.Single(harness.LedgerEntries);
+        Assert.Equal("HU-PLAN-001", entry.HuCode);
+        Assert.Equal(600, entry.QtyDelta);
+        Assert.DoesNotContain(harness.LedgerEntries, row => string.Equals(row.HuCode, "HU-PLAN-002", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void CloseProductionReceipt_WithAllFilledProductionPallets_KeepsStockOnPlannedHusWithoutDuplicate()
+    {
+        var harness = CreateTwoPalletHarness();
+        var palletService = new ProductionPalletService(harness.Store);
+        Assert.True(palletService.Fill("HU-PLAN-001", "TSD-01").Success);
+        Assert.True(palletService.Fill("HU-PLAN-002", "TSD-01").Success);
+        Assert.Equal(2, harness.LedgerEntries.Count);
+
+        var close = harness.CreateService().TryCloseDoc(20, allowNegative: false);
+
+        Assert.True(close.Success);
+        Assert.Equal(2, harness.LedgerEntries.Count);
+        Assert.Equal(600, harness.LedgerEntries.Where(row => row.HuCode == "HU-PLAN-001").Sum(row => row.QtyDelta));
+        Assert.Equal(600, harness.LedgerEntries.Where(row => row.HuCode == "HU-PLAN-002").Sum(row => row.QtyDelta));
+        Assert.DoesNotContain(harness.LedgerEntries, row =>
+            !string.Equals(row.HuCode, "HU-PLAN-001", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(row.HuCode, "HU-PLAN-002", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(DocStatus.Closed, harness.GetDoc(20).Status);
+        Assert.Equal(OrderStatus.Shipped, harness.GetOrder(10).Status);
+    }
+
+    [Fact]
+    public void AutoDistributeProductionReceiptHus_WithProductionPallets_DoesNotChangePlannedHus()
+    {
+        var harness = CreateTwoPalletHarness();
+        var beforeLines = harness.GetDocLines(20).Select(line => line.ToHu).ToArray();
+        var beforePallets = harness.Store.GetProductionPalletsByDoc(20).Select(pallet => pallet.HuCode).ToArray();
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            harness.CreateService().AutoDistributeProductionReceiptHus(20));
+
+        Assert.Equal("Для выпуска с планом паллет распределение HU выполняется через план паллет", ex.Message);
+        Assert.Equal(beforeLines, harness.GetDocLines(20).Select(line => line.ToHu).ToArray());
+        Assert.Equal(beforePallets, harness.Store.GetProductionPalletsByDoc(20).Select(pallet => pallet.HuCode).ToArray());
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void OrderReceiptRemaining_UsesFilledProductionPalletsWithoutDoubleCounting()
+    {
+        var harness = CreateTwoPalletHarness();
+        var documentService = harness.CreateService();
+        var palletService = new ProductionPalletService(harness.Store);
+
+        var initial = Assert.Single(documentService.GetOrderReceiptRemaining(10));
+        Assert.Equal(0, initial.QtyReceived);
+        Assert.Equal(1200, initial.QtyRemaining);
+
+        Assert.True(palletService.Fill("HU-PLAN-001", "TSD-01").Success);
+        var partial = Assert.Single(documentService.GetOrderReceiptRemaining(10));
+        Assert.Equal(600, partial.QtyReceived);
+        Assert.Equal(600, partial.QtyRemaining);
+
+        Assert.True(palletService.Fill("HU-PLAN-002", "TSD-01").Success);
+        var fullBeforeClose = Assert.Single(documentService.GetOrderReceiptRemaining(10));
+        Assert.Equal(1200, fullBeforeClose.QtyReceived);
+        Assert.Equal(0, fullBeforeClose.QtyRemaining);
+
+        var close = documentService.TryCloseDoc(20, allowNegative: false);
+
+        Assert.True(close.Success);
+        var fullAfterClose = Assert.Single(documentService.GetOrderReceiptRemaining(10));
+        Assert.Equal(1200, fullAfterClose.QtyReceived);
+        Assert.Equal(0, fullAfterClose.QtyRemaining);
+        Assert.Equal(2, harness.LedgerEntries.Count);
+    }
+
+    private static CloseDocumentHarness CreateTwoPalletHarness()
+    {
+        var harness = CreateHarness(orderQty: 1200, firstHu: "HU-PLAN-001");
+        harness.SeedLine(new DocLine
+        {
+            Id = 202,
+            DocId = 20,
+            OrderLineId = 101,
+            ItemId = 100,
+            Qty = 600,
+            ToLocationId = 1,
+            ToHu = "HU-PLAN-002"
+        });
+        harness.SeedProductionPallet(BuildPallet(
+            id: 1,
+            docLineId: 201,
+            huCode: "HU-PLAN-001",
+            status: ProductionPalletStatus.Planned));
+        harness.SeedProductionPallet(BuildPallet(
+            id: 2,
+            docLineId: 202,
+            huCode: "HU-PLAN-002",
+            status: ProductionPalletStatus.Planned));
+        return harness;
+    }
+
+    private static CloseDocumentHarness CreateHarness(double orderQty = 600, string firstHu = "HU-000001")
     {
         var harness = new CloseDocumentHarness();
         harness.SeedLocation(new Location { Id = 1, Code = "MAIN", Name = "Основной склад" });
@@ -56,7 +165,7 @@ public sealed class ProductionPalletCloseTests
             Id = 101,
             OrderId = 10,
             ItemId = 100,
-            QtyOrdered = 600
+            QtyOrdered = orderQty
         });
         harness.SeedDoc(new Doc
         {
@@ -75,23 +184,28 @@ public sealed class ProductionPalletCloseTests
             ItemId = 100,
             Qty = 600,
             ToLocationId = 1,
-            ToHu = "HU-000001"
+            ToHu = firstHu
         });
         return harness;
     }
 
     private static ProductionPallet BuildPallet(string status)
     {
+        return BuildPallet(id: 1, docLineId: 201, huCode: "HU-000001", status: status);
+    }
+
+    private static ProductionPallet BuildPallet(long id, long docLineId, string huCode, string status)
+    {
         return new ProductionPallet
         {
-            Id = 1,
+            Id = id,
             PrdDocId = 20,
-            DocLineId = 201,
+            DocLineId = docLineId,
             OrderId = 10,
             OrderLineId = 101,
             ItemId = 100,
             ItemName = "Товар",
-            HuCode = "HU-000001",
+            HuCode = huCode,
             PlannedQty = 600,
             ToLocationId = 1,
             ToLocationCode = "MAIN",

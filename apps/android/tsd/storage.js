@@ -873,6 +873,28 @@
     };
   }
 
+  function normalizeProductionFillingOrder(row) {
+    if (!row || row.order_id == null) {
+      return null;
+    }
+    var orderId = Number(row.order_id);
+    if (!orderId) {
+      return null;
+    }
+    return {
+      orderId: orderId,
+      orderRef: String(row.order_ref || ""),
+      orderType: String(row.order_type || ""),
+      orderTypeDisplay: String(row.order_type_display || ""),
+      orderStatus: String(row.order_status || ""),
+      orderStatusDisplay: String(row.order_status_display || ""),
+      partnerName: String(row.partner_name || ""),
+      prdDocId: row.prd_doc_id != null ? Number(row.prd_doc_id) || null : null,
+      prdDocRef: String(row.prd_doc_ref || ""),
+      summary: normalizeProductionPalletSummary(row.summary),
+    };
+  }
+
   function normalizeProductionPallet(row) {
     if (!row || row.id == null) {
       return null;
@@ -944,6 +966,48 @@
           throw new Error("INVALID_PRODUCTION_FILLING_DOCS");
         }
         return payload.map(normalizeProductionFillingDoc).filter(function (row) { return !!row; });
+      });
+  }
+
+  function apiGetProductionFillingOrders() {
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/tsd/production/filling-orders", { method: "GET" });
+      })
+      .then(function (payload) {
+        if (!Array.isArray(payload)) {
+          throw new Error("INVALID_PRODUCTION_FILLING_ORDERS");
+        }
+        return payload.map(normalizeProductionFillingOrder).filter(function (row) { return !!row; });
+      });
+  }
+
+  function apiGetProductionFillingContext(orderId) {
+    var target = Number(orderId);
+    if (!target) {
+      return Promise.reject(new Error("INVALID_ORDER_ID"));
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(
+          baseUrl + "/api/tsd/production/orders/" + encodeURIComponent(target) + "/filling-context",
+          { method: "GET" }
+        );
+      })
+      .then(function (payload) {
+        payload = payload || {};
+        return {
+          orderId: Number(payload.order_id) || target,
+          orderRef: String(payload.order_ref || ""),
+          orderType: String(payload.order_type || ""),
+          orderTypeDisplay: String(payload.order_type_display || ""),
+          orderStatus: String(payload.order_status || ""),
+          orderStatusDisplay: String(payload.order_status_display || ""),
+          partnerName: String(payload.partner_name || ""),
+          prdDocId: Number(payload.prd_doc_id) || 0,
+          prdDocRef: String(payload.prd_doc_ref || ""),
+          document: payload.document ? normalizeProductionPalletDocument(payload.document) : null,
+        };
       });
   }
 
@@ -2422,6 +2486,8 @@
     apiGetNextDocRef: apiGetNextDocRef,
     apiGetDocById: apiGetDocById,
     apiGetDocLines: apiGetDocLines,
+    apiGetProductionFillingOrders: apiGetProductionFillingOrders,
+    apiGetProductionFillingContext: apiGetProductionFillingContext,
     apiGetProductionFillingDocs: apiGetProductionFillingDocs,
     apiGetProductionPallets: apiGetProductionPallets,
     apiScanProductionPallet: apiScanProductionPallet,

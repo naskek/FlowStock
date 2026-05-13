@@ -97,8 +97,14 @@
 - Главное меню TSD сгруппировано по разделам `Операции`, `Состояние склада`, `Каталог`, `Заказы`; `История операций` больше не является отдельным top-level block.
 - В разделе `Операции` на TSD доступны: `Приемка`, `Выпуск продукции`, `Отгрузка`, `Перемещение`, `Списание`, `Инвентаризация`.
 - Серверный MVP TSD filling model для выпуска:
+  - старые/существующие заказы и legacy PRD без `production_pallets` остаются legacy и не попадают в TSD `Наполнение`, пока пользователь явно не создаст план паллет;
+  - `POST /api/orders/{orderId}/production-pallets/plan` является явным действием `Сформировать план паллет`: сервер создает/находит технический открытый PRD, дробит строки заказа по `items.max_qty_per_hu`, генерирует HU через server sequence и создает `production_pallets` без записи в `ledger`;
   - `POST /api/docs/{docId}/production-pallets/plan` создает плановые паллеты PRD из текущих строк документа с `to_hu` и возвращает summary;
-  - `GET /api/tsd/production/filling-docs` возвращает активные PRD, где есть ненаполненные planned pallets;
+  - `GET /api/tsd/production/filling-orders` возвращает только заказы с уже подготовленными паллетами, где есть не наполненные паллеты; оператор выбирает заказ, а не PRD;
+  - `GET /api/tsd/production/orders/{orderId}/filling-context` возвращает существующий PRD/session и план паллет; TSD не создает HU и не формирует план паллет;
+  - HU для новой production pallet модели генерируется сервером в формате `HU-0000001` через PostgreSQL sequence `hu_code_seq`; ручной HU generator/реестр остается legacy/internal совместимостью и не является нормальным production flow;
+  - для выпуска с планом паллет старое распределение HU не подбирает новые HU: допустимый набор HU задается `production_pallets`;
+  - `GET /api/tsd/production/filling-docs` сохраняется как compatibility endpoint для старого PRD-ориентированного списка, но новый TSD UX его не использует;
   - `GET /api/docs/{docId}/production-pallets` возвращает паллеты, summary по PRD и summary по строкам заказа;
   - `POST /api/tsd/production/scan-pallet` валидирует выбранную паллету и возвращает read-only preview для подтверждения оператором, не меняя `ledger`;
   - `POST /api/tsd/production/fill-pallet` принимает `hu_code` и `device_id`, находит плановую паллету, валидирует остаток строки заказа и пишет складской факт;
@@ -204,7 +210,13 @@
 - `doc_lines.replaces_line_id` используется для append-only semantics черновиков (`UpdateDocLine` / `DeleteDocLine`). Историческая строка остается в БД; удаление строки создает tombstone-row с `qty = 0` и `replaces_line_id = deleted_line_id`. В document read-model и в расчетах заказов/проведения учитываются только активные строки с `qty > 0`, на которые не ссылается более новая запись.
 - Выпуск продукции: приемка готовой продукции на склад (плюс в `ledger`), HU обязателен на момент проведения по каждой строке, партия производства хранится в `production_batch_no`, документ может быть связан с заказом (`order_id/order_ref`).
   - Для legacy `PRODUCTION_RECEIPT` без строк `production_pallets` складское движение по-прежнему пишется при закрытии документа по активным `doc_lines`.
-  - Для новой TSD-модели один `PRODUCTION_RECEIPT` является производственной сессией, а активные `doc_lines` с `to_hu` используются как плановые паллеты. `POST /api/docs/{docId}/production-pallets/plan` создает/актуализирует строки `production_pallets` идемпотентно.
+  - Для новой TSD-модели один `PRODUCTION_RECEIPT` является производственной сессией, а активные `doc_lines` с `to_hu` используются как плановые паллеты. `POST /api/orders/{orderId}/production-pallets/plan` создает план по активному заказу явным действием; `POST /api/docs/{docId}/production-pallets/plan` создает/актуализирует строки `production_pallets` по уже подготовленным строкам PRD.
+  - В WPF в карточке заказа доступны явные действия `Сформировать план паллет` и `Печать паллетных этикеток`. Планирование вызывает серверный `POST /api/orders/{orderId}/production-pallets/plan`; печать получает read-only строки через `GET /api/orders/{orderId}/production-pallets/print-rows`.
+  - HU для новой модели генерируется сервером во время планирования паллет через `hu_code_seq`. WPF-печать и TSD не вызывают legacy/manual `/api/hus/generate`, не создают HU и не принимают неизвестные HU.
+  - Печать паллетных этикеток использует существующие `production_pallets` и BarTender `.btw` шаблон. Шаблон получает NamedSubStrings: обязательные `HuCode`, `ItemName`, `Qty`; дополнительные `OrderRef`, `PrdRef`, `Brand`, `Uom`, `PalletNo`, `PalletCount`, `StoragePlace`, `ProductionDate`, `Comment`.
+  - Путь к `.btw` задается настройкой `pallet_labels.template_path` или переменной `FLOWSTOCK_PALLET_LABEL_TEMPLATE_PATH`; принтер и копии задаются `pallet_labels.printer_name` / `pallet_labels.copies` или переменными `FLOWSTOCK_PALLET_LABEL_PRINTER_NAME` / `FLOWSTOCK_PALLET_LABEL_COPIES`.
+  - Печать не меняет `ledger`, не создает `docs`/`doc_lines`/HU и не влияет на склад. После успешной печати сервер может перевести только `PLANNED` паллеты в `PRINTED`; повторная печать использует тот же `hu_code`, а `FILLED` паллеты не даунгрейдятся.
+  - Если `items.max_qty_per_hu` не задано или <= 0, сервер не создает план паллет и возвращает ошибку `Не задано количество на паллете для номенклатуры`. Если количество заказа не делится на capacity, последняя паллета может быть неполной.
   - Открытый PRD сам по себе не меняет склад. Факт поступления создается только успешным `POST /api/tsd/production/fill-pallet`, который атомарно пишет `ledger` по конкретной паллете и переводит ее в `FILLED`.
   - Повторное сканирование уже наполненной паллеты не пишет второй `ledger`. Наполненная паллета считается immutable с точки зрения складского эффекта; исправления оформляются отдельными документами.
   - Закрытие PRD с `production_pallets` только финализирует документ и статус заказа: если есть ненаполненные активные паллеты, закрытие блокируется; если все наполнены, `ledger` повторно по `doc_lines` не пишется.

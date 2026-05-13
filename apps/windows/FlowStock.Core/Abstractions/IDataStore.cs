@@ -89,12 +89,14 @@ public interface IDataStore
     void UpdateDocOrder(long docId, long? orderId, string? orderRef);
     void UpdateDocStatus(long docId, DocStatus status, DateTime? closedAt);
     IReadOnlyList<ProductionPallet> PlanProductionPallets(long docId, DateTime createdAt);
+    string CreateProductionPalletHuCode(string? createdBy);
     IReadOnlyList<ProductionPallet> GetProductionPalletsByDoc(long docId);
     ProductionPallet? GetProductionPalletByHu(string huCode);
     IReadOnlyList<ProductionPalletWorkItem> GetActiveProductionPalletWorkItems();
     bool HasProductionPallets(long docId);
     double GetFilledProductionPalletQtyByOrderLine(long orderLineId, long? excludePalletId = null);
     void MarkProductionPalletFilled(long palletId, DateTime filledAt, string? deviceId);
+    int MarkProductionPalletsPrintedByOrder(long orderId, DateTime printedAt);
 
     Order? GetOrder(long id);
     IReadOnlyList<Order> GetOrders();

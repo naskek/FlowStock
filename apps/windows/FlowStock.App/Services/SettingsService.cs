@@ -180,6 +180,8 @@ public sealed class BackupSettings
     public PostgresSettings Postgres { get; set; } = new();
     [JsonPropertyName("server")]
     public ServerSettings Server { get; set; } = new();
+    [JsonPropertyName("pallet_labels")]
+    public PalletLabelSettings PalletLabels { get; set; } = new();
     [JsonPropertyName("recent_postgres")]
     public List<PostgresConnectionProfile> RecentPostgres { get; set; } = new();
 
@@ -208,6 +210,7 @@ public sealed class BackupSettings
         DocumentNumbering = (DocumentNumbering ?? new DocumentNumberingSettings()).Normalize();
         Postgres = (Postgres ?? new PostgresSettings()).Normalize();
         Server = (Server ?? new ServerSettings()).Normalize();
+        PalletLabels = (PalletLabels ?? new PalletLabelSettings()).Normalize();
         RecentPostgres = (RecentPostgres ?? new List<PostgresConnectionProfile>())
             .Where(profile => profile != null)
             .Select(profile => profile!.Normalize())
@@ -218,6 +221,39 @@ public sealed class BackupSettings
             .ToList();
 
         return this;
+    }
+}
+
+public sealed class PalletLabelSettings
+{
+    [JsonPropertyName("template_path")]
+    public string? TemplatePath { get; set; }
+
+    [JsonPropertyName("printer_name")]
+    public string? PrinterName { get; set; }
+
+    [JsonPropertyName("copies")]
+    public int Copies { get; set; } = 1;
+
+    public PalletLabelSettings Normalize()
+    {
+        TemplatePath = NormalizeValue(TemplatePath);
+        PrinterName = NormalizeValue(PrinterName);
+        if (Copies < 1)
+        {
+            Copies = 1;
+        }
+        else if (Copies > 100)
+        {
+            Copies = 100;
+        }
+
+        return this;
+    }
+
+    private static string? NormalizeValue(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 }
 

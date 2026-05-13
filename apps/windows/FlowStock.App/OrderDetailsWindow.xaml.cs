@@ -153,6 +153,7 @@ public partial class OrderDetailsWindow : Window
         RefreshLineMetrics();
         SetEditingEnabled(true);
         UpdateMarkingExportButton();
+        UpdatePalletButtons();
         SaveStatusText.Text = string.Empty;
         EndLoad();
     }
@@ -204,6 +205,7 @@ public partial class OrderDetailsWindow : Window
         RefreshLineMetrics();
         SetEditingEnabled(!isFinalStatus);
         UpdateMarkingExportButton();
+        UpdatePalletButtons();
         EndLoad();
     }
 
@@ -272,6 +274,111 @@ public partial class OrderDetailsWindow : Window
         finally
         {
             UpdateMarkingExportButton();
+        }
+    }
+
+    private async void PlanPallets_Click(object sender, RoutedEventArgs e)
+    {
+        if (!EnsurePalletActionReady())
+        {
+            return;
+        }
+
+        if (!await EnsureSavedForPalletActionAsync().ConfigureAwait(true))
+        {
+            return;
+        }
+
+        if (!_orderId.HasValue)
+        {
+            MessageBox.Show("Сначала сохраните заказ.", "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        PlanPalletsButton.IsEnabled = false;
+        PrintPalletLabelsButton.IsEnabled = false;
+        try
+        {
+            var result = await _services.WpfProductionPalletApi.TryPlanOrderAsync(_orderId.Value).ConfigureAwait(true);
+            if (!result.IsSuccess)
+            {
+                MessageBox.Show(result.Message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var message =
+                $"{result.Message}{Environment.NewLine}{Environment.NewLine}" +
+                $"Запланировано паллет: {result.PlannedPalletCount}{Environment.NewLine}" +
+                $"Запланировано количество: {FormatQty(result.PlannedQty)}{Environment.NewLine}" +
+                $"Осталось наполнить: {FormatQty(result.RemainingQty)}";
+            MessageBox.Show(message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
+            LoadOrder();
+        }
+        finally
+        {
+            UpdatePalletButtons();
+        }
+    }
+
+    private async void PrintPalletLabels_Click(object sender, RoutedEventArgs e)
+    {
+        if (!EnsurePalletActionReady())
+        {
+            return;
+        }
+
+        if (!await EnsureSavedForPalletActionAsync().ConfigureAwait(true))
+        {
+            return;
+        }
+
+        if (!_orderId.HasValue)
+        {
+            MessageBox.Show("Сначала сохраните заказ.", "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        PlanPalletsButton.IsEnabled = false;
+        PrintPalletLabelsButton.IsEnabled = false;
+        try
+        {
+            var rowsResult = await _services.WpfProductionPalletApi.TryGetPrintRowsAsync(_orderId.Value).ConfigureAwait(true);
+            if (!rowsResult.IsSuccess)
+            {
+                MessageBox.Show(rowsResult.Message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            if (rowsResult.Rows.Count == 0)
+            {
+                MessageBox.Show("Сначала сформируйте план паллет", "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var printResult = await Task.Run(() => _services.PalletLabelPrinter.Print(rowsResult.Rows)).ConfigureAwait(true);
+            if (!printResult.IsSuccess)
+            {
+                MessageBox.Show(printResult.Message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var markResult = await _services.WpfProductionPalletApi.TryMarkPrintedAsync(_orderId.Value).ConfigureAwait(true);
+            if (!markResult.IsSuccess)
+            {
+                MessageBox.Show(
+                    $"Паллетные этикетки отправлены на печать, но сервер не подтвердил статус PRINTED: {markResult.Error}",
+                    "Паллеты",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            MessageBox.Show("Паллетные этикетки отправлены на печать", "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
+            LoadOrder();
+        }
+        finally
+        {
+            UpdatePalletButtons();
         }
     }
 
@@ -817,6 +924,31 @@ public partial class OrderDetailsWindow : Window
         return true;
     }
 
+    private bool EnsurePalletActionReady()
+    {
+        if (_order != null && _order.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
+        {
+            MessageBox.Show(
+                $"{OrderStatusMapper.StatusToDisplayName(_order.Status, _order.Type)} заказ недоступен для подготовки паллет.",
+                "Паллеты",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return false;
+        }
+
+        return true;
+    }
+
+    private Task<bool> EnsureSavedForPalletActionAsync()
+    {
+        if (!_orderId.HasValue || _hasUnsavedChanges)
+        {
+            return Task.FromResult(TrySaveOrder(showFeedback: false));
+        }
+
+        return Task.FromResult(true);
+    }
+
     private void SetEditingEnabled(bool enabled)
     {
         OrderRefBox.IsEnabled = false;
@@ -827,6 +959,7 @@ public partial class OrderDetailsWindow : Window
         DeleteLineButton.IsEnabled = enabled && _selectedLine != null;
         SaveButton.IsEnabled = enabled;
         UpdateMarkingExportButton();
+        UpdatePalletButtons();
         UpdateTypeUi();
     }
 
@@ -838,6 +971,18 @@ public partial class OrderDetailsWindow : Window
         }
 
         ExportMarkingButton.IsEnabled = OrderMarkingExportUiPolicy.CanExport(_order, _lines.ToList());
+    }
+
+    private void UpdatePalletButtons()
+    {
+        if (!IsInitialized)
+        {
+            return;
+        }
+
+        var canUse = _orderId.HasValue && _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled);
+        PlanPalletsButton.IsEnabled = canUse;
+        PrintPalletLabelsButton.IsEnabled = canUse;
     }
 
     private bool HasMarkableLines()
@@ -1141,6 +1286,11 @@ public partial class OrderDetailsWindow : Window
         }
 
         return true;
+    }
+
+    private static string FormatQty(double value)
+    {
+        return value.ToString("0.###", CultureInfo.CurrentCulture);
     }
 
     private static string ResolveDefaultUomCode(Item item, IReadOnlyList<ItemPackaging> packagings)

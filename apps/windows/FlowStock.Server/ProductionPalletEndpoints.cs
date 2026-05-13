@@ -9,11 +9,29 @@ public static class ProductionPalletEndpoints
 {
     public static void Map(WebApplication app)
     {
+        app.MapPost("/api/orders/{orderId:long}/production-pallets/plan", HandlePlanOrder);
+        app.MapGet("/api/orders/{orderId:long}/production-pallets/print-rows", HandlePrintRows);
+        app.MapPost("/api/orders/{orderId:long}/production-pallets/mark-printed", HandleMarkPrinted);
         app.MapPost("/api/docs/{docId:long}/production-pallets/plan", HandlePlan);
         app.MapGet("/api/docs/{docId:long}/production-pallets", HandleGet);
+        app.MapGet("/api/tsd/production/filling-orders", HandleFillingOrders);
+        app.MapGet("/api/tsd/production/orders/{orderId:long}/filling-context", HandleFillingContext);
+        app.MapPost("/api/tsd/production/orders/{orderId:long}/start-filling", HandleStartFilling);
         app.MapGet("/api/tsd/production/filling-docs", HandleWorkItems);
         app.MapPost("/api/tsd/production/scan-pallet", HandleScan);
         app.MapPost("/api/tsd/production/fill-pallet", HandleFill);
+    }
+
+    private static IResult HandlePlanOrder(long orderId, ProductionPalletService service)
+    {
+        try
+        {
+            return Results.Ok(MapOrderPlan(service.PlanOrder(orderId)));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.BadRequest(new { ok = false, error = ex.Message, message = ex.Message });
+        }
     }
 
     private static IResult HandlePlan(long docId, ProductionPalletService service)
@@ -21,6 +39,31 @@ public static class ProductionPalletEndpoints
         try
         {
             return Results.Ok(MapDocument(service.Plan(docId)));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.BadRequest(new { ok = false, error = ex.Message, message = ex.Message });
+        }
+    }
+
+    private static IResult HandlePrintRows(long orderId, ProductionPalletService service)
+    {
+        try
+        {
+            return Results.Ok(service.GetPrintRows(orderId).Select(MapPrintRow));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.BadRequest(new { ok = false, error = ex.Message, message = ex.Message });
+        }
+    }
+
+    private static IResult HandleMarkPrinted(long orderId, ProductionPalletService service)
+    {
+        try
+        {
+            var updated = service.MarkPrinted(orderId, DateTime.Now);
+            return Results.Ok(new { ok = true, updated_count = updated });
         }
         catch (InvalidOperationException ex)
         {
@@ -43,6 +86,28 @@ public static class ProductionPalletEndpoints
     private static IResult HandleWorkItems(ProductionPalletService service)
     {
         return Results.Ok(service.GetActiveWorkItems().Select(MapWorkItem));
+    }
+
+    private static IResult HandleFillingOrders(ProductionPalletService service)
+    {
+        return Results.Ok(service.GetFillingOrders().Select(MapFillingOrder));
+    }
+
+    private static IResult HandleStartFilling(long orderId, ProductionPalletService service)
+    {
+        return HandleFillingContext(orderId, service);
+    }
+
+    private static IResult HandleFillingContext(long orderId, ProductionPalletService service)
+    {
+        try
+        {
+            return Results.Ok(MapFillingContext(service.GetFillingContext(orderId)));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.BadRequest(new { ok = false, error = ex.Message, message = ex.Message });
+        }
     }
 
     private static IResult HandleScan(ProductionPalletScanRequest request, ProductionPalletService service)
@@ -83,6 +148,85 @@ public static class ProductionPalletEndpoints
             order_id = item.OrderId,
             order_ref = item.OrderRef,
             summary = MapSummary(item.Summary)
+        };
+    }
+
+    private static object MapFillingOrder(ProductionFillingOrder order)
+    {
+        return new
+        {
+            order_id = order.OrderId,
+            order_ref = order.OrderRef,
+            order_type = order.OrderType,
+            order_type_display = order.OrderTypeDisplay,
+            order_status = order.OrderStatus,
+            order_status_display = order.OrderStatusDisplay,
+            partner_name = order.PartnerName,
+            prd_doc_id = order.PrdDocId,
+            prd_doc_ref = order.PrdDocRef,
+            summary = MapSummary(order.Summary)
+        };
+    }
+
+    private static object MapFillingContext(ProductionFillingContext context)
+    {
+        return new
+        {
+            order_id = context.OrderId,
+            order_ref = context.OrderRef,
+            order_type = context.OrderType,
+            order_type_display = context.OrderTypeDisplay,
+            order_status = context.OrderStatus,
+            order_status_display = context.OrderStatusDisplay,
+            partner_name = context.PartnerName,
+            prd_doc_id = context.PrdDocId,
+            prd_doc_ref = context.PrdDocRef,
+            document = MapDocument(context.Document)
+        };
+    }
+
+    private static object MapOrderPlan(ProductionPalletOrderPlanResult result)
+    {
+        return new
+        {
+            order_id = result.OrderId,
+            order_ref = result.OrderRef,
+            prd_doc_id = result.PrdDocId,
+            prd_ref = result.PrdDocRef,
+            prd_doc_ref = result.PrdDocRef,
+            was_existing = result.WasExisting,
+            planned_pallet_count = result.Summary.PlannedPalletCount,
+            planned_qty = result.Summary.PlannedQty,
+            filled_pallet_count = result.Summary.FilledPalletCount,
+            filled_qty = result.Summary.FilledQty,
+            remaining_pallet_count = result.Summary.RemainingPalletCount,
+            remaining_qty = result.Summary.RemainingQty,
+            summary = MapSummary(result.Summary),
+            document = MapDocument(result.Document)
+        };
+    }
+
+    private static object MapPrintRow(ProductionPalletPrintRow row)
+    {
+        return new
+        {
+            pallet_id = row.PalletId,
+            order_id = row.OrderId,
+            order_ref = row.OrderRef,
+            prd_doc_id = row.PrdDocId,
+            prd_ref = row.PrdRef,
+            hu_code = row.HuCode,
+            item_id = row.ItemId,
+            item_name = row.ItemName,
+            brand = row.Brand,
+            qty = row.Qty,
+            uom = row.Uom,
+            pallet_no = row.PalletNo,
+            pallet_count = row.PalletCount,
+            storage_place = row.StoragePlace,
+            production_date = row.ProductionDate,
+            comment = row.Comment,
+            status = row.Status
         };
     }
 

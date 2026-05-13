@@ -1727,6 +1727,35 @@ ON CONFLICT (prd_doc_id, doc_line_id) DO NOTHING;
         });
     }
 
+    public string CreateProductionPalletHuCode(string? createdBy)
+    {
+        return WithConnection(connection =>
+        {
+            for (var attempt = 0; attempt < 10; attempt++)
+            {
+                using var next = CreateCommand(connection, "SELECT nextval('hu_code_seq');");
+                var value = Convert.ToInt64(next.ExecuteScalar() ?? 0L);
+                var huCode = $"HU-{value:0000000}";
+
+                using var insert = CreateCommand(connection, @"
+INSERT INTO hus(hu_code, status, created_at, created_by)
+VALUES(@hu_code, 'OPEN', @created_at, @created_by)
+ON CONFLICT (hu_code) DO NOTHING;
+");
+                insert.Parameters.AddWithValue("@hu_code", huCode);
+                insert.Parameters.AddWithValue("@created_at", ToDbDate(DateTime.Now));
+                insert.Parameters.AddWithValue("@created_by", string.IsNullOrWhiteSpace(createdBy) ? DBNull.Value : createdBy.Trim());
+                var affected = insert.ExecuteNonQuery();
+                if (affected > 0)
+                {
+                    return huCode;
+                }
+            }
+
+            throw new InvalidOperationException("Не удалось сгенерировать HU-код.");
+        });
+    }
+
     public IReadOnlyList<ProductionPallet> GetProductionPalletsByDoc(long docId)
     {
         return WithConnection(connection => GetProductionPalletsByDoc(connection, docId));
@@ -1872,6 +1901,27 @@ WHERE id = @id
             command.Parameters.AddWithValue("@device_id", string.IsNullOrWhiteSpace(deviceId) ? DBNull.Value : deviceId.Trim());
             command.ExecuteNonQuery();
             return 0;
+        });
+    }
+
+    public int MarkProductionPalletsPrintedByOrder(long orderId, DateTime printedAt)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE production_pallets pp
+SET status = @printed_status
+FROM docs d
+WHERE d.id = pp.prd_doc_id
+  AND d.order_id = @order_id
+  AND d.type = @doc_type
+  AND pp.status = @planned_status;
+");
+            command.Parameters.AddWithValue("@order_id", orderId);
+            command.Parameters.AddWithValue("@doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+            command.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+            command.Parameters.AddWithValue("@printed_status", ProductionPalletStatus.Printed);
+            return command.ExecuteNonQuery();
         });
     }
 

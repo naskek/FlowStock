@@ -43,16 +43,26 @@ assert(
   "filling route should show the filling loading screen immediately"
 );
 assert(
-  appJs.includes("TsdStorage.apiGetProductionFillingDocs()"),
-  "filling route should load /api/tsd/production/filling-docs"
+  appJs.includes("TsdStorage.apiGetProductionFillingOrders()"),
+  "filling route should load /api/tsd/production/filling-orders"
 );
 assert(
-  appJs.includes("Нет активных выпусков для наполнения"),
+  appJs.includes("Выберите заказ с подготовленными паллетами.") &&
+    appJs.includes("Нет заказов с подготовленными паллетами для наполнения"),
   "empty filling list message should be visible"
 );
 assert(
-  appJs.includes("Не удалось загрузить выпуски для наполнения") && appJs.includes("console.error(error)"),
+  appJs.includes("TsdStorage.apiGetProductionFillingContext(orderId)") &&
+    appJs.includes('data-filling-order="'),
+  "selecting an order should load existing filling context and open scan screen"
+);
+assert(
+  appJs.includes("Не удалось загрузить заказы для наполнения") && appJs.includes("console.error(error)"),
   "filling API failures should be visible and logged"
+);
+assert(
+  !appJs.includes("apiStartProductionFilling(orderId)"),
+  "TSD filling should not call the old start-filling flow"
 );
 assert(
   /CACHE_NAME\s*=\s*"tsd-shell-v\d+"/.test(serviceWorkerJs) && serviceWorkerJs.includes('"./app.js"'),

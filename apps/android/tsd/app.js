@@ -1761,7 +1761,7 @@
       }
       setCurrentClientBlockContext(getOperationBlockKey("PRODUCTION_RECEIPT") || "tsd_operations");
       app.innerHTML = renderFillingLoading();
-      TsdStorage.apiGetProductionFillingDocs()
+      TsdStorage.apiGetProductionFillingOrders()
         .then(function (items) {
           app.innerHTML = renderFillingList(items || []);
           wireFillingList();
@@ -1769,7 +1769,7 @@
         })
         .catch(function (error) {
           console.error(error);
-          app.innerHTML = renderError("Не удалось загрузить выпуски для наполнения");
+          app.innerHTML = renderError("Не удалось загрузить заказы для наполнения");
           applySoftKeyboardSetting(app);
         });
       return;
@@ -1786,8 +1786,9 @@
         .then(function (context) {
           renderFillingScanScreen(context, { message: "", messageType: "", preview: null });
         })
-        .catch(function () {
-          app.innerHTML = renderError("Ошибка загрузки наполнения");
+        .catch(function (error) {
+          console.error(error);
+          app.innerHTML = renderError(String(error && error.message ? error.message : "Ошибка загрузки наполнения"));
           applySoftKeyboardSetting(app);
         });
       return;
@@ -2353,7 +2354,7 @@
   }
 
   function getFillingWorkPrdRef(item) {
-    return String((item && (item.prdDocRef || item.prd_doc_ref)) || "").trim() || "-";
+    return String((item && (item.prdDocRef || item.prd_doc_ref)) || "").trim();
   }
 
   function getFillingSummary(itemOrDocument) {
@@ -2364,28 +2365,40 @@
     var rows = (items || [])
       .map(function (item) {
         var summary = getFillingSummary(item);
+        var prdRef = getFillingWorkPrdRef(item);
+        var prdHtml = prdRef
+          ? '<div class="filling-doc-subtitle">PRD: ' + escapeHtml(prdRef) + "</div>"
+          : "";
+        var partnerHtml = item.partnerName
+          ? '<div class="filling-doc-meta">Клиент: ' + escapeHtml(item.partnerName) + "</div>"
+          : "";
         return (
-          '<button class="filling-doc-card" data-filling-doc="' +
-          escapeHtml(item.prdDocId || item.prd_doc_id || "") +
+          '<button class="filling-doc-card" data-filling-order="' +
+          escapeHtml(item.orderId || item.order_id || "") +
           '">' +
           '  <div class="filling-doc-main">' +
           '    <div class="filling-doc-title">Заказ № ' +
           escapeHtml(getFillingWorkOrderRef(item)) +
           "</div>" +
-          '    <div class="filling-doc-subtitle">PRD: ' +
-          escapeHtml(getFillingWorkPrdRef(item)) +
+          '    <div class="filling-doc-subtitle">' +
+          escapeHtml(item.orderTypeDisplay || item.order_type_display || "") +
           "</div>" +
+          prdHtml +
+          partnerHtml +
           '    <div class="filling-doc-meta">Статус: ' +
-          escapeHtml(item.prdStatus || item.prd_status || "В работе") +
+          escapeHtml(item.orderStatusDisplay || item.order_status_display || "В работе") +
           "</div>" +
           "  </div>" +
           '  <div class="filling-doc-progress">' +
-          '    <div>Наполнено: <strong>' +
+          '    <div>Запланировано паллет: <strong>' +
+          escapeHtml(summary.plannedPalletCount || 0) +
+          "</strong></div>" +
+          '    <div>Наполнено паллет: <strong>' +
           escapeHtml(summary.filledPalletCount || 0) +
           " / " +
           escapeHtml(summary.plannedPalletCount || 0) +
-          " паллет</strong></div>" +
-          '    <div>Осталось: <strong>' +
+          "</strong></div>" +
+          '    <div>Осталось наполнить: <strong>' +
           escapeHtml(formatQtyWithUnit(summary.remainingQty || 0, "шт")) +
           "</strong></div>" +
           "  </div>" +
@@ -2395,14 +2408,14 @@
       .join("");
 
     if (!rows) {
-      rows = '<div class="empty-state">Нет активных выпусков для наполнения</div>';
+      rows = '<div class="empty-state">Нет заказов с подготовленными паллетами для наполнения</div>';
     }
 
     return (
       '<section class="screen filling-screen">' +
       '  <div class="screen-card filling-card">' +
       '    <div class="section-title">Наполнение</div>' +
-      '    <div class="field-hint">Выберите заказ / PRD выпуск.</div>' +
+      '    <div class="field-hint">Выберите заказ с подготовленными паллетами.</div>' +
       '    <div class="filling-doc-list">' +
       rows +
       "    </div>" +
@@ -2411,37 +2424,28 @@
     );
   }
 
-  function buildFillingContext(workItem, document, doc) {
-    var firstPallet = document && document.pallets && document.pallets.length ? document.pallets[0] : null;
+  function buildFillingContext(context) {
+    context = context || {};
     return {
-      workItem: workItem || {
-        prdDocId: document ? document.prdDocId : Number(doc && doc.id) || 0,
-        prdDocRef: doc && doc.doc_ref ? doc.doc_ref : "",
-        prdStatus: doc && doc.status ? doc.status : "",
-        orderId: firstPallet ? firstPallet.orderId : null,
-        orderRef: doc && doc.order_ref ? doc.order_ref : "",
-        summary: document ? document.summary : null,
+      workItem: {
+        orderId: context.orderId,
+        orderRef: context.orderRef,
+        orderType: context.orderType,
+        orderTypeDisplay: context.orderTypeDisplay,
+        orderStatus: context.orderStatus,
+        orderStatusDisplay: context.orderStatusDisplay,
+        partnerName: context.partnerName,
+        prdDocId: context.prdDocId,
+        prdDocRef: context.prdDocRef,
+        summary: context.document ? context.document.summary : null,
       },
-      document: document,
-      doc: doc || null,
+      document: context.document || null,
+      doc: null,
     };
   }
 
-  function loadFillingContext(docId) {
-    var target = Number(docId);
-    return Promise.all([
-      TsdStorage.apiGetProductionFillingDocs().catch(function () { return []; }),
-      TsdStorage.apiGetProductionPallets(target),
-      TsdStorage.apiGetDocById(target).catch(function () { return null; }),
-    ]).then(function (results) {
-      var workItems = results[0] || [];
-      var document = results[1];
-      var doc = results[2];
-      var workItem = workItems.find(function (item) {
-        return Number(item.prdDocId) === target;
-      });
-      return buildFillingContext(workItem, document, doc);
-    });
+  function loadFillingContext(orderId) {
+    return TsdStorage.apiGetProductionFillingContext(orderId).then(buildFillingContext);
   }
 
   function renderFillingScan(context, state) {
@@ -2465,9 +2469,6 @@
         '  <div class="filling-preview-title">Наполнение паллеты</div>' +
         '  <div class="filling-preview-line">Заказ: <strong>' +
         escapeHtml(preview.orderRef || getFillingWorkOrderRef(work)) +
-        "</strong></div>" +
-        '  <div class="filling-preview-line">PRD: <strong>' +
-        escapeHtml(preview.prdDocRef || getFillingWorkPrdRef(work)) +
         "</strong></div>" +
         '  <div class="filling-preview-line">HU: <strong>' +
         escapeHtml(preview.huCode) +
@@ -2499,9 +2500,9 @@
       '      <div>Заказ: <strong>' +
       escapeHtml(getFillingWorkOrderRef(work)) +
       "</strong></div>" +
-      '      <div>PRD: <strong>' +
-      escapeHtml(getFillingWorkPrdRef(work)) +
-      "</strong></div>" +
+      (getFillingWorkPrdRef(work)
+        ? '      <div>PRD: <strong>' + escapeHtml(getFillingWorkPrdRef(work)) + "</strong></div>"
+        : "") +
       '      <div>Наполнено паллет: <strong>' +
       escapeHtml(summary.filledPalletCount || 0) +
       " / " +
@@ -5003,12 +5004,12 @@
   }
 
   function wireFillingList() {
-    var docs = document.querySelectorAll("[data-filling-doc]");
-    docs.forEach(function (item) {
+    var orders = document.querySelectorAll("[data-filling-order]");
+    orders.forEach(function (item) {
       item.addEventListener("click", function () {
-        var docId = item.getAttribute("data-filling-doc");
-        if (docId) {
-          navigate("/filling/" + encodeURIComponent(docId));
+        var orderId = item.getAttribute("data-filling-order");
+        if (orderId) {
+          navigate("/filling/" + encodeURIComponent(orderId));
         }
       });
     });
@@ -5017,7 +5018,7 @@
       if (!currentRoute || currentRoute.name !== "filling") {
         return;
       }
-      TsdStorage.apiGetProductionFillingDocs()
+      TsdStorage.apiGetProductionFillingOrders()
         .then(function (items) {
           if (currentRoute && currentRoute.name === "filling") {
             app.innerHTML = renderFillingList(items || []);
@@ -5045,7 +5046,7 @@
     if (message === "Паллета не найдена в плане выпуска") {
       return message;
     }
-    if (message === "Эта паллета относится к другому заказу/выпуску") {
+    if (message === "Эта паллета относится к другому заказу") {
       return message;
     }
     if (message === "Паллета отменена") {
@@ -5082,7 +5083,7 @@
     }
 
     function refreshContext(nextState) {
-      return loadFillingContext(context.workItem && context.workItem.prdDocId)
+      return loadFillingContext(context.workItem && context.workItem.orderId)
         .then(function (nextContext) {
           renderFillingScanScreen(nextContext, nextState || {});
         })
