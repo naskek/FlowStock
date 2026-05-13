@@ -124,6 +124,9 @@ public sealed class CreateOrderApiLineRequest
 
     [JsonPropertyName("production_purpose")]
     public string? ProductionPurpose { get; init; }
+
+    [JsonPropertyName("production_pallet_group")]
+    public string? ProductionPalletGroup { get; init; }
 }
 
 public sealed class CreateOrderApiResponse

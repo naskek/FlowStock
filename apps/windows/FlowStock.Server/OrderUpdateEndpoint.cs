@@ -151,7 +151,8 @@ public static class OrderUpdateEndpoint
                 QtyOrdered = line.QtyOrdered,
                 ProductionPurpose = orderType.Value == OrderType.Customer
                     ? ProductionLinePurpose.CustomerOrder
-                    : ProductionLinePurposeMapper.FromDbValue(line.ProductionPurpose)
+                    : ProductionLinePurposeMapper.FromDbValue(line.ProductionPurpose),
+                ProductionPalletGroup = NormalizePalletGroup(line.ProductionPalletGroup)
             });
         }
 
@@ -264,6 +265,11 @@ public static class OrderUpdateEndpoint
     private static string? NormalizeOrderRef(string? orderRef)
     {
         return string.IsNullOrWhiteSpace(orderRef) ? null : orderRef.Trim();
+    }
+
+    private static string? NormalizePalletGroup(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToUpperInvariant();
     }
 
     private static async Task<string> ReadBodyAsync(HttpRequest request)

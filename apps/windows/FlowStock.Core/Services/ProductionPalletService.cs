@@ -43,7 +43,7 @@ public sealed class ProductionPalletService
             {
                 prdDocId = preparedDoc.Id;
                 wasExisting = true;
-                return;
+                store.ClearPlannedProductionPalletPlan(preparedDoc.Id);
             }
 
             var remainingLines = OrderReceiptRemainingCalculator.GetRemaining(store, order)
@@ -56,6 +56,7 @@ public sealed class ProductionPalletService
             }
 
             var itemsById = store.GetItems(null).ToDictionary(item => item.Id, item => item);
+            var orderLinesById = store.GetOrderLines(orderId).ToDictionary(line => line.Id, line => line);
             foreach (var line in remainingLines)
             {
                 if (!itemsById.TryGetValue(line.ItemId, out var item)
@@ -67,8 +68,45 @@ public sealed class ProductionPalletService
             }
 
             var targetLocation = ResolveProductionPalletPlanLocation(store);
-            prdDocId = FindReusableEmptyProductionReceipt(store, orderId)?.Id ?? CreateProductionReceipt(store, order).Id;
-            foreach (var line in remainingLines)
+            if (prdDocId == 0)
+            {
+                prdDocId = FindReusableEmptyProductionReceipt(store, orderId)?.Id ?? CreateProductionReceipt(store, order).Id;
+            }
+
+            var mixedLineIds = new HashSet<long>();
+            foreach (var group in remainingLines
+                         .Where(line => orderLinesById.TryGetValue(line.OrderLineId, out var orderLine)
+                                        && !string.IsNullOrWhiteSpace(orderLine.ProductionPalletGroup))
+                         .GroupBy(line => orderLinesById[line.OrderLineId].ProductionPalletGroup!.Trim().ToUpperInvariant())
+                         .Where(group => group.Count() > 1))
+            {
+                var groupLines = group.OrderBy(line => line.OrderLineId).ToList();
+                var load = 0d;
+                foreach (var line in groupLines)
+                {
+                    if (!itemsById.TryGetValue(line.ItemId, out var item)
+                        || !item.MaxQtyPerHu.HasValue
+                        || item.MaxQtyPerHu.Value <= QtyTolerance)
+                    {
+                        throw new InvalidOperationException("Не задано правило вместимости для микс-паллеты");
+                    }
+
+                    load += line.QtyRemaining / item.MaxQtyPerHu.Value;
+                }
+
+                if (load > 1d + QtyTolerance)
+                {
+                    throw new InvalidOperationException("Микс-паллета превышает вместимость. Разделите группу паллеты.");
+                }
+
+                AddMixedPlannedPalletLines(store, prdDocId, groupLines, targetLocation.Id);
+                foreach (var line in groupLines)
+                {
+                    mixedLineIds.Add(line.OrderLineId);
+                }
+            }
+
+            foreach (var line in remainingLines.Where(line => !mixedLineIds.Contains(line.OrderLineId)))
             {
                 var item = itemsById[line.ItemId];
                 AddPlannedPalletLines(store, prdDocId, line, item.MaxQtyPerHu!.Value, targetLocation.Id);
@@ -147,7 +185,7 @@ public sealed class ProductionPalletService
         }
 
         var itemsById = pallets
-            .Select(pallet => pallet.ItemId)
+            .SelectMany(pallet => GetPalletLines(pallet).Select(line => line.ItemId))
             .Distinct()
             .Select(id => _data.FindItemById(id))
             .Where(item => item != null)
@@ -162,20 +200,38 @@ public sealed class ProductionPalletService
                 throw new InvalidOperationException("Для паллеты не задан HU.");
             }
 
-            if (!itemsById.TryGetValue(pallet.ItemId, out var item))
+            var componentLines = GetPalletLines(pallet)
+                .OrderBy(line => line.Id)
+                .ToList();
+            var isMixed = componentLines.Count > 1;
+            var firstLine = componentLines.FirstOrDefault();
+            if (firstLine == null || !itemsById.TryGetValue(firstLine.ItemId, out var item))
             {
                 throw new InvalidOperationException("Номенклатура паллеты не найдена.");
             }
 
-            if (string.IsNullOrWhiteSpace(item.Name))
+            if (string.IsNullOrWhiteSpace(isMixed ? "Микс-паллета" : item.Name))
             {
                 throw new InvalidOperationException("Для паллеты не задана номенклатура.");
             }
 
-            if (pallet.PlannedQty <= QtyTolerance)
+            var plannedQty = componentLines.Sum(line => line.PlannedQty);
+            if (plannedQty <= QtyTolerance)
             {
                 throw new InvalidOperationException("Для паллеты не задано количество.");
             }
+
+            var printLines = componentLines.Select(line =>
+            {
+                var lineItem = itemsById.TryGetValue(line.ItemId, out var found) ? found : null;
+                return new ProductionPalletPrintLine
+                {
+                    ItemName = lineItem?.Name ?? line.ItemName,
+                    Qty = line.PlannedQty,
+                    Uom = string.IsNullOrWhiteSpace(lineItem?.BaseUom) ? line.Uom : lineItem!.BaseUom!
+                };
+            }).ToList();
+            var composition = string.Join("; ", printLines.Select(line => $"{line.ItemName} - {FormatQty(line.Qty)} {line.Uom}"));
 
             rows.Add(new ProductionPalletPrintRow
             {
@@ -185,18 +241,21 @@ public sealed class ProductionPalletService
                 PrdDocId = doc.Id,
                 PrdRef = doc.DocRef,
                 HuCode = pallet.HuCode,
-                ItemId = pallet.ItemId,
-                ItemName = item.Name,
-                Brand = item.Brand ?? string.Empty,
-                Qty = pallet.PlannedQty,
-                Uom = string.IsNullOrWhiteSpace(item.BaseUom) ? "шт" : item.BaseUom!,
+                ItemId = firstLine.ItemId,
+                ItemName = isMixed ? "Микс-паллета" : item.Name,
+                Brand = isMixed ? string.Empty : item.Brand ?? string.Empty,
+                Qty = plannedQty,
+                Uom = isMixed ? string.Empty : string.IsNullOrWhiteSpace(item.BaseUom) ? "шт" : item.BaseUom!,
                 PalletNo = index + 1,
                 PalletCount = pallets.Count,
                 StoragePlace = pallet.ToLocationId.HasValue && locationsById.TryGetValue(pallet.ToLocationId.Value, out var locationCode)
                     ? locationCode
                     : pallet.ToLocationCode ?? string.Empty,
                 ProductionDate = doc.CreatedAt.Date,
-                Comment = doc.Comment ?? string.Empty,
+                Comment = isMixed ? composition : doc.Comment ?? string.Empty,
+                IsMixedPallet = isMixed,
+                Composition = composition,
+                Lines = printLines,
                 Status = pallet.Status
             });
         }
@@ -251,27 +310,33 @@ public sealed class ProductionPalletService
             return ProductionPalletScanResult.Failure("Паллета отменена");
         }
 
-        var docLine = _data.GetDocLines(doc.Id).FirstOrDefault(line => line.Id == pallet.DocLineId);
-        if (docLine == null || docLine.ItemId != pallet.ItemId || docLine.OrderLineId != pallet.OrderLineId)
+        var palletLines = GetPalletLines(pallet);
+        var docLinesById = _data.GetDocLines(doc.Id).ToDictionary(line => line.Id, line => line);
+        foreach (var palletLine in palletLines)
         {
-            return ProductionPalletScanResult.Failure("План паллеты не совпадает со строкой выпуска.");
-        }
-
-        if (pallet.OrderId.HasValue && pallet.OrderLineId.HasValue)
-        {
-            var orderLine = _data.GetOrderLines(pallet.OrderId.Value)
-                .FirstOrDefault(line => line.Id == pallet.OrderLineId.Value);
-            if (orderLine == null || orderLine.ItemId != pallet.ItemId)
+            if (!docLinesById.TryGetValue(palletLine.DocLineId, out var docLine)
+                || docLine.ItemId != palletLine.ItemId
+                || docLine.OrderLineId != palletLine.OrderLineId)
             {
-                return ProductionPalletScanResult.Failure("Строка заказа для паллеты не найдена.");
+                return ProductionPalletScanResult.Failure("План паллеты не совпадает со строкой выпуска.");
             }
 
-            if (!string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+            if (pallet.OrderId.HasValue && palletLine.OrderLineId.HasValue)
             {
-                var alreadyFilled = _data.GetFilledProductionPalletQtyByOrderLine(orderLine.Id, pallet.Id);
-                if (alreadyFilled + pallet.PlannedQty > orderLine.QtyOrdered + QtyTolerance)
+                var orderLine = _data.GetOrderLines(pallet.OrderId.Value)
+                    .FirstOrDefault(line => line.Id == palletLine.OrderLineId.Value);
+                if (orderLine == null || orderLine.ItemId != palletLine.ItemId)
                 {
-                    return ProductionPalletScanResult.Failure("Выпуск превышает остаток по строке заказа");
+                    return ProductionPalletScanResult.Failure("Строка заказа для паллеты не найдена.");
+                }
+
+                if (!string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+                {
+                    var alreadyFilled = _data.GetFilledProductionPalletQtyByOrderLine(orderLine.Id, pallet.Id);
+                    if (alreadyFilled + palletLine.PlannedQty > orderLine.QtyOrdered + QtyTolerance)
+                    {
+                        return ProductionPalletScanResult.Failure("Выпуск превышает остаток по строке заказа");
+                    }
                 }
             }
         }
@@ -282,8 +347,21 @@ public sealed class ProductionPalletService
             .OrderBy(row => row.Id)
             .ToList();
         var index = activePallets.FindIndex(row => row.Id == pallet.Id);
-        var item = _data.FindItemById(pallet.ItemId);
+        var firstLine = palletLines.First();
+        var item = _data.FindItemById(firstLine.ItemId);
         var order = pallet.OrderId.HasValue ? _data.GetOrder(pallet.OrderId.Value) : null;
+        var scanLines = palletLines.Select(line =>
+        {
+            var lineItem = _data.FindItemById(line.ItemId);
+            return new ProductionPalletScanLine
+            {
+                ItemId = line.ItemId,
+                ItemName = lineItem?.Name ?? line.ItemName,
+                Brand = lineItem?.Brand ?? line.Brand,
+                Qty = line.PlannedQty,
+                Uom = string.IsNullOrWhiteSpace(lineItem?.BaseUom) ? line.Uom : lineItem!.BaseUom!
+            };
+        }).ToList();
 
         return new ProductionPalletScanResult
         {
@@ -295,11 +373,13 @@ public sealed class ProductionPalletService
             PrdDocRef = doc.DocRef,
             PalletId = pallet.Id,
             HuCode = pallet.HuCode,
-            ItemId = pallet.ItemId,
-            ItemName = item?.Name ?? pallet.ItemName,
-            ItemBrand = item?.Brand,
+            ItemId = firstLine.ItemId,
+            ItemName = palletLines.Count > 1 ? "Микс-паллета" : item?.Name ?? pallet.ItemName,
+            ItemBrand = palletLines.Count > 1 ? null : item?.Brand,
             BaseUom = string.IsNullOrWhiteSpace(item?.BaseUom) ? "шт" : item!.BaseUom,
-            PlannedQty = pallet.PlannedQty,
+            PlannedQty = palletLines.Sum(line => line.PlannedQty),
+            IsMixedPallet = palletLines.Count > 1,
+            Lines = scanLines,
             PalletIndex = index >= 0 ? index + 1 : 0,
             PalletCount = activePallets.Count,
             PalletStatus = pallet.Status,
@@ -307,7 +387,7 @@ public sealed class ProductionPalletService
         };
     }
 
-    public ProductionPalletFillResult Fill(string? huCode, string? deviceId)
+    public ProductionPalletFillResult Fill(string? huCode, string? deviceId, long? orderId = null, long? prdDocId = null)
     {
         var normalizedHu = NormalizeHu(huCode);
         if (string.IsNullOrWhiteSpace(normalizedHu))
@@ -322,6 +402,13 @@ public sealed class ProductionPalletService
             if (pallet == null)
             {
                 result = ProductionPalletFillResult.Failure("Паллета не найдена в плане выпуска.");
+                return;
+            }
+
+            if ((prdDocId.HasValue && pallet.PrdDocId != prdDocId.Value)
+                || (orderId.HasValue && pallet.OrderId != orderId.Value))
+            {
+                result = ProductionPalletFillResult.Failure("Эта паллета относится к другому заказу");
                 return;
             }
 
@@ -356,53 +443,61 @@ public sealed class ProductionPalletService
                 return;
             }
 
-            var docLine = store.GetDocLines(doc.Id).FirstOrDefault(line => line.Id == pallet.DocLineId);
-            if (docLine == null)
+            var palletLines = GetPalletLines(pallet);
+            var docLinesById = store.GetDocLines(doc.Id).ToDictionary(line => line.Id, line => line);
+            foreach (var palletLine in palletLines)
             {
-                result = ProductionPalletFillResult.Failure("Строка паллеты не найдена в документе выпуска.");
-                return;
-            }
-
-            if (docLine.ItemId != pallet.ItemId || docLine.OrderLineId != pallet.OrderLineId)
-            {
-                result = ProductionPalletFillResult.Failure("План паллеты не совпадает со строкой выпуска.");
-                return;
-            }
-
-            if (!docLine.ToLocationId.HasValue)
-            {
-                result = ProductionPalletFillResult.Failure("Для паллеты не указано место хранения.");
-                return;
-            }
-
-            if (pallet.OrderId.HasValue && pallet.OrderLineId.HasValue)
-            {
-                var orderLine = store.GetOrderLines(pallet.OrderId.Value)
-                    .FirstOrDefault(line => line.Id == pallet.OrderLineId.Value);
-                if (orderLine == null || orderLine.ItemId != pallet.ItemId)
+                if (!docLinesById.TryGetValue(palletLine.DocLineId, out var docLine))
                 {
-                    result = ProductionPalletFillResult.Failure("Строка заказа для паллеты не найдена.");
+                    result = ProductionPalletFillResult.Failure("Строка паллеты не найдена в документе выпуска.");
                     return;
                 }
 
-                var alreadyFilled = store.GetFilledProductionPalletQtyByOrderLine(orderLine.Id, pallet.Id);
-                if (alreadyFilled + pallet.PlannedQty > orderLine.QtyOrdered + QtyTolerance)
+                if (docLine.ItemId != palletLine.ItemId || docLine.OrderLineId != palletLine.OrderLineId)
                 {
-                    result = ProductionPalletFillResult.Failure("Выпуск превышает остаток по строке заказа");
+                    result = ProductionPalletFillResult.Failure("План паллеты не совпадает со строкой выпуска.");
                     return;
+                }
+
+                if (!docLine.ToLocationId.HasValue)
+                {
+                    result = ProductionPalletFillResult.Failure("Для паллеты не указано место хранения.");
+                    return;
+                }
+
+                if (pallet.OrderId.HasValue && palletLine.OrderLineId.HasValue)
+                {
+                    var orderLine = store.GetOrderLines(pallet.OrderId.Value)
+                        .FirstOrDefault(line => line.Id == palletLine.OrderLineId.Value);
+                    if (orderLine == null || orderLine.ItemId != palletLine.ItemId)
+                    {
+                        result = ProductionPalletFillResult.Failure("Строка заказа для паллеты не найдена.");
+                        return;
+                    }
+
+                    var alreadyFilled = store.GetFilledProductionPalletQtyByOrderLine(orderLine.Id, pallet.Id);
+                    if (alreadyFilled + palletLine.PlannedQty > orderLine.QtyOrdered + QtyTolerance)
+                    {
+                        result = ProductionPalletFillResult.Failure("Выпуск превышает остаток по строке заказа");
+                        return;
+                    }
                 }
             }
 
             var filledAt = DateTime.Now;
-            store.AddLedgerEntry(new LedgerEntry
+            foreach (var palletLine in palletLines)
             {
-                Timestamp = filledAt,
-                DocId = doc.Id,
-                ItemId = pallet.ItemId,
-                LocationId = docLine.ToLocationId.Value,
-                QtyDelta = pallet.PlannedQty,
-                HuCode = pallet.HuCode
-            });
+                var docLine = docLinesById[palletLine.DocLineId];
+                store.AddLedgerEntry(new LedgerEntry
+                {
+                    Timestamp = filledAt,
+                    DocId = doc.Id,
+                    ItemId = palletLine.ItemId,
+                    LocationId = docLine.ToLocationId!.Value,
+                    QtyDelta = palletLine.PlannedQty,
+                    HuCode = pallet.HuCode
+                });
+            }
             store.MarkProductionPalletFilled(pallet.Id, filledAt, NormalizeDeviceId(deviceId));
 
             var filledPallet = store.GetProductionPalletByHu(normalizedHu) ?? pallet;
@@ -599,12 +694,42 @@ public sealed class ProductionPalletService
         }
     }
 
+    private static void AddMixedPlannedPalletLines(
+        IDataStore store,
+        long prdDocId,
+        IReadOnlyList<OrderReceiptLine> lines,
+        long toLocationId)
+    {
+        var huCode = store.CreateProductionPalletHuCode(PlanHuCreatedBy);
+        foreach (var line in lines)
+        {
+            store.AddDocLine(new DocLine
+            {
+                DocId = prdDocId,
+                OrderLineId = line.OrderLineId,
+                ProductionPurpose = line.ProductionPurpose,
+                ItemId = line.ItemId,
+                Qty = line.QtyRemaining,
+                QtyInput = null,
+                UomCode = null,
+                FromLocationId = null,
+                ToLocationId = toLocationId,
+                FromHu = null,
+                ToHu = huCode,
+                PackSingleHu = true
+            });
+        }
+    }
+
     private ProductionPalletDocument BuildDocument(long docId, IReadOnlyList<ProductionPallet> pallets)
     {
         var summary = BuildSummary(pallets);
-        var orderLineIds = pallets
-            .Where(pallet => pallet.OrderId.HasValue && pallet.OrderLineId.HasValue)
-            .Select(pallet => (OrderId: pallet.OrderId!.Value, OrderLineId: pallet.OrderLineId!.Value))
+        var palletLineRows = pallets
+            .SelectMany(pallet => GetPalletLines(pallet).Select(line => new { Pallet = pallet, Line = line }))
+            .ToList();
+        var orderLineIds = palletLineRows
+            .Where(row => row.Pallet.OrderId.HasValue && row.Line.OrderLineId.HasValue)
+            .Select(row => (OrderId: row.Pallet.OrderId!.Value, OrderLineId: row.Line.OrderLineId!.Value))
             .Distinct()
             .ToList();
         var orderLinesById = new Dictionary<long, OrderLine>();
@@ -616,28 +741,34 @@ public sealed class ProductionPalletService
             }
         }
 
-        var lines = pallets
-            .GroupBy(pallet => new { pallet.OrderLineId, pallet.ItemId, pallet.ItemName })
+        var lines = palletLineRows
+            .GroupBy(row => new { row.Line.OrderLineId, row.Line.ItemId, row.Line.ItemName })
             .Select(group =>
             {
                 var orderedQty = group.Key.OrderLineId.HasValue
                                   && orderLinesById.TryGetValue(group.Key.OrderLineId.Value, out var orderLine)
                     ? orderLine.QtyOrdered
-                    : group.Sum(pallet => pallet.PlannedQty);
-                var linePallets = group.ToList();
-                var lineSummary = BuildSummary(linePallets);
+                    : group.Sum(row => row.Line.PlannedQty);
+                var groupRows = group.ToList();
+                var plannedPalletCount = groupRows.Select(row => row.Pallet.Id).Distinct().Count();
+                var filledRows = groupRows
+                    .Where(row => string.Equals(row.Pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                var filledPalletCount = filledRows.Select(row => row.Pallet.Id).Distinct().Count();
+                var plannedQty = groupRows.Sum(row => row.Line.PlannedQty);
+                var filledQty = filledRows.Sum(row => row.Line.PlannedQty);
                 return new ProductionPalletLineSummary
                 {
                     OrderLineId = group.Key.OrderLineId,
                     ItemId = group.Key.ItemId,
                     ItemName = group.Key.ItemName,
                     OrderedQty = orderedQty,
-                    PlannedPalletCount = lineSummary.PlannedPalletCount,
-                    PlannedQty = lineSummary.PlannedQty,
-                    FilledPalletCount = lineSummary.FilledPalletCount,
-                    FilledQty = lineSummary.FilledQty,
-                    RemainingPalletCount = lineSummary.RemainingPalletCount,
-                    RemainingQty = Math.Max(0, orderedQty - lineSummary.FilledQty)
+                    PlannedPalletCount = plannedPalletCount,
+                    PlannedQty = plannedQty,
+                    FilledPalletCount = filledPalletCount,
+                    FilledQty = filledQty,
+                    RemainingPalletCount = plannedPalletCount - filledPalletCount,
+                    RemainingQty = Math.Max(0, orderedQty - filledQty)
                 };
             })
             .OrderBy(line => line.OrderLineId ?? long.MaxValue)
@@ -715,5 +846,35 @@ public sealed class ProductionPalletService
     private static string? NormalizeDeviceId(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static IReadOnlyList<ProductionPalletComponentLine> GetPalletLines(ProductionPallet pallet)
+    {
+        if (pallet.Lines.Count > 0)
+        {
+            return pallet.Lines;
+        }
+
+        return new[]
+        {
+            new ProductionPalletComponentLine
+            {
+                ProductionPalletId = pallet.Id,
+                DocLineId = pallet.DocLineId,
+                OrderLineId = pallet.OrderLineId,
+                ItemId = pallet.ItemId,
+                ItemName = pallet.ItemName,
+                PlannedQty = pallet.PlannedQty,
+                FilledQty = string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)
+                    ? pallet.PlannedQty
+                    : 0,
+                CreatedAt = pallet.CreatedAt
+            }
+        };
+    }
+
+    private static string FormatQty(double value)
+    {
+        return value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
     }
 }

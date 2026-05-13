@@ -205,6 +205,14 @@ public sealed class WpfProductionPalletApiService
             StoragePlace = row.StoragePlace ?? string.Empty,
             ProductionDate = row.ProductionDate,
             Comment = row.Comment ?? string.Empty,
+            IsMixedPallet = row.IsMixedPallet,
+            Composition = row.Composition ?? string.Empty,
+            Line1ItemName = row.Line1ItemName ?? string.Empty,
+            Line1Qty = row.Line1Qty,
+            Line2ItemName = row.Line2ItemName ?? string.Empty,
+            Line2Qty = row.Line2Qty,
+            Line3ItemName = row.Line3ItemName ?? string.Empty,
+            Line3Qty = row.Line3Qty,
             Status = row.Status ?? string.Empty
         };
     }
@@ -345,6 +353,30 @@ public sealed class WpfProductionPalletApiService
 
         [JsonPropertyName("comment")]
         public string? Comment { get; init; }
+
+        [JsonPropertyName("is_mixed_pallet")]
+        public bool IsMixedPallet { get; init; }
+
+        [JsonPropertyName("composition")]
+        public string? Composition { get; init; }
+
+        [JsonPropertyName("line1_item_name")]
+        public string? Line1ItemName { get; init; }
+
+        [JsonPropertyName("line1_qty")]
+        public double Line1Qty { get; init; }
+
+        [JsonPropertyName("line2_item_name")]
+        public string? Line2ItemName { get; init; }
+
+        [JsonPropertyName("line2_qty")]
+        public double Line2Qty { get; init; }
+
+        [JsonPropertyName("line3_item_name")]
+        public string? Line3ItemName { get; init; }
+
+        [JsonPropertyName("line3_qty")]
+        public double Line3Qty { get; init; }
 
         [JsonPropertyName("status")]
         public string? Status { get; init; }

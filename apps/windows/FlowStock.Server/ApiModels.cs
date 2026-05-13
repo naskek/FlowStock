@@ -77,6 +77,9 @@ public sealed class AddDocLineRequest
     [JsonPropertyName("production_purpose")]
     public string? ProductionPurpose { get; set; }
 
+    [JsonPropertyName("production_pallet_group")]
+    public string? ProductionPalletGroup { get; set; }
+
     [JsonPropertyName("qty")]
     public double Qty { get; set; }
 
@@ -300,6 +303,9 @@ public sealed class CreateOrderLineRequest
 
     [JsonPropertyName("production_purpose")]
     public string? ProductionPurpose { get; set; }
+
+    [JsonPropertyName("production_pallet_group")]
+    public string? ProductionPalletGroup { get; set; }
 }
 
 public sealed class CreateOrderRequest
@@ -366,6 +372,9 @@ public sealed class UpdateOrderLineRequest
 
     [JsonPropertyName("production_purpose")]
     public string? ProductionPurpose { get; set; }
+
+    [JsonPropertyName("production_pallet_group")]
+    public string? ProductionPalletGroup { get; set; }
 }
 
 public sealed class UpdateOrderRequest

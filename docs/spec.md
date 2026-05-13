@@ -56,11 +56,12 @@
 - `locations(id, code, name)`
 - `partners(id, name, inn, ... )`
 - `orders(id, order_ref, order_type, partner_id NULL, due_date, status, comment, created_at, bind_reserved_stock, marking_status, marking_excel_generated_at, marking_printed_at)`
-- `order_lines(id, order_id, item_id, qty_ordered)`
+- `order_lines(id, order_id, item_id, qty_ordered, production_pallet_group NULL)` // `production_pallet_group` задает группу микс-паллеты на уровне заказа
 - `order_receipt_plan_lines(id, order_id, order_line_id, item_id, qty_planned, to_location_id, to_hu, sort_order)` // серверный план выпуска по заказу
 - `docs(id, doc_ref, type, status, created_at, closed_at, partner_id, order_id, order_ref, shipping_ref, reason_code, comment, production_batch_no)`
 - `doc_lines(id, doc_id, replaces_line_id NULL, order_line_id, item_id, qty, qty_input, uom_code, from_location_id, to_location_id, from_hu, to_hu)`
-- `production_pallets(id, prd_doc_id, doc_line_id, order_id, order_line_id, item_id, hu_code, planned_qty, to_location_id, status, filled_at, filled_by_device_id, created_at)` // server-side состояние плановой паллеты PRD; `doc_lines` остаются планом, факт наполнения хранится отдельно
+- `production_pallets(id, prd_doc_id, doc_line_id, order_id, order_line_id, item_id, hu_code, planned_qty, to_location_id, status, pallet_no, pallet_count, printed_at, filled_at, filled_by_device_id, created_at)` // header плановой паллеты/HU; для микс-паллеты является одним HU с несколькими строками состава
+- `production_pallet_lines(id, production_pallet_id, doc_line_id, order_line_id, item_id, planned_qty, filled_qty, created_at)` // состав паллеты; одиночная паллета имеет одну строку, mixed pallet имеет несколько строк
 - `ledger(id, ts, doc_id, item_id, location_id, qty_delta, hu_code)`
 - `km_code_batch(id, order_id, file_name, file_hash, imported_at, imported_by, total_codes, error_count)`
 - `km_code(id, batch_id, code_raw, gtin14, sku_id, product_name, status, receipt_doc_id, receipt_line_id, hu_id, location_id, ship_doc_id, ship_line_id, order_id)`
@@ -98,7 +99,9 @@
 - В разделе `Операции` на TSD доступны: `Приемка`, `Выпуск продукции`, `Отгрузка`, `Перемещение`, `Списание`, `Инвентаризация`.
 - Серверный MVP TSD filling model для выпуска:
   - старые/существующие заказы и legacy PRD без `production_pallets` остаются legacy и не попадают в TSD `Наполнение`, пока пользователь явно не создаст план паллет;
-  - `POST /api/orders/{orderId}/production-pallets/plan` является явным действием `Сформировать план паллет`: сервер создает/находит технический открытый PRD, дробит строки заказа по `items.max_qty_per_hu`, генерирует HU через server sequence и создает `production_pallets` без записи в `ledger`;
+  - `POST /api/orders/{orderId}/production-pallets/plan` является явным действием `Сформировать план паллет`: сервер создает/находит технический открытый PRD, дробит обычные строки заказа по `items.max_qty_per_hu`, учитывает `order_lines.production_pallet_group` для микс-паллет, генерирует HU через server sequence и создает `production_pallets`/`production_pallet_lines` без записи в `ledger`;
+  - `Общий HU / микс-паллета` задается в заказе/планировании паллет, а не в PRD. В WPF карточке заказа у каждой строки есть галочка `Общий HU`; отмеченные строки с одинаковой группой паллеты планируются на один общий HU, если суммарная загрузка по `qty / items.max_qty_per_hu` не превышает одну паллету; если вместимость для микса не определена, сервер возвращает понятную ошибку;
+  - В строках заказа отображаются назначенные `HU паллет`. Повторное `Сформировать план паллет` до печати пересобирает нераспечатанный план по текущим галочкам строк и назначает новые HU без создания дублей; после `PRINTED`/`FILLED` переназначение запрещено.
   - `POST /api/docs/{docId}/production-pallets/plan` создает плановые паллеты PRD из текущих строк документа с `to_hu` и возвращает summary;
   - `GET /api/tsd/production/filling-orders` возвращает только заказы с уже подготовленными паллетами, где есть не наполненные паллеты; оператор выбирает заказ, а не PRD;
   - `GET /api/tsd/production/orders/{orderId}/filling-context` возвращает существующий PRD/session и план паллет; TSD не создает HU и не формирует план паллет;
@@ -106,8 +109,8 @@
   - для выпуска с планом паллет старое распределение HU не подбирает новые HU: допустимый набор HU задается `production_pallets`;
   - `GET /api/tsd/production/filling-docs` сохраняется как compatibility endpoint для старого PRD-ориентированного списка, но новый TSD UX его не использует;
   - `GET /api/docs/{docId}/production-pallets` возвращает паллеты, summary по PRD и summary по строкам заказа;
-  - `POST /api/tsd/production/scan-pallet` валидирует выбранную паллету и возвращает read-only preview для подтверждения оператором, не меняя `ledger`;
-  - `POST /api/tsd/production/fill-pallet` принимает `hu_code` и `device_id`, находит плановую паллету, валидирует остаток строки заказа и пишет складской факт;
+  - `POST /api/tsd/production/scan-pallet` валидирует выбранную паллету и возвращает read-only preview для подтверждения оператором, включая состав `lines` для mixed pallet, не меняя `ledger`;
+  - `POST /api/tsd/production/fill-pallet` принимает `hu_code` и `device_id`, находит плановую паллету, валидирует остаток по всем строкам состава и пишет складской факт по всем `production_pallet_lines`;
   - в пользовательских текстах используется термин `паллета`, а `HU` остается техническим идентификатором.
 
 ## Неизвестные товары
@@ -213,11 +216,11 @@
   - Для новой TSD-модели один `PRODUCTION_RECEIPT` является производственной сессией, а активные `doc_lines` с `to_hu` используются как плановые паллеты. `POST /api/orders/{orderId}/production-pallets/plan` создает план по активному заказу явным действием; `POST /api/docs/{docId}/production-pallets/plan` создает/актуализирует строки `production_pallets` по уже подготовленным строкам PRD.
   - В WPF в карточке заказа доступны явные действия `Сформировать план паллет` и `Печать паллетных этикеток`. Планирование вызывает серверный `POST /api/orders/{orderId}/production-pallets/plan`; печать получает read-only строки через `GET /api/orders/{orderId}/production-pallets/print-rows`.
   - HU для новой модели генерируется сервером во время планирования паллет через `hu_code_seq`. WPF-печать и TSD не вызывают legacy/manual `/api/hus/generate`, не создают HU и не принимают неизвестные HU.
-  - Печать паллетных этикеток использует существующие `production_pallets` и BarTender `.btw` шаблон. Шаблон получает NamedSubStrings: обязательные `HuCode`, `ItemName`, `Qty`; дополнительные `OrderRef`, `PrdRef`, `Brand`, `Uom`, `PalletNo`, `PalletCount`, `StoragePlace`, `ProductionDate`, `Comment`.
+  - Печать паллетных этикеток использует существующие `production_pallets` и BarTender `.btw` шаблон, печатает одну этикетку на один `HuCode`. Для mixed pallet `ItemName = Микс-паллета`, а состав передается в `Composition`/`Comment` и построчные поля `Line1ItemName`, `Line1Qty`, `Line2ItemName`, `Line2Qty`, `Line3ItemName`, `Line3Qty`. Шаблон получает NamedSubStrings: обязательные `HuCode`, `ItemName`, `Qty`; дополнительные `OrderRef`, `PrdRef`, `Brand`, `Uom`, `PalletNo`, `PalletCount`, `StoragePlace`, `ProductionDate`, `Comment`, `IsMixedPallet`, `Composition`.
   - Путь к `.btw` задается настройкой `pallet_labels.template_path` или переменной `FLOWSTOCK_PALLET_LABEL_TEMPLATE_PATH`; принтер и копии задаются `pallet_labels.printer_name` / `pallet_labels.copies` или переменными `FLOWSTOCK_PALLET_LABEL_PRINTER_NAME` / `FLOWSTOCK_PALLET_LABEL_COPIES`.
   - Печать не меняет `ledger`, не создает `docs`/`doc_lines`/HU и не влияет на склад. После успешной печати сервер может перевести только `PLANNED` паллеты в `PRINTED`; повторная печать использует тот же `hu_code`, а `FILLED` паллеты не даунгрейдятся.
   - Если `items.max_qty_per_hu` не задано или <= 0, сервер не создает план паллет и возвращает ошибку `Не задано количество на паллете для номенклатуры`. Если количество заказа не делится на capacity, последняя паллета может быть неполной.
-  - Открытый PRD сам по себе не меняет склад. Факт поступления создается только успешным `POST /api/tsd/production/fill-pallet`, который атомарно пишет `ledger` по конкретной паллете и переводит ее в `FILLED`.
+  - Открытый PRD сам по себе не меняет склад. Факт поступления создается только успешным `POST /api/tsd/production/fill-pallet`, который атомарно пишет `ledger` по конкретной паллете: у одиночной паллеты одна строка ledger, у mixed pallet по одной строке на компонент; затем паллета переводится в `FILLED`. Повторный fill возвращает `already_filled` и не дублирует `ledger`.
   - Повторное сканирование уже наполненной паллеты не пишет второй `ledger`. Наполненная паллета считается immutable с точки зрения складского эффекта; исправления оформляются отдельными документами.
   - Закрытие PRD с `production_pallets` только финализирует документ и статус заказа: если есть ненаполненные активные паллеты, закрытие блокируется; если все наполнены, `ledger` повторно по `doc_lines` не пишется.
   - Для HU разделяются два независимых контекста:
@@ -287,10 +290,10 @@
   - После полного выпуска по `INTERNAL`-заказу сервер переводит заказ сразу в `SHIPPED` (UI: `Выполнен`); дополнительный `OUTBOUND` для такого заказа не требуется и не ожидается.
   - Это правило распространяется и на `INTERNAL DRAFT`, созданные из `Потребность производства -> Сформировать заказ`: `DRAFT` сохраняется только до фактического начала выпуска.
   - При пересчете статуса и `receipt remaining` для `INTERNAL` сервер учитывает оба варианта связи выпуска с заказом: прямой `doc_lines.order_line_id` и fallback через `docs.order_id`, если строка выпуска сохранена без `order_line_id`.
-  - В WPF для выпуска используется отдельное действие `Распределить по HU`: система сама берет свободные HU из реестра по порядку кода, при необходимости повторно вводит в оборот свободные `CLOSED` HU и, если их не хватает, создает новые HU.
+  - В WPF для legacy выпуска без `production_pallets` используется отдельное действие `Распределить по HU`: система сама берет свободные HU из реестра по порядку кода, при необходимости повторно вводит в оборот свободные `CLOSED` HU и, если их не хватает, создает новые HU. Для palletized PRD с `production_pallets` legacy `Общий HU`, `Распределить по HU` и `Назначить HU` не используются: WPF скрывает/disabled эти действия и показывает бейдж `Паллетный выпуск по плану`.
   - В TSD выпуск продукции работает в построчном режиме HU: поля `Куда` и шапочный `HU` в форме выпуска не редактируются оператором.
   - В TSD для `Выпуска продукции` доступен выбор заказа с автозаполнением строк по `receipt_remaining?detailed=1`; серверные назначения HU/локаций применяются для `INTERNAL`-заказов, а резерв `CUSTOMER`-заказов не превращается в строки PRD.
-  - В TSD у каждой строки выпуска доступен переключатель `Общий HU` (`pack_single_hu`) и построчное назначение/сброс HU.
+  - В TSD у каждой строки legacy-выпуска без `production_pallets` доступен переключатель `Общий HU` (`pack_single_hu`) и построчное назначение/сброс HU; в palletized flow TSD работает только по заранее подготовленным `production_pallets`.
   - TSD не генерирует новые HU и не выполняет локальное авто-распределение HU: используются только серверные номера из реестра HU.
   - Перед созданием серверного документа `PRD` TSD запрашивает подтверждение нанесенных HU (сканирование всех назначенных HU). Если подтверждение отменено, документ в БД не создается.
   - Если в карточке товара задан `items.max_qty_per_hu`, `Распределить по HU` автоматически дробит строки выпуска так, чтобы каждая строка не превышала лимит на один HU.
@@ -298,7 +301,7 @@
   - При `Распределить по HU` сервер автоматически выбирает локацию приемки для каждого нового HU только среди локаций с включенным `auto_hu_distribution_enabled`, учитывая занятые HU-места и `locations.max_hu_slots`.
   - Если во всех auto-локациях нет свободных HU-мест, авто-операция прерывается с ошибкой и не изменяет строки документа; оператор может продолжить ручным назначением HU/локаций по строкам.
   - В WPF для `INBOUND` и `PRODUCTION_RECEIPT` выбор локации приемки выполняется на уровне строки документа (header-выбор локации не используется).
-  - Для строки выпуска можно включить флаг общего HU (`doc_lines.pack_single_hu`): такая строка не дробится при автораспределении и может быть уложена вместе с другими отмеченными строками на один общий HU, если суммарная загрузка паллеты по формуле `sum(qty / max_qty_per_hu)` не превышает `1`.
+  - Для строки legacy-выпуска без `production_pallets` можно включить флаг общего HU (`doc_lines.pack_single_hu`): такая строка не дробится при автораспределении и может быть уложена вместе с другими отмеченными строками на один общий HU, если суммарная загрузка паллеты по формуле `sum(qty / max_qty_per_hu)` не превышает `1`. В palletized flow этот смысл перенесен в `order_lines.production_pallet_group`.
   - При проведении приоритет имеет HU строки; HU из шапки используется только как fallback для старых/неполных строк, а не как переопределение уже назначенного HU строки.
   - При проведении проверяется, что количество в каждой строке выпуска не превышает `max_qty_per_hu` (если лимит задан), а для строк на одном HU суммарная загрузка паллеты также не превышает `1`.
   - Для совместимости со старыми черновиками при проверке/проведении выполняется auto-remap устаревшего `order_line_id` по `item_id` (только при однозначном совпадении строки заказа).

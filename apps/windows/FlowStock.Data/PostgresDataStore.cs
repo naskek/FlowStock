@@ -34,6 +34,9 @@ SELECT p.id,
        p.to_location_id,
        l.code,
        p.status,
+       p.pallet_no,
+       p.pallet_count,
+       p.printed_at,
        p.filled_at,
        p.filled_by_device_id,
        p.created_at
@@ -1689,36 +1692,112 @@ INSERT INTO production_pallets(
     to_location_id,
     status,
     created_at)
-SELECT d.id,
-       dl.id,
-       d.order_id,
-       dl.order_line_id,
-       dl.item_id,
-       BTRIM(dl.to_hu),
-       dl.qty,
-       dl.to_location_id,
+WITH active_lines AS (
+    SELECT d.id AS prd_doc_id,
+           d.order_id,
+           dl.id AS doc_line_id,
+           dl.order_line_id,
+           dl.item_id,
+           BTRIM(dl.to_hu) AS hu_code,
+           dl.qty,
+           dl.to_location_id,
+           UPPER(BTRIM(dl.to_hu)) AS hu_key
+    FROM docs d
+    INNER JOIN doc_lines dl ON dl.doc_id = d.id
+    WHERE d.id = @doc_id
+      AND d.type = @doc_type
+      AND d.status <> @closed_status
+      AND dl.qty > 0
+      AND dl.to_hu IS NOT NULL
+      AND BTRIM(dl.to_hu) <> ''
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+),
+grouped AS (
+    SELECT prd_doc_id,
+           hu_key,
+           COUNT(DISTINCT order_line_id) AS order_line_count,
+           SUM(qty) AS total_qty
+    FROM active_lines
+    GROUP BY prd_doc_id, hu_key
+),
+representative AS (
+    SELECT al.*,
+           ROW_NUMBER() OVER (PARTITION BY al.prd_doc_id, al.hu_key ORDER BY al.doc_line_id) AS rn
+    FROM active_lines al
+)
+SELECT al.prd_doc_id,
+       al.doc_line_id,
+       al.order_id,
+       CASE WHEN g.order_line_count = 1 THEN al.order_line_id ELSE NULL END,
+       al.item_id,
+       al.hu_code,
+       g.total_qty,
+       al.to_location_id,
        @status,
        @created_at
-FROM docs d
-INNER JOIN doc_lines dl ON dl.doc_id = d.id
-WHERE d.id = @doc_id
-  AND d.type = @doc_type
-  AND d.status <> @closed_status
-  AND dl.qty > 0
-  AND dl.to_hu IS NOT NULL
-  AND BTRIM(dl.to_hu) <> ''
+FROM representative al
+INNER JOIN grouped g ON g.prd_doc_id = al.prd_doc_id AND g.hu_key = al.hu_key
+WHERE rn = 1
   AND NOT EXISTS (
       SELECT 1
-      FROM doc_lines newer
-      WHERE newer.replaces_line_id = dl.id
-  )
-ON CONFLICT (prd_doc_id, doc_line_id) DO NOTHING;
+      FROM production_pallets existing
+      WHERE existing.prd_doc_id = al.prd_doc_id
+        AND UPPER(BTRIM(existing.hu_code)) = UPPER(BTRIM(al.hu_code))
+        AND existing.status <> @cancelled_status
+  );
 "))
             {
                 command.Parameters.AddWithValue("@doc_id", docId);
                 command.Parameters.AddWithValue("@doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
                 command.Parameters.AddWithValue("@closed_status", DocTypeMapper.StatusToString(DocStatus.Closed));
                 command.Parameters.AddWithValue("@status", ProductionPalletStatus.Planned);
+                command.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
+                command.Parameters.AddWithValue("@created_at", ToDbDate(createdAt));
+                command.ExecuteNonQuery();
+            }
+
+            using (var command = CreateCommand(connection, @"
+INSERT INTO production_pallet_lines(
+    production_pallet_id,
+    doc_line_id,
+    order_line_id,
+    item_id,
+    planned_qty,
+    filled_qty,
+    created_at)
+SELECT p.id,
+       dl.id,
+       dl.order_line_id,
+       dl.item_id,
+       dl.qty,
+       CASE WHEN p.status = @filled_status THEN dl.qty ELSE 0 END,
+       @created_at
+FROM production_pallets p
+INNER JOIN doc_lines dl ON dl.doc_id = p.prd_doc_id
+                       AND UPPER(BTRIM(dl.to_hu)) = UPPER(BTRIM(p.hu_code))
+WHERE p.prd_doc_id = @doc_id
+  AND p.status <> @cancelled_status
+  AND dl.qty > 0
+  AND NOT EXISTS (
+      SELECT 1
+      FROM doc_lines newer
+      WHERE newer.replaces_line_id = dl.id
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM production_pallet_lines existing
+      WHERE existing.production_pallet_id = p.id
+        AND existing.doc_line_id = dl.id
+  );
+"))
+            {
+                command.Parameters.AddWithValue("@doc_id", docId);
+                command.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
+                command.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
                 command.Parameters.AddWithValue("@created_at", ToDbDate(createdAt));
                 command.ExecuteNonQuery();
             }
@@ -1775,7 +1854,16 @@ LIMIT 1;
             command.Parameters.AddWithValue("@hu_code", huCode);
             command.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
             using var reader = command.ExecuteReader();
-            return reader.Read() ? ReadProductionPallet(reader) : null;
+            var pallet = reader.Read() ? ReadProductionPallet(reader) : null;
+            reader.Close();
+            if (pallet != null)
+            {
+                var pallets = new[] { pallet };
+                AttachProductionPalletLines(connection, pallets);
+                pallet = pallets[0];
+            }
+
+            return pallet;
         });
     }
 
@@ -1860,16 +1948,60 @@ LIMIT 1;
         });
     }
 
+    public void ClearPlannedProductionPalletPlan(long docId)
+    {
+        WithConnection(connection =>
+        {
+            using (var guard = CreateCommand(connection, @"
+SELECT 1
+FROM production_pallets
+WHERE prd_doc_id = @doc_id
+  AND status <> @cancelled_status
+  AND status <> @planned_status
+LIMIT 1;
+"))
+            {
+                guard.Parameters.AddWithValue("@doc_id", docId);
+                guard.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+                guard.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
+                if (guard.ExecuteScalar() != null)
+                {
+                    throw new InvalidOperationException("План паллет уже напечатан или наполнен. Переназначение HU запрещено.");
+                }
+            }
+
+            using (var command = CreateCommand(connection, @"
+DELETE FROM production_pallet_lines pll
+USING production_pallets pp
+WHERE pp.id = pll.production_pallet_id
+  AND pp.prd_doc_id = @doc_id;
+
+DELETE FROM production_pallets
+WHERE prd_doc_id = @doc_id;
+
+DELETE FROM doc_lines
+WHERE doc_id = @doc_id;
+"))
+            {
+                command.Parameters.AddWithValue("@doc_id", docId);
+                command.ExecuteNonQuery();
+            }
+
+            return 0;
+        });
+    }
+
     public double GetFilledProductionPalletQtyByOrderLine(long orderLineId, long? excludePalletId = null)
     {
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
 SELECT COALESCE(SUM(planned_qty), 0)
-FROM production_pallets
-WHERE order_line_id = @order_line_id
-  AND status = @filled_status
-  AND (@exclude_pallet_id IS NULL OR id <> @exclude_pallet_id);
+FROM production_pallet_lines pll
+INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
+WHERE pll.order_line_id = @order_line_id
+  AND pp.status = @filled_status
+  AND (@exclude_pallet_id IS NULL OR pp.id <> @exclude_pallet_id);
 ");
             command.Parameters.AddWithValue("@order_line_id", orderLineId);
             command.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
@@ -1893,6 +2025,10 @@ SET status = @filled_status,
 WHERE id = @id
   AND status <> @filled_status
   AND status <> @cancelled_status;
+
+UPDATE production_pallet_lines
+SET filled_qty = planned_qty
+WHERE production_pallet_id = @id;
 ");
             command.Parameters.AddWithValue("@id", palletId);
             command.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
@@ -1904,13 +2040,40 @@ WHERE id = @id
         });
     }
 
+    public void UpdateProductionPalletHu(long palletId, string huCode)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE production_pallets
+SET hu_code = @hu_code
+WHERE id = @id
+  AND status = @planned_status;
+
+UPDATE doc_lines dl
+SET to_hu = @hu_code
+FROM production_pallet_lines pll
+INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
+WHERE pll.doc_line_id = dl.id
+  AND pp.id = @id
+  AND pp.status = @planned_status;
+");
+            command.Parameters.AddWithValue("@id", palletId);
+            command.Parameters.AddWithValue("@hu_code", huCode.Trim());
+            command.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
     public int MarkProductionPalletsPrintedByOrder(long orderId, DateTime printedAt)
     {
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
 UPDATE production_pallets pp
-SET status = @printed_status
+SET status = @printed_status,
+    printed_at = @printed_at
 FROM docs d
 WHERE d.id = pp.prd_doc_id
   AND d.order_id = @order_id
@@ -1921,6 +2084,7 @@ WHERE d.id = pp.prd_doc_id
             command.Parameters.AddWithValue("@doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
             command.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
             command.Parameters.AddWithValue("@printed_status", ProductionPalletStatus.Printed);
+            command.Parameters.AddWithValue("@printed_at", ToDbDate(printedAt));
             return command.ExecuteNonQuery();
         });
     }
@@ -2724,7 +2888,7 @@ WHERE id = @id
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT id, order_id, item_id, qty_ordered, production_purpose FROM order_lines WHERE order_id = @order_id ORDER BY id");
+            using var command = CreateCommand(connection, "SELECT id, order_id, item_id, qty_ordered, production_purpose, production_pallet_group FROM order_lines WHERE order_id = @order_id ORDER BY id");
             command.Parameters.AddWithValue("@order_id", orderId);
             using var reader = command.ExecuteReader();
             var lines = new List<OrderLine>();
@@ -2742,7 +2906,7 @@ WHERE id = @id
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT ol.id, ol.order_id, ol.item_id, i.name, i.barcode, i.gtin, ol.qty_ordered, ol.production_purpose
+SELECT ol.id, ol.order_id, ol.item_id, i.name, i.barcode, i.gtin, ol.qty_ordered, ol.production_purpose, ol.production_pallet_group
 FROM order_lines ol
 INNER JOIN items i ON i.id = ol.item_id
 WHERE ol.order_id = @order_id
@@ -2762,7 +2926,8 @@ ORDER BY i.name, ol.id;
                     Barcode = reader.IsDBNull(4) ? null : reader.GetString(4),
                     Gtin = reader.IsDBNull(5) ? null : reader.GetString(5),
                     QtyOrdered = reader.GetDouble(6),
-                    ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(reader.IsDBNull(7) ? null : reader.GetString(7))
+                    ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(reader.IsDBNull(7) ? null : reader.GetString(7)),
+                    ProductionPalletGroup = reader.IsDBNull(8) ? null : reader.GetString(8)
                 });
             }
 
@@ -2818,13 +2983,14 @@ legacy_receipt_totals AS (
     GROUP BY dl.order_line_id
 ),
 filled_pallet_totals AS (
-    SELECT pp.order_line_id,
-           SUM(pp.planned_qty) AS sum_qty
-    FROM production_pallets pp
-    INNER JOIN order_line_scope ols ON ols.id = pp.order_line_id
+    SELECT pll.order_line_id,
+           SUM(pll.planned_qty) AS sum_qty
+    FROM production_pallet_lines pll
+    INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
+    INNER JOIN order_line_scope ols ON ols.id = pll.order_line_id
     WHERE pp.status = @pallet_filled_status
-      AND pp.planned_qty > 0
-    GROUP BY pp.order_line_id
+      AND pll.planned_qty > 0
+    GROUP BY pll.order_line_id
 ),
 receipt_totals AS (
     SELECT order_line_id,
@@ -3421,14 +3587,15 @@ ORDER BY ol.id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO order_lines(order_id, item_id, qty_ordered, production_purpose)
-VALUES(@order_id, @item_id, @qty_ordered, @production_purpose)
+INSERT INTO order_lines(order_id, item_id, qty_ordered, production_purpose, production_pallet_group)
+VALUES(@order_id, @item_id, @qty_ordered, @production_purpose, @production_pallet_group)
 RETURNING id;
 ");
             command.Parameters.AddWithValue("@order_id", line.OrderId);
             command.Parameters.AddWithValue("@item_id", line.ItemId);
             command.Parameters.AddWithValue("@qty_ordered", line.QtyOrdered);
             command.Parameters.AddWithValue("@production_purpose", ProductionLinePurposeMapper.ToDbValue(line.ProductionPurpose));
+            command.Parameters.AddWithValue("@production_pallet_group", string.IsNullOrWhiteSpace(line.ProductionPalletGroup) ? DBNull.Value : line.ProductionPalletGroup.Trim());
             return (long)(command.ExecuteScalar() ?? 0L);
         });
     }
@@ -3451,6 +3618,18 @@ RETURNING id;
         {
             using var command = CreateCommand(connection, "UPDATE order_lines SET production_purpose = @production_purpose WHERE id = @id");
             command.Parameters.AddWithValue("@production_purpose", ProductionLinePurposeMapper.ToDbValue(purpose));
+            command.Parameters.AddWithValue("@id", orderLineId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void UpdateOrderLineProductionPalletGroup(long orderLineId, string? groupCode)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "UPDATE order_lines SET production_pallet_group = @production_pallet_group WHERE id = @id");
+            command.Parameters.AddWithValue("@production_pallet_group", string.IsNullOrWhiteSpace(groupCode) ? DBNull.Value : groupCode.Trim());
             command.Parameters.AddWithValue("@id", orderLineId);
             command.ExecuteNonQuery();
             return 0;
@@ -4690,7 +4869,107 @@ ORDER BY p.id;
             pallets.Add(ReadProductionPallet(reader));
         }
 
+        reader.Close();
+        AttachProductionPalletLines(connection, pallets);
         return pallets;
+    }
+
+    private void AttachProductionPalletLines(NpgsqlConnection connection, IList<ProductionPallet> pallets)
+    {
+        if (pallets.Count == 0)
+        {
+            return;
+        }
+
+        using var command = CreateCommand(connection, @"
+SELECT pll.id,
+       pll.production_pallet_id,
+       pll.doc_line_id,
+       pll.order_line_id,
+       pll.item_id,
+       i.name,
+       i.brand,
+       i.base_uom,
+       pll.planned_qty,
+       pll.filled_qty,
+       pll.created_at
+FROM production_pallet_lines pll
+INNER JOIN items i ON i.id = pll.item_id
+WHERE pll.production_pallet_id = ANY(@ids)
+ORDER BY pll.production_pallet_id, pll.id;
+");
+        command.Parameters.AddWithValue("@ids", pallets.Select(pallet => pallet.Id).ToArray());
+        using var reader = command.ExecuteReader();
+        var byPallet = new Dictionary<long, List<ProductionPalletComponentLine>>();
+        while (reader.Read())
+        {
+            var line = new ProductionPalletComponentLine
+            {
+                Id = reader.GetInt64(0),
+                ProductionPalletId = reader.GetInt64(1),
+                DocLineId = reader.GetInt64(2),
+                OrderLineId = reader.IsDBNull(3) ? null : reader.GetInt64(3),
+                ItemId = reader.GetInt64(4),
+                ItemName = reader.GetString(5),
+                Brand = reader.IsDBNull(6) ? null : reader.GetString(6),
+                Uom = string.IsNullOrWhiteSpace(reader.IsDBNull(7) ? null : reader.GetString(7)) ? "шт" : reader.GetString(7),
+                PlannedQty = reader.GetDouble(8),
+                FilledQty = reader.GetDouble(9),
+                CreatedAt = FromDbDate(reader.GetString(10)) ?? DateTime.MinValue
+            };
+            if (!byPallet.TryGetValue(line.ProductionPalletId, out var lines))
+            {
+                lines = new List<ProductionPalletComponentLine>();
+                byPallet[line.ProductionPalletId] = lines;
+            }
+
+            lines.Add(line);
+        }
+
+        for (var index = 0; index < pallets.Count; index++)
+        {
+            var pallet = pallets[index];
+            if (!byPallet.TryGetValue(pallet.Id, out var lines) || lines.Count == 0)
+            {
+                lines = new List<ProductionPalletComponentLine>
+                {
+                    new()
+                    {
+                        ProductionPalletId = pallet.Id,
+                        DocLineId = pallet.DocLineId,
+                        OrderLineId = pallet.OrderLineId,
+                        ItemId = pallet.ItemId,
+                        ItemName = pallet.ItemName,
+                        PlannedQty = pallet.PlannedQty,
+                        FilledQty = string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase) ? pallet.PlannedQty : 0,
+                        CreatedAt = pallet.CreatedAt
+                    }
+                };
+            }
+
+            pallets[index] = new ProductionPallet
+            {
+                Id = pallet.Id,
+                PrdDocId = pallet.PrdDocId,
+                DocLineId = pallet.DocLineId,
+                OrderId = pallet.OrderId,
+                OrderLineId = pallet.OrderLineId,
+                ItemId = pallet.ItemId,
+                ItemName = pallet.ItemName,
+                HuCode = pallet.HuCode,
+                PlannedQty = lines.Sum(line => line.PlannedQty),
+                ToLocationId = pallet.ToLocationId,
+                ToLocationCode = pallet.ToLocationCode,
+                Status = pallet.Status,
+                PalletNo = pallet.PalletNo,
+                PalletCount = pallet.PalletCount,
+                PrintedAt = pallet.PrintedAt,
+                FilledAt = pallet.FilledAt,
+                FilledByDeviceId = pallet.FilledByDeviceId,
+                CreatedAt = pallet.CreatedAt,
+                Lines = lines
+            };
+        }
     }
 
     private static ProductionPallet ReadProductionPallet(NpgsqlDataReader reader)
@@ -4709,9 +4988,12 @@ ORDER BY p.id;
             ToLocationId = reader.IsDBNull(9) ? null : reader.GetInt64(9),
             ToLocationCode = reader.IsDBNull(10) ? null : reader.GetString(10),
             Status = reader.GetString(11),
-            FilledAt = FromDbDate(reader.IsDBNull(12) ? null : reader.GetString(12)),
-            FilledByDeviceId = reader.IsDBNull(13) ? null : reader.GetString(13),
-            CreatedAt = FromDbDate(reader.GetString(14)) ?? DateTime.MinValue
+            PalletNo = reader.IsDBNull(12) ? 0 : reader.GetInt32(12),
+            PalletCount = reader.IsDBNull(13) ? 0 : reader.GetInt32(13),
+            PrintedAt = FromDbDate(reader.IsDBNull(14) ? null : reader.GetString(14)),
+            FilledAt = FromDbDate(reader.IsDBNull(15) ? null : reader.GetString(15)),
+            FilledByDeviceId = reader.IsDBNull(16) ? null : reader.GetString(16),
+            CreatedAt = FromDbDate(reader.GetString(17)) ?? DateTime.MinValue
         };
     }
 
@@ -4766,7 +5048,8 @@ ORDER BY p.id;
             OrderId = reader.GetInt64(1),
             ItemId = reader.GetInt64(2),
             QtyOrdered = reader.GetDouble(3),
-            ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(reader.IsDBNull(4) ? null : reader.GetString(4))
+            ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(reader.IsDBNull(4) ? null : reader.GetString(4)),
+            ProductionPalletGroup = reader.FieldCount > 5 && !reader.IsDBNull(5) ? reader.GetString(5) : null
         };
     }
 
@@ -4886,6 +5169,8 @@ LIMIT 1;";
             "order_receipt_plan_lines",
             "docs",
             "doc_lines",
+            "production_pallets",
+            "production_pallet_lines",
             "ledger",
             "tsd_devices",
             "marking_order",
@@ -4907,7 +5192,11 @@ LIMIT 1;";
         EnsureColumn(connection, "orders", "marking_excel_generated_at", "TEXT NULL");
         EnsureColumn(connection, "orders", "marking_printed_at", "TEXT NULL");
         EnsureColumn(connection, "order_lines", "production_purpose", "TEXT NOT NULL DEFAULT 'INTERNAL_STOCK'");
+        EnsureColumn(connection, "order_lines", "production_pallet_group", "TEXT NULL");
         EnsureColumn(connection, "doc_lines", "production_purpose", "TEXT NOT NULL DEFAULT 'INTERNAL_STOCK'");
+        EnsureColumn(connection, "production_pallets", "pallet_no", "INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(connection, "production_pallets", "pallet_count", "INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(connection, "production_pallets", "printed_at", "TEXT NULL");
         EnsureNullable(connection, "marking_order", "order_id");
         EnsureColumn(connection, "marking_order", "source_type", "TEXT NULL");
         EnsureColumn(connection, "marking_order", "source_order_id", "BIGINT NULL");
@@ -4933,6 +5222,7 @@ LIMIT 1;";
             || !ColumnExists(connection, "orders", "marking_excel_generated_at")
             || !ColumnExists(connection, "orders", "marking_printed_at")
             || !ColumnExists(connection, "order_lines", "production_purpose")
+            || !ColumnExists(connection, "order_lines", "production_pallet_group")
             || !ColumnExists(connection, "doc_lines", "production_purpose"))
         {
             throw new InvalidOperationException("Database schema is outdated. Run deploy/scripts/migrate.sh before starting FlowStock.");

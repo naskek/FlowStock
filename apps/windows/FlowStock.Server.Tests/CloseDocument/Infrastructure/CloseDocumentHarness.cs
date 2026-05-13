@@ -166,7 +166,8 @@ internal sealed class CloseDocumentHarness
             OrderId = line.OrderId,
             ItemId = line.ItemId,
             QtyOrdered = line.QtyOrdered,
-            ProductionPurpose = line.ProductionPurpose
+            ProductionPurpose = line.ProductionPurpose,
+            ProductionPalletGroup = line.ProductionPalletGroup
         };
     }
 
@@ -250,7 +251,21 @@ internal sealed class CloseDocumentHarness
             Status = pallet.Status,
             FilledAt = pallet.FilledAt,
             FilledByDeviceId = pallet.FilledByDeviceId,
-            CreatedAt = pallet.CreatedAt
+            CreatedAt = pallet.CreatedAt,
+            Lines = pallet.Lines.Select(line => new ProductionPalletComponentLine
+            {
+                Id = line.Id,
+                ProductionPalletId = line.ProductionPalletId,
+                DocLineId = line.DocLineId,
+                OrderLineId = line.OrderLineId,
+                ItemId = line.ItemId,
+                ItemName = line.ItemName,
+                Brand = line.Brand,
+                Uom = line.Uom,
+                PlannedQty = line.PlannedQty,
+                FilledQty = line.FilledQty,
+                CreatedAt = line.CreatedAt
+            }).ToArray()
         };
     }
 
@@ -729,7 +744,8 @@ internal sealed class CloseDocumentHarness
                         ItemId = line.ItemId,
                         ItemName = _items.TryGetValue(line.ItemId, out var item) ? item.Name : string.Empty,
                         QtyOrdered = line.QtyOrdered,
-                        ProductionPurpose = line.ProductionPurpose
+                        ProductionPurpose = line.ProductionPurpose,
+                        ProductionPalletGroup = line.ProductionPalletGroup
                     })
                     .ToArray();
             });
@@ -788,7 +804,8 @@ internal sealed class CloseDocumentHarness
                     OrderId = line.OrderId,
                     ItemId = line.ItemId,
                     QtyOrdered = line.QtyOrdered,
-                    ProductionPurpose = line.ProductionPurpose
+                    ProductionPurpose = line.ProductionPurpose,
+                    ProductionPalletGroup = line.ProductionPalletGroup
                 });
 
                 return orderLineId;
@@ -813,7 +830,8 @@ internal sealed class CloseDocumentHarness
                             OrderId = current.OrderId,
                             ItemId = current.ItemId,
                             QtyOrdered = qtyOrdered,
-                            ProductionPurpose = current.ProductionPurpose
+                            ProductionPurpose = current.ProductionPurpose,
+                            ProductionPalletGroup = current.ProductionPalletGroup
                         };
                         return;
                     }
@@ -839,7 +857,35 @@ internal sealed class CloseDocumentHarness
                             OrderId = current.OrderId,
                             ItemId = current.ItemId,
                             QtyOrdered = current.QtyOrdered,
-                            ProductionPurpose = purpose
+                            ProductionPurpose = purpose,
+                            ProductionPalletGroup = current.ProductionPalletGroup
+                        };
+                        return;
+                    }
+                }
+            });
+
+        _store.Setup(store => store.UpdateOrderLineProductionPalletGroup(It.IsAny<long>(), It.IsAny<string?>()))
+            .Callback<long, string?>((orderLineId, groupCode) =>
+            {
+                foreach (var pair in _orderLinesByOrder)
+                {
+                    for (var index = 0; index < pair.Value.Count; index++)
+                    {
+                        if (pair.Value[index].Id != orderLineId)
+                        {
+                            continue;
+                        }
+
+                        var current = pair.Value[index];
+                        pair.Value[index] = new OrderLine
+                        {
+                            Id = current.Id,
+                            OrderId = current.OrderId,
+                            ItemId = current.ItemId,
+                            QtyOrdered = current.QtyOrdered,
+                            ProductionPurpose = current.ProductionPurpose,
+                            ProductionPalletGroup = groupCode
                         };
                         return;
                     }
@@ -1362,15 +1408,20 @@ internal sealed class CloseDocumentHarness
                     return Array.Empty<ProductionPallet>();
                 }
 
-                foreach (var line in GetActiveDocLines(docId).Where(line => line.Qty > 0 && !string.IsNullOrWhiteSpace(line.ToHu)))
+                foreach (var group in GetActiveDocLines(docId)
+                             .Where(line => line.Qty > 0 && !string.IsNullOrWhiteSpace(line.ToHu))
+                             .GroupBy(line => NormalizeHu(line.ToHu), StringComparer.OrdinalIgnoreCase))
                 {
-                    if (_productionPallets.Values.Any(pallet => pallet.PrdDocId == docId && pallet.DocLineId == line.Id))
+                    if (_productionPallets.Values.Any(pallet => pallet.PrdDocId == docId
+                                                                && string.Equals(NormalizeHu(pallet.HuCode), group.Key, StringComparison.OrdinalIgnoreCase)))
                     {
                         continue;
                     }
 
-                    var item = _items.TryGetValue(line.ItemId, out var foundItem) ? foundItem : null;
-                    var location = line.ToLocationId.HasValue && _locations.TryGetValue(line.ToLocationId.Value, out var foundLocation)
+                    var groupLines = group.OrderBy(line => line.Id).ToList();
+                    var firstLine = groupLines[0];
+                    var item = _items.TryGetValue(firstLine.ItemId, out var foundItem) ? foundItem : null;
+                    var location = firstLine.ToLocationId.HasValue && _locations.TryGetValue(firstLine.ToLocationId.Value, out var foundLocation)
                         ? foundLocation
                         : null;
                     var palletId = _nextProductionPalletId++;
@@ -1378,17 +1429,34 @@ internal sealed class CloseDocumentHarness
                     {
                         Id = palletId,
                         PrdDocId = docId,
-                        DocLineId = line.Id,
+                        DocLineId = firstLine.Id,
                         OrderId = doc.OrderId,
-                        OrderLineId = line.OrderLineId,
-                        ItemId = line.ItemId,
+                        OrderLineId = groupLines.Select(line => line.OrderLineId).Distinct().Count() == 1 ? firstLine.OrderLineId : null,
+                        ItemId = firstLine.ItemId,
                         ItemName = item?.Name ?? string.Empty,
-                        HuCode = line.ToHu?.Trim() ?? string.Empty,
-                        PlannedQty = line.Qty,
-                        ToLocationId = line.ToLocationId,
+                        HuCode = firstLine.ToHu?.Trim() ?? string.Empty,
+                        PlannedQty = groupLines.Sum(line => line.Qty),
+                        ToLocationId = firstLine.ToLocationId,
                         ToLocationCode = location?.Code,
                         Status = ProductionPalletStatus.Planned,
-                        CreatedAt = createdAt
+                        CreatedAt = createdAt,
+                        Lines = groupLines.Select((line, index) =>
+                        {
+                            var lineItem = _items.TryGetValue(line.ItemId, out var foundLineItem) ? foundLineItem : null;
+                            return new ProductionPalletComponentLine
+                            {
+                                Id = (palletId * 1000) + index + 1,
+                                ProductionPalletId = palletId,
+                                DocLineId = line.Id,
+                                OrderLineId = line.OrderLineId,
+                                ItemId = line.ItemId,
+                                ItemName = lineItem?.Name ?? string.Empty,
+                                Brand = lineItem?.Brand,
+                                Uom = string.IsNullOrWhiteSpace(lineItem?.BaseUom) ? "шт" : lineItem!.BaseUom,
+                                PlannedQty = line.Qty,
+                                CreatedAt = createdAt
+                            };
+                        }).ToArray()
                     };
                 }
 
@@ -1469,12 +1537,45 @@ internal sealed class CloseDocumentHarness
                 pallet.PrdDocId == docId
                 && !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)));
 
+        _store.Setup(store => store.ClearPlannedProductionPalletPlan(It.IsAny<long>()))
+            .Callback<long>(docId =>
+            {
+                var activePallets = _productionPallets.Values
+                    .Where(pallet => pallet.PrdDocId == docId
+                                     && !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                if (activePallets.Any(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)))
+                {
+                    throw new InvalidOperationException("План паллет уже напечатан или наполнен. Переназначение HU запрещено.");
+                }
+
+                foreach (var pallet in _productionPallets.Values.Where(pallet => pallet.PrdDocId == docId).ToArray())
+                {
+                    _productionPallets.Remove(pallet.Id);
+                }
+
+                if (_linesByDoc.TryGetValue(docId, out var docLines))
+                {
+                    docLines.Clear();
+                }
+            });
+
         _store.Setup(store => store.GetFilledProductionPalletQtyByOrderLine(It.IsAny<long>(), It.IsAny<long?>()))
             .Returns<long, long?>((orderLineId, excludePalletId) => _productionPallets.Values
-                .Where(pallet => pallet.OrderLineId == orderLineId
-                                 && (!excludePalletId.HasValue || pallet.Id != excludePalletId.Value)
+                .Where(pallet => (!excludePalletId.HasValue || pallet.Id != excludePalletId.Value)
                                  && string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
-                .Sum(pallet => pallet.PlannedQty));
+                .SelectMany(pallet => pallet.Lines.Count > 0
+                    ? pallet.Lines
+                    : new[]
+                    {
+                        new ProductionPalletComponentLine
+                        {
+                            OrderLineId = pallet.OrderLineId,
+                            PlannedQty = pallet.PlannedQty
+                        }
+                    })
+                .Where(line => line.OrderLineId == orderLineId)
+                .Sum(line => line.PlannedQty));
 
         _store.Setup(store => store.MarkProductionPalletFilled(It.IsAny<long>(), It.IsAny<DateTime>(), It.IsAny<string?>()))
             .Callback<long, DateTime, string?>((palletId, filledAt, deviceId) =>
@@ -1501,8 +1602,87 @@ internal sealed class CloseDocumentHarness
                     Status = ProductionPalletStatus.Filled,
                     FilledAt = filledAt,
                     FilledByDeviceId = deviceId,
-                    CreatedAt = current.CreatedAt
+                    CreatedAt = current.CreatedAt,
+                    Lines = current.Lines.Select(line => new ProductionPalletComponentLine
+                    {
+                        Id = line.Id,
+                        ProductionPalletId = line.ProductionPalletId,
+                        DocLineId = line.DocLineId,
+                        OrderLineId = line.OrderLineId,
+                        ItemId = line.ItemId,
+                        ItemName = line.ItemName,
+                        Brand = line.Brand,
+                        Uom = line.Uom,
+                        PlannedQty = line.PlannedQty,
+                        FilledQty = line.PlannedQty,
+                        CreatedAt = line.CreatedAt
+                    }).ToArray()
                 };
+            });
+
+        _store.Setup(store => store.UpdateProductionPalletHu(It.IsAny<long>(), It.IsAny<string>()))
+            .Callback<long, string>((palletId, huCode) =>
+            {
+                if (!_productionPallets.TryGetValue(palletId, out var current)
+                    || !string.Equals(current.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
+                _productionPallets[palletId] = new ProductionPallet
+                {
+                    Id = current.Id,
+                    PrdDocId = current.PrdDocId,
+                    DocLineId = current.DocLineId,
+                    OrderId = current.OrderId,
+                    OrderLineId = current.OrderLineId,
+                    ItemId = current.ItemId,
+                    ItemName = current.ItemName,
+                    HuCode = huCode,
+                    PlannedQty = current.PlannedQty,
+                    ToLocationId = current.ToLocationId,
+                    ToLocationCode = current.ToLocationCode,
+                    Status = current.Status,
+                    FilledAt = current.FilledAt,
+                    FilledByDeviceId = current.FilledByDeviceId,
+                    CreatedAt = current.CreatedAt,
+                    Lines = current.Lines
+                };
+
+                foreach (var line in current.Lines)
+                {
+                    if (!_linesByDoc.TryGetValue(current.PrdDocId, out var docLines))
+                    {
+                        continue;
+                    }
+
+                    for (var index = 0; index < docLines.Count; index++)
+                    {
+                        if (docLines[index].Id != line.DocLineId)
+                        {
+                            continue;
+                        }
+
+                        var docLine = docLines[index];
+                        docLines[index] = new DocLine
+                        {
+                            Id = docLine.Id,
+                            DocId = docLine.DocId,
+                            ReplacesLineId = docLine.ReplacesLineId,
+                            OrderLineId = docLine.OrderLineId,
+                            ProductionPurpose = docLine.ProductionPurpose,
+                            ItemId = docLine.ItemId,
+                            Qty = docLine.Qty,
+                            QtyInput = docLine.QtyInput,
+                            UomCode = docLine.UomCode,
+                            FromLocationId = docLine.FromLocationId,
+                            ToLocationId = docLine.ToLocationId,
+                            FromHu = docLine.FromHu,
+                            ToHu = huCode,
+                            PackSingleHu = docLine.PackSingleHu
+                        };
+                    }
+                }
             });
 
         _store.Setup(store => store.MarkProductionPalletsPrintedByOrder(It.IsAny<long>(), It.IsAny<DateTime>()))
@@ -1534,7 +1714,8 @@ internal sealed class CloseDocumentHarness
                         Status = ProductionPalletStatus.Printed,
                         FilledAt = current.FilledAt,
                         FilledByDeviceId = current.FilledByDeviceId,
-                        CreatedAt = current.CreatedAt
+                        CreatedAt = current.CreatedAt,
+                        Lines = current.Lines
                     };
                     updated++;
                 }

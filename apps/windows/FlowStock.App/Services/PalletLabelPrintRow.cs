@@ -17,6 +17,14 @@ public sealed class PalletLabelPrintRow
     public string StoragePlace { get; init; } = string.Empty;
     public DateTime? ProductionDate { get; init; }
     public string Comment { get; init; } = string.Empty;
+    public bool IsMixedPallet { get; init; }
+    public string Composition { get; init; } = string.Empty;
+    public string Line1ItemName { get; init; } = string.Empty;
+    public double Line1Qty { get; init; }
+    public string Line2ItemName { get; init; } = string.Empty;
+    public double Line2Qty { get; init; }
+    public string Line3ItemName { get; init; } = string.Empty;
+    public double Line3Qty { get; init; }
     public string Status { get; init; } = string.Empty;
 
     public IReadOnlyDictionary<string, string> ToNamedSubStrings()
@@ -34,7 +42,15 @@ public sealed class PalletLabelPrintRow
             ["PalletCount"] = PalletCount > 0 ? PalletCount.ToString(CultureInfo.InvariantCulture) : string.Empty,
             ["StoragePlace"] = StoragePlace,
             ["ProductionDate"] = ProductionDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty,
-            ["Comment"] = Comment
+            ["Comment"] = Comment,
+            ["IsMixedPallet"] = IsMixedPallet ? "1" : "0",
+            ["Composition"] = Composition,
+            ["Line1ItemName"] = Line1ItemName,
+            ["Line1Qty"] = Line1Qty > 0 ? Line1Qty.ToString("0.###", CultureInfo.InvariantCulture) : string.Empty,
+            ["Line2ItemName"] = Line2ItemName,
+            ["Line2Qty"] = Line2Qty > 0 ? Line2Qty.ToString("0.###", CultureInfo.InvariantCulture) : string.Empty,
+            ["Line3ItemName"] = Line3ItemName,
+            ["Line3Qty"] = Line3Qty > 0 ? Line3Qty.ToString("0.###", CultureInfo.InvariantCulture) : string.Empty
         };
     }
 }

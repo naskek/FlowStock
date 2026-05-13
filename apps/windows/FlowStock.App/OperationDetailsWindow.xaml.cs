@@ -48,6 +48,7 @@ public partial class OperationDetailsWindow : Window
     private bool _preserveEmptyDraftOnClose;
     private bool _discardEmptyDraftInProgress;
     private bool _discardEmptyDraftAttempted;
+    private bool _hasProductionPalletPlan;
     private const double QtyTolerance = 0.000001;
 
     public OperationDetailsWindow(AppServices services, long docId, string? createdDraftDocUid = null)
@@ -298,6 +299,7 @@ public partial class OperationDetailsWindow : Window
         LoadOrders();
 
         Title = $"Операция: {_doc.DocRef} ({DocTypeMapper.ToDisplayName(_doc.Type)})";
+        _hasProductionPalletPlan = _doc.Type == DocType.ProductionReceipt && _services.DataStore.HasProductionPallets(_doc.Id);
         LoadDocLines();
         UpdateDocView();
         TriggerAutoFillBoundOrderIfNeeded();
@@ -2104,6 +2106,12 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
+        if (_doc.Type == DocType.ProductionReceipt && _hasProductionPalletPlan)
+        {
+            LoadDocLines();
+            return;
+        }
+
         if (!IsDocEditable())
         {
             LoadDocLines();
@@ -2587,7 +2595,9 @@ public partial class OperationDetailsWindow : Window
             : Visibility.Collapsed;
         DocProductionPurposeColumn.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
         DocOrderLineColumn.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
-        DocPackSingleHuColumn.Visibility = doc.Type is DocType.ProductionReceipt or DocType.Inbound ? Visibility.Visible : Visibility.Collapsed;
+        DocPackSingleHuColumn.Visibility = doc.Type == DocType.ProductionReceipt && _hasProductionPalletPlan
+            ? Visibility.Collapsed
+            : doc.Type is DocType.ProductionReceipt or DocType.Inbound ? Visibility.Visible : Visibility.Collapsed;
         DocFromColumn.Visibility = showFromColumn ? Visibility.Visible : Visibility.Collapsed;
         DocToEditColumn.Visibility = doc.Type is DocType.Inbound or DocType.ProductionReceipt
             ? Visibility.Visible
@@ -2600,6 +2610,9 @@ public partial class OperationDetailsWindow : Window
             : Visibility.Collapsed;
         AutoHuButton.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
         AssignHuButton.Visibility = doc.Type is DocType.Inbound or DocType.Inventory or DocType.ProductionReceipt or DocType.Outbound
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        PalletizedPrdBadge.Visibility = doc.Type == DocType.ProductionReceipt && _hasProductionPalletPlan
             ? Visibility.Visible
             : Visibility.Collapsed;
         DocFromColumn.Header = fromLabel;
@@ -2648,10 +2661,11 @@ public partial class OperationDetailsWindow : Window
         var hasSelection = selectedLineCount > 0;
         var hasSingleSelection = selectedLineCount == 1 && _selectedDocLine != null;
         AddItemButton.IsEnabled = isEditable;
-        AutoHuButton.IsEnabled = isEditable && _doc?.Type == DocType.ProductionReceipt && _docLines.Count > 0;
+        AutoHuButton.IsEnabled = isEditable && _doc?.Type == DocType.ProductionReceipt && !_hasProductionPalletPlan && _docLines.Count > 0;
         EditLineButton.IsEnabled = isEditable && hasSingleSelection;
         AssignHuButton.IsEnabled = isEditable
                                   && SupportsLineHuAssignment()
+                                  && !(_doc?.Type == DocType.ProductionReceipt && _hasProductionPalletPlan)
                                   && (_doc?.Type == DocType.Inbound
                                       ? _docLines.Count > 0
                                       : hasSelection);

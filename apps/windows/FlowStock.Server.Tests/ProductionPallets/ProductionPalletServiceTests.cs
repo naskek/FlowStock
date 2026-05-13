@@ -46,7 +46,9 @@ public sealed class ProductionPalletServiceTests
         var service = new ProductionPalletService(harness.Store);
 
         var first = service.PlanOrder(10);
+        var firstHuCodes = harness.Store.GetProductionPalletsByDoc(first.PrdDocId).Select(pallet => pallet.HuCode).ToArray();
         var second = service.PlanOrder(10);
+        var secondHuCodes = harness.Store.GetProductionPalletsByDoc(second.PrdDocId).Select(pallet => pallet.HuCode).ToArray();
 
         Assert.Equal(first.PrdDocId, second.PrdDocId);
         Assert.Equal(first.PrdDocRef, second.PrdDocRef);
@@ -55,9 +57,8 @@ public sealed class ProductionPalletServiceTests
         Assert.Equal(1, harness.Store.GetDocsByOrder(10).Count(doc => doc.Type == DocType.ProductionReceipt));
         Assert.Equal(2, harness.Store.GetDocLines(first.PrdDocId).Count);
         Assert.Equal(2, harness.Store.GetProductionPalletsByDoc(first.PrdDocId).Count);
-        Assert.Equal(
-            harness.Store.GetProductionPalletsByDoc(first.PrdDocId).Select(pallet => pallet.HuCode).ToArray(),
-            harness.Store.GetProductionPalletsByDoc(second.PrdDocId).Select(pallet => pallet.HuCode).ToArray());
+        Assert.Equal(2, secondHuCodes.Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        Assert.NotEqual(firstHuCodes, secondHuCodes);
         Assert.Empty(harness.LedgerEntries);
     }
 
@@ -79,6 +80,105 @@ public sealed class ProductionPalletServiceTests
         var pallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(result.PrdDocId));
         Assert.Matches("^HU-[0-9]{7}$", pallet.HuCode);
         Assert.True(long.Parse(Regex.Match(pallet.HuCode, "[0-9]+").Value) > 42);
+    }
+
+    [Fact]
+    public void PlanOrder_MixedLines_CreateOneHuWithMultipleComponentLines_AndNoLedger()
+    {
+        var harness = CreateHarnessWithMixedOrderOnly();
+        var service = new ProductionPalletService(harness.Store);
+
+        var result = service.PlanOrder(10);
+
+        Assert.Equal(1, result.Summary.PlannedPalletCount);
+        Assert.Equal(500, result.Summary.PlannedQty);
+        Assert.Empty(harness.LedgerEntries);
+        var pallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(result.PrdDocId));
+        Assert.Matches("^HU-[0-9]{7}$", pallet.HuCode);
+        Assert.True(pallet.IsMixedPallet);
+        Assert.Equal(2, pallet.Lines.Count);
+        Assert.Equal(new[] { 101L, 102L }, pallet.Lines.Select(line => line.OrderLineId!.Value).Order().ToArray());
+        Assert.Single(harness.Store.GetProductionPalletsByDoc(result.PrdDocId).Select(p => p.HuCode).Distinct());
+    }
+
+    [Fact]
+    public void PlanOrder_MixedLines_IsIdempotent()
+    {
+        var harness = CreateHarnessWithMixedOrderOnly();
+        var service = new ProductionPalletService(harness.Store);
+
+        var first = service.PlanOrder(10);
+        var firstHu = harness.Store.GetProductionPalletsByDoc(first.PrdDocId).Single().HuCode;
+        var second = service.PlanOrder(10);
+        var secondHu = harness.Store.GetProductionPalletsByDoc(second.PrdDocId).Single().HuCode;
+
+        Assert.Equal(first.PrdDocId, second.PrdDocId);
+        Assert.Single(harness.Store.GetProductionPalletsByDoc(first.PrdDocId));
+        Assert.Equal(2, harness.Store.GetDocLines(first.PrdDocId).Count);
+        Assert.NotEqual(firstHu, secondHu);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void PlanOrder_AfterMixedCheckboxesCleared_RebuildsAsSeparateHus()
+    {
+        var harness = CreateHarnessWithMixedOrderOnly();
+        var service = new ProductionPalletService(harness.Store);
+        var first = service.PlanOrder(10);
+
+        harness.Store.UpdateOrderLineProductionPalletGroup(101, null);
+        harness.Store.UpdateOrderLineProductionPalletGroup(102, null);
+        var second = service.PlanOrder(10);
+
+        Assert.Equal(first.PrdDocId, second.PrdDocId);
+        var pallets = harness.Store.GetProductionPalletsByDoc(second.PrdDocId).OrderBy(pallet => pallet.Id).ToArray();
+        Assert.Equal(2, pallets.Length);
+        Assert.Equal(2, pallets.Select(pallet => pallet.HuCode).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        Assert.All(pallets, pallet => Assert.False(pallet.IsMixedPallet));
+        Assert.Equal(new[] { 101L, 102L }, pallets.SelectMany(pallet => pallet.Lines).Select(line => line.OrderLineId!.Value).Order().ToArray());
+        Assert.Equal(2, harness.Store.GetDocLines(second.PrdDocId).Count);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void GetPrintRows_MixedPallet_ReturnsOneRowWithComposition()
+    {
+        var harness = CreateHarnessWithMixedOrderOnly();
+        var service = new ProductionPalletService(harness.Store);
+        service.PlanOrder(10);
+
+        var row = Assert.Single(service.GetPrintRows(10));
+
+        Assert.True(row.IsMixedPallet);
+        Assert.Equal("Микс-паллета", row.ItemName);
+        Assert.Equal(500, row.Qty);
+        Assert.Contains("Товар", row.Composition);
+        Assert.Contains("Добавка", row.Composition);
+        Assert.Equal(2, row.Lines.Count);
+    }
+
+    [Fact]
+    public void ScanAndFill_MixedPallet_ReturnsCompositionAndWritesAllLedgerOnce()
+    {
+        var harness = CreateHarnessWithMixedOrderOnly();
+        var service = new ProductionPalletService(harness.Store);
+        var plan = service.PlanOrder(10);
+        var hu = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Single().HuCode;
+
+        var scan = service.Scan(10, plan.PrdDocId, hu);
+        var firstFill = service.Fill(hu, "TSD-01");
+        var secondFill = service.Fill(hu, "TSD-01");
+
+        Assert.True(scan.Success);
+        Assert.True(scan.IsMixedPallet);
+        Assert.Equal(2, scan.Lines.Count);
+        Assert.True(firstFill.Success);
+        Assert.False(firstFill.AlreadyFilled);
+        Assert.True(secondFill.Success);
+        Assert.True(secondFill.AlreadyFilled);
+        Assert.Equal(2, harness.LedgerEntries.Count);
+        Assert.Equal(500, harness.LedgerEntries.Sum(entry => entry.QtyDelta));
+        Assert.All(harness.LedgerEntries, entry => Assert.Equal(hu, entry.HuCode));
     }
 
     [Fact]
@@ -400,6 +500,82 @@ public sealed class ProductionPalletServiceTests
             OrderId = 10,
             ItemId = 100,
             QtyOrdered = orderQty
+        });
+        return harness;
+    }
+
+    [Fact]
+    public void FillPallet_WrongSelectedOrder_IsRejected()
+    {
+        var harness = CreateHarnessWithSinglePallet(ProductionPalletStatus.Planned);
+        var service = new ProductionPalletService(harness.Store);
+
+        var result = service.Fill("HU-000001", "TSD-01", orderId: 999, prdDocId: 20);
+
+        Assert.False(result.Success);
+        Assert.Equal("Эта паллета относится к другому заказу", result.Error);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void PlanOrder_AfterPrintedPlan_DoesNotReassignHu()
+    {
+        var harness = CreateHarnessWithOrderOnly(orderQty: 600, maxQtyPerHu: 600);
+        var service = new ProductionPalletService(harness.Store);
+        var plan = service.PlanOrder(10);
+        var huBeforePrint = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Single().HuCode;
+
+        service.MarkPrinted(10, new DateTime(2026, 5, 13, 11, 0, 0));
+        var ex = Assert.Throws<InvalidOperationException>(() => service.PlanOrder(10));
+
+        Assert.Equal("План паллет уже напечатан или наполнен. Переназначение HU запрещено.", ex.Message);
+        Assert.Equal(huBeforePrint, harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Single().HuCode);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    private static CloseDocumentHarness CreateHarnessWithMixedOrderOnly()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedLocation(new Location { Id = 1, Code = "MAIN", Name = "Основной склад" });
+        harness.SeedItem(new Item
+        {
+            Id = 100,
+            Name = "Товар",
+            Brand = "Печагин",
+            BaseUom = "шт",
+            MaxQtyPerHu = 600
+        });
+        harness.SeedItem(new Item
+        {
+            Id = 200,
+            Name = "Добавка",
+            Brand = "Печагин",
+            BaseUom = "шт",
+            MaxQtyPerHu = 400
+        });
+        harness.SeedOrder(new Order
+        {
+            Id = 10,
+            OrderRef = "056",
+            Type = OrderType.Internal,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 5, 13, 8, 0, 0)
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 101,
+            OrderId = 10,
+            ItemId = 100,
+            QtyOrdered = 300,
+            ProductionPalletGroup = "MIX-1"
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 102,
+            OrderId = 10,
+            ItemId = 200,
+            QtyOrdered = 200,
+            ProductionPalletGroup = "MIX-1"
         });
         return harness;
     }

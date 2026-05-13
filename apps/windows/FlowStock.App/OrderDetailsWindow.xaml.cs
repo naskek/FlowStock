@@ -33,6 +33,7 @@ public partial class OrderDetailsWindow : Window
     private bool _hasUnsavedChanges;
     private bool _allowCloseWithoutPrompt;
     private bool _suppressPartnerFilter;
+    private bool _productionPalletHuLocked;
 
     public OrderDetailsWindow(AppServices services)
     {
@@ -149,6 +150,7 @@ public partial class OrderDetailsWindow : Window
         CommentBox.Text = string.Empty;
         OrderStatusText.Text = OrderStatusMapper.StatusToDisplayName(OrderStatus.Draft, OrderType.Customer);
         _lines.Clear();
+        _productionPalletHuLocked = false;
         UpdateTypeUi();
         RefreshLineMetrics();
         SetEditingEnabled(true);
@@ -199,6 +201,7 @@ public partial class OrderDetailsWindow : Window
         {
             _lines.Add(line);
         }
+        _productionPalletHuLocked = HasPrintedOrFilledProductionPallets(_order.Id);
 
         SaveStatusText.Text = string.Empty;
         UpdateTypeUi();
@@ -800,6 +803,34 @@ public partial class OrderDetailsWindow : Window
         MarkDirty();
     }
 
+    private void MixedPalletCheckBox_Click(object sender, RoutedEventArgs e)
+    {
+        if (!EnsureEditable())
+        {
+            return;
+        }
+
+        if (_productionPalletHuLocked)
+        {
+            LoadOrder();
+            MessageBox.Show("Паллетные этикетки уже напечатаны или паллета наполнена. Переназначение общего HU запрещено.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (sender is not System.Windows.Controls.CheckBox checkBox || checkBox.DataContext is not OrderLineView line)
+        {
+            MessageBox.Show("Выберите строку.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        line.ProductionPalletGroup = checkBox.IsChecked == true
+            ? "MIX-1"
+            : null;
+        MarkDirty();
+        OrderLinesGrid.Items.Refresh();
+        UpdatePalletButtons();
+    }
+
     private void OrderLinesGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
         _selectedLine = OrderLinesGrid.SelectedItem as OrderLineView;
@@ -983,11 +1014,29 @@ public partial class OrderDetailsWindow : Window
         var canUse = _orderId.HasValue && _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled);
         PlanPalletsButton.IsEnabled = canUse;
         PrintPalletLabelsButton.IsEnabled = canUse;
+        OrderLinesGrid.Tag = EnsureEditable(false) && !_productionPalletHuLocked;
     }
 
     private bool HasMarkableLines()
     {
         return _lines.Any(line => !string.IsNullOrWhiteSpace(line.Gtin));
+    }
+
+    private bool HasPrintedOrFilledProductionPallets(long orderId)
+    {
+        try
+        {
+            return _services.DataStore.GetDocsByOrder(orderId)
+                .Where(doc => doc.Type == DocType.ProductionReceipt)
+                .SelectMany(doc => _services.DataStore.GetProductionPalletsByDoc(doc.Id))
+                .Any(pallet =>
+                    !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase));
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private void UpdateTypeUi()

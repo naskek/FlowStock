@@ -10,6 +10,8 @@ public sealed class OrderLineView
     public string? Gtin { get; init; }
     public double QtyOrdered { get; set; }
     public ProductionLinePurpose ProductionPurpose { get; set; } = ProductionLinePurpose.InternalStock;
+    public string? ProductionPalletGroup { get; set; }
+    public string ProductionHuCodes { get; set; } = string.Empty;
     public double QtyShipped { get; set; }
     public double QtyProduced { get; set; }
     public double QtyRemaining { get; set; }
@@ -17,5 +19,7 @@ public sealed class OrderLineView
     public double CanShipNow { get; set; }
     public double Shortage { get; set; }
     public string ProductionPurposeDisplay => ProductionLinePurposeMapper.ToDisplayName(ProductionPurpose);
+    public bool IsMixedPalletLine => !string.IsNullOrWhiteSpace(ProductionPalletGroup);
+    public string ProductionPalletGroupDisplay => string.IsNullOrWhiteSpace(ProductionPalletGroup) ? string.Empty : ProductionPalletGroup!;
 }
 

@@ -2461,12 +2461,27 @@
     var confirmHtml = "";
 
     if (preview && preview.alreadyFilled !== true) {
-      var brandHtml = preview.itemBrand
+      var isMixed = preview.isMixedPallet === true;
+      var brandHtml = !isMixed && preview.itemBrand
         ? '<div class="filling-preview-brand">' + escapeHtml(preview.itemBrand) + "</div>"
         : "";
+      var compositionHtml = "";
+      if (isMixed && Array.isArray(preview.lines) && preview.lines.length) {
+        compositionHtml =
+          '<div class="filling-preview-composition-title">Состав:</div>' +
+          '<ol class="filling-preview-composition">' +
+          preview.lines.map(function (line) {
+            return '<li>' +
+              escapeHtml(line.itemName || "-") +
+              " — " +
+              escapeHtml(formatQtyWithUnit(line.qty || 0, line.uom || "шт")) +
+              "</li>";
+          }).join("") +
+          "</ol>";
+      }
       confirmHtml =
         '<div class="filling-preview-card">' +
-        '  <div class="filling-preview-title">Наполнение паллеты</div>' +
+        '  <div class="filling-preview-title">' + (isMixed ? "Микс-паллета" : "Наполнение паллеты") + "</div>" +
         '  <div class="filling-preview-line">Заказ: <strong>' +
         escapeHtml(preview.orderRef || getFillingWorkOrderRef(work)) +
         "</strong></div>" +
@@ -2479,12 +2494,12 @@
         escapeHtml(preview.palletCount || 0) +
         "</strong></div>" +
         '  <div class="filling-preview-item">' +
-        escapeHtml(preview.itemName || "-") +
+        escapeHtml(isMixed ? "Микс-паллета" : preview.itemName || "-") +
         "</div>" +
         brandHtml +
-        '  <div class="filling-preview-qty">' +
+        (isMixed ? compositionHtml : '  <div class="filling-preview-qty">' +
         escapeHtml(formatQtyWithUnit(preview.plannedQty || 0, preview.baseUom || "шт")) +
-        "</div>" +
+        "</div>") +
         '  <div class="filling-preview-actions">' +
         '    <button class="btn primary-btn filling-ok-btn" id="fillingConfirmBtn" type="button">ОК</button>' +
         '    <button class="btn btn-outline filling-cancel-btn" id="fillingCancelBtn" type="button">Отмена</button>' +
@@ -5161,6 +5176,8 @@
           .then(function (deviceId) {
             return TsdStorage.apiFillProductionPallet({
               huCode: activePreview.huCode,
+              orderId: activePreview.orderId,
+              prdDocId: activePreview.prdDocId,
               deviceId: deviceId,
             });
           })

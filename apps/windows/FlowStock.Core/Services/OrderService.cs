@@ -311,7 +311,8 @@ public sealed class OrderService
                     OrderId = orderId,
                     ItemId = line.ItemId,
                     QtyOrdered = line.QtyOrdered,
-                    ProductionPurpose = ResolveLinePurpose(type, line.ProductionPurpose)
+                    ProductionPurpose = ResolveLinePurpose(type, line.ProductionPurpose),
+                    ProductionPalletGroup = NormalizePalletGroup(line.ProductionPalletGroup)
                 });
             }
 
@@ -449,6 +450,12 @@ public sealed class OrderService
                         store.UpdateOrderLinePurpose(primary.Id, linePurpose);
                     }
 
+                    var incomingGroup = NormalizePalletGroup(line.ProductionPalletGroup);
+                    if (!string.Equals(NormalizePalletGroup(primary.ProductionPalletGroup), incomingGroup, StringComparison.OrdinalIgnoreCase))
+                    {
+                        store.UpdateOrderLineProductionPalletGroup(primary.Id, incomingGroup);
+                    }
+
                     // Legacy cleanup: keep one line per item and purpose, remove accidental duplicates.
                     for (var i = 1; i < matched.Count; i++)
                     {
@@ -462,7 +469,8 @@ public sealed class OrderService
                     OrderId = orderId,
                     ItemId = line.ItemId,
                     QtyOrdered = line.QtyOrdered,
-                    ProductionPurpose = linePurpose
+                    ProductionPurpose = linePurpose,
+                    ProductionPalletGroup = NormalizePalletGroup(line.ProductionPalletGroup)
                 });
             }
 
@@ -693,7 +701,8 @@ public sealed class OrderService
                 ItemId = line.ItemId,
                 ItemName = line.ItemName,
                 QtyOrdered = line.QtyOrdered,
-                ProductionPurpose = purpose
+                ProductionPurpose = purpose,
+                ProductionPalletGroup = NormalizePalletGroup(line.ProductionPalletGroup)
             };
         }
 
@@ -705,6 +714,11 @@ public sealed class OrderService
         return orderType == OrderType.Internal
             ? ProductionLinePurpose.InternalStock
             : ProductionLinePurpose.CustomerOrder;
+    }
+
+    private static string? NormalizePalletGroup(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToUpperInvariant();
     }
 
     private void RebuildOrderReceiptPlan(IDataStore store, long orderId)

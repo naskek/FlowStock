@@ -123,7 +123,7 @@ public static class ProductionPalletEndpoints
 
     private static IResult HandleFill(ProductionPalletFillRequest request, ProductionPalletService service)
     {
-        var result = service.Fill(request.HuCode, request.DeviceId);
+        var result = service.Fill(request.HuCode, request.DeviceId, request.OrderId, request.PrdDocId);
         if (!result.Success)
         {
             return Results.BadRequest(new { ok = false, error = result.Error, message = result.Error });
@@ -226,6 +226,14 @@ public static class ProductionPalletEndpoints
             storage_place = row.StoragePlace,
             production_date = row.ProductionDate,
             comment = row.Comment,
+            is_mixed_pallet = row.IsMixedPallet,
+            composition = row.Composition,
+            line1_item_name = row.Lines.Count > 0 ? row.Lines[0].ItemName : string.Empty,
+            line1_qty = row.Lines.Count > 0 ? row.Lines[0].Qty : 0,
+            line2_item_name = row.Lines.Count > 1 ? row.Lines[1].ItemName : string.Empty,
+            line2_qty = row.Lines.Count > 1 ? row.Lines[1].Qty : 0,
+            line3_item_name = row.Lines.Count > 2 ? row.Lines[2].ItemName : string.Empty,
+            line3_qty = row.Lines.Count > 2 ? row.Lines[2].Qty : 0,
             status = row.Status
         };
     }
@@ -247,6 +255,15 @@ public static class ProductionPalletEndpoints
             item_brand = result.ItemBrand,
             base_uom = result.BaseUom,
             planned_qty = result.PlannedQty,
+            is_mixed_pallet = result.IsMixedPallet,
+            lines = result.Lines.Select(line => new
+            {
+                item_id = line.ItemId,
+                item_name = line.ItemName,
+                brand = line.Brand,
+                qty = line.Qty,
+                uom = line.Uom
+            }),
             pallet_index = result.PalletIndex,
             pallet_count = result.PalletCount,
             pallet_status = result.PalletStatus,
@@ -306,6 +323,15 @@ public static class ProductionPalletEndpoints
             to_location_id = pallet.ToLocationId,
             to_location_code = pallet.ToLocationCode,
             status = pallet.Status,
+            is_mixed_pallet = pallet.IsMixedPallet,
+            lines = pallet.Lines.Select(line => new
+            {
+                item_id = line.ItemId,
+                item_name = line.ItemName,
+                brand = line.Brand,
+                qty = line.PlannedQty,
+                uom = line.Uom
+            }),
             filled_at = pallet.FilledAt,
             filled_by_device_id = pallet.FilledByDeviceId,
             created_at = pallet.CreatedAt
@@ -314,6 +340,12 @@ public static class ProductionPalletEndpoints
 
     private sealed class ProductionPalletFillRequest
     {
+        [JsonPropertyName("order_id")]
+        public long? OrderId { get; init; }
+
+        [JsonPropertyName("prd_doc_id")]
+        public long? PrdDocId { get; init; }
+
         [JsonPropertyName("hu_code")]
         public string? HuCode { get; init; }
 

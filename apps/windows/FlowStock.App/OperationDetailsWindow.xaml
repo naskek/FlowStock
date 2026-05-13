@@ -103,6 +103,7 @@
             <Button x:Name="AssignHuButton" Content="Назначить HU..." Click="AssignHuButton_Click" Margin="8,0,0,0" />
             <Button x:Name="DeleteLineButton" Content="Удалить строки" Click="DocDeleteLine_Click" Margin="8,0,0,0" />
             <Button x:Name="KmCodesButton" Content="Коды КМ..." Click="KmCodes_Click" Margin="8,0,0,0" />
+            <TextBlock x:Name="PalletizedPrdBadge" Text="Паллетный выпуск по плану" Margin="12,0,0,0" VerticalAlignment="Center" FontWeight="SemiBold" Foreground="#2D6A3D" Visibility="Collapsed" />
         </StackPanel>
         <DataGrid x:Name="DocLinesGrid" Grid.Row="2" AutoGenerateColumns="False" IsReadOnly="True"
                   SelectionMode="Extended"

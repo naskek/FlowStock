@@ -913,6 +913,16 @@
       itemName: String(row.item_name || ""),
       huCode: String(row.hu_code || ""),
       plannedQty: Number(row.planned_qty) || 0,
+      isMixedPallet: row.is_mixed_pallet === true,
+      lines: Array.isArray(row.lines) ? row.lines.map(function (line) {
+        return {
+          itemId: Number(line.item_id) || 0,
+          itemName: String(line.item_name || ""),
+          brand: String(line.brand || ""),
+          qty: Number(line.qty) || 0,
+          uom: String(line.uom || "шт"),
+        };
+      }) : [],
       toLocationId: row.to_location_id != null ? Number(row.to_location_id) || null : null,
       toLocationCode: String(row.to_location_code || ""),
       status: String(row.status || ""),
@@ -949,6 +959,16 @@
       itemBrand: String(payload.item_brand || ""),
       baseUom: String(payload.base_uom || "шт"),
       plannedQty: Number(payload.planned_qty) || 0,
+      isMixedPallet: payload.is_mixed_pallet === true,
+      lines: Array.isArray(payload.lines) ? payload.lines.map(function (line) {
+        return {
+          itemId: Number(line.item_id) || 0,
+          itemName: String(line.item_name || ""),
+          brand: String(line.brand || ""),
+          qty: Number(line.qty) || 0,
+          uom: String(line.uom || "шт"),
+        };
+      }) : [],
       palletIndex: Number(payload.pallet_index) || 0,
       palletCount: Number(payload.pallet_count) || 0,
       palletStatus: String(payload.pallet_status || ""),
@@ -1052,6 +1072,8 @@
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            order_id: body.orderId || body.order_id || null,
+            prd_doc_id: body.prdDocId || body.prd_doc_id || null,
             hu_code: body.huCode || body.hu_code || "",
             device_id: body.deviceId || body.device_id || "",
           }),
