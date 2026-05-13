@@ -881,12 +881,6 @@ body {
   color: #1b3a57;
 }
 
-.filling-menu-btn {
-  background: linear-gradient(135deg, #f6b93b, #f8d36b);
-  color: #17324d;
-  font-weight: 800;
-}
-
 .filling-card {
   display: grid;
   gap: 12px;

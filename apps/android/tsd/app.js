@@ -1760,15 +1760,16 @@
         return;
       }
       setCurrentClientBlockContext(getOperationBlockKey("PRODUCTION_RECEIPT") || "tsd_operations");
-      app.innerHTML = renderLoading();
+      app.innerHTML = renderFillingLoading();
       TsdStorage.apiGetProductionFillingDocs()
         .then(function (items) {
           app.innerHTML = renderFillingList(items || []);
           wireFillingList();
           applySoftKeyboardSetting(app);
         })
-        .catch(function () {
-          app.innerHTML = renderError("Ошибка загрузки выпусков для наполнения");
+        .catch(function (error) {
+          console.error(error);
+          app.innerHTML = renderError("Не удалось загрузить выпуски для наполнения");
           applySoftKeyboardSetting(app);
         });
       return;
@@ -2108,7 +2109,7 @@
   function buildOperationsMenuButtonsHtml() {
     var buttons = [];
     if (isOperationEnabled("PRODUCTION_RECEIPT")) {
-      buttons.push('<button class="btn menu-btn filling-menu-btn" data-route="filling">Наполнение</button>');
+      buttons.push('<button class="btn menu-btn" data-route="filling">Наполнение</button>');
     }
     Object.keys(OPS).forEach(function (op) {
       if (!isOperationEnabled(op)) {
@@ -2394,7 +2395,7 @@
       .join("");
 
     if (!rows) {
-      rows = '<div class="empty-state">Нет активных выпусков с ненаполненными паллетами.</div>';
+      rows = '<div class="empty-state">Нет активных выпусков для наполнения</div>';
     }
 
     return (
@@ -2522,6 +2523,17 @@
     app.innerHTML = renderFillingScan(context, state || {});
     wireFillingScan(context, state || {});
     applySoftKeyboardSetting(app);
+  }
+
+  function renderFillingLoading() {
+    return (
+      '<section class="screen filling-screen">' +
+      '  <div class="screen-card filling-card">' +
+      '    <div class="section-title">Наполнение</div>' +
+      '    <div class="status">Загрузка...</div>' +
+      "  </div>" +
+      "</section>"
+    );
   }
 
   function renderStock() {
@@ -5529,6 +5541,7 @@
 
   function wireOperationsMenu() {
     var buttons = document.querySelectorAll("[data-op]");
+    var routes = document.querySelectorAll("[data-route]");
     buttons.forEach(function (btn) {
       btn.addEventListener("click", function () {
         var op = btn.getAttribute("data-op");
@@ -5536,6 +5549,15 @@
           return;
         }
         createDocAndOpen(op, "operations");
+      });
+    });
+    routes.forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var route = btn.getAttribute("data-route");
+        if (!route) {
+          return;
+        }
+        navigate("/" + route);
       });
     });
   }
