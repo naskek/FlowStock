@@ -130,6 +130,9 @@
     if (route.name === "operations") {
       return "tsd_operations";
     }
+    if (route.name === "filling" || route.name === "fillingDoc") {
+      return getOperationBlockKey("PRODUCTION_RECEIPT") || "tsd_operations";
+    }
     if (route.name === "docs" || route.name === "new") {
       return getOperationBlockKey(route.op) || "tsd_operations";
     }
@@ -1145,6 +1148,9 @@
     if (route.name === "operations" || route.name === "new") {
       return hasOperationsMenu();
     }
+    if (route.name === "filling" || route.name === "fillingDoc") {
+      return isOperationEnabled("PRODUCTION_RECEIPT");
+    }
     if (route.name === "docs") {
       return !!route.op && isOperationEnabled(route.op);
     }
@@ -1485,6 +1491,12 @@
     if (parts[0] === "operations") {
       return { name: "operations" };
     }
+    if (parts[0] === "filling" && parts[1]) {
+      return { name: "fillingDoc", id: decodeURIComponent(parts[1]) };
+    }
+    if (parts[0] === "filling") {
+      return { name: "filling" };
+    }
     if (parts[0] === "docs" && parts[1]) {
       return { name: "docs", op: decodeURIComponent(parts[1]) };
     }
@@ -1539,6 +1551,12 @@
     var parts = cleanPath.split("/");
     if (parts[0] === "operations") {
       return { name: "operations" };
+    }
+    if (parts[0] === "filling" && parts[1]) {
+      return { name: "fillingDoc", id: decodeURIComponent(parts[1]) };
+    }
+    if (parts[0] === "filling") {
+      return { name: "filling" };
     }
     if (parts[0] === "docs" && parts[1]) {
       return { name: "docs", op: decodeURIComponent(parts[1]) };
@@ -1736,6 +1754,44 @@
       return;
     }
 
+    if (route.name === "filling") {
+      if (!isOperationEnabled("PRODUCTION_RECEIPT")) {
+        navigate("/operations");
+        return;
+      }
+      setCurrentClientBlockContext(getOperationBlockKey("PRODUCTION_RECEIPT") || "tsd_operations");
+      app.innerHTML = renderLoading();
+      TsdStorage.apiGetProductionFillingDocs()
+        .then(function (items) {
+          app.innerHTML = renderFillingList(items || []);
+          wireFillingList();
+          applySoftKeyboardSetting(app);
+        })
+        .catch(function () {
+          app.innerHTML = renderError("Ошибка загрузки выпусков для наполнения");
+          applySoftKeyboardSetting(app);
+        });
+      return;
+    }
+
+    if (route.name === "fillingDoc") {
+      if (!isOperationEnabled("PRODUCTION_RECEIPT")) {
+        navigate("/operations");
+        return;
+      }
+      setCurrentClientBlockContext(getOperationBlockKey("PRODUCTION_RECEIPT") || "tsd_operations");
+      app.innerHTML = renderLoading();
+      loadFillingContext(route.id)
+        .then(function (context) {
+          renderFillingScanScreen(context, { message: "", messageType: "", preview: null });
+        })
+        .catch(function () {
+          app.innerHTML = renderError("Ошибка загрузки наполнения");
+          applySoftKeyboardSetting(app);
+        });
+      return;
+    }
+
     if (route.name === "doc") {
       app.innerHTML = renderLoading();
       if (isServerDocId(route.id)) {
@@ -1870,6 +1926,8 @@
     return (
       currentRoute.name === "home" ||
       currentRoute.name === "operations" ||
+      currentRoute.name === "filling" ||
+      currentRoute.name === "fillingDoc" ||
       currentRoute.name === "docs" ||
       currentRoute.name === "stock" ||
       currentRoute.name === "items" ||
@@ -2049,6 +2107,9 @@
 
   function buildOperationsMenuButtonsHtml() {
     var buttons = [];
+    if (isOperationEnabled("PRODUCTION_RECEIPT")) {
+      buttons.push('<button class="btn menu-btn filling-menu-btn" data-route="filling">Наполнение</button>');
+    }
     Object.keys(OPS).forEach(function (op) {
       if (!isOperationEnabled(op)) {
         return;
@@ -2284,6 +2345,183 @@
       "  </div>" +
       "</section>"
     );
+  }
+
+  function getFillingWorkOrderRef(item) {
+    return String((item && (item.orderRef || item.order_ref)) || "").trim() || "-";
+  }
+
+  function getFillingWorkPrdRef(item) {
+    return String((item && (item.prdDocRef || item.prd_doc_ref)) || "").trim() || "-";
+  }
+
+  function getFillingSummary(itemOrDocument) {
+    return (itemOrDocument && itemOrDocument.summary) || {};
+  }
+
+  function renderFillingList(items) {
+    var rows = (items || [])
+      .map(function (item) {
+        var summary = getFillingSummary(item);
+        return (
+          '<button class="filling-doc-card" data-filling-doc="' +
+          escapeHtml(item.prdDocId || item.prd_doc_id || "") +
+          '">' +
+          '  <div class="filling-doc-main">' +
+          '    <div class="filling-doc-title">Заказ № ' +
+          escapeHtml(getFillingWorkOrderRef(item)) +
+          "</div>" +
+          '    <div class="filling-doc-subtitle">PRD: ' +
+          escapeHtml(getFillingWorkPrdRef(item)) +
+          "</div>" +
+          '    <div class="filling-doc-meta">Статус: ' +
+          escapeHtml(item.prdStatus || item.prd_status || "В работе") +
+          "</div>" +
+          "  </div>" +
+          '  <div class="filling-doc-progress">' +
+          '    <div>Наполнено: <strong>' +
+          escapeHtml(summary.filledPalletCount || 0) +
+          " / " +
+          escapeHtml(summary.plannedPalletCount || 0) +
+          " паллет</strong></div>" +
+          '    <div>Осталось: <strong>' +
+          escapeHtml(formatQtyWithUnit(summary.remainingQty || 0, "шт")) +
+          "</strong></div>" +
+          "  </div>" +
+          "</button>"
+        );
+      })
+      .join("");
+
+    if (!rows) {
+      rows = '<div class="empty-state">Нет активных выпусков с ненаполненными паллетами.</div>';
+    }
+
+    return (
+      '<section class="screen filling-screen">' +
+      '  <div class="screen-card filling-card">' +
+      '    <div class="section-title">Наполнение</div>' +
+      '    <div class="field-hint">Выберите заказ / PRD выпуск.</div>' +
+      '    <div class="filling-doc-list">' +
+      rows +
+      "    </div>" +
+      "  </div>" +
+      "</section>"
+    );
+  }
+
+  function buildFillingContext(workItem, document, doc) {
+    var firstPallet = document && document.pallets && document.pallets.length ? document.pallets[0] : null;
+    return {
+      workItem: workItem || {
+        prdDocId: document ? document.prdDocId : Number(doc && doc.id) || 0,
+        prdDocRef: doc && doc.doc_ref ? doc.doc_ref : "",
+        prdStatus: doc && doc.status ? doc.status : "",
+        orderId: firstPallet ? firstPallet.orderId : null,
+        orderRef: doc && doc.order_ref ? doc.order_ref : "",
+        summary: document ? document.summary : null,
+      },
+      document: document,
+      doc: doc || null,
+    };
+  }
+
+  function loadFillingContext(docId) {
+    var target = Number(docId);
+    return Promise.all([
+      TsdStorage.apiGetProductionFillingDocs().catch(function () { return []; }),
+      TsdStorage.apiGetProductionPallets(target),
+      TsdStorage.apiGetDocById(target).catch(function () { return null; }),
+    ]).then(function (results) {
+      var workItems = results[0] || [];
+      var document = results[1];
+      var doc = results[2];
+      var workItem = workItems.find(function (item) {
+        return Number(item.prdDocId) === target;
+      });
+      return buildFillingContext(workItem, document, doc);
+    });
+  }
+
+  function renderFillingScan(context, state) {
+    var work = context.workItem || {};
+    var document = context.document || {};
+    var summary = getFillingSummary(document.summary ? document : work);
+    var preview = state && state.preview;
+    var message = state && state.message ? String(state.message) : "";
+    var messageType = state && state.messageType ? String(state.messageType) : "";
+    var messageHtml = message
+      ? '<div class="filling-message filling-message-' + escapeHtml(messageType || "info") + '">' + escapeHtml(message) + "</div>"
+      : "";
+    var confirmHtml = "";
+
+    if (preview && preview.alreadyFilled !== true) {
+      var brandHtml = preview.itemBrand
+        ? '<div class="filling-preview-brand">' + escapeHtml(preview.itemBrand) + "</div>"
+        : "";
+      confirmHtml =
+        '<div class="filling-preview-card">' +
+        '  <div class="filling-preview-title">Наполнение паллеты</div>' +
+        '  <div class="filling-preview-line">Заказ: <strong>' +
+        escapeHtml(preview.orderRef || getFillingWorkOrderRef(work)) +
+        "</strong></div>" +
+        '  <div class="filling-preview-line">PRD: <strong>' +
+        escapeHtml(preview.prdDocRef || getFillingWorkPrdRef(work)) +
+        "</strong></div>" +
+        '  <div class="filling-preview-line">HU: <strong>' +
+        escapeHtml(preview.huCode) +
+        "</strong></div>" +
+        '  <div class="filling-preview-line">Паллета: <strong>' +
+        escapeHtml(preview.palletIndex || 0) +
+        " / " +
+        escapeHtml(preview.palletCount || 0) +
+        "</strong></div>" +
+        '  <div class="filling-preview-item">' +
+        escapeHtml(preview.itemName || "-") +
+        "</div>" +
+        brandHtml +
+        '  <div class="filling-preview-qty">' +
+        escapeHtml(formatQtyWithUnit(preview.plannedQty || 0, preview.baseUom || "шт")) +
+        "</div>" +
+        '  <div class="filling-preview-actions">' +
+        '    <button class="btn primary-btn filling-ok-btn" id="fillingConfirmBtn" type="button">ОК</button>' +
+        '    <button class="btn btn-outline filling-cancel-btn" id="fillingCancelBtn" type="button">Отмена</button>' +
+        "  </div>" +
+        "</div>";
+    }
+
+    return (
+      '<section class="screen filling-screen">' +
+      '  <div class="screen-card filling-card">' +
+      '    <div class="section-title">Наполнение</div>' +
+      '    <div class="filling-context-card">' +
+      '      <div>Заказ: <strong>' +
+      escapeHtml(getFillingWorkOrderRef(work)) +
+      "</strong></div>" +
+      '      <div>PRD: <strong>' +
+      escapeHtml(getFillingWorkPrdRef(work)) +
+      "</strong></div>" +
+      '      <div>Наполнено паллет: <strong>' +
+      escapeHtml(summary.filledPalletCount || 0) +
+      " / " +
+      escapeHtml(summary.plannedPalletCount || 0) +
+      "</strong></div>" +
+      "    </div>" +
+      messageHtml +
+      '    <div class="filling-scan-card">' +
+      '      <label class="form-label" for="fillingScanInput">Сканируйте HU / паллетный штрихкод</label>' +
+      '      <input class="form-input filling-scan-input" id="fillingScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" placeholder="HU-000001" />' +
+      "    </div>" +
+      confirmHtml +
+      "  </div>" +
+      "</section>"
+    );
+  }
+
+  function renderFillingScanScreen(context, state) {
+    app.innerHTML = renderFillingScan(context, state || {});
+    wireFillingScan(context, state || {});
+    applySoftKeyboardSetting(app);
   }
 
   function renderStock() {
@@ -4749,6 +4987,219 @@
         setNavOrigin(listOrigin);
         navigate("/doc/" + encodeURIComponent(docId));
       });
+    });
+  }
+
+  function wireFillingList() {
+    var docs = document.querySelectorAll("[data-filling-doc]");
+    docs.forEach(function (item) {
+      item.addEventListener("click", function () {
+        var docId = item.getAttribute("data-filling-doc");
+        if (docId) {
+          navigate("/filling/" + encodeURIComponent(docId));
+        }
+      });
+    });
+
+    setLiveRefreshHandler(function () {
+      if (!currentRoute || currentRoute.name !== "filling") {
+        return;
+      }
+      TsdStorage.apiGetProductionFillingDocs()
+        .then(function (items) {
+          if (currentRoute && currentRoute.name === "filling") {
+            app.innerHTML = renderFillingList(items || []);
+            wireFillingList();
+            applySoftKeyboardSetting(app);
+          }
+        })
+        .catch(function () {
+          // Keep the current list visible while the live refresh is unavailable.
+        });
+    });
+  }
+
+  function getFillingDeviceId() {
+    return TsdStorage.getSetting("device_id").then(function (value) {
+      return String(value || "").trim();
+    });
+  }
+
+  function mapFillingError(error) {
+    var message = String(error && error.message ? error.message : error || "").trim();
+    if (!message || message === "SERVER_ERROR" || message === "Failed to fetch" || message === "AbortError") {
+      return "Нет связи с сервером. Наполнение не подтверждено.";
+    }
+    if (message === "Паллета не найдена в плане выпуска") {
+      return message;
+    }
+    if (message === "Эта паллета относится к другому заказу/выпуску") {
+      return message;
+    }
+    if (message === "Паллета отменена") {
+      return message;
+    }
+    if (message === "Выпуск превышает остаток по строке заказа") {
+      return message;
+    }
+    if (message === "Документ выпуска уже закрыт.") {
+      return "Документ выпуска уже закрыт.";
+    }
+    return message;
+  }
+
+  function wireFillingScan(context, state) {
+    var scanInput = document.getElementById("fillingScanInput");
+    var confirmBtn = document.getElementById("fillingConfirmBtn");
+    var cancelBtn = document.getElementById("fillingCancelBtn");
+    var activePreview = state && state.preview;
+    var scanBusy = false;
+    var fillBusy = false;
+
+    function focusScan() {
+      if (!scanInput) {
+        return;
+      }
+      setPreferredScanTarget(scanInput);
+      window.setTimeout(function () {
+        if (scanInput && scanInput.isConnected) {
+          scanInput.value = "";
+          scanInput.focus();
+        }
+      }, 30);
+    }
+
+    function refreshContext(nextState) {
+      return loadFillingContext(context.workItem && context.workItem.prdDocId)
+        .then(function (nextContext) {
+          renderFillingScanScreen(nextContext, nextState || {});
+        })
+        .catch(function () {
+          renderFillingScanScreen(context, nextState || {});
+        });
+    }
+
+    function handleScannedValue(value) {
+      var huCode = String(value || "").trim();
+      if (!huCode || scanBusy) {
+        focusScan();
+        return;
+      }
+
+      scanBusy = true;
+      renderFillingScanScreen(context, {
+        message: "Проверяем паллету...",
+        messageType: "info",
+        preview: null,
+      });
+
+      getFillingDeviceId()
+        .then(function (deviceId) {
+          return TsdStorage.apiScanProductionPallet({
+            orderId: context.workItem && context.workItem.orderId,
+            prdDocId: context.workItem && context.workItem.prdDocId,
+            huCode: huCode,
+            deviceId: deviceId,
+          });
+        })
+        .then(function (preview) {
+          if (preview.alreadyFilled) {
+            return refreshContext({
+              message: "Паллета уже наполнена",
+              messageType: "warn",
+              preview: null,
+            });
+          }
+          var nextContext = {
+            workItem: {
+              prdDocId: preview.prdDocId || (context.workItem && context.workItem.prdDocId),
+              prdDocRef: preview.prdDocRef || getFillingWorkPrdRef(context.workItem),
+              prdStatus: context.workItem && context.workItem.prdStatus,
+              orderId: preview.orderId || (context.workItem && context.workItem.orderId),
+              orderRef: preview.orderRef || getFillingWorkOrderRef(context.workItem),
+              summary: preview.document ? preview.document.summary : context.workItem && context.workItem.summary,
+            },
+            document: preview.document || context.document,
+            doc: context.doc,
+          };
+          renderFillingScanScreen(nextContext, {
+            message: "",
+            messageType: "",
+            preview: preview,
+          });
+        })
+        .catch(function (error) {
+          refreshContext({
+            message: mapFillingError(error),
+            messageType: "error",
+            preview: null,
+          });
+        });
+    }
+
+    if (confirmBtn && activePreview) {
+      confirmBtn.addEventListener("click", function () {
+        if (fillBusy) {
+          return;
+        }
+        fillBusy = true;
+        confirmBtn.disabled = true;
+        getFillingDeviceId()
+          .then(function (deviceId) {
+            return TsdStorage.apiFillProductionPallet({
+              huCode: activePreview.huCode,
+              deviceId: deviceId,
+            });
+          })
+          .then(function (result) {
+            var nextDocument = result && result.document ? result.document : context.document;
+            var nextContext = {
+              workItem: {
+                prdDocId: activePreview.prdDocId || (context.workItem && context.workItem.prdDocId),
+                prdDocRef: activePreview.prdDocRef || getFillingWorkPrdRef(context.workItem),
+                prdStatus: context.workItem && context.workItem.prdStatus,
+                orderId: activePreview.orderId || (context.workItem && context.workItem.orderId),
+                orderRef: activePreview.orderRef || getFillingWorkOrderRef(context.workItem),
+                summary: nextDocument ? nextDocument.summary : context.workItem && context.workItem.summary,
+              },
+              document: nextDocument,
+              doc: context.doc,
+            };
+            renderFillingScanScreen(nextContext, {
+              message: result && result.alreadyFilled ? "Паллета уже наполнена" : "Паллета наполнена",
+              messageType: result && result.alreadyFilled ? "warn" : "success",
+              preview: null,
+            });
+          })
+          .catch(function (error) {
+            renderFillingScanScreen(context, {
+              message: mapFillingError(error),
+              messageType: "error",
+              preview: activePreview,
+            });
+          });
+      });
+    }
+
+    if (cancelBtn) {
+      cancelBtn.addEventListener("click", function () {
+        renderFillingScanScreen(context, { message: "", messageType: "", preview: null });
+      });
+    }
+
+    if (scanInput) {
+      scanInput.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          handleScannedValue(scanInput.value);
+        }
+      });
+      focusScan();
+    }
+
+    setScanHandler(function (scan) {
+      var value = scan && scan.value ? scan.value : scan;
+      handleScannedValue(value);
     });
   }
 
@@ -10408,6 +10859,10 @@
               navigate("/home");
             } else if (currentRoute.name === "operations") {
               navigate("/home");
+            } else if (currentRoute.name === "filling") {
+              navigate("/operations");
+            } else if (currentRoute.name === "fillingDoc") {
+              navigate("/filling");
             } else if (currentRoute.name === "docs") {
               navigate("/operations");
             } else if (currentRoute.name === "doc" || currentRoute.name === "new") {

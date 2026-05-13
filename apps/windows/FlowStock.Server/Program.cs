@@ -40,6 +40,7 @@ builder.Services.AddSingleton<PostgresDataStore>(_ =>
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.IDataStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton<IApiDocStore>(new PostgresApiDocStore(postgresConnectionString));
 builder.Services.AddSingleton<DocumentService>();
+builder.Services.AddSingleton<ProductionPalletService>();
 builder.Services.AddSingleton<CatalogService>();
 builder.Services.AddSingleton<ImportService>();
 builder.Services.AddSingleton<ItemPackagingService>();
@@ -2726,6 +2727,7 @@ RETURNING id;
 //   -d "{\"schema_version\":1,\"event_id\":\"...\",\"ts\":\"2026-01-27T18:45:00Z\",\"device_id\":\"CT48-01\",\"op\":\"RECEIVE\",\"doc_ref\":\"IN-ONLINE-0001\",\"barcode\":\"4660011933641\",\"qty\":10,\"to_loc\":\"A1\"}"
 OpsEndpoint.Map(app);
 DocumentDraftEndpoints.Map(app);
+ProductionPalletEndpoints.Map(app);
 CloseDocumentEndpoint.Map(app);
 
 app.Run();

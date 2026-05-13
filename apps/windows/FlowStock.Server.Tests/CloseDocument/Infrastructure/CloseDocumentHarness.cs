@@ -22,6 +22,7 @@ internal sealed class CloseDocumentHarness
     private readonly Dictionary<long, IReadOnlyList<OrderReceiptLine>> _orderReceiptRemaining = new();
     private readonly Dictionary<long, IReadOnlyList<OrderReceiptLine>> _orderReceiptRemainingWithoutReservedStock = new();
     private readonly Dictionary<long, IReadOnlyList<OrderReceiptPlanLine>> _orderReceiptPlanLines = new();
+    private readonly Dictionary<long, ProductionPallet> _productionPallets = new();
     private readonly Dictionary<long, IReadOnlyDictionary<long, double>> _shippedTotalsByOrderLine = new();
     private readonly Dictionary<Guid, MarkingOrder> _markingOrders = new();
     private readonly Dictionary<Guid, MarkingCode> _markingCodes = new();
@@ -226,6 +227,28 @@ internal sealed class CloseDocumentHarness
             ToLocationCode = line.ToLocationCode,
             ToHu = line.ToHu,
             SortOrder = line.SortOrder
+        };
+    }
+
+    private static ProductionPallet CloneProductionPallet(ProductionPallet pallet)
+    {
+        return new ProductionPallet
+        {
+            Id = pallet.Id,
+            PrdDocId = pallet.PrdDocId,
+            DocLineId = pallet.DocLineId,
+            OrderId = pallet.OrderId,
+            OrderLineId = pallet.OrderLineId,
+            ItemId = pallet.ItemId,
+            ItemName = pallet.ItemName,
+            HuCode = pallet.HuCode,
+            PlannedQty = pallet.PlannedQty,
+            ToLocationId = pallet.ToLocationId,
+            ToLocationCode = pallet.ToLocationCode,
+            Status = pallet.Status,
+            FilledAt = pallet.FilledAt,
+            FilledByDeviceId = pallet.FilledByDeviceId,
+            CreatedAt = pallet.CreatedAt
         };
     }
 
@@ -434,6 +457,11 @@ internal sealed class CloseDocumentHarness
     public void SeedBalance(long itemId, long locationId, double qty, string? huCode = null)
     {
         _seedBalances[(itemId, locationId, NormalizeHu(huCode))] = qty;
+    }
+
+    public void SeedProductionPallet(ProductionPallet pallet)
+    {
+        _productionPallets[pallet.Id] = CloneProductionPallet(pallet);
     }
 
     private void ConfigureStore()
@@ -1319,6 +1347,97 @@ internal sealed class CloseDocumentHarness
                 };
             });
 
+        _store.Setup(store => store.PlanProductionPallets(It.IsAny<long>(), It.IsAny<DateTime>()))
+            .Returns<long, DateTime>((docId, createdAt) => GetProductionPallets(docId));
+
+        _store.Setup(store => store.GetProductionPalletsByDoc(It.IsAny<long>()))
+            .Returns<long>(GetProductionPallets);
+
+        _store.Setup(store => store.GetProductionPalletByHu(It.IsAny<string>()))
+            .Returns<string>(huCode =>
+            {
+                var active = _productionPallets.Values.FirstOrDefault(pallet =>
+                    string.Equals(NormalizeHu(pallet.HuCode), NormalizeHu(huCode), StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase));
+                var found = active ?? _productionPallets.Values.FirstOrDefault(pallet =>
+                    string.Equals(NormalizeHu(pallet.HuCode), NormalizeHu(huCode), StringComparison.OrdinalIgnoreCase));
+                return found == null ? null : CloneProductionPallet(found);
+            });
+
+        _store.Setup(store => store.GetActiveProductionPalletWorkItems())
+            .Returns(() => _productionPallets.Values
+                .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                .GroupBy(pallet => pallet.PrdDocId)
+                .Select(group =>
+                {
+                    var doc = _docs.TryGetValue(group.Key, out var foundDoc) ? foundDoc : null;
+                    var rows = group.ToList();
+                    var filledRows = rows
+                        .Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+                    return new ProductionPalletWorkItem
+                    {
+                        PrdDocId = group.Key,
+                        PrdDocRef = doc?.DocRef ?? string.Empty,
+                        PrdStatus = doc == null ? string.Empty : DocTypeMapper.StatusToString(doc.Status),
+                        OrderId = doc?.OrderId ?? rows.Select(pallet => pallet.OrderId).FirstOrDefault(id => id.HasValue),
+                        OrderRef = doc?.OrderRef ?? rows.Select(pallet => pallet.OrderId.HasValue && _orders.TryGetValue(pallet.OrderId.Value, out var order) ? order.OrderRef : null).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)),
+                        Summary = new ProductionPalletSummary
+                        {
+                            PlannedPalletCount = rows.Count,
+                            PlannedQty = rows.Sum(pallet => pallet.PlannedQty),
+                            FilledPalletCount = filledRows.Count,
+                            FilledQty = filledRows.Sum(pallet => pallet.PlannedQty),
+                            RemainingPalletCount = rows.Count - filledRows.Count,
+                            RemainingQty = Math.Max(0, rows.Sum(pallet => pallet.PlannedQty) - filledRows.Sum(pallet => pallet.PlannedQty))
+                        }
+                    };
+                })
+                .Where(item => item.Summary.FilledPalletCount < item.Summary.PlannedPalletCount)
+                .OrderByDescending(item => item.PrdDocId)
+                .ToArray());
+
+        _store.Setup(store => store.HasProductionPallets(It.IsAny<long>()))
+            .Returns<long>(docId => _productionPallets.Values.Any(pallet =>
+                pallet.PrdDocId == docId
+                && !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)));
+
+        _store.Setup(store => store.GetFilledProductionPalletQtyByOrderLine(It.IsAny<long>(), It.IsAny<long?>()))
+            .Returns<long, long?>((orderLineId, excludePalletId) => _productionPallets.Values
+                .Where(pallet => pallet.OrderLineId == orderLineId
+                                 && (!excludePalletId.HasValue || pallet.Id != excludePalletId.Value)
+                                 && string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+                .Sum(pallet => pallet.PlannedQty));
+
+        _store.Setup(store => store.MarkProductionPalletFilled(It.IsAny<long>(), It.IsAny<DateTime>(), It.IsAny<string?>()))
+            .Callback<long, DateTime, string?>((palletId, filledAt, deviceId) =>
+            {
+                if (!_productionPallets.TryGetValue(palletId, out var current)
+                    || string.Equals(current.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
+                _productionPallets[palletId] = new ProductionPallet
+                {
+                    Id = current.Id,
+                    PrdDocId = current.PrdDocId,
+                    DocLineId = current.DocLineId,
+                    OrderId = current.OrderId,
+                    OrderLineId = current.OrderLineId,
+                    ItemId = current.ItemId,
+                    ItemName = current.ItemName,
+                    HuCode = current.HuCode,
+                    PlannedQty = current.PlannedQty,
+                    ToLocationId = current.ToLocationId,
+                    ToLocationCode = current.ToLocationCode,
+                    Status = ProductionPalletStatus.Filled,
+                    FilledAt = filledAt,
+                    FilledByDeviceId = deviceId,
+                    CreatedAt = current.CreatedAt
+                };
+            });
+
         _store.Setup(store => store.CountKmCodesByReceiptLine(It.IsAny<long>()))
             .Returns<long>(docLineId => _kmCodeCountByReceiptLine.TryGetValue(docLineId, out var count) ? count : 0);
 
@@ -1414,6 +1533,15 @@ internal sealed class CloseDocumentHarness
             .Sum(entry => entry.QtyDelta);
 
         return seed + delta;
+    }
+
+    private IReadOnlyList<ProductionPallet> GetProductionPallets(long docId)
+    {
+        return _productionPallets.Values
+            .Where(pallet => pallet.PrdDocId == docId)
+            .OrderBy(pallet => pallet.Id)
+            .Select(CloneProductionPallet)
+            .ToArray();
     }
 
     private IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemainingLines(long orderId)

@@ -60,6 +60,7 @@
 - `order_receipt_plan_lines(id, order_id, order_line_id, item_id, qty_planned, to_location_id, to_hu, sort_order)` // серверный план выпуска по заказу
 - `docs(id, doc_ref, type, status, created_at, closed_at, partner_id, order_id, order_ref, shipping_ref, reason_code, comment, production_batch_no)`
 - `doc_lines(id, doc_id, replaces_line_id NULL, order_line_id, item_id, qty, qty_input, uom_code, from_location_id, to_location_id, from_hu, to_hu)`
+- `production_pallets(id, prd_doc_id, doc_line_id, order_id, order_line_id, item_id, hu_code, planned_qty, to_location_id, status, filled_at, filled_by_device_id, created_at)` // server-side состояние плановой паллеты PRD; `doc_lines` остаются планом, факт наполнения хранится отдельно
 - `ledger(id, ts, doc_id, item_id, location_id, qty_delta, hu_code)`
 - `km_code_batch(id, order_id, file_name, file_hash, imported_at, imported_by, total_codes, error_count)`
 - `km_code(id, batch_id, code_raw, gtin14, sku_id, product_name, status, receipt_doc_id, receipt_line_id, hu_id, location_id, ship_doc_id, ship_line_id, order_id)`
@@ -95,6 +96,13 @@
 - TSD scanner по умолчанию использует Keyboard wedge; Intent mode работает только через JS bridge (см. `TSD README`). Для `Chrome/PWA` нужно оставлять Keyboard mode и выключать Intent output.
 - Главное меню TSD сгруппировано по разделам `Операции`, `Состояние склада`, `Каталог`, `Заказы`; `История операций` больше не является отдельным top-level block.
 - В разделе `Операции` на TSD доступны: `Приемка`, `Выпуск продукции`, `Отгрузка`, `Перемещение`, `Списание`, `Инвентаризация`.
+- Серверный MVP TSD filling model для выпуска:
+  - `POST /api/docs/{docId}/production-pallets/plan` создает плановые паллеты PRD из текущих строк документа с `to_hu` и возвращает summary;
+  - `GET /api/tsd/production/filling-docs` возвращает активные PRD, где есть ненаполненные planned pallets;
+  - `GET /api/docs/{docId}/production-pallets` возвращает паллеты, summary по PRD и summary по строкам заказа;
+  - `POST /api/tsd/production/scan-pallet` валидирует выбранную паллету и возвращает read-only preview для подтверждения оператором, не меняя `ledger`;
+  - `POST /api/tsd/production/fill-pallet` принимает `hu_code` и `device_id`, находит плановую паллету, валидирует остаток строки заказа и пишет складской факт;
+  - в пользовательских текстах используется термин `паллета`, а `HU` остается техническим идентификатором.
 
 ## Неизвестные товары
 - TSD не может создавать товары напрямую.
@@ -195,6 +203,11 @@
   - после автоназначения оператор может вручную менять HU построчно.
 - `doc_lines.replaces_line_id` используется для append-only semantics черновиков (`UpdateDocLine` / `DeleteDocLine`). Историческая строка остается в БД; удаление строки создает tombstone-row с `qty = 0` и `replaces_line_id = deleted_line_id`. В document read-model и в расчетах заказов/проведения учитываются только активные строки с `qty > 0`, на которые не ссылается более новая запись.
 - Выпуск продукции: приемка готовой продукции на склад (плюс в `ledger`), HU обязателен на момент проведения по каждой строке, партия производства хранится в `production_batch_no`, документ может быть связан с заказом (`order_id/order_ref`).
+  - Для legacy `PRODUCTION_RECEIPT` без строк `production_pallets` складское движение по-прежнему пишется при закрытии документа по активным `doc_lines`.
+  - Для новой TSD-модели один `PRODUCTION_RECEIPT` является производственной сессией, а активные `doc_lines` с `to_hu` используются как плановые паллеты. `POST /api/docs/{docId}/production-pallets/plan` создает/актуализирует строки `production_pallets` идемпотентно.
+  - Открытый PRD сам по себе не меняет склад. Факт поступления создается только успешным `POST /api/tsd/production/fill-pallet`, который атомарно пишет `ledger` по конкретной паллете и переводит ее в `FILLED`.
+  - Повторное сканирование уже наполненной паллеты не пишет второй `ledger`. Наполненная паллета считается immutable с точки зрения складского эффекта; исправления оформляются отдельными документами.
+  - Закрытие PRD с `production_pallets` только финализирует документ и статус заказа: если есть ненаполненные активные паллеты, закрытие блокируется; если все наполнены, `ledger` повторно по `doc_lines` не пишется.
   - Для HU разделяются два независимых контекста:
     - `origin/internal order` (происхождение HU): определяется по закрытому `PRODUCTION_RECEIPT` внутреннего заказа через `docs.order_id` + `docs.type=PRODUCTION_RECEIPT` + `doc_lines.to_hu`.
     - `reserved/customer order` (текущий резерв HU под клиентский заказ): хранится отдельно в `order_receipt_plan_lines` и не затирает происхождение HU.

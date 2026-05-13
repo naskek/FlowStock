@@ -1,0 +1,243 @@
+using FlowStock.Core.Models;
+using FlowStock.Core.Services;
+using FlowStock.Server.Tests.CloseDocument.Infrastructure;
+
+namespace FlowStock.Server.Tests.ProductionPallets;
+
+public sealed class ProductionPalletServiceTests
+{
+    [Fact]
+    public void ScanPallet_KnownHu_ReturnsPreviewWithoutLedger()
+    {
+        var harness = CreateHarnessWithSinglePallet(ProductionPalletStatus.Planned);
+        var service = new ProductionPalletService(harness.Store);
+
+        var result = service.Scan(orderId: 10, prdDocId: 20, huCode: "HU-000001");
+
+        Assert.True(result.Success);
+        Assert.False(result.AlreadyFilled);
+        Assert.Equal("056", result.OrderRef);
+        Assert.Equal("PRD-2026-000001", result.PrdDocRef);
+        Assert.Equal("HU-000001", result.HuCode);
+        Assert.Equal("Товар", result.ItemName);
+        Assert.Equal(600, result.PlannedQty);
+        Assert.Equal(1, result.PalletIndex);
+        Assert.Equal(1, result.PalletCount);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void ScanPallet_WrongSelectedOrderOrPrd_IsRejected()
+    {
+        var harness = CreateHarnessWithSinglePallet(ProductionPalletStatus.Planned);
+        var service = new ProductionPalletService(harness.Store);
+
+        var result = service.Scan(orderId: 999, prdDocId: 20, huCode: "HU-000001");
+
+        Assert.False(result.Success);
+        Assert.Equal("Эта паллета относится к другому заказу/выпуску", result.Error);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void ScanPallet_FilledHu_ReturnsAlreadyFilledStateWithoutLedger()
+    {
+        var harness = CreateHarnessWithSinglePallet(ProductionPalletStatus.Filled);
+        var service = new ProductionPalletService(harness.Store);
+
+        var result = service.Scan(orderId: 10, prdDocId: 20, huCode: "HU-000001");
+
+        Assert.True(result.Success);
+        Assert.True(result.AlreadyFilled);
+        Assert.Equal(ProductionPalletStatus.Filled, result.PalletStatus);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void ScanPallet_UnknownHu_IsRejectedWithoutLedger()
+    {
+        var harness = CreateHarnessWithSinglePallet(ProductionPalletStatus.Planned);
+        var service = new ProductionPalletService(harness.Store);
+
+        var result = service.Scan(orderId: 10, prdDocId: 20, huCode: "HU-404");
+
+        Assert.False(result.Success);
+        Assert.Equal("Паллета не найдена в плане выпуска", result.Error);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void ScanPallet_CancelledHu_IsRejectedWithoutLedger()
+    {
+        var harness = CreateHarnessWithSinglePallet(ProductionPalletStatus.Cancelled);
+        var service = new ProductionPalletService(harness.Store);
+
+        var result = service.Scan(orderId: 10, prdDocId: 20, huCode: "HU-000001");
+
+        Assert.False(result.Success);
+        Assert.Equal("Паллета отменена", result.Error);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void FillPallet_PostsLedgerOnce_AndRepeatedScanIsIdempotent()
+    {
+        var harness = CreateHarnessWithSinglePallet(ProductionPalletStatus.Planned);
+        var service = new ProductionPalletService(harness.Store);
+
+        var first = service.Fill("HU-000001", "TSD-01");
+        var second = service.Fill("HU-000001", "TSD-01");
+
+        Assert.True(first.Success);
+        Assert.False(first.AlreadyFilled);
+        Assert.True(second.Success);
+        Assert.True(second.AlreadyFilled);
+        Assert.Single(harness.LedgerEntries);
+        Assert.Equal(600, harness.LedgerEntries.Single().QtyDelta);
+        Assert.Equal("HU-000001", harness.LedgerEntries.Single().HuCode);
+        Assert.Equal(1, first.Document?.Summary.FilledPalletCount);
+        Assert.Equal(600, first.Document?.Summary.FilledQty);
+        Assert.Equal(0, first.Document?.Summary.RemainingQty);
+    }
+
+    [Fact]
+    public void FillPallet_RejectsOverproduction()
+    {
+        var harness = new CloseDocumentHarness();
+        SeedBase(harness, orderQty: 1000, plannedQty: 300, huCode: "HU-000002");
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 1,
+            PrdDocId = 20,
+            DocLineId = 201,
+            OrderId = 10,
+            OrderLineId = 101,
+            ItemId = 100,
+            ItemName = "Товар",
+            HuCode = "HU-000001",
+            PlannedQty = 800,
+            ToLocationId = 1,
+            ToLocationCode = "MAIN",
+            Status = ProductionPalletStatus.Filled,
+            FilledAt = new DateTime(2026, 5, 13, 10, 0, 0),
+            CreatedAt = new DateTime(2026, 5, 13, 9, 0, 0)
+        });
+        harness.SeedProductionPallet(BuildPallet(id: 2, huCode: "HU-000002", plannedQty: 300));
+        var service = new ProductionPalletService(harness.Store);
+
+        var result = service.Fill("HU-000002", "TSD-01");
+
+        Assert.False(result.Success);
+        Assert.Equal("Выпуск превышает остаток по строке заказа", result.Error);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void Get_ReturnsProductionPalletSummary()
+    {
+        var harness = CreateHarnessWithSixPallets(filledCount: 2);
+        var service = new ProductionPalletService(harness.Store);
+
+        var document = service.Get(20);
+
+        Assert.Equal(6, document.Summary.PlannedPalletCount);
+        Assert.Equal(3600, document.Summary.PlannedQty);
+        Assert.Equal(2, document.Summary.FilledPalletCount);
+        Assert.Equal(1200, document.Summary.FilledQty);
+        Assert.Equal(4, document.Summary.RemainingPalletCount);
+        Assert.Equal(2400, document.Summary.RemainingQty);
+        var line = Assert.Single(document.Lines);
+        Assert.Equal(3600, line.OrderedQty);
+        Assert.Equal(6, line.PlannedPalletCount);
+        Assert.Equal(2, line.FilledPalletCount);
+    }
+
+    private static CloseDocumentHarness CreateHarnessWithSinglePallet(string status)
+    {
+        var harness = new CloseDocumentHarness();
+        SeedBase(harness, orderQty: 600, plannedQty: 600, huCode: "HU-000001");
+        harness.SeedProductionPallet(BuildPallet(id: 1, huCode: "HU-000001", plannedQty: 600, status: status));
+        return harness;
+    }
+
+    private static CloseDocumentHarness CreateHarnessWithSixPallets(int filledCount)
+    {
+        var harness = new CloseDocumentHarness();
+        SeedBase(harness, orderQty: 3600, plannedQty: 600, huCode: "HU-000001");
+        for (var i = 1; i <= 6; i++)
+        {
+            harness.SeedProductionPallet(BuildPallet(
+                id: i,
+                huCode: $"HU-00000{i}",
+                plannedQty: 600,
+                status: i <= filledCount ? ProductionPalletStatus.Filled : ProductionPalletStatus.Planned));
+        }
+
+        return harness;
+    }
+
+    private static void SeedBase(CloseDocumentHarness harness, double orderQty, double plannedQty, string huCode)
+    {
+        harness.SeedLocation(new Location { Id = 1, Code = "MAIN", Name = "Основной склад" });
+        harness.SeedItem(new Item { Id = 100, Name = "Товар" });
+        harness.SeedOrder(new Order
+        {
+            Id = 10,
+            OrderRef = "056",
+            Type = OrderType.Internal,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 5, 13, 8, 0, 0)
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 101,
+            OrderId = 10,
+            ItemId = 100,
+            QtyOrdered = orderQty
+        });
+        harness.SeedDoc(new Doc
+        {
+            Id = 20,
+            DocRef = "PRD-2026-000001",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 10,
+            CreatedAt = new DateTime(2026, 5, 13, 9, 0, 0)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 201,
+            DocId = 20,
+            OrderLineId = 101,
+            ItemId = 100,
+            Qty = plannedQty,
+            ToLocationId = 1,
+            ToHu = huCode
+        });
+    }
+
+    private static ProductionPallet BuildPallet(
+        long id,
+        string huCode,
+        double plannedQty,
+        string status = ProductionPalletStatus.Planned)
+    {
+        return new ProductionPallet
+        {
+            Id = id,
+            PrdDocId = 20,
+            DocLineId = 201,
+            OrderId = 10,
+            OrderLineId = 101,
+            ItemId = 100,
+            ItemName = "Товар",
+            HuCode = huCode,
+            PlannedQty = plannedQty,
+            ToLocationId = 1,
+            ToLocationCode = "MAIN",
+            Status = status,
+            FilledAt = status == ProductionPalletStatus.Filled ? new DateTime(2026, 5, 13, 10, 0, 0) : null,
+            CreatedAt = new DateTime(2026, 5, 13, 9, 0, 0)
+        };
+    }
+}

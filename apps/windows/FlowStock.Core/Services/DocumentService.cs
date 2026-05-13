@@ -254,6 +254,7 @@ public sealed class DocumentService
             }
 
             var lines = EnsureOrderLineLinks(store, doc, store.GetDocLines(docId));
+            var hasProductionPallets = doc.Type == DocType.ProductionReceipt && store.HasProductionPallets(docId);
             Dictionary<StockKey, double>? inventoryTotals = doc.Type == DocType.Inventory
                 ? new Dictionary<StockKey, double>()
                 : null;
@@ -289,7 +290,7 @@ public sealed class DocumentService
                 {
                     case DocType.Inbound:
                     case DocType.ProductionReceipt:
-                        if (line.ToLocationId.HasValue)
+                        if (!hasProductionPallets && line.ToLocationId.HasValue)
                         {
                             store.AddLedgerEntry(new LedgerEntry
                             {
@@ -1551,6 +1552,7 @@ public sealed class DocumentService
 
         var docHu = NormalizeHuValue(doc.ShippingRef);
         var lines = EnsureOrderLineLinks(_data, doc, _data.GetDocLines(docId));
+        var hasProductionPallets = doc.Type == DocType.ProductionReceipt && _data.HasProductionPallets(docId);
         if (lines.Count == 0)
         {
             check.Errors.Add("Добавьте хотя бы один товар в документ перед проведением.");
@@ -1736,7 +1738,7 @@ public sealed class DocumentService
                 }
             }
 
-            if (doc.Type == DocType.ProductionReceipt && line.OrderLineId.HasValue)
+            if (doc.Type == DocType.ProductionReceipt && !hasProductionPallets && line.OrderLineId.HasValue)
             {
                 if (!doc.OrderId.HasValue)
                 {
@@ -1903,7 +1905,18 @@ public sealed class DocumentService
             }
         }
 
-        if (doc.Type == DocType.ProductionReceipt && productionReceiptRequested.Count > 0)
+        if (doc.Type == DocType.ProductionReceipt && hasProductionPallets)
+        {
+            var pallets = _data.GetProductionPalletsByDoc(docId)
+                .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (pallets.Any(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
+            {
+                check.Errors.Add("Нельзя закрыть выпуск: есть ненаполненные паллеты");
+            }
+        }
+
+        if (doc.Type == DocType.ProductionReceipt && !hasProductionPallets && productionReceiptRequested.Count > 0)
         {
             foreach (var entry in productionReceiptRequested)
             {
