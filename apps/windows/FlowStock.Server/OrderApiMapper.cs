@@ -5,12 +5,19 @@ namespace FlowStock.Server;
 
 public static class OrderApiMapper
 {
-    public static object MapOrder(Order order)
+    public static object MapOrder(
+        Order order,
+        bool? hasShipmentRemaining = null,
+        bool? hasProductionPalletPlan = null,
+        bool? needsProductionPalletPlan = null,
+        ProductionPalletSummary? palletSummary = null,
+        string? palletPlanStatus = null)
     {
         var markingStatus = order.MarkingCompleted
             ? MarkingStatus.Printed
             : order.EffectiveMarkingStatus;
         var markingLabel = order.MarkingLabel;
+        palletSummary ??= new ProductionPalletSummary();
 
         return new
         {
@@ -37,7 +44,17 @@ public static class OrderApiMapper
             marking_excel_generated_at = order.MarkingExcelGeneratedAt?.ToString("O", CultureInfo.InvariantCulture),
             marking_printed_at = order.MarkingPrintedAt?.ToString("O", CultureInfo.InvariantCulture),
             created_at = order.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
-            shipped_at = order.ShippedAt?.ToString("O", CultureInfo.InvariantCulture)
+            shipped_at = order.ShippedAt?.ToString("O", CultureInfo.InvariantCulture),
+            has_shipment_remaining = hasShipmentRemaining,
+            has_production_pallet_plan = hasProductionPalletPlan,
+            needs_production_pallet_plan = needsProductionPalletPlan,
+            planned_pallet_count = palletSummary.PlannedPalletCount,
+            filled_pallet_count = palletSummary.FilledPalletCount,
+            planned_qty = palletSummary.PlannedQty,
+            filled_qty = palletSummary.FilledQty,
+            pallet_plan_status = palletPlanStatus ?? string.Empty,
+            production_pallet_plan_created = (hasProductionPalletPlan ?? false),
+            production_pallet_plan_prepared = (hasProductionPalletPlan ?? false)
         };
     }
 }

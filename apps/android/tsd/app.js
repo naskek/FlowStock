@@ -130,6 +130,9 @@
     if (route.name === "operations") {
       return "tsd_operations";
     }
+    if (route.name === "filling" || route.name === "fillingDoc") {
+      return getOperationBlockKey("PRODUCTION_RECEIPT") || "tsd_operations";
+    }
     if (route.name === "docs" || route.name === "new") {
       return getOperationBlockKey(route.op) || "tsd_operations";
     }
@@ -1145,6 +1148,9 @@
     if (route.name === "operations" || route.name === "new") {
       return hasOperationsMenu();
     }
+    if (route.name === "filling" || route.name === "fillingDoc") {
+      return isOperationEnabled("PRODUCTION_RECEIPT");
+    }
     if (route.name === "docs") {
       return !!route.op && isOperationEnabled(route.op);
     }
@@ -1340,6 +1346,31 @@
     return { label: raw, className: "order-status-pill order-status-neutral" };
   }
 
+  function getOrderStatusInfoForOrder(order) {
+    var statusCode = order && order.status;
+    var statusDisplay =
+      (order && (order.statusDisplay || order.orderStatusDisplay || order.order_status_display)) || "";
+    var normalized = normalizeOrderStatusCode(statusCode || statusDisplay);
+    if (normalized === "IN_PROGRESS") {
+      return { label: "В работе", className: "order-status-pill order-status-progress" };
+    }
+    if (normalized === "ACCEPTED") {
+      return { label: String(statusDisplay || "Готов"), className: "order-status-pill order-status-accepted" };
+    }
+    if (normalized === "SHIPPED") {
+      return { label: String(statusDisplay || "Выполнен"), className: "order-status-pill order-status-shipped" };
+    }
+    return getOrderStatusInfo(statusDisplay || statusCode);
+  }
+
+  function formatPalletCountValue(value) {
+    var count = Number(value);
+    if (isNaN(count) || count < 0) {
+      return "0";
+    }
+    return String(count);
+  }
+
   function getOrderTypeValue(order) {
     return String((order && (order.orderType || order.order_type)) || "")
       .trim()
@@ -1365,6 +1396,28 @@
       partnerLabel += " · ИНН: " + order.partnerInn;
     }
     return partnerLabel;
+  }
+
+  function getProductionPalletPlanInfo(order) {
+    if (!order || order.needsProductionPalletPlan !== true) {
+      return { label: "", className: "order-plan-neutral" };
+    }
+
+    if (order.palletPlanStatus) {
+      if (order.palletPlanStatus.indexOf("не сформирован") >= 0) {
+        return { label: order.palletPlanStatus, className: "order-plan-missing" };
+      }
+      if (order.palletPlanStatus.indexOf("Наполнение") >= 0) {
+        return { label: order.palletPlanStatus, className: "order-plan-ready" };
+      }
+      return { label: order.palletPlanStatus, className: "order-plan-ready" };
+    }
+
+    if (order.hasProductionPalletPlan === true) {
+      return { label: "План паллет: сформирован", className: "order-plan-ready" };
+    }
+
+    return { label: "План паллет: не сформирован", className: "order-plan-missing" };
   }
 
   function normalizeOrderStatusCode(status) {
@@ -1393,6 +1446,16 @@
       return "SHIPPED";
     }
     return raw;
+  }
+
+  function isOrderAvailableForShipment(order) {
+    var status = normalizeOrderStatusCode(order && order.status);
+    return (
+      !isInternalOrder(order) &&
+      (status === "ACCEPTED" || status === "IN_PROGRESS") &&
+      order &&
+      order.hasShipmentRemaining === true
+    );
   }
 
   function getDateKey(date) {
@@ -1485,6 +1548,12 @@
     if (parts[0] === "operations") {
       return { name: "operations" };
     }
+    if (parts[0] === "filling" && parts[1]) {
+      return { name: "fillingDoc", id: decodeURIComponent(parts[1]) };
+    }
+    if (parts[0] === "filling") {
+      return { name: "filling" };
+    }
     if (parts[0] === "docs" && parts[1]) {
       return { name: "docs", op: decodeURIComponent(parts[1]) };
     }
@@ -1539,6 +1608,12 @@
     var parts = cleanPath.split("/");
     if (parts[0] === "operations") {
       return { name: "operations" };
+    }
+    if (parts[0] === "filling" && parts[1]) {
+      return { name: "fillingDoc", id: decodeURIComponent(parts[1]) };
+    }
+    if (parts[0] === "filling") {
+      return { name: "filling" };
     }
     if (parts[0] === "docs" && parts[1]) {
       return { name: "docs", op: decodeURIComponent(parts[1]) };
@@ -1736,6 +1811,46 @@
       return;
     }
 
+    if (route.name === "filling") {
+      if (!isOperationEnabled("PRODUCTION_RECEIPT")) {
+        navigate("/operations");
+        return;
+      }
+      setCurrentClientBlockContext(getOperationBlockKey("PRODUCTION_RECEIPT") || "tsd_operations");
+      app.innerHTML = renderFillingLoading();
+      TsdStorage.apiGetProductionFillingOrders()
+        .then(function (items) {
+          app.innerHTML = renderFillingList(items || []);
+          wireFillingList();
+          applySoftKeyboardSetting(app);
+        })
+        .catch(function (error) {
+          console.error(error);
+          app.innerHTML = renderError("Не удалось загрузить заказы для наполнения");
+          applySoftKeyboardSetting(app);
+        });
+      return;
+    }
+
+    if (route.name === "fillingDoc") {
+      if (!isOperationEnabled("PRODUCTION_RECEIPT")) {
+        navigate("/operations");
+        return;
+      }
+      setCurrentClientBlockContext(getOperationBlockKey("PRODUCTION_RECEIPT") || "tsd_operations");
+      app.innerHTML = renderLoading();
+      loadFillingContext(route.id)
+        .then(function (context) {
+          renderFillingScanScreen(context, { message: "", messageType: "", preview: null });
+        })
+        .catch(function (error) {
+          console.error(error);
+          app.innerHTML = renderError(String(error && error.message ? error.message : "Ошибка загрузки наполнения"));
+          applySoftKeyboardSetting(app);
+        });
+      return;
+    }
+
     if (route.name === "doc") {
       app.innerHTML = renderLoading();
       if (isServerDocId(route.id)) {
@@ -1870,6 +1985,8 @@
     return (
       currentRoute.name === "home" ||
       currentRoute.name === "operations" ||
+      currentRoute.name === "filling" ||
+      currentRoute.name === "fillingDoc" ||
       currentRoute.name === "docs" ||
       currentRoute.name === "stock" ||
       currentRoute.name === "items" ||
@@ -2049,7 +2166,13 @@
 
   function buildOperationsMenuButtonsHtml() {
     var buttons = [];
+    if (isOperationEnabled("PRODUCTION_RECEIPT")) {
+      buttons.push('<button class="btn menu-btn" data-route="filling">Наполнение</button>');
+    }
     Object.keys(OPS).forEach(function (op) {
+      if (op === "PRODUCTION_RECEIPT") {
+        return;
+      }
       if (!isOperationEnabled(op)) {
         return;
       }
@@ -2172,7 +2295,7 @@
   }
 
   function renderOrderDetails(order, lines) {
-    var statusInfo = getOrderStatusInfo(order.status);
+    var statusInfo = getOrderStatusInfoForOrder(order);
     var orderNumber =
       order.number || order.orderNumber || order.order_ref || order.orderRef || "—";
     var partnerLabel = getOrderPartnerLabel(order);
@@ -2281,6 +2404,372 @@
       '    <div class="menu-grid">' +
       buildOperationsMenuButtonsHtml() +
       "    </div>" +
+      "  </div>" +
+      "</section>"
+    );
+  }
+
+  function getFillingWorkOrderRef(item) {
+    return String((item && (item.orderRef || item.order_ref)) || "").trim() || "-";
+  }
+
+  function getFillingWorkPrdRef(item) {
+    return String((item && (item.prdDocRef || item.prd_doc_ref)) || "").trim();
+  }
+
+  function getFillingSummary(itemOrDocument) {
+    return (itemOrDocument && itemOrDocument.summary) || {};
+  }
+
+  function renderFillingPalletStatusList(pallets) {
+    var items = (Array.isArray(pallets) ? pallets : [])
+      .map(function (pallet) {
+        var isFilled = String((pallet && pallet.status) || "").toUpperCase() === "FILLED";
+        var huCode = pallet && pallet.huCode ? pallet.huCode : "-";
+        var palletIndex = pallet && pallet.id ? pallet.id : null;
+        return (
+          '<li class="filling-pallet-item ' +
+          (isFilled ? "is-filled" : "is-pending") +
+          '">' +
+          '  <span class="filling-pallet-dot" aria-hidden="true"></span>' +
+          '  <span class="filling-pallet-code">' +
+          escapeHtml(huCode) +
+          "</span>" +
+          (palletIndex ? '  <span class="filling-pallet-status-text">' + escapeHtml(isFilled ? "Наполнена" : "Не наполнена") + "</span>" : "") +
+          "</li>"
+        );
+      })
+      .join("");
+
+    if (!items) {
+      return "";
+    }
+
+    return (
+      '<div class="filling-pallet-list-card">' +
+      '  <div class="filling-pallet-list-title">Паллеты к наполнению</div>' +
+      '  <ul class="filling-pallet-list">' +
+      items +
+      "  </ul>" +
+      "</div>"
+    );
+  }
+
+  function renderFillingList(items) {
+    var rows = (items || [])
+      .map(function (item) {
+        var summary = getFillingSummary(item);
+        var statusInfo = getOrderStatusInfoForOrder({
+          status: item.orderStatus,
+          statusDisplay: item.orderStatusDisplay || item.order_status_display,
+        });
+        var prdRef = getFillingWorkPrdRef(item);
+        var prdHtml = prdRef
+          ? '<div class="filling-doc-subtitle">PRD: ' + escapeHtml(prdRef) + "</div>"
+          : "";
+        var partnerHtml = item.partnerName
+          ? '<div class="filling-doc-meta">Клиент: ' + escapeHtml(item.partnerName) + "</div>"
+          : "";
+        return (
+          '<button class="filling-doc-card" data-filling-order="' +
+          escapeHtml(item.orderId || item.order_id || "") +
+          '">' +
+          '  <div class="filling-doc-main">' +
+          '    <div class="filling-doc-title">Заказ № ' +
+          escapeHtml(getFillingWorkOrderRef(item)) +
+          "</div>" +
+          '    <div class="filling-doc-subtitle">' +
+          escapeHtml(item.orderTypeDisplay || item.order_type_display || "") +
+          "</div>" +
+          prdHtml +
+          partnerHtml +
+          '    <div class="' +
+          escapeHtml(statusInfo.className) +
+          '">' +
+          escapeHtml(statusInfo.label) +
+          "</div>" +
+          "  </div>" +
+          '  <div class="filling-doc-progress">' +
+          '    <div>Запланировано паллет: <strong>' +
+          escapeHtml(formatPalletCountValue(summary.plannedPalletCount)) +
+          "</strong></div>" +
+          '    <div>Наполнено паллет: <strong>' +
+          escapeHtml(formatPalletCountValue(summary.filledPalletCount)) +
+          " / " +
+          escapeHtml(formatPalletCountValue(summary.plannedPalletCount)) +
+          "</strong></div>" +
+          '    <div>Осталось наполнить: <strong>' +
+          escapeHtml(formatQtyWithUnit(summary.remainingQty || 0, "шт")) +
+          "</strong></div>" +
+          "  </div>" +
+          "</button>"
+        );
+      })
+      .join("");
+
+    if (!rows) {
+      rows = '<div class="empty-state">Нет заказов с подготовленными паллетами для наполнения</div>';
+    }
+
+    return (
+      '<section class="screen filling-screen">' +
+      '  <div class="screen-card filling-card">' +
+      '    <div class="section-title">Наполнение</div>' +
+      '    <div class="field-hint">Выберите заказ с подготовленными паллетами.</div>' +
+      '    <div class="filling-doc-list">' +
+      rows +
+      "    </div>" +
+      "  </div>" +
+      "</section>"
+    );
+  }
+
+  function buildFillingContext(context) {
+    context = context || {};
+    return {
+      workItem: {
+        orderId: context.orderId,
+        orderRef: context.orderRef,
+        orderType: context.orderType,
+        orderTypeDisplay: context.orderTypeDisplay,
+        orderStatus: context.orderStatus,
+        orderStatusDisplay: context.orderStatusDisplay,
+        partnerName: context.partnerName,
+        prdDocId: context.prdDocId,
+        prdDocRef: context.prdDocRef,
+        summary: context.document ? context.document.summary : null,
+      },
+      document: context.document || null,
+      doc: null,
+    };
+  }
+
+  function loadFillingContext(orderId) {
+    return TsdStorage.apiGetProductionFillingContext(orderId).then(buildFillingContext);
+  }
+
+  function renderFillingScan(context, state) {
+    var work = context.workItem || {};
+    var document = context.document || {};
+    var summary = getFillingSummary(document.summary ? document : work);
+    var palletListHtml = renderFillingPalletStatusList(document.pallets);
+    var message = state && state.message ? String(state.message) : "";
+    var messageType = state && state.messageType ? String(state.messageType) : "";
+    var messageHtml = message
+      ? '<div class="filling-message filling-message-' + escapeHtml(messageType || "info") + '">' + escapeHtml(message) + "</div>"
+      : "";
+
+    return (
+      '<section class="screen filling-screen">' +
+      '  <div class="screen-card filling-card">' +
+      '    <div class="section-title">Наполнение</div>' +
+      '    <div class="filling-context-card">' +
+      '      <div>Заказ: <strong>' +
+      escapeHtml(getFillingWorkOrderRef(work)) +
+      "</strong></div>" +
+      (getFillingWorkPrdRef(work)
+        ? '      <div>PRD: <strong>' + escapeHtml(getFillingWorkPrdRef(work)) + "</strong></div>"
+        : "") +
+      '      <div>Наполнено паллет: <strong>' +
+      escapeHtml(formatPalletCountValue(summary.filledPalletCount)) +
+      " / " +
+      escapeHtml(formatPalletCountValue(summary.plannedPalletCount)) +
+      "</strong></div>" +
+      "    </div>" +
+      messageHtml +
+      '    <div class="filling-scan-card">' +
+      '      <label class="form-label" for="fillingScanInput">Сканируйте HU / паллетный штрихкод</label>' +
+      '      <input class="form-input filling-scan-input" id="fillingScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" placeholder="HU-000001" />' +
+      "    </div>" +
+      palletListHtml +
+      "  </div>" +
+      "</section>"
+    );
+  }
+
+  function buildFillingPreviewHtml(preview, work) {
+    var isMixed = preview && preview.isMixedPallet === true;
+    var brandHtml = !isMixed && preview && preview.itemBrand
+      ? '<div class="filling-preview-brand">' + escapeHtml(preview.itemBrand) + "</div>"
+      : "";
+    var compositionHtml = "";
+    if (isMixed && preview && Array.isArray(preview.lines) && preview.lines.length) {
+      compositionHtml =
+        '<div class="filling-preview-composition-title">Состав:</div>' +
+        '<ol class="filling-preview-composition">' +
+        preview.lines.map(function (line) {
+          return '<li>' +
+            escapeHtml(line.itemName || "-") +
+            " — " +
+            escapeHtml(formatQtyWithUnit(line.qty || 0, line.uom || "шт")) +
+            "</li>";
+        }).join("") +
+        "</ol>";
+    }
+
+    return (
+      '<div class="filling-preview-card filling-preview-overlay-card">' +
+      '  <div class="filling-preview-title">' + (isMixed ? "Микс-паллета" : "Наполнение паллеты") + "</div>" +
+      '  <div class="filling-preview-line">Заказ: <strong>' +
+      escapeHtml((preview && preview.orderRef) || getFillingWorkOrderRef(work)) +
+      "</strong></div>" +
+      '  <div class="filling-preview-line">HU: <strong>' +
+      escapeHtml((preview && preview.huCode) || "") +
+      "</strong></div>" +
+      '  <div class="filling-preview-line">Паллета: <strong>' +
+      escapeHtml((preview && preview.palletIndex) || 0) +
+      " / " +
+      escapeHtml((preview && preview.palletCount) || 0) +
+      "</strong></div>" +
+      '  <div class="filling-preview-item">' +
+      escapeHtml(isMixed ? "Микс-паллета" : (preview && preview.itemName) || "-") +
+      "</div>" +
+      brandHtml +
+      (isMixed ? compositionHtml : '  <div class="filling-preview-qty">' +
+      escapeHtml(formatQtyWithUnit((preview && preview.plannedQty) || 0, (preview && preview.baseUom) || "шт")) +
+      "</div>") +
+      '  <div class="filling-preview-error" id="fillingPreviewError"></div>' +
+      '  <div class="filling-preview-actions">' +
+      '    <button class="btn primary-btn filling-ok-btn" id="fillingOverlayConfirmBtn" type="button">Подтвердить</button>' +
+      '    <button class="btn btn-outline filling-cancel-btn" id="fillingOverlayCancelBtn" type="button">Отмена</button>' +
+      "  </div>" +
+      "</div>"
+    );
+  }
+
+  function openFillingPreviewOverlay(context, preview) {
+    if (!preview || preview.alreadyFilled === true) {
+      return;
+    }
+
+    var overlay = document.createElement("div");
+    overlay.className = "overlay filling-preview-overlay";
+    overlay.setAttribute("tabindex", "-1");
+    overlay.innerHTML =
+      '<div class="overlay-card filling-preview-overlay-shell">' +
+      '  <div class="overlay-header">' +
+      '    <div class="overlay-title">Подтверждение наполнения</div>' +
+      '    <button class="btn btn-ghost overlay-close" type="button">Закрыть</button>' +
+      "  </div>" +
+      '  <div class="overlay-body">' +
+      buildFillingPreviewHtml(preview, context.workItem || {}) +
+      "  </div>" +
+      "</div>";
+
+    var closeBtn = overlay.querySelector(".overlay-close");
+    var cancelBtn = overlay.querySelector("#fillingOverlayCancelBtn");
+    var confirmBtn = overlay.querySelector("#fillingOverlayConfirmBtn");
+    var errorEl = overlay.querySelector("#fillingPreviewError");
+    var busy = false;
+
+    function closeOverlay() {
+      unlockOverlayScroll();
+      if (overlay.parentNode) {
+        overlay.parentNode.removeChild(overlay);
+      }
+    }
+
+    function cancelOverlay() {
+      closeOverlay();
+      renderFillingScanScreen(context, { message: "", messageType: "", preview: null });
+    }
+
+    function setOverlayError(message) {
+      if (errorEl) {
+        errorEl.textContent = message || "";
+      }
+    }
+
+    if (confirmBtn) {
+      confirmBtn.addEventListener("click", function () {
+        if (busy) {
+          return;
+        }
+
+        busy = true;
+        confirmBtn.disabled = true;
+        if (cancelBtn) {
+          cancelBtn.disabled = true;
+        }
+        setOverlayError("");
+
+        getFillingDeviceId()
+          .then(function (deviceId) {
+            return TsdStorage.apiFillProductionPallet({
+              huCode: preview.huCode,
+              orderId: preview.orderId,
+              prdDocId: preview.prdDocId,
+              deviceId: deviceId,
+            });
+          })
+          .then(function (result) {
+            var nextDocument = result && result.document ? result.document : context.document;
+            var nextContext = {
+              workItem: {
+                prdDocId: preview.prdDocId || (context.workItem && context.workItem.prdDocId),
+                prdDocRef: preview.prdDocRef || getFillingWorkPrdRef(context.workItem),
+                prdStatus: context.workItem && context.workItem.prdStatus,
+                orderId: preview.orderId || (context.workItem && context.workItem.orderId),
+                orderRef: preview.orderRef || getFillingWorkOrderRef(context.workItem),
+                summary: nextDocument ? nextDocument.summary : context.workItem && context.workItem.summary,
+              },
+              document: nextDocument,
+              doc: context.doc,
+            };
+            var remainingPalletCount = nextDocument && nextDocument.summary
+              ? Number(nextDocument.summary.remainingPalletCount) || 0
+              : 0;
+            var successMessage = remainingPalletCount <= 0
+              ? "Наполнение завершено. Заказ закрыт."
+              : (result && result.alreadyFilled ? "Паллета уже наполнена" : "Паллета наполнена");
+            var successType = result && result.alreadyFilled ? "warn" : "success";
+            closeOverlay();
+            renderFillingScanScreen(nextContext, {
+              message: successMessage,
+              messageType: successType,
+              preview: null,
+            });
+          })
+          .catch(function (error) {
+            busy = false;
+            confirmBtn.disabled = false;
+            if (cancelBtn) {
+              cancelBtn.disabled = false;
+            }
+            setOverlayError(mapFillingError(error));
+          });
+      });
+    }
+
+    if (closeBtn) {
+      closeBtn.addEventListener("click", cancelOverlay);
+    }
+    if (cancelBtn) {
+      cancelBtn.addEventListener("click", cancelOverlay);
+    }
+    overlay.addEventListener("click", function (event) {
+      if (event.target === overlay) {
+        cancelOverlay();
+      }
+    });
+
+    document.body.appendChild(overlay);
+    lockOverlayScroll();
+    focusOverlay(overlay);
+  }
+
+  function renderFillingScanScreen(context, state) {
+    app.innerHTML = renderFillingScan(context, state || {});
+    wireFillingScan(context, state || {});
+    applySoftKeyboardSetting(app);
+  }
+
+  function renderFillingLoading() {
+    return (
+      '<section class="screen filling-screen">' +
+      '  <div class="screen-card filling-card">' +
+      '    <div class="section-title">Наполнение</div>' +
+      '    <div class="status">Загрузка...</div>' +
       "  </div>" +
       "</section>"
     );
@@ -4752,6 +5241,173 @@
     });
   }
 
+  function wireFillingList() {
+    var orders = document.querySelectorAll("[data-filling-order]");
+    orders.forEach(function (item) {
+      item.addEventListener("click", function () {
+        var orderId = item.getAttribute("data-filling-order");
+        if (orderId) {
+          navigate("/filling/" + encodeURIComponent(orderId));
+        }
+      });
+    });
+
+    setLiveRefreshHandler(function () {
+      if (!currentRoute || currentRoute.name !== "filling") {
+        return;
+      }
+      TsdStorage.apiGetProductionFillingOrders()
+        .then(function (items) {
+          if (currentRoute && currentRoute.name === "filling") {
+            app.innerHTML = renderFillingList(items || []);
+            wireFillingList();
+            applySoftKeyboardSetting(app);
+          }
+        })
+        .catch(function () {
+          // Keep the current list visible while the live refresh is unavailable.
+        });
+    });
+  }
+
+  function getFillingDeviceId() {
+    return TsdStorage.getSetting("device_id").then(function (value) {
+      return String(value || "").trim();
+    });
+  }
+
+  function mapFillingError(error) {
+    var message = String(error && error.message ? error.message : error || "").trim();
+    if (!message || message === "Failed to fetch" || message === "AbortError") {
+      return "Нет связи с сервером. Наполнение не подтверждено.";
+    }
+    if (message === "SERVER_ERROR" || message === "INVALID_RESPONSE") {
+      return "Сервер вернул ошибку при наполнении. Проверьте лог FlowStock Server.";
+    }
+    if (message === "Паллета не найдена в плане выпуска") {
+      return message;
+    }
+    if (message === "Эта паллета относится к другому заказу") {
+      return message;
+    }
+    if (message === "Паллета отменена") {
+      return message;
+    }
+    if (message === "Выпуск превышает остаток по строке заказа") {
+      return message;
+    }
+    if (message === "Документ выпуска уже закрыт.") {
+      return "Документ выпуска уже закрыт.";
+    }
+    return message;
+  }
+
+  function wireFillingScan(context, state) {
+    var scanInput = document.getElementById("fillingScanInput");
+    var activePreview = state && state.preview;
+    var scanBusy = false;
+
+    function focusScan() {
+      if (!scanInput) {
+        return;
+      }
+      setPreferredScanTarget(scanInput);
+      window.setTimeout(function () {
+        if (scanInput && scanInput.isConnected) {
+          scanInput.value = "";
+          scanInput.focus();
+        }
+      }, 30);
+    }
+
+    function refreshContext(nextState) {
+      return loadFillingContext(context.workItem && context.workItem.orderId)
+        .then(function (nextContext) {
+          renderFillingScanScreen(nextContext, nextState || {});
+        })
+        .catch(function () {
+          renderFillingScanScreen(context, nextState || {});
+        });
+    }
+
+    function handleScannedValue(value) {
+      var huCode = String(value || "").trim();
+      if (!huCode || scanBusy) {
+        focusScan();
+        return;
+      }
+
+      scanBusy = true;
+      renderFillingScanScreen(context, {
+        message: "Проверяем паллету...",
+        messageType: "info",
+        preview: null,
+      });
+
+      getFillingDeviceId()
+        .then(function (deviceId) {
+          return TsdStorage.apiScanProductionPallet({
+            orderId: context.workItem && context.workItem.orderId,
+            prdDocId: context.workItem && context.workItem.prdDocId,
+            huCode: huCode,
+            deviceId: deviceId,
+          });
+        })
+        .then(function (preview) {
+          if (preview.alreadyFilled) {
+            return refreshContext({
+              message: "Паллета уже наполнена",
+              messageType: "warn",
+              preview: null,
+            });
+          }
+          var nextContext = {
+            workItem: {
+              prdDocId: preview.prdDocId || (context.workItem && context.workItem.prdDocId),
+              prdDocRef: preview.prdDocRef || getFillingWorkPrdRef(context.workItem),
+              prdStatus: context.workItem && context.workItem.prdStatus,
+              orderId: preview.orderId || (context.workItem && context.workItem.orderId),
+              orderRef: preview.orderRef || getFillingWorkOrderRef(context.workItem),
+              summary: preview.document ? preview.document.summary : context.workItem && context.workItem.summary,
+            },
+            document: preview.document || context.document,
+            doc: context.doc,
+          };
+          renderFillingScanScreen(nextContext, {
+            message: "",
+            messageType: "",
+            preview: preview,
+          });
+        })
+        .catch(function (error) {
+          refreshContext({
+            message: mapFillingError(error),
+            messageType: "error",
+            preview: null,
+          });
+        });
+    }
+
+    if (scanInput) {
+      scanInput.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          handleScannedValue(scanInput.value);
+        }
+      });
+      focusScan();
+    }
+
+    setScanHandler(function (scan) {
+      var value = scan && scan.value ? scan.value : scan;
+      handleScannedValue(value);
+    });
+
+    if (activePreview) {
+      openFillingPreviewOverlay(context, activePreview);
+    }
+  }
+
   function wireOrders() {
     var searchInput = document.getElementById("ordersSearchInput");
     var listEl = document.getElementById("ordersList");
@@ -4769,41 +5425,23 @@
     }
 
     function classifyOrderStatus(order) {
-      var status = order && order.status;
-      var raw = String(status || "").trim().toLowerCase();
+      var status = normalizeOrderStatusCode(
+        (order && (order.status || order.statusDisplay || order.orderStatusDisplay || order.order_status_display)) || ""
+      );
       var internalOrder = isInternalOrder(order);
-      if (!raw) {
+      if (!status) {
         return "in_work";
       }
-      if (
-        raw.indexOf("черновик") !== -1 ||
-        raw.indexOf("draft") !== -1 ||
-        raw.indexOf("процесс") !== -1 ||
-        raw.indexOf("в работе") !== -1 ||
-        raw.indexOf("processing") !== -1 ||
-        raw.indexOf("picking") !== -1
-      ) {
+      if (status === "IN_PROGRESS") {
         return "in_work";
       }
-      if (
-        raw.indexOf("готов") !== -1 ||
-        raw.indexOf("ready") !== -1 ||
-        raw.indexOf("accepted") !== -1 ||
-        raw.indexOf("new") !== -1 ||
-        raw.indexOf("принят") !== -1
-      ) {
+      if (status === "ACCEPTED") {
         if (internalOrder) {
           return "in_work";
         }
         return "ready";
       }
-      if (
-        raw.indexOf("выполн") !== -1 ||
-        raw.indexOf("отгруж") !== -1 ||
-        raw.indexOf("shipped") !== -1 ||
-        raw.indexOf("done") !== -1 ||
-        raw.indexOf("closed") !== -1
-      ) {
+      if (status === "SHIPPED") {
         return "done";
       }
       return "in_work";
@@ -4854,7 +5492,8 @@
       }
       var rows = (orders || [])
         .map(function (order) {
-          var statusInfo = getOrderStatusInfo(order.status);
+          var statusInfo = getOrderStatusInfoForOrder(order);
+          var planInfo = getProductionPalletPlanInfo(order);
           var orderNumber =
             order.number || order.orderNumber || order.order_ref || order.orderRef || "—";
           var partnerLabel = getOrderPartnerLabel(order);
@@ -4862,7 +5501,9 @@
           var shippedDate = formatDate(order.shippedAt || order.shipped_at);
           var createdAt = formatDateTime(order.createdAt || order.created_at);
           return (
-            '<button class="doc-item order-item" data-order="' +
+            '<button class="doc-item order-item' +
+            (planInfo.className === "order-plan-missing" ? " order-item-needs-plan" : "") +
+            '" data-order="' +
             escapeHtml(order.orderId) +
             '">' +
             '  <div class="doc-main">' +
@@ -4882,6 +5523,9 @@
             '      <div class="order-meta-row">Создан: ' +
             escapeHtml(createdAt) +
             "</div>" +
+            (planInfo.label
+              ? '      <div class="order-meta-row ' + escapeHtml(planInfo.className) + '">' + escapeHtml(planInfo.label) + "</div>"
+              : "") +
             "    </div>" +
             "  </div>" +
             '  <div class="' +
@@ -5078,6 +5722,7 @@
 
   function wireOperationsMenu() {
     var buttons = document.querySelectorAll("[data-op]");
+    var routes = document.querySelectorAll("[data-route]");
     buttons.forEach(function (btn) {
       btn.addEventListener("click", function () {
         var op = btn.getAttribute("data-op");
@@ -5085,6 +5730,15 @@
           return;
         }
         createDocAndOpen(op, "operations");
+      });
+    });
+    routes.forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var route = btn.getAttribute("data-route");
+        if (!route) {
+          return;
+        }
+        navigate("/" + route);
       });
     });
   }
@@ -5438,6 +6092,7 @@
     var pickerOptions = options || {};
     var allowInternal = pickerOptions.allowInternal !== false;
     var onlyInProgress = pickerOptions.onlyInProgress === true;
+    var onlyShipmentAvailable = pickerOptions.onlyShipmentAvailable === true;
     var overlay = buildOverlay("Заказы");
     var input = overlay.querySelector(".overlay-search");
     var recentsEl = overlay.querySelector(".overlay-recents");
@@ -5467,6 +6122,9 @@
       TsdStorage.listOrders({ q: query })
         .then(function (orders) {
           var filteredOrders = (orders || []).filter(function (order) {
+            if (onlyShipmentAvailable) {
+              return isOrderAvailableForShipment(order);
+            }
             if (onlyInProgress && normalizeOrderStatusCode(order && order.status) !== "IN_PROGRESS") {
               return false;
             }
@@ -8197,7 +8855,7 @@
       function applyLines() {
         setDocStatus("Загрузка строк заказа...");
         var lineData = buildLineData(doc.op, doc.header);
-        TsdStorage.apiGetOrderLines(orderId)
+        TsdStorage.apiGetOrderShipmentRemaining(orderId)
           .then(function (lines) {
             var nextLines = (lines || [])
               .filter(function (line) {
@@ -8405,6 +9063,7 @@
         openOrderPicker(applyOrderSelection, {
           allowInternal: doc.op !== "OUTBOUND",
           onlyInProgress: doc.op === "PRODUCTION_RECEIPT",
+          onlyShipmentAvailable: doc.op === "OUTBOUND",
         });
       });
     }
@@ -10408,6 +11067,10 @@
               navigate("/home");
             } else if (currentRoute.name === "operations") {
               navigate("/home");
+            } else if (currentRoute.name === "filling") {
+              navigate("/operations");
+            } else if (currentRoute.name === "fillingDoc") {
+              navigate("/filling");
             } else if (currentRoute.name === "docs") {
               navigate("/operations");
             } else if (currentRoute.name === "doc" || currentRoute.name === "new") {

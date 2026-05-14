@@ -43,7 +43,8 @@ public sealed class WpfUpdateOrderService
                 {
                     ItemId = line.ItemId,
                     QtyOrdered = line.QtyOrdered,
-                    ProductionPurpose = ProductionLinePurposeMapper.ToDbValue(line.ProductionPurpose)
+                    ProductionPurpose = ProductionLinePurposeMapper.ToDbValue(line.ProductionPurpose),
+                    ProductionPalletGroup = NormalizeValue(line.ProductionPalletGroup)?.ToUpperInvariant()
                 })
                 .ToList()
         };

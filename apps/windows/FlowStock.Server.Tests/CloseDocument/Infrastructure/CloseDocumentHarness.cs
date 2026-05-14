@@ -22,6 +22,7 @@ internal sealed class CloseDocumentHarness
     private readonly Dictionary<long, IReadOnlyList<OrderReceiptLine>> _orderReceiptRemaining = new();
     private readonly Dictionary<long, IReadOnlyList<OrderReceiptLine>> _orderReceiptRemainingWithoutReservedStock = new();
     private readonly Dictionary<long, IReadOnlyList<OrderReceiptPlanLine>> _orderReceiptPlanLines = new();
+    private readonly Dictionary<long, ProductionPallet> _productionPallets = new();
     private readonly Dictionary<long, IReadOnlyDictionary<long, double>> _shippedTotalsByOrderLine = new();
     private readonly Dictionary<Guid, MarkingOrder> _markingOrders = new();
     private readonly Dictionary<Guid, MarkingCode> _markingCodes = new();
@@ -34,6 +35,8 @@ internal sealed class CloseDocumentHarness
     private long _nextDocLineId = 1;
     private long _nextOrderId = 1;
     private long _nextOrderLineId = 1;
+    private long _nextProductionPalletId = 1;
+    private long _nextProductionPalletHuNumber = 1;
 
     public CloseDocumentHarness()
     {
@@ -163,7 +166,8 @@ internal sealed class CloseDocumentHarness
             OrderId = line.OrderId,
             ItemId = line.ItemId,
             QtyOrdered = line.QtyOrdered,
-            ProductionPurpose = line.ProductionPurpose
+            ProductionPurpose = line.ProductionPurpose,
+            ProductionPalletGroup = line.ProductionPalletGroup
         };
     }
 
@@ -226,6 +230,42 @@ internal sealed class CloseDocumentHarness
             ToLocationCode = line.ToLocationCode,
             ToHu = line.ToHu,
             SortOrder = line.SortOrder
+        };
+    }
+
+    private static ProductionPallet CloneProductionPallet(ProductionPallet pallet)
+    {
+        return new ProductionPallet
+        {
+            Id = pallet.Id,
+            PrdDocId = pallet.PrdDocId,
+            DocLineId = pallet.DocLineId,
+            OrderId = pallet.OrderId,
+            OrderLineId = pallet.OrderLineId,
+            ItemId = pallet.ItemId,
+            ItemName = pallet.ItemName,
+            HuCode = pallet.HuCode,
+            PlannedQty = pallet.PlannedQty,
+            ToLocationId = pallet.ToLocationId,
+            ToLocationCode = pallet.ToLocationCode,
+            Status = pallet.Status,
+            FilledAt = pallet.FilledAt,
+            FilledByDeviceId = pallet.FilledByDeviceId,
+            CreatedAt = pallet.CreatedAt,
+            Lines = pallet.Lines.Select(line => new ProductionPalletComponentLine
+            {
+                Id = line.Id,
+                ProductionPalletId = line.ProductionPalletId,
+                DocLineId = line.DocLineId,
+                OrderLineId = line.OrderLineId,
+                ItemId = line.ItemId,
+                ItemName = line.ItemName,
+                Brand = line.Brand,
+                Uom = line.Uom,
+                PlannedQty = line.PlannedQty,
+                FilledQty = line.FilledQty,
+                CreatedAt = line.CreatedAt
+            }).ToArray()
         };
     }
 
@@ -429,11 +469,19 @@ internal sealed class CloseDocumentHarness
     public void SeedHu(HuRecord hu)
     {
         _hus[hu.Code] = hu;
+        _nextProductionPalletHuNumber = Math.Max(_nextProductionPalletHuNumber, ExtractHuNumber(hu.Code) + 1);
     }
 
     public void SeedBalance(long itemId, long locationId, double qty, string? huCode = null)
     {
         _seedBalances[(itemId, locationId, NormalizeHu(huCode))] = qty;
+    }
+
+    public void SeedProductionPallet(ProductionPallet pallet)
+    {
+        _productionPallets[pallet.Id] = CloneProductionPallet(pallet);
+        _nextProductionPalletId = Math.Max(_nextProductionPalletId, pallet.Id + 1);
+        _nextProductionPalletHuNumber = Math.Max(_nextProductionPalletHuNumber, ExtractHuNumber(pallet.HuCode) + 1);
     }
 
     private void ConfigureStore()
@@ -696,7 +744,8 @@ internal sealed class CloseDocumentHarness
                         ItemId = line.ItemId,
                         ItemName = _items.TryGetValue(line.ItemId, out var item) ? item.Name : string.Empty,
                         QtyOrdered = line.QtyOrdered,
-                        ProductionPurpose = line.ProductionPurpose
+                        ProductionPurpose = line.ProductionPurpose,
+                        ProductionPalletGroup = line.ProductionPalletGroup
                     })
                     .ToArray();
             });
@@ -755,7 +804,8 @@ internal sealed class CloseDocumentHarness
                     OrderId = line.OrderId,
                     ItemId = line.ItemId,
                     QtyOrdered = line.QtyOrdered,
-                    ProductionPurpose = line.ProductionPurpose
+                    ProductionPurpose = line.ProductionPurpose,
+                    ProductionPalletGroup = line.ProductionPalletGroup
                 });
 
                 return orderLineId;
@@ -780,7 +830,8 @@ internal sealed class CloseDocumentHarness
                             OrderId = current.OrderId,
                             ItemId = current.ItemId,
                             QtyOrdered = qtyOrdered,
-                            ProductionPurpose = current.ProductionPurpose
+                            ProductionPurpose = current.ProductionPurpose,
+                            ProductionPalletGroup = current.ProductionPalletGroup
                         };
                         return;
                     }
@@ -806,7 +857,35 @@ internal sealed class CloseDocumentHarness
                             OrderId = current.OrderId,
                             ItemId = current.ItemId,
                             QtyOrdered = current.QtyOrdered,
-                            ProductionPurpose = purpose
+                            ProductionPurpose = purpose,
+                            ProductionPalletGroup = current.ProductionPalletGroup
+                        };
+                        return;
+                    }
+                }
+            });
+
+        _store.Setup(store => store.UpdateOrderLineProductionPalletGroup(It.IsAny<long>(), It.IsAny<string?>()))
+            .Callback<long, string?>((orderLineId, groupCode) =>
+            {
+                foreach (var pair in _orderLinesByOrder)
+                {
+                    for (var index = 0; index < pair.Value.Count; index++)
+                    {
+                        if (pair.Value[index].Id != orderLineId)
+                        {
+                            continue;
+                        }
+
+                        var current = pair.Value[index];
+                        pair.Value[index] = new OrderLine
+                        {
+                            Id = current.Id,
+                            OrderId = current.OrderId,
+                            ItemId = current.ItemId,
+                            QtyOrdered = current.QtyOrdered,
+                            ProductionPurpose = current.ProductionPurpose,
+                            ProductionPalletGroup = groupCode
                         };
                         return;
                     }
@@ -1076,6 +1155,7 @@ internal sealed class CloseDocumentHarness
                     DocId = line.DocId,
                     ReplacesLineId = line.ReplacesLineId,
                     OrderLineId = line.OrderLineId,
+                    ProductionPurpose = line.ProductionPurpose,
                     ItemId = line.ItemId,
                     Qty = line.Qty,
                     QtyInput = line.QtyInput,
@@ -1319,6 +1399,330 @@ internal sealed class CloseDocumentHarness
                 };
             });
 
+        _store.Setup(store => store.PlanProductionPallets(It.IsAny<long>(), It.IsAny<DateTime>()))
+            .Returns<long, DateTime>((docId, createdAt) =>
+            {
+                var doc = _docs.TryGetValue(docId, out var foundDoc) ? foundDoc : null;
+                if (doc == null)
+                {
+                    return Array.Empty<ProductionPallet>();
+                }
+
+                foreach (var group in GetActiveDocLines(docId)
+                             .Where(line => line.Qty > 0 && !string.IsNullOrWhiteSpace(line.ToHu))
+                             .GroupBy(line => NormalizeHu(line.ToHu), StringComparer.OrdinalIgnoreCase))
+                {
+                    if (_productionPallets.Values.Any(pallet => pallet.PrdDocId == docId
+                                                                && string.Equals(NormalizeHu(pallet.HuCode), group.Key, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        continue;
+                    }
+
+                    var groupLines = group.OrderBy(line => line.Id).ToList();
+                    var firstLine = groupLines[0];
+                    var item = _items.TryGetValue(firstLine.ItemId, out var foundItem) ? foundItem : null;
+                    var location = firstLine.ToLocationId.HasValue && _locations.TryGetValue(firstLine.ToLocationId.Value, out var foundLocation)
+                        ? foundLocation
+                        : null;
+                    var palletId = _nextProductionPalletId++;
+                    _productionPallets[palletId] = new ProductionPallet
+                    {
+                        Id = palletId,
+                        PrdDocId = docId,
+                        DocLineId = firstLine.Id,
+                        OrderId = doc.OrderId,
+                        OrderLineId = groupLines.Select(line => line.OrderLineId).Distinct().Count() == 1 ? firstLine.OrderLineId : null,
+                        ItemId = firstLine.ItemId,
+                        ItemName = item?.Name ?? string.Empty,
+                        HuCode = firstLine.ToHu?.Trim() ?? string.Empty,
+                        PlannedQty = groupLines.Sum(line => line.Qty),
+                        ToLocationId = firstLine.ToLocationId,
+                        ToLocationCode = location?.Code,
+                        Status = ProductionPalletStatus.Planned,
+                        CreatedAt = createdAt,
+                        Lines = groupLines.Select((line, index) =>
+                        {
+                            var lineItem = _items.TryGetValue(line.ItemId, out var foundLineItem) ? foundLineItem : null;
+                            return new ProductionPalletComponentLine
+                            {
+                                Id = (palletId * 1000) + index + 1,
+                                ProductionPalletId = palletId,
+                                DocLineId = line.Id,
+                                OrderLineId = line.OrderLineId,
+                                ItemId = line.ItemId,
+                                ItemName = lineItem?.Name ?? string.Empty,
+                                Brand = lineItem?.Brand,
+                                Uom = string.IsNullOrWhiteSpace(lineItem?.BaseUom) ? "шт" : lineItem!.BaseUom,
+                                PlannedQty = line.Qty,
+                                CreatedAt = createdAt
+                            };
+                        }).ToArray()
+                    };
+                }
+
+                return GetProductionPallets(docId);
+            });
+
+        _store.Setup(store => store.CreateProductionPalletHuCode(It.IsAny<string?>()))
+            .Returns<string?>(createdBy =>
+            {
+                var existing = BuildExistingHuNumbers();
+                while (existing.Contains(_nextProductionPalletHuNumber))
+                {
+                    _nextProductionPalletHuNumber++;
+                }
+
+                var code = $"HU-{_nextProductionPalletHuNumber:0000000}";
+                _nextProductionPalletHuNumber++;
+                _hus[code] = new HuRecord
+                {
+                    Id = _hus.Count + 1,
+                    Code = code,
+                    Status = "OPEN",
+                    CreatedAt = DateTime.UtcNow,
+                    CreatedBy = createdBy
+                };
+                return code;
+            });
+
+        _store.Setup(store => store.GetProductionPalletsByDoc(It.IsAny<long>()))
+            .Returns<long>(GetProductionPallets);
+
+        _store.Setup(store => store.GetProductionPalletByHu(It.IsAny<string>()))
+            .Returns<string>(huCode =>
+            {
+                var active = _productionPallets.Values.FirstOrDefault(pallet =>
+                    string.Equals(NormalizeHu(pallet.HuCode), NormalizeHu(huCode), StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase));
+                var found = active ?? _productionPallets.Values.FirstOrDefault(pallet =>
+                    string.Equals(NormalizeHu(pallet.HuCode), NormalizeHu(huCode), StringComparison.OrdinalIgnoreCase));
+                return found == null ? null : CloneProductionPallet(found);
+            });
+
+        _store.Setup(store => store.GetActiveProductionPalletWorkItems())
+            .Returns(() => _productionPallets.Values
+                .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                .GroupBy(pallet => pallet.PrdDocId)
+                .Select(group =>
+                {
+                    var doc = _docs.TryGetValue(group.Key, out var foundDoc) ? foundDoc : null;
+                    var rows = group.ToList();
+                    var filledRows = rows
+                        .Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+                    return new ProductionPalletWorkItem
+                    {
+                        PrdDocId = group.Key,
+                        PrdDocRef = doc?.DocRef ?? string.Empty,
+                        PrdStatus = doc == null ? string.Empty : DocTypeMapper.StatusToString(doc.Status),
+                        OrderId = doc?.OrderId ?? rows.Select(pallet => pallet.OrderId).FirstOrDefault(id => id.HasValue),
+                        OrderRef = doc?.OrderRef ?? rows.Select(pallet => pallet.OrderId.HasValue && _orders.TryGetValue(pallet.OrderId.Value, out var order) ? order.OrderRef : null).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)),
+                        Summary = new ProductionPalletSummary
+                        {
+                            PlannedPalletCount = rows.Count,
+                            PlannedQty = rows.Sum(pallet => pallet.PlannedQty),
+                            FilledPalletCount = filledRows.Count,
+                            FilledQty = filledRows.Sum(pallet => pallet.PlannedQty),
+                            RemainingPalletCount = rows.Count - filledRows.Count,
+                            RemainingQty = Math.Max(0, rows.Sum(pallet => pallet.PlannedQty) - filledRows.Sum(pallet => pallet.PlannedQty))
+                        }
+                    };
+                })
+                .Where(item => item.Summary.FilledPalletCount < item.Summary.PlannedPalletCount)
+                .OrderByDescending(item => item.PrdDocId)
+                .ToArray());
+
+        _store.Setup(store => store.HasProductionPallets(It.IsAny<long>()))
+            .Returns<long>(docId => _productionPallets.Values.Any(pallet =>
+                pallet.PrdDocId == docId
+                && !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)));
+
+        _store.Setup(store => store.ClearPlannedProductionPalletPlan(It.IsAny<long>()))
+            .Callback<long>(docId =>
+            {
+                var activePallets = _productionPallets.Values
+                    .Where(pallet => pallet.PrdDocId == docId
+                                     && !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                if (activePallets.Any(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)))
+                {
+                    throw new InvalidOperationException("План паллет уже напечатан или наполнен. Переназначение HU запрещено.");
+                }
+
+                foreach (var pallet in _productionPallets.Values.Where(pallet => pallet.PrdDocId == docId).ToArray())
+                {
+                    _productionPallets.Remove(pallet.Id);
+                }
+
+                if (_linesByDoc.TryGetValue(docId, out var docLines))
+                {
+                    docLines.Clear();
+                }
+            });
+
+        _store.Setup(store => store.GetFilledProductionPalletQtyByOrderLine(It.IsAny<long>(), It.IsAny<long?>()))
+            .Returns<long, long?>((orderLineId, excludePalletId) => _productionPallets.Values
+                .Where(pallet => (!excludePalletId.HasValue || pallet.Id != excludePalletId.Value)
+                                 && string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+                .SelectMany(pallet => pallet.Lines.Count > 0
+                    ? pallet.Lines
+                    : new[]
+                    {
+                        new ProductionPalletComponentLine
+                        {
+                            OrderLineId = pallet.OrderLineId,
+                            PlannedQty = pallet.PlannedQty
+                        }
+                    })
+                .Where(line => line.OrderLineId == orderLineId)
+                .Sum(line => line.PlannedQty));
+
+        _store.Setup(store => store.MarkProductionPalletFilled(It.IsAny<long>(), It.IsAny<DateTime>(), It.IsAny<string?>()))
+            .Callback<long, DateTime, string?>((palletId, filledAt, deviceId) =>
+            {
+                if (!_productionPallets.TryGetValue(palletId, out var current)
+                    || string.Equals(current.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
+                _productionPallets[palletId] = new ProductionPallet
+                {
+                    Id = current.Id,
+                    PrdDocId = current.PrdDocId,
+                    DocLineId = current.DocLineId,
+                    OrderId = current.OrderId,
+                    OrderLineId = current.OrderLineId,
+                    ItemId = current.ItemId,
+                    ItemName = current.ItemName,
+                    HuCode = current.HuCode,
+                    PlannedQty = current.PlannedQty,
+                    ToLocationId = current.ToLocationId,
+                    ToLocationCode = current.ToLocationCode,
+                    Status = ProductionPalletStatus.Filled,
+                    FilledAt = filledAt,
+                    FilledByDeviceId = deviceId,
+                    CreatedAt = current.CreatedAt,
+                    Lines = current.Lines.Select(line => new ProductionPalletComponentLine
+                    {
+                        Id = line.Id,
+                        ProductionPalletId = line.ProductionPalletId,
+                        DocLineId = line.DocLineId,
+                        OrderLineId = line.OrderLineId,
+                        ItemId = line.ItemId,
+                        ItemName = line.ItemName,
+                        Brand = line.Brand,
+                        Uom = line.Uom,
+                        PlannedQty = line.PlannedQty,
+                        FilledQty = line.PlannedQty,
+                        CreatedAt = line.CreatedAt
+                    }).ToArray()
+                };
+            });
+
+        _store.Setup(store => store.UpdateProductionPalletHu(It.IsAny<long>(), It.IsAny<string>()))
+            .Callback<long, string>((palletId, huCode) =>
+            {
+                if (!_productionPallets.TryGetValue(palletId, out var current)
+                    || !string.Equals(current.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
+                _productionPallets[palletId] = new ProductionPallet
+                {
+                    Id = current.Id,
+                    PrdDocId = current.PrdDocId,
+                    DocLineId = current.DocLineId,
+                    OrderId = current.OrderId,
+                    OrderLineId = current.OrderLineId,
+                    ItemId = current.ItemId,
+                    ItemName = current.ItemName,
+                    HuCode = huCode,
+                    PlannedQty = current.PlannedQty,
+                    ToLocationId = current.ToLocationId,
+                    ToLocationCode = current.ToLocationCode,
+                    Status = current.Status,
+                    FilledAt = current.FilledAt,
+                    FilledByDeviceId = current.FilledByDeviceId,
+                    CreatedAt = current.CreatedAt,
+                    Lines = current.Lines
+                };
+
+                foreach (var line in current.Lines)
+                {
+                    if (!_linesByDoc.TryGetValue(current.PrdDocId, out var docLines))
+                    {
+                        continue;
+                    }
+
+                    for (var index = 0; index < docLines.Count; index++)
+                    {
+                        if (docLines[index].Id != line.DocLineId)
+                        {
+                            continue;
+                        }
+
+                        var docLine = docLines[index];
+                        docLines[index] = new DocLine
+                        {
+                            Id = docLine.Id,
+                            DocId = docLine.DocId,
+                            ReplacesLineId = docLine.ReplacesLineId,
+                            OrderLineId = docLine.OrderLineId,
+                            ProductionPurpose = docLine.ProductionPurpose,
+                            ItemId = docLine.ItemId,
+                            Qty = docLine.Qty,
+                            QtyInput = docLine.QtyInput,
+                            UomCode = docLine.UomCode,
+                            FromLocationId = docLine.FromLocationId,
+                            ToLocationId = docLine.ToLocationId,
+                            FromHu = docLine.FromHu,
+                            ToHu = huCode,
+                            PackSingleHu = docLine.PackSingleHu
+                        };
+                    }
+                }
+            });
+
+        _store.Setup(store => store.MarkProductionPalletsPrintedByOrder(It.IsAny<long>(), It.IsAny<DateTime>()))
+            .Returns<long, DateTime>((orderId, _) =>
+            {
+                var updated = 0;
+                foreach (var pair in _productionPallets.ToArray())
+                {
+                    var current = pair.Value;
+                    if (current.OrderId != orderId
+                        || !string.Equals(current.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    _productionPallets[pair.Key] = new ProductionPallet
+                    {
+                        Id = current.Id,
+                        PrdDocId = current.PrdDocId,
+                        DocLineId = current.DocLineId,
+                        OrderId = current.OrderId,
+                        OrderLineId = current.OrderLineId,
+                        ItemId = current.ItemId,
+                        ItemName = current.ItemName,
+                        HuCode = current.HuCode,
+                        PlannedQty = current.PlannedQty,
+                        ToLocationId = current.ToLocationId,
+                        ToLocationCode = current.ToLocationCode,
+                        Status = ProductionPalletStatus.Printed,
+                        FilledAt = current.FilledAt,
+                        FilledByDeviceId = current.FilledByDeviceId,
+                        CreatedAt = current.CreatedAt,
+                        Lines = current.Lines
+                    };
+                    updated++;
+                }
+
+                return updated;
+            });
+
         _store.Setup(store => store.CountKmCodesByReceiptLine(It.IsAny<long>()))
             .Returns<long>(docLineId => _kmCodeCountByReceiptLine.TryGetValue(docLineId, out var count) ? count : 0);
 
@@ -1414,6 +1818,15 @@ internal sealed class CloseDocumentHarness
             .Sum(entry => entry.QtyDelta);
 
         return seed + delta;
+    }
+
+    private IReadOnlyList<ProductionPallet> GetProductionPallets(long docId)
+    {
+        return _productionPallets.Values
+            .Where(pallet => pallet.PrdDocId == docId)
+            .OrderBy(pallet => pallet.Id)
+            .Select(CloneProductionPallet)
+            .ToArray();
     }
 
     private IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemainingLines(long orderId)
@@ -1596,10 +2009,22 @@ internal sealed class CloseDocumentHarness
         var total = 0d;
         foreach (var doc in _docs.Values.Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status == DocStatus.Closed))
         {
+            if (_productionPallets.Values.Any(pallet =>
+                    pallet.PrdDocId == doc.Id
+                    && !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
             total += GetActiveDocLines(doc.Id)
                 .Where(line => line.OrderLineId == orderLineId && line.Qty > 0)
                 .Sum(line => line.Qty);
         }
+
+        total += _productionPallets.Values
+            .Where(pallet => pallet.OrderLineId == orderLineId
+                             && string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+            .Sum(pallet => pallet.PlannedQty);
 
         return total;
     }
@@ -1837,6 +2262,46 @@ internal sealed class CloseDocumentHarness
     private static string? NormalizeHu(string? huCode)
     {
         return string.IsNullOrWhiteSpace(huCode) ? null : huCode.Trim();
+    }
+
+    private HashSet<long> BuildExistingHuNumbers()
+    {
+        var result = new HashSet<long>();
+        foreach (var code in _hus.Keys)
+        {
+            result.Add(ExtractHuNumber(code));
+        }
+        foreach (var pallet in _productionPallets.Values)
+        {
+            result.Add(ExtractHuNumber(pallet.HuCode));
+        }
+        foreach (var lines in _linesByDoc.Values)
+        {
+            foreach (var line in lines)
+            {
+                result.Add(ExtractHuNumber(line.FromHu));
+                result.Add(ExtractHuNumber(line.ToHu));
+            }
+        }
+        foreach (var entry in _postedLedger)
+        {
+            result.Add(ExtractHuNumber(entry.HuCode));
+        }
+
+        result.Remove(0);
+        return result;
+    }
+
+    private static long ExtractHuNumber(string? huCode)
+    {
+        var normalized = NormalizeHu(huCode);
+        if (string.IsNullOrWhiteSpace(normalized) || !normalized.StartsWith("HU-", StringComparison.OrdinalIgnoreCase))
+        {
+            return 0;
+        }
+
+        var digits = new string(normalized.Skip(3).Where(char.IsDigit).ToArray());
+        return long.TryParse(digits, out var value) ? value : 0;
     }
 
     private static string? NormalizeText(string? value)

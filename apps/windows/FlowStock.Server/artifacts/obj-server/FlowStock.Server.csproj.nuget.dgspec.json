@@ -1,0 +1,211 @@
+{
+  "format": 1,
+  "restore": {
+    "D:\\FlowStock\\apps\\windows\\FlowStock.Server\\FlowStock.Server.csproj": {}
+  },
+  "projects": {
+    "D:\\FlowStock\\apps\\windows\\FlowStock.Core\\FlowStock.Core.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "D:\\FlowStock\\apps\\windows\\FlowStock.Core\\FlowStock.Core.csproj",
+        "projectName": "FlowStock.Core",
+        "projectPath": "D:\\FlowStock\\apps\\windows\\FlowStock.Core\\FlowStock.Core.csproj",
+        "packagesPath": "D:\\NuGetPackages",
+        "outputPath": "D:\\FlowStock\\apps\\windows\\FlowStock.Core\\artifacts/obj-server/",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "D:\\FlowStock\\NuGet.Config",
+          "C:\\Users\\ЧестныйЗнак\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0": {
+            "targetAlias": "net8.0",
+            "projectReferences": {}
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        }
+      },
+      "frameworks": {
+        "net8.0": {
+          "targetAlias": "net8.0",
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\8.0.420/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    },
+    "D:\\FlowStock\\apps\\windows\\FlowStock.Data\\FlowStock.Data.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "D:\\FlowStock\\apps\\windows\\FlowStock.Data\\FlowStock.Data.csproj",
+        "projectName": "FlowStock.Data",
+        "projectPath": "D:\\FlowStock\\apps\\windows\\FlowStock.Data\\FlowStock.Data.csproj",
+        "packagesPath": "D:\\NuGetPackages",
+        "outputPath": "D:\\FlowStock\\apps\\windows\\FlowStock.Data\\artifacts/obj-server/",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "D:\\FlowStock\\NuGet.Config",
+          "C:\\Users\\ЧестныйЗнак\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0": {
+            "targetAlias": "net8.0",
+            "projectReferences": {
+              "D:\\FlowStock\\apps\\windows\\FlowStock.Core\\FlowStock.Core.csproj": {
+                "projectPath": "D:\\FlowStock\\apps\\windows\\FlowStock.Core\\FlowStock.Core.csproj"
+              }
+            }
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        }
+      },
+      "frameworks": {
+        "net8.0": {
+          "targetAlias": "net8.0",
+          "dependencies": {
+            "Npgsql": {
+              "target": "Package",
+              "version": "[8.0.3, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\8.0.420/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    },
+    "D:\\FlowStock\\apps\\windows\\FlowStock.Server\\FlowStock.Server.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "D:\\FlowStock\\apps\\windows\\FlowStock.Server\\FlowStock.Server.csproj",
+        "projectName": "FlowStock.Server",
+        "projectPath": "D:\\FlowStock\\apps\\windows\\FlowStock.Server\\FlowStock.Server.csproj",
+        "packagesPath": "D:\\NuGetPackages",
+        "outputPath": "D:\\FlowStock\\apps\\windows\\FlowStock.Server\\artifacts/obj-server/",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "D:\\FlowStock\\NuGet.Config",
+          "C:\\Users\\ЧестныйЗнак\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0": {
+            "targetAlias": "net8.0",
+            "projectReferences": {
+              "D:\\FlowStock\\apps\\windows\\FlowStock.Core\\FlowStock.Core.csproj": {
+                "projectPath": "D:\\FlowStock\\apps\\windows\\FlowStock.Core\\FlowStock.Core.csproj"
+              },
+              "D:\\FlowStock\\apps\\windows\\FlowStock.Data\\FlowStock.Data.csproj": {
+                "projectPath": "D:\\FlowStock\\apps\\windows\\FlowStock.Data\\FlowStock.Data.csproj"
+              }
+            }
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        }
+      },
+      "frameworks": {
+        "net8.0": {
+          "targetAlias": "net8.0",
+          "dependencies": {
+            "Npgsql": {
+              "target": "Package",
+              "version": "[8.0.3, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.AspNetCore.App": {
+              "privateAssets": "none"
+            },
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\8.0.420/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    }
+  }
+}

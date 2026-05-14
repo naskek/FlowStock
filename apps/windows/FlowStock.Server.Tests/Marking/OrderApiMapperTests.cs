@@ -203,4 +203,41 @@ public sealed class OrderApiMapperTests
         Assert.Equal(expectedDisplay, json.GetProperty("order_status_display").GetString());
         Assert.Equal(expectedDisplay, json.GetProperty("status").GetString());
     }
+
+    [Fact]
+    public void MapOrder_ReturnsProductionPalletPlanFields()
+    {
+        var order = new Order
+        {
+            Id = 80,
+            OrderRef = "080",
+            Type = OrderType.Internal,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 5, 14, 9, 0, 0, DateTimeKind.Utc)
+        };
+
+        var json = JsonSerializer.SerializeToElement(OrderApiMapper.MapOrder(
+            order,
+            hasShipmentRemaining: false,
+            hasProductionPalletPlan: true,
+            needsProductionPalletPlan: true,
+            palletSummary: new ProductionPalletSummary
+            {
+                PlannedPalletCount = 3,
+                FilledPalletCount = 1,
+                PlannedQty = 1800,
+                FilledQty = 600,
+                RemainingPalletCount = 2,
+                RemainingQty = 1200
+            },
+            palletPlanStatus: "Наполнение идёт: 1 / 3"));
+
+        Assert.True(json.GetProperty("has_production_pallet_plan").GetBoolean());
+        Assert.True(json.GetProperty("needs_production_pallet_plan").GetBoolean());
+        Assert.Equal(3, json.GetProperty("planned_pallet_count").GetInt32());
+        Assert.Equal(1, json.GetProperty("filled_pallet_count").GetInt32());
+        Assert.Equal(1800, json.GetProperty("planned_qty").GetDouble());
+        Assert.Equal(600, json.GetProperty("filled_qty").GetDouble());
+        Assert.Equal("Наполнение идёт: 1 / 3", json.GetProperty("pallet_plan_status").GetString());
+    }
 }

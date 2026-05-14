@@ -88,6 +88,17 @@ public interface IDataStore
     void UpdateDocProductionBatch(long docId, string? productionBatchNo);
     void UpdateDocOrder(long docId, long? orderId, string? orderRef);
     void UpdateDocStatus(long docId, DocStatus status, DateTime? closedAt);
+    IReadOnlyList<ProductionPallet> PlanProductionPallets(long docId, DateTime createdAt);
+    string CreateProductionPalletHuCode(string? createdBy);
+    IReadOnlyList<ProductionPallet> GetProductionPalletsByDoc(long docId);
+    ProductionPallet? GetProductionPalletByHu(string huCode);
+    IReadOnlyList<ProductionPalletWorkItem> GetActiveProductionPalletWorkItems();
+    bool HasProductionPallets(long docId);
+    void ClearPlannedProductionPalletPlan(long docId);
+    double GetFilledProductionPalletQtyByOrderLine(long orderLineId, long? excludePalletId = null);
+    void UpdateProductionPalletHu(long palletId, string huCode);
+    void MarkProductionPalletFilled(long palletId, DateTime filledAt, string? deviceId);
+    int MarkProductionPalletsPrintedByOrder(long orderId, DateTime printedAt);
 
     Order? GetOrder(long id);
     IReadOnlyList<Order> GetOrders();
@@ -114,6 +125,7 @@ public interface IDataStore
     long AddOrderLine(OrderLine line);
     void UpdateOrderLineQty(long orderLineId, double qtyOrdered);
     void UpdateOrderLinePurpose(long orderLineId, ProductionLinePurpose purpose);
+    void UpdateOrderLineProductionPalletGroup(long orderLineId, string? groupCode);
     void DeleteOrderLine(long orderLineId);
     void DeleteOrderLines(long orderId);
     void DeleteOrder(long orderId);

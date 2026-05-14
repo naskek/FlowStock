@@ -881,6 +881,225 @@ body {
   color: #1b3a57;
 }
 
+.filling-card {
+  display: grid;
+  gap: 12px;
+}
+
+.filling-doc-list {
+  display: grid;
+  gap: 10px;
+}
+
+.filling-doc-card {
+  width: 100%;
+  border: 2px solid #cfe2ec;
+  border-radius: 16px;
+  padding: 14px;
+  background: #fff;
+  color: var(--text);
+  display: grid;
+  gap: 10px;
+  text-align: left;
+  box-shadow: 0 8px 18px rgba(16, 42, 67, 0.1);
+}
+
+.filling-doc-title {
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.filling-doc-subtitle,
+.filling-doc-meta,
+.filling-doc-progress {
+  font-size: 15px;
+  color: #334e68;
+}
+
+.filling-doc-progress {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border-radius: 12px;
+  background: #eef7f9;
+}
+
+.filling-context-card,
+.filling-scan-card,
+.filling-preview-card {
+  border-radius: 16px;
+  background: #fff;
+  border: 2px solid #d9e7ee;
+  padding: 14px;
+}
+
+.filling-context-card {
+  display: grid;
+  gap: 6px;
+  font-size: 16px;
+}
+
+.filling-pallet-list-card {
+  border-radius: 16px;
+  background: #fff;
+  border: 2px solid #d9e7ee;
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.filling-pallet-list-title {
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.filling-pallet-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.filling-pallet-item {
+  display: grid;
+  grid-template-columns: 12px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 2px solid #d9e7ee;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.filling-pallet-item.is-filled {
+  background: #ecfdf3;
+  border-color: #86efac;
+  color: #166534;
+}
+
+.filling-pallet-item.is-pending {
+  background: #fef2f2;
+  border-color: #fca5a5;
+  color: #991b1b;
+}
+
+.filling-pallet-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.filling-pallet-code {
+  word-break: break-word;
+}
+
+.filling-pallet-status-text {
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.filling-scan-input {
+  min-height: 54px;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.filling-message {
+  padding: 12px 14px;
+  border-radius: 14px;
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.filling-message-success {
+  background: #d1fae5;
+  color: #065f46;
+  border: 2px solid #86efac;
+}
+
+.filling-message-error {
+  background: #fee2e2;
+  color: #991b1b;
+  border: 2px solid #fecaca;
+}
+
+.filling-message-warn,
+.filling-message-info {
+  background: #fef3c7;
+  color: #92400e;
+  border: 2px solid #fde68a;
+}
+
+.filling-preview-card {
+  display: grid;
+  gap: 10px;
+}
+
+.filling-preview-overlay .overlay-card {
+  width: min(520px, calc(100vw - 24px));
+}
+
+.filling-preview-overlay-shell {
+  padding-bottom: 18px;
+}
+
+.filling-preview-overlay-card {
+  border: none;
+  padding: 0;
+}
+
+.filling-preview-title {
+  font-size: 22px;
+  font-weight: 900;
+}
+
+.filling-preview-line {
+  font-size: 18px;
+}
+
+.filling-preview-item {
+  margin-top: 6px;
+  font-size: 22px;
+  font-weight: 900;
+  line-height: 1.15;
+}
+
+.filling-preview-brand {
+  font-size: 18px;
+  color: #334e68;
+}
+
+.filling-preview-qty {
+  font-size: 30px;
+  font-weight: 900;
+  color: #0f5132;
+}
+
+.filling-preview-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.filling-preview-error {
+  min-height: 20px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #b91c1c;
+}
+
+.filling-ok-btn,
+.filling-cancel-btn {
+  min-height: 58px;
+  font-size: 20px;
+  font-weight: 900;
+}
+
 .actions-row {
   display: grid;
   gap: 8px;
@@ -909,6 +1128,25 @@ body {
   display: grid;
   gap: 2px;
   font-size: 11px;
+  color: #486581;
+}
+
+.order-item-needs-plan {
+  border-color: #f3b6cf;
+  background: #fff0f6;
+}
+
+.order-plan-ready {
+  color: #166534;
+  font-weight: 700;
+}
+
+.order-plan-missing {
+  color: #c2185b;
+  font-weight: 800;
+}
+
+.order-plan-neutral {
   color: #486581;
 }
 
@@ -964,8 +1202,8 @@ body {
 }
 
 .order-status-accepted {
-  background: #e5e7eb;
-  color: #374151;
+  background: #dbeafe;
+  color: #1d4ed8;
 }
 
 .order-status-progress {

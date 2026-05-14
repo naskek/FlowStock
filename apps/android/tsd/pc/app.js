@@ -808,12 +808,12 @@
     return renderPageShell(
       '<section class="pc-card">' +
       '  <div class="section-title">Потребность производства</div>' +
-      '  <div class="pc-toolbar">' +
+      '  <div class="pc-toolbar pc-production-need-toolbar">' +
       '    <div class="pc-toolbar-actions">' +
       '      <button id="productionNeedRefreshBtn" class="btn btn-outline" type="button">Обновить</button>' +
       '      <button id="productionNeedCreateOrdersBtn" class="btn btn-primary" type="button">Сформировать заказ</button>' +
       "    </div>" +
-      '    <div id="productionNeedStatus" class="pc-status"></div>' +
+      '    <div id="productionNeedStatus" class="pc-status pc-production-need-status"></div>' +
       "  </div>" +
       '  <div id="productionNeedTableWrap"></div>' +
       "</section>"
@@ -831,8 +831,52 @@
       minStockQty: Number(row && row.min_stock_qty) || 0,
       toCloseOrdersQty: Number(row && row.to_close_orders_qty) || 0,
       toMinStockQty: Number(row && row.to_min_stock_qty) || 0,
+      qtyToCreate: Number(row && row.qty_to_create) || 0,
+      canCreateOrder: row && row.can_create_order === true,
+      reason: String((row && row.reason) || ""),
+      openInternalOrderQty: Number(row && row.open_internal_order_qty) || 0,
+      openInternalOrderRefs: String((row && row.open_internal_order_refs) || ""),
+      plannedPalletQty: Number(row && row.planned_pallet_qty) || 0,
+      filledPalletQty: Number(row && row.filled_pallet_qty) || 0,
+      plannedPalletCount: Number(row && row.planned_pallet_count) || 0,
+      filledPalletCount: Number(row && row.filled_pallet_count) || 0,
+      remainingPalletQty: Number(row && row.remaining_pallet_qty) || 0,
       totalToMakeQty: Number(row && row.total_to_make_qty) || 0,
     };
+  }
+
+  function mapProductionNeedPreviewRow(row) {
+    return {
+      itemId: Number(row && row.item_id) || 0,
+      gtin: String((row && row.gtin) || ""),
+      itemName: String((row && row.item_name) || ""),
+      qtyToCreate: Number(row && row.qty_to_create) || 0,
+      reason: String((row && row.reason) || ""),
+      minStockQty: Number(row && row.min_stock_qty) || 0,
+      freeStockQty: Number(row && row.free_stock_qty) || 0,
+      openInternalOrderQty: Number(row && row.open_internal_order_qty) || 0,
+      plannedPalletQty: Number(row && row.planned_pallet_qty) || 0,
+      filledPalletQty: Number(row && row.filled_pallet_qty) || 0,
+    };
+  }
+
+  function formatPalletProgress(row) {
+    if (!row) {
+      return "0";
+    }
+
+    if ((Number(row.plannedPalletCount) || 0) > 0) {
+      return (
+        escapeHtml(String(Number(row.filledPalletCount) || 0)) +
+        " / " +
+        escapeHtml(String(Number(row.plannedPalletCount) || 0)) +
+        " паллет, " +
+        escapeHtml(formatReportQty(Number(row.filledPalletQty) || 0)) +
+        " шт"
+      );
+    }
+
+    return escapeHtml(formatReportQty(Number(row.filledPalletQty) || 0));
   }
 
   function renderProductionNeedTable(rows) {
@@ -861,7 +905,13 @@
         escapeHtml(formatReportQty(row.toCloseOrdersQty)) +
         "</td>" +
         '<td class="pc-num">' +
-        escapeHtml(formatReportQty(row.toMinStockQty)) +
+        escapeHtml(formatReportQty(row.qtyToCreate || row.toMinStockQty)) +
+        "</td>" +
+        '<td class="pc-num">' +
+        escapeHtml(formatReportQty(row.openInternalOrderQty)) +
+        "</td>" +
+        '<td class="pc-num">' +
+        formatPalletProgress(row) +
         "</td>" +
         '<td class="pc-num"><span class="pc-qty pc-production-need-qty">' +
         escapeHtml(formatReportQty(row.totalToMakeQty)) +
@@ -875,11 +925,13 @@
       '<div class="pc-table-scroll">' +
       '<table class="pc-table pc-production-need-table">' +
       "<thead><tr>" +
-      "<th>Номенклатура</th>" +
-      '<th class="pc-num">Остаток</th>' +
-      '<th class="pc-num">До закрытия заказов</th>' +
-      '<th class="pc-num">На склад до мин.</th>' +
-      '<th class="pc-num">Всего произвести</th>' +
+      '<th class="pc-production-need-col-item">Номенклатура</th>' +
+      '<th class="pc-num pc-production-need-col-stock">Остаток</th>' +
+      '<th class="pc-num pc-production-need-col-orders">До закрытия заказов</th>' +
+      '<th class="pc-num pc-production-need-col-min">На склад до мин.</th>' +
+      '<th class="pc-num pc-production-need-col-open">Во внутренних заказах</th>' +
+      '<th class="pc-num pc-production-need-col-pallets">Наполнено паллетами</th>' +
+      '<th class="pc-num pc-production-need-col-total">Всего произвести</th>' +
       "</tr></thead>" +
       "<tbody>" +
       body +
@@ -908,6 +960,7 @@
     var createOrdersBtn = document.getElementById("productionNeedCreateOrdersBtn");
     var statusEl = document.getElementById("productionNeedStatus");
     var tableWrap = document.getElementById("productionNeedTableWrap");
+    var currentRows = [];
 
     function setStatus(text) {
       if (statusEl) {
@@ -917,6 +970,7 @@
 
     function renderRows(sourceRows) {
       var rows = Array.isArray(sourceRows) ? sourceRows.slice() : [];
+      currentRows = rows.slice();
       rows.sort(function (left, right) {
         var totalCompare = Number(right.totalToMakeQty) - Number(left.totalToMakeQty);
         if (totalCompare !== 0) {
@@ -929,6 +983,94 @@
         return;
       }
       tableWrap.innerHTML = renderProductionNeedTable(rows);
+      if (createOrdersBtn) {
+        createOrdersBtn.disabled = getCreatableProductionNeedRows(currentRows).length === 0;
+      }
+    }
+
+    function getCreatableProductionNeedRows(rows) {
+      return (rows || []).filter(function (row) {
+        return row.canCreateOrder === true && Number(row.qtyToCreate) > 0;
+      });
+    }
+
+    function openProductionNeedPreviewModal(rows, onConfirm) {
+      var modal = document.createElement("div");
+      modal.className = "pc-modal";
+      modal.innerHTML =
+        '<div class="pc-modal-card pc-order-modal-card">' +
+        '  <div class="pc-modal-header">' +
+        '    <div class="pc-modal-title">Предпросмотр производственного заказа</div>' +
+        '    <button class="btn btn-outline" type="button" id="productionNeedPreviewCloseBtn">Закрыть</button>' +
+        "  </div>" +
+        '  <div class="pc-status">Количество можно изменить. Строки с 0 не будут созданы.</div>' +
+        '  <div class="pc-table-scroll">' +
+        '    <table class="pc-table">' +
+        "      <thead><tr><th>Номенклатура</th><th>GTIN</th><th>Причина</th><th class=\"pc-num\">Количество</th></tr></thead>" +
+        '      <tbody>' +
+        rows.map(function (row, index) {
+          return (
+            "<tr>" +
+            "<td>" + escapeHtml(row.itemName || "-") + "</td>" +
+            "<td>" + escapeHtml(row.gtin || "-") + "</td>" +
+            "<td>" + escapeHtml(row.reason || "Пополнение склада до минимума") + "</td>" +
+            '<td class="pc-num"><input class="form-input pc-production-need-qty-input" type="number" min="0" step="0.001" data-preview-index="' + escapeHtml(index) + '" value="' + escapeHtml(String(Number(row.qtyToCreate) || 0)) + '" /></td>' +
+            "</tr>"
+          );
+        }).join("") +
+        "      </tbody>" +
+        "    </table>" +
+        "  </div>" +
+        '  <div class="pc-modal-footer">' +
+        '    <button class="btn btn-outline" type="button" id="productionNeedPreviewCancelBtn">Отмена</button>' +
+        '    <button class="btn btn-primary" type="button" id="productionNeedPreviewConfirmBtn">Подтвердить</button>' +
+        "  </div>" +
+        "</div>";
+      document.body.appendChild(modal);
+
+      function close() {
+        if (modal.parentNode) {
+          modal.parentNode.removeChild(modal);
+        }
+      }
+
+      modal.querySelector("#productionNeedPreviewCloseBtn").addEventListener("click", close);
+      modal.querySelector("#productionNeedPreviewCancelBtn").addEventListener("click", close);
+      modal.querySelector("#productionNeedPreviewConfirmBtn").addEventListener("click", function () {
+        var requestRows = rows.map(function (row, index) {
+          var input = modal.querySelector('[data-preview-index="' + index + '"]');
+          var qty = input ? Number(input.value) || 0 : 0;
+          return {
+            item_id: row.itemId,
+            qty_ordered: qty
+          };
+        }).filter(function (row) {
+          return row.qty_ordered > 0;
+        });
+
+        if (!requestRows.length) {
+          window.alert("Нет строк с количеством больше нуля.");
+          return;
+        }
+
+        close();
+        onConfirm(requestRows);
+      });
+    }
+
+    function loadProductionNeedPreview() {
+      return fetchJson("/api/reports/production-need/create-orders/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      }).then(function (payload) {
+        return {
+          message: payload && payload.message ? String(payload.message) : "",
+          rows: Array.isArray(payload && payload.rows)
+            ? payload.rows.map(mapProductionNeedPreviewRow)
+            : []
+        };
+      });
     }
 
     function loadAndRender() {
@@ -952,29 +1094,60 @@
 
     if (createOrdersBtn) {
       createOrdersBtn.addEventListener("click", function () {
+        var creatableRows = getCreatableProductionNeedRows(currentRows);
+        if (!creatableRows.length) {
+          createOrdersBtn.disabled = true;
+          setStatus("Нет позиций для создания внутреннего заказа");
+          return;
+        }
+
         createOrdersBtn.disabled = true;
-        setStatus("Формирование производственного черновика...");
-        fetchJson("/api/production-needs/create-orders", {
-          method: "POST",
-        })
-          .then(function (payload) {
-            var message = payload && payload.message
-              ? String(payload.message)
-              : "Производственный черновик сформирован.";
-            window.alert(message);
-            return Promise.all([
-              loadAndRender(),
-              fetchJson(getProductionNeedCreateOrdersRefreshUrl()).catch(function () {
-                return null;
-              }),
-            ]);
+        setStatus("Подготовка предпросмотра...");
+        loadProductionNeedPreview()
+          .then(function (preview) {
+            if (!preview.rows.length) {
+              setStatus("Нет позиций для создания внутреннего заказа");
+              return;
+            }
+
+            openProductionNeedPreviewModal(preview.rows, function (requestRows) {
+              createOrdersBtn.disabled = true;
+              setStatus("Формирование производственного черновика...");
+              fetchJson("/api/production-needs/create-orders", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ rows: requestRows }),
+              })
+                .then(function (payload) {
+                  var message = payload && payload.message
+                    ? String(payload.message)
+                    : "Производственный черновик сформирован.";
+                  window.alert(message);
+                  return Promise.all([
+                    loadAndRender(),
+                    fetchJson(getProductionNeedCreateOrdersRefreshUrl()).catch(function () {
+                      return null;
+                    }),
+                  ]);
+                })
+                .catch(function (error) {
+                  setStatus("Ошибка формирования производственного черновика");
+                  window.alert(error && error.message ? error.message : "Не удалось сформировать производственный черновик.");
+                })
+                .finally(function () {
+                  createOrdersBtn.disabled = false;
+                });
+            });
           })
           .catch(function (error) {
-            setStatus("Ошибка формирования производственного черновика");
-            window.alert(error && error.message ? error.message : "Не удалось сформировать производственный черновик.");
+            setStatus("Ошибка предпросмотра производственного черновика");
+            window.alert(error && error.message ? error.message : "Не удалось получить предпросмотр производственного черновика.");
+            createOrdersBtn.disabled = false;
           })
           .finally(function () {
-            createOrdersBtn.disabled = false;
+            if (createOrdersBtn.disabled && !document.querySelector(".pc-modal")) {
+              createOrdersBtn.disabled = false;
+            }
           });
       });
     }
@@ -3984,6 +4157,8 @@
     window.FlowStockPcTestHooks.sortOrdersNewestFirst = sortOrdersNewestFirst;
     window.FlowStockPcTestHooks.buildOrdersUrl = buildOrdersUrl;
     window.FlowStockPcTestHooks.getProductionNeedCreateOrdersRefreshUrl = getProductionNeedCreateOrdersRefreshUrl;
+    window.FlowStockPcTestHooks.mapProductionNeedRow = mapProductionNeedRow;
+    window.FlowStockPcTestHooks.renderProductionNeedTable = renderProductionNeedTable;
     window.FlowStockPcTestHooks.trimOrdersPage = trimOrdersPage;
     return;
   }

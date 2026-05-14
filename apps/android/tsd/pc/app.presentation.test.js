@@ -269,3 +269,37 @@ assert.ok(
   !pc.getProductionNeedCreateOrdersRefreshUrl().includes("/api/marking/orders"),
   "create-orders must refresh orders, not marking queue"
 );
+
+const productionNeedRow = pc.mapProductionNeedRow({
+  item_id: 1001,
+  item_name: "Горчица",
+  gtin: "04607186951520",
+  free_stock_qty: 100,
+  min_stock_qty: 300,
+  to_close_orders_qty: 200,
+  to_min_stock_qty: 150,
+  qty_to_create: 125,
+  can_create_order: true,
+  reason: "Требуется пополнение склада до минимального остатка.",
+  open_internal_order_qty: 75,
+  planned_pallet_qty: 100,
+  filled_pallet_qty: 25,
+  planned_pallet_count: 2,
+  filled_pallet_count: 1,
+  remaining_pallet_qty: 75,
+  total_to_make_qty: 350,
+});
+assert.strictEqual(productionNeedRow.openInternalOrderQty, 75);
+assert.strictEqual(productionNeedRow.filledPalletQty, 25);
+assert.strictEqual(productionNeedRow.qtyToCreate, 125);
+assert.strictEqual(productionNeedRow.canCreateOrder, true);
+
+const productionNeedHtml = pc.renderProductionNeedTable([productionNeedRow]);
+assert.match(productionNeedHtml, /Во внутренних заказах/);
+assert.match(productionNeedHtml, /Наполнено паллетами/);
+assert.match(productionNeedHtml, /1 \/ 2 паллет, 25 шт/);
+assert.match(
+  fs.readFileSync(appPath, "utf8"),
+  /\/api\/reports\/production-need\/create-orders\/preview/,
+  "PC production need must use server-side preview endpoint before create"
+);

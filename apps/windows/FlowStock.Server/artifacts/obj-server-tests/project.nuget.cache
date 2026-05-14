@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "dgSpecHash": "fMmYmZ2jHZo=",
+  "success": true,
+  "projectFilePath": "D:\\FlowStock\\apps\\windows\\FlowStock.Server\\FlowStock.Server.csproj",
+  "expectedPackageFiles": [
+    "D:\\NuGetPackages\\microsoft.extensions.dependencyinjection.abstractions\\8.0.0\\microsoft.extensions.dependencyinjection.abstractions.8.0.0.nupkg.sha512",
+    "D:\\NuGetPackages\\microsoft.extensions.logging.abstractions\\8.0.0\\microsoft.extensions.logging.abstractions.8.0.0.nupkg.sha512",
+    "D:\\NuGetPackages\\npgsql\\8.0.3\\npgsql.8.0.3.nupkg.sha512"
+  ],
+  "logs": []
+}

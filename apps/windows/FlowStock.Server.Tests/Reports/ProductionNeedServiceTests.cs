@@ -105,10 +105,11 @@ public sealed class ProductionNeedServiceTests
 
         store.Verify(s => s.GetItems(null), Times.Once);
         store.Verify(s => s.GetStock(null), Times.Once);
-        store.Verify(s => s.GetOrders(), Times.Exactly(2));
+        store.Verify(s => s.GetOrders(), Times.Exactly(3));
         store.Verify(s => s.GetShippedTotalsByOrderLine(1), Times.Once);
         store.Verify(s => s.GetOrderReceiptPlanLines(1), Times.Once);
         store.Verify(s => s.GetOrderLines(1), Times.Once);
+        store.Verify(s => s.GetActiveProductionPalletWorkItems(), Times.Once);
         store.VerifyNoOtherCalls();
     }
 
@@ -324,6 +325,7 @@ public sealed class ProductionNeedServiceTests
             .Cast<Order>()
             .ToArray();
         store.Setup(s => s.GetOrders()).Returns(orders);
+        store.Setup(s => s.GetActiveProductionPalletWorkItems()).Returns(Array.Empty<ProductionPalletWorkItem>());
 
         foreach (var scenario in orderScenarios)
         {
@@ -386,6 +388,8 @@ public sealed class ProductionNeedServiceTests
                 }
             ]);
         }
+
+        store.Setup(s => s.GetProductionPalletsByDoc(It.IsAny<long>())).Returns(Array.Empty<ProductionPallet>());
 
         return new ProductionNeedService(store.Object);
     }

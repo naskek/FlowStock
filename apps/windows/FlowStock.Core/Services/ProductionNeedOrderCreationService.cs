@@ -9,24 +9,31 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
     private const double QtyTolerance = 0.000001;
     private readonly IDataStore _dataStore = dataStore;
 
-    public ProductionNeedOrderCreationResult CreateDraftOrders()
+    public ProductionNeedOrderPreviewResult PreviewDraftOrders()
+    {
+        return BuildPreview(_dataStore);
+    }
+
+    public ProductionNeedOrderCreationResult CreateDraftOrders(IReadOnlyList<ProductionNeedOrderDraftRequestLine>? requestedLines = null)
     {
         ProductionNeedOrderCreationResult? result = null;
         _dataStore.ExecuteInTransaction(store =>
         {
-            result = CreateDraftOrdersInTransaction(store);
+            result = CreateDraftOrdersInTransaction(store, requestedLines);
         });
 
         return result ?? throw new InvalidOperationException("Не удалось выполнить формирование производственной потребности.");
     }
 
-    private static ProductionNeedOrderCreationResult CreateDraftOrdersInTransaction(IDataStore dataStore)
+    private static ProductionNeedOrderCreationResult CreateDraftOrdersInTransaction(
+        IDataStore dataStore,
+        IReadOnlyList<ProductionNeedOrderDraftRequestLine>? requestedLines)
     {
-        var currentRows = new ProductionNeedService(dataStore)
-            .GetRows(includeZeroNeed: false);
+        var preview = BuildPreview(dataStore);
+        var currentRows = new ProductionNeedService(dataStore).GetRows(includeZeroNeed: false);
         var openInternalByItem = BuildDebugOpenInternalProductionByItem(dataStore);
         var debugSummary = BuildDebugSummary(currentRows, openInternalByItem);
-        var draftLines = BuildDraftLines(dataStore, currentRows);
+        var draftLines = BuildDraftLines(dataStore, preview.Rows, requestedLines);
         long? internalOrderId = null;
         if (draftLines.Count > 0)
         {
@@ -48,22 +55,98 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
             CreatedQty = draftLines.Sum(line => line.QtyOrdered),
             InternalDraftOrderId = internalOrderId,
             DebugSummary = debugSummary,
-            Message = BuildMessage(draftLines.Count)
+            Message = BuildMessage(draftLines.Count, preview.Rows.Count)
         };
     }
 
-    private static List<OrderLineView> BuildDraftLines(IDataStore dataStore, IReadOnlyList<ProductionNeedRow> currentRows)
+    private static ProductionNeedOrderPreviewResult BuildPreview(IDataStore dataStore)
     {
-        return currentRows
-            .Where(row => row.ToMinStockQty > QtyTolerance)
-            .Select(row =>
+        var currentRows = new ProductionNeedService(dataStore)
+            .GetRows(includeZeroNeed: false);
+        var previewRows = currentRows
+            .Where(row => row.CanCreateOrder && row.QtyToCreate > QtyTolerance)
+            .Select(row => new ProductionNeedOrderPreviewLine
             {
-                var item = dataStore.FindItemById(row.ItemId) ?? throw new InvalidOperationException("Товар потребности не найден.");
-                return new OrderLineView
+                ItemId = row.ItemId,
+                Gtin = row.Gtin ?? string.Empty,
+                ItemName = row.ItemName,
+                Qty = row.QtyToCreate,
+                Reason = string.IsNullOrWhiteSpace(row.Reason)
+                    ? "Пополнение склада до минимального остатка."
+                    : row.Reason,
+                MinStockQty = row.MinStockQty,
+                FreeStockQty = row.FreeStockQty,
+                OpenInternalOrderQty = row.OpenInternalOrderQty,
+                PlannedPalletQty = row.PlannedPalletQty,
+                FilledPalletQty = row.FilledPalletQty
+            })
+            .OrderByDescending(row => row.Qty)
+            .ThenBy(row => row.ItemName, StringComparer.CurrentCultureIgnoreCase)
+            .ToArray();
+
+        return new ProductionNeedOrderPreviewResult
+        {
+            Rows = previewRows,
+            Message = previewRows.Length == 0
+                ? "Нет строк для создания внутреннего заказа."
+                : $"Подготовлено строк к созданию: {previewRows.Length}."
+        };
+    }
+
+    private static List<OrderLineView> BuildDraftLines(
+        IDataStore dataStore,
+        IReadOnlyList<ProductionNeedOrderPreviewLine> previewRows,
+        IReadOnlyList<ProductionNeedOrderDraftRequestLine>? requestedLines)
+    {
+        var suggestedRows = previewRows.ToDictionary(row => row.ItemId);
+
+        IReadOnlyList<ProductionNeedOrderDraftRequestLine> effectiveRows;
+        if (requestedLines != null && requestedLines.Count > 0)
+        {
+            effectiveRows = requestedLines
+                .Where(line => line.ItemId > 0
+                               && line.QtyOrdered > QtyTolerance
+                               && suggestedRows.ContainsKey(line.ItemId))
+                .GroupBy(line => line.ItemId)
+                .Select(group => new ProductionNeedOrderDraftRequestLine
+                {
+                    ItemId = group.Key,
+                    QtyOrdered = group.Last().QtyOrdered
+                })
+                .Where(line => line.QtyOrdered > QtyTolerance)
+                .ToArray();
+        }
+        else
+        {
+            effectiveRows = suggestedRows.Values
+                .Select(row => new ProductionNeedOrderDraftRequestLine
                 {
                     ItemId = row.ItemId,
+                    QtyOrdered = row.Qty
+                })
+                .ToArray();
+        }
+
+        if (requestedLines != null && requestedLines.Count > 0 && effectiveRows.Count == 0)
+        {
+            throw new InvalidOperationException("Нет строк с количеством больше нуля для создания внутреннего заказа.");
+        }
+
+        return effectiveRows
+            .Select(line =>
+            {
+                var item = dataStore.FindItemById(line.ItemId) ?? throw new InvalidOperationException("Товар потребности не найден.");
+                var previewLine = suggestedRows[line.ItemId];
+                if (line.QtyOrdered - previewLine.Qty > QtyTolerance)
+                {
+                    throw new InvalidOperationException($"Количество для {item.Name} устарело: доступно к созданию не больше {previewLine.Qty:0.###}.");
+                }
+
+                return new OrderLineView
+                {
+                    ItemId = line.ItemId,
                     ItemName = item.Name,
-                    QtyOrdered = row.ToMinStockQty,
+                    QtyOrdered = line.QtyOrdered,
                     ProductionPurpose = ProductionLinePurpose.InternalStock
                 };
             })
@@ -138,15 +221,17 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
                 openInternalByItem.TryGetValue(row.ItemId, out var openInternalPlanned);
                 return string.Create(
                     CultureInfo.InvariantCulture,
-                    $"item_id={row.ItemId}; gtin={row.Gtin ?? ""}; item={row.ItemName}; to_close_orders={row.ToCloseOrdersQty:0.###}; to_min_stock={row.ToMinStockQty:0.###}; total_to_make={row.TotalToMakeQty:0.###}; open_internal_planned={openInternalPlanned:0.###}; internal_draft_qty_to_create={row.ToMinStockQty:0.###}");
+                    $"item_id={row.ItemId}; gtin={row.Gtin ?? ""}; item={row.ItemName}; to_close_orders={row.ToCloseOrdersQty:0.###}; to_min_stock={row.ToMinStockQty:0.###}; total_to_make={row.TotalToMakeQty:0.###}; open_internal_planned={openInternalPlanned:0.###}; internal_draft_qty_to_create={row.QtyToCreate:0.###}");
             })
             .ToArray();
     }
 
-    private static string BuildMessage(int createdLineCount)
+    private static string BuildMessage(int createdLineCount, int previewLineCount)
     {
         return createdLineCount == 0
-            ? "Внутренний черновик не создан: по актуальной потребности нет строк \"На склад до мин.\"."
+            ? previewLineCount == 0
+                ? "Внутренний черновик не создан: по актуальной потребности нет строк на пополнение склада."
+                : "Внутренний черновик не создан: не осталось подтверждённых строк с количеством больше нуля."
             : $"Создан внутренний черновик на склад: строк {createdLineCount}.";
     }
 }

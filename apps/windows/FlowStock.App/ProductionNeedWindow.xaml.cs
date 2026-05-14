@@ -55,6 +55,12 @@ public partial class ProductionNeedWindow : Window
                 MinStockQty = row.MinStockQty,
                 ToCloseOrdersQty = row.ToCloseOrdersQty,
                 ToMinStockQty = row.ToMinStockQty,
+                OpenInternalOrderQty = row.OpenInternalOrderQty,
+                PlannedPalletQty = row.PlannedPalletQty,
+                FilledPalletQty = row.FilledPalletQty,
+                PlannedPalletCount = row.PlannedPalletCount,
+                FilledPalletCount = row.FilledPalletCount,
+                QtyToCreate = row.QtyToCreate,
                 TotalToMakeQty = row.TotalToMakeQty
             });
         }
@@ -72,8 +78,17 @@ public partial class ProductionNeedWindow : Window
         public double MinStockQty { get; init; }
         public double ToCloseOrdersQty { get; init; }
         public double ToMinStockQty { get; init; }
+        public double OpenInternalOrderQty { get; init; }
+        public double PlannedPalletQty { get; init; }
+        public double FilledPalletQty { get; init; }
+        public int PlannedPalletCount { get; init; }
+        public int FilledPalletCount { get; init; }
+        public double QtyToCreate { get; init; }
         public double TotalToMakeQty { get; init; }
         public string StockDisplay => $"{FormatQty(FreeStockQty)} / {FormatQty(MinStockQty)}";
+        public string FilledPalletDisplay => PlannedPalletCount > 0
+            ? $"{FilledPalletCount} / {PlannedPalletCount} паллет, {FormatQty(FilledPalletQty)} шт"
+            : FormatQty(FilledPalletQty);
     }
 
     private static string FormatQty(double value)

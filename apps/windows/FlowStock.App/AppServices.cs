@@ -29,6 +29,7 @@ public sealed class AppServices
     public WpfImportApiService WpfImportApi { get; }
     public WpfPackagingApiService WpfPackagingApi { get; }
     public WpfMarkingApiService WpfMarkingApi { get; }
+    public WpfProductionPalletApiService WpfProductionPalletApi { get; }
     public WpfReadApiService WpfReadApi { get; }
     public WpfDocumentRuntimeApiService WpfDocumentRuntimeApi { get; }
     public WpfIncomingRequestsApiService WpfIncomingRequestsApi { get; }
@@ -43,6 +44,7 @@ public sealed class AppServices
     public WpfBatchAddDocLineService WpfBatchAddDocLines { get; }
     public WpfUpdateDocLineService WpfUpdateDocLines { get; }
     public WpfDeleteDocLineService WpfDeleteDocLines { get; }
+    public IPalletLabelPrintService PalletLabelPrinter { get; }
     public FileLogger AppLogger { get; }
     public FileLogger AdminLogger { get; }
     public string DatabasePath { get; }
@@ -94,6 +96,7 @@ public sealed class AppServices
         WpfImportApi = new WpfImportApiService(Settings, appLogger);
         WpfPackagingApi = new WpfPackagingApiService(Settings, appLogger);
         WpfMarkingApi = new WpfMarkingApiService(Settings, appLogger);
+        WpfProductionPalletApi = new WpfProductionPalletApiService(Settings, appLogger);
         WpfReadApi = new WpfReadApiService(Settings, appLogger);
         WpfDocumentRuntimeApi = new WpfDocumentRuntimeApiService(Settings, appLogger);
         WpfIncomingRequestsApi = new WpfIncomingRequestsApiService(Settings, appLogger);
@@ -108,6 +111,7 @@ public sealed class AppServices
         WpfBatchAddDocLines = new WpfBatchAddDocLineService(connectionString, Settings, appLogger);
         WpfUpdateDocLines = new WpfUpdateDocLineService(connectionString, Settings, appLogger);
         WpfDeleteDocLines = new WpfDeleteDocLineService(connectionString, Settings, appLogger);
+        PalletLabelPrinter = new BarTenderPalletLabelPrintService(Settings, appLogger, baseDir);
         DatabasePath = databaseTarget;
         ConnectionString = connectionString;
         BaseDir = baseDir;

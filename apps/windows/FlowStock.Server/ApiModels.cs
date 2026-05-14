@@ -77,6 +77,9 @@ public sealed class AddDocLineRequest
     [JsonPropertyName("production_purpose")]
     public string? ProductionPurpose { get; set; }
 
+    [JsonPropertyName("production_pallet_group")]
+    public string? ProductionPalletGroup { get; set; }
+
     [JsonPropertyName("qty")]
     public double Qty { get; set; }
 
@@ -300,6 +303,9 @@ public sealed class CreateOrderLineRequest
 
     [JsonPropertyName("production_purpose")]
     public string? ProductionPurpose { get; set; }
+
+    [JsonPropertyName("production_pallet_group")]
+    public string? ProductionPalletGroup { get; set; }
 }
 
 public sealed class CreateOrderRequest
@@ -366,6 +372,9 @@ public sealed class UpdateOrderLineRequest
 
     [JsonPropertyName("production_purpose")]
     public string? ProductionPurpose { get; set; }
+
+    [JsonPropertyName("production_pallet_group")]
+    public string? ProductionPalletGroup { get; set; }
 }
 
 public sealed class UpdateOrderRequest
@@ -417,6 +426,66 @@ public sealed class CreateProductionNeedOrdersResponse
 
     [JsonPropertyName("debug_summary")]
     public IReadOnlyList<string> DebugSummary { get; init; } = Array.Empty<string>();
+}
+
+public sealed class CreateProductionNeedOrdersRequest
+{
+    [JsonPropertyName("rows")]
+    public List<CreateProductionNeedOrdersRequestLine>? Rows { get; set; }
+}
+
+public sealed class CreateProductionNeedOrdersRequestLine
+{
+    [JsonPropertyName("item_id")]
+    public long ItemId { get; set; }
+
+    [JsonPropertyName("qty_ordered")]
+    public double? QtyOrdered { get; set; }
+}
+
+public sealed class PreviewProductionNeedOrdersResponse
+{
+    [JsonPropertyName("ok")]
+    public bool Ok { get; init; }
+
+    [JsonPropertyName("message")]
+    public string Message { get; init; } = string.Empty;
+
+    [JsonPropertyName("rows")]
+    public IReadOnlyList<PreviewProductionNeedOrdersResponseLine> Rows { get; init; } = Array.Empty<PreviewProductionNeedOrdersResponseLine>();
+}
+
+public sealed class PreviewProductionNeedOrdersResponseLine
+{
+    [JsonPropertyName("item_id")]
+    public long ItemId { get; init; }
+
+    [JsonPropertyName("gtin")]
+    public string Gtin { get; init; } = string.Empty;
+
+    [JsonPropertyName("item_name")]
+    public string ItemName { get; init; } = string.Empty;
+
+    [JsonPropertyName("qty_to_create")]
+    public double QtyToCreate { get; init; }
+
+    [JsonPropertyName("reason")]
+    public string Reason { get; init; } = string.Empty;
+
+    [JsonPropertyName("min_stock_qty")]
+    public double MinStockQty { get; init; }
+
+    [JsonPropertyName("free_stock_qty")]
+    public double FreeStockQty { get; init; }
+
+    [JsonPropertyName("open_internal_order_qty")]
+    public double OpenInternalOrderQty { get; init; }
+
+    [JsonPropertyName("planned_pallet_qty")]
+    public double PlannedPalletQty { get; init; }
+
+    [JsonPropertyName("filled_pallet_qty")]
+    public double FilledPalletQty { get; init; }
 }
 
 public sealed class CreateMarkingFromProductionNeedsResponse

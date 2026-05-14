@@ -135,7 +135,7 @@
           })
           .then(function (payload) {
             if (!response.ok) {
-              var message = (payload && payload.error) || "SERVER_ERROR";
+              var message = (payload && (payload.error || payload.message)) || "SERVER_ERROR";
               if (message === "BLOCK_DISABLED") {
                 notifyBlockDisabled(url, payload);
               }
@@ -272,7 +272,18 @@
       plannedDate: order.due_date || order.dueDate || null,
       createdAt: order.created_at || order.createdAt || null,
       shippedAt: order.shipped_at || order.shippedAt || null,
-      status: order.status || order.status_display || order.statusDisplay || null,
+      status: order.order_status || order.orderStatus || order.status || order.status_display || order.statusDisplay || null,
+      statusDisplay: order.order_status_display || order.orderStatusDisplay || order.status_display || order.statusDisplay || order.status || null,
+      hasShipmentRemaining: order.has_shipment_remaining === true || order.hasShipmentRemaining === true,
+      hasProductionPalletPlan:
+        order.has_production_pallet_plan === true || order.hasProductionPalletPlan === true,
+      needsProductionPalletPlan:
+        order.needs_production_pallet_plan === true || order.needsProductionPalletPlan === true,
+      palletPlanStatus: String(order.pallet_plan_status || order.palletPlanStatus || "").trim(),
+      plannedPalletCount: Number(order.planned_pallet_count || order.plannedPalletCount) || 0,
+      filledPalletCount: Number(order.filled_pallet_count || order.filledPalletCount) || 0,
+      plannedQty: Number(order.planned_qty || order.plannedQty) || 0,
+      filledQty: Number(order.filled_qty || order.filledQty) || 0,
     };
   }
 
@@ -293,7 +304,14 @@
       barcode: String(line.barcode || ""),
       orderedQty: Number(line.qty_ordered) || 0,
       shippedQty: Number(line.qty_shipped) || 0,
-      leftQty: Number(line.qty_left) || 0,
+      leftQty:
+        line.qty_left != null
+          ? Number(line.qty_left) || 0
+          : line.qty_remaining != null
+            ? Number(line.qty_remaining) || 0
+            : line.qtyRemaining != null
+              ? Number(line.qtyRemaining) || 0
+              : 0,
     };
   }
 
@@ -710,6 +728,30 @@
       });
   }
 
+  function apiGetOrderShipmentRemaining(orderId) {
+    var target = Number(orderId);
+    if (!target) {
+      return Promise.resolve([]);
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(
+          baseUrl + "/api/orders/" + encodeURIComponent(target) + "/shipment-remaining",
+          { method: "GET" }
+        );
+      })
+      .then(function (payload) {
+        if (!Array.isArray(payload)) {
+          throw new Error("INVALID_ORDER_SHIPMENT_REMAINING");
+        }
+        return payload
+          .map(normalizeApiOrderLine)
+          .filter(function (line) {
+            return !!line;
+          });
+      });
+  }
+
   function apiGetOrderReceiptRemaining(orderId) {
     var target = Number(orderId);
     if (!target) {
@@ -840,6 +882,252 @@
           .filter(function (line) {
             return !!line;
           });
+      });
+  }
+
+  function normalizeProductionPalletSummary(summary) {
+    summary = summary || {};
+    return {
+      plannedPalletCount: Number(summary.planned_pallet_count) || 0,
+      plannedQty: Number(summary.planned_qty) || 0,
+      filledPalletCount: Number(summary.filled_pallet_count) || 0,
+      filledQty: Number(summary.filled_qty) || 0,
+      remainingPalletCount: Number(summary.remaining_pallet_count) || 0,
+      remainingQty: Number(summary.remaining_qty) || 0,
+    };
+  }
+
+  function normalizeProductionFillingDoc(row) {
+    if (!row || row.prd_doc_id == null) {
+      return null;
+    }
+    var prdDocId = Number(row.prd_doc_id);
+    if (!prdDocId) {
+      return null;
+    }
+    return {
+      prdDocId: prdDocId,
+      prdDocRef: String(row.prd_doc_ref || ""),
+      prdStatus: String(row.prd_status || ""),
+      orderId: row.order_id != null ? Number(row.order_id) || null : null,
+      orderRef: String(row.order_ref || ""),
+      summary: normalizeProductionPalletSummary(row.summary),
+    };
+  }
+
+  function normalizeProductionFillingOrder(row) {
+    if (!row || row.order_id == null) {
+      return null;
+    }
+    var orderId = Number(row.order_id);
+    if (!orderId) {
+      return null;
+    }
+    return {
+      orderId: orderId,
+      orderRef: String(row.order_ref || ""),
+      orderType: String(row.order_type || ""),
+      orderTypeDisplay: String(row.order_type_display || ""),
+      orderStatus: String(row.order_status || ""),
+      orderStatusDisplay: String(row.order_status_display || ""),
+      partnerName: String(row.partner_name || ""),
+      prdDocId: row.prd_doc_id != null ? Number(row.prd_doc_id) || null : null,
+      prdDocRef: String(row.prd_doc_ref || ""),
+      summary: normalizeProductionPalletSummary(row.summary),
+    };
+  }
+
+  function normalizeProductionPallet(row) {
+    if (!row || row.id == null) {
+      return null;
+    }
+    var id = Number(row.id);
+    if (!id) {
+      return null;
+    }
+    return {
+      id: id,
+      prdDocId: Number(row.prd_doc_id) || 0,
+      docLineId: Number(row.doc_line_id) || 0,
+      orderId: row.order_id != null ? Number(row.order_id) || null : null,
+      orderLineId: row.order_line_id != null ? Number(row.order_line_id) || null : null,
+      itemId: Number(row.item_id) || 0,
+      itemName: String(row.item_name || ""),
+      huCode: String(row.hu_code || ""),
+      plannedQty: Number(row.planned_qty) || 0,
+      isMixedPallet: row.is_mixed_pallet === true,
+      lines: Array.isArray(row.lines) ? row.lines.map(function (line) {
+        return {
+          itemId: Number(line.item_id) || 0,
+          itemName: String(line.item_name || ""),
+          brand: String(line.brand || ""),
+          qty: Number(line.qty) || 0,
+          uom: String(line.uom || "шт"),
+        };
+      }) : [],
+      toLocationId: row.to_location_id != null ? Number(row.to_location_id) || null : null,
+      toLocationCode: String(row.to_location_code || ""),
+      status: String(row.status || ""),
+      filledAt: String(row.filled_at || ""),
+      filledByDeviceId: String(row.filled_by_device_id || ""),
+    };
+  }
+
+  function normalizeProductionPalletDocument(payload) {
+    payload = payload || {};
+    return {
+      prdDocId: Number(payload.prd_doc_id) || 0,
+      summary: normalizeProductionPalletSummary(payload.summary),
+      lines: Array.isArray(payload.lines) ? payload.lines.slice() : [],
+      pallets: Array.isArray(payload.pallets)
+        ? payload.pallets.map(normalizeProductionPallet).filter(function (row) { return !!row; })
+        : [],
+    };
+  }
+
+  function normalizeProductionPalletScan(payload) {
+    payload = payload || {};
+    return {
+      ok: payload.ok !== false,
+      alreadyFilled: payload.already_filled === true,
+      orderId: payload.order_id != null ? Number(payload.order_id) || null : null,
+      orderRef: String(payload.order_ref || ""),
+      prdDocId: Number(payload.prd_doc_id) || 0,
+      prdDocRef: String(payload.prd_doc_ref || ""),
+      palletId: Number(payload.pallet_id) || 0,
+      huCode: String(payload.hu_code || ""),
+      itemId: Number(payload.item_id) || 0,
+      itemName: String(payload.item_name || ""),
+      itemBrand: String(payload.item_brand || ""),
+      baseUom: String(payload.base_uom || "шт"),
+      plannedQty: Number(payload.planned_qty) || 0,
+      isMixedPallet: payload.is_mixed_pallet === true,
+      lines: Array.isArray(payload.lines) ? payload.lines.map(function (line) {
+        return {
+          itemId: Number(line.item_id) || 0,
+          itemName: String(line.item_name || ""),
+          brand: String(line.brand || ""),
+          qty: Number(line.qty) || 0,
+          uom: String(line.uom || "шт"),
+        };
+      }) : [],
+      palletIndex: Number(payload.pallet_index) || 0,
+      palletCount: Number(payload.pallet_count) || 0,
+      palletStatus: String(payload.pallet_status || ""),
+      document: payload.document ? normalizeProductionPalletDocument(payload.document) : null,
+    };
+  }
+
+  function apiGetProductionFillingDocs() {
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/tsd/production/filling-docs", { method: "GET" });
+      })
+      .then(function (payload) {
+        if (!Array.isArray(payload)) {
+          throw new Error("INVALID_PRODUCTION_FILLING_DOCS");
+        }
+        return payload.map(normalizeProductionFillingDoc).filter(function (row) { return !!row; });
+      });
+  }
+
+  function apiGetProductionFillingOrders() {
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/tsd/production/filling-orders", { method: "GET" });
+      })
+      .then(function (payload) {
+        if (!Array.isArray(payload)) {
+          throw new Error("INVALID_PRODUCTION_FILLING_ORDERS");
+        }
+        return payload.map(normalizeProductionFillingOrder).filter(function (row) { return !!row; });
+      });
+  }
+
+  function apiGetProductionFillingContext(orderId) {
+    var target = Number(orderId);
+    if (!target) {
+      return Promise.reject(new Error("INVALID_ORDER_ID"));
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(
+          baseUrl + "/api/tsd/production/orders/" + encodeURIComponent(target) + "/filling-context",
+          { method: "GET" }
+        );
+      })
+      .then(function (payload) {
+        payload = payload || {};
+        return {
+          orderId: Number(payload.order_id) || target,
+          orderRef: String(payload.order_ref || ""),
+          orderType: String(payload.order_type || ""),
+          orderTypeDisplay: String(payload.order_type_display || ""),
+          orderStatus: String(payload.order_status || ""),
+          orderStatusDisplay: String(payload.order_status_display || ""),
+          partnerName: String(payload.partner_name || ""),
+          prdDocId: Number(payload.prd_doc_id) || 0,
+          prdDocRef: String(payload.prd_doc_ref || ""),
+          document: payload.document ? normalizeProductionPalletDocument(payload.document) : null,
+        };
+      });
+  }
+
+  function apiGetProductionPallets(docId) {
+    var target = Number(docId);
+    if (!target) {
+      return Promise.reject(new Error("INVALID_DOC_ID"));
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(
+          baseUrl + "/api/docs/" + encodeURIComponent(target) + "/production-pallets",
+          { method: "GET" }
+        );
+      })
+      .then(normalizeProductionPalletDocument);
+  }
+
+  function apiScanProductionPallet(payload) {
+    var body = payload || {};
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/tsd/production/scan-pallet", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            order_id: body.orderId || body.order_id || null,
+            prd_doc_id: body.prdDocId || body.prd_doc_id || null,
+            hu_code: body.huCode || body.hu_code || "",
+            device_id: body.deviceId || body.device_id || "",
+          }),
+        });
+      })
+      .then(normalizeProductionPalletScan);
+  }
+
+  function apiFillProductionPallet(payload) {
+    var body = payload || {};
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/tsd/production/fill-pallet", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            order_id: body.orderId || body.order_id || null,
+            prd_doc_id: body.prdDocId || body.prd_doc_id || null,
+            hu_code: body.huCode || body.hu_code || "",
+            device_id: body.deviceId || body.device_id || "",
+          }),
+        });
+      })
+      .then(function (result) {
+        return {
+          ok: result && result.ok !== false,
+          alreadyFilled: result && result.already_filled === true,
+          pallet: result && result.pallet ? normalizeProductionPallet(result.pallet) : null,
+          document: result && result.document ? normalizeProductionPalletDocument(result.document) : null,
+        };
       });
   }
 
@@ -2262,7 +2550,14 @@
     apiGetNextDocRef: apiGetNextDocRef,
     apiGetDocById: apiGetDocById,
     apiGetDocLines: apiGetDocLines,
+    apiGetProductionFillingOrders: apiGetProductionFillingOrders,
+    apiGetProductionFillingContext: apiGetProductionFillingContext,
+    apiGetProductionFillingDocs: apiGetProductionFillingDocs,
+    apiGetProductionPallets: apiGetProductionPallets,
+    apiScanProductionPallet: apiScanProductionPallet,
+    apiFillProductionPallet: apiFillProductionPallet,
     apiGetOrderLines: apiGetOrderLines,
+    apiGetOrderShipmentRemaining: apiGetOrderShipmentRemaining,
     apiGetOrderReceiptRemaining: apiGetOrderReceiptRemaining,
     apiLogin: apiLogin,
   };

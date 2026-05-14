@@ -113,6 +113,70 @@ public sealed class CreateOrdersFromProductionNeedTests
     }
 
     [Fact]
+    public async Task CreateOrdersFromProductionNeed_UsesEditedPreviewQty_WhenProvidedByClient()
+    {
+        var (harness, apiStore) = CreateInternalOnlyScenario();
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        var payload = await CreateOrdersAsync(host.Client, new
+        {
+            rows = new[]
+            {
+                new
+                {
+                    item_id = 1002,
+                    qty_ordered = 125d
+                }
+            }
+        });
+
+        Assert.True(payload.Ok);
+        Assert.Equal(1, payload.InternalDraftCount);
+        var internalDraft = Assert.Single(harness.Store.GetOrders().Where(order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft));
+        Assert.Equal(125, Assert.Single(harness.GetOrderLines(internalDraft.Id)).QtyOrdered);
+    }
+
+    [Fact]
+    public async Task ProductionNeedPreview_ReturnsOnlyCreatableStockRows()
+    {
+        var (harness, apiStore) = CreateTwoItemNeedScenario();
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        using var response = await host.Client.PostAsJsonAsync("/api/reports/production-need/create-orders/preview", new { });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.True(payload.GetProperty("ok").GetBoolean());
+        var rows = payload.GetProperty("rows").EnumerateArray().ToArray();
+        Assert.Equal(2, rows.Length);
+        Assert.All(rows, row => Assert.True(row.GetProperty("qty_to_create").GetDouble() > 0));
+        Assert.DoesNotContain(rows, row => row.GetProperty("item_id").GetInt64() == 999999);
+    }
+
+    [Fact]
+    public async Task CreateOrdersFromProductionNeed_RejectsEmptyAndZeroQuantities()
+    {
+        var (harness, apiStore) = CreateInternalOnlyScenario();
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        using var response = await host.Client.PostAsJsonAsync("/api/production-needs/create-orders", new
+        {
+            rows = new[]
+            {
+                new
+                {
+                    item_id = 1002,
+                    qty_ordered = 0d
+                }
+            }
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<ApiResult>();
+        Assert.Equal("Нет строк с количеством больше нуля для создания внутреннего заказа.", payload?.Error);
+    }
+
+    [Fact]
     public async Task CreateOrdersFromProductionNeed_WithOnlyCustomerNeed_DoesNotCreateInternalDraft()
     {
         var (harness, apiStore) = CreateCustomerOnlyScenario();
@@ -126,6 +190,105 @@ public sealed class CreateOrdersFromProductionNeedTests
         Assert.Equal(0, payload.CreatedLineCount);
         Assert.Empty(harness.MarkingOrders);
         Assert.DoesNotContain(harness.Store.GetOrders(), order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft);
+    }
+
+    [Fact]
+    public void ProductionNeed_AfterInternalDraftCreated_KeepsRowVisible_WithOpenInternalQty()
+    {
+        var (harness, _) = CreateInternalOnlyScenario();
+
+        var createResult = new ProductionNeedOrderCreationService(harness.Store).CreateDraftOrders();
+
+        Assert.Equal(1, createResult.InternalDraftCount);
+        var row = Assert.Single(new ProductionNeedService(harness.Store).GetRows(includeZeroNeed: false));
+        Assert.Equal(0, row.TotalToMakeQty);
+        Assert.Equal(500, row.OpenInternalOrderQty);
+    }
+
+    [Fact]
+    public void ProductionNeed_WithOpenPalletWork_PopulatesFilledPalletProgress()
+    {
+        var harness = CreateBaseHarness();
+        harness.SeedItem(new Item
+        {
+            Id = 1001,
+            Name = "Горчица",
+            Gtin = "04607186951520",
+            ItemTypeName = "Готовая продукция",
+            ItemTypeEnableMinStockControl = true,
+            MinStockQty = 1000
+        });
+        harness.SeedLocation(new Location
+        {
+            Id = 1,
+            Code = "FG-01",
+            Name = "Готовая продукция"
+        });
+        harness.SeedOrder(new Order
+        {
+            Id = 60,
+            OrderRef = "060",
+            Type = OrderType.Internal,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 5, 14, 10, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 601,
+            OrderId = 60,
+            ItemId = 1001,
+            QtyOrdered = 1000,
+            ProductionPurpose = ProductionLinePurpose.InternalStock
+        });
+        harness.SeedDoc(new Doc
+        {
+            Id = 70,
+            DocRef = "PRD-2026-000070",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            CreatedAt = new DateTime(2026, 5, 14, 10, 10, 0, DateTimeKind.Utc),
+            OrderId = 60,
+            OrderRef = "060"
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 701,
+            PrdDocId = 70,
+            DocLineId = 7001,
+            OrderId = 60,
+            OrderLineId = 601,
+            ItemId = 1001,
+            ItemName = "Горчица",
+            HuCode = "HU-000701",
+            PlannedQty = 400,
+            Status = ProductionPalletStatus.Filled,
+            PalletNo = 1,
+            PalletCount = 2,
+            CreatedAt = new DateTime(2026, 5, 14, 10, 15, 0, DateTimeKind.Utc)
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 702,
+            PrdDocId = 70,
+            DocLineId = 7002,
+            OrderId = 60,
+            OrderLineId = 601,
+            ItemId = 1001,
+            ItemName = "Горчица",
+            HuCode = "HU-000702",
+            PlannedQty = 600,
+            Status = ProductionPalletStatus.Planned,
+            PalletNo = 2,
+            PalletCount = 2,
+            CreatedAt = new DateTime(2026, 5, 14, 10, 16, 0, DateTimeKind.Utc)
+        });
+
+        var row = Assert.Single(new ProductionNeedService(harness.Store).GetRows(includeZeroNeed: true));
+        Assert.Equal(1000, row.PlannedPalletQty);
+        Assert.Equal(400, row.FilledPalletQty);
+        Assert.Equal(2, row.PlannedPalletCount);
+        Assert.Equal(1, row.FilledPalletCount);
+        Assert.Equal(600, row.RemainingPalletQty);
     }
 
     [Fact]

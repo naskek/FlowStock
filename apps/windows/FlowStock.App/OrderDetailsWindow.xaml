@@ -103,7 +103,9 @@
             <Button x:Name="AddItemButton" Content="+ Товар" Click="AddLine_Click" TabIndex="7" />
             <Button x:Name="EditLineButton" Content="Редактировать" Click="EditLine_Click" Margin="8,0,0,0" TabIndex="8" />
             <Button x:Name="DeleteLineButton" Content="Удалить строку" Click="DeleteLine_Click" Margin="8,0,0,0" TabIndex="9" />
-            <Button x:Name="ExportMarkingButton" Content="Сформировать Excel ЧЗ" Click="ExportMarking_Click" Margin="16,0,0,0" Width="180" TabIndex="10" />
+            <Button x:Name="PlanPalletsButton" Content="Сформировать план паллет" Click="PlanPallets_Click" Margin="16,0,0,0" Width="190" TabIndex="10" />
+            <Button x:Name="PrintPalletLabelsButton" Content="Печать паллетных этикеток" Click="PrintPalletLabels_Click" Margin="8,0,0,0" Width="210" TabIndex="11" />
+            <Button x:Name="ExportMarkingButton" Content="Сформировать Excel ЧЗ" Click="ExportMarking_Click" Margin="8,0,0,0" Width="180" TabIndex="12" />
         </StackPanel>
             <Grid Grid.Row="1">
                 <DataGrid x:Name="OrderLinesGrid" AutoGenerateColumns="False" IsReadOnly="True"
@@ -115,6 +117,18 @@
                         <DataGridTextColumn Header="SKU / ШК" Binding="{Binding Barcode}" Width="150" IsReadOnly="True" />
                         <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="150" IsReadOnly="True" />
                         <DataGridTextColumn Header="Заказано (база)" Binding="{Binding QtyOrdered}" Width="140" IsReadOnly="True" />
+                        <DataGridTemplateColumn Header="Общий HU" Width="100">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <CheckBox IsChecked="{Binding IsMixedPalletLine, Mode=OneWay}"
+                                              Click="MixedPalletCheckBox_Click"
+                                              HorizontalAlignment="Center"
+                                              IsEnabled="{Binding RelativeSource={RelativeSource AncestorType=DataGrid}, Path=Tag}"
+                                              ToolTip="Строки с включенным общим HU попадут в одну микс-паллету до печати этикеток." />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTextColumn Header="HU паллет" Binding="{Binding ProductionHuCodes}" Width="170" IsReadOnly="True" />
                         <DataGridTextColumn x:Name="ProcessedQtyColumn" Header="Отгружено" Binding="{Binding QtyShipped}" Width="120" IsReadOnly="True" />
                         <DataGridTextColumn Header="Осталось" Binding="{Binding QtyRemaining}" Width="120" IsReadOnly="True" />
                         <DataGridTextColumn x:Name="AvailableQtyColumn" Header="В наличии" Binding="{Binding QtyAvailable}" Width="120" IsReadOnly="True" />
