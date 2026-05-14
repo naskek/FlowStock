@@ -1373,6 +1373,7 @@ public partial class MainWindow : Window
                 return;
             }
 
+            LoadDocs();
             LoadOrders();
             LoadStock(StatusSearchBox.Text);
         }
