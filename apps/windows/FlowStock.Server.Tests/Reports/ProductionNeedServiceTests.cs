@@ -106,11 +106,133 @@ public sealed class ProductionNeedServiceTests
         store.Verify(s => s.GetItems(null), Times.Once);
         store.Verify(s => s.GetStock(null), Times.Once);
         store.Verify(s => s.GetOrders(), Times.Exactly(3));
-        store.Verify(s => s.GetShippedTotalsByOrderLine(1), Times.Once);
-        store.Verify(s => s.GetOrderReceiptPlanLines(1), Times.Once);
-        store.Verify(s => s.GetOrderLines(1), Times.Once);
+        store.Verify(s => s.GetOrderReceiptRemaining(1), Times.Once);
         store.Verify(s => s.GetActiveProductionPalletWorkItems(), Times.Once);
         store.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public void ProductionNeed_AcceptedFullyProducedCustomerOrder_DoesNotCreateCustomerDemand()
+    {
+        var service = BuildService(
+            itemId: 64,
+            physicalStockQty: 0,
+            minStockQty: 0,
+            orderScenarios:
+            [
+                new OrderScenario(
+                    OrderId: 57,
+                    LineId: 5700,
+                    QtyOrdered: 1680,
+                    QtyReserved: 0,
+                    DueDate: DateTime.Today,
+                    QtyProducedEffective: 1680,
+                    Status: OrderStatus.Accepted)
+            ],
+            store: out _);
+
+        var row = service.GetRows(includeZeroNeed: true).Single();
+
+        Assert.Equal(0, row.ToCloseOrdersQty);
+        Assert.Equal(0, row.TotalToMakeQty);
+    }
+
+    [Fact]
+    public void ProductionNeed_UnproducedInProgressCustomerOrders_StillContributeDemand()
+    {
+        var service = BuildService(
+            itemId: 64,
+            physicalStockQty: 0,
+            minStockQty: 0,
+            orderScenarios:
+            [
+                new OrderScenario(
+                    OrderId: 60,
+                    LineId: 6000,
+                    QtyOrdered: 1680,
+                    QtyReserved: 0,
+                    DueDate: DateTime.Today,
+                    Status: OrderStatus.InProgress),
+                new OrderScenario(
+                    OrderId: 62,
+                    LineId: 6200,
+                    QtyOrdered: 840,
+                    QtyReserved: 0,
+                    DueDate: DateTime.Today,
+                    Status: OrderStatus.InProgress)
+            ],
+            store: out _);
+
+        var row = service.GetRows(includeZeroNeed: true).Single();
+
+        Assert.Equal(2520, row.ToCloseOrdersQty);
+        Assert.Equal(2520, row.TotalToMakeQty);
+    }
+
+    [Fact]
+    public void ProductionNeed_AggregatesProducedAcceptedAndUnproducedInProgressOrders_AsProductionDemand()
+    {
+        var service = BuildService(
+            itemId: 64,
+            physicalStockQty: 0,
+            minStockQty: 0,
+            orderScenarios:
+            [
+                new OrderScenario(
+                    OrderId: 57,
+                    LineId: 5700,
+                    QtyOrdered: 1680,
+                    QtyReserved: 0,
+                    DueDate: DateTime.Today,
+                    QtyProducedEffective: 1680,
+                    Status: OrderStatus.Accepted),
+                new OrderScenario(
+                    OrderId: 60,
+                    LineId: 6000,
+                    QtyOrdered: 1680,
+                    QtyReserved: 0,
+                    DueDate: DateTime.Today,
+                    Status: OrderStatus.InProgress),
+                new OrderScenario(
+                    OrderId: 62,
+                    LineId: 6200,
+                    QtyOrdered: 840,
+                    QtyReserved: 0,
+                    DueDate: DateTime.Today,
+                    Status: OrderStatus.InProgress)
+            ],
+            store: out _);
+
+        var row = service.GetRows(includeZeroNeed: true).Single();
+
+        Assert.Equal(2520, row.ToCloseOrdersQty);
+        Assert.Equal(2520, row.TotalToMakeQty);
+    }
+
+    [Fact]
+    public void ProductionNeed_PartialProducedCustomerOrder_ReturnsOnlyRemainingProductionDemand()
+    {
+        var service = BuildService(
+            itemId: 64,
+            physicalStockQty: 0,
+            minStockQty: 0,
+            orderScenarios:
+            [
+                new OrderScenario(
+                    OrderId: 63,
+                    LineId: 6300,
+                    QtyOrdered: 1680,
+                    QtyReserved: 0,
+                    DueDate: DateTime.Today,
+                    QtyProducedEffective: 600,
+                    Status: OrderStatus.InProgress)
+            ],
+            store: out _);
+
+        var row = service.GetRows(includeZeroNeed: true).Single();
+
+        Assert.Equal(1080, row.ToCloseOrdersQty);
+        Assert.Equal(1080, row.TotalToMakeQty);
     }
 
     [Fact]
@@ -312,7 +434,7 @@ public sealed class ProductionNeedServiceTests
                 Id = scenario.OrderId,
                 OrderRef = scenario.OrderId.ToString(),
                 Type = OrderType.Customer,
-                Status = OrderStatus.InProgress,
+                Status = scenario.Status,
                 DueDate = scenario.DueDate
             })
             .Concat(planned.Select(scenario => new Order
@@ -329,35 +451,19 @@ public sealed class ProductionNeedServiceTests
 
         foreach (var scenario in orderScenarios)
         {
-            store.Setup(s => s.GetOrderLines(scenario.OrderId)).Returns(
+            store.Setup(s => s.GetOrderReceiptRemaining(scenario.OrderId)).Returns(
             [
-                new OrderLine
+                new OrderReceiptLine
                 {
-                    Id = scenario.LineId,
+                    OrderLineId = scenario.LineId,
                     OrderId = scenario.OrderId,
                     ItemId = itemId,
-                    QtyOrdered = scenario.QtyOrdered
+                    ItemName = "Товар",
+                    QtyOrdered = scenario.QtyOrdered,
+                    QtyReceived = scenario.QtyProducedEffective + scenario.QtyReserved,
+                    QtyRemaining = Math.Max(0, scenario.QtyOrdered - scenario.QtyProducedEffective - scenario.QtyReserved)
                 }
             ]);
-            store.Setup(s => s.GetShippedTotalsByOrderLine(scenario.OrderId)).Returns(
-                new Dictionary<long, double> { [scenario.LineId] = scenario.QtyShipped });
-
-            IReadOnlyList<OrderReceiptPlanLine> planLines = scenario.QtyReserved > 0
-                ?
-                [
-                    new OrderReceiptPlanLine
-                    {
-                        Id = scenario.LineId + 1000,
-                        OrderId = scenario.OrderId,
-                        OrderLineId = scenario.LineId,
-                        ItemId = itemId,
-                        ItemName = "Товар",
-                        QtyPlanned = scenario.QtyReserved,
-                        SortOrder = 1
-                    }
-                ]
-                : Array.Empty<OrderReceiptPlanLine>();
-            store.Setup(s => s.GetOrderReceiptPlanLines(scenario.OrderId)).Returns(planLines);
         }
 
         foreach (var scenario in planned)
@@ -410,7 +516,8 @@ public sealed class ProductionNeedServiceTests
         double QtyOrdered,
         double QtyReserved,
         DateTime? DueDate,
-        double QtyShipped = 0);
+        double QtyProducedEffective = 0,
+        OrderStatus Status = OrderStatus.InProgress);
 
     private sealed record PlannedScenario(
         long OrderId,

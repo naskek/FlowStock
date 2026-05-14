@@ -3168,15 +3168,43 @@ customer_order_lines AS (
     WHERE o.order_type = @customer_order_type
       AND o.status NOT IN (@draft_order_status, @shipped_order_status, @cancelled_order_status)
 ),
-customer_shipped_by_line AS (
+customer_legacy_receipt_by_line AS (
     SELECT dl.order_line_id,
-           SUM(dl.qty) AS qty_shipped
+           SUM(dl.qty) AS qty_received
     FROM active_doc_lines dl
     INNER JOIN docs d ON d.id = dl.doc_id
     INNER JOIN customer_order_lines col ON col.id = dl.order_line_id
     WHERE d.status = @closed_doc_status
-      AND d.type = @outbound_doc_type
+      AND d.type = @production_doc_type
+      AND NOT EXISTS (
+          SELECT 1
+          FROM production_pallets pp
+          WHERE pp.prd_doc_id = d.id
+            AND pp.status <> @cancelled_pallet_status
+      )
     GROUP BY dl.order_line_id
+),
+customer_filled_pallet_by_line AS (
+    SELECT ppl.order_line_id,
+           SUM(ppl.planned_qty) AS qty_received
+    FROM production_pallet_lines ppl
+    INNER JOIN production_pallets pp ON pp.id = ppl.production_pallet_id
+    INNER JOIN customer_order_lines col ON col.id = ppl.order_line_id
+    WHERE pp.status = @filled_pallet_status
+      AND ppl.planned_qty > 0
+    GROUP BY ppl.order_line_id
+),
+customer_receipt_by_line AS (
+    SELECT order_line_id,
+           SUM(qty_received) AS qty_received
+    FROM (
+        SELECT order_line_id, qty_received
+        FROM customer_legacy_receipt_by_line
+        UNION ALL
+        SELECT order_line_id, qty_received
+        FROM customer_filled_pallet_by_line
+    ) customer_receipt_sources
+    GROUP BY order_line_id
 ),
 customer_reserved_by_line AS (
     SELECT p.order_line_id,
@@ -3188,10 +3216,9 @@ customer_reserved_by_line AS (
 ),
 need_by_item AS (
     SELECT col.item_id,
-           SUM(GREATEST(0, col.qty_ordered - COALESCE(shipped.qty_shipped, 0))) AS order_qty,
-           SUM(GREATEST(0, COALESCE(reserved.qty_reserved, 0))) AS reserved_qty
+           SUM(GREATEST(0, col.qty_ordered - COALESCE(receipt.qty_received, 0) - COALESCE(reserved.qty_reserved, 0))) AS order_qty
     FROM customer_order_lines col
-    LEFT JOIN customer_shipped_by_line shipped ON shipped.order_line_id = col.id
+    LEFT JOIN customer_receipt_by_line receipt ON receipt.order_line_id = col.id
     LEFT JOIN customer_reserved_by_line reserved ON reserved.order_line_id = col.id
     GROUP BY col.item_id
 ),
@@ -3311,7 +3338,7 @@ SELECT ids.item_id,
            WHEN COALESCE(snapshot.enable_min_stock_control, FALSE) THEN GREATEST(0, COALESCE(snapshot.min_stock_qty, 0))
            ELSE 0
        END AS min_stock_qty,
-       GREATEST(0, COALESCE(need.order_qty, 0) - COALESCE(need.reserved_qty, 0)) AS to_close_orders_qty,
+       GREATEST(0, COALESCE(need.order_qty, 0)) AS to_close_orders_qty,
        GREATEST(0, CASE
            WHEN COALESCE(snapshot.enable_min_stock_control, FALSE)
                THEN COALESCE(snapshot.min_stock_qty, 0) - (COALESCE(stock.physical_stock_qty, 0) - COALESCE(reserved_stock.reserved_customer_order_qty, 0))
@@ -3327,7 +3354,7 @@ LEFT JOIN need_by_item need ON need.item_id = ids.item_id
 LEFT JOIN planned_internal_by_item planned ON planned.item_id = ids.item_id
 LEFT JOIN filled_pallet_by_item filled ON filled.item_id = ids.item_id
 WHERE @include_zero = TRUE
-   OR GREATEST(0, COALESCE(need.order_qty, 0) - COALESCE(need.reserved_qty, 0))
+   OR GREATEST(0, COALESCE(need.order_qty, 0))
       + GREATEST(0, CASE
           WHEN COALESCE(snapshot.enable_min_stock_control, FALSE)
               THEN COALESCE(snapshot.min_stock_qty, 0) - (COALESCE(stock.physical_stock_qty, 0) - COALESCE(reserved_stock.reserved_customer_order_qty, 0))
@@ -3336,7 +3363,7 @@ WHERE @include_zero = TRUE
    OR COALESCE(planned.planned_internal_stock_qty, 0) > 0
    OR COALESCE(filled.filled_pallet_qty, 0) > 0
 ORDER BY
-    (GREATEST(0, COALESCE(need.order_qty, 0) - COALESCE(need.reserved_qty, 0))
+    (GREATEST(0, COALESCE(need.order_qty, 0))
      + GREATEST(0, CASE
          WHEN COALESCE(snapshot.enable_min_stock_control, FALSE)
              THEN COALESCE(snapshot.min_stock_qty, 0) - (COALESCE(stock.physical_stock_qty, 0) - COALESCE(reserved_stock.reserved_customer_order_qty, 0))
