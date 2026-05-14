@@ -34,6 +34,7 @@
                     <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
                         <ComboBox x:Name="DocOrderCombo" Width="220" DisplayMemberPath="DisplayName" IsEditable="True"
                                   SelectionChanged="DocOrderCombo_SelectionChanged" KeyUp="DocOrderCombo_KeyUp" />
+                        <TextBox x:Name="DocOrderReadOnlyBox" Width="220" Visibility="Collapsed" IsReadOnly="True" />
                         <Button x:Name="DocOrderClearButton" Content="Сброс" Width="60" Margin="8,0,0,0"
                                 Click="DocOrderClear_Click" />
                     </StackPanel>
@@ -101,6 +102,7 @@
             <Button x:Name="AutoHuButton" Content="Распределить по HU" Click="AutoHuButton_Click" Margin="8,0,0,0" />
             <Button x:Name="EditLineButton" Content="Изменить количество..." Click="DocEditLine_Click" Margin="8,0,0,0" />
             <Button x:Name="AssignHuButton" Content="Назначить HU..." Click="AssignHuButton_Click" Margin="8,0,0,0" />
+            <Button x:Name="FillPalletButton" Content="Наполнить паллет" Click="FillPalletButton_Click" Margin="8,0,0,0" Visibility="Collapsed" />
             <Button x:Name="DeleteLineButton" Content="Удалить строки" Click="DocDeleteLine_Click" Margin="8,0,0,0" />
             <Button x:Name="KmCodesButton" Content="Коды КМ..." Click="KmCodes_Click" Margin="8,0,0,0" />
             <TextBlock x:Name="PalletizedPrdBadge" Text="Паллетный выпуск по плану" Margin="12,0,0,0" VerticalAlignment="Center" FontWeight="SemiBold" Foreground="#2D6A3D" Visibility="Collapsed" />
@@ -119,6 +121,12 @@
                         </DataTrigger>
                         <DataTrigger Binding="{Binding HasInventoryDiff}" Value="True">
                             <Setter Property="Background" Value="#FFFFF2CC" />
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding HasProductionPalletPlanLine}" Value="True">
+                            <Setter Property="Background" Value="#FFFCE4EC" />
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding IsProductionPalletFilled}" Value="True">
+                            <Setter Property="Background" Value="#FFE8F6EC" />
                         </DataTrigger>
                     </Style.Triggers>
                 </Style>
@@ -161,6 +169,7 @@
                     </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
                 <DataGridTextColumn x:Name="DocHuColumn" Header="HU" Binding="{Binding HuDisplay}" Width="180" />
+                <DataGridTextColumn x:Name="DocPalletStatusColumn" Header="Паллета" Binding="{Binding ProductionPalletStatusDisplay}" Width="170" />
                 <DataGridTextColumn x:Name="DocFromColumn" Header="Откуда" Binding="{Binding FromLocation}" Width="220" />
                 <DataGridTemplateColumn x:Name="DocToEditColumn" Header="Куда" Width="220">
                     <DataGridTemplateColumn.CellTemplate>

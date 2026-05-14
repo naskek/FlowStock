@@ -134,6 +134,60 @@ public sealed class WpfProductionPalletApiService
         }
     }
 
+    public async Task<WpfProductionPalletFillApiResult> TryFillPalletAsync(
+        long prdDocId,
+        long? orderId,
+        string huCode,
+        string? deviceId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (!TryLoadConfiguration(out var configuration))
+            {
+                _logger.Info("Production pallet API skipped for manual fill: server base URL is not configured.");
+                return WpfProductionPalletFillApiResult.Failure("FlowStock Server API не настроен.");
+            }
+
+            using var handler = CreateHandler(configuration);
+            using var client = CreateClient(handler, configuration);
+            using var response = await client.PostAsJsonAsync("/api/tsd/production/fill-pallet", new
+                {
+                    order_id = orderId,
+                    prd_doc_id = prdDocId,
+                    hu_code = huCode,
+                    device_id = deviceId
+                }, cancellationToken)
+                .ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return WpfProductionPalletFillApiResult.Failure(await ReadApiErrorAsync(response).ConfigureAwait(false));
+            }
+
+            var payload = await response.Content.ReadFromJsonAsync<FillResponse>(JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+            if (payload == null)
+            {
+                return WpfProductionPalletFillApiResult.Failure("Сервер вернул пустой ответ.");
+            }
+
+            return new WpfProductionPalletFillApiResult(
+                true,
+                string.Empty,
+                payload.AlreadyFilled,
+                payload.Pallet?.HuCode ?? huCode,
+                payload.Pallet?.Status ?? string.Empty,
+                payload.Document?.Summary?.PlannedPalletCount ?? 0,
+                payload.Document?.Summary?.FilledPalletCount ?? 0,
+                payload.Document?.Summary?.RemainingPalletCount ?? 0);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Production pallet fill failed", ex);
+            return WpfProductionPalletFillApiResult.Failure(ex.Message);
+        }
+    }
+
     private bool TryLoadConfiguration(out WpfProductionPalletApiConfiguration configuration)
     {
         var settings = _settings.Load().Server ?? new ServerSettings();
@@ -381,6 +435,45 @@ public sealed class WpfProductionPalletApiService
         [JsonPropertyName("status")]
         public string? Status { get; init; }
     }
+
+    private sealed class FillResponse
+    {
+        [JsonPropertyName("already_filled")]
+        public bool AlreadyFilled { get; init; }
+
+        [JsonPropertyName("pallet")]
+        public FillPalletResponse? Pallet { get; init; }
+
+        [JsonPropertyName("document")]
+        public FillDocumentResponse? Document { get; init; }
+    }
+
+    private sealed class FillPalletResponse
+    {
+        [JsonPropertyName("hu_code")]
+        public string? HuCode { get; init; }
+
+        [JsonPropertyName("status")]
+        public string? Status { get; init; }
+    }
+
+    private sealed class FillDocumentResponse
+    {
+        [JsonPropertyName("summary")]
+        public FillSummaryResponse? Summary { get; init; }
+    }
+
+    private sealed class FillSummaryResponse
+    {
+        [JsonPropertyName("planned_pallet_count")]
+        public int PlannedPalletCount { get; init; }
+
+        [JsonPropertyName("filled_pallet_count")]
+        public int FilledPalletCount { get; init; }
+
+        [JsonPropertyName("remaining_pallet_count")]
+        public int RemainingPalletCount { get; init; }
+    }
 }
 
 public sealed record WpfProductionPalletPlanApiResult(
@@ -412,5 +505,21 @@ public sealed record WpfProductionPalletPrintRowsApiResult(
     public static WpfProductionPalletPrintRowsApiResult Failure(string message)
     {
         return new WpfProductionPalletPrintRowsApiResult(false, message, Array.Empty<PalletLabelPrintRow>());
+    }
+}
+
+public sealed record WpfProductionPalletFillApiResult(
+    bool IsSuccess,
+    string Message,
+    bool AlreadyFilled,
+    string HuCode,
+    string PalletStatus,
+    int PlannedPalletCount,
+    int FilledPalletCount,
+    int RemainingPalletCount)
+{
+    public static WpfProductionPalletFillApiResult Failure(string message)
+    {
+        return new WpfProductionPalletFillApiResult(false, message, false, string.Empty, string.Empty, 0, 0, 0);
     }
 }

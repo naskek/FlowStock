@@ -114,9 +114,19 @@ assert(
 );
 assert(
   appJs.includes("TsdStorage.apiFillProductionPallet({") &&
-    appJs.includes("orderId: activePreview.orderId") &&
-    appJs.includes("prdDocId: activePreview.prdDocId"),
+    appJs.includes("orderId: preview.orderId") &&
+    appJs.includes("prdDocId: preview.prdDocId"),
   "fill confirmation should include scanned order and PRD context"
+);
+assert(
+  appJs.includes("openFillingPreviewOverlay(context, activePreview)") &&
+    appJs.includes('className = "overlay filling-preview-overlay"') &&
+    appJs.includes("Подтверждение наполнения"),
+  "fill confirmation should open in a separate modal overlay"
+);
+assert(
+  appJs.includes("Наполнение завершено. Заказ закрыт."),
+  "final pallet fill should tell the operator that the order is closed"
 );
 assert(
   appJs.includes("TsdStorage.apiGetOrderShipmentRemaining(orderId)") &&

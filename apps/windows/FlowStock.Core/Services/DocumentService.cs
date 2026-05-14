@@ -2236,7 +2236,7 @@ public sealed class DocumentService
 
             foreach (var orderId in affectedOrderIds)
             {
-                orderService.GetOrder(orderId);
+                orderService.RefreshPersistedStatus(orderId);
             }
 
             OrderService.RefreshCustomerReceiptPlansCore(store);

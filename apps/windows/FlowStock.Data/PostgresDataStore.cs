@@ -1996,7 +1996,7 @@ WHERE doc_id = @doc_id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT COALESCE(SUM(planned_qty), 0)
+SELECT COALESCE(SUM(pll.planned_qty), 0)
 FROM production_pallet_lines pll
 INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
 WHERE pll.order_line_id = @order_line_id
@@ -3364,6 +3364,9 @@ ORDER BY
                 var minStockQty = reader.GetDouble(6);
                 var toCloseOrdersQty = reader.GetDouble(7);
                 var toMinStockQty = reader.GetDouble(8);
+                var openInternalOrderQty = reader.GetDouble(9);
+                var filledPalletQty = reader.GetDouble(10);
+                var qtyToCreate = toMinStockQty;
                 rows.Add(new ProductionNeedRow
                 {
                     ItemId = reader.GetInt64(0),
@@ -3375,8 +3378,11 @@ ORDER BY
                     MinStockQty = minStockQty,
                     ToCloseOrdersQty = toCloseOrdersQty,
                     ToMinStockQty = toMinStockQty,
-                    OpenInternalOrderQty = reader.GetDouble(9),
-                    FilledPalletQty = reader.GetDouble(10),
+                    OpenInternalOrderQty = openInternalOrderQty,
+                    FilledPalletQty = filledPalletQty,
+                    QtyToCreate = qtyToCreate,
+                    CanCreateOrder = qtyToCreate > 0.000001d,
+                    Reason = BuildProductionNeedReason(minStockQty, toMinStockQty, openInternalOrderQty, qtyToCreate),
                     TotalToMakeQty = toCloseOrdersQty + toMinStockQty
                 });
             }
@@ -3430,6 +3436,26 @@ ORDER BY p.sort_order, p.id;
 
             return lines;
         });
+    }
+
+    private static string BuildProductionNeedReason(double minStockQty, double toMinStockQty, double openInternalOrderQty, double qtyToCreate)
+    {
+        if (qtyToCreate > 0.000001d)
+        {
+            return "Требуется пополнение склада до минимального остатка.";
+        }
+
+        if (minStockQty <= 0.000001d)
+        {
+            return "Для товара не задан минимальный остаток.";
+        }
+
+        if (toMinStockQty <= 0.000001d && openInternalOrderQty > 0.000001d)
+        {
+            return "Потребность уже покрыта открытой внутренней работой.";
+        }
+
+        return "Свободный остаток уже покрывает минимальный уровень.";
     }
 
     public IReadOnlyCollection<string> GetReservedOrderReceiptHuCodes(long? excludeOrderId = null)

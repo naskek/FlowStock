@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "dgSpecHash": "BuJCh7AziB4=",
+  "success": true,
+  "projectFilePath": "D:\\FlowStock\\apps\\windows\\FlowStock.App\\FlowStock.App.csproj",
+  "expectedPackageFiles": [
+    "D:\\NuGetPackages\\exceldatareader\\3.8.0\\exceldatareader.3.8.0.nupkg.sha512",
+    "D:\\NuGetPackages\\microsoft.extensions.dependencyinjection.abstractions\\8.0.0\\microsoft.extensions.dependencyinjection.abstractions.8.0.0.nupkg.sha512",
+    "D:\\NuGetPackages\\microsoft.extensions.logging.abstractions\\8.0.0\\microsoft.extensions.logging.abstractions.8.0.0.nupkg.sha512",
+    "D:\\NuGetPackages\\npgsql\\8.0.3\\npgsql.8.0.3.nupkg.sha512"
+  ],
+  "logs": []
+}

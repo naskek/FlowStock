@@ -1041,6 +1041,19 @@ body {
   gap: 10px;
 }
 
+.filling-preview-overlay .overlay-card {
+  width: min(520px, calc(100vw - 24px));
+}
+
+.filling-preview-overlay-shell {
+  padding-bottom: 18px;
+}
+
+.filling-preview-overlay-card {
+  border: none;
+  padding: 0;
+}
+
 .filling-preview-title {
   font-size: 22px;
   font-weight: 900;
@@ -1071,6 +1084,13 @@ body {
 .filling-preview-actions {
   display: grid;
   gap: 10px;
+}
+
+.filling-preview-error {
+  min-height: 20px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #b91c1c;
 }
 
 .filling-ok-btn,

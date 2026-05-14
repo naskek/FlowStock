@@ -1,6 +1,8 @@
+using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 using FlowStock.Core.Services;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
+using Moq;
 
 namespace FlowStock.Server.Tests.CloseDocument;
 
@@ -525,6 +527,56 @@ public sealed class OrderStatusRefreshTests
         }
 
         Assert.Equal(OrderStatus.Shipped, harness.GetOrder(20).Status);
+    }
+
+    [Fact]
+    public void RefreshPersistedStatus_ComputedShippedCustomerOrder_PersistsStatus()
+    {
+        var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(s => s.GetOrder(55))
+            .Returns(new Order
+            {
+                Id = 55,
+                OrderRef = "055",
+                Type = OrderType.Customer,
+                Status = OrderStatus.Shipped,
+                PartnerId = 200,
+                CreatedAt = new DateTime(2026, 5, 14, 8, 28, 23, DateTimeKind.Utc)
+            });
+        store.Setup(s => s.GetOrderLines(55))
+            .Returns([
+                new OrderLine
+                {
+                    Id = 143,
+                    OrderId = 55,
+                    ItemId = 18,
+                    QtyOrdered = 1134,
+                    ProductionPurpose = ProductionLinePurpose.CustomerOrder
+                }
+            ]);
+        store.Setup(s => s.GetShippedTotalsByOrderLine(55))
+            .Returns(new Dictionary<long, double> { [143] = 1134 });
+        store.Setup(s => s.GetOrderReceiptRemaining(55))
+            .Returns([
+                new OrderReceiptLine
+                {
+                    OrderLineId = 143,
+                    OrderId = 55,
+                    ItemId = 18,
+                    QtyOrdered = 1134,
+                    QtyReceived = 1134,
+                    QtyRemaining = 0,
+                    ProductionPurpose = ProductionLinePurpose.CustomerOrder
+                }
+            ]);
+        store.Setup(s => s.UpdateOrderStatus(55, OrderStatus.Shipped));
+
+        var service = new OrderService(store.Object);
+
+        var status = service.RefreshPersistedStatus(55);
+
+        Assert.Equal(OrderStatus.Shipped, status);
+        store.Verify(s => s.UpdateOrderStatus(55, OrderStatus.Shipped), Times.Once);
     }
 
     private static CloseDocumentHarness CreateCustomerOrderHarness()

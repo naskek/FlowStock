@@ -2553,60 +2553,11 @@
     var document = context.document || {};
     var summary = getFillingSummary(document.summary ? document : work);
     var palletListHtml = renderFillingPalletStatusList(document.pallets);
-    var preview = state && state.preview;
     var message = state && state.message ? String(state.message) : "";
     var messageType = state && state.messageType ? String(state.messageType) : "";
     var messageHtml = message
       ? '<div class="filling-message filling-message-' + escapeHtml(messageType || "info") + '">' + escapeHtml(message) + "</div>"
       : "";
-    var confirmHtml = "";
-
-    if (preview && preview.alreadyFilled !== true) {
-      var isMixed = preview.isMixedPallet === true;
-      var brandHtml = !isMixed && preview.itemBrand
-        ? '<div class="filling-preview-brand">' + escapeHtml(preview.itemBrand) + "</div>"
-        : "";
-      var compositionHtml = "";
-      if (isMixed && Array.isArray(preview.lines) && preview.lines.length) {
-        compositionHtml =
-          '<div class="filling-preview-composition-title">Состав:</div>' +
-          '<ol class="filling-preview-composition">' +
-          preview.lines.map(function (line) {
-            return '<li>' +
-              escapeHtml(line.itemName || "-") +
-              " — " +
-              escapeHtml(formatQtyWithUnit(line.qty || 0, line.uom || "шт")) +
-              "</li>";
-          }).join("") +
-          "</ol>";
-      }
-      confirmHtml =
-        '<div class="filling-preview-card">' +
-        '  <div class="filling-preview-title">' + (isMixed ? "Микс-паллета" : "Наполнение паллеты") + "</div>" +
-        '  <div class="filling-preview-line">Заказ: <strong>' +
-        escapeHtml(preview.orderRef || getFillingWorkOrderRef(work)) +
-        "</strong></div>" +
-        '  <div class="filling-preview-line">HU: <strong>' +
-        escapeHtml(preview.huCode) +
-        "</strong></div>" +
-        '  <div class="filling-preview-line">Паллета: <strong>' +
-        escapeHtml(preview.palletIndex || 0) +
-        " / " +
-        escapeHtml(preview.palletCount || 0) +
-        "</strong></div>" +
-        '  <div class="filling-preview-item">' +
-        escapeHtml(isMixed ? "Микс-паллета" : preview.itemName || "-") +
-        "</div>" +
-        brandHtml +
-        (isMixed ? compositionHtml : '  <div class="filling-preview-qty">' +
-        escapeHtml(formatQtyWithUnit(preview.plannedQty || 0, preview.baseUom || "шт")) +
-        "</div>") +
-        '  <div class="filling-preview-actions">' +
-        '    <button class="btn primary-btn filling-ok-btn" id="fillingConfirmBtn" type="button">ОК</button>' +
-        '    <button class="btn btn-outline filling-cancel-btn" id="fillingCancelBtn" type="button">Отмена</button>' +
-        "  </div>" +
-        "</div>";
-    }
 
     return (
       '<section class="screen filling-screen">' +
@@ -2631,10 +2582,180 @@
       '      <input class="form-input filling-scan-input" id="fillingScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" placeholder="HU-000001" />' +
       "    </div>" +
       palletListHtml +
-      confirmHtml +
       "  </div>" +
       "</section>"
     );
+  }
+
+  function buildFillingPreviewHtml(preview, work) {
+    var isMixed = preview && preview.isMixedPallet === true;
+    var brandHtml = !isMixed && preview && preview.itemBrand
+      ? '<div class="filling-preview-brand">' + escapeHtml(preview.itemBrand) + "</div>"
+      : "";
+    var compositionHtml = "";
+    if (isMixed && preview && Array.isArray(preview.lines) && preview.lines.length) {
+      compositionHtml =
+        '<div class="filling-preview-composition-title">Состав:</div>' +
+        '<ol class="filling-preview-composition">' +
+        preview.lines.map(function (line) {
+          return '<li>' +
+            escapeHtml(line.itemName || "-") +
+            " — " +
+            escapeHtml(formatQtyWithUnit(line.qty || 0, line.uom || "шт")) +
+            "</li>";
+        }).join("") +
+        "</ol>";
+    }
+
+    return (
+      '<div class="filling-preview-card filling-preview-overlay-card">' +
+      '  <div class="filling-preview-title">' + (isMixed ? "Микс-паллета" : "Наполнение паллеты") + "</div>" +
+      '  <div class="filling-preview-line">Заказ: <strong>' +
+      escapeHtml((preview && preview.orderRef) || getFillingWorkOrderRef(work)) +
+      "</strong></div>" +
+      '  <div class="filling-preview-line">HU: <strong>' +
+      escapeHtml((preview && preview.huCode) || "") +
+      "</strong></div>" +
+      '  <div class="filling-preview-line">Паллета: <strong>' +
+      escapeHtml((preview && preview.palletIndex) || 0) +
+      " / " +
+      escapeHtml((preview && preview.palletCount) || 0) +
+      "</strong></div>" +
+      '  <div class="filling-preview-item">' +
+      escapeHtml(isMixed ? "Микс-паллета" : (preview && preview.itemName) || "-") +
+      "</div>" +
+      brandHtml +
+      (isMixed ? compositionHtml : '  <div class="filling-preview-qty">' +
+      escapeHtml(formatQtyWithUnit((preview && preview.plannedQty) || 0, (preview && preview.baseUom) || "шт")) +
+      "</div>") +
+      '  <div class="filling-preview-error" id="fillingPreviewError"></div>' +
+      '  <div class="filling-preview-actions">' +
+      '    <button class="btn primary-btn filling-ok-btn" id="fillingOverlayConfirmBtn" type="button">Подтвердить</button>' +
+      '    <button class="btn btn-outline filling-cancel-btn" id="fillingOverlayCancelBtn" type="button">Отмена</button>' +
+      "  </div>" +
+      "</div>"
+    );
+  }
+
+  function openFillingPreviewOverlay(context, preview) {
+    if (!preview || preview.alreadyFilled === true) {
+      return;
+    }
+
+    var overlay = document.createElement("div");
+    overlay.className = "overlay filling-preview-overlay";
+    overlay.setAttribute("tabindex", "-1");
+    overlay.innerHTML =
+      '<div class="overlay-card filling-preview-overlay-shell">' +
+      '  <div class="overlay-header">' +
+      '    <div class="overlay-title">Подтверждение наполнения</div>' +
+      '    <button class="btn btn-ghost overlay-close" type="button">Закрыть</button>' +
+      "  </div>" +
+      '  <div class="overlay-body">' +
+      buildFillingPreviewHtml(preview, context.workItem || {}) +
+      "  </div>" +
+      "</div>";
+
+    var closeBtn = overlay.querySelector(".overlay-close");
+    var cancelBtn = overlay.querySelector("#fillingOverlayCancelBtn");
+    var confirmBtn = overlay.querySelector("#fillingOverlayConfirmBtn");
+    var errorEl = overlay.querySelector("#fillingPreviewError");
+    var busy = false;
+
+    function closeOverlay() {
+      unlockOverlayScroll();
+      if (overlay.parentNode) {
+        overlay.parentNode.removeChild(overlay);
+      }
+    }
+
+    function cancelOverlay() {
+      closeOverlay();
+      renderFillingScanScreen(context, { message: "", messageType: "", preview: null });
+    }
+
+    function setOverlayError(message) {
+      if (errorEl) {
+        errorEl.textContent = message || "";
+      }
+    }
+
+    if (confirmBtn) {
+      confirmBtn.addEventListener("click", function () {
+        if (busy) {
+          return;
+        }
+
+        busy = true;
+        confirmBtn.disabled = true;
+        if (cancelBtn) {
+          cancelBtn.disabled = true;
+        }
+        setOverlayError("");
+
+        getFillingDeviceId()
+          .then(function (deviceId) {
+            return TsdStorage.apiFillProductionPallet({
+              huCode: preview.huCode,
+              orderId: preview.orderId,
+              prdDocId: preview.prdDocId,
+              deviceId: deviceId,
+            });
+          })
+          .then(function (result) {
+            var nextDocument = result && result.document ? result.document : context.document;
+            var nextContext = {
+              workItem: {
+                prdDocId: preview.prdDocId || (context.workItem && context.workItem.prdDocId),
+                prdDocRef: preview.prdDocRef || getFillingWorkPrdRef(context.workItem),
+                prdStatus: context.workItem && context.workItem.prdStatus,
+                orderId: preview.orderId || (context.workItem && context.workItem.orderId),
+                orderRef: preview.orderRef || getFillingWorkOrderRef(context.workItem),
+                summary: nextDocument ? nextDocument.summary : context.workItem && context.workItem.summary,
+              },
+              document: nextDocument,
+              doc: context.doc,
+            };
+            var remainingPalletCount = nextDocument && nextDocument.summary
+              ? Number(nextDocument.summary.remainingPalletCount) || 0
+              : 0;
+            var successMessage = remainingPalletCount <= 0
+              ? "Наполнение завершено. Заказ закрыт."
+              : (result && result.alreadyFilled ? "Паллета уже наполнена" : "Паллета наполнена");
+            var successType = result && result.alreadyFilled ? "warn" : "success";
+            closeOverlay();
+            renderFillingScanScreen(nextContext, {
+              message: successMessage,
+              messageType: successType,
+              preview: null,
+            });
+          })
+          .catch(function (error) {
+            busy = false;
+            confirmBtn.disabled = false;
+            if (cancelBtn) {
+              cancelBtn.disabled = false;
+            }
+            setOverlayError(mapFillingError(error));
+          });
+      });
+    }
+
+    if (closeBtn) {
+      closeBtn.addEventListener("click", cancelOverlay);
+    }
+    if (cancelBtn) {
+      cancelBtn.addEventListener("click", cancelOverlay);
+    }
+    overlay.addEventListener("click", function (event) {
+      if (event.target === overlay) {
+        cancelOverlay();
+      }
+    });
+
+    document.body.appendChild(overlay);
+    lockOverlayScroll();
+    focusOverlay(overlay);
   }
 
   function renderFillingScanScreen(context, state) {
@@ -5157,8 +5278,11 @@
 
   function mapFillingError(error) {
     var message = String(error && error.message ? error.message : error || "").trim();
-    if (!message || message === "SERVER_ERROR" || message === "Failed to fetch" || message === "AbortError") {
+    if (!message || message === "Failed to fetch" || message === "AbortError") {
       return "Нет связи с сервером. Наполнение не подтверждено.";
+    }
+    if (message === "SERVER_ERROR" || message === "INVALID_RESPONSE") {
+      return "Сервер вернул ошибку при наполнении. Проверьте лог FlowStock Server.";
     }
     if (message === "Паллета не найдена в плане выпуска") {
       return message;
@@ -5180,11 +5304,8 @@
 
   function wireFillingScan(context, state) {
     var scanInput = document.getElementById("fillingScanInput");
-    var confirmBtn = document.getElementById("fillingConfirmBtn");
-    var cancelBtn = document.getElementById("fillingCancelBtn");
     var activePreview = state && state.preview;
     var scanBusy = false;
-    var fillBusy = false;
 
     function focusScan() {
       if (!scanInput) {
@@ -5267,58 +5388,6 @@
         });
     }
 
-    if (confirmBtn && activePreview) {
-      confirmBtn.addEventListener("click", function () {
-        if (fillBusy) {
-          return;
-        }
-        fillBusy = true;
-        confirmBtn.disabled = true;
-        getFillingDeviceId()
-          .then(function (deviceId) {
-            return TsdStorage.apiFillProductionPallet({
-              huCode: activePreview.huCode,
-              orderId: activePreview.orderId,
-              prdDocId: activePreview.prdDocId,
-              deviceId: deviceId,
-            });
-          })
-          .then(function (result) {
-            var nextDocument = result && result.document ? result.document : context.document;
-            var nextContext = {
-              workItem: {
-                prdDocId: activePreview.prdDocId || (context.workItem && context.workItem.prdDocId),
-                prdDocRef: activePreview.prdDocRef || getFillingWorkPrdRef(context.workItem),
-                prdStatus: context.workItem && context.workItem.prdStatus,
-                orderId: activePreview.orderId || (context.workItem && context.workItem.orderId),
-                orderRef: activePreview.orderRef || getFillingWorkOrderRef(context.workItem),
-                summary: nextDocument ? nextDocument.summary : context.workItem && context.workItem.summary,
-              },
-              document: nextDocument,
-              doc: context.doc,
-            };
-            renderFillingScanScreen(nextContext, {
-              message: result && result.alreadyFilled ? "Паллета уже наполнена" : "Паллета наполнена",
-              messageType: result && result.alreadyFilled ? "warn" : "success",
-              preview: null,
-            });
-          })
-          .catch(function (error) {
-            renderFillingScanScreen(context, {
-              message: mapFillingError(error),
-              messageType: "error",
-              preview: activePreview,
-            });
-          });
-      });
-    }
-
-    if (cancelBtn) {
-      cancelBtn.addEventListener("click", function () {
-        renderFillingScanScreen(context, { message: "", messageType: "", preview: null });
-      });
-    }
-
     if (scanInput) {
       scanInput.addEventListener("keydown", function (event) {
         if (event.key === "Enter") {
@@ -5333,6 +5402,10 @@
       var value = scan && scan.value ? scan.value : scan;
       handleScannedValue(value);
     });
+
+    if (activePreview) {
+      openFillingPreviewOverlay(context, activePreview);
+    }
   }
 
   function wireOrders() {

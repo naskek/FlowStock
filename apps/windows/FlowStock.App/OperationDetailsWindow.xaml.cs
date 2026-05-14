@@ -338,6 +338,12 @@ public partial class OperationDetailsWindow : Window
         var stockRows = isInventory && _services.WpfReadApi.TryGetStockRows(null, out var apiStockRows)
             ? apiStockRows
             : Array.Empty<StockRow>();
+        var productionPalletsByLineId = isProductionReceipt && _hasProductionPalletPlan
+            ? _services.DataStore.GetProductionPalletsByDoc(_docId)
+                .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                .GroupBy(pallet => pallet.DocLineId)
+                .ToDictionary(group => group.Key, group => group.OrderBy(pallet => pallet.Id).ToList())
+            : new Dictionary<long, List<ProductionPallet>>();
         var requiredByItem = checkOutboundAvailability
             ? lines.Where(line => line.Qty > 0)
                 .GroupBy(line => line.ItemId)
@@ -396,11 +402,27 @@ public partial class OperationDetailsWindow : Window
             }
             var orderLineDisplay = string.Empty;
             var orderLineHint = string.Empty;
+            var palletStatusDisplay = string.Empty;
+            var hasProductionPalletPlanLine = false;
+            var isProductionPalletFilled = false;
             if (line.OrderLineId.HasValue)
             {
                 var remaining = receiptRemaining.TryGetValue(line.OrderLineId.Value, out var value) ? value : 0;
                 orderLineDisplay = FormatQty(remaining);
                 orderLineHint = $"Осталось принять: {FormatQty(remaining)}";
+            }
+            if (productionPalletsByLineId.TryGetValue(line.Id, out var palletsForLine) && palletsForLine.Count > 0)
+            {
+                var pallet = palletsForLine[0];
+                hasProductionPalletPlanLine = true;
+                isProductionPalletFilled = string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase);
+                palletStatusDisplay = isProductionPalletFilled ? "Наполнен" : "Ожидает";
+                if (!string.IsNullOrWhiteSpace(pallet.HuCode))
+                {
+                    orderLineHint = string.IsNullOrWhiteSpace(orderLineHint)
+                        ? $"Паллета: {pallet.HuCode}"
+                        : $"{orderLineHint}{Environment.NewLine}Паллета: {pallet.HuCode}";
+                }
             }
 
             _docLines.Add(new DocLineDisplay
@@ -433,6 +455,9 @@ public partial class OperationDetailsWindow : Window
                 PackSingleHu = line.PackSingleHu,
                 KmDisplay = kmDisplay,
                 KmDistributeEnabled = kmEnabled,
+                HasProductionPalletPlanLine = hasProductionPalletPlanLine,
+                IsProductionPalletFilled = isProductionPalletFilled,
+                ProductionPalletStatusDisplay = palletStatusDisplay,
                 HuDisplay = huDisplay,
                 FromLocationId = ResolveLocationId(line.FromLocation, locationLookup),
                 ToLocationId = ResolveLocationId(line.ToLocation, locationLookup),
@@ -1584,6 +1609,70 @@ public partial class OperationDetailsWindow : Window
         await TryAssignHuToSingleLineAsync(line, selectedHu);
     }
 
+    private async void FillPalletButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!EnsureDraftDocSelected())
+        {
+            return;
+        }
+
+        if (_doc?.Type != DocType.ProductionReceipt || !_hasProductionPalletPlan)
+        {
+            return;
+        }
+
+        if (_selectedDocLine == null || !_selectedDocLine.HasProductionPalletPlanLine)
+        {
+            MessageBox.Show("Выберите строку паллетного выпуска.", "Наполнение паллет", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var huCode = NormalizeHuValue(_selectedDocLine.ToHu);
+        if (string.IsNullOrWhiteSpace(huCode))
+        {
+            MessageBox.Show("У выбранной строки не найден HU паллеты.", "Наполнение паллет", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var selectedLineId = _selectedDocLine.Id;
+        FillPalletButton.IsEnabled = false;
+        try
+        {
+            var result = await _services.WpfProductionPalletApi.TryFillPalletAsync(
+                _doc.Id,
+                _doc.OrderId,
+                huCode,
+                $"WPF:{Environment.MachineName}");
+            if (!result.IsSuccess)
+            {
+                MessageBox.Show(
+                    string.IsNullOrWhiteSpace(result.Message) ? "Не удалось наполнить паллету." : result.Message,
+                    "Наполнение паллет",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            LoadDoc();
+            var refreshedLine = _docLines.FirstOrDefault(line => line.Id == selectedLineId);
+            if (refreshedLine != null)
+            {
+                SelectDocLine(refreshedLine);
+            }
+
+            var message = result.AlreadyFilled
+                ? $"Паллета {result.HuCode} уже была наполнена."
+                : result.RemainingPalletCount <= 0
+                    ? $"Паллета {result.HuCode} наполнена. Наполнение по заказу завершено."
+                    : $"Паллета {result.HuCode} наполнена. Наполнено {result.FilledPalletCount} / {result.PlannedPalletCount}.";
+            MessageBox.Show(message, "Наполнение паллет", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        finally
+        {
+            UpdateLineButtons();
+        }
+    }
+
     private async Task TryAutoAssignInboundHuToLinesAsync(IReadOnlyList<DocLine> lines)
     {
         if (_doc == null || _doc.Type != DocType.Inbound || lines.Count == 0)
@@ -2016,11 +2105,13 @@ public partial class OperationDetailsWindow : Window
             var selected = _ordersAll.FirstOrDefault(order => order.Id == doc.OrderId.Value);
             DocOrderCombo.SelectedItem = selected;
             DocOrderCombo.Text = selected?.DisplayName ?? doc.OrderRef ?? string.Empty;
+            DocOrderReadOnlyBox.Text = selected?.DisplayName ?? doc.OrderRef ?? string.Empty;
         }
         else
         {
             DocOrderCombo.SelectedItem = null;
             DocOrderCombo.Text = doc.OrderRef ?? string.Empty;
+            DocOrderReadOnlyBox.Text = doc.OrderRef ?? string.Empty;
         }
         _suppressOrderSync = false;
     }
@@ -2490,6 +2581,7 @@ public partial class OperationDetailsWindow : Window
         var partnerLabel = "Контрагент";
         var fromLabel = "Откуда";
         var toLabel = "Куда";
+        var useReadOnlyOrderBinding = false;
 
         switch (doc.Type)
         {
@@ -2525,6 +2617,7 @@ public partial class OperationDetailsWindow : Window
             case DocType.ProductionReceipt:
                 showTo = false;
                 showOrder = true;
+                useReadOnlyOrderBinding = true;
                 showBatch = false;
                 showComment = true;
                 showHuHeader = false;
@@ -2553,6 +2646,11 @@ public partial class OperationDetailsWindow : Window
                 ? "HU (палета)"
                 : doc.Type == DocType.Outbound ? "HU (источник)" : "HU";
         DocPartialCheck.Visibility = doc.Type == DocType.Outbound ? Visibility.Visible : Visibility.Collapsed;
+        DocOrderCombo.Visibility = useReadOnlyOrderBinding ? Visibility.Collapsed : Visibility.Visible;
+        DocOrderCombo.IsEnabled = isEditable && !useReadOnlyOrderBinding;
+        DocOrderReadOnlyBox.Visibility = showOrder && useReadOnlyOrderBinding ? Visibility.Visible : Visibility.Collapsed;
+        DocOrderReadOnlyBox.IsEnabled = false;
+        DocOrderClearButton.Visibility = showOrder && !useReadOnlyOrderBinding ? Visibility.Visible : Visibility.Collapsed;
         DocHuCombo.IsEnabled = isEditable;
         DocHuFromCombo.IsEnabled = isEditable;
         DocHuCombo.IsEditable = doc.Type == DocType.Move;
@@ -2612,7 +2710,16 @@ public partial class OperationDetailsWindow : Window
         AssignHuButton.Visibility = doc.Type is DocType.Inbound or DocType.Inventory or DocType.ProductionReceipt or DocType.Outbound
             ? Visibility.Visible
             : Visibility.Collapsed;
+        FillPalletButton.Visibility = doc.Type == DocType.ProductionReceipt && _hasProductionPalletPlan
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        AssignHuButton.Visibility = doc.Type == DocType.ProductionReceipt && _hasProductionPalletPlan
+            ? Visibility.Collapsed
+            : AssignHuButton.Visibility;
         PalletizedPrdBadge.Visibility = doc.Type == DocType.ProductionReceipt && _hasProductionPalletPlan
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        DocPalletStatusColumn.Visibility = doc.Type == DocType.ProductionReceipt && _hasProductionPalletPlan
             ? Visibility.Visible
             : Visibility.Collapsed;
         DocFromColumn.Header = fromLabel;
@@ -2669,6 +2776,11 @@ public partial class OperationDetailsWindow : Window
                                   && (_doc?.Type == DocType.Inbound
                                       ? _docLines.Count > 0
                                       : hasSelection);
+        FillPalletButton.IsEnabled = isEditable
+                                     && _doc?.Type == DocType.ProductionReceipt
+                                     && _hasProductionPalletPlan
+                                     && hasSingleSelection
+                                     && _selectedDocLine?.HasProductionPalletPlanLine == true;
         DeleteLineButton.IsEnabled = isEditable && hasSelection;
         DocPartialCheck.IsEnabled = isEditable && _doc?.Type == DocType.Outbound && hasOrder;
         KmCodesButton.IsEnabled = KmUiEnabled
@@ -5125,6 +5237,9 @@ public partial class OperationDetailsWindow : Window
         public bool PackSingleHu { get; init; }
         public string KmDisplay { get; init; } = string.Empty;
         public bool KmDistributeEnabled { get; init; }
+        public bool HasProductionPalletPlanLine { get; init; }
+        public bool IsProductionPalletFilled { get; init; }
+        public string ProductionPalletStatusDisplay { get; init; } = string.Empty;
         public long? FromLocationId { get; init; }
         public long? ToLocationId { get; init; }
         public string? FromHu { get; init; }

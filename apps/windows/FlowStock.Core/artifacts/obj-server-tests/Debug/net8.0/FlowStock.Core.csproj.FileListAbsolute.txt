@@ -1,0 +1,5 @@
+D:\FlowStock\apps\windows\FlowStock.Core\artifacts\obj-server-tests\Debug\net8.0\FlowStock.Core.GeneratedMSBuildEditorConfig.editorconfig
+D:\FlowStock\apps\windows\FlowStock.Core\artifacts\obj-server-tests\Debug\net8.0\FlowStock.Core.AssemblyInfoInputs.cache
+D:\FlowStock\apps\windows\FlowStock.Core\artifacts\obj-server-tests\Debug\net8.0\FlowStock.Core.AssemblyInfo.cs
+D:\FlowStock\apps\windows\FlowStock.Core\artifacts\obj-server-tests\Debug\net8.0\FlowStock.Core.csproj.CoreCompileInputs.cache
+D:\FlowStock\apps\windows\FlowStock.Core\artifacts\obj-server-tests\Debug\net8.0\FlowStock.Core.sourcelink.json

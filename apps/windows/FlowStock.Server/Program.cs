@@ -2214,6 +2214,24 @@ static Dictionary<long, string[]> BuildProductionHuCodesByOrderLine(IDataStore s
 {
     var result = new Dictionary<long, string[]>();
     var rows = new Dictionary<long, SortedSet<string>>();
+
+    foreach (var reservedLine in store.GetOrderReceiptPlanLines(orderId)
+                 .Where(line => line.QtyPlanned > 0))
+    {
+        if (reservedLine.OrderLineId <= 0 || string.IsNullOrWhiteSpace(reservedLine.ToHu))
+        {
+            continue;
+        }
+
+        if (!rows.TryGetValue(reservedLine.OrderLineId, out var huCodes))
+        {
+            huCodes = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+            rows[reservedLine.OrderLineId] = huCodes;
+        }
+
+        huCodes.Add(reservedLine.ToHu.Trim());
+    }
+
     foreach (var doc in store.GetDocsByOrder(orderId).Where(doc => doc.Type == DocType.ProductionReceipt))
     {
         foreach (var pallet in store.GetProductionPalletsByDoc(doc.Id)

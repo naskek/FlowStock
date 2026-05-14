@@ -808,12 +808,12 @@
     return renderPageShell(
       '<section class="pc-card">' +
       '  <div class="section-title">Потребность производства</div>' +
-      '  <div class="pc-toolbar">' +
+      '  <div class="pc-toolbar pc-production-need-toolbar">' +
       '    <div class="pc-toolbar-actions">' +
       '      <button id="productionNeedRefreshBtn" class="btn btn-outline" type="button">Обновить</button>' +
       '      <button id="productionNeedCreateOrdersBtn" class="btn btn-primary" type="button">Сформировать заказ</button>' +
       "    </div>" +
-      '    <div id="productionNeedStatus" class="pc-status"></div>' +
+      '    <div id="productionNeedStatus" class="pc-status pc-production-need-status"></div>' +
       "  </div>" +
       '  <div id="productionNeedTableWrap"></div>' +
       "</section>"
@@ -925,13 +925,13 @@
       '<div class="pc-table-scroll">' +
       '<table class="pc-table pc-production-need-table">' +
       "<thead><tr>" +
-      "<th>Номенклатура</th>" +
-      '<th class="pc-num">Остаток</th>' +
-      '<th class="pc-num">До закрытия заказов</th>' +
-      '<th class="pc-num">На склад до мин.</th>' +
-      '<th class="pc-num">Во внутренних заказах</th>' +
-      '<th class="pc-num">Наполнено паллетами</th>' +
-      '<th class="pc-num">Всего произвести</th>' +
+      '<th class="pc-production-need-col-item">Номенклатура</th>' +
+      '<th class="pc-num pc-production-need-col-stock">Остаток</th>' +
+      '<th class="pc-num pc-production-need-col-orders">До закрытия заказов</th>' +
+      '<th class="pc-num pc-production-need-col-min">На склад до мин.</th>' +
+      '<th class="pc-num pc-production-need-col-open">Во внутренних заказах</th>' +
+      '<th class="pc-num pc-production-need-col-pallets">Наполнено паллетами</th>' +
+      '<th class="pc-num pc-production-need-col-total">Всего произвести</th>' +
       "</tr></thead>" +
       "<tbody>" +
       body +

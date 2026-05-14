@@ -61,6 +61,14 @@ public sealed class OrderService
             : ApplyAutoStatus(order);
     }
 
+    public OrderStatus RefreshPersistedStatus(long orderId)
+    {
+        var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+        var nextStatus = DetermineAutoStatus(order);
+        _data.UpdateOrderStatus(orderId, nextStatus);
+        return nextStatus;
+    }
+
     public IReadOnlyList<OrderLineView> GetOrderLineViews(long orderId)
     {
         var order = _data.GetOrder(orderId);
@@ -1201,117 +1209,14 @@ public sealed class OrderService
 
     private Order ApplyAutoStatus(Order order)
     {
-        if (order.Status == OrderStatus.Cancelled)
-        {
-            return order;
-        }
-
-        if (order.Type == OrderType.Internal)
-        {
-            var orderLines = _data.GetOrderLines(order.Id);
-            var internalProducedByLine = OrderReceiptRemainingCalculator.BuildProducedTotalsByOrderLine(_data, order.Id, orderLines);
-            var fullyProduced = orderLines.Count > 0 && orderLines.All(line =>
-            {
-                var produced = internalProducedByLine.TryGetValue(line.Id, out var qty) ? qty : 0d;
-                return produced + QtyTolerance >= line.QtyOrdered;
-            });
-            var anyProduced = orderLines.Any(line =>
-            {
-                var produced = internalProducedByLine.TryGetValue(line.Id, out var qty) ? qty : 0d;
-                return produced > QtyTolerance;
-            });
-
-            var internalStatus = order.Status;
-            if (fullyProduced)
-            {
-                internalStatus = OrderStatus.Shipped;
-            }
-            else if (anyProduced)
-            {
-                internalStatus = OrderStatus.InProgress;
-            }
-            else if (order.Status != OrderStatus.Draft)
-            {
-                internalStatus = OrderStatus.InProgress;
-            }
-
-            if (internalStatus != order.Status)
-            {
-                _data.UpdateOrderStatus(order.Id, internalStatus);
-            }
-
-            var completedAt = internalStatus == OrderStatus.Shipped
-                ? _data.GetDocsByOrder(order.Id)
-                    .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status == DocStatus.Closed && doc.ClosedAt.HasValue)
-                    .Select(doc => doc.ClosedAt!.Value)
-                    .DefaultIfEmpty()
-                    .Max()
-                : (DateTime?)null;
-
-            return new Order
-            {
-                Id = order.Id,
-                OrderRef = order.OrderRef,
-                Type = order.Type,
-                PartnerId = order.PartnerId,
-                DueDate = order.DueDate,
-                Status = internalStatus,
-                Comment = order.Comment,
-                CreatedAt = order.CreatedAt,
-                ShippedAt = completedAt == DateTime.MinValue ? null : completedAt,
-                PartnerName = order.PartnerName,
-                PartnerCode = order.PartnerCode,
-                UseReservedStock = order.UseReservedStock,
-                MarkingStatus = order.MarkingStatus,
-                IsLegacyExcelGeneratedMarkingStatus = order.IsLegacyExcelGeneratedMarkingStatus,
-                MarkingRequired = order.MarkingRequired,
-                MarkingExcelGeneratedAt = order.MarkingExcelGeneratedAt,
-                MarkingPrintedAt = order.MarkingPrintedAt,
-                MarkingApplies = order.MarkingApplies,
-                MarkingCodeCovered = order.MarkingCodeCovered
-            };
-        }
-
-        if (order.Status == OrderStatus.Draft)
-        {
-            return order;
-        }
-
-        var lines = _data.GetOrderLines(order.Id);
-        var shippedTotals = _data.GetShippedTotalsByOrderLine(order.Id);
-        var customerReceiptLines = _data.GetOrderReceiptRemaining(order.Id);
-        var producedByLine = customerReceiptLines.ToDictionary(line => line.OrderLineId, line => line.QtyReceived);
-
-        var fullyShipped = lines.Count > 0 && lines.All(line =>
-        {
-            var shipped = shippedTotals.TryGetValue(line.Id, out var qty) ? qty : 0;
-            return shipped + QtyTolerance >= line.QtyOrdered;
-        });
-
-        var nextStatus = OrderStatus.InProgress;
-        if (fullyShipped)
-        {
-            nextStatus = OrderStatus.Shipped;
-        }
-        else
-        {
-            var fullyProducedForOrder = lines.Count > 0 && lines.All(line =>
-            {
-                var produced = producedByLine.TryGetValue(line.Id, out var qty) ? qty : 0;
-                return produced + QtyTolerance >= line.QtyOrdered;
-            });
-            if (fullyProducedForOrder)
-            {
-                nextStatus = OrderStatus.Accepted;
-            }
-        }
+        var nextStatus = DetermineAutoStatus(order);
 
         if (nextStatus != order.Status)
         {
             _data.UpdateOrderStatus(order.Id, nextStatus);
         }
 
-        var shippedAt = fullyShipped ? _data.GetOrderShippedAt(order.Id) : null;
+        var shippedAt = nextStatus == OrderStatus.Shipped ? _data.GetOrderShippedAt(order.Id) : null;
         return new Order
         {
             Id = order.Id,
@@ -1334,6 +1239,75 @@ public sealed class OrderService
             MarkingApplies = order.MarkingApplies,
             MarkingCodeCovered = order.MarkingCodeCovered
         };
+    }
+
+    private OrderStatus DetermineAutoStatus(Order order)
+    {
+        if (order.Status == OrderStatus.Cancelled)
+        {
+            return order.Status;
+        }
+
+        if (order.Type == OrderType.Internal)
+        {
+            var orderLines = _data.GetOrderLines(order.Id);
+            var internalProducedByLine = OrderReceiptRemainingCalculator.BuildProducedTotalsByOrderLine(_data, order.Id, orderLines);
+            var fullyProduced = orderLines.Count > 0 && orderLines.All(line =>
+            {
+                var produced = internalProducedByLine.TryGetValue(line.Id, out var qty) ? qty : 0d;
+                return produced + QtyTolerance >= line.QtyOrdered;
+            });
+            var anyProduced = orderLines.Any(line =>
+            {
+                var produced = internalProducedByLine.TryGetValue(line.Id, out var qty) ? qty : 0d;
+                return produced > QtyTolerance;
+            });
+
+            if (fullyProduced)
+            {
+                return OrderStatus.Shipped;
+            }
+
+            if (anyProduced)
+            {
+                return OrderStatus.InProgress;
+            }
+
+            return order.Status == OrderStatus.Draft
+                ? OrderStatus.Draft
+                : OrderStatus.InProgress;
+        }
+
+        if (order.Status == OrderStatus.Draft)
+        {
+            return OrderStatus.Draft;
+        }
+
+        var lines = _data.GetOrderLines(order.Id);
+        var shippedTotals = _data.GetShippedTotalsByOrderLine(order.Id);
+        var customerReceiptLines = _data.GetOrderReceiptRemaining(order.Id);
+        var producedByLine = customerReceiptLines.ToDictionary(line => line.OrderLineId, line => line.QtyReceived);
+
+        var fullyShipped = lines.Count > 0 && lines.All(line =>
+        {
+            var shipped = shippedTotals.TryGetValue(line.Id, out var qty) ? qty : 0;
+            return shipped + QtyTolerance >= line.QtyOrdered;
+        });
+
+        if (fullyShipped)
+        {
+            return OrderStatus.Shipped;
+        }
+
+        var fullyProducedForOrder = lines.Count > 0 && lines.All(line =>
+        {
+            var produced = producedByLine.TryGetValue(line.Id, out var qty) ? qty : 0;
+            return produced + QtyTolerance >= line.QtyOrdered;
+        });
+
+        return fullyProducedForOrder
+            ? OrderStatus.Accepted
+            : OrderStatus.InProgress;
     }
 }
 

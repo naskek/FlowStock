@@ -112,30 +112,44 @@ public static class ProductionPalletEndpoints
 
     private static IResult HandleScan(ProductionPalletScanRequest request, ProductionPalletService service)
     {
-        var result = service.Scan(request.OrderId, request.PrdDocId, request.HuCode);
-        if (!result.Success)
+        try
         {
-            return Results.BadRequest(new { ok = false, error = result.Error, message = result.Error });
-        }
+            var result = service.Scan(request.OrderId, request.PrdDocId, request.HuCode);
+            if (!result.Success)
+            {
+                return Results.BadRequest(new { ok = false, error = result.Error, message = result.Error });
+            }
 
-        return Results.Ok(MapScanResult(result));
+            return Results.Ok(MapScanResult(result));
+        }
+        catch (Exception ex)
+        {
+            return Results.Json(new { ok = false, error = ex.Message, message = ex.Message }, statusCode: 500);
+        }
     }
 
     private static IResult HandleFill(ProductionPalletFillRequest request, ProductionPalletService service)
     {
-        var result = service.Fill(request.HuCode, request.DeviceId, request.OrderId, request.PrdDocId);
-        if (!result.Success)
+        try
         {
-            return Results.BadRequest(new { ok = false, error = result.Error, message = result.Error });
-        }
+            var result = service.Fill(request.HuCode, request.DeviceId, request.OrderId, request.PrdDocId);
+            if (!result.Success)
+            {
+                return Results.BadRequest(new { ok = false, error = result.Error, message = result.Error });
+            }
 
-        return Results.Ok(new
+            return Results.Ok(new
+            {
+                ok = true,
+                already_filled = result.AlreadyFilled,
+                pallet = result.Pallet == null ? null : MapPallet(result.Pallet),
+                document = result.Document == null ? null : MapDocument(result.Document)
+            });
+        }
+        catch (Exception ex)
         {
-            ok = true,
-            already_filled = result.AlreadyFilled,
-            pallet = result.Pallet == null ? null : MapPallet(result.Pallet),
-            document = result.Document == null ? null : MapDocument(result.Document)
-        });
+            return Results.Json(new { ok = false, error = ex.Message, message = ex.Message }, statusCode: 500);
+        }
     }
 
     private static object MapWorkItem(ProductionPalletWorkItem item)
