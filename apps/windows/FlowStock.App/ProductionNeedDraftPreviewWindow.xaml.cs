@@ -18,7 +18,13 @@ public partial class ProductionNeedDraftPreviewWindow : Window
                 ItemId = row.ItemId,
                 Gtin = row.Gtin,
                 ItemName = row.ItemName,
-                QtyOrdered = row.QtyOrdered
+                QtyOrdered = row.QtyOrdered,
+                Reason = row.Reason,
+                FreeStockQty = row.FreeStockQty,
+                MinStockQty = row.MinStockQty,
+                OpenInternalOrderQty = row.OpenInternalOrderQty,
+                PlannedPalletQty = row.PlannedPalletQty,
+                FilledPalletQty = row.FilledPalletQty
             }));
         RowsGrid.ItemsSource = _rows;
     }
@@ -32,7 +38,13 @@ public partial class ProductionNeedDraftPreviewWindow : Window
                 ItemId = row.ItemId,
                 Gtin = row.Gtin,
                 ItemName = row.ItemName,
-                QtyOrdered = row.QtyOrdered
+                QtyOrdered = row.QtyOrdered,
+                Reason = row.Reason,
+                FreeStockQty = row.FreeStockQty,
+                MinStockQty = row.MinStockQty,
+                OpenInternalOrderQty = row.OpenInternalOrderQty,
+                PlannedPalletQty = row.PlannedPalletQty,
+                FilledPalletQty = row.FilledPalletQty
             })
             .ToArray();
     }
@@ -71,6 +83,14 @@ public sealed class ProductionNeedDraftLineRow
     public long ItemId { get; init; }
     public string Gtin { get; init; } = string.Empty;
     public string ItemName { get; init; } = string.Empty;
+    public string Reason { get; init; } = string.Empty;
+    public double FreeStockQty { get; init; }
+    public double MinStockQty { get; init; }
+    public double OpenInternalOrderQty { get; init; }
+    public double PlannedPalletQty { get; init; }
+    public double FilledPalletQty { get; init; }
     public double QtyOrdered { get; set; }
     public string QtyDisplay => QtyOrdered.ToString("0.###", CultureInfo.CurrentCulture);
+    public string StockSummary => $"{FreeStockQty:0.###} / {MinStockQty:0.###}";
+    public string WorkSummary => $"внутр. {OpenInternalOrderQty:0.###}; паллеты {FilledPalletQty:0.###}/{PlannedPalletQty:0.###}";
 }

@@ -784,7 +784,7 @@ public sealed class ProductionPalletService
         };
     }
 
-    private static ProductionPalletSummary BuildSummary(IReadOnlyList<ProductionPallet> pallets)
+    public static ProductionPalletSummary BuildSummary(IReadOnlyList<ProductionPallet> pallets)
     {
         var active = pallets
             .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))

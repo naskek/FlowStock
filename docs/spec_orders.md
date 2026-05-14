@@ -95,9 +95,13 @@
   - `to_close_orders_qty = raw_to_close_orders_qty`.
   - `to_min_stock_qty = max(0, raw_to_min_stock_qty - planned_internal_stock_qty)`.
   - `total_to_make_qty = to_close_orders_qty + to_min_stock_qty`.
+  - Для UI/report дополнительно возвращаются `open_internal_order_qty`, `open_internal_order_refs`, `planned_pallet_qty`, `filled_pallet_qty`, `planned_pallet_count`, `filled_pallet_count`, `remaining_pallet_qty`, `qty_to_create`, `can_create_order`, `reason`.
+  - Строка отчета не скрывается, если `qty_to_create = 0`, но по товару есть открытый `INTERNAL` order или открытая palletized production work.
   - Колонка `Всего произвести` показывает информационную сумму `total_to_make_qty`.
-  - Кнопка `Сформировать заказ` вызывает `POST /api/production-needs/create-orders`; сервер заново пересчитывает потребность из БД в момент POST и игнорирует любые расчетные количества/строки, если WPF или Web технически передали их в body.
-  - Endpoint создает один черновик `INTERNAL` (`status = DRAFT`, `partner_id = null`) только по строкам актуального server-side расчета, где `to_min_stock_qty > 0`; `qty` строки равен `to_min_stock_qty`.
+  - Кнопка `Сформировать заказ` сначала вызывает `POST /api/reports/production-need/create-orders/preview`; preview не создает заказ и возвращает только строки складской части потребности (`qty_to_create > 0`), которые реально можно создать сейчас.
+  - После подтверждения/редактирования клиент вызывает `POST /api/production-needs/create-orders` и передает подтвержденные строки `item_id + qty`.
+  - Сервер при `create-orders` заново пересчитывает актуальную потребность, валидирует `qty > 0`, не создает пустой заказ и не позволяет создать количество больше текущего `qty_to_create` по строке.
+  - Endpoint создает один черновик `INTERNAL` (`status = DRAFT`, `partner_id = null`) только по складской части потребности; часть `to_close_orders_qty` остается информативной и не попадает в auto-create.
   - WPF и Web не являются источником истины для production quantities и после команды перечитывают серверные отчеты, поэтому одинаково видят результат.
   - `POST /api/production-needs/create-orders` не создает `marking_order`, не создает synthetic `marking_code`, не трогает Excel ЧЗ и не выполняет side effects маркировки.
   - Если `to_min_stock_qty = 0`, `INTERNAL`-черновик не создается даже при наличии `to_close_orders_qty > 0`.

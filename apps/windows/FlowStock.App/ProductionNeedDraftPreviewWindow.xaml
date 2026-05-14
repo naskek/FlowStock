@@ -20,8 +20,19 @@
                   HeadersVisibility="Column"
                   Margin="0,0,0,12">
             <DataGrid.Columns>
-                <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" IsReadOnly="True" />
+                <DataGridTemplateColumn Header="Товар" Width="*">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <StackPanel Margin="0,2,0,2">
+                                <TextBlock Text="{Binding ItemName}" TextWrapping="Wrap" />
+                                <TextBlock Text="{Binding Reason}" Foreground="#667784" FontSize="11" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
                 <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="170" IsReadOnly="True" />
+                <DataGridTextColumn Header="Остаток / мин." Binding="{Binding StockSummary}" Width="150" IsReadOnly="True" />
+                <DataGridTextColumn Header="Open work" Binding="{Binding WorkSummary}" Width="170" IsReadOnly="True" />
                 <DataGridTextColumn Header="Количество" Binding="{Binding QtyOrdered, StringFormat={}{0:0.###}}" Width="140" />
             </DataGrid.Columns>
         </DataGrid>

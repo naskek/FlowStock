@@ -353,6 +353,79 @@ public sealed class WpfReadApiService
         }
     }
 
+    public async Task<WpfProductionNeedOrderPreviewResult> GetProductionNeedOrderPreviewAsync(
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var configuration = LoadConfiguration();
+            if (!configuration.IsConfigured)
+            {
+                return WpfProductionNeedOrderPreviewResult.Failure("Не настроен адрес FlowStock Server API.");
+            }
+
+            using var handler = CreateHandler(configuration);
+            using var client = new HttpClient(handler)
+            {
+                BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
+                Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
+            };
+            using var response = await client.PostAsJsonAsync(
+                "/api/reports/production-need/create-orders/preview",
+                new { },
+                cancellationToken);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorPayload = await response.Content.ReadFromJsonAsync<ApiResultEnvelope>(JsonOptions, cancellationToken);
+                var message = string.IsNullOrWhiteSpace(errorPayload?.Error)
+                    ? $"Сервер вернул ошибку {(int)response.StatusCode}."
+                    : $"Сервер отклонил предпросмотр: {errorPayload.Error}";
+                return WpfProductionNeedOrderPreviewResult.Failure(message);
+            }
+
+            var payload = await response.Content.ReadFromJsonAsync<PreviewProductionNeedOrdersResponse>(JsonOptions, cancellationToken);
+            if (payload == null || !payload.Ok)
+            {
+                return WpfProductionNeedOrderPreviewResult.Failure("Сервер вернул неполный ответ при предпросмотре производственного заказа.");
+            }
+
+            var rows = payload.Rows
+                .Select(row => new ProductionNeedDraftLineRow
+                {
+                    ItemId = row.ItemId,
+                    Gtin = row.Gtin,
+                    ItemName = row.ItemName,
+                    QtyOrdered = row.QtyToCreate,
+                    Reason = row.Reason,
+                    FreeStockQty = row.FreeStockQty,
+                    MinStockQty = row.MinStockQty,
+                    OpenInternalOrderQty = row.OpenInternalOrderQty,
+                    PlannedPalletQty = row.PlannedPalletQty,
+                    FilledPalletQty = row.FilledPalletQty
+                })
+                .ToArray();
+            return WpfProductionNeedOrderPreviewResult.Success(rows, payload.Message);
+        }
+        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.Warn("WPF production need preview timed out");
+            return WpfProductionNeedOrderPreviewResult.Failure("Сервер не ответил вовремя при предпросмотре производственного черновика.", ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.Error("WPF production need preview request failed", ex);
+            return WpfProductionNeedOrderPreviewResult.Failure(
+                "Не удалось связаться с FlowStock Server API при предпросмотре производственного черновика.",
+                ex);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Unexpected WPF production need preview failure", ex);
+            return WpfProductionNeedOrderPreviewResult.Failure("Не удалось получить предпросмотр производственного черновика. Подробности записаны в лог.", ex);
+        }
+    }
+
     public bool TryGetHuStockRows(out IReadOnlyList<HuStockContextRow> rows)
     {
         rows = Array.Empty<HuStockContextRow>();
@@ -644,7 +717,13 @@ public sealed class WpfReadApiService
             SourceDeviceId = ReadString(element, "source_device_id"),
             LineCount = ReadInt32(element, "line_count"),
             ProductionPalletFillingStarted = ReadBool(element, "production_pallet_filling_started"),
-            HasProductionPalletPlan = ReadBool(element, "has_production_pallet_plan")
+            HasProductionPalletPlan = ReadBool(element, "has_production_pallet_plan"),
+            IsPalletized = ReadBool(element, "is_palletized"),
+            PlannedPalletCount = ReadInt32(element, "planned_pallet_count"),
+            FilledPalletCount = ReadInt32(element, "filled_pallet_count"),
+            PlannedPalletQty = ReadDouble(element, "planned_qty"),
+            FilledPalletQty = ReadDouble(element, "filled_qty"),
+            PalletFillingStatus = ReadString(element, "pallet_filling_status") ?? string.Empty
         };
     }
 
@@ -675,6 +754,11 @@ public sealed class WpfReadApiService
             MarkingPrintedAt = ReadDateTime(element, "marking_printed_at"),
             HasProductionPalletPlan = ReadBool(element, "has_production_pallet_plan"),
             NeedsProductionPalletPlan = ReadBool(element, "needs_production_pallet_plan"),
+            PlannedPalletCount = ReadInt32(element, "planned_pallet_count"),
+            FilledPalletCount = ReadInt32(element, "filled_pallet_count"),
+            PlannedQty = ReadDouble(element, "planned_qty"),
+            FilledQty = ReadDouble(element, "filled_qty"),
+            PalletPlanStatus = ReadString(element, "pallet_plan_status") ?? string.Empty,
             CreatedAt = ReadDateTime(element, "created_at") ?? DateTime.MinValue,
             ShippedAt = ReadDateTime(element, "shipped_at")
         };
@@ -768,7 +852,15 @@ public sealed class WpfReadApiService
             ToCloseOrdersQty = ReadDouble(element, "to_close_orders_qty"),
             ToMinStockQty = ReadDouble(element, "to_min_stock_qty"),
             OpenInternalOrderQty = ReadDouble(element, "open_internal_order_qty"),
+            OpenInternalOrderRefs = ReadString(element, "open_internal_order_refs") ?? string.Empty,
+            PlannedPalletQty = ReadDouble(element, "planned_pallet_qty"),
             FilledPalletQty = ReadDouble(element, "filled_pallet_qty"),
+            PlannedPalletCount = ReadInt32(element, "planned_pallet_count"),
+            FilledPalletCount = ReadInt32(element, "filled_pallet_count"),
+            RemainingPalletQty = ReadDouble(element, "remaining_pallet_qty"),
+            QtyToCreate = ReadDouble(element, "qty_to_create"),
+            CanCreateOrder = ReadBool(element, "can_create_order"),
+            Reason = ReadString(element, "reason") ?? string.Empty,
             TotalToMakeQty = ReadDouble(element, "total_to_make_qty")
         };
     }
@@ -1022,6 +1114,30 @@ public sealed class WpfCreateProductionNeedOrdersResult
     public static WpfCreateProductionNeedOrdersResult Failure(string message, Exception? exception = null) => new(false, message, exception);
 }
 
+public sealed class WpfProductionNeedOrderPreviewResult
+{
+    private WpfProductionNeedOrderPreviewResult(bool isSuccess, IReadOnlyList<ProductionNeedDraftLineRow> rows, string message, Exception? exception = null)
+    {
+        IsSuccess = isSuccess;
+        Rows = rows;
+        Message = message;
+        ErrorMessage = isSuccess ? string.Empty : message;
+        Exception = exception;
+    }
+
+    public bool IsSuccess { get; }
+    public IReadOnlyList<ProductionNeedDraftLineRow> Rows { get; }
+    public string Message { get; }
+    public string ErrorMessage { get; }
+    public Exception? Exception { get; }
+
+    public static WpfProductionNeedOrderPreviewResult Success(IReadOnlyList<ProductionNeedDraftLineRow> rows, string message)
+        => new(true, rows, message);
+
+    public static WpfProductionNeedOrderPreviewResult Failure(string message, Exception? exception = null)
+        => new(false, Array.Empty<ProductionNeedDraftLineRow>(), message, exception);
+}
+
 file sealed class ApiResultEnvelope
 {
     [JsonPropertyName("error")]
@@ -1035,4 +1151,49 @@ file sealed class CreateProductionNeedOrdersResponse
 
     [JsonPropertyName("message")]
     public string Message { get; init; } = string.Empty;
+}
+
+file sealed class PreviewProductionNeedOrdersResponse
+{
+    [JsonPropertyName("ok")]
+    public bool Ok { get; init; }
+
+    [JsonPropertyName("message")]
+    public string Message { get; init; } = string.Empty;
+
+    [JsonPropertyName("rows")]
+    public IReadOnlyList<PreviewProductionNeedOrdersResponseLine> Rows { get; init; } = Array.Empty<PreviewProductionNeedOrdersResponseLine>();
+}
+
+file sealed class PreviewProductionNeedOrdersResponseLine
+{
+    [JsonPropertyName("item_id")]
+    public long ItemId { get; init; }
+
+    [JsonPropertyName("gtin")]
+    public string Gtin { get; init; } = string.Empty;
+
+    [JsonPropertyName("item_name")]
+    public string ItemName { get; init; } = string.Empty;
+
+    [JsonPropertyName("qty_to_create")]
+    public double QtyToCreate { get; init; }
+
+    [JsonPropertyName("reason")]
+    public string Reason { get; init; } = string.Empty;
+
+    [JsonPropertyName("min_stock_qty")]
+    public double MinStockQty { get; init; }
+
+    [JsonPropertyName("free_stock_qty")]
+    public double FreeStockQty { get; init; }
+
+    [JsonPropertyName("open_internal_order_qty")]
+    public double OpenInternalOrderQty { get; init; }
+
+    [JsonPropertyName("planned_pallet_qty")]
+    public double PlannedPalletQty { get; init; }
+
+    [JsonPropertyName("filled_pallet_qty")]
+    public double FilledPalletQty { get; init; }
 }

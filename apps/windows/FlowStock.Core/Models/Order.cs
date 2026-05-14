@@ -23,6 +23,11 @@ public sealed class Order
     public DateTime? MarkingPrintedAt { get; init; }
     public bool HasProductionPalletPlan { get; init; }
     public bool NeedsProductionPalletPlan { get; init; }
+    public int PlannedPalletCount { get; init; }
+    public int FilledPalletCount { get; init; }
+    public double PlannedQty { get; init; }
+    public double FilledQty { get; init; }
+    public string PalletPlanStatus { get; init; } = string.Empty;
 
     public string TypeDisplay => OrderStatusMapper.TypeToDisplayName(Type);
     public string StatusDisplay => OrderStatusMapper.StatusToDisplayName(Status, Type);
@@ -60,11 +65,35 @@ public sealed class Order
             : string.Empty;
     public string MarkingStatusDisplay => MarkingStatusMapper.ToDisplayName(EffectiveMarkingStatus);
     public string MarkingStatusShortDisplay => MarkingStatusMapper.ToShortDisplayName(EffectiveMarkingStatus);
-    public string ProductionPalletPlanShortDisplay => HasProductionPalletPlan
-        ? "План сформирован"
-        : NeedsProductionPalletPlan
-            ? "План не сформирован"
-            : string.Empty;
+    public string ProductionPalletPlanShortDisplay
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(PalletPlanStatus))
+            {
+                return PalletPlanStatus;
+            }
+
+            if (HasProductionPalletPlan)
+            {
+                return "План сформирован";
+            }
+
+            return NeedsProductionPalletPlan
+                ? "План не сформирован"
+                : string.Empty;
+        }
+    }
+
+    public bool ProductionPalletFillCompleted =>
+        PlannedPalletCount > 0
+        && FilledPalletCount >= PlannedPalletCount
+        && ProductionPalletPlanShortDisplay.StartsWith("Наполнено", StringComparison.CurrentCultureIgnoreCase);
+
+    public bool ProductionPalletFillInProgress =>
+        FilledPalletCount > 0
+        && PlannedPalletCount > 0
+        && !ProductionPalletFillCompleted;
 
     public string PartnerDisplay
     {

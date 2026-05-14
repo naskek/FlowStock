@@ -1541,7 +1541,16 @@ app.MapGet("/api/docs", (HttpRequest request, IDataStore store) =>
 
     var list = docs
         .OrderByDescending(doc => doc.CreatedAt)
-        .Select(doc => MapDoc(doc, IsProductionPalletFillingStarted(store, doc), HasProductionPalletPlan(store, doc)))
+        .Select(doc =>
+        {
+            var summary = BuildProductionPalletSummary(store, doc);
+            return MapDoc(
+                doc,
+                IsProductionPalletFillingStarted(store, doc),
+                HasProductionPalletPlan(store, doc),
+                summary,
+                BuildPalletFillingStatus(summary));
+        })
         .ToList();
     return Results.Ok(list);
 });
@@ -1571,7 +1580,13 @@ app.MapGet("/api/docs/{docId:long}", (long docId, IDataStore store) =>
         return Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"));
     }
 
-    return Results.Ok(MapDoc(doc, IsProductionPalletFillingStarted(store, doc), HasProductionPalletPlan(store, doc)));
+    var summary = BuildProductionPalletSummary(store, doc);
+    return Results.Ok(MapDoc(
+        doc,
+        IsProductionPalletFillingStarted(store, doc),
+        HasProductionPalletPlan(store, doc),
+        summary,
+        BuildPalletFillingStatus(summary)));
 });
 
 app.MapGet("/api/docs/{docId:long}/lines", (long docId, IDataStore store) =>
@@ -1684,7 +1699,12 @@ app.MapPost("/api/docs/{docId:long}/header", async (long docId, HttpRequest requ
     var updated = store.GetDoc(docId);
     return updated == null
         ? Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"))
-        : Results.Ok(MapDoc(updated, IsProductionPalletFillingStarted(store, updated), HasProductionPalletPlan(store, updated)));
+        : Results.Ok(MapDoc(
+            updated,
+            IsProductionPalletFillingStarted(store, updated),
+            HasProductionPalletPlan(store, updated),
+            BuildProductionPalletSummary(store, updated),
+            BuildPalletFillingStatus(BuildProductionPalletSummary(store, updated))));
 });
 
 app.MapPost("/api/docs/{docId:long}/lines/{lineId:long}/assign-hu", async (long docId, long lineId, HttpRequest request, IDataStore store, DocumentService docs) =>
@@ -3439,8 +3459,14 @@ static bool IsDigitsOnly(string value)
     return true;
 }
 
-static object MapDoc(Doc doc, bool productionPalletFillingStarted = false, bool hasProductionPalletPlan = false)
+static object MapDoc(
+    Doc doc,
+    bool productionPalletFillingStarted = false,
+    bool hasProductionPalletPlan = false,
+    ProductionPalletSummary? palletSummary = null,
+    string? palletFillingStatus = null)
 {
+    palletSummary ??= new ProductionPalletSummary();
     return new
     {
         id = doc.Id,
@@ -3462,7 +3488,13 @@ static object MapDoc(Doc doc, bool productionPalletFillingStarted = false, bool 
         source_device_id = doc.SourceDeviceId,
         line_count = doc.LineCount,
         production_pallet_filling_started = productionPalletFillingStarted,
-        has_production_pallet_plan = hasProductionPalletPlan
+        has_production_pallet_plan = hasProductionPalletPlan,
+        is_palletized = hasProductionPalletPlan,
+        planned_pallet_count = palletSummary.PlannedPalletCount,
+        filled_pallet_count = palletSummary.FilledPalletCount,
+        planned_qty = palletSummary.PlannedQty,
+        filled_qty = palletSummary.FilledQty,
+        pallet_filling_status = palletFillingStatus ?? BuildPalletFillingStatus(palletSummary)
     };
 }
 
@@ -3476,10 +3508,21 @@ static object MapOrderWithShipmentRemaining(Order order, IDataStore store)
     var needsProductionPalletPlan = order.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled)
                                     && documentService.GetOrderReceiptRemaining(order.Id)
                                         .Any(line => line.QtyRemaining > 0.000001);
-    var hasProductionPalletPlan = store.GetDocsByOrder(order.Id)
+    var palletDocs = store.GetDocsByOrder(order.Id)
         .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status != DocStatus.Closed)
-        .Any(doc => HasProductionPalletPlan(store, doc));
-    return OrderApiMapper.MapOrder(order, hasShipmentRemaining, hasProductionPalletPlan, needsProductionPalletPlan);
+        .ToList();
+    var palletSummaries = palletDocs
+        .Select(doc => BuildProductionPalletSummary(store, doc))
+        .ToList();
+    var hasProductionPalletPlan = palletSummaries.Any(summary => summary.PlannedPalletCount > 0);
+    var palletSummary = CombineProductionPalletSummaries(palletSummaries);
+    return OrderApiMapper.MapOrder(
+        order,
+        hasShipmentRemaining,
+        hasProductionPalletPlan,
+        needsProductionPalletPlan,
+        palletSummary,
+        BuildOrderPalletPlanStatus(needsProductionPalletPlan, hasProductionPalletPlan, palletSummary));
 }
 
 static bool IsProductionPalletFillingStarted(IDataStore store, Doc doc)
@@ -3502,6 +3545,80 @@ static bool HasProductionPalletPlan(IDataStore store, Doc doc)
 
     return store.GetProductionPalletsByDoc(doc.Id)
         .Any(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase));
+}
+
+static ProductionPalletSummary BuildProductionPalletSummary(IDataStore store, Doc doc)
+{
+    if (doc.Type != DocType.ProductionReceipt)
+    {
+        return new ProductionPalletSummary();
+    }
+
+    return ProductionPalletService.BuildSummary(store.GetProductionPalletsByDoc(doc.Id));
+}
+
+static ProductionPalletSummary CombineProductionPalletSummaries(IEnumerable<ProductionPalletSummary> summaries)
+{
+    var result = new ProductionPalletSummary();
+    foreach (var summary in summaries)
+    {
+        result = new ProductionPalletSummary
+        {
+            PlannedPalletCount = result.PlannedPalletCount + summary.PlannedPalletCount,
+            PlannedQty = result.PlannedQty + summary.PlannedQty,
+            FilledPalletCount = result.FilledPalletCount + summary.FilledPalletCount,
+            FilledQty = result.FilledQty + summary.FilledQty,
+            RemainingPalletCount = result.RemainingPalletCount + summary.RemainingPalletCount,
+            RemainingQty = result.RemainingQty + summary.RemainingQty
+        };
+    }
+
+    return result;
+}
+
+static string BuildPalletFillingStatus(ProductionPalletSummary summary)
+{
+    if (summary.PlannedPalletCount <= 0)
+    {
+        return string.Empty;
+    }
+
+    if (summary.FilledPalletCount >= summary.PlannedPalletCount && summary.RemainingPalletCount <= 0)
+    {
+        return $"Наполнено полностью: {summary.FilledPalletCount} / {summary.PlannedPalletCount} паллет";
+    }
+
+    if (summary.FilledPalletCount > 0 || summary.FilledQty > 0)
+    {
+        return $"Наполнено {summary.FilledPalletCount} / {summary.PlannedPalletCount} паллет";
+    }
+
+    return "Паллетный выпуск по плану";
+}
+
+static string BuildOrderPalletPlanStatus(bool needsProductionPalletPlan, bool hasProductionPalletPlan, ProductionPalletSummary summary)
+{
+    if (!needsProductionPalletPlan)
+    {
+        return string.Empty;
+    }
+
+    if (!hasProductionPalletPlan || summary.PlannedPalletCount <= 0)
+    {
+        return "План не сформирован";
+    }
+
+    if (summary.FilledPalletCount >= summary.PlannedPalletCount && summary.RemainingPalletCount <= 0)
+    {
+        return "Наполнено полностью";
+    }
+
+    if (summary.FilledPalletCount > 0 || summary.FilledQty > 0)
+    {
+        return $"Наполнение идёт: {summary.FilledPalletCount} / {summary.PlannedPalletCount}";
+    }
+
+    return "План сформирован";
 }
 
 static object MapDocLine(DocLineView line)
@@ -3597,7 +3714,15 @@ static object MapProductionNeedRow(ProductionNeedRow row)
         to_close_orders_qty = row.ToCloseOrdersQty,
         to_min_stock_qty = row.ToMinStockQty,
         open_internal_order_qty = row.OpenInternalOrderQty,
+        open_internal_order_refs = row.OpenInternalOrderRefs,
+        planned_pallet_qty = row.PlannedPalletQty,
         filled_pallet_qty = row.FilledPalletQty,
+        planned_pallet_count = row.PlannedPalletCount,
+        filled_pallet_count = row.FilledPalletCount,
+        remaining_pallet_qty = row.RemainingPalletQty,
+        qty_to_create = row.QtyToCreate,
+        can_create_order = row.CanCreateOrder,
+        reason = row.Reason,
         total_to_make_qty = row.TotalToMakeQty
     };
 }

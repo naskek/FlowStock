@@ -279,6 +279,11 @@
         order.has_production_pallet_plan === true || order.hasProductionPalletPlan === true,
       needsProductionPalletPlan:
         order.needs_production_pallet_plan === true || order.needsProductionPalletPlan === true,
+      palletPlanStatus: String(order.pallet_plan_status || order.palletPlanStatus || "").trim(),
+      plannedPalletCount: Number(order.planned_pallet_count || order.plannedPalletCount) || 0,
+      filledPalletCount: Number(order.filled_pallet_count || order.filledPalletCount) || 0,
+      plannedQty: Number(order.planned_qty || order.plannedQty) || 0,
+      filledQty: Number(order.filled_qty || order.filledQty) || 0,
     };
   }
 

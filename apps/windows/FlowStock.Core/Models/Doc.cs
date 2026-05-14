@@ -24,6 +24,12 @@ public sealed class Doc
     public string? ApiDocUid { get; init; }
     public bool ProductionPalletFillingStarted { get; init; }
     public bool HasProductionPalletPlan { get; init; }
+    public bool IsPalletized { get; init; }
+    public int PlannedPalletCount { get; init; }
+    public int FilledPalletCount { get; init; }
+    public double PlannedPalletQty { get; init; }
+    public double FilledPalletQty { get; init; }
+    public string PalletFillingStatus { get; init; } = string.Empty;
 
     public string TypeDisplay => DocTypeMapper.ToDisplayName(Type);
 
@@ -100,6 +106,29 @@ public sealed class Doc
             }
 
             return $"HU: {ShippingRef}";
+        }
+    }
+
+    public string ProductionPalletBadge
+    {
+        get
+        {
+            if (!IsPalletized && !HasProductionPalletPlan)
+            {
+                return string.Empty;
+            }
+
+            if (!string.IsNullOrWhiteSpace(PalletFillingStatus))
+            {
+                return PalletFillingStatus;
+            }
+
+            if (PlannedPalletCount > 0)
+            {
+                return $"Наполнено {FilledPalletCount} / {PlannedPalletCount} паллет";
+            }
+
+            return "Паллетный выпуск по плану";
         }
     }
 }

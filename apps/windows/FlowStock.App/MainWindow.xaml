@@ -211,9 +211,9 @@
                             </DataGridTemplateColumn>
                             <DataGridTextColumn Header="Остаток" Binding="{Binding StockDisplay}" Width="120" />
                             <DataGridTextColumn Header="До закрытия заказов" Binding="{Binding ToCloseOrdersQty, StringFormat={}{0:0.###}}" Width="150" />
-                            <DataGridTextColumn Header="На склад до мин." Binding="{Binding ToMinStockQty, StringFormat={}{0:0.###}}" Width="140" />
+                            <DataGridTextColumn Header="На склад до мин." Binding="{Binding QtyToCreate, StringFormat={}{0:0.###}}" Width="140" />
                             <DataGridTextColumn Header="Во внутренних заказах" Binding="{Binding OpenInternalOrderQty, StringFormat={}{0:0.###}}" Width="150" />
-                            <DataGridTextColumn Header="Наполнено паллетами" Binding="{Binding FilledPalletQty, StringFormat={}{0:0.###}}" Width="150" />
+                            <DataGridTextColumn Header="Наполнено паллетами" Binding="{Binding FilledPalletDisplay}" Width="190" />
                             <DataGridTextColumn Header="Всего произвести" Binding="{Binding TotalToMakeQty, StringFormat={}{0:0.###}}" Width="150">
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
@@ -271,6 +271,19 @@
                                     <Style TargetType="TextBlock">
                                         <Setter Property="TextTrimming" Value="CharacterEllipsis" />
                                         <Setter Property="ToolTip" Value="{Binding StatusDisplay}" />
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="Паллеты" Binding="{Binding ProductionPalletBadge}" Width="Auto" MaxWidth="280">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground" Value="#8A5A00" />
+                                        <Setter Property="FontWeight" Value="SemiBold" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding ProductionPalletBadge}" Value="Паллетный выпуск по плану">
+                                                <Setter Property="Foreground" Value="#1565C0" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
@@ -336,6 +349,12 @@
                                                         </DataTrigger>
                                                         <DataTrigger Binding="{Binding ProductionPalletPlanShortDisplay}" Value="План сформирован">
                                                             <Setter Property="Foreground" Value="#2E7D32" />
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding ProductionPalletFillInProgress}" Value="True">
+                                                            <Setter Property="Foreground" Value="#8A5A00" />
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding ProductionPalletFillCompleted}" Value="True">
+                                                            <Setter Property="Foreground" Value="#1565C0" />
                                                         </DataTrigger>
                                                     </Style.Triggers>
                                                 </Style>

@@ -1030,45 +1030,47 @@ public partial class MainWindow : Window
 
     private async void ProductionNeedCreateOrders_Click(object sender, RoutedEventArgs e)
     {
-        var draftRows = _productionNeedRows
-            .Where(row => row.ToMinStockQty > 0.000001d)
-            .Select(row => new ProductionNeedDraftLineRow
-            {
-                ItemId = row.ItemId,
-                Gtin = row.Gtin,
-                ItemName = row.ItemName,
-                QtyOrdered = row.ToMinStockQty
-            })
-            .ToList();
-        if (draftRows.Count == 0)
-        {
-            ProductionNeedCreateOrdersButton.IsEnabled = false;
-            ProductionNeedSummaryText.Text = "Нет позиций для создания внутреннего заказа.";
-            return;
-        }
-
-        var previewWindow = new ProductionNeedDraftPreviewWindow(draftRows)
-        {
-            Owner = this
-        };
-        if (previewWindow.ShowDialog() != true)
-        {
-            return;
-        }
-
-        var requestLines = previewWindow.GetConfirmedLines();
-        if (requestLines.Count == 0)
-        {
-            ProductionNeedCreateOrdersButton.IsEnabled = false;
-            ProductionNeedSummaryText.Text = "Нет позиций для создания внутреннего заказа.";
-            return;
-        }
-
         ProductionNeedCreateOrdersButton.IsEnabled = false;
-        ProductionNeedSummaryText.Text = "Формирование производственного черновика...";
+        ProductionNeedSummaryText.Text = "Подготовка предпросмотра...";
 
         try
         {
+            var preview = await _services.WpfReadApi.GetProductionNeedOrderPreviewAsync();
+            if (!preview.IsSuccess)
+            {
+                ProductionNeedSummaryText.Text = "Не удалось получить предпросмотр.";
+                MessageBox.Show(
+                    preview.ErrorMessage,
+                    "Потребность производства",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            if (preview.Rows.Count == 0)
+            {
+                ProductionNeedSummaryText.Text = "Нет позиций для создания внутреннего заказа.";
+                return;
+            }
+
+            var previewWindow = new ProductionNeedDraftPreviewWindow(preview.Rows)
+            {
+                Owner = this
+            };
+            if (previewWindow.ShowDialog() != true)
+            {
+                ProductionNeedSummaryText.Text = "Создание отменено.";
+                return;
+            }
+
+            var requestLines = previewWindow.GetConfirmedLines();
+            if (requestLines.Count == 0)
+            {
+                ProductionNeedSummaryText.Text = "Нет позиций для создания внутреннего заказа.";
+                return;
+            }
+
+            ProductionNeedSummaryText.Text = "Формирование производственного черновика...";
             var result = await _services.WpfReadApi.CreateProductionNeedOrdersAsync(
                 requestLines.Select(line => new ProductionNeedOrderDraftRequestLine
                 {
@@ -1134,12 +1136,20 @@ public partial class MainWindow : Window
                 ToCloseOrdersQty = row.ToCloseOrdersQty,
                 ToMinStockQty = row.ToMinStockQty,
                 OpenInternalOrderQty = row.OpenInternalOrderQty,
+                OpenInternalOrderRefs = row.OpenInternalOrderRefs,
+                PlannedPalletQty = row.PlannedPalletQty,
                 FilledPalletQty = row.FilledPalletQty,
+                PlannedPalletCount = row.PlannedPalletCount,
+                FilledPalletCount = row.FilledPalletCount,
+                RemainingPalletQty = row.RemainingPalletQty,
+                QtyToCreate = row.QtyToCreate,
+                CanCreateOrder = row.CanCreateOrder,
+                Reason = row.Reason,
                 TotalToMakeQty = row.TotalToMakeQty
             });
         }
 
-        var creatableCount = _productionNeedRows.Count(row => row.ToMinStockQty > 0.000001d);
+        var creatableCount = _productionNeedRows.Count(row => row.CanCreateOrder && row.QtyToCreate > 0.000001d);
         ProductionNeedCreateOrdersButton.IsEnabled = creatableCount > 0;
         ProductionNeedSummaryText.Text = $"Позиций: {_productionNeedRows.Count}. К созданию: {creatableCount}.";
     }
@@ -2718,9 +2728,20 @@ public partial class MainWindow : Window
         public double ToCloseOrdersQty { get; init; }
         public double ToMinStockQty { get; init; }
         public double OpenInternalOrderQty { get; init; }
+        public string OpenInternalOrderRefs { get; init; } = string.Empty;
+        public double PlannedPalletQty { get; init; }
         public double FilledPalletQty { get; init; }
+        public int PlannedPalletCount { get; init; }
+        public int FilledPalletCount { get; init; }
+        public double RemainingPalletQty { get; init; }
+        public double QtyToCreate { get; init; }
+        public bool CanCreateOrder { get; init; }
+        public string Reason { get; init; } = string.Empty;
         public double TotalToMakeQty { get; init; }
         public string StockDisplay => $"{FormatQty(FreeStockQty)} / {FormatQty(MinStockQty)}";
+        public string FilledPalletDisplay => PlannedPalletCount > 0
+            ? $"{FilledPalletCount} / {PlannedPalletCount} паллет, {FormatQty(FilledPalletQty)} шт"
+            : FormatQty(FilledPalletQty);
     }
 
     private sealed class StockDisplayRow : INotifyPropertyChanged

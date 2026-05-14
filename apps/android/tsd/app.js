@@ -1403,6 +1403,16 @@
       return { label: "", className: "order-plan-neutral" };
     }
 
+    if (order.palletPlanStatus) {
+      if (order.palletPlanStatus.indexOf("не сформирован") >= 0) {
+        return { label: order.palletPlanStatus, className: "order-plan-missing" };
+      }
+      if (order.palletPlanStatus.indexOf("Наполнение") >= 0) {
+        return { label: order.palletPlanStatus, className: "order-plan-ready" };
+      }
+      return { label: order.palletPlanStatus, className: "order-plan-ready" };
+    }
+
     if (order.hasProductionPalletPlan === true) {
       return { label: "План паллет: сформирован", className: "order-plan-ready" };
     }
