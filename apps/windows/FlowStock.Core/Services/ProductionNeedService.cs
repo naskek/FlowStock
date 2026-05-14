@@ -168,6 +168,15 @@ public sealed class ProductionNeedService(IDataStore dataStore)
         var result = new Dictionary<long, PalletProgress>();
         foreach (var workItem in _dataStore.GetActiveProductionPalletWorkItems())
         {
+            if (workItem.OrderId.HasValue)
+            {
+                var linkedOrder = _dataStore.GetOrder(workItem.OrderId.Value);
+                if (linkedOrder?.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
+                {
+                    continue;
+                }
+            }
+
             if (workItem.Summary.PlannedPalletCount <= 0 && workItem.Summary.PlannedQty <= QtyTolerance)
             {
                 continue;

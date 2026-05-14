@@ -3240,7 +3240,40 @@ internal_direct_by_line AS (
     INNER JOIN internal_order_lines iol ON iol.id = dl.order_line_id
     WHERE d.status = @closed_doc_status
       AND d.type = @production_doc_type
+      AND NOT EXISTS (
+          SELECT 1
+          FROM production_pallets pp
+          WHERE pp.prd_doc_id = d.id
+            AND pp.status <> @cancelled_pallet_status
+      )
     GROUP BY dl.order_line_id
+),
+internal_filled_pallet_by_line AS (
+    SELECT ppl.order_line_id,
+           SUM(
+               CASE
+                   WHEN ppl.filled_qty > 0 THEN ppl.filled_qty
+                   ELSE ppl.planned_qty
+               END
+           ) AS qty_received
+    FROM production_pallet_lines ppl
+    INNER JOIN production_pallets pp ON pp.id = ppl.production_pallet_id
+    INNER JOIN internal_order_lines iol ON iol.id = ppl.order_line_id
+    WHERE pp.status = @filled_pallet_status
+      AND pp.status <> @cancelled_pallet_status
+    GROUP BY ppl.order_line_id
+),
+internal_receipt_by_line AS (
+    SELECT order_line_id,
+           SUM(qty_received) AS qty_received
+    FROM (
+        SELECT order_line_id, qty_received
+        FROM internal_direct_by_line
+        UNION ALL
+        SELECT order_line_id, qty_received
+        FROM internal_filled_pallet_by_line
+    ) internal_receipt_sources
+    GROUP BY order_line_id
 ),
 internal_unlinked_by_item AS (
     SELECT d.order_id,
@@ -3254,6 +3287,12 @@ internal_unlinked_by_item AS (
       AND d.status = @closed_doc_status
       AND d.type = @production_doc_type
       AND dl.order_line_id IS NULL
+      AND NOT EXISTS (
+          SELECT 1
+          FROM production_pallets pp
+          WHERE pp.prd_doc_id = d.id
+            AND pp.status <> @cancelled_pallet_status
+      )
     GROUP BY d.order_id,
              dl.item_id
 ),
@@ -3262,20 +3301,20 @@ internal_line_seed AS (
            iol.id AS order_line_id,
            iol.item_id,
            iol.qty_ordered,
-           COALESCE(direct.qty_received, 0) AS qty_direct_received,
+           COALESCE(receipt.qty_received, 0) AS qty_direct_received,
            COALESCE(unlinked.qty_received, 0) AS qty_unlinked_item_received,
-           GREATEST(0, iol.qty_ordered - COALESCE(direct.qty_received, 0)) AS qty_direct_unfilled,
+           GREATEST(0, iol.qty_ordered - COALESCE(receipt.qty_received, 0)) AS qty_direct_unfilled,
            ROW_NUMBER() OVER (
                PARTITION BY iol.order_id, iol.item_id
                ORDER BY iol.id DESC
            ) AS item_line_desc_rank,
-           COALESCE(SUM(GREATEST(0, iol.qty_ordered - COALESCE(direct.qty_received, 0))) OVER (
+           COALESCE(SUM(GREATEST(0, iol.qty_ordered - COALESCE(receipt.qty_received, 0))) OVER (
                PARTITION BY iol.order_id, iol.item_id
                ORDER BY iol.id
                ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
            ), 0) AS qty_direct_unfilled_before
     FROM internal_order_lines iol
-    LEFT JOIN internal_direct_by_line direct ON direct.order_line_id = iol.id
+    LEFT JOIN internal_receipt_by_line receipt ON receipt.order_line_id = iol.id
     LEFT JOIN internal_unlinked_by_item unlinked ON unlinked.order_id = iol.order_id
                                                  AND unlinked.item_id = iol.item_id
 ),
@@ -3309,10 +3348,12 @@ filled_pallet_by_item AS (
     FROM production_pallets pp
     INNER JOIN docs d ON d.id = pp.prd_doc_id
     INNER JOIN production_pallet_lines ppl ON ppl.production_pallet_id = pp.id
+    LEFT JOIN orders o ON o.id = COALESCE(pp.order_id, d.order_id)
     WHERE d.type = @production_doc_type
       AND d.status <> @closed_doc_status
       AND pp.status = @filled_pallet_status
       AND pp.status <> @cancelled_pallet_status
+      AND (o.id IS NULL OR o.status NOT IN (@shipped_order_status, @cancelled_order_status))
     GROUP BY ppl.item_id
 ),
 item_ids AS (

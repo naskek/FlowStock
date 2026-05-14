@@ -47,4 +47,62 @@ internal static class SetOrderStatusHttpScenario
 
         return (harness, apiStore, orderId);
     }
+
+    public static (CloseDocumentHarness Harness, InMemoryApiDocStore ApiStore, long OrderId, long DraftPrdDocId) CreateCustomerScenarioWithDraftProductionReceipt()
+    {
+        var (harness, apiStore, orderId) = CreateDraftCustomerScenario();
+        harness.SeedLocation(new Location
+        {
+            Id = 1,
+            Code = "FG-01",
+            Name = "Готовая продукция"
+        });
+        harness.SeedItem(new Item
+        {
+            Id = 1001,
+            Name = "Тестовый товар",
+            BaseUom = "шт",
+            MaxQtyPerHu = 10
+        });
+
+        const long docId = 900;
+        harness.SeedDoc(new Doc
+        {
+            Id = docId,
+            DocRef = "PRD-2026-000900",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = orderId,
+            OrderRef = "030",
+            CreatedAt = new DateTime(2026, 3, 10, 11, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 901,
+            DocId = docId,
+            OrderLineId = 501,
+            ItemId = 1001,
+            Qty = 10,
+            ToLocationId = 1,
+            ToHu = "HU-000900"
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 902,
+            PrdDocId = docId,
+            DocLineId = 901,
+            OrderId = orderId,
+            OrderLineId = 501,
+            ItemId = 1001,
+            ItemName = "Тестовый товар",
+            HuCode = "HU-000900",
+            PlannedQty = 10,
+            ToLocationId = 1,
+            ToLocationCode = "FG-01",
+            Status = ProductionPalletStatus.Planned,
+            CreatedAt = new DateTime(2026, 3, 10, 11, 5, 0, DateTimeKind.Utc)
+        });
+
+        return (harness, apiStore, orderId, docId);
+    }
 }

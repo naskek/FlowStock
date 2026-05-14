@@ -59,6 +59,7 @@ public sealed class OrderMarkingExportService
             .ToDictionary(group => group.Key, group => group.ToList());
 
         var taskIdsToExport = new List<Guid>();
+        var taskIdsAvailableForReexport = new List<Guid>();
         var createdCodeQty = 0d;
         var reusedCodeQty = 0d;
         var exportLineCount = 0;
@@ -79,6 +80,9 @@ public sealed class OrderMarkingExportService
             var taskCodeQtyById = itemTasks.ToDictionary(task => task.Id, task => _data.CountMarkingCodesByMarkingOrder(task.Id));
             var taskCodeQty = taskCodeQtyById.Sum(pair => pair.Value);
             reusedCodeQty += Math.Min(itemRequiredQty, taskCodeQty);
+            taskIdsAvailableForReexport.AddRange(itemTasks
+                .Where(task => taskCodeQtyById.TryGetValue(task.Id, out var codes) && codes > 0)
+                .Select(task => task.Id));
 
             foreach (var task in itemTasks.Where(task => taskCodeQtyById.TryGetValue(task.Id, out var codes)
                                                          && codes + QtyTolerance < task.RequestedQuantity))
@@ -102,6 +106,13 @@ public sealed class OrderMarkingExportService
         }
 
         taskIdsToExport = taskIdsToExport.Distinct().ToList();
+        if (taskIdsToExport.Count == 0)
+        {
+            taskIdsToExport = taskIdsAvailableForReexport
+                .Distinct()
+                .ToList();
+        }
+
         MarkingExcelExportResult? excelResult = null;
         if (taskIdsToExport.Count > 0)
         {

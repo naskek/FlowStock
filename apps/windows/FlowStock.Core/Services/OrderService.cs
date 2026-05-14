@@ -583,12 +583,35 @@ public sealed class OrderService
         _data.ExecuteInTransaction(store =>
         {
             TryClearOrderReceiptPlan(store, orderId);
+            DeleteDraftProductionReceiptsForCancelledOrder(store, orderId);
             store.UpdateOrderStatus(orderId, OrderStatus.Cancelled);
             if (existing.Type == OrderType.Customer)
             {
                 TryRefreshCustomerReceiptPlans(store);
             }
         });
+    }
+
+    private static void DeleteDraftProductionReceiptsForCancelledOrder(IDataStore store, long orderId)
+    {
+        var draftProductionReceipts = store.GetDocsByOrder(orderId)
+            .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status == DocStatus.Draft)
+            .OrderByDescending(doc => doc.Id)
+            .ToList();
+
+        foreach (var doc in draftProductionReceipts)
+        {
+            if (store.HasProductionPallets(doc.Id))
+            {
+                store.ClearPlannedProductionPalletPlan(doc.Id);
+            }
+            else if (store.GetDocLines(doc.Id).Count > 0)
+            {
+                store.DeleteDocLines(doc.Id);
+            }
+
+            store.DeleteDoc(doc.Id);
+        }
     }
 
     public void RefreshCustomerReceiptPlans()
