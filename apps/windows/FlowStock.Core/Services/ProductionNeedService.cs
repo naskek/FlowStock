@@ -58,7 +58,7 @@ public sealed class ProductionNeedService(IDataStore dataStore)
                 var minStockQty = item?.ItemTypeEnableMinStockControl == true
                     ? Math.Max(0, item.MinStockQty ?? 0)
                     : 0;
-                var rawToCloseOrdersQty = Math.Max(0, currentNeed.OrderQty - currentNeed.ReservedQty);
+                var rawToCloseOrdersQty = Math.Max(0, currentNeed);
                 var rawToMinStockQty = Math.Max(0, minStockQty - freeStockQty);
                 var plannedProductionQty = Math.Max(0, planned);
                 palletProgress ??= new PalletProgress();
@@ -105,9 +105,9 @@ public sealed class ProductionNeedService(IDataStore dataStore)
             .ToList();
     }
 
-    private Dictionary<long, (double OrderQty, double ReservedQty)> BuildNeedByItem()
+    private Dictionary<long, double> BuildNeedByItem()
     {
-        var result = new Dictionary<long, (double OrderQty, double ReservedQty)>();
+        var result = new Dictionary<long, double>();
         var activeCustomerOrders = _dataStore.GetOrders()
             .Where(order => order.Type == OrderType.Customer
                             && order.Status != OrderStatus.Draft
@@ -115,28 +115,17 @@ public sealed class ProductionNeedService(IDataStore dataStore)
 
         foreach (var order in activeCustomerOrders)
         {
-            var shippedQtyByLine = _dataStore.GetShippedTotalsByOrderLine(order.Id);
-            var reservedQtyByLine = _dataStore.GetOrderReceiptPlanLines(order.Id)
-                .GroupBy(line => line.OrderLineId)
-                .ToDictionary(
-                    group => group.Key,
-                    group => group.Sum(line => line.QtyPlanned));
-
-            foreach (var line in _dataStore.GetOrderLines(order.Id))
+            foreach (var line in OrderReceiptRemainingCalculator.GetRemaining(_dataStore, order))
             {
-                var shippedQty = shippedQtyByLine.TryGetValue(line.Id, out var value) ? value : 0;
-                var openQty = Math.Max(0, line.QtyOrdered - shippedQty);
-                var reservedQty = reservedQtyByLine.TryGetValue(line.Id, out var reservedValue)
-                    ? Math.Max(0, reservedValue)
-                    : 0;
-
-                if (openQty <= 0 && reservedQty <= 0)
+                var remainingQty = Math.Max(0, line.QtyRemaining);
+                if (remainingQty <= QtyTolerance)
                 {
                     continue;
                 }
 
-                result.TryGetValue(line.ItemId, out var current);
-                result[line.ItemId] = (current.OrderQty + openQty, current.ReservedQty + reservedQty);
+                result[line.ItemId] = result.TryGetValue(line.ItemId, out var current)
+                    ? current + remainingQty
+                    : remainingQty;
             }
         }
 

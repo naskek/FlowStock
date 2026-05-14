@@ -244,7 +244,14 @@
     - Отчет показывает текущую суммарную потребность на момент просмотра, без календарного фильтра в UI.
     - Клиентские заказы уже являются источником спроса и не создаются заново из этого отчета.
     - `free_stock_qty` считается как свободный остаток после резервов под клиентские заказы: `physical_stock_qty - reserved_customer_order_qty`.
-    - `raw_to_close_orders_qty` считается по активным `CUSTOMER`-заказам (`status NOT IN (SHIPPED, CANCELLED)`) как `max(0, qty_in_accepted_customer_orders - qty_reserved_for_customer_orders)`, где резерв берется из `order_receipt_plan_lines`.
+    - `raw_to_close_orders_qty` считается по активным `CUSTOMER`-заказам (`status NOT IN (SHIPPED, CANCELLED)`) как оставшаяся потребность именно к производству, а не к отгрузке.
+    - Для каждой строки customer order:
+      - `customer_production_need_qty = max(0, qty_ordered - covered_qty)`.
+      - `covered_qty` включает:
+        - закрытые `PRODUCTION_RECEIPT` по `order_line_id`;
+        - `FILLED production_pallet_lines` по `order_line_id`, если palletized PRD еще не закрыт;
+        - уже зарезервированный готовый складской товар из `order_receipt_plan_lines`.
+      - После закрытия palletized PRD double count не допускается: legacy receipt lines такого PRD не суммируются поверх уже учтенных `production_pallet_lines`.
     - `min_stock_qty` учитывается только если у товара/его типа включен контроль минимального остатка; иначе для отчета он считается равным `0`.
     - `raw_to_min_stock_qty = max(0, min_stock_qty - free_stock_qty)`.
     - Открытые клиентские заказы в статусах `IN_PROGRESS` (`В работе`) и `ACCEPTED` (`Готов`) являются входными данными для `До закрытия заказов`.
