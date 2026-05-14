@@ -282,7 +282,7 @@ public partial class OrderDetailsWindow : Window
 
     private async void PlanPallets_Click(object sender, RoutedEventArgs e)
     {
-        if (!EnsurePalletActionReady())
+        if (!EnsurePalletPlanningReady())
         {
             return;
         }
@@ -325,7 +325,7 @@ public partial class OrderDetailsWindow : Window
 
     private async void PrintPalletLabels_Click(object sender, RoutedEventArgs e)
     {
-        if (!EnsurePalletActionReady())
+        if (!EnsurePalletPrintReady())
         {
             return;
         }
@@ -955,12 +955,27 @@ public partial class OrderDetailsWindow : Window
         return true;
     }
 
-    private bool EnsurePalletActionReady()
+    private bool EnsurePalletPlanningReady()
     {
         if (_order != null && _order.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
         {
             MessageBox.Show(
                 $"{OrderStatusMapper.StatusToDisplayName(_order.Status, _order.Type)} заказ недоступен для подготовки паллет.",
+                "Паллеты",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool EnsurePalletPrintReady()
+    {
+        if (_order != null && _order.Status is OrderStatus.Cancelled)
+        {
+            MessageBox.Show(
+                $"{OrderStatusMapper.StatusToDisplayName(_order.Status, _order.Type)} заказ недоступен для печати паллетных этикеток.",
                 "Паллеты",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
@@ -1011,9 +1026,10 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        var canUse = _orderId.HasValue && _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled);
-        PlanPalletsButton.IsEnabled = canUse;
-        PrintPalletLabelsButton.IsEnabled = canUse;
+        var canPlan = _orderId.HasValue && _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled);
+        var canPrint = _orderId.HasValue && _order?.Status is not OrderStatus.Cancelled;
+        PlanPalletsButton.IsEnabled = canPlan;
+        PrintPalletLabelsButton.IsEnabled = canPrint;
         OrderLinesGrid.Tag = EnsureEditable(false) && !_productionPalletHuLocked;
     }
 

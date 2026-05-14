@@ -2,8 +2,10 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Предпросмотр производственного заказа"
-        Height="520"
-        Width="820"
+        Height="640"
+        Width="1180"
+        MinHeight="560"
+        MinWidth="980"
         WindowStartupLocation="CenterOwner"
         ResizeMode="CanResize">
     <DockPanel Margin="12">
@@ -18,9 +20,13 @@
                   CanUserAddRows="False"
                   CanUserDeleteRows="False"
                   HeadersVisibility="Column"
+                  RowHeaderWidth="0"
+                  GridLinesVisibility="Horizontal"
+                  HorizontalScrollBarVisibility="Auto"
+                  VerticalScrollBarVisibility="Auto"
                   Margin="0,0,0,12">
             <DataGrid.Columns>
-                <DataGridTemplateColumn Header="Товар" Width="*">
+                <DataGridTemplateColumn Header="Товар" Width="3*" MinWidth="340">
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
                             <StackPanel Margin="0,2,0,2">
@@ -30,10 +36,10 @@
                         </DataTemplate>
                     </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
-                <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="170" IsReadOnly="True" />
-                <DataGridTextColumn Header="Остаток / мин." Binding="{Binding StockSummary}" Width="150" IsReadOnly="True" />
-                <DataGridTextColumn Header="Open work" Binding="{Binding WorkSummary}" Width="170" IsReadOnly="True" />
-                <DataGridTextColumn Header="Количество" Binding="{Binding QtyOrdered, StringFormat={}{0:0.###}}" Width="140" />
+                <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="185" MinWidth="160" IsReadOnly="True" />
+                <DataGridTextColumn Header="Остаток / мин." Binding="{Binding StockSummary}" Width="150" MinWidth="130" IsReadOnly="True" />
+                <DataGridTextColumn Header="Open work" Binding="{Binding WorkSummary}" Width="2*" MinWidth="240" IsReadOnly="True" />
+                <DataGridTextColumn Header="Количество" Binding="{Binding QtyOrdered, StringFormat={}{0:0.###}}" Width="150" MinWidth="130" />
             </DataGrid.Columns>
         </DataGrid>
         <StackPanel DockPanel.Dock="Bottom"
