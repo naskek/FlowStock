@@ -76,9 +76,32 @@ public sealed class OrderMarkingExportTests
 
         Assert.True(first.IsSuccessStatusCode);
         Assert.True(second.IsSuccessStatusCode);
+        Assert.Equal(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            second.Content.Headers.ContentType?.MediaType);
         var markingOrder = Assert.Single(harness.MarkingOrders);
         Assert.Equal(3600, markingOrder.RequestedQuantity);
         Assert.Equal(3600, harness.MarkingCodes.Count(code => code.MarkingOrderId == markingOrder.Id));
+    }
+
+    [Fact]
+    public async Task CustomerOrderExport_WhenCodesAlreadyExist_StillRegeneratesExcelWithoutCreatingNewCodes()
+    {
+        var harness = CreateOrderHarness(OrderType.Customer, qty: 3600, status: OrderStatus.Accepted);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        var first = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
+        var codeCountAfterFirst = harness.MarkingCodes.Count;
+
+        var second = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
+
+        Assert.True(first.IsSuccessStatusCode);
+        Assert.True(second.IsSuccessStatusCode);
+        Assert.Equal(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            second.Content.Headers.ContentType?.MediaType);
+        Assert.Single(harness.MarkingOrders);
+        Assert.Equal(codeCountAfterFirst, harness.MarkingCodes.Count);
     }
 
     [Fact]

@@ -1195,6 +1195,17 @@ internal sealed class CloseDocumentHarness
                 }
             });
 
+        _store.Setup(store => store.DeleteDoc(It.IsAny<long>()))
+            .Callback<long>(docId =>
+            {
+                _docs.Remove(docId);
+                _linesByDoc.Remove(docId);
+                foreach (var pallet in _productionPallets.Values.Where(pallet => pallet.PrdDocId == docId).ToArray())
+                {
+                    _productionPallets.Remove(pallet.Id);
+                }
+            });
+
         _store.Setup(store => store.UpdateDocHeader(It.IsAny<long>(), It.IsAny<long?>(), It.IsAny<string?>(), It.IsAny<string?>()))
             .Callback<long, long?, string?, string?>((docId, partnerId, orderRef, shippingRef) =>
             {
