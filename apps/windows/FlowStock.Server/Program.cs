@@ -1541,7 +1541,7 @@ app.MapGet("/api/docs", (HttpRequest request, IDataStore store) =>
 
     var list = docs
         .OrderByDescending(doc => doc.CreatedAt)
-        .Select(MapDoc)
+        .Select(doc => MapDoc(doc, IsProductionPalletFillingStarted(store, doc), HasProductionPalletPlan(store, doc)))
         .ToList();
     return Results.Ok(list);
 });
@@ -1571,7 +1571,7 @@ app.MapGet("/api/docs/{docId:long}", (long docId, IDataStore store) =>
         return Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"));
     }
 
-    return Results.Ok(MapDoc(doc));
+    return Results.Ok(MapDoc(doc, IsProductionPalletFillingStarted(store, doc), HasProductionPalletPlan(store, doc)));
 });
 
 app.MapGet("/api/docs/{docId:long}/lines", (long docId, IDataStore store) =>
@@ -1684,7 +1684,7 @@ app.MapPost("/api/docs/{docId:long}/header", async (long docId, HttpRequest requ
     var updated = store.GetDoc(docId);
     return updated == null
         ? Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"))
-        : Results.Ok(MapDoc(updated));
+        : Results.Ok(MapDoc(updated, IsProductionPalletFillingStarted(store, updated), HasProductionPalletPlan(store, updated)));
 });
 
 app.MapPost("/api/docs/{docId:long}/lines/{lineId:long}/assign-hu", async (long docId, long lineId, HttpRequest request, IDataStore store, DocumentService docs) =>
@@ -1897,7 +1897,7 @@ app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>
         {
             var realOffset = Math.Max(0, offset - pendingRows.Count);
             page.AddRange(orderService.GetOrdersPage(includeInternal, normalized, remainingLimit, realOffset)
-                .Select(OrderApiMapper.MapOrder));
+                .Select(order => MapOrderWithShipmentRemaining(order, store)));
         }
 
         return Results.Ok(page);
@@ -1922,7 +1922,7 @@ app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>
     }
 
     var list = orders
-        .Select(OrderApiMapper.MapOrder)
+        .Select(order => MapOrderWithShipmentRemaining(order, store))
         .ToList();
     if (includePendingRequests)
     {
@@ -1949,7 +1949,7 @@ app.MapGet("/api/orders/{orderId:long}", (long orderId, IDataStore store) =>
         return Results.NotFound(new ApiResult(false, "ORDER_NOT_FOUND"));
     }
 
-    return Results.Ok(OrderApiMapper.MapOrder(order));
+    return Results.Ok(MapOrderWithShipmentRemaining(order, store));
 });
 
 app.MapGet("/api/orders/{orderId:long}/lines", (long orderId, IDataStore store) =>
@@ -3439,7 +3439,7 @@ static bool IsDigitsOnly(string value)
     return true;
 }
 
-static object MapDoc(Doc doc)
+static object MapDoc(Doc doc, bool productionPalletFillingStarted = false, bool hasProductionPalletPlan = false)
 {
     return new
     {
@@ -3460,8 +3460,48 @@ static object MapDoc(Doc doc)
         comment = doc.Comment,
         production_batch_no = doc.ProductionBatchNo,
         source_device_id = doc.SourceDeviceId,
-        line_count = doc.LineCount
+        line_count = doc.LineCount,
+        production_pallet_filling_started = productionPalletFillingStarted,
+        has_production_pallet_plan = hasProductionPalletPlan
     };
+}
+
+static object MapOrderWithShipmentRemaining(Order order, IDataStore store)
+{
+    var documentService = new DocumentService(store);
+    var hasShipmentRemaining = order.Type == OrderType.Customer
+                               && documentService
+                                   .GetOrderShipmentRemaining(order.Id)
+                                   .Any(line => line.QtyRemaining > 0.000001);
+    var needsProductionPalletPlan = order.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled)
+                                    && documentService.GetOrderReceiptRemaining(order.Id)
+                                        .Any(line => line.QtyRemaining > 0.000001);
+    var hasProductionPalletPlan = store.GetDocsByOrder(order.Id)
+        .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status != DocStatus.Closed)
+        .Any(doc => HasProductionPalletPlan(store, doc));
+    return OrderApiMapper.MapOrder(order, hasShipmentRemaining, hasProductionPalletPlan, needsProductionPalletPlan);
+}
+
+static bool IsProductionPalletFillingStarted(IDataStore store, Doc doc)
+{
+    if (doc.Type != DocType.ProductionReceipt || doc.Status != DocStatus.Draft)
+    {
+        return false;
+    }
+
+    return store.GetProductionPalletsByDoc(doc.Id)
+        .Any(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase));
+}
+
+static bool HasProductionPalletPlan(IDataStore store, Doc doc)
+{
+    if (doc.Type != DocType.ProductionReceipt)
+    {
+        return false;
+    }
+
+    return store.GetProductionPalletsByDoc(doc.Id)
+        .Any(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase));
 }
 
 static object MapDocLine(DocLineView line)
@@ -3556,6 +3596,8 @@ static object MapProductionNeedRow(ProductionNeedRow row)
         min_stock_qty = row.MinStockQty,
         to_close_orders_qty = row.ToCloseOrdersQty,
         to_min_stock_qty = row.ToMinStockQty,
+        open_internal_order_qty = row.OpenInternalOrderQty,
+        filled_pallet_qty = row.FilledPalletQty,
         total_to_make_qty = row.TotalToMakeQty
     };
 }

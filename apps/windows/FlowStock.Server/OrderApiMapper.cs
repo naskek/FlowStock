@@ -5,7 +5,11 @@ namespace FlowStock.Server;
 
 public static class OrderApiMapper
 {
-    public static object MapOrder(Order order)
+    public static object MapOrder(
+        Order order,
+        bool? hasShipmentRemaining = null,
+        bool? hasProductionPalletPlan = null,
+        bool? needsProductionPalletPlan = null)
     {
         var markingStatus = order.MarkingCompleted
             ? MarkingStatus.Printed
@@ -37,7 +41,10 @@ public static class OrderApiMapper
             marking_excel_generated_at = order.MarkingExcelGeneratedAt?.ToString("O", CultureInfo.InvariantCulture),
             marking_printed_at = order.MarkingPrintedAt?.ToString("O", CultureInfo.InvariantCulture),
             created_at = order.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
-            shipped_at = order.ShippedAt?.ToString("O", CultureInfo.InvariantCulture)
+            shipped_at = order.ShippedAt?.ToString("O", CultureInfo.InvariantCulture),
+            has_shipment_remaining = hasShipmentRemaining,
+            has_production_pallet_plan = hasProductionPalletPlan,
+            needs_production_pallet_plan = needsProductionPalletPlan
         };
     }
 }

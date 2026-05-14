@@ -272,7 +272,13 @@
       plannedDate: order.due_date || order.dueDate || null,
       createdAt: order.created_at || order.createdAt || null,
       shippedAt: order.shipped_at || order.shippedAt || null,
-      status: order.status || order.status_display || order.statusDisplay || null,
+      status: order.order_status || order.orderStatus || order.status || order.status_display || order.statusDisplay || null,
+      statusDisplay: order.order_status_display || order.orderStatusDisplay || order.status_display || order.statusDisplay || order.status || null,
+      hasShipmentRemaining: order.has_shipment_remaining === true || order.hasShipmentRemaining === true,
+      hasProductionPalletPlan:
+        order.has_production_pallet_plan === true || order.hasProductionPalletPlan === true,
+      needsProductionPalletPlan:
+        order.needs_production_pallet_plan === true || order.needsProductionPalletPlan === true,
     };
   }
 
@@ -293,7 +299,14 @@
       barcode: String(line.barcode || ""),
       orderedQty: Number(line.qty_ordered) || 0,
       shippedQty: Number(line.qty_shipped) || 0,
-      leftQty: Number(line.qty_left) || 0,
+      leftQty:
+        line.qty_left != null
+          ? Number(line.qty_left) || 0
+          : line.qty_remaining != null
+            ? Number(line.qty_remaining) || 0
+            : line.qtyRemaining != null
+              ? Number(line.qtyRemaining) || 0
+              : 0,
     };
   }
 
@@ -701,6 +714,30 @@
       .then(function (payload) {
         if (!Array.isArray(payload)) {
           throw new Error("INVALID_ORDER_LINES");
+        }
+        return payload
+          .map(normalizeApiOrderLine)
+          .filter(function (line) {
+            return !!line;
+          });
+      });
+  }
+
+  function apiGetOrderShipmentRemaining(orderId) {
+    var target = Number(orderId);
+    if (!target) {
+      return Promise.resolve([]);
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(
+          baseUrl + "/api/orders/" + encodeURIComponent(target) + "/shipment-remaining",
+          { method: "GET" }
+        );
+      })
+      .then(function (payload) {
+        if (!Array.isArray(payload)) {
+          throw new Error("INVALID_ORDER_SHIPMENT_REMAINING");
         }
         return payload
           .map(normalizeApiOrderLine)
@@ -2515,6 +2552,7 @@
     apiScanProductionPallet: apiScanProductionPallet,
     apiFillProductionPallet: apiFillProductionPallet,
     apiGetOrderLines: apiGetOrderLines,
+    apiGetOrderShipmentRemaining: apiGetOrderShipmentRemaining,
     apiGetOrderReceiptRemaining: apiGetOrderReceiptRemaining,
     apiLogin: apiLogin,
   };

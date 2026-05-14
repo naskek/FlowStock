@@ -287,7 +287,9 @@ public sealed class WpfReadApiService
             out rows);
     }
 
-    public async Task<WpfCreateProductionNeedOrdersResult> CreateProductionNeedOrdersAsync(CancellationToken cancellationToken = default)
+    public async Task<WpfCreateProductionNeedOrdersResult> CreateProductionNeedOrdersAsync(
+        IReadOnlyList<ProductionNeedOrderDraftRequestLine>? rows = null,
+        CancellationToken cancellationToken = default)
     {
         try
         {
@@ -305,7 +307,14 @@ public sealed class WpfReadApiService
             };
             using var response = await client.PostAsJsonAsync(
                 "/api/production-needs/create-orders",
-                new { },
+                new
+                {
+                    rows = rows?.Select(row => new
+                    {
+                        item_id = row.ItemId,
+                        qty_ordered = row.QtyOrdered
+                    })
+                },
                 cancellationToken);
 
             if (!response.IsSuccessStatusCode)
@@ -633,7 +642,9 @@ public sealed class WpfReadApiService
             Comment = ReadString(element, "comment"),
             ProductionBatchNo = ReadString(element, "production_batch_no"),
             SourceDeviceId = ReadString(element, "source_device_id"),
-            LineCount = ReadInt32(element, "line_count")
+            LineCount = ReadInt32(element, "line_count"),
+            ProductionPalletFillingStarted = ReadBool(element, "production_pallet_filling_started"),
+            HasProductionPalletPlan = ReadBool(element, "has_production_pallet_plan")
         };
     }
 
@@ -662,6 +673,8 @@ public sealed class WpfReadApiService
             MarkingCodeCovered = ReadBool(element, "marking_completed"),
             MarkingExcelGeneratedAt = ReadDateTime(element, "marking_excel_generated_at"),
             MarkingPrintedAt = ReadDateTime(element, "marking_printed_at"),
+            HasProductionPalletPlan = ReadBool(element, "has_production_pallet_plan"),
+            NeedsProductionPalletPlan = ReadBool(element, "needs_production_pallet_plan"),
             CreatedAt = ReadDateTime(element, "created_at") ?? DateTime.MinValue,
             ShippedAt = ReadDateTime(element, "shipped_at")
         };
@@ -754,6 +767,8 @@ public sealed class WpfReadApiService
             MinStockQty = ReadDouble(element, "min_stock_qty"),
             ToCloseOrdersQty = ReadDouble(element, "to_close_orders_qty"),
             ToMinStockQty = ReadDouble(element, "to_min_stock_qty"),
+            OpenInternalOrderQty = ReadDouble(element, "open_internal_order_qty"),
+            FilledPalletQty = ReadDouble(element, "filled_pallet_qty"),
             TotalToMakeQty = ReadDouble(element, "total_to_make_qty")
         };
     }

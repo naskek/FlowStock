@@ -1346,6 +1346,31 @@
     return { label: raw, className: "order-status-pill order-status-neutral" };
   }
 
+  function getOrderStatusInfoForOrder(order) {
+    var statusCode = order && order.status;
+    var statusDisplay =
+      (order && (order.statusDisplay || order.orderStatusDisplay || order.order_status_display)) || "";
+    var normalized = normalizeOrderStatusCode(statusCode || statusDisplay);
+    if (normalized === "IN_PROGRESS") {
+      return { label: "В работе", className: "order-status-pill order-status-progress" };
+    }
+    if (normalized === "ACCEPTED") {
+      return { label: String(statusDisplay || "Готов"), className: "order-status-pill order-status-accepted" };
+    }
+    if (normalized === "SHIPPED") {
+      return { label: String(statusDisplay || "Выполнен"), className: "order-status-pill order-status-shipped" };
+    }
+    return getOrderStatusInfo(statusDisplay || statusCode);
+  }
+
+  function formatPalletCountValue(value) {
+    var count = Number(value);
+    if (isNaN(count) || count < 0) {
+      return "0";
+    }
+    return String(count);
+  }
+
   function getOrderTypeValue(order) {
     return String((order && (order.orderType || order.order_type)) || "")
       .trim()
@@ -1371,6 +1396,18 @@
       partnerLabel += " · ИНН: " + order.partnerInn;
     }
     return partnerLabel;
+  }
+
+  function getProductionPalletPlanInfo(order) {
+    if (!order || order.needsProductionPalletPlan !== true) {
+      return { label: "", className: "order-plan-neutral" };
+    }
+
+    if (order.hasProductionPalletPlan === true) {
+      return { label: "План паллет: сформирован", className: "order-plan-ready" };
+    }
+
+    return { label: "План паллет: не сформирован", className: "order-plan-missing" };
   }
 
   function normalizeOrderStatusCode(status) {
@@ -1399,6 +1436,16 @@
       return "SHIPPED";
     }
     return raw;
+  }
+
+  function isOrderAvailableForShipment(order) {
+    var status = normalizeOrderStatusCode(order && order.status);
+    return (
+      !isInternalOrder(order) &&
+      (status === "ACCEPTED" || status === "IN_PROGRESS") &&
+      order &&
+      order.hasShipmentRemaining === true
+    );
   }
 
   function getDateKey(date) {
@@ -2113,6 +2160,9 @@
       buttons.push('<button class="btn menu-btn" data-route="filling">Наполнение</button>');
     }
     Object.keys(OPS).forEach(function (op) {
+      if (op === "PRODUCTION_RECEIPT") {
+        return;
+      }
       if (!isOperationEnabled(op)) {
         return;
       }
@@ -2235,7 +2285,7 @@
   }
 
   function renderOrderDetails(order, lines) {
-    var statusInfo = getOrderStatusInfo(order.status);
+    var statusInfo = getOrderStatusInfoForOrder(order);
     var orderNumber =
       order.number || order.orderNumber || order.order_ref || order.orderRef || "—";
     var partnerLabel = getOrderPartnerLabel(order);
@@ -2361,10 +2411,48 @@
     return (itemOrDocument && itemOrDocument.summary) || {};
   }
 
+  function renderFillingPalletStatusList(pallets) {
+    var items = (Array.isArray(pallets) ? pallets : [])
+      .map(function (pallet) {
+        var isFilled = String((pallet && pallet.status) || "").toUpperCase() === "FILLED";
+        var huCode = pallet && pallet.huCode ? pallet.huCode : "-";
+        var palletIndex = pallet && pallet.id ? pallet.id : null;
+        return (
+          '<li class="filling-pallet-item ' +
+          (isFilled ? "is-filled" : "is-pending") +
+          '">' +
+          '  <span class="filling-pallet-dot" aria-hidden="true"></span>' +
+          '  <span class="filling-pallet-code">' +
+          escapeHtml(huCode) +
+          "</span>" +
+          (palletIndex ? '  <span class="filling-pallet-status-text">' + escapeHtml(isFilled ? "Наполнена" : "Не наполнена") + "</span>" : "") +
+          "</li>"
+        );
+      })
+      .join("");
+
+    if (!items) {
+      return "";
+    }
+
+    return (
+      '<div class="filling-pallet-list-card">' +
+      '  <div class="filling-pallet-list-title">Паллеты к наполнению</div>' +
+      '  <ul class="filling-pallet-list">' +
+      items +
+      "  </ul>" +
+      "</div>"
+    );
+  }
+
   function renderFillingList(items) {
     var rows = (items || [])
       .map(function (item) {
         var summary = getFillingSummary(item);
+        var statusInfo = getOrderStatusInfoForOrder({
+          status: item.orderStatus,
+          statusDisplay: item.orderStatusDisplay || item.order_status_display,
+        });
         var prdRef = getFillingWorkPrdRef(item);
         var prdHtml = prdRef
           ? '<div class="filling-doc-subtitle">PRD: ' + escapeHtml(prdRef) + "</div>"
@@ -2385,18 +2473,20 @@
           "</div>" +
           prdHtml +
           partnerHtml +
-          '    <div class="filling-doc-meta">Статус: ' +
-          escapeHtml(item.orderStatusDisplay || item.order_status_display || "В работе") +
+          '    <div class="' +
+          escapeHtml(statusInfo.className) +
+          '">' +
+          escapeHtml(statusInfo.label) +
           "</div>" +
           "  </div>" +
           '  <div class="filling-doc-progress">' +
           '    <div>Запланировано паллет: <strong>' +
-          escapeHtml(summary.plannedPalletCount || 0) +
+          escapeHtml(formatPalletCountValue(summary.plannedPalletCount)) +
           "</strong></div>" +
           '    <div>Наполнено паллет: <strong>' +
-          escapeHtml(summary.filledPalletCount || 0) +
+          escapeHtml(formatPalletCountValue(summary.filledPalletCount)) +
           " / " +
-          escapeHtml(summary.plannedPalletCount || 0) +
+          escapeHtml(formatPalletCountValue(summary.plannedPalletCount)) +
           "</strong></div>" +
           '    <div>Осталось наполнить: <strong>' +
           escapeHtml(formatQtyWithUnit(summary.remainingQty || 0, "шт")) +
@@ -2452,6 +2542,7 @@
     var work = context.workItem || {};
     var document = context.document || {};
     var summary = getFillingSummary(document.summary ? document : work);
+    var palletListHtml = renderFillingPalletStatusList(document.pallets);
     var preview = state && state.preview;
     var message = state && state.message ? String(state.message) : "";
     var messageType = state && state.messageType ? String(state.messageType) : "";
@@ -2519,9 +2610,9 @@
         ? '      <div>PRD: <strong>' + escapeHtml(getFillingWorkPrdRef(work)) + "</strong></div>"
         : "") +
       '      <div>Наполнено паллет: <strong>' +
-      escapeHtml(summary.filledPalletCount || 0) +
+      escapeHtml(formatPalletCountValue(summary.filledPalletCount)) +
       " / " +
-      escapeHtml(summary.plannedPalletCount || 0) +
+      escapeHtml(formatPalletCountValue(summary.plannedPalletCount)) +
       "</strong></div>" +
       "    </div>" +
       messageHtml +
@@ -2529,6 +2620,7 @@
       '      <label class="form-label" for="fillingScanInput">Сканируйте HU / паллетный штрихкод</label>' +
       '      <input class="form-input filling-scan-input" id="fillingScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" placeholder="HU-000001" />' +
       "    </div>" +
+      palletListHtml +
       confirmHtml +
       "  </div>" +
       "</section>"
@@ -5250,41 +5342,23 @@
     }
 
     function classifyOrderStatus(order) {
-      var status = order && order.status;
-      var raw = String(status || "").trim().toLowerCase();
+      var status = normalizeOrderStatusCode(
+        (order && (order.status || order.statusDisplay || order.orderStatusDisplay || order.order_status_display)) || ""
+      );
       var internalOrder = isInternalOrder(order);
-      if (!raw) {
+      if (!status) {
         return "in_work";
       }
-      if (
-        raw.indexOf("черновик") !== -1 ||
-        raw.indexOf("draft") !== -1 ||
-        raw.indexOf("процесс") !== -1 ||
-        raw.indexOf("в работе") !== -1 ||
-        raw.indexOf("processing") !== -1 ||
-        raw.indexOf("picking") !== -1
-      ) {
+      if (status === "IN_PROGRESS") {
         return "in_work";
       }
-      if (
-        raw.indexOf("готов") !== -1 ||
-        raw.indexOf("ready") !== -1 ||
-        raw.indexOf("accepted") !== -1 ||
-        raw.indexOf("new") !== -1 ||
-        raw.indexOf("принят") !== -1
-      ) {
+      if (status === "ACCEPTED") {
         if (internalOrder) {
           return "in_work";
         }
         return "ready";
       }
-      if (
-        raw.indexOf("выполн") !== -1 ||
-        raw.indexOf("отгруж") !== -1 ||
-        raw.indexOf("shipped") !== -1 ||
-        raw.indexOf("done") !== -1 ||
-        raw.indexOf("closed") !== -1
-      ) {
+      if (status === "SHIPPED") {
         return "done";
       }
       return "in_work";
@@ -5335,7 +5409,8 @@
       }
       var rows = (orders || [])
         .map(function (order) {
-          var statusInfo = getOrderStatusInfo(order.status);
+          var statusInfo = getOrderStatusInfoForOrder(order);
+          var planInfo = getProductionPalletPlanInfo(order);
           var orderNumber =
             order.number || order.orderNumber || order.order_ref || order.orderRef || "—";
           var partnerLabel = getOrderPartnerLabel(order);
@@ -5343,7 +5418,9 @@
           var shippedDate = formatDate(order.shippedAt || order.shipped_at);
           var createdAt = formatDateTime(order.createdAt || order.created_at);
           return (
-            '<button class="doc-item order-item" data-order="' +
+            '<button class="doc-item order-item' +
+            (planInfo.className === "order-plan-missing" ? " order-item-needs-plan" : "") +
+            '" data-order="' +
             escapeHtml(order.orderId) +
             '">' +
             '  <div class="doc-main">' +
@@ -5363,6 +5440,9 @@
             '      <div class="order-meta-row">Создан: ' +
             escapeHtml(createdAt) +
             "</div>" +
+            (planInfo.label
+              ? '      <div class="order-meta-row ' + escapeHtml(planInfo.className) + '">' + escapeHtml(planInfo.label) + "</div>"
+              : "") +
             "    </div>" +
             "  </div>" +
             '  <div class="' +
@@ -5929,6 +6009,7 @@
     var pickerOptions = options || {};
     var allowInternal = pickerOptions.allowInternal !== false;
     var onlyInProgress = pickerOptions.onlyInProgress === true;
+    var onlyShipmentAvailable = pickerOptions.onlyShipmentAvailable === true;
     var overlay = buildOverlay("Заказы");
     var input = overlay.querySelector(".overlay-search");
     var recentsEl = overlay.querySelector(".overlay-recents");
@@ -5958,6 +6039,9 @@
       TsdStorage.listOrders({ q: query })
         .then(function (orders) {
           var filteredOrders = (orders || []).filter(function (order) {
+            if (onlyShipmentAvailable) {
+              return isOrderAvailableForShipment(order);
+            }
             if (onlyInProgress && normalizeOrderStatusCode(order && order.status) !== "IN_PROGRESS") {
               return false;
             }
@@ -8688,7 +8772,7 @@
       function applyLines() {
         setDocStatus("Загрузка строк заказа...");
         var lineData = buildLineData(doc.op, doc.header);
-        TsdStorage.apiGetOrderLines(orderId)
+        TsdStorage.apiGetOrderShipmentRemaining(orderId)
           .then(function (lines) {
             var nextLines = (lines || [])
               .filter(function (line) {
@@ -8896,6 +8980,7 @@
         openOrderPicker(applyOrderSelection, {
           allowInternal: doc.op !== "OUTBOUND",
           onlyInProgress: doc.op === "PRODUCTION_RECEIPT",
+          onlyShipmentAvailable: doc.op === "OUTBOUND",
         });
       });
     }

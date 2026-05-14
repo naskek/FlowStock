@@ -3,6 +3,8 @@ using System.Net.Http.Json;
 using FlowStock.Core.Models;
 using FlowStock.Server;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
+using FlowStock.Server.Tests.CreateDocDraft.Infrastructure;
+using FlowStock.Server.Tests.CreateDocLine.Infrastructure;
 
 namespace FlowStock.Server.Tests.CloseDocument;
 
@@ -153,6 +155,64 @@ public sealed class CloseDocumentHttpIntegrationTests
         Assert.Equal(DocStatus.Closed, harness.GetDoc(1).Status);
     }
 
+    [Fact]
+    public async Task TsdOutbound_OrderBoundHu_ClosesShipmentAndWritesLedger()
+    {
+        const string docUid = "tsd-outbound-order-bound-001";
+        var harness = CreateTsdOutboundOrderBoundScenario();
+        var apiStore = new InMemoryApiDocStore();
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        var created = await CreateDocDraftHttpApi.CreateAsync(
+            host.Client,
+            new CreateDocRequest
+            {
+                DocUid = docUid,
+                EventId = "evt-tsd-outbound-create-001",
+                DeviceId = "TSD-01",
+                Type = "OUTBOUND",
+                OrderId = 20,
+                FromLocationId = 1,
+                FromHu = "HU-CUST-001",
+                DraftOnly = true
+            });
+        Assert.True(created.Ok);
+
+        var line = await CreateDocLineHttpApi.AddAsync(
+            host.Client,
+            docUid,
+            new AddDocLineRequest
+            {
+                EventId = "evt-tsd-outbound-line-001",
+                DeviceId = "TSD-01",
+                ItemId = 1001,
+                OrderLineId = 201,
+                Qty = 5,
+                FromLocationId = 1,
+                FromHu = "HU-CUST-001"
+            });
+        Assert.True(line.Ok);
+        Assert.Equal(201, line.Line?.OrderLineId);
+        Assert.Equal("HU-CUST-001", line.Line?.FromHu);
+
+        using var response = await host.Client.PostAsJsonAsync(
+            $"/api/docs/{docUid}/close",
+            new CloseDocRequest { EventId = "evt-tsd-outbound-close-001", DeviceId = "TSD-01" });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await ReadCloseResponseAsync(response);
+        Assert.True(payload.Ok);
+        Assert.True(payload.Closed);
+        Assert.Empty(payload.Errors);
+
+        var ledger = Assert.Single(harness.LedgerEntries);
+        Assert.Equal(1001, ledger.ItemId);
+        Assert.Equal(1, ledger.LocationId);
+        Assert.Equal("HU-CUST-001", ledger.HuCode);
+        Assert.Equal(-5, ledger.QtyDelta);
+        Assert.Equal(OrderStatus.Shipped, harness.GetOrder(20).Status);
+    }
+
     private static async Task<CloseDocResponse> ReadCloseResponseAsync(HttpResponseMessage response)
     {
         var payload = await response.Content.ReadFromJsonAsync<CloseDocResponse>();
@@ -243,5 +303,79 @@ public sealed class CloseDocumentHttpIntegrationTests
             deviceId: "WPF-01");
 
         return (harness, apiStore, docUid);
+    }
+
+    private static CloseDocumentHarness CreateTsdOutboundOrderBoundScenario()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedLocation(new Location
+        {
+            Id = 1,
+            Code = "FG-01",
+            Name = "Готовая продукция"
+        });
+        harness.SeedPartner(new Partner
+        {
+            Id = 200,
+            Code = "CUST-200",
+            Name = "Тестовый клиент",
+            CreatedAt = new DateTime(2026, 5, 8, 8, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedItem(new Item
+        {
+            Id = 1001,
+            Name = "Горчица",
+            Gtin = "04607186951520",
+            ItemTypeName = "Готовая продукция",
+            ItemTypeEnableMarking = false
+        });
+        harness.SeedOrder(new Order
+        {
+            Id = 20,
+            OrderRef = "SO-020",
+            Type = OrderType.Customer,
+            Status = OrderStatus.Accepted,
+            PartnerId = 200,
+            CreatedAt = new DateTime(2026, 5, 8, 9, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 201,
+            OrderId = 20,
+            ItemId = 1001,
+            QtyOrdered = 5,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder
+        });
+        harness.SeedDoc(new Doc
+        {
+            Id = 3,
+            DocRef = "PRD-2026-000003",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Closed,
+            OrderId = 20,
+            OrderRef = "SO-020",
+            PartnerId = 200,
+            CreatedAt = new DateTime(2026, 5, 8, 10, 0, 0, DateTimeKind.Utc),
+            ClosedAt = new DateTime(2026, 5, 8, 11, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 31,
+            DocId = 3,
+            OrderLineId = 201,
+            ItemId = 1001,
+            Qty = 5,
+            ToLocationId = 1,
+            ToHu = "HU-CUST-001"
+        });
+        harness.SeedHu(new HuRecord
+        {
+            Id = 1,
+            Code = "HU-CUST-001",
+            Status = "ACTIVE",
+            CreatedAt = new DateTime(2026, 5, 8, 10, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedBalance(itemId: 1001, locationId: 1, qty: 5, huCode: "HU-CUST-001");
+        return harness;
     }
 }

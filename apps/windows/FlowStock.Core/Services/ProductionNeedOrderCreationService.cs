@@ -9,24 +9,26 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
     private const double QtyTolerance = 0.000001;
     private readonly IDataStore _dataStore = dataStore;
 
-    public ProductionNeedOrderCreationResult CreateDraftOrders()
+    public ProductionNeedOrderCreationResult CreateDraftOrders(IReadOnlyList<ProductionNeedOrderDraftRequestLine>? requestedLines = null)
     {
         ProductionNeedOrderCreationResult? result = null;
         _dataStore.ExecuteInTransaction(store =>
         {
-            result = CreateDraftOrdersInTransaction(store);
+            result = CreateDraftOrdersInTransaction(store, requestedLines);
         });
 
         return result ?? throw new InvalidOperationException("Не удалось выполнить формирование производственной потребности.");
     }
 
-    private static ProductionNeedOrderCreationResult CreateDraftOrdersInTransaction(IDataStore dataStore)
+    private static ProductionNeedOrderCreationResult CreateDraftOrdersInTransaction(
+        IDataStore dataStore,
+        IReadOnlyList<ProductionNeedOrderDraftRequestLine>? requestedLines)
     {
         var currentRows = new ProductionNeedService(dataStore)
             .GetRows(includeZeroNeed: false);
         var openInternalByItem = BuildDebugOpenInternalProductionByItem(dataStore);
         var debugSummary = BuildDebugSummary(currentRows, openInternalByItem);
-        var draftLines = BuildDraftLines(dataStore, currentRows);
+        var draftLines = BuildDraftLines(dataStore, currentRows, requestedLines);
         long? internalOrderId = null;
         if (draftLines.Count > 0)
         {
@@ -52,18 +54,50 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
         };
     }
 
-    private static List<OrderLineView> BuildDraftLines(IDataStore dataStore, IReadOnlyList<ProductionNeedRow> currentRows)
+    private static List<OrderLineView> BuildDraftLines(
+        IDataStore dataStore,
+        IReadOnlyList<ProductionNeedRow> currentRows,
+        IReadOnlyList<ProductionNeedOrderDraftRequestLine>? requestedLines)
     {
-        return currentRows
+        var suggestedRows = currentRows
             .Where(row => row.ToMinStockQty > QtyTolerance)
-            .Select(row =>
-            {
-                var item = dataStore.FindItemById(row.ItemId) ?? throw new InvalidOperationException("Товар потребности не найден.");
-                return new OrderLineView
+            .ToDictionary(row => row.ItemId);
+
+        IReadOnlyList<ProductionNeedOrderDraftRequestLine> effectiveRows;
+        if (requestedLines != null && requestedLines.Count > 0)
+        {
+            effectiveRows = requestedLines
+                .Where(line => line.ItemId > 0
+                               && line.QtyOrdered > QtyTolerance
+                               && suggestedRows.ContainsKey(line.ItemId))
+                .GroupBy(line => line.ItemId)
+                .Select(group => new ProductionNeedOrderDraftRequestLine
+                {
+                    ItemId = group.Key,
+                    QtyOrdered = group.Last().QtyOrdered
+                })
+                .ToArray();
+        }
+        else
+        {
+            effectiveRows = suggestedRows.Values
+                .Select(row => new ProductionNeedOrderDraftRequestLine
                 {
                     ItemId = row.ItemId,
+                    QtyOrdered = row.ToMinStockQty
+                })
+                .ToArray();
+        }
+
+        return effectiveRows
+            .Select(line =>
+            {
+                var item = dataStore.FindItemById(line.ItemId) ?? throw new InvalidOperationException("Товар потребности не найден.");
+                return new OrderLineView
+                {
+                    ItemId = line.ItemId,
                     ItemName = item.Name,
-                    QtyOrdered = row.ToMinStockQty,
+                    QtyOrdered = line.QtyOrdered,
                     ProductionPurpose = ProductionLinePurpose.InternalStock
                 };
             })

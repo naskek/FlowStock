@@ -3,7 +3,9 @@ const path = require("path");
 const assert = require("assert");
 
 const appJs = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
+const storageJs = fs.readFileSync(path.join(__dirname, "storage.js"), "utf8");
 const serviceWorkerJs = fs.readFileSync(path.join(__dirname, "service-worker.js"), "utf8");
+const scannerJs = fs.readFileSync(path.join(__dirname, "scanner.js"), "utf8");
 
 function extractFunctionBody(source, name) {
   const marker = `function ${name}(`;
@@ -39,6 +41,11 @@ assert(
   "filling button should use the common menu button design"
 );
 assert(
+  appJs.includes('if (op === "PRODUCTION_RECEIPT")') &&
+    appJs.includes('onlyShipmentAvailable: doc.op === "OUTBOUND"'),
+  "operations menu should hide the legacy production receipt button and keep outbound order filtering"
+);
+assert(
   appJs.includes("renderFillingLoading()"),
   "filling route should show the filling loading screen immediately"
 );
@@ -55,6 +62,79 @@ assert(
   appJs.includes("TsdStorage.apiGetProductionFillingContext(orderId)") &&
     appJs.includes('data-filling-order="'),
   "selecting an order should load existing filling context and open scan screen"
+);
+assert(
+  appJs.includes("formatPalletCountValue(summary.filledPalletCount)") &&
+    appJs.includes("renderFillingPalletStatusList(document.pallets)") &&
+    appJs.includes('"is-filled"') &&
+    appJs.includes('"is-pending"'),
+  "filling screen should show explicit 0/N counters and a status list of pallet HU codes"
+);
+assert(
+  appJs.includes('id="fillingScanInput" type="text"') &&
+    appJs.includes('data-scan-allow="1"') &&
+    appJs.includes('placeholder="HU-000001"'),
+  "filling scan input should accept keyboard-wedge scanner text"
+);
+assert(
+  appJs.includes("getOrderStatusInfoForOrder(order)") &&
+    appJs.includes("statusDisplay || order.orderStatusDisplay || order.order_status_display"),
+  "TSD order and filling lists should render status labels from the same status/display mapping"
+);
+assert(
+  appJs.includes("getProductionPalletPlanInfo(order)") &&
+    appJs.includes("order-item-needs-plan") &&
+    storageJs.includes("hasProductionPalletPlan") &&
+    storageJs.includes("needsProductionPalletPlan"),
+  "TSD order list should surface pallet plan state and highlight orders without a pallet plan"
+);
+assert(
+  appJs.includes('scanInput.addEventListener("keydown"') &&
+    appJs.includes('event.key === "Enter"') &&
+    appJs.includes("handleScannedValue(scanInput.value)"),
+  "filling scan input should submit typed scanner text on Enter"
+);
+assert(
+  scannerJs.includes("function unlockScanTarget(target)") &&
+    scannerJs.includes('target.getAttribute("data-scan-readonly") !== "1"') &&
+    scannerJs.includes("target.readOnly = false"),
+  "keyboard scanner should temporarily unlock scan input when soft keyboard suppression made it readonly"
+);
+assert(
+  scannerJs.includes("buffer += event.key") &&
+    scannerJs.includes('flushBuffer("enter")') &&
+    scannerJs.includes("isScanAllowedTarget(event.target)"),
+  "keyboard scanner should collect scanner key events and flush on Enter"
+);
+assert(
+  appJs.includes("TsdStorage.apiScanProductionPallet({") &&
+    appJs.includes("orderId: context.workItem && context.workItem.orderId") &&
+    appJs.includes("prdDocId: context.workItem && context.workItem.prdDocId"),
+  "HU scan should include selected order and PRD context"
+);
+assert(
+  appJs.includes("TsdStorage.apiFillProductionPallet({") &&
+    appJs.includes("orderId: activePreview.orderId") &&
+    appJs.includes("prdDocId: activePreview.prdDocId"),
+  "fill confirmation should include scanned order and PRD context"
+);
+assert(
+  appJs.includes("TsdStorage.apiGetOrderShipmentRemaining(orderId)") &&
+    appJs.includes("isOrderAvailableForShipment(order)") &&
+    appJs.includes("order.hasShipmentRemaining === true"),
+  "TSD outbound should select only shipment-ready customer orders and load shipment remaining lines"
+);
+assert(
+  storageJs.includes('"/shipment-remaining"') &&
+    storageJs.includes("hasShipmentRemaining") &&
+    storageJs.includes("order.has_shipment_remaining === true"),
+  "TSD storage should normalize shipment availability and call /shipment-remaining"
+);
+assert(
+  appJs.includes("Микс-паллета") &&
+    appJs.includes("preview.lines") &&
+    appJs.includes("filling-preview-composition"),
+  "mixed pallet preview should render composition lines"
 );
 assert(
   appJs.includes("Не удалось загрузить заказы для наполнения") && appJs.includes("console.error(error)"),

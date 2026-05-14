@@ -1619,11 +1619,11 @@ public sealed class DocumentService
                     }
                     break;
                 case DocType.ProductionReceipt:
-                    if (!line.ToLocationId.HasValue)
+                    if (!hasProductionPallets && !line.ToLocationId.HasValue)
                     {
                         check.Errors.Add($"{rowLabel}: требуется место хранения получателя.");
                     }
-                    if (string.IsNullOrWhiteSpace(NormalizeHuValue(toHu)))
+                    if (!hasProductionPallets && string.IsNullOrWhiteSpace(NormalizeHuValue(toHu)))
                     {
                         check.Errors.Add($"{rowLabel}: требуется HU.");
                     }
@@ -1658,6 +1658,7 @@ public sealed class DocumentService
             }
 
             if (doc.Type == DocType.ProductionReceipt
+                && !hasProductionPallets
                 && item?.MaxQtyPerHu is double maxQtyPerHu
                 && maxQtyPerHu > 0
                 && line.Qty > maxQtyPerHu + 0.000001)
@@ -1862,7 +1863,7 @@ public sealed class DocumentService
             }
         }
 
-        if (doc.Type == DocType.ProductionReceipt)
+        if (doc.Type == DocType.ProductionReceipt && !hasProductionPallets)
         {
             var huLoadByCode = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
             foreach (var line in lines)

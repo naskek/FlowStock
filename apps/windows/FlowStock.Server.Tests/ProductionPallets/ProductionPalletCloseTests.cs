@@ -39,6 +39,71 @@ public sealed class ProductionPalletCloseTests
     }
 
     [Fact]
+    public void CloseProductionReceipt_WithFilledProductionPallets_SkipsLegacyHuDistributionValidation()
+    {
+        var harness = CreateHarness(orderQty: 1200, firstHu: null, firstLineQty: 1200, maxQtyPerHu: 600);
+        harness.SeedProductionPallet(BuildPallet(
+            id: 1,
+            docLineId: 201,
+            huCode: "HU-PLAN-001",
+            status: ProductionPalletStatus.Planned,
+            plannedQty: 1200));
+        var palletService = new ProductionPalletService(harness.Store);
+        Assert.True(palletService.Fill("HU-PLAN-001", "TSD-01").Success);
+
+        var close = harness.CreateService().TryCloseDoc(20, allowNegative: false);
+
+        Assert.True(close.Success);
+        Assert.Single(harness.LedgerEntries);
+        Assert.Equal("HU-PLAN-001", harness.LedgerEntries.Single().HuCode);
+        Assert.Equal(DocStatus.Closed, harness.GetDoc(20).Status);
+    }
+
+    [Fact]
+    public void ProductionOrder_PlanFillCloseAndShip_UsesPlannedHu()
+    {
+        var harness = CreateOrderPlanningHarness();
+        var palletService = new ProductionPalletService(harness.Store);
+        var documentService = harness.CreateService();
+
+        var plan = palletService.PlanOrder(10);
+        var pallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId));
+        Assert.True(palletService.Fill(pallet.HuCode, "TSD-01").Success);
+        Assert.True(documentService.TryCloseDoc(plan.PrdDocId, allowNegative: false).Success);
+
+        harness.SeedPartner(new Partner { Id = 1, Name = "Клиент" });
+        harness.SeedDoc(new Doc
+        {
+            Id = 30,
+            DocRef = "OUT-2026-000001",
+            Type = DocType.Outbound,
+            Status = DocStatus.Draft,
+            PartnerId = 1,
+            OrderId = 10,
+            CreatedAt = new DateTime(2026, 5, 13, 12, 0, 0)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 301,
+            DocId = 30,
+            OrderLineId = 101,
+            ItemId = 100,
+            Qty = 600,
+            FromLocationId = 1,
+            FromHu = pallet.HuCode
+        });
+
+        var outboundClose = documentService.TryCloseDoc(30, allowNegative: false);
+
+        Assert.True(outboundClose.Success);
+        Assert.Equal(DocStatus.Closed, harness.GetDoc(30).Status);
+        Assert.Equal(2, harness.LedgerEntries.Count);
+        Assert.Equal(0, harness.LedgerEntries.Where(entry => entry.HuCode == pallet.HuCode).Sum(entry => entry.QtyDelta));
+        Assert.Contains(harness.LedgerEntries, entry => entry.DocId == plan.PrdDocId && entry.QtyDelta == 600 && entry.HuCode == pallet.HuCode);
+        Assert.Contains(harness.LedgerEntries, entry => entry.DocId == 30 && entry.QtyDelta == -600 && entry.HuCode == pallet.HuCode);
+    }
+
+    [Fact]
     public void FillPallet_UsesPlannedHuOnly()
     {
         var harness = CreateTwoPalletHarness();
@@ -147,11 +212,44 @@ public sealed class ProductionPalletCloseTests
         return harness;
     }
 
-    private static CloseDocumentHarness CreateHarness(double orderQty = 600, string firstHu = "HU-000001")
+    private static CloseDocumentHarness CreateOrderPlanningHarness()
     {
         var harness = new CloseDocumentHarness();
         harness.SeedLocation(new Location { Id = 1, Code = "MAIN", Name = "Основной склад" });
-        harness.SeedItem(new Item { Id = 100, Name = "Товар" });
+        harness.SeedItem(new Item
+        {
+            Id = 100,
+            Name = "Товар",
+            BaseUom = "шт",
+            MaxQtyPerHu = 600
+        });
+        harness.SeedOrder(new Order
+        {
+            Id = 10,
+            OrderRef = "056",
+            Type = OrderType.Internal,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 5, 13, 8, 0, 0)
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 101,
+            OrderId = 10,
+            ItemId = 100,
+            QtyOrdered = 600
+        });
+        return harness;
+    }
+
+    private static CloseDocumentHarness CreateHarness(
+        double orderQty = 600,
+        string? firstHu = "HU-000001",
+        double firstLineQty = 600,
+        double? maxQtyPerHu = null)
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedLocation(new Location { Id = 1, Code = "MAIN", Name = "Основной склад" });
+        harness.SeedItem(new Item { Id = 100, Name = "Товар", MaxQtyPerHu = maxQtyPerHu });
         harness.SeedOrder(new Order
         {
             Id = 10,
@@ -182,7 +280,7 @@ public sealed class ProductionPalletCloseTests
             DocId = 20,
             OrderLineId = 101,
             ItemId = 100,
-            Qty = 600,
+            Qty = firstLineQty,
             ToLocationId = 1,
             ToHu = firstHu
         });
@@ -194,7 +292,7 @@ public sealed class ProductionPalletCloseTests
         return BuildPallet(id: 1, docLineId: 201, huCode: "HU-000001", status: status);
     }
 
-    private static ProductionPallet BuildPallet(long id, long docLineId, string huCode, string status)
+    private static ProductionPallet BuildPallet(long id, long docLineId, string huCode, string status, double plannedQty = 600)
     {
         return new ProductionPallet
         {
@@ -206,7 +304,7 @@ public sealed class ProductionPalletCloseTests
             ItemId = 100,
             ItemName = "Товар",
             HuCode = huCode,
-            PlannedQty = 600,
+            PlannedQty = plannedQty,
             ToLocationId = 1,
             ToLocationCode = "MAIN",
             Status = status,

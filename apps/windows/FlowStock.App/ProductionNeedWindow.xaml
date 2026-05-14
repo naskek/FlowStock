@@ -40,6 +40,8 @@
                 <DataGridTextColumn Header="Остаток" Binding="{Binding StockDisplay}" Width="120" />
                 <DataGridTextColumn Header="До закрытия заказов" Binding="{Binding ToCloseOrdersQty, StringFormat={}{0:0.###}}" Width="150" />
                 <DataGridTextColumn Header="На склад до мин." Binding="{Binding ToMinStockQty, StringFormat={}{0:0.###}}" Width="140" />
+                <DataGridTextColumn Header="Во внутренних заказах" Binding="{Binding OpenInternalOrderQty, StringFormat={}{0:0.###}}" Width="150" />
+                <DataGridTextColumn Header="Наполнено паллетами" Binding="{Binding FilledPalletQty, StringFormat={}{0:0.###}}" Width="150" />
                 <DataGridTextColumn Header="Всего произвести" Binding="{Binding TotalToMakeQty, StringFormat={}{0:0.###}}" Width="150">
                     <DataGridTextColumn.ElementStyle>
                         <Style TargetType="TextBlock">

@@ -11,5 +11,7 @@ public sealed class ProductionNeedRow
     public double MinStockQty { get; init; }
     public double ToCloseOrdersQty { get; init; }
     public double ToMinStockQty { get; init; }
+    public double OpenInternalOrderQty { get; init; }
+    public double FilledPalletQty { get; init; }
     public double TotalToMakeQty { get; init; }
 }

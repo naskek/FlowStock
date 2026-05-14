@@ -428,6 +428,21 @@ public sealed class CreateProductionNeedOrdersResponse
     public IReadOnlyList<string> DebugSummary { get; init; } = Array.Empty<string>();
 }
 
+public sealed class CreateProductionNeedOrdersRequest
+{
+    [JsonPropertyName("rows")]
+    public List<CreateProductionNeedOrdersRequestLine>? Rows { get; set; }
+}
+
+public sealed class CreateProductionNeedOrdersRequestLine
+{
+    [JsonPropertyName("item_id")]
+    public long ItemId { get; set; }
+
+    [JsonPropertyName("qty_ordered")]
+    public double QtyOrdered { get; set; }
+}
+
 public sealed class CreateMarkingFromProductionNeedsResponse
 {
     [JsonPropertyName("ok")]

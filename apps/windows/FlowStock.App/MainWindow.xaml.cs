@@ -1030,12 +1030,51 @@ public partial class MainWindow : Window
 
     private async void ProductionNeedCreateOrders_Click(object sender, RoutedEventArgs e)
     {
+        var draftRows = _productionNeedRows
+            .Where(row => row.ToMinStockQty > 0.000001d)
+            .Select(row => new ProductionNeedDraftLineRow
+            {
+                ItemId = row.ItemId,
+                Gtin = row.Gtin,
+                ItemName = row.ItemName,
+                QtyOrdered = row.ToMinStockQty
+            })
+            .ToList();
+        if (draftRows.Count == 0)
+        {
+            ProductionNeedCreateOrdersButton.IsEnabled = false;
+            ProductionNeedSummaryText.Text = "Нет позиций для создания внутреннего заказа.";
+            return;
+        }
+
+        var previewWindow = new ProductionNeedDraftPreviewWindow(draftRows)
+        {
+            Owner = this
+        };
+        if (previewWindow.ShowDialog() != true)
+        {
+            return;
+        }
+
+        var requestLines = previewWindow.GetConfirmedLines();
+        if (requestLines.Count == 0)
+        {
+            ProductionNeedCreateOrdersButton.IsEnabled = false;
+            ProductionNeedSummaryText.Text = "Нет позиций для создания внутреннего заказа.";
+            return;
+        }
+
         ProductionNeedCreateOrdersButton.IsEnabled = false;
         ProductionNeedSummaryText.Text = "Формирование производственного черновика...";
 
         try
         {
-            var result = await _services.WpfReadApi.CreateProductionNeedOrdersAsync();
+            var result = await _services.WpfReadApi.CreateProductionNeedOrdersAsync(
+                requestLines.Select(line => new ProductionNeedOrderDraftRequestLine
+                {
+                    ItemId = line.ItemId,
+                    QtyOrdered = line.QtyOrdered
+                }).ToArray());
             if (!result.IsSuccess)
             {
                 ProductionNeedSummaryText.Text = "Не удалось сформировать производственный черновик.";
@@ -1067,6 +1106,7 @@ public partial class MainWindow : Window
                 out var rows))
         {
             _productionNeedRows.Clear();
+            ProductionNeedCreateOrdersButton.IsEnabled = false;
             ProductionNeedSummaryText.Text = "Не удалось загрузить отчет. Проверьте доступность FlowStock Server API.";
             if (showErrorMessage)
             {
@@ -1093,11 +1133,15 @@ public partial class MainWindow : Window
                 MinStockQty = row.MinStockQty,
                 ToCloseOrdersQty = row.ToCloseOrdersQty,
                 ToMinStockQty = row.ToMinStockQty,
+                OpenInternalOrderQty = row.OpenInternalOrderQty,
+                FilledPalletQty = row.FilledPalletQty,
                 TotalToMakeQty = row.TotalToMakeQty
             });
         }
 
-        ProductionNeedSummaryText.Text = $"Позиций: {_productionNeedRows.Count}.";
+        var creatableCount = _productionNeedRows.Count(row => row.ToMinStockQty > 0.000001d);
+        ProductionNeedCreateOrdersButton.IsEnabled = creatableCount > 0;
+        ProductionNeedSummaryText.Text = $"Позиций: {_productionNeedRows.Count}. К созданию: {creatableCount}.";
     }
 
     private string? GetSelectedStockLocationCode()
@@ -2673,6 +2717,8 @@ public partial class MainWindow : Window
         public double MinStockQty { get; init; }
         public double ToCloseOrdersQty { get; init; }
         public double ToMinStockQty { get; init; }
+        public double OpenInternalOrderQty { get; init; }
+        public double FilledPalletQty { get; init; }
         public double TotalToMakeQty { get; init; }
         public string StockDisplay => $"{FormatQty(FreeStockQty)} / {FormatQty(MinStockQty)}";
     }

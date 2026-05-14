@@ -1,0 +1,41 @@
+<Window x:Class="FlowStock.App.ProductionNeedDraftPreviewWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Предпросмотр производственного заказа"
+        Height="520"
+        Width="820"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="CanResize">
+    <DockPanel Margin="12">
+        <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+            <TextBlock Text="Будущие строки внутреннего заказа" FontSize="16" FontWeight="SemiBold" />
+            <TextBlock Text="Количество можно изменить. Строки с количеством 0 не будут созданы."
+                       Margin="0,4,0,0"
+                       Foreground="#475467" />
+        </StackPanel>
+        <DataGrid x:Name="RowsGrid"
+                  AutoGenerateColumns="False"
+                  CanUserAddRows="False"
+                  CanUserDeleteRows="False"
+                  HeadersVisibility="Column"
+                  Margin="0,0,0,12">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" IsReadOnly="True" />
+                <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="170" IsReadOnly="True" />
+                <DataGridTextColumn Header="Количество" Binding="{Binding QtyOrdered, StringFormat={}{0:0.###}}" Width="140" />
+            </DataGrid.Columns>
+        </DataGrid>
+        <StackPanel DockPanel.Dock="Bottom"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right">
+            <Button Content="Отмена"
+                    Width="120"
+                    Margin="0,0,8,0"
+                    IsCancel="True" />
+            <Button Content="Подтвердить"
+                    Width="140"
+                    IsDefault="True"
+                    Click="Confirm_Click" />
+        </StackPanel>
+    </DockPanel>
+</Window>

@@ -239,6 +239,86 @@ public sealed class ProductionPalletServiceTests
     }
 
     [Fact]
+    public void TsdFillingChain_PlannedOrder_ScansAndFillsAllPalletsWithoutDuplicates()
+    {
+        var harness = CreateHarnessWithOrderOnly(orderQty: 1200, maxQtyPerHu: 600);
+        var service = new ProductionPalletService(harness.Store);
+
+        var plan = service.PlanOrder(10);
+        var plannedHus = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId)
+            .OrderBy(pallet => pallet.Id)
+            .Select(pallet => pallet.HuCode)
+            .ToArray();
+        var order = Assert.Single(service.GetFillingOrders());
+        var context = service.GetFillingContext(order.OrderId);
+
+        Assert.Equal(plan.PrdDocId, context.PrdDocId);
+        Assert.Equal(2, context.Document.Summary.PlannedPalletCount);
+        Assert.Equal(2, context.Document.Summary.RemainingPalletCount);
+        Assert.Equal(plannedHus, context.Document.Pallets.Select(pallet => pallet.HuCode).ToArray());
+
+        var firstScan = service.Scan(context.OrderId, context.PrdDocId, plannedHus[0]);
+        var firstFill = service.Fill(plannedHus[0], "TSD-01", context.OrderId, context.PrdDocId);
+        var afterFirst = service.GetFillingContext(context.OrderId);
+        var secondScan = service.Scan(context.OrderId, context.PrdDocId, plannedHus[1]);
+        var secondFill = service.Fill(plannedHus[1], "TSD-01", context.OrderId, context.PrdDocId);
+        var duplicateFill = service.Fill(plannedHus[1], "TSD-01", context.OrderId, context.PrdDocId);
+
+        Assert.True(firstScan.Success);
+        Assert.Equal(1, firstScan.PalletIndex);
+        Assert.Equal(2, firstScan.PalletCount);
+        Assert.True(firstFill.Success);
+        Assert.False(firstFill.AlreadyFilled);
+        Assert.Equal(1, firstFill.Document?.Summary.FilledPalletCount);
+        Assert.Equal(1, afterFirst.Document.Summary.RemainingPalletCount);
+        Assert.True(secondScan.Success);
+        Assert.Equal(2, secondScan.PalletIndex);
+        Assert.True(secondFill.Success);
+        Assert.False(secondFill.AlreadyFilled);
+        Assert.Equal(2, secondFill.Document?.Summary.FilledPalletCount);
+        Assert.True(duplicateFill.Success);
+        Assert.True(duplicateFill.AlreadyFilled);
+        Assert.Empty(service.GetFillingOrders());
+        Assert.Equal(2, harness.LedgerEntries.Count);
+        Assert.Equal(1200, harness.LedgerEntries.Sum(entry => entry.QtyDelta));
+        Assert.Equal(
+            plannedHus.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray(),
+            harness.LedgerEntries.Select(entry => entry.HuCode).OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray());
+    }
+
+    [Fact]
+    public void TsdFillingChain_MixedOrder_ReturnsCompositionAndFillsWholeHu()
+    {
+        var harness = CreateHarnessWithMixedOrderOnly();
+        var service = new ProductionPalletService(harness.Store);
+
+        var plan = service.PlanOrder(10);
+        var context = service.GetFillingContext(10);
+        var hu = Assert.Single(context.Document.Pallets).HuCode;
+
+        var scan = service.Scan(context.OrderId, context.PrdDocId, hu);
+        var fill = service.Fill(hu, "TSD-01", context.OrderId, context.PrdDocId);
+        var repeated = service.Fill(hu, "TSD-01", context.OrderId, context.PrdDocId);
+
+        Assert.Equal(plan.PrdDocId, context.PrdDocId);
+        Assert.True(scan.Success);
+        Assert.True(scan.IsMixedPallet);
+        Assert.Equal("Микс-паллета", scan.ItemName);
+        Assert.Equal(2, scan.Lines.Count);
+        Assert.Equal(500, scan.Lines.Sum(line => line.Qty));
+        Assert.True(fill.Success);
+        Assert.False(fill.AlreadyFilled);
+        Assert.Equal(1, fill.Document?.Summary.FilledPalletCount);
+        Assert.Equal(0, fill.Document?.Summary.RemainingPalletCount);
+        Assert.True(repeated.Success);
+        Assert.True(repeated.AlreadyFilled);
+        Assert.Empty(service.GetFillingOrders());
+        Assert.Equal(2, harness.LedgerEntries.Count);
+        Assert.All(harness.LedgerEntries, entry => Assert.Equal(hu, entry.HuCode));
+        Assert.Equal(new[] { 100L, 200L }, harness.LedgerEntries.Select(entry => entry.ItemId).Order().ToArray());
+    }
+
+    [Fact]
     public void GetFillingContext_WithoutPreparedPallets_ReturnsClearError()
     {
         var harness = CreateHarnessWithOrderOnly(orderQty: 1200, maxQtyPerHu: 600);

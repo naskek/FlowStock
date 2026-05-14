@@ -3271,6 +3271,23 @@ planned_internal_by_item AS (
     WHERE qty_remaining > 0
     GROUP BY item_id
 ),
+filled_pallet_by_item AS (
+    SELECT ppl.item_id,
+           SUM(
+               CASE
+                   WHEN ppl.filled_qty > 0 THEN ppl.filled_qty
+                   ELSE ppl.planned_qty
+               END
+           ) AS filled_pallet_qty
+    FROM production_pallets pp
+    INNER JOIN docs d ON d.id = pp.prd_doc_id
+    INNER JOIN production_pallet_lines ppl ON ppl.production_pallet_id = pp.id
+    WHERE d.type = @production_doc_type
+      AND d.status <> @closed_doc_status
+      AND pp.status = @filled_pallet_status
+      AND pp.status <> @cancelled_pallet_status
+    GROUP BY ppl.item_id
+),
 item_ids AS (
     SELECT item_id FROM item_snapshot
     UNION
@@ -3279,6 +3296,8 @@ item_ids AS (
     SELECT item_id FROM need_by_item
     UNION
     SELECT item_id FROM planned_internal_by_item
+    UNION
+    SELECT item_id FROM filled_pallet_by_item
     UNION
     SELECT item_id FROM reserved_customer_stock
 )
@@ -3297,13 +3316,16 @@ SELECT ids.item_id,
            WHEN COALESCE(snapshot.enable_min_stock_control, FALSE)
                THEN COALESCE(snapshot.min_stock_qty, 0) - (COALESCE(stock.physical_stock_qty, 0) - COALESCE(reserved_stock.reserved_customer_order_qty, 0))
            ELSE 0
-       END - COALESCE(planned.planned_internal_stock_qty, 0)) AS to_min_stock_qty
+       END - COALESCE(planned.planned_internal_stock_qty, 0)) AS to_min_stock_qty,
+       COALESCE(planned.planned_internal_stock_qty, 0) AS open_internal_order_qty,
+       COALESCE(filled.filled_pallet_qty, 0) AS filled_pallet_qty
 FROM item_ids ids
 LEFT JOIN item_snapshot snapshot ON snapshot.item_id = ids.item_id
 LEFT JOIN stock_by_item stock ON stock.item_id = ids.item_id
 LEFT JOIN reserved_customer_stock reserved_stock ON reserved_stock.item_id = ids.item_id
 LEFT JOIN need_by_item need ON need.item_id = ids.item_id
 LEFT JOIN planned_internal_by_item planned ON planned.item_id = ids.item_id
+LEFT JOIN filled_pallet_by_item filled ON filled.item_id = ids.item_id
 WHERE @include_zero = TRUE
    OR GREATEST(0, COALESCE(need.order_qty, 0) - COALESCE(need.reserved_qty, 0))
       + GREATEST(0, CASE
@@ -3311,6 +3333,8 @@ WHERE @include_zero = TRUE
               THEN COALESCE(snapshot.min_stock_qty, 0) - (COALESCE(stock.physical_stock_qty, 0) - COALESCE(reserved_stock.reserved_customer_order_qty, 0))
           ELSE 0
       END - COALESCE(planned.planned_internal_stock_qty, 0)) > 0
+   OR COALESCE(planned.planned_internal_stock_qty, 0) > 0
+   OR COALESCE(filled.filled_pallet_qty, 0) > 0
 ORDER BY
     (GREATEST(0, COALESCE(need.order_qty, 0) - COALESCE(need.reserved_qty, 0))
      + GREATEST(0, CASE
@@ -3331,12 +3355,15 @@ ORDER BY
             command.Parameters.AddWithValue("@closed_doc_status", DocTypeMapper.StatusToString(DocStatus.Closed));
             command.Parameters.AddWithValue("@outbound_doc_type", DocTypeMapper.ToOpString(DocType.Outbound));
             command.Parameters.AddWithValue("@production_doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+            command.Parameters.AddWithValue("@filled_pallet_status", ProductionPalletStatus.Filled);
+            command.Parameters.AddWithValue("@cancelled_pallet_status", ProductionPalletStatus.Cancelled);
             using var reader = command.ExecuteReader();
             var rows = new List<ProductionNeedRow>();
             while (reader.Read())
             {
-                var toCloseOrdersQty = reader.GetDouble(6);
-                var toMinStockQty = reader.GetDouble(7);
+                var minStockQty = reader.GetDouble(6);
+                var toCloseOrdersQty = reader.GetDouble(7);
+                var toMinStockQty = reader.GetDouble(8);
                 rows.Add(new ProductionNeedRow
                 {
                     ItemId = reader.GetInt64(0),
@@ -3345,9 +3372,11 @@ ORDER BY
                     ItemName = reader.GetString(3),
                     ItemTypeName = reader.GetString(4),
                     FreeStockQty = reader.GetDouble(5),
-                    MinStockQty = reader.GetDouble(6),
+                    MinStockQty = minStockQty,
                     ToCloseOrdersQty = toCloseOrdersQty,
                     ToMinStockQty = toMinStockQty,
+                    OpenInternalOrderQty = reader.GetDouble(9),
+                    FilledPalletQty = reader.GetDouble(10),
                     TotalToMakeQty = toCloseOrdersQty + toMinStockQty
                 });
             }

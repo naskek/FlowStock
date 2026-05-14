@@ -831,6 +831,8 @@
       minStockQty: Number(row && row.min_stock_qty) || 0,
       toCloseOrdersQty: Number(row && row.to_close_orders_qty) || 0,
       toMinStockQty: Number(row && row.to_min_stock_qty) || 0,
+      openInternalOrderQty: Number(row && row.open_internal_order_qty) || 0,
+      filledPalletQty: Number(row && row.filled_pallet_qty) || 0,
       totalToMakeQty: Number(row && row.total_to_make_qty) || 0,
     };
   }
@@ -863,6 +865,12 @@
         '<td class="pc-num">' +
         escapeHtml(formatReportQty(row.toMinStockQty)) +
         "</td>" +
+        '<td class="pc-num">' +
+        escapeHtml(formatReportQty(row.openInternalOrderQty)) +
+        "</td>" +
+        '<td class="pc-num">' +
+        escapeHtml(formatReportQty(row.filledPalletQty)) +
+        "</td>" +
         '<td class="pc-num"><span class="pc-qty pc-production-need-qty">' +
         escapeHtml(formatReportQty(row.totalToMakeQty)) +
         "</span></td>" +
@@ -879,6 +887,8 @@
       '<th class="pc-num">Остаток</th>' +
       '<th class="pc-num">До закрытия заказов</th>' +
       '<th class="pc-num">На склад до мин.</th>' +
+      '<th class="pc-num">Во внутренних заказах</th>' +
+      '<th class="pc-num">Наполнено паллетами</th>' +
       '<th class="pc-num">Всего произвести</th>' +
       "</tr></thead>" +
       "<tbody>" +
@@ -908,6 +918,7 @@
     var createOrdersBtn = document.getElementById("productionNeedCreateOrdersBtn");
     var statusEl = document.getElementById("productionNeedStatus");
     var tableWrap = document.getElementById("productionNeedTableWrap");
+    var currentRows = [];
 
     function setStatus(text) {
       if (statusEl) {
@@ -917,6 +928,7 @@
 
     function renderRows(sourceRows) {
       var rows = Array.isArray(sourceRows) ? sourceRows.slice() : [];
+      currentRows = rows.slice();
       rows.sort(function (left, right) {
         var totalCompare = Number(right.totalToMakeQty) - Number(left.totalToMakeQty);
         if (totalCompare !== 0) {
@@ -929,6 +941,78 @@
         return;
       }
       tableWrap.innerHTML = renderProductionNeedTable(rows);
+      if (createOrdersBtn) {
+        createOrdersBtn.disabled = getCreatableProductionNeedRows(currentRows).length === 0;
+      }
+    }
+
+    function getCreatableProductionNeedRows(rows) {
+      return (rows || []).filter(function (row) {
+        return Number(row.toMinStockQty) > 0;
+      });
+    }
+
+    function openProductionNeedPreviewModal(rows, onConfirm) {
+      var modal = document.createElement("div");
+      modal.className = "pc-modal";
+      modal.innerHTML =
+        '<div class="pc-modal-card pc-order-modal-card">' +
+        '  <div class="pc-modal-header">' +
+        '    <div class="pc-modal-title">Предпросмотр производственного заказа</div>' +
+        '    <button class="btn btn-outline" type="button" id="productionNeedPreviewCloseBtn">Закрыть</button>' +
+        "  </div>" +
+        '  <div class="pc-status">Количество можно изменить. Строки с 0 не будут созданы.</div>' +
+        '  <div class="pc-table-scroll">' +
+        '    <table class="pc-table">' +
+        "      <thead><tr><th>Номенклатура</th><th>GTIN</th><th class=\"pc-num\">Количество</th></tr></thead>" +
+        '      <tbody>' +
+        rows.map(function (row, index) {
+          return (
+            "<tr>" +
+            "<td>" + escapeHtml(row.itemName || "-") + "</td>" +
+            "<td>" + escapeHtml(row.gtin || "-") + "</td>" +
+            '<td class="pc-num"><input class="form-input pc-production-need-qty-input" type="number" min="0" step="0.001" data-preview-index="' + escapeHtml(index) + '" value="' + escapeHtml(String(Number(row.toMinStockQty) || 0)) + '" /></td>' +
+            "</tr>"
+          );
+        }).join("") +
+        "      </tbody>" +
+        "    </table>" +
+        "  </div>" +
+        '  <div class="pc-modal-footer">' +
+        '    <button class="btn btn-outline" type="button" id="productionNeedPreviewCancelBtn">Отмена</button>' +
+        '    <button class="btn btn-primary" type="button" id="productionNeedPreviewConfirmBtn">Подтвердить</button>' +
+        "  </div>" +
+        "</div>";
+      document.body.appendChild(modal);
+
+      function close() {
+        if (modal.parentNode) {
+          modal.parentNode.removeChild(modal);
+        }
+      }
+
+      modal.querySelector("#productionNeedPreviewCloseBtn").addEventListener("click", close);
+      modal.querySelector("#productionNeedPreviewCancelBtn").addEventListener("click", close);
+      modal.querySelector("#productionNeedPreviewConfirmBtn").addEventListener("click", function () {
+        var requestRows = rows.map(function (row, index) {
+          var input = modal.querySelector('[data-preview-index="' + index + '"]');
+          var qty = input ? Number(input.value) || 0 : 0;
+          return {
+            item_id: row.itemId,
+            qty_ordered: qty
+          };
+        }).filter(function (row) {
+          return row.qty_ordered > 0;
+        });
+
+        if (!requestRows.length) {
+          window.alert("Нет строк с количеством больше нуля.");
+          return;
+        }
+
+        close();
+        onConfirm(requestRows);
+      });
     }
 
     function loadAndRender() {
@@ -952,30 +1036,41 @@
 
     if (createOrdersBtn) {
       createOrdersBtn.addEventListener("click", function () {
-        createOrdersBtn.disabled = true;
-        setStatus("Формирование производственного черновика...");
-        fetchJson("/api/production-needs/create-orders", {
-          method: "POST",
-        })
-          .then(function (payload) {
-            var message = payload && payload.message
-              ? String(payload.message)
-              : "Производственный черновик сформирован.";
-            window.alert(message);
-            return Promise.all([
-              loadAndRender(),
-              fetchJson(getProductionNeedCreateOrdersRefreshUrl()).catch(function () {
-                return null;
-              }),
-            ]);
+        var creatableRows = getCreatableProductionNeedRows(currentRows);
+        if (!creatableRows.length) {
+          createOrdersBtn.disabled = true;
+          setStatus("Нет позиций для создания внутреннего заказа");
+          return;
+        }
+
+        openProductionNeedPreviewModal(creatableRows, function (requestRows) {
+          createOrdersBtn.disabled = true;
+          setStatus("Формирование производственного черновика...");
+          fetchJson("/api/production-needs/create-orders", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ rows: requestRows }),
           })
-          .catch(function (error) {
-            setStatus("Ошибка формирования производственного черновика");
-            window.alert(error && error.message ? error.message : "Не удалось сформировать производственный черновик.");
-          })
-          .finally(function () {
-            createOrdersBtn.disabled = false;
-          });
+            .then(function (payload) {
+              var message = payload && payload.message
+                ? String(payload.message)
+                : "Производственный черновик сформирован.";
+              window.alert(message);
+              return Promise.all([
+                loadAndRender(),
+                fetchJson(getProductionNeedCreateOrdersRefreshUrl()).catch(function () {
+                  return null;
+                }),
+              ]);
+            })
+            .catch(function (error) {
+              setStatus("Ошибка формирования производственного черновика");
+              window.alert(error && error.message ? error.message : "Не удалось сформировать производственный черновик.");
+            })
+            .finally(function () {
+              createOrdersBtn.disabled = false;
+            });
+        });
       });
     }
 
@@ -3984,6 +4079,8 @@
     window.FlowStockPcTestHooks.sortOrdersNewestFirst = sortOrdersNewestFirst;
     window.FlowStockPcTestHooks.buildOrdersUrl = buildOrdersUrl;
     window.FlowStockPcTestHooks.getProductionNeedCreateOrdersRefreshUrl = getProductionNeedCreateOrdersRefreshUrl;
+    window.FlowStockPcTestHooks.mapProductionNeedRow = mapProductionNeedRow;
+    window.FlowStockPcTestHooks.renderProductionNeedTable = renderProductionNeedTable;
     window.FlowStockPcTestHooks.trimOrdersPage = trimOrdersPage;
     return;
   }

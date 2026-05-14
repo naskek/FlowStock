@@ -939,6 +939,71 @@ body {
   font-size: 16px;
 }
 
+.filling-pallet-list-card {
+  border-radius: 16px;
+  background: #fff;
+  border: 2px solid #d9e7ee;
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.filling-pallet-list-title {
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.filling-pallet-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.filling-pallet-item {
+  display: grid;
+  grid-template-columns: 12px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 2px solid #d9e7ee;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.filling-pallet-item.is-filled {
+  background: #ecfdf3;
+  border-color: #86efac;
+  color: #166534;
+}
+
+.filling-pallet-item.is-pending {
+  background: #fef2f2;
+  border-color: #fca5a5;
+  color: #991b1b;
+}
+
+.filling-pallet-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.filling-pallet-code {
+  word-break: break-word;
+}
+
+.filling-pallet-status-text {
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 .filling-scan-input {
   min-height: 54px;
   font-size: 22px;
@@ -1046,6 +1111,25 @@ body {
   color: #486581;
 }
 
+.order-item-needs-plan {
+  border-color: #f3b6cf;
+  background: #fff0f6;
+}
+
+.order-plan-ready {
+  color: #166534;
+  font-weight: 700;
+}
+
+.order-plan-missing {
+  color: #c2185b;
+  font-weight: 800;
+}
+
+.order-plan-neutral {
+  color: #486581;
+}
+
 .doc-item:active {
   transform: translateY(2px);
 }
@@ -1098,8 +1182,8 @@ body {
 }
 
 .order-status-accepted {
-  background: #e5e7eb;
-  color: #374151;
+  background: #dbeafe;
+  color: #1d4ed8;
 }
 
 .order-status-progress {

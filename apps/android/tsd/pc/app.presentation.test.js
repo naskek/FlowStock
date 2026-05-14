@@ -269,3 +269,22 @@ assert.ok(
   !pc.getProductionNeedCreateOrdersRefreshUrl().includes("/api/marking/orders"),
   "create-orders must refresh orders, not marking queue"
 );
+
+const productionNeedRow = pc.mapProductionNeedRow({
+  item_id: 1001,
+  item_name: "Горчица",
+  gtin: "04607186951520",
+  free_stock_qty: 100,
+  min_stock_qty: 300,
+  to_close_orders_qty: 200,
+  to_min_stock_qty: 150,
+  open_internal_order_qty: 75,
+  filled_pallet_qty: 25,
+  total_to_make_qty: 350,
+});
+assert.strictEqual(productionNeedRow.openInternalOrderQty, 75);
+assert.strictEqual(productionNeedRow.filledPalletQty, 25);
+
+const productionNeedHtml = pc.renderProductionNeedTable([productionNeedRow]);
+assert.match(productionNeedHtml, /Во внутренних заказах/);
+assert.match(productionNeedHtml, /Наполнено паллетами/);

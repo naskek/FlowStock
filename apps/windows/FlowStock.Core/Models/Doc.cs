@@ -22,6 +22,8 @@ public sealed class Doc
     public int LineCount { get; init; }
     public string? SourceDeviceId { get; init; }
     public string? ApiDocUid { get; init; }
+    public bool ProductionPalletFillingStarted { get; init; }
+    public bool HasProductionPalletPlan { get; init; }
 
     public string TypeDisplay => DocTypeMapper.ToDisplayName(Type);
 

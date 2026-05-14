@@ -55,6 +55,8 @@ public partial class ProductionNeedWindow : Window
                 MinStockQty = row.MinStockQty,
                 ToCloseOrdersQty = row.ToCloseOrdersQty,
                 ToMinStockQty = row.ToMinStockQty,
+                OpenInternalOrderQty = row.OpenInternalOrderQty,
+                FilledPalletQty = row.FilledPalletQty,
                 TotalToMakeQty = row.TotalToMakeQty
             });
         }
@@ -72,6 +74,8 @@ public partial class ProductionNeedWindow : Window
         public double MinStockQty { get; init; }
         public double ToCloseOrdersQty { get; init; }
         public double ToMinStockQty { get; init; }
+        public double OpenInternalOrderQty { get; init; }
+        public double FilledPalletQty { get; init; }
         public double TotalToMakeQty { get; init; }
         public string StockDisplay => $"{FormatQty(FreeStockQty)} / {FormatQty(MinStockQty)}";
     }

@@ -113,6 +113,30 @@ public sealed class CreateOrdersFromProductionNeedTests
     }
 
     [Fact]
+    public async Task CreateOrdersFromProductionNeed_UsesEditedPreviewQty_WhenProvidedByClient()
+    {
+        var (harness, apiStore) = CreateInternalOnlyScenario();
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        var payload = await CreateOrdersAsync(host.Client, new
+        {
+            rows = new[]
+            {
+                new
+                {
+                    item_id = 1001,
+                    qty_ordered = 125d
+                }
+            }
+        });
+
+        Assert.True(payload.Ok);
+        Assert.Equal(1, payload.InternalDraftCount);
+        var internalDraft = Assert.Single(harness.Store.GetOrders().Where(order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft));
+        Assert.Equal(125, Assert.Single(harness.GetOrderLines(internalDraft.Id)).QtyOrdered);
+    }
+
+    [Fact]
     public async Task CreateOrdersFromProductionNeed_WithOnlyCustomerNeed_DoesNotCreateInternalDraft()
     {
         var (harness, apiStore) = CreateCustomerOnlyScenario();
@@ -126,6 +150,19 @@ public sealed class CreateOrdersFromProductionNeedTests
         Assert.Equal(0, payload.CreatedLineCount);
         Assert.Empty(harness.MarkingOrders);
         Assert.DoesNotContain(harness.Store.GetOrders(), order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft);
+    }
+
+    [Fact]
+    public void ProductionNeed_AfterInternalDraftCreated_KeepsRowVisible_WithOpenInternalQty()
+    {
+        var (harness, _) = CreateInternalOnlyScenario();
+
+        var createResult = new ProductionNeedOrderCreationService(harness.Store).CreateDraftOrders();
+
+        Assert.Equal(1, createResult.InternalDraftCount);
+        var row = Assert.Single(new ProductionNeedService(harness.Store).GetRows(includeZeroNeed: false));
+        Assert.Equal(0, row.TotalToMakeQty);
+        Assert.Equal(500, row.OpenInternalOrderQty);
     }
 
     [Fact]

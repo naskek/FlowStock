@@ -21,6 +21,8 @@ public sealed class Order
     public bool MarkingCodeCovered { get; init; }
     public DateTime? MarkingExcelGeneratedAt { get; init; }
     public DateTime? MarkingPrintedAt { get; init; }
+    public bool HasProductionPalletPlan { get; init; }
+    public bool NeedsProductionPalletPlan { get; init; }
 
     public string TypeDisplay => OrderStatusMapper.TypeToDisplayName(Type);
     public string StatusDisplay => OrderStatusMapper.StatusToDisplayName(Status, Type);
@@ -58,6 +60,11 @@ public sealed class Order
             : string.Empty;
     public string MarkingStatusDisplay => MarkingStatusMapper.ToDisplayName(EffectiveMarkingStatus);
     public string MarkingStatusShortDisplay => MarkingStatusMapper.ToShortDisplayName(EffectiveMarkingStatus);
+    public string ProductionPalletPlanShortDisplay => HasProductionPalletPlan
+        ? "План сформирован"
+        : NeedsProductionPalletPlan
+            ? "План не сформирован"
+            : string.Empty;
 
     public string PartnerDisplay
     {

@@ -5,6 +5,7 @@ namespace FlowStock.Core.Services;
 
 public sealed class ProductionNeedService(IDataStore dataStore)
 {
+    private const double QtyTolerance = 0.000001d;
     private readonly IDataStore _dataStore = dataStore;
 
     public IReadOnlyList<ProductionNeedRow> GetRows(bool includeZeroNeed = false)
@@ -18,6 +19,7 @@ public sealed class ProductionNeedService(IDataStore dataStore)
         var stockRows = _dataStore.GetStock(null);
         var needByItem = BuildNeedByItem();
         var plannedByItem = BuildPlannedProductionByItem();
+        var filledPalletByItem = BuildFilledProductionPalletQtyByItem();
 
         var stockByItem = stockRows
             .GroupBy(row => row.ItemId)
@@ -32,6 +34,7 @@ public sealed class ProductionNeedService(IDataStore dataStore)
         var itemIds = items.Select(item => item.Id)
             .Concat(stockByItem.Keys)
             .Concat(needByItem.Keys)
+            .Concat(filledPalletByItem.Keys)
             .Distinct()
             .ToList();
         var itemsById = items.ToDictionary(item => item.Id);
@@ -43,6 +46,7 @@ public sealed class ProductionNeedService(IDataStore dataStore)
                 stockByItem.TryGetValue(itemId, out var stockSnapshot);
                 needByItem.TryGetValue(itemId, out var currentNeed);
                 plannedByItem.TryGetValue(itemId, out var planned);
+                filledPalletByItem.TryGetValue(itemId, out var filledPalletQty);
 
                 var physicalStockQty = stockSnapshot?.PhysicalStockQty ?? 0;
                 var reservedCustomerOrderQty = stockSnapshot?.ReservedCustomerOrderQty ?? 0;
@@ -53,6 +57,7 @@ public sealed class ProductionNeedService(IDataStore dataStore)
                 var rawToCloseOrdersQty = Math.Max(0, currentNeed.OrderQty - currentNeed.ReservedQty);
                 var rawToMinStockQty = Math.Max(0, minStockQty - freeStockQty);
                 var plannedProductionQty = Math.Max(0, planned);
+                var palletFillQty = Math.Max(0, filledPalletQty);
                 var toCloseOrdersQty = rawToCloseOrdersQty;
                 var toMinStockQty = Math.Max(0, rawToMinStockQty - plannedProductionQty);
                 var itemTypeName = string.IsNullOrWhiteSpace(item?.ItemTypeName) ? "Без типа" : item!.ItemTypeName!;
@@ -68,10 +73,15 @@ public sealed class ProductionNeedService(IDataStore dataStore)
                     MinStockQty = minStockQty,
                     ToCloseOrdersQty = toCloseOrdersQty,
                     ToMinStockQty = toMinStockQty,
+                    OpenInternalOrderQty = plannedProductionQty,
+                    FilledPalletQty = palletFillQty,
                     TotalToMakeQty = toCloseOrdersQty + toMinStockQty
                 };
             })
-            .Where(row => includeZeroNeed || row.TotalToMakeQty > 0)
+            .Where(row => includeZeroNeed
+                          || row.TotalToMakeQty > 0
+                          || row.OpenInternalOrderQty > 0
+                          || row.FilledPalletQty > 0)
             .OrderByDescending(row => row.TotalToMakeQty)
             .ThenBy(row => row.ItemTypeName, StringComparer.CurrentCultureIgnoreCase)
             .ThenBy(row => row.ItemName, StringComparer.CurrentCultureIgnoreCase)
@@ -142,6 +152,51 @@ public sealed class ProductionNeedService(IDataStore dataStore)
                 result[line.ItemId] = result.TryGetValue(line.ItemId, out var current)
                     ? current + remainingQty
                     : remainingQty;
+            }
+        }
+
+        return result;
+    }
+
+    private Dictionary<long, double> BuildFilledProductionPalletQtyByItem()
+    {
+        var result = new Dictionary<long, double>();
+        foreach (var workItem in _dataStore.GetActiveProductionPalletWorkItems())
+        {
+            if (workItem.Summary.FilledPalletCount <= 0 && workItem.Summary.FilledQty <= QtyTolerance)
+            {
+                continue;
+            }
+
+            foreach (var pallet in _dataStore.GetProductionPalletsByDoc(workItem.PrdDocId)
+                         .Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
+            {
+                if (pallet.Lines.Count > 0)
+                {
+                    foreach (var line in pallet.Lines)
+                    {
+                        var qty = line.FilledQty > QtyTolerance ? line.FilledQty : line.PlannedQty;
+                        if (qty <= QtyTolerance)
+                        {
+                            continue;
+                        }
+
+                        result[line.ItemId] = result.TryGetValue(line.ItemId, out var current)
+                            ? current + qty
+                            : qty;
+                    }
+
+                    continue;
+                }
+
+                if (pallet.PlannedQty <= QtyTolerance)
+                {
+                    continue;
+                }
+
+                result[pallet.ItemId] = result.TryGetValue(pallet.ItemId, out var current)
+                    ? current + pallet.PlannedQty
+                    : pallet.PlannedQty;
             }
         }
 

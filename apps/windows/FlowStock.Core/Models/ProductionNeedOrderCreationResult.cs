@@ -11,3 +11,9 @@ public sealed class ProductionNeedOrderCreationResult
     public IReadOnlyList<string> DebugSummary { get; init; } = Array.Empty<string>();
     public string Message { get; init; } = string.Empty;
 }
+
+public sealed class ProductionNeedOrderDraftRequestLine
+{
+    public long ItemId { get; init; }
+    public double QtyOrdered { get; init; }
+}
