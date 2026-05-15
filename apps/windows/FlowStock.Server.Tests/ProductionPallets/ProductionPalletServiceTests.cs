@@ -506,6 +506,38 @@ public sealed class ProductionPalletServiceTests
     }
 
     [Fact]
+    public void GetPrintRows_ShippedOrderWithoutOpenPrd_UsesLatestProductionReceiptWithPallets()
+    {
+        var harness = CreateHarnessWithSixPallets(filledCount: 6);
+        harness.SeedOrder(new Order
+        {
+            Id = 10,
+            OrderRef = "056",
+            Type = OrderType.Internal,
+            Status = OrderStatus.Shipped,
+            CreatedAt = new DateTime(2026, 5, 13, 8, 0, 0)
+        });
+        harness.SeedDoc(new Doc
+        {
+            Id = 20,
+            DocRef = "PRD-2026-000001",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Closed,
+            OrderId = 10,
+            CreatedAt = new DateTime(2026, 5, 13, 9, 0, 0),
+            ClosedAt = new DateTime(2026, 5, 13, 12, 0, 0)
+        });
+        var service = new ProductionPalletService(harness.Store);
+
+        var rows = service.GetPrintRows(10);
+
+        Assert.Equal(6, rows.Count);
+        Assert.All(rows, row => Assert.Equal("PRD-2026-000001", row.PrdRef));
+        Assert.Equal("HU-000001", rows[0].HuCode);
+        Assert.Equal("HU-000006", rows[^1].HuCode);
+    }
+
+    [Fact]
     public void GetPrintRows_WithoutPreparedPlan_ReturnsClearError()
     {
         var harness = CreateHarnessWithOrderOnly(orderQty: 1200, maxQtyPerHu: 600);

@@ -169,7 +169,7 @@ public sealed class ProductionPalletService
     public IReadOnlyList<ProductionPalletPrintRow> GetPrintRows(long orderId)
     {
         var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
-        var doc = FindPreparedOpenProductionReceipt(_data, orderId, requireRemaining: false);
+        var doc = FindPrintableProductionReceipt(_data, order);
         if (doc == null)
         {
             throw new InvalidOperationException("Сначала сформируйте план паллет");
@@ -616,6 +616,35 @@ public sealed class ProductionPalletService
             }
 
             return doc;
+        }
+
+        return null;
+    }
+
+    private static Doc? FindPrintableProductionReceipt(IDataStore store, Order order)
+    {
+        var openDoc = FindPreparedOpenProductionReceipt(store, order.Id, requireRemaining: false);
+        if (openDoc != null)
+        {
+            return openDoc;
+        }
+
+        if (order.Status is not (OrderStatus.Shipped or OrderStatus.Accepted))
+        {
+            return null;
+        }
+
+        foreach (var doc in store.GetDocsByOrder(order.Id)
+                     .Where(doc => doc.Type == DocType.ProductionReceipt)
+                     .OrderByDescending(doc => doc.Id))
+        {
+            var pallets = store.GetProductionPalletsByDoc(doc.Id)
+                .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (pallets.Count > 0)
+            {
+                return doc;
+            }
         }
 
         return null;
