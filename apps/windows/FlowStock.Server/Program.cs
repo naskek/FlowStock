@@ -2009,7 +2009,11 @@ app.MapGet("/api/orders/{orderId:long}/lines", (long orderId, IDataStore store) 
             qty_left = line.QtyRemaining,
             qty_available = line.QtyAvailable,
             can_ship_now = line.CanShipNow,
-            shortage = line.Shortage
+            shortage = line.Shortage,
+            planned_pallet_count = line.PlannedPalletCount,
+            filled_pallet_count = line.FilledPalletCount,
+            pallet_planned_qty = line.PlannedPalletQty,
+            pallet_filled_qty = line.FilledPalletQty
         })
         .ToList();
 

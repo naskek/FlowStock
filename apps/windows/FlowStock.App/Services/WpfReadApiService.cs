@@ -783,7 +783,11 @@ public sealed class WpfReadApiService
             QtyRemaining = ReadDouble(element, "qty_left"),
             QtyAvailable = ReadDouble(element, "qty_available"),
             CanShipNow = ReadDouble(element, "can_ship_now"),
-            Shortage = ReadDouble(element, "shortage")
+            Shortage = ReadDouble(element, "shortage"),
+            PlannedPalletCount = ReadInt32(element, "planned_pallet_count"),
+            FilledPalletCount = ReadInt32(element, "filled_pallet_count"),
+            PlannedPalletQty = ReadDouble(element, "pallet_planned_qty"),
+            FilledPalletQty = ReadDouble(element, "pallet_filled_qty")
         };
     }
 

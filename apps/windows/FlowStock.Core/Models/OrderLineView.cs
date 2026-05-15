@@ -18,6 +18,10 @@ public sealed class OrderLineView
     public double QtyAvailable { get; set; }
     public double CanShipNow { get; set; }
     public double Shortage { get; set; }
+    public int PlannedPalletCount { get; set; }
+    public int FilledPalletCount { get; set; }
+    public double PlannedPalletQty { get; set; }
+    public double FilledPalletQty { get; set; }
     public string ProductionPurposeDisplay => ProductionLinePurposeMapper.ToDisplayName(ProductionPurpose);
     public bool IsMixedPalletLine => !string.IsNullOrWhiteSpace(ProductionPalletGroup);
     public string ProductionPalletGroupDisplay => string.IsNullOrWhiteSpace(ProductionPalletGroup) ? string.Empty : ProductionPalletGroup!;

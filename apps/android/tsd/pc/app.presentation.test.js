@@ -37,6 +37,18 @@ assert.strictEqual(
   "canonical cancelled status should use cancelled badge tone"
 );
 
+const shippedOrderHtml = pc.renderOrdersTable([
+  { id: 9, order_ref: "009", order_status: "SHIPPED", status: "Выполнен" },
+]);
+assert.match(shippedOrderHtml, /pc-order-status-icon/);
+assert.match(shippedOrderHtml, /title="Выполнен"/);
+assert.doesNotMatch(shippedOrderHtml, />Выполнен</);
+
+const readyOrderHtml = pc.renderOrdersTable([
+  { id: 10, order_ref: "010", order_status: "ACCEPTED", status: "Готов" },
+]);
+assert.match(readyOrderHtml, />Готов</);
+
 assert.strictEqual(
   pc.getOrderMarkingPresentation({
     marking_label: "Маркировка проведена",
@@ -101,9 +113,153 @@ const printedHtml = pc.renderOrderMarkingIndicator({
   marking_effective_status: "PRINTED",
   marking_status_display: "Маркировка проведена",
 });
-assert.match(printedHtml, /pc-status-badge/);
+assert.match(printedHtml, /pc-icon-status/);
 assert.match(printedHtml, /pc-marking-badge/);
-assert.match(printedHtml, /Маркировка проведена/);
+assert.match(printedHtml, /title="Маркировка проведена"/);
+assert.doesNotMatch(printedHtml, />Маркировка проведена</);
+
+assert.strictEqual(
+  pc.getOrderPalletFillingPresentation({
+    needs_production_pallet_plan: true,
+    has_production_pallet_plan: false,
+  }).label,
+  "План не сформирован"
+);
+assert.strictEqual(
+  pc.getOrderPalletFillingPresentation({
+    has_production_pallet_plan: true,
+    planned_pallet_count: 3,
+    filled_pallet_count: 1,
+    pallet_plan_status: "Наполнение идёт: 1 / 3",
+  }).label,
+  "Наполнено 1 / 3"
+);
+assert.strictEqual(
+  pc.getOrderPalletFillingPresentation({
+    has_production_pallet_plan: true,
+    planned_pallet_count: 2,
+    filled_pallet_count: 2,
+  }).tone,
+  "completed"
+);
+
+const completedPalletHtml = pc.renderOrderPalletFillingIndicator({
+  has_production_pallet_plan: true,
+  planned_pallet_count: 2,
+  filled_pallet_count: 2,
+});
+assert.match(completedPalletHtml, /pc-icon-status/);
+assert.match(completedPalletHtml, /title="Паллеты: 2 \/ 2"/);
+assert.doesNotMatch(completedPalletHtml, /Количество:/);
+assert.doesNotMatch(completedPalletHtml, />Наполнено 2 \/ 2</);
+
+const ordersWithPalletHtml = pc.renderOrdersTable([
+  {
+    id: 77,
+    order_ref: "077",
+    order_type: "INTERNAL",
+    order_status: "IN_PROGRESS",
+    has_production_pallet_plan: true,
+    planned_pallet_count: 2,
+    filled_pallet_count: 1,
+  },
+]);
+assert.match(ordersWithPalletHtml, /Наполнение паллет/);
+assert.match(ordersWithPalletHtml, /pc-pallet-filling-badge/);
+assert.match(ordersWithPalletHtml, /Наполнено 1 \/ 2/);
+
+const orderLinesWithPalletHtml = pc.renderOrderLinesTable(
+  [
+    {
+      item_name: "Горчица",
+      barcode: "SKU-001",
+      gtin: "04607186951520",
+      production_purpose: "INTERNAL_STOCK",
+      qty_ordered: 20,
+      qty_produced: 10,
+      planned_pallet_count: 2,
+      filled_pallet_count: 1,
+      pallet_planned_qty: 20,
+      pallet_filled_qty: 10,
+    },
+  ],
+  { order_type: "INTERNAL", order_status: "IN_PROGRESS" }
+);
+assert.match(orderLinesWithPalletHtml, /pc-order-line-pallet-filled/);
+assert.match(orderLinesWithPalletHtml, /Наполнение/);
+assert.match(orderLinesWithPalletHtml, /Наполнено 1 \/ 2/);
+
+const orderLinesCompletePalletHtml = pc.renderOrderLinesTable(
+  [
+    {
+      item_name: "Горчица",
+      barcode: "SKU-001",
+      gtin: "04607186951520",
+      production_purpose: "INTERNAL_STOCK",
+      qty_ordered: 20,
+      qty_produced: 20,
+      planned_pallet_count: 2,
+      filled_pallet_count: 2,
+      pallet_planned_qty: 20,
+      pallet_filled_qty: 20,
+    },
+  ],
+  { order_type: "INTERNAL", order_status: "IN_PROGRESS" }
+);
+assert.match(orderLinesCompletePalletHtml, /pc-icon-status/);
+assert.doesNotMatch(orderLinesCompletePalletHtml, />Наполнено 2 \/ 2</);
+
+const fallbackOrder = { id: 88, order_ref: "088" };
+pc.applyOrderLinePalletFillingFallback(fallbackOrder, [
+  {
+    planned_pallet_count: 3,
+    filled_pallet_count: 3,
+    pallet_planned_qty: 3600,
+    pallet_filled_qty: 3600,
+  },
+]);
+assert.strictEqual(pc.getOrderPalletFillingPresentation(fallbackOrder).label, "Наполнено 3 / 3");
+assert.strictEqual(pc.getOrderPalletFillingPresentation(fallbackOrder).tone, "completed");
+
+const reservedShipmentOrder = { id: 89, order_ref: "089", order_type: "CUSTOMER" };
+pc.applyOrderLineShipmentPalletReadiness(reservedShipmentOrder, [
+  {
+    qty_left: 1200,
+    can_ship_now: 1200,
+    production_hu_codes: ["HU-001", "HU-002"],
+  },
+  {
+    qty_left: 600,
+    can_ship_now: 600,
+    production_hu_codes: ["HU-003"],
+  },
+]);
+assert.strictEqual(
+  pc.getOrderPalletFillingPresentation(reservedShipmentOrder).title,
+  "К отгрузке готово 3 из 3 паллет по заказу"
+);
+const reservedShipmentHtml = pc.renderOrderPalletFillingIndicator(reservedShipmentOrder);
+assert.match(reservedShipmentHtml, /pc-icon-status/);
+assert.match(reservedShipmentHtml, /title="К отгрузке готово 3 из 3 паллет по заказу"/);
+assert.doesNotMatch(reservedShipmentHtml, />К отгрузке 3 \/ 3 паллет</);
+
+const partialReservedShipmentOrder = { id: 90, order_ref: "090", order_type: "CUSTOMER" };
+pc.applyOrderLineShipmentPalletReadiness(partialReservedShipmentOrder, [
+  {
+    qty_left: 1200,
+    can_ship_now: 1200,
+    production_hu_codes: ["HU-004"],
+  },
+  {
+    qty_left: 600,
+    can_ship_now: 0,
+    production_hu_codes: ["HU-005"],
+  },
+]);
+assert.strictEqual(
+  pc.getOrderPalletFillingPresentation(partialReservedShipmentOrder).label,
+  "К отгрузке 1 / 2 паллет"
+);
 
 const markingLabels = [
   pc.getOrderMarkingPresentation({ marking_effective_status: "PRINTED" }).label,

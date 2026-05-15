@@ -240,18 +240,31 @@ order_list_flags AS (
     LEFT JOIN order_line_metrics olm ON olm.order_id = ob.id
     GROUP BY ob.id
 ),
-pallet_summary AS (
-    SELECT d.order_id,
-           COUNT(*) FILTER (WHERE pp.status <> 'CANCELLED')::int AS planned_pallet_count,
-           COALESCE(SUM(pp.planned_qty) FILTER (WHERE pp.status <> 'CANCELLED'), 0)::double precision AS planned_qty,
-           COUNT(*) FILTER (WHERE pp.status = 'FILLED')::int AS filled_pallet_count,
-           COALESCE(SUM(pp.planned_qty) FILTER (WHERE pp.status = 'FILLED'), 0)::double precision AS filled_qty
-    FROM docs d
-    INNER JOIN order_scope os ON os.id = d.order_id
-    INNER JOIN production_pallets pp ON pp.prd_doc_id = d.id
+pallet_source AS (
+    SELECT COALESCE(pp.order_id, MAX(ol.order_id), d.order_id) AS order_id,
+           pp.id,
+           pp.status,
+           pp.planned_qty
+    FROM production_pallets pp
+    INNER JOIN docs d ON d.id = pp.prd_doc_id
+    LEFT JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
+    LEFT JOIN order_lines ol ON ol.id = pll.order_line_id
     WHERE d.type = 'PRODUCTION_RECEIPT'
-      AND d.status <> 'CLOSED'
-    GROUP BY d.order_id
+    GROUP BY pp.id,
+             pp.order_id,
+             d.order_id,
+             pp.status,
+             pp.planned_qty
+),
+pallet_summary AS (
+    SELECT ps.order_id,
+           COUNT(*) FILTER (WHERE ps.status <> 'CANCELLED')::int AS planned_pallet_count,
+           COALESCE(SUM(ps.planned_qty) FILTER (WHERE ps.status <> 'CANCELLED'), 0)::double precision AS planned_qty,
+           COUNT(*) FILTER (WHERE ps.status = 'FILLED')::int AS filled_pallet_count,
+           COALESCE(SUM(ps.planned_qty) FILTER (WHERE ps.status = 'FILLED'), 0)::double precision AS filled_qty
+    FROM pallet_source ps
+    INNER JOIN order_scope os ON os.id = ps.order_id
+    GROUP BY ps.order_id
 ),
 markable_line_need AS (
     SELECT olm.order_id,
@@ -2591,18 +2604,31 @@ line_summary AS (
     FROM line_metrics
     GROUP BY order_id
 ),
-pallet_summary AS (
-    SELECT d.order_id,
-           COUNT(*) FILTER (WHERE pp.status <> @pallet_cancelled_status)::int AS planned_pallet_count,
-           COALESCE(SUM(pp.planned_qty) FILTER (WHERE pp.status <> @pallet_cancelled_status), 0)::double precision AS planned_qty,
-           COUNT(*) FILTER (WHERE pp.status = @pallet_filled_status)::int AS filled_pallet_count,
-           COALESCE(SUM(pp.planned_qty) FILTER (WHERE pp.status = @pallet_filled_status), 0)::double precision AS filled_qty
-    FROM docs d
-    INNER JOIN order_scope os ON os.id = d.order_id
-    INNER JOIN production_pallets pp ON pp.prd_doc_id = d.id
+pallet_source AS (
+    SELECT COALESCE(pp.order_id, MAX(ol.order_id), d.order_id) AS order_id,
+           pp.id,
+           pp.status,
+           pp.planned_qty
+    FROM production_pallets pp
+    INNER JOIN docs d ON d.id = pp.prd_doc_id
+    LEFT JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
+    LEFT JOIN order_lines ol ON ol.id = pll.order_line_id
     WHERE d.type = @production_type
-      AND d.status <> @closed_status
-    GROUP BY d.order_id
+    GROUP BY pp.id,
+             pp.order_id,
+             d.order_id,
+             pp.status,
+             pp.planned_qty
+),
+pallet_summary AS (
+    SELECT ps.order_id,
+           COUNT(*) FILTER (WHERE ps.status <> @pallet_cancelled_status)::int AS planned_pallet_count,
+           COALESCE(SUM(ps.planned_qty) FILTER (WHERE ps.status <> @pallet_cancelled_status), 0)::double precision AS planned_qty,
+           COUNT(*) FILTER (WHERE ps.status = @pallet_filled_status)::int AS filled_pallet_count,
+           COALESCE(SUM(ps.planned_qty) FILTER (WHERE ps.status = @pallet_filled_status), 0)::double precision AS filled_qty
+    FROM pallet_source ps
+    INNER JOIN order_scope os ON os.id = ps.order_id
+    GROUP BY ps.order_id
 )
 SELECT os.id,
        COALESCE(line_summary.has_shipment_remaining, FALSE) AS has_shipment_remaining,
@@ -3217,13 +3243,40 @@ WHERE id = @id
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT ol.id, ol.order_id, ol.item_id, i.name, i.barcode, i.gtin, ol.qty_ordered, ol.production_purpose, ol.production_pallet_group
+WITH pallet_metrics AS (
+    SELECT pll.order_line_id,
+           COUNT(DISTINCT pp.id) FILTER (WHERE pp.status <> @pallet_cancelled_status)::int AS planned_pallet_count,
+           COUNT(DISTINCT pp.id) FILTER (WHERE pp.status = @pallet_filled_status)::int AS filled_pallet_count,
+           COALESCE(SUM(pll.planned_qty) FILTER (WHERE pp.status <> @pallet_cancelled_status), 0)::double precision AS planned_pallet_qty,
+           COALESCE(SUM(pll.planned_qty) FILTER (WHERE pp.status = @pallet_filled_status), 0)::double precision AS filled_pallet_qty
+    FROM production_pallet_lines pll
+    INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
+    WHERE pp.order_id = @order_id
+      AND pll.order_line_id IS NOT NULL
+    GROUP BY pll.order_line_id
+)
+SELECT ol.id,
+       ol.order_id,
+       ol.item_id,
+       i.name,
+       i.barcode,
+       i.gtin,
+       ol.qty_ordered,
+       ol.production_purpose,
+       ol.production_pallet_group,
+       COALESCE(pm.planned_pallet_count, 0),
+       COALESCE(pm.filled_pallet_count, 0),
+       COALESCE(pm.planned_pallet_qty, 0),
+       COALESCE(pm.filled_pallet_qty, 0)
 FROM order_lines ol
 INNER JOIN items i ON i.id = ol.item_id
+LEFT JOIN pallet_metrics pm ON pm.order_line_id = ol.id
 WHERE ol.order_id = @order_id
 ORDER BY i.name, ol.id;
 ");
             command.Parameters.AddWithValue("@order_id", orderId);
+            command.Parameters.AddWithValue("@pallet_filled_status", ProductionPalletStatus.Filled);
+            command.Parameters.AddWithValue("@pallet_cancelled_status", ProductionPalletStatus.Cancelled);
             using var reader = command.ExecuteReader();
             var lines = new List<OrderLineView>();
             while (reader.Read())
@@ -3238,7 +3291,11 @@ ORDER BY i.name, ol.id;
                     Gtin = reader.IsDBNull(5) ? null : reader.GetString(5),
                     QtyOrdered = reader.GetDouble(6),
                     ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(reader.IsDBNull(7) ? null : reader.GetString(7)),
-                    ProductionPalletGroup = reader.IsDBNull(8) ? null : reader.GetString(8)
+                    ProductionPalletGroup = reader.IsDBNull(8) ? null : reader.GetString(8),
+                    PlannedPalletCount = reader.GetInt32(9),
+                    FilledPalletCount = reader.GetInt32(10),
+                    PlannedPalletQty = reader.GetDouble(11),
+                    FilledPalletQty = reader.GetDouble(12)
                 });
             }
 
