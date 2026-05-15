@@ -9,7 +9,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore
+public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore
 {
     private readonly string _connectionString;
     private readonly NpgsqlConnection? _connection;
@@ -2343,6 +2343,249 @@ paged_orders.order_ref DESC");
         });
     }
 
+    public IReadOnlyDictionary<long, OrderListMetrics> GetOrderListMetrics(IReadOnlyCollection<long> orderIds)
+    {
+        var ids = orderIds
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
+        if (ids.Length == 0)
+        {
+            return new Dictionary<long, OrderListMetrics>();
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH order_scope AS (
+    SELECT o.id,
+           o.order_type
+    FROM orders o
+    WHERE o.id = ANY(@order_ids)
+),
+order_line_scope AS (
+    SELECT ol.id,
+           ol.order_id,
+           ol.item_id,
+           ol.qty_ordered
+    FROM order_lines ol
+    INNER JOIN order_scope os ON os.id = ol.order_id
+),
+shipment_totals AS (
+    SELECT dl.order_line_id,
+           SUM(dl.qty) AS sum_qty
+    FROM doc_lines dl
+    INNER JOIN order_line_scope ols ON ols.id = dl.order_line_id
+    INNER JOIN docs d ON d.id = dl.doc_id
+    WHERE d.status = @closed_status
+      AND d.type = @outbound_type
+      AND dl.qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+    GROUP BY dl.order_line_id
+),
+legacy_receipt_totals AS (
+    SELECT dl.order_line_id,
+           SUM(dl.qty) AS sum_qty
+    FROM doc_lines dl
+    INNER JOIN order_line_scope ols ON ols.id = dl.order_line_id
+    INNER JOIN docs d ON d.id = dl.doc_id
+    WHERE d.status = @closed_status
+      AND d.type = @production_type
+      AND dl.order_line_id IS NOT NULL
+      AND dl.qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM production_pallets pp
+          WHERE pp.prd_doc_id = d.id
+            AND pp.status <> @pallet_cancelled_status
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+    GROUP BY dl.order_line_id
+),
+filled_pallet_totals AS (
+    SELECT pll.order_line_id,
+           SUM(pll.planned_qty) AS sum_qty
+    FROM production_pallet_lines pll
+    INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
+    INNER JOIN order_line_scope ols ON ols.id = pll.order_line_id
+    WHERE pp.status = @pallet_filled_status
+      AND pll.planned_qty > 0
+    GROUP BY pll.order_line_id
+),
+direct_receipt_totals AS (
+    SELECT order_line_id,
+           SUM(sum_qty) AS sum_qty
+    FROM (
+        SELECT order_line_id, sum_qty
+        FROM legacy_receipt_totals
+        UNION ALL
+        SELECT order_line_id, sum_qty
+        FROM filled_pallet_totals
+    ) receipt_sources
+    GROUP BY order_line_id
+),
+unlinked_receipt_totals AS (
+    SELECT d.order_id,
+           dl.item_id,
+           SUM(dl.qty) AS sum_qty
+    FROM docs d
+    INNER JOIN order_scope os ON os.id = d.order_id
+    INNER JOIN doc_lines dl ON dl.doc_id = d.id
+    WHERE os.order_type = @internal_order_type
+      AND d.status = @closed_status
+      AND d.type = @production_type
+      AND dl.order_line_id IS NULL
+      AND dl.qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM production_pallets pp
+          WHERE pp.prd_doc_id = d.id
+            AND pp.status <> @pallet_cancelled_status
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+    GROUP BY d.order_id,
+             dl.item_id
+),
+reserved_totals AS (
+    SELECT p.order_line_id,
+           SUM(p.qty_planned) AS sum_qty
+    FROM order_receipt_plan_lines p
+    INNER JOIN order_line_scope ols ON ols.id = p.order_line_id
+    WHERE p.qty_planned > 0
+      AND p.to_hu IS NOT NULL
+      AND p.to_hu <> ''
+    GROUP BY p.order_line_id
+),
+line_seed AS (
+    SELECT os.id AS order_id,
+           os.order_type,
+           ols.id AS order_line_id,
+           ols.item_id,
+           ols.qty_ordered,
+           COALESCE(shipment.sum_qty, 0) AS qty_shipped,
+           COALESCE(direct_receipt.sum_qty, 0) AS qty_direct_received,
+           COALESCE(unlinked_receipt.sum_qty, 0) AS qty_unlinked_item_received,
+           COALESCE(reserved.sum_qty, 0) AS qty_reserved,
+           GREATEST(0, ols.qty_ordered - COALESCE(direct_receipt.sum_qty, 0)) AS qty_direct_unfilled,
+           ROW_NUMBER() OVER (
+               PARTITION BY os.id, ols.item_id
+               ORDER BY ols.id DESC
+           ) AS item_line_desc_rank,
+           COALESCE(SUM(GREATEST(0, ols.qty_ordered - COALESCE(direct_receipt.sum_qty, 0))) OVER (
+               PARTITION BY os.id, ols.item_id
+               ORDER BY ols.id
+               ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+           ), 0) AS qty_direct_unfilled_before
+    FROM order_scope os
+    LEFT JOIN order_line_scope ols ON ols.order_id = os.id
+    LEFT JOIN shipment_totals shipment ON shipment.order_line_id = ols.id
+    LEFT JOIN direct_receipt_totals direct_receipt ON direct_receipt.order_line_id = ols.id
+    LEFT JOIN unlinked_receipt_totals unlinked_receipt ON unlinked_receipt.order_id = os.id
+                                                    AND unlinked_receipt.item_id = ols.item_id
+    LEFT JOIN reserved_totals reserved ON reserved.order_line_id = ols.id
+),
+line_metrics AS (
+    SELECT order_id,
+           order_type,
+           order_line_id,
+           qty_ordered,
+           qty_shipped,
+           qty_direct_received
+           + CASE
+                 WHEN order_type <> @internal_order_type THEN 0
+                 WHEN qty_unlinked_item_received <= 0 THEN 0
+                 WHEN item_line_desc_rank = 1 THEN GREATEST(0, qty_unlinked_item_received - qty_direct_unfilled_before)
+                 ELSE GREATEST(0, LEAST(qty_unlinked_item_received - qty_direct_unfilled_before, qty_direct_unfilled))
+             END AS qty_produced,
+           CASE
+               WHEN order_type = @customer_order_type THEN qty_reserved
+               ELSE 0
+           END AS qty_reserved
+    FROM line_seed
+),
+line_summary AS (
+    SELECT order_id,
+           COALESCE(BOOL_OR(order_type = @customer_order_type
+                            AND qty_ordered - qty_shipped > 0.000001), FALSE) AS has_shipment_remaining,
+           COALESCE(BOOL_OR(qty_ordered - (qty_produced + qty_reserved) > 0.000001), FALSE) AS has_receipt_remaining
+    FROM line_metrics
+    GROUP BY order_id
+),
+pallet_summary AS (
+    SELECT d.order_id,
+           COUNT(*) FILTER (WHERE pp.status <> @pallet_cancelled_status)::int AS planned_pallet_count,
+           COALESCE(SUM(pp.planned_qty) FILTER (WHERE pp.status <> @pallet_cancelled_status), 0)::double precision AS planned_qty,
+           COUNT(*) FILTER (WHERE pp.status = @pallet_filled_status)::int AS filled_pallet_count,
+           COALESCE(SUM(pp.planned_qty) FILTER (WHERE pp.status = @pallet_filled_status), 0)::double precision AS filled_qty
+    FROM docs d
+    INNER JOIN order_scope os ON os.id = d.order_id
+    INNER JOIN production_pallets pp ON pp.prd_doc_id = d.id
+    WHERE d.type = @production_type
+      AND d.status <> @closed_status
+    GROUP BY d.order_id
+)
+SELECT os.id,
+       COALESCE(line_summary.has_shipment_remaining, FALSE) AS has_shipment_remaining,
+       COALESCE(line_summary.has_receipt_remaining, FALSE) AS has_receipt_remaining,
+       COALESCE(pallet_summary.planned_pallet_count, 0) AS planned_pallet_count,
+       COALESCE(pallet_summary.planned_qty, 0) AS planned_qty,
+       COALESCE(pallet_summary.filled_pallet_count, 0) AS filled_pallet_count,
+       COALESCE(pallet_summary.filled_qty, 0) AS filled_qty
+FROM order_scope os
+LEFT JOIN line_summary ON line_summary.order_id = os.id
+LEFT JOIN pallet_summary ON pallet_summary.order_id = os.id;
+");
+            command.Parameters.Add("@order_ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint).Value = ids;
+            command.Parameters.AddWithValue("@closed_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+            command.Parameters.AddWithValue("@outbound_type", DocTypeMapper.ToOpString(DocType.Outbound));
+            command.Parameters.AddWithValue("@production_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+            command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+            command.Parameters.AddWithValue("@internal_order_type", OrderStatusMapper.TypeToString(OrderType.Internal));
+            command.Parameters.AddWithValue("@pallet_filled_status", ProductionPalletStatus.Filled);
+            command.Parameters.AddWithValue("@pallet_cancelled_status", ProductionPalletStatus.Cancelled);
+
+            using var reader = command.ExecuteReader();
+            var metrics = new Dictionary<long, OrderListMetrics>();
+            while (reader.Read())
+            {
+                var plannedPalletCount = reader.GetInt32(3);
+                var plannedQty = reader.GetDouble(4);
+                var filledPalletCount = reader.GetInt32(5);
+                var filledQty = reader.GetDouble(6);
+                metrics[reader.GetInt64(0)] = new OrderListMetrics
+                {
+                    OrderId = reader.GetInt64(0),
+                    HasShipmentRemaining = reader.GetBoolean(1),
+                    HasReceiptRemaining = reader.GetBoolean(2),
+                    HasProductionPalletPlan = plannedPalletCount > 0,
+                    PalletSummary = new ProductionPalletSummary
+                    {
+                        PlannedPalletCount = plannedPalletCount,
+                        PlannedQty = plannedQty,
+                        FilledPalletCount = filledPalletCount,
+                        FilledQty = filledQty,
+                        RemainingPalletCount = Math.Max(0, plannedPalletCount - filledPalletCount),
+                        RemainingQty = Math.Max(0, plannedQty - filledQty)
+                    }
+                };
+            }
+
+            return metrics;
+        });
+    }
+
     public long AddOrder(Order order)
     {
         return WithConnection(connection =>
@@ -3670,6 +3913,7 @@ LEFT JOIN (
     INNER JOIN docs d ON d.id = dl.doc_id
     WHERE d.status = @status
       AND d.type = @doc_type
+      AND d.order_id = @order_id
       AND dl.order_line_id IS NOT NULL
       AND dl.qty > 0
       AND NOT EXISTS (

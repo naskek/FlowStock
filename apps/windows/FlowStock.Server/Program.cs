@@ -1544,10 +1544,14 @@ app.MapGet("/api/docs", (HttpRequest request, IDataStore store) =>
         .Select(doc =>
         {
             var summary = BuildProductionPalletSummary(store, doc);
+            var hasProductionPalletPlan = summary.PlannedPalletCount > 0;
+            var productionPalletFillingStarted = doc.Type == DocType.ProductionReceipt
+                                                 && doc.Status == DocStatus.Draft
+                                                 && summary.FilledPalletCount > 0;
             return MapDoc(
                 doc,
-                IsProductionPalletFillingStarted(store, doc),
-                HasProductionPalletPlan(store, doc),
+                productionPalletFillingStarted,
+                hasProductionPalletPlan,
                 summary,
                 BuildPalletFillingStatus(summary));
         })
@@ -1581,10 +1585,14 @@ app.MapGet("/api/docs/{docId:long}", (long docId, IDataStore store) =>
     }
 
     var summary = BuildProductionPalletSummary(store, doc);
+    var hasProductionPalletPlan = summary.PlannedPalletCount > 0;
+    var productionPalletFillingStarted = doc.Type == DocType.ProductionReceipt
+                                         && doc.Status == DocStatus.Draft
+                                         && summary.FilledPalletCount > 0;
     return Results.Ok(MapDoc(
         doc,
-        IsProductionPalletFillingStarted(store, doc),
-        HasProductionPalletPlan(store, doc),
+        productionPalletFillingStarted,
+        hasProductionPalletPlan,
         summary,
         BuildPalletFillingStatus(summary)));
 });
@@ -1916,8 +1924,9 @@ app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>
         if (remainingLimit > 0)
         {
             var realOffset = Math.Max(0, offset - pendingRows.Count);
-            page.AddRange(orderService.GetOrdersPage(includeInternal, normalized, remainingLimit, realOffset)
-                .Select(order => MapOrderWithShipmentRemaining(order, store)));
+            page.AddRange(MapOrdersWithShipmentRemaining(
+                orderService.GetOrdersPage(includeInternal, normalized, remainingLimit, realOffset),
+                store));
         }
 
         return Results.Ok(page);
@@ -1941,9 +1950,7 @@ app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>
             .ToList();
     }
 
-    var list = orders
-        .Select(order => MapOrderWithShipmentRemaining(order, store))
-        .ToList();
+    var list = MapOrdersWithShipmentRemaining(orders, store);
     if (includePendingRequests)
     {
         var pendingCreateOrders = GetPendingCreateOrderRows(store, normalized);
@@ -1969,7 +1976,7 @@ app.MapGet("/api/orders/{orderId:long}", (long orderId, IDataStore store) =>
         return Results.NotFound(new ApiResult(false, "ORDER_NOT_FOUND"));
     }
 
-    return Results.Ok(MapOrderWithShipmentRemaining(order, store));
+    return Results.Ok(MapOrdersWithShipmentRemaining([order], store).First());
 });
 
 app.MapGet("/api/orders/{orderId:long}/lines", (long orderId, IDataStore store) =>
@@ -3514,6 +3521,47 @@ static object MapDoc(
         filled_qty = palletSummary.FilledQty,
         pallet_filling_status = palletFillingStatus ?? BuildPalletFillingStatus(palletSummary)
     };
+}
+
+static List<object> MapOrdersWithShipmentRemaining(IEnumerable<Order> orders, IDataStore store)
+{
+    var orderList = orders.ToList();
+    if (orderList.Count == 0)
+    {
+        return new List<object>();
+    }
+
+    if (store is IOptimizedOrderListMetricsStore optimizedStore)
+    {
+        var metricsByOrderId = optimizedStore.GetOrderListMetrics(orderList.Select(order => order.Id).ToArray());
+        return orderList
+            .Select(order =>
+            {
+                metricsByOrderId.TryGetValue(order.Id, out var metrics);
+                return MapOrderWithMetrics(order, metrics);
+            })
+            .ToList();
+    }
+
+    return orderList
+        .Select(order => MapOrderWithShipmentRemaining(order, store))
+        .ToList();
+}
+
+static object MapOrderWithMetrics(Order order, OrderListMetrics? metrics)
+{
+    var hasShipmentRemaining = metrics?.HasShipmentRemaining ?? false;
+    var hasProductionPalletPlan = metrics?.HasProductionPalletPlan ?? false;
+    var needsProductionPalletPlan = order.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled)
+                                    && (metrics?.HasReceiptRemaining ?? false);
+    var palletSummary = metrics?.PalletSummary ?? new ProductionPalletSummary();
+    return OrderApiMapper.MapOrder(
+        order,
+        hasShipmentRemaining,
+        hasProductionPalletPlan,
+        needsProductionPalletPlan,
+        palletSummary,
+        BuildOrderPalletPlanStatus(needsProductionPalletPlan, hasProductionPalletPlan, palletSummary));
 }
 
 static object MapOrderWithShipmentRemaining(Order order, IDataStore store)
