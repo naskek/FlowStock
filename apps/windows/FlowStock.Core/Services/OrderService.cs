@@ -1260,7 +1260,16 @@ public sealed class OrderService
             MarkingExcelGeneratedAt = order.MarkingExcelGeneratedAt,
             MarkingPrintedAt = order.MarkingPrintedAt,
             MarkingApplies = order.MarkingApplies,
-            MarkingCodeCovered = order.MarkingCodeCovered
+            MarkingCodeCovered = order.MarkingCodeCovered,
+            ListMetricsLoaded = order.ListMetricsLoaded,
+            HasShipmentRemaining = order.HasShipmentRemaining,
+            HasProductionPalletPlan = order.HasProductionPalletPlan,
+            NeedsProductionPalletPlan = order.NeedsProductionPalletPlan,
+            PlannedPalletCount = order.PlannedPalletCount,
+            FilledPalletCount = order.FilledPalletCount,
+            PlannedQty = order.PlannedQty,
+            FilledQty = order.FilledQty,
+            PalletPlanStatus = order.PalletPlanStatus
         };
     }
 

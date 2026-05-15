@@ -21,6 +21,8 @@ public sealed class Order
     public bool MarkingCodeCovered { get; init; }
     public DateTime? MarkingExcelGeneratedAt { get; init; }
     public DateTime? MarkingPrintedAt { get; init; }
+    public bool ListMetricsLoaded { get; init; }
+    public bool HasShipmentRemaining { get; init; }
     public bool HasProductionPalletPlan { get; init; }
     public bool NeedsProductionPalletPlan { get; init; }
     public int PlannedPalletCount { get; init; }
