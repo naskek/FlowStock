@@ -393,6 +393,40 @@ body.pc-body::before {
   background: #f5f9fc;
 }
 
+.pc-order-status-cell,
+.pc-order-pallet-cell,
+.pc-order-marking-cell {
+  text-align: center;
+  vertical-align: middle;
+}
+
+.pc-order-pallet-cell,
+.pc-order-marking-cell {
+  white-space: nowrap;
+}
+
+.pc-pallet-filling-badge,
+.pc-line-pallet-badge {
+  max-width: 210px;
+}
+
+.pc-order-line-pallet-filled td {
+  background: #eefaf1;
+  border-bottom-color: #c7e8d0;
+}
+
+.pc-order-line-pallet-filled:hover td {
+  background: #e0f5e7;
+}
+
+.pc-order-line-pallet-filled.is-complete td {
+  background: #e6f7ec;
+}
+
+.pc-order-line-pallet-filled.is-complete:hover td {
+  background: #d9f1e2;
+}
+
 .pc-stock-parent-row {
   cursor: pointer;
 }
@@ -587,6 +621,41 @@ body.pc-body::before {
   line-height: 1;
 }
 
+.pc-icon-status {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.pc-icon-status-success,
+.pc-icon-status-ready,
+.pc-icon-status-completed {
+  color: #ffffff;
+  background: #1f7a3e;
+}
+
+.pc-icon-status-danger {
+  color: #ffffff;
+  background: #c2412f;
+}
+
+.pc-icon-status-warning,
+.pc-icon-status-inprogress {
+  color: #ffffff;
+  background: #d18414;
+}
+
+.pc-icon-status-neutral,
+.pc-icon-status-cancelled {
+  color: #ffffff;
+  background: #8a97a3;
+}
+
 .pc-status-badge-success {
   color: #2d6a3d;
   background: #e8f7ec;
@@ -657,12 +726,6 @@ body.pc-body::before {
 .pc-status-badge-cancelled .pc-status-badge-icon {
   color: #ffffff;
   background: #8a97a3;
-}
-
-.pc-order-marking-cell {
-  text-align: left;
-  vertical-align: middle;
-  white-space: nowrap;
 }
 
 .pc-marking-badge {

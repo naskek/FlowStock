@@ -1875,8 +1875,11 @@
           "<td>" +
           escapeHtml(formatDate(order.shipped_at)) +
           "</td>" +
-          "<td>" +
+          '<td class="pc-order-status-cell">' +
           getOrderStatusHtml(order) +
+          "</td>" +
+          '<td class="pc-order-pallet-cell">' +
+          renderOrderPalletFillingIndicator(order) +
           "</td>" +
           '<td class="pc-order-marking-cell">' +
           renderOrderMarkingIndicator(order) +
@@ -1894,6 +1897,7 @@
       renderSortableHeader("orders", "dueDate", "План") +
       renderSortableHeader("orders", "shippedAt", "Факт") +
       renderSortableHeader("orders", "status", "Статус") +
+      renderSortableHeader("orders", "palletFilling", "Наполнение паллет") +
       "<th>ЧЗ</th>" +
       "</tr></thead>" +
       "<tbody>" +
@@ -2408,6 +2412,10 @@
 
   function getOrderStatusHtml(order) {
     var status = getOrderStatusPresentation(order);
+    if (getOrderStatusCode(order) === "SHIPPED") {
+      return renderStatusIconOnly(status.tone, "pc-order-status-icon", status.label);
+    }
+
     return renderStatusBadge(status.label, status.tone);
   }
 
@@ -2474,7 +2482,313 @@
       return "";
     }
 
-    return renderStatusBadge(marking.label, marking.tone, "pc-marking-badge", marking.title);
+    return renderStatusIconOnly(marking.tone, "pc-marking-badge", marking.title || marking.label);
+  }
+
+  function getOrderPalletFillingPresentation(order) {
+    var plannedCount = Number(order && (order.planned_pallet_count != null ? order.planned_pallet_count : order.plannedPalletCount)) || 0;
+    var filledCount = Number(order && (order.filled_pallet_count != null ? order.filled_pallet_count : order.filledPalletCount)) || 0;
+    var filledQty = Number(order && (order.filled_qty != null ? order.filled_qty : order.filledQty)) || 0;
+    var plannedQty = Number(order && (order.planned_qty != null ? order.planned_qty : order.plannedQty)) || 0;
+    var hasPlan = plannedCount > 0 || (order && (order.has_production_pallet_plan === true || order.hasProductionPalletPlan === true));
+    var needsPlan = order && (order.needs_production_pallet_plan === true || order.needsProductionPalletPlan === true);
+    var serverLabel = String((order && (order.pallet_plan_status || order.palletPlanStatus)) || "").trim();
+    var shipmentPallets = getOrderShipmentPalletReadinessPresentation(order);
+
+    if (!hasPlan && !needsPlan && shipmentPallets) {
+      return shipmentPallets;
+    }
+
+    if (!hasPlan && !needsPlan && !serverLabel) {
+      return { label: "", tone: "neutral", title: "", sortValue: 0 };
+    }
+
+    if (!hasPlan && serverLabel) {
+      var lowerServerLabel = serverLabel.toLowerCase();
+      var serverTone = lowerServerLabel.indexOf("не сформирован") >= 0
+        ? "warning"
+        : lowerServerLabel.indexOf("наполн") >= 0
+          ? "ready"
+          : "neutral";
+      return {
+        label: serverLabel,
+        tone: serverTone,
+        title: serverLabel,
+        sortValue: serverTone === "warning" ? 1 : 2,
+      };
+    }
+
+    if (!hasPlan) {
+      return {
+        label: "План не сформирован",
+        tone: "warning",
+        title: "Для заказа требуется план паллет",
+        sortValue: 1,
+      };
+    }
+
+    var label = plannedCount > 0
+      ? "Наполнено " + formatQuantity(filledCount) + " / " + formatQuantity(plannedCount)
+      : (serverLabel || "План сформирован");
+    var titleParts = [];
+    if (serverLabel) {
+      titleParts.push(serverLabel);
+    }
+    if (plannedCount > 0) {
+      titleParts.push("Паллеты: " + formatQuantity(filledCount) + " / " + formatQuantity(plannedCount));
+    }
+    if (shipmentPallets && shipmentPallets.title) {
+      titleParts.push(shipmentPallets.title);
+    }
+
+    if (plannedCount > 0 && filledCount >= plannedCount) {
+      return {
+        label: label,
+        tone: "completed",
+        title: titleParts.join(". ") || label,
+        sortValue: 4,
+      };
+    }
+
+    if (filledCount > 0 || filledQty > 0) {
+      return {
+        label: label,
+        tone: "ready",
+        title: titleParts.join(". ") || label,
+        sortValue: 3,
+      };
+    }
+
+    return {
+      label: serverLabel || "План сформирован",
+      tone: "neutral",
+      title: titleParts.join(". ") || "Паллетный план сформирован, наполнения пока нет",
+      sortValue: 2,
+    };
+  }
+
+  function renderOrderPalletFillingIndicator(order) {
+    var filling = getOrderPalletFillingPresentation(order);
+    if (!filling.label) {
+      return "";
+    }
+
+    if (filling.tone === "completed") {
+      return renderStatusIconOnly(filling.tone, "pc-pallet-filling-badge", filling.title || filling.label);
+    }
+
+    return renderStatusBadge(filling.label, filling.tone, "pc-pallet-filling-badge", filling.title);
+  }
+
+  function getLinePalletFillingState(line) {
+    var plannedCount = Number(line && (line.planned_pallet_count != null ? line.planned_pallet_count : line.plannedPalletCount)) || 0;
+    var filledCount = Number(line && (line.filled_pallet_count != null ? line.filled_pallet_count : line.filledPalletCount)) || 0;
+    var plannedQty = Number(line && (
+      line.pallet_planned_qty != null
+        ? line.pallet_planned_qty
+        : line.planned_pallet_qty != null
+          ? line.planned_pallet_qty
+          : line.plannedPalletQty
+    )) || 0;
+    var filledQty = Number(line && (
+      line.pallet_filled_qty != null
+        ? line.pallet_filled_qty
+        : line.filled_pallet_qty != null
+          ? line.filled_pallet_qty
+          : line.filledPalletQty
+    )) || 0;
+    var hasPlan = plannedCount > 0 || plannedQty > 0;
+    var hasFilled = filledCount > 0 || filledQty > 0;
+    var complete = hasPlan
+      && (plannedQty <= 0 || filledQty + 0.000001 >= plannedQty)
+      && (plannedCount <= 0 || filledCount >= plannedCount);
+
+    return {
+      plannedCount: plannedCount,
+      filledCount: filledCount,
+      plannedQty: plannedQty,
+      filledQty: filledQty,
+      hasPlan: hasPlan,
+      hasFilled: hasFilled,
+      complete: complete,
+    };
+  }
+
+  function renderLinePalletFillingBadge(line) {
+    var state = getLinePalletFillingState(line);
+    if (!state.hasPlan) {
+      return "";
+    }
+
+    if (state.hasFilled) {
+      var filledLabel = state.plannedCount > 0
+        ? "Наполнено " + formatQuantity(state.filledCount) + " / " + formatQuantity(state.plannedCount)
+        : "Наполнено " + formatQuantity(state.filledQty);
+      var filledTitle = state.plannedCount > 0
+        ? "Наполнение по строке: " + formatQuantity(state.filledCount) + " / " + formatQuantity(state.plannedCount) + " паллет"
+        : "Наполнение по строке: " + formatQuantity(state.filledQty) + " / " + formatQuantity(state.plannedQty);
+      if (state.complete) {
+        return renderStatusIconOnly("completed", "pc-line-pallet-badge", filledTitle);
+      }
+
+      return renderStatusBadge(
+        filledLabel,
+        "ready",
+        "pc-line-pallet-badge",
+        filledTitle
+      );
+    }
+
+    var planLabel = state.plannedCount > 0
+      ? "План " + formatQuantity(state.plannedCount)
+      : "План " + formatQuantity(state.plannedQty);
+    return renderStatusBadge(
+      planLabel,
+      "neutral",
+      "pc-line-pallet-badge",
+      "По строке есть паллетный план, наполнения пока нет"
+    );
+  }
+
+  function getOrderShipmentPalletReadinessPresentation(order) {
+    var readyCount = Number(order && (order.shipment_pallet_ready_count != null ? order.shipment_pallet_ready_count : order.shipmentPalletReadyCount)) || 0;
+    var totalCount = Number(order && (order.shipment_pallet_total_count != null ? order.shipment_pallet_total_count : order.shipmentPalletTotalCount)) || 0;
+    if (totalCount <= 0) {
+      return null;
+    }
+
+    var safeReadyCount = Math.min(Math.max(0, readyCount), totalCount);
+    var title = "К отгрузке готово " + formatQuantity(safeReadyCount) + " из " + formatQuantity(totalCount) + " паллет по заказу";
+    return {
+      label: "К отгрузке " + formatQuantity(safeReadyCount) + " / " + formatQuantity(totalCount) + " паллет",
+      tone: safeReadyCount >= totalCount ? "completed" : "ready",
+      title: title,
+      sortValue: safeReadyCount >= totalCount ? 4 : 3,
+    };
+  }
+
+  function getLineHuCodes(line) {
+    if (!line) {
+      return [];
+    }
+    if (Array.isArray(line.production_hu_codes)) {
+      return line.production_hu_codes
+        .map(function (code) { return String(code || "").trim(); })
+        .filter(Boolean);
+    }
+
+    return String(line.production_hu_codes_display || "")
+      .split(",")
+      .map(function (code) { return code.trim(); })
+      .filter(Boolean);
+  }
+
+  function applyOrderLineShipmentPalletReadiness(order, lines) {
+    if (!order || isInternalOrder(order)) {
+      return order;
+    }
+
+    var source = Array.isArray(lines) ? lines : [];
+    var totalCodes = {};
+    var readyCodes = {};
+
+    source.forEach(function (line) {
+      var codes = getLineHuCodes(line);
+      if (!codes.length) {
+        return;
+      }
+
+      codes.forEach(function (code) {
+        totalCodes[code.toUpperCase()] = true;
+      });
+
+      var required = getLineRequiredQty(line);
+      var canShip = Number(line && (line.can_ship_now != null ? line.can_ship_now : line.qty_available)) || 0;
+      var ready = required <= 0.000001 || canShip + 0.000001 >= required || getAvailabilityState(line).ready;
+      if (!ready) {
+        return;
+      }
+
+      codes.forEach(function (code) {
+        readyCodes[code.toUpperCase()] = true;
+      });
+    });
+
+    var totalCount = Object.keys(totalCodes).length;
+    if (totalCount <= 0) {
+      return order;
+    }
+
+    var readyCount = Math.min(Object.keys(readyCodes).length, totalCount);
+    order.shipment_pallet_ready_count = readyCount;
+    order.shipment_pallet_total_count = totalCount;
+    order.shipmentPalletReadyCount = readyCount;
+    order.shipmentPalletTotalCount = totalCount;
+    return order;
+  }
+
+  function summarizeOrderPalletFillingFromLines(lines) {
+    var source = Array.isArray(lines) ? lines : [];
+    var summary = {
+      plannedCount: 0,
+      filledCount: 0,
+      plannedQty: 0,
+      filledQty: 0,
+    };
+
+    source.forEach(function (line) {
+      var state = getLinePalletFillingState(line);
+      if (!state.hasPlan) {
+        return;
+      }
+
+      summary.plannedCount += state.plannedCount;
+      summary.filledCount += state.filledCount;
+      summary.plannedQty += state.plannedQty;
+      summary.filledQty += state.filledQty;
+    });
+
+    if (summary.plannedCount <= 0 && summary.plannedQty <= 0) {
+      return null;
+    }
+
+    return summary;
+  }
+
+  function hasOrderPalletFillingData(order) {
+    if (!order) {
+      return false;
+    }
+
+    return Number(order.planned_pallet_count != null ? order.planned_pallet_count : order.plannedPalletCount) > 0
+      || order.has_production_pallet_plan === true
+      || order.hasProductionPalletPlan === true
+      || order.needs_production_pallet_plan === true
+      || order.needsProductionPalletPlan === true
+      || !!String(order.pallet_plan_status || order.palletPlanStatus || "").trim();
+  }
+
+  function applyOrderLinePalletFillingFallback(order, lines) {
+    if (!order || hasOrderPalletFillingData(order)) {
+      return order;
+    }
+
+    var summary = summarizeOrderPalletFillingFromLines(lines);
+    if (!summary) {
+      return order;
+    }
+
+    order.has_production_pallet_plan = true;
+    order.hasProductionPalletPlan = true;
+    order.planned_pallet_count = summary.plannedCount;
+    order.filled_pallet_count = summary.filledCount;
+    order.planned_qty = summary.plannedQty;
+    order.filled_qty = summary.filledQty;
+    order.plannedPalletCount = summary.plannedCount;
+    order.filledPalletCount = summary.filledCount;
+    order.plannedQty = summary.plannedQty;
+    order.filledQty = summary.filledQty;
+    return order;
   }
 
   function normalizeMarkingTaskRows(rows) {
@@ -2591,21 +2905,27 @@
       });
   }
 
-  function renderStatusBadge(text, tone, extraClass, title) {
+  function getStatusToneIcon(tone) {
     var normalizedTone = tone || "neutral";
-    var icon = "•";
     if (normalizedTone === "success" || normalizedTone === "ready") {
-      icon = "✓";
-    } else if (normalizedTone === "warning") {
-      icon = "!";
-    } else if (normalizedTone === "completed") {
-      icon = "✓";
-    } else if (normalizedTone === "inprogress") {
-      icon = "•";
-    } else if (normalizedTone === "cancelled") {
-      icon = "×";
+      return "✓";
+    }
+    if (normalizedTone === "warning" || normalizedTone === "danger") {
+      return "!";
+    }
+    if (normalizedTone === "completed") {
+      return "✓";
+    }
+    if (normalizedTone === "cancelled") {
+      return "×";
     }
 
+    return "•";
+  }
+
+  function renderStatusBadge(text, tone, extraClass, title) {
+    var normalizedTone = tone || "neutral";
+    var icon = getStatusToneIcon(normalizedTone);
     var className = "pc-status-badge pc-status-badge-" + normalizedTone;
     if (extraClass) {
       className += " " + extraClass;
@@ -2631,18 +2951,54 @@
     );
   }
 
+  function renderStatusIconOnly(tone, extraClass, title) {
+    var normalizedTone = tone || "neutral";
+    var className = "pc-icon-status pc-icon-status-" + normalizedTone;
+    if (extraClass) {
+      className += " " + extraClass;
+    }
+    var tooltip = title || "";
+
+    return (
+      '<span class="' +
+      className +
+      '" title="' +
+      escapeHtml(tooltip) +
+      '" aria-label="' +
+      escapeHtml(tooltip) +
+      '" role="img">' +
+      escapeHtml(getStatusToneIcon(normalizedTone)) +
+      "</span>"
+    );
+  }
+
   function loadOrderReadiness(order) {
-    if (!isActiveShipmentOrder(order)) {
+    var needsReadiness = isActiveShipmentOrder(order);
+    var needsPalletFallback = !!(
+      order &&
+      order.id != null &&
+      !order.is_pending_confirmation &&
+      !getOrderPalletFillingPresentation(order).label
+    );
+    if (!needsReadiness && !needsPalletFallback) {
       return Promise.resolve(order);
     }
 
     return fetchJson("/api/orders/" + encodeURIComponent(order.id) + "/lines")
       .then(function (lines) {
-        order.shipment_readiness = getShipmentReadiness(lines);
+        if (needsReadiness) {
+          order.shipment_readiness = getShipmentReadiness(lines);
+        }
+        applyOrderLineShipmentPalletReadiness(order, lines);
+        if (needsPalletFallback) {
+          applyOrderLinePalletFillingFallback(order, lines);
+        }
         return order;
       })
       .catch(function () {
-        order.shipment_readiness = null;
+        if (needsReadiness) {
+          order.shipment_readiness = null;
+        }
         return order;
       });
   }
@@ -3759,6 +4115,84 @@
     renderLines();
   }
 
+  function renderOrderLinesTable(lines, order) {
+    var isInternal = isInternalOrder(order);
+    var showAvailableColumn = !isShippedOrder(order);
+    var processedHeader = isInternal ? "Выпущено" : "Отгружено";
+    var body = (Array.isArray(lines) ? lines : [])
+      .map(function (line) {
+        var processedQty = isInternal ? line.qty_produced || 0 : line.qty_shipped || 0;
+        var availabilityState = getAvailabilityState(line);
+        var shortageTitle = availabilityState.ready
+          ? ""
+          : ' title="Не хватает: ' + escapeHtml(formatQuantity(availabilityState.shortage)) + '"';
+        var availabilityClass = availabilityState.ready ? "pc-availability-ready" : "pc-availability-short";
+        var palletState = getLinePalletFillingState(line);
+        var rowClass = palletState.hasFilled
+          ? ' class="pc-order-line-pallet-filled' + (palletState.complete ? " is-complete" : " is-partial") + '"'
+          : "";
+        return (
+          "<tr" +
+          rowClass +
+          ">" +
+          "<td>" +
+          escapeHtml(line.item_name || "-") +
+          "</td>" +
+          "<td>" +
+          escapeHtml(line.barcode || "-") +
+          "</td>" +
+          "<td>" +
+          escapeHtml(line.gtin || "-") +
+          "</td>" +
+          "<td>" +
+          escapeHtml(String(line.production_purpose_display || (line.production_purpose === "CUSTOMER_ORDER" ? "Под заказ" : "На склад"))) +
+          "</td>" +
+          "<td>" +
+          escapeHtml(formatQuantity(line.qty_ordered || 0)) +
+          "</td>" +
+          "<td>" +
+          escapeHtml(formatQuantity(processedQty)) +
+          "</td>" +
+          "<td>" +
+          renderLinePalletFillingBadge(line) +
+          "</td>" +
+          (showAvailableColumn
+            ? "<td>" +
+              '<span class="pc-availability ' +
+              availabilityClass +
+              '"' +
+              shortageTitle +
+              ">" +
+              escapeHtml(formatQuantity(availabilityState.available)) +
+              "</span>" +
+              "</td>"
+            : "") +
+          "</tr>"
+        );
+      })
+      .join("");
+
+    return (
+      '<table class="pc-table pc-order-lines-table">' +
+      "<thead><tr>" +
+      "<th>Товар</th>" +
+      "<th>SKU / ШК</th>" +
+      "<th>GTIN</th>" +
+      "<th>Назначение</th>" +
+      "<th>Заказано</th>" +
+      "<th>" +
+      escapeHtml(processedHeader) +
+      "</th>" +
+      "<th>Наполнение</th>" +
+      (showAvailableColumn ? "<th>В наличии</th>" : "") +
+      "</tr></thead>" +
+      "<tbody>" +
+      body +
+      "</tbody>" +
+      "</table>"
+    );
+  }
+
   function openOrderModal(order, onSubmitted) {
     var isPending = order && order.is_pending_confirmation;
     var isInternal = isInternalOrder(order);
@@ -3825,67 +4259,7 @@
         if (readinessBadge) {
           readinessBadge.outerHTML = renderReadinessBadge(readiness);
         }
-        var processedHeader = isInternal ? "Выпущено" : "Отгружено";
-        var body = lines
-          .map(function (line) {
-            var processedQty = isInternal ? line.qty_produced || 0 : line.qty_shipped || 0;
-            var availabilityState = getAvailabilityState(line);
-            var shortageTitle = availabilityState.ready
-              ? ""
-              : ' title="Не хватает: ' + escapeHtml(formatQuantity(availabilityState.shortage)) + '"';
-            var availabilityClass = availabilityState.ready ? "pc-availability-ready" : "pc-availability-short";
-            return (
-              "<tr>" +
-              "<td>" +
-              escapeHtml(line.item_name || "-") +
-              "</td>" +
-              "<td>" +
-              escapeHtml(line.barcode || "-") +
-              "</td>" +
-              "<td>" +
-              escapeHtml(line.gtin || "-") +
-              "</td>" +
-              "<td>" +
-              escapeHtml(String(line.production_purpose_display || (line.production_purpose === "CUSTOMER_ORDER" ? "Под заказ" : "На склад"))) +
-              "</td>" +
-              "<td>" +
-              escapeHtml(String(line.qty_ordered || 0)) +
-              "</td>" +
-              "<td>" +
-              escapeHtml(String(processedQty)) +
-              "</td>" +
-              (showAvailableColumn
-                ? "<td>" +
-                  '<span class="pc-availability ' +
-                  availabilityClass +
-                  '"' +
-                  shortageTitle +
-                  ">" +
-                  escapeHtml(formatQuantity(availabilityState.available)) +
-                  "</span>" +
-                  "</td>"
-                : "") +
-              "</tr>"
-            );
-          })
-          .join("");
-        wrap.innerHTML =
-          '<table class="pc-table pc-order-lines-table">' +
-          "<thead><tr>" +
-          "<th>Товар</th>" +
-          "<th>SKU / ШК</th>" +
-          "<th>GTIN</th>" +
-          "<th>Назначение</th>" +
-          "<th>Заказано</th>" +
-          "<th>" +
-          escapeHtml(processedHeader) +
-          "</th>" +
-          (showAvailableColumn ? "<th>В наличии</th>" : "") +
-          "</tr></thead>" +
-          "<tbody>" +
-          body +
-          "</tbody>" +
-          "</table>";
+        wrap.innerHTML = renderOrderLinesTable(lines, order);
       })
       .catch(function () {
         var wrap = modal.querySelector("#orderLinesWrap");
@@ -3923,6 +4297,7 @@
         dueDate: { type: "date", getValue: function (row) { return row.due_date; } },
         shippedAt: { type: "date", getValue: function (row) { return row.shipped_at; } },
         status: { type: "string", getValue: function (row) { return getOrderStatusPresentation(row).label; } },
+        palletFilling: { type: "number", getValue: function (row) { return getOrderPalletFillingPresentation(row).sortValue; } },
       });
       return sortPendingOrdersFirst(sortedRows);
     }
@@ -4152,6 +4527,12 @@
     window.FlowStockPcTestHooks.getOrderStatusPresentation = getOrderStatusPresentation;
     window.FlowStockPcTestHooks.getOrderMarkingPresentation = getOrderMarkingPresentation;
     window.FlowStockPcTestHooks.renderOrderMarkingIndicator = renderOrderMarkingIndicator;
+    window.FlowStockPcTestHooks.getOrderPalletFillingPresentation = getOrderPalletFillingPresentation;
+    window.FlowStockPcTestHooks.renderOrderPalletFillingIndicator = renderOrderPalletFillingIndicator;
+    window.FlowStockPcTestHooks.applyOrderLinePalletFillingFallback = applyOrderLinePalletFillingFallback;
+    window.FlowStockPcTestHooks.applyOrderLineShipmentPalletReadiness = applyOrderLineShipmentPalletReadiness;
+    window.FlowStockPcTestHooks.renderOrdersTable = renderOrdersTable;
+    window.FlowStockPcTestHooks.renderOrderLinesTable = renderOrderLinesTable;
     window.FlowStockPcTestHooks.normalizeMarkingTaskRows = normalizeMarkingTaskRows;
     window.FlowStockPcTestHooks.renderStockTable = renderStockTable;
     window.FlowStockPcTestHooks.sortOrdersNewestFirst = sortOrdersNewestFirst;
