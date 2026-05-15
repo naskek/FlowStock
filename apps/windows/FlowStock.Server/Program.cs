@@ -3531,6 +3531,13 @@ static List<object> MapOrdersWithShipmentRemaining(IEnumerable<Order> orders, ID
         return new List<object>();
     }
 
+    if (orderList.All(order => order.ListMetricsLoaded))
+    {
+        return orderList
+            .Select(MapOrderWithLoadedMetrics)
+            .ToList();
+    }
+
     if (store is IOptimizedOrderListMetricsStore optimizedStore)
     {
         var metricsByOrderId = optimizedStore.GetOrderListMetrics(orderList.Select(order => order.Id).ToArray());
@@ -3546,6 +3553,26 @@ static List<object> MapOrdersWithShipmentRemaining(IEnumerable<Order> orders, ID
     return orderList
         .Select(order => MapOrderWithShipmentRemaining(order, store))
         .ToList();
+}
+
+static object MapOrderWithLoadedMetrics(Order order)
+{
+    var palletSummary = new ProductionPalletSummary
+    {
+        PlannedPalletCount = order.PlannedPalletCount,
+        FilledPalletCount = order.FilledPalletCount,
+        PlannedQty = order.PlannedQty,
+        FilledQty = order.FilledQty,
+        RemainingPalletCount = Math.Max(0, order.PlannedPalletCount - order.FilledPalletCount),
+        RemainingQty = Math.Max(0, order.PlannedQty - order.FilledQty)
+    };
+    return OrderApiMapper.MapOrder(
+        order,
+        order.HasShipmentRemaining,
+        order.HasProductionPalletPlan,
+        order.NeedsProductionPalletPlan,
+        palletSummary,
+        BuildOrderPalletPlanStatus(order.NeedsProductionPalletPlan, order.HasProductionPalletPlan, palletSummary));
 }
 
 static object MapOrderWithMetrics(Order order, OrderListMetrics? metrics)

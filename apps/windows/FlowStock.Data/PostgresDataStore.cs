@@ -74,28 +74,20 @@ order_lines_scope AS (
     FROM order_lines ol
     INNER JOIN order_scope os ON os.id = ol.order_id
 ),
-active_doc_lines AS (
-    SELECT dl.id,
-           dl.doc_id,
-           dl.order_line_id,
-           dl.item_id,
-           dl.qty
-    FROM doc_lines dl
-    WHERE dl.qty > 0
+shipped_by_line AS (
+    SELECT dl.order_line_id,
+           SUM(dl.qty) AS qty_shipped
+    FROM order_lines_scope ols
+    INNER JOIN doc_lines dl ON dl.order_line_id = ols.id
+    INNER JOIN docs d ON d.id = dl.doc_id
+    WHERE d.status = 'CLOSED'
+      AND d.type = 'OUTBOUND'
+      AND dl.qty > 0
       AND NOT EXISTS (
           SELECT 1
           FROM doc_lines newer
           WHERE newer.replaces_line_id = dl.id
       )
-),
-shipped_by_line AS (
-    SELECT dl.order_line_id,
-           SUM(dl.qty) AS qty_shipped
-    FROM active_doc_lines dl
-    INNER JOIN docs d ON d.id = dl.doc_id
-    INNER JOIN order_lines_scope ols ON ols.id = dl.order_line_id
-    WHERE d.status = 'CLOSED'
-      AND d.type = 'OUTBOUND'
     GROUP BY dl.order_line_id
 ),
 reserved_by_line AS (
@@ -109,11 +101,17 @@ reserved_by_line AS (
 direct_produced_by_line AS (
     SELECT dl.order_line_id,
            SUM(dl.qty) AS qty_received
-    FROM active_doc_lines dl
+    FROM order_lines_scope ols
+    INNER JOIN doc_lines dl ON dl.order_line_id = ols.id
     INNER JOIN docs d ON d.id = dl.doc_id
-    INNER JOIN order_lines_scope ols ON ols.id = dl.order_line_id
     WHERE d.status = 'CLOSED'
       AND d.type = 'PRODUCTION_RECEIPT'
+      AND dl.qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
     GROUP BY dl.order_line_id
 ),
 unlinked_produced_by_item AS (
@@ -121,11 +119,17 @@ unlinked_produced_by_item AS (
            dl.item_id,
            SUM(dl.qty) AS qty_received
     FROM docs d
-    INNER JOIN active_doc_lines dl ON dl.doc_id = d.id
     INNER JOIN order_scope os ON os.id = d.order_id
+    INNER JOIN doc_lines dl ON dl.doc_id = d.id
     WHERE d.status = 'CLOSED'
       AND d.type = 'PRODUCTION_RECEIPT'
       AND dl.order_line_id IS NULL
+      AND dl.qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
     GROUP BY d.order_id,
              dl.item_id
 ),
@@ -133,10 +137,16 @@ production_totals_by_order AS (
     SELECT d.order_id,
            SUM(dl.qty) AS qty_received
     FROM docs d
-    INNER JOIN active_doc_lines dl ON dl.doc_id = d.id
     INNER JOIN order_scope os ON os.id = d.order_id
+    INNER JOIN doc_lines dl ON dl.doc_id = d.id
     WHERE d.status = 'CLOSED'
       AND d.type = 'PRODUCTION_RECEIPT'
+      AND dl.qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
     GROUP BY d.order_id
 ),
 line_metrics_seed AS (
@@ -217,6 +227,32 @@ doc_summary AS (
     INNER JOIN order_scope os ON os.id = d.order_id
     GROUP BY d.order_id
 ),
+order_list_flags AS (
+    SELECT ob.id AS order_id,
+           COALESCE(BOOL_OR(olm.order_type = 'CUSTOMER'
+                            AND olm.qty_ordered - olm.qty_shipped > 0.000001), FALSE) AS has_shipment_remaining,
+           COALESCE(BOOL_OR(olm.qty_ordered
+                            - CASE
+                                  WHEN olm.order_type = 'CUSTOMER' THEN olm.qty_customer_ready
+                                  ELSE olm.qty_produced_total
+                              END > 0.000001), FALSE) AS has_receipt_remaining
+    FROM order_base ob
+    LEFT JOIN order_line_metrics olm ON olm.order_id = ob.id
+    GROUP BY ob.id
+),
+pallet_summary AS (
+    SELECT d.order_id,
+           COUNT(*) FILTER (WHERE pp.status <> 'CANCELLED')::int AS planned_pallet_count,
+           COALESCE(SUM(pp.planned_qty) FILTER (WHERE pp.status <> 'CANCELLED'), 0)::double precision AS planned_qty,
+           COUNT(*) FILTER (WHERE pp.status = 'FILLED')::int AS filled_pallet_count,
+           COALESCE(SUM(pp.planned_qty) FILTER (WHERE pp.status = 'FILLED'), 0)::double precision AS filled_qty
+    FROM docs d
+    INNER JOIN order_scope os ON os.id = d.order_id
+    INNER JOIN production_pallets pp ON pp.prd_doc_id = d.id
+    WHERE d.type = 'PRODUCTION_RECEIPT'
+      AND d.status <> 'CLOSED'
+    GROUP BY d.order_id
+),
 markable_line_need AS (
     SELECT olm.order_id,
            olm.item_id,
@@ -239,6 +275,12 @@ markable_item_need AS (
     FROM markable_line_need
     GROUP BY order_id, item_id, gtin
 ),
+needed_marking_keys AS (
+    SELECT DISTINCT item_id,
+           gtin
+    FROM markable_item_need
+    WHERE qty_for_marking > 0
+),
 free_code_stats AS (
     SELECT COALESCE(mo.item_id, 0) AS item_id,
            COALESCE(NULLIF(BTRIM(COALESCE(mo.gtin, c.gtin)), ''), '') AS gtin,
@@ -251,6 +293,13 @@ free_code_stats AS (
       AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
       AND (mo.source_type IN (@production_need_source_type, @production_order_source_type)
            OR mo.order_id IS NOT NULL)
+      AND EXISTS (
+          SELECT 1
+          FROM needed_marking_keys need
+          WHERE COALESCE(mo.item_id, 0) = need.item_id
+             OR (need.gtin IS NOT NULL
+                 AND COALESCE(NULLIF(BTRIM(COALESCE(mo.gtin, c.gtin)), ''), '') = COALESCE(need.gtin, ''))
+      )
     GROUP BY COALESCE(mo.item_id, 0),
              COALESCE(NULLIF(BTRIM(COALESCE(mo.gtin, c.gtin)), ''), '')
 ),
@@ -347,11 +396,20 @@ SELECT ob.id,
                 AND COALESCE(ss.line_count, 0) > 0
                 AND COALESCE(ss.fully_shipped, FALSE) THEN ds.outbound_closed_at
            ELSE NULL
-       END AS shipped_at
+       END AS shipped_at,
+       COALESCE(olf.has_shipment_remaining, FALSE) AS has_shipment_remaining,
+       COALESCE(olf.has_receipt_remaining, FALSE) AS has_receipt_remaining,
+       COALESCE(ps.planned_pallet_count, 0) > 0 AS has_production_pallet_plan,
+       COALESCE(ps.planned_pallet_count, 0) AS planned_pallet_count,
+       COALESCE(ps.filled_pallet_count, 0) AS filled_pallet_count,
+       COALESCE(ps.planned_qty, 0) AS planned_qty,
+       COALESCE(ps.filled_qty, 0) AS filled_qty
 FROM order_base ob
 LEFT JOIN status_summary ss ON ss.order_id = ob.id
 LEFT JOIN doc_summary ds ON ds.order_id = ob.id
-LEFT JOIN marking_rollup mr ON mr.order_id = ob.id";
+LEFT JOIN marking_rollup mr ON mr.order_id = ob.id
+LEFT JOIN order_list_flags olf ON olf.order_id = ob.id
+LEFT JOIN pallet_summary ps ON ps.order_id = ob.id";
 
     public PostgresDataStore(string connectionString)
     {
@@ -2151,28 +2209,20 @@ candidate_order_lines AS (
     FROM order_lines ol
     INNER JOIN candidate_orders co ON co.id = ol.order_id
 ),
-active_doc_lines AS (
-    SELECT dl.id,
-           dl.doc_id,
-           dl.order_line_id,
-           dl.item_id,
-           dl.qty
-    FROM doc_lines dl
-    WHERE dl.qty > 0
+shipped_by_line AS (
+    SELECT dl.order_line_id,
+           SUM(dl.qty) AS qty_shipped
+    FROM candidate_order_lines col
+    INNER JOIN doc_lines dl ON dl.order_line_id = col.id
+    INNER JOIN docs d ON d.id = dl.doc_id
+    WHERE d.status = 'CLOSED'
+      AND d.type = 'OUTBOUND'
+      AND dl.qty > 0
       AND NOT EXISTS (
           SELECT 1
           FROM doc_lines newer
           WHERE newer.replaces_line_id = dl.id
       )
-),
-shipped_by_line AS (
-    SELECT dl.order_line_id,
-           SUM(dl.qty) AS qty_shipped
-    FROM active_doc_lines dl
-    INNER JOIN docs d ON d.id = dl.doc_id
-    INNER JOIN candidate_order_lines col ON col.id = dl.order_line_id
-    WHERE d.status = 'CLOSED'
-      AND d.type = 'OUTBOUND'
     GROUP BY dl.order_line_id
 ),
 reserved_by_line AS (
@@ -2186,11 +2236,17 @@ reserved_by_line AS (
 direct_produced_by_line AS (
     SELECT dl.order_line_id,
            SUM(dl.qty) AS qty_received
-    FROM active_doc_lines dl
+    FROM candidate_order_lines col
+    INNER JOIN doc_lines dl ON dl.order_line_id = col.id
     INNER JOIN docs d ON d.id = dl.doc_id
-    INNER JOIN candidate_order_lines col ON col.id = dl.order_line_id
     WHERE d.status = 'CLOSED'
       AND d.type = 'PRODUCTION_RECEIPT'
+      AND dl.qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
     GROUP BY dl.order_line_id
 ),
 unlinked_produced_by_item AS (
@@ -2198,11 +2254,17 @@ unlinked_produced_by_item AS (
            dl.item_id,
            SUM(dl.qty) AS qty_received
     FROM docs d
-    INNER JOIN active_doc_lines dl ON dl.doc_id = d.id
     INNER JOIN candidate_orders co ON co.id = d.order_id
+    INNER JOIN doc_lines dl ON dl.doc_id = d.id
     WHERE d.status = 'CLOSED'
       AND d.type = 'PRODUCTION_RECEIPT'
       AND dl.order_line_id IS NULL
+      AND dl.qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
     GROUP BY d.order_id,
              dl.item_id
 ),
@@ -2210,10 +2272,16 @@ production_totals_by_order AS (
     SELECT d.order_id,
            SUM(dl.qty) AS qty_received
     FROM docs d
-    INNER JOIN active_doc_lines dl ON dl.doc_id = d.id
     INNER JOIN candidate_orders co ON co.id = d.order_id
+    INNER JOIN doc_lines dl ON dl.doc_id = d.id
     WHERE d.status = 'CLOSED'
       AND d.type = 'PRODUCTION_RECEIPT'
+      AND dl.qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
     GROUP BY d.order_id
 ),
 line_metrics_seed AS (
@@ -5382,6 +5450,14 @@ ORDER BY pll.production_pallet_id, pll.id;
         var markingApplies = reader.FieldCount > 15 && !reader.IsDBNull(15) && reader.GetBoolean(15);
         var markingCodeCovered = reader.FieldCount > 16 && !reader.IsDBNull(16) && reader.GetBoolean(16);
         var shippedAt = reader.FieldCount > 17 ? FromDbDate(reader.IsDBNull(17) ? null : reader.GetString(17)) : null;
+        var listMetricsLoaded = reader.FieldCount > 24;
+        var hasShipmentRemaining = listMetricsLoaded && !reader.IsDBNull(18) && reader.GetBoolean(18);
+        var hasReceiptRemaining = listMetricsLoaded && !reader.IsDBNull(19) && reader.GetBoolean(19);
+        var hasProductionPalletPlan = listMetricsLoaded && !reader.IsDBNull(20) && reader.GetBoolean(20);
+        var plannedPalletCount = listMetricsLoaded && !reader.IsDBNull(21) ? reader.GetInt32(21) : 0;
+        var filledPalletCount = listMetricsLoaded && !reader.IsDBNull(22) ? reader.GetInt32(22) : 0;
+        var plannedQty = listMetricsLoaded && !reader.IsDBNull(23) ? reader.GetDouble(23) : 0d;
+        var filledQty = listMetricsLoaded && !reader.IsDBNull(24) ? reader.GetDouble(24) : 0d;
 
         return new Order
         {
@@ -5403,7 +5479,15 @@ ORDER BY pll.production_pallet_id, pll.id;
             MarkingApplies = markingApplies,
             MarkingCodeCovered = markingCodeCovered,
             MarkingExcelGeneratedAt = markingExcelGeneratedAt,
-            MarkingPrintedAt = markingPrintedAt
+            MarkingPrintedAt = markingPrintedAt,
+            ListMetricsLoaded = listMetricsLoaded,
+            HasShipmentRemaining = hasShipmentRemaining,
+            HasProductionPalletPlan = hasProductionPalletPlan,
+            NeedsProductionPalletPlan = status is not (OrderStatus.Shipped or OrderStatus.Cancelled) && hasReceiptRemaining,
+            PlannedPalletCount = plannedPalletCount,
+            FilledPalletCount = filledPalletCount,
+            PlannedQty = plannedQty,
+            FilledQty = filledQty
         };
     }
 
