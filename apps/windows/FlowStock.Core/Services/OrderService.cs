@@ -64,9 +64,11 @@ public sealed class OrderService
         return ApplyAutoStatus(order);
     }
 
-    public static void RefreshInternalOrderStatuses(IDataStore store)
+    public static OrderStatusRefreshReport RefreshInternalOrderStatuses(IDataStore store)
     {
         var orderService = new OrderService(store);
+        var changedOrders = new List<OrderStatusRefreshChangedOrder>();
+        var refreshedCount = 0;
         foreach (var order in store.GetOrders())
         {
             if (order.Type != OrderType.Internal || order.Status == OrderStatus.Cancelled)
@@ -74,8 +76,26 @@ public sealed class OrderService
                 continue;
             }
 
-            orderService.RefreshPersistedStatus(order.Id);
+            refreshedCount++;
+            var oldStatus = order.Status;
+            var newStatus = orderService.RefreshPersistedStatus(order.Id);
+            if (newStatus != oldStatus)
+            {
+                changedOrders.Add(new OrderStatusRefreshChangedOrder
+                {
+                    OrderId = order.Id,
+                    OrderRef = order.OrderRef,
+                    OldStatus = oldStatus,
+                    NewStatus = newStatus
+                });
+            }
         }
+
+        return new OrderStatusRefreshReport
+        {
+            RefreshedCount = refreshedCount,
+            ChangedOrders = changedOrders
+        };
     }
 
     public OrderStatus RefreshPersistedStatus(long orderId)
@@ -1457,5 +1477,20 @@ public sealed class OrderService
             ? OrderStatus.Accepted
             : OrderStatus.InProgress;
     }
+}
+
+public sealed class OrderStatusRefreshReport
+{
+    public int RefreshedCount { get; init; }
+    public IReadOnlyList<OrderStatusRefreshChangedOrder> ChangedOrders { get; init; } = Array.Empty<OrderStatusRefreshChangedOrder>();
+    public int ChangedCount => ChangedOrders.Count;
+}
+
+public sealed class OrderStatusRefreshChangedOrder
+{
+    public long OrderId { get; init; }
+    public string OrderRef { get; init; } = string.Empty;
+    public OrderStatus OldStatus { get; init; }
+    public OrderStatus NewStatus { get; init; }
 }
 

@@ -203,9 +203,11 @@ order_line_metrics AS (
 status_summary AS (
     SELECT ob.id AS order_id,
            COUNT(olm.order_line_id) AS line_count,
+           COUNT(olm.order_line_id) FILTER (WHERE olm.qty_ordered > 0.000001) AS demand_line_count,
            COALESCE(BOOL_AND(olm.qty_shipped + 0.000001 >= olm.qty_ordered), FALSE) AS fully_shipped,
            COALESCE(BOOL_AND(olm.qty_customer_ready + 0.000001 >= olm.qty_ordered), FALSE) AS fully_customer_ready,
            COALESCE(BOOL_AND(olm.qty_produced_total + 0.000001 >= olm.qty_ordered), FALSE) AS fully_produced,
+           COALESCE(BOOL_AND(olm.qty_produced_total + 0.000001 >= olm.qty_ordered) FILTER (WHERE olm.qty_ordered > 0.000001), FALSE) AS fully_demand_produced,
            COALESCE(BOOL_OR(olm.qty_produced_total > 0.000001), FALSE) AS any_produced,
            COALESCE(MAX(production_totals.qty_received), 0) > 0.000001 AS any_posted_production
     FROM order_base ob
@@ -378,8 +380,11 @@ SELECT ob.id,
        CASE
            WHEN ob.persisted_status = 'CANCELLED' THEN 'CANCELLED'
            WHEN ob.order_type = 'INTERNAL' THEN CASE
-               WHEN ob.persisted_status = 'SHIPPED' THEN 'SHIPPED'
-               WHEN COALESCE(ss.line_count, 0) > 0 AND COALESCE(ss.fully_produced, FALSE) THEN 'SHIPPED'
+               WHEN COALESCE(ss.any_produced, FALSE)
+                    AND COALESCE(ss.demand_line_count, 0) > 0
+                    AND COALESCE(ss.fully_demand_produced, FALSE) THEN 'SHIPPED'
+               WHEN ob.persisted_status = 'DRAFT'
+                    AND NOT COALESCE(ss.any_produced, FALSE) THEN 'DRAFT'
                ELSE 'IN_PROGRESS'
            END
            ELSE CASE
@@ -403,8 +408,9 @@ SELECT ob.id,
        CASE
            WHEN ob.persisted_status = 'CANCELLED' THEN NULL
            WHEN ob.order_type = 'INTERNAL'
-                AND COALESCE(ss.line_count, 0) > 0
-                AND COALESCE(ss.fully_produced, FALSE) THEN ds.production_closed_at
+                AND COALESCE(ss.any_produced, FALSE)
+                AND COALESCE(ss.demand_line_count, 0) > 0
+                AND COALESCE(ss.fully_demand_produced, FALSE) THEN ds.production_closed_at
            WHEN ob.order_type <> 'INTERNAL'
                 AND COALESCE(ss.line_count, 0) > 0
                 AND COALESCE(ss.fully_shipped, FALSE) THEN ds.outbound_closed_at
@@ -2546,8 +2552,11 @@ effective_orders AS (
            CASE
                WHEN co.persisted_status = 'CANCELLED' THEN 'CANCELLED'
                WHEN co.order_type = 'INTERNAL' THEN CASE
-                   WHEN co.persisted_status = 'SHIPPED' THEN 'SHIPPED'
-                   WHEN COALESCE(ss.line_count, 0) > 0 AND COALESCE(ss.fully_produced, FALSE) THEN 'SHIPPED'
+                   WHEN COALESCE(ss.any_produced, FALSE)
+                        AND COALESCE(ss.demand_line_count, 0) > 0
+                        AND COALESCE(ss.fully_demand_produced, FALSE) THEN 'SHIPPED'
+                   WHEN co.persisted_status = 'DRAFT'
+                        AND NOT COALESCE(ss.any_produced, FALSE) THEN 'DRAFT'
                    ELSE 'IN_PROGRESS'
                END
                ELSE CASE
@@ -2674,9 +2683,11 @@ legacy_receipt_totals AS (
 filled_pallet_totals AS (
     SELECT pll.order_line_id,
            SUM(pll.planned_qty) AS sum_qty
+           COUNT(olm.order_line_id) FILTER (WHERE olm.qty_ordered > 0.000001) AS demand_line_count,
     FROM production_pallet_lines pll
     INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
     INNER JOIN order_line_scope ols ON ols.id = pll.order_line_id
+           COALESCE(BOOL_AND(olm.qty_produced_total + 0.000001 >= olm.qty_ordered) FILTER (WHERE olm.qty_ordered > 0.000001), FALSE) AS fully_demand_produced,
     WHERE pp.status = @pallet_filled_status
       AND pll.planned_qty > 0
     GROUP BY pll.order_line_id

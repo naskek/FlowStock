@@ -19,26 +19,26 @@ public static class OrderCustomerSaveFollowUpBuilder
             : Array.Empty<OrderReservationPlanLineDto>();
 
         var warnings = new List<OrderSaveFollowUpWarningDto>();
+        foreach (var warning in applyResult.Warnings)
+        {
+            AddWarning(warnings, warning.Code, warning.Message);
+        }
+
         if (!string.IsNullOrWhiteSpace(applyResult.SkippedReason))
         {
             var description = OrderAutoRedistributionReasonCodes.DescribeSkippedReason(applyResult.SkippedReason);
             if (!string.IsNullOrWhiteSpace(description))
             {
-                warnings.Add(new OrderSaveFollowUpWarningDto
-                {
-                    Code = applyResult.SkippedReason!,
-                    Message = description
-                });
+                AddWarning(warnings, applyResult.SkippedReason!, description);
             }
         }
 
-        if (bindReservedStock && reservationLines.Count == 0)
+        if (bindReservedStock && reservationLines.Count == 0 && string.IsNullOrWhiteSpace(applyResult.SkippedReason))
         {
-            warnings.Add(new OrderSaveFollowUpWarningDto
-            {
-                Code = "NO_HU_RESERVED",
-                Message = "Резерв включён, но в плане заказа нет закреплённых HU (нет подходящего складского остатка или тип номенклатуры без резерва)."
-            });
+            AddWarning(
+                warnings,
+                "NO_HU_RESERVED",
+                "Резерв включён, но в плане заказа нет закреплённых HU (нет подходящего складского остатка или тип номенклатуры без резерва).");
         }
 
         var transfers = applyResult.Transfers
@@ -111,5 +111,21 @@ public static class OrderCustomerSaveFollowUpBuilder
                 QtyPlanned = line.QtyPlanned
             })
             .ToList();
+    }
+
+    private static void AddWarning(List<OrderSaveFollowUpWarningDto> warnings, string code, string message)
+    {
+        if (warnings.Any(warning =>
+                string.Equals(warning.Code, code, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(warning.Message, message, StringComparison.Ordinal)))
+        {
+            return;
+        }
+
+        warnings.Add(new OrderSaveFollowUpWarningDto
+        {
+            Code = code,
+            Message = message
+        });
     }
 }

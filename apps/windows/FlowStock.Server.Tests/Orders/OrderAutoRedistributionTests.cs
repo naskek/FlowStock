@@ -203,4 +203,120 @@ public sealed class OrderAutoRedistributionTests
         Assert.False(result.HasTransfers);
         Assert.Equal("CUSTOMER_RESERVATION_DISABLED", result.SkippedReason);
     }
+
+    [Fact]
+    public void ApplyFromOpenInternalOrders_WhenTargetHasNoOpenLines_ReturnsReasonCode()
+    {
+        const long customerOrderId = 65;
+        var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(s => s.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
+            .Callback<Action<IDataStore>>(work => work(store.Object));
+        store.Setup(s => s.GetOrder(customerOrderId))
+            .Returns(new Order
+            {
+                Id = customerOrderId,
+                OrderRef = "CUST-65",
+                Type = OrderType.Customer,
+                Status = OrderStatus.InProgress,
+                UseReservedStock = true,
+                CreatedAt = DateTime.Now
+            });
+        store.Setup(s => s.GetOrderLines(customerOrderId))
+            .Returns([new OrderLine { Id = 1, OrderId = customerOrderId, ItemId = 6, QtyOrdered = 0 }]);
+
+        var service = new OrderAutoRedistributionService(store.Object);
+        var result = service.ApplyFromOpenInternalOrders(customerOrderId);
+
+        Assert.False(result.HasTransfers);
+        Assert.Equal("TARGET_CUSTOMER_HAS_NO_OPEN_LINES", result.SkippedReason);
+    }
+
+    [Fact]
+    public void ApplyFromOpenInternalOrders_WhenMatchingInternalQtyZeroWithPalletPlan_ReturnsSpecificWarning()
+    {
+        const long internalOrderId = 66;
+        const long customerOrderId = 67;
+        const long itemId = 6;
+        const long internalLineId = 6601;
+        const long customerLineId = 6701;
+        var internalOrder = new Order
+        {
+            Id = internalOrderId,
+            OrderRef = "066",
+            Type = OrderType.Internal,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 5, 18, 16, 58, 0)
+        };
+        var customerOrder = new Order
+        {
+            Id = customerOrderId,
+            OrderRef = "067",
+            Type = OrderType.Customer,
+            Status = OrderStatus.InProgress,
+            UseReservedStock = true,
+            CreatedAt = new DateTime(2026, 5, 18, 16, 58, 34)
+        };
+        var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(s => s.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
+            .Callback<Action<IDataStore>>(work => work(store.Object));
+        store.Setup(s => s.GetOrder(customerOrderId)).Returns(customerOrder);
+        store.Setup(s => s.GetOrder(internalOrderId)).Returns(internalOrder);
+        store.Setup(s => s.GetOrders()).Returns([internalOrder, customerOrder]);
+        store.Setup(s => s.GetOrderLines(customerOrderId))
+            .Returns([new OrderLine { Id = customerLineId, OrderId = customerOrderId, ItemId = itemId, QtyOrdered = 2400 }]);
+        store.Setup(s => s.GetOrderLines(internalOrderId))
+            .Returns([new OrderLine { Id = internalLineId, OrderId = internalOrderId, ItemId = itemId, QtyOrdered = 0 }]);
+        store.Setup(s => s.GetOrderReceiptRemaining(internalOrderId))
+            .Returns([
+                new OrderReceiptLine
+                {
+                    OrderLineId = internalLineId,
+                    OrderId = internalOrderId,
+                    ItemId = itemId,
+                    QtyOrdered = 0,
+                    QtyReceived = 0,
+                    QtyRemaining = 0
+                }
+            ]);
+        store.Setup(s => s.GetDocsByOrder(internalOrderId))
+            .Returns([
+                new Doc
+                {
+                    Id = 162,
+                    DocRef = "PRD-2026-000156",
+                    Type = DocType.ProductionReceipt,
+                    Status = DocStatus.Draft,
+                    OrderId = internalOrderId,
+                    OrderRef = "066",
+                    CreatedAt = new DateTime(2026, 5, 18, 16, 58, 10)
+                }
+            ]);
+        store.Setup(s => s.GetProductionPalletsByDoc(162))
+            .Returns([
+                new ProductionPallet
+                {
+                    Id = 35,
+                    PrdDocId = 162,
+                    DocLineId = 1752,
+                    OrderId = internalOrderId,
+                    OrderLineId = internalLineId,
+                    ItemId = itemId,
+                    HuCode = "HU-0000462",
+                    PlannedQty = 600,
+                    Status = ProductionPalletStatus.Planned,
+                    CreatedAt = DateTime.Now
+                }
+            ]);
+        store.Setup(s => s.CountLedgerEntriesByDocId(162)).Returns(0);
+        store.Setup(s => s.UpdateOrderStatus(internalOrderId, OrderStatus.InProgress));
+
+        var service = new OrderAutoRedistributionService(store.Object);
+        var result = service.ApplyFromOpenInternalOrders(customerOrderId);
+
+        Assert.False(result.HasTransfers);
+        Assert.Equal("SOURCE_INTERNAL_HAS_PALLET_PLAN_BUT_QTY_ZERO", result.SkippedReason);
+        Assert.Contains(result.Warnings, warning => warning.Code == "SOURCE_INTERNAL_HAS_PALLET_PLAN_BUT_QTY_ZERO");
+        Assert.Equal(1, result.OpenInternalCandidateCount);
+        Assert.Equal(1, result.MatchingInternalCandidateCount);
+    }
 }

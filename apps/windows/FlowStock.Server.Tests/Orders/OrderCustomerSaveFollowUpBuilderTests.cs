@@ -56,6 +56,11 @@ public sealed class OrderCustomerSaveFollowUpBuilderTests
             Qty = 5,
             Reason = "Недостаточно выпущенного товара на складе по внутреннему заказу для переноса с привязкой HU."
         });
+        applyResult.Warnings.Add(new OrderAutoRedistributionWarning
+        {
+            Code = "SOURCE_INTERNAL_HAS_PALLET_PLAN_BUT_QTY_ZERO",
+            Message = "INTERNAL имеет palletized PRD plan, но qty_ordered уже 0."
+        });
 
         var envelope = OrderCustomerSaveFollowUpBuilder.Build(store.Object, applyResult);
 
@@ -68,6 +73,7 @@ public sealed class OrderCustomerSaveFollowUpBuilderTests
         Assert.Single(envelope.IgnoredAttempts);
         Assert.Equal("INSUFFICIENT_PRODUCED_STOCK", envelope.IgnoredAttempts[0].ReasonCode);
         Assert.Contains(envelope.Warnings, warning => warning.Code == "AUTO_TRANSFER_PARTIAL");
+        Assert.Contains(envelope.Warnings, warning => warning.Code == "SOURCE_INTERNAL_HAS_PALLET_PLAN_BUT_QTY_ZERO");
     }
 
     [Fact]

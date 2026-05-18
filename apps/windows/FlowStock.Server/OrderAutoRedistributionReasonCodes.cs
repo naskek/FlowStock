@@ -56,6 +56,19 @@ public static class OrderAutoRedistributionReasonCodes
             "CUSTOMER_RESERVATION_DISABLED" =>
                 "Автоперенос не выполнялся, потому что заказ сохранён без резерва складских HU. "
                 + "Сохраните заказ с ответом «Да», чтобы разрешить резерв HU и автоперенос с INTERNAL.",
+            "TARGET_CUSTOMER_HAS_NO_OPEN_LINES" =>
+                "У клиентского заказа нет строк с количеством больше нуля для автопереноса.",
+            "NO_OPEN_INTERNAL_ORDERS" =>
+                "После обновления статусов нет открытых INTERNAL-заказов для автопереноса.",
+            "OPEN_INTERNAL_WITHOUT_MATCHING_ITEM" =>
+                "Открытые INTERNAL-заказы есть, но в них нет номенклатуры, совпадающей со строками клиентского заказа.",
+            "OPEN_INTERNAL_MATCHING_ITEM_QTY_ZERO" =>
+                "Есть открытый INTERNAL с совпадающей номенклатурой, но количество источника уже равно нулю.",
+            "SOURCE_INTERNAL_HAS_PALLET_PLAN_BUT_QTY_ZERO" =>
+                "INTERNAL имеет palletized PRD plan, но qty_ordered уже 0. Обычный auto-redistribute не может перенести строки. "
+                + "Нужно удалить/перенести паллетный план отдельным действием.",
+            "INTERNAL_STATUSES_REFRESHED" =>
+                "Перед автопереносом обновлены устаревшие статусы INTERNAL-заказов.",
             _ => string.Empty
         };
     }
