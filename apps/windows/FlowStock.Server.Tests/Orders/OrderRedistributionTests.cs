@@ -100,7 +100,46 @@ public sealed class OrderRedistributionTests
         store.Setup(s => s.GetHuOrderContextRows()).Returns(Array.Empty<HuOrderContextRow>());
         store.Setup(s => s.GetOrderReceiptPlanLines(It.IsAny<long>())).Returns(Array.Empty<OrderReceiptPlanLine>());
         store.Setup(s => s.GetDocs()).Returns(Array.Empty<Doc>());
-        store.Setup(s => s.ReplaceOrderReceiptPlanLines(It.IsAny<long>(), It.IsAny<IReadOnlyList<OrderReceiptPlanLine>>()));
+        var planByOrder = new Dictionary<long, List<OrderReceiptPlanLine>>
+        {
+            [internalOrderId] =
+            [
+                new OrderReceiptPlanLine
+                {
+                    Id = 1,
+                    OrderId = internalOrderId,
+                    OrderLineId = internalLineId,
+                    ItemId = itemId,
+                    QtyPlanned = 600,
+                    ToHu = "HU-0000460",
+                    SortOrder = 0
+                },
+                new OrderReceiptPlanLine
+                {
+                    Id = 2,
+                    OrderId = internalOrderId,
+                    OrderLineId = internalLineId,
+                    ItemId = itemId,
+                    QtyPlanned = 600,
+                    ToHu = "HU-0000461",
+                    SortOrder = 1
+                }
+            ],
+            [customerOrderId] = []
+        };
+        store.Setup(s => s.ReplaceOrderReceiptPlanLines(It.IsAny<long>(), It.IsAny<IReadOnlyList<OrderReceiptPlanLine>>()))
+            .Callback<long, IReadOnlyList<OrderReceiptPlanLine>>((orderId, lines) =>
+            {
+                planByOrder[orderId] = lines?.ToList() ?? [];
+            });
+        store.Setup(s => s.GetOrderReceiptPlanLines(It.IsAny<long>()))
+            .Returns<long>(orderId => planByOrder.TryGetValue(orderId, out var lines) ? lines : []);
+        store.Setup(s => s.ReassignOpenProductionPalletsByHu(
+                It.IsAny<long>(),
+                It.IsAny<long>(),
+                It.IsAny<long>(),
+                It.IsAny<long>(),
+                It.IsAny<IReadOnlyList<string>>()));
         store.Setup(s => s.GetPartner(500)).Returns(new Partner { Id = 500, Name = "Customer", Code = "CUST" });
 
         var service = new OrderRedistributionService(store.Object);
@@ -111,9 +150,20 @@ public sealed class OrderRedistributionTests
         Assert.Equal(0, result.QtyFromProducedStock, 3);
         Assert.Equal(200, internalQtyAfter);
         Assert.Equal(500, customerQtyAfter);
+        Assert.Contains("HU-0000460", result.TransferredHuCodes, StringComparer.OrdinalIgnoreCase);
+        var customerPlan = planByOrder[customerOrderId];
+        Assert.Contains(customerPlan, line => string.Equals(line.ToHu, "HU-0000460", StringComparison.OrdinalIgnoreCase));
+        var internalPlan = planByOrder[internalOrderId];
+        Assert.Contains(internalPlan, line => string.Equals(line.ToHu, "HU-0000461", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(internalPlan, line => string.Equals(line.ToHu, "HU-0000460", StringComparison.OrdinalIgnoreCase));
         store.Verify(
-            s => s.ReplaceOrderReceiptPlanLines(It.IsAny<long>(), It.IsAny<IReadOnlyList<OrderReceiptPlanLine>>()),
-            Times.AtLeastOnce);
+            s => s.ReassignOpenProductionPalletsByHu(
+                internalOrderId,
+                customerOrderId,
+                customerLineId,
+                itemId,
+                It.Is<IReadOnlyList<string>>(codes => codes.Contains("HU-0000460")),
+            Times.Once);
     }
 
     [Fact]
