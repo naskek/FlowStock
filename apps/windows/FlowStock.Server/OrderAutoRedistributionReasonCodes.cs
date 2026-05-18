@@ -53,7 +53,9 @@ public static class OrderAutoRedistributionReasonCodes
             "ORDER_NOT_FOUND" => "Заказ не найден на сервере.",
             "TARGET_NOT_CUSTOMER" => "Операция доступна только для клиентского заказа.",
             "ORDER_NOT_EDITABLE" => "Заказ недоступен для перераспределения.",
-            "CUSTOMER_RESERVATION_DISABLED" => "Резерв складских HU не включён — автоперенос не выполнялся.",
+            "CUSTOMER_RESERVATION_DISABLED" =>
+                "Автоперенос не выполнялся, потому что заказ сохранён без резерва складских HU. "
+                + "Сохраните заказ с ответом «Да», чтобы разрешить резерв HU и автоперенос с INTERNAL.",
             _ => string.Empty
         };
     }

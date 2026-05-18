@@ -604,7 +604,9 @@ public partial class OrderDetailsWindow : Window
         }
         else
         {
-            sections.Add("Резерв складских HU не включён — сервер не выполнял автоперенос с внутренних заказов.");
+            sections.Add(
+                "Резерв складских HU не включён — автоперенос с INTERNAL не выполнялся. "
+                + "При следующем сохранении выберите «Да» в диалоге резерва HU, чтобы разрешить резерв и автоперенос.");
         }
 
         if (payload.HasTransfers)
@@ -704,15 +706,32 @@ public partial class OrderDetailsWindow : Window
         var currentValue = _order?.Type == OrderType.Customer
             ? _order.UseReservedStock
             : false;
-        bindReservedStockForCustomer = currentValue;
 
-        if (!TryBuildReservationPreview(orderRef, partnerId, out var previewText))
+        const string previewChoiceExplanation =
+            "Да — закрепить найденные HU и выполнить автоперенос с подходящих INTERNAL-заказов.\n" +
+            "Нет — сохранить без резерва HU; автоперенос с INTERNAL выполнен не будет.";
+
+        const string fallbackChoiceExplanation =
+            "Да — сервер попробует закрепить доступные HU и перенести потребность с подходящих INTERNAL-заказов.\n" +
+            "Нет — сохранить без резерва HU; автоперенос с INTERNAL выполнен не будет.";
+
+        string dialogText;
+        if (TryBuildReservationPreview(orderRef, partnerId, out var previewText))
         {
-            return true;
+            dialogText = previewText + "\n\n" + previewChoiceExplanation;
+        }
+        else
+        {
+            var partnerDisplay = !partnerId.HasValue
+                ? "контрагента"
+                : (_partnersAll.FirstOrDefault(partner => partner.Id == partnerId.Value)?.DisplayName ?? $"ID {partnerId.Value}");
+            dialogText =
+                $"Включить резерв складских HU и автоперенос с внутренних заказов для заказа №{orderRef.Trim()} для {partnerDisplay}?\n\n"
+                + fallbackChoiceExplanation;
         }
 
         var confirm = MessageBox.Show(
-            previewText,
+            dialogText,
             "Заказы",
             MessageBoxButton.YesNoCancel,
             MessageBoxImage.Question,
