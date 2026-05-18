@@ -149,6 +149,56 @@ public sealed class WpfProductionPalletApiService
         }
     }
 
+    public async Task<WpfProductionPalletAdoptPlanApiResult> TryAdoptPlanFromInternalAsync(
+        long targetCustomerOrderId,
+        long sourceInternalOrderId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (!TryLoadConfiguration(out var configuration))
+            {
+                _logger.Info("Production pallet API skipped for adopt plan: server base URL is not configured.");
+                return WpfProductionPalletAdoptPlanApiResult.Failure("FlowStock Server API не настроен.");
+            }
+
+            using var handler = CreateHandler(configuration);
+            using var client = CreateClient(handler, configuration);
+            using var response = await client.PostAsJsonAsync(
+                    $"/api/orders/{targetCustomerOrderId}/production-pallets/adopt-from-internal/{sourceInternalOrderId}",
+                    new { },
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return WpfProductionPalletAdoptPlanApiResult.Failure(await ReadApiErrorAsync(response).ConfigureAwait(false));
+            }
+
+            var payload = await response.Content.ReadFromJsonAsync<AdoptPlanResponse>(JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+            if (payload == null)
+            {
+                return WpfProductionPalletAdoptPlanApiResult.Failure("Сервер вернул пустой ответ.");
+            }
+
+            return new WpfProductionPalletAdoptPlanApiResult(
+                true,
+                string.IsNullOrWhiteSpace(payload.Message) ? "План паллет перенесён." : payload.Message!,
+                payload.SourceOrderId,
+                payload.TargetOrderId,
+                payload.SourcePrdDocId,
+                payload.TargetPrdDocId,
+                payload.TransferredPalletCount,
+                payload.TransferredLineCount,
+                payload.TransferredHuCodes ?? Array.Empty<string>());
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Production pallet adopt plan failed", ex);
+            return WpfProductionPalletAdoptPlanApiResult.Failure(ex.Message);
+        }
+    }
+
     public async Task<(bool IsSuccess, string? Error)> TryMarkPrintedAsync(
         long orderId,
         CancellationToken cancellationToken = default)
@@ -388,6 +438,33 @@ public sealed class WpfProductionPalletApiService
         public int RemovedLineCount { get; init; }
     }
 
+    private sealed class AdoptPlanResponse
+    {
+        [JsonPropertyName("message")]
+        public string? Message { get; init; }
+
+        [JsonPropertyName("source_order_id")]
+        public long SourceOrderId { get; init; }
+
+        [JsonPropertyName("target_order_id")]
+        public long TargetOrderId { get; init; }
+
+        [JsonPropertyName("source_prd_doc_id")]
+        public long SourcePrdDocId { get; init; }
+
+        [JsonPropertyName("target_prd_doc_id")]
+        public long TargetPrdDocId { get; init; }
+
+        [JsonPropertyName("transferred_pallet_count")]
+        public int TransferredPalletCount { get; init; }
+
+        [JsonPropertyName("transferred_line_count")]
+        public int TransferredLineCount { get; init; }
+
+        [JsonPropertyName("transferred_hu_codes")]
+        public IReadOnlyList<string>? TransferredHuCodes { get; init; }
+    }
+
     private sealed class OrderPlanResponse
     {
         [JsonPropertyName("order_id")]
@@ -546,6 +623,23 @@ public sealed record WpfProductionPalletCancelPlanApiResult(
     public static WpfProductionPalletCancelPlanApiResult Failure(string message)
     {
         return new WpfProductionPalletCancelPlanApiResult(false, message, 0, 0, 0);
+    }
+}
+
+public sealed record WpfProductionPalletAdoptPlanApiResult(
+    bool IsSuccess,
+    string Message,
+    long SourceOrderId,
+    long TargetOrderId,
+    long SourcePrdDocId,
+    long TargetPrdDocId,
+    int TransferredPalletCount,
+    int TransferredLineCount,
+    IReadOnlyList<string> TransferredHuCodes)
+{
+    public static WpfProductionPalletAdoptPlanApiResult Failure(string message)
+    {
+        return new WpfProductionPalletAdoptPlanApiResult(false, message, 0, 0, 0, 0, 0, 0, Array.Empty<string>());
     }
 }
 

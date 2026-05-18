@@ -2086,6 +2086,150 @@ LIMIT 1;
         });
     }
 
+    public ProductionPalletPlanAdoptionResult AdoptProductionPalletPlan(
+        long sourcePrdDocId,
+        long targetPrdDocId,
+        long sourceOrderId,
+        long targetOrderId,
+        IReadOnlyDictionary<long, long> targetOrderLineIdByItemId)
+    {
+        if (targetOrderLineIdByItemId.Count == 0)
+        {
+            throw new InvalidOperationException("Не заданы строки клиентского заказа для переноса плана паллет.");
+        }
+
+        return WithConnection(connection =>
+        {
+            var values = string.Join(", ", targetOrderLineIdByItemId.Select((_, index) => $"(@item_id_{index}, @order_line_id_{index})"));
+            var targetLineCte = $"WITH target_lines(item_id, target_order_line_id) AS (VALUES {values})";
+
+            var transferredHuCodes = new List<string>();
+            int transferredPalletCount;
+            int transferredLineCount;
+            using (var count = CreateCommand(connection, $@"
+{targetLineCte}
+SELECT
+    COUNT(DISTINCT pp.id),
+    COUNT(DISTINCT dl.id)
+FROM production_pallets pp
+INNER JOIN doc_lines dl ON dl.id = pp.doc_line_id
+INNER JOIN target_lines tl ON tl.item_id = pp.item_id
+WHERE pp.prd_doc_id = @source_prd_doc_id
+  AND pp.status <> @cancelled_status
+  AND dl.doc_id = @source_prd_doc_id;
+"))
+            {
+                AddTargetLineParameters(count, targetOrderLineIdByItemId);
+                count.Parameters.AddWithValue("@source_prd_doc_id", sourcePrdDocId);
+                count.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
+                using var reader = count.ExecuteReader();
+                if (!reader.Read())
+                {
+                    transferredPalletCount = 0;
+                    transferredLineCount = 0;
+                }
+                else
+                {
+                    transferredPalletCount = Convert.ToInt32(reader.GetValue(0), CultureInfo.InvariantCulture);
+                    transferredLineCount = Convert.ToInt32(reader.GetValue(1), CultureInfo.InvariantCulture);
+                }
+            }
+
+            using (var huCommand = CreateCommand(connection, @"
+SELECT DISTINCT pp.hu_code
+FROM production_pallets pp
+WHERE pp.prd_doc_id = @source_prd_doc_id
+  AND pp.status <> @cancelled_status
+ORDER BY pp.hu_code;
+"))
+            {
+                huCommand.Parameters.AddWithValue("@source_prd_doc_id", sourcePrdDocId);
+                huCommand.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
+                using var reader = huCommand.ExecuteReader();
+                while (reader.Read())
+                {
+                    transferredHuCodes.Add(reader.GetString(0));
+                }
+            }
+
+            using (var updatePalletLines = CreateCommand(connection, $@"
+{targetLineCte}
+UPDATE production_pallet_lines pll
+SET order_line_id = tl.target_order_line_id
+FROM production_pallets pp,
+     target_lines tl
+WHERE pp.id = pll.production_pallet_id
+  AND pp.prd_doc_id = @source_prd_doc_id
+  AND pll.item_id = tl.item_id;
+"))
+            {
+                AddTargetLineParameters(updatePalletLines, targetOrderLineIdByItemId);
+                updatePalletLines.Parameters.AddWithValue("@source_prd_doc_id", sourcePrdDocId);
+                updatePalletLines.ExecuteNonQuery();
+            }
+
+            using (var updatePallets = CreateCommand(connection, $@"
+{targetLineCte}
+UPDATE production_pallets pp
+SET prd_doc_id = @target_prd_doc_id,
+    order_id = @target_order_id,
+    order_line_id = tl.target_order_line_id
+FROM target_lines tl
+WHERE pp.prd_doc_id = @source_prd_doc_id
+  AND pp.item_id = tl.item_id;
+"))
+            {
+                AddTargetLineParameters(updatePallets, targetOrderLineIdByItemId);
+                updatePallets.Parameters.AddWithValue("@source_prd_doc_id", sourcePrdDocId);
+                updatePallets.Parameters.AddWithValue("@target_prd_doc_id", targetPrdDocId);
+                updatePallets.Parameters.AddWithValue("@target_order_id", targetOrderId);
+                updatePallets.ExecuteNonQuery();
+            }
+
+            using (var updateDocLines = CreateCommand(connection, $@"
+{targetLineCte}
+UPDATE doc_lines dl
+SET doc_id = @target_prd_doc_id,
+    order_line_id = tl.target_order_line_id,
+    production_purpose = @target_purpose
+FROM target_lines tl
+WHERE dl.doc_id = @source_prd_doc_id
+  AND dl.item_id = tl.item_id;
+"))
+            {
+                AddTargetLineParameters(updateDocLines, targetOrderLineIdByItemId);
+                updateDocLines.Parameters.AddWithValue("@source_prd_doc_id", sourcePrdDocId);
+                updateDocLines.Parameters.AddWithValue("@target_prd_doc_id", targetPrdDocId);
+                updateDocLines.Parameters.AddWithValue("@target_purpose", ProductionLinePurposeMapper.ToDbValue(ProductionLinePurpose.CustomerOrder));
+                updateDocLines.ExecuteNonQuery();
+            }
+
+            return new ProductionPalletPlanAdoptionResult
+            {
+                Success = true,
+                Message = "План паллет перенесён на клиентский заказ.",
+                SourceOrderId = sourceOrderId,
+                TargetOrderId = targetOrderId,
+                SourcePrdDocId = sourcePrdDocId,
+                TargetPrdDocId = targetPrdDocId,
+                TransferredPalletCount = transferredPalletCount,
+                TransferredLineCount = transferredLineCount,
+                TransferredHuCodes = transferredHuCodes
+            };
+        });
+    }
+
+    private static void AddTargetLineParameters(NpgsqlCommand command, IReadOnlyDictionary<long, long> targetOrderLineIdByItemId)
+    {
+        var index = 0;
+        foreach (var pair in targetOrderLineIdByItemId)
+        {
+            command.Parameters.AddWithValue($"@item_id_{index}", pair.Key);
+            command.Parameters.AddWithValue($"@order_line_id_{index}", pair.Value);
+            index++;
+        }
+    }
+
     private ProductionPalletPlanCleanupCounts ClearProductionPalletPlanCore(NpgsqlConnection connection, long docId, bool deletePlanHus)
     {
         var removedPalletCount = 0;
@@ -2536,9 +2680,11 @@ order_line_metrics AS (
 status_summary AS (
     SELECT co.id AS order_id,
            COUNT(olm.order_line_id) AS line_count,
+           COUNT(olm.order_line_id) FILTER (WHERE olm.qty_ordered > 0.000001) AS demand_line_count,
            COALESCE(BOOL_AND(olm.qty_shipped + 0.000001 >= olm.qty_ordered), FALSE) AS fully_shipped,
            COALESCE(BOOL_AND(olm.qty_customer_ready + 0.000001 >= olm.qty_ordered), FALSE) AS fully_customer_ready,
            COALESCE(BOOL_AND(olm.qty_produced_total + 0.000001 >= olm.qty_ordered), FALSE) AS fully_produced,
+           COALESCE(BOOL_AND(olm.qty_produced_total + 0.000001 >= olm.qty_ordered) FILTER (WHERE olm.qty_ordered > 0.000001), FALSE) AS fully_demand_produced,
            COALESCE(BOOL_OR(olm.qty_produced_total > 0.000001), FALSE) AS any_produced,
            COALESCE(MAX(production_totals.qty_received), 0) > 0.000001 AS any_posted_production
     FROM candidate_orders co

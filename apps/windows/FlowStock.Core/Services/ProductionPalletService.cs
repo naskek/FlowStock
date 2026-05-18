@@ -160,6 +160,103 @@ public sealed class ProductionPalletService
         };
     }
 
+    public ProductionPalletPlanAdoptionResult AdoptPlanFromInternal(long targetCustomerOrderId, long sourceInternalOrderId)
+    {
+        ProductionPalletPlanAdoptionResult result = null!;
+        _data.ExecuteInTransaction(store =>
+        {
+            var sourceOrder = store.GetOrder(sourceInternalOrderId)
+                              ?? throw new ProductionPalletPlanAdoptionException("SOURCE_ORDER_NOT_FOUND", "Внутренний заказ-источник не найден.");
+            var targetOrder = store.GetOrder(targetCustomerOrderId)
+                              ?? throw new ProductionPalletPlanAdoptionException("TARGET_ORDER_NOT_FOUND", "Клиентский заказ-получатель не найден.");
+
+            if (sourceOrder.Type != OrderType.Internal)
+            {
+                throw new ProductionPalletPlanAdoptionException("SOURCE_NOT_INTERNAL", "Источник должен быть внутренним заказом.");
+            }
+
+            if (targetOrder.Type != OrderType.Customer)
+            {
+                throw new ProductionPalletPlanAdoptionException("TARGET_NOT_CUSTOMER", "Получатель должен быть клиентским заказом.");
+            }
+
+            if (sourceOrder.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
+            {
+                throw new ProductionPalletPlanAdoptionException("SOURCE_ORDER_NOT_EDITABLE", "Внутренний заказ недоступен для переноса плана паллет.");
+            }
+
+            if (targetOrder.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
+            {
+                throw new ProductionPalletPlanAdoptionException("TARGET_ORDER_NOT_EDITABLE", "Клиентский заказ недоступен для переноса плана паллет.");
+            }
+
+            var sourceDoc = FindProductionReceiptWithPalletPlan(store, sourceInternalOrderId)
+                            ?? throw new ProductionPalletPlanAdoptionException("SOURCE_PRD_NOT_FOUND", "План паллет внутреннего заказа не найден.");
+            if (sourceDoc.Status == DocStatus.Closed)
+            {
+                throw new ProductionPalletPlanAdoptionException("SOURCE_PRD_CLOSED", "Нельзя перенести план паллет: выпуск уже закрыт.");
+            }
+
+            if (TargetHasActiveProductionPalletPlan(store, targetCustomerOrderId))
+            {
+                throw new ProductionPalletPlanAdoptionException(
+                    "TARGET_ALREADY_HAS_PALLET_PLAN",
+                    "У клиентского заказа уже есть план паллет. Сначала удалите текущий план паллет.");
+            }
+
+            var sourcePallets = store.GetProductionPalletsByDoc(sourceDoc.Id)
+                .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (sourcePallets.Count == 0)
+            {
+                throw new ProductionPalletPlanAdoptionException("SOURCE_HAS_NO_ACTIVE_PALLETS", "У внутреннего выпуска нет активных паллет для переноса.");
+            }
+
+            if (sourcePallets.Any(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new ProductionPalletPlanAdoptionException("SOURCE_HAS_FILLED_PALLETS", "Нельзя перенести план паллет: есть уже наполненные паллеты.");
+            }
+
+            if (sourcePallets.Any(pallet =>
+                    !string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new ProductionPalletPlanAdoptionException("INVALID_OPERATION", "Перенести можно только паллеты PLANNED/PRINTED.");
+            }
+
+            if (store.CountLedgerEntriesByDocId(sourceDoc.Id) > 0)
+            {
+                throw new ProductionPalletPlanAdoptionException("SOURCE_HAS_LEDGER", "Нельзя перенести план паллет: по внутреннему выпуску уже есть движения склада.");
+            }
+
+            var targetLinesByItemId = store.GetOrderLines(targetCustomerOrderId)
+                .GroupBy(line => line.ItemId)
+                .ToDictionary(group => group.Key, group => group.OrderBy(line => line.Id).First().Id);
+            var sourceItemIds = sourcePallets
+                .SelectMany(pallet => GetPalletLines(pallet).Select(line => line.ItemId).DefaultIfEmpty(pallet.ItemId))
+                .Distinct()
+                .ToList();
+            foreach (var itemId in sourceItemIds)
+            {
+                if (!targetLinesByItemId.ContainsKey(itemId))
+                {
+                    throw new ProductionPalletPlanAdoptionException("TARGET_LINE_NOT_FOUND", $"В клиентском заказе нет строки для номенклатуры id={itemId}.");
+                }
+            }
+
+            var targetDoc = FindReusableEmptyProductionReceipt(store, targetCustomerOrderId)
+                            ?? CreateProductionReceipt(store, targetOrder);
+            result = store.AdoptProductionPalletPlan(
+                sourceDoc.Id,
+                targetDoc.Id,
+                sourceInternalOrderId,
+                targetCustomerOrderId,
+                targetLinesByItemId);
+        });
+
+        return result;
+    }
+
     public ProductionPalletDocument Get(long docId)
     {
         var doc = RequireProductionReceipt(docId);
@@ -723,6 +820,13 @@ public sealed class ProductionPalletService
             .FirstOrDefault(doc => !store.GetDocLines(doc.Id).Any() && !store.HasProductionPallets(doc.Id));
     }
 
+    private static bool TargetHasActiveProductionPalletPlan(IDataStore store, long orderId)
+    {
+        return store.GetDocsByOrder(orderId)
+            .Where(doc => doc.Type == DocType.ProductionReceipt)
+            .Any(doc => store.HasProductionPallets(doc.Id));
+    }
+
     private static Doc CreateProductionReceipt(IDataStore store, Order order)
     {
         var docRef = DocRefGenerator.Generate(store, DocType.ProductionReceipt, DateTime.Now);
@@ -971,4 +1075,15 @@ public sealed class ProductionPalletService
     {
         return value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
     }
+}
+
+public sealed class ProductionPalletPlanAdoptionException : InvalidOperationException
+{
+    public ProductionPalletPlanAdoptionException(string code, string message)
+        : base(message)
+    {
+        Code = code;
+    }
+
+    public string Code { get; }
 }

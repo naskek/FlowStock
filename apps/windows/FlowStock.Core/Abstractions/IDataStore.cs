@@ -97,6 +97,12 @@ public interface IDataStore
     void ClearPlannedProductionPalletPlan(long docId);
     int CountLedgerEntriesByDocId(long docId);
     ProductionPalletPlanCleanupCounts CancelProductionPalletPlan(long docId);
+    ProductionPalletPlanAdoptionResult AdoptProductionPalletPlan(
+        long sourcePrdDocId,
+        long targetPrdDocId,
+        long sourceOrderId,
+        long targetOrderId,
+        IReadOnlyDictionary<long, long> targetOrderLineIdByItemId);
     double GetFilledProductionPalletQtyByOrderLine(long orderLineId, long? excludePalletId = null);
     void UpdateProductionPalletHu(long palletId, string huCode);
     void ReassignOpenProductionPalletsByHu(

@@ -143,6 +143,26 @@ public sealed class ProductionPalletCancelPlanResult
     public int RemovedLineCount { get; init; }
 }
 
+public sealed class ProductionPalletPlanAdoptionResult
+{
+    public bool Success { get; init; }
+    public string Message { get; init; } = string.Empty;
+    public long SourceOrderId { get; init; }
+    public long TargetOrderId { get; init; }
+    public long SourcePrdDocId { get; init; }
+    public long TargetPrdDocId { get; init; }
+    public int TransferredPalletCount { get; init; }
+    public int TransferredLineCount { get; init; }
+    public IReadOnlyList<string> TransferredHuCodes { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<ProductionPalletPlanAdoptionWarning> Warnings { get; init; } = Array.Empty<ProductionPalletPlanAdoptionWarning>();
+}
+
+public sealed class ProductionPalletPlanAdoptionWarning
+{
+    public string Code { get; init; } = string.Empty;
+    public string Message { get; init; } = string.Empty;
+}
+
 public sealed class ProductionPalletPrintRow
 {
     public long PalletId { get; init; }

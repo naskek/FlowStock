@@ -1593,6 +1593,118 @@ internal sealed class CloseDocumentHarness
                 };
             });
 
+        _store.Setup(store => store.AdoptProductionPalletPlan(
+                It.IsAny<long>(),
+                It.IsAny<long>(),
+                It.IsAny<long>(),
+                It.IsAny<long>(),
+                It.IsAny<IReadOnlyDictionary<long, long>>()))
+            .Returns<long, long, long, long, IReadOnlyDictionary<long, long>>((sourcePrdDocId, targetPrdDocId, sourceOrderId, targetOrderId, targetOrderLineIdByItemId) =>
+            {
+                var sourcePallets = _productionPallets.Values
+                    .Where(pallet => pallet.PrdDocId == sourcePrdDocId
+                                     && !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                var transferredHuCodes = sourcePallets
+                    .Select(pallet => pallet.HuCode)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                var transferredLineCount = _linesByDoc.TryGetValue(sourcePrdDocId, out var sourceLines)
+                    ? sourceLines.Count
+                    : 0;
+
+                if (!_linesByDoc.TryGetValue(targetPrdDocId, out var targetLines))
+                {
+                    targetLines = new List<DocLine>();
+                    _linesByDoc[targetPrdDocId] = targetLines;
+                }
+
+                if (_linesByDoc.TryGetValue(sourcePrdDocId, out sourceLines))
+                {
+                    foreach (var line in sourceLines.ToArray())
+                    {
+                        if (!targetOrderLineIdByItemId.TryGetValue(line.ItemId, out var targetLineId))
+                        {
+                            continue;
+                        }
+
+                        sourceLines.Remove(line);
+                        targetLines.Add(new DocLine
+                        {
+                            Id = line.Id,
+                            DocId = targetPrdDocId,
+                            ReplacesLineId = line.ReplacesLineId,
+                            OrderLineId = targetLineId,
+                            ProductionPurpose = ProductionLinePurpose.CustomerOrder,
+                            ItemId = line.ItemId,
+                            Qty = line.Qty,
+                            QtyInput = line.QtyInput,
+                            UomCode = line.UomCode,
+                            FromLocationId = line.FromLocationId,
+                            ToLocationId = line.ToLocationId,
+                            FromHu = line.FromHu,
+                            ToHu = line.ToHu,
+                            PackSingleHu = line.PackSingleHu
+                        });
+                    }
+                }
+
+                foreach (var pallet in sourcePallets)
+                {
+                    var targetLineId = targetOrderLineIdByItemId.TryGetValue(pallet.ItemId, out var foundTargetLineId)
+                        ? foundTargetLineId
+                        : pallet.OrderLineId;
+                    _productionPallets[pallet.Id] = new ProductionPallet
+                    {
+                        Id = pallet.Id,
+                        PrdDocId = targetPrdDocId,
+                        DocLineId = pallet.DocLineId,
+                        OrderId = targetOrderId,
+                        OrderLineId = targetLineId,
+                        ItemId = pallet.ItemId,
+                        ItemName = pallet.ItemName,
+                        HuCode = pallet.HuCode,
+                        PlannedQty = pallet.PlannedQty,
+                        ToLocationId = pallet.ToLocationId,
+                        ToLocationCode = pallet.ToLocationCode,
+                        Status = pallet.Status,
+                        FilledAt = pallet.FilledAt,
+                        FilledByDeviceId = pallet.FilledByDeviceId,
+                        CreatedAt = pallet.CreatedAt,
+                        Lines = pallet.Lines.Select(line => new ProductionPalletComponentLine
+                        {
+                            Id = line.Id,
+                            ProductionPalletId = line.ProductionPalletId,
+                            DocLineId = line.DocLineId,
+                            OrderLineId = targetOrderLineIdByItemId.TryGetValue(line.ItemId, out var componentTargetLineId)
+                                ? componentTargetLineId
+                                : line.OrderLineId,
+                            ItemId = line.ItemId,
+                            ItemName = line.ItemName,
+                            Brand = line.Brand,
+                            Uom = line.Uom,
+                            PlannedQty = line.PlannedQty,
+                            FilledQty = line.FilledQty,
+                            CreatedAt = line.CreatedAt
+                        }).ToArray()
+                    };
+                }
+
+                return new ProductionPalletPlanAdoptionResult
+                {
+                    Success = true,
+                    Message = "План паллет перенесён на клиентский заказ.",
+                    SourceOrderId = sourceOrderId,
+                    TargetOrderId = targetOrderId,
+                    SourcePrdDocId = sourcePrdDocId,
+                    TargetPrdDocId = targetPrdDocId,
+                    TransferredPalletCount = sourcePallets.Length,
+                    TransferredLineCount = transferredLineCount,
+                    TransferredHuCodes = transferredHuCodes
+                };
+            });
+
         _store.Setup(store => store.GetFilledProductionPalletQtyByOrderLine(It.IsAny<long>(), It.IsAny<long?>()))
             .Returns<long, long?>((orderLineId, excludePalletId) => _productionPallets.Values
                 .Where(pallet => (!excludePalletId.HasValue || pallet.Id != excludePalletId.Value)
