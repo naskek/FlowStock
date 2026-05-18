@@ -1560,15 +1560,37 @@ internal sealed class CloseDocumentHarness
                     throw new InvalidOperationException("План паллет уже напечатан или наполнен. Переназначение HU запрещено.");
                 }
 
-                foreach (var pallet in _productionPallets.Values.Where(pallet => pallet.PrdDocId == docId).ToArray())
+                ClearProductionPalletPlanInHarness(docId);
+            });
+
+        _store.Setup(store => store.CountLedgerEntriesByDocId(It.IsAny<long>()))
+            .Returns<long>(docId => _postedLedger.Count(entry => entry.DocId == docId));
+
+        _store.Setup(store => store.CancelProductionPalletPlan(It.IsAny<long>()))
+            .Returns<long>(docId =>
+            {
+                if (_productionPallets.Values.Any(pallet =>
+                        pallet.PrdDocId == docId
+                        && string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
                 {
-                    _productionPallets.Remove(pallet.Id);
+                    throw new InvalidOperationException("Нельзя удалить план паллет: есть уже наполненные паллеты.");
                 }
 
-                if (_linesByDoc.TryGetValue(docId, out var docLines))
+                if (_postedLedger.Any(entry => entry.DocId == docId))
                 {
-                    docLines.Clear();
+                    throw new InvalidOperationException("Нельзя удалить план паллет: по выпуску уже есть движения склада.");
                 }
+
+                var removedPalletCount = _productionPallets.Values.Count(pallet =>
+                    pallet.PrdDocId == docId
+                    && !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase));
+                var removedLineCount = _linesByDoc.TryGetValue(docId, out var docLines) ? docLines.Count : 0;
+                ClearProductionPalletPlanInHarness(docId);
+                return new ProductionPalletPlanCleanupCounts
+                {
+                    RemovedPalletCount = removedPalletCount,
+                    RemovedLineCount = removedLineCount
+                };
             });
 
         _store.Setup(store => store.GetFilledProductionPalletQtyByOrderLine(It.IsAny<long>(), It.IsAny<long?>()))
@@ -2318,5 +2340,18 @@ internal sealed class CloseDocumentHarness
     private static string? NormalizeText(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private void ClearProductionPalletPlanInHarness(long docId)
+    {
+        foreach (var pallet in _productionPallets.Values.Where(pallet => pallet.PrdDocId == docId).ToArray())
+        {
+            _productionPallets.Remove(pallet.Id);
+        }
+
+        if (_linesByDoc.TryGetValue(docId, out var docLines))
+        {
+            docLines.Clear();
+        }
     }
 }

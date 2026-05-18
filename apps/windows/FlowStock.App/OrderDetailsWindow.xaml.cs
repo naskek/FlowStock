@@ -324,6 +324,62 @@ public partial class OrderDetailsWindow : Window
         }
     }
 
+    private async void DeletePalletPlan_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_orderId.HasValue)
+        {
+            MessageBox.Show("Сначала сохраните заказ.", "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!HasOpenProductionPalletPlan(_orderId.Value))
+        {
+            MessageBox.Show("План паллет не найден.", "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var hasPrintedLabels = HasPrintedProductionPallets(_orderId.Value);
+        var confirmMessage = hasPrintedLabels
+            ? "Паллетные этикетки уже были напечатаны. После удаления плана старые этикетки использовать нельзя. Продолжить?"
+            : "Удалить текущий план паллет? После этого нужно будет сформировать план заново.";
+        var confirmResult = MessageBox.Show(
+            confirmMessage,
+            "Паллеты",
+            MessageBoxButton.YesNo,
+            hasPrintedLabels ? MessageBoxImage.Warning : MessageBoxImage.Question,
+            MessageBoxResult.No);
+        if (confirmResult != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        DeletePalletPlanButton.IsEnabled = false;
+        PlanPalletsButton.IsEnabled = false;
+        PrintPalletLabelsButton.IsEnabled = false;
+        try
+        {
+            var result = await _services.WpfProductionPalletApi.TryCancelPlanAsync(_orderId.Value).ConfigureAwait(true);
+            if (!result.IsSuccess)
+            {
+                MessageBox.Show(result.Message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            MessageBox.Show(
+                $"{result.Message}{Environment.NewLine}{Environment.NewLine}" +
+                $"Удалено паллет: {result.RemovedPalletCount}{Environment.NewLine}" +
+                $"Удалено строк выпуска: {result.RemovedLineCount}",
+                "Паллеты",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            LoadOrder();
+        }
+        finally
+        {
+            UpdatePalletButtons();
+        }
+    }
+
     private async void PrintPalletLabels_Click(object sender, RoutedEventArgs e)
     {
         if (!EnsurePalletPrintReady())
@@ -1208,8 +1264,12 @@ public partial class OrderDetailsWindow : Window
 
         var canPlan = _orderId.HasValue && _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled);
         var canPrint = _orderId.HasValue && _order?.Status is not OrderStatus.Cancelled;
+        var canDeletePlan = _orderId.HasValue
+                            && _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled)
+                            && HasOpenProductionPalletPlan(_orderId.Value);
         PlanPalletsButton.IsEnabled = canPlan;
         PrintPalletLabelsButton.IsEnabled = canPrint;
+        DeletePalletPlanButton.IsEnabled = canDeletePlan;
         OpenProductionReceiptButton.IsEnabled = _orderId.HasValue && GetProductionReceiptsForOrder(_orderId.Value).Count > 0;
         OrderLinesGrid.Tag = EnsureEditable(false) && !_productionPalletHuLocked;
     }
@@ -1300,6 +1360,38 @@ public partial class OrderDetailsWindow : Window
     private bool HasMarkableLines()
     {
         return _lines.Any(line => !string.IsNullOrWhiteSpace(line.Gtin));
+    }
+
+    private bool HasOpenProductionPalletPlan(long orderId)
+    {
+        try
+        {
+            return _services.DataStore.GetDocsByOrder(orderId)
+                .Any(doc => doc.Type == DocType.ProductionReceipt
+                            && doc.Status != DocStatus.Closed
+                            && _services.DataStore.HasProductionPallets(doc.Id));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool HasPrintedProductionPallets(long orderId)
+    {
+        try
+        {
+            return _services.DataStore.GetDocsByOrder(orderId)
+                .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status != DocStatus.Closed)
+                .SelectMany(doc => _services.DataStore.GetProductionPalletsByDoc(doc.Id))
+                .Any(pallet =>
+                    !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase));
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private bool HasPrintedOrFilledProductionPallets(long orderId)

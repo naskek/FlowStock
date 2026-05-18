@@ -645,6 +645,87 @@ public sealed class ProductionPalletServiceTests
         Assert.Empty(harness.LedgerEntries);
     }
 
+    [Fact]
+    public void CancelOrderPlan_RemovesPlannedPallets_AndAllowsReplan()
+    {
+        var harness = CreateHarnessWithOrderOnly(orderQty: 1200, maxQtyPerHu: 600);
+        var service = new ProductionPalletService(harness.Store);
+        var plan = service.PlanOrder(10);
+
+        var cancel = service.CancelOrderPlan(10);
+
+        Assert.Equal(plan.PrdDocId, cancel.PrdDocId);
+        Assert.Equal(2, cancel.RemovedPalletCount);
+        Assert.Equal(2, cancel.RemovedLineCount);
+        Assert.False(harness.Store.HasProductionPallets(plan.PrdDocId));
+        Assert.Empty(harness.Store.GetDocLines(plan.PrdDocId));
+        Assert.Empty(harness.LedgerEntries);
+
+        var replan = service.PlanOrder(10);
+        Assert.Equal(plan.PrdDocId, replan.PrdDocId);
+        Assert.Equal(2, replan.Summary.PlannedPalletCount);
+        Assert.Equal(1200, replan.Summary.PlannedQty);
+    }
+
+    [Fact]
+    public void CancelOrderPlan_AllowsPrintedPallets()
+    {
+        var harness = CreateHarnessWithOrderOnly(orderQty: 600, maxQtyPerHu: 600);
+        var service = new ProductionPalletService(harness.Store);
+        var plan = service.PlanOrder(10);
+        service.MarkPrinted(10, new DateTime(2026, 5, 13, 11, 0, 0));
+
+        var cancel = service.CancelOrderPlan(10);
+
+        Assert.Equal(1, cancel.RemovedPalletCount);
+        Assert.False(harness.Store.HasProductionPallets(plan.PrdDocId));
+        var replan = service.PlanOrder(10);
+        Assert.Equal(1, replan.Summary.PlannedPalletCount);
+    }
+
+    [Fact]
+    public void CancelOrderPlan_RejectsFilledPallet()
+    {
+        var harness = CreateHarnessWithSinglePallet(ProductionPalletStatus.Filled);
+        var service = new ProductionPalletService(harness.Store);
+
+        var ex = Assert.Throws<InvalidOperationException>(() => service.CancelOrderPlan(10));
+
+        Assert.Equal("Нельзя удалить план паллет: есть уже наполненные паллеты.", ex.Message);
+    }
+
+    [Fact]
+    public void CancelOrderPlan_RejectsClosedProductionReceipt()
+    {
+        var harness = CreateHarnessWithOrderOnly(orderQty: 600, maxQtyPerHu: 600);
+        var service = new ProductionPalletService(harness.Store);
+        var plan = service.PlanOrder(10);
+        var doc = harness.Store.GetDoc(plan.PrdDocId)!;
+        harness.Store.UpdateDocStatus(doc.Id, DocStatus.Closed, new DateTime(2026, 5, 13, 12, 0, 0));
+
+        var ex = Assert.Throws<InvalidOperationException>(() => service.CancelOrderPlan(10));
+
+        Assert.Equal("Нельзя удалить план паллет: выпуск уже закрыт.", ex.Message);
+    }
+
+    [Fact]
+    public void CancelOrderPlan_AfterQtyChange_ReplansByCurrentQty()
+    {
+        var harness = CreateHarnessWithOrderOnly(orderQty: 1200, maxQtyPerHu: 600);
+        var service = new ProductionPalletService(harness.Store);
+        var plan = service.PlanOrder(10);
+        service.CancelOrderPlan(10);
+
+        var orderLine = harness.Store.GetOrderLines(10).Single();
+        harness.Store.UpdateOrderLineQty(orderLine.Id, 600);
+
+        var replan = service.PlanOrder(10);
+        Assert.Equal(plan.PrdDocId, replan.PrdDocId);
+        Assert.Equal(1, replan.Summary.PlannedPalletCount);
+        Assert.Equal(600, replan.Summary.PlannedQty);
+        Assert.Single(harness.Store.GetDocLines(plan.PrdDocId));
+    }
+
     private static CloseDocumentHarness CreateHarnessWithMixedOrderOnly()
     {
         var harness = new CloseDocumentHarness();

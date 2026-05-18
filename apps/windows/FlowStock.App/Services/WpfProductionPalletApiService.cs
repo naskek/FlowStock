@@ -107,6 +107,48 @@ public sealed class WpfProductionPalletApiService
         }
     }
 
+    public async Task<WpfProductionPalletCancelPlanApiResult> TryCancelPlanAsync(
+        long orderId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (!TryLoadConfiguration(out var configuration))
+            {
+                _logger.Info("Production pallet API skipped for cancel plan: server base URL is not configured.");
+                return WpfProductionPalletCancelPlanApiResult.Failure("FlowStock Server API не настроен.");
+            }
+
+            using var handler = CreateHandler(configuration);
+            using var client = CreateClient(handler, configuration);
+            using var response = await client.PostAsJsonAsync($"/api/orders/{orderId}/production-pallets/cancel-plan", new { }, cancellationToken)
+                .ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return WpfProductionPalletCancelPlanApiResult.Failure(await ReadApiErrorAsync(response).ConfigureAwait(false));
+            }
+
+            var payload = await response.Content.ReadFromJsonAsync<CancelPlanResponse>(JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+            if (payload == null)
+            {
+                return WpfProductionPalletCancelPlanApiResult.Failure("Сервер вернул пустой ответ.");
+            }
+
+            return new WpfProductionPalletCancelPlanApiResult(
+                true,
+                string.IsNullOrWhiteSpace(payload.Message) ? "План паллет удалён." : payload.Message!,
+                payload.PrdDocId,
+                payload.RemovedPalletCount,
+                payload.RemovedLineCount);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Production pallet cancel plan failed", ex);
+            return WpfProductionPalletCancelPlanApiResult.Failure(ex.Message);
+        }
+    }
+
     public async Task<(bool IsSuccess, string? Error)> TryMarkPrintedAsync(
         long orderId,
         CancellationToken cancellationToken = default)
@@ -328,6 +370,24 @@ public sealed class WpfProductionPalletApiService
 
     private sealed record WpfProductionPalletApiConfiguration(string? BaseUrl, int TimeoutSeconds, bool AllowInvalidTls);
 
+    private sealed class CancelPlanResponse
+    {
+        [JsonPropertyName("success")]
+        public bool Success { get; init; }
+
+        [JsonPropertyName("message")]
+        public string? Message { get; init; }
+
+        [JsonPropertyName("prd_doc_id")]
+        public long PrdDocId { get; init; }
+
+        [JsonPropertyName("removed_pallet_count")]
+        public int RemovedPalletCount { get; init; }
+
+        [JsonPropertyName("removed_line_count")]
+        public int RemovedLineCount { get; init; }
+    }
+
     private sealed class OrderPlanResponse
     {
         [JsonPropertyName("order_id")]
@@ -473,6 +533,19 @@ public sealed class WpfProductionPalletApiService
 
         [JsonPropertyName("remaining_pallet_count")]
         public int RemainingPalletCount { get; init; }
+    }
+}
+
+public sealed record WpfProductionPalletCancelPlanApiResult(
+    bool IsSuccess,
+    string Message,
+    long PrdDocId,
+    int RemovedPalletCount,
+    int RemovedLineCount)
+{
+    public static WpfProductionPalletCancelPlanApiResult Failure(string message)
+    {
+        return new WpfProductionPalletCancelPlanApiResult(false, message, 0, 0, 0);
     }
 }
 

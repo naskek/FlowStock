@@ -10,6 +10,7 @@ public static class ProductionPalletEndpoints
     public static void Map(WebApplication app)
     {
         app.MapPost("/api/orders/{orderId:long}/production-pallets/plan", HandlePlanOrder);
+        app.MapPost("/api/orders/{orderId:long}/production-pallets/cancel-plan", HandleCancelPlan);
         app.MapGet("/api/orders/{orderId:long}/production-pallets/print-rows", HandlePrintRows);
         app.MapPost("/api/orders/{orderId:long}/production-pallets/mark-printed", HandleMarkPrinted);
         app.MapPost("/api/docs/{docId:long}/production-pallets/plan", HandlePlan);
@@ -31,6 +32,26 @@ public static class ProductionPalletEndpoints
         catch (InvalidOperationException ex)
         {
             return Results.BadRequest(new { ok = false, error = ex.Message, message = ex.Message });
+        }
+    }
+
+    private static IResult HandleCancelPlan(long orderId, ProductionPalletService service)
+    {
+        try
+        {
+            var result = service.CancelOrderPlan(orderId);
+            return Results.Ok(new
+            {
+                success = true,
+                message = result.Message,
+                prd_doc_id = result.PrdDocId,
+                removed_pallet_count = result.RemovedPalletCount,
+                removed_line_count = result.RemovedLineCount
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.BadRequest(new { ok = false, success = false, error = ex.Message, message = ex.Message });
         }
     }
 

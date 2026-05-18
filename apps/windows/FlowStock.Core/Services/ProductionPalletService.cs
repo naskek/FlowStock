@@ -118,6 +118,48 @@ public sealed class ProductionPalletService
         return BuildOrderPlanResult(orderId, prdDocId, wasExisting);
     }
 
+    public ProductionPalletCancelPlanResult CancelOrderPlan(long orderId)
+    {
+        var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+        if (order.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
+        {
+            throw new InvalidOperationException("Заказ недоступен для удаления плана паллет.");
+        }
+
+        var docWithPlan = FindProductionReceiptWithPalletPlan(_data, orderId)
+                          ?? throw new InvalidOperationException("План паллет не найден.");
+        if (docWithPlan.Status == DocStatus.Closed)
+        {
+            throw new InvalidOperationException("Нельзя удалить план паллет: выпуск уже закрыт.");
+        }
+
+        ProductionPalletPlanCleanupCounts cleanup = null!;
+        _data.ExecuteInTransaction(store =>
+        {
+            var doc = store.GetDoc(docWithPlan.Id) ?? throw new InvalidOperationException("Документ выпуска не найден.");
+            if (doc.Status == DocStatus.Closed)
+            {
+                throw new InvalidOperationException("Нельзя удалить план паллет: выпуск уже закрыт.");
+            }
+
+            if (!store.HasProductionPallets(doc.Id))
+            {
+                throw new InvalidOperationException("План паллет не найден.");
+            }
+
+            cleanup = store.CancelProductionPalletPlan(doc.Id);
+        });
+
+        return new ProductionPalletCancelPlanResult
+        {
+            OrderId = order.Id,
+            PrdDocId = docWithPlan.Id,
+            Message = "План паллет удалён.",
+            RemovedPalletCount = cleanup.RemovedPalletCount,
+            RemovedLineCount = cleanup.RemovedLineCount
+        };
+    }
+
     public ProductionPalletDocument Get(long docId)
     {
         var doc = RequireProductionReceipt(docId);
@@ -596,6 +638,29 @@ public sealed class ProductionPalletService
             Summary = document.Summary,
             Document = document
         };
+    }
+
+    private static Doc? FindProductionReceiptWithPalletPlan(IDataStore store, long orderId)
+    {
+        Doc? closedWithPlan = null;
+        foreach (var doc in store.GetDocsByOrder(orderId)
+                     .Where(doc => doc.Type == DocType.ProductionReceipt)
+                     .OrderByDescending(doc => doc.Id))
+        {
+            if (!store.HasProductionPallets(doc.Id))
+            {
+                continue;
+            }
+
+            if (doc.Status != DocStatus.Closed)
+            {
+                return doc;
+            }
+
+            closedWithPlan ??= doc;
+        }
+
+        return closedWithPlan;
     }
 
     private static Doc? FindPreparedOpenProductionReceipt(IDataStore store, long orderId, bool requireRemaining)

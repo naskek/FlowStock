@@ -2041,7 +2041,107 @@ LIMIT 1;
                 }
             }
 
-            using (var command = CreateCommand(connection, @"
+            ClearProductionPalletPlanCore(connection, docId, deletePlanHus: false);
+            return 0;
+        });
+    }
+
+    public ProductionPalletPlanCleanupCounts CancelProductionPalletPlan(long docId)
+    {
+        return WithConnection(connection =>
+        {
+            using (var filledGuard = CreateCommand(connection, @"
+SELECT 1
+FROM production_pallets
+WHERE prd_doc_id = @doc_id
+  AND status = @filled_status
+LIMIT 1;
+"))
+            {
+                filledGuard.Parameters.AddWithValue("@doc_id", docId);
+                filledGuard.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
+                if (filledGuard.ExecuteScalar() != null)
+                {
+                    throw new InvalidOperationException("Нельзя удалить план паллет: есть уже наполненные паллеты.");
+                }
+            }
+
+            using (var ledgerGuard = CreateCommand(connection, "SELECT COUNT(*) FROM ledger WHERE doc_id = @doc_id;"))
+            {
+                ledgerGuard.Parameters.AddWithValue("@doc_id", docId);
+                var ledgerCount = Convert.ToInt32(ledgerGuard.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
+                if (ledgerCount > 0)
+                {
+                    throw new InvalidOperationException("Нельзя удалить план паллет: по выпуску уже есть движения склада.");
+                }
+            }
+
+            return ClearProductionPalletPlanCore(connection, docId, deletePlanHus: true);
+        });
+    }
+
+    private ProductionPalletPlanCleanupCounts ClearProductionPalletPlanCore(NpgsqlConnection connection, long docId, bool deletePlanHus)
+    {
+        var removedPalletCount = 0;
+        var removedLineCount = 0;
+        using (var countPallets = CreateCommand(connection, @"
+SELECT COUNT(*)
+FROM production_pallets
+WHERE prd_doc_id = @doc_id
+  AND status <> @cancelled_status;
+"))
+        {
+            countPallets.Parameters.AddWithValue("@doc_id", docId);
+            countPallets.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
+            removedPalletCount = Convert.ToInt32(countPallets.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
+        }
+
+        using (var countLines = CreateCommand(connection, "SELECT COUNT(*) FROM doc_lines WHERE doc_id = @doc_id;"))
+        {
+            countLines.Parameters.AddWithValue("@doc_id", docId);
+            removedLineCount = Convert.ToInt32(countLines.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
+        }
+
+        if (deletePlanHus)
+        {
+            using var deleteHus = CreateCommand(connection, @"
+DELETE FROM hus h
+WHERE COALESCE(h.created_by, '') = @plan_created_by
+  AND EXISTS (
+      SELECT 1
+      FROM production_pallets pp
+      WHERE pp.prd_doc_id = @doc_id
+        AND UPPER(BTRIM(pp.hu_code)) = UPPER(BTRIM(h.hu_code))
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM ledger l
+      WHERE UPPER(BTRIM(l.hu_code)) = UPPER(BTRIM(h.hu_code))
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM doc_lines dl
+      WHERE dl.doc_id <> @doc_id
+        AND (
+            UPPER(BTRIM(COALESCE(dl.to_hu, ''))) = UPPER(BTRIM(h.hu_code))
+            OR UPPER(BTRIM(COALESCE(dl.from_hu, ''))) = UPPER(BTRIM(h.hu_code))
+        )
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM production_pallets pp
+      WHERE pp.prd_doc_id <> @doc_id
+        AND UPPER(BTRIM(pp.hu_code)) = UPPER(BTRIM(h.hu_code))
+        AND pp.status <> @cancelled_status
+  );
+");
+            deleteHus.Parameters.AddWithValue("@doc_id", docId);
+            deleteHus.Parameters.AddWithValue("@plan_created_by", "PRODUCTION-PALLET-PLAN");
+            deleteHus.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
+            deleteHus.ExecuteNonQuery();
+        }
+
+        using (var command = CreateCommand(connection, @"
 DELETE FROM production_pallet_lines pll
 USING production_pallets pp
 WHERE pp.id = pll.production_pallet_id
@@ -2053,13 +2153,16 @@ WHERE prd_doc_id = @doc_id;
 DELETE FROM doc_lines
 WHERE doc_id = @doc_id;
 "))
-            {
-                command.Parameters.AddWithValue("@doc_id", docId);
-                command.ExecuteNonQuery();
-            }
+        {
+            command.Parameters.AddWithValue("@doc_id", docId);
+            command.ExecuteNonQuery();
+        }
 
-            return 0;
-        });
+        return new ProductionPalletPlanCleanupCounts
+        {
+            RemovedPalletCount = removedPalletCount,
+            RemovedLineCount = removedLineCount
+        };
     }
 
     public double GetFilledProductionPalletQtyByOrderLine(long orderLineId, long? excludePalletId = null)

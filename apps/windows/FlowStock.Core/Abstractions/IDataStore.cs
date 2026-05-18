@@ -95,6 +95,8 @@ public interface IDataStore
     IReadOnlyList<ProductionPalletWorkItem> GetActiveProductionPalletWorkItems();
     bool HasProductionPallets(long docId);
     void ClearPlannedProductionPalletPlan(long docId);
+    int CountLedgerEntriesByDocId(long docId);
+    ProductionPalletPlanCleanupCounts CancelProductionPalletPlan(long docId);
     double GetFilledProductionPalletQtyByOrderLine(long orderLineId, long? excludePalletId = null);
     void UpdateProductionPalletHu(long palletId, string huCode);
     void ReassignOpenProductionPalletsByHu(

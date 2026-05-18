@@ -128,6 +128,21 @@ public sealed class ProductionPalletOrderPlanResult
     public ProductionPalletDocument Document { get; init; } = new();
 }
 
+public sealed class ProductionPalletPlanCleanupCounts
+{
+    public int RemovedPalletCount { get; init; }
+    public int RemovedLineCount { get; init; }
+}
+
+public sealed class ProductionPalletCancelPlanResult
+{
+    public long OrderId { get; init; }
+    public long PrdDocId { get; init; }
+    public string Message { get; init; } = string.Empty;
+    public int RemovedPalletCount { get; init; }
+    public int RemovedLineCount { get; init; }
+}
+
 public sealed class ProductionPalletPrintRow
 {
     public long PalletId { get; init; }
