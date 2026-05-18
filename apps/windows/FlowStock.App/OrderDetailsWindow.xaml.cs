@@ -1210,7 +1210,91 @@ public partial class OrderDetailsWindow : Window
         var canPrint = _orderId.HasValue && _order?.Status is not OrderStatus.Cancelled;
         PlanPalletsButton.IsEnabled = canPlan;
         PrintPalletLabelsButton.IsEnabled = canPrint;
+        OpenProductionReceiptButton.IsEnabled = _orderId.HasValue && GetProductionReceiptsForOrder(_orderId.Value).Count > 0;
         OrderLinesGrid.Tag = EnsureEditable(false) && !_productionPalletHuLocked;
+    }
+
+    private void OpenProductionReceipt_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_orderId.HasValue)
+        {
+            return;
+        }
+
+        var productionReceipts = GetProductionReceiptsForOrder(_orderId.Value);
+        if (productionReceipts.Count == 0)
+        {
+            MessageBox.Show(
+                "Черновик выпуска для этого заказа не найден.",
+                "Заказы",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        var docToOpen = ResolveProductionReceiptToOpen(productionReceipts);
+        if (docToOpen == null)
+        {
+            MessageBox.Show(
+                "Черновик выпуска для этого заказа не найден.",
+                "Заказы",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        try
+        {
+            var window = new OperationDetailsWindow(_services, docToOpen.Id)
+            {
+                Owner = this
+            };
+            window.ShowDialog();
+            LoadOrder();
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error($"Open production receipt failed for order_id={_orderId.Value}, doc_id={docToOpen.Id}", ex);
+            MessageBox.Show(
+                "Не удалось открыть выпуск. Подробности записаны в лог.",
+                "Заказы",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
+    private static Doc? ResolveProductionReceiptToOpen(IReadOnlyList<Doc> productionReceipts)
+    {
+        var draft = productionReceipts
+            .Where(doc => doc.Status == DocStatus.Draft)
+            .OrderByDescending(doc => doc.CreatedAt)
+            .ThenByDescending(doc => doc.Id)
+            .FirstOrDefault();
+        if (draft != null)
+        {
+            return draft;
+        }
+
+        return productionReceipts
+            .Where(doc => doc.Status == DocStatus.Closed)
+            .OrderByDescending(doc => doc.ClosedAt ?? doc.CreatedAt)
+            .ThenByDescending(doc => doc.Id)
+            .FirstOrDefault();
+    }
+
+    private IReadOnlyList<Doc> GetProductionReceiptsForOrder(long orderId)
+    {
+        try
+        {
+            return _services.DataStore.GetDocsByOrder(orderId)
+                .Where(doc => doc.Type == DocType.ProductionReceipt)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error($"Load production receipts for order_id={orderId} failed", ex);
+            return Array.Empty<Doc>();
+        }
     }
 
     private bool HasMarkableLines()
