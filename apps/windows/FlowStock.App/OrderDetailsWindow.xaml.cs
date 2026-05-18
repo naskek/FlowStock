@@ -460,6 +460,7 @@ public partial class OrderDetailsWindow : Window
 
         _orderId = result.Response.OrderId;
         LoadOrder();
+        TryNotifyAutoRedistributionFromInternal(type);
 
         if (!string.IsNullOrWhiteSpace(result.Message))
         {
@@ -514,6 +515,7 @@ public partial class OrderDetailsWindow : Window
 
         _orderId = result.Response.OrderId;
         LoadOrder();
+        TryNotifyAutoRedistributionFromInternal(type);
 
         if (!string.IsNullOrWhiteSpace(result.Message))
         {
@@ -526,6 +528,53 @@ public partial class OrderDetailsWindow : Window
         }
 
         return true;
+    }
+
+    private void TryNotifyAutoRedistributionFromInternal(OrderType orderType)
+    {
+        if (orderType != OrderType.Customer || !_orderId.HasValue)
+        {
+            return;
+        }
+
+        if (!_services.WpfReadApi.TryAutoRedistributeFromInternal(_orderId.Value, out var result)
+            || !result.HasTransfers)
+        {
+            return;
+        }
+
+        var itemNames = _services.WpfReadApi.TryGetItems(null, out var items)
+            ? items.ToDictionary(item => item.Id, item => item.Name)
+            : new Dictionary<long, string>();
+
+        var lines = result.Transfers
+            .Select(transfer =>
+            {
+                var itemLabel = itemNames.TryGetValue(transfer.ItemId, out var itemName) && !string.IsNullOrWhiteSpace(itemName)
+                    ? itemName
+                    : $"товар ID {transfer.ItemId}";
+                var huPart = transfer.TransferredHuCodes.Count > 0
+                    ? $", HU: {string.Join(", ", transfer.TransferredHuCodes)}"
+                    : string.Empty;
+                var producedPart = transfer.QtyFromProducedStock > QtyTolerance
+                    ? $", со склада: {transfer.QtyFromProducedStock:0.###}"
+                    : string.Empty;
+                var unproducedPart = transfer.QtyFromUnproduced > QtyTolerance
+                    ? $", из выпуска: {transfer.QtyFromUnproduced:0.###}"
+                    : string.Empty;
+                return $"• {transfer.SourceOrderRef} → {itemLabel}: {transfer.QtyTransferred:0.###}{unproducedPart}{producedPart}{huPart}";
+            })
+            .ToList();
+
+        MessageBox.Show(
+            "После сохранения заказа система перенесла потребность с открытых внутренних заказов:\n\n"
+            + string.Join("\n", lines)
+            + "\n\nКоличество в строках клиентского заказа не изменилось; перенесены план выпуска и привязка HU.",
+            "Перенос с внутреннего заказа",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
+
+        LoadOrder();
     }
 
     private bool TryResolveBindReservedStockForSave(

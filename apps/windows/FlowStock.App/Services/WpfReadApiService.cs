@@ -353,6 +353,22 @@ public sealed class WpfReadApiService
         }
     }
 
+    public bool TryAutoRedistributeFromInternal(long targetCustomerOrderId, out WpfAutoRedistributeFromInternalResult result)
+    {
+        result = WpfAutoRedistributeFromInternalResult.Empty;
+        if (targetCustomerOrderId <= 0)
+        {
+            return false;
+        }
+
+        return TryRead(
+            $"/api/orders/{targetCustomerOrderId}/auto-redistribute-from-internal",
+            MapAutoRedistributeEnvelope,
+            "orders-auto-redistribute-from-internal",
+            out result,
+            HttpMethod.Post);
+    }
+
     public async Task<WpfProductionNeedOrderPreviewResult> GetProductionNeedOrderPreviewAsync(
         CancellationToken cancellationToken = default)
     {
@@ -509,7 +525,8 @@ public sealed class WpfReadApiService
         string relativePath,
         Func<JsonElement, T> map,
         string operationName,
-        out T value)
+        out T value,
+        HttpMethod? method = null)
     {
         value = default!;
 
@@ -522,7 +539,7 @@ public sealed class WpfReadApiService
                 return false;
             }
 
-            var payload = SendRequest(relativePath, configuration);
+            var payload = SendRequest(relativePath, configuration, method ?? HttpMethod.Get);
             if (payload == null)
             {
                 return false;
@@ -538,7 +555,10 @@ public sealed class WpfReadApiService
         }
     }
 
-    private JsonDocument? SendRequest(string relativePath, WpfReadApiConfiguration configuration)
+    private JsonDocument? SendRequest(
+        string relativePath,
+        WpfReadApiConfiguration configuration,
+        HttpMethod method)
     {
         using var handler = CreateHandler(configuration);
         using var client = new HttpClient(handler)
@@ -546,7 +566,12 @@ public sealed class WpfReadApiService
             BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
             Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
         };
-        using var request = new HttpRequestMessage(HttpMethod.Get, relativePath);
+        using var request = new HttpRequestMessage(method, relativePath);
+        if (method == HttpMethod.Post)
+        {
+            request.Content = new StringContent(string.Empty);
+        }
+
         using var response = client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead)
             .ConfigureAwait(false)
             .GetAwaiter()
@@ -564,6 +589,39 @@ public sealed class WpfReadApiService
             .GetResult();
 
         return JsonDocument.Parse(json);
+    }
+
+    private static WpfAutoRedistributeFromInternalResult MapAutoRedistributeEnvelope(JsonElement root)
+    {
+        if (!root.TryGetProperty("ok", out var okElement) || !okElement.GetBoolean())
+        {
+            return WpfAutoRedistributeFromInternalResult.Empty;
+        }
+
+        var transfers = root.TryGetProperty("transfers", out var transfersElement) && transfersElement.ValueKind == JsonValueKind.Array
+            ? transfersElement.EnumerateArray()
+                .Select(MapAutoRedistributeTransfer)
+                .ToList()
+            : new List<WpfAutoRedistributeTransfer>();
+
+        return new WpfAutoRedistributeFromInternalResult(transfers);
+    }
+
+    private static WpfAutoRedistributeTransfer MapAutoRedistributeTransfer(JsonElement element)
+    {
+        return new WpfAutoRedistributeTransfer(
+            element.TryGetProperty("source_order_id", out var sourceOrderIdElement) ? sourceOrderIdElement.GetInt64() : 0,
+            element.TryGetProperty("source_order_ref", out var sourceOrderRefElement) ? (sourceOrderRefElement.GetString() ?? string.Empty) : string.Empty,
+            element.TryGetProperty("item_id", out var itemIdElement) ? itemIdElement.GetInt64() : 0,
+            element.TryGetProperty("qty_transferred", out var qtyTransferredElement) ? qtyTransferredElement.GetDouble() : 0,
+            element.TryGetProperty("qty_from_unproduced", out var qtyUnproducedElement) ? qtyUnproducedElement.GetDouble() : 0,
+            element.TryGetProperty("qty_from_produced_stock", out var qtyProducedElement) ? qtyProducedElement.GetDouble() : 0,
+            element.TryGetProperty("transferred_hu_codes", out var huElement) && huElement.ValueKind == JsonValueKind.Array
+                ? huElement.EnumerateArray()
+                    .Select(code => code.GetString() ?? string.Empty)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .ToList()
+                : []);
     }
 
     private WpfReadApiConfiguration LoadConfiguration()
@@ -1167,6 +1225,49 @@ file sealed class PreviewProductionNeedOrdersResponse
 
     [JsonPropertyName("rows")]
     public IReadOnlyList<PreviewProductionNeedOrdersResponseLine> Rows { get; init; } = Array.Empty<PreviewProductionNeedOrdersResponseLine>();
+}
+
+public sealed class WpfAutoRedistributeFromInternalResult
+{
+    public static WpfAutoRedistributeFromInternalResult Empty { get; } = new([]);
+
+    public WpfAutoRedistributeFromInternalResult(IReadOnlyList<WpfAutoRedistributeTransfer> transfers)
+    {
+        Transfers = transfers;
+    }
+
+    public IReadOnlyList<WpfAutoRedistributeTransfer> Transfers { get; }
+
+    public bool HasTransfers => Transfers.Count > 0;
+}
+
+public sealed class WpfAutoRedistributeTransfer
+{
+    public WpfAutoRedistributeTransfer(
+        long sourceOrderId,
+        string sourceOrderRef,
+        long itemId,
+        double qtyTransferred,
+        double qtyFromUnproduced,
+        double qtyFromProducedStock,
+        IReadOnlyList<string> transferredHuCodes)
+    {
+        SourceOrderId = sourceOrderId;
+        SourceOrderRef = sourceOrderRef;
+        ItemId = itemId;
+        QtyTransferred = qtyTransferred;
+        QtyFromUnproduced = qtyFromUnproduced;
+        QtyFromProducedStock = qtyFromProducedStock;
+        TransferredHuCodes = transferredHuCodes;
+    }
+
+    public long SourceOrderId { get; }
+    public string SourceOrderRef { get; }
+    public long ItemId { get; }
+    public double QtyTransferred { get; }
+    public double QtyFromUnproduced { get; }
+    public double QtyFromProducedStock { get; }
+    public IReadOnlyList<string> TransferredHuCodes { get; }
 }
 
 file sealed class PreviewProductionNeedOrdersResponseLine
