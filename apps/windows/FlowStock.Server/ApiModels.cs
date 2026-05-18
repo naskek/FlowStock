@@ -955,5 +955,8 @@ public sealed class OrderRedistributeEnvelope
 
     [JsonPropertyName("target_qty_ordered_after")]
     public double TargetQtyOrderedAfter { get; init; }
+
+    [JsonPropertyName("transferred_hu_codes")]
+    public IReadOnlyList<string> TransferredHuCodes { get; init; } = Array.Empty<string>();
 }
 

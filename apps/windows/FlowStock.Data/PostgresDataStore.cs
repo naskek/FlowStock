@@ -2137,6 +2137,83 @@ WHERE pll.doc_line_id = dl.id
         });
     }
 
+    public void ReassignOpenProductionPalletsByHu(
+        long sourceOrderId,
+        long targetOrderId,
+        long targetOrderLineId,
+        long itemId,
+        IReadOnlyList<string> huCodes)
+    {
+        if (huCodes.Count == 0)
+        {
+            return;
+        }
+
+        var normalizedHuCodes = huCodes
+            .Select(code => string.IsNullOrWhiteSpace(code) ? null : code.Trim().ToUpperInvariant())
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Cast<string>()
+            .ToArray();
+        if (normalizedHuCodes.Length == 0)
+        {
+            return;
+        }
+
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE production_pallets pp
+SET order_id = @target_order_id,
+    order_line_id = @target_order_line_id
+FROM docs d
+WHERE d.id = pp.prd_doc_id
+  AND d.order_id = @source_order_id
+  AND d.type = @prd_type
+  AND d.status <> @closed_status
+  AND pp.item_id = @item_id
+  AND pp.status IN (@planned_status, @printed_status)
+  AND UPPER(BTRIM(pp.hu_code)) = ANY(@hu_codes);
+
+UPDATE production_pallet_lines pll
+SET order_line_id = @target_order_line_id
+FROM production_pallets pp
+INNER JOIN docs d ON d.id = pp.prd_doc_id
+WHERE pll.production_pallet_id = pp.id
+  AND d.order_id = @source_order_id
+  AND d.type = @prd_type
+  AND d.status <> @closed_status
+  AND pp.item_id = @item_id
+  AND pp.status IN (@planned_status, @printed_status)
+  AND UPPER(BTRIM(pp.hu_code)) = ANY(@hu_codes);
+
+UPDATE doc_lines dl
+SET order_line_id = @target_order_line_id
+FROM production_pallets pp
+INNER JOIN docs d ON d.id = pp.prd_doc_id
+WHERE dl.doc_id = pp.prd_doc_id
+  AND UPPER(BTRIM(dl.to_hu)) = UPPER(BTRIM(pp.hu_code))
+  AND d.order_id = @source_order_id
+  AND d.type = @prd_type
+  AND d.status <> @closed_status
+  AND pp.item_id = @item_id
+  AND pp.status IN (@planned_status, @printed_status)
+  AND UPPER(BTRIM(pp.hu_code)) = ANY(@hu_codes);
+");
+            command.Parameters.AddWithValue("@source_order_id", sourceOrderId);
+            command.Parameters.AddWithValue("@target_order_id", targetOrderId);
+            command.Parameters.AddWithValue("@target_order_line_id", targetOrderLineId);
+            command.Parameters.AddWithValue("@item_id", itemId);
+            command.Parameters.AddWithValue("@prd_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+            command.Parameters.AddWithValue("@closed_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+            command.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+            command.Parameters.AddWithValue("@printed_status", ProductionPalletStatus.Printed);
+            command.Parameters.AddWithValue("@hu_codes", normalizedHuCodes);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
     public int MarkProductionPalletsPrintedByOrder(long orderId, DateTime printedAt)
     {
         return WithConnection(connection =>

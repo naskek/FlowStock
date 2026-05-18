@@ -121,16 +121,26 @@ public sealed class OrderRedistributionService
                 "Нельзя перенести больше, чем незакрытый остаток внутреннего заказа с учетом уже выпущенного объема.");
         }
 
+        var sourcePlanBefore = store.GetOrderReceiptPlanLines(sourceInternalOrderId).ToList();
+        var transferredPlanSegments = PeelSourceReceiptPlan(
+            sourcePlanBefore,
+            sourceLine.Id,
+            itemId,
+            transferQty,
+            out var remainingSourcePlan);
+
         store.UpdateOrderLineQty(sourceLine.Id, newSourceQty);
 
+        long targetLineId;
+        double targetQtyAfter;
         var targetLines = store.GetOrderLines(targetCustomerOrderId)
             .Where(line => line.ItemId == itemId)
             .OrderBy(line => line.Id)
             .ToList();
-        double targetQtyAfter;
         if (targetLines.Count > 0)
         {
             var targetLine = targetLines[0];
+            targetLineId = targetLine.Id;
             targetQtyAfter = targetLine.QtyOrdered + transferQty;
             store.UpdateOrderLineQty(targetLine.Id, targetQtyAfter);
             for (var i = 1; i < targetLines.Count; i++)
@@ -140,7 +150,7 @@ public sealed class OrderRedistributionService
         }
         else
         {
-            var newLineId = store.AddOrderLine(new OrderLine
+            targetLineId = store.AddOrderLine(new OrderLine
             {
                 OrderId = targetCustomerOrderId,
                 ItemId = itemId,
@@ -148,15 +158,58 @@ public sealed class OrderRedistributionService
                 ProductionPurpose = ProductionLinePurpose.CustomerOrder
             });
             targetQtyAfter = transferQty;
-            _ = newLineId;
         }
 
-        var orderService = new OrderService(store);
-        orderService.TryRebuildOrderReceiptPlan(store, sourceInternalOrderId);
-        if (targetOrder.UseReservedStock)
+        store.ReplaceOrderReceiptPlanLines(sourceInternalOrderId, remainingSourcePlan);
+
+        var remainingPlanQty = remainingSourcePlan
+            .Where(line => line.OrderLineId == sourceLine.Id && line.ItemId == itemId)
+            .Sum(line => line.QtyPlanned);
+        if (newSourceQty > QtyTolerance && Math.Abs(remainingPlanQty - newSourceQty) > QtyTolerance)
         {
-            OrderService.RefreshCustomerReceiptPlansCore(store);
+            var orderService = new OrderService(store);
+            orderService.TryRebuildOrderReceiptPlan(store, sourceInternalOrderId);
         }
+
+        var transferredHuCodes = transferredPlanSegments
+            .Select(segment => segment.HuCode)
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (targetOrder.UseReservedStock && ItemTypeUsesOrderReservation(store, itemId))
+        {
+            ApplyTransferredPlanToCustomer(
+                store,
+                targetCustomerOrderId,
+                targetLineId,
+                itemId,
+                transferredPlanSegments);
+
+            if (qtyFromProduced > QtyTolerance)
+            {
+                AppendStockReservationFromSource(
+                    store,
+                    sourceInternalOrderId,
+                    targetCustomerOrderId,
+                    targetLineId,
+                    itemId,
+                    qtyFromProduced);
+            }
+        }
+
+        if (transferredHuCodes.Count > 0)
+        {
+            store.ReassignOpenProductionPalletsByHu(
+                sourceInternalOrderId,
+                targetCustomerOrderId,
+                targetLineId,
+                itemId,
+                transferredHuCodes);
+        }
+
+        OrderService.RefreshCustomerReceiptPlansCore(store, preserveOrderId: targetCustomerOrderId);
 
         return new OrderRedistributionResult
         {
@@ -167,9 +220,183 @@ public sealed class OrderRedistributionService
             QtyFromUnproduced = qtyFromUnproduced,
             QtyFromProducedStock = qtyFromProduced,
             SourceQtyOrderedAfter = newSourceQty,
-            TargetQtyOrderedAfter = targetQtyAfter
+            TargetQtyOrderedAfter = targetQtyAfter,
+            TransferredHuCodes = transferredHuCodes
         };
     }
+
+    private static List<PlanTransferSegment> PeelSourceReceiptPlan(
+        IReadOnlyList<OrderReceiptPlanLine> sourcePlan,
+        long orderLineId,
+        long itemId,
+        double qtyToTransfer,
+        out List<OrderReceiptPlanLine> remainingPlan)
+    {
+        remainingPlan = new List<OrderReceiptPlanLine>();
+        var transferred = new List<PlanTransferSegment>();
+        var remainingQty = qtyToTransfer;
+
+        foreach (var line in sourcePlan.OrderBy(line => line.SortOrder))
+        {
+            if (line.OrderLineId != orderLineId || line.ItemId != itemId)
+            {
+                remainingPlan.Add(ClonePlanLine(line));
+                continue;
+            }
+
+            if (remainingQty <= QtyTolerance)
+            {
+                remainingPlan.Add(ClonePlanLine(line));
+                continue;
+            }
+
+            var takeQty = Math.Min(remainingQty, line.QtyPlanned);
+            if (takeQty > QtyTolerance)
+            {
+                transferred.Add(new PlanTransferSegment(
+                    NormalizeHuOrNull(line.ToHu),
+                    line.ToLocationId,
+                    takeQty));
+                remainingQty -= takeQty;
+            }
+
+            var leftQty = line.QtyPlanned - takeQty;
+            if (leftQty > QtyTolerance)
+            {
+                remainingPlan.Add(ClonePlanLine(line, leftQty));
+            }
+        }
+
+        return transferred;
+    }
+
+    private static void ApplyTransferredPlanToCustomer(
+        IDataStore store,
+        long targetOrderId,
+        long targetOrderLineId,
+        long itemId,
+        IReadOnlyList<PlanTransferSegment> transferredSegments)
+    {
+        if (transferredSegments.Count == 0)
+        {
+            return;
+        }
+
+        var customerPlan = store.GetOrderReceiptPlanLines(targetOrderId).ToList();
+        var nextSortOrder = customerPlan.Count == 0
+            ? 0
+            : customerPlan.Max(line => line.SortOrder) + 1;
+        foreach (var segment in transferredSegments)
+        {
+            customerPlan.Add(new OrderReceiptPlanLine
+            {
+                OrderId = targetOrderId,
+                OrderLineId = targetOrderLineId,
+                ItemId = itemId,
+                QtyPlanned = segment.Qty,
+                ToLocationId = segment.LocationId,
+                ToHu = segment.HuCode,
+                SortOrder = nextSortOrder++
+            });
+        }
+
+        store.ReplaceOrderReceiptPlanLines(targetOrderId, customerPlan);
+    }
+
+    private static void AppendStockReservationFromSource(
+        IDataStore store,
+        long sourceInternalOrderId,
+        long targetCustomerOrderId,
+        long targetOrderLineId,
+        long itemId,
+        double qty)
+    {
+        var stockByHu = store.GetHuStockRows()
+            .Where(row => row.ItemId == itemId && row.Qty > QtyTolerance)
+            .GroupBy(row => NormalizeHu(row.HuCode), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key!, group => group.Sum(entry => entry.Qty), StringComparer.OrdinalIgnoreCase);
+        var sourceHuCodes = CollectSourceOrderHuCodes(store, sourceInternalOrderId, itemId);
+        var contextByHu = store.GetHuOrderContextRows()
+            .Where(row => row.ItemId == itemId)
+            .GroupBy(row => NormalizeHu(row.HuCode), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key!, group => group.First(), StringComparer.OrdinalIgnoreCase);
+
+        var customerPlan = store.GetOrderReceiptPlanLines(targetCustomerOrderId).ToList();
+        var nextSortOrder = customerPlan.Count == 0
+            ? 0
+            : customerPlan.Max(line => line.SortOrder) + 1;
+        var remaining = qty;
+        foreach (var huCode in sourceHuCodes.OrderBy(code => code, StringComparer.OrdinalIgnoreCase))
+        {
+            if (remaining <= QtyTolerance)
+            {
+                break;
+            }
+
+            if (!stockByHu.TryGetValue(huCode, out var stockQty) || stockQty <= QtyTolerance)
+            {
+                continue;
+            }
+
+            if (contextByHu.TryGetValue(huCode, out var context)
+                && context.ReservedCustomerOrderId.HasValue
+                && context.ReservedCustomerOrderId.Value != targetCustomerOrderId)
+            {
+                continue;
+            }
+
+            if (customerPlan.Any(line => string.Equals(NormalizeHu(line.ToHu), huCode, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            var takeQty = Math.Min(remaining, stockQty);
+            var locationId = customerPlan.FirstOrDefault(line => line.ToLocationId.HasValue)?.ToLocationId
+                             ?? store.GetLocations().FirstOrDefault()?.Id;
+            customerPlan.Add(new OrderReceiptPlanLine
+            {
+                OrderId = targetCustomerOrderId,
+                OrderLineId = targetOrderLineId,
+                ItemId = itemId,
+                QtyPlanned = takeQty,
+                ToLocationId = locationId,
+                ToHu = huCode,
+                SortOrder = nextSortOrder++
+            });
+            remaining -= takeQty;
+        }
+
+        if (remaining > QtyTolerance)
+        {
+            throw new InvalidOperationException(
+                "Недостаточно выпущенного товара на складе по внутреннему заказу для переноса с привязкой HU. " +
+                $"Осталось зарезервировать: {remaining:0.###}.");
+        }
+
+        store.ReplaceOrderReceiptPlanLines(targetCustomerOrderId, customerPlan);
+    }
+
+    private static OrderReceiptPlanLine ClonePlanLine(OrderReceiptPlanLine line, double? qtyPlanned = null)
+    {
+        return new OrderReceiptPlanLine
+        {
+            OrderId = line.OrderId,
+            OrderLineId = line.OrderLineId,
+            ItemId = line.ItemId,
+            QtyPlanned = qtyPlanned ?? line.QtyPlanned,
+            ToLocationId = line.ToLocationId,
+            ToHu = line.ToHu,
+            SortOrder = line.SortOrder
+        };
+    }
+
+    private static string? NormalizeHuOrNull(string? value)
+    {
+        var normalized = NormalizeHu(value);
+        return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
+    }
+
+    private sealed record PlanTransferSegment(string? HuCode, long? LocationId, double Qty);
 
     private static double GetBindableStockQtyFromSource(
         IDataStore store,
@@ -288,4 +515,5 @@ public sealed class OrderRedistributionResult
     public double QtyFromProducedStock { get; init; }
     public double SourceQtyOrderedAfter { get; init; }
     public double TargetQtyOrderedAfter { get; init; }
+    public IReadOnlyList<string> TransferredHuCodes { get; init; } = Array.Empty<string>();
 }

@@ -97,6 +97,12 @@ public interface IDataStore
     void ClearPlannedProductionPalletPlan(long docId);
     double GetFilledProductionPalletQtyByOrderLine(long orderLineId, long? excludePalletId = null);
     void UpdateProductionPalletHu(long palletId, string huCode);
+    void ReassignOpenProductionPalletsByHu(
+        long sourceOrderId,
+        long targetOrderId,
+        long targetOrderLineId,
+        long itemId,
+        IReadOnlyList<string> huCodes);
     void MarkProductionPalletFilled(long palletId, DateTime filledAt, string? deviceId);
     int MarkProductionPalletsPrintedByOrder(long orderId, DateTime printedAt);
 

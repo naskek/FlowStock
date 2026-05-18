@@ -58,7 +58,8 @@ public static class OrderRedistributionEndpoint
                 QtyFromUnproduced = result.QtyFromUnproduced,
                 QtyFromProducedStock = result.QtyFromProducedStock,
                 SourceQtyOrderedAfter = result.SourceQtyOrderedAfter,
-                TargetQtyOrderedAfter = result.TargetQtyOrderedAfter
+                TargetQtyOrderedAfter = result.TargetQtyOrderedAfter,
+                TransferredHuCodes = result.TransferredHuCodes
             });
         }
         catch (ArgumentException)
