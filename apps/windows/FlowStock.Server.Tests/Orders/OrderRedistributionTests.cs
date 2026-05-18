@@ -162,7 +162,7 @@ public sealed class OrderRedistributionTests
                 customerOrderId,
                 customerLineId,
                 itemId,
-                It.Is<IReadOnlyList<string>>(codes => codes.Contains("HU-0000460")),
+                It.Is<IReadOnlyList<string>>(codes => codes.Contains("HU-0000460"))),
             Times.Once);
     }
 
