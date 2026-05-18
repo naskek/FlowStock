@@ -54,6 +54,7 @@ OrderCreateEndpoint.Map(app);
 OrderUpdateEndpoint.Map(app);
 OrderDeleteEndpoint.Map(app);
 OrderStatusEndpoint.Map(app);
+OrderRedistributionEndpoint.Map(app);
 OrderMarkingExportEndpoint.Map(app);
 ProductionNeedCreateOrdersEndpoint.Map(app);
 MaintenanceBackfillEndpoints.Map(app);

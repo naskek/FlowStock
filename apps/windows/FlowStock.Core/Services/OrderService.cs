@@ -776,6 +776,24 @@ public sealed class OrderService
             return;
         }
 
+        var producedByLine = OrderReceiptRemainingCalculator.BuildProducedTotalsByOrderLine(store, orderId, orderLines);
+        var linesToPlan = new List<(OrderLine Line, double QtyRemaining)>();
+        foreach (var orderLine in orderLines)
+        {
+            var produced = producedByLine.TryGetValue(orderLine.Id, out var qty) ? qty : 0d;
+            var remaining = Math.Max(0, orderLine.QtyOrdered - produced);
+            if (remaining > QtyTolerance)
+            {
+                linesToPlan.Add((orderLine, remaining));
+            }
+        }
+
+        if (linesToPlan.Count == 0)
+        {
+            store.ReplaceOrderReceiptPlanLines(orderId, Array.Empty<OrderReceiptPlanLine>());
+            return;
+        }
+
         var locations = store.GetLocations()
             .OrderBy(location => location.Code, StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -785,14 +803,14 @@ public sealed class OrderService
 
         var drafts = new List<PlanDraft>();
         var nextSortOrder = 0;
-        foreach (var orderLine in orderLines)
+        foreach (var (orderLine, qtyRemaining) in linesToPlan)
         {
             var item = store.FindItemById(orderLine.ItemId) ?? throw new InvalidOperationException("Товар заказа не найден.");
             var requiresHuDistribution = item.ItemTypeId.HasValue
                                          && store.GetItemType(item.ItemTypeId.Value)?.EnableHuDistribution == true;
             if (!requiresHuDistribution)
             {
-                drafts.Add(new PlanDraft(orderLine.Id, orderLine.ItemId, orderLine.QtyOrdered, false, nextSortOrder++));
+                drafts.Add(new PlanDraft(orderLine.Id, orderLine.ItemId, qtyRemaining, false, nextSortOrder++));
                 continue;
             }
 
@@ -801,7 +819,7 @@ public sealed class OrderService
                 throw new InvalidOperationException($"Для товара \"{item.Name}\" обязательно заполнить \"Макс шт на 1 HU\".");
             }
 
-            var remaining = orderLine.QtyOrdered;
+            var remaining = qtyRemaining;
             while (remaining > QtyTolerance)
             {
                 var chunk = Math.Min(item.MaxQtyPerHu.Value, remaining);
@@ -1087,7 +1105,7 @@ public sealed class OrderService
         }
     }
 
-    private void TryRebuildOrderReceiptPlan(IDataStore store, long orderId)
+    internal void TryRebuildOrderReceiptPlan(IDataStore store, long orderId)
     {
         try
         {

@@ -890,3 +890,51 @@ public sealed class OperationEventRequest
     public string? ReasonCode { get; set; }
 }
 
+public sealed class OrderRedistributeRequest
+{
+    [JsonPropertyName("source_internal_order_id")]
+    public long SourceInternalOrderId { get; set; }
+
+    [JsonPropertyName("target_customer_order_id")]
+    public long TargetCustomerOrderId { get; set; }
+
+    [JsonPropertyName("item_id")]
+    public long ItemId { get; set; }
+
+    [JsonPropertyName("qty")]
+    public double Qty { get; set; }
+}
+
+public sealed class OrderRedistributeEnvelope
+{
+    [JsonPropertyName("ok")]
+    public bool Ok { get; init; }
+
+    [JsonPropertyName("result")]
+    public string Result { get; init; } = string.Empty;
+
+    [JsonPropertyName("source_order_id")]
+    public long SourceOrderId { get; init; }
+
+    [JsonPropertyName("target_order_id")]
+    public long TargetOrderId { get; init; }
+
+    [JsonPropertyName("item_id")]
+    public long ItemId { get; init; }
+
+    [JsonPropertyName("qty_transferred")]
+    public double QtyTransferred { get; init; }
+
+    [JsonPropertyName("qty_from_unproduced")]
+    public double QtyFromUnproduced { get; init; }
+
+    [JsonPropertyName("qty_from_produced_stock")]
+    public double QtyFromProducedStock { get; init; }
+
+    [JsonPropertyName("source_qty_ordered_after")]
+    public double SourceQtyOrderedAfter { get; init; }
+
+    [JsonPropertyName("target_qty_ordered_after")]
+    public double TargetQtyOrderedAfter { get; init; }
+}
+
