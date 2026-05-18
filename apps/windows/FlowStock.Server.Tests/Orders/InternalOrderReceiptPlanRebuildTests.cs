@@ -65,6 +65,7 @@ public sealed class InternalOrderReceiptPlanRebuildTests
             .Callback<Action<IDataStore>>(work => work(store.Object));
         store.Setup(s => s.GetOrder(order.Id)).Returns(order);
         store.Setup(s => s.GetOrderLines(order.Id)).Returns(() => orderLines);
+        store.Setup(s => s.GetOrderReceiptPlanLines(order.Id)).Returns(Array.Empty<OrderReceiptPlanLine>());
         store.Setup(s => s.UpdateOrder(It.IsAny<Order>()));
         store.Setup(s => s.UpdateOrderLineQty(orderLines[0].Id, It.IsAny<double>()));
         store.Setup(s => s.GetShippedTotalsByOrderLine(order.Id)).Returns(new Dictionary<long, double>());

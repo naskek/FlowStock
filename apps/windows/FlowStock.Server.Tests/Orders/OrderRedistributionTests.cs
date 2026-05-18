@@ -98,7 +98,6 @@ public sealed class OrderRedistributionTests
             .Returns([new Location { Id = 1, Code = "01", AutoHuDistributionEnabled = true }]);
         store.Setup(s => s.GetHuStockRows()).Returns(Array.Empty<HuStockRow>());
         store.Setup(s => s.GetHuOrderContextRows()).Returns(Array.Empty<HuOrderContextRow>());
-        store.Setup(s => s.GetOrderReceiptPlanLines(It.IsAny<long>())).Returns(Array.Empty<OrderReceiptPlanLine>());
         store.Setup(s => s.GetDocs()).Returns(Array.Empty<Doc>());
         var planByOrder = new Dictionary<long, List<OrderReceiptPlanLine>>
         {

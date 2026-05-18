@@ -160,12 +160,17 @@ public sealed class OrderRedistributionService
             targetQtyAfter = transferQty;
         }
 
-        store.ReplaceOrderReceiptPlanLines(sourceInternalOrderId, remainingSourcePlan);
+        var normalizedRemainingPlan = NormalizeInternalPlanAfterTransfer(
+            remainingSourcePlan,
+            sourceLine.Id,
+            itemId,
+            newSourceQty);
+        store.ReplaceOrderReceiptPlanLines(sourceInternalOrderId, normalizedRemainingPlan);
 
-        var remainingPlanQty = remainingSourcePlan
+        var remainingPlanQty = normalizedRemainingPlan
             .Where(line => line.OrderLineId == sourceLine.Id && line.ItemId == itemId)
             .Sum(line => line.QtyPlanned);
-        if (newSourceQty > QtyTolerance && Math.Abs(remainingPlanQty - newSourceQty) > QtyTolerance)
+        if (newSourceQty > QtyTolerance && remainingPlanQty + QtyTolerance < newSourceQty)
         {
             var orderService = new OrderService(store);
             orderService.TryRebuildOrderReceiptPlan(store, sourceInternalOrderId);
@@ -223,6 +228,58 @@ public sealed class OrderRedistributionService
             TargetQtyOrderedAfter = targetQtyAfter,
             TransferredHuCodes = transferredHuCodes
         };
+    }
+
+    private static List<OrderReceiptPlanLine> NormalizeInternalPlanAfterTransfer(
+        IReadOnlyList<OrderReceiptPlanLine> remainingPlan,
+        long orderLineId,
+        long itemId,
+        double newSourceQty)
+    {
+        if (newSourceQty <= QtyTolerance)
+        {
+            return remainingPlan
+                .Where(line => line.OrderLineId != orderLineId || line.ItemId != itemId)
+                .Select(line => ClonePlanLine(line))
+                .ToList();
+        }
+
+        var otherLines = remainingPlan
+            .Where(line => line.OrderLineId != orderLineId || line.ItemId != itemId)
+            .Select(line => ClonePlanLine(line))
+            .ToList();
+        var linePlan = remainingPlan
+            .Where(line => line.OrderLineId == orderLineId && line.ItemId == itemId)
+            .OrderBy(line => line.SortOrder)
+            .ToList();
+        var linePlanQty = linePlan.Sum(line => line.QtyPlanned);
+        if (linePlanQty <= newSourceQty + QtyTolerance)
+        {
+            otherLines.AddRange(linePlan.Select(line => ClonePlanLine(line)));
+            return otherLines;
+        }
+
+        var excessPlanQty = linePlanQty - newSourceQty;
+        var trimmedLinePlan = new List<OrderReceiptPlanLine>();
+        foreach (var line in linePlan)
+        {
+            if (excessPlanQty <= QtyTolerance)
+            {
+                trimmedLinePlan.Add(ClonePlanLine(line));
+                continue;
+            }
+
+            var removeQty = Math.Min(excessPlanQty, line.QtyPlanned);
+            var keepQty = line.QtyPlanned - removeQty;
+            excessPlanQty -= removeQty;
+            if (keepQty > QtyTolerance)
+            {
+                trimmedLinePlan.Add(ClonePlanLine(line, keepQty));
+            }
+        }
+
+        otherLines.AddRange(trimmedLinePlan);
+        return otherLines;
     }
 
     private static List<PlanTransferSegment> PeelSourceReceiptPlan(
