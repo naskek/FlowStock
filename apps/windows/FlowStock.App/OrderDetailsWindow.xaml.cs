@@ -460,7 +460,7 @@ public partial class OrderDetailsWindow : Window
 
         _orderId = result.Response.OrderId;
         LoadOrder();
-        TryNotifyAutoRedistributionFromInternal(type);
+        ShowCustomerOrderSaveFollowUp(type);
 
         if (!string.IsNullOrWhiteSpace(result.Message))
         {
@@ -515,7 +515,7 @@ public partial class OrderDetailsWindow : Window
 
         _orderId = result.Response.OrderId;
         LoadOrder();
-        TryNotifyAutoRedistributionFromInternal(type);
+        ShowCustomerOrderSaveFollowUp(type);
 
         if (!string.IsNullOrWhiteSpace(result.Message))
         {
@@ -530,51 +530,118 @@ public partial class OrderDetailsWindow : Window
         return true;
     }
 
-    private void TryNotifyAutoRedistributionFromInternal(OrderType orderType)
+    private void ShowCustomerOrderSaveFollowUp(OrderType orderType)
     {
         if (orderType != OrderType.Customer || !_orderId.HasValue)
         {
             return;
         }
 
-        if (!_services.WpfReadApi.TryAutoRedistributeFromInternal(_orderId.Value, out var result)
-            || !result.HasTransfers)
+        var followUp = _services.WpfReadApi.ApplyCustomerOrderSaveFollowUp(_orderId.Value);
+        if (!followUp.IsSuccess)
         {
+            MessageBox.Show(
+                followUp.ErrorMessage ?? "Не удалось получить результат резерва HU и автопереноса.",
+                "Результат сохранения заказа",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
             return;
         }
 
+        var payload = followUp.Payload!;
         var itemNames = _services.WpfReadApi.TryGetItems(null, out var items)
             ? items.ToDictionary(item => item.Id, item => item.Name)
             : new Dictionary<long, string>();
 
-        var lines = result.Transfers
-            .Select(transfer =>
+        var sections = new List<string>();
+
+        if (payload.BindReservedStock)
+        {
+            if (payload.ReservationLines.Count > 0)
             {
-                var itemLabel = itemNames.TryGetValue(transfer.ItemId, out var itemName) && !string.IsNullOrWhiteSpace(itemName)
-                    ? itemName
-                    : $"товар ID {transfer.ItemId}";
-                var huPart = transfer.TransferredHuCodes.Count > 0
-                    ? $", HU: {string.Join(", ", transfer.TransferredHuCodes)}"
-                    : string.Empty;
-                var producedPart = transfer.QtyFromProducedStock > QtyTolerance
-                    ? $", со склада: {transfer.QtyFromProducedStock:0.###}"
-                    : string.Empty;
-                var unproducedPart = transfer.QtyFromUnproduced > QtyTolerance
-                    ? $", из выпуска: {transfer.QtyFromUnproduced:0.###}"
-                    : string.Empty;
-                return $"• {transfer.SourceOrderRef} → {itemLabel}: {transfer.QtyTransferred:0.###}{unproducedPart}{producedPart}{huPart}";
-            })
-            .ToList();
+                var reservationLines = payload.ReservationLines
+                    .Select(line =>
+                    {
+                        var itemLabel = FormatItemLabel(line.ItemId, itemNames);
+                        return $"• {itemLabel}: HU {line.HuCode}, {line.QtyPlanned:0.###}";
+                    });
+                sections.Add("Закреплённые HU (план резерва):\n" + string.Join("\n", reservationLines));
+            }
+            else
+            {
+                sections.Add("Закреплённые HU: в плане заказа пока нет HU (см. предупреждения ниже).");
+            }
+        }
+        else
+        {
+            sections.Add("Резерв складских HU не включён — сервер не выполнял автоперенос с внутренних заказов.");
+        }
+
+        if (payload.HasTransfers)
+        {
+            var transferLines = payload.Transfers
+                .Select(transfer =>
+                {
+                    var itemLabel = FormatItemLabel(transfer.ItemId, itemNames);
+                    var huPart = transfer.TransferredHuCodes.Count > 0
+                        ? $", HU: {string.Join(", ", transfer.TransferredHuCodes)}"
+                        : string.Empty;
+                    var producedPart = transfer.QtyFromProducedStock > QtyTolerance
+                        ? $", со склада: {transfer.QtyFromProducedStock:0.###}"
+                        : string.Empty;
+                    var unproducedPart = transfer.QtyFromUnproduced > QtyTolerance
+                        ? $", из выпуска: {transfer.QtyFromUnproduced:0.###}"
+                        : string.Empty;
+                    return $"• {transfer.SourceOrderRef} → {itemLabel}: {transfer.QtyTransferred:0.###}{unproducedPart}{producedPart}{huPart}";
+                });
+            sections.Add(
+                "Перенос с внутренних заказов (количество в строках заказа не изменилось):\n"
+                + string.Join("\n", transferLines));
+        }
+        else if (payload.BindReservedStock && string.IsNullOrWhiteSpace(payload.SkippedReason))
+        {
+            sections.Add("Перенос с внутренних заказов: совпадений с открытыми INTERNAL не найдено.");
+        }
+
+        if (payload.HasIgnoredAttempts)
+        {
+            var ignoredLines = payload.IgnoredAttempts
+                .Select(attempt =>
+                {
+                    var itemLabel = FormatItemLabel(attempt.ItemId, itemNames);
+                    var code = string.IsNullOrWhiteSpace(attempt.ReasonCode) ? "UNKNOWN" : attempt.ReasonCode;
+                    return $"• {attempt.SourceOrderRef} / {itemLabel}, {attempt.Qty:0.###} — {code}: {attempt.Reason}";
+                });
+            sections.Add("Не выполнено (пропущено):\n" + string.Join("\n", ignoredLines));
+        }
+
+        if (payload.Warnings.Count > 0)
+        {
+            var warningLines = payload.Warnings
+                .Select(warning => $"• {warning.Code}: {warning.Message}");
+            sections.Add("Предупреждения:\n" + string.Join("\n", warningLines));
+        }
+
+        var icon = payload.HasIgnoredAttempts || payload.Warnings.Count > 0
+            ? MessageBoxImage.Warning
+            : payload.HasTransfers
+                ? MessageBoxImage.Information
+                : MessageBoxImage.Information;
 
         MessageBox.Show(
-            "После сохранения заказа система перенесла потребность с открытых внутренних заказов:\n\n"
-            + string.Join("\n", lines)
-            + "\n\nКоличество в строках клиентского заказа не изменилось; перенесены план выпуска и привязка HU.",
-            "Перенос с внутреннего заказа",
+            string.Join("\n\n", sections),
+            "Результат сохранения заказа",
             MessageBoxButton.OK,
-            MessageBoxImage.Information);
+            icon);
 
         LoadOrder();
+    }
+
+    private static string FormatItemLabel(long itemId, IReadOnlyDictionary<long, string> itemNames)
+    {
+        return itemNames.TryGetValue(itemId, out var itemName) && !string.IsNullOrWhiteSpace(itemName)
+            ? itemName
+            : $"товар ID {itemId}";
     }
 
     private bool TryResolveBindReservedStockForSave(
