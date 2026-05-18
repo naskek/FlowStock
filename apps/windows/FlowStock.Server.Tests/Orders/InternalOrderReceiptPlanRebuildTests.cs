@@ -60,26 +60,39 @@ public sealed class InternalOrderReceiptPlanRebuildTests
         double producedQty,
         Action<IReadOnlyList<OrderReceiptPlanLine>> capturePlan)
     {
+        var currentQtyOrdered = orderLines[0].QtyOrdered;
         var store = new Mock<IDataStore>(MockBehavior.Strict);
         store.Setup(s => s.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
             .Callback<Action<IDataStore>>(work => work(store.Object));
         store.Setup(s => s.GetOrder(order.Id)).Returns(order);
-        store.Setup(s => s.GetOrderLines(order.Id)).Returns(() => orderLines);
+        store.Setup(s => s.GetOrderLines(order.Id))
+            .Returns(() =>
+            [
+                new OrderLine
+                {
+                    Id = orderLines[0].Id,
+                    OrderId = orderLines[0].OrderId,
+                    ItemId = orderLines[0].ItemId,
+                    QtyOrdered = currentQtyOrdered
+                }
+            ]);
         store.Setup(s => s.GetOrderReceiptPlanLines(order.Id)).Returns(Array.Empty<OrderReceiptPlanLine>());
         store.Setup(s => s.UpdateOrder(It.IsAny<Order>()));
-        store.Setup(s => s.UpdateOrderLineQty(orderLines[0].Id, It.IsAny<double>()));
+        store.Setup(s => s.UpdateOrderLineQty(orderLines[0].Id, It.IsAny<double>()))
+            .Callback<long, double>((_, qty) => currentQtyOrdered = qty);
         store.Setup(s => s.GetShippedTotalsByOrderLine(order.Id)).Returns(new Dictionary<long, double>());
         store.Setup(s => s.GetDocsByOrder(order.Id)).Returns(Array.Empty<Doc>());
         store.Setup(s => s.GetOrderReceiptRemaining(order.Id))
-            .Returns([
+            .Returns(() =>
+            [
                 new OrderReceiptLine
                 {
                     OrderLineId = orderLines[0].Id,
                     OrderId = order.Id,
                     ItemId = orderLines[0].ItemId,
-                    QtyOrdered = orderLines[0].QtyOrdered,
+                    QtyOrdered = currentQtyOrdered,
                     QtyReceived = producedQty,
-                    QtyRemaining = Math.Max(0, orderLines[0].QtyOrdered - producedQty)
+                    QtyRemaining = Math.Max(0, currentQtyOrdered - producedQty)
                 }
             ]);
         store.Setup(s => s.FindItemById(orderLines[0].ItemId))
