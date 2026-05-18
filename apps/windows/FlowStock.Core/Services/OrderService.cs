@@ -1380,16 +1380,19 @@ public sealed class OrderService
         {
             var orderLines = _data.GetOrderLines(order.Id);
             var internalProducedByLine = OrderReceiptRemainingCalculator.BuildProducedTotalsByOrderLine(_data, order.Id, orderLines);
-            var fullyProduced = orderLines.Count > 0 && orderLines.All(line =>
-            {
-                var produced = internalProducedByLine.TryGetValue(line.Id, out var qty) ? qty : 0d;
-                return produced + QtyTolerance >= line.QtyOrdered;
-            });
             var anyProduced = orderLines.Any(line =>
             {
                 var produced = internalProducedByLine.TryGetValue(line.Id, out var qty) ? qty : 0d;
                 return produced > QtyTolerance;
             });
+            var linesWithDemand = orderLines.Where(line => line.QtyOrdered > QtyTolerance).ToList();
+            var fullyProduced = anyProduced
+                                && linesWithDemand.Count > 0
+                                && linesWithDemand.All(line =>
+                                {
+                                    var produced = internalProducedByLine.TryGetValue(line.Id, out var qty) ? qty : 0d;
+                                    return produced + QtyTolerance >= line.QtyOrdered;
+                                });
 
             if (fullyProduced)
             {
