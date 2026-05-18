@@ -65,6 +65,8 @@ public sealed class OrderAutoRedistributionService
             return result;
         }
 
+        OrderService.RefreshInternalOrderStatuses(store);
+
         var internalOrders = store.GetOrders()
             .Where(order => order.Type == OrderType.Internal
                             && order.Id != targetCustomerOrderId

@@ -18,7 +18,7 @@ public sealed class OrderService
     {
         if (_data is IOptimizedOrderReadModelStore)
         {
-            return _data.GetOrders();
+            return ApplyAutoStatusForInternalOrders(_data.GetOrders());
         }
 
         var orders = _data.GetOrders();
@@ -35,7 +35,7 @@ public sealed class OrderService
     {
         if (_data is IOptimizedOrderReadModelStore)
         {
-            return _data.GetOrdersPage(includeInternal, query, limit, offset);
+            return ApplyAutoStatusForInternalOrders(_data.GetOrdersPage(includeInternal, query, limit, offset));
         }
 
         var orders = _data.GetOrdersPage(includeInternal, query, limit, offset);
@@ -56,9 +56,26 @@ public sealed class OrderService
             return null;
         }
 
-        return _data is IOptimizedOrderReadModelStore
-            ? order
-            : ApplyAutoStatus(order);
+        if (_data is IOptimizedOrderReadModelStore && order.Type != OrderType.Internal)
+        {
+            return order;
+        }
+
+        return ApplyAutoStatus(order);
+    }
+
+    public static void RefreshInternalOrderStatuses(IDataStore store)
+    {
+        var orderService = new OrderService(store);
+        foreach (var order in store.GetOrders())
+        {
+            if (order.Type != OrderType.Internal || order.Status == OrderStatus.Cancelled)
+            {
+                continue;
+            }
+
+            orderService.RefreshPersistedStatus(order.Id);
+        }
     }
 
     public OrderStatus RefreshPersistedStatus(long orderId)
@@ -1324,6 +1341,17 @@ public sealed class OrderService
                 StringComparer.OrdinalIgnoreCase.GetHashCode(obj.HuCode),
                 obj.LocationId);
         }
+    }
+
+    private IReadOnlyList<Order> ApplyAutoStatusForInternalOrders(IReadOnlyList<Order> orders)
+    {
+        var result = new List<Order>(orders.Count);
+        foreach (var order in orders)
+        {
+            result.Add(order.Type == OrderType.Internal ? ApplyAutoStatus(order) : order);
+        }
+
+        return result;
     }
 
     private Order ApplyAutoStatus(Order order)
