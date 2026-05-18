@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -460,7 +461,7 @@ public partial class OrderDetailsWindow : Window
 
         _orderId = result.Response.OrderId;
         LoadOrder();
-        ShowCustomerOrderSaveFollowUp(type);
+        BeginCustomerOrderSaveFollowUp(type);
 
         if (!string.IsNullOrWhiteSpace(result.Message))
         {
@@ -515,7 +516,7 @@ public partial class OrderDetailsWindow : Window
 
         _orderId = result.Response.OrderId;
         LoadOrder();
-        ShowCustomerOrderSaveFollowUp(type);
+        BeginCustomerOrderSaveFollowUp(type);
 
         if (!string.IsNullOrWhiteSpace(result.Message))
         {
@@ -530,21 +531,48 @@ public partial class OrderDetailsWindow : Window
         return true;
     }
 
-    private void ShowCustomerOrderSaveFollowUp(OrderType orderType)
+    private void BeginCustomerOrderSaveFollowUp(OrderType orderType)
+    {
+        _ = RunCustomerOrderSaveFollowUpSafeAsync(orderType);
+    }
+
+    private async Task RunCustomerOrderSaveFollowUpSafeAsync(OrderType orderType)
+    {
+        try
+        {
+            await ShowCustomerOrderSaveFollowUpAsync(orderType).ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[OrderDetails] customer save follow-up failed: {ex}");
+            MessageBox.Show(
+                "Не удалось завершить проверку резерва HU и автопереноса. Заказ сохранён — откройте его повторно.",
+                "Результат сохранения заказа",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+    }
+
+    private async Task ShowCustomerOrderSaveFollowUpAsync(OrderType orderType)
     {
         if (orderType != OrderType.Customer || !_orderId.HasValue)
         {
             return;
         }
 
-        var followUp = _services.WpfReadApi.ApplyCustomerOrderSaveFollowUp(_orderId.Value);
+        Debug.WriteLine($"[OrderDetails] before follow-up API order_id={_orderId.Value}");
+        var followUp = await _services.WpfReadApi.ApplyCustomerOrderSaveFollowUpAsync(_orderId.Value).ConfigureAwait(true);
+        Debug.WriteLine($"[OrderDetails] after follow-up API order_id={_orderId.Value}, success={followUp.IsSuccess}");
+
         if (!followUp.IsSuccess)
         {
+            Debug.WriteLine("[OrderDetails] before follow-up error MessageBox");
             MessageBox.Show(
                 followUp.ErrorMessage ?? "Не удалось получить результат резерва HU и автопереноса.",
                 "Результат сохранения заказа",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
+            Debug.WriteLine("[OrderDetails] after follow-up error MessageBox");
             return;
         }
 
@@ -565,7 +593,9 @@ public partial class OrderDetailsWindow : Window
                         var itemLabel = FormatItemLabel(line.ItemId, itemNames);
                         return $"• {itemLabel}: HU {line.HuCode}, {line.QtyPlanned:0.###}";
                     });
-                sections.Add("Закреплённые HU (план резерва):\n" + string.Join("\n", reservationLines));
+                sections.Add(
+                    "Закреплённые HU (план резерва):\n"
+                    + FormatLimitedLines(reservationLines, maxLines: 50));
             }
             else
             {
@@ -596,7 +626,7 @@ public partial class OrderDetailsWindow : Window
                 });
             sections.Add(
                 "Перенос с внутренних заказов (количество в строках заказа не изменилось):\n"
-                + string.Join("\n", transferLines));
+                + FormatLimitedLines(transferLines, maxLines: 50));
         }
         else if (payload.BindReservedStock && string.IsNullOrWhiteSpace(payload.SkippedReason))
         {
@@ -612,29 +642,44 @@ public partial class OrderDetailsWindow : Window
                     var code = string.IsNullOrWhiteSpace(attempt.ReasonCode) ? "UNKNOWN" : attempt.ReasonCode;
                     return $"• {attempt.SourceOrderRef} / {itemLabel}, {attempt.Qty:0.###} — {code}: {attempt.Reason}";
                 });
-            sections.Add("Не выполнено (пропущено):\n" + string.Join("\n", ignoredLines));
+            sections.Add("Не выполнено (пропущено):\n" + FormatLimitedLines(ignoredLines, maxLines: 50));
         }
 
         if (payload.Warnings.Count > 0)
         {
             var warningLines = payload.Warnings
                 .Select(warning => $"• {warning.Code}: {warning.Message}");
-            sections.Add("Предупреждения:\n" + string.Join("\n", warningLines));
+            sections.Add("Предупреждения:\n" + FormatLimitedLines(warningLines, maxLines: 20));
         }
 
         var icon = payload.HasIgnoredAttempts || payload.Warnings.Count > 0
             ? MessageBoxImage.Warning
-            : payload.HasTransfers
-                ? MessageBoxImage.Information
-                : MessageBoxImage.Information;
+            : MessageBoxImage.Information;
 
+        Debug.WriteLine("[OrderDetails] before follow-up result MessageBox");
         MessageBox.Show(
             string.Join("\n\n", sections),
             "Результат сохранения заказа",
             MessageBoxButton.OK,
             icon);
+        Debug.WriteLine("[OrderDetails] after follow-up result MessageBox");
 
+        Debug.WriteLine("[OrderDetails] before LoadOrder after follow-up");
         LoadOrder();
+        Debug.WriteLine("[OrderDetails] after LoadOrder after follow-up");
+    }
+
+    private static string FormatLimitedLines(IEnumerable<string> lines, int maxLines)
+    {
+        var materialized = lines as IList<string> ?? lines.ToList();
+        if (materialized.Count <= maxLines)
+        {
+            return string.Join("\n", materialized);
+        }
+
+        var visible = materialized.Take(maxLines);
+        var remaining = materialized.Count - maxLines;
+        return string.Join("\n", visible) + $"\n... и ещё {remaining}";
     }
 
     private static string FormatItemLabel(long itemId, IReadOnlyDictionary<long, string> itemNames)
