@@ -67,16 +67,32 @@ public static class OrderRedistributionEndpoint
         }
         catch (InvalidOperationException ex)
         {
-            return Results.BadRequest(new ApiResult(false, MapKnownInvalidOperationError(ex)));
+            return Results.BadRequest(new ApiErrorResult(false, MapKnownInvalidOperationError(ex), ex.Message));
         }
     }
 
     private static string MapKnownInvalidOperationError(InvalidOperationException ex)
     {
         var message = ex.Message;
-        if (message.Contains("не найден", StringComparison.OrdinalIgnoreCase))
+        if (message.Contains("заказ-источник не найден", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("заказ-получатель не найден", StringComparison.OrdinalIgnoreCase))
         {
             return "ORDER_NOT_FOUND";
+        }
+
+        if (message.Contains("должен быть внутренним", StringComparison.OrdinalIgnoreCase))
+        {
+            return "SOURCE_NOT_INTERNAL";
+        }
+
+        if (message.Contains("должен быть клиентским", StringComparison.OrdinalIgnoreCase))
+        {
+            return "TARGET_NOT_CUSTOMER";
+        }
+
+        if (message.Contains("недоступен для перераспределения", StringComparison.OrdinalIgnoreCase))
+        {
+            return "ORDER_NOT_EDITABLE";
         }
 
         if (message.Contains("Позиция не найдена", StringComparison.OrdinalIgnoreCase))
@@ -98,6 +114,11 @@ public static class OrderRedistributionEndpoint
         if (message.Contains("Нет доступного объема", StringComparison.OrdinalIgnoreCase))
         {
             return "NOTHING_TO_TRANSFER";
+        }
+
+        if (message.Contains("Нельзя перенести больше", StringComparison.OrdinalIgnoreCase))
+        {
+            return "TRANSFER_EXCEEDS_REMAINING";
         }
 
         return "REDISTRIBUTION_FAILED";

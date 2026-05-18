@@ -833,6 +833,25 @@ public sealed class ApiResult
     public string? Error { get; init; }
 }
 
+public sealed class ApiErrorResult
+{
+    public ApiErrorResult(bool ok, string? error, string? message)
+    {
+        Ok = ok;
+        Error = error;
+        Message = message;
+    }
+
+    [JsonPropertyName("ok")]
+    public bool Ok { get; init; }
+
+    [JsonPropertyName("error")]
+    public string? Error { get; init; }
+
+    [JsonPropertyName("message")]
+    public string? Message { get; init; }
+}
+
 public sealed class OperationEventRequest
 {
     [JsonPropertyName("schema_version")]
