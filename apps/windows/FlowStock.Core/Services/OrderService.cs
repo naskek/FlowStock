@@ -82,11 +82,7 @@ public sealed class OrderService
     {
         var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
         var nextStatus = DetermineAutoStatus(order);
-        if (nextStatus != order.Status)
-        {
-            _data.UpdateOrderStatus(orderId, nextStatus);
-        }
-
+        _data.UpdateOrderStatus(orderId, nextStatus);
         return nextStatus;
     }
 
