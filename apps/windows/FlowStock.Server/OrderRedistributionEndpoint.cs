@@ -15,18 +15,10 @@ public static class OrderRedistributionEndpoint
 
     private static async Task<IResult> HandleRedistributeAsync(HttpRequest request, IDataStore store)
     {
-        var rawJson = await ReadBodyAsync(request);
-        if (string.IsNullOrWhiteSpace(rawJson))
-        {
-            return Results.BadRequest(new ApiResult(false, "EMPTY_BODY"));
-        }
-
         OrderRedistributeRequest? redistributeRequest;
         try
         {
-            redistributeRequest = JsonSerializer.Deserialize<OrderRedistributeRequest>(
-                rawJson,
-                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            redistributeRequest = await request.ReadFromJsonAsync<OrderRedistributeRequest>(JsonOptions);
         }
         catch (JsonException)
         {
@@ -35,7 +27,7 @@ public static class OrderRedistributionEndpoint
 
         if (redistributeRequest == null)
         {
-            return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+            return Results.BadRequest(new ApiResult(false, "EMPTY_BODY"));
         }
 
         if (redistributeRequest.SourceInternalOrderId <= 0
@@ -111,9 +103,8 @@ public static class OrderRedistributionEndpoint
         return "REDISTRIBUTION_FAILED";
     }
 
-    private static async Task<string> ReadBodyAsync(HttpRequest request)
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
-        using var reader = new StreamReader(request.Body);
-        return await reader.ReadToEndAsync();
-    }
+        PropertyNameCaseInsensitive = true
+    };
 }
