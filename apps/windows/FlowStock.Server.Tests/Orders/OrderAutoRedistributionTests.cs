@@ -58,7 +58,7 @@ public sealed class OrderAutoRedistributionTests
             .Callback<Action<IDataStore>>(work => work(store.Object));
         store.Setup(s => s.GetOrders()).Returns(() => orders.Values.ToArray());
         store.Setup(s => s.GetOrder(customerOrderId)).Returns(customerOrder);
-        store.Setup(s => s.GetOrder(internalOrderId)).Returns(internalOrder);
+        store.Setup(s => s.GetOrder(internalOrderId)).Returns(() => orders[internalOrderId]);
         store.Setup(s => s.GetOrderLines(customerOrderId)).Returns(() => customerLines);
         store.Setup(s => s.GetOrderLines(internalOrderId)).Returns(() => internalLines);
         store.Setup(s => s.GetShippedTotalsByOrderLine(It.IsAny<long>())).Returns(new Dictionary<long, double>());
@@ -155,6 +155,18 @@ public sealed class OrderAutoRedistributionTests
             It.IsAny<long>(),
             It.IsAny<IReadOnlyList<string>>()));
         store.Setup(s => s.GetPartner(500)).Returns(new Partner { Id = 500, Name = "Customer", Code = "CUST" });
+        store.Setup(s => s.UpdateOrderStatus(internalOrderId, It.IsAny<OrderStatus>()))
+            .Callback<long, OrderStatus>((_, status) =>
+            {
+                orders[internalOrderId] = new Order
+                {
+                    Id = internalOrderId,
+                    OrderRef = internalOrder.OrderRef,
+                    Type = OrderType.Internal,
+                    Status = status,
+                    CreatedAt = internalOrder.CreatedAt
+                };
+            });
 
         var service = new OrderAutoRedistributionService(store.Object);
         var result = service.ApplyFromOpenInternalOrders(customerOrderId);

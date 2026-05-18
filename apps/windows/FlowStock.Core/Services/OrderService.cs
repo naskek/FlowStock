@@ -18,7 +18,7 @@ public sealed class OrderService
     {
         if (_data is IOptimizedOrderReadModelStore)
         {
-            return ApplyAutoStatusForInternalOrders(_data.GetOrders());
+            return _data.GetOrders();
         }
 
         var orders = _data.GetOrders();
@@ -35,7 +35,7 @@ public sealed class OrderService
     {
         if (_data is IOptimizedOrderReadModelStore)
         {
-            return ApplyAutoStatusForInternalOrders(_data.GetOrdersPage(includeInternal, query, limit, offset));
+            return _data.GetOrdersPage(includeInternal, query, limit, offset);
         }
 
         var orders = _data.GetOrdersPage(includeInternal, query, limit, offset);
@@ -82,7 +82,11 @@ public sealed class OrderService
     {
         var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
         var nextStatus = DetermineAutoStatus(order);
-        _data.UpdateOrderStatus(orderId, nextStatus);
+        if (nextStatus != order.Status)
+        {
+            _data.UpdateOrderStatus(orderId, nextStatus);
+        }
+
         return nextStatus;
     }
 
@@ -1341,17 +1345,6 @@ public sealed class OrderService
                 StringComparer.OrdinalIgnoreCase.GetHashCode(obj.HuCode),
                 obj.LocationId);
         }
-    }
-
-    private IReadOnlyList<Order> ApplyAutoStatusForInternalOrders(IReadOnlyList<Order> orders)
-    {
-        var result = new List<Order>(orders.Count);
-        foreach (var order in orders)
-        {
-            result.Add(order.Type == OrderType.Internal ? ApplyAutoStatus(order) : order);
-        }
-
-        return result;
     }
 
     private Order ApplyAutoStatus(Order order)
