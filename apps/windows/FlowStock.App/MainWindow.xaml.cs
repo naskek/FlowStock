@@ -72,6 +72,8 @@ public partial class MainWindow : Window
     private const int TabLocationsIndex = 6;
     private const int TabPartnersIndex = 7;
     private const int TabKmIndex = 8;
+    private const int OrdersPageSize = 15;
+    private bool _ordersHasMore;
 
     public MainWindow(AppServices services)
     {
@@ -698,19 +700,74 @@ public partial class MainWindow : Window
                && source.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
-    private void LoadOrders()
+    private void LoadOrders(bool reset = true)
     {
         var selectedId = (OrdersGrid.SelectedItem as Order)?.Id;
-        _orders.Clear();
-        var orders = _services.WpfReadApi.TryGetOrders(includeInternal: true, search: null, out var apiOrders)
+        if (reset)
+        {
+            _orders.Clear();
+        }
+
+        var offset = reset ? 0 : _orders.Count;
+        var includeCancelledMerged = ShowCancelledMergedOrdersCheckBox.IsChecked == true;
+        var page = _services.WpfReadApi.TryGetOrdersPage(
+            includeInternal: true,
+            search: null,
+            limit: OrdersPageSize,
+            offset: offset,
+            includeCancelledMerged: includeCancelledMerged,
+            out var apiOrders)
             ? apiOrders
             : Array.Empty<Order>();
-        foreach (var order in orders)
+        foreach (var order in page)
         {
             _orders.Add(order);
         }
-        RestoreOrderSelection(selectedId);
+
+        _ordersHasMore = page.Count >= OrdersPageSize;
+        UpdateLoadMoreOrdersButton();
+        if (reset)
+        {
+            RestoreOrderSelection(selectedId);
+        }
+
         UpdateDeleteButtonsAvailability();
+    }
+
+    private void ShowCancelledMergedOrdersCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded)
+        {
+            return;
+        }
+
+        LoadOrders(reset: true);
+    }
+
+    private void LoadMoreOrders_Click(object sender, RoutedEventArgs e)
+    {
+        LoadOrders(reset: false);
+    }
+
+    private void UpdateLoadMoreOrdersButton()
+    {
+        if (_ordersHasMore)
+        {
+            LoadMoreOrdersButton.Visibility = Visibility.Visible;
+            LoadMoreOrdersButton.IsEnabled = true;
+            LoadMoreOrdersButton.Content = "Загрузить следующие";
+            return;
+        }
+
+        if (_orders.Count > 0)
+        {
+            LoadMoreOrdersButton.Visibility = Visibility.Visible;
+            LoadMoreOrdersButton.IsEnabled = false;
+            LoadMoreOrdersButton.Content = "Больше заказов нет";
+            return;
+        }
+
+        LoadMoreOrdersButton.Visibility = Visibility.Collapsed;
     }
 
     private void LoadStock(string? search)

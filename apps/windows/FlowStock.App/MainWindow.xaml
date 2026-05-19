@@ -300,11 +300,19 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
-                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
-                        <Button Content="Новый" Click="OrdersNew_Click" />
-                        <Button x:Name="OrdersEditButton" Content="Изменить" Click="OrdersEdit_Click" Margin="8,0,0,0" />
-                        <Button x:Name="OrdersCancelButton" Content="Отменить" Click="OrdersCancel_Click" Margin="8,0,0,0" />
+                    <StackPanel Grid.Row="0" Margin="0,0,0,8">
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="Новый" Click="OrdersNew_Click" />
+                            <Button x:Name="OrdersEditButton" Content="Изменить" Click="OrdersEdit_Click" Margin="8,0,0,0" />
+                            <Button x:Name="OrdersCancelButton" Content="Отменить" Click="OrdersCancel_Click" Margin="8,0,0,0" />
+                        </StackPanel>
+                        <CheckBox x:Name="ShowCancelledMergedOrdersCheckBox"
+                                  Content="Показать отменённые/перенесённые"
+                                  Margin="0,8,0,0"
+                                  Checked="ShowCancelledMergedOrdersCheckBox_Changed"
+                                  Unchecked="ShowCancelledMergedOrdersCheckBox_Changed" />
                     </StackPanel>
                     <DataGrid x:Name="OrdersGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
                               SelectionChanged="OrdersGrid_SelectionChanged"
@@ -425,6 +433,13 @@
                             <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="Auto" MaxWidth="320" />
                         </DataGrid.Columns>
                     </DataGrid>
+                    <Button x:Name="LoadMoreOrdersButton"
+                            Grid.Row="2"
+                            Content="Загрузить следующие"
+                            Click="LoadMoreOrders_Click"
+                            HorizontalAlignment="Left"
+                            Margin="0,8,0,0"
+                            Visibility="Collapsed" />
                 </Grid>
             </TabItem>
             <TabItem x:Name="WarehouseTasksTab" Header="Задания">

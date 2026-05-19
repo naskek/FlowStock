@@ -30,22 +30,39 @@ public static class HuBalanceDiagnosticsEndpoints
 
         if (!result.Success)
         {
-            return Results.BadRequest(new
-            {
-                success = false,
-                error = result.Error,
-                message = result.Message
-            });
+            return Results.BadRequest(MapResult(result, success: false));
         }
 
-        return Results.Ok(new
+        return Results.Ok(MapResult(result, success: true));
+    }
+
+    private static object MapResult(HuBalanceCorrectionDraftResult result, bool success)
+    {
+        return new
         {
-            success = true,
+            success,
+            error = result.Error,
+            message = result.Message,
             doc_id = result.DocId,
             doc_ref = result.DocRef,
             line_count = result.LineCount,
-            message = result.Message
-        });
+            protected_filled_pallets = result.ProtectedFilledPallets.Select(pallet => new
+            {
+                hu_code = pallet.HuCode,
+                prd_doc_id = pallet.PrdDocId,
+                prd_ref = pallet.PrdDocRef,
+                status = pallet.Status,
+                planned_qty = pallet.PlannedQty
+            }),
+            candidate_balances = result.CandidateBalances.Select(balance => new
+            {
+                hu_code = balance.HuCode,
+                qty = balance.Qty,
+                is_protected = balance.Protected
+            }),
+            total_all = result.TotalAll,
+            total_excluding_protected = result.TotalExcludingProtected
+        };
     }
 
     private sealed class CreateHuBalanceCorrectionDraftRequest

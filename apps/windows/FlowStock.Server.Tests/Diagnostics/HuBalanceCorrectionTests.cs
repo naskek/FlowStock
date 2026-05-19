@@ -113,6 +113,48 @@ public sealed class HuBalanceCorrectionTests
     }
 
     [Fact]
+    public void HuBalanceCorrection_DoesNotTouchFilledProductionPallet()
+    {
+        var harness = CreatePhantomHuScenarioWithFilledPallet();
+        var service = new HuBalanceCorrectionService(harness.Store);
+
+        var result = service.CreateCorrectionDraft(new HuBalanceCorrectionDraftRequest
+        {
+            ItemId = TestItemId,
+            LocationId = TestLocationId
+        });
+
+        Assert.False(result.Success);
+        Assert.Equal("HU_BALANCE_CONTAINS_FILLED_PRODUCTION_PALLETS", result.Error);
+        Assert.Contains(result.ProtectedFilledPallets, pallet => pallet.HuCode == "HU-A");
+        Assert.Single(result.ProtectedFilledPallets);
+        Assert.NotNull(result.TotalAll);
+        Assert.NotNull(result.TotalExcludingProtected);
+        Assert.True(Math.Abs(result.TotalAll!.Value) < 0.001);
+        Assert.True(result.TotalExcludingProtected!.Value < -0.001);
+        Assert.Contains(result.CandidateBalances, balance => balance.HuCode == "HU-A" && balance.Protected);
+        Assert.Contains(result.CandidateBalances, balance => balance.HuCode == "HU-B" && !balance.Protected);
+        Assert.Null(result.DocId);
+    }
+
+    [Fact]
+    public void HuBalanceCorrection_AllowsCleanup_WhenNoFilledProductionPallets()
+    {
+        var harness = CreatePhantomHuScenario();
+        var service = new HuBalanceCorrectionService(harness.Store);
+
+        var result = service.CreateCorrectionDraft(new HuBalanceCorrectionDraftRequest
+        {
+            ItemId = TestItemId,
+            LocationId = TestLocationId
+        });
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(4, result.LineCount);
+        Assert.Empty(result.ProtectedFilledPallets);
+    }
+
+    [Fact]
     public void CreateCorrectionDraft_AllowsTwoHuOppositeSigns_WhenTotalIsZero()
     {
         var harness = new CloseDocumentHarness();
@@ -141,6 +183,35 @@ public sealed class HuBalanceCorrectionTests
         harness.SeedBalance(TestItemId, TestLocationId, 840, "HU-B");
         harness.SeedBalance(TestItemId, TestLocationId, -840, "HU-C");
         harness.SeedBalance(TestItemId, TestLocationId, -840, "HU-D");
+        return harness;
+    }
+
+    private static CloseDocumentHarness CreatePhantomHuScenarioWithFilledPallet()
+    {
+        var harness = CreatePhantomHuScenario();
+        harness.SeedDoc(new Doc
+        {
+            Id = 153,
+            DocRef = "PRD-2026-000153",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Closed,
+            CreatedAt = new DateTime(2026, 5, 13, 9, 0, 0)
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 437,
+            PrdDocId = 153,
+            DocLineId = 15301,
+            ItemId = TestItemId,
+            ItemName = "Хрен Столовый - Налив",
+            HuCode = "HU-A",
+            PlannedQty = 840,
+            ToLocationId = TestLocationId,
+            ToLocationCode = "001",
+            Status = ProductionPalletStatus.Filled,
+            FilledAt = new DateTime(2026, 5, 13, 10, 0, 0),
+            CreatedAt = new DateTime(2026, 5, 13, 9, 0, 0)
+        });
         return harness;
     }
 

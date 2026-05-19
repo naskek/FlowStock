@@ -2370,6 +2370,115 @@ WHERE pll.order_line_id = @order_line_id
         });
     }
 
+    public IReadOnlyList<ProductionPallet> GetFilledProductionPalletsByItemAndLocation(long itemId, long locationId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, $@"
+{ProductionPalletSelectSql}
+WHERE p.status = @filled_status
+  AND p.to_location_id = @location_id
+  AND (
+      p.item_id = @item_id
+      OR EXISTS (
+          SELECT 1
+          FROM production_pallet_lines pll
+          WHERE pll.production_pallet_id = p.id
+            AND pll.item_id = @item_id
+      )
+  )
+ORDER BY p.hu_code, p.id;
+");
+            command.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
+            command.Parameters.AddWithValue("@item_id", itemId);
+            command.Parameters.AddWithValue("@location_id", locationId);
+            using var reader = command.ExecuteReader();
+            var pallets = new List<ProductionPallet>();
+            while (reader.Read())
+            {
+                pallets.Add(ReadProductionPallet(reader));
+            }
+
+            reader.Close();
+            AttachProductionPalletLines(connection, pallets);
+            return pallets;
+        });
+    }
+
+    public IReadOnlyList<FilledProductionPalletStockGap> GetFilledProductionPalletsWithStockGaps()
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH filled_components AS (
+    SELECT p.id AS pallet_id,
+           p.prd_doc_id,
+           d.doc_ref AS prd_doc_ref,
+           COALESCE(pll.item_id, p.item_id) AS item_id,
+           i.name AS item_name,
+           p.hu_code,
+           p.to_location_id,
+           p.status,
+           p.filled_at,
+           COALESCE(pll.planned_qty, p.planned_qty) AS planned_qty
+    FROM production_pallets p
+    INNER JOIN docs d ON d.id = p.prd_doc_id
+    LEFT JOIN production_pallet_lines pll ON pll.production_pallet_id = p.id
+    INNER JOIN items i ON i.id = COALESCE(pll.item_id, p.item_id)
+    WHERE p.status = @filled_status
+      AND p.to_location_id IS NOT NULL
+)
+SELECT fc.pallet_id,
+       fc.prd_doc_id,
+       fc.prd_doc_ref,
+       fc.item_id,
+       fc.item_name,
+       fc.hu_code,
+       fc.to_location_id,
+       fc.planned_qty,
+       COALESCE(ledger.qty, 0) AS ledger_qty,
+       fc.status,
+       fc.filled_at
+FROM filled_components fc
+LEFT JOIN LATERAL (
+    SELECT COALESCE(SUM(led.qty_delta), 0) AS qty
+    FROM ledger led
+    WHERE led.item_id = fc.item_id
+      AND led.location_id = fc.to_location_id
+      AND UPPER(BTRIM(COALESCE(led.hu_code, ''))) = UPPER(BTRIM(fc.hu_code))
+) ledger ON TRUE
+WHERE fc.planned_qty - COALESCE(ledger.qty, 0) > @qty_tolerance
+ORDER BY fc.prd_doc_id, fc.hu_code, fc.item_id;
+");
+            command.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+            using var reader = command.ExecuteReader();
+            var gaps = new List<FilledProductionPalletStockGap>();
+            while (reader.Read())
+            {
+                var plannedQty = reader.GetDouble(7);
+                var ledgerQty = reader.GetDouble(8);
+                gaps.Add(new FilledProductionPalletStockGap
+                {
+                    PalletId = reader.GetInt64(0),
+                    PrdDocId = reader.GetInt64(1),
+                    PrdDocRef = reader.GetString(2),
+                    ItemId = reader.GetInt64(3),
+                    ItemName = reader.GetString(4),
+                    HuCode = reader.GetString(5),
+                    ToLocationId = reader.GetInt64(6),
+                    PlannedQty = plannedQty,
+                    LedgerQty = ledgerQty,
+                    MissingQty = plannedQty - ledgerQty,
+                    Status = reader.GetString(9),
+                    FilledAt = FromDbDate(reader.IsDBNull(10) ? null : reader.GetString(10))
+                });
+            }
+
+            return gaps;
+        });
+    }
+
     public void MarkProductionPalletFilled(long palletId, DateTime filledAt, string? deviceId)
     {
         WithConnection(connection =>
@@ -2556,20 +2665,29 @@ ORDER BY created_at DESC");
         });
     }
 
-    public IReadOnlyList<Order> GetOrdersPage(bool includeInternal, string? query, int limit, int offset)
+    public IReadOnlyList<Order> GetOrdersPage(
+        bool includeInternal,
+        string? query,
+        int limit,
+        int offset,
+        bool includeCancelledMerged = false)
     {
         return WithConnection(connection =>
         {
             var normalized = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
-            const string pageOrderScopeSql = @"
+            var effectiveOrderBy = OrderPageSortSql.BuildEffectiveStatusOrderBy("eo.effective_status", includeCancelledMerged);
+            var pagedOrderBy = OrderPageSortSql.BuildEffectiveStatusOrderBy("paged_orders.status", includeCancelledMerged);
+            var pageOrderScopeSql = $@"
 WITH candidate_orders AS (
     SELECT o.id,
            o.order_ref,
            o.order_type,
-           o.status AS persisted_status
+           o.status AS persisted_status,
+           o.created_at
     FROM orders o
     LEFT JOIN partners p ON p.id = o.partner_id
     WHERE (@include_internal OR o.order_type = @customer_order_type)
+      AND (@include_cancelled_merged OR o.status NOT IN (@cancelled_status, @merged_status))
       AND (
           @query IS NULL
           OR o.order_ref ILIKE @query_pattern
@@ -2728,6 +2846,7 @@ status_summary AS (
 effective_orders AS (
     SELECT co.id,
            co.order_ref,
+           co.created_at,
            CASE
                WHEN co.persisted_status = 'CANCELLED' THEN 'CANCELLED'
                WHEN co.persisted_status = 'MERGED' THEN 'MERGED'
@@ -2751,15 +2870,8 @@ effective_orders AS (
 )
 SELECT eo.id
 FROM effective_orders eo
-ORDER BY CASE eo.effective_status
-    WHEN 'IN_PROGRESS' THEN 1
-    WHEN 'ACCEPTED' THEN 2
-    WHEN 'DRAFT' THEN 3
-    WHEN 'SHIPPED' THEN 4
-    WHEN 'MERGED' THEN 5
-    WHEN 'CANCELLED' THEN 6
-    ELSE 99
-END,
+ORDER BY {effectiveOrderBy},
+eo.created_at DESC,
 eo.order_ref DESC
 LIMIT @limit OFFSET @offset";
             using var command = CreateCommand(connection, $@"
@@ -2767,18 +2879,14 @@ SELECT *
 FROM (
 {BuildOrderSelectSql(pageOrderScopeSql)}
 ) paged_orders
-ORDER BY CASE paged_orders.status
-    WHEN 'IN_PROGRESS' THEN 1
-    WHEN 'ACCEPTED' THEN 2
-    WHEN 'DRAFT' THEN 3
-    WHEN 'SHIPPED' THEN 4
-    WHEN 'MERGED' THEN 5
-    WHEN 'CANCELLED' THEN 6
-    ELSE 99
-END,
+ORDER BY {pagedOrderBy},
+paged_orders.created_at DESC,
 paged_orders.order_ref DESC");
             AddOrderSelectParameters(command);
             command.Parameters.AddWithValue("@include_internal", includeInternal);
+            command.Parameters.AddWithValue("@include_cancelled_merged", includeCancelledMerged);
+            command.Parameters.AddWithValue("@cancelled_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+            command.Parameters.AddWithValue("@merged_status", OrderStatusMapper.StatusToString(OrderStatus.Merged));
             command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
             command.Parameters.Add("@query", NpgsqlDbType.Text).Value = string.IsNullOrWhiteSpace(normalized) ? DBNull.Value : normalized;
             command.Parameters.Add("@query_pattern", NpgsqlDbType.Text).Value = string.IsNullOrWhiteSpace(normalized) ? DBNull.Value : $"%{normalized}%";

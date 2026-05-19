@@ -31,14 +31,19 @@ public sealed class OrderService
         return result;
     }
 
-    public IReadOnlyList<Order> GetOrdersPage(bool includeInternal, string? query, int limit, int offset)
+    public IReadOnlyList<Order> GetOrdersPage(
+        bool includeInternal,
+        string? query,
+        int limit,
+        int offset,
+        bool includeCancelledMerged = false)
     {
         if (_data is IOptimizedOrderReadModelStore)
         {
-            return _data.GetOrdersPage(includeInternal, query, limit, offset);
+            return _data.GetOrdersPage(includeInternal, query, limit, offset, includeCancelledMerged);
         }
 
-        var orders = _data.GetOrdersPage(includeInternal, query, limit, offset);
+        var orders = _data.GetOrdersPage(includeInternal, query, limit, offset, includeCancelledMerged);
         var result = new List<Order>(orders.Count);
         foreach (var order in orders)
         {

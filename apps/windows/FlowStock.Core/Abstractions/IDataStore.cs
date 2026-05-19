@@ -114,10 +114,12 @@ public interface IDataStore
         IReadOnlyList<string> huCodes);
     void MarkProductionPalletFilled(long palletId, DateTime filledAt, string? deviceId);
     int MarkProductionPalletsPrintedByOrder(long orderId, DateTime printedAt);
+    IReadOnlyList<ProductionPallet> GetFilledProductionPalletsByItemAndLocation(long itemId, long locationId);
+    IReadOnlyList<FilledProductionPalletStockGap> GetFilledProductionPalletsWithStockGaps();
 
     Order? GetOrder(long id);
     IReadOnlyList<Order> GetOrders();
-    IReadOnlyList<Order> GetOrdersPage(bool includeInternal, string? query, int limit, int offset);
+    IReadOnlyList<Order> GetOrdersPage(bool includeInternal, string? query, int limit, int offset, bool includeCancelledMerged = false);
     long AddOrder(Order order);
     void UpdateOrder(Order order);
     void UpdateOrderStatus(long orderId, OrderStatus status);
