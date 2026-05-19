@@ -2022,6 +2022,7 @@ app.MapGet("/api/orders/{orderId:long}/lines", (long orderId, IDataStore store) 
             pallet_filled_qty = line.FilledPalletQty,
             line_fully_shipped = line.LineFullyShipped,
             hide_pallet_fill_indicator = line.HidePalletFillIndicator,
+            show_pallet_completed_icon = line.ShowPalletCompletedIcon,
             blocking_fill_required = line.BlockingFillRequired,
             fulfillment_status = line.FulfillmentStatus,
             pallet_fill_label = line.PalletFillLabel,

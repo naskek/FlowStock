@@ -6,6 +6,7 @@ public sealed class PalletLabelPrintRow
 {
     public long PalletId { get; init; }
     public string OrderRef { get; init; } = string.Empty;
+    public string ClientName { get; init; } = string.Empty;
     public string PrdRef { get; init; } = string.Empty;
     public string HuCode { get; init; } = string.Empty;
     public string ItemName { get; init; } = string.Empty;
@@ -35,6 +36,7 @@ public sealed class PalletLabelPrintRow
             ["ItemName"] = ItemName,
             ["Qty"] = Qty.ToString("0.###", CultureInfo.InvariantCulture),
             ["OrderRef"] = OrderRef,
+            ["ClientName"] = ClientName,
             ["PrdRef"] = PrdRef,
             ["Brand"] = Brand,
             ["Uom"] = Uom,

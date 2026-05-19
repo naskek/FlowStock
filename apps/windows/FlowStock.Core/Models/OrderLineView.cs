@@ -24,6 +24,7 @@ public sealed class OrderLineView
     public double FilledPalletQty { get; set; }
     public bool LineFullyShipped { get; set; }
     public bool HidePalletFillIndicator { get; set; }
+    public bool ShowPalletCompletedIcon { get; set; }
     public bool BlockingFillRequired { get; set; }
     public string FulfillmentStatus { get; set; } = string.Empty;
     public string? PalletFillLabel { get; set; }

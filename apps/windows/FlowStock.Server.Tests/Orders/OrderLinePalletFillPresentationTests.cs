@@ -16,8 +16,40 @@ public sealed class OrderLinePalletFillPresentationTests
         Assert.Equal("SHIPPED", presentation.FulfillmentStatus);
         Assert.True(presentation.LineFullyShipped);
         Assert.True(presentation.HidePalletFillIndicator);
+        Assert.True(presentation.ShowCompletedIcon);
         Assert.False(presentation.BlockingFillRequired);
         Assert.Null(presentation.Label);
+        Assert.Equal("completed", presentation.Tone);
+    }
+
+    [Fact]
+    public void CustomerOrder_FullyShipped_OrderLevelPresentation_ShowsCompletedIcon()
+    {
+        var order = new Order
+        {
+            Id = 66,
+            OrderRef = "066",
+            Type = OrderType.Customer,
+            Status = OrderStatus.Shipped,
+            HasShipmentRemaining = false
+        };
+
+        var presentation = OrderPalletFillPresentationService.ResolveOrderFill(
+            order,
+            needsProductionPalletPlan: false,
+            hasProductionPalletPlan: true,
+            new ProductionPalletSummary
+            {
+                PlannedPalletCount = 5,
+                FilledPalletCount = 2,
+                RemainingPalletCount = 3
+            });
+
+        Assert.True(presentation.ShowCompletedIcon);
+        Assert.Equal("completed", presentation.Tone);
+        Assert.Null(presentation.Label);
+        Assert.Equal("Заказ полностью отгружен", presentation.Title);
+        Assert.DoesNotContain("Наполнено", presentation.Label ?? string.Empty);
     }
 
     [Fact]

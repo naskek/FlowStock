@@ -425,6 +425,7 @@ public sealed class ProductionPalletService
                 PalletId = pallet.Id,
                 OrderId = order.Id,
                 OrderRef = order.OrderRef,
+                ClientName = order.PartnerName ?? string.Empty,
                 PrdDocId = doc.Id,
                 PrdRef = doc.DocRef,
                 HuCode = pallet.HuCode,

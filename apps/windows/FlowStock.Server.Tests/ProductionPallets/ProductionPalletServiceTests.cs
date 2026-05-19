@@ -506,6 +506,7 @@ public sealed class ProductionPalletServiceTests
         Assert.All(rows, row =>
         {
             Assert.Equal("056", row.OrderRef);
+            Assert.Equal("ПЕЧАГИН ПРОДУКТ", row.ClientName);
             Assert.Equal("PRD-2026-000001", row.PrdRef);
             Assert.Equal("Товар", row.ItemName);
             Assert.Equal("Печагин", row.Brand);
@@ -1078,7 +1079,8 @@ public sealed class ProductionPalletServiceTests
         {
             Id = 10,
             OrderRef = "056",
-            Type = OrderType.Internal,
+            Type = OrderType.Customer,
+            PartnerName = "ПЕЧАГИН ПРОДУКТ",
             Status = OrderStatus.InProgress,
             CreatedAt = new DateTime(2026, 5, 13, 8, 0, 0)
         });

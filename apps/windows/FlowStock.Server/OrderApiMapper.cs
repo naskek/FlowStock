@@ -1,5 +1,6 @@
 using System.Globalization;
 using FlowStock.Core.Models;
+using FlowStock.Core.Services;
 
 namespace FlowStock.Server;
 
@@ -11,13 +12,19 @@ public static class OrderApiMapper
         bool? hasProductionPalletPlan = null,
         bool? needsProductionPalletPlan = null,
         ProductionPalletSummary? palletSummary = null,
-        string? palletPlanStatus = null)
+        string? palletPlanStatus = null,
+        OrderPalletFillPresentation? palletFill = null)
     {
         var markingStatus = order.MarkingCompleted
             ? MarkingStatus.Printed
             : order.EffectiveMarkingStatus;
         var markingLabel = order.MarkingLabel;
         palletSummary ??= new ProductionPalletSummary();
+        palletFill ??= OrderPalletFillPresentationService.ResolveOrderFill(
+            order,
+            needsProductionPalletPlan ?? false,
+            hasProductionPalletPlan ?? false,
+            palletSummary);
 
         return new
         {
@@ -53,6 +60,10 @@ public static class OrderApiMapper
             planned_qty = palletSummary.PlannedQty,
             filled_qty = palletSummary.FilledQty,
             pallet_plan_status = palletPlanStatus ?? string.Empty,
+            pallet_fill_tone = palletFill.Tone,
+            pallet_fill_label = palletFill.Label ?? string.Empty,
+            pallet_fill_title = palletFill.Title ?? string.Empty,
+            pallet_fill_show_completed_icon = palletFill.ShowCompletedIcon,
             production_pallet_plan_created = (hasProductionPalletPlan ?? false),
             production_pallet_plan_prepared = (hasProductionPalletPlan ?? false)
         };

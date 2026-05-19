@@ -400,6 +400,14 @@ body.pc-body::before {
   vertical-align: middle;
 }
 
+.pc-order-icon-cell-inner {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 28px;
+}
+
 .pc-order-pallet-cell,
 .pc-order-marking-cell {
   white-space: nowrap;

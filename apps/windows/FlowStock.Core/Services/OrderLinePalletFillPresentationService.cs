@@ -7,10 +7,20 @@ public sealed class OrderLinePalletFillPresentation
     public string FulfillmentStatus { get; init; } = string.Empty;
     public bool LineFullyShipped { get; init; }
     public bool HidePalletFillIndicator { get; init; }
+    public bool ShowCompletedIcon { get; init; }
     public bool BlockingFillRequired { get; init; }
     public string? Label { get; init; }
     public string Tone { get; init; } = "neutral";
     public string? Title { get; init; }
+}
+
+public sealed class OrderPalletFillPresentation
+{
+    public string Tone { get; init; } = "neutral";
+    public string? Label { get; init; }
+    public string? Title { get; init; }
+    public bool ShowCompletedIcon { get; init; }
+    public int SortValue { get; init; }
 }
 
 public static class OrderLinePalletFillPresentationService
@@ -36,6 +46,7 @@ public static class OrderLinePalletFillPresentationService
                 FulfillmentStatus = "SHIPPED",
                 LineFullyShipped = true,
                 HidePalletFillIndicator = true,
+                ShowCompletedIcon = true,
                 BlockingFillRequired = false,
                 Tone = "completed",
                 Label = null,
@@ -56,6 +67,7 @@ public static class OrderLinePalletFillPresentationService
         var presentation = Resolve(order, line);
         line.LineFullyShipped = presentation.LineFullyShipped;
         line.HidePalletFillIndicator = presentation.HidePalletFillIndicator;
+        line.ShowPalletCompletedIcon = presentation.ShowCompletedIcon;
         line.BlockingFillRequired = presentation.BlockingFillRequired;
         line.PalletFillLabel = presentation.Label;
         line.PalletFillTone = presentation.Tone;
@@ -182,6 +194,78 @@ public static class OrderPalletFillPresentationService
     {
         return order.Type == OrderType.Customer
                && (order.Status == OrderStatus.Shipped || !order.HasShipmentRemaining);
+    }
+
+    public static OrderPalletFillPresentation ResolveOrderFill(
+        Order order,
+        bool needsProductionPalletPlan,
+        bool hasProductionPalletPlan,
+        ProductionPalletSummary summary)
+    {
+        if (IsCustomerOrderFullyShipped(order))
+        {
+            return new OrderPalletFillPresentation
+            {
+                Tone = "completed",
+                Title = "Заказ полностью отгружен",
+                ShowCompletedIcon = true,
+                SortValue = 4
+            };
+        }
+
+        var planStatus = ResolveOrderPalletPlanStatus(order, needsProductionPalletPlan, hasProductionPalletPlan, summary);
+        if (string.IsNullOrWhiteSpace(planStatus))
+        {
+            return new OrderPalletFillPresentation();
+        }
+
+        if (planStatus.Contains("не сформирован", StringComparison.CurrentCultureIgnoreCase))
+        {
+            return new OrderPalletFillPresentation
+            {
+                Label = planStatus,
+                Tone = "warning",
+                Title = planStatus,
+                SortValue = 1
+            };
+        }
+
+        if (summary.PlannedPalletCount > 0
+            && summary.FilledPalletCount >= summary.PlannedPalletCount
+            && summary.RemainingPalletCount <= 0)
+        {
+            var label = $"Наполнено {summary.FilledPalletCount} / {summary.PlannedPalletCount}";
+            return new OrderPalletFillPresentation
+            {
+                Label = label,
+                Tone = "completed",
+                Title = planStatus,
+                ShowCompletedIcon = true,
+                SortValue = 4
+            };
+        }
+
+        if (summary.FilledPalletCount > 0 || summary.FilledQty > 0)
+        {
+            var inProgressLabel = summary.PlannedPalletCount > 0
+                ? $"Наполнено {summary.FilledPalletCount} / {summary.PlannedPalletCount}"
+                : planStatus;
+            return new OrderPalletFillPresentation
+            {
+                Label = inProgressLabel,
+                Tone = "ready",
+                Title = planStatus,
+                SortValue = 3
+            };
+        }
+
+        return new OrderPalletFillPresentation
+        {
+            Label = planStatus,
+            Tone = "neutral",
+            Title = planStatus,
+            SortValue = 2
+        };
     }
 
     public static string? ResolveOrderPalletPlanStatus(
