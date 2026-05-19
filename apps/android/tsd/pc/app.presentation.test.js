@@ -280,6 +280,67 @@ const customerInProgressPalletHtml = pc.renderOrdersTable([
   },
 ]);
 assert.match(customerInProgressPalletHtml, /Наполнено 2 \/ 5/);
+assert.match(customerInProgressPalletHtml, /pc-status-badge-inprogress/);
+
+assert.strictEqual(
+  pc.getOrderPalletFillingPresentation({
+    has_production_pallet_plan: true,
+    planned_pallet_count: 5,
+    filled_pallet_count: 2,
+    pallet_plan_status: "План сформирован",
+  }).label,
+  "Наполнено 2 / 5"
+);
+assert.strictEqual(
+  pc.getOrderPalletFillingPresentation({
+    has_production_pallet_plan: true,
+    planned_pallet_count: 5,
+    filled_pallet_count: 2,
+    pallet_plan_status: "План сформирован",
+  }).tone,
+  "inprogress"
+);
+
+assert.strictEqual(
+  pc.getOrderPalletFillingPresentation({
+    has_production_pallet_plan: true,
+    planned_pallet_count: 5,
+    filled_pallet_count: 0,
+  }).label,
+  "Наполнено 0 / 5"
+);
+assert.strictEqual(
+  pc.getOrderPalletFillingPresentation({
+    has_production_pallet_plan: true,
+    planned_pallet_count: 5,
+    filled_pallet_count: 0,
+  }).tone,
+  "inprogress"
+);
+
+assert.strictEqual(
+  pc.getOrderPalletFillingPresentation({
+    has_production_pallet_plan: true,
+    planned_pallet_count: 5,
+    filled_pallet_count: 5,
+  }).tone,
+  "completed"
+);
+
+const planFormedOnlyHtml = pc.renderOrdersTable([
+  {
+    id: 71,
+    order_ref: "071",
+    order_type: "INTERNAL",
+    order_status: "IN_PROGRESS",
+    has_production_pallet_plan: true,
+    planned_pallet_count: 4,
+    filled_pallet_count: 0,
+    pallet_plan_status: "План сформирован",
+  },
+]);
+assert.doesNotMatch(planFormedOnlyHtml, />План сформирован</);
+assert.match(planFormedOnlyHtml, /Наполнено 0 \/ 4/);
 
 assert.strictEqual(
   pc.getOrderPalletFillingPresentation({
@@ -554,3 +615,44 @@ assert.match(
   /\/api\/reports\/production-need\/create-orders\/preview/,
   "PC production need must use server-side preview endpoint before create"
 );
+
+const catalogHtml = pc.renderCatalogTable([
+  {
+    itemId: 100,
+    itemName: "Горчица Русская 1 кг",
+    brand: "Печагин",
+    volume: "1 кг",
+    barcode: "1234567890123",
+    gtin: "04607186951520",
+    baseUom: "шт",
+  },
+  {
+    itemId: 101,
+    itemName: "Товар без кодов",
+    brand: "Бренд",
+    volume: "-",
+    barcode: "",
+    gtin: "",
+    baseUom: "шт",
+  },
+  {
+    itemId: 102,
+    itemName: "Только GTIN",
+    brand: "-",
+    volume: "-",
+    barcode: "",
+    gtin: "04609999999999",
+    baseUom: "шт",
+  },
+]);
+assert.match(catalogHtml, /pc-catalog-item-name/);
+assert.match(catalogHtml, /Горчица Русская 1 кг/);
+assert.match(catalogHtml, /GTIN: 04607186951520/);
+assert.match(catalogHtml, /ШК: 1234567890123/);
+assert.match(catalogHtml, /Только GTIN/);
+assert.match(catalogHtml, /GTIN: 04609999999999/);
+assert.doesNotMatch(catalogHtml, /GTIN:\s*<\/div>/);
+assert.doesNotMatch(catalogHtml, /ШК:\s*<\/div>/);
+assert.doesNotMatch(catalogHtml, /<th[^>]*>\s*ID\s*<\/th>/);
+assert.doesNotMatch(catalogHtml, /<th[^>]*>\s*GTIN\s*<\/th>/);
+assert.doesNotMatch(catalogHtml, /<th[^>]*>[^<]*ШК[^<]*<\/th>/);
