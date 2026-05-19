@@ -1475,8 +1475,12 @@ SELECT dl.id,
        dl.to_hu,
        dl.pack_single_hu
 FROM doc_lines dl
+INNER JOIN docs d ON d.id = dl.doc_id
 WHERE dl.doc_id = @doc_id
-  AND dl.qty > 0
+  AND (
+      (d.type = @inventory_correction_type AND ABS(dl.qty) > @qty_tolerance)
+      OR (d.type <> @inventory_correction_type AND dl.qty > @qty_tolerance)
+  )
   AND NOT EXISTS (
       SELECT 1
       FROM doc_lines newer
@@ -1484,6 +1488,8 @@ WHERE dl.doc_id = @doc_id
   )
 ORDER BY dl.id");
             command.Parameters.AddWithValue("@doc_id", docId);
+            command.Parameters.AddWithValue("@inventory_correction_type", DocTypeMapper.ToOpString(DocType.InventoryCorrection));
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
             using var reader = command.ExecuteReader();
             var lines = new List<DocLine>();
             while (reader.Read())
@@ -1515,11 +1521,15 @@ ORDER BY dl.id");
             using var command = CreateCommand(connection, @"
 SELECT dl.id, dl.order_line_id, dl.production_purpose, dl.item_id, i.name, i.barcode, dl.qty, dl.qty_input, dl.uom_code, i.base_uom, lf.code, lt.code, dl.from_hu, dl.to_hu, dl.pack_single_hu
 FROM doc_lines dl
+INNER JOIN docs d ON d.id = dl.doc_id
 INNER JOIN items i ON i.id = dl.item_id
 LEFT JOIN locations lf ON lf.id = dl.from_location_id
 LEFT JOIN locations lt ON lt.id = dl.to_location_id
 WHERE dl.doc_id = @doc_id
-  AND dl.qty > 0
+  AND (
+      (d.type = @inventory_correction_type AND ABS(dl.qty) > @qty_tolerance)
+      OR (d.type <> @inventory_correction_type AND dl.qty > @qty_tolerance)
+  )
   AND NOT EXISTS (
       SELECT 1
       FROM doc_lines newer
@@ -1528,6 +1538,8 @@ WHERE dl.doc_id = @doc_id
 ORDER BY dl.id;
 ");
             command.Parameters.AddWithValue("@doc_id", docId);
+            command.Parameters.AddWithValue("@inventory_correction_type", DocTypeMapper.ToOpString(DocType.InventoryCorrection));
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
             using var reader = command.ExecuteReader();
             var lines = new List<DocLineView>();
             while (reader.Read())
@@ -4988,7 +5000,7 @@ last_movement AS (
            NULLIF(BTRIM(COALESCE(led.hu_code, led.hu)), '') AS hu_code,
            led.id AS last_ledger_entry_id,
            led.doc_id AS last_doc_id,
-           led.timestamp AS last_movement_at
+           led.ts AS last_movement_at
     FROM ledger led
     INNER JOIN balances b ON b.item_id = led.item_id
                         AND b.location_id = led.location_id
@@ -4999,7 +5011,7 @@ last_movement AS (
     ORDER BY led.item_id,
              led.location_id,
              NULLIF(BTRIM(COALESCE(led.hu_code, led.hu)), ''),
-             led.timestamp DESC,
+             led.ts DESC,
              led.id DESC
 )
 SELECT b.item_id,
@@ -5050,7 +5062,9 @@ ORDER BY b.qty, i.name, l.code, b.hu_code;
                         : DocTypeMapper.FromOpString(lastDocTypeText),
                     OrderId = reader.IsDBNull(10) ? null : reader.GetInt64(10),
                     OrderRef = reader.IsDBNull(11) ? null : reader.GetString(11),
-                    LastMovementAt = reader.IsDBNull(12) ? null : reader.GetDateTime(12)
+                    LastMovementAt = reader.IsDBNull(12)
+                        ? null
+                        : LedgerTimestampParser.TryParse(reader.GetString(12))
                 });
             }
 

@@ -750,15 +750,22 @@ public sealed class DocumentService
 
     public long AddDocLine(long docId, long itemId, double qty, long? fromLocationId, long? toLocationId, double? qtyInput = null, string? uomCode = null, string? fromHu = null, string? toHu = null, long? orderLineId = null, long? replacesLineId = null, ProductionLinePurpose? productionPurpose = null)
     {
-        if (qty <= 0)
-        {
-            throw new ArgumentException("Количество должно быть больше 0.", nameof(qty));
-        }
-
         var doc = _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
         if (doc.Status != DocStatus.Draft)
         {
             throw new InvalidOperationException("Документ уже закрыт.");
+        }
+
+        if (doc.Type == DocType.InventoryCorrection)
+        {
+            if (StockQuantityRules.IsEffectivelyZero(qty))
+            {
+                throw new ArgumentException("Количество не может быть 0.", nameof(qty));
+            }
+        }
+        else if (qty <= 0)
+        {
+            throw new ArgumentException("Количество должно быть больше 0.", nameof(qty));
         }
 
         var item = _data.FindItemById(itemId);
@@ -1606,7 +1613,14 @@ public sealed class DocumentService
                 continue;
             }
 
-            if (line.Qty <= 0)
+            if (doc.Type == DocType.InventoryCorrection)
+            {
+                if (StockQuantityRules.IsEffectivelyZero(line.Qty))
+                {
+                    check.Errors.Add($"{rowLabel}: количество не может быть 0.");
+                }
+            }
+            else if (line.Qty <= 0)
             {
                 check.Errors.Add($"{rowLabel}: количество должно быть > 0.");
             }
@@ -2613,7 +2627,7 @@ public sealed class DocumentService
             return (lineFrom, lineTo);
         }
 
-        if (doc.Type == DocType.Inbound || doc.Type == DocType.Inventory || doc.Type == DocType.ProductionReceipt)
+        if (doc.Type is DocType.Inbound or DocType.Inventory or DocType.ProductionReceipt or DocType.InventoryCorrection)
         {
             return (null, lineTo ?? docHu);
         }

@@ -128,9 +128,13 @@ internal sealed class CloseDocumentHarness
 
     private IReadOnlyList<DocLine> GetActiveDocLines(long docId)
     {
+        var allowSignedQty = _docs.TryGetValue(docId, out var doc) && doc.Type == DocType.InventoryCorrection;
         return _linesByDoc.TryGetValue(docId, out var lines)
             ? lines
-                .Where(line => line.Qty > 0 && !lines.Any(newer => newer.ReplacesLineId == line.Id))
+                .Where(line => !lines.Any(newer => newer.ReplacesLineId == line.Id))
+                .Where(line => allowSignedQty
+                    ? !StockQuantityRules.IsEffectivelyZero(line.Qty)
+                    : line.Qty > 0)
                 .OrderBy(line => line.Id)
                 .Select(CloneDocLine)
                 .ToArray()
