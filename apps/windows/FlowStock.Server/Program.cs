@@ -2834,6 +2834,7 @@ PlannerEndpoints.Map(app);
 WarehouseBoardStateEndpoints.Map(app);
 WarehouseTaskEndpoints.Map(app);
 NegativeStockDiagnosticsEndpoints.Map(app);
+HuBalanceDiagnosticsEndpoints.Map(app);
 CloseDocumentEndpoint.Map(app);
 
 app.Run();
