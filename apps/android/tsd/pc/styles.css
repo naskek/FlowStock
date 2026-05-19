@@ -987,6 +987,96 @@ body.pc-body::before {
   width: 180px;
 }
 
+.wb-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.wb-toolbar {
+  flex-wrap: wrap;
+}
+
+.wb-table-wrap {
+  overflow-x: auto;
+}
+
+.wb-table tr.is-selected {
+  background: var(--pc-accent-soft);
+}
+
+.wb-details {
+  border-top: 1px solid var(--pc-border);
+  padding-top: 12px;
+  min-height: 120px;
+}
+
+.wb-details-placeholder {
+  color: var(--pc-muted);
+  padding: 16px 0;
+}
+
+.wb-details-card h3,
+.wb-details-card h4,
+.wb-details-card h5 {
+  margin: 12px 0 8px;
+}
+
+.wb-detail-meta {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+  font-size: 14px;
+}
+
+.wb-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.wb-subtable {
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.wb-notice.is-error,
+.wb-error,
+.wb-preview-result.is-error {
+  color: #b42318;
+}
+
+.wb-preview-result.is-ok {
+  color: #067647;
+}
+
+.wb-form {
+  display: grid;
+  gap: 10px;
+}
+
+.wb-form label {
+  display: grid;
+  gap: 4px;
+  font-size: 14px;
+}
+
+.wb-modal-card {
+  max-width: 520px;
+}
+
+.wb-events {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 13px;
+}
+
 .pc-modal-footer {
   display: grid;
   gap: 8px;

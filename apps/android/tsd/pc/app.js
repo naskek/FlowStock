@@ -78,6 +78,7 @@
     if (isClientBlockEnabled("pc_catalog")) {
       views.push("catalog");
     }
+    views.push("warehouse-board");
     return views;
   }
 
@@ -103,7 +104,8 @@
         (view === "stock" && isClientBlockEnabled("pc_stock")) ||
         (view === "catalog" && isClientBlockEnabled("pc_catalog")) ||
         (view === "orders" && isClientBlockEnabled("pc_orders")) ||
-        (view === "production-need" && isClientBlockEnabled("pc_stock"));
+        (view === "production-need" && isClientBlockEnabled("pc_stock")) ||
+        view === "warehouse-board";
       tab.hidden = !visible;
     });
   }
@@ -209,6 +211,9 @@
     }
     if (view === "production-need") {
       return "pc_stock";
+    }
+    if (view === "warehouse-board") {
+      return "pc_orders";
     }
     return "";
   }
@@ -4476,6 +4481,18 @@
       return;
     }
 
+    if (allowedView === "warehouse-board") {
+      if (window.FlowStockWarehouseBoard && window.FlowStockWarehouseBoard.render) {
+        app.innerHTML = window.FlowStockWarehouseBoard.render();
+        window.FlowStockWarehouseBoard.wire();
+      } else {
+        app.innerHTML = renderPageShell(
+          '<section class="pc-card"><div class="pc-status">Модуль «Задания склада» не загружен.</div></section>'
+        );
+      }
+      return;
+    }
+
     app.innerHTML = renderStock();
     wireStock();
   }
@@ -4484,6 +4501,18 @@
     tabs.forEach(function (tab) {
       var match = tab.getAttribute("data-view") === view;
       tab.classList.toggle("is-active", match);
+    });
+  }
+
+  if (window.FlowStockWarehouseBoard) {
+    window.FlowStockWarehouseBoard.init({
+      getAccount: loadAccount,
+      fetchJson: fetchJson,
+      createRequestHeaders: createRequestHeaders,
+      renderPageShell: renderPageShell,
+      escapeHtml: escapeHtml,
+      formatDateTime: formatDateTime,
+      formatDate: formatDate,
     });
   }
 

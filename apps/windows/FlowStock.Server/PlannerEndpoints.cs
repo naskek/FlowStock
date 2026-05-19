@@ -55,7 +55,7 @@ public static class PlannerEndpoints
         return Results.Ok(new
         {
             success = true,
-            bundles = bundles.Select(MapBundleSummary).ToArray()
+            bundles = bundles.Select(bundle => MapBundleSummary(bundle, store)).ToArray()
         });
     }
 
@@ -84,7 +84,7 @@ public static class PlannerEndpoints
         return Results.Ok(new
         {
             success = true,
-            bundle = MapBundle(bundle),
+            bundle = MapBundle(bundle, store),
             lines = lines.Select(MapLine).ToArray(),
             tasks = taskDetails
         });
@@ -164,7 +164,7 @@ public static class PlannerEndpoints
         lines = preview.Lines.Select(l => new { line_no = l.LineNo, action_type = l.ActionType, summary = l.Summary })
     };
 
-    private static object MapBundleSummary(WarehouseActionBundle bundle) => new
+    private static object MapBundleSummary(WarehouseActionBundle bundle, IDataStore? store = null) => new
     {
         id = bundle.Id,
         bundle_ref = bundle.BundleRef,
@@ -175,10 +175,13 @@ public static class PlannerEndpoints
         approved_at = bundle.ApprovedAt,
         executed_at = bundle.ExecutedAt,
         completed_at = bundle.CompletedAt,
-        comment = bundle.Comment
+        comment = bundle.Comment,
+        line_count = store?.GetWarehouseActionLines(bundle.Id).Count ?? 0,
+        task_count = store?.GetWarehouseTasksByBundle(bundle.Id).Count ?? 0
     };
 
-    private static object MapBundle(WarehouseActionBundle bundle) => MapBundleSummary(bundle);
+    private static object MapBundle(WarehouseActionBundle bundle, IDataStore store) =>
+        MapBundleSummary(bundle, store);
 
     private static object MapLine(WarehouseActionLine line) => new
     {
