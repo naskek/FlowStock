@@ -387,6 +387,10 @@
                                                             <Setter Property="Background" Value="#F2F4F7" />
                                                             <Setter Property="BorderBrush" Value="#98A2B3" />
                                                         </DataTrigger>
+                                                        <DataTrigger Binding="{Binding StatusDisplay}" Value="Объединён">
+                                                            <Setter Property="Background" Value="#EEF2F6" />
+                                                            <Setter Property="BorderBrush" Value="#98A2B3" />
+                                                        </DataTrigger>
                                                     </Style.Triggers>
                                                 </Style>
                                             </Border.Style>
@@ -406,6 +410,9 @@
                                                             <DataTrigger Binding="{Binding StatusDisplay}" Value="Отменён">
                                                                 <Setter Property="Foreground" Value="#475467" />
                                                             </DataTrigger>
+                                                            <DataTrigger Binding="{Binding StatusDisplay}" Value="Объединён">
+                                                                <Setter Property="Foreground" Value="#475467" />
+                                                            </DataTrigger>
                                                         </Style.Triggers>
                                                     </Style>
                                                 </TextBlock.Style>
@@ -416,6 +423,36 @@
                             </DataGridTemplateColumn>
                             <DataGridTextColumn Header="Завершен" Binding="{Binding ShippedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="Auto" MaxWidth="320" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </TabItem>
+            <TabItem Header="Задания">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+                        <ComboBox x:Name="WarehouseBundleFilterCombo"
+                                  Width="200"
+                                  SelectionChanged="WarehouseBundleFilterCombo_SelectionChanged" />
+                        <Button Content="Обновить" Click="WarehouseBundlesRefresh_Click" Margin="8,0,0,0" />
+                        <Button Content="Открыть" Click="WarehouseBundlesOpen_Click" Margin="8,0,0,0" />
+                        <Button Content="Тест MOVE_HU" Click="WarehouseTestMove_Click" Margin="8,0,0,0" />
+                        <Button Content="Тест ADOPT" Click="WarehouseTestAdopt_Click" Margin="8,0,0,0" />
+                    </StackPanel>
+                    <DataGrid x:Name="WarehouseBundlesGrid"
+                              Grid.Row="1"
+                              AutoGenerateColumns="False"
+                              IsReadOnly="True"
+                              MouseDoubleClick="WarehouseBundlesGrid_MouseDoubleClick">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="№" Binding="{Binding BundleRef}" Width="130" />
+                            <DataGridTextColumn Header="Статус" Binding="{Binding StatusDisplay}" Width="140" />
+                            <DataGridTextColumn Header="Источник" Binding="{Binding Source}" Width="90" />
+                            <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt, StringFormat={}{0:dd.MM.yyyy HH:mm}}" Width="130" />
+                            <DataGridTextColumn Header="Автор" Binding="{Binding CreatedBy}" Width="*" />
                         </DataGrid.Columns>
                     </DataGrid>
                 </Grid>

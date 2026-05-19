@@ -55,7 +55,7 @@ public sealed class OrderRedistributionService
             throw new InvalidOperationException("Получатель перераспределения должен быть клиентским заказом.");
         }
 
-        if (sourceOrder.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
+        if (sourceOrder.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
         {
             throw new InvalidOperationException("Внутренний заказ-источник недоступен для перераспределения.");
         }
@@ -215,6 +215,12 @@ public sealed class OrderRedistributionService
         }
 
         OrderService.RefreshCustomerReceiptPlansCore(store, preserveOrderId: targetCustomerOrderId);
+        var mergeResult = InternalOrderMergeService.TryMarkAsMerged(
+            store,
+            sourceInternalOrderId,
+            targetCustomerOrderId,
+            targetOrder.OrderRef);
+        EmptyDraftProductionReceiptCleanup.CleanupEmptyDraftProductionReceiptsForOrder(store, sourceInternalOrderId);
 
         return new OrderRedistributionResult
         {
@@ -226,7 +232,8 @@ public sealed class OrderRedistributionService
             QtyFromProducedStock = qtyFromProduced,
             SourceQtyOrderedAfter = newSourceQty,
             TargetQtyOrderedAfter = targetQtyAfter,
-            TransferredHuCodes = transferredHuCodes
+            TransferredHuCodes = transferredHuCodes,
+            SourceMergeResult = mergeResult
         };
     }
 
@@ -573,4 +580,5 @@ public sealed class OrderRedistributionResult
     public double SourceQtyOrderedAfter { get; init; }
     public double TargetQtyOrderedAfter { get; init; }
     public IReadOnlyList<string> TransferredHuCodes { get; init; } = Array.Empty<string>();
+    public InternalOrderMergeResult? SourceMergeResult { get; init; }
 }

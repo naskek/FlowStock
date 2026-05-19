@@ -80,7 +80,7 @@ public sealed class OrderAutoRedistributionService
         var internalOrders = store.GetOrders()
             .Where(order => order.Type == OrderType.Internal
                             && order.Id != targetCustomerOrderId
-                            && order.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled))
+                            && order.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged))
             .OrderBy(order => order.CreatedAt)
             .ThenBy(order => order.Id)
             .ToList();
@@ -112,27 +112,22 @@ public sealed class OrderAutoRedistributionService
             .ToList();
         foreach (var candidate in matchingQtyZeroCandidates)
         {
-            var palletPlan = GetOpenPalletPlanDiagnostics(store, candidate.Order.Id);
-            if (palletPlan.HasPalletPlan)
+            if (InternalOrderMergeService.HasActiveProductionPalletPlan(store, candidate.Order.Id))
             {
-                var code = palletPlan.HasFilledPallets || palletPlan.HasLedger
-                    ? "OPEN_INTERNAL_MATCHING_ITEM_QTY_ZERO"
-                    : "SOURCE_INTERNAL_HAS_PALLET_PLAN_BUT_QTY_ZERO";
                 result.Warnings.Add(new OrderAutoRedistributionWarning
                 {
-                    Code = code,
+                    Code = InternalOrderMergeService.ActivePalletPlanWarningCode,
                     SourceOrderId = candidate.Order.Id,
                     SourceOrderRef = candidate.Order.OrderRef,
                     ItemId = candidate.Line.ItemId,
-                    Message = code == "SOURCE_INTERNAL_HAS_PALLET_PLAN_BUT_QTY_ZERO"
-                        ? "INTERNAL имеет palletized PRD plan, но qty_ordered уже 0. Обычный auto-redistribute не может перенести строки. Нужно удалить/перенести паллетный план отдельным действием."
-                        : "INTERNAL содержит совпадающую позицию с qty_ordered = 0; автоперенос строк невозможен."
+                    Message = "Внутренний заказ уже без количества, но у него остался активный план паллет. Сначала удалите или перенесите план паллет."
                 });
             }
         }
 
         var redistribution = new OrderRedistributionService(store);
         var transfers = new List<OrderAutoRedistributionTransfer>();
+        var sourceMergeResults = new Dictionary<long, InternalOrderMergeResult>();
 
         foreach (var customerLine in customerLines)
         {
@@ -192,6 +187,14 @@ public sealed class OrderAutoRedistributionService
                         QtyFromProducedStock = redistributeResult.QtyFromProducedStock,
                         TransferredHuCodes = redistributeResult.TransferredHuCodes
                     });
+                    if (redistributeResult.SourceMergeResult is { } mergeResult
+                        && (!sourceMergeResults.TryGetValue(redistributeResult.SourceOrderId, out var existing)
+                            || (!existing.IsMerged && mergeResult.IsMerged)
+                            || (mergeResult.IsMerged && !string.IsNullOrWhiteSpace(mergeResult.InfoMessage))))
+                    {
+                        sourceMergeResults[redistributeResult.SourceOrderId] = mergeResult;
+                    }
+
                     remainingCap -= preDecrementQty;
                 }
                 catch (InvalidOperationException ex)
@@ -222,48 +225,53 @@ public sealed class OrderAutoRedistributionService
         }
 
         result.Transfers.AddRange(transfers);
+        foreach (var sourceOrderId in transfers.Select(transfer => transfer.SourceOrderId).Distinct())
+        {
+            var sourceOrder = store.GetOrder(sourceOrderId);
+            if (sourceOrder == null)
+            {
+                continue;
+            }
+
+            var mergeResult = sourceMergeResults.TryGetValue(sourceOrderId, out var mergeFromTransfer)
+                ? mergeFromTransfer
+                : InternalOrderMergeService.TryMarkAsMerged(
+                    store,
+                    sourceOrderId,
+                    targetCustomerOrderId,
+                    targetOrder.OrderRef);
+            if (mergeResult.IsMerged && !string.IsNullOrWhiteSpace(mergeResult.InfoMessage))
+            {
+                result.Warnings.Add(new OrderAutoRedistributionWarning
+                {
+                    Code = mergeResult.InfoCode ?? InternalOrderMergeService.MergedInfoCode,
+                    SourceOrderId = sourceOrderId,
+                    SourceOrderRef = sourceOrder.OrderRef,
+                    Message = mergeResult.InfoMessage
+                });
+            }
+            else if (!string.IsNullOrWhiteSpace(mergeResult.WarningCode))
+            {
+                result.Warnings.Add(new OrderAutoRedistributionWarning
+                {
+                    Code = mergeResult.WarningCode,
+                    SourceOrderId = sourceOrderId,
+                    SourceOrderRef = sourceOrder.OrderRef,
+                    Message = mergeResult.WarningMessage ?? string.Empty
+                });
+            }
+        }
+
         if (!result.HasTransfers && string.IsNullOrWhiteSpace(result.SkippedReason))
         {
             result.SkippedReason = matchingQtyZeroCandidates.Count > 0
-                ? result.Warnings.Any(warning => warning.Code == "SOURCE_INTERNAL_HAS_PALLET_PLAN_BUT_QTY_ZERO")
-                    ? "SOURCE_INTERNAL_HAS_PALLET_PLAN_BUT_QTY_ZERO"
+                ? result.Warnings.Any(warning => warning.Code == InternalOrderMergeService.ActivePalletPlanWarningCode)
+                    ? InternalOrderMergeService.ActivePalletPlanWarningCode
                     : "OPEN_INTERNAL_MATCHING_ITEM_QTY_ZERO"
                 : "OPEN_INTERNAL_WITHOUT_MATCHING_ITEM";
         }
 
         return result;
-    }
-
-    private static PalletPlanDiagnostics GetOpenPalletPlanDiagnostics(IDataStore store, long orderId)
-    {
-        foreach (var doc in store.GetDocsByOrder(orderId)
-                     .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status != DocStatus.Closed)
-                     .OrderByDescending(doc => doc.Id))
-        {
-            var pallets = store.GetProductionPalletsByDoc(doc.Id)
-                .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-            if (pallets.Count == 0)
-            {
-                continue;
-            }
-
-            return new PalletPlanDiagnostics
-            {
-                HasPalletPlan = true,
-                HasFilledPallets = pallets.Any(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)),
-                HasLedger = store.CountLedgerEntriesByDocId(doc.Id) > 0
-            };
-        }
-
-        return new PalletPlanDiagnostics();
-    }
-
-    private sealed class PalletPlanDiagnostics
-    {
-        public bool HasPalletPlan { get; init; }
-        public bool HasFilledPallets { get; init; }
-        public bool HasLedger { get; init; }
     }
 }
 

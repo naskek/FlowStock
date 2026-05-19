@@ -67,6 +67,10 @@ public static class OrderAutoRedistributionReasonCodes
             "SOURCE_INTERNAL_HAS_PALLET_PLAN_BUT_QTY_ZERO" =>
                 "INTERNAL имеет palletized PRD plan, но qty_ordered уже 0. Обычный auto-redistribute не может перенести строки. "
                 + "Нужно удалить/перенести паллетный план отдельным действием.",
+            "SOURCE_INTERNAL_HAS_ACTIVE_PALLET_PLAN" =>
+                "Внутренний заказ уже без количества, но у него остался активный план паллет. Сначала удалите или перенесите план паллет.",
+            "SOURCE_INTERNAL_MERGED" =>
+                "Внутренний заказ переведён в статус «Объединён» после переноса потребности.",
             "INTERNAL_STATUSES_REFRESHED" =>
                 "Перед автопереносом обновлены устаревшие статусы INTERNAL-заказов.",
             _ => string.Empty

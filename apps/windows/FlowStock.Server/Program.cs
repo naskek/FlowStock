@@ -41,6 +41,8 @@ builder.Services.AddSingleton<FlowStock.Core.Abstractions.IDataStore>(sp => sp.G
 builder.Services.AddSingleton<IApiDocStore>(new PostgresApiDocStore(postgresConnectionString));
 builder.Services.AddSingleton<DocumentService>();
 builder.Services.AddSingleton<ProductionPalletService>();
+builder.Services.AddSingleton<FlowStock.Core.Services.Warehouse.WarehouseActionBundleService>();
+builder.Services.AddSingleton<FlowStock.Core.Services.Warehouse.WarehouseTaskExecutionService>();
 builder.Services.AddSingleton<CatalogService>();
 builder.Services.AddSingleton<ImportService>();
 builder.Services.AddSingleton<ItemPackagingService>();
@@ -2828,6 +2830,9 @@ RETURNING id;
 OpsEndpoint.Map(app);
 DocumentDraftEndpoints.Map(app);
 ProductionPalletEndpoints.Map(app);
+PlannerEndpoints.Map(app);
+WarehouseTaskEndpoints.Map(app);
+NegativeStockDiagnosticsEndpoints.Map(app);
 CloseDocumentEndpoint.Map(app);
 
 app.Run();

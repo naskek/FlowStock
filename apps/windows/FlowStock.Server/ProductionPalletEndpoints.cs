@@ -72,6 +72,8 @@ public static class ProductionPalletEndpoints
                 transferred_pallet_count = result.TransferredPalletCount,
                 transferred_line_count = result.TransferredLineCount,
                 transferred_hu_codes = result.TransferredHuCodes,
+                source_order_status = result.SourceOrderStatus,
+                source_order_comment_updated = result.SourceOrderCommentUpdated,
                 warnings = result.Warnings.Select(warning => new
                 {
                     code = warning.Code,

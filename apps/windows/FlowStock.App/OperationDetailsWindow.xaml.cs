@@ -495,7 +495,7 @@ public partial class OperationDetailsWindow : Window
 
         return type switch
         {
-            DocType.Inbound or DocType.Inventory or DocType.ProductionReceipt => toHu,
+            DocType.Inbound or DocType.Inventory or DocType.InventoryCorrection or DocType.ProductionReceipt => toHu,
             DocType.Outbound or DocType.WriteOff => fromHu,
             DocType.Move => ResolveMoveHuDisplay(fromHu, toHu),
             _ => toHu ?? fromHu

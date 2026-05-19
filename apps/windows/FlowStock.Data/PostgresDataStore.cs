@@ -379,6 +379,7 @@ SELECT ob.id,
        ob.due_date,
        CASE
            WHEN ob.persisted_status = 'CANCELLED' THEN 'CANCELLED'
+           WHEN ob.persisted_status = 'MERGED' THEN 'MERGED'
            WHEN ob.order_type = 'INTERNAL' THEN CASE
                WHEN COALESCE(ss.any_produced, FALSE)
                     AND COALESCE(ss.demand_line_count, 0) > 0
@@ -1964,6 +1965,7 @@ LEFT JOIN orders o ON o.id = d.order_id
 WHERE d.type = @doc_type
   AND d.status <> @closed_status
   AND pp.status <> @cancelled_status
+  AND (o.id IS NULL OR o.status NOT IN (@shipped_order_status, @cancelled_order_status, @merged_order_status))
 GROUP BY d.id,
          d.doc_ref,
          d.status,
@@ -1977,6 +1979,9 @@ ORDER BY d.created_at DESC,
             command.Parameters.AddWithValue("@closed_status", DocTypeMapper.StatusToString(DocStatus.Closed));
             command.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
             command.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
+            command.Parameters.AddWithValue("@shipped_order_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+            command.Parameters.AddWithValue("@cancelled_order_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+            command.Parameters.AddWithValue("@merged_order_status", OrderStatusMapper.StatusToString(OrderStatus.Merged));
             using var reader = command.ExecuteReader();
             var result = new List<ProductionPalletWorkItem>();
             while (reader.Read())
@@ -2021,6 +2026,22 @@ LIMIT 1;
 ");
             command.Parameters.AddWithValue("@doc_id", docId);
             command.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
+            return command.ExecuteScalar() != null;
+        });
+    }
+
+    public bool HasProductionPalletLinesForDoc(long docId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT 1
+FROM production_pallet_lines pll
+INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
+WHERE pp.prd_doc_id = @doc_id
+LIMIT 1;
+");
+            command.Parameters.AddWithValue("@doc_id", docId);
             return command.ExecuteScalar() != null;
         });
     }
@@ -2697,6 +2718,7 @@ effective_orders AS (
            co.order_ref,
            CASE
                WHEN co.persisted_status = 'CANCELLED' THEN 'CANCELLED'
+               WHEN co.persisted_status = 'MERGED' THEN 'MERGED'
                WHEN co.order_type = 'INTERNAL' THEN CASE
                    WHEN COALESCE(ss.any_produced, FALSE)
                         AND COALESCE(ss.demand_line_count, 0) > 0
@@ -2722,7 +2744,8 @@ ORDER BY CASE eo.effective_status
     WHEN 'ACCEPTED' THEN 2
     WHEN 'DRAFT' THEN 3
     WHEN 'SHIPPED' THEN 4
-    WHEN 'CANCELLED' THEN 5
+    WHEN 'MERGED' THEN 5
+    WHEN 'CANCELLED' THEN 6
     ELSE 99
 END,
 eo.order_ref DESC
@@ -2737,7 +2760,8 @@ ORDER BY CASE paged_orders.status
     WHEN 'ACCEPTED' THEN 2
     WHEN 'DRAFT' THEN 3
     WHEN 'SHIPPED' THEN 4
-    WHEN 'CANCELLED' THEN 5
+    WHEN 'MERGED' THEN 5
+    WHEN 'CANCELLED' THEN 6
     ELSE 99
 END,
 paged_orders.order_ref DESC");
@@ -3819,7 +3843,7 @@ WITH item_snapshot AS (
            i.gtin,
            COALESCE(it.name, 'Без типа') AS item_type_name,
            COALESCE(it.enable_min_stock_control, FALSE) AS enable_min_stock_control,
-           COALESCE(i.min_stock_qty, 0) AS min_stock_qty
+           i.min_stock_qty AS min_stock_qty
     FROM items i
     LEFT JOIN item_types it ON it.id = i.item_type_id
 ),
@@ -3935,7 +3959,7 @@ internal_order_lines AS (
     FROM order_lines ol
     INNER JOIN orders o ON o.id = ol.order_id
     WHERE o.order_type = @internal_order_type
-      AND o.status NOT IN (@shipped_order_status, @cancelled_order_status)
+      AND o.status NOT IN (@shipped_order_status, @cancelled_order_status, @merged_order_status)
 ),
 internal_direct_by_line AS (
     SELECT dl.order_line_id,
@@ -3988,7 +4012,7 @@ internal_unlinked_by_item AS (
     INNER JOIN active_doc_lines dl ON dl.doc_id = d.id
     INNER JOIN orders o ON o.id = d.order_id
     WHERE o.order_type = @internal_order_type
-      AND o.status NOT IN (@shipped_order_status, @cancelled_order_status)
+      AND o.status NOT IN (@shipped_order_status, @cancelled_order_status, @merged_order_status)
       AND d.status = @closed_doc_status
       AND d.type = @production_doc_type
       AND dl.order_line_id IS NULL
@@ -4058,7 +4082,7 @@ filled_pallet_by_item AS (
       AND d.status <> @closed_doc_status
       AND pp.status = @filled_pallet_status
       AND pp.status <> @cancelled_pallet_status
-      AND (o.id IS NULL OR o.status NOT IN (@shipped_order_status, @cancelled_order_status))
+      AND (o.id IS NULL OR o.status NOT IN (@shipped_order_status, @cancelled_order_status, @merged_order_status))
     GROUP BY ppl.item_id
 ),
 item_ids AS (
@@ -4081,12 +4105,15 @@ SELECT ids.item_id,
        COALESCE(snapshot.item_type_name, 'Без типа') AS item_type_name,
        COALESCE(stock.physical_stock_qty, 0) - COALESCE(reserved_stock.reserved_customer_order_qty, 0) AS free_stock_qty,
        CASE
-           WHEN COALESCE(snapshot.enable_min_stock_control, FALSE) THEN GREATEST(0, COALESCE(snapshot.min_stock_qty, 0))
+           WHEN COALESCE(snapshot.enable_min_stock_control, FALSE)
+                AND COALESCE(snapshot.min_stock_qty, 0) > @qty_tolerance
+               THEN COALESCE(snapshot.min_stock_qty, 0)
            ELSE 0
        END AS min_stock_qty,
        GREATEST(0, COALESCE(need.order_qty, 0)) AS to_close_orders_qty,
        GREATEST(0, CASE
            WHEN COALESCE(snapshot.enable_min_stock_control, FALSE)
+                AND COALESCE(snapshot.min_stock_qty, 0) > @qty_tolerance
                THEN COALESCE(snapshot.min_stock_qty, 0) - (COALESCE(stock.physical_stock_qty, 0) - COALESCE(reserved_stock.reserved_customer_order_qty, 0))
            ELSE 0
        END - COALESCE(planned.planned_internal_stock_qty, 0)) AS to_min_stock_qty,
@@ -4103,15 +4130,17 @@ WHERE @include_zero = TRUE
    OR GREATEST(0, COALESCE(need.order_qty, 0))
       + GREATEST(0, CASE
           WHEN COALESCE(snapshot.enable_min_stock_control, FALSE)
+               AND COALESCE(snapshot.min_stock_qty, 0) > @qty_tolerance
               THEN COALESCE(snapshot.min_stock_qty, 0) - (COALESCE(stock.physical_stock_qty, 0) - COALESCE(reserved_stock.reserved_customer_order_qty, 0))
           ELSE 0
-      END - COALESCE(planned.planned_internal_stock_qty, 0)) > 0
+      END - COALESCE(planned.planned_internal_stock_qty, 0)) > @qty_tolerance
    OR COALESCE(planned.planned_internal_stock_qty, 0) > 0
    OR COALESCE(filled.filled_pallet_qty, 0) > 0
 ORDER BY
     (GREATEST(0, COALESCE(need.order_qty, 0))
      + GREATEST(0, CASE
          WHEN COALESCE(snapshot.enable_min_stock_control, FALSE)
+              AND COALESCE(snapshot.min_stock_qty, 0) > @qty_tolerance
              THEN COALESCE(snapshot.min_stock_qty, 0) - (COALESCE(stock.physical_stock_qty, 0) - COALESCE(reserved_stock.reserved_customer_order_qty, 0))
          ELSE 0
      END - COALESCE(planned.planned_internal_stock_qty, 0))) DESC,
@@ -4120,11 +4149,13 @@ ORDER BY
     ids.item_id;
 ");
             command.Parameters.AddWithValue("@include_zero", includeZeroNeed);
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
             command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
             command.Parameters.AddWithValue("@internal_order_type", OrderStatusMapper.TypeToString(OrderType.Internal));
             command.Parameters.AddWithValue("@draft_order_status", OrderStatusMapper.StatusToString(OrderStatus.Draft));
             command.Parameters.AddWithValue("@shipped_order_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
             command.Parameters.AddWithValue("@cancelled_order_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+            command.Parameters.AddWithValue("@merged_order_status", OrderStatusMapper.StatusToString(OrderStatus.Merged));
             command.Parameters.AddWithValue("@closed_doc_status", DocTypeMapper.StatusToString(DocStatus.Closed));
             command.Parameters.AddWithValue("@outbound_doc_type", DocTypeMapper.ToOpString(DocType.Outbound));
             command.Parameters.AddWithValue("@production_doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
@@ -4654,6 +4685,7 @@ VALUES(@ts, @doc_id, @item_id, @location_id, @qty_delta, @hu_code, @hu);
                 double? MinStockQty)>();
             {
                 using var command = CreateCommand(connection, BuildStockQuery(search));
+                command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
                 if (!string.IsNullOrWhiteSpace(search))
                 {
                     command.Parameters.AddWithValue("@search", $"%{search.Trim()}%");
@@ -4910,8 +4942,9 @@ SELECT COALESCE(hu_code, hu), item_id, location_id, COALESCE(SUM(qty_delta), 0) 
 FROM ledger
 WHERE hu_code IS NOT NULL OR hu IS NOT NULL
 GROUP BY COALESCE(hu_code, hu), item_id, location_id
-HAVING COALESCE(SUM(qty_delta), 0) != 0;
+HAVING ABS(COALESCE(SUM(qty_delta), 0)) > @qty_tolerance;
 ");
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
             using var reader = command.ExecuteReader();
             var rows = new List<HuStockRow>();
             while (reader.Read())
@@ -4934,6 +4967,97 @@ HAVING COALESCE(SUM(qty_delta), 0) != 0;
         });
     }
 
+    public IReadOnlyList<NegativeStockBalanceRow> GetNegativeStockBalances()
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH balances AS (
+    SELECT led.item_id,
+           led.location_id,
+           NULLIF(BTRIM(COALESCE(led.hu_code, led.hu)), '') AS hu_code,
+           SUM(led.qty_delta) AS qty
+    FROM ledger led
+    GROUP BY led.item_id, led.location_id, NULLIF(BTRIM(COALESCE(led.hu_code, led.hu)), '')
+    HAVING SUM(led.qty_delta) < -@qty_tolerance
+),
+last_movement AS (
+    SELECT DISTINCT ON (led.item_id, led.location_id, NULLIF(BTRIM(COALESCE(led.hu_code, led.hu)), ''))
+           led.item_id,
+           led.location_id,
+           NULLIF(BTRIM(COALESCE(led.hu_code, led.hu)), '') AS hu_code,
+           led.id AS last_ledger_entry_id,
+           led.doc_id AS last_doc_id,
+           led.timestamp AS last_movement_at
+    FROM ledger led
+    INNER JOIN balances b ON b.item_id = led.item_id
+                        AND b.location_id = led.location_id
+                        AND (
+                            (b.hu_code IS NULL AND NULLIF(BTRIM(COALESCE(led.hu_code, led.hu)), '') IS NULL)
+                            OR b.hu_code = NULLIF(BTRIM(COALESCE(led.hu_code, led.hu)), '')
+                        )
+    ORDER BY led.item_id,
+             led.location_id,
+             NULLIF(BTRIM(COALESCE(led.hu_code, led.hu)), ''),
+             led.timestamp DESC,
+             led.id DESC
+)
+SELECT b.item_id,
+       i.name AS item_name,
+       b.location_id,
+       l.code AS location_code,
+       b.hu_code,
+       b.qty,
+       lm.last_ledger_entry_id,
+       lm.last_doc_id,
+       d.doc_ref AS last_doc_ref,
+       d.type AS last_doc_type,
+       d.order_id,
+       COALESCE(d.order_ref, o.order_ref) AS order_ref,
+       lm.last_movement_at
+FROM balances b
+INNER JOIN items i ON i.id = b.item_id
+INNER JOIN locations l ON l.id = b.location_id
+LEFT JOIN last_movement lm ON lm.item_id = b.item_id
+                            AND lm.location_id = b.location_id
+                            AND (
+                                (b.hu_code IS NULL AND lm.hu_code IS NULL)
+                                OR b.hu_code = lm.hu_code
+                            )
+LEFT JOIN docs d ON d.id = lm.last_doc_id
+LEFT JOIN orders o ON o.id = d.order_id
+ORDER BY b.qty, i.name, l.code, b.hu_code;
+");
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+            using var reader = command.ExecuteReader();
+            var rows = new List<NegativeStockBalanceRow>();
+            while (reader.Read())
+            {
+                var lastDocTypeText = reader.IsDBNull(9) ? null : reader.GetString(9);
+                rows.Add(new NegativeStockBalanceRow
+                {
+                    ItemId = reader.GetInt64(0),
+                    ItemName = reader.GetString(1),
+                    LocationId = reader.GetInt64(2),
+                    LocationCode = reader.GetString(3),
+                    HuCode = reader.IsDBNull(4) ? null : reader.GetString(4),
+                    Qty = reader.GetDouble(5),
+                    LastLedgerEntryId = reader.IsDBNull(6) ? null : reader.GetInt64(6),
+                    LastDocId = reader.IsDBNull(7) ? null : reader.GetInt64(7),
+                    LastDocRef = reader.IsDBNull(8) ? null : reader.GetString(8),
+                    LastDocType = string.IsNullOrWhiteSpace(lastDocTypeText)
+                        ? null
+                        : DocTypeMapper.FromOpString(lastDocTypeText),
+                    OrderId = reader.IsDBNull(10) ? null : reader.GetInt64(10),
+                    OrderRef = reader.IsDBNull(11) ? null : reader.GetString(11),
+                    LastMovementAt = reader.IsDBNull(12) ? null : reader.GetDateTime(12)
+                });
+            }
+
+            return rows;
+        });
+    }
+
     public IReadOnlyList<HuOrderContextRow> GetHuOrderContextRows()
     {
         return WithConnection(GetHuOrderContextRows);
@@ -4949,7 +5073,7 @@ WITH hu_stock AS (
     WHERE COALESCE(hu_code, hu) IS NOT NULL
       AND COALESCE(hu_code, hu) <> ''
     GROUP BY UPPER(TRIM(COALESCE(hu_code, hu))), item_id
-    HAVING COALESCE(SUM(qty_delta), 0) <> 0
+    HAVING ABS(COALESCE(SUM(qty_delta), 0)) > @qty_tolerance
 ),
 origin_candidates AS (
     SELECT dl.item_id,
@@ -5075,6 +5199,7 @@ LEFT JOIN reserved_map rm ON rm.item_id = hs.item_id AND rm.hu_code = hs.hu_code
         command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
         command.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
         command.Parameters.AddWithValue("@cancelled_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+        command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
 
         using var reader = command.ExecuteReader();
         var rows = new List<HuOrderContextRow>();
@@ -6019,7 +6144,12 @@ LIMIT 1;";
             "ledger",
             "tsd_devices",
             "marking_order",
-            "client_blocks"
+            "client_blocks",
+            "warehouse_action_bundles",
+            "warehouse_action_lines",
+            "warehouse_tasks",
+            "warehouse_task_lines",
+            "warehouse_task_events"
         };
 
         foreach (var table in requiredTables)
@@ -6232,7 +6362,7 @@ LEFT JOIN item_types it ON it.id = i.item_type_id
             baseQuery += "WHERE i.name ILIKE @search OR i.barcode ILIKE @search OR l.code ILIKE @search\n";
         }
 
-        baseQuery += "GROUP BY i.id, i.name, i.barcode, i.base_uom, i.item_type_id, it.name, it.enable_min_stock_control, it.min_stock_uses_order_binding, it.enable_order_reservation, i.min_stock_qty, l.id, COALESCE(led.hu_code, led.hu) HAVING SUM(led.qty_delta) != 0 ORDER BY i.name, l.code, COALESCE(led.hu_code, led.hu)";
+        baseQuery += "GROUP BY i.id, i.name, i.barcode, i.base_uom, i.item_type_id, it.name, it.enable_min_stock_control, it.min_stock_uses_order_binding, it.enable_order_reservation, i.min_stock_qty, l.id, COALESCE(led.hu_code, led.hu) HAVING ABS(SUM(led.qty_delta)) > @qty_tolerance ORDER BY i.name, l.code, COALESCE(led.hu_code, led.hu)";
         return baseQuery;
     }
 
@@ -7637,6 +7767,771 @@ LEFT JOIN locations l ON l.id = c.location_id
     private static string ToDbDateOnly(DateTime value)
     {
         return value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    }
+
+    public WarehouseActionBundle? GetWarehouseActionBundle(long id)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT id, bundle_ref, source, status, created_at, created_by, approved_at, approved_by,
+       executed_at, completed_at, rejected_at, rejected_by, comment, error_code, error_message
+FROM warehouse_action_bundles
+WHERE id = @id;");
+            command.Parameters.AddWithValue("@id", id);
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadWarehouseActionBundle(reader) : null;
+        });
+    }
+
+    public WarehouseActionBundle? FindWarehouseBundleByRef(string bundleRef)
+    {
+        if (string.IsNullOrWhiteSpace(bundleRef))
+        {
+            return null;
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT id, bundle_ref, source, status, created_at, created_by, approved_at, approved_by,
+       executed_at, completed_at, rejected_at, rejected_by, comment, error_code, error_message
+FROM warehouse_action_bundles
+WHERE UPPER(BTRIM(bundle_ref)) = UPPER(BTRIM(@bundle_ref));");
+            command.Parameters.AddWithValue("@bundle_ref", bundleRef.Trim());
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadWarehouseActionBundle(reader) : null;
+        });
+    }
+
+    public IReadOnlyList<WarehouseActionBundle> GetWarehouseActionBundles(string? status)
+    {
+        return WithConnection(connection =>
+        {
+            var sql = @"
+SELECT id, bundle_ref, source, status, created_at, created_by, approved_at, approved_by,
+       executed_at, completed_at, rejected_at, rejected_by, comment, error_code, error_message
+FROM warehouse_action_bundles";
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                sql += " WHERE status = @status";
+            }
+
+            sql += " ORDER BY created_at DESC, id DESC";
+            using var command = CreateCommand(connection, sql);
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                command.Parameters.AddWithValue("@status", status.Trim());
+            }
+
+            using var reader = command.ExecuteReader();
+            var list = new List<WarehouseActionBundle>();
+            while (reader.Read())
+            {
+                list.Add(ReadWarehouseActionBundle(reader));
+            }
+
+            return list;
+        });
+    }
+
+    public int GetMaxWarehouseBundleRefSequenceByYear(int year)
+    {
+        return GetMaxRefSequenceByYear("SELECT bundle_ref FROM warehouse_action_bundles WHERE bundle_ref LIKE @pattern", year);
+    }
+
+    public long AddWarehouseActionBundle(WarehouseActionBundle bundle)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO warehouse_action_bundles(
+    bundle_ref, source, status, created_at, created_by, approved_at, approved_by,
+    executed_at, completed_at, rejected_at, rejected_by, comment, error_code, error_message)
+VALUES(
+    @bundle_ref, @source, @status, @created_at, @created_by, @approved_at, @approved_by,
+    @executed_at, @completed_at, @rejected_at, @rejected_by, @comment, @error_code, @error_message)
+RETURNING id;");
+            command.Parameters.AddWithValue("@bundle_ref", bundle.BundleRef.Trim());
+            command.Parameters.AddWithValue("@source", bundle.Source.Trim());
+            command.Parameters.AddWithValue("@status", bundle.Status.Trim());
+            command.Parameters.AddWithValue("@created_at", ToDbDate(bundle.CreatedAt));
+            command.Parameters.AddWithValue("@created_by", ToDbNullable(bundle.CreatedBy));
+            command.Parameters.AddWithValue("@approved_at", bundle.ApprovedAt.HasValue ? ToDbDate(bundle.ApprovedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@approved_by", ToDbNullable(bundle.ApprovedBy));
+            command.Parameters.AddWithValue("@executed_at", bundle.ExecutedAt.HasValue ? ToDbDate(bundle.ExecutedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@completed_at", bundle.CompletedAt.HasValue ? ToDbDate(bundle.CompletedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@rejected_at", bundle.RejectedAt.HasValue ? ToDbDate(bundle.RejectedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@rejected_by", ToDbNullable(bundle.RejectedBy));
+            command.Parameters.AddWithValue("@comment", ToDbNullable(bundle.Comment));
+            command.Parameters.AddWithValue("@error_code", ToDbNullable(bundle.ErrorCode));
+            command.Parameters.AddWithValue("@error_message", ToDbNullable(bundle.ErrorMessage));
+            return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public void UpdateWarehouseActionBundleStatus(
+        long bundleId,
+        string status,
+        DateTime? approvedAt,
+        string? approvedBy,
+        DateTime? executedAt,
+        DateTime? completedAt,
+        DateTime? rejectedAt,
+        string? rejectedBy,
+        string? errorCode,
+        string? errorMessage)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE warehouse_action_bundles
+SET status = @status,
+    approved_at = COALESCE(@approved_at, approved_at),
+    approved_by = COALESCE(@approved_by, approved_by),
+    executed_at = COALESCE(@executed_at, executed_at),
+    completed_at = COALESCE(@completed_at, completed_at),
+    rejected_at = COALESCE(@rejected_at, rejected_at),
+    rejected_by = COALESCE(@rejected_by, rejected_by),
+    error_code = COALESCE(@error_code, error_code),
+    error_message = COALESCE(@error_message, error_message)
+WHERE id = @id;");
+            command.Parameters.AddWithValue("@status", status.Trim());
+            command.Parameters.AddWithValue("@approved_at", approvedAt.HasValue ? ToDbDate(approvedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@approved_by", ToDbNullable(approvedBy));
+            command.Parameters.AddWithValue("@executed_at", executedAt.HasValue ? ToDbDate(executedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@completed_at", completedAt.HasValue ? ToDbDate(completedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@rejected_at", rejectedAt.HasValue ? ToDbDate(rejectedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@rejected_by", ToDbNullable(rejectedBy));
+            command.Parameters.AddWithValue("@error_code", ToDbNullable(errorCode));
+            command.Parameters.AddWithValue("@error_message", ToDbNullable(errorMessage));
+            command.Parameters.AddWithValue("@id", bundleId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public WarehouseActionLine? GetWarehouseActionLine(long lineId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildWarehouseActionLineSelectSql("WHERE l.id = @id"));
+            command.Parameters.AddWithValue("@id", lineId);
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadWarehouseActionLine(reader) : null;
+        });
+    }
+
+    public IReadOnlyList<WarehouseActionLine> GetWarehouseActionLines(long bundleId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildWarehouseActionLineSelectSql("WHERE l.bundle_id = @bundle_id ORDER BY l.line_no, l.id"));
+            command.Parameters.AddWithValue("@bundle_id", bundleId);
+            using var reader = command.ExecuteReader();
+            var list = new List<WarehouseActionLine>();
+            while (reader.Read())
+            {
+                list.Add(ReadWarehouseActionLine(reader));
+            }
+
+            return list;
+        });
+    }
+
+    public int GetNextWarehouseActionLineNo(long bundleId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "SELECT COALESCE(MAX(line_no), 0) + 1 FROM warehouse_action_lines WHERE bundle_id = @bundle_id;");
+            command.Parameters.AddWithValue("@bundle_id", bundleId);
+            return Convert.ToInt32(command.ExecuteScalar() ?? 1);
+        });
+    }
+
+    public long AddWarehouseActionLine(WarehouseActionLine line)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO warehouse_action_lines(
+    bundle_id, line_no, action_type, status, source_order_id, target_order_id, source_doc_id, target_doc_id,
+    item_id, hu_code, from_location_id, to_location_id, qty, payload_json, result_json,
+    error_code, error_message, created_at, updated_at)
+VALUES(
+    @bundle_id, @line_no, @action_type, @status, @source_order_id, @target_order_id, @source_doc_id, @target_doc_id,
+    @item_id, @hu_code, @from_location_id, @to_location_id, @qty, @payload_json::jsonb, @result_json::jsonb,
+    @error_code, @error_message, @created_at, @updated_at)
+RETURNING id;");
+            AddWarehouseActionLineParameters(command, line);
+            return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public void UpdateWarehouseActionLine(
+        long lineId,
+        string status,
+        long? targetDocId,
+        string? resultJson,
+        string? errorCode,
+        string? errorMessage,
+        DateTime updatedAt)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE warehouse_action_lines
+SET status = @status,
+    target_doc_id = COALESCE(@target_doc_id, target_doc_id),
+    result_json = COALESCE(@result_json::jsonb, result_json),
+    error_code = @error_code,
+    error_message = @error_message,
+    updated_at = @updated_at
+WHERE id = @id;");
+            command.Parameters.AddWithValue("@status", status.Trim());
+            command.Parameters.AddWithValue("@target_doc_id", targetDocId.HasValue ? targetDocId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@result_json", string.IsNullOrWhiteSpace(resultJson) ? DBNull.Value : resultJson);
+            command.Parameters.AddWithValue("@error_code", ToDbNullable(errorCode));
+            command.Parameters.AddWithValue("@error_message", ToDbNullable(errorMessage));
+            command.Parameters.AddWithValue("@updated_at", ToDbDate(updatedAt));
+            command.Parameters.AddWithValue("@id", lineId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public WarehouseTask? GetWarehouseTask(long taskId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildWarehouseTaskSelectSql("WHERE t.id = @id"));
+            command.Parameters.AddWithValue("@id", taskId);
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadWarehouseTask(reader) : null;
+        });
+    }
+
+    public WarehouseTask? FindWarehouseTaskByRef(string taskRef)
+    {
+        if (string.IsNullOrWhiteSpace(taskRef))
+        {
+            return null;
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildWarehouseTaskSelectSql("WHERE UPPER(BTRIM(t.task_ref)) = UPPER(BTRIM(@task_ref))"));
+            command.Parameters.AddWithValue("@task_ref", taskRef.Trim());
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadWarehouseTask(reader) : null;
+        });
+    }
+
+    public IReadOnlyList<WarehouseTask> GetWarehouseTasksByBundle(long bundleId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildWarehouseTaskSelectSql("WHERE t.bundle_id = @bundle_id ORDER BY t.id"));
+            command.Parameters.AddWithValue("@bundle_id", bundleId);
+            using var reader = command.ExecuteReader();
+            var list = new List<WarehouseTask>();
+            while (reader.Read())
+            {
+                list.Add(ReadWarehouseTask(reader));
+            }
+
+            return list;
+        });
+    }
+
+    public IReadOnlyList<WarehouseTask> GetActiveWarehouseTasks(string? deviceId)
+    {
+        return WithConnection(connection =>
+        {
+            var sql = BuildWarehouseTaskSelectSql(@"
+WHERE t.status IN ('NEW', 'ASSIGNED', 'IN_EXECUTION')
+  AND EXISTS (
+      SELECT 1
+      FROM warehouse_action_bundles b
+      WHERE b.id = t.bundle_id
+        AND b.status IN ('APPROVED', 'IN_EXECUTION', 'EXECUTED'))");
+            if (!string.IsNullOrWhiteSpace(deviceId))
+            {
+                sql += " AND (t.assigned_to_device_id IS NULL OR UPPER(BTRIM(t.assigned_to_device_id)) = UPPER(BTRIM(@device_id)))";
+            }
+
+            sql += " ORDER BY t.created_at, t.id";
+            using var command = CreateCommand(connection, sql);
+            if (!string.IsNullOrWhiteSpace(deviceId))
+            {
+                command.Parameters.AddWithValue("@device_id", deviceId.Trim());
+            }
+
+            using var reader = command.ExecuteReader();
+            var list = new List<WarehouseTask>();
+            while (reader.Read())
+            {
+                list.Add(ReadWarehouseTask(reader));
+            }
+
+            return list;
+        });
+    }
+
+    public int GetMaxWarehouseTaskRefSequenceByYear(int year)
+    {
+        return GetMaxRefSequenceByYear("SELECT task_ref FROM warehouse_tasks WHERE task_ref LIKE @pattern", year);
+    }
+
+    public long AddWarehouseTask(WarehouseTask task)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO warehouse_tasks(
+    task_ref, bundle_id, action_line_id, task_type, status, assigned_to_device_id, assigned_to_user,
+    created_at, started_at, executed_at, confirmed_at, cancelled_at, comment)
+VALUES(
+    @task_ref, @bundle_id, @action_line_id, @task_type, @status, @assigned_to_device_id, @assigned_to_user,
+    @created_at, @started_at, @executed_at, @confirmed_at, @cancelled_at, @comment)
+RETURNING id;");
+            command.Parameters.AddWithValue("@task_ref", task.TaskRef.Trim());
+            command.Parameters.AddWithValue("@bundle_id", task.BundleId);
+            command.Parameters.AddWithValue("@action_line_id", task.ActionLineId);
+            command.Parameters.AddWithValue("@task_type", task.TaskType.Trim());
+            command.Parameters.AddWithValue("@status", task.Status.Trim());
+            command.Parameters.AddWithValue("@assigned_to_device_id", ToDbNullable(task.AssignedToDeviceId));
+            command.Parameters.AddWithValue("@assigned_to_user", ToDbNullable(task.AssignedToUser));
+            command.Parameters.AddWithValue("@created_at", ToDbDate(task.CreatedAt));
+            command.Parameters.AddWithValue("@started_at", task.StartedAt.HasValue ? ToDbDate(task.StartedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@executed_at", task.ExecutedAt.HasValue ? ToDbDate(task.ExecutedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@confirmed_at", task.ConfirmedAt.HasValue ? ToDbDate(task.ConfirmedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@cancelled_at", task.CancelledAt.HasValue ? ToDbDate(task.CancelledAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@comment", ToDbNullable(task.Comment));
+            return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public void UpdateWarehouseTaskStatus(
+        long taskId,
+        string status,
+        DateTime? startedAt,
+        DateTime? executedAt,
+        DateTime? confirmedAt,
+        DateTime? cancelledAt,
+        string? assignedToDeviceId,
+        string? assignedToUser)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE warehouse_tasks
+SET status = @status,
+    started_at = COALESCE(@started_at, started_at),
+    executed_at = COALESCE(@executed_at, executed_at),
+    confirmed_at = COALESCE(@confirmed_at, confirmed_at),
+    cancelled_at = COALESCE(@cancelled_at, cancelled_at),
+    assigned_to_device_id = COALESCE(@assigned_to_device_id, assigned_to_device_id),
+    assigned_to_user = COALESCE(@assigned_to_user, assigned_to_user)
+WHERE id = @id;");
+            command.Parameters.AddWithValue("@status", status.Trim());
+            command.Parameters.AddWithValue("@started_at", startedAt.HasValue ? ToDbDate(startedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@executed_at", executedAt.HasValue ? ToDbDate(executedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@confirmed_at", confirmedAt.HasValue ? ToDbDate(confirmedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@cancelled_at", cancelledAt.HasValue ? ToDbDate(cancelledAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@assigned_to_device_id", ToDbNullable(assignedToDeviceId));
+            command.Parameters.AddWithValue("@assigned_to_user", ToDbNullable(assignedToUser));
+            command.Parameters.AddWithValue("@id", taskId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public WarehouseTaskLine? GetWarehouseTaskLine(long lineId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildWarehouseTaskLineSelectSql("WHERE tl.id = @id"));
+            command.Parameters.AddWithValue("@id", lineId);
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadWarehouseTaskLine(reader) : null;
+        });
+    }
+
+    public IReadOnlyList<WarehouseTaskLine> GetWarehouseTaskLines(long taskId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildWarehouseTaskLineSelectSql("WHERE tl.task_id = @task_id ORDER BY tl.line_no, tl.id"));
+            command.Parameters.AddWithValue("@task_id", taskId);
+            using var reader = command.ExecuteReader();
+            var list = new List<WarehouseTaskLine>();
+            while (reader.Read())
+            {
+                list.Add(ReadWarehouseTaskLine(reader));
+            }
+
+            return list;
+        });
+    }
+
+    public long AddWarehouseTaskLine(WarehouseTaskLine line)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO warehouse_task_lines(
+    task_id, line_no, expected_hu_code, expected_item_id, expected_qty, from_location_id, to_location_id,
+    order_id, doc_id, status, scanned_hu_code, scanned_location_id, scanned_at, device_id, operator_id,
+    error_code, error_message)
+VALUES(
+    @task_id, @line_no, @expected_hu_code, @expected_item_id, @expected_qty, @from_location_id, @to_location_id,
+    @order_id, @doc_id, @status, @scanned_hu_code, @scanned_location_id, @scanned_at, @device_id, @operator_id,
+    @error_code, @error_message)
+RETURNING id;");
+            command.Parameters.AddWithValue("@task_id", line.TaskId);
+            command.Parameters.AddWithValue("@line_no", line.LineNo);
+            command.Parameters.AddWithValue("@expected_hu_code", ToDbNullable(line.ExpectedHuCode));
+            command.Parameters.AddWithValue("@expected_item_id", line.ExpectedItemId.HasValue ? line.ExpectedItemId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@expected_qty", line.ExpectedQty.HasValue ? line.ExpectedQty.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@from_location_id", line.FromLocationId.HasValue ? line.FromLocationId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@to_location_id", line.ToLocationId.HasValue ? line.ToLocationId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@order_id", line.OrderId.HasValue ? line.OrderId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@doc_id", line.DocId.HasValue ? line.DocId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@status", line.Status.Trim());
+            command.Parameters.AddWithValue("@scanned_hu_code", ToDbNullable(line.ScannedHuCode));
+            command.Parameters.AddWithValue("@scanned_location_id", line.ScannedLocationId.HasValue ? line.ScannedLocationId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@scanned_at", line.ScannedAt.HasValue ? ToDbDate(line.ScannedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@device_id", ToDbNullable(line.DeviceId));
+            command.Parameters.AddWithValue("@operator_id", ToDbNullable(line.OperatorId));
+            command.Parameters.AddWithValue("@error_code", ToDbNullable(line.ErrorCode));
+            command.Parameters.AddWithValue("@error_message", ToDbNullable(line.ErrorMessage));
+            return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public void UpdateWarehouseTaskLineScan(
+        long lineId,
+        string status,
+        string? scannedHuCode,
+        long? scannedLocationId,
+        DateTime? scannedAt,
+        string? deviceId,
+        string? operatorId,
+        string? errorCode,
+        string? errorMessage)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE warehouse_task_lines
+SET status = @status,
+    scanned_hu_code = COALESCE(@scanned_hu_code, scanned_hu_code),
+    scanned_location_id = COALESCE(@scanned_location_id, scanned_location_id),
+    scanned_at = COALESCE(@scanned_at, scanned_at),
+    device_id = COALESCE(@device_id, device_id),
+    operator_id = COALESCE(@operator_id, operator_id),
+    error_code = @error_code,
+    error_message = @error_message
+WHERE id = @id;");
+            command.Parameters.AddWithValue("@status", status.Trim());
+            command.Parameters.AddWithValue("@scanned_hu_code", ToDbNullable(scannedHuCode));
+            command.Parameters.AddWithValue("@scanned_location_id", scannedLocationId.HasValue ? scannedLocationId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@scanned_at", scannedAt.HasValue ? ToDbDate(scannedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@device_id", ToDbNullable(deviceId));
+            command.Parameters.AddWithValue("@operator_id", ToDbNullable(operatorId));
+            command.Parameters.AddWithValue("@error_code", ToDbNullable(errorCode));
+            command.Parameters.AddWithValue("@error_message", ToDbNullable(errorMessage));
+            command.Parameters.AddWithValue("@id", lineId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public long AddWarehouseTaskEvent(WarehouseTaskEvent warehouseEvent)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO warehouse_task_events(
+    task_id, task_line_id, event_type, event_at, device_id, operator_id, hu_code, location_id, payload_json, message)
+VALUES(
+    @task_id, @task_line_id, @event_type, @event_at, @device_id, @operator_id, @hu_code, @location_id, @payload_json::jsonb, @message)
+RETURNING id;");
+            command.Parameters.AddWithValue("@task_id", warehouseEvent.TaskId);
+            command.Parameters.AddWithValue("@task_line_id", warehouseEvent.TaskLineId.HasValue ? warehouseEvent.TaskLineId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@event_type", warehouseEvent.EventType.Trim());
+            command.Parameters.AddWithValue("@event_at", ToDbDate(warehouseEvent.EventAt));
+            command.Parameters.AddWithValue("@device_id", ToDbNullable(warehouseEvent.DeviceId));
+            command.Parameters.AddWithValue("@operator_id", ToDbNullable(warehouseEvent.OperatorId));
+            command.Parameters.AddWithValue("@hu_code", ToDbNullable(warehouseEvent.HuCode));
+            command.Parameters.AddWithValue("@location_id", warehouseEvent.LocationId.HasValue ? warehouseEvent.LocationId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@payload_json", string.IsNullOrWhiteSpace(warehouseEvent.PayloadJson) ? "{}" : warehouseEvent.PayloadJson);
+            command.Parameters.AddWithValue("@message", ToDbNullable(warehouseEvent.Message));
+            return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public IReadOnlyList<WarehouseTaskEvent> GetWarehouseTaskEvents(long taskId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT id, task_id, task_line_id, event_type, event_at, device_id, operator_id, hu_code, location_id, payload_json::text, message
+FROM warehouse_task_events
+WHERE task_id = @task_id
+ORDER BY event_at, id;");
+            command.Parameters.AddWithValue("@task_id", taskId);
+            using var reader = command.ExecuteReader();
+            var list = new List<WarehouseTaskEvent>();
+            while (reader.Read())
+            {
+                list.Add(ReadWarehouseTaskEvent(reader));
+            }
+
+            return list;
+        });
+    }
+
+    public bool IsHuLockedByActiveWarehouseTask(string huCode, long? excludeBundleId)
+    {
+        if (string.IsNullOrWhiteSpace(huCode))
+        {
+            return false;
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT 1
+FROM warehouse_action_bundles b
+JOIN warehouse_action_lines l ON l.bundle_id = b.id
+WHERE b.status IN ('SUBMITTED', 'APPROVED', 'IN_EXECUTION', 'EXECUTED')
+  AND UPPER(BTRIM(l.hu_code)) = UPPER(BTRIM(@hu_code))
+  AND (@exclude_bundle_id IS NULL OR b.id <> @exclude_bundle_id)
+UNION ALL
+SELECT 1
+FROM warehouse_action_bundles b
+JOIN warehouse_tasks t ON t.bundle_id = b.id
+JOIN warehouse_task_lines tl ON tl.task_id = t.id
+WHERE b.status IN ('SUBMITTED', 'APPROVED', 'IN_EXECUTION', 'EXECUTED')
+  AND UPPER(BTRIM(COALESCE(tl.scanned_hu_code, tl.expected_hu_code))) = UPPER(BTRIM(@hu_code))
+  AND (@exclude_bundle_id IS NULL OR b.id <> @exclude_bundle_id)
+LIMIT 1;");
+            command.Parameters.AddWithValue("@hu_code", huCode.Trim());
+            command.Parameters.AddWithValue("@exclude_bundle_id", excludeBundleId.HasValue ? excludeBundleId.Value : DBNull.Value);
+            return command.ExecuteScalar() != null;
+        });
+    }
+
+    private static string BuildWarehouseActionLineSelectSql(string whereClause)
+    {
+        return @"
+SELECT l.id, l.bundle_id, l.line_no, l.action_type, l.status, l.source_order_id, l.target_order_id,
+       l.source_doc_id, l.target_doc_id, l.item_id, l.hu_code, l.from_location_id, l.to_location_id,
+       l.qty, l.payload_json::text, l.result_json::text, l.error_code, l.error_message, l.created_at, l.updated_at
+FROM warehouse_action_lines l " + whereClause;
+    }
+
+    private static string BuildWarehouseTaskSelectSql(string whereClause)
+    {
+        return @"
+SELECT t.id, t.task_ref, t.bundle_id, t.action_line_id, t.task_type, t.status, t.assigned_to_device_id,
+       t.assigned_to_user, t.created_at, t.started_at, t.executed_at, t.confirmed_at, t.cancelled_at, t.comment
+FROM warehouse_tasks t " + whereClause;
+    }
+
+    private static string BuildWarehouseTaskLineSelectSql(string whereClause)
+    {
+        return @"
+SELECT tl.id, tl.task_id, tl.line_no, tl.expected_hu_code, tl.expected_item_id, tl.expected_qty,
+       tl.from_location_id, tl.to_location_id, tl.order_id, tl.doc_id, tl.status, tl.scanned_hu_code,
+       tl.scanned_location_id, tl.scanned_at, tl.device_id, tl.operator_id, tl.error_code, tl.error_message
+FROM warehouse_task_lines tl " + whereClause;
+    }
+
+    private static void AddWarehouseActionLineParameters(NpgsqlCommand command, WarehouseActionLine line)
+    {
+        command.Parameters.AddWithValue("@bundle_id", line.BundleId);
+        command.Parameters.AddWithValue("@line_no", line.LineNo);
+        command.Parameters.AddWithValue("@action_type", line.ActionType.Trim());
+        command.Parameters.AddWithValue("@status", line.Status.Trim());
+        command.Parameters.AddWithValue("@source_order_id", line.SourceOrderId.HasValue ? line.SourceOrderId.Value : DBNull.Value);
+        command.Parameters.AddWithValue("@target_order_id", line.TargetOrderId.HasValue ? line.TargetOrderId.Value : DBNull.Value);
+        command.Parameters.AddWithValue("@source_doc_id", line.SourceDocId.HasValue ? line.SourceDocId.Value : DBNull.Value);
+        command.Parameters.AddWithValue("@target_doc_id", line.TargetDocId.HasValue ? line.TargetDocId.Value : DBNull.Value);
+        command.Parameters.AddWithValue("@item_id", line.ItemId.HasValue ? line.ItemId.Value : DBNull.Value);
+        command.Parameters.AddWithValue("@hu_code", ToDbNullable(line.HuCode));
+        command.Parameters.AddWithValue("@from_location_id", line.FromLocationId.HasValue ? line.FromLocationId.Value : DBNull.Value);
+        command.Parameters.AddWithValue("@to_location_id", line.ToLocationId.HasValue ? line.ToLocationId.Value : DBNull.Value);
+        command.Parameters.AddWithValue("@qty", line.Qty.HasValue ? line.Qty.Value : DBNull.Value);
+        command.Parameters.AddWithValue("@payload_json", string.IsNullOrWhiteSpace(line.PayloadJson) ? "{}" : line.PayloadJson);
+        command.Parameters.AddWithValue("@result_json", string.IsNullOrWhiteSpace(line.ResultJson) ? DBNull.Value : line.ResultJson);
+        command.Parameters.AddWithValue("@error_code", ToDbNullable(line.ErrorCode));
+        command.Parameters.AddWithValue("@error_message", ToDbNullable(line.ErrorMessage));
+        command.Parameters.AddWithValue("@created_at", ToDbDate(line.CreatedAt));
+        command.Parameters.AddWithValue("@updated_at", ToDbDate(line.UpdatedAt));
+    }
+
+    private static WarehouseActionBundle ReadWarehouseActionBundle(NpgsqlDataReader reader)
+    {
+        return new WarehouseActionBundle
+        {
+            Id = reader.GetInt64(0),
+            BundleRef = reader.GetString(1),
+            Source = reader.GetString(2),
+            Status = reader.GetString(3),
+            CreatedAt = FromDbDate(reader.GetString(4)) ?? DateTime.MinValue,
+            CreatedBy = reader.IsDBNull(5) ? null : reader.GetString(5),
+            ApprovedAt = reader.IsDBNull(6) ? null : FromDbDate(reader.GetString(6)),
+            ApprovedBy = reader.IsDBNull(7) ? null : reader.GetString(7),
+            ExecutedAt = reader.IsDBNull(8) ? null : FromDbDate(reader.GetString(8)),
+            CompletedAt = reader.IsDBNull(9) ? null : FromDbDate(reader.GetString(9)),
+            RejectedAt = reader.IsDBNull(10) ? null : FromDbDate(reader.GetString(10)),
+            RejectedBy = reader.IsDBNull(11) ? null : reader.GetString(11),
+            Comment = reader.IsDBNull(12) ? null : reader.GetString(12),
+            ErrorCode = reader.IsDBNull(13) ? null : reader.GetString(13),
+            ErrorMessage = reader.IsDBNull(14) ? null : reader.GetString(14)
+        };
+    }
+
+    private static WarehouseActionLine ReadWarehouseActionLine(NpgsqlDataReader reader)
+    {
+        return new WarehouseActionLine
+        {
+            Id = reader.GetInt64(0),
+            BundleId = reader.GetInt64(1),
+            LineNo = reader.GetInt32(2),
+            ActionType = reader.GetString(3),
+            Status = reader.GetString(4),
+            SourceOrderId = reader.IsDBNull(5) ? null : reader.GetInt64(5),
+            TargetOrderId = reader.IsDBNull(6) ? null : reader.GetInt64(6),
+            SourceDocId = reader.IsDBNull(7) ? null : reader.GetInt64(7),
+            TargetDocId = reader.IsDBNull(8) ? null : reader.GetInt64(8),
+            ItemId = reader.IsDBNull(9) ? null : reader.GetInt64(9),
+            HuCode = reader.IsDBNull(10) ? null : reader.GetString(10),
+            FromLocationId = reader.IsDBNull(11) ? null : reader.GetInt64(11),
+            ToLocationId = reader.IsDBNull(12) ? null : reader.GetInt64(12),
+            Qty = reader.IsDBNull(13) ? null : reader.GetDouble(13),
+            PayloadJson = reader.IsDBNull(14) ? "{}" : reader.GetString(14),
+            ResultJson = reader.IsDBNull(15) ? null : reader.GetString(15),
+            ErrorCode = reader.IsDBNull(16) ? null : reader.GetString(16),
+            ErrorMessage = reader.IsDBNull(17) ? null : reader.GetString(17),
+            CreatedAt = FromDbDate(reader.GetString(18)) ?? DateTime.MinValue,
+            UpdatedAt = FromDbDate(reader.GetString(19)) ?? DateTime.MinValue
+        };
+    }
+
+    private static WarehouseTask ReadWarehouseTask(NpgsqlDataReader reader)
+    {
+        return new WarehouseTask
+        {
+            Id = reader.GetInt64(0),
+            TaskRef = reader.GetString(1),
+            BundleId = reader.GetInt64(2),
+            ActionLineId = reader.GetInt64(3),
+            TaskType = reader.GetString(4),
+            Status = reader.GetString(5),
+            AssignedToDeviceId = reader.IsDBNull(6) ? null : reader.GetString(6),
+            AssignedToUser = reader.IsDBNull(7) ? null : reader.GetString(7),
+            CreatedAt = FromDbDate(reader.GetString(8)) ?? DateTime.MinValue,
+            StartedAt = reader.IsDBNull(9) ? null : FromDbDate(reader.GetString(9)),
+            ExecutedAt = reader.IsDBNull(10) ? null : FromDbDate(reader.GetString(10)),
+            ConfirmedAt = reader.IsDBNull(11) ? null : FromDbDate(reader.GetString(11)),
+            CancelledAt = reader.IsDBNull(12) ? null : FromDbDate(reader.GetString(12)),
+            Comment = reader.IsDBNull(13) ? null : reader.GetString(13)
+        };
+    }
+
+    private static WarehouseTaskLine ReadWarehouseTaskLine(NpgsqlDataReader reader)
+    {
+        return new WarehouseTaskLine
+        {
+            Id = reader.GetInt64(0),
+            TaskId = reader.GetInt64(1),
+            LineNo = reader.GetInt32(2),
+            ExpectedHuCode = reader.IsDBNull(3) ? null : reader.GetString(3),
+            ExpectedItemId = reader.IsDBNull(4) ? null : reader.GetInt64(4),
+            ExpectedQty = reader.IsDBNull(5) ? null : reader.GetDouble(5),
+            FromLocationId = reader.IsDBNull(6) ? null : reader.GetInt64(6),
+            ToLocationId = reader.IsDBNull(7) ? null : reader.GetInt64(7),
+            OrderId = reader.IsDBNull(8) ? null : reader.GetInt64(8),
+            DocId = reader.IsDBNull(9) ? null : reader.GetInt64(9),
+            Status = reader.GetString(10),
+            ScannedHuCode = reader.IsDBNull(11) ? null : reader.GetString(11),
+            ScannedLocationId = reader.IsDBNull(12) ? null : reader.GetInt64(12),
+            ScannedAt = reader.IsDBNull(13) ? null : FromDbDate(reader.GetString(13)),
+            DeviceId = reader.IsDBNull(14) ? null : reader.GetString(14),
+            OperatorId = reader.IsDBNull(15) ? null : reader.GetString(15),
+            ErrorCode = reader.IsDBNull(16) ? null : reader.GetString(16),
+            ErrorMessage = reader.IsDBNull(17) ? null : reader.GetString(17)
+        };
+    }
+
+    private static WarehouseTaskEvent ReadWarehouseTaskEvent(NpgsqlDataReader reader)
+    {
+        return new WarehouseTaskEvent
+        {
+            Id = reader.GetInt64(0),
+            TaskId = reader.GetInt64(1),
+            TaskLineId = reader.IsDBNull(2) ? null : reader.GetInt64(2),
+            EventType = reader.GetString(3),
+            EventAt = FromDbDate(reader.GetString(4)) ?? DateTime.MinValue,
+            DeviceId = reader.IsDBNull(5) ? null : reader.GetString(5),
+            OperatorId = reader.IsDBNull(6) ? null : reader.GetString(6),
+            HuCode = reader.IsDBNull(7) ? null : reader.GetString(7),
+            LocationId = reader.IsDBNull(8) ? null : reader.GetInt64(8),
+            PayloadJson = reader.IsDBNull(9) ? "{}" : reader.GetString(9),
+            Message = reader.IsDBNull(10) ? null : reader.GetString(10)
+        };
+    }
+
+    private int GetMaxRefSequenceByYear(string sql, int year)
+    {
+        if (year <= 0)
+        {
+            return 0;
+        }
+
+        return WithConnection(connection =>
+        {
+            var yearToken = year.ToString(CultureInfo.InvariantCulture);
+            using var command = CreateCommand(connection, sql);
+            command.Parameters.AddWithValue("@pattern", $"%-{yearToken}-%");
+            using var reader = command.ExecuteReader();
+            var max = 0;
+            while (reader.Read())
+            {
+                var value = reader.GetString(0);
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
+                var parts = value.Split('-', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 3)
+                {
+                    continue;
+                }
+
+                if (!string.Equals(parts[1], yearToken, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (int.TryParse(parts[^1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var sequence))
+                {
+                    max = Math.Max(max, sequence);
+                }
+            }
+
+            return max;
+        });
+    }
+
+    private static object ToDbNullable(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? DBNull.Value : value.Trim();
     }
 
     private static DateTime? FromDbDate(string? value)

@@ -1048,6 +1048,9 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.GetHuStockRows())
             .Returns(() => BuildHuStockRows());
 
+        _store.Setup(store => store.GetNegativeStockBalances())
+            .Returns(() => BuildNegativeStockBalances());
+
         _store.Setup(store => store.GetHuByCode(It.IsAny<string>()))
             .Returns<string>(code => _hus.TryGetValue(code.Trim(), out var hu) ? hu : null);
 
@@ -1547,6 +1550,9 @@ internal sealed class CloseDocumentHarness
             .Returns<long>(docId => _productionPallets.Values.Any(pallet =>
                 pallet.PrdDocId == docId
                 && !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)));
+
+        _store.Setup(store => store.HasProductionPalletLinesForDoc(It.IsAny<long>()))
+            .Returns(false);
 
         _store.Setup(store => store.ClearPlannedProductionPalletPlan(It.IsAny<long>()))
             .Callback<long>(docId =>
@@ -2364,13 +2370,52 @@ internal sealed class CloseDocumentHarness
         }
 
         return totals
-            .Where(pair => Math.Abs(pair.Value) > 0.000001)
+            .Where(pair => !StockQuantityRules.IsEffectivelyZero(pair.Value))
             .Select(pair => new HuStockRow
             {
                 ItemId = pair.Key.ItemId,
                 LocationId = pair.Key.LocationId,
                 HuCode = pair.Key.HuCode,
                 Qty = pair.Value
+            })
+            .ToArray();
+    }
+
+    private IReadOnlyList<NegativeStockBalanceRow> BuildNegativeStockBalances()
+    {
+        return BuildHuStockRows()
+            .Where(row => StockQuantityRules.IsNegativeStockQty(row.Qty))
+            .Select(row =>
+            {
+                var lastEntry = _postedLedger
+                    .Where(entry => entry.ItemId == row.ItemId
+                                    && entry.LocationId == row.LocationId
+                                    && string.Equals(
+                                        NormalizeHu(entry.HuCode),
+                                        NormalizeHu(row.HuCode),
+                                        StringComparison.Ordinal))
+                    .OrderByDescending(entry => entry.Timestamp)
+                    .ThenByDescending(entry => entry.Id)
+                    .FirstOrDefault();
+                var lastDoc = lastEntry?.DocId is long docId && _docs.TryGetValue(docId, out var doc) ? doc : null;
+                _items.TryGetValue(row.ItemId, out var item);
+                _locations.TryGetValue(row.LocationId, out var location);
+                return new NegativeStockBalanceRow
+                {
+                    ItemId = row.ItemId,
+                    ItemName = item?.Name ?? $"#{row.ItemId}",
+                    LocationId = row.LocationId,
+                    LocationCode = location?.Code ?? $"#{row.LocationId}",
+                    HuCode = row.HuCode,
+                    Qty = row.Qty,
+                    LastLedgerEntryId = lastEntry?.Id,
+                    LastDocId = lastEntry?.DocId,
+                    LastDocRef = lastDoc?.DocRef,
+                    LastDocType = lastDoc?.Type,
+                    OrderId = lastDoc?.OrderId,
+                    OrderRef = lastDoc?.OrderRef,
+                    LastMovementAt = lastEntry?.Timestamp
+                };
             })
             .ToArray();
     }

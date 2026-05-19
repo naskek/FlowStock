@@ -1106,6 +1106,79 @@
       .then(normalizeProductionPalletScan);
   }
 
+  function apiListWarehouseTasks(deviceId) {
+    var query = deviceId ? "?device_id=" + encodeURIComponent(String(deviceId)) : "";
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/tsd/tasks" + query, { method: "GET" });
+      })
+      .then(function (payload) {
+        return payload && Array.isArray(payload.tasks) ? payload.tasks : [];
+      });
+  }
+
+  function apiGetWarehouseTask(taskId) {
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/tsd/tasks/" + encodeURIComponent(String(taskId)), {
+          method: "GET",
+        });
+      })
+      .then(function (payload) {
+        return {
+          task: payload && payload.task ? payload.task : null,
+          lines: payload && Array.isArray(payload.lines) ? payload.lines : [],
+          events: payload && Array.isArray(payload.events) ? payload.events : [],
+        };
+      });
+  }
+
+  function apiStartWarehouseTask(taskId, deviceId) {
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/tsd/tasks/" + encodeURIComponent(String(taskId)) + "/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            device_id: deviceId || "",
+          }),
+        });
+      });
+  }
+
+  function apiScanWarehouseTask(taskId, payload) {
+    var body = payload || {};
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/tsd/tasks/" + encodeURIComponent(String(taskId)) + "/scan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            barcode: body.barcode || body.barcodeValue || "",
+            scan_type: body.scanType || body.scan_type || "HU",
+            device_id: body.deviceId || body.device_id || "",
+            operator_id: body.operatorId || body.operator_id || "",
+          }),
+        });
+      });
+  }
+
+  function apiCompleteWarehouseTask(taskId, deviceId) {
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(
+          baseUrl + "/api/tsd/tasks/" + encodeURIComponent(String(taskId)) + "/complete",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              device_id: deviceId || "",
+            }),
+          }
+        );
+      });
+  }
+
   function apiFillProductionPallet(payload) {
     var body = payload || {};
     return getBaseUrl()
@@ -2556,6 +2629,11 @@
     apiGetProductionPallets: apiGetProductionPallets,
     apiScanProductionPallet: apiScanProductionPallet,
     apiFillProductionPallet: apiFillProductionPallet,
+    apiListWarehouseTasks: apiListWarehouseTasks,
+    apiGetWarehouseTask: apiGetWarehouseTask,
+    apiStartWarehouseTask: apiStartWarehouseTask,
+    apiScanWarehouseTask: apiScanWarehouseTask,
+    apiCompleteWarehouseTask: apiCompleteWarehouseTask,
     apiGetOrderLines: apiGetOrderLines,
     apiGetOrderShipmentRemaining: apiGetOrderShipmentRemaining,
     apiGetOrderReceiptRemaining: apiGetOrderReceiptRemaining,

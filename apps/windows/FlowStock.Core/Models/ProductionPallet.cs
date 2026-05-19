@@ -155,6 +155,8 @@ public sealed class ProductionPalletPlanAdoptionResult
     public int TransferredLineCount { get; init; }
     public IReadOnlyList<string> TransferredHuCodes { get; init; } = Array.Empty<string>();
     public IReadOnlyList<ProductionPalletPlanAdoptionWarning> Warnings { get; init; } = Array.Empty<ProductionPalletPlanAdoptionWarning>();
+    public string? SourceOrderStatus { get; init; }
+    public bool SourceOrderCommentUpdated { get; init; }
 }
 
 public sealed class ProductionPalletPlanAdoptionWarning

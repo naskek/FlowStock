@@ -33,9 +33,11 @@ public sealed class ProductionPalletService
         _data.ExecuteInTransaction(store =>
         {
             var order = store.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
-            if (order.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
+            if (order.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
             {
-                throw new InvalidOperationException("Заказ недоступен для планирования паллет.");
+                throw new InvalidOperationException(order.Status == OrderStatus.Merged
+                    ? "Заказ объединён с другим заказом. Выпуск по нему не требуется."
+                    : "Заказ недоступен для планирования паллет.");
             }
 
             var preparedDoc = FindPreparedOpenProductionReceipt(store, orderId, requireRemaining: false);
@@ -121,9 +123,11 @@ public sealed class ProductionPalletService
     public ProductionPalletCancelPlanResult CancelOrderPlan(long orderId)
     {
         var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
-        if (order.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
+        if (order.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
         {
-            throw new InvalidOperationException("Заказ недоступен для удаления плана паллет.");
+            throw new InvalidOperationException(order.Status == OrderStatus.Merged
+                ? "Заказ объединён с другим заказом. Выпуск по нему не требуется."
+                : "Заказ недоступен для удаления плана паллет.");
         }
 
         var docWithPlan = FindProductionReceiptWithPalletPlan(_data, orderId)
@@ -180,7 +184,7 @@ public sealed class ProductionPalletService
                 throw new ProductionPalletPlanAdoptionException("TARGET_NOT_CUSTOMER", "Получатель должен быть клиентским заказом.");
             }
 
-            if (sourceOrder.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
+            if (sourceOrder.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
             {
                 throw new ProductionPalletPlanAdoptionException("SOURCE_ORDER_NOT_EDITABLE", "Внутренний заказ недоступен для переноса плана паллет.");
             }
@@ -246,12 +250,54 @@ public sealed class ProductionPalletService
 
             var targetDoc = FindReusableEmptyProductionReceipt(store, targetCustomerOrderId)
                             ?? CreateProductionReceipt(store, targetOrder);
-            result = store.AdoptProductionPalletPlan(
+            var adoptResult = store.AdoptProductionPalletPlan(
                 sourceDoc.Id,
                 targetDoc.Id,
                 sourceInternalOrderId,
                 targetCustomerOrderId,
                 targetLinesByItemId);
+            EmptyDraftProductionReceiptCleanup.TryDeleteEmptyDraftProductionReceiptIfSafe(
+                store,
+                sourceInternalOrderId,
+                sourceDoc.Id);
+            var mergeResult = InternalOrderMergeService.TryMarkAsMerged(
+                store,
+                sourceInternalOrderId,
+                targetCustomerOrderId,
+                targetOrder.OrderRef);
+            var warnings = new List<ProductionPalletPlanAdoptionWarning>();
+            if (!string.IsNullOrWhiteSpace(mergeResult.WarningCode))
+            {
+                warnings.Add(new ProductionPalletPlanAdoptionWarning
+                {
+                    Code = mergeResult.WarningCode,
+                    Message = mergeResult.WarningMessage ?? string.Empty
+                });
+            }
+            else if (mergeResult.IsMerged && !string.IsNullOrWhiteSpace(mergeResult.InfoMessage))
+            {
+                warnings.Add(new ProductionPalletPlanAdoptionWarning
+                {
+                    Code = mergeResult.InfoCode ?? InternalOrderMergeService.MergedInfoCode,
+                    Message = mergeResult.InfoMessage
+                });
+            }
+
+            result = new ProductionPalletPlanAdoptionResult
+            {
+                Success = adoptResult.Success,
+                Message = adoptResult.Message,
+                SourceOrderId = adoptResult.SourceOrderId,
+                TargetOrderId = adoptResult.TargetOrderId,
+                SourcePrdDocId = adoptResult.SourcePrdDocId,
+                TargetPrdDocId = adoptResult.TargetPrdDocId,
+                TransferredPalletCount = adoptResult.TransferredPalletCount,
+                TransferredLineCount = adoptResult.TransferredLineCount,
+                TransferredHuCodes = adoptResult.TransferredHuCodes,
+                Warnings = warnings,
+                SourceOrderStatus = OrderStatusMapper.StatusToString(mergeResult.IsMerged ? OrderStatus.Merged : sourceOrder.Status),
+                SourceOrderCommentUpdated = mergeResult.CommentUpdated
+            };
         });
 
         return result;
@@ -275,7 +321,7 @@ public sealed class ProductionPalletService
             .Where(item => item.OrderId.HasValue)
             .GroupBy(item => item.OrderId!.Value)
             .Select(group => BuildFillingOrder(group.Key, group.ToList()))
-            .Where(row => row != null)
+            .Where(row => row != null && row.OrderStatus != OrderStatusMapper.StatusToString(OrderStatus.Merged))
             .Cast<ProductionFillingOrder>()
             .OrderBy(row => row.OrderType == OrderStatusMapper.TypeToString(OrderType.Internal) ? 0 : 1)
             .ThenByDescending(row => TryParseLong(row.OrderRef, out var number) ? number : long.MinValue)
@@ -291,9 +337,11 @@ public sealed class ProductionPalletService
     public ProductionFillingContext GetFillingContext(long orderId)
     {
         var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
-        if (order.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
+        if (order.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
         {
-            throw new InvalidOperationException("Заказ недоступен для наполнения.");
+            throw new InvalidOperationException(order.Status == OrderStatus.Merged
+                ? "Заказ объединён с другим заказом. Выпуск по нему не требуется."
+                : "Заказ недоступен для наполнения.");
         }
 
         var openDoc = FindPreparedOpenProductionReceipt(_data, orderId, requireRemaining: true);

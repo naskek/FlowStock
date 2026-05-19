@@ -191,7 +191,7 @@ public partial class OrderDetailsWindow : Window
         DueDatePicker.SelectedDate = _order.DueDate;
         CommentBox.Text = _order.Comment ?? string.Empty;
 
-        var isFinalStatus = _order.Status is OrderStatus.Shipped or OrderStatus.Cancelled;
+        var isFinalStatus = _order.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged;
         OrderStatusText.Text = OrderStatusMapper.StatusToDisplayName(_order.Status, _order.Type);
 
         _lines.Clear();
@@ -1251,11 +1251,14 @@ public partial class OrderDetailsWindow : Window
 
     private bool EnsureEditable(bool showMessage = true)
     {
-        if (_order != null && _order.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
+        if (_order != null && _order.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
         {
             if (showMessage)
             {
-                MessageBox.Show($"{OrderStatusMapper.StatusToDisplayName(_order.Status, _order.Type)} заказ нельзя редактировать.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
+                var message = _order.Status == OrderStatus.Merged
+                    ? "Заказ объединён с другим заказом. Выпуск по нему не требуется."
+                    : $"{OrderStatusMapper.StatusToDisplayName(_order.Status, _order.Type)} заказ нельзя редактировать.";
+                MessageBox.Show(message, "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             return false;
         }
@@ -1265,13 +1268,12 @@ public partial class OrderDetailsWindow : Window
 
     private bool EnsurePalletPlanningReady()
     {
-        if (_order != null && _order.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
+        if (_order != null && _order.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
         {
-            MessageBox.Show(
-                $"{OrderStatusMapper.StatusToDisplayName(_order.Status, _order.Type)} заказ недоступен для подготовки паллет.",
-                "Паллеты",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
+            var message = _order.Status == OrderStatus.Merged
+                ? "Заказ объединён с другим заказом. Выпуск по нему не требуется."
+                : $"{OrderStatusMapper.StatusToDisplayName(_order.Status, _order.Type)} заказ недоступен для подготовки паллет.";
+            MessageBox.Show(message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
             return false;
         }
 
@@ -1334,17 +1336,17 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        var canPlan = _orderId.HasValue && _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled);
-        var canPrint = _orderId.HasValue && _order?.Status is not OrderStatus.Cancelled;
+        var canPlan = _orderId.HasValue && _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged);
+        var canPrint = _orderId.HasValue && _order?.Status is not (OrderStatus.Cancelled or OrderStatus.Merged);
         var canDeletePlan = _orderId.HasValue
-                            && _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled)
+                            && _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
                             && HasOpenProductionPalletPlan(_orderId.Value);
         PlanPalletsButton.IsEnabled = canPlan;
         PrintPalletLabelsButton.IsEnabled = canPrint;
         DeletePalletPlanButton.IsEnabled = canDeletePlan;
         AdoptPalletPlanButton.IsEnabled = _orderId.HasValue
                                           && _order?.Type == OrderType.Customer
-                                          && _order.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled);
+                                          && _order.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged);
         OpenProductionReceiptButton.IsEnabled = _orderId.HasValue && GetProductionReceiptsForOrder(_orderId.Value).Count > 0;
         OrderLinesGrid.Tag = EnsureEditable(false) && !_productionPalletHuLocked;
     }
@@ -1567,7 +1569,7 @@ public partial class OrderDetailsWindow : Window
     private void UpdateTypeUi()
     {
         var type = GetSelectedOrderType();
-        var canEdit = _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled);
+        var canEdit = _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged);
 
         TypeCombo.IsEnabled = canEdit;
         PartnerCombo.IsEnabled = canEdit && type == OrderType.Customer;

@@ -94,6 +94,7 @@ public interface IDataStore
     ProductionPallet? GetProductionPalletByHu(string huCode);
     IReadOnlyList<ProductionPalletWorkItem> GetActiveProductionPalletWorkItems();
     bool HasProductionPallets(long docId);
+    bool HasProductionPalletLinesForDoc(long docId);
     void ClearPlannedProductionPalletPlan(long docId);
     int CountLedgerEntriesByDocId(long docId);
     ProductionPalletPlanCleanupCounts CancelProductionPalletPlan(long docId);
@@ -160,6 +161,8 @@ public interface IDataStore
     double GetAvailableQty(long itemId, long locationId, string? huCode);
     IReadOnlyDictionary<string, double> GetLedgerTotalsByHu();
     IReadOnlyList<HuStockRow> GetHuStockRows();
+
+    IReadOnlyList<NegativeStockBalanceRow> GetNegativeStockBalances();
     IReadOnlyList<HuOrderContextRow> GetHuOrderContextRows();
 
     HuRecord CreateHuRecord(string? createdBy);
@@ -224,5 +227,69 @@ public interface IDataStore
     void MarkKmCodeShipped(long codeId, long docId, long lineId, long? orderId);
     int DeleteKmCodesFromBatch(long batchId, IReadOnlyList<long> codeIds);
     void DeleteKmBatch(long batchId);
+
+    WarehouseActionBundle? GetWarehouseActionBundle(long id);
+    WarehouseActionBundle? FindWarehouseBundleByRef(string bundleRef);
+    IReadOnlyList<WarehouseActionBundle> GetWarehouseActionBundles(string? status);
+    int GetMaxWarehouseBundleRefSequenceByYear(int year);
+    long AddWarehouseActionBundle(WarehouseActionBundle bundle);
+    void UpdateWarehouseActionBundleStatus(
+        long bundleId,
+        string status,
+        DateTime? approvedAt,
+        string? approvedBy,
+        DateTime? executedAt,
+        DateTime? completedAt,
+        DateTime? rejectedAt,
+        string? rejectedBy,
+        string? errorCode,
+        string? errorMessage);
+
+    WarehouseActionLine? GetWarehouseActionLine(long lineId);
+    IReadOnlyList<WarehouseActionLine> GetWarehouseActionLines(long bundleId);
+    int GetNextWarehouseActionLineNo(long bundleId);
+    long AddWarehouseActionLine(WarehouseActionLine line);
+    void UpdateWarehouseActionLine(
+        long lineId,
+        string status,
+        long? targetDocId,
+        string? resultJson,
+        string? errorCode,
+        string? errorMessage,
+        DateTime updatedAt);
+
+    WarehouseTask? GetWarehouseTask(long taskId);
+    WarehouseTask? FindWarehouseTaskByRef(string taskRef);
+    IReadOnlyList<WarehouseTask> GetWarehouseTasksByBundle(long bundleId);
+    IReadOnlyList<WarehouseTask> GetActiveWarehouseTasks(string? deviceId);
+    int GetMaxWarehouseTaskRefSequenceByYear(int year);
+    long AddWarehouseTask(WarehouseTask task);
+    void UpdateWarehouseTaskStatus(
+        long taskId,
+        string status,
+        DateTime? startedAt,
+        DateTime? executedAt,
+        DateTime? confirmedAt,
+        DateTime? cancelledAt,
+        string? assignedToDeviceId,
+        string? assignedToUser);
+
+    WarehouseTaskLine? GetWarehouseTaskLine(long lineId);
+    IReadOnlyList<WarehouseTaskLine> GetWarehouseTaskLines(long taskId);
+    long AddWarehouseTaskLine(WarehouseTaskLine line);
+    void UpdateWarehouseTaskLineScan(
+        long lineId,
+        string status,
+        string? scannedHuCode,
+        long? scannedLocationId,
+        DateTime? scannedAt,
+        string? deviceId,
+        string? operatorId,
+        string? errorCode,
+        string? errorMessage);
+
+    long AddWarehouseTaskEvent(WarehouseTaskEvent warehouseEvent);
+    IReadOnlyList<WarehouseTaskEvent> GetWarehouseTaskEvents(long taskId);
+    bool IsHuLockedByActiveWarehouseTask(string huCode, long? excludeBundleId);
 }
 

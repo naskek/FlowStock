@@ -71,7 +71,7 @@ public sealed class OrderService
         var refreshedCount = 0;
         foreach (var order in store.GetOrders())
         {
-            if (order.Type != OrderType.Internal || order.Status == OrderStatus.Cancelled)
+            if (order.Type != OrderType.Internal || order.Status is OrderStatus.Cancelled or OrderStatus.Merged)
             {
                 continue;
             }
@@ -1408,7 +1408,7 @@ public sealed class OrderService
 
     private OrderStatus DetermineAutoStatus(Order order)
     {
-        if (order.Status == OrderStatus.Cancelled)
+        if (order.Status is OrderStatus.Cancelled or OrderStatus.Merged)
         {
             return order.Status;
         }

@@ -233,8 +233,11 @@ public sealed class InternalOrderAutoStatusTests
                     QtyReceived = 0
                 }
             ]);
-        store.Setup(s => s.UpdateOrderStatus(internalOrderId, OrderStatus.InProgress))
+        store.Setup(s => s.UpdateOrderStatus(internalOrderId, It.IsAny<OrderStatus>()))
             .Callback<long, OrderStatus>((_, status) => internalStatus = status);
+        store.Setup(s => s.UpdateOrder(It.IsAny<Order>()));
+        store.Setup(s => s.HasProductionPallets(It.IsAny<long>())).Returns(false);
+        store.Setup(s => s.CountLedgerEntriesByDocId(It.IsAny<long>())).Returns(0);
         store.Setup(s => s.UpdateOrderLineQty(It.IsAny<long>(), It.IsAny<double>()))
             .Callback<long, double>((lineId, qty) =>
             {
@@ -283,7 +286,9 @@ public sealed class InternalOrderAutoStatusTests
         var result = service.ApplyFromOpenInternalOrders(customerOrderId);
 
         store.Verify(s => s.UpdateOrderStatus(internalOrderId, OrderStatus.InProgress), Times.Once);
+        store.Verify(s => s.UpdateOrderStatus(internalOrderId, OrderStatus.Merged), Times.Once);
         Assert.True(result.HasTransfers);
+        Assert.Equal(OrderStatus.Merged, internalStatus);
     }
 
     [Fact]

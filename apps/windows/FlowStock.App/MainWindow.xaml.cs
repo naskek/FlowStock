@@ -11,6 +11,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using ExcelDataReader;
+using FlowStock.App.Services;
 using FlowStock.Core.Models;
 using Microsoft.Win32;
 using Npgsql;
@@ -27,6 +28,7 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<PartnerRow> _partners = new();
     private readonly ObservableCollection<Doc> _docs = new();
     private readonly ObservableCollection<Order> _orders = new();
+    private readonly ObservableCollection<WarehouseBundleListRow> _warehouseBundles = new();
     private readonly ObservableCollection<StockDisplayRow> _stock = new();
     private readonly ObservableCollection<LowStockDisplayRow> _lowStock = new();
     private readonly ObservableCollection<ProductionNeedDisplayRow> _productionNeedRows = new();
@@ -65,10 +67,11 @@ public partial class MainWindow : Window
     private const int TabProductionNeedIndex = 1;
     private const int TabDocsIndex = 2;
     private const int TabOrdersIndex = 3;
-    private const int TabItemsIndex = 4;
-    private const int TabLocationsIndex = 5;
-    private const int TabPartnersIndex = 6;
-    private const int TabKmIndex = 7;
+    private const int TabTasksIndex = 4;
+    private const int TabItemsIndex = 5;
+    private const int TabLocationsIndex = 6;
+    private const int TabPartnersIndex = 7;
+    private const int TabKmIndex = 8;
 
     public MainWindow(AppServices services)
     {
@@ -80,6 +83,18 @@ public partial class MainWindow : Window
         PartnersGrid.ItemsSource = _partners;
         DocsGrid.ItemsSource = _docs;
         OrdersGrid.ItemsSource = _orders;
+        WarehouseBundlesGrid.ItemsSource = _warehouseBundles;
+        WarehouseBundleFilterCombo.ItemsSource = new[]
+        {
+            new WarehouseBundleFilterOption(null, "Все"),
+            new WarehouseBundleFilterOption("SUBMITTED", "На подтверждении"),
+            new WarehouseBundleFilterOption("IN_EXECUTION", "В работе"),
+            new WarehouseBundleFilterOption("EXECUTED", "Исполнено ТСД"),
+            new WarehouseBundleFilterOption("COMPLETED", "Проведено"),
+            new WarehouseBundleFilterOption("REJECTED", "Отклонено")
+        };
+        WarehouseBundleFilterCombo.DisplayMemberPath = nameof(WarehouseBundleFilterOption.Label);
+        WarehouseBundleFilterCombo.SelectedIndex = 1;
         StockGrid.ItemsSource = _stock;
         LowStockGrid.ItemsSource = _lowStock;
         ProductionNeedGrid.ItemsSource = _productionNeedRows;
@@ -370,6 +385,9 @@ public partial class MainWindow : Window
                     break;
                 case TabOrdersIndex:
                     LoadOrders();
+                    break;
+                case TabTasksIndex:
+                    LoadWarehouseBundles();
                     break;
                 case TabItemsIndex:
                     LoadItems(ItemsSearchBox?.Text);
@@ -2487,6 +2505,82 @@ public partial class MainWindow : Window
         window.ShowDialog();
     }
 
+    private async void LoadWarehouseBundles()
+    {
+        try
+        {
+            var filter = WarehouseBundleFilterCombo.SelectedItem as WarehouseBundleFilterOption;
+            var result = await _services.WpfWarehouseTasks.TryListBundlesAsync(filter?.Status).ConfigureAwait(true);
+            _warehouseBundles.Clear();
+            if (!result.IsSuccess)
+            {
+                if (!string.IsNullOrWhiteSpace(result.ErrorMessage))
+                {
+                    MessageBox.Show(result.ErrorMessage, "Задания", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+
+                return;
+            }
+
+            foreach (var row in result.Bundles)
+            {
+                _warehouseBundles.Add(row);
+            }
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error("Load warehouse bundles failed", ex);
+            MessageBox.Show(ex.Message, "Задания", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void WarehouseBundlesRefresh_Click(object sender, RoutedEventArgs e) => LoadWarehouseBundles();
+
+    private void WarehouseBundleFilterCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (MainTabs.SelectedIndex == TabTasksIndex)
+        {
+            LoadWarehouseBundles();
+        }
+    }
+
+    private void WarehouseBundlesOpen_Click(object sender, RoutedEventArgs e) => OpenSelectedWarehouseBundle();
+
+    private void WarehouseBundlesGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e) => OpenSelectedWarehouseBundle();
+
+    private void OpenSelectedWarehouseBundle()
+    {
+        if (WarehouseBundlesGrid.SelectedItem is not WarehouseBundleListRow row)
+        {
+            MessageBox.Show("Выберите пакет.", "Задания", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var window = new WarehouseBundleDetailsWindow(_services, row.Id) { Owner = this };
+        if (window.ShowDialog() == true)
+        {
+            LoadWarehouseBundles();
+        }
+    }
+
+    private void WarehouseTestMove_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new WarehouseTestBundleDialog(_services, WarehouseTestBundleMode.MoveHu) { Owner = this };
+        if (dialog.ShowDialog() == true)
+        {
+            LoadWarehouseBundles();
+        }
+    }
+
+    private void WarehouseTestAdopt_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new WarehouseTestBundleDialog(_services, WarehouseTestBundleMode.AdoptPalletPlan) { Owner = this };
+        if (dialog.ShowDialog() == true)
+        {
+            LoadWarehouseBundles();
+        }
+    }
+
     private void OpenAdmin_Click(object sender, RoutedEventArgs e)
     {
         var window = new AdminWindow(
@@ -2801,6 +2895,8 @@ public partial class MainWindow : Window
         public string ReservedOrderDisplay { get; init; } = "не зарезервировано";
         public string ReservedCustomerDisplay { get; init; } = "не зарезервировано";
     }
+
+    private sealed record WarehouseBundleFilterOption(string? Status, string Label);
 
     private sealed record StockLocationFilterOption(string? Code, string Name);
 

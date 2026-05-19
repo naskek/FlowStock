@@ -164,9 +164,25 @@ public sealed class OrderAutoRedistributionTests
                     OrderRef = internalOrder.OrderRef,
                     Type = OrderType.Internal,
                     Status = status,
+                    Comment = orders[internalOrderId].Comment,
                     CreatedAt = internalOrder.CreatedAt
                 };
             });
+        store.Setup(s => s.UpdateOrder(It.IsAny<Order>()))
+            .Callback<Order>(order =>
+            {
+                orders[internalOrderId] = new Order
+                {
+                    Id = internalOrderId,
+                    OrderRef = internalOrder.OrderRef,
+                    Type = OrderType.Internal,
+                    Status = orders[internalOrderId].Status,
+                    Comment = order.Comment,
+                    CreatedAt = internalOrder.CreatedAt
+                };
+            });
+        store.Setup(s => s.HasProductionPallets(It.IsAny<long>())).Returns(false);
+        store.Setup(s => s.CountLedgerEntriesByDocId(It.IsAny<long>())).Returns(0);
 
         var service = new OrderAutoRedistributionService(store.Object);
         var result = service.ApplyFromOpenInternalOrders(customerOrderId);
@@ -176,6 +192,8 @@ public sealed class OrderAutoRedistributionTests
         Assert.Equal(100, result.Transfers[0].QtyTransferred, 3);
         Assert.Equal(100, customerQtyAfterAll);
         Assert.Equal(0, internalQty);
+        Assert.Equal(OrderStatus.Merged, orders[internalOrderId].Status);
+        Assert.Contains(result.Warnings, warning => warning.Code == InternalOrderMergeService.MergedInfoCode);
     }
 
     [Fact]
@@ -307,6 +325,7 @@ public sealed class OrderAutoRedistributionTests
                     CreatedAt = DateTime.Now
                 }
             ]);
+        store.Setup(s => s.HasProductionPallets(162)).Returns(true);
         store.Setup(s => s.CountLedgerEntriesByDocId(162)).Returns(0);
         store.Setup(s => s.UpdateOrderStatus(internalOrderId, OrderStatus.InProgress));
 
@@ -314,8 +333,8 @@ public sealed class OrderAutoRedistributionTests
         var result = service.ApplyFromOpenInternalOrders(customerOrderId);
 
         Assert.False(result.HasTransfers);
-        Assert.Equal("SOURCE_INTERNAL_HAS_PALLET_PLAN_BUT_QTY_ZERO", result.SkippedReason);
-        Assert.Contains(result.Warnings, warning => warning.Code == "SOURCE_INTERNAL_HAS_PALLET_PLAN_BUT_QTY_ZERO");
+        Assert.Equal(InternalOrderMergeService.ActivePalletPlanWarningCode, result.SkippedReason);
+        Assert.Contains(result.Warnings, warning => warning.Code == InternalOrderMergeService.ActivePalletPlanWarningCode);
         Assert.Equal(1, result.OpenInternalCandidateCount);
         Assert.Equal(1, result.MatchingInternalCandidateCount);
     }

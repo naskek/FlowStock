@@ -1,0 +1,26 @@
+<Window x:Class="FlowStock.App.WarehouseTestBundleDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Тестовый пакет"
+        SizeToContent="WidthAndHeight"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        MinWidth="380">
+    <StackPanel Margin="12">
+        <TextBlock x:Name="HintText" TextWrapping="Wrap" Margin="0,0,0,8" />
+        <TextBlock x:Name="Field1Label" Text="HU" />
+        <TextBox x:Name="Field1Box" Margin="0,4,0,8" />
+        <TextBlock x:Name="Field2Label" Text="Item id" />
+        <TextBox x:Name="Field2Box" Margin="0,4,0,8" />
+        <TextBlock x:Name="Field3Label" Text="From location id" />
+        <TextBox x:Name="Field3Box" Margin="0,4,0,8" />
+        <TextBlock x:Name="Field4Label" Text="To location id" Visibility="Collapsed" />
+        <TextBox x:Name="Field4Box" Margin="0,4,0,8" Visibility="Collapsed" />
+        <TextBlock x:Name="QtyLabel" Text="Qty" Visibility="Collapsed" />
+        <TextBox x:Name="QtyBox" Margin="0,4,0,8" Visibility="Collapsed" />
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
+            <Button Content="Создать и отправить" Width="150" IsDefault="True" Click="Create_Click" />
+            <Button Content="Отмена" Width="90" Margin="8,0,0,0" IsCancel="True" />
+        </StackPanel>
+    </StackPanel>
+</Window>

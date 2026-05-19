@@ -290,6 +290,7 @@ public sealed class DocumentService
                 switch (doc.Type)
                 {
                     case DocType.Inbound:
+                    case DocType.InventoryCorrection:
                     case DocType.ProductionReceipt:
                         if (!hasProductionPallets && line.ToLocationId.HasValue)
                         {
@@ -1613,6 +1614,7 @@ public sealed class DocumentService
             switch (doc.Type)
             {
                 case DocType.Inbound:
+                case DocType.InventoryCorrection:
                     if (!line.ToLocationId.HasValue)
                     {
                         check.Errors.Add($"{rowLabel}: требуется место хранения получателя.");
@@ -2381,6 +2383,12 @@ public sealed class DocumentService
                 if (!toLocationId.HasValue)
                 {
                     throw new ArgumentException("Для приемки требуется место хранения получателя.");
+                }
+                break;
+            case DocType.InventoryCorrection:
+                if (!toLocationId.HasValue)
+                {
+                    throw new ArgumentException("Для корректировки требуется место хранения.");
                 }
                 break;
             case DocType.ProductionReceipt:

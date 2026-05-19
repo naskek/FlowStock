@@ -40,6 +40,22 @@ public sealed class ProductionPalletServiceTests
     }
 
     [Fact]
+    public void CancelOrderPlan_KeepsEmptyDraftPrdForReuse()
+    {
+        var harness = CreateHarnessWithOrderOnly(orderQty: 1200, maxQtyPerHu: 600);
+        var service = new ProductionPalletService(harness.Store);
+
+        var plan = service.PlanOrder(10);
+        service.CancelOrderPlan(10);
+
+        var prdAfterCancel = harness.Store.GetDoc(plan.PrdDocId);
+        Assert.NotNull(prdAfterCancel);
+        Assert.Equal(DocStatus.Draft, prdAfterCancel.Status);
+        Assert.False(harness.Store.HasProductionPallets(plan.PrdDocId));
+        Assert.Empty(harness.Store.GetDocLines(plan.PrdDocId));
+    }
+
+    [Fact]
     public void PlanOrder_IsIdempotent()
     {
         var harness = CreateHarnessWithOrderOnly(orderQty: 1200, maxQtyPerHu: 600);
@@ -742,6 +758,8 @@ public sealed class ProductionPalletServiceTests
         Assert.Equal(new[] { "HU-0000462", "HU-0000463" }, result.TransferredHuCodes.Order().ToArray());
         Assert.False(harness.Store.HasProductionPallets(162));
         Assert.Empty(harness.Store.GetDocLines(162));
+        Assert.Null(harness.Store.GetDoc(162));
+        Assert.DoesNotContain(harness.Store.GetDocsByOrder(66), doc => doc.Id == 162);
         var targetPallets = harness.Store.GetProductionPalletsByDoc(result.TargetPrdDocId);
         Assert.Equal(2, targetPallets.Count);
         Assert.All(targetPallets, pallet =>
@@ -759,6 +777,11 @@ public sealed class ProductionPalletServiceTests
             item.OrderId == 67
             && item.Summary.PlannedPalletCount == 2
             && item.Summary.FilledPalletCount == 0);
+        Assert.Equal("MERGED", result.SourceOrderStatus);
+        Assert.True(result.SourceOrderCommentUpdated);
+        Assert.Equal(OrderStatus.Merged, harness.Store.GetOrder(66)?.Status);
+        Assert.Contains("Объединён с заказом №067", harness.Store.GetOrder(66)?.Comment ?? string.Empty, StringComparison.Ordinal);
+        Assert.DoesNotContain(harness.Store.GetActiveProductionPalletWorkItems(), item => item.OrderId == 66);
     }
 
     [Fact]

@@ -140,6 +140,16 @@ public sealed class OrderRedistributionTests
                 It.IsAny<long>(),
                 It.IsAny<IReadOnlyList<string>>()));
         store.Setup(s => s.GetPartner(500)).Returns(new Partner { Id = 500, Name = "Customer", Code = "CUST" });
+        OrderStatus? internalStatus = OrderStatus.InProgress;
+        string? internalComment = null;
+        store.Setup(s => s.UpdateOrderStatus(internalOrderId, It.IsAny<OrderStatus>()))
+            .Callback<long, OrderStatus>((_, status) => internalStatus = status);
+        store.Setup(s => s.UpdateOrder(It.IsAny<Order>()))
+            .Callback<Order>(order =>
+            {
+                internalComment = order.Comment;
+                internalStatus = order.Status;
+            });
 
         var service = new OrderRedistributionService(store.Object);
         var result = service.Redistribute(internalOrderId, customerOrderId, itemId, 200);
@@ -163,6 +173,128 @@ public sealed class OrderRedistributionTests
                 itemId,
                 It.Is<IReadOnlyList<string>>(codes => codes.Contains("HU-0000460"))),
             Times.Once);
+    }
+
+    [Fact]
+    public void Redistribute_WhenAllDemandTransferredWithoutProduction_MarksSourceMerged()
+    {
+        const long internalOrderId = 66;
+        const long customerOrderId = 67;
+        const long itemId = 100;
+        const long internalLineId = 171;
+        const long customerLineId = 172;
+
+        var internalLines = new List<OrderLine>
+        {
+            new() { Id = internalLineId, OrderId = internalOrderId, ItemId = itemId, QtyOrdered = 3600 }
+        };
+        var customerLines = new List<OrderLine>
+        {
+            new() { Id = customerLineId, OrderId = customerOrderId, ItemId = itemId, QtyOrdered = 0 }
+        };
+        var orders = new Dictionary<long, Order>
+        {
+            [internalOrderId] = new()
+            {
+                Id = internalOrderId,
+                OrderRef = "066",
+                Type = OrderType.Internal,
+                Status = OrderStatus.InProgress,
+                CreatedAt = DateTime.Now
+            },
+            [customerOrderId] = new()
+            {
+                Id = customerOrderId,
+                OrderRef = "067",
+                Type = OrderType.Customer,
+                PartnerId = 1,
+                Status = OrderStatus.InProgress,
+                UseReservedStock = true,
+                CreatedAt = DateTime.Now
+            }
+        };
+
+        OrderStatus? internalStatus = OrderStatus.InProgress;
+        string? internalComment = null;
+        var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(s => s.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
+            .Callback<Action<IDataStore>>(work => work(store.Object));
+        store.Setup(s => s.GetOrder(It.IsAny<long>())).Returns<long>(id => orders[id]);
+        store.Setup(s => s.GetOrders()).Returns(() => orders.Values.ToArray());
+        store.Setup(s => s.GetOrderLines(internalOrderId)).Returns(() => internalLines);
+        store.Setup(s => s.GetOrderLines(customerOrderId)).Returns(() => customerLines);
+        store.Setup(s => s.GetShippedTotalsByOrderLine(It.IsAny<long>())).Returns(new Dictionary<long, double>());
+        store.Setup(s => s.GetDocsByOrder(It.IsAny<long>())).Returns(Array.Empty<Doc>());
+        store.Setup(s => s.GetOrderReceiptRemaining(internalOrderId))
+            .Returns([
+                new OrderReceiptLine
+                {
+                    OrderLineId = internalLineId,
+                    OrderId = internalOrderId,
+                    ItemId = itemId,
+                    QtyOrdered = 3600,
+                    QtyReceived = 0,
+                    QtyRemaining = 3600
+                }
+            ]);
+        store.Setup(s => s.GetOrderReceiptRemaining(customerOrderId))
+            .Returns([
+                new OrderReceiptLine
+                {
+                    OrderLineId = customerLineId,
+                    OrderId = customerOrderId,
+                    ItemId = itemId,
+                    QtyOrdered = 0,
+                    QtyReceived = 0,
+                    QtyRemaining = 0
+                }
+            ]);
+        store.Setup(s => s.UpdateOrderLineQty(It.IsAny<long>(), It.IsAny<double>()))
+            .Callback<long, double>((lineId, qty) =>
+            {
+                if (lineId == internalLineId)
+                {
+                    internalLines[0] = new OrderLine { Id = internalLineId, OrderId = internalOrderId, ItemId = itemId, QtyOrdered = qty };
+                }
+                else
+                {
+                    customerLines[0] = new OrderLine { Id = customerLineId, OrderId = customerOrderId, ItemId = itemId, QtyOrdered = qty };
+                }
+            });
+        store.Setup(s => s.FindItemById(itemId))
+            .Returns(new Item { Id = itemId, Name = "Item", ItemTypeId = 1, MaxQtyPerHu = 600 });
+        store.Setup(s => s.GetItemType(1))
+            .Returns(new ItemType { Id = 1, Name = "Товар", EnableOrderReservation = true });
+        store.Setup(s => s.GetLocations())
+            .Returns([new Location { Id = 1, Code = "MAIN", AutoHuDistributionEnabled = true }]);
+        store.Setup(s => s.GetHuStockRows()).Returns(Array.Empty<HuStockRow>());
+        store.Setup(s => s.GetHuOrderContextRows()).Returns(Array.Empty<HuOrderContextRow>());
+        store.Setup(s => s.GetDocs()).Returns(Array.Empty<Doc>());
+        store.Setup(s => s.GetOrderReceiptPlanLines(It.IsAny<long>())).Returns(Array.Empty<OrderReceiptPlanLine>());
+        store.Setup(s => s.ReplaceOrderReceiptPlanLines(It.IsAny<long>(), It.IsAny<IReadOnlyList<OrderReceiptPlanLine>>()));
+        store.Setup(s => s.ReassignOpenProductionPalletsByHu(
+            It.IsAny<long>(),
+            It.IsAny<long>(),
+            It.IsAny<long>(),
+            It.IsAny<long>(),
+            It.IsAny<IReadOnlyList<string>>()));
+        store.Setup(s => s.GetPartner(1)).Returns(new Partner { Id = 1, Name = "Customer", Code = "CUST" });
+        store.Setup(s => s.UpdateOrderStatus(internalOrderId, It.IsAny<OrderStatus>()))
+            .Callback<long, OrderStatus>((_, status) => internalStatus = status);
+        store.Setup(s => s.UpdateOrder(It.IsAny<Order>()))
+            .Callback<Order>(order =>
+            {
+                internalComment = order.Comment;
+                internalStatus = order.Status;
+            });
+
+        var service = new OrderRedistributionService(store.Object);
+        var result = service.Redistribute(internalOrderId, customerOrderId, itemId, 3600);
+
+        Assert.Equal(0, result.SourceQtyOrderedAfter);
+        Assert.True(result.SourceMergeResult?.IsMerged);
+        Assert.Equal(OrderStatus.Merged, internalStatus);
+        Assert.Contains("Объединён с заказом №067", internalComment ?? string.Empty, StringComparison.Ordinal);
     }
 
     [Fact]

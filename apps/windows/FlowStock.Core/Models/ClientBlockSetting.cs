@@ -20,6 +20,7 @@ public static class ClientBlockCatalog
     public const string TsdMove = "tsd_move";
     public const string TsdWriteOff = "tsd_write_off";
     public const string TsdInventory = "tsd_inventory";
+    public const string TsdWarehouseTasks = "tsd_warehouse_tasks";
 
     public static readonly IReadOnlyList<ClientBlockDefinition> All = new[]
     {
@@ -35,7 +36,8 @@ public static class ClientBlockCatalog
         new ClientBlockDefinition(TsdOutbound, "TSD", "Операции", "Отгрузка"),
         new ClientBlockDefinition(TsdMove, "TSD", "Операции", "Перемещение"),
         new ClientBlockDefinition(TsdWriteOff, "TSD", "Операции", "Списание"),
-        new ClientBlockDefinition(TsdInventory, "TSD", "Операции", "Инвентаризация")
+        new ClientBlockDefinition(TsdInventory, "TSD", "Операции", "Инвентаризация"),
+        new ClientBlockDefinition(TsdWarehouseTasks, "TSD", "Основные", "Задания склада")
     };
 
     public static IReadOnlyDictionary<string, bool> MergeWithDefaults(IEnumerable<ClientBlockSetting>? settings)
