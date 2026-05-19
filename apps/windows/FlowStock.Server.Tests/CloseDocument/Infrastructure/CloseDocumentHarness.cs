@@ -481,6 +481,35 @@ internal sealed class CloseDocumentHarness
         _seedBalances[(itemId, locationId, NormalizeHu(huCode))] = qty;
     }
 
+    public void SeedLedgerEntry(long docId, long itemId, long locationId, double qtyDelta, string? huCode = null)
+    {
+        _postedLedger.Add(new LedgerEntry
+        {
+            Id = _postedLedger.Count + 1,
+            Timestamp = DateTime.UtcNow,
+            DocId = docId,
+            ItemId = itemId,
+            LocationId = locationId,
+            QtyDelta = qtyDelta,
+            HuCode = NormalizeHu(huCode)
+        });
+    }
+
+    public void SeedClosedOutbound(long docId, string docRef, long orderId, long itemId, long locationId, double qty, string huCode)
+    {
+        SeedDoc(new Doc
+        {
+            Id = docId,
+            DocRef = docRef,
+            Type = DocType.Outbound,
+            Status = DocStatus.Closed,
+            OrderId = orderId,
+            CreatedAt = DateTime.UtcNow,
+            ClosedAt = DateTime.UtcNow
+        });
+        SeedLedgerEntry(docId, itemId, locationId, -qty, huCode);
+    }
+
     public void SeedProductionPallet(ProductionPallet pallet)
     {
         _productionPallets[pallet.Id] = CloneProductionPallet(pallet);
@@ -1527,8 +1556,8 @@ internal sealed class CloseDocumentHarness
                 .OrderBy(pallet => pallet.HuCode, StringComparer.OrdinalIgnoreCase)
                 .ToArray());
 
-        _store.Setup(store => store.GetFilledProductionPalletsWithStockGaps())
-            .Returns(BuildFilledProductionPalletStockGaps);
+        _store.Setup(store => store.GetFilledProductionPalletStockMetrics())
+            .Returns(BuildFilledProductionPalletStockMetrics);
 
         _store.Setup(store => store.GetActiveProductionPalletWorkItems())
             .Returns(() => _productionPallets.Values
@@ -2516,53 +2545,106 @@ internal sealed class CloseDocumentHarness
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
-    private IReadOnlyList<FilledProductionPalletStockGap> BuildFilledProductionPalletStockGaps()
+    private IReadOnlyList<FilledProductionPalletStockMetrics> BuildFilledProductionPalletStockMetrics()
     {
-        var gaps = new List<FilledProductionPalletStockGap>();
+        var rows = new List<FilledProductionPalletStockMetrics>();
         foreach (var pallet in _productionPallets.Values
                      .Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
                      .Where(pallet => pallet.ToLocationId.HasValue))
         {
             var components = pallet.Lines.Count > 0
-                ? pallet.Lines.Select(line => (line.ItemId, line.PlannedQty, pallet.ItemName))
+                ? pallet.Lines.Select(line => (line.ItemId, line.PlannedQty, line.ItemName))
                 : new[] { (pallet.ItemId, pallet.PlannedQty, pallet.ItemName) };
-            var doc = _docs.TryGetValue(pallet.PrdDocId, out var foundDoc) ? foundDoc : null;
+            var prdDoc = _docs.TryGetValue(pallet.PrdDocId, out var foundPrdDoc) ? foundPrdDoc : null;
+            var orderId = pallet.OrderId ?? prdDoc?.OrderId;
+            Order? order = null;
+            if (orderId.HasValue)
+            {
+                _orders.TryGetValue(orderId.Value, out order);
+            }
+
             foreach (var (itemId, plannedQty, itemName) in components)
             {
-                var ledgerQty = _postedLedger
+                var currentLedgerQty = _postedLedger
                     .Where(entry => entry.ItemId == itemId
                                     && entry.LocationId == pallet.ToLocationId
                                     && string.Equals(NormalizeHu(entry.HuCode), NormalizeHu(pallet.HuCode), StringComparison.OrdinalIgnoreCase))
                     .Sum(entry => entry.QtyDelta);
-                var missingQty = plannedQty - ledgerQty;
-                if (missingQty <= StockQuantityRules.QtyTolerance)
-                {
-                    continue;
-                }
+                var outboundByHu = SumOutboundQty(itemId, pallet.ToLocationId, pallet.HuCode, orderId: null);
+                var outboundDocsByHu = JoinOutboundDocRefs(itemId, pallet.ToLocationId, pallet.HuCode, orderId: null);
+                var outboundByOrderItem = orderId.HasValue
+                    ? SumOutboundQty(itemId, locationId: null, huCode: null, orderId: orderId.Value)
+                    : 0d;
+                var outboundDocsByOrderItem = orderId.HasValue
+                    ? JoinOutboundDocRefs(itemId, locationId: null, huCode: null, orderId: orderId.Value)
+                    : string.Empty;
 
-                gaps.Add(new FilledProductionPalletStockGap
+                rows.Add(new FilledProductionPalletStockMetrics
                 {
                     PalletId = pallet.Id,
                     PrdDocId = pallet.PrdDocId,
-                    PrdDocRef = doc?.DocRef ?? string.Empty,
+                    PrdDocRef = prdDoc?.DocRef ?? string.Empty,
+                    OrderId = orderId,
+                    OrderRef = order?.OrderRef,
+                    OrderStatus = order == null ? null : OrderStatusMapper.StatusToString(order.Status),
                     ItemId = itemId,
                     ItemName = itemName,
                     HuCode = pallet.HuCode,
                     ToLocationId = pallet.ToLocationId,
+                    ToLocationCode = pallet.ToLocationCode,
                     PlannedQty = plannedQty,
-                    LedgerQty = ledgerQty,
-                    MissingQty = missingQty,
+                    CurrentLedgerQty = currentLedgerQty,
+                    OutboundBySameHuQty = outboundByHu,
+                    OutboundDocsBySameHu = outboundDocsByHu,
+                    OutboundByOrderItemQty = outboundByOrderItem,
+                    OutboundDocsByOrderItem = outboundDocsByOrderItem,
                     Status = pallet.Status,
                     FilledAt = pallet.FilledAt
                 });
             }
         }
 
-        return gaps
-            .OrderBy(gap => gap.PrdDocId)
-            .ThenBy(gap => gap.HuCode, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(gap => gap.ItemId)
+        return rows
+            .OrderBy(row => row.PrdDocId)
+            .ThenBy(row => row.HuCode, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.ItemId)
             .ToArray();
+    }
+
+    private double SumOutboundQty(long itemId, long? locationId, string? huCode, long? orderId)
+    {
+        return _postedLedger
+            .Where(entry => entry.QtyDelta < -StockQuantityRules.QtyTolerance)
+            .Where(entry => entry.ItemId == itemId)
+            .Where(entry => _docs.TryGetValue(entry.DocId, out var doc)
+                            && doc.Type == DocType.Outbound
+                            && doc.Status == DocStatus.Closed)
+            .Where(entry => !orderId.HasValue || (_docs[entry.DocId].OrderId == orderId))
+            .Where(entry => !locationId.HasValue
+                            || entry.LocationId == locationId)
+            .Where(entry => string.IsNullOrWhiteSpace(huCode)
+                            || string.Equals(NormalizeHu(entry.HuCode), NormalizeHu(huCode), StringComparison.OrdinalIgnoreCase))
+            .Sum(entry => -entry.QtyDelta);
+    }
+
+    private string JoinOutboundDocRefs(long itemId, long? locationId, string? huCode, long? orderId)
+    {
+        return string.Join(
+            ", ",
+            _postedLedger
+                .Where(entry => entry.QtyDelta < -StockQuantityRules.QtyTolerance)
+                .Where(entry => entry.ItemId == itemId)
+                .Where(entry => _docs.TryGetValue(entry.DocId, out var doc)
+                                && doc.Type == DocType.Outbound
+                                && doc.Status == DocStatus.Closed)
+                .Where(entry => !orderId.HasValue || (_docs[entry.DocId].OrderId == orderId))
+                .Where(entry => !locationId.HasValue
+                                || entry.LocationId == locationId)
+                .Where(entry => string.IsNullOrWhiteSpace(huCode)
+                                || string.Equals(NormalizeHu(entry.HuCode), NormalizeHu(huCode), StringComparison.OrdinalIgnoreCase))
+                .Select(entry => _docs[entry.DocId].DocRef)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(docRef => docRef, StringComparer.OrdinalIgnoreCase));
     }
 
     private void ClearProductionPalletPlanInHarness(long docId)

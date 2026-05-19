@@ -2405,7 +2405,7 @@ ORDER BY p.hu_code, p.id;
         });
     }
 
-    public IReadOnlyList<FilledProductionPalletStockGap> GetFilledProductionPalletsWithStockGaps()
+    public IReadOnlyList<FilledProductionPalletStockMetrics> GetFilledProductionPalletStockMetrics()
     {
         return WithConnection(connection =>
         {
@@ -2414,15 +2414,21 @@ WITH filled_components AS (
     SELECT p.id AS pallet_id,
            p.prd_doc_id,
            d.doc_ref AS prd_doc_ref,
+           COALESCE(p.order_id, d.order_id) AS order_id,
+           o.order_ref,
+           o.status AS order_status,
            COALESCE(pll.item_id, p.item_id) AS item_id,
            i.name AS item_name,
            p.hu_code,
            p.to_location_id,
+           l.code AS to_location_code,
            p.status,
            p.filled_at,
            COALESCE(pll.planned_qty, p.planned_qty) AS planned_qty
     FROM production_pallets p
     INNER JOIN docs d ON d.id = p.prd_doc_id
+    LEFT JOIN orders o ON o.id = COALESCE(p.order_id, d.order_id)
+    LEFT JOIN locations l ON l.id = p.to_location_id
     LEFT JOIN production_pallet_lines pll ON pll.production_pallet_id = p.id
     INNER JOIN items i ON i.id = COALESCE(pll.item_id, p.item_id)
     WHERE p.status = @filled_status
@@ -2431,12 +2437,20 @@ WITH filled_components AS (
 SELECT fc.pallet_id,
        fc.prd_doc_id,
        fc.prd_doc_ref,
+       fc.order_id,
+       fc.order_ref,
+       fc.order_status,
        fc.item_id,
        fc.item_name,
        fc.hu_code,
        fc.to_location_id,
+       fc.to_location_code,
        fc.planned_qty,
-       COALESCE(ledger.qty, 0) AS ledger_qty,
+       COALESCE(ledger.qty, 0) AS current_ledger_qty,
+       COALESCE(out_hu.qty, 0) AS outbound_by_same_hu_qty,
+       COALESCE(out_hu.doc_refs, '') AS outbound_docs_by_same_hu,
+       COALESCE(out_order.qty, 0) AS outbound_by_order_item_qty,
+       COALESCE(out_order.doc_refs, '') AS outbound_docs_by_order_item,
        fc.status,
        fc.filled_at
 FROM filled_components fc
@@ -2447,35 +2461,64 @@ LEFT JOIN LATERAL (
       AND led.location_id = fc.to_location_id
       AND UPPER(BTRIM(COALESCE(led.hu_code, ''))) = UPPER(BTRIM(fc.hu_code))
 ) ledger ON TRUE
-WHERE fc.planned_qty - COALESCE(ledger.qty, 0) > @qty_tolerance
+LEFT JOIN LATERAL (
+    SELECT COALESCE(SUM(-led.qty_delta), 0) AS qty,
+           STRING_AGG(DISTINCT d.doc_ref, ', ' ORDER BY d.doc_ref) AS doc_refs
+    FROM ledger led
+    INNER JOIN docs d ON d.id = led.doc_id
+    WHERE d.type = @outbound_doc_type
+      AND d.status = @closed_doc_status
+      AND led.item_id = fc.item_id
+      AND led.qty_delta < -@qty_tolerance
+      AND UPPER(BTRIM(COALESCE(led.hu_code, ''))) = UPPER(BTRIM(fc.hu_code))
+) out_hu ON TRUE
+LEFT JOIN LATERAL (
+    SELECT COALESCE(SUM(-led.qty_delta), 0) AS qty,
+           STRING_AGG(DISTINCT d.doc_ref, ', ' ORDER BY d.doc_ref) AS doc_refs
+    FROM ledger led
+    INNER JOIN docs d ON d.id = led.doc_id
+    WHERE d.type = @outbound_doc_type
+      AND d.status = @closed_doc_status
+      AND fc.order_id IS NOT NULL
+      AND d.order_id = fc.order_id
+      AND led.item_id = fc.item_id
+      AND led.qty_delta < -@qty_tolerance
+) out_order ON TRUE
 ORDER BY fc.prd_doc_id, fc.hu_code, fc.item_id;
 ");
             command.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
+            command.Parameters.AddWithValue("@outbound_doc_type", DocTypeMapper.ToOpString(DocType.Outbound));
+            command.Parameters.AddWithValue("@closed_doc_status", DocTypeMapper.StatusToString(DocStatus.Closed));
             command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
             using var reader = command.ExecuteReader();
-            var gaps = new List<FilledProductionPalletStockGap>();
+            var rows = new List<FilledProductionPalletStockMetrics>();
             while (reader.Read())
             {
-                var plannedQty = reader.GetDouble(7);
-                var ledgerQty = reader.GetDouble(8);
-                gaps.Add(new FilledProductionPalletStockGap
+                rows.Add(new FilledProductionPalletStockMetrics
                 {
                     PalletId = reader.GetInt64(0),
                     PrdDocId = reader.GetInt64(1),
                     PrdDocRef = reader.GetString(2),
-                    ItemId = reader.GetInt64(3),
-                    ItemName = reader.GetString(4),
-                    HuCode = reader.GetString(5),
-                    ToLocationId = reader.GetInt64(6),
-                    PlannedQty = plannedQty,
-                    LedgerQty = ledgerQty,
-                    MissingQty = plannedQty - ledgerQty,
-                    Status = reader.GetString(9),
-                    FilledAt = FromDbDate(reader.IsDBNull(10) ? null : reader.GetString(10))
+                    OrderId = reader.IsDBNull(3) ? null : reader.GetInt64(3),
+                    OrderRef = reader.IsDBNull(4) ? null : reader.GetString(4),
+                    OrderStatus = reader.IsDBNull(5) ? null : reader.GetString(5),
+                    ItemId = reader.GetInt64(6),
+                    ItemName = reader.GetString(7),
+                    HuCode = reader.GetString(8),
+                    ToLocationId = reader.GetInt64(9),
+                    ToLocationCode = reader.IsDBNull(10) ? null : reader.GetString(10),
+                    PlannedQty = reader.GetDouble(11),
+                    CurrentLedgerQty = reader.GetDouble(12),
+                    OutboundBySameHuQty = reader.GetDouble(13),
+                    OutboundDocsBySameHu = reader.GetString(14),
+                    OutboundByOrderItemQty = reader.GetDouble(15),
+                    OutboundDocsByOrderItem = reader.GetString(16),
+                    Status = reader.GetString(17),
+                    FilledAt = FromDbDate(reader.IsDBNull(18) ? null : reader.GetString(18))
                 });
             }
 
-            return gaps;
+            return rows;
         });
     }
 

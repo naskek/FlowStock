@@ -115,7 +115,7 @@ public interface IDataStore
     void MarkProductionPalletFilled(long palletId, DateTime filledAt, string? deviceId);
     int MarkProductionPalletsPrintedByOrder(long orderId, DateTime printedAt);
     IReadOnlyList<ProductionPallet> GetFilledProductionPalletsByItemAndLocation(long itemId, long locationId);
-    IReadOnlyList<FilledProductionPalletStockGap> GetFilledProductionPalletsWithStockGaps();
+    IReadOnlyList<FilledProductionPalletStockMetrics> GetFilledProductionPalletStockMetrics();
 
     Order? GetOrder(long id);
     IReadOnlyList<Order> GetOrders();

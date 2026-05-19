@@ -25,17 +25,21 @@ public static class ProductionPalletEndpoints
         app.MapPost("/api/tsd/production/fill-pallet", HandleFill);
         app.MapGet("/api/production-pallets/filled-without-stock", HandleFilledWithoutStock);
         app.MapPost("/api/production-pallets/backfill-filled-stock", HandleBackfillFilledStock);
+        app.MapGet("/api/production-pallets/filled-stock-reverse-candidates", HandleFilledStockReverseCandidates);
+        app.MapPost("/api/production-pallets/reverse-filled-stock-backfill-draft", HandleReverseFilledStockBackfillDraft);
     }
 
     private static IResult HandleFilledWithoutStock(IDataStore store)
     {
         var service = new ProductionPalletFilledStockBackfillService(store);
-        var gaps = service.GetFilledWithoutStock();
+        var analyses = service.GetStockAnalyses();
+        var safeGaps = service.GetFilledWithoutStock();
         return Results.Ok(new
         {
             ok = true,
-            count = gaps.Count,
-            items = gaps.Select(MapStockGap)
+            count = safeGaps.Count,
+            items = safeGaps.Select(MapStockAnalysis),
+            analyses = analyses.Select(MapStockAnalysis)
         });
     }
 
@@ -49,33 +53,123 @@ public static class ProductionPalletEndpoints
         {
             ok = true,
             dry_run = result.DryRun,
-            gap_count = result.Gaps.Count,
+            analysis_count = result.Analyses.Count,
+            gap_count = result.Applied.Count,
             ledger_rows_written = result.LedgerRowsWritten,
-            gaps = result.Gaps.Select(MapStockGap),
-            applied = result.Applied.Select(MapStockGap)
+            analyses = result.Analyses.Select(MapStockAnalysis),
+            applied = result.Applied.Select(MapStockAnalysis)
         });
     }
 
-    private static object MapStockGap(FilledProductionPalletStockGap gap) =>
+    private static IResult HandleFilledStockReverseCandidates(IDataStore store)
+    {
+        var service = new ProductionPalletFilledStockBackfillService(store);
+        var candidates = service.GetReverseCandidates();
+        return Results.Ok(new
+        {
+            ok = true,
+            count = candidates.Count,
+            items = candidates.Select(MapReverseCandidate)
+        });
+    }
+
+    private static async Task<IResult> HandleReverseFilledStockBackfillDraft(HttpRequest request, IDataStore store)
+    {
+        var body = await request.ReadFromJsonAsync<ReverseFilledStockBackfillDraftRequest>();
+        if (body?.PalletIds == null || body.PalletIds.Count == 0)
+        {
+            return Results.BadRequest(new { ok = false, error = "INVALID_PALLET_IDS", message = "Укажите pallet_ids." });
+        }
+
+        var service = new ProductionPalletFilledStockBackfillService(store);
+        var result = service.CreateReverseBackfillDraft(body.PalletIds, body.Comment);
+        if (!result.Success)
+        {
+            return Results.BadRequest(new
+            {
+                ok = false,
+                error = result.Error,
+                message = result.Message,
+                warnings = result.Warnings
+            });
+        }
+
+        return Results.Ok(new
+        {
+            ok = true,
+            doc_id = result.DocId,
+            doc_ref = result.DocRef,
+            line_count = result.LineCount,
+            message = result.Message,
+            warnings = result.Warnings
+        });
+    }
+
+    private static object MapStockAnalysis(FilledProductionPalletStockAnalysis analysis) =>
         new
         {
-            pallet_id = gap.PalletId,
-            prd_doc_id = gap.PrdDocId,
-            prd_ref = gap.PrdDocRef,
-            item_id = gap.ItemId,
-            item_name = gap.ItemName,
-            hu_code = gap.HuCode,
-            planned_qty = gap.PlannedQty,
-            ledger_qty = gap.LedgerQty,
-            missing_qty = gap.MissingQty,
-            status = gap.Status,
-            filled_at = gap.FilledAt
+            pallet_id = analysis.PalletId,
+            prd_doc_id = analysis.PrdDocId,
+            prd_ref = analysis.PrdDocRef,
+            order_id = analysis.OrderId,
+            order_ref = analysis.OrderRef,
+            order_status = analysis.OrderStatus,
+            item_id = analysis.ItemId,
+            item_name = analysis.ItemName,
+            hu_code = analysis.HuCode,
+            location_id = analysis.ToLocationId,
+            location_code = analysis.ToLocationCode,
+            planned_qty = analysis.PlannedQty,
+            current_ledger_qty = analysis.CurrentLedgerQty,
+            outbound_by_same_hu_qty = analysis.OutboundBySameHuQty,
+            outbound_docs_by_same_hu = analysis.OutboundDocsBySameHu,
+            outbound_by_order_item_qty = analysis.OutboundByOrderItemQty,
+            outbound_docs_by_order_item = analysis.OutboundDocsByOrderItem,
+            decision = analysis.Decision,
+            expected_current_qty = analysis.ExpectedCurrentQty,
+            missing_qty = analysis.MissingQty,
+            reason = analysis.Reason,
+            status = analysis.Status,
+            filled_at = analysis.FilledAt
+        };
+
+    private static object MapReverseCandidate(FilledStockReverseCandidate candidate) =>
+        new
+        {
+            pallet_id = candidate.PalletId,
+            prd_doc_id = candidate.PrdDocId,
+            prd_ref = candidate.PrdDocRef,
+            order_id = candidate.OrderId,
+            order_ref = candidate.OrderRef,
+            order_status = candidate.OrderStatus,
+            item_id = candidate.ItemId,
+            item_name = candidate.ItemName,
+            hu_code = candidate.HuCode,
+            location_id = candidate.LocationId,
+            location_code = candidate.LocationCode,
+            planned_qty = candidate.PlannedQty,
+            current_hu_stock = candidate.CurrentHuStock,
+            outbound_by_same_hu_qty = candidate.OutboundBySameHuQty,
+            outbound_docs_by_same_hu = candidate.OutboundDocsBySameHu,
+            outbound_by_order_item_qty = candidate.OutboundByOrderItemQty,
+            outbound_docs_by_order_item = candidate.OutboundDocsByOrderItem,
+            reverse_qty = candidate.ReverseQty,
+            reason = candidate.Reason
         };
 
     private sealed class BackfillFilledStockRequest
     {
         [JsonPropertyName("dry_run")]
         public bool DryRun { get; init; } = true;
+    }
+
+    private sealed class ReverseFilledStockBackfillDraftRequest
+    {
+        [JsonPropertyName("pallet_ids")]
+        public IReadOnlyList<long>? PalletIds { get; init; }
+
+        [JsonPropertyName("comment")]
+        public string? Comment { get; init; }
     }
 
     private static IResult HandlePlanOrder(long orderId, ProductionPalletService service)
