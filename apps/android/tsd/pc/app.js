@@ -766,6 +766,30 @@
     );
   }
 
+  function renderCatalogItemCell(row) {
+    var name = escapeHtml(row.itemName || "-");
+    var metaParts = [];
+    var gtin = String(row.gtin || "").trim();
+    var barcode = String(row.barcode || "").trim();
+    if (gtin) {
+      metaParts.push("GTIN: " + escapeHtml(gtin));
+    }
+    if (barcode) {
+      metaParts.push("ШК: " + escapeHtml(barcode));
+    }
+    var metaHtml = metaParts.length
+      ? '<div class="pc-catalog-item-meta">' + metaParts.join(" · ") + "</div>"
+      : "";
+    return (
+      '<div class="pc-catalog-item-cell">' +
+      '<div class="pc-catalog-item-name">' +
+      name +
+      "</div>" +
+      metaHtml +
+      "</div>"
+    );
+  }
+
   function renderCatalogTable(rows) {
     if (!rows || !rows.length) {
       return '<div class="empty-state">Товары не найдены.</div>';
@@ -776,22 +800,13 @@
         return (
           "<tr>" +
           "<td>" +
-          escapeHtml(String(row.itemId || "-")) +
-          "</td>" +
-          "<td>" +
-          escapeHtml(row.itemName || "-") +
+          renderCatalogItemCell(row) +
           "</td>" +
           "<td>" +
           escapeHtml(row.brand || "-") +
           "</td>" +
           "<td>" +
           escapeHtml(row.volume || "-") +
-          "</td>" +
-          "<td>" +
-          escapeHtml(row.barcode || "-") +
-          "</td>" +
-          "<td>" +
-          escapeHtml(row.gtin || "-") +
           "</td>" +
           "<td>" +
           escapeHtml(row.baseUom || "-") +
@@ -802,14 +817,11 @@
       .join("");
 
     return (
-      '<table class="pc-table">' +
+      '<table class="pc-table pc-catalog-table">' +
       "<thead><tr>" +
-      renderSortableHeader("catalog", "itemId", "ID") +
       renderSortableHeader("catalog", "itemName", "Товар") +
       renderSortableHeader("catalog", "brand", "Бренд") +
       renderSortableHeader("catalog", "volume", "Объем") +
-      renderSortableHeader("catalog", "barcode", "SKU / ШК") +
-      renderSortableHeader("catalog", "gtin", "GTIN") +
       renderSortableHeader("catalog", "baseUom", "Ед.") +
       "</tr></thead>" +
       "<tbody>" +
@@ -2545,6 +2557,36 @@
     return '<span class="pc-order-icon-cell-inner">' + html + "</span>";
   }
 
+  function buildPalletFillProgressLabel(filledCount, plannedCount) {
+    return (
+      "Наполнено " + formatQuantity(filledCount) + " / " + formatQuantity(plannedCount)
+    );
+  }
+
+  function buildOrderPalletFillProgressPresentation(filledCount, plannedCount, titleParts) {
+    var parts = Array.isArray(titleParts) ? titleParts.slice() : [];
+    parts.push(
+      "Паллеты: " + formatQuantity(filledCount) + " / " + formatQuantity(plannedCount)
+    );
+    var title = parts.filter(Boolean).join(". ");
+    var label = buildPalletFillProgressLabel(filledCount, plannedCount);
+    if (plannedCount > 0 && filledCount >= plannedCount) {
+      return {
+        label: label,
+        tone: "completed",
+        title: title,
+        sortValue: 4,
+      };
+    }
+
+    return {
+      label: label,
+      tone: "inprogress",
+      title: title,
+      sortValue: 3,
+    };
+  }
+
   function getOrderPalletFillingPresentation(order) {
     if (order && (order.pallet_fill_show_completed_icon === true || order.palletFillShowCompletedIcon === true)) {
       return getCustomerFullyShippedPalletPresentation(order);
@@ -2572,10 +2614,13 @@
 
     if (!hasPlan && serverLabel) {
       var lowerServerLabel = serverLabel.toLowerCase();
+      if (lowerServerLabel.indexOf("план сформирован") >= 0) {
+        return { label: "", tone: "neutral", title: "", sortValue: 0 };
+      }
       var serverTone = lowerServerLabel.indexOf("не сформирован") >= 0
         ? "warning"
         : lowerServerLabel.indexOf("наполн") >= 0
-          ? "ready"
+          ? "inprogress"
           : "neutral";
       return {
         label: serverLabel,
@@ -2594,44 +2639,28 @@
       };
     }
 
-    var label = plannedCount > 0
-      ? "Наполнено " + formatQuantity(filledCount) + " / " + formatQuantity(plannedCount)
-      : (serverLabel || "План сформирован");
     var titleParts = [];
-    if (serverLabel) {
+    if (serverLabel && serverLabel.toLowerCase().indexOf("план сформирован") < 0) {
       titleParts.push(serverLabel);
-    }
-    if (plannedCount > 0) {
-      titleParts.push("Паллеты: " + formatQuantity(filledCount) + " / " + formatQuantity(plannedCount));
     }
     if (shipmentPallets && shipmentPallets.title) {
       titleParts.push(shipmentPallets.title);
     }
 
-    if (plannedCount > 0 && filledCount >= plannedCount) {
-      return {
-        label: label,
-        tone: "completed",
-        title: titleParts.join(". ") || label,
-        sortValue: 4,
-      };
+    if (plannedCount > 0) {
+      return buildOrderPalletFillProgressPresentation(filledCount, plannedCount, titleParts);
     }
 
-    if (filledCount > 0 || filledQty > 0) {
+    if (hasPlan && (filledCount > 0 || filledQty > 0 || plannedQty > 0)) {
       return {
-        label: label,
-        tone: "ready",
-        title: titleParts.join(". ") || label,
+        label: "Наполнено " + formatQuantity(filledQty),
+        tone: filledQty > 0 && plannedQty > 0 && filledQty + 0.000001 >= plannedQty ? "completed" : "inprogress",
+        title: titleParts.join(". ") || "Паллетный план без счётчика паллет",
         sortValue: 3,
       };
     }
 
-    return {
-      label: serverLabel || "План сформирован",
-      tone: "neutral",
-      title: titleParts.join(". ") || "Паллетный план сформирован, наполнения пока нет",
-      sortValue: 2,
-    };
+    return { label: "", tone: "neutral", title: titleParts.join(". "), sortValue: 0 };
   }
 
   function renderOrderPalletFillingIndicator(order) {
@@ -2702,15 +2731,24 @@
       return "";
     }
     if (line && line.pallet_fill_label) {
+      var lineState = getLinePalletFillingState(line);
       var serverTone = String(line.pallet_fill_tone || "neutral");
+      var serverLabel = String(line.pallet_fill_label || "");
+      if (serverLabel.toLowerCase().indexOf("план ") === 0 && lineState.plannedCount > 0) {
+        serverLabel = buildPalletFillProgressLabel(lineState.filledCount, lineState.plannedCount);
+        serverTone = "inprogress";
+      }
       if (serverTone === "completed") {
-        return renderStatusIconOnly("completed", "pc-line-pallet-badge", line.pallet_fill_title || line.pallet_fill_label);
+        return renderStatusIconOnly("completed", "pc-line-pallet-badge", line.pallet_fill_title || serverLabel);
+      }
+      if (serverTone === "ready") {
+        serverTone = "inprogress";
       }
       return renderStatusBadge(
-        line.pallet_fill_label,
+        serverLabel,
         serverTone,
         "pc-line-pallet-badge",
-        line.pallet_fill_title || line.pallet_fill_label
+        line.pallet_fill_title || serverLabel
       );
     }
 
@@ -2719,34 +2757,36 @@
       return "";
     }
 
-    if (state.hasFilled) {
-      var filledLabel = state.plannedCount > 0
-        ? "Наполнено " + formatQuantity(state.filledCount) + " / " + formatQuantity(state.plannedCount)
-        : "Наполнено " + formatQuantity(state.filledQty);
-      var filledTitle = state.plannedCount > 0
-        ? "Наполнение по строке: " + formatQuantity(state.filledCount) + " / " + formatQuantity(state.plannedCount) + " паллет"
-        : "Наполнение по строке: " + formatQuantity(state.filledQty) + " / " + formatQuantity(state.plannedQty);
+    if (state.plannedCount > 0) {
+      var palletLabel = buildPalletFillProgressLabel(state.filledCount, state.plannedCount);
+      var palletTitle =
+        "Наполнение по строке: " +
+        formatQuantity(state.filledCount) +
+        " / " +
+        formatQuantity(state.plannedCount) +
+        " паллет";
       if (state.complete) {
-        return renderStatusIconOnly("completed", "pc-line-pallet-badge", filledTitle);
+        return renderStatusIconOnly("completed", "pc-line-pallet-badge", palletTitle);
       }
 
-      return renderStatusBadge(
-        filledLabel,
-        "ready",
-        "pc-line-pallet-badge",
-        filledTitle
-      );
+      return renderStatusBadge(palletLabel, "inprogress", "pc-line-pallet-badge", palletTitle);
     }
 
-    var planLabel = state.plannedCount > 0
-      ? "План " + formatQuantity(state.plannedCount)
-      : "План " + formatQuantity(state.plannedQty);
-    return renderStatusBadge(
-      planLabel,
-      "neutral",
-      "pc-line-pallet-badge",
-      "По строке есть паллетный план, наполнения пока нет"
-    );
+    if (state.plannedQty > 0) {
+      var qtyLabel = "Наполнено " + formatQuantity(state.filledQty) + " / " + formatQuantity(state.plannedQty);
+      var qtyTitle =
+        "Наполнение по строке: " +
+        formatQuantity(state.filledQty) +
+        " / " +
+        formatQuantity(state.plannedQty);
+      if (state.complete) {
+        return renderStatusIconOnly("completed", "pc-line-pallet-badge", qtyTitle);
+      }
+
+      return renderStatusBadge(qtyLabel, "inprogress", "pc-line-pallet-badge", qtyTitle);
+    }
+
+    return "";
   }
 
   function getOrderShipmentPalletReadinessPresentation(order) {
@@ -4665,6 +4705,7 @@
     window.FlowStockPcTestHooks.renderOrderLinesTable = renderOrderLinesTable;
     window.FlowStockPcTestHooks.normalizeMarkingTaskRows = normalizeMarkingTaskRows;
     window.FlowStockPcTestHooks.renderStockTable = renderStockTable;
+    window.FlowStockPcTestHooks.renderCatalogTable = renderCatalogTable;
     window.FlowStockPcTestHooks.sortOrdersNewestFirst = sortOrdersNewestFirst;
     window.FlowStockPcTestHooks.buildOrdersUrl = buildOrdersUrl;
     window.FlowStockPcTestHooks.getProductionNeedCreateOrdersRefreshUrl = getProductionNeedCreateOrdersRefreshUrl;

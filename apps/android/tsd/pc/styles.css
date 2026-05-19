@@ -413,6 +413,26 @@ body.pc-body::before {
   white-space: nowrap;
 }
 
+.pc-catalog-table .pc-catalog-item-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 220px;
+}
+
+.pc-catalog-item-name {
+  font-weight: 600;
+  color: #1f2a33;
+  line-height: 1.35;
+}
+
+.pc-catalog-item-meta {
+  font-size: 12px;
+  line-height: 1.35;
+  color: #6b7b88;
+  word-break: break-word;
+}
+
 .pc-pallet-filling-badge,
 .pc-line-pallet-badge {
   max-width: 210px;
