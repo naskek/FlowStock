@@ -35,6 +35,75 @@ public sealed class ProductionNeedServiceTests
     }
 
     [Fact]
+    public void ProductionNeed_WithoutMinStock_DoesNotCreateMinStockDemand()
+    {
+        var service = BuildService(
+            itemId: 10,
+            physicalStockQty: -100,
+            minStockQty: 0,
+            orderScenarios: Array.Empty<OrderScenario>(),
+            store: out _);
+
+        var row = service.GetRows(includeZeroNeed: true).Single();
+
+        Assert.Equal(-100, row.FreeStockQty);
+        Assert.Equal(0, row.MinStockQty);
+        Assert.Equal(0, row.ToMinStockQty);
+        Assert.Equal(0, row.QtyToCreate);
+        Assert.Equal(0, row.TotalToMakeQty);
+    }
+
+    [Fact]
+    public void ProductionNeed_WithNullMinStockAndNoCustomerDemand_IsExcludedByDefault()
+    {
+        var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(s => s.GetItems(null)).Returns(
+        [
+            new Item
+            {
+                Id = 10,
+                Name = "Товар",
+                ItemTypeEnableMinStockControl = true,
+                MinStockQty = null
+            }
+        ]);
+        store.Setup(s => s.GetStock(null)).Returns(
+        [
+            new StockRow
+            {
+                ItemId = 10,
+                ItemName = "Товар",
+                LocationCode = "A-01",
+                Qty = 50
+            }
+        ]);
+        store.Setup(s => s.GetOrders()).Returns(Array.Empty<Order>());
+        store.Setup(s => s.GetActiveProductionPalletWorkItems()).Returns(Array.Empty<ProductionPalletWorkItem>());
+        store.Setup(s => s.GetProductionPalletsByDoc(It.IsAny<long>())).Returns(Array.Empty<ProductionPallet>());
+
+        var service = new ProductionNeedService(store.Object);
+        var rows = service.GetRows(includeZeroNeed: false);
+        Assert.Empty(rows);
+    }
+
+    [Fact]
+    public void ProductionNeed_WithPositiveMinStockBelowLevel_CreatesMinStockDemand()
+    {
+        var service = BuildService(
+            itemId: 10,
+            physicalStockQty: 100,
+            minStockQty: 500,
+            orderScenarios: Array.Empty<OrderScenario>(),
+            store: out _);
+
+        var row = service.GetRows(includeZeroNeed: true).Single();
+
+        Assert.Equal(500, row.MinStockQty);
+        Assert.Equal(400, row.ToMinStockQty);
+        Assert.Equal(400, row.QtyToCreate);
+    }
+
+    [Fact]
     public void ProductionNeed_WithoutOrders_UsesOnlyMinStock()
     {
         var service = BuildService(

@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -190,7 +191,7 @@ public partial class OrderDetailsWindow : Window
         DueDatePicker.SelectedDate = _order.DueDate;
         CommentBox.Text = _order.Comment ?? string.Empty;
 
-        var isFinalStatus = _order.Status is OrderStatus.Shipped or OrderStatus.Cancelled;
+        var isFinalStatus = _order.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged;
         OrderStatusText.Text = OrderStatusMapper.StatusToDisplayName(_order.Status, _order.Type);
 
         _lines.Clear();
@@ -315,6 +316,134 @@ public partial class OrderDetailsWindow : Window
                 $"Запланировано количество: {FormatQty(result.PlannedQty)}{Environment.NewLine}" +
                 $"Осталось наполнить: {FormatQty(result.RemainingQty)}";
             MessageBox.Show(message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
+            LoadOrder();
+        }
+        finally
+        {
+            UpdatePalletButtons();
+        }
+    }
+
+    private async void DeletePalletPlan_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_orderId.HasValue)
+        {
+            MessageBox.Show("Сначала сохраните заказ.", "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!HasOpenProductionPalletPlan(_orderId.Value))
+        {
+            MessageBox.Show("План паллет не найден.", "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var hasPrintedLabels = HasPrintedProductionPallets(_orderId.Value);
+        var confirmMessage = hasPrintedLabels
+            ? "Паллетные этикетки уже были напечатаны. После удаления плана старые этикетки использовать нельзя. Продолжить?"
+            : "Удалить текущий план паллет? После этого нужно будет сформировать план заново.";
+        var confirmResult = MessageBox.Show(
+            confirmMessage,
+            "Паллеты",
+            MessageBoxButton.YesNo,
+            hasPrintedLabels ? MessageBoxImage.Warning : MessageBoxImage.Question,
+            MessageBoxResult.No);
+        if (confirmResult != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        DeletePalletPlanButton.IsEnabled = false;
+        PlanPalletsButton.IsEnabled = false;
+        PrintPalletLabelsButton.IsEnabled = false;
+        try
+        {
+            var result = await _services.WpfProductionPalletApi.TryCancelPlanAsync(_orderId.Value).ConfigureAwait(true);
+            if (!result.IsSuccess)
+            {
+                MessageBox.Show(result.Message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            MessageBox.Show(
+                $"{result.Message}{Environment.NewLine}{Environment.NewLine}" +
+                $"Удалено паллет: {result.RemovedPalletCount}{Environment.NewLine}" +
+                $"Удалено строк выпуска: {result.RemovedLineCount}",
+                "Паллеты",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            LoadOrder();
+        }
+        finally
+        {
+            UpdatePalletButtons();
+        }
+    }
+
+    private async void AdoptPalletPlan_Click(object sender, RoutedEventArgs e)
+    {
+        if (_order?.Type != OrderType.Customer || !_orderId.HasValue)
+        {
+            MessageBox.Show("Перенос плана паллет доступен только для сохранённого клиентского заказа.", "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!await EnsureSavedForPalletActionAsync().ConfigureAwait(true))
+        {
+            return;
+        }
+
+        var sourceRef = PromptForInternalOrderRef();
+        if (string.IsNullOrWhiteSpace(sourceRef))
+        {
+            return;
+        }
+
+        var sourceOrder = FindInternalOrderByRef(sourceRef);
+        if (sourceOrder == null)
+        {
+            MessageBox.Show("Внутренний заказ с таким номером не найден.", "Паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            $"Перенести план паллет с внутреннего заказа №{sourceOrder.OrderRef} на текущий клиентский заказ? Старый план паллет клиентского заказа должен быть удалён заранее.",
+            "Паллеты",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+        if (confirm != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        AdoptPalletPlanButton.IsEnabled = false;
+        PlanPalletsButton.IsEnabled = false;
+        PrintPalletLabelsButton.IsEnabled = false;
+        DeletePalletPlanButton.IsEnabled = false;
+        try
+        {
+            var result = await _services.WpfProductionPalletApi
+                .TryAdoptPlanFromInternalAsync(_orderId.Value, sourceOrder.Id)
+                .ConfigureAwait(true);
+            if (!result.IsSuccess)
+            {
+                MessageBox.Show(result.Message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var huCodes = result.TransferredHuCodes.Count == 0
+                ? "нет HU"
+                : string.Join(", ", result.TransferredHuCodes);
+            MessageBox.Show(
+                $"{result.Message}{Environment.NewLine}{Environment.NewLine}" +
+                $"Перенесено паллет: {result.TransferredPalletCount}{Environment.NewLine}" +
+                $"Перенесено строк выпуска: {result.TransferredLineCount}{Environment.NewLine}" +
+                $"HU: {huCodes}{Environment.NewLine}" +
+                $"PRD получателя: {result.TargetPrdDocId}",
+                "Паллеты",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
             LoadOrder();
         }
         finally
@@ -460,6 +589,7 @@ public partial class OrderDetailsWindow : Window
 
         _orderId = result.Response.OrderId;
         LoadOrder();
+        BeginCustomerOrderSaveFollowUp(type);
 
         if (!string.IsNullOrWhiteSpace(result.Message))
         {
@@ -514,6 +644,7 @@ public partial class OrderDetailsWindow : Window
 
         _orderId = result.Response.OrderId;
         LoadOrder();
+        BeginCustomerOrderSaveFollowUp(type);
 
         if (!string.IsNullOrWhiteSpace(result.Message))
         {
@@ -526,6 +657,166 @@ public partial class OrderDetailsWindow : Window
         }
 
         return true;
+    }
+
+    private void BeginCustomerOrderSaveFollowUp(OrderType orderType)
+    {
+        _ = RunCustomerOrderSaveFollowUpSafeAsync(orderType);
+    }
+
+    private async Task RunCustomerOrderSaveFollowUpSafeAsync(OrderType orderType)
+    {
+        try
+        {
+            await ShowCustomerOrderSaveFollowUpAsync(orderType).ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[OrderDetails] customer save follow-up failed: {ex}");
+            MessageBox.Show(
+                "Не удалось завершить проверку резерва HU и автопереноса. Заказ сохранён — откройте его повторно.",
+                "Результат сохранения заказа",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+    }
+
+    private async Task ShowCustomerOrderSaveFollowUpAsync(OrderType orderType)
+    {
+        if (orderType != OrderType.Customer || !_orderId.HasValue)
+        {
+            return;
+        }
+
+        Debug.WriteLine($"[OrderDetails] before follow-up API order_id={_orderId.Value}");
+        var followUp = await _services.WpfReadApi.ApplyCustomerOrderSaveFollowUpAsync(_orderId.Value).ConfigureAwait(true);
+        Debug.WriteLine($"[OrderDetails] after follow-up API order_id={_orderId.Value}, success={followUp.IsSuccess}");
+
+        if (!followUp.IsSuccess)
+        {
+            Debug.WriteLine("[OrderDetails] before follow-up error MessageBox");
+            MessageBox.Show(
+                followUp.ErrorMessage ?? "Не удалось получить результат резерва HU и автопереноса.",
+                "Результат сохранения заказа",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            Debug.WriteLine("[OrderDetails] after follow-up error MessageBox");
+            return;
+        }
+
+        var payload = followUp.Payload!;
+        var itemNames = _services.WpfReadApi.TryGetItems(null, out var items)
+            ? items.ToDictionary(item => item.Id, item => item.Name)
+            : new Dictionary<long, string>();
+
+        var sections = new List<string>();
+
+        if (payload.BindReservedStock)
+        {
+            if (payload.ReservationLines.Count > 0)
+            {
+                var reservationLines = payload.ReservationLines
+                    .Select(line =>
+                    {
+                        var itemLabel = FormatItemLabel(line.ItemId, itemNames);
+                        return $"• {itemLabel}: HU {line.HuCode}, {line.QtyPlanned:0.###}";
+                    });
+                sections.Add(
+                    "Закреплённые HU (план резерва):\n"
+                    + FormatLimitedLines(reservationLines, maxLines: 50));
+            }
+            else
+            {
+                sections.Add("Закреплённые HU: в плане заказа пока нет HU (см. предупреждения ниже).");
+            }
+        }
+        else
+        {
+            sections.Add(
+                "Резерв складских HU не включён — автоперенос с INTERNAL не выполнялся. "
+                + "При следующем сохранении выберите «Да» в диалоге резерва HU, чтобы разрешить резерв и автоперенос.");
+        }
+
+        if (payload.HasTransfers)
+        {
+            var transferLines = payload.Transfers
+                .Select(transfer =>
+                {
+                    var itemLabel = FormatItemLabel(transfer.ItemId, itemNames);
+                    var huPart = transfer.TransferredHuCodes.Count > 0
+                        ? $", HU: {string.Join(", ", transfer.TransferredHuCodes)}"
+                        : string.Empty;
+                    var producedPart = transfer.QtyFromProducedStock > QtyTolerance
+                        ? $", со склада: {transfer.QtyFromProducedStock:0.###}"
+                        : string.Empty;
+                    var unproducedPart = transfer.QtyFromUnproduced > QtyTolerance
+                        ? $", из выпуска: {transfer.QtyFromUnproduced:0.###}"
+                        : string.Empty;
+                    return $"• {transfer.SourceOrderRef} → {itemLabel}: {transfer.QtyTransferred:0.###}{unproducedPart}{producedPart}{huPart}";
+                });
+            sections.Add(
+                "Перенос с внутренних заказов (количество в строках заказа не изменилось):\n"
+                + FormatLimitedLines(transferLines, maxLines: 50));
+        }
+        else if (payload.BindReservedStock && string.IsNullOrWhiteSpace(payload.SkippedReason))
+        {
+            sections.Add("Перенос с внутренних заказов: совпадений с открытыми INTERNAL не найдено.");
+        }
+
+        if (payload.HasIgnoredAttempts)
+        {
+            var ignoredLines = payload.IgnoredAttempts
+                .Select(attempt =>
+                {
+                    var itemLabel = FormatItemLabel(attempt.ItemId, itemNames);
+                    var code = string.IsNullOrWhiteSpace(attempt.ReasonCode) ? "UNKNOWN" : attempt.ReasonCode;
+                    return $"• {attempt.SourceOrderRef} / {itemLabel}, {attempt.Qty:0.###} — {code}: {attempt.Reason}";
+                });
+            sections.Add("Не выполнено (пропущено):\n" + FormatLimitedLines(ignoredLines, maxLines: 50));
+        }
+
+        if (payload.Warnings.Count > 0)
+        {
+            var warningLines = payload.Warnings
+                .Select(warning => $"• {warning.Code}: {warning.Message}");
+            sections.Add("Предупреждения:\n" + FormatLimitedLines(warningLines, maxLines: 20));
+        }
+
+        var icon = payload.HasIgnoredAttempts || payload.Warnings.Count > 0
+            ? MessageBoxImage.Warning
+            : MessageBoxImage.Information;
+
+        Debug.WriteLine("[OrderDetails] before follow-up result MessageBox");
+        MessageBox.Show(
+            string.Join("\n\n", sections),
+            "Результат сохранения заказа",
+            MessageBoxButton.OK,
+            icon);
+        Debug.WriteLine("[OrderDetails] after follow-up result MessageBox");
+
+        Debug.WriteLine("[OrderDetails] before LoadOrder after follow-up");
+        LoadOrder();
+        Debug.WriteLine("[OrderDetails] after LoadOrder after follow-up");
+    }
+
+    private static string FormatLimitedLines(IEnumerable<string> lines, int maxLines)
+    {
+        var materialized = lines as IList<string> ?? lines.ToList();
+        if (materialized.Count <= maxLines)
+        {
+            return string.Join("\n", materialized);
+        }
+
+        var visible = materialized.Take(maxLines);
+        var remaining = materialized.Count - maxLines;
+        return string.Join("\n", visible) + $"\n... и ещё {remaining}";
+    }
+
+    private static string FormatItemLabel(long itemId, IReadOnlyDictionary<long, string> itemNames)
+    {
+        return itemNames.TryGetValue(itemId, out var itemName) && !string.IsNullOrWhiteSpace(itemName)
+            ? itemName
+            : $"товар ID {itemId}";
     }
 
     private bool TryResolveBindReservedStockForSave(
@@ -543,15 +834,32 @@ public partial class OrderDetailsWindow : Window
         var currentValue = _order?.Type == OrderType.Customer
             ? _order.UseReservedStock
             : false;
-        bindReservedStockForCustomer = currentValue;
 
-        if (!TryBuildReservationPreview(orderRef, partnerId, out var previewText))
+        const string previewChoiceExplanation =
+            "Да — закрепить найденные HU и выполнить автоперенос с подходящих INTERNAL-заказов.\n" +
+            "Нет — сохранить без резерва HU; автоперенос с INTERNAL выполнен не будет.";
+
+        const string fallbackChoiceExplanation =
+            "Да — сервер попробует закрепить доступные HU и перенести потребность с подходящих INTERNAL-заказов.\n" +
+            "Нет — сохранить без резерва HU; автоперенос с INTERNAL выполнен не будет.";
+
+        string dialogText;
+        if (TryBuildReservationPreview(orderRef, partnerId, out var previewText))
         {
-            return true;
+            dialogText = previewText + "\n\n" + previewChoiceExplanation;
+        }
+        else
+        {
+            var partnerDisplay = !partnerId.HasValue
+                ? "контрагента"
+                : (_partnersAll.FirstOrDefault(partner => partner.Id == partnerId.Value)?.DisplayName ?? $"ID {partnerId.Value}");
+            dialogText =
+                $"Включить резерв складских HU и автоперенос с внутренних заказов для заказа №{orderRef.Trim()} для {partnerDisplay}?\n\n"
+                + fallbackChoiceExplanation;
         }
 
         var confirm = MessageBox.Show(
-            previewText,
+            dialogText,
             "Заказы",
             MessageBoxButton.YesNoCancel,
             MessageBoxImage.Question,
@@ -943,11 +1251,14 @@ public partial class OrderDetailsWindow : Window
 
     private bool EnsureEditable(bool showMessage = true)
     {
-        if (_order != null && _order.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
+        if (_order != null && _order.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
         {
             if (showMessage)
             {
-                MessageBox.Show($"{OrderStatusMapper.StatusToDisplayName(_order.Status, _order.Type)} заказ нельзя редактировать.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
+                var message = _order.Status == OrderStatus.Merged
+                    ? "Заказ объединён с другим заказом. Выпуск по нему не требуется."
+                    : $"{OrderStatusMapper.StatusToDisplayName(_order.Status, _order.Type)} заказ нельзя редактировать.";
+                MessageBox.Show(message, "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             return false;
         }
@@ -957,13 +1268,12 @@ public partial class OrderDetailsWindow : Window
 
     private bool EnsurePalletPlanningReady()
     {
-        if (_order != null && _order.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
+        if (_order != null && _order.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
         {
-            MessageBox.Show(
-                $"{OrderStatusMapper.StatusToDisplayName(_order.Status, _order.Type)} заказ недоступен для подготовки паллет.",
-                "Паллеты",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
+            var message = _order.Status == OrderStatus.Merged
+                ? "Заказ объединён с другим заказом. Выпуск по нему не требуется."
+                : $"{OrderStatusMapper.StatusToDisplayName(_order.Status, _order.Type)} заказ недоступен для подготовки паллет.";
+            MessageBox.Show(message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
             return false;
         }
 
@@ -1026,16 +1336,217 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        var canPlan = _orderId.HasValue && _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled);
-        var canPrint = _orderId.HasValue && _order?.Status is not OrderStatus.Cancelled;
+        var canPlan = _orderId.HasValue && _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged);
+        var canPrint = _orderId.HasValue && _order?.Status is not (OrderStatus.Cancelled or OrderStatus.Merged);
+        var canDeletePlan = _orderId.HasValue
+                            && _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
+                            && HasOpenProductionPalletPlan(_orderId.Value);
         PlanPalletsButton.IsEnabled = canPlan;
         PrintPalletLabelsButton.IsEnabled = canPrint;
+        DeletePalletPlanButton.IsEnabled = canDeletePlan;
+        AdoptPalletPlanButton.IsEnabled = _orderId.HasValue
+                                          && _order?.Type == OrderType.Customer
+                                          && _order.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged);
+        OpenProductionReceiptButton.IsEnabled = _orderId.HasValue && GetProductionReceiptsForOrder(_orderId.Value).Count > 0;
         OrderLinesGrid.Tag = EnsureEditable(false) && !_productionPalletHuLocked;
+    }
+
+    private void OpenProductionReceipt_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_orderId.HasValue)
+        {
+            return;
+        }
+
+        var productionReceipts = GetProductionReceiptsForOrder(_orderId.Value);
+        if (productionReceipts.Count == 0)
+        {
+            MessageBox.Show(
+                "Черновик выпуска для этого заказа не найден.",
+                "Заказы",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        var docToOpen = ResolveProductionReceiptToOpen(productionReceipts);
+        if (docToOpen == null)
+        {
+            MessageBox.Show(
+                "Черновик выпуска для этого заказа не найден.",
+                "Заказы",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        try
+        {
+            var window = new OperationDetailsWindow(_services, docToOpen.Id)
+            {
+                Owner = this
+            };
+            window.ShowDialog();
+            LoadOrder();
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error($"Open production receipt failed for order_id={_orderId.Value}, doc_id={docToOpen.Id}", ex);
+            MessageBox.Show(
+                "Не удалось открыть выпуск. Подробности записаны в лог.",
+                "Заказы",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
+    private static Doc? ResolveProductionReceiptToOpen(IReadOnlyList<Doc> productionReceipts)
+    {
+        var draft = productionReceipts
+            .Where(doc => doc.Status == DocStatus.Draft)
+            .OrderByDescending(doc => doc.CreatedAt)
+            .ThenByDescending(doc => doc.Id)
+            .FirstOrDefault();
+        if (draft != null)
+        {
+            return draft;
+        }
+
+        return productionReceipts
+            .Where(doc => doc.Status == DocStatus.Closed)
+            .OrderByDescending(doc => doc.ClosedAt ?? doc.CreatedAt)
+            .ThenByDescending(doc => doc.Id)
+            .FirstOrDefault();
+    }
+
+    private IReadOnlyList<Doc> GetProductionReceiptsForOrder(long orderId)
+    {
+        try
+        {
+            return _services.DataStore.GetDocsByOrder(orderId)
+                .Where(doc => doc.Type == DocType.ProductionReceipt)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error($"Load production receipts for order_id={orderId} failed", ex);
+            return Array.Empty<Doc>();
+        }
+    }
+
+    private Order? FindInternalOrderByRef(string orderRef)
+    {
+        var normalized = orderRef.Trim();
+        try
+        {
+            return _services.DataStore.GetOrders()
+                .Where(order => order.Type == OrderType.Internal)
+                .FirstOrDefault(order => string.Equals(order.OrderRef, normalized, StringComparison.OrdinalIgnoreCase));
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error($"Find internal order by ref failed: {normalized}", ex);
+            return null;
+        }
+    }
+
+    private string? PromptForInternalOrderRef()
+    {
+        var dialog = new Window
+        {
+            Title = "Перенести план паллет",
+            Owner = this,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            SizeToContent = SizeToContent.WidthAndHeight,
+            ResizeMode = ResizeMode.NoResize
+        };
+
+        var input = new System.Windows.Controls.TextBox
+        {
+            MinWidth = 260,
+            Margin = new Thickness(0, 8, 0, 0)
+        };
+        var okButton = new System.Windows.Controls.Button
+        {
+            Content = "OK",
+            Width = 90,
+            IsDefault = true,
+            Margin = new Thickness(0, 12, 8, 0)
+        };
+        var cancelButton = new System.Windows.Controls.Button
+        {
+            Content = "Отмена",
+            Width = 90,
+            IsCancel = true,
+            Margin = new Thickness(0, 12, 0, 0)
+        };
+        okButton.Click += (_, _) =>
+        {
+            dialog.DialogResult = true;
+            dialog.Close();
+        };
+
+        var buttons = new StackPanel
+        {
+            Orientation = System.Windows.Controls.Orientation.Horizontal,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right
+        };
+        buttons.Children.Add(okButton);
+        buttons.Children.Add(cancelButton);
+
+        var panel = new StackPanel
+        {
+            Margin = new Thickness(16)
+        };
+        panel.Children.Add(new TextBlock
+        {
+            Text = "Введите номер внутреннего заказа-источника:"
+        });
+        panel.Children.Add(input);
+        panel.Children.Add(buttons);
+        dialog.Content = panel;
+        dialog.Loaded += (_, _) => input.Focus();
+
+        return dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(input.Text)
+            ? input.Text.Trim()
+            : null;
     }
 
     private bool HasMarkableLines()
     {
         return _lines.Any(line => !string.IsNullOrWhiteSpace(line.Gtin));
+    }
+
+    private bool HasOpenProductionPalletPlan(long orderId)
+    {
+        try
+        {
+            return _services.DataStore.GetDocsByOrder(orderId)
+                .Any(doc => doc.Type == DocType.ProductionReceipt
+                            && doc.Status != DocStatus.Closed
+                            && _services.DataStore.HasProductionPallets(doc.Id));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool HasPrintedProductionPallets(long orderId)
+    {
+        try
+        {
+            return _services.DataStore.GetDocsByOrder(orderId)
+                .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status != DocStatus.Closed)
+                .SelectMany(doc => _services.DataStore.GetProductionPalletsByDoc(doc.Id))
+                .Any(pallet =>
+                    !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase));
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private bool HasPrintedOrFilledProductionPallets(long orderId)
@@ -1058,7 +1569,7 @@ public partial class OrderDetailsWindow : Window
     private void UpdateTypeUi()
     {
         var type = GetSelectedOrderType();
-        var canEdit = _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled);
+        var canEdit = _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged);
 
         TypeCombo.IsEnabled = canEdit;
         PartnerCombo.IsEnabled = canEdit && type == OrderType.Customer;

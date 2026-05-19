@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.IO;
+using FlowStock.App.Services;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Services;
 using FlowStock.Data;
@@ -30,6 +31,7 @@ public sealed class AppServices
     public WpfPackagingApiService WpfPackagingApi { get; }
     public WpfMarkingApiService WpfMarkingApi { get; }
     public WpfProductionPalletApiService WpfProductionPalletApi { get; }
+    public WpfWarehouseTaskApiService WpfWarehouseTasks { get; }
     public WpfReadApiService WpfReadApi { get; }
     public WpfDocumentRuntimeApiService WpfDocumentRuntimeApi { get; }
     public WpfIncomingRequestsApiService WpfIncomingRequestsApi { get; }
@@ -97,6 +99,7 @@ public sealed class AppServices
         WpfPackagingApi = new WpfPackagingApiService(Settings, appLogger);
         WpfMarkingApi = new WpfMarkingApiService(Settings, appLogger);
         WpfProductionPalletApi = new WpfProductionPalletApiService(Settings, appLogger);
+        WpfWarehouseTasks = new WpfWarehouseTaskApiService(Settings, appLogger);
         WpfReadApi = new WpfReadApiService(Settings, appLogger);
         WpfDocumentRuntimeApi = new WpfDocumentRuntimeApiService(Settings, appLogger);
         WpfIncomingRequestsApi = new WpfIncomingRequestsApiService(Settings, appLogger);

@@ -29,6 +29,7 @@
   - Раздел FlowStock Server в окне подключения к БД используется только для настройки API endpoint-ов и диагностики. Для non-KM runtime-сценариев WPF legacy per-operation toggles удалены, всегда используется server path.
   - Non-KM runtime read/write-потоки WPF используют `FlowStock.Server` для списков, деталей, request inbox, справочников, контрагентов, HU, packaging и import tooling. Прямой доступ к PostgreSQL в WPF остается только для startup connection/bootstrap и замороженных KM-specific code path.
 - `TSD PWA`: online data capture через API (без прямого доступа к БД).
+- **Warehouse Task Board** ([`spec_tasks.md`](spec_tasks.md)) — **experimental / UI disabled by default**: backend и тесты сохранены; входы Web/WPF/TSD скрыты до доработки. `ledger` только после `confirm-execution` в WPF.
 - `PC web client`: остатки доступны только на чтение; создание заказа отправляется как request и применяется только после подтверждения в WPF.
   - Отправка requests разрешена только активным аккаунтам с PC-access (`tsd_devices.platform=PC` или `BOTH`).
   - В списке заказов финальные зеленые индикаторы (`SHIPPED`/`Выполнен`, полностью наполненные паллеты) могут отображаться как icon-only с подсказкой; промежуточные статусы и частичное наполнение сохраняют видимый текст. Подсказки паллетных индикаторов показывают количество паллет, а для клиентского резерва HU - готовность к отгрузке в паллетах по заказу.
@@ -69,6 +70,7 @@
 - `marking_order(id, order_id NULL, item_id NULL, gtin, requested_quantity, request_number, status, notes, source_type, source_order_id NULL, requested_at, codes_bound_at, created_at, updated_at)`
 - `marking_code(..., marking_order_id, status, receipt_doc_id NULL, receipt_line_id NULL, ...)`: новые ЧЗ/КМ-коды хранят привязку к строке выпуска через `receipt_line_id`; один код может быть привязан только к одной строке.
 - `client_blocks(block_key, is_enabled, updated_at)`
+- Складские задания (experimental, см. [`spec_tasks.md`](spec_tasks.md)): `warehouse_action_bundles`, `warehouse_action_lines`, `warehouse_tasks`, `warehouse_task_lines`, `warehouse_task_events`
 
 ## Инварианты
 - Остатки рассчитываются только из `ledger`.
@@ -89,11 +91,12 @@
 - WPF в окне создания до нажатия `Создать` показывает предварительный номер без создания draft; при смене типа меняется только префикс номера, числовой хвост сохраняется.
 - В WPF настройки нумерации документов вынесены в `Справочники -> Нумерация документов...`: шаблон предпросмотра (`{PREFIX}`, `{YYYY}`, `{SEQ}`), опциональный фиксированный год и стиль числовой части (с ведущими нулями/без них).
 - Строки добавляются через API; закрытие документа пишет изменения в `ledger`.
+- Исправление ошибочного отрицательного остатка в `ledger` выполняется только новым документом `INVENTORY_CORRECTION` (отображаемое имя «Корректировка остатков»): `GET /api/diagnostics/negative-stock` показывает отрицательные HU/локации; `POST /api/diagnostics/negative-stock/correction-draft` создаёт черновик с компенсирующей строкой; проводка — через стандартный `Close`. Записи `ledger` не редактируются и не удаляются.
 - Canonical online submit-flow TSD: `reserve doc_ref -> local edit -> create draft on submit -> add lines -> close`.
   - При открытии операции на TSD серверный draft не создается: резервируется только номер документа (`doc_ref`).
   - Документ в БД создается только в момент отправки/завершения документа.
   - В API-сценарии (`POST /api/docs`) привязка `order_id/order_ref` не должна автоматически добавлять строки заказа: строки добавляются клиентом явными вызовами `POST /api/docs/{docUid}/lines`.
-- Базовый формат `doc_ref`: `PREFIX-YYYY-NNNNNN`, где `PREFIX` один из `IN/PRD/OUT/MOV/WO/INV`; последовательность по умолчанию дополняется нулями до 6 знаков и уникальна в рамках года для всех типов документов.
+- Базовый формат `doc_ref`: `PREFIX-YYYY-NNNNNN`, где `PREFIX` один из `IN/PRD/OUT/MOV/WO/INV/COR`; последовательность по умолчанию дополняется нулями до 6 знаков и уникальна в рамках года для всех типов документов.
 - Черновики с `doc_uid` могут быть восстановлены на TSD (server draft реконструируется как local draft для редактирования).
 - TSD scanner по умолчанию использует Keyboard wedge; Intent mode работает только через JS bridge (см. `TSD README`). Для `Chrome/PWA` нужно оставлять Keyboard mode и выключать Intent output.
 - Главное меню TSD сгруппировано по разделам `Операции`, `Состояние склада`, `Каталог`, `Заказы`; `История операций` больше не является отдельным top-level block.

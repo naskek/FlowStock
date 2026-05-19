@@ -353,6 +353,95 @@ public sealed class WpfReadApiService
         }
     }
 
+    public WpfCustomerOrderSaveFollowUpResult ApplyCustomerOrderSaveFollowUp(long targetCustomerOrderId)
+    {
+        return ApplyCustomerOrderSaveFollowUpAsync(targetCustomerOrderId)
+            .ConfigureAwait(false)
+            .GetAwaiter()
+            .GetResult();
+    }
+
+    public async Task<WpfCustomerOrderSaveFollowUpResult> ApplyCustomerOrderSaveFollowUpAsync(
+        long targetCustomerOrderId,
+        CancellationToken cancellationToken = default)
+    {
+        if (targetCustomerOrderId <= 0)
+        {
+            return WpfCustomerOrderSaveFollowUpResult.Failure(
+                WpfCustomerOrderSaveFollowUpStatus.InvalidRequest,
+                "Некорректный идентификатор заказа.");
+        }
+
+        try
+        {
+            var configuration = LoadConfiguration();
+            if (!configuration.IsConfigured)
+            {
+                return WpfCustomerOrderSaveFollowUpResult.Failure(
+                    WpfCustomerOrderSaveFollowUpStatus.NotConfigured,
+                    "Не настроен адрес FlowStock Server API. Резерв HU и автоперенос не проверены на сервере.");
+            }
+
+            using var handler = CreateHandler(configuration);
+            using var client = new HttpClient(handler)
+            {
+                BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
+                Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
+            };
+            using var response = await client.PostAsync(
+                $"/api/orders/{targetCustomerOrderId}/auto-redistribute-from-internal",
+                new StringContent(string.Empty),
+                cancellationToken);
+
+            var json = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = TryParseFollowUpError(json);
+                var message = error?.Message
+                              ?? $"Сервер вернул ошибку {(int)response.StatusCode} при проверке резерва HU и автопереноса.";
+                return WpfCustomerOrderSaveFollowUpResult.Failure(
+                    WpfCustomerOrderSaveFollowUpStatus.ServerError,
+                    message,
+                    error?.ErrorCode);
+            }
+
+            using var document = JsonDocument.Parse(json);
+            var payload = MapCustomerOrderSaveFollowUp(document.RootElement);
+            if (payload == null)
+            {
+                return WpfCustomerOrderSaveFollowUpResult.Failure(
+                    WpfCustomerOrderSaveFollowUpStatus.InvalidResponse,
+                    "Сервер вернул неполный ответ при проверке резерва HU и автопереноса.");
+            }
+
+            return WpfCustomerOrderSaveFollowUpResult.Success(payload);
+        }
+        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.Warn($"WPF customer order save follow-up timed out for order_id={targetCustomerOrderId}");
+            return WpfCustomerOrderSaveFollowUpResult.Failure(
+                WpfCustomerOrderSaveFollowUpStatus.Timeout,
+                "Сервер не ответил вовремя при проверке резерва HU и автопереноса. Заказ сохранён — обновите карточку и проверьте план HU вручную.",
+                exception: ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.Error($"WPF customer order save follow-up request failed for order_id={targetCustomerOrderId}", ex);
+            return WpfCustomerOrderSaveFollowUpResult.Failure(
+                WpfCustomerOrderSaveFollowUpStatus.NetworkError,
+                "Не удалось связаться с сервером после сохранения заказа. Резерв HU и автоперенос могли не выполниться — проверьте FlowStock.Server и повторите открытие заказа.",
+                exception: ex);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"Unexpected WPF customer order save follow-up failure for order_id={targetCustomerOrderId}", ex);
+            return WpfCustomerOrderSaveFollowUpResult.Failure(
+                WpfCustomerOrderSaveFollowUpStatus.UnexpectedError,
+                "Не удалось получить результат резерва HU и автопереноса. Подробности записаны в лог.",
+                exception: ex);
+        }
+    }
+
     public async Task<WpfProductionNeedOrderPreviewResult> GetProductionNeedOrderPreviewAsync(
         CancellationToken cancellationToken = default)
     {
@@ -509,7 +598,8 @@ public sealed class WpfReadApiService
         string relativePath,
         Func<JsonElement, T> map,
         string operationName,
-        out T value)
+        out T value,
+        HttpMethod? method = null)
     {
         value = default!;
 
@@ -522,7 +612,7 @@ public sealed class WpfReadApiService
                 return false;
             }
 
-            var payload = SendRequest(relativePath, configuration);
+            var payload = SendRequest(relativePath, configuration, method ?? HttpMethod.Get);
             if (payload == null)
             {
                 return false;
@@ -538,7 +628,10 @@ public sealed class WpfReadApiService
         }
     }
 
-    private JsonDocument? SendRequest(string relativePath, WpfReadApiConfiguration configuration)
+    private JsonDocument? SendRequest(
+        string relativePath,
+        WpfReadApiConfiguration configuration,
+        HttpMethod method)
     {
         using var handler = CreateHandler(configuration);
         using var client = new HttpClient(handler)
@@ -546,7 +639,12 @@ public sealed class WpfReadApiService
             BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
             Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
         };
-        using var request = new HttpRequestMessage(HttpMethod.Get, relativePath);
+        using var request = new HttpRequestMessage(method, relativePath);
+        if (method == HttpMethod.Post)
+        {
+            request.Content = new StringContent(string.Empty);
+        }
+
         using var response = client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead)
             .ConfigureAwait(false)
             .GetAwaiter()
@@ -564,6 +662,106 @@ public sealed class WpfReadApiService
             .GetResult();
 
         return JsonDocument.Parse(json);
+    }
+
+    private static WpfCustomerOrderSaveFollowUpError? TryParseFollowUpError(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("error_code", out var codeElement))
+            {
+                return null;
+            }
+
+            return new WpfCustomerOrderSaveFollowUpError(
+                codeElement.GetString() ?? string.Empty,
+                root.TryGetProperty("message", out var messageElement)
+                    ? messageElement.GetString() ?? string.Empty
+                    : string.Empty);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static WpfCustomerOrderSaveFollowUpPayload? MapCustomerOrderSaveFollowUp(JsonElement root)
+    {
+        if (!root.TryGetProperty("ok", out var okElement) || !okElement.GetBoolean())
+        {
+            return null;
+        }
+
+        var transfers = root.TryGetProperty("transfers", out var transfersElement) && transfersElement.ValueKind == JsonValueKind.Array
+            ? transfersElement.EnumerateArray().Select(MapAutoRedistributeTransfer).ToList()
+            : [];
+
+        var ignored = root.TryGetProperty("ignored_attempts", out var ignoredElement) && ignoredElement.ValueKind == JsonValueKind.Array
+            ? ignoredElement.EnumerateArray().Select(MapIgnoredAttempt).ToList()
+            : [];
+
+        var reservationLines = root.TryGetProperty("reservation_lines", out var reservationElement) && reservationElement.ValueKind == JsonValueKind.Array
+            ? reservationElement.EnumerateArray().Select(MapReservationLine).ToList()
+            : [];
+
+        var warnings = root.TryGetProperty("warnings", out var warningsElement) && warningsElement.ValueKind == JsonValueKind.Array
+            ? warningsElement.EnumerateArray().Select(MapFollowUpWarning).ToList()
+            : [];
+
+        return new WpfCustomerOrderSaveFollowUpPayload(
+            root.TryGetProperty("result", out var resultElement) ? resultElement.GetString() ?? string.Empty : string.Empty,
+            root.TryGetProperty("bind_reserved_stock", out var bindElement) && bindElement.GetBoolean(),
+            root.TryGetProperty("skipped_reason", out var skippedElement) ? skippedElement.GetString() : null,
+            reservationLines,
+            transfers,
+            ignored,
+            warnings);
+    }
+
+    private static WpfOrderReservationPlanLine MapReservationLine(JsonElement element)
+    {
+        return new WpfOrderReservationPlanLine(
+            element.TryGetProperty("order_line_id", out var lineIdElement) ? lineIdElement.GetInt64() : 0,
+            element.TryGetProperty("item_id", out var itemIdElement) ? itemIdElement.GetInt64() : 0,
+            element.TryGetProperty("hu_code", out var huElement) ? (huElement.GetString() ?? string.Empty) : string.Empty,
+            element.TryGetProperty("qty_planned", out var qtyElement) ? qtyElement.GetDouble() : 0);
+    }
+
+    private static WpfOrderSaveFollowUpWarning MapFollowUpWarning(JsonElement element)
+    {
+        return new WpfOrderSaveFollowUpWarning(
+            element.TryGetProperty("code", out var codeElement) ? (codeElement.GetString() ?? string.Empty) : string.Empty,
+            element.TryGetProperty("message", out var messageElement) ? (messageElement.GetString() ?? string.Empty) : string.Empty);
+    }
+
+    private static WpfAutoRedistributeIgnoredAttempt MapIgnoredAttempt(JsonElement element)
+    {
+        return new WpfAutoRedistributeIgnoredAttempt(
+            element.TryGetProperty("source_order_id", out var sourceOrderIdElement) ? sourceOrderIdElement.GetInt64() : 0,
+            element.TryGetProperty("source_order_ref", out var sourceOrderRefElement) ? (sourceOrderRefElement.GetString() ?? string.Empty) : string.Empty,
+            element.TryGetProperty("item_id", out var itemIdElement) ? itemIdElement.GetInt64() : 0,
+            element.TryGetProperty("qty", out var qtyElement) ? qtyElement.GetDouble() : 0,
+            element.TryGetProperty("reason_code", out var reasonCodeElement) ? (reasonCodeElement.GetString() ?? string.Empty) : string.Empty,
+            element.TryGetProperty("reason", out var reasonElement) ? (reasonElement.GetString() ?? string.Empty) : string.Empty);
+    }
+
+    private static WpfAutoRedistributeTransfer MapAutoRedistributeTransfer(JsonElement element)
+    {
+        return new WpfAutoRedistributeTransfer(
+            element.TryGetProperty("source_order_id", out var sourceOrderIdElement) ? sourceOrderIdElement.GetInt64() : 0,
+            element.TryGetProperty("source_order_ref", out var sourceOrderRefElement) ? (sourceOrderRefElement.GetString() ?? string.Empty) : string.Empty,
+            element.TryGetProperty("item_id", out var itemIdElement) ? itemIdElement.GetInt64() : 0,
+            element.TryGetProperty("qty_transferred", out var qtyTransferredElement) ? qtyTransferredElement.GetDouble() : 0,
+            element.TryGetProperty("qty_from_unproduced", out var qtyUnproducedElement) ? qtyUnproducedElement.GetDouble() : 0,
+            element.TryGetProperty("qty_from_produced_stock", out var qtyProducedElement) ? qtyProducedElement.GetDouble() : 0,
+            element.TryGetProperty("transferred_hu_codes", out var huElement) && huElement.ValueKind == JsonValueKind.Array
+                ? huElement.EnumerateArray()
+                    .Select(code => code.GetString() ?? string.Empty)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .ToList()
+                : []);
     }
 
     private WpfReadApiConfiguration LoadConfiguration()
@@ -949,7 +1147,7 @@ public sealed class WpfReadApiService
             return parsed.Value;
         }
 
-        foreach (var candidate in new[] { OrderStatus.Draft, OrderStatus.Accepted, OrderStatus.InProgress, OrderStatus.Shipped, OrderStatus.Cancelled })
+        foreach (var candidate in new[] { OrderStatus.Draft, OrderStatus.Accepted, OrderStatus.InProgress, OrderStatus.Shipped, OrderStatus.Merged, OrderStatus.Cancelled })
         {
             if (string.Equals(value, OrderStatusMapper.StatusToDisplayName(candidate, type), StringComparison.OrdinalIgnoreCase))
             {
@@ -1167,6 +1365,182 @@ file sealed class PreviewProductionNeedOrdersResponse
 
     [JsonPropertyName("rows")]
     public IReadOnlyList<PreviewProductionNeedOrdersResponseLine> Rows { get; init; } = Array.Empty<PreviewProductionNeedOrdersResponseLine>();
+}
+
+public enum WpfCustomerOrderSaveFollowUpStatus
+{
+    Success,
+    NotConfigured,
+    InvalidRequest,
+    NetworkError,
+    Timeout,
+    ServerError,
+    InvalidResponse,
+    UnexpectedError
+}
+
+public sealed class WpfCustomerOrderSaveFollowUpResult
+{
+    private WpfCustomerOrderSaveFollowUpResult(
+        WpfCustomerOrderSaveFollowUpStatus status,
+        WpfCustomerOrderSaveFollowUpPayload? payload,
+        string? errorMessage,
+        string? errorCode,
+        Exception? exception)
+    {
+        Status = status;
+        Payload = payload;
+        ErrorMessage = errorMessage;
+        ErrorCode = errorCode;
+        Exception = exception;
+    }
+
+    public WpfCustomerOrderSaveFollowUpStatus Status { get; }
+    public WpfCustomerOrderSaveFollowUpPayload? Payload { get; }
+    public string? ErrorMessage { get; }
+    public string? ErrorCode { get; }
+    public Exception? Exception { get; }
+    public bool IsSuccess => Status == WpfCustomerOrderSaveFollowUpStatus.Success && Payload != null;
+
+    public static WpfCustomerOrderSaveFollowUpResult Success(WpfCustomerOrderSaveFollowUpPayload payload)
+    {
+        return new WpfCustomerOrderSaveFollowUpResult(WpfCustomerOrderSaveFollowUpStatus.Success, payload, null, null, null);
+    }
+
+    public static WpfCustomerOrderSaveFollowUpResult Failure(
+        WpfCustomerOrderSaveFollowUpStatus status,
+        string message,
+        string? errorCode = null,
+        Exception? exception = null)
+    {
+        return new WpfCustomerOrderSaveFollowUpResult(status, null, message, errorCode, exception);
+    }
+}
+
+public sealed class WpfCustomerOrderSaveFollowUpPayload
+{
+    public WpfCustomerOrderSaveFollowUpPayload(
+        string result,
+        bool bindReservedStock,
+        string? skippedReason,
+        IReadOnlyList<WpfOrderReservationPlanLine> reservationLines,
+        IReadOnlyList<WpfAutoRedistributeTransfer> transfers,
+        IReadOnlyList<WpfAutoRedistributeIgnoredAttempt> ignoredAttempts,
+        IReadOnlyList<WpfOrderSaveFollowUpWarning> warnings)
+    {
+        Result = result;
+        BindReservedStock = bindReservedStock;
+        SkippedReason = skippedReason;
+        ReservationLines = reservationLines;
+        Transfers = transfers;
+        IgnoredAttempts = ignoredAttempts;
+        Warnings = warnings;
+    }
+
+    public string Result { get; }
+    public bool BindReservedStock { get; }
+    public string? SkippedReason { get; }
+    public IReadOnlyList<WpfOrderReservationPlanLine> ReservationLines { get; }
+    public IReadOnlyList<WpfAutoRedistributeTransfer> Transfers { get; }
+    public IReadOnlyList<WpfAutoRedistributeIgnoredAttempt> IgnoredAttempts { get; }
+    public IReadOnlyList<WpfOrderSaveFollowUpWarning> Warnings { get; }
+    public bool HasTransfers => Transfers.Count > 0;
+    public bool HasIgnoredAttempts => IgnoredAttempts.Count > 0;
+}
+
+public sealed class WpfCustomerOrderSaveFollowUpError
+{
+    public WpfCustomerOrderSaveFollowUpError(string errorCode, string message)
+    {
+        ErrorCode = errorCode;
+        Message = message;
+    }
+
+    public string ErrorCode { get; }
+    public string Message { get; }
+}
+
+public sealed class WpfOrderReservationPlanLine
+{
+    public WpfOrderReservationPlanLine(long orderLineId, long itemId, string huCode, double qtyPlanned)
+    {
+        OrderLineId = orderLineId;
+        ItemId = itemId;
+        HuCode = huCode;
+        QtyPlanned = qtyPlanned;
+    }
+
+    public long OrderLineId { get; }
+    public long ItemId { get; }
+    public string HuCode { get; }
+    public double QtyPlanned { get; }
+}
+
+public sealed class WpfOrderSaveFollowUpWarning
+{
+    public WpfOrderSaveFollowUpWarning(string code, string message)
+    {
+        Code = code;
+        Message = message;
+    }
+
+    public string Code { get; }
+    public string Message { get; }
+}
+
+public sealed class WpfAutoRedistributeIgnoredAttempt
+{
+    public WpfAutoRedistributeIgnoredAttempt(
+        long sourceOrderId,
+        string sourceOrderRef,
+        long itemId,
+        double qty,
+        string reasonCode,
+        string reason)
+    {
+        SourceOrderId = sourceOrderId;
+        SourceOrderRef = sourceOrderRef;
+        ItemId = itemId;
+        Qty = qty;
+        ReasonCode = reasonCode;
+        Reason = reason;
+    }
+
+    public long SourceOrderId { get; }
+    public string SourceOrderRef { get; }
+    public long ItemId { get; }
+    public double Qty { get; }
+    public string ReasonCode { get; }
+    public string Reason { get; }
+}
+
+public sealed class WpfAutoRedistributeTransfer
+{
+    public WpfAutoRedistributeTransfer(
+        long sourceOrderId,
+        string sourceOrderRef,
+        long itemId,
+        double qtyTransferred,
+        double qtyFromUnproduced,
+        double qtyFromProducedStock,
+        IReadOnlyList<string> transferredHuCodes)
+    {
+        SourceOrderId = sourceOrderId;
+        SourceOrderRef = sourceOrderRef;
+        ItemId = itemId;
+        QtyTransferred = qtyTransferred;
+        QtyFromUnproduced = qtyFromUnproduced;
+        QtyFromProducedStock = qtyFromProducedStock;
+        TransferredHuCodes = transferredHuCodes;
+    }
+
+    public long SourceOrderId { get; }
+    public string SourceOrderRef { get; }
+    public long ItemId { get; }
+    public double QtyTransferred { get; }
+    public double QtyFromUnproduced { get; }
+    public double QtyFromProducedStock { get; }
+    public IReadOnlyList<string> TransferredHuCodes { get; }
 }
 
 file sealed class PreviewProductionNeedOrdersResponseLine

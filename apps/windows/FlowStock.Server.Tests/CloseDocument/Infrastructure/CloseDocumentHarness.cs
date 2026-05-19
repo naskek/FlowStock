@@ -1048,6 +1048,9 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.GetHuStockRows())
             .Returns(() => BuildHuStockRows());
 
+        _store.Setup(store => store.GetNegativeStockBalances())
+            .Returns(() => BuildNegativeStockBalances());
+
         _store.Setup(store => store.GetHuByCode(It.IsAny<string>()))
             .Returns<string>(code => _hus.TryGetValue(code.Trim(), out var hu) ? hu : null);
 
@@ -1548,6 +1551,9 @@ internal sealed class CloseDocumentHarness
                 pallet.PrdDocId == docId
                 && !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)));
 
+        _store.Setup(store => store.HasProductionPalletLinesForDoc(It.IsAny<long>()))
+            .Returns(false);
+
         _store.Setup(store => store.ClearPlannedProductionPalletPlan(It.IsAny<long>()))
             .Callback<long>(docId =>
             {
@@ -1560,15 +1566,149 @@ internal sealed class CloseDocumentHarness
                     throw new InvalidOperationException("План паллет уже напечатан или наполнен. Переназначение HU запрещено.");
                 }
 
-                foreach (var pallet in _productionPallets.Values.Where(pallet => pallet.PrdDocId == docId).ToArray())
+                ClearProductionPalletPlanInHarness(docId);
+            });
+
+        _store.Setup(store => store.CountLedgerEntriesByDocId(It.IsAny<long>()))
+            .Returns<long>(docId => _postedLedger.Count(entry => entry.DocId == docId));
+
+        _store.Setup(store => store.CancelProductionPalletPlan(It.IsAny<long>()))
+            .Returns<long>(docId =>
+            {
+                if (_productionPallets.Values.Any(pallet =>
+                        pallet.PrdDocId == docId
+                        && string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
                 {
-                    _productionPallets.Remove(pallet.Id);
+                    throw new InvalidOperationException("Нельзя удалить план паллет: есть уже наполненные паллеты.");
                 }
 
-                if (_linesByDoc.TryGetValue(docId, out var docLines))
+                if (_postedLedger.Any(entry => entry.DocId == docId))
                 {
-                    docLines.Clear();
+                    throw new InvalidOperationException("Нельзя удалить план паллет: по выпуску уже есть движения склада.");
                 }
+
+                var removedPalletCount = _productionPallets.Values.Count(pallet =>
+                    pallet.PrdDocId == docId
+                    && !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase));
+                var removedLineCount = _linesByDoc.TryGetValue(docId, out var docLines) ? docLines.Count : 0;
+                ClearProductionPalletPlanInHarness(docId);
+                return new ProductionPalletPlanCleanupCounts
+                {
+                    RemovedPalletCount = removedPalletCount,
+                    RemovedLineCount = removedLineCount
+                };
+            });
+
+        _store.Setup(store => store.AdoptProductionPalletPlan(
+                It.IsAny<long>(),
+                It.IsAny<long>(),
+                It.IsAny<long>(),
+                It.IsAny<long>(),
+                It.IsAny<IReadOnlyDictionary<long, long>>()))
+            .Returns<long, long, long, long, IReadOnlyDictionary<long, long>>((sourcePrdDocId, targetPrdDocId, sourceOrderId, targetOrderId, targetOrderLineIdByItemId) =>
+            {
+                var sourcePallets = _productionPallets.Values
+                    .Where(pallet => pallet.PrdDocId == sourcePrdDocId
+                                     && !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                var transferredHuCodes = sourcePallets
+                    .Select(pallet => pallet.HuCode)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                var transferredLineCount = _linesByDoc.TryGetValue(sourcePrdDocId, out var sourceLines)
+                    ? sourceLines.Count
+                    : 0;
+
+                if (!_linesByDoc.TryGetValue(targetPrdDocId, out var targetLines))
+                {
+                    targetLines = new List<DocLine>();
+                    _linesByDoc[targetPrdDocId] = targetLines;
+                }
+
+                if (_linesByDoc.TryGetValue(sourcePrdDocId, out sourceLines))
+                {
+                    foreach (var line in sourceLines.ToArray())
+                    {
+                        if (!targetOrderLineIdByItemId.TryGetValue(line.ItemId, out var targetLineId))
+                        {
+                            continue;
+                        }
+
+                        sourceLines.Remove(line);
+                        targetLines.Add(new DocLine
+                        {
+                            Id = line.Id,
+                            DocId = targetPrdDocId,
+                            ReplacesLineId = line.ReplacesLineId,
+                            OrderLineId = targetLineId,
+                            ProductionPurpose = ProductionLinePurpose.CustomerOrder,
+                            ItemId = line.ItemId,
+                            Qty = line.Qty,
+                            QtyInput = line.QtyInput,
+                            UomCode = line.UomCode,
+                            FromLocationId = line.FromLocationId,
+                            ToLocationId = line.ToLocationId,
+                            FromHu = line.FromHu,
+                            ToHu = line.ToHu,
+                            PackSingleHu = line.PackSingleHu
+                        });
+                    }
+                }
+
+                foreach (var pallet in sourcePallets)
+                {
+                    var targetLineId = targetOrderLineIdByItemId.TryGetValue(pallet.ItemId, out var foundTargetLineId)
+                        ? foundTargetLineId
+                        : pallet.OrderLineId;
+                    _productionPallets[pallet.Id] = new ProductionPallet
+                    {
+                        Id = pallet.Id,
+                        PrdDocId = targetPrdDocId,
+                        DocLineId = pallet.DocLineId,
+                        OrderId = targetOrderId,
+                        OrderLineId = targetLineId,
+                        ItemId = pallet.ItemId,
+                        ItemName = pallet.ItemName,
+                        HuCode = pallet.HuCode,
+                        PlannedQty = pallet.PlannedQty,
+                        ToLocationId = pallet.ToLocationId,
+                        ToLocationCode = pallet.ToLocationCode,
+                        Status = pallet.Status,
+                        FilledAt = pallet.FilledAt,
+                        FilledByDeviceId = pallet.FilledByDeviceId,
+                        CreatedAt = pallet.CreatedAt,
+                        Lines = pallet.Lines.Select(line => new ProductionPalletComponentLine
+                        {
+                            Id = line.Id,
+                            ProductionPalletId = line.ProductionPalletId,
+                            DocLineId = line.DocLineId,
+                            OrderLineId = targetOrderLineIdByItemId.TryGetValue(line.ItemId, out var componentTargetLineId)
+                                ? componentTargetLineId
+                                : line.OrderLineId,
+                            ItemId = line.ItemId,
+                            ItemName = line.ItemName,
+                            Brand = line.Brand,
+                            Uom = line.Uom,
+                            PlannedQty = line.PlannedQty,
+                            FilledQty = line.FilledQty,
+                            CreatedAt = line.CreatedAt
+                        }).ToArray()
+                    };
+                }
+
+                return new ProductionPalletPlanAdoptionResult
+                {
+                    Success = true,
+                    Message = "План паллет перенесён на клиентский заказ.",
+                    SourceOrderId = sourceOrderId,
+                    TargetOrderId = targetOrderId,
+                    SourcePrdDocId = sourcePrdDocId,
+                    TargetPrdDocId = targetPrdDocId,
+                    TransferredPalletCount = sourcePallets.Length,
+                    TransferredLineCount = transferredLineCount,
+                    TransferredHuCodes = transferredHuCodes
+                };
             });
 
         _store.Setup(store => store.GetFilledProductionPalletQtyByOrderLine(It.IsAny<long>(), It.IsAny<long?>()))
@@ -2230,13 +2370,52 @@ internal sealed class CloseDocumentHarness
         }
 
         return totals
-            .Where(pair => Math.Abs(pair.Value) > 0.000001)
+            .Where(pair => !StockQuantityRules.IsEffectivelyZero(pair.Value))
             .Select(pair => new HuStockRow
             {
                 ItemId = pair.Key.ItemId,
                 LocationId = pair.Key.LocationId,
                 HuCode = pair.Key.HuCode,
                 Qty = pair.Value
+            })
+            .ToArray();
+    }
+
+    private IReadOnlyList<NegativeStockBalanceRow> BuildNegativeStockBalances()
+    {
+        return BuildHuStockRows()
+            .Where(row => StockQuantityRules.IsNegativeStockQty(row.Qty))
+            .Select(row =>
+            {
+                var lastEntry = _postedLedger
+                    .Where(entry => entry.ItemId == row.ItemId
+                                    && entry.LocationId == row.LocationId
+                                    && string.Equals(
+                                        NormalizeHu(entry.HuCode),
+                                        NormalizeHu(row.HuCode),
+                                        StringComparison.Ordinal))
+                    .OrderByDescending(entry => entry.Timestamp)
+                    .ThenByDescending(entry => entry.Id)
+                    .FirstOrDefault();
+                var lastDoc = lastEntry?.DocId is long docId && _docs.TryGetValue(docId, out var doc) ? doc : null;
+                _items.TryGetValue(row.ItemId, out var item);
+                _locations.TryGetValue(row.LocationId, out var location);
+                return new NegativeStockBalanceRow
+                {
+                    ItemId = row.ItemId,
+                    ItemName = item?.Name ?? $"#{row.ItemId}",
+                    LocationId = row.LocationId,
+                    LocationCode = location?.Code ?? $"#{row.LocationId}",
+                    HuCode = row.HuCode,
+                    Qty = row.Qty,
+                    LastLedgerEntryId = lastEntry?.Id,
+                    LastDocId = lastEntry?.DocId,
+                    LastDocRef = lastDoc?.DocRef,
+                    LastDocType = lastDoc?.Type,
+                    OrderId = lastDoc?.OrderId,
+                    OrderRef = lastDoc?.OrderRef,
+                    LastMovementAt = lastEntry?.Timestamp
+                };
             })
             .ToArray();
     }
@@ -2318,5 +2497,18 @@ internal sealed class CloseDocumentHarness
     private static string? NormalizeText(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private void ClearProductionPalletPlanInHarness(long docId)
+    {
+        foreach (var pallet in _productionPallets.Values.Where(pallet => pallet.PrdDocId == docId).ToArray())
+        {
+            _productionPallets.Remove(pallet.Id);
+        }
+
+        if (_linesByDoc.TryGetValue(docId, out var docLines))
+        {
+            docLines.Clear();
+        }
     }
 }

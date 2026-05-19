@@ -74,6 +74,7 @@
       tsd_move: true,
       tsd_write_off: true,
       tsd_inventory: true,
+      tsd_warehouse_tasks: false,
     };
   }
 
@@ -144,6 +145,9 @@
     }
     if (route.name === "orders" || route.name === "order") {
       return "tsd_orders";
+    }
+    if (route.name === "tasks" || route.name === "taskDoc") {
+      return "tsd_warehouse_tasks";
     }
     if (route.name === "doc") {
       return currentClientBlockContext || "";
@@ -1166,6 +1170,9 @@
     if (route.name === "orders" || route.name === "order") {
       return isClientBlockEnabled("tsd_orders");
     }
+    if (route.name === "tasks" || route.name === "taskDoc") {
+      return isClientBlockEnabled("tsd_warehouse_tasks");
+    }
 
     return true;
   }
@@ -1554,6 +1561,12 @@
     if (parts[0] === "filling") {
       return { name: "filling" };
     }
+    if (parts[0] === "tasks" && parts[1]) {
+      return { name: "taskDoc", id: decodeURIComponent(parts[1]) };
+    }
+    if (parts[0] === "tasks") {
+      return { name: "tasks" };
+    }
     if (parts[0] === "docs" && parts[1]) {
       return { name: "docs", op: decodeURIComponent(parts[1]) };
     }
@@ -1614,6 +1627,12 @@
     }
     if (parts[0] === "filling") {
       return { name: "filling" };
+    }
+    if (parts[0] === "tasks" && parts[1]) {
+      return { name: "taskDoc", id: decodeURIComponent(parts[1]) };
+    }
+    if (parts[0] === "tasks") {
+      return { name: "tasks" };
     }
     if (parts[0] === "docs" && parts[1]) {
       return { name: "docs", op: decodeURIComponent(parts[1]) };
@@ -1851,6 +1870,41 @@
       return;
     }
 
+    if (route.name === "tasks") {
+      if (!isClientBlockEnabled("tsd_warehouse_tasks")) {
+        navigate("/home");
+        return;
+      }
+      setCurrentClientBlockContext("tsd_warehouse_tasks");
+      app.innerHTML = renderLoading();
+      getWarehouseTaskDeviceId()
+        .then(function (deviceId) {
+          return TsdStorage.apiListWarehouseTasks(deviceId);
+        })
+        .then(function (tasks) {
+          app.innerHTML = renderWarehouseTasksList(tasks || []);
+          wireWarehouseTasksList();
+          applySoftKeyboardSetting(app);
+        })
+        .catch(function (error) {
+          console.error(error);
+          app.innerHTML = renderError(mapWarehouseTaskError(error));
+          applySoftKeyboardSetting(app);
+        });
+      return;
+    }
+
+    if (route.name === "taskDoc") {
+      if (!isClientBlockEnabled("tsd_warehouse_tasks")) {
+        navigate("/home");
+        return;
+      }
+      setCurrentClientBlockContext("tsd_warehouse_tasks");
+      app.innerHTML = renderLoading();
+      openWarehouseTaskDetail(route.id, { message: "", messageType: "" });
+      return;
+    }
+
     if (route.name === "doc") {
       app.innerHTML = renderLoading();
       if (isServerDocId(route.id)) {
@@ -1990,7 +2044,9 @@
       currentRoute.name === "docs" ||
       currentRoute.name === "stock" ||
       currentRoute.name === "items" ||
-      currentRoute.name === "orders"
+      currentRoute.name === "orders" ||
+      currentRoute.name === "tasks" ||
+      currentRoute.name === "taskDoc"
     );
   }
 
@@ -2019,6 +2075,9 @@
     }
     if (isClientBlockEnabled("tsd_orders")) {
       buttons.push('<button class="btn menu-btn" data-route="orders">Заказы</button>');
+    }
+    if (isClientBlockEnabled("tsd_warehouse_tasks")) {
+      buttons.push('<button class="btn menu-btn" data-route="tasks">Задания</button>');
     }
     if (!buttons.length) {
       return '<div class="empty-state">Все блоки ТСД сейчас временно отключены.</div>';
@@ -5237,6 +5296,339 @@
         var docId = item.getAttribute("data-doc");
         setNavOrigin(listOrigin);
         navigate("/doc/" + encodeURIComponent(docId));
+      });
+    });
+  }
+
+  function getWarehouseTaskDeviceId() {
+    return TsdStorage.getSetting("device_id").then(function (value) {
+      return String(value || "").trim();
+    });
+  }
+
+  function mapWarehouseTaskError(error) {
+    var message = String(error && error.message ? error.message : error || "").trim();
+    if (!message || message === "Failed to fetch" || message === "AbortError") {
+      return "Нет связи с сервером. Задание не выполнено.";
+    }
+    if (message === "SERVER_ERROR" || message === "INVALID_RESPONSE") {
+      return "Сервер вернул ошибку. Проверьте лог FlowStock Server.";
+    }
+    var translations = {
+      TASK_NOT_IN_EXECUTION: "Сначала начните задание.",
+      TASK_ALREADY_COMPLETED: "Задание уже завершено.",
+      HU_NOT_IN_TASK: "HU не из задания.",
+      HU_ALREADY_SCANNED: "HU уже отсканирован.",
+      LOCATION_NOT_FOUND: "Место не найдено.",
+      WRONG_LOCATION: "Место назначения неверное.",
+      SCAN_HU_FIRST: "Сначала отсканируйте HU.",
+      TASK_LINES_INCOMPLETE: "Не все шаги сканирования выполнены.",
+      MISSING_BARCODE: "Отсканируйте штрихкод.",
+      TASK_NOT_FOUND: "Задание не найдено."
+    };
+    if (translations[message]) {
+      return translations[message];
+    }
+    return message;
+  }
+
+  function formatWarehouseTaskStatus(status) {
+    var normalized = String(status || "").trim().toUpperCase();
+    if (normalized === "NEW" || normalized === "ASSIGNED") {
+      return "Назначено";
+    }
+    if (normalized === "IN_EXECUTION") {
+      return "В работе";
+    }
+    if (normalized === "EXECUTED") {
+      return "Выполнено (ожидает подтверждения)";
+    }
+    if (normalized === "CONFIRMED") {
+      return "Подтверждено";
+    }
+    if (normalized === "CANCELLED") {
+      return "Отменено";
+    }
+    return status || "-";
+  }
+
+  function renderWarehouseTasksList(tasks) {
+    var rows = (tasks || [])
+      .map(function (task) {
+        var taskId = task.id || task.task_id;
+        var hu = task.expected_hu_code || task.expectedHuCode || "-";
+        return (
+          '<button class="doc-item" data-warehouse-task="' +
+          escapeHtml(taskId) +
+          '">' +
+          '  <div class="doc-main">' +
+          '    <div class="doc-title">' +
+          escapeHtml(task.task_ref || task.taskRef || "Задание") +
+          "</div>" +
+          '    <div class="doc-ref">HU: ' +
+          escapeHtml(hu) +
+          "</div>" +
+          '    <div class="doc-created">' +
+          escapeHtml(formatWarehouseTaskStatus(task.status)) +
+          "</div>" +
+          "  </div>" +
+          "</button>"
+        );
+      })
+      .join("");
+
+    if (!rows) {
+      rows = '<div class="empty-state">Активных заданий нет.</div>';
+    }
+
+    return (
+      '<section class="screen">' +
+      '  <div class="screen-card doc-screen-card">' +
+      '    <div class="section-title">Задания склада</div>' +
+      '    <div class="doc-list">' +
+      rows +
+      "</div>" +
+      "</div>" +
+      "</section>"
+    );
+  }
+
+  function renderWarehouseTaskDetail(payload, state) {
+    var task = (payload && payload.task) || {};
+    var lines = (payload && payload.lines) || [];
+    var line = lines[0] || {};
+    var status = String(task.status || "").toUpperCase();
+    var scanType = resolveWarehouseTaskScanType(line);
+    var prompt =
+      scanType === "HU"
+        ? "Отсканируйте HU: " + (line.expected_hu_code || line.expectedHuCode || "-")
+        : scanType === "LOCATION"
+          ? "Отсканируйте место назначения"
+          : "Все шаги выполнены";
+    var messageHtml =
+      state && state.message
+        ? '<div class="status ' +
+          escapeHtml(state.messageType || "") +
+          '">' +
+          escapeHtml(state.message) +
+          "</div>"
+        : "";
+    var completeDisabled =
+      status === "EXECUTED" || status === "CONFIRMED" || scanType !== "DONE" ? " disabled" : "";
+    var scanDisabled = status === "EXECUTED" || status === "CONFIRMED" || scanType === "DONE" ? " disabled" : "";
+    var doneNotice =
+      status === "EXECUTED" || status === "CONFIRMED"
+        ? '<div class="status ok">Задание выполнено на ТСД. Дождитесь подтверждения в WPF.</div>'
+        : "";
+
+    return (
+      '<section class="screen">' +
+      '  <div class="screen-card">' +
+      '    <div class="section-title">' +
+      escapeHtml(task.task_ref || task.taskRef || "Задание") +
+      "</div>" +
+      '    <div class="doc-created">' +
+      escapeHtml(formatWarehouseTaskStatus(task.status)) +
+      "</div>" +
+      doneNotice +
+      messageHtml +
+      '    <div class="filling-preview-title">' +
+      escapeHtml(prompt) +
+      "</div>" +
+      '    <div class="scan-row">' +
+      '      <input id="warehouseTaskScanInput" class="scan-input" type="text" placeholder="Скан штрихкода"' +
+      scanDisabled +
+      " />" +
+      '      <button class="btn primary-btn" id="warehouseTaskScanBtn"' +
+      scanDisabled +
+      ">Скан</button>" +
+      "</div>" +
+      '    <div class="actions-row">' +
+      '      <button class="btn" data-route="tasks">К списку</button>' +
+      '      <button class="btn primary-btn" id="warehouseTaskCompleteBtn"' +
+      completeDisabled +
+      ">Завершить</button>" +
+      "</div>" +
+      "  </div>" +
+      "</section>"
+    );
+  }
+
+  function resolveWarehouseTaskScanType(line) {
+    if (!line) {
+      return "HU";
+    }
+    var status = String(line.status || "").toUpperCase();
+    if (status === "DONE" || status === "CANCELLED") {
+      return "DONE";
+    }
+    if (line.scanned_hu_code || line.scannedHuCode || status === "SCANNED") {
+      return "LOCATION";
+    }
+    return "HU";
+  }
+
+  function isWarehouseTaskLineDone(line) {
+    return String((line && line.status) || "").toUpperCase() === "DONE";
+  }
+
+  function wireWarehouseTasksList() {
+    var items = document.querySelectorAll("[data-warehouse-task]");
+    items.forEach(function (item) {
+      item.addEventListener("click", function () {
+        var taskId = item.getAttribute("data-warehouse-task");
+        if (taskId) {
+          navigate("/tasks/" + encodeURIComponent(taskId));
+        }
+      });
+    });
+
+    setLiveRefreshHandler(function () {
+      if (!currentRoute || currentRoute.name !== "tasks") {
+        return;
+      }
+      getWarehouseTaskDeviceId()
+        .then(function (deviceId) {
+          return TsdStorage.apiListWarehouseTasks(deviceId);
+        })
+        .then(function (tasks) {
+          if (currentRoute && currentRoute.name === "tasks") {
+            app.innerHTML = renderWarehouseTasksList(tasks || []);
+            wireWarehouseTasksList();
+            applySoftKeyboardSetting(app);
+          }
+        })
+        .catch(function () {
+          // keep current list
+        });
+    });
+  }
+
+  function openWarehouseTaskDetail(taskId, state) {
+    return TsdStorage.apiGetWarehouseTask(taskId)
+      .then(function (payload) {
+        var task = payload.task || {};
+        var status = String(task.status || "").toUpperCase();
+        var startPromise =
+          status === "IN_EXECUTION" || status === "EXECUTED" || status === "CONFIRMED"
+            ? Promise.resolve(payload)
+            : getWarehouseTaskDeviceId().then(function (deviceId) {
+                return TsdStorage.apiStartWarehouseTask(taskId, deviceId).then(function () {
+                  return TsdStorage.apiGetWarehouseTask(taskId);
+                });
+              });
+        return startPromise.then(function (freshPayload) {
+          app.innerHTML = renderWarehouseTaskDetail(freshPayload, state || {});
+          wireWarehouseTaskDetail(taskId);
+          applySoftKeyboardSetting(app);
+        });
+      })
+      .catch(function (error) {
+        console.error(error);
+        app.innerHTML = renderError(mapWarehouseTaskError(error));
+        applySoftKeyboardSetting(app);
+      });
+  }
+
+  function wireWarehouseTaskDetail(taskId) {
+    var scanInput = document.getElementById("warehouseTaskScanInput");
+    var scanBtn = document.getElementById("warehouseTaskScanBtn");
+    var completeBtn = document.getElementById("warehouseTaskCompleteBtn");
+    var scanBusy = false;
+
+    function focusScan() {
+      if (!scanInput || scanInput.disabled) {
+        return;
+      }
+      setPreferredScanTarget(scanInput);
+      scanInput.focus();
+    }
+
+    function submitScan() {
+      if (!scanInput || scanInput.disabled || scanBusy) {
+        return;
+      }
+      var barcode = String(scanInput.value || "").trim();
+      if (!barcode) {
+        return;
+      }
+      scanBusy = true;
+      getWarehouseTaskDeviceId()
+        .then(function (deviceId) {
+          return TsdStorage.apiGetWarehouseTask(taskId).then(function (payload) {
+            var line = (payload.lines || [])[0] || {};
+            var scanType = resolveWarehouseTaskScanType(line);
+            return TsdStorage.apiScanWarehouseTask(taskId, {
+              barcode: barcode,
+              scanType: scanType,
+              deviceId: deviceId
+            });
+          });
+        })
+        .then(function () {
+          scanInput.value = "";
+          return openWarehouseTaskDetail(taskId, {
+            message: "Скан принят.",
+            messageType: "ok"
+          });
+        })
+        .catch(function (error) {
+          scanBusy = false;
+          return openWarehouseTaskDetail(taskId, {
+            message: mapWarehouseTaskError(error),
+            messageType: "error"
+          });
+        });
+    }
+
+    if (scanBtn) {
+      scanBtn.addEventListener("click", submitScan);
+    }
+    if (scanInput) {
+      scanInput.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          submitScan();
+        }
+      });
+      setScanHandler(function (value) {
+        if (!scanInput || scanInput.disabled) {
+          return;
+        }
+        scanInput.value = String(value || "").trim();
+        submitScan();
+      });
+      focusScan();
+    }
+
+    if (completeBtn) {
+      completeBtn.addEventListener("click", function () {
+        if (completeBtn.disabled) {
+          return;
+        }
+        getWarehouseTaskDeviceId()
+          .then(function (deviceId) {
+            return TsdStorage.apiCompleteWarehouseTask(taskId, deviceId);
+          })
+          .then(function () {
+            return openWarehouseTaskDetail(taskId, {
+              message: "Задание завершено на ТСД.",
+              messageType: "ok"
+            });
+          })
+          .catch(function (error) {
+            return openWarehouseTaskDetail(taskId, {
+              message: mapWarehouseTaskError(error),
+              messageType: "error"
+            });
+          });
+      });
+    }
+
+    var backButtons = document.querySelectorAll('[data-route="tasks"]');
+    backButtons.forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        navigate("/tasks");
       });
     });
   }

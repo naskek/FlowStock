@@ -128,6 +128,43 @@ public sealed class ProductionPalletOrderPlanResult
     public ProductionPalletDocument Document { get; init; } = new();
 }
 
+public sealed class ProductionPalletPlanCleanupCounts
+{
+    public int RemovedPalletCount { get; init; }
+    public int RemovedLineCount { get; init; }
+}
+
+public sealed class ProductionPalletCancelPlanResult
+{
+    public long OrderId { get; init; }
+    public long PrdDocId { get; init; }
+    public string Message { get; init; } = string.Empty;
+    public int RemovedPalletCount { get; init; }
+    public int RemovedLineCount { get; init; }
+}
+
+public sealed class ProductionPalletPlanAdoptionResult
+{
+    public bool Success { get; init; }
+    public string Message { get; init; } = string.Empty;
+    public long SourceOrderId { get; init; }
+    public long TargetOrderId { get; init; }
+    public long SourcePrdDocId { get; init; }
+    public long TargetPrdDocId { get; init; }
+    public int TransferredPalletCount { get; init; }
+    public int TransferredLineCount { get; init; }
+    public IReadOnlyList<string> TransferredHuCodes { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<ProductionPalletPlanAdoptionWarning> Warnings { get; init; } = Array.Empty<ProductionPalletPlanAdoptionWarning>();
+    public string? SourceOrderStatus { get; init; }
+    public bool SourceOrderCommentUpdated { get; init; }
+}
+
+public sealed class ProductionPalletPlanAdoptionWarning
+{
+    public string Code { get; init; } = string.Empty;
+    public string Message { get; init; } = string.Empty;
+}
+
 public sealed class ProductionPalletPrintRow
 {
     public long PalletId { get; init; }

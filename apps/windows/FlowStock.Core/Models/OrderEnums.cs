@@ -12,6 +12,7 @@ public enum OrderStatus
     Accepted,
     InProgress,
     Shipped,
+    Merged,
     Cancelled
 }
 
@@ -55,6 +56,7 @@ public static class OrderStatusMapper
             "ACCEPTED" => OrderStatus.Accepted,
             "IN_PROGRESS" => OrderStatus.InProgress,
             "SHIPPED" => OrderStatus.Shipped,
+            "MERGED" => OrderStatus.Merged,
             "CANCELLED" => OrderStatus.Cancelled,
             "CANCELED" => OrderStatus.Cancelled,
             _ => null
@@ -69,6 +71,7 @@ public static class OrderStatusMapper
             OrderStatus.Accepted => "ACCEPTED",
             OrderStatus.InProgress => "IN_PROGRESS",
             OrderStatus.Shipped => "SHIPPED",
+            OrderStatus.Merged => "MERGED",
             OrderStatus.Cancelled => "CANCELLED",
             _ => "UNKNOWN"
         };
@@ -87,6 +90,7 @@ public static class OrderStatusMapper
             OrderStatus.Accepted => "Готов",
             OrderStatus.InProgress => "В работе",
             OrderStatus.Shipped => "Выполнен",
+            OrderStatus.Merged => type == OrderType.Internal ? "Объединён" : "Объединён",
             OrderStatus.Cancelled => "Отменён",
             _ => "Неизвестно"
         };

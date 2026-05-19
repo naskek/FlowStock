@@ -56,9 +56,46 @@ public sealed class OrderService
             return null;
         }
 
-        return _data is IOptimizedOrderReadModelStore
-            ? order
-            : ApplyAutoStatus(order);
+        if (_data is IOptimizedOrderReadModelStore && order.Type != OrderType.Internal)
+        {
+            return order;
+        }
+
+        return ApplyAutoStatus(order);
+    }
+
+    public static OrderStatusRefreshReport RefreshInternalOrderStatuses(IDataStore store)
+    {
+        var orderService = new OrderService(store);
+        var changedOrders = new List<OrderStatusRefreshChangedOrder>();
+        var refreshedCount = 0;
+        foreach (var order in store.GetOrders())
+        {
+            if (order.Type != OrderType.Internal || order.Status is OrderStatus.Cancelled or OrderStatus.Merged)
+            {
+                continue;
+            }
+
+            refreshedCount++;
+            var oldStatus = order.Status;
+            var newStatus = orderService.RefreshPersistedStatus(order.Id);
+            if (newStatus != oldStatus)
+            {
+                changedOrders.Add(new OrderStatusRefreshChangedOrder
+                {
+                    OrderId = order.Id,
+                    OrderRef = order.OrderRef,
+                    OldStatus = oldStatus,
+                    NewStatus = newStatus
+                });
+            }
+        }
+
+        return new OrderStatusRefreshReport
+        {
+            RefreshedCount = refreshedCount,
+            ChangedOrders = changedOrders
+        };
     }
 
     public OrderStatus RefreshPersistedStatus(long orderId)
@@ -776,6 +813,24 @@ public sealed class OrderService
             return;
         }
 
+        var producedByLine = OrderReceiptRemainingCalculator.BuildProducedTotalsByOrderLine(store, orderId, orderLines);
+        var linesToPlan = new List<(OrderLine Line, double QtyRemaining)>();
+        foreach (var orderLine in orderLines)
+        {
+            var produced = producedByLine.TryGetValue(orderLine.Id, out var qty) ? qty : 0d;
+            var remaining = Math.Max(0, orderLine.QtyOrdered - produced);
+            if (remaining > QtyTolerance)
+            {
+                linesToPlan.Add((orderLine, remaining));
+            }
+        }
+
+        if (linesToPlan.Count == 0)
+        {
+            store.ReplaceOrderReceiptPlanLines(orderId, Array.Empty<OrderReceiptPlanLine>());
+            return;
+        }
+
         var locations = store.GetLocations()
             .OrderBy(location => location.Code, StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -785,14 +840,14 @@ public sealed class OrderService
 
         var drafts = new List<PlanDraft>();
         var nextSortOrder = 0;
-        foreach (var orderLine in orderLines)
+        foreach (var (orderLine, qtyRemaining) in linesToPlan)
         {
             var item = store.FindItemById(orderLine.ItemId) ?? throw new InvalidOperationException("Товар заказа не найден.");
             var requiresHuDistribution = item.ItemTypeId.HasValue
                                          && store.GetItemType(item.ItemTypeId.Value)?.EnableHuDistribution == true;
             if (!requiresHuDistribution)
             {
-                drafts.Add(new PlanDraft(orderLine.Id, orderLine.ItemId, orderLine.QtyOrdered, false, nextSortOrder++));
+                drafts.Add(new PlanDraft(orderLine.Id, orderLine.ItemId, qtyRemaining, false, nextSortOrder++));
                 continue;
             }
 
@@ -801,7 +856,7 @@ public sealed class OrderService
                 throw new InvalidOperationException($"Для товара \"{item.Name}\" обязательно заполнить \"Макс шт на 1 HU\".");
             }
 
-            var remaining = orderLine.QtyOrdered;
+            var remaining = qtyRemaining;
             while (remaining > QtyTolerance)
             {
                 var chunk = Math.Min(item.MaxQtyPerHu.Value, remaining);
@@ -810,25 +865,93 @@ public sealed class OrderService
             }
         }
 
-        var requiredHuCount = drafts.Count(line => line.RequiresHu);
-        var allocatedHus = requiredHuCount > 0
-            ? AllocateHuCodesForPlan(store, orderId, requiredHuCount)
-            : Array.Empty<string>();
-        var huIndex = 0;
+        var preservedHuQueue = BuildPreservedInternalPlanHuQueue(store, orderId);
+        var plannedLines = new List<OrderReceiptPlanLine>(drafts.Count);
+        var pendingAllocationIndexes = new List<int>();
+        foreach (var line in drafts)
+        {
+            string? toHu = null;
+            if (line.RequiresHu)
+            {
+                if (TryTakePreservedHu(preservedHuQueue, line.QtyPlanned, out var preservedHu))
+                {
+                    toHu = preservedHu;
+                }
+                else
+                {
+                    pendingAllocationIndexes.Add(plannedLines.Count);
+                }
+            }
 
-        var plannedLines = drafts.Select(line => new OrderReceiptPlanLine
+            plannedLines.Add(new OrderReceiptPlanLine
             {
                 OrderId = orderId,
                 OrderLineId = line.OrderLineId,
                 ItemId = line.ItemId,
                 QtyPlanned = line.QtyPlanned,
                 ToLocationId = targetLocationId,
-                ToHu = line.RequiresHu ? allocatedHus[huIndex++] : null,
+                ToHu = toHu,
                 SortOrder = line.SortOrder
-            })
-            .ToList();
+            });
+        }
+
+        if (pendingAllocationIndexes.Count > 0)
+        {
+            var allocatedHus = AllocateHuCodesForPlan(store, orderId, pendingAllocationIndexes.Count);
+            for (var index = 0; index < pendingAllocationIndexes.Count; index++)
+            {
+                var lineIndex = pendingAllocationIndexes[index];
+                var existing = plannedLines[lineIndex];
+                plannedLines[lineIndex] = new OrderReceiptPlanLine
+                {
+                    OrderId = existing.OrderId,
+                    OrderLineId = existing.OrderLineId,
+                    ItemId = existing.ItemId,
+                    QtyPlanned = existing.QtyPlanned,
+                    ToLocationId = existing.ToLocationId,
+                    ToHu = allocatedHus[index],
+                    SortOrder = existing.SortOrder
+                };
+            }
+        }
 
         store.ReplaceOrderReceiptPlanLines(orderId, plannedLines);
+    }
+
+    private static Queue<(string Hu, double Qty)> BuildPreservedInternalPlanHuQueue(IDataStore store, long orderId)
+    {
+        var queue = new Queue<(string Hu, double Qty)>();
+        foreach (var line in store.GetOrderReceiptPlanLines(orderId).OrderBy(line => line.SortOrder))
+        {
+            var hu = NormalizeHu(line.ToHu);
+            if (string.IsNullOrWhiteSpace(hu) || line.QtyPlanned <= QtyTolerance)
+            {
+                continue;
+            }
+
+            queue.Enqueue((hu, line.QtyPlanned));
+        }
+
+        return queue;
+    }
+
+    private static bool TryTakePreservedHu(Queue<(string Hu, double Qty)> queue, double qtyPlanned, out string hu)
+    {
+        hu = string.Empty;
+        if (queue.Count == 0 || qtyPlanned <= QtyTolerance)
+        {
+            return false;
+        }
+
+        var (preservedHu, preservedQty) = queue.Peek();
+        if (Math.Abs(preservedQty - qtyPlanned) > QtyTolerance)
+        {
+            return false;
+        }
+
+        queue.Dequeue();
+        hu = preservedHu;
+        return true;
     }
 
     private void RebuildCustomerOrderReceiptPlan(IDataStore store, long orderId)
@@ -1045,7 +1168,7 @@ public sealed class OrderService
         return fullyProduced ? OrderStatus.Accepted : OrderStatus.InProgress;
     }
 
-    internal static void RefreshCustomerReceiptPlansCore(IDataStore store)
+    internal static void RefreshCustomerReceiptPlansCore(IDataStore store, long? preserveOrderId = null)
     {
         var service = new OrderService(store);
         var customerOrders = store.GetOrders()
@@ -1060,11 +1183,21 @@ public sealed class OrderService
 
         foreach (var order in customerOrders)
         {
+            if (preserveOrderId.HasValue && order.Id == preserveOrderId.Value)
+            {
+                continue;
+            }
+
             TryClearOrderReceiptPlan(store, order.Id);
         }
 
         foreach (var order in customerOrders.Where(order => order.UseReservedStock))
         {
+            if (preserveOrderId.HasValue && order.Id == preserveOrderId.Value)
+            {
+                continue;
+            }
+
             var effectiveStatus = ResolveCustomerOrderStatus(store, order);
             if (effectiveStatus is OrderStatus.Shipped or OrderStatus.Cancelled)
             {
@@ -1087,7 +1220,7 @@ public sealed class OrderService
         }
     }
 
-    private void TryRebuildOrderReceiptPlan(IDataStore store, long orderId)
+    internal void TryRebuildOrderReceiptPlan(IDataStore store, long orderId)
     {
         try
         {
@@ -1275,7 +1408,7 @@ public sealed class OrderService
 
     private OrderStatus DetermineAutoStatus(Order order)
     {
-        if (order.Status == OrderStatus.Cancelled)
+        if (order.Status is OrderStatus.Cancelled or OrderStatus.Merged)
         {
             return order.Status;
         }
@@ -1284,16 +1417,19 @@ public sealed class OrderService
         {
             var orderLines = _data.GetOrderLines(order.Id);
             var internalProducedByLine = OrderReceiptRemainingCalculator.BuildProducedTotalsByOrderLine(_data, order.Id, orderLines);
-            var fullyProduced = orderLines.Count > 0 && orderLines.All(line =>
-            {
-                var produced = internalProducedByLine.TryGetValue(line.Id, out var qty) ? qty : 0d;
-                return produced + QtyTolerance >= line.QtyOrdered;
-            });
             var anyProduced = orderLines.Any(line =>
             {
                 var produced = internalProducedByLine.TryGetValue(line.Id, out var qty) ? qty : 0d;
                 return produced > QtyTolerance;
             });
+            var linesWithDemand = orderLines.Where(line => line.QtyOrdered > QtyTolerance).ToList();
+            var fullyProduced = anyProduced
+                                && linesWithDemand.Count > 0
+                                && linesWithDemand.All(line =>
+                                {
+                                    var produced = internalProducedByLine.TryGetValue(line.Id, out var qty) ? qty : 0d;
+                                    return produced + QtyTolerance >= line.QtyOrdered;
+                                });
 
             if (fullyProduced)
             {
@@ -1341,5 +1477,20 @@ public sealed class OrderService
             ? OrderStatus.Accepted
             : OrderStatus.InProgress;
     }
+}
+
+public sealed class OrderStatusRefreshReport
+{
+    public int RefreshedCount { get; init; }
+    public IReadOnlyList<OrderStatusRefreshChangedOrder> ChangedOrders { get; init; } = Array.Empty<OrderStatusRefreshChangedOrder>();
+    public int ChangedCount => ChangedOrders.Count;
+}
+
+public sealed class OrderStatusRefreshChangedOrder
+{
+    public long OrderId { get; init; }
+    public string OrderRef { get; init; } = string.Empty;
+    public OrderStatus OldStatus { get; init; }
+    public OrderStatus NewStatus { get; init; }
 }
 

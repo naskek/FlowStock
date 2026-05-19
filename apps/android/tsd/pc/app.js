@@ -64,6 +64,14 @@
     return clientBlocks[key] !== false;
   }
 
+  function isExperimentalWarehouseTasksEnabled() {
+    try {
+      return localStorage.getItem("flowstock_experimental_warehouse_tasks") === "1";
+    } catch (error) {
+      return false;
+    }
+  }
+
   function getEnabledViews() {
     var views = [];
     if (isClientBlockEnabled("pc_orders")) {
@@ -77,6 +85,9 @@
     }
     if (isClientBlockEnabled("pc_catalog")) {
       views.push("catalog");
+    }
+    if (isExperimentalWarehouseTasksEnabled()) {
+      views.push("warehouse-board");
     }
     return views;
   }
@@ -103,7 +114,8 @@
         (view === "stock" && isClientBlockEnabled("pc_stock")) ||
         (view === "catalog" && isClientBlockEnabled("pc_catalog")) ||
         (view === "orders" && isClientBlockEnabled("pc_orders")) ||
-        (view === "production-need" && isClientBlockEnabled("pc_stock"));
+        (view === "production-need" && isClientBlockEnabled("pc_stock")) ||
+        (view === "warehouse-board" && isExperimentalWarehouseTasksEnabled());
       tab.hidden = !visible;
     });
   }
@@ -209,6 +221,9 @@
     }
     if (view === "production-need") {
       return "pc_stock";
+    }
+    if (view === "warehouse-board") {
+      return "pc_orders";
     }
     return "";
   }
@@ -4447,6 +4462,9 @@
 
     syncTabsVisibility();
     var allowedView = resolveAllowedView(view);
+    if (allowedView !== "warehouse-board") {
+      app.classList.remove("pc-content--warehouse");
+    }
     if (!allowedView) {
       currentView = getDefaultView();
       setActiveTab("");
@@ -4476,6 +4494,19 @@
       return;
     }
 
+    if (allowedView === "warehouse-board") {
+      app.classList.add("pc-content--warehouse");
+      if (window.FlowStockWarehouseBoard && window.FlowStockWarehouseBoard.render) {
+        app.innerHTML = window.FlowStockWarehouseBoard.render();
+        window.FlowStockWarehouseBoard.wire();
+      } else {
+        app.innerHTML = renderPageShell(
+          '<section class="pc-card"><div class="pc-status">Модуль «Задания склада» не загружен.</div></section>'
+        );
+      }
+      return;
+    }
+
     app.innerHTML = renderStock();
     wireStock();
   }
@@ -4484,6 +4515,18 @@
     tabs.forEach(function (tab) {
       var match = tab.getAttribute("data-view") === view;
       tab.classList.toggle("is-active", match);
+    });
+  }
+
+  if (window.FlowStockWarehouseBoard) {
+    window.FlowStockWarehouseBoard.init({
+      getAccount: loadAccount,
+      fetchJson: fetchJson,
+      createRequestHeaders: createRequestHeaders,
+      renderPageShell: renderPageShell,
+      escapeHtml: escapeHtml,
+      formatDateTime: formatDateTime,
+      formatDate: formatDate,
     });
   }
 

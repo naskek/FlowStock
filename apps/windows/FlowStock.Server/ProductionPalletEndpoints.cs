@@ -10,6 +10,8 @@ public static class ProductionPalletEndpoints
     public static void Map(WebApplication app)
     {
         app.MapPost("/api/orders/{orderId:long}/production-pallets/plan", HandlePlanOrder);
+        app.MapPost("/api/orders/{orderId:long}/production-pallets/cancel-plan", HandleCancelPlan);
+        app.MapPost("/api/orders/{targetCustomerOrderId:long}/production-pallets/adopt-from-internal/{sourceInternalOrderId:long}", HandleAdoptFromInternal);
         app.MapGet("/api/orders/{orderId:long}/production-pallets/print-rows", HandlePrintRows);
         app.MapPost("/api/orders/{orderId:long}/production-pallets/mark-printed", HandleMarkPrinted);
         app.MapPost("/api/docs/{docId:long}/production-pallets/plan", HandlePlan);
@@ -31,6 +33,61 @@ public static class ProductionPalletEndpoints
         catch (InvalidOperationException ex)
         {
             return Results.BadRequest(new { ok = false, error = ex.Message, message = ex.Message });
+        }
+    }
+
+    private static IResult HandleCancelPlan(long orderId, ProductionPalletService service)
+    {
+        try
+        {
+            var result = service.CancelOrderPlan(orderId);
+            return Results.Ok(new
+            {
+                success = true,
+                message = result.Message,
+                prd_doc_id = result.PrdDocId,
+                removed_pallet_count = result.RemovedPalletCount,
+                removed_line_count = result.RemovedLineCount
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.BadRequest(new { ok = false, success = false, error = ex.Message, message = ex.Message });
+        }
+    }
+
+    private static IResult HandleAdoptFromInternal(long targetCustomerOrderId, long sourceInternalOrderId, ProductionPalletService service)
+    {
+        try
+        {
+            var result = service.AdoptPlanFromInternal(targetCustomerOrderId, sourceInternalOrderId);
+            return Results.Ok(new
+            {
+                success = true,
+                message = result.Message,
+                source_order_id = result.SourceOrderId,
+                target_order_id = result.TargetOrderId,
+                source_prd_doc_id = result.SourcePrdDocId,
+                target_prd_doc_id = result.TargetPrdDocId,
+                transferred_pallet_count = result.TransferredPalletCount,
+                transferred_line_count = result.TransferredLineCount,
+                transferred_hu_codes = result.TransferredHuCodes,
+                source_order_status = result.SourceOrderStatus,
+                source_order_comment_updated = result.SourceOrderCommentUpdated,
+                warnings = result.Warnings.Select(warning => new
+                {
+                    code = warning.Code,
+                    message = warning.Message
+                })
+            });
+        }
+        catch (ProductionPalletPlanAdoptionException ex)
+        {
+            return Results.BadRequest(new { ok = false, success = false, error_code = ex.Code, error = ex.Message, message = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.BadRequest(new { ok = false, success = false, error_code = "INVALID_OPERATION", error = ex.Message, message = ex.Message });
         }
     }
 

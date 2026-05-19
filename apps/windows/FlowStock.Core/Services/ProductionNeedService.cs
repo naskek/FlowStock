@@ -56,10 +56,13 @@ public sealed class ProductionNeedService(IDataStore dataStore)
                 var reservedCustomerOrderQty = stockSnapshot?.ReservedCustomerOrderQty ?? 0;
                 var freeStockQty = physicalStockQty - reservedCustomerOrderQty;
                 var minStockQty = item?.ItemTypeEnableMinStockControl == true
-                    ? Math.Max(0, item.MinStockQty ?? 0)
+                                    && (item.MinStockQty ?? 0) > QtyTolerance
+                    ? item.MinStockQty!.Value
                     : 0;
                 var rawToCloseOrdersQty = Math.Max(0, currentNeed);
-                var rawToMinStockQty = Math.Max(0, minStockQty - freeStockQty);
+                var rawToMinStockQty = minStockQty > QtyTolerance
+                    ? Math.Max(0, minStockQty - freeStockQty)
+                    : 0;
                 var plannedProductionQty = Math.Max(0, planned);
                 palletProgress ??= new PalletProgress();
                 var toCloseOrdersQty = rawToCloseOrdersQty;
@@ -137,7 +140,7 @@ public sealed class ProductionNeedService(IDataStore dataStore)
         var result = new Dictionary<long, double>();
         var activePlannedOrders = _dataStore.GetOrders()
             .Where(order => order.Type == OrderType.Internal
-                            && order.Status is not OrderStatus.Shipped and not OrderStatus.Cancelled);
+                            && order.Status is not OrderStatus.Shipped and not OrderStatus.Cancelled and not OrderStatus.Merged);
 
         foreach (var order in activePlannedOrders)
         {
@@ -171,7 +174,7 @@ public sealed class ProductionNeedService(IDataStore dataStore)
             if (workItem.OrderId.HasValue)
             {
                 var linkedOrder = _dataStore.GetOrder(workItem.OrderId.Value);
-                if (linkedOrder?.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
+                if (linkedOrder?.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
                 {
                     continue;
                 }
@@ -238,7 +241,7 @@ public sealed class ProductionNeedService(IDataStore dataStore)
         var refsByItem = new Dictionary<long, HashSet<string>>();
         var activeInternalOrders = _dataStore.GetOrders()
             .Where(order => order.Type == OrderType.Internal
-                            && order.Status is not OrderStatus.Shipped and not OrderStatus.Cancelled)
+                            && order.Status is not OrderStatus.Shipped and not OrderStatus.Cancelled and not OrderStatus.Merged)
             .ToList();
 
         foreach (var order in activeInternalOrders)

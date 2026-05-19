@@ -105,7 +105,10 @@
             <Button x:Name="DeleteLineButton" Content="Удалить строку" Click="DeleteLine_Click" Margin="8,0,0,0" TabIndex="9" />
             <Button x:Name="PlanPalletsButton" Content="Сформировать план паллет" Click="PlanPallets_Click" Margin="16,0,0,0" Width="190" TabIndex="10" />
             <Button x:Name="PrintPalletLabelsButton" Content="Печать паллетных этикеток" Click="PrintPalletLabels_Click" Margin="8,0,0,0" Width="210" TabIndex="11" />
-            <Button x:Name="ExportMarkingButton" Content="Сформировать Excel ЧЗ" Click="ExportMarking_Click" Margin="8,0,0,0" Width="180" TabIndex="12" />
+            <Button x:Name="DeletePalletPlanButton" Content="Удалить план паллет" Click="DeletePalletPlan_Click" Margin="8,0,0,0" Width="170" TabIndex="12" />
+            <Button x:Name="AdoptPalletPlanButton" Content="Перенести план паллет" Click="AdoptPalletPlan_Click" Margin="8,0,0,0" Width="180" TabIndex="13" />
+            <Button x:Name="OpenProductionReceiptButton" Content="Открыть выпуск" Click="OpenProductionReceipt_Click" Margin="8,0,0,0" Width="150" TabIndex="14" />
+            <Button x:Name="ExportMarkingButton" Content="Сформировать Excel ЧЗ" Click="ExportMarking_Click" Margin="8,0,0,0" Width="180" TabIndex="15" />
         </StackPanel>
             <Grid Grid.Row="1">
                 <DataGrid x:Name="OrderLinesGrid" AutoGenerateColumns="False" IsReadOnly="True"

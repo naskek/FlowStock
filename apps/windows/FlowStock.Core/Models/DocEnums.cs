@@ -6,6 +6,7 @@ public enum DocType
     WriteOff,
     Move,
     Inventory,
+    InventoryCorrection,
     ProductionReceipt,
     Outbound
 }
@@ -26,6 +27,9 @@ public static class DocTypeMapper
             "WRITE_OFF" => DocType.WriteOff,
             "MOVE" => DocType.Move,
             "INVENTORY" => DocType.Inventory,
+            "INVENTORY_CORRECTION" => DocType.InventoryCorrection,
+            "PRODUCTION_CORRECTION" => DocType.InventoryCorrection,
+            "STOCK_ADJUSTMENT" => DocType.InventoryCorrection,
             "PRODUCTION_RECEIPT" => DocType.ProductionReceipt,
             "OUTBOUND" => DocType.Outbound,
             _ => null
@@ -40,6 +44,7 @@ public static class DocTypeMapper
             DocType.WriteOff => "WRITE_OFF",
             DocType.Move => "MOVE",
             DocType.Inventory => "INVENTORY",
+            DocType.InventoryCorrection => "INVENTORY_CORRECTION",
             DocType.ProductionReceipt => "PRODUCTION_RECEIPT",
             DocType.Outbound => "OUTBOUND",
             _ => "UNKNOWN"
@@ -74,6 +79,7 @@ public static class DocTypeMapper
             DocType.WriteOff => "Списание",
             DocType.Move => "Перемещение",
             DocType.Inventory => "Инвентаризация",
+            DocType.InventoryCorrection => "Корректировка остатков",
             DocType.ProductionReceipt => "Выпуск продукции",
             DocType.Outbound => "Отгрузка",
             _ => "Неизвестно"

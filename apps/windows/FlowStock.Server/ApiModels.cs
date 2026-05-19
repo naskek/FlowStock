@@ -833,6 +833,25 @@ public sealed class ApiResult
     public string? Error { get; init; }
 }
 
+public sealed class ApiErrorResult
+{
+    public ApiErrorResult(bool ok, string? error, string? message)
+    {
+        Ok = ok;
+        Error = error;
+        Message = message;
+    }
+
+    [JsonPropertyName("ok")]
+    public bool Ok { get; init; }
+
+    [JsonPropertyName("error")]
+    public string? Error { get; init; }
+
+    [JsonPropertyName("message")]
+    public string? Message { get; init; }
+}
+
 public sealed class OperationEventRequest
 {
     [JsonPropertyName("schema_version")]
@@ -888,5 +907,176 @@ public sealed class OperationEventRequest
 
     [JsonPropertyName("reason_code")]
     public string? ReasonCode { get; set; }
+}
+
+public sealed class OrderRedistributeRequest
+{
+    [JsonPropertyName("source_internal_order_id")]
+    public long SourceInternalOrderId { get; set; }
+
+    [JsonPropertyName("target_customer_order_id")]
+    public long TargetCustomerOrderId { get; set; }
+
+    [JsonPropertyName("item_id")]
+    public long ItemId { get; set; }
+
+    [JsonPropertyName("qty")]
+    public double Qty { get; set; }
+}
+
+public sealed class OrderRedistributeEnvelope
+{
+    [JsonPropertyName("ok")]
+    public bool Ok { get; init; }
+
+    [JsonPropertyName("result")]
+    public string Result { get; init; } = string.Empty;
+
+    [JsonPropertyName("source_order_id")]
+    public long SourceOrderId { get; init; }
+
+    [JsonPropertyName("target_order_id")]
+    public long TargetOrderId { get; init; }
+
+    [JsonPropertyName("item_id")]
+    public long ItemId { get; init; }
+
+    [JsonPropertyName("qty_transferred")]
+    public double QtyTransferred { get; init; }
+
+    [JsonPropertyName("qty_from_unproduced")]
+    public double QtyFromUnproduced { get; init; }
+
+    [JsonPropertyName("qty_from_produced_stock")]
+    public double QtyFromProducedStock { get; init; }
+
+    [JsonPropertyName("source_qty_ordered_after")]
+    public double SourceQtyOrderedAfter { get; init; }
+
+    [JsonPropertyName("target_qty_ordered_after")]
+    public double TargetQtyOrderedAfter { get; init; }
+
+    [JsonPropertyName("transferred_hu_codes")]
+    public IReadOnlyList<string> TransferredHuCodes { get; init; } = Array.Empty<string>();
+}
+
+public sealed class OrderAutoRedistributeEnvelope
+{
+    [JsonPropertyName("ok")]
+    public bool Ok { get; init; }
+
+    [JsonPropertyName("success")]
+    public bool Success { get; init; }
+
+    [JsonPropertyName("result")]
+    public string Result { get; init; } = string.Empty;
+
+    [JsonPropertyName("target_order_id")]
+    public long TargetOrderId { get; init; }
+
+    [JsonPropertyName("bind_reserved_stock")]
+    public bool BindReservedStock { get; init; }
+
+    [JsonPropertyName("skipped_reason")]
+    public string? SkippedReason { get; init; }
+
+    [JsonPropertyName("reservation_lines")]
+    public IReadOnlyList<OrderReservationPlanLineDto> ReservationLines { get; init; } = Array.Empty<OrderReservationPlanLineDto>();
+
+    [JsonPropertyName("warnings")]
+    public IReadOnlyList<OrderSaveFollowUpWarningDto> Warnings { get; init; } = Array.Empty<OrderSaveFollowUpWarningDto>();
+
+    [JsonPropertyName("transfers")]
+    public IReadOnlyList<OrderAutoRedistributeTransferDto> Transfers { get; init; } = Array.Empty<OrderAutoRedistributeTransferDto>();
+
+    [JsonPropertyName("ignored_attempts")]
+    public IReadOnlyList<OrderAutoRedistributeIgnoredDto> IgnoredAttempts { get; init; } = Array.Empty<OrderAutoRedistributeIgnoredDto>();
+}
+
+public sealed class OrderReservationPlanLineDto
+{
+    [JsonPropertyName("order_line_id")]
+    public long OrderLineId { get; init; }
+
+    [JsonPropertyName("item_id")]
+    public long ItemId { get; init; }
+
+    [JsonPropertyName("hu_code")]
+    public string HuCode { get; init; } = string.Empty;
+
+    [JsonPropertyName("qty_planned")]
+    public double QtyPlanned { get; init; }
+}
+
+public sealed class OrderSaveFollowUpWarningDto
+{
+    [JsonPropertyName("code")]
+    public string Code { get; init; } = string.Empty;
+
+    [JsonPropertyName("message")]
+    public string Message { get; init; } = string.Empty;
+}
+
+public sealed class OrderAutoRedistributeErrorEnvelope
+{
+    [JsonPropertyName("ok")]
+    public bool Ok { get; init; }
+
+    [JsonPropertyName("success")]
+    public bool Success { get; init; }
+
+    [JsonPropertyName("error_code")]
+    public string ErrorCode { get; init; } = string.Empty;
+
+    [JsonPropertyName("message")]
+    public string Message { get; init; } = string.Empty;
+}
+
+public sealed class OrderAutoRedistributeTransferDto
+{
+    [JsonPropertyName("source_order_id")]
+    public long SourceOrderId { get; init; }
+
+    [JsonPropertyName("source_order_ref")]
+    public string SourceOrderRef { get; init; } = string.Empty;
+
+    [JsonPropertyName("target_order_id")]
+    public long TargetOrderId { get; init; }
+
+    [JsonPropertyName("item_id")]
+    public long ItemId { get; init; }
+
+    [JsonPropertyName("qty_transferred")]
+    public double QtyTransferred { get; init; }
+
+    [JsonPropertyName("qty_from_unproduced")]
+    public double QtyFromUnproduced { get; init; }
+
+    [JsonPropertyName("qty_from_produced_stock")]
+    public double QtyFromProducedStock { get; init; }
+
+    [JsonPropertyName("transferred_hu_codes")]
+    public IReadOnlyList<string> TransferredHuCodes { get; init; } = Array.Empty<string>();
+}
+
+public sealed class OrderAutoRedistributeIgnoredDto
+{
+    [JsonPropertyName("source_order_id")]
+    public long SourceOrderId { get; init; }
+
+    [JsonPropertyName("source_order_ref")]
+    public string SourceOrderRef { get; init; } = string.Empty;
+
+    [JsonPropertyName("item_id")]
+    public long ItemId { get; init; }
+
+    [JsonPropertyName("qty")]
+    public double Qty { get; init; }
+
+    [JsonPropertyName("reason_code")]
+    public string ReasonCode { get; init; } = string.Empty;
+
+    [JsonPropertyName("reason")]
+    public string Reason { get; init; } = string.Empty;
 }
 
