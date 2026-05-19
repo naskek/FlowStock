@@ -107,6 +107,7 @@ public partial class MainWindow : Window
         DocsStatusFilter.ItemsSource = _docStatusFilters;
         DocsStatusFilter.SelectedIndex = 0;
         ApplyDeleteMode();
+        ApplyExperimentalTabVisibility();
 
         TryLoadAllOnStartup();
         ClearItemForm();
@@ -125,6 +126,18 @@ public partial class MainWindow : Window
             ? "FlowStock [режим удаления: админ]"
             : "FlowStock";
         UpdateDeleteButtonsAvailability();
+    }
+
+    private void ApplyExperimentalTabVisibility()
+    {
+        if (WarehouseTasksTab == null)
+        {
+            return;
+        }
+
+        WarehouseTasksTab.Visibility = ExperimentalFeatureFlags.WarehouseTasksEnabled
+            ? Visibility.Visible
+            : Visibility.Collapsed;
     }
 
     private void UpdateDeleteButtonsAvailability()
@@ -387,7 +400,10 @@ public partial class MainWindow : Window
                     LoadOrders();
                     break;
                 case TabTasksIndex:
-                    LoadWarehouseBundles();
+                    if (ExperimentalFeatureFlags.WarehouseTasksEnabled)
+                    {
+                        LoadWarehouseBundles();
+                    }
                     break;
                 case TabItemsIndex:
                     LoadItems(ItemsSearchBox?.Text);
@@ -2538,7 +2554,7 @@ public partial class MainWindow : Window
 
     private void WarehouseBundleFilterCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
-        if (MainTabs.SelectedIndex == TabTasksIndex)
+        if (ExperimentalFeatureFlags.WarehouseTasksEnabled && MainTabs.SelectedIndex == TabTasksIndex)
         {
             LoadWarehouseBundles();
         }

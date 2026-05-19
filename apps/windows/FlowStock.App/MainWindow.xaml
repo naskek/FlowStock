@@ -427,7 +427,7 @@
                     </DataGrid>
                 </Grid>
             </TabItem>
-            <TabItem Header="Задания">
+            <TabItem x:Name="WarehouseTasksTab" Header="Задания">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />

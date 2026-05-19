@@ -74,7 +74,7 @@
       tsd_move: true,
       tsd_write_off: true,
       tsd_inventory: true,
-      tsd_warehouse_tasks: true,
+      tsd_warehouse_tasks: false,
     };
   }
 

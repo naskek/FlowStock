@@ -2831,6 +2831,7 @@ OpsEndpoint.Map(app);
 DocumentDraftEndpoints.Map(app);
 ProductionPalletEndpoints.Map(app);
 PlannerEndpoints.Map(app);
+WarehouseBoardStateEndpoints.Map(app);
 WarehouseTaskEndpoints.Map(app);
 NegativeStockDiagnosticsEndpoints.Map(app);
 CloseDocumentEndpoint.Map(app);

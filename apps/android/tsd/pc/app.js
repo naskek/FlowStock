@@ -64,6 +64,14 @@
     return clientBlocks[key] !== false;
   }
 
+  function isExperimentalWarehouseTasksEnabled() {
+    try {
+      return localStorage.getItem("flowstock_experimental_warehouse_tasks") === "1";
+    } catch (error) {
+      return false;
+    }
+  }
+
   function getEnabledViews() {
     var views = [];
     if (isClientBlockEnabled("pc_orders")) {
@@ -78,7 +86,9 @@
     if (isClientBlockEnabled("pc_catalog")) {
       views.push("catalog");
     }
-    views.push("warehouse-board");
+    if (isExperimentalWarehouseTasksEnabled()) {
+      views.push("warehouse-board");
+    }
     return views;
   }
 
@@ -105,7 +115,7 @@
         (view === "catalog" && isClientBlockEnabled("pc_catalog")) ||
         (view === "orders" && isClientBlockEnabled("pc_orders")) ||
         (view === "production-need" && isClientBlockEnabled("pc_stock")) ||
-        view === "warehouse-board";
+        (view === "warehouse-board" && isExperimentalWarehouseTasksEnabled());
       tab.hidden = !visible;
     });
   }
@@ -4452,6 +4462,9 @@
 
     syncTabsVisibility();
     var allowedView = resolveAllowedView(view);
+    if (allowedView !== "warehouse-board") {
+      app.classList.remove("pc-content--warehouse");
+    }
     if (!allowedView) {
       currentView = getDefaultView();
       setActiveTab("");
@@ -4482,6 +4495,7 @@
     }
 
     if (allowedView === "warehouse-board") {
+      app.classList.add("pc-content--warehouse");
       if (window.FlowStockWarehouseBoard && window.FlowStockWarehouseBoard.render) {
         app.innerHTML = window.FlowStockWarehouseBoard.render();
         window.FlowStockWarehouseBoard.wire();
