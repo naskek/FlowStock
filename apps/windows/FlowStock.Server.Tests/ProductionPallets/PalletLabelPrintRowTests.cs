@@ -10,6 +10,7 @@ public sealed class PalletLabelPrintRowTests
         var row = new PalletLabelPrintRow
         {
             OrderRef = "056",
+            ClientName = "ПЕЧАГИН ПРОДУКТ",
             PrdRef = "PRD-2026-000142",
             HuCode = "HU-0000001",
             ItemName = "Горчица Русская 1 кг",
@@ -26,6 +27,7 @@ public sealed class PalletLabelPrintRowTests
         var fields = row.ToNamedSubStrings();
 
         Assert.Equal("056", fields["OrderRef"]);
+        Assert.Equal("ПЕЧАГИН ПРОДУКТ", fields["ClientName"]);
         Assert.Equal("PRD-2026-000142", fields["PrdRef"]);
         Assert.Equal("HU-0000001", fields["HuCode"]);
         Assert.Equal("Горчица Русская 1 кг", fields["ItemName"]);
@@ -37,6 +39,20 @@ public sealed class PalletLabelPrintRowTests
         Assert.Equal("Производство", fields["StoragePlace"]);
         Assert.Equal("2026-05-13", fields["ProductionDate"]);
         Assert.Equal(string.Empty, fields["Comment"]);
+    }
+
+    [Fact]
+    public void ToNamedSubStrings_ContainsClientName()
+    {
+        var row = new PalletLabelPrintRow
+        {
+            ClientName = "ПЕЧАГИН ПРОДУКТ"
+        };
+
+        var fields = row.ToNamedSubStrings();
+
+        Assert.True(fields.ContainsKey("ClientName"));
+        Assert.Equal("ПЕЧАГИН ПРОДУКТ", fields["ClientName"]);
     }
 
     [Fact]

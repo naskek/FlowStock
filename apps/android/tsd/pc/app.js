@@ -2428,7 +2428,7 @@
   function getOrderStatusHtml(order) {
     var status = getOrderStatusPresentation(order);
     if (getOrderStatusCode(order) === "SHIPPED") {
-      return renderStatusIconOnly(status.tone, "pc-order-status-icon", status.label);
+      return wrapOrderIconCell(renderStatusIconOnly(status.tone, "pc-order-status-icon", status.label));
     }
 
     return renderStatusBadge(status.label, status.tone);
@@ -2497,14 +2497,27 @@
       return "";
     }
 
-    return renderStatusIconOnly(marking.tone, "pc-marking-badge", marking.title || marking.label);
+    return wrapOrderIconCell(renderStatusIconOnly(marking.tone, "pc-marking-badge", marking.title || marking.label));
+  }
+
+  function isCustomerOrderFullyShipped(order) {
+    if (!order || isInternalOrder(order)) {
+      return false;
+    }
+    if (isShippedOrder(order)) {
+      return true;
+    }
+    if (order.has_shipment_remaining === false) {
+      return true;
+    }
+    return false;
   }
 
   function isLineFullyShippedForCustomer(line, order) {
     if (!line || isInternalOrder(order)) {
       return false;
     }
-    if (line.line_fully_shipped === true || line.hide_pallet_fill_indicator === true) {
+    if (line.line_fully_shipped === true) {
       return true;
     }
     var ordered = Number(line.qty_ordered) || 0;
@@ -2512,9 +2525,32 @@
     return ordered > 0.000001 && shipped + 0.000001 >= ordered;
   }
 
+  function getCustomerFullyShippedPalletPresentation(order) {
+    var title =
+      (order && (order.pallet_fill_title || order.palletFillTitle)) || "Заказ полностью отгружен";
+    var tone = (order && (order.pallet_fill_tone || order.palletFillTone)) || "completed";
+    return {
+      label: "",
+      tone: tone,
+      title: title,
+      sortValue: 4,
+      iconOnly: true,
+    };
+  }
+
+  function wrapOrderIconCell(html) {
+    if (!html) {
+      return "";
+    }
+    return '<span class="pc-order-icon-cell-inner">' + html + "</span>";
+  }
+
   function getOrderPalletFillingPresentation(order) {
-    if (order && !isInternalOrder(order) && isShippedOrder(order)) {
-      return { label: "", tone: "neutral", title: "", sortValue: 0 };
+    if (order && (order.pallet_fill_show_completed_icon === true || order.palletFillShowCompletedIcon === true)) {
+      return getCustomerFullyShippedPalletPresentation(order);
+    }
+    if (isCustomerOrderFullyShipped(order)) {
+      return getCustomerFullyShippedPalletPresentation(order);
     }
 
     var plannedCount = Number(order && (order.planned_pallet_count != null ? order.planned_pallet_count : order.plannedPalletCount)) || 0;
@@ -2601,11 +2637,22 @@
   function renderOrderPalletFillingIndicator(order) {
     var filling = getOrderPalletFillingPresentation(order);
     if (!filling.label) {
+      if (filling.iconOnly || filling.tone === "completed") {
+        return wrapOrderIconCell(
+          renderStatusIconOnly(
+            filling.tone || "completed",
+            "pc-pallet-filling-badge",
+            filling.title || "Заказ полностью отгружен"
+          )
+        );
+      }
       return "";
     }
 
     if (filling.tone === "completed") {
-      return renderStatusIconOnly(filling.tone, "pc-pallet-filling-badge", filling.title || filling.label);
+      return wrapOrderIconCell(
+        renderStatusIconOnly(filling.tone, "pc-pallet-filling-badge", filling.title || filling.label)
+      );
     }
 
     return renderStatusBadge(filling.label, filling.tone, "pc-pallet-filling-badge", filling.title);
@@ -2646,10 +2693,12 @@
   }
 
   function renderLinePalletFillingBadge(line, order) {
-    if (line && line.hide_pallet_fill_indicator === true) {
-      return "";
-    }
     if (isLineFullyShippedForCustomer(line, order)) {
+      var shippedTitle =
+        (line && (line.pallet_fill_title || line.palletFillTitle)) || "Строка полностью отгружена";
+      return wrapOrderIconCell(renderStatusIconOnly("completed", "pc-line-pallet-badge", shippedTitle));
+    }
+    if (line && line.hide_pallet_fill_indicator === true) {
       return "";
     }
     if (line && line.pallet_fill_label) {
@@ -3024,11 +3073,13 @@
 
   function loadOrderReadiness(order) {
     var needsReadiness = isActiveShipmentOrder(order);
+    var palletPresentation = getOrderPalletFillingPresentation(order);
     var needsPalletFallback = !!(
       order &&
       order.id != null &&
       !order.is_pending_confirmation &&
-      !getOrderPalletFillingPresentation(order).label
+      !palletPresentation.label &&
+      !palletPresentation.iconOnly
     );
     if (!needsReadiness && !needsPalletFallback) {
       return Promise.resolve(order);

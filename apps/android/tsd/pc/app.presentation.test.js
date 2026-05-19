@@ -244,6 +244,42 @@ const shippedCustomerStalePalletFallbackHtml = pc.renderOrderLinesTable(
   { order_type: "CUSTOMER", order_status: "SHIPPED" }
 );
 assert.doesNotMatch(shippedCustomerStalePalletFallbackHtml, /Наполнено 2 \/ 5/);
+assert.match(shippedCustomerStalePalletFallbackHtml, /pc-icon-status/);
+
+const shippedCustomerStalePalletListHtml = pc.renderOrdersTable([
+  {
+    id: 66,
+    order_ref: "066",
+    order_type: "CUSTOMER",
+    order_status: "SHIPPED",
+    status: "Выполнен",
+    has_production_pallet_plan: true,
+    planned_pallet_count: 5,
+    filled_pallet_count: 2,
+    pallet_fill_show_completed_icon: true,
+    pallet_fill_tone: "completed",
+    pallet_fill_title: "Заказ полностью отгружен",
+  },
+]);
+assert.match(shippedCustomerStalePalletListHtml, /pc-order-pallet-cell/);
+assert.match(shippedCustomerStalePalletListHtml, /pc-icon-status/);
+assert.match(shippedCustomerStalePalletListHtml, /pc-order-icon-cell-inner/);
+assert.doesNotMatch(shippedCustomerStalePalletListHtml, /Наполнено 2 \/ 5/);
+
+const customerInProgressPalletHtml = pc.renderOrdersTable([
+  {
+    id: 70,
+    order_ref: "070",
+    order_type: "CUSTOMER",
+    order_status: "IN_PROGRESS",
+    status: "В работе",
+    has_production_pallet_plan: true,
+    planned_pallet_count: 5,
+    filled_pallet_count: 2,
+    pallet_plan_status: "Наполнение идёт: 2 / 5",
+  },
+]);
+assert.match(customerInProgressPalletHtml, /Наполнено 2 \/ 5/);
 
 assert.strictEqual(
   pc.getOrderPalletFillingPresentation({
@@ -253,8 +289,19 @@ assert.strictEqual(
     planned_pallet_count: 5,
     filled_pallet_count: 2,
     pallet_plan_status: "Наполнение идёт: 2 / 5",
-  }).label,
-  ""
+  }).iconOnly,
+  true
+);
+assert.strictEqual(
+  pc.getOrderPalletFillingPresentation({
+    order_type: "CUSTOMER",
+    order_status: "SHIPPED",
+    has_production_pallet_plan: true,
+    planned_pallet_count: 5,
+    filled_pallet_count: 2,
+    pallet_plan_status: "Наполнение идёт: 2 / 5",
+  }).tone,
+  "completed"
 );
 
 const fallbackOrder = { id: 88, order_ref: "088" };

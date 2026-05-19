@@ -432,6 +432,7 @@ public static class ProductionPalletEndpoints
             pallet_id = row.PalletId,
             order_id = row.OrderId,
             order_ref = row.OrderRef,
+            client_name = row.ClientName,
             prd_doc_id = row.PrdDocId,
             prd_ref = row.PrdRef,
             hu_code = row.HuCode,

@@ -340,6 +340,7 @@ public sealed class WpfProductionPalletApiService
         {
             PalletId = row.PalletId,
             OrderRef = row.OrderRef ?? string.Empty,
+            ClientName = row.ClientName ?? string.Empty,
             PrdRef = row.PrdRef ?? string.Empty,
             HuCode = row.HuCode ?? string.Empty,
             ItemName = row.ItemName ?? string.Empty,
@@ -511,6 +512,9 @@ public sealed class WpfProductionPalletApiService
 
         [JsonPropertyName("order_ref")]
         public string? OrderRef { get; init; }
+
+        [JsonPropertyName("client_name")]
+        public string? ClientName { get; init; }
 
         [JsonPropertyName("prd_ref")]
         public string? PrdRef { get; init; }
