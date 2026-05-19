@@ -2500,7 +2500,23 @@
     return renderStatusIconOnly(marking.tone, "pc-marking-badge", marking.title || marking.label);
   }
 
+  function isLineFullyShippedForCustomer(line, order) {
+    if (!line || isInternalOrder(order)) {
+      return false;
+    }
+    if (line.line_fully_shipped === true || line.hide_pallet_fill_indicator === true) {
+      return true;
+    }
+    var ordered = Number(line.qty_ordered) || 0;
+    var shipped = Number(line.qty_shipped) || 0;
+    return ordered > 0.000001 && shipped + 0.000001 >= ordered;
+  }
+
   function getOrderPalletFillingPresentation(order) {
+    if (order && !isInternalOrder(order) && isShippedOrder(order)) {
+      return { label: "", tone: "neutral", title: "", sortValue: 0 };
+    }
+
     var plannedCount = Number(order && (order.planned_pallet_count != null ? order.planned_pallet_count : order.plannedPalletCount)) || 0;
     var filledCount = Number(order && (order.filled_pallet_count != null ? order.filled_pallet_count : order.filledPalletCount)) || 0;
     var filledQty = Number(order && (order.filled_qty != null ? order.filled_qty : order.filledQty)) || 0;
@@ -2629,7 +2645,26 @@
     };
   }
 
-  function renderLinePalletFillingBadge(line) {
+  function renderLinePalletFillingBadge(line, order) {
+    if (line && line.hide_pallet_fill_indicator === true) {
+      return "";
+    }
+    if (isLineFullyShippedForCustomer(line, order)) {
+      return "";
+    }
+    if (line && line.pallet_fill_label) {
+      var serverTone = String(line.pallet_fill_tone || "neutral");
+      if (serverTone === "completed") {
+        return renderStatusIconOnly("completed", "pc-line-pallet-badge", line.pallet_fill_title || line.pallet_fill_label);
+      }
+      return renderStatusBadge(
+        line.pallet_fill_label,
+        serverTone,
+        "pc-line-pallet-badge",
+        line.pallet_fill_title || line.pallet_fill_label
+      );
+    }
+
     var state = getLinePalletFillingState(line);
     if (!state.hasPlan) {
       return "";
@@ -4143,7 +4178,8 @@
           : ' title="Не хватает: ' + escapeHtml(formatQuantity(availabilityState.shortage)) + '"';
         var availabilityClass = availabilityState.ready ? "pc-availability-ready" : "pc-availability-short";
         var palletState = getLinePalletFillingState(line);
-        var rowClass = palletState.hasFilled
+        var showPalletRowHighlight = !isLineFullyShippedForCustomer(line, order) && palletState.hasFilled;
+        var rowClass = showPalletRowHighlight
           ? ' class="pc-order-line-pallet-filled' + (palletState.complete ? " is-complete" : " is-partial") + '"'
           : "";
         return (
@@ -4169,7 +4205,7 @@
           escapeHtml(formatQuantity(processedQty)) +
           "</td>" +
           "<td>" +
-          renderLinePalletFillingBadge(line) +
+          renderLinePalletFillingBadge(line, order) +
           "</td>" +
           (showAvailableColumn
             ? "<td>" +

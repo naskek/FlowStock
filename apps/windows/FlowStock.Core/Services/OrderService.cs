@@ -121,6 +121,11 @@ public sealed class OrderService
 
         var lines = _data.GetOrderLineViews(orderId);
         ApplyLineMetrics(order, lines);
+        foreach (var line in lines)
+        {
+            OrderLinePalletFillPresentationService.Apply(order, line);
+        }
+
         return lines;
     }
 

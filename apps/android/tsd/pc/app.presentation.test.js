@@ -209,6 +209,54 @@ const orderLinesCompletePalletHtml = pc.renderOrderLinesTable(
 assert.match(orderLinesCompletePalletHtml, /pc-icon-status/);
 assert.doesNotMatch(orderLinesCompletePalletHtml, />Наполнено 2 \/ 2</);
 
+const shippedCustomerStalePalletHtml = pc.renderOrderLinesTable(
+  [
+    {
+      item_name: "Хрен столовый",
+      barcode: "SKU-066",
+      gtin: "04607186951520",
+      production_purpose: "CUSTOMER_ORDER",
+      qty_ordered: 1890,
+      qty_shipped: 1890,
+      planned_pallet_count: 5,
+      filled_pallet_count: 2,
+      hide_pallet_fill_indicator: true,
+      line_fully_shipped: true,
+    },
+  ],
+  { order_type: "CUSTOMER", order_status: "SHIPPED" }
+);
+assert.doesNotMatch(shippedCustomerStalePalletHtml, /Наполнено 2 \/ 5/);
+
+const shippedCustomerStalePalletFallbackHtml = pc.renderOrderLinesTable(
+  [
+    {
+      item_name: "Хрен столовый",
+      barcode: "SKU-066",
+      gtin: "04607186951520",
+      production_purpose: "CUSTOMER_ORDER",
+      qty_ordered: 1890,
+      qty_shipped: 1890,
+      planned_pallet_count: 5,
+      filled_pallet_count: 2,
+    },
+  ],
+  { order_type: "CUSTOMER", order_status: "SHIPPED" }
+);
+assert.doesNotMatch(shippedCustomerStalePalletFallbackHtml, /Наполнено 2 \/ 5/);
+
+assert.strictEqual(
+  pc.getOrderPalletFillingPresentation({
+    order_type: "CUSTOMER",
+    order_status: "SHIPPED",
+    has_production_pallet_plan: true,
+    planned_pallet_count: 5,
+    filled_pallet_count: 2,
+    pallet_plan_status: "Наполнение идёт: 2 / 5",
+  }).label,
+  ""
+);
+
 const fallbackOrder = { id: 88, order_ref: "088" };
 pc.applyOrderLinePalletFillingFallback(fallbackOrder, [
   {

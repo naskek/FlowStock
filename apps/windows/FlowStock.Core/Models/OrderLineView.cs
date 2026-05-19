@@ -22,6 +22,13 @@ public sealed class OrderLineView
     public int FilledPalletCount { get; set; }
     public double PlannedPalletQty { get; set; }
     public double FilledPalletQty { get; set; }
+    public bool LineFullyShipped { get; set; }
+    public bool HidePalletFillIndicator { get; set; }
+    public bool BlockingFillRequired { get; set; }
+    public string FulfillmentStatus { get; set; } = string.Empty;
+    public string? PalletFillLabel { get; set; }
+    public string PalletFillTone { get; set; } = "neutral";
+    public string? PalletFillTitle { get; set; }
     public string ProductionPurposeDisplay => ProductionLinePurposeMapper.ToDisplayName(ProductionPurpose);
     public bool IsMixedPalletLine => !string.IsNullOrWhiteSpace(ProductionPalletGroup);
     public string ProductionPalletGroupDisplay => string.IsNullOrWhiteSpace(ProductionPalletGroup) ? string.Empty : ProductionPalletGroup!;

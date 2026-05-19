@@ -2019,7 +2019,14 @@ app.MapGet("/api/orders/{orderId:long}/lines", (long orderId, IDataStore store) 
             planned_pallet_count = line.PlannedPalletCount,
             filled_pallet_count = line.FilledPalletCount,
             pallet_planned_qty = line.PlannedPalletQty,
-            pallet_filled_qty = line.FilledPalletQty
+            pallet_filled_qty = line.FilledPalletQty,
+            line_fully_shipped = line.LineFullyShipped,
+            hide_pallet_fill_indicator = line.HidePalletFillIndicator,
+            blocking_fill_required = line.BlockingFillRequired,
+            fulfillment_status = line.FulfillmentStatus,
+            pallet_fill_label = line.PalletFillLabel,
+            pallet_fill_tone = line.PalletFillTone,
+            pallet_fill_title = line.PalletFillTitle
         })
         .ToList();
 
@@ -3587,7 +3594,7 @@ static object MapOrderWithLoadedMetrics(Order order)
         order.HasProductionPalletPlan,
         order.NeedsProductionPalletPlan,
         palletSummary,
-        BuildOrderPalletPlanStatus(order.NeedsProductionPalletPlan, order.HasProductionPalletPlan, palletSummary));
+        BuildOrderPalletPlanStatus(order, order.NeedsProductionPalletPlan, order.HasProductionPalletPlan, palletSummary));
 }
 
 static object MapOrderWithMetrics(Order order, OrderListMetrics? metrics)
@@ -3603,7 +3610,7 @@ static object MapOrderWithMetrics(Order order, OrderListMetrics? metrics)
         hasProductionPalletPlan,
         needsProductionPalletPlan,
         palletSummary,
-        BuildOrderPalletPlanStatus(needsProductionPalletPlan, hasProductionPalletPlan, palletSummary));
+        BuildOrderPalletPlanStatus(order, needsProductionPalletPlan, hasProductionPalletPlan, palletSummary));
 }
 
 static object MapOrderWithShipmentRemaining(Order order, IDataStore store)
@@ -3630,7 +3637,7 @@ static object MapOrderWithShipmentRemaining(Order order, IDataStore store)
         hasProductionPalletPlan,
         needsProductionPalletPlan,
         palletSummary,
-        BuildOrderPalletPlanStatus(needsProductionPalletPlan, hasProductionPalletPlan, palletSummary));
+        BuildOrderPalletPlanStatus(order, needsProductionPalletPlan, hasProductionPalletPlan, palletSummary));
 }
 
 static bool IsProductionPalletFillingStarted(IDataStore store, Doc doc)
@@ -3704,29 +3711,18 @@ static string BuildPalletFillingStatus(ProductionPalletSummary summary)
     return "Паллетный выпуск по плану";
 }
 
-static string BuildOrderPalletPlanStatus(bool needsProductionPalletPlan, bool hasProductionPalletPlan, ProductionPalletSummary summary)
+static string BuildOrderPalletPlanStatus(
+    Order order,
+    bool needsProductionPalletPlan,
+    bool hasProductionPalletPlan,
+    ProductionPalletSummary summary)
 {
-    if (!needsProductionPalletPlan)
-    {
-        return string.Empty;
-    }
-
-    if (!hasProductionPalletPlan || summary.PlannedPalletCount <= 0)
-    {
-        return "План не сформирован";
-    }
-
-    if (summary.FilledPalletCount >= summary.PlannedPalletCount && summary.RemainingPalletCount <= 0)
-    {
-        return "Наполнено полностью";
-    }
-
-    if (summary.FilledPalletCount > 0 || summary.FilledQty > 0)
-    {
-        return $"Наполнение идёт: {summary.FilledPalletCount} / {summary.PlannedPalletCount}";
-    }
-
-    return "План сформирован";
+    return OrderPalletFillPresentationService.ResolveOrderPalletPlanStatus(
+               order,
+               needsProductionPalletPlan,
+               hasProductionPalletPlan,
+               summary)
+           ?? string.Empty;
 }
 
 static object MapDocLine(DocLineView line)

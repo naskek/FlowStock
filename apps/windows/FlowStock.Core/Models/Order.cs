@@ -88,14 +88,19 @@ public sealed class Order
     }
 
     public bool ProductionPalletFillCompleted =>
-        PlannedPalletCount > 0
-        && FilledPalletCount >= PlannedPalletCount
-        && ProductionPalletPlanShortDisplay.StartsWith("Наполнено", StringComparison.CurrentCultureIgnoreCase);
+        Type == OrderType.Customer && Status == OrderStatus.Shipped
+            ? false
+            : PlannedPalletCount > 0
+              && FilledPalletCount >= PlannedPalletCount
+              && ProductionPalletPlanShortDisplay.StartsWith("Наполнено", StringComparison.CurrentCultureIgnoreCase);
 
     public bool ProductionPalletFillInProgress =>
-        FilledPalletCount > 0
-        && PlannedPalletCount > 0
-        && !ProductionPalletFillCompleted;
+        Type == OrderType.Customer
+        && Status == OrderStatus.Shipped
+            ? false
+            : FilledPalletCount > 0
+              && PlannedPalletCount > 0
+              && !ProductionPalletFillCompleted;
 
     public string PartnerDisplay
     {
