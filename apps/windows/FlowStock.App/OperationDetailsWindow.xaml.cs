@@ -2596,6 +2596,7 @@ public partial class OperationDetailsWindow : Window
                 showPartner = true;
                 partnerLabel = "Покупатель";
                 showOrder = true;
+                showHuHeader = false;
                 break;
             case DocType.Move:
                 showFromHeader = true;
@@ -2707,15 +2708,12 @@ public partial class OperationDetailsWindow : Window
             ? Visibility.Visible
             : Visibility.Collapsed;
         AutoHuButton.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
-        AssignHuButton.Visibility = doc.Type is DocType.Inbound or DocType.Inventory or DocType.ProductionReceipt or DocType.Outbound
+        AssignHuButton.Visibility = doc.Type is DocType.Inventory or DocType.Outbound
             ? Visibility.Visible
             : Visibility.Collapsed;
         FillPalletButton.Visibility = doc.Type == DocType.ProductionReceipt && _hasProductionPalletPlan
             ? Visibility.Visible
             : Visibility.Collapsed;
-        AssignHuButton.Visibility = doc.Type == DocType.ProductionReceipt && _hasProductionPalletPlan
-            ? Visibility.Collapsed
-            : AssignHuButton.Visibility;
         PalletizedPrdBadge.Visibility = doc.Type == DocType.ProductionReceipt && _hasProductionPalletPlan
             ? Visibility.Visible
             : Visibility.Collapsed;
@@ -2729,10 +2727,7 @@ public partial class OperationDetailsWindow : Window
         FillFromOrderButton.Visibility = Visibility.Collapsed;
         FillFromOrderButton.IsEnabled = false;
 
-        if (doc.Type != DocType.Outbound)
-        {
-            OutboundHuPanel.Visibility = Visibility.Collapsed;
-        }
+        OutboundHuPanel.Visibility = Visibility.Collapsed;
     }
 
     private static bool IsTsdSource(Doc doc)
@@ -2805,45 +2800,7 @@ public partial class OperationDetailsWindow : Window
         _outboundHuCandidates.Clear();
         _selectedOutboundHu = null;
         UpdateOutboundHuButton();
-
-        if (_doc?.Type != DocType.Outbound || !IsDocEditable() || _selectedDocLine == null)
-        {
-            OutboundHuPanel.Visibility = Visibility.Collapsed;
-            return;
-        }
-
-        OutboundHuPanel.Visibility = Visibility.Visible;
-
-        var locationsById = _locations.ToDictionary(location => location.Id, location => location);
-        var rows = GetStockRows()
-            .Where(row => row.ItemId == _selectedDocLine.ItemId
-                          && row.Qty > 0
-                          && !string.IsNullOrWhiteSpace(row.Hu))
-            .Select(row => new
-            {
-                HuCode = NormalizeHuValue(row.Hu)!,
-                LocationId = _locations.FirstOrDefault(location =>
-                    string.Equals(location.Code, row.LocationCode, StringComparison.OrdinalIgnoreCase))?.Id ?? 0,
-                row.Qty
-            })
-            .Where(row => row.LocationId > 0)
-            .OrderBy(row => row.HuCode, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(row => row.LocationId)
-            .ToList();
-
-        foreach (var row in rows)
-        {
-            var locationLabel = locationsById.TryGetValue(row.LocationId, out var location)
-                ? location.DisplayName
-                : row.LocationId.ToString(CultureInfo.InvariantCulture);
-            _outboundHuCandidates.Add(new OutboundHuCandidate
-            {
-                HuCode = row.HuCode,
-                LocationId = row.LocationId,
-                LocationDisplay = locationLabel,
-                Qty = row.Qty
-            });
-        }
+        OutboundHuPanel.Visibility = Visibility.Collapsed;
     }
 
     private async void OutboundHuApply_Click(object sender, RoutedEventArgs e)
@@ -4951,6 +4908,11 @@ public partial class OperationDetailsWindow : Window
             toHu = null;
         }
         else if (_doc.Type == DocType.Inbound)
+        {
+            fromHu = null;
+            toHu = null;
+        }
+        else if (_doc.Type == DocType.Outbound)
         {
             fromHu = null;
             toHu = null;
