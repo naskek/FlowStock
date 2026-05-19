@@ -1910,6 +1910,8 @@ app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>
                                  || string.Equals(request.Query["include_pending_requests"], "true", StringComparison.OrdinalIgnoreCase);
     var limit = TryReadNonNegativeInt(request.Query["limit"]);
     var offset = TryReadNonNegativeInt(request.Query["offset"]) ?? 0;
+    var includeCancelledMerged = string.Equals(request.Query["include_cancelled_merged"], "1", StringComparison.OrdinalIgnoreCase)
+                                 || string.Equals(request.Query["include_cancelled_merged"], "true", StringComparison.OrdinalIgnoreCase);
 
     var orderService = new OrderService(store);
     if (limit.HasValue)
@@ -1929,7 +1931,7 @@ app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>
         {
             var realOffset = Math.Max(0, offset - pendingRows.Count);
             page.AddRange(MapOrdersWithShipmentRemaining(
-                orderService.GetOrdersPage(includeInternal, normalized, remainingLimit, realOffset),
+                orderService.GetOrdersPage(includeInternal, normalized, remainingLimit, realOffset, includeCancelledMerged),
                 store));
         }
 

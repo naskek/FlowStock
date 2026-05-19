@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 using FlowStock.Core.Services;
 using Microsoft.AspNetCore.Http;
@@ -22,6 +23,59 @@ public static class ProductionPalletEndpoints
         app.MapGet("/api/tsd/production/filling-docs", HandleWorkItems);
         app.MapPost("/api/tsd/production/scan-pallet", HandleScan);
         app.MapPost("/api/tsd/production/fill-pallet", HandleFill);
+        app.MapGet("/api/production-pallets/filled-without-stock", HandleFilledWithoutStock);
+        app.MapPost("/api/production-pallets/backfill-filled-stock", HandleBackfillFilledStock);
+    }
+
+    private static IResult HandleFilledWithoutStock(IDataStore store)
+    {
+        var service = new ProductionPalletFilledStockBackfillService(store);
+        var gaps = service.GetFilledWithoutStock();
+        return Results.Ok(new
+        {
+            ok = true,
+            count = gaps.Count,
+            items = gaps.Select(MapStockGap)
+        });
+    }
+
+    private static async Task<IResult> HandleBackfillFilledStock(HttpRequest request, IDataStore store)
+    {
+        var body = await request.ReadFromJsonAsync<BackfillFilledStockRequest>();
+        var dryRun = body?.DryRun ?? true;
+        var service = new ProductionPalletFilledStockBackfillService(store);
+        var result = service.BackfillFilledStock(dryRun);
+        return Results.Ok(new
+        {
+            ok = true,
+            dry_run = result.DryRun,
+            gap_count = result.Gaps.Count,
+            ledger_rows_written = result.LedgerRowsWritten,
+            gaps = result.Gaps.Select(MapStockGap),
+            applied = result.Applied.Select(MapStockGap)
+        });
+    }
+
+    private static object MapStockGap(FilledProductionPalletStockGap gap) =>
+        new
+        {
+            pallet_id = gap.PalletId,
+            prd_doc_id = gap.PrdDocId,
+            prd_ref = gap.PrdDocRef,
+            item_id = gap.ItemId,
+            item_name = gap.ItemName,
+            hu_code = gap.HuCode,
+            planned_qty = gap.PlannedQty,
+            ledger_qty = gap.LedgerQty,
+            missing_qty = gap.MissingQty,
+            status = gap.Status,
+            filled_at = gap.FilledAt
+        };
+
+    private sealed class BackfillFilledStockRequest
+    {
+        [JsonPropertyName("dry_run")]
+        public bool DryRun { get; init; } = true;
     }
 
     private static IResult HandlePlanOrder(long orderId, ProductionPalletService service)

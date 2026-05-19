@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using FlowStock.Core.Models;
+using FlowStock.Core.Services;
 
 namespace FlowStock.App;
 
@@ -123,6 +124,27 @@ public sealed class WpfReadApiService
             path += "?" + string.Join("&", query);
         }
 
+        return TryRead(
+            path,
+            root => root.ValueKind == JsonValueKind.Array
+                ? root.EnumerateArray()
+                    .Select(MapOrder)
+                    .ToList()
+                : new List<Order>(),
+            "orders",
+            out orders);
+    }
+
+    public bool TryGetOrdersPage(
+        bool includeInternal,
+        string? search,
+        int limit,
+        int offset,
+        bool includeCancelledMerged,
+        out IReadOnlyList<Order> orders)
+    {
+        orders = Array.Empty<Order>();
+        var path = OrdersPageApiQuery.BuildPath(includeInternal, search, limit, offset, includeCancelledMerged);
         return TryRead(
             path,
             root => root.ValueKind == JsonValueKind.Array

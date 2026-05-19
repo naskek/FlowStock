@@ -1517,6 +1517,19 @@ internal sealed class CloseDocumentHarness
                 return found == null ? null : CloneProductionPallet(found);
             });
 
+        _store.Setup(store => store.GetFilledProductionPalletsByItemAndLocation(It.IsAny<long>(), It.IsAny<long>()))
+            .Returns<long, long>((itemId, locationId) => _productionPallets.Values
+                .Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+                .Where(pallet => pallet.ToLocationId == locationId)
+                .Where(pallet => pallet.ItemId == itemId
+                                 || pallet.Lines.Any(line => line.ItemId == itemId))
+                .Select(CloneProductionPallet)
+                .OrderBy(pallet => pallet.HuCode, StringComparer.OrdinalIgnoreCase)
+                .ToArray());
+
+        _store.Setup(store => store.GetFilledProductionPalletsWithStockGaps())
+            .Returns(BuildFilledProductionPalletStockGaps);
+
         _store.Setup(store => store.GetActiveProductionPalletWorkItems())
             .Returns(() => _productionPallets.Values
                 .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
@@ -2501,6 +2514,55 @@ internal sealed class CloseDocumentHarness
     private static string? NormalizeText(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private IReadOnlyList<FilledProductionPalletStockGap> BuildFilledProductionPalletStockGaps()
+    {
+        var gaps = new List<FilledProductionPalletStockGap>();
+        foreach (var pallet in _productionPallets.Values
+                     .Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+                     .Where(pallet => pallet.ToLocationId.HasValue))
+        {
+            var components = pallet.Lines.Count > 0
+                ? pallet.Lines.Select(line => (line.ItemId, line.PlannedQty, pallet.ItemName))
+                : new[] { (pallet.ItemId, pallet.PlannedQty, pallet.ItemName) };
+            var doc = _docs.TryGetValue(pallet.PrdDocId, out var foundDoc) ? foundDoc : null;
+            foreach (var (itemId, plannedQty, itemName) in components)
+            {
+                var ledgerQty = _postedLedger
+                    .Where(entry => entry.ItemId == itemId
+                                    && entry.LocationId == pallet.ToLocationId
+                                    && string.Equals(NormalizeHu(entry.HuCode), NormalizeHu(pallet.HuCode), StringComparison.OrdinalIgnoreCase))
+                    .Sum(entry => entry.QtyDelta);
+                var missingQty = plannedQty - ledgerQty;
+                if (missingQty <= StockQuantityRules.QtyTolerance)
+                {
+                    continue;
+                }
+
+                gaps.Add(new FilledProductionPalletStockGap
+                {
+                    PalletId = pallet.Id,
+                    PrdDocId = pallet.PrdDocId,
+                    PrdDocRef = doc?.DocRef ?? string.Empty,
+                    ItemId = itemId,
+                    ItemName = itemName,
+                    HuCode = pallet.HuCode,
+                    ToLocationId = pallet.ToLocationId,
+                    PlannedQty = plannedQty,
+                    LedgerQty = ledgerQty,
+                    MissingQty = missingQty,
+                    Status = pallet.Status,
+                    FilledAt = pallet.FilledAt
+                });
+            }
+        }
+
+        return gaps
+            .OrderBy(gap => gap.PrdDocId)
+            .ThenBy(gap => gap.HuCode, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(gap => gap.ItemId)
+            .ToArray();
     }
 
     private void ClearProductionPalletPlanInHarness(long docId)

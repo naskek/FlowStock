@@ -11,7 +11,7 @@ public sealed class OrderServicePaginationTests
     public void GetOrdersPage_ForwardsLimitOffsetSearchAndIncludeInternalToDataStore()
     {
         var store = new Mock<IDataStore>(MockBehavior.Strict);
-        store.Setup(data => data.GetOrdersPage(true, "002", 20, 40))
+        store.Setup(data => data.GetOrdersPage(true, "002", 20, 40, false))
             .Returns(new[]
             {
                 CreateOrder(1, "002", OrderStatus.Cancelled)
@@ -22,7 +22,7 @@ public sealed class OrderServicePaginationTests
         var order = Assert.Single(result);
         Assert.Equal("002", order.OrderRef);
         Assert.Equal(OrderStatus.Cancelled, order.Status);
-        store.Verify(data => data.GetOrdersPage(true, "002", 20, 40), Times.Once);
+        store.Verify(data => data.GetOrdersPage(true, "002", 20, 40, false), Times.Once);
         store.Verify(data => data.GetOrders(), Times.Never);
     }
 
@@ -30,7 +30,7 @@ public sealed class OrderServicePaginationTests
     public void GetOrdersPage_PreservesReturnedPageShape()
     {
         var store = new Mock<IDataStore>(MockBehavior.Strict);
-        store.Setup(data => data.GetOrdersPage(false, null, 2, 1))
+        store.Setup(data => data.GetOrdersPage(false, null, 2, 1, false))
             .Returns(new[]
             {
                 CreateOrder(2, "002", OrderStatus.Cancelled),
@@ -44,15 +44,58 @@ public sealed class OrderServicePaginationTests
             result,
             first => Assert.Equal("002", first.OrderRef),
             second => Assert.Equal("003", second.OrderRef));
-        store.Verify(data => data.GetOrdersPage(false, null, 2, 1), Times.Once);
+        store.Verify(data => data.GetOrdersPage(false, null, 2, 1, false), Times.Once);
         store.Verify(data => data.GetOrders(), Times.Never);
+    }
+
+    [Fact]
+    public void GetOrdersPage_ForwardsIncludeCancelledMergedToDataStore()
+    {
+        var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(data => data.GetOrdersPage(true, null, 15, 0, true))
+            .Returns(Array.Empty<Order>());
+        store.Setup(data => data.GetOrdersPage(true, null, 15, 15, true))
+            .Returns(Array.Empty<Order>());
+
+        _ = new OrderService(store.Object).GetOrdersPage(true, null, 15, 0, includeCancelledMerged: true);
+        _ = new OrderService(store.Object).GetOrdersPage(true, null, 15, 15, includeCancelledMerged: true);
+
+        store.Verify(data => data.GetOrdersPage(true, null, 15, 0, true), Times.Once);
+        store.Verify(data => data.GetOrdersPage(true, null, 15, 15, true), Times.Once);
+    }
+
+    [Fact]
+    public void GetOrdersPage_PaginationOffsets_AreForwardedWithoutOverlap()
+    {
+        var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.As<IOptimizedOrderReadModelStore>();
+        store.Setup(data => data.GetOrdersPage(true, null, 15, 0, false))
+            .Returns(new[]
+            {
+                CreateOrder(1, "001", OrderStatus.InProgress),
+                CreateOrder(2, "002", OrderStatus.Accepted)
+            });
+        store.Setup(data => data.GetOrdersPage(true, null, 15, 15, false))
+            .Returns(new[]
+            {
+                CreateOrder(3, "003", OrderStatus.Shipped)
+            });
+
+        var firstPage = new OrderService(store.Object).GetOrdersPage(true, null, 15, 0);
+        var secondPage = new OrderService(store.Object).GetOrdersPage(true, null, 15, 15);
+
+        Assert.Equal(2, firstPage.Count);
+        Assert.Single(secondPage);
+        Assert.DoesNotContain(secondPage, order => firstPage.Any(existing => existing.Id == order.Id));
+        store.Verify(data => data.GetOrdersPage(true, null, 15, 0, false), Times.Once);
+        store.Verify(data => data.GetOrdersPage(true, null, 15, 15, false), Times.Once);
     }
 
     [Fact]
     public void GetOrdersPage_PreservesCanonicalServerOrder_ForMixedTypesAndStatuses()
     {
         var store = new Mock<IDataStore>(MockBehavior.Strict);
-        store.Setup(data => data.GetOrdersPage(true, null, 4, 0))
+        store.Setup(data => data.GetOrdersPage(true, null, 4, 0, false))
             .Returns(new[]
             {
                 CreateOrder(11, "INT-002", OrderStatus.InProgress, OrderType.Internal, dueDate: new DateTime(2026, 5, 15, 0, 0, 0, DateTimeKind.Utc)),
@@ -92,7 +135,7 @@ public sealed class OrderServicePaginationTests
                 Assert.Equal("CUST-003", fourth.OrderRef);
                 Assert.Equal(OrderStatus.Shipped, fourth.Status);
             });
-        store.Verify(data => data.GetOrdersPage(true, null, 4, 0), Times.Once);
+        store.Verify(data => data.GetOrdersPage(true, null, 4, 0, false), Times.Once);
         store.Verify(data => data.GetOrders(), Times.Never);
     }
 
@@ -101,7 +144,7 @@ public sealed class OrderServicePaginationTests
     {
         var store = new Mock<IDataStore>(MockBehavior.Strict);
         store.As<IOptimizedOrderReadModelStore>();
-        store.Setup(data => data.GetOrdersPage(true, null, 21, 0))
+        store.Setup(data => data.GetOrdersPage(true, null, 21, 0, false))
             .Returns(new[]
             {
                 CreateOrder(10, "CUST-010", OrderStatus.InProgress, OrderType.Customer),
@@ -120,7 +163,7 @@ public sealed class OrderServicePaginationTests
                 Assert.Equal(OrderType.Internal, second.Type);
                 Assert.Equal(OrderStatus.InProgress, second.Status);
             });
-        store.Verify(data => data.GetOrdersPage(true, null, 21, 0), Times.Once);
+        store.Verify(data => data.GetOrdersPage(true, null, 21, 0, false), Times.Once);
         store.Verify(data => data.GetOrders(), Times.Never);
         store.VerifyNoOtherCalls();
     }
@@ -130,7 +173,7 @@ public sealed class OrderServicePaginationTests
     {
         var store = new Mock<IDataStore>(MockBehavior.Strict);
         store.As<IOptimizedOrderReadModelStore>();
-        store.Setup(data => data.GetOrdersPage(true, null, 21, 0))
+        store.Setup(data => data.GetOrdersPage(true, null, 21, 0, false))
             .Returns(new[]
             {
                 CreateOrder(56, "056", OrderStatus.InProgress, OrderType.Internal),
