@@ -134,6 +134,9 @@
     if (route.name === "filling" || route.name === "fillingDoc") {
       return getOperationBlockKey("PRODUCTION_RECEIPT") || "tsd_operations";
     }
+    if (route.name === "outbound" || route.name === "outboundOrder") {
+      return getOperationBlockKey("OUTBOUND") || "tsd_operations";
+    }
     if (route.name === "docs" || route.name === "new") {
       return getOperationBlockKey(route.op) || "tsd_operations";
     }
@@ -1155,6 +1158,9 @@
     if (route.name === "filling" || route.name === "fillingDoc") {
       return isOperationEnabled("PRODUCTION_RECEIPT");
     }
+    if (route.name === "outbound" || route.name === "outboundOrder") {
+      return isOperationEnabled("OUTBOUND");
+    }
     if (route.name === "docs") {
       return !!route.op && isOperationEnabled(route.op);
     }
@@ -1561,6 +1567,12 @@
     if (parts[0] === "filling") {
       return { name: "filling" };
     }
+    if (parts[0] === "outbound" && parts[1]) {
+      return { name: "outboundOrder", id: decodeURIComponent(parts[1]) };
+    }
+    if (parts[0] === "outbound") {
+      return { name: "outbound" };
+    }
     if (parts[0] === "tasks" && parts[1]) {
       return { name: "taskDoc", id: decodeURIComponent(parts[1]) };
     }
@@ -1627,6 +1639,12 @@
     }
     if (parts[0] === "filling") {
       return { name: "filling" };
+    }
+    if (parts[0] === "outbound" && parts[1]) {
+      return { name: "outboundOrder", id: decodeURIComponent(parts[1]) };
+    }
+    if (parts[0] === "outbound") {
+      return { name: "outbound" };
     }
     if (parts[0] === "tasks" && parts[1]) {
       return { name: "taskDoc", id: decodeURIComponent(parts[1]) };
@@ -1774,6 +1792,10 @@
         navigate("/home");
         return;
       }
+      if (String(route.op || "").toUpperCase() === "OUTBOUND") {
+        navigate("/outbound");
+        return;
+      }
       setCurrentClientBlockContext(getOperationBlockKey(route.op) || "tsd_operations");
       app.innerHTML = renderLoading();
       Promise.all([
@@ -1865,6 +1887,46 @@
         .catch(function (error) {
           console.error(error);
           app.innerHTML = renderError(String(error && error.message ? error.message : "Ошибка загрузки наполнения"));
+          applySoftKeyboardSetting(app);
+        });
+      return;
+    }
+
+    if (route.name === "outbound") {
+      if (!isOperationEnabled("OUTBOUND")) {
+        navigate("/operations");
+        return;
+      }
+      setCurrentClientBlockContext(getOperationBlockKey("OUTBOUND") || "tsd_operations");
+      app.innerHTML = renderLoading();
+      TsdStorage.apiGetOutboundPickingOrders()
+        .then(function (orders) {
+          app.innerHTML = renderOutboundPickingList(orders || []);
+          wireOutboundPickingList();
+          applySoftKeyboardSetting(app);
+        })
+        .catch(function (error) {
+          console.error(error);
+          app.innerHTML = renderError("Не удалось загрузить заказы для отгрузки");
+          applySoftKeyboardSetting(app);
+        });
+      return;
+    }
+
+    if (route.name === "outboundOrder") {
+      if (!isOperationEnabled("OUTBOUND")) {
+        navigate("/operations");
+        return;
+      }
+      setCurrentClientBlockContext(getOperationBlockKey("OUTBOUND") || "tsd_operations");
+      app.innerHTML = renderLoading();
+      TsdStorage.apiGetOutboundPickingOrder(route.id)
+        .then(function (order) {
+          renderOutboundPickingOrder(order, { message: "", messageType: "" });
+        })
+        .catch(function (error) {
+          console.error(error);
+          app.innerHTML = renderError(String(error && error.message ? error.message : "Ошибка загрузки отгрузки"));
           applySoftKeyboardSetting(app);
         });
       return;
@@ -2233,6 +2295,10 @@
         return;
       }
       if (!isOperationEnabled(op)) {
+        return;
+      }
+      if (op === "OUTBOUND") {
+        buttons.push('<button class="btn menu-btn" data-route="outbound">Отгрузка</button>');
         return;
       }
       buttons.push(
@@ -2832,6 +2898,169 @@
       "  </div>" +
       "</section>"
     );
+  }
+
+  function getOutboundPickingStatusLabel(status) {
+    var normalized = String(status || "").trim().toUpperCase();
+    if (normalized === "PICKED") {
+      return "Подобрано";
+    }
+    if (normalized === "PENDING") {
+      return "Ожидает";
+    }
+    return status || "-";
+  }
+
+  function renderOutboundPickingList(orders) {
+    var rows = (orders || [])
+      .map(function (order) {
+        var orderId = order.orderId || order.order_id || 0;
+        var picked = Number(order.pickedHuCount || order.picked_hu_count) || 0;
+        var expected = Number(order.expectedHuCount || order.expected_hu_count) || 0;
+        return (
+          '<button class="filling-doc-card outbound-picking-order-card" data-outbound-order="' +
+          escapeHtml(orderId) +
+          '">' +
+          '  <div class="filling-doc-main">' +
+          '    <div class="filling-doc-title">Заказ № ' +
+          escapeHtml(order.orderRef || order.order_ref || "-") +
+          "</div>" +
+          (order.partnerName || order.partner_name
+            ? '    <div class="filling-doc-meta">Клиент: ' + escapeHtml(order.partnerName || order.partner_name) + "</div>"
+            : "") +
+          '    <div class="order-status-pill order-status-accepted">' +
+          escapeHtml(order.status || "Готов") +
+          "</div>" +
+          "  </div>" +
+          '  <div class="filling-doc-progress">' +
+          "    <div>Подобрано <strong>" +
+          escapeHtml(picked + "/" + expected) +
+          "</strong></div>" +
+          "  </div>" +
+          "</button>"
+        );
+      })
+      .join("");
+
+    if (!rows) {
+      rows = '<div class="empty-state">Нет готовых клиентских заказов с ожидаемыми HU к отгрузке.</div>';
+    }
+
+    return (
+      '<section class="screen filling-screen outbound-picking-screen">' +
+      '  <div class="screen-card filling-card">' +
+      '    <div class="section-title">Отгрузка</div>' +
+      '    <div class="field-hint">Выберите готовый клиентский заказ для подбора паллет.</div>' +
+      '    <div class="filling-doc-list">' +
+      rows +
+      "    </div>" +
+      "  </div>" +
+      "</section>"
+    );
+  }
+
+  function renderOutboundPickingHuLines(lines) {
+    var html = (Array.isArray(lines) ? lines : [])
+      .map(function (line) {
+        return (
+          '<div class="outbound-picking-hu-line">' +
+          "  <span>" +
+          escapeHtml(line.itemName || line.item_name || "-") +
+          "</span>" +
+          "  <strong>" +
+          escapeHtml(formatQtyWithUnit(line.qty || 0, "шт")) +
+          "</strong>" +
+          "</div>"
+        );
+      })
+      .join("");
+    return html ? '<div class="outbound-picking-hu-lines">' + html + "</div>" : "";
+  }
+
+  function renderOutboundPickingHuList(hus) {
+    var rows = (Array.isArray(hus) ? hus : [])
+      .map(function (hu) {
+        var status = hu.status || "PENDING";
+        var picked = String(status).toUpperCase() === "PICKED";
+        return (
+          '<div class="filling-pallet-item outbound-picking-hu-item ' +
+          (picked ? "is-filled" : "is-pending") +
+          '">' +
+          '  <span class="filling-pallet-dot" aria-hidden="true"></span>' +
+          '  <div class="outbound-picking-hu-main">' +
+          '    <div class="filling-pallet-code">' +
+          escapeHtml(hu.huCode || hu.hu_code || "-") +
+          "</div>" +
+          '    <div class="filling-pallet-status-text">' +
+          escapeHtml(getOutboundPickingStatusLabel(status)) +
+          "</div>" +
+          (hu.itemSummary || hu.item_summary
+            ? '    <div class="filling-doc-meta">' + escapeHtml(hu.itemSummary || hu.item_summary) + "</div>"
+            : "") +
+          renderOutboundPickingHuLines(hu.lines) +
+          "  </div>" +
+          "</div>"
+        );
+      })
+      .join("");
+
+    if (!rows) {
+      return '<div class="empty-state">Нет ожидаемых HU к отгрузке.</div>';
+    }
+
+    return (
+      '<div class="filling-pallet-list-card">' +
+      '  <div class="filling-pallet-list-title">Паллеты к отгрузке</div>' +
+      '  <div class="filling-pallet-list outbound-picking-hu-list">' +
+      rows +
+      "  </div>" +
+      "</div>"
+    );
+  }
+
+  function renderOutboundPickingOrder(order, state) {
+    var picked = Number(order && order.pickedHuCount) || 0;
+    var expected = Number(order && order.expectedHuCount) || 0;
+    var complete = order && order.isComplete === true;
+    var message = state && state.message ? String(state.message) : "";
+    var messageType = state && state.messageType ? String(state.messageType) : "";
+    var messageHtml = message
+      ? '<div class="filling-message filling-message-' + escapeHtml(messageType || "info") + '">' + escapeHtml(message) + "</div>"
+      : "";
+
+    app.innerHTML =
+      '<section class="screen filling-screen outbound-picking-screen">' +
+      '  <div class="screen-card filling-card">' +
+      '    <div class="section-title">Отгрузка</div>' +
+      '    <div class="filling-context-card">' +
+      '      <div>Заказ: <strong>' +
+      escapeHtml((order && order.orderRef) || "-") +
+      "</strong></div>" +
+      (order && order.partnerName ? '      <div>Клиент: <strong>' + escapeHtml(order.partnerName) + "</strong></div>" : "") +
+      '      <div>Подобрано паллет: <strong>' +
+      escapeHtml(picked + " / " + expected) +
+      "</strong></div>" +
+      (order && order.draftOutboundDocRef
+        ? '      <div>Черновик OUTBOUND: <strong>' + escapeHtml(order.draftOutboundDocRef) + "</strong></div>"
+        : "") +
+      "    </div>" +
+      messageHtml +
+      (complete
+        ? '    <div class="filling-message filling-message-success">Все паллеты подобраны. Ожидает проведения в WPF.</div>'
+        : "") +
+      '    <div class="filling-scan-card">' +
+      '      <label class="form-label" for="outboundPickingScanInput">Сканируйте HU</label>' +
+      '      <input class="form-input filling-scan-input" id="outboundPickingScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" placeholder="HU-000001" />' +
+      "    </div>" +
+      renderOutboundPickingHuList(order && order.hus) +
+      '    <div class="actions-bar">' +
+      '      <button class="btn primary-btn" id="outboundPickingCompleteBtn" type="button">Завершить подбор</button>' +
+      "    </div>" +
+      "  </div>" +
+      "</section>";
+
+    wireOutboundPickingOrder(order || {}, state || {});
+    applySoftKeyboardSetting(app);
   }
 
   function renderStock() {
@@ -5798,6 +6027,171 @@
     if (activePreview) {
       openFillingPreviewOverlay(context, activePreview);
     }
+  }
+
+  function mapOutboundPickingError(error) {
+    var message = String(error && error.message ? error.message : error || "").trim();
+    if (!message || message === "Failed to fetch" || message === "AbortError") {
+      return "Нет связи с сервером. Подбор не сохранен.";
+    }
+    if (message === "SERVER_ERROR" || message === "INVALID_RESPONSE") {
+      return "Сервер вернул ошибку при подборе. Проверьте лог FlowStock Server.";
+    }
+    if (message === "HU_REQUIRED") {
+      return "Отсканируйте HU.";
+    }
+    if (message === "HU_NOT_EXPECTED") {
+      return "HU не ожидается для выбранного заказа.";
+    }
+    if (message === "HU_PICKED_IN_OTHER_OUTBOUND") {
+      return "HU уже подобрана в другом открытом документе отгрузки.";
+    }
+    if (message === "PICKING_INCOMPLETE") {
+      return "Не все паллеты подобраны.";
+    }
+    if (message === "NO_SHIPMENT_REMAINING" || message === "SHIPMENT_REMAINING_EXCEEDED") {
+      return "По заказу не осталось количества к отгрузке для этой HU.";
+    }
+    return message || "Ошибка подбора.";
+  }
+
+  function wireOutboundPickingList() {
+    var orders = document.querySelectorAll("[data-outbound-order]");
+    orders.forEach(function (item) {
+      item.addEventListener("click", function () {
+        var orderId = item.getAttribute("data-outbound-order");
+        if (orderId) {
+          navigate("/outbound/" + encodeURIComponent(orderId));
+        }
+      });
+    });
+
+    setLiveRefreshHandler(function () {
+      if (!currentRoute || currentRoute.name !== "outbound") {
+        return;
+      }
+      TsdStorage.apiGetOutboundPickingOrders()
+        .then(function (orders) {
+          if (currentRoute && currentRoute.name === "outbound") {
+            app.innerHTML = renderOutboundPickingList(orders || []);
+            wireOutboundPickingList();
+            applySoftKeyboardSetting(app);
+          }
+        })
+        .catch(function () {
+          // Keep the current list visible while the live refresh is unavailable.
+        });
+    });
+  }
+
+  function wireOutboundPickingOrder(order, state) {
+    var scanInput = document.getElementById("outboundPickingScanInput");
+    var completeBtn = document.getElementById("outboundPickingCompleteBtn");
+    var orderId = order && order.orderId;
+    var scanBusy = false;
+    var completeBusy = false;
+
+    function focusScan() {
+      if (!scanInput) {
+        return;
+      }
+      setPreferredScanTarget(scanInput);
+      window.setTimeout(function () {
+        if (scanInput && scanInput.isConnected) {
+          scanInput.value = "";
+          scanInput.focus();
+        }
+      }, 30);
+    }
+
+    function refreshOrder(nextState) {
+      return TsdStorage.apiGetOutboundPickingOrder(orderId)
+        .then(function (nextOrder) {
+          renderOutboundPickingOrder(nextOrder, nextState || {});
+        })
+        .catch(function () {
+          renderOutboundPickingOrder(order, nextState || {});
+        });
+    }
+
+    function handleScannedValue(value) {
+      var huCode = extractHuCode(value) || String(value || "").trim();
+      if (!huCode || scanBusy) {
+        focusScan();
+        return;
+      }
+
+      scanBusy = true;
+      renderOutboundPickingOrder(order, {
+        message: "Подбираем HU...",
+        messageType: "info",
+      });
+
+      TsdStorage.apiScanOutboundPickingHu(orderId, huCode)
+        .then(function (result) {
+          var nextOrder = result && result.order ? result.order : order;
+          var complete = nextOrder && nextOrder.isComplete === true;
+          renderOutboundPickingOrder(nextOrder, {
+            message: complete
+              ? "Все паллеты подобраны. Ожидает проведения в WPF."
+              : (result && result.message) || "HU подобрана.",
+            messageType: result && result.alreadyPicked ? "warn" : "success",
+          });
+        })
+        .catch(function (error) {
+          refreshOrder({
+            message: mapOutboundPickingError(error),
+            messageType: "error",
+          });
+        });
+    }
+
+    if (scanInput) {
+      scanInput.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          handleScannedValue(scanInput.value);
+        }
+      });
+      focusScan();
+    }
+
+    if (completeBtn) {
+      completeBtn.addEventListener("click", function () {
+        if (completeBusy) {
+          return;
+        }
+        completeBusy = true;
+        completeBtn.disabled = true;
+        TsdStorage.apiCompleteOutboundPicking(orderId)
+          .then(function (result) {
+            renderOutboundPickingOrder((result && result.order) || order, {
+              message: (result && result.message) || "Все паллеты подобраны. Ожидает проведения в WPF.",
+              messageType: "success",
+            });
+          })
+          .catch(function (error) {
+            completeBusy = false;
+            completeBtn.disabled = false;
+            refreshOrder({
+              message: mapOutboundPickingError(error),
+              messageType: "error",
+            });
+          });
+      });
+    }
+
+    setScanHandler(function (scan) {
+      var value = scan && scan.value ? scan.value : scan;
+      handleScannedValue(value);
+    });
+
+    setLiveRefreshHandler(function () {
+      if (!currentRoute || currentRoute.name !== "outboundOrder") {
+        return;
+      }
+      refreshOrder(state || {});
+    });
   }
 
   function wireOrders() {

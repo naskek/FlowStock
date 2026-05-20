@@ -111,6 +111,40 @@ public sealed class OrderService
         return nextStatus;
     }
 
+    public FullyShippedCustomerOrderStatusRefreshReport RefreshFullyShippedCustomerOrderStatuses(bool apply)
+    {
+        var candidates = GetFullyShippedCustomerOrderStatusCandidates();
+        var rows = new List<FullyShippedCustomerOrderStatusRefreshRow>(candidates.Count);
+
+        foreach (var candidate in candidates)
+        {
+            var newStatus = OrderStatus.Shipped;
+            var updated = false;
+            if (apply)
+            {
+                newStatus = RefreshPersistedStatus(candidate.OrderId);
+                updated = newStatus != candidate.OldStatus;
+            }
+
+            rows.Add(new FullyShippedCustomerOrderStatusRefreshRow
+            {
+                OrderId = candidate.OrderId,
+                OrderRef = candidate.OrderRef,
+                OldStatus = candidate.OldStatus,
+                NewStatus = newStatus,
+                TotalOrderedQty = candidate.TotalOrderedQty,
+                TotalShippedQty = candidate.TotalShippedQty,
+                Updated = updated
+            });
+        }
+
+        return new FullyShippedCustomerOrderStatusRefreshReport
+        {
+            DryRun = !apply,
+            Rows = rows
+        };
+    }
+
     public IReadOnlyList<OrderLineView> GetOrderLineViews(long orderId)
     {
         var order = _data.GetOrder(orderId);
@@ -664,6 +698,59 @@ public sealed class OrderService
     public void RefreshCustomerReceiptPlans()
     {
         _data.ExecuteInTransaction(TryRefreshCustomerReceiptPlans);
+    }
+
+    private IReadOnlyList<FullyShippedCustomerOrderStatusCandidate> GetFullyShippedCustomerOrderStatusCandidates()
+    {
+        if (_data is IOrderStatusDiagnosticsStore diagnosticsStore)
+        {
+            return diagnosticsStore.GetFullyShippedCustomerOrderStatusCandidates();
+        }
+
+        var result = new List<FullyShippedCustomerOrderStatusCandidate>();
+        var activeCustomerOrders = _data.GetOrders()
+            .Where(order => order.Type == OrderType.Customer
+                            && order.Status is not OrderStatus.Draft
+                                and not OrderStatus.Shipped
+                                and not OrderStatus.Cancelled
+                                and not OrderStatus.Merged)
+            .OrderBy(order => order.OrderRef, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(order => order.Id);
+
+        foreach (var order in activeCustomerOrders)
+        {
+            var lines = _data.GetOrderLines(order.Id)
+                .Where(line => line.QtyOrdered > QtyTolerance)
+                .ToList();
+            if (lines.Count == 0)
+            {
+                continue;
+            }
+
+            var shippedByLine = _data.GetShippedTotalsByOrderLine(order.Id);
+            var fullyShipped = lines.All(line =>
+            {
+                var shipped = shippedByLine.TryGetValue(line.Id, out var qty)
+                    ? qty
+                    : 0d;
+                return Math.Max(0d, line.QtyOrdered - shipped) <= QtyTolerance;
+            });
+            if (!fullyShipped)
+            {
+                continue;
+            }
+
+            result.Add(new FullyShippedCustomerOrderStatusCandidate
+            {
+                OrderId = order.Id,
+                OrderRef = order.OrderRef,
+                OldStatus = order.Status,
+                TotalOrderedQty = lines.Sum(line => Math.Max(0d, line.QtyOrdered)),
+                TotalShippedQty = lines.Sum(line => shippedByLine.TryGetValue(line.Id, out var shipped) ? Math.Max(0d, shipped) : 0d)
+            });
+        }
+
+        return result;
     }
 
     private void ApplyLineMetrics(Order order, IReadOnlyList<OrderLineView> lines)
@@ -1502,5 +1589,24 @@ public sealed class OrderStatusRefreshChangedOrder
     public string OrderRef { get; init; } = string.Empty;
     public OrderStatus OldStatus { get; init; }
     public OrderStatus NewStatus { get; init; }
+}
+
+public sealed class FullyShippedCustomerOrderStatusRefreshReport
+{
+    public bool DryRun { get; init; }
+    public IReadOnlyList<FullyShippedCustomerOrderStatusRefreshRow> Rows { get; init; } = Array.Empty<FullyShippedCustomerOrderStatusRefreshRow>();
+    public int RefreshedCount => Rows.Count;
+    public int ChangedCount => Rows.Count(row => row.Updated);
+}
+
+public sealed class FullyShippedCustomerOrderStatusRefreshRow
+{
+    public long OrderId { get; init; }
+    public string OrderRef { get; init; } = string.Empty;
+    public OrderStatus OldStatus { get; init; }
+    public OrderStatus NewStatus { get; init; }
+    public double TotalOrderedQty { get; init; }
+    public double TotalShippedQty { get; init; }
+    public bool Updated { get; init; }
 }
 

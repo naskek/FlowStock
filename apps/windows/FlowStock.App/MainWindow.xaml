@@ -1,6 +1,7 @@
 <Window x:Class="FlowStock.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:FlowStock.App"
         Title="FlowStock" Height="720" Width="1100"
         PreviewKeyDown="MainWindow_PreviewKeyDown">
     <DockPanel>
@@ -59,27 +60,57 @@
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                        <TextBox x:Name="StatusSearchBox" Width="240" Margin="0,0,8,0" />
-                        <Button Content="Поиск" Click="StatusSearch_Click" Margin="0,0,8,0" />
-                        <TextBlock Text="Место хранения" VerticalAlignment="Center" Margin="12,0,6,0" />
-                        <ComboBox x:Name="StockLocationFilter" Width="220" DisplayMemberPath="Name"
-                                  SelectionChanged="StockLocationFilter_SelectionChanged" />
-                        <TextBlock Text="HU" VerticalAlignment="Center" Margin="12,0,6,0" />
-                        <ComboBox x:Name="StockHuFilter" Width="200" DisplayMemberPath="Name"
-                                  SelectionChanged="StockHuFilter_SelectionChanged" />
-                        <TextBlock Text="Тип" VerticalAlignment="Center" Margin="12,0,6,0" />
-                        <ComboBox x:Name="StockItemTypeFilter" Width="220" DisplayMemberPath="Name"
-                                  SelectionChanged="StockItemTypeFilter_SelectionChanged" />
-                        <CheckBox x:Name="StockBelowMinOnlyCheckBox"
-                                  Margin="12,0,0,0"
-                                  VerticalAlignment="Center"
-                                  Content="Только ниже минимума"
-                                  Checked="StockBelowMinOnlyCheckBox_Changed"
-                                  Unchecked="StockBelowMinOnlyCheckBox_Changed" />
-                    </StackPanel>
+                    <Grid Margin="0,0,0,8">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <StackPanel Grid.Row="0"
+                                    Orientation="Horizontal"
+                                    Margin="0,0,0,8">
+                            <Button Content="Обновить"
+                                    Padding="12,4"
+                                    Click="StatusSearch_Click" />
+                            <Button x:Name="ProductionNeedCreateOrdersButton"
+                                    Content="Сформировать заказ"
+                                    Padding="12,4"
+                                    Margin="8,0,0,0"
+                                    Click="ProductionNeedCreateOrders_Click" />
+                            <TextBlock Text="План не входит в складской остаток"
+                                       VerticalAlignment="Center"
+                                       Margin="12,0,0,0"
+                                       Foreground="#666666" />
+                            <TextBlock x:Name="ProductionNeedSummaryText"
+                                       Margin="12,0,0,0"
+                                       VerticalAlignment="Center"
+                                       FontWeight="SemiBold" />
+                        </StackPanel>
+                        <WrapPanel Grid.Row="1">
+                            <TextBox x:Name="StatusSearchBox" Width="240" Margin="0,0,8,4" />
+                            <Button Content="Поиск" Click="StatusSearch_Click" Margin="0,0,8,4" />
+                            <TextBlock Text="Место хранения" VerticalAlignment="Center" Margin="12,0,6,4" />
+                            <ComboBox x:Name="StockLocationFilter" Width="220" DisplayMemberPath="Name"
+                                      Margin="0,0,0,4"
+                                      SelectionChanged="StockLocationFilter_SelectionChanged" />
+                            <TextBlock Text="HU" VerticalAlignment="Center" Margin="12,0,6,4" />
+                            <ComboBox x:Name="StockHuFilter" Width="200" DisplayMemberPath="Name"
+                                      Margin="0,0,0,4"
+                                      SelectionChanged="StockHuFilter_SelectionChanged" />
+                            <TextBlock Text="Тип" VerticalAlignment="Center" Margin="12,0,6,4" />
+                            <ComboBox x:Name="StockItemTypeFilter" Width="220" DisplayMemberPath="Name"
+                                      Margin="0,0,0,4"
+                                      SelectionChanged="StockItemTypeFilter_SelectionChanged" />
+                            <CheckBox x:Name="StockBelowMinOnlyCheckBox"
+                                      Margin="12,0,0,4"
+                                      VerticalAlignment="Center"
+                                      Content="Только ниже минимума"
+                                      Checked="StockBelowMinOnlyCheckBox_Changed"
+                                      Unchecked="StockBelowMinOnlyCheckBox_Changed" />
+                        </WrapPanel>
+                    </Grid>
                     <DataGrid x:Name="StockGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True" RowDetailsVisibilityMode="Collapsed"
                               SelectionMode="Single" SelectionUnit="FullRow"
+                              Visibility="Collapsed"
                               MouseDoubleClick="StockGrid_MouseDoubleClick">
                         <DataGrid.RowStyle>
                             <Style TargetType="DataGridRow">
@@ -129,6 +160,223 @@
                             <DataGridTextColumn Header="В базе" Binding="{Binding BaseDisplay}" Width="Auto" MaxWidth="320" />
                         </DataGrid.Columns>
                     </DataGrid>
+                    <DataGrid x:Name="WarehouseProductionStateGrid"
+                              Grid.Row="1"
+                              AutoGenerateColumns="False"
+                              IsReadOnly="True"
+                              RowDetailsVisibilityMode="Collapsed"
+                              SelectionMode="Single"
+                              SelectionUnit="FullRow"
+                              MinColumnWidth="24"
+                              local:ResponsiveDataGridBehavior.IsEnabled="False"
+                              MouseDoubleClick="WarehouseProductionStateGrid_MouseDoubleClick"
+                              Visibility="Visible">
+                        <DataGrid.CellStyle>
+                            <Style TargetType="DataGridCell">
+                                <Setter Property="Padding" Value="4,2" />
+                                <Setter Property="VerticalContentAlignment" Value="Center" />
+                            </Style>
+                        </DataGrid.CellStyle>
+                        <DataGrid.ColumnHeaderStyle>
+                            <Style TargetType="DataGridColumnHeader">
+                                <Setter Property="Padding" Value="4,3" />
+                                <Setter Property="HorizontalContentAlignment" Value="Left" />
+                            </Style>
+                        </DataGrid.ColumnHeaderStyle>
+                        <DataGrid.RowStyle>
+                            <Style TargetType="DataGridRow">
+                                <Setter Property="DetailsVisibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsExpanded}" Value="True">
+                                        <Setter Property="DetailsVisibility" Value="Visible" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsBelowMin}" Value="True">
+                                        <Setter Property="Foreground" Value="#B71C1C" />
+                                        <Setter Property="FontWeight" Value="SemiBold" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </DataGrid.RowStyle>
+                        <DataGrid.RowDetailsTemplate>
+                            <DataTemplate>
+                                <Border Margin="8,4,8,8"
+                                        Padding="8"
+                                        BorderBrush="#E0E0E0"
+                                        BorderThickness="1"
+                                        Background="#FAFAFA"
+                                        CornerRadius="4">
+                                    <StackPanel>
+                                        <TextBlock Text="Паллеты" FontWeight="SemiBold" Margin="0,0,0,6" />
+                                        <DataGrid AutoGenerateColumns="False"
+                                                  IsReadOnly="True"
+                                                  CanUserAddRows="False"
+                                                  CanUserDeleteRows="False"
+                                                  HeadersVisibility="Column"
+                                                  Margin="0,0,0,10"
+                                                  ItemsSource="{Binding ProductionReceipts}">
+                                            <DataGrid.Columns>
+                                                <DataGridTextColumn Header="HU" Binding="{Binding HuCode}" Width="180" />
+                                                <DataGridTextColumn Header="Статус" Binding="{Binding PalletStatus}" Width="110" />
+                                                <DataGridTextColumn Header="План" Binding="{Binding PlannedQtyDisplay}" Width="110" />
+                                                <DataGridTextColumn Header="Наполнено" Binding="{Binding FilledQtyDisplay}" Width="110" />
+                                                <DataGridTextColumn Header="Товар" Binding="{Binding Composition}" Width="*" />
+                                            </DataGrid.Columns>
+                                        </DataGrid>
+
+                                        <TextBlock Text="Расчёт потребности" FontWeight="SemiBold" Margin="0,0,0,6" />
+                                        <DataGrid AutoGenerateColumns="False"
+                                                  IsReadOnly="True"
+                                                  CanUserAddRows="False"
+                                                  CanUserDeleteRows="False"
+                                                  HeadersVisibility="Column"
+                                                  ItemsSource="{Binding NeedBreakdownRows}">
+                                            <DataGrid.Columns>
+                                                <DataGridTextColumn Header="Всего в заказах для клиентов" Binding="{Binding DemandToCloseDisplay}" Width="190" />
+                                                <DataGridTextColumn Header="До минимума" Binding="{Binding DemandToMinDisplay}" Width="120" />
+                                                <DataGridTextColumn Header="Во внутренних заказах" Binding="{Binding AlreadyPlannedInternalDisplay}" Width="150" />
+                                                <DataGridTextColumn Header="Выпущено" Binding="{Binding FilledDisplay}" Width="120" />
+                                                <DataGridTextColumn Header="Осталось выпустить" Binding="{Binding RemainingToCreateDisplay}" Width="150" />
+                                            </DataGrid.Columns>
+                                        </DataGrid>
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </DataGrid.RowDetailsTemplate>
+                        <DataGrid.Columns>
+                            <DataGridTemplateColumn Width="26"
+                                                    MinWidth="26"
+                                                    MaxWidth="26"
+                                                    CanUserResize="False">
+                                <DataGridTemplateColumn.CellStyle>
+                                    <Style TargetType="DataGridCell">
+                                        <Setter Property="Padding" Value="0" />
+                                        <Setter Property="HorizontalContentAlignment" Value="Center" />
+                                        <Setter Property="VerticalContentAlignment" Value="Center" />
+                                    </Style>
+                                </DataGridTemplateColumn.CellStyle>
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding ExpandMarker}"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center"
+                                                   FontSize="11"
+                                                   Margin="0" />
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTemplateColumn Header="Товар" Width="2*" MinWidth="240">
+                                <DataGridTemplateColumn.CellStyle>
+                                    <Style TargetType="DataGridCell">
+                                        <Setter Property="Padding" Value="4,2" />
+                                        <Setter Property="VerticalContentAlignment" Value="Top" />
+                                    </Style>
+                                </DataGridTemplateColumn.CellStyle>
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <StackPanel VerticalAlignment="Top">
+                                            <TextBlock Text="{Binding ItemName}"
+                                                       TextWrapping="Wrap"
+                                                       LineHeight="16"
+                                                       MaxHeight="32"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       ToolTip="{Binding ItemName}" />
+                                            <TextBlock Text="{Binding ProductSubline}"
+                                                       Foreground="#667784"
+                                                       FontSize="11"
+                                                       Margin="0,1,0,0"
+                                                       TextWrapping="NoWrap"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       ToolTip="{Binding ProductSubline}" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="На складе"
+                                                Binding="{Binding StockQtyDisplay}"
+                                                Width="Auto"
+                                                MinWidth="72"
+                                                MaxWidth="96">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="TextWrapping" Value="NoWrap" />
+                                        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                        <Setter Property="VerticalAlignment" Value="Center" />
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="Минимум"
+                                                Binding="{Binding MinStockSummary}"
+                                                Width="Auto"
+                                                MinWidth="80"
+                                                MaxWidth="110">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="TextWrapping" Value="NoWrap" />
+                                        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                        <Setter Property="VerticalAlignment" Value="Center" />
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="Потребность"
+                                                Binding="{Binding NeedSummary}"
+                                                Width="Auto"
+                                                MinWidth="92"
+                                                MaxWidth="130">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="TextWrapping" Value="NoWrap" />
+                                        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                        <Setter Property="ToolTip" Value="{Binding NeedSummary}" />
+                                        <Setter Property="VerticalAlignment" Value="Center" />
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="План"
+                                                Binding="{Binding PlanSummary}"
+                                                Width="Auto"
+                                                MinWidth="72"
+                                                MaxWidth="120">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="TextWrapping" Value="NoWrap" />
+                                        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                        <Setter Property="ToolTip" Value="{Binding PlanSummary}" />
+                                        <Setter Property="VerticalAlignment" Value="Center" />
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="Выпущено / наполнено"
+                                                Binding="{Binding FilledSummary}"
+                                                Width="Auto"
+                                                MinWidth="100"
+                                                MaxWidth="132">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="TextWrapping" Value="NoWrap" />
+                                        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                        <Setter Property="ToolTip" Value="{Binding FilledSummary}" />
+                                        <Setter Property="VerticalAlignment" Value="Center" />
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTemplateColumn Header="Осталось выпустить"
+                                                    Width="Auto"
+                                                    MinWidth="96"
+                                                    MaxWidth="128">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding RemainingNeedSummary}"
+                                                   Foreground="{Binding RemainingNeedBrush}"
+                                                   FontWeight="{Binding RemainingNeedFontWeight}"
+                                                   TextWrapping="NoWrap"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding RemainingNeedSummary}"
+                                                   VerticalAlignment="Center" />
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                        </DataGrid.Columns>
+                    </DataGrid>
                     <TextBlock x:Name="StockEmptyText"
                                Grid.Row="1"
                                Text="Остатки появятся после закрытия хотя бы одного документа."
@@ -139,12 +387,14 @@
                                HorizontalAlignment="Center"
                                VerticalAlignment="Center"
                                Visibility="Collapsed" />
-                    <Border Grid.Row="2"
+                    <Border x:Name="LowStockPanel"
+                            Grid.Row="2"
                             Margin="0,8,0,0"
-                            Padding="8"
-                            BorderBrush="#DDD"
-                            BorderThickness="1"
-                            CornerRadius="4">
+                             Padding="8"
+                             BorderBrush="#DDD"
+                             BorderThickness="1"
+                             CornerRadius="4"
+                            Visibility="Collapsed">
                         <Grid>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
@@ -174,19 +424,17 @@
                     </Border>
                 </Grid>
             </TabItem>
-            <TabItem Header="Потребность производства">
+            <TabItem Header="Потребность производства" Visibility="Collapsed">
                 <DockPanel Margin="8">
                     <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
                         <Button Content="Обновить"
                                 Padding="12,4"
                                 Click="ProductionNeedRefresh_Click" />
-                        <Button x:Name="ProductionNeedCreateOrdersButton"
-                                Content="Сформировать заказ"
+                        <Button Content="Сформировать заказ"
                                 Padding="12,4"
                                 Margin="8,0,0,0"
                                 Click="ProductionNeedCreateOrders_Click" />
-                        <TextBlock x:Name="ProductionNeedSummaryText"
-                                   Margin="12,0,0,0"
+                        <TextBlock Margin="12,0,0,0"
                                    VerticalAlignment="Center"
                                    FontWeight="SemiBold" />
                     </StackPanel>

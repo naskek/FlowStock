@@ -9,7 +9,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore
+public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore
 {
     private readonly string _connectionString;
     private readonly NpgsqlConnection? _connection;
@@ -3265,6 +3265,796 @@ WHERE id = @id;
         });
     }
 
+    public IReadOnlyList<FullyShippedCustomerOrderStatusCandidate> GetFullyShippedCustomerOrderStatusCandidates()
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH candidate_orders AS (
+    SELECT o.id,
+           o.order_ref,
+           o.status AS persisted_status
+    FROM orders o
+    WHERE o.order_type = @customer_order_type
+      AND o.status NOT IN (@draft_order_status, @shipped_order_status, @cancelled_order_status, @merged_order_status)
+),
+line_totals AS (
+    SELECT co.id AS order_id,
+           co.order_ref,
+           co.persisted_status,
+           ol.id AS order_line_id,
+           GREATEST(0, ol.qty_ordered) AS qty_ordered,
+           COALESCE(shipped.qty_shipped, 0) AS qty_shipped
+    FROM candidate_orders co
+    INNER JOIN order_lines ol ON ol.order_id = co.id
+    LEFT JOIN LATERAL (
+        SELECT SUM(dl.qty) AS qty_shipped
+        FROM doc_lines dl
+        INNER JOIN docs d ON d.id = dl.doc_id
+        WHERE d.order_id = co.id
+          AND d.status = @closed_doc_status
+          AND d.type = @outbound_doc_type
+          AND dl.order_line_id = ol.id
+          AND dl.qty > 0
+          AND NOT EXISTS (
+              SELECT 1
+              FROM doc_lines newer
+              WHERE newer.replaces_line_id = dl.id
+          )
+    ) shipped ON TRUE
+)
+SELECT order_id,
+       order_ref,
+       persisted_status,
+       SUM(qty_ordered) AS total_ordered_qty,
+       SUM(qty_shipped) AS total_shipped_qty
+FROM line_totals
+GROUP BY order_id,
+         order_ref,
+         persisted_status
+HAVING COUNT(*) FILTER (WHERE qty_ordered > @qty_tolerance) > 0
+   AND BOOL_AND(qty_shipped + @qty_tolerance >= qty_ordered)
+ORDER BY order_ref,
+         order_id;
+");
+            command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+            command.Parameters.AddWithValue("@draft_order_status", OrderStatusMapper.StatusToString(OrderStatus.Draft));
+            command.Parameters.AddWithValue("@shipped_order_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+            command.Parameters.AddWithValue("@cancelled_order_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+            command.Parameters.AddWithValue("@merged_order_status", OrderStatusMapper.StatusToString(OrderStatus.Merged));
+            command.Parameters.AddWithValue("@closed_doc_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+            command.Parameters.AddWithValue("@outbound_doc_type", DocTypeMapper.ToOpString(DocType.Outbound));
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+
+            using var reader = command.ExecuteReader();
+            var rows = new List<FullyShippedCustomerOrderStatusCandidate>();
+            while (reader.Read())
+            {
+                rows.Add(new FullyShippedCustomerOrderStatusCandidate
+                {
+                    OrderId = reader.GetInt64(0),
+                    OrderRef = reader.GetString(1),
+                    OldStatus = OrderStatusMapper.StatusFromString(reader.GetString(2)) ?? OrderStatus.InProgress,
+                    TotalOrderedQty = reader.GetDouble(3),
+                    TotalShippedQty = reader.GetDouble(4)
+                });
+            }
+
+            return rows;
+        });
+    }
+
+    public IReadOnlyList<OverShippedOrderDiagnosticItem> GetOverShippedOrderDiagnostics()
+    {
+        return WithConnection<IReadOnlyList<OverShippedOrderDiagnosticItem>>(connection =>
+        {
+            var rows = new Dictionary<(long OrderId, long ItemId), OverShippedOrderDiagnosticItem>();
+            using (var command = CreateCommand(connection, $@"
+{BuildOverShippedOrderDiagnosticsCte()}
+SELECT order_id,
+       order_ref,
+       item_id,
+       item_name,
+       qty_ordered,
+       shipped_by_api_read_model,
+       shipped_by_closed_outbound,
+       shipped_by_ledger,
+       GREATEST(0, GREATEST(shipped_by_api_read_model, shipped_by_closed_outbound, shipped_by_ledger) - qty_ordered) AS over_shipped_qty
+FROM candidates
+ORDER BY order_ref,
+         item_name,
+         item_id;
+"))
+            {
+                AddOverShippedOrderDiagnosticsParameters(command);
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    var row = new OverShippedOrderDiagnosticItem
+                    {
+                        OrderId = reader.GetInt64(0),
+                        OrderRef = reader.GetString(1),
+                        ItemId = reader.GetInt64(2),
+                        ItemName = reader.GetString(3),
+                        QtyOrdered = reader.GetDouble(4),
+                        ShippedByApiReadModel = reader.GetDouble(5),
+                        ShippedByClosedOutbound = reader.GetDouble(6),
+                        ShippedByLedger = reader.GetDouble(7),
+                        OverShippedQty = reader.GetDouble(8)
+                    };
+                    rows[(row.OrderId, row.ItemId)] = row;
+                }
+            }
+
+            if (rows.Count == 0)
+            {
+                return Array.Empty<OverShippedOrderDiagnosticItem>();
+            }
+
+            var outboundByKey = rows.Keys.ToDictionary(key => key, _ => new List<OverShippedOutboundDocLine>());
+            using (var command = CreateCommand(connection, $@"
+{BuildOverShippedOrderDiagnosticsCte()}
+SELECT c.order_id,
+       c.item_id,
+       d.id AS doc_id,
+       d.doc_ref,
+       d.status,
+       d.closed_at,
+       dl.id AS doc_line_id,
+       dl.qty,
+       dl.from_hu,
+       dl.order_line_id
+FROM candidates c
+INNER JOIN docs d ON d.order_id = c.order_id
+                 AND d.type = @outbound_doc_type
+                 AND d.status = @closed_doc_status
+INNER JOIN active_doc_lines dl ON dl.doc_id = d.id
+INNER JOIN order_lines ol ON ol.id = dl.order_line_id
+                         AND ol.order_id = c.order_id
+                         AND ol.item_id = c.item_id
+ORDER BY c.order_ref,
+         d.id,
+         dl.id;
+"))
+            {
+                AddOverShippedOrderDiagnosticsParameters(command);
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    var key = (reader.GetInt64(0), reader.GetInt64(1));
+                    if (!outboundByKey.TryGetValue(key, out var bucket))
+                    {
+                        continue;
+                    }
+
+                    bucket.Add(new OverShippedOutboundDocLine
+                    {
+                        DocId = reader.GetInt64(2),
+                        DocRef = reader.GetString(3),
+                        Status = reader.GetString(4),
+                        ClosedAt = reader.IsDBNull(5) ? null : FromDbDate(reader.GetString(5)),
+                        DocLineId = reader.GetInt64(6),
+                        Qty = reader.GetDouble(7),
+                        FromHu = reader.IsDBNull(8) ? null : reader.GetString(8),
+                        OrderLineId = reader.IsDBNull(9) ? null : reader.GetInt64(9)
+                    });
+                }
+            }
+
+            var ledgerByKey = rows.Keys.ToDictionary(key => key, _ => new List<OverShippedLedgerEntry>());
+            using (var command = CreateCommand(connection, $@"
+{BuildOverShippedOrderDiagnosticsCte()}
+SELECT c.order_id,
+       c.item_id,
+       l.id AS ledger_id,
+       l.doc_id,
+       l.item_id AS ledger_item_id,
+       l.hu_code,
+       l.qty_delta
+FROM candidates c
+INNER JOIN docs d ON d.order_id = c.order_id
+                 AND d.type = @outbound_doc_type
+                 AND d.status = @closed_doc_status
+INNER JOIN ledger l ON l.doc_id = d.id
+                   AND l.item_id = c.item_id
+ORDER BY c.order_ref,
+         l.doc_id,
+         l.id;
+"))
+            {
+                AddOverShippedOrderDiagnosticsParameters(command);
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    var key = (reader.GetInt64(0), reader.GetInt64(1));
+                    if (!ledgerByKey.TryGetValue(key, out var bucket))
+                    {
+                        continue;
+                    }
+
+                    bucket.Add(new OverShippedLedgerEntry
+                    {
+                        LedgerId = reader.GetInt64(2),
+                        DocId = reader.GetInt64(3),
+                        ItemId = reader.GetInt64(4),
+                        HuCode = reader.IsDBNull(5) ? null : reader.GetString(5),
+                        QtyDelta = reader.GetDouble(6)
+                    });
+                }
+            }
+
+            return rows
+                .Select(pair =>
+                {
+                    var key = pair.Key;
+                    var row = pair.Value;
+                    return new OverShippedOrderDiagnosticItem
+                    {
+                        OrderId = row.OrderId,
+                        OrderRef = row.OrderRef,
+                        ItemId = row.ItemId,
+                        ItemName = row.ItemName,
+                        QtyOrdered = row.QtyOrdered,
+                        ShippedByApiReadModel = row.ShippedByApiReadModel,
+                        ShippedByClosedOutbound = row.ShippedByClosedOutbound,
+                        ShippedByLedger = row.ShippedByLedger,
+                        OverShippedQty = row.OverShippedQty,
+                        OutboundDocs = outboundByKey.TryGetValue(key, out var outboundDocs) ? outboundDocs : Array.Empty<OverShippedOutboundDocLine>(),
+                        LedgerEntries = ledgerByKey.TryGetValue(key, out var ledgerEntries) ? ledgerEntries : Array.Empty<OverShippedLedgerEntry>(),
+                        Recommendation = BuildOverShippedRecommendation(row)
+                    };
+                })
+                .ToList();
+        });
+    }
+
+    public IReadOnlyList<ProductionPlanConsistencyDiagnosticItem> GetProductionPlanConsistencyDiagnostics()
+    {
+        return WithConnection<IReadOnlyList<ProductionPlanConsistencyDiagnosticItem>>(connection =>
+        {
+            var rows = new Dictionary<(long OrderId, long ItemId), ProductionPlanConsistencyDiagnosticItem>();
+            using (var command = CreateCommand(connection, $@"
+{BuildProductionPlanConsistencyDiagnosticsCte()}
+SELECT order_id,
+       order_ref,
+       order_type,
+       order_status,
+       item_id,
+       item_name,
+       order_qty,
+       open_prd_doc_qty,
+       closed_prd_doc_qty,
+       prd_doc_qty,
+       open_pallet_planned_qty,
+       pallet_planned_qty,
+       pallet_filled_qty,
+       ledger_closed_prd_qty,
+       ledger_open_prd_qty,
+       ledger_prd_qty,
+       severity,
+       problem_code
+FROM candidates
+ORDER BY order_ref,
+         item_name,
+         item_id;
+"))
+            {
+                AddProductionPlanConsistencyDiagnosticsParameters(command);
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    var row = new ProductionPlanConsistencyDiagnosticItem
+                    {
+                        OrderId = reader.GetInt64(0),
+                        OrderRef = reader.GetString(1),
+                        OrderType = reader.GetString(2),
+                        OrderStatus = reader.GetString(3),
+                        ItemId = reader.GetInt64(4),
+                        ItemName = reader.GetString(5),
+                        OrderQty = reader.GetDouble(6),
+                        OpenPrdDocQty = reader.GetDouble(7),
+                        ClosedPrdDocQty = reader.GetDouble(8),
+                        PrdDocQty = reader.GetDouble(9),
+                        OpenPalletPlannedQty = reader.GetDouble(10),
+                        PalletPlannedQty = reader.GetDouble(11),
+                        PalletFilledQty = reader.GetDouble(12),
+                        LedgerClosedPrdQty = reader.GetDouble(13),
+                        LedgerOpenPrdQty = reader.GetDouble(14),
+                        LedgerPrdQty = reader.GetDouble(15),
+                        Severity = reader.GetString(16),
+                        ProblemCode = reader.GetString(17)
+                    };
+                    rows[(row.OrderId, row.ItemId)] = row;
+                }
+            }
+
+            if (rows.Count == 0)
+            {
+                return Array.Empty<ProductionPlanConsistencyDiagnosticItem>();
+            }
+
+            var palletsByKey = rows.Keys.ToDictionary(key => key, _ => new List<ProductionPlanConsistencyPalletRow>());
+            using (var command = CreateCommand(connection, $@"
+{BuildProductionPlanConsistencyDiagnosticsCte()}
+SELECT c.order_id,
+       c.item_id,
+       p.pallet_id,
+       p.prd_doc_id,
+       p.prd_doc_ref,
+       p.doc_line_id,
+       p.order_line_id,
+       p.line_item_id,
+       p.hu_code,
+       p.status,
+       p.planned_qty,
+       p.filled_qty
+FROM candidates c
+INNER JOIN pallet_rows p ON p.order_id = c.order_id
+                         AND p.line_item_id = c.item_id
+ORDER BY c.order_ref,
+         p.prd_doc_id,
+         p.pallet_id,
+         p.doc_line_id;
+"))
+            {
+                AddProductionPlanConsistencyDiagnosticsParameters(command);
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    var key = (reader.GetInt64(0), reader.GetInt64(1));
+                    if (!palletsByKey.TryGetValue(key, out var bucket))
+                    {
+                        continue;
+                    }
+
+                    bucket.Add(new ProductionPlanConsistencyPalletRow
+                    {
+                        PalletId = reader.GetInt64(2),
+                        PrdDocId = reader.GetInt64(3),
+                        PrdDocRef = reader.IsDBNull(4) ? null : reader.GetString(4),
+                        DocLineId = reader.IsDBNull(5) ? null : reader.GetInt64(5),
+                        OrderLineId = reader.IsDBNull(6) ? null : reader.GetInt64(6),
+                        ItemId = reader.GetInt64(7),
+                        HuCode = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
+                        Status = reader.GetString(9),
+                        PlannedQty = reader.GetDouble(10),
+                        FilledQty = reader.GetDouble(11)
+                    });
+                }
+            }
+
+            var prdDocsByKey = rows.Keys.ToDictionary(key => key, _ => new List<ProductionPlanConsistencyPrdDocRow>());
+            using (var command = CreateCommand(connection, $@"
+{BuildProductionPlanConsistencyDiagnosticsCte()}
+SELECT c.order_id,
+       c.item_id,
+       d.id,
+       d.doc_ref,
+       d.status,
+       d.closed_at,
+       dl.id AS doc_line_id,
+       dl.order_line_id,
+       dl.item_id AS line_item_id,
+       dl.qty
+FROM candidates c
+INNER JOIN docs d ON d.type = @prd_doc_type
+INNER JOIN active_doc_lines dl ON dl.doc_id = d.id
+                              AND dl.item_id = c.item_id
+LEFT JOIN order_lines ol ON ol.id = dl.order_line_id
+WHERE COALESCE(ol.order_id, d.order_id) = c.order_id
+ORDER BY c.order_ref,
+         d.id,
+         dl.id;
+"))
+            {
+                AddProductionPlanConsistencyDiagnosticsParameters(command);
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    var key = (reader.GetInt64(0), reader.GetInt64(1));
+                    if (!prdDocsByKey.TryGetValue(key, out var bucket))
+                    {
+                        continue;
+                    }
+
+                    bucket.Add(new ProductionPlanConsistencyPrdDocRow
+                    {
+                        DocId = reader.GetInt64(2),
+                        DocRef = reader.GetString(3),
+                        Status = reader.GetString(4),
+                        ClosedAt = reader.IsDBNull(5) ? null : FromDbDate(reader.GetString(5)),
+                        DocLineId = reader.GetInt64(6),
+                        OrderLineId = reader.IsDBNull(7) ? null : reader.GetInt64(7),
+                        ItemId = reader.GetInt64(8),
+                        Qty = reader.GetDouble(9)
+                    });
+                }
+            }
+
+            return rows
+                .Select(pair =>
+                {
+                    var key = pair.Key;
+                    var row = pair.Value;
+                    return new ProductionPlanConsistencyDiagnosticItem
+                    {
+                        OrderId = row.OrderId,
+                        OrderRef = row.OrderRef,
+                        OrderType = row.OrderType,
+                        OrderStatus = row.OrderStatus,
+                        ItemId = row.ItemId,
+                        ItemName = row.ItemName,
+                        OrderQty = row.OrderQty,
+                        OpenPrdDocQty = row.OpenPrdDocQty,
+                        ClosedPrdDocQty = row.ClosedPrdDocQty,
+                        PrdDocQty = row.PrdDocQty,
+                        OpenPalletPlannedQty = row.OpenPalletPlannedQty,
+                        PalletPlannedQty = row.PalletPlannedQty,
+                        PalletFilledQty = row.PalletFilledQty,
+                        LedgerClosedPrdQty = row.LedgerClosedPrdQty,
+                        LedgerOpenPrdQty = row.LedgerOpenPrdQty,
+                        LedgerPrdQty = row.LedgerPrdQty,
+                        Severity = row.Severity,
+                        ProblemCode = row.ProblemCode,
+                        Recommendation = BuildProductionPlanConsistencyRecommendation(row.ProblemCode),
+                        Pallets = palletsByKey.TryGetValue(key, out var pallets) ? pallets : Array.Empty<ProductionPlanConsistencyPalletRow>(),
+                        PrdDocs = prdDocsByKey.TryGetValue(key, out var prdDocs) ? prdDocs : Array.Empty<ProductionPlanConsistencyPrdDocRow>()
+                    };
+                })
+                .ToList();
+        });
+    }
+
+    private static string BuildProductionPlanConsistencyDiagnosticsCte()
+    {
+        return @"
+WITH active_doc_lines AS (
+    SELECT dl.id,
+           dl.doc_id,
+           dl.order_line_id,
+           dl.item_id,
+           dl.qty
+    FROM doc_lines dl
+    WHERE dl.qty > @qty_tolerance
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+),
+order_qty AS (
+    SELECT ol.order_id,
+           ol.item_id,
+           SUM(GREATEST(0, ol.qty_ordered)) AS order_qty
+    FROM order_lines ol
+    GROUP BY ol.order_id,
+             ol.item_id
+),
+prd_doc_qty AS (
+    SELECT COALESCE(ol.order_id, d.order_id) AS order_id,
+           dl.item_id,
+           SUM(CASE WHEN d.status = @closed_doc_status THEN dl.qty ELSE 0 END) AS closed_prd_doc_qty,
+           SUM(CASE WHEN d.status <> @closed_doc_status THEN dl.qty ELSE 0 END) AS open_prd_doc_qty,
+           SUM(dl.qty) AS prd_doc_qty,
+           BOOL_OR(d.status <> @closed_doc_status) AS has_open_prd,
+           BOOL_OR(d.status = @closed_doc_status) AS has_closed_prd
+    FROM docs d
+    INNER JOIN active_doc_lines dl ON dl.doc_id = d.id
+    LEFT JOIN order_lines ol ON ol.id = dl.order_line_id
+    WHERE d.type = @prd_doc_type
+      AND d.order_id IS NOT NULL
+      AND COALESCE(ol.order_id, d.order_id) IS NOT NULL
+    GROUP BY COALESCE(ol.order_id, d.order_id),
+             dl.item_id
+),
+pallet_rows AS (
+    SELECT COALESCE(pp.order_id, d.order_id) AS order_id,
+           pp.id AS pallet_id,
+           pp.prd_doc_id,
+           d.status AS prd_doc_status,
+           d.doc_ref AS prd_doc_ref,
+           COALESCE(pll.doc_line_id, pp.doc_line_id) AS doc_line_id,
+           COALESCE(pll.order_line_id, pp.order_line_id) AS order_line_id,
+           COALESCE(pll.item_id, pp.item_id) AS line_item_id,
+           pp.hu_code,
+           pp.status,
+           COALESCE(pll.planned_qty, pp.planned_qty) AS planned_qty,
+           COALESCE(
+               pll.filled_qty,
+               CASE WHEN pp.status = @filled_pallet_status THEN pp.planned_qty ELSE 0 END
+           ) AS filled_qty
+    FROM production_pallets pp
+    INNER JOIN docs d ON d.id = pp.prd_doc_id
+    LEFT JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
+    WHERE pp.status <> @cancelled_pallet_status
+      AND COALESCE(pp.order_id, d.order_id) IS NOT NULL
+),
+pallet_qty AS (
+    SELECT order_id,
+           line_item_id AS item_id,
+           SUM(planned_qty) AS pallet_planned_qty,
+           SUM(filled_qty) AS pallet_filled_qty
+    FROM pallet_rows
+    GROUP BY order_id,
+             line_item_id
+),
+open_pallet_qty AS (
+    SELECT order_id,
+           line_item_id AS item_id,
+           SUM(planned_qty) AS open_pallet_planned_qty,
+           SUM(filled_qty) AS open_pallet_filled_qty
+    FROM pallet_rows
+    WHERE prd_doc_status <> @closed_doc_status
+    GROUP BY order_id,
+             line_item_id
+),
+ledger_prd_qty AS (
+    SELECT d.order_id,
+           l.item_id,
+           SUM(CASE WHEN d.status = @closed_doc_status AND l.qty_delta > 0 THEN l.qty_delta ELSE 0 END) AS ledger_closed_prd_qty,
+           SUM(CASE WHEN d.status <> @closed_doc_status AND l.qty_delta > 0 THEN l.qty_delta ELSE 0 END) AS ledger_open_prd_qty,
+           SUM(CASE WHEN l.qty_delta > 0 THEN l.qty_delta ELSE 0 END) AS ledger_prd_qty
+    FROM ledger l
+    INNER JOIN docs d ON d.id = l.doc_id
+    WHERE d.type = @prd_doc_type
+      AND d.order_id IS NOT NULL
+    GROUP BY d.order_id,
+             l.item_id
+),
+scope AS (
+    SELECT order_id, item_id FROM order_qty
+    UNION
+    SELECT order_id, item_id FROM prd_doc_qty
+    UNION
+    SELECT order_id, item_id FROM pallet_qty
+    UNION
+    SELECT order_id, item_id FROM ledger_prd_qty
+),
+rollup AS (
+    SELECT s.order_id,
+           o.order_ref,
+           o.order_type,
+           o.status AS order_status,
+           s.item_id,
+           COALESCE(i.name, '') AS item_name,
+           COALESCE(oq.order_qty, 0) AS order_qty,
+           COALESCE(pdq.open_prd_doc_qty, 0) AS open_prd_doc_qty,
+           COALESCE(pdq.closed_prd_doc_qty, 0) AS closed_prd_doc_qty,
+           COALESCE(pdq.prd_doc_qty, 0) AS prd_doc_qty,
+           COALESCE(opq.open_pallet_planned_qty, 0) AS open_pallet_planned_qty,
+           COALESCE(pq.pallet_planned_qty, 0) AS pallet_planned_qty,
+           COALESCE(pq.pallet_filled_qty, 0) AS pallet_filled_qty,
+           COALESCE(lq.ledger_closed_prd_qty, 0) AS ledger_closed_prd_qty,
+           COALESCE(lq.ledger_open_prd_qty, 0) AS ledger_open_prd_qty,
+           COALESCE(lq.ledger_prd_qty, 0) AS ledger_prd_qty,
+           COALESCE(pdq.has_open_prd, FALSE) AS has_open_prd,
+           COALESCE(pdq.has_closed_prd, FALSE) AS has_closed_prd,
+           COALESCE(pdq.open_prd_doc_qty, 0) <= @qty_tolerance
+               OR ABS(COALESCE(pdq.open_prd_doc_qty, 0) - COALESCE(opq.open_pallet_planned_qty, 0)) <= @qty_tolerance AS open_prd_matches_open_pallets,
+           COALESCE(opq.open_pallet_planned_qty, 0) <= @qty_tolerance
+               OR ABS(COALESCE(opq.open_pallet_planned_qty, 0) - COALESCE(opq.open_pallet_filled_qty, 0)) <= @qty_tolerance AS open_pallets_match_fill
+    FROM scope s
+    INNER JOIN orders o ON o.id = s.order_id
+    LEFT JOIN items i ON i.id = s.item_id
+    LEFT JOIN order_qty oq ON oq.order_id = s.order_id AND oq.item_id = s.item_id
+    LEFT JOIN prd_doc_qty pdq ON pdq.order_id = s.order_id AND pdq.item_id = s.item_id
+    LEFT JOIN pallet_qty pq ON pq.order_id = s.order_id AND pq.item_id = s.item_id
+    LEFT JOIN open_pallet_qty opq ON opq.order_id = s.order_id AND opq.item_id = s.item_id
+    LEFT JOIN ledger_prd_qty lq ON lq.order_id = s.order_id AND lq.item_id = s.item_id
+),
+all_candidates AS (
+    SELECT *,
+           CASE
+               WHEN order_status = @merged_order_status AND open_pallet_planned_qty > @qty_tolerance THEN @problem_merged_order_with_pallet_plan
+               WHEN order_type = @customer_order_type AND order_status = @shipped_order_status AND has_open_prd THEN @problem_shipped_customer_with_open_prd
+               WHEN order_qty <= @qty_tolerance AND open_pallet_planned_qty > @qty_tolerance THEN @problem_order_zero_but_pallets_exist
+               WHEN has_open_prd
+                    AND NOT (order_type = @customer_order_type AND order_status = @shipped_order_status)
+                    AND open_pallet_planned_qty - order_qty > @qty_tolerance THEN @problem_pallets_exceed_order_qty
+               WHEN has_open_prd
+                    AND NOT (order_type = @customer_order_type AND order_status = @shipped_order_status)
+                    AND open_prd_doc_qty - order_qty > @qty_tolerance THEN @problem_prd_lines_exceed_order_qty
+               WHEN has_closed_prd
+                    AND ABS(closed_prd_doc_qty - ledger_closed_prd_qty) > @qty_tolerance THEN @problem_closed_prd_ledger_mismatch
+               WHEN pallet_filled_qty > @qty_tolerance AND has_open_prd THEN @problem_filled_pallets_with_draft_prd
+               ELSE NULL
+           END AS problem_code,
+           CASE
+               WHEN order_type = @customer_order_type
+                    AND order_status = @shipped_order_status
+                    AND has_open_prd
+                    AND open_pallet_planned_qty <= @qty_tolerance
+                    AND pallet_filled_qty <= @qty_tolerance
+                    AND ledger_open_prd_qty <= @qty_tolerance THEN @severity_warning
+               WHEN order_type = @customer_order_type
+                    AND order_status = @shipped_order_status
+                    AND has_open_prd
+                    AND (open_pallet_planned_qty > @qty_tolerance
+                         OR pallet_filled_qty > @qty_tolerance
+                         OR ledger_open_prd_qty > @qty_tolerance)
+                    AND (NOT open_prd_matches_open_pallets OR NOT open_pallets_match_fill) THEN @severity_error
+               WHEN order_type = @customer_order_type
+                    AND order_status = @shipped_order_status
+                    AND has_open_prd THEN @severity_warning
+               WHEN pallet_filled_qty > @qty_tolerance AND has_open_prd THEN @severity_warning
+               ELSE @severity_error
+           END AS severity
+    FROM rollup
+),
+candidates AS (
+    SELECT *
+    FROM all_candidates
+    WHERE problem_code IS NOT NULL
+)
+";
+    }
+
+    private static void AddProductionPlanConsistencyDiagnosticsParameters(NpgsqlCommand command)
+    {
+        command.Parameters.AddWithValue("@prd_doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+        command.Parameters.AddWithValue("@closed_doc_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+        command.Parameters.AddWithValue("@filled_pallet_status", ProductionPalletStatus.Filled);
+        command.Parameters.AddWithValue("@cancelled_pallet_status", ProductionPalletStatus.Cancelled);
+        command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+        command.Parameters.AddWithValue("@shipped_order_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+        command.Parameters.AddWithValue("@merged_order_status", OrderStatusMapper.StatusToString(OrderStatus.Merged));
+        command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+        command.Parameters.AddWithValue("@severity_error", ProductionPlanConsistencySeverity.Error);
+        command.Parameters.AddWithValue("@severity_warning", ProductionPlanConsistencySeverity.Warning);
+        command.Parameters.AddWithValue("@problem_order_zero_but_pallets_exist", ProductionPlanConsistencyProblemCode.OrderZeroButPalletsExist);
+        command.Parameters.AddWithValue("@problem_pallets_exceed_order_qty", ProductionPlanConsistencyProblemCode.PalletsExceedOrderQty);
+        command.Parameters.AddWithValue("@problem_prd_lines_exceed_order_qty", ProductionPlanConsistencyProblemCode.PrdLinesExceedOrderQty);
+        command.Parameters.AddWithValue("@problem_filled_pallets_with_draft_prd", ProductionPlanConsistencyProblemCode.FilledPalletsWithDraftPrd);
+        command.Parameters.AddWithValue("@problem_shipped_customer_with_open_prd", ProductionPlanConsistencyProblemCode.ShippedCustomerWithOpenPrd);
+        command.Parameters.AddWithValue("@problem_merged_order_with_pallet_plan", ProductionPlanConsistencyProblemCode.MergedOrderWithPalletPlan);
+        command.Parameters.AddWithValue("@problem_closed_prd_ledger_mismatch", ProductionPlanConsistencyProblemCode.ClosedPrdLedgerMismatch);
+    }
+
+    private static string BuildProductionPlanConsistencyRecommendation(string problemCode)
+    {
+        return problemCode switch
+        {
+            ProductionPlanConsistencyProblemCode.OrderZeroButPalletsExist =>
+                "Order line quantity is zero but active pallet plan remains. Review merge/redistribution history and create a manual repair plan before closing PRD.",
+            ProductionPlanConsistencyProblemCode.PalletsExceedOrderQty =>
+                "Active pallet plan exceeds current order quantity. Do not close PRD until pallet plan is cancelled, transferred, or manually repaired.",
+            ProductionPlanConsistencyProblemCode.PrdLinesExceedOrderQty =>
+                "Active PRD document lines exceed current order quantity. Review draft PRD lines and order redistribution before closing.",
+            ProductionPlanConsistencyProblemCode.FilledPalletsWithDraftPrd =>
+                "Filled pallet ledger exists while PRD is still open. If quantities are aligned, close the PRD; otherwise review diagnostics before closing.",
+            ProductionPlanConsistencyProblemCode.ShippedCustomerWithOpenPrd =>
+                "Customer order is already shipped but has an open PRD/pallet plan. Review and cancel or repair the open production plan.",
+            ProductionPlanConsistencyProblemCode.MergedOrderWithPalletPlan =>
+                "Merged order still has active pallet plan. Manual review is required; do not silently edit production pallets.",
+            ProductionPlanConsistencyProblemCode.ClosedPrdLedgerMismatch =>
+                "Closed PRD ledger does not match PRD/pallet quantities. Do not edit ledger manually; create an explicit correction document if confirmed.",
+            _ => "Review production plan consistency diagnostics."
+        };
+    }
+
+    private static string BuildOverShippedOrderDiagnosticsCte()
+    {
+        return @"
+WITH customer_order_lines AS (
+    SELECT o.id AS order_id,
+           o.order_ref,
+           ol.id AS order_line_id,
+           ol.item_id,
+           i.name AS item_name,
+           GREATEST(0, ol.qty_ordered) AS qty_ordered
+    FROM orders o
+    INNER JOIN order_lines ol ON ol.order_id = o.id
+    INNER JOIN items i ON i.id = ol.item_id
+    WHERE o.order_type = @customer_order_type
+      AND o.status NOT IN (@cancelled_order_status, @merged_order_status)
+      AND ol.qty_ordered > @qty_tolerance
+),
+active_doc_lines AS (
+    SELECT dl.id,
+           dl.doc_id,
+           dl.order_line_id,
+           dl.item_id,
+           dl.qty,
+           dl.from_hu
+    FROM doc_lines dl
+    WHERE dl.qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+),
+line_shipments AS (
+    SELECT dl.order_line_id,
+           SUM(dl.qty) AS qty_shipped
+    FROM active_doc_lines dl
+    INNER JOIN docs d ON d.id = dl.doc_id
+    INNER JOIN customer_order_lines col ON col.order_line_id = dl.order_line_id
+                                      AND col.item_id = dl.item_id
+                                      AND col.order_id = d.order_id
+    WHERE d.type = @outbound_doc_type
+      AND d.status = @closed_doc_status
+    GROUP BY dl.order_line_id
+),
+line_rollup AS (
+    SELECT col.order_id,
+           col.order_ref,
+           col.item_id,
+           col.item_name,
+           SUM(col.qty_ordered) AS qty_ordered,
+           SUM(COALESCE(ship.qty_shipped, 0)) AS shipped_by_api_read_model,
+           SUM(COALESCE(ship.qty_shipped, 0)) AS shipped_by_closed_outbound
+    FROM customer_order_lines col
+    LEFT JOIN line_shipments ship ON ship.order_line_id = col.order_line_id
+    GROUP BY col.order_id,
+             col.order_ref,
+             col.item_id,
+             col.item_name
+),
+ledger_shipments AS (
+    SELECT d.order_id,
+           l.item_id,
+           SUM(CASE WHEN l.qty_delta < 0 THEN -l.qty_delta ELSE 0 END) AS shipped_by_ledger
+    FROM ledger l
+    INNER JOIN docs d ON d.id = l.doc_id
+    INNER JOIN orders o ON o.id = d.order_id
+    WHERE o.order_type = @customer_order_type
+      AND o.status NOT IN (@cancelled_order_status, @merged_order_status)
+      AND d.type = @outbound_doc_type
+      AND d.status = @closed_doc_status
+    GROUP BY d.order_id,
+             l.item_id
+),
+candidates AS (
+    SELECT lr.order_id,
+           lr.order_ref,
+           lr.item_id,
+           lr.item_name,
+           lr.qty_ordered,
+           lr.shipped_by_api_read_model,
+           lr.shipped_by_closed_outbound,
+           COALESCE(ledger.shipped_by_ledger, 0) AS shipped_by_ledger
+    FROM line_rollup lr
+    LEFT JOIN ledger_shipments ledger ON ledger.order_id = lr.order_id
+                                     AND ledger.item_id = lr.item_id
+    WHERE GREATEST(lr.shipped_by_api_read_model, lr.shipped_by_closed_outbound, COALESCE(ledger.shipped_by_ledger, 0))
+          - lr.qty_ordered > @qty_tolerance
+)
+";
+    }
+
+    private static void AddOverShippedOrderDiagnosticsParameters(NpgsqlCommand command)
+    {
+        command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+        command.Parameters.AddWithValue("@cancelled_order_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+        command.Parameters.AddWithValue("@merged_order_status", OrderStatusMapper.StatusToString(OrderStatus.Merged));
+        command.Parameters.AddWithValue("@closed_doc_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+        command.Parameters.AddWithValue("@outbound_doc_type", DocTypeMapper.ToOpString(DocType.Outbound));
+        command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+    }
+
+    private static string BuildOverShippedRecommendation(OverShippedOrderDiagnosticItem row)
+    {
+        var activeOver = row.ShippedByClosedOutbound - row.QtyOrdered > StockQuantityRules.QtyTolerance;
+        var ledgerOver = row.ShippedByLedger - row.QtyOrdered > StockQuantityRules.QtyTolerance;
+        if (activeOver && ledgerOver)
+        {
+            return "REAL_OVER_SHIPMENT_REVIEW_REQUIRED";
+        }
+
+        if (activeOver)
+        {
+            return "DOC_LINES_OVER_ORDERED_LEDGER_NOT_OVER_SHIPPED_REVIEW_DOC_LINES";
+        }
+
+        if (ledgerOver)
+        {
+            return "LEDGER_OVER_ORDERED_REVIEW_LEDGER_AND_CREATE_CORRECTION_DRAFT_IF_CONFIRMED";
+        }
+
+        return "NO_ACTION";
+    }
+
     public IReadOnlyList<MarkingOrderQueueRow> GetMarkingOrderQueue(bool includeCompleted)
     {
         return WithConnection(connection =>
@@ -4023,7 +4813,7 @@ reserved_hu AS (
     INNER JOIN orders o ON o.id = p.order_id
     INNER JOIN item_types it ON it.id = (SELECT item_type_id FROM items WHERE id = p.item_id)
     WHERE o.order_type = @customer_order_type
-      AND o.status NOT IN (@shipped_order_status, @cancelled_order_status)
+      AND o.status NOT IN (@shipped_order_status, @cancelled_order_status, @merged_order_status)
       AND p.qty_planned > 0
       AND p.to_hu IS NOT NULL
       AND BTRIM(p.to_hu) <> ''
@@ -4058,7 +4848,18 @@ customer_order_lines AS (
     FROM order_lines ol
     INNER JOIN orders o ON o.id = ol.order_id
     WHERE o.order_type = @customer_order_type
-      AND o.status NOT IN (@draft_order_status, @shipped_order_status, @cancelled_order_status)
+      AND o.status NOT IN (@draft_order_status, @shipped_order_status, @cancelled_order_status, @merged_order_status)
+),
+customer_shipped_by_line AS (
+    SELECT dl.order_line_id,
+           SUM(dl.qty) AS qty_shipped
+    FROM active_doc_lines dl
+    INNER JOIN docs d ON d.id = dl.doc_id
+    INNER JOIN customer_order_lines col ON col.id = dl.order_line_id
+    WHERE d.status = @closed_doc_status
+      AND d.type = @outbound_doc_type
+      AND d.order_id = col.order_id
+    GROUP BY dl.order_line_id
 ),
 customer_legacy_receipt_by_line AS (
     SELECT dl.order_line_id,
@@ -4108,10 +4909,14 @@ customer_reserved_by_line AS (
 ),
 need_by_item AS (
     SELECT col.item_id,
-           SUM(GREATEST(0, col.qty_ordered - COALESCE(receipt.qty_received, 0) - COALESCE(reserved.qty_reserved, 0))) AS order_qty
+           SUM(LEAST(
+               GREATEST(0, col.qty_ordered - COALESCE(receipt.qty_received, 0) - COALESCE(reserved.qty_reserved, 0)),
+               GREATEST(0, col.qty_ordered - COALESCE(shipped.qty_shipped, 0))
+           )) AS order_qty
     FROM customer_order_lines col
     LEFT JOIN customer_receipt_by_line receipt ON receipt.order_line_id = col.id
     LEFT JOIN customer_reserved_by_line reserved ON reserved.order_line_id = col.id
+    LEFT JOIN customer_shipped_by_line shipped ON shipped.order_line_id = col.id
     GROUP BY col.item_id
 ),
 internal_order_lines AS (
@@ -4560,7 +5365,7 @@ SELECT ol.id,
        i.name,
        ol.qty_ordered,
        COALESCE(s.sum_qty, 0) AS shipped_qty,
-       (ol.qty_ordered - COALESCE(s.sum_qty, 0)) AS remaining
+       GREATEST(0, ol.qty_ordered - COALESCE(s.sum_qty, 0)) AS remaining
 FROM order_lines ol
 INNER JOIN items i ON i.id = ol.item_id
 LEFT JOIN (

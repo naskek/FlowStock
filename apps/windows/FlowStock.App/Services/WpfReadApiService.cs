@@ -309,6 +309,46 @@ public sealed class WpfReadApiService
             out rows);
     }
 
+    public bool TryGetWarehouseProductionStateRows(
+        bool includeZero,
+        string? search,
+        bool belowMinOnly,
+        out IReadOnlyList<WarehouseProductionStateRow> rows)
+    {
+        rows = Array.Empty<WarehouseProductionStateRow>();
+        var query = new List<string>();
+        if (includeZero)
+        {
+            query.Add("include_zero=1");
+        }
+
+        if (belowMinOnly)
+        {
+            query.Add("below_min_only=1");
+        }
+
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            query.Add("q=" + Uri.EscapeDataString(search.Trim()));
+        }
+
+        var path = "/api/reports/warehouse-production-state";
+        if (query.Count > 0)
+        {
+            path += "?" + string.Join("&", query);
+        }
+
+        return TryRead(
+            path,
+            root => root.ValueKind == JsonValueKind.Array
+                ? root.EnumerateArray()
+                    .Select(MapWarehouseProductionStateRow)
+                    .ToList()
+                : new List<WarehouseProductionStateRow>(),
+            "warehouse-production-state",
+            out rows);
+    }
+
     public async Task<WpfCreateProductionNeedOrdersResult> CreateProductionNeedOrdersAsync(
         IReadOnlyList<ProductionNeedOrderDraftRequestLine>? rows = null,
         CancellationToken cancellationToken = default)
@@ -1104,6 +1144,145 @@ public sealed class WpfReadApiService
             ReservedCustomerId = ReadNullableInt64(element, "reserved_customer_id"),
             ReservedCustomerName = ReadString(element, "reserved_customer_name")
         };
+    }
+
+    private static WarehouseProductionStateRow MapWarehouseProductionStateRow(JsonElement element)
+    {
+        return new WarehouseProductionStateRow
+        {
+            ItemId = ReadInt64(element, "item_id"),
+            ItemName = ReadString(element, "item_name") ?? string.Empty,
+            Barcode = ReadString(element, "barcode"),
+            Gtin = ReadString(element, "gtin"),
+            ItemType = ReadString(element, "item_type"),
+            Brand = ReadString(element, "brand"),
+            BaseUom = ReadString(element, "base_uom") ?? "шт",
+            StockQty = ReadDouble(element, "stock_qty"),
+            FreeQty = ReadDouble(element, "free_qty"),
+            ReservedQty = ReadDouble(element, "reserved_qty"),
+            MinStockQty = ReadDouble(element, "min_stock_qty"),
+            BelowMinQty = ReadDouble(element, "below_min_qty"),
+            CustomerOpenDemandQty = ReadDouble(element, "customer_open_demand_qty"),
+            CustomerRemainingToShipQty = ReadDouble(element, "customer_remaining_to_ship_qty"),
+            InternalOpenQty = ReadDouble(element, "internal_open_qty"),
+            InternalRemainingQty = ReadDouble(element, "internal_remaining_qty"),
+            PrdPlannedQty = ReadDouble(element, "prd_planned_qty"),
+            PrdFilledQty = ReadDouble(element, "prd_filled_qty"),
+            PalletPlannedCount = ReadInt32(element, "pallet_planned_count"),
+            PalletFilledCount = ReadInt32(element, "pallet_filled_count"),
+            RemainingNeedQty = ReadDouble(element, "remaining_need_qty"),
+            NeedReason = ReadString(element, "need_reason") ?? string.Empty,
+            Warnings = ReadStringArray(element, "warnings"),
+            NeedBreakdown = MapNeedBreakdown(element),
+            HuRows = ReadArray(element, "hu_rows", MapWarehouseProductionStateHuRow),
+            CustomerOrders = ReadArray(element, "customer_orders", MapWarehouseProductionStateCustomerOrderRow),
+            InternalOrders = ReadArray(element, "internal_orders", MapWarehouseProductionStateInternalOrderRow),
+            ProductionReceipts = ReadArray(element, "production_receipts", MapWarehouseProductionStatePalletRow)
+        };
+    }
+
+    private static WarehouseProductionStateNeedBreakdownRow MapNeedBreakdown(JsonElement element)
+    {
+        if (!element.TryGetProperty("need_breakdown", out var breakdown) || breakdown.ValueKind != JsonValueKind.Object)
+        {
+            return new WarehouseProductionStateNeedBreakdownRow();
+        }
+
+        return new WarehouseProductionStateNeedBreakdownRow
+        {
+            DemandToCloseCustomerOrders = ReadDouble(breakdown, "demand_to_close_customer_orders"),
+            DemandToMinStock = ReadDouble(breakdown, "demand_to_min_stock"),
+            AlreadyPlannedInternal = ReadDouble(breakdown, "already_planned_internal"),
+            AlreadyPlannedPrd = ReadDouble(breakdown, "already_planned_prd"),
+            RemainingToCreate = ReadDouble(breakdown, "remaining_to_create")
+        };
+    }
+
+    private static WarehouseProductionStateHuRow MapWarehouseProductionStateHuRow(JsonElement element)
+    {
+        return new WarehouseProductionStateHuRow
+        {
+            Location = ReadString(element, "location") ?? string.Empty,
+            LocationId = ReadInt64(element, "location_id"),
+            HuCode = ReadString(element, "hu_code") ?? string.Empty,
+            Qty = ReadDouble(element, "qty"),
+            OriginInternalOrderId = ReadNullableInt64(element, "origin_internal_order_id"),
+            OriginInternalOrderRef = ReadString(element, "origin_internal_order_ref"),
+            ReservedCustomerOrderId = ReadNullableInt64(element, "reserved_customer_order_id"),
+            ReservedCustomerOrderRef = ReadString(element, "reserved_customer_order_ref"),
+            ReservedCustomerId = ReadNullableInt64(element, "reserved_customer_id"),
+            ReservedCustomerName = ReadString(element, "reserved_customer_name"),
+            StockStatus = ReadString(element, "stock_status") ?? string.Empty
+        };
+    }
+
+    private static WarehouseProductionStateCustomerOrderRow MapWarehouseProductionStateCustomerOrderRow(JsonElement element)
+    {
+        return new WarehouseProductionStateCustomerOrderRow
+        {
+            OrderId = ReadInt64(element, "order_id"),
+            OrderRef = ReadString(element, "order_ref") ?? string.Empty,
+            PartnerName = ReadString(element, "partner_name"),
+            Status = ReadString(element, "status") ?? string.Empty,
+            QtyOrdered = ReadDouble(element, "qty_ordered"),
+            ShippedQty = ReadDouble(element, "shipped_qty"),
+            RemainingQty = ReadDouble(element, "remaining_qty")
+        };
+    }
+
+    private static WarehouseProductionStateInternalOrderRow MapWarehouseProductionStateInternalOrderRow(JsonElement element)
+    {
+        return new WarehouseProductionStateInternalOrderRow
+        {
+            OrderId = ReadInt64(element, "order_id"),
+            OrderRef = ReadString(element, "order_ref") ?? string.Empty,
+            Status = ReadString(element, "status") ?? string.Empty,
+            QtyOrdered = ReadDouble(element, "qty_ordered"),
+            ProducedQty = ReadDouble(element, "produced_qty"),
+            RemainingQty = ReadDouble(element, "remaining_qty")
+        };
+    }
+
+    private static WarehouseProductionStatePalletRow MapWarehouseProductionStatePalletRow(JsonElement element)
+    {
+        return new WarehouseProductionStatePalletRow
+        {
+            PrdDocId = ReadInt64(element, "prd_doc_id"),
+            PrdRef = ReadString(element, "prd_ref") ?? string.Empty,
+            PalletId = ReadInt64(element, "pallet_id"),
+            HuCode = ReadString(element, "hu_code") ?? string.Empty,
+            PalletStatus = ReadString(element, "pallet_status") ?? string.Empty,
+            PlannedQty = ReadDouble(element, "planned_qty"),
+            FilledQty = ReadDouble(element, "filled_qty"),
+            StockEffect = ReadString(element, "stock_effect") ?? string.Empty,
+            IsMixedPallet = ReadBool(element, "is_mixed_pallet"),
+            Composition = ReadString(element, "composition") ?? string.Empty,
+            Location = ReadString(element, "location")
+        };
+    }
+
+    private static IReadOnlyList<T> ReadArray<T>(JsonElement element, string propertyName, Func<JsonElement, T> map)
+    {
+        if (!element.TryGetProperty(propertyName, out var array) || array.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<T>();
+        }
+
+        return array.EnumerateArray().Select(map).ToList();
+    }
+
+    private static IReadOnlyList<string> ReadStringArray(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var array) || array.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<string>();
+        }
+
+        return array.EnumerateArray()
+            .Where(item => item.ValueKind == JsonValueKind.String)
+            .Select(item => item.GetString() ?? string.Empty)
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .ToList();
     }
 
     private static DocLineView MapDocLineView(JsonElement element)

@@ -114,13 +114,19 @@ public sealed class ProductionNeedService(IDataStore dataStore)
         var activeCustomerOrders = _dataStore.GetOrders()
             .Where(order => order.Type == OrderType.Customer
                             && order.Status != OrderStatus.Draft
-                            && order.Status is not OrderStatus.Shipped and not OrderStatus.Cancelled);
+                            && order.Status is not OrderStatus.Shipped and not OrderStatus.Cancelled and not OrderStatus.Merged);
 
         foreach (var order in activeCustomerOrders)
         {
+            var shippedByLine = _dataStore.GetShippedTotalsByOrderLine(order.Id);
             foreach (var line in OrderReceiptRemainingCalculator.GetRemaining(_dataStore, order))
             {
-                var remainingQty = Math.Max(0, line.QtyRemaining);
+                var shippedQty = shippedByLine.TryGetValue(line.OrderLineId, out var shipped)
+                    ? shipped
+                    : 0d;
+                var remainingToShipQty = Math.Max(0, line.QtyOrdered - shippedQty);
+                var remainingProductionQty = Math.Max(0, line.QtyRemaining);
+                var remainingQty = Math.Min(remainingProductionQty, remainingToShipQty);
                 if (remainingQty <= QtyTolerance)
                 {
                     continue;

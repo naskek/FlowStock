@@ -95,6 +95,10 @@
 - HU-разбалансировка при нулевом общем остатке (фантомные +/- HU): `POST /api/diagnostics/hu-balance/correction-draft` создаёт черновик `INVENTORY_CORRECTION` с обратными строками по каждому HU только если суммарный остаток item/location = 0 и есть одновременно положительные и отрицательные HU; иначе `ITEM_LOCATION_TOTAL_NOT_ZERO` и ручная корректировка. Положительные HU, связанные с `production_pallets` в статусе `FILLED` по тому же `item_id`/`to_location_id`, не включаются в авто-cleanup: это реальный выпуск, а не фантом. Если после исключения таких HU сумма по остальным HU не равна нулю, endpoint отказывает с `HU_BALANCE_CONTAINS_FILLED_PRODUCTION_PALLETS` и возвращает `protected_filled_pallets`, `candidate_balances`, `total_all`, `total_excluding_protected`.
 - Восстановление stock по ошибочно обнулённым `FILLED` паллетам: `GET /api/production-pallets/filled-without-stock` и `POST /api/production-pallets/backfill-filled-stock` (`dry_run` по умолчанию `true`). Backfill shipment-aware: учитывает `OUTBOUND` по тому же HU и по `order_id + item_id`; decision `SAFE_TO_BACKFILL` / `ALREADY_SHIPPED_SKIP` / `AMBIGUOUS_REQUIRES_MANUAL_REVIEW`. Запись в `ledger` только для `SAFE_TO_BACKFILL` с `missing_qty > tolerance`.
 - Сторно ошибочного backfill для уже отгруженных HU: `GET /api/production-pallets/filled-stock-reverse-candidates` и `POST /api/production-pallets/reverse-filled-stock-backfill-draft` создают draft `INVENTORY_CORRECTION` с отрицательными строками по `reverse_qty = min(current_hu_stock, planned_qty)` только для candidates с доказанной отгрузкой.
+- Проверка согласованности производственного плана перед production deploy: `GET /api/diagnostics/production-plan-consistency` read-only сравнивает `order_lines.qty_ordered`, open/closed qty по активным строкам `PRODUCTION_RECEIPT`, open/total `production_pallet_lines.planned_qty/filled_qty` и `ledger` по closed/open PRD. Endpoint ничего не исправляет и используется как обязательный dry-run шаг после deploy.
+  - Возможные `problem_code`: `ORDER_ZERO_BUT_PALLETS_EXIST`, `PALLETS_EXCEED_ORDER_QTY`, `PRD_LINES_EXCEED_ORDER_QTY`, `FILLED_PALLETS_WITH_DRAFT_PRD`, `SHIPPED_CUSTOMER_WITH_OPEN_PRD`, `MERGED_ORDER_WITH_PALLET_PLAN`, `CLOSED_PRD_LEDGER_MISMATCH`.
+  - `ERROR` блокирует Close palletized PRD; `SHIPPED_CUSTOMER_WITH_OPEN_PRD` для stale open PRD без паллет/ledger — `WARNING`; при open pallets/ledger и рассинхроне — `ERROR`, но Close PRD не блокируется.
+  - Закрытие palletized `PRODUCTION_RECEIPT` блокируется только при критичном рассинхроне текущего PRD, с сообщением: `План паллет не соответствует строкам заказа. Запустите диагностику production-plan-consistency.`
 - Canonical online submit-flow TSD: `reserve doc_ref -> local edit -> create draft on submit -> add lines -> close`.
   - При открытии операции на TSD серверный draft не создается: резервируется только номер документа (`doc_ref`).
   - Документ в БД создается только в момент отправки/завершения документа.
@@ -251,17 +255,19 @@
     - Отчет показывает текущую суммарную потребность на момент просмотра, без календарного фильтра в UI.
     - Клиентские заказы уже являются источником спроса и не создаются заново из этого отчета.
     - `free_stock_qty` считается как свободный остаток после резервов под клиентские заказы: `physical_stock_qty - reserved_customer_order_qty`.
-    - `raw_to_close_orders_qty` считается по активным `CUSTOMER`-заказам (`status NOT IN (SHIPPED, CANCELLED)`) как оставшаяся потребность именно к производству, а не к отгрузке.
+    - `raw_to_close_orders_qty` считается по активным `CUSTOMER`-заказам (`status NOT IN (SHIPPED, CANCELLED, MERGED)`) как оставшаяся потребность к производству, ограниченная фактическим остатком к отгрузке по закрытым `OUTBOUND`.
     - Для каждой строки customer order:
-      - `customer_production_need_qty = max(0, qty_ordered - covered_qty)`.
+      - `shipment_remaining_qty = max(0, qty_ordered - shipped_by_closed_outbound_qty)`.
+      - `customer_production_need_qty = min(max(0, qty_ordered - covered_qty), shipment_remaining_qty)`.
       - `covered_qty` включает:
         - закрытые `PRODUCTION_RECEIPT` по `order_line_id`;
         - `FILLED production_pallet_lines` по `order_line_id`, если palletized PRD еще не закрыт;
         - уже зарезервированный готовый складской товар из `order_receipt_plan_lines`.
+      - Полностью отгруженная или over-shipped строка дает `customer_production_need_qty = 0` даже при старом persisted `orders.status = IN_PROGRESS/ACCEPTED`; отрицательный остаток к отгрузке зажимается в `0`.
       - После закрытия palletized PRD double count не допускается: legacy receipt lines такого PRD не суммируются поверх уже учтенных `production_pallet_lines`.
     - `min_stock_qty` учитывается только если у товара/его типа включен контроль минимального остатка; иначе для отчета он считается равным `0`.
     - `raw_to_min_stock_qty = max(0, min_stock_qty - free_stock_qty)`.
-    - Открытые клиентские заказы в статусах `IN_PROGRESS` (`В работе`) и `ACCEPTED` (`Готов`) являются входными данными для `До закрытия заказов`.
+    - Открытые клиентские заказы в статусах `IN_PROGRESS` (`В работе`) и `ACCEPTED` (`Готов`) являются входными данными для `До закрытия заказов` только в объеме положительного `shipment_remaining_qty`.
     - `planned_internal_stock_qty` считается как сумма `qty_remaining` по открытым/незакрытым производственным заказам и черновикам `INTERNAL`; закрытые документы в planned-вычитание не входят, потому что уже отражены через `ledger`.
     - `planned_internal_stock_qty` уменьшает только `На склад до мин.` и не уменьшает `До закрытия заказов`.
     - `to_close_orders_qty = raw_to_close_orders_qty`.
@@ -325,8 +331,11 @@
   - При проведении проверяется, что количество в каждой строке выпуска не превышает `max_qty_per_hu` (если лимит задан), а для строк на одном HU суммарная загрузка паллеты также не превышает `1`.
   - Для совместимости со старыми черновиками при проверке/проведении выполняется auto-remap устаревшего `order_line_id` по `item_id` (только при однозначном совпадении строки заказа).
 - Отгрузка по заказу: `OUTBOUND` может быть связан с заказом (`order_id/order_ref`).
-  - Для выбора в WPF и TSD `OUTBOUND` доступны только клиентские заказы в статусах `ACCEPTED`/`IN_PROGRESS` с положительным `shipment_remaining`; заказ без предыдущих отгрузок тоже должен быть доступен, если остаток к отгрузке ненулевой.
-  - TSD получает строки отгрузки из `/api/orders/{orderId}/shipment-remaining`, сохраняет `order_id` в шапке и `order_line_id` в строках; проведение валидирует, что выбранный HU выпущен или зарезервирован под этот заказ.
+  - Для выбора в WPF `OUTBOUND` доступны только клиентские заказы в статусах `ACCEPTED`/`IN_PROGRESS` с положительным `shipment_remaining`; заказ без предыдущих отгрузок тоже должен быть доступен, если остаток к отгрузке ненулевой.
+  - TSD `Отгрузка` работает как подбор паллет по заказу через `/api/tsd/outbound/orders`: в список попадают только `CUSTOMER`-заказы в статусе `ACCEPTED` (`Готов`) с ожидаемыми HU.
+  - Ожидаемые HU для TSD берутся только из положительного HU stock по `ledger`, который зарезервирован за этим заказом через `order_receipt_plan_lines`; произвольные свободные HU в MVP не принимаются.
+  - При сканировании TSD вызывает `/api/tsd/outbound/orders/{orderId}/scan`: сервер создает/использует draft `OUTBOUND`, добавляет `doc_lines` по HU и `order_line_id`, для mixed pallet добавляет component-lines. Повторный scan той же HU идемпотентен.
+  - TSD не пишет `ledger` и не закрывает `OUTBOUND`. `/api/tsd/outbound/orders/{orderId}/complete` только помечает подбор готовым; WPF затем проводит draft `OUTBOUND` обычным `Close`, и только это списывает `ledger` и переводит заказ в `SHIPPED`.
   - При выборе заказа автоматически подставляются остатки по строкам заказа (`order_line_id`) с учетом уже закрытых отгрузок.
   - В `OUTBOUND` доступны только клиентские заказы (`order_type = CUSTOMER`); внутренние заказы не участвуют в клиентской отгрузке.
   - Полностью отгруженный заказ (`shipment_remaining = 0`, UI `Выполнен`) не должен предлагаться для новой отгрузки.
@@ -336,6 +345,8 @@
     - HU, заранее присвоенных заказу из свободного HU stock через `order_receipt_plan_lines`.
   - Добор из свободного/чужого остатка не допускается.
   - После проведения `OUTBOUND` статус связанного заказа пересчитывается сразу; при полном объеме отгрузки заказ автоматически закрывается (`SHIPPED` / UI `Выполнен`), а резервы по клиентским заказам пересчитываются.
+  - Для исторически зависших клиентских заказов доступен диагностический repair: `POST /api/diagnostics/order-status/refresh-fully-shipped` выполняет dry-run по умолчанию, а с `{ "apply": true }` переводит полностью отгруженные `CUSTOMER`-заказы в `SHIPPED` через `OrderService.RefreshPersistedStatus`. Команда не редактирует `ledger`, закрытые документы и строки документов.
+  - Для проверки возможной переотгрузки доступна read-only диагностика `GET /api/diagnostics/over-shipped-orders`. Она сравнивает ordered qty, API/read-model shipment, активные строки закрытых `OUTBOUND` и отрицательные движения `ledger`; замененные `doc_lines` (`replaces_line_id`) исключаются. Endpoint ничего не исправляет и не пишет в `ledger`.
   - TSD показывает `pick list` HU/локаций по выбранной строке и позволяет привязать HU/локацию к строке отгрузки.
   - Pick list строится по `ledger`/HU-остаткам. Старый KM pick list по `km_code` относится к замороженной legacy-модели и не используется новой ЧЗ-очередью.
   - В ручном `OUTBOUND` выбор товара фильтруется по остаткам источника (выбранные `location/HU`), чтобы показывать только реально отгружаемые позиции.

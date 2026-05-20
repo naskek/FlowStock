@@ -1935,6 +1935,11 @@ public sealed class DocumentService
             {
                 check.Errors.Add("Нельзя закрыть выпуск: есть ненаполненные паллеты");
             }
+
+            if (new ProductionPlanConsistencyDiagnosticsService(_data).BlocksPrdClose(docId))
+            {
+                check.Errors.Add("План паллет не соответствует строкам заказа. Запустите диагностику production-plan-consistency.");
+            }
         }
 
         if (doc.Type == DocType.ProductionReceipt && !hasProductionPallets && productionReceiptRequested.Count > 0)

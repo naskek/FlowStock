@@ -476,52 +476,140 @@ const lastPage = pc.trimOrdersPage(Array.from({ length: 20 }, function (_, index
 assert.strictEqual(lastPage.rows.length, 20);
 assert.strictEqual(lastPage.hasMore, false);
 
-const expandedStockHtml = pc.renderStockTable(
-  [
+const stockPageHtml = pc.renderStock();
+assert.match(stockPageHtml, /stockCreateProductionOrderBtn/);
+assert.match(stockPageHtml, /Сформировать заказ/);
+assert.doesNotMatch(stockPageHtml, /Показать производственный план/);
+assert.ok(
+  !pc.getEnabledViews().includes("production-need"),
+  "separate production need tab must be hidden from normal PC navigation"
+);
+assert.match(
+  fs.readFileSync(appPath, "utf8"),
+  /\/api\/reports\/warehouse-production-state/,
+  "stock page must load warehouse-production-state"
+);
+assert.match(
+  fs.readFileSync(appPath, "utf8"),
+  /Не удалось загрузить объединённое состояние склада/,
+  "warehouse-production-state endpoint error must show readable message"
+);
+
+const warehouseStockRow = pc.mapWarehouseProductionStateRow({
+  item_id: 10,
+  item_name: "Товар 1",
+  barcode: "SKU-001",
+  gtin: "04607186951520",
+  base_uom: "шт",
+  item_type: "Готовая продукция",
+  stock_qty: 12,
+  min_stock_qty: 20,
+  below_min_qty: 8,
+  customer_open_demand_qty: 5,
+  internal_remaining_qty: 6,
+  prd_planned_qty: 4,
+  prd_filled_qty: 2,
+  remaining_need_qty: 3,
+  hu_rows: [{ location: "FG-01", hu_code: "HU-000001", qty: 12 }],
+  production_receipts: [
     {
-      itemId: 10,
-      itemName: "Товар 1",
-      barcode: "SKU-001",
-      brand: "Бренд",
-      volume: "1 л",
-      qtyDisplay: "12",
-      details: [
-        {
-          locationCode: "01",
-          hu: "HU-000001",
-          reservationPartnerName: "Очень длинное имя клиента для проверки стабильной сетки",
-          reservationOrderRef: "ORD-2026-000001/Сверхдлинный суффикс",
-          qtyDisplay: "7"
-        }
-      ]
+      hu_code: "HU-000001",
+      pallet_status: "PLANNED",
+      planned_qty: 4,
+      filled_qty: 0,
+      composition: "Товар 1"
+    },
+    {
+      hu_code: "HU-000002",
+      pallet_status: "PRINTED",
+      planned_qty: 4,
+      filled_qty: 1,
+      composition: "Товар 1"
+    },
+    {
+      hu_code: "HU-000003",
+      pallet_status: "FILLED",
+      planned_qty: 4,
+      filled_qty: 1,
+      composition: "Товар 1"
     }
   ],
-  { 10: true }
-);
-assert.match(expandedStockHtml, /pc-stock-shared-grid/);
+  need_breakdown: {
+    demand_to_close_customer_orders: 5,
+    demand_to_min_stock: 8,
+    already_planned_internal: 6,
+    already_planned_prd: 4,
+    remaining_to_create: 3
+  }
+});
+assert.strictEqual(warehouseStockRow.stockQty, 12);
+assert.strictEqual(warehouseStockRow.internalRemainingQty, 6);
+assert.strictEqual(warehouseStockRow.prdPlannedQty, 4);
+assert.strictEqual(warehouseStockRow.remainingNeedSummary, "Произвести: 3 шт");
+
+const expandedStockHtml = pc.renderStockTable([warehouseStockRow], { 10: true });
 assert.match(expandedStockHtml, /pc-stock-detail-block/);
-assert.match(expandedStockHtml, /pc-stock-detail-entry/);
-assert.match(expandedStockHtml, /pc-stock-detail-col-client/);
-assert.match(expandedStockHtml, /pc-stock-detail-col-order/);
-assert.match(expandedStockHtml, /pc-stock-detail-col-qty/);
-assert.match(expandedStockHtml, /pc-stock-detail-text/);
 assert.match(expandedStockHtml, /pc-stock-item-meta/);
-assert.match(expandedStockHtml, /Номенклатура/);
-assert.match(expandedStockHtml, /colspan="4" class="pc-stock-detail-cell"/);
-assert.match(
-  expandedStockHtml,
-  /pc-stock-detail-head[^>]*>.*Место.*HU.*Заказ.*Клиент.*Кол-во/s
-);
-assert.match(
-  expandedStockHtml,
-  /pc-stock-detail-col-order[\s\S]*pc-stock-detail-col-client[\s\S]*pc-stock-detail-col-qty/s,
-  "в detail row порядок должен быть Заказ -> Клиент -> Кол-во"
-);
-assert.doesNotMatch(
-  expandedStockHtml,
-  /pc-stock-detail-col-client[\s\S]*pc-stock-detail-col-qty[\s\S]*pc-stock-detail-col-order/s,
-  "qty cell не должна попадать внутрь блока клиент/заказ"
-);
+assert.match(expandedStockHtml, /Товар/);
+assert.match(expandedStockHtml, /На складе/);
+assert.match(expandedStockHtml, /Минимум/);
+assert.match(expandedStockHtml, /Потребность/);
+assert.match(expandedStockHtml, /План/);
+assert.match(expandedStockHtml, /Выпущено \/ наполнено/);
+assert.match(expandedStockHtml, /Осталось выпустить/);
+assert.match(expandedStockHtml, /Клиенты: 5 шт/);
+assert.match(expandedStockHtml, /До мин.: 8 шт/);
+assert.match(expandedStockHtml, /Внутр.: 6 шт/);
+assert.match(expandedStockHtml, /PRD: 4 шт/);
+assert.match(expandedStockHtml, /2 шт/);
+assert.match(expandedStockHtml, /Произвести: 3 шт/);
+assert.match(expandedStockHtml, /colspan="7" class="pc-stock-detail-cell"/);
+assert.match(expandedStockHtml, />Паллеты</);
+assert.match(expandedStockHtml, />Расчёт потребности</);
+assert.doesNotMatch(expandedStockHtml, /Реальный склад \/ HU/);
+assert.doesNotMatch(expandedStockHtml, /Клиентские заказы/);
+assert.doesNotMatch(expandedStockHtml, /Внутренние заказы/);
+assert.match(expandedStockHtml, /<th>HU<\/th><th>Статус<\/th><th class="pc-num">План<\/th><th class="pc-num">Наполнено<\/th><th>Товар<\/th>/);
+assert.match(expandedStockHtml, /Ожидает/);
+assert.match(expandedStockHtml, /Этикетка напечатана/);
+assert.match(expandedStockHtml, /Наполнена/);
+assert.match(expandedStockHtml, /Всего в заказах для клиентов/);
+assert.match(expandedStockHtml, /До минимума/);
+assert.match(expandedStockHtml, /Во внутренних заказах/);
+assert.match(expandedStockHtml, /Выпущено/);
+assert.match(expandedStockHtml, /Осталось выпустить/);
+assert.doesNotMatch(expandedStockHtml, /pc-stock-plan-cell[^>]*>[\s\S]*12 шт[\s\S]*<\/td>/, "planned/internal/PRD values must not appear as stock");
+
+const coveredStockHtml = pc.renderStockTable([
+  pc.mapWarehouseProductionStateRow({
+    item_id: 11,
+    item_name: "Покрытый товар",
+    base_uom: "шт",
+    stock_qty: 10,
+    internal_remaining_qty: 5,
+    remaining_need_qty: 0,
+    need_breakdown: { already_planned_internal: 5, remaining_to_create: 0 },
+    production_receipts: []
+  })
+], { 11: true });
+assert.match(coveredStockHtml, /Покрыто/);
+assert.match(coveredStockHtml, /Паллетный план не сформирован/);
+
+const noNeedStockHtml = pc.renderStockTable([
+  pc.mapWarehouseProductionStateRow({
+    item_id: 12,
+    item_name: "Без потребности",
+    base_uom: "шт",
+    stock_qty: 10,
+    remaining_need_qty: 0,
+    need_breakdown: { remaining_to_create: 0 },
+    production_receipts: []
+  })
+], { 12: true });
+assert.match(noNeedStockHtml, /Потребности нет/);
+
+assert.strictEqual(pc.translatePalletStatus("Cancelled"), "Отменена");
+assert.strictEqual(pc.translatePalletStatus("CUSTOM"), "CUSTOM");
 
 const canonicalSortedOrders = pc.sortOrdersNewestFirst([
   {

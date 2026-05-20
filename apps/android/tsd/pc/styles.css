@@ -464,16 +464,45 @@ body.pc-body::before {
 }
 
 .pc-stock-table .pc-stock-col-nomenclature {
-  width: 580px;
+  width: 30%;
 }
 
-.pc-stock-table .pc-stock-col-brand {
-  width: 180px;
-}
-
-.pc-stock-table .pc-stock-col-volume,
 .pc-stock-table .pc-stock-col-qty {
-  width: 140px;
+  width: 112px;
+}
+
+.pc-stock-table .pc-stock-col-min,
+.pc-stock-table .pc-stock-col-filled,
+.pc-stock-table .pc-stock-col-remaining {
+  width: 130px;
+}
+
+.pc-stock-table .pc-stock-col-need,
+.pc-stock-table .pc-stock-col-plan {
+  width: 170px;
+}
+
+.pc-stock-warning-cell {
+  color: #b7791f;
+  font-weight: 700;
+}
+
+.pc-stock-plan-cell {
+  color: #3f5f73;
+}
+
+.pc-stock-summary-line + .pc-stock-summary-line {
+  margin-top: 2px;
+}
+
+.pc-stock-remaining-need {
+  color: #c05621;
+  font-weight: 800;
+}
+
+.pc-stock-covered {
+  color: #18743a;
+  font-weight: 700;
 }
 
 .pc-stock-parent-row:focus-visible {
@@ -531,6 +560,25 @@ body.pc-body::before {
   border-left: 3px solid #bfd7e5;
   background: #f4f9fc;
   border-radius: 8px 0 0 8px;
+}
+
+.pc-stock-detail-section + .pc-stock-detail-section {
+  margin-top: 12px;
+}
+
+.pc-stock-detail-title {
+  margin-bottom: 6px;
+  color: #233747;
+  font-weight: 800;
+}
+
+.pc-stock-detail-table-wrap {
+  overflow-x: auto;
+}
+
+.pc-stock-detail-table th,
+.pc-stock-detail-table td {
+  padding: 6px 8px;
 }
 
 .pc-stock-shared-grid {

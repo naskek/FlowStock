@@ -752,6 +752,132 @@
       });
   }
 
+  function getStoredDeviceId() {
+    try {
+      var raw = localStorage.getItem("flowstock_account");
+      if (!raw) {
+        return "";
+      }
+      var account = JSON.parse(raw);
+      return String((account && account.device_id) || "").trim();
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function normalizeOutboundPickingLine(line) {
+    return {
+      itemId: Number(line && line.item_id) || 0,
+      itemName: String((line && line.item_name) || ""),
+      orderLineId: Number(line && line.order_line_id) || 0,
+      locationId: Number(line && line.location_id) || 0,
+      locationCode: String((line && line.location_code) || ""),
+      qty: Number(line && line.qty) || 0,
+    };
+  }
+
+  function normalizeOutboundPickingHu(row) {
+    return {
+      huCode: String((row && row.hu_code) || ""),
+      status: String((row && row.status) || "PENDING"),
+      qty: Number(row && row.qty) || 0,
+      itemSummary: String((row && row.item_summary) || ""),
+      lines: Array.isArray(row && row.lines)
+        ? row.lines.map(normalizeOutboundPickingLine)
+        : [],
+    };
+  }
+
+  function normalizeOutboundPickingOrder(row) {
+    return {
+      orderId: Number(row && row.order_id) || 0,
+      orderRef: String((row && row.order_ref) || ""),
+      partnerName: String((row && row.partner_name) || ""),
+      status: String((row && row.status) || ""),
+      expectedHuCount: Number(row && row.expected_hu_count) || 0,
+      pickedHuCount: Number(row && row.picked_hu_count) || 0,
+      isComplete: row && row.is_complete === true,
+      draftOutboundDocId: Number(row && row.draft_outbound_doc_id) || 0,
+      draftOutboundDocRef: String((row && row.draft_outbound_doc_ref) || ""),
+      hus: Array.isArray(row && row.hus)
+        ? row.hus.map(normalizeOutboundPickingHu)
+        : [],
+    };
+  }
+
+  function apiGetOutboundPickingOrders() {
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/tsd/outbound/orders", { method: "GET" });
+      })
+      .then(function (payload) {
+        if (!Array.isArray(payload)) {
+          throw new Error("INVALID_OUTBOUND_PICKING_ORDERS");
+        }
+        return payload.map(normalizeOutboundPickingOrder);
+      });
+  }
+
+  function apiGetOutboundPickingOrder(orderId) {
+    var target = Number(orderId);
+    if (!target) {
+      return Promise.reject(new Error("INVALID_ORDER_ID"));
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/tsd/outbound/orders/" + encodeURIComponent(target), { method: "GET" });
+      })
+      .then(normalizeOutboundPickingOrder);
+  }
+
+  function apiScanOutboundPickingHu(orderId, huCode) {
+    var target = Number(orderId);
+    if (!target) {
+      return Promise.reject(new Error("INVALID_ORDER_ID"));
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/tsd/outbound/orders/" + encodeURIComponent(target) + "/scan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            hu_code: huCode,
+            device_id: getStoredDeviceId(),
+          }),
+        });
+      })
+      .then(function (payload) {
+        return {
+          ok: payload && payload.ok === true,
+          message: String((payload && payload.message) || ""),
+          alreadyPicked: payload && payload.already_picked === true,
+          order: payload && payload.order ? normalizeOutboundPickingOrder(payload.order) : null,
+        };
+      });
+  }
+
+  function apiCompleteOutboundPicking(orderId) {
+    var target = Number(orderId);
+    if (!target) {
+      return Promise.reject(new Error("INVALID_ORDER_ID"));
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/tsd/outbound/orders/" + encodeURIComponent(target) + "/complete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ device_id: getStoredDeviceId() }),
+        });
+      })
+      .then(function (payload) {
+        return {
+          ok: payload && payload.ok === true,
+          message: String((payload && payload.message) || ""),
+          order: payload && payload.order ? normalizeOutboundPickingOrder(payload.order) : null,
+        };
+      });
+  }
+
   function apiGetOrderReceiptRemaining(orderId) {
     var target = Number(orderId);
     if (!target) {
@@ -2637,6 +2763,10 @@
     apiGetOrderLines: apiGetOrderLines,
     apiGetOrderShipmentRemaining: apiGetOrderShipmentRemaining,
     apiGetOrderReceiptRemaining: apiGetOrderReceiptRemaining,
+    apiGetOutboundPickingOrders: apiGetOutboundPickingOrders,
+    apiGetOutboundPickingOrder: apiGetOutboundPickingOrder,
+    apiScanOutboundPickingHu: apiScanOutboundPickingHu,
+    apiCompleteOutboundPicking: apiCompleteOutboundPicking,
     apiLogin: apiLogin,
   };
 

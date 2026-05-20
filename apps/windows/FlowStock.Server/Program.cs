@@ -41,6 +41,7 @@ builder.Services.AddSingleton<FlowStock.Core.Abstractions.IDataStore>(sp => sp.G
 builder.Services.AddSingleton<IApiDocStore>(new PostgresApiDocStore(postgresConnectionString));
 builder.Services.AddSingleton<DocumentService>();
 builder.Services.AddSingleton<ProductionPalletService>();
+builder.Services.AddSingleton<OutboundPickingService>();
 builder.Services.AddSingleton<FlowStock.Core.Services.Warehouse.WarehouseActionBundleService>();
 builder.Services.AddSingleton<FlowStock.Core.Services.Warehouse.WarehouseTaskExecutionService>();
 builder.Services.AddSingleton<CatalogService>();
@@ -2842,9 +2843,14 @@ DocumentDraftEndpoints.Map(app);
 ProductionPalletEndpoints.Map(app);
 PlannerEndpoints.Map(app);
 WarehouseBoardStateEndpoints.Map(app);
+WarehouseProductionStateEndpoint.Map(app);
+TsdOutboundPickingEndpoints.Map(app);
 WarehouseTaskEndpoints.Map(app);
 NegativeStockDiagnosticsEndpoints.Map(app);
 HuBalanceDiagnosticsEndpoints.Map(app);
+OrderStatusDiagnosticsEndpoint.Map(app);
+OverShippedOrderDiagnosticsEndpoint.Map(app);
+ProductionPlanConsistencyDiagnosticsEndpoint.Map(app);
 CloseDocumentEndpoint.Map(app);
 
 app.Run();

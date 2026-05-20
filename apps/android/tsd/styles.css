@@ -1004,6 +1004,30 @@ body {
   white-space: nowrap;
 }
 
+.outbound-picking-hu-item {
+  grid-template-columns: 12px 1fr;
+  align-items: flex-start;
+}
+
+.outbound-picking-hu-main {
+  display: grid;
+  gap: 4px;
+}
+
+.outbound-picking-hu-lines {
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.outbound-picking-hu-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
 .filling-scan-input {
   min-height: 54px;
   font-size: 22px;
