@@ -91,7 +91,9 @@ public sealed class ProductionPlanConsistencyRepairService(IDataStore dataStore)
                 .ToArray();
             var blocking072 = diagnosticsAfter
                 .Where(item => item.OrderId == context.Order072.Id
-                               && item.ProblemCode == ProductionPlanConsistencyProblemCode.PalletsExceedOrderQty)
+                               && item.ItemId == MustardItemId
+                               && (item.ProblemCode == ProductionPlanConsistencyProblemCode.PalletsExceedOrderQty
+                                   || item.ProblemCode == ProductionPlanConsistencyProblemCode.PrdLinesExceedOrderQty))
                 .ToArray();
             if (blocking067.Length > 0 || blocking072.Length > 0)
             {
@@ -257,15 +259,22 @@ public sealed class ProductionPlanConsistencyRepairService(IDataStore dataStore)
                         pallet.HuCode,
                         $"SKIP: ledger already {ledgerQty:0.###}",
                         skipped: true));
+                    PlanTombstonePrdDocLine(store, context.OpenPrd072.Id, pallet.DocLineId, steps);
                     continue;
                 }
             }
 
+            var alreadyCancelled = string.Equals(
+                pallet.Status,
+                ProductionPalletStatus.Cancelled,
+                StringComparison.OrdinalIgnoreCase);
             steps.Add(Step(
                 "cancel_empty_pallet",
                 pallet.HuCode,
-                $"status {pallet.Status} -> CANCELLED",
-                skipped: false));
+                alreadyCancelled ? $"status {pallet.Status}, no changes" : $"status {pallet.Status} -> CANCELLED",
+                skipped: alreadyCancelled));
+
+            PlanTombstonePrdDocLine(store, context.OpenPrd072.Id, pallet.DocLineId, steps);
         }
 
         foreach (var pallet in context.Pallets072Keep)
@@ -360,6 +369,7 @@ public sealed class ProductionPlanConsistencyRepairService(IDataStore dataStore)
         {
             if (string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
             {
+                ApplyTombstonePrdDocLine(store, context.OpenPrd072.Id, pallet.DocLineId, steps);
                 continue;
             }
 
@@ -368,17 +378,87 @@ public sealed class ProductionPlanConsistencyRepairService(IDataStore dataStore)
                 var ledgerQty = store.GetLedgerBalance(MustardItemId, pallet.ToLocationId.Value, pallet.HuCode);
                 if (ledgerQty > StockQuantityRules.QtyTolerance)
                 {
+                    ApplyTombstonePrdDocLine(store, context.OpenPrd072.Id, pallet.DocLineId, steps);
                     continue;
                 }
             }
 
-            toCancel.Add(pallet.PalletId);
+            if (!string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+            {
+                toCancel.Add(pallet.PalletId);
+            }
+
+            ApplyTombstonePrdDocLine(store, context.OpenPrd072.Id, pallet.DocLineId, steps);
         }
 
         if (toCancel.Count > 0)
         {
             store.CancelProductionPallets(toCancel);
         }
+    }
+
+    private static void PlanTombstonePrdDocLine(
+        IDataStore store,
+        long prdDocId,
+        long? docLineId,
+        List<ProductionPlanConsistencyRepairStep> steps)
+    {
+        if (!docLineId.HasValue)
+        {
+            return;
+        }
+
+        var activeLine = store.GetDocLines(prdDocId).FirstOrDefault(line => line.Id == docLineId.Value);
+        if (activeLine == null)
+        {
+            steps.Add(Step(
+                "tombstone_prd_doc_line",
+                $"doc_line {docLineId.Value}",
+                "already inactive",
+                skipped: true));
+            return;
+        }
+
+        steps.Add(Step(
+            "tombstone_prd_doc_line",
+            $"doc_line {docLineId.Value}",
+            $"qty {activeLine.Qty:0.###} -> 0 (replaces_line_id={docLineId.Value})",
+            skipped: false));
+    }
+
+    private static void ApplyTombstonePrdDocLine(
+        IDataStore store,
+        long prdDocId,
+        long? docLineId,
+        List<ProductionPlanConsistencyRepairStep> steps)
+    {
+        if (!docLineId.HasValue)
+        {
+            return;
+        }
+
+        var activeLine = store.GetDocLines(prdDocId).FirstOrDefault(line => line.Id == docLineId.Value);
+        if (activeLine == null)
+        {
+            return;
+        }
+
+        store.AddDocLine(new DocLine
+        {
+            DocId = prdDocId,
+            ReplacesLineId = activeLine.Id,
+            OrderLineId = activeLine.OrderLineId,
+            ProductionPurpose = activeLine.ProductionPurpose,
+            ItemId = activeLine.ItemId,
+            Qty = 0,
+            QtyInput = null,
+            UomCode = activeLine.UomCode,
+            FromLocationId = activeLine.FromLocationId,
+            ToLocationId = activeLine.ToLocationId,
+            FromHu = activeLine.FromHu,
+            ToHu = activeLine.ToHu,
+            PackSingleHu = activeLine.PackSingleHu
+        });
     }
 
     private static List<ResolvedPallet> ResolvePallets(
