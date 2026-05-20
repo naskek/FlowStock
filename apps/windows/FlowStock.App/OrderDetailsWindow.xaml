@@ -5,6 +5,16 @@
         Height="700" Width="1100"
         WindowStartupLocation="CenterOwner"
         Closing="OrderDetailsWindow_Closing">
+    <Window.Resources>
+        <Style x:Key="OrderActionButtonStyle" TargetType="Button">
+            <Setter Property="Width" Value="190" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="Margin" Value="0,0,8,8" />
+            <Setter Property="Padding" Value="10,4" />
+            <Setter Property="HorizontalAlignment" Value="Left" />
+            <Setter Property="VerticalAlignment" Value="Top" />
+        </Style>
+    </Window.Resources>
     <Grid Margin="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -97,20 +107,48 @@
         <Grid Grid.Row="1">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
-                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
-        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
-            <Button x:Name="AddItemButton" Content="+ Товар" Click="AddLine_Click" TabIndex="7" />
-            <Button x:Name="EditLineButton" Content="Редактировать" Click="EditLine_Click" Margin="8,0,0,0" TabIndex="8" />
-            <Button x:Name="DeleteLineButton" Content="Удалить строку" Click="DeleteLine_Click" Margin="8,0,0,0" TabIndex="9" />
-            <Button x:Name="PlanPalletsButton" Content="Сформировать план паллет" Click="PlanPallets_Click" Margin="16,0,0,0" Width="190" TabIndex="10" />
-            <Button x:Name="PrintPalletLabelsButton" Content="Печать паллетных этикеток" Click="PrintPalletLabels_Click" Margin="8,0,0,0" Width="210" TabIndex="11" />
-            <Button x:Name="DeletePalletPlanButton" Content="Удалить план паллет" Click="DeletePalletPlan_Click" Margin="8,0,0,0" Width="170" TabIndex="12" />
-            <Button x:Name="AdoptPalletPlanButton" Content="Перенести план паллет" Click="AdoptPalletPlan_Click" Margin="8,0,0,0" Width="180" TabIndex="13" />
-            <Button x:Name="OpenProductionReceiptButton" Content="Открыть выпуск" Click="OpenProductionReceipt_Click" Margin="8,0,0,0" Width="150" TabIndex="14" />
-            <Button x:Name="ExportMarkingButton" Content="Сформировать Excel ЧЗ" Click="ExportMarking_Click" Margin="8,0,0,0" Width="180" TabIndex="15" />
-        </StackPanel>
-            <Grid Grid.Row="1">
+            <Grid Grid.Row="0" Margin="0,0,0,8">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <GroupBox Grid.Row="0" Grid.Column="0" Header="Строки заказа" Margin="0,0,8,8" Padding="8">
+                    <UniformGrid Columns="3">
+                        <Button x:Name="AddItemButton" Style="{StaticResource OrderActionButtonStyle}" Content="+ Товар" Click="AddLine_Click" TabIndex="7" />
+                        <Button x:Name="EditLineButton" Style="{StaticResource OrderActionButtonStyle}" Content="Редактировать" Click="EditLine_Click" TabIndex="8" />
+                        <Button x:Name="DeleteLineButton" Style="{StaticResource OrderActionButtonStyle}" Content="Удалить строку" Click="DeleteLine_Click" TabIndex="9" Margin="0,0,0,8" />
+                    </UniformGrid>
+                </GroupBox>
+
+                <GroupBox Grid.Row="0" Grid.Column="1" Header="Паллетный план" Margin="8,0,0,8" Padding="8">
+                    <UniformGrid Columns="2">
+                        <Button x:Name="PlanPalletsButton" Style="{StaticResource OrderActionButtonStyle}" Content="Сформировать план паллет" Click="PlanPallets_Click" TabIndex="10" />
+                        <Button x:Name="PrintPalletLabelsButton" Style="{StaticResource OrderActionButtonStyle}" Content="Печать паллетных этикеток" Click="PrintPalletLabels_Click" TabIndex="11" Margin="0,0,0,8" />
+                        <Button x:Name="DeletePalletPlanButton" Style="{StaticResource OrderActionButtonStyle}" Content="Удалить план паллет" Click="DeletePalletPlan_Click" TabIndex="12" />
+                        <Button x:Name="AdoptPalletPlanButton" Style="{StaticResource OrderActionButtonStyle}" Content="Перенести план паллет" Click="AdoptPalletPlan_Click" TabIndex="13" Margin="0,0,0,8" />
+                    </UniformGrid>
+                </GroupBox>
+
+                <GroupBox Grid.Row="1" Grid.Column="0" Header="Выпуск" Margin="0,0,8,0" Padding="8">
+                    <Grid>
+                        <Button x:Name="OpenProductionReceiptButton" Style="{StaticResource OrderActionButtonStyle}" Content="Открыть выпуск" Click="OpenProductionReceipt_Click" TabIndex="14" Margin="0" />
+                    </Grid>
+                </GroupBox>
+
+                <GroupBox Grid.Row="1" Grid.Column="1" Header="Маркировка ЧЗ" Margin="8,0,0,0" Padding="8">
+                    <Grid>
+                        <Button x:Name="ExportMarkingButton" Style="{StaticResource OrderActionButtonStyle}" Content="Сформировать Excel ЧЗ" Click="ExportMarking_Click" TabIndex="15" Margin="0" />
+                    </Grid>
+                </GroupBox>
+            </Grid>
+            <Grid Grid.Row="1" Height="255">
                 <DataGrid x:Name="OrderLinesGrid" AutoGenerateColumns="False" IsReadOnly="True"
                           SelectionChanged="OrderLinesGrid_SelectionChanged"
                           MouseDoubleClick="OrderLinesGrid_MouseDoubleClick"
