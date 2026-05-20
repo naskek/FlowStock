@@ -991,6 +991,48 @@ public sealed class OrderAutoRedistributeEnvelope
 
     [JsonPropertyName("ignored_attempts")]
     public IReadOnlyList<OrderAutoRedistributeIgnoredDto> IgnoredAttempts { get; init; } = Array.Empty<OrderAutoRedistributeIgnoredDto>();
+
+    [JsonPropertyName("redistribution_blocks")]
+    public IReadOnlyList<OrderAutoRedistributeBlockDto> RedistributionBlocks { get; init; } = Array.Empty<OrderAutoRedistributeBlockDto>();
+}
+
+public sealed class OrderAutoRedistributeBlockDto
+{
+    [JsonPropertyName("source_order_id")]
+    public long SourceOrderId { get; init; }
+
+    [JsonPropertyName("source_order_ref")]
+    public string SourceOrderRef { get; init; } = string.Empty;
+
+    [JsonPropertyName("item_id")]
+    public long? ItemId { get; init; }
+
+    [JsonPropertyName("item_name")]
+    public string? ItemName { get; init; }
+
+    [JsonPropertyName("message")]
+    public string Message { get; init; } = string.Empty;
+
+    [JsonPropertyName("draft_prd_docs")]
+    public IReadOnlyList<string> DraftPrdDocs { get; init; } = Array.Empty<string>();
+
+    [JsonPropertyName("active_pallet_hu_codes")]
+    public IReadOnlyList<string> ActivePalletHuCodes { get; init; } = Array.Empty<string>();
+
+    [JsonPropertyName("prd_docs_with_ledger")]
+    public IReadOnlyList<string> PrdDocsWithLedger { get; init; } = Array.Empty<string>();
+
+    [JsonPropertyName("marking_orders")]
+    public IReadOnlyList<string> MarkingOrders { get; init; } = Array.Empty<string>();
+}
+
+public sealed class ProductionPlanConsistencyRepairRequest
+{
+    [JsonPropertyName("mode")]
+    public string Mode { get; set; } = string.Empty;
+
+    [JsonPropertyName("apply")]
+    public bool Apply { get; set; }
 }
 
 public sealed class OrderReservationPlanLineDto

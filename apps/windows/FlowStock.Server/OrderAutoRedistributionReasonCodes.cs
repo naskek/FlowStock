@@ -1,3 +1,5 @@
+using FlowStock.Core.Models;
+
 namespace FlowStock.Server;
 
 public static class OrderAutoRedistributionReasonCodes
@@ -9,9 +11,16 @@ public static class OrderAutoRedistributionReasonCodes
     public const string OrderNotEditable = "ORDER_NOT_EDITABLE";
     public const string SourceLineNotFound = "SOURCE_LINE_NOT_FOUND";
     public const string RedistributionFailed = "REDISTRIBUTION_FAILED";
+    public const string ActiveProductionBlocked = InternalOrderRedistributionGuardResult.BlockedCode;
 
     public static string MapFromExceptionMessage(string message)
     {
+        if (message.Contains("Автоперенос запрещён", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("активный PRD/план паллет/маркировку", StringComparison.OrdinalIgnoreCase))
+        {
+            return ActiveProductionBlocked;
+        }
+
         if (message.Contains("Недостаточно выпущенного", StringComparison.OrdinalIgnoreCase))
         {
             return InsufficientProducedStock;

@@ -1828,6 +1828,42 @@ internal sealed class CloseDocumentHarness
                 };
             });
 
+        _store.Setup(store => store.CancelProductionPallets(It.IsAny<IReadOnlyList<long>>()))
+            .Returns<IReadOnlyList<long>>(palletIds =>
+            {
+                var cancelled = 0;
+                foreach (var palletId in palletIds)
+                {
+                    if (!_productionPallets.TryGetValue(palletId, out var current)
+                        || string.Equals(current.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(current.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    _productionPallets[palletId] = new ProductionPallet
+                    {
+                        Id = current.Id,
+                        PrdDocId = current.PrdDocId,
+                        DocLineId = current.DocLineId,
+                        OrderId = current.OrderId,
+                        OrderLineId = current.OrderLineId,
+                        ItemId = current.ItemId,
+                        ItemName = current.ItemName,
+                        HuCode = current.HuCode,
+                        PlannedQty = current.PlannedQty,
+                        ToLocationId = current.ToLocationId,
+                        ToLocationCode = current.ToLocationCode,
+                        Status = ProductionPalletStatus.Cancelled,
+                        CreatedAt = current.CreatedAt,
+                        Lines = current.Lines
+                    };
+                    cancelled++;
+                }
+
+                return cancelled;
+            });
+
         _store.Setup(store => store.UpdateProductionPalletHu(It.IsAny<long>(), It.IsAny<string>()))
             .Callback<long, string>((palletId, huCode) =>
             {

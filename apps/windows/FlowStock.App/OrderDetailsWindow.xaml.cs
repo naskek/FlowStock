@@ -763,6 +763,44 @@ public partial class OrderDetailsWindow : Window
             sections.Add("Перенос с внутренних заказов: совпадений с открытыми INTERNAL не найдено.");
         }
 
+        if (payload.HasRedistributionBlocks)
+        {
+            var blockLines = payload.RedistributionBlocks
+                .Select(block =>
+                {
+                    var itemLabel = block.ItemId.HasValue
+                        ? FormatItemLabel(block.ItemId.Value, itemNames)
+                        : "—";
+                    var details = new List<string> { $"• INTERNAL {block.SourceOrderRef}, {itemLabel}" };
+                    if (block.DraftPrdDocs.Count > 0)
+                    {
+                        details.Add($"  PRD (DRAFT): {string.Join(", ", block.DraftPrdDocs)}");
+                    }
+
+                    if (block.ActivePalletHuCodes.Count > 0)
+                    {
+                        details.Add($"  HU (PRINTED/FILLED): {string.Join(", ", block.ActivePalletHuCodes)}");
+                    }
+
+                    if (block.PrdDocsWithLedger.Count > 0)
+                    {
+                        details.Add($"  PRD с ledger: {string.Join(", ", block.PrdDocsWithLedger)}");
+                    }
+
+                    if (block.MarkingOrders.Count > 0)
+                    {
+                        details.Add($"  Маркировка: {string.Join(", ", block.MarkingOrders)}");
+                    }
+
+                    details.Add("  Строки заказа не изменены.");
+                    return string.Join(Environment.NewLine, details);
+                });
+            sections.Insert(
+                0,
+                "Автоперенос не выполнен — активный производственный план на INTERNAL:\n"
+                + string.Join(Environment.NewLine + Environment.NewLine, blockLines));
+        }
+
         if (payload.HasIgnoredAttempts)
         {
             var ignoredLines = payload.IgnoredAttempts
@@ -782,9 +820,11 @@ public partial class OrderDetailsWindow : Window
             sections.Add("Предупреждения:\n" + FormatLimitedLines(warningLines, maxLines: 20));
         }
 
-        var icon = payload.HasIgnoredAttempts || payload.Warnings.Count > 0
-            ? MessageBoxImage.Warning
-            : MessageBoxImage.Information;
+        var icon = payload.HasRedistributionBlocks
+            ? MessageBoxImage.Error
+            : payload.HasIgnoredAttempts || payload.Warnings.Count > 0
+                ? MessageBoxImage.Warning
+                : MessageBoxImage.Information;
 
         Debug.WriteLine("[OrderDetails] before follow-up result MessageBox");
         MessageBox.Show(
