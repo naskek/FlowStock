@@ -1,5 +1,6 @@
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
+using FlowStock.Core.Models.Marking;
 using FlowStock.Core.Services;
 using Moq;
 
@@ -182,6 +183,8 @@ public sealed class InternalOrderAutoStatusTests
         var store = new Mock<IDataStore>(MockBehavior.Strict);
         store.Setup(s => s.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
             .Callback<Action<IDataStore>>(work => work(store.Object));
+        store.Setup(s => s.GetMarkingOrdersByItemIds(It.IsAny<IReadOnlyCollection<long>>()))
+            .Returns(Array.Empty<MarkingOrder>());
         store.Setup(s => s.GetOrders())
             .Returns(() =>
             [

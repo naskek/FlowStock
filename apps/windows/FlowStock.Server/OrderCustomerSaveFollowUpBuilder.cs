@@ -55,7 +55,15 @@ public static class OrderCustomerSaveFollowUpBuilder
             })
             .ToList();
 
+        var redistributionBlocks = applyResult.IgnoredAttempts
+            .Where(attempt => attempt.Guard?.IsBlocked == true)
+            .Select(attempt => MapRedistributionBlock(store, attempt))
+            .GroupBy(block => block.SourceOrderId)
+            .Select(group => group.First())
+            .ToList();
+
         var ignoredAttempts = applyResult.IgnoredAttempts
+            .Where(attempt => attempt.Guard?.IsBlocked != true)
             .Select(attempt => new OrderAutoRedistributeIgnoredDto
             {
                 SourceOrderId = attempt.SourceOrderId,
@@ -77,7 +85,15 @@ public static class OrderCustomerSaveFollowUpBuilder
         }
 
         var result = applyResult.HasTransfers ? "REDISTRIBUTED" : "NO_TRANSFERS";
-        if (applyResult.HasTransfers && ignoredAttempts.Count > 0)
+        if (redistributionBlocks.Count > 0 && !applyResult.HasTransfers)
+        {
+            result = "REDISTRIBUTION_BLOCKED";
+        }
+        else if (applyResult.HasTransfers && ignoredAttempts.Count > 0)
+        {
+            result = "PARTIALLY_REDISTRIBUTED";
+        }
+        else if (applyResult.HasTransfers && redistributionBlocks.Count > 0)
         {
             result = "PARTIALLY_REDISTRIBUTED";
         }
@@ -93,7 +109,31 @@ public static class OrderCustomerSaveFollowUpBuilder
             ReservationLines = reservationLines,
             Warnings = warnings,
             Transfers = transfers,
-            IgnoredAttempts = ignoredAttempts
+            IgnoredAttempts = ignoredAttempts,
+            RedistributionBlocks = redistributionBlocks
+        };
+    }
+
+    private static OrderAutoRedistributeBlockDto MapRedistributionBlock(
+        IDataStore store,
+        OrderAutoRedistributionIgnoredAttempt attempt)
+    {
+        var guard = attempt.Guard!;
+        var itemName = attempt.ItemId > 0 && store.FindItemById(attempt.ItemId) is { } item
+            ? item.Name
+            : null;
+
+        return new OrderAutoRedistributeBlockDto
+        {
+            SourceOrderId = guard.SourceOrderId,
+            SourceOrderRef = guard.SourceOrderRef,
+            ItemId = attempt.ItemId > 0 ? attempt.ItemId : null,
+            ItemName = itemName,
+            Message = InternalOrderRedistributionGuardResult.BlockedMessage,
+            DraftPrdDocs = guard.DraftPrdDocs.Select(doc => doc.DocRef).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            ActivePalletHuCodes = guard.ActivePallets.Select(pallet => pallet.HuCode).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            PrdDocsWithLedger = guard.PrdDocsWithLedger.Select(doc => doc.DocRef).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            MarkingOrders = guard.MarkingOrders.Select(order => order.RequestNumber).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
         };
     }
 

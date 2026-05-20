@@ -2549,6 +2549,29 @@ WHERE production_pallet_id = @id;
         });
     }
 
+    public int CancelProductionPallets(IReadOnlyList<long> palletIds)
+    {
+        if (palletIds.Count == 0)
+        {
+            return 0;
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE production_pallets
+SET status = @cancelled_status
+WHERE id = ANY(@pallet_ids)
+  AND status <> @cancelled_status
+  AND status <> @filled_status;
+");
+            command.Parameters.AddWithValue("@pallet_ids", palletIds.ToArray());
+            command.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
+            command.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
+            return command.ExecuteNonQuery();
+        });
+    }
+
     public void UpdateProductionPalletHu(long palletId, string huCode)
     {
         WithConnection(connection =>

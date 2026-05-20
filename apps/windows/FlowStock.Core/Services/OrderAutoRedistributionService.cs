@@ -166,6 +166,21 @@ public sealed class OrderAutoRedistributionService
                 }
 
                 var preDecrementQty = Math.Min(transferQty, customerQtyBefore);
+                var redistributionGuard = InternalOrderRedistributionGuard.Evaluate(store, internalOrder.Id);
+                if (redistributionGuard.IsBlocked)
+                {
+                    result.IgnoredAttempts.Add(new OrderAutoRedistributionIgnoredAttempt
+                    {
+                        SourceOrderId = internalOrder.Id,
+                        SourceOrderRef = internalOrder.OrderRef,
+                        ItemId = customerLine.ItemId,
+                        Qty = preDecrementQty,
+                        Reason = InternalOrderRedistributionGuardResult.BlockedMessage,
+                        Guard = redistributionGuard
+                    });
+                    continue;
+                }
+
                 store.UpdateOrderLineQty(customerLine.Id, customerQtyBefore - preDecrementQty);
 
                 try
@@ -318,4 +333,5 @@ public sealed class OrderAutoRedistributionIgnoredAttempt
     public long ItemId { get; init; }
     public double Qty { get; init; }
     public string Reason { get; init; } = string.Empty;
+    public InternalOrderRedistributionGuardResult? Guard { get; init; }
 }

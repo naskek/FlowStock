@@ -113,6 +113,7 @@ public interface IDataStore
         long itemId,
         IReadOnlyList<string> huCodes);
     void MarkProductionPalletFilled(long palletId, DateTime filledAt, string? deviceId);
+    int CancelProductionPallets(IReadOnlyList<long> palletIds);
     int MarkProductionPalletsPrintedByOrder(long orderId, DateTime printedAt);
     IReadOnlyList<ProductionPallet> GetFilledProductionPalletsByItemAndLocation(long itemId, long locationId);
     IReadOnlyList<FilledProductionPalletStockMetrics> GetFilledProductionPalletStockMetrics();

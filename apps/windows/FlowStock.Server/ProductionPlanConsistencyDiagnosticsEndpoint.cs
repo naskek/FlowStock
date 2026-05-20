@@ -9,6 +9,33 @@ public static class ProductionPlanConsistencyDiagnosticsEndpoint
     public static void Map(WebApplication app)
     {
         app.MapGet("/api/diagnostics/production-plan-consistency", HandleGet);
+        app.MapPost("/api/diagnostics/production-plan-consistency/repair", HandleRepair);
+    }
+
+    private static async Task<IResult> HandleRepair(HttpRequest request, IDataStore store)
+    {
+        var body = await request.ReadFromJsonAsync<ProductionPlanConsistencyRepairRequest>();
+        if (body == null || string.IsNullOrWhiteSpace(body.Mode))
+        {
+            return Results.BadRequest(new { ok = false, message = "Укажите mode." });
+        }
+
+        var result = new ProductionPlanConsistencyRepairService(store).Repair(body.Mode.Trim(), body.Apply);
+        return Results.Ok(new
+        {
+            ok = result.Ok,
+            applied = result.Applied,
+            mode = result.Mode,
+            validation_errors = result.ValidationErrors,
+            steps = result.Steps.Select(step => new
+            {
+                action = step.Action,
+                target = step.Target,
+                detail = step.Detail,
+                skipped = step.Skipped
+            }),
+            diagnostics_after = result.DiagnosticsAfter.Select(MapItem)
+        });
     }
 
     private static IResult HandleGet(IDataStore store)

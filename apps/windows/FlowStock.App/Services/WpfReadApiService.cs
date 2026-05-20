@@ -772,6 +772,10 @@ public sealed class WpfReadApiService
             ? warningsElement.EnumerateArray().Select(MapFollowUpWarning).ToList()
             : [];
 
+        var blocks = root.TryGetProperty("redistribution_blocks", out var blocksElement) && blocksElement.ValueKind == JsonValueKind.Array
+            ? blocksElement.EnumerateArray().Select(MapRedistributionBlock).ToList()
+            : [];
+
         return new WpfCustomerOrderSaveFollowUpPayload(
             root.TryGetProperty("result", out var resultElement) ? resultElement.GetString() ?? string.Empty : string.Empty,
             root.TryGetProperty("bind_reserved_stock", out var bindElement) && bindElement.GetBoolean(),
@@ -779,7 +783,32 @@ public sealed class WpfReadApiService
             reservationLines,
             transfers,
             ignored,
-            warnings);
+            warnings,
+            blocks);
+    }
+
+    private static WpfAutoRedistributeBlock MapRedistributionBlock(JsonElement element)
+    {
+        static IReadOnlyList<string> ReadStringArray(JsonElement parent, string name)
+        {
+            return parent.TryGetProperty(name, out var array) && array.ValueKind == JsonValueKind.Array
+                ? array.EnumerateArray()
+                    .Select(value => value.GetString() ?? string.Empty)
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .ToList()
+                : [];
+        }
+
+        return new WpfAutoRedistributeBlock(
+            element.TryGetProperty("source_order_id", out var sourceOrderIdElement) ? sourceOrderIdElement.GetInt64() : 0,
+            element.TryGetProperty("source_order_ref", out var sourceOrderRefElement) ? (sourceOrderRefElement.GetString() ?? string.Empty) : string.Empty,
+            element.TryGetProperty("item_id", out var itemIdElement) && itemIdElement.ValueKind != JsonValueKind.Null ? itemIdElement.GetInt64() : null,
+            element.TryGetProperty("item_name", out var itemNameElement) && itemNameElement.ValueKind != JsonValueKind.Null ? itemNameElement.GetString() : null,
+            element.TryGetProperty("message", out var messageElement) ? (messageElement.GetString() ?? string.Empty) : string.Empty,
+            ReadStringArray(element, "draft_prd_docs"),
+            ReadStringArray(element, "active_pallet_hu_codes"),
+            ReadStringArray(element, "prd_docs_with_ledger"),
+            ReadStringArray(element, "marking_orders"));
     }
 
     private static WpfOrderReservationPlanLine MapReservationLine(JsonElement element)
@@ -1627,7 +1656,8 @@ public sealed class WpfCustomerOrderSaveFollowUpPayload
         IReadOnlyList<WpfOrderReservationPlanLine> reservationLines,
         IReadOnlyList<WpfAutoRedistributeTransfer> transfers,
         IReadOnlyList<WpfAutoRedistributeIgnoredAttempt> ignoredAttempts,
-        IReadOnlyList<WpfOrderSaveFollowUpWarning> warnings)
+        IReadOnlyList<WpfOrderSaveFollowUpWarning> warnings,
+        IReadOnlyList<WpfAutoRedistributeBlock> redistributionBlocks)
     {
         Result = result;
         BindReservedStock = bindReservedStock;
@@ -1636,6 +1666,7 @@ public sealed class WpfCustomerOrderSaveFollowUpPayload
         Transfers = transfers;
         IgnoredAttempts = ignoredAttempts;
         Warnings = warnings;
+        RedistributionBlocks = redistributionBlocks;
     }
 
     public string Result { get; }
@@ -1645,8 +1676,45 @@ public sealed class WpfCustomerOrderSaveFollowUpPayload
     public IReadOnlyList<WpfAutoRedistributeTransfer> Transfers { get; }
     public IReadOnlyList<WpfAutoRedistributeIgnoredAttempt> IgnoredAttempts { get; }
     public IReadOnlyList<WpfOrderSaveFollowUpWarning> Warnings { get; }
+    public IReadOnlyList<WpfAutoRedistributeBlock> RedistributionBlocks { get; }
     public bool HasTransfers => Transfers.Count > 0;
     public bool HasIgnoredAttempts => IgnoredAttempts.Count > 0;
+    public bool HasRedistributionBlocks => RedistributionBlocks.Count > 0;
+}
+
+public sealed class WpfAutoRedistributeBlock
+{
+    public WpfAutoRedistributeBlock(
+        long sourceOrderId,
+        string sourceOrderRef,
+        long? itemId,
+        string? itemName,
+        string message,
+        IReadOnlyList<string> draftPrdDocs,
+        IReadOnlyList<string> activePalletHuCodes,
+        IReadOnlyList<string> prdDocsWithLedger,
+        IReadOnlyList<string> markingOrders)
+    {
+        SourceOrderId = sourceOrderId;
+        SourceOrderRef = sourceOrderRef;
+        ItemId = itemId;
+        ItemName = itemName;
+        Message = message;
+        DraftPrdDocs = draftPrdDocs;
+        ActivePalletHuCodes = activePalletHuCodes;
+        PrdDocsWithLedger = prdDocsWithLedger;
+        MarkingOrders = markingOrders;
+    }
+
+    public long SourceOrderId { get; }
+    public string SourceOrderRef { get; }
+    public long? ItemId { get; }
+    public string? ItemName { get; }
+    public string Message { get; }
+    public IReadOnlyList<string> DraftPrdDocs { get; }
+    public IReadOnlyList<string> ActivePalletHuCodes { get; }
+    public IReadOnlyList<string> PrdDocsWithLedger { get; }
+    public IReadOnlyList<string> MarkingOrders { get; }
 }
 
 public sealed class WpfCustomerOrderSaveFollowUpError

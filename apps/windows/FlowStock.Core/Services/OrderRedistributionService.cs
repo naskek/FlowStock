@@ -70,6 +70,12 @@ public sealed class OrderRedistributionService
             throw new InvalidOperationException("Нельзя перераспределить позицию в тот же заказ.");
         }
 
+        var redistributionGuard = InternalOrderRedistributionGuard.Evaluate(store, sourceInternalOrderId);
+        if (redistributionGuard.IsBlocked)
+        {
+            throw new InvalidOperationException(InternalOrderRedistributionGuardResult.BlockedMessage);
+        }
+
         var sourceLine = store.GetOrderLines(sourceInternalOrderId)
             .Where(line => line.ItemId == itemId && line.QtyOrdered > QtyTolerance)
             .OrderBy(line => line.Id)
