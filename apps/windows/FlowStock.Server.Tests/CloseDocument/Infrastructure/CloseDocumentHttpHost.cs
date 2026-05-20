@@ -50,6 +50,7 @@ internal sealed class CloseDocumentHttpHost : IAsyncDisposable
         DocumentDraftEndpoints.Map(app);
         CloseDocumentEndpoint.Map(app);
         OpsEndpoint.Map(app);
+        WarehouseProductionStateEndpoint.Map(app);
         app.MapPost("/api/orders/requests/{requestId:long}/resolve", (long requestId, ResolveOrderRequestRequest request, IDataStore store) =>
         {
             var existing = store.GetOrderRequests(true).FirstOrDefault(entry => entry.Id == requestId);

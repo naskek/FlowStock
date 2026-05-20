@@ -59,27 +59,57 @@
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                        <TextBox x:Name="StatusSearchBox" Width="240" Margin="0,0,8,0" />
-                        <Button Content="Поиск" Click="StatusSearch_Click" Margin="0,0,8,0" />
-                        <TextBlock Text="Место хранения" VerticalAlignment="Center" Margin="12,0,6,0" />
-                        <ComboBox x:Name="StockLocationFilter" Width="220" DisplayMemberPath="Name"
-                                  SelectionChanged="StockLocationFilter_SelectionChanged" />
-                        <TextBlock Text="HU" VerticalAlignment="Center" Margin="12,0,6,0" />
-                        <ComboBox x:Name="StockHuFilter" Width="200" DisplayMemberPath="Name"
-                                  SelectionChanged="StockHuFilter_SelectionChanged" />
-                        <TextBlock Text="Тип" VerticalAlignment="Center" Margin="12,0,6,0" />
-                        <ComboBox x:Name="StockItemTypeFilter" Width="220" DisplayMemberPath="Name"
-                                  SelectionChanged="StockItemTypeFilter_SelectionChanged" />
-                        <CheckBox x:Name="StockBelowMinOnlyCheckBox"
-                                  Margin="12,0,0,0"
-                                  VerticalAlignment="Center"
-                                  Content="Только ниже минимума"
-                                  Checked="StockBelowMinOnlyCheckBox_Changed"
-                                  Unchecked="StockBelowMinOnlyCheckBox_Changed" />
-                    </StackPanel>
+                    <Grid Margin="0,0,0,8">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <StackPanel Grid.Row="0"
+                                    Orientation="Horizontal"
+                                    Margin="0,0,0,8">
+                            <Button Content="Обновить"
+                                    Padding="12,4"
+                                    Click="StatusSearch_Click" />
+                            <Button x:Name="ProductionNeedCreateOrdersButton"
+                                    Content="Сформировать заказ"
+                                    Padding="12,4"
+                                    Margin="8,0,0,0"
+                                    Click="ProductionNeedCreateOrders_Click" />
+                            <TextBlock Text="План не входит в складской остаток"
+                                       VerticalAlignment="Center"
+                                       Margin="12,0,0,0"
+                                       Foreground="#666666" />
+                            <TextBlock x:Name="ProductionNeedSummaryText"
+                                       Margin="12,0,0,0"
+                                       VerticalAlignment="Center"
+                                       FontWeight="SemiBold" />
+                        </StackPanel>
+                        <WrapPanel Grid.Row="1">
+                            <TextBox x:Name="StatusSearchBox" Width="240" Margin="0,0,8,4" />
+                            <Button Content="Поиск" Click="StatusSearch_Click" Margin="0,0,8,4" />
+                            <TextBlock Text="Место хранения" VerticalAlignment="Center" Margin="12,0,6,4" />
+                            <ComboBox x:Name="StockLocationFilter" Width="220" DisplayMemberPath="Name"
+                                      Margin="0,0,0,4"
+                                      SelectionChanged="StockLocationFilter_SelectionChanged" />
+                            <TextBlock Text="HU" VerticalAlignment="Center" Margin="12,0,6,4" />
+                            <ComboBox x:Name="StockHuFilter" Width="200" DisplayMemberPath="Name"
+                                      Margin="0,0,0,4"
+                                      SelectionChanged="StockHuFilter_SelectionChanged" />
+                            <TextBlock Text="Тип" VerticalAlignment="Center" Margin="12,0,6,4" />
+                            <ComboBox x:Name="StockItemTypeFilter" Width="220" DisplayMemberPath="Name"
+                                      Margin="0,0,0,4"
+                                      SelectionChanged="StockItemTypeFilter_SelectionChanged" />
+                            <CheckBox x:Name="StockBelowMinOnlyCheckBox"
+                                      Margin="12,0,0,4"
+                                      VerticalAlignment="Center"
+                                      Content="Только ниже минимума"
+                                      Checked="StockBelowMinOnlyCheckBox_Changed"
+                                      Unchecked="StockBelowMinOnlyCheckBox_Changed" />
+                        </WrapPanel>
+                    </Grid>
                     <DataGrid x:Name="StockGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True" RowDetailsVisibilityMode="Collapsed"
                               SelectionMode="Single" SelectionUnit="FullRow"
+                              Visibility="Collapsed"
                               MouseDoubleClick="StockGrid_MouseDoubleClick">
                         <DataGrid.RowStyle>
                             <Style TargetType="DataGridRow">
@@ -129,6 +159,103 @@
                             <DataGridTextColumn Header="В базе" Binding="{Binding BaseDisplay}" Width="Auto" MaxWidth="320" />
                         </DataGrid.Columns>
                     </DataGrid>
+                    <DataGrid x:Name="WarehouseProductionStateGrid"
+                              Grid.Row="1"
+                              AutoGenerateColumns="False"
+                              IsReadOnly="True"
+                              RowDetailsVisibilityMode="Collapsed"
+                              SelectionMode="Single"
+                              SelectionUnit="FullRow"
+                              MouseDoubleClick="WarehouseProductionStateGrid_MouseDoubleClick"
+                              Visibility="Visible">
+                        <DataGrid.RowStyle>
+                            <Style TargetType="DataGridRow">
+                                <Setter Property="DetailsVisibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsExpanded}" Value="True">
+                                        <Setter Property="DetailsVisibility" Value="Visible" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsBelowMin}" Value="True">
+                                        <Setter Property="Foreground" Value="#B71C1C" />
+                                        <Setter Property="FontWeight" Value="SemiBold" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </DataGrid.RowStyle>
+                        <DataGrid.RowDetailsTemplate>
+                            <DataTemplate>
+                                <Border Margin="8,4,8,8"
+                                        Padding="8"
+                                        BorderBrush="#E0E0E0"
+                                        BorderThickness="1"
+                                        Background="#FAFAFA"
+                                        CornerRadius="4">
+                                    <StackPanel>
+                                        <TextBlock Text="Паллеты" FontWeight="SemiBold" Margin="0,0,0,6" />
+                                        <DataGrid AutoGenerateColumns="False"
+                                                  IsReadOnly="True"
+                                                  CanUserAddRows="False"
+                                                  CanUserDeleteRows="False"
+                                                  HeadersVisibility="Column"
+                                                  Margin="0,0,0,10"
+                                                  ItemsSource="{Binding ProductionReceipts}">
+                                            <DataGrid.Columns>
+                                                <DataGridTextColumn Header="HU" Binding="{Binding HuCode}" Width="180" />
+                                                <DataGridTextColumn Header="Статус" Binding="{Binding PalletStatus}" Width="110" />
+                                                <DataGridTextColumn Header="План" Binding="{Binding PlannedQtyDisplay}" Width="110" />
+                                                <DataGridTextColumn Header="Наполнено" Binding="{Binding FilledQtyDisplay}" Width="110" />
+                                                <DataGridTextColumn Header="Товар" Binding="{Binding Composition}" Width="*" />
+                                            </DataGrid.Columns>
+                                        </DataGrid>
+
+                                        <TextBlock Text="Расчёт потребности" FontWeight="SemiBold" Margin="0,0,0,6" />
+                                        <DataGrid AutoGenerateColumns="False"
+                                                  IsReadOnly="True"
+                                                  CanUserAddRows="False"
+                                                  CanUserDeleteRows="False"
+                                                  HeadersVisibility="Column"
+                                                  ItemsSource="{Binding NeedBreakdownRows}">
+                                            <DataGrid.Columns>
+                                                <DataGridTextColumn Header="Всего в заказах для клиентов" Binding="{Binding DemandToCloseDisplay}" Width="190" />
+                                                <DataGridTextColumn Header="До минимума" Binding="{Binding DemandToMinDisplay}" Width="120" />
+                                                <DataGridTextColumn Header="Во внутренних заказах" Binding="{Binding AlreadyPlannedInternalDisplay}" Width="150" />
+                                                <DataGridTextColumn Header="Выпущено" Binding="{Binding FilledDisplay}" Width="120" />
+                                                <DataGridTextColumn Header="Осталось выпустить" Binding="{Binding RemainingToCreateDisplay}" Width="150" />
+                                            </DataGrid.Columns>
+                                        </DataGrid>
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </DataGrid.RowDetailsTemplate>
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="" Binding="{Binding ExpandMarker}" Width="40" />
+                            <DataGridTemplateColumn Header="Товар" Width="*">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Margin="0,2,0,2">
+                                            <TextBlock Text="{Binding ItemName}" TextWrapping="Wrap" />
+                                            <TextBlock Text="{Binding ProductSubline}" Foreground="#667784" FontSize="11" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="На складе" Binding="{Binding StockQtyDisplay}" Width="110" />
+                            <DataGridTextColumn Header="Минимум" Binding="{Binding MinStockSummary}" Width="120" />
+                            <DataGridTextColumn Header="Потребность" Binding="{Binding NeedSummary}" Width="180" />
+                            <DataGridTextColumn Header="План" Binding="{Binding PlanSummary}" Width="180" />
+                            <DataGridTextColumn Header="Выпущено / наполнено" Binding="{Binding FilledSummary}" Width="150" />
+                            <DataGridTemplateColumn Header="Осталось выпустить" Width="150">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding RemainingNeedSummary}"
+                                                   Foreground="{Binding RemainingNeedBrush}"
+                                                   FontWeight="{Binding RemainingNeedFontWeight}"
+                                                   TextWrapping="Wrap" />
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                        </DataGrid.Columns>
+                    </DataGrid>
                     <TextBlock x:Name="StockEmptyText"
                                Grid.Row="1"
                                Text="Остатки появятся после закрытия хотя бы одного документа."
@@ -139,12 +266,14 @@
                                HorizontalAlignment="Center"
                                VerticalAlignment="Center"
                                Visibility="Collapsed" />
-                    <Border Grid.Row="2"
+                    <Border x:Name="LowStockPanel"
+                            Grid.Row="2"
                             Margin="0,8,0,0"
-                            Padding="8"
-                            BorderBrush="#DDD"
-                            BorderThickness="1"
-                            CornerRadius="4">
+                             Padding="8"
+                             BorderBrush="#DDD"
+                             BorderThickness="1"
+                             CornerRadius="4"
+                            Visibility="Collapsed">
                         <Grid>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
@@ -174,19 +303,17 @@
                     </Border>
                 </Grid>
             </TabItem>
-            <TabItem Header="Потребность производства">
+            <TabItem Header="Потребность производства" Visibility="Collapsed">
                 <DockPanel Margin="8">
                     <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
                         <Button Content="Обновить"
                                 Padding="12,4"
                                 Click="ProductionNeedRefresh_Click" />
-                        <Button x:Name="ProductionNeedCreateOrdersButton"
-                                Content="Сформировать заказ"
+                        <Button Content="Сформировать заказ"
                                 Padding="12,4"
                                 Margin="8,0,0,0"
                                 Click="ProductionNeedCreateOrders_Click" />
-                        <TextBlock x:Name="ProductionNeedSummaryText"
-                                   Margin="12,0,0,0"
+                        <TextBlock Margin="12,0,0,0"
                                    VerticalAlignment="Center"
                                    FontWeight="SemiBold" />
                     </StackPanel>

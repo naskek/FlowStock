@@ -1084,6 +1084,9 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.GetNegativeStockBalances())
             .Returns(() => BuildNegativeStockBalances());
 
+        _store.Setup(store => store.GetHuOrderContextRows())
+            .Returns(() => BuildHuOrderContextRows());
+
         _store.Setup(store => store.GetHuByCode(It.IsAny<string>()))
             .Returns<string>(code => _hus.TryGetValue(code.Trim(), out var hu) ? hu : null);
 
@@ -2198,6 +2201,100 @@ internal sealed class CloseDocumentHarness
                 };
             })
             .Where(line => line.QtyRemaining > 0.000001)
+            .ToArray();
+    }
+
+    private IReadOnlyList<HuOrderContextRow> BuildHuOrderContextRows()
+    {
+        var activeHuKeys = BuildHuStockRows()
+            .Where(row => !string.IsNullOrWhiteSpace(row.HuCode))
+            .Select(row => (row.ItemId, HuCode: NormalizeHu(row.HuCode)!))
+            .ToHashSet();
+        var result = new List<HuOrderContextRow>();
+
+        foreach (var pair in _orderReceiptPlanLines)
+        {
+            if (!_orders.TryGetValue(pair.Key, out var order)
+                || order.Type != OrderType.Customer
+                || order.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
+            {
+                continue;
+            }
+
+            foreach (var line in pair.Value.Where(line => line.QtyPlanned > 0 && !string.IsNullOrWhiteSpace(line.ToHu)))
+            {
+                var huCode = NormalizeHu(line.ToHu);
+                if (huCode == null || !activeHuKeys.Contains((line.ItemId, huCode)))
+                {
+                    continue;
+                }
+
+                result.Add(new HuOrderContextRow
+                {
+                    HuCode = huCode,
+                    ItemId = line.ItemId,
+                    ReservedCustomerOrderId = order.Id,
+                    ReservedCustomerOrderRef = order.OrderRef,
+                    ReservedCustomerId = order.PartnerId,
+                    ReservedCustomerName = order.PartnerName
+                });
+            }
+        }
+
+        foreach (var doc in _docs.Values.Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status == DocStatus.Closed && doc.OrderId.HasValue))
+        {
+            var orderId = doc.OrderId;
+            if (!orderId.HasValue || !_orders.TryGetValue(orderId.Value, out var order))
+            {
+                continue;
+            }
+
+            if (order.Type == OrderType.Internal)
+            {
+                foreach (var line in GetActiveDocLines(doc.Id).Where(line => line.Qty > 0 && !string.IsNullOrWhiteSpace(line.ToHu)))
+                {
+                    var huCode = NormalizeHu(line.ToHu);
+                    if (huCode == null || !activeHuKeys.Contains((line.ItemId, huCode)))
+                    {
+                        continue;
+                    }
+
+                    result.Add(new HuOrderContextRow
+                    {
+                        HuCode = huCode,
+                        ItemId = line.ItemId,
+                        OriginInternalOrderId = order.Id,
+                        OriginInternalOrderRef = order.OrderRef
+                    });
+                }
+            }
+
+            if (order.Type == OrderType.Customer)
+            {
+                foreach (var line in GetActiveDocLines(doc.Id).Where(line => line.Qty > 0 && !string.IsNullOrWhiteSpace(line.ToHu)))
+                {
+                    var huCode = NormalizeHu(line.ToHu);
+                    if (huCode == null || !activeHuKeys.Contains((line.ItemId, huCode)))
+                    {
+                        continue;
+                    }
+
+                    result.Add(new HuOrderContextRow
+                    {
+                        HuCode = huCode,
+                        ItemId = line.ItemId,
+                        ReservedCustomerOrderId = order.Id,
+                        ReservedCustomerOrderRef = order.OrderRef,
+                        ReservedCustomerId = order.PartnerId,
+                        ReservedCustomerName = order.PartnerName
+                    });
+                }
+            }
+        }
+
+        return result
+            .GroupBy(row => (row.ItemId, HuCode: NormalizeHu(row.HuCode)))
+            .Select(group => group.First())
             .ToArray();
     }
 

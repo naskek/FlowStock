@@ -30,6 +30,7 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<Order> _orders = new();
     private readonly ObservableCollection<WarehouseBundleListRow> _warehouseBundles = new();
     private readonly ObservableCollection<StockDisplayRow> _stock = new();
+    private readonly ObservableCollection<WarehouseProductionStateDisplayRow> _warehouseProductionStateRows = new();
     private readonly ObservableCollection<LowStockDisplayRow> _lowStock = new();
     private readonly ObservableCollection<ProductionNeedDisplayRow> _productionNeedRows = new();
     private readonly ObservableCollection<StockLocationFilterOption> _stockLocationFilters = new();
@@ -98,6 +99,7 @@ public partial class MainWindow : Window
         WarehouseBundleFilterCombo.DisplayMemberPath = nameof(WarehouseBundleFilterOption.Label);
         WarehouseBundleFilterCombo.SelectedIndex = 1;
         StockGrid.ItemsSource = _stock;
+        WarehouseProductionStateGrid.ItemsSource = _warehouseProductionStateRows;
         LowStockGrid.ItemsSource = _lowStock;
         ProductionNeedGrid.ItemsSource = _productionNeedRows;
         StockLocationFilter.ItemsSource = _stockLocationFilters;
@@ -110,6 +112,7 @@ public partial class MainWindow : Window
         DocsStatusFilter.SelectedIndex = 0;
         ApplyDeleteMode();
         ApplyExperimentalTabVisibility();
+        UpdateStockModeUi();
 
         TryLoadAllOnStartup();
         ClearItemForm();
@@ -772,76 +775,125 @@ public partial class MainWindow : Window
 
     private void LoadStock(string? search)
     {
+        LoadWarehouseProductionState(search);
+        LoadProductionNeedRows();
+    }
+
+    private void LoadWarehouseProductionState(string? search)
+    {
         _stock.Clear();
+        _warehouseProductionStateRows.Clear();
+
+        var belowMinOnly = StockBelowMinOnlyCheckBox.IsChecked == true;
+        var itemTypeId = GetSelectedStockItemTypeId();
+        if (!_services.WpfReadApi.TryGetWarehouseProductionStateRows(
+                includeZero: false,
+                search,
+                belowMinOnly,
+                out var rows))
+        {
+            UpdateStockEmptyState(search);
+            StockEmptyText.Text = "Не удалось загрузить производственный dashboard. Проверьте доступность FlowStock Server API.";
+            LowStockGrid.Visibility = Visibility.Collapsed;
+            LowStockSummaryText.Text = string.Empty;
+            return;
+        }
+
+        var itemTypeByItemId = (_services.WpfReadApi.TryGetItems(null, out var apiItems) ? apiItems : Array.Empty<Item>())
+            .ToDictionary(item => item.Id, item => item.ItemTypeId);
         var locationCode = GetSelectedStockLocationCode();
         var huCode = GetSelectedStockHuCode();
-        var itemTypeId = GetSelectedStockItemTypeId();
-        var belowMinOnly = StockBelowMinOnlyCheckBox.IsChecked == true;
-        var rows = _services.WpfReadApi.TryGetStockRows(search, out var apiRows)
-            ? apiRows
-            : Array.Empty<StockRow>();
-        var allItems = _services.WpfReadApi.TryGetItems(null, out var apiItems)
-            ? apiItems
-            : Array.Empty<Item>();
-        var huContextMap = BuildHuContextMap();
-        LoadStockHuFilters(rows);
-        var lowStockByItem = BuildLowStockByItem(rows, allItems);
-        var filteredRows = rows
-            .Where(row => string.IsNullOrWhiteSpace(locationCode)
-                          || string.Equals(row.LocationCode, locationCode, StringComparison.OrdinalIgnoreCase))
-            .Where(row => string.IsNullOrWhiteSpace(huCode)
-                          || string.Equals(row.Hu, huCode, StringComparison.OrdinalIgnoreCase))
-            .Where(row => !itemTypeId.HasValue || row.ItemTypeId == itemTypeId.Value)
-            .ToList();
 
-        var groupedRows = filteredRows
-            .GroupBy(row => row.ItemId)
-            .OrderBy(group => group.First().ItemName, StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
-
-        foreach (var group in groupedRows)
+        foreach (var row in rows
+                     .Where(row => !itemTypeId.HasValue
+                                   || itemTypeByItemId.TryGetValue(row.ItemId, out var currentItemTypeId)
+                                   && currentItemTypeId == itemTypeId.Value)
+                     .Where(row => string.IsNullOrWhiteSpace(locationCode)
+                                   || row.HuRows.Any(hu => string.Equals(hu.Location, locationCode, StringComparison.OrdinalIgnoreCase)))
+                     .Where(row => string.IsNullOrWhiteSpace(huCode)
+                                   || row.HuRows.Any(hu => string.Equals(hu.HuCode, huCode, StringComparison.OrdinalIgnoreCase))))
         {
-            var first = group.First();
-            var isBelowMin = lowStockByItem.ContainsKey(group.Key);
-            if (belowMinOnly && !isBelowMin)
+            _warehouseProductionStateRows.Add(new WarehouseProductionStateDisplayRow
             {
-                continue;
-            }
-
-            var totalQty = group.Sum(row => row.Qty);
-            var packaging = _services.Packagings.FormatAsPackaging(group.Key, totalQty);
-            var details = group
-                .OrderBy(row => row.LocationCode ?? string.Empty, StringComparer.CurrentCultureIgnoreCase)
-                .ThenBy(row => row.Hu ?? string.Empty, StringComparer.CurrentCultureIgnoreCase)
-                .ThenBy(row => row.Qty)
-                .Select(row => new StockDetailDisplayRow
+                ItemId = row.ItemId,
+                ItemName = row.ItemName,
+                Barcode = row.Barcode,
+                Gtin = row.Gtin,
+                ItemTypeName = string.IsNullOrWhiteSpace(row.ItemType) ? "Без типа" : row.ItemType,
+                Brand = row.Brand,
+                BaseUom = string.IsNullOrWhiteSpace(row.BaseUom) ? "шт" : row.BaseUom,
+                StockQty = row.StockQty,
+                FreeQty = row.FreeQty,
+                ReservedQty = row.ReservedQty,
+                MinStockQty = row.MinStockQty,
+                BelowMinQty = row.BelowMinQty,
+                CustomerOpenDemandQty = row.CustomerOpenDemandQty,
+                PrdPlannedQty = row.PrdPlannedQty,
+                PrdFilledQty = row.PrdFilledQty,
+                InternalRemainingQty = row.InternalRemainingQty,
+                RemainingNeedQty = row.RemainingNeedQty,
+                NeedReason = row.NeedReason,
+                Warnings = row.Warnings,
+                IsExpanded = _expandedStockItemIds.Contains(row.ItemId),
+                ExpandMarker = _expandedStockItemIds.Contains(row.ItemId) ? "▼" : "▶",
+                HuRows = row.HuRows.Select(hu => new WarehouseProductionStateHuDisplayRow
                 {
-                    LocationCode = string.IsNullOrWhiteSpace(row.LocationCode) ? "-" : row.LocationCode,
-                    HuDisplay = string.IsNullOrWhiteSpace(row.Hu) ? "Без HU" : row.Hu!,
-                    BaseDisplay = FormatQtyWithUom(row.Qty, row.BaseUom),
-                    OriginOrderDisplay = ResolveOriginOrderDisplay(row, huContextMap),
-                    ReservedOrderDisplay = ResolveReservedOrderDisplay(row, huContextMap),
-                    ReservedCustomerDisplay = ResolveReservedCustomerDisplay(row, huContextMap)
-                })
-                .ToList();
-
-            _stock.Add(new StockDisplayRow
-            {
-                ItemId = group.Key,
-                ItemName = first.ItemName,
-                ItemTypeName = first.ItemTypeName ?? "Без типа",
-                Barcode = first.Barcode,
-                PackagingDisplay = packaging,
-                BaseDisplay = FormatQtyWithUom(totalQty, first.BaseUom),
-                IsBelowMin = isBelowMin,
-                IsExpanded = _expandedStockItemIds.Contains(group.Key),
-                ExpandMarker = _expandedStockItemIds.Contains(group.Key) ? "▼" : "▶",
-                Details = details
+                    Location = hu.Location,
+                    HuCode = string.IsNullOrWhiteSpace(hu.HuCode) ? "Без HU" : hu.HuCode,
+                    QtyDisplay = FormatQtyWithUom(hu.Qty, row.BaseUom),
+                    ReservedOrderDisplay = string.IsNullOrWhiteSpace(hu.ReservedCustomerOrderRef) ? "не зарезервировано" : hu.ReservedCustomerOrderRef!,
+                    ReservedCustomerDisplay = string.IsNullOrWhiteSpace(hu.ReservedCustomerName) ? "не зарезервировано" : hu.ReservedCustomerName!,
+                    StockStatus = hu.StockStatus
+                }).ToList(),
+                CustomerOrders = row.CustomerOrders.Select(order => new WarehouseProductionStateCustomerOrderDisplayRow
+                {
+                    OrderRef = order.OrderRef,
+                    PartnerName = string.IsNullOrWhiteSpace(order.PartnerName) ? "—" : order.PartnerName!,
+                    Status = order.Status,
+                    QtyOrderedDisplay = FormatQtyWithUom(order.QtyOrdered, row.BaseUom),
+                    ShippedQtyDisplay = FormatQtyWithUom(order.ShippedQty, row.BaseUom),
+                    RemainingQtyDisplay = FormatQtyWithUom(order.RemainingQty, row.BaseUom)
+                }).ToList(),
+                InternalOrders = row.InternalOrders.Select(order => new WarehouseProductionStateInternalOrderDisplayRow
+                {
+                    OrderRef = order.OrderRef,
+                    Status = order.Status,
+                    QtyOrderedDisplay = FormatQtyWithUom(order.QtyOrdered, row.BaseUom),
+                    ProducedQtyDisplay = FormatQtyWithUom(order.ProducedQty, row.BaseUom),
+                    RemainingQtyDisplay = FormatQtyWithUom(order.RemainingQty, row.BaseUom)
+                }).ToList(),
+                ProductionReceipts = row.ProductionReceipts.Select(prd => new WarehouseProductionStatePalletDisplayRow
+                {
+                    PrdRef = prd.PrdRef,
+                    HuCode = prd.HuCode,
+                    PalletStatus = TranslatePalletStatus(prd.PalletStatus),
+                    PlannedQtyDisplay = FormatQtyWithUom(prd.PlannedQty, row.BaseUom),
+                    FilledQtyDisplay = FormatQtyWithUom(prd.FilledQty, row.BaseUom),
+                    StockEffect = prd.StockEffect,
+                    Composition = prd.Composition
+                }).ToList(),
+                NeedBreakdownRows =
+                [
+                    new WarehouseProductionStateNeedBreakdownDisplayRow
+                    {
+                        DemandToCloseDisplay = FormatQtyWithUom(row.NeedBreakdown.DemandToCloseCustomerOrders, row.BaseUom),
+                        DemandToMinDisplay = FormatQtyWithUom(row.NeedBreakdown.DemandToMinStock, row.BaseUom),
+                        AlreadyPlannedInternalDisplay = FormatQtyWithUom(row.NeedBreakdown.AlreadyPlannedInternal, row.BaseUom),
+                        AlreadyPlannedPrdDisplay = FormatQtyWithUom(row.NeedBreakdown.AlreadyPlannedPrd, row.BaseUom),
+                        FilledDisplay = FormatQtyWithUom(row.PrdFilledQty, row.BaseUom),
+                        RemainingToCreateDisplay = FormatQtyWithUom(row.NeedBreakdown.RemainingToCreate, row.BaseUom),
+                        NeedReason = row.NeedReason
+                    }
+                ]
             });
         }
 
         UpdateStockEmptyState(search);
-        LoadLowStockView(lowStockByItem);
+        StockGrid.Visibility = Visibility.Collapsed;
+        WarehouseProductionStateGrid.Visibility = Visibility.Visible;
+        LowStockGrid.Visibility = Visibility.Collapsed;
+        LowStockPanel.Visibility = Visibility.Collapsed;
+        LowStockSummaryText.Text = string.Empty;
         ApplyExpandedStockRowDetailsVisibility();
     }
 
@@ -914,13 +966,15 @@ public partial class MainWindow : Window
 
     private void UpdateStockEmptyState(string? search)
     {
+        var currentCount = _warehouseProductionStateRows.Count;
         if (string.IsNullOrWhiteSpace(search)
-            && _stock.Count == 0
+            && currentCount == 0
             && string.IsNullOrWhiteSpace(GetSelectedStockLocationCode())
             && string.IsNullOrWhiteSpace(GetSelectedStockHuCode())
             && !GetSelectedStockItemTypeId().HasValue
             && StockBelowMinOnlyCheckBox.IsChecked != true)
         {
+            StockEmptyText.Text = "Нет позиций по остаткам и производственной потребности.";
             StockEmptyText.Visibility = Visibility.Visible;
             return;
         }
@@ -1114,6 +1168,15 @@ public partial class MainWindow : Window
         LoadStock(StatusSearchBox.Text);
     }
 
+    private void UpdateStockModeUi()
+    {
+        StockGrid.Visibility = Visibility.Collapsed;
+        WarehouseProductionStateGrid.Visibility = Visibility.Visible;
+        LowStockGrid.Visibility = Visibility.Collapsed;
+        LowStockPanel.Visibility = Visibility.Collapsed;
+        LowStockSummaryText.Text = string.Empty;
+    }
+
     private void ProductionNeedRefresh_Click(object sender, RoutedEventArgs e)
     {
         LoadProductionNeedRows(showErrorMessage: true);
@@ -1184,11 +1247,11 @@ public partial class MainWindow : Window
                 "Потребность производства",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
-            LoadProductionNeedRows(showErrorMessage: true);
+            LoadStock(StatusSearchBox.Text);
         }
         finally
         {
-            ProductionNeedCreateOrdersButton.IsEnabled = true;
+            LoadProductionNeedRows();
         }
     }
 
@@ -1257,20 +1320,31 @@ public partial class MainWindow : Window
 
     private void StockGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
+        ToggleStockRowDetails<StockDisplayRow>(StockGrid, e);
+    }
+
+    private void WarehouseProductionStateGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        ToggleStockRowDetails<WarehouseProductionStateDisplayRow>(WarehouseProductionStateGrid, e);
+    }
+
+    private void ToggleStockRowDetails<TRow>(System.Windows.Controls.DataGrid gridControl, MouseButtonEventArgs e)
+        where TRow : IExpandableStockRow
+    {
         if (e.OriginalSource is not DependencyObject source)
         {
             return;
         }
 
         var sourceGrid = FindVisualParent<System.Windows.Controls.DataGrid>(source);
-        if (!ReferenceEquals(sourceGrid, StockGrid))
+        if (!ReferenceEquals(sourceGrid, gridControl))
         {
             // Ignore double-clicks inside row details nested grids.
             return;
         }
 
         var clickedRow = FindVisualParent<System.Windows.Controls.DataGridRow>(source);
-        if (clickedRow?.DataContext is not StockDisplayRow row)
+        if (clickedRow?.DataContext is not TRow row)
         {
             return;
         }
@@ -1316,6 +1390,16 @@ public partial class MainWindow : Window
             foreach (var row in _stock)
             {
                 if (StockGrid.ItemContainerGenerator.ContainerFromItem(row) is not System.Windows.Controls.DataGridRow gridRow)
+                {
+                    continue;
+                }
+
+                gridRow.DetailsVisibility = row.IsExpanded ? Visibility.Visible : Visibility.Collapsed;
+            }
+
+            foreach (var row in _warehouseProductionStateRows)
+            {
+                if (WarehouseProductionStateGrid.ItemContainerGenerator.ContainerFromItem(row) is not System.Windows.Controls.DataGridRow gridRow)
                 {
                     continue;
                 }
@@ -2873,6 +2957,29 @@ public partial class MainWindow : Window
         return $"{formattedValue} {baseUom.Trim()}";
     }
 
+    private static string FormatOptionalQtyWithUom(double value, string? baseUom)
+        => value > 0.000001d ? FormatQtyWithUom(value, baseUom) : string.Empty;
+
+    private static string CombineNonEmptyLines(params string[] lines)
+    {
+        var nonEmptyLines = lines
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .ToArray();
+        return nonEmptyLines.Length == 0 ? "—" : string.Join(Environment.NewLine, nonEmptyLines);
+    }
+
+    private static string TranslatePalletStatus(string? status)
+    {
+        return status?.Trim().ToUpperInvariant() switch
+        {
+            "PLANNED" => "Ожидает",
+            "PRINTED" => "Этикетка напечатана",
+            "FILLED" => "Наполнена",
+            "CANCELLED" => "Отменена",
+            _ => string.IsNullOrWhiteSpace(status) ? "—" : status.Trim()
+        };
+    }
+
     private sealed record DocTypeFilterOption(DocType? Type, string Name);
 
     private sealed record DocStatusFilterOption(DocStatus? Status, string Name);
@@ -2912,7 +3019,14 @@ public partial class MainWindow : Window
             : FormatQty(FilledPalletQty);
     }
 
-    private sealed class StockDisplayRow : INotifyPropertyChanged
+    private interface IExpandableStockRow : INotifyPropertyChanged
+    {
+        long ItemId { get; }
+        bool IsExpanded { get; set; }
+        string ExpandMarker { get; set; }
+    }
+
+    private sealed class StockDisplayRow : IExpandableStockRow
     {
         private bool _isExpanded;
         private string _expandMarker = "▶";
@@ -2967,6 +3081,185 @@ public partial class MainWindow : Window
         public string OriginOrderDisplay { get; init; } = "—";
         public string ReservedOrderDisplay { get; init; } = "не зарезервировано";
         public string ReservedCustomerDisplay { get; init; } = "не зарезервировано";
+    }
+
+    private sealed class WarehouseProductionStateDisplayRow : IExpandableStockRow
+    {
+        private bool _isExpanded;
+        private string _expandMarker = "▶";
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+
+        public long ItemId { get; init; }
+        public string ItemName { get; init; } = string.Empty;
+        public string? Barcode { get; init; }
+        public string? Gtin { get; init; }
+        public string ItemTypeName { get; init; } = string.Empty;
+        public string? Brand { get; init; }
+        public string BaseUom { get; init; } = "шт";
+        public double StockQty { get; init; }
+        public double FreeQty { get; init; }
+        public double ReservedQty { get; init; }
+        public double MinStockQty { get; init; }
+        public double BelowMinQty { get; init; }
+        public double CustomerOpenDemandQty { get; init; }
+        public double PrdPlannedQty { get; init; }
+        public double PrdFilledQty { get; init; }
+        public double InternalRemainingQty { get; init; }
+        public double RemainingNeedQty { get; init; }
+        public string NeedReason { get; init; } = string.Empty;
+        public IReadOnlyList<string> Warnings { get; init; } = Array.Empty<string>();
+        public IReadOnlyList<WarehouseProductionStateHuDisplayRow> HuRows { get; init; } = Array.Empty<WarehouseProductionStateHuDisplayRow>();
+        public IReadOnlyList<WarehouseProductionStateCustomerOrderDisplayRow> CustomerOrders { get; init; } = Array.Empty<WarehouseProductionStateCustomerOrderDisplayRow>();
+        public IReadOnlyList<WarehouseProductionStateInternalOrderDisplayRow> InternalOrders { get; init; } = Array.Empty<WarehouseProductionStateInternalOrderDisplayRow>();
+        public IReadOnlyList<WarehouseProductionStatePalletDisplayRow> ProductionReceipts { get; init; } = Array.Empty<WarehouseProductionStatePalletDisplayRow>();
+        public IReadOnlyList<WarehouseProductionStateNeedBreakdownDisplayRow> NeedBreakdownRows { get; init; } = Array.Empty<WarehouseProductionStateNeedBreakdownDisplayRow>();
+        public bool IsBelowMin => BelowMinQty > 0.000001d;
+        public bool IsExpanded
+        {
+            get => _isExpanded;
+            set
+            {
+                if (_isExpanded == value)
+                {
+                    return;
+                }
+
+                _isExpanded = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsExpanded)));
+            }
+        }
+
+        public string ExpandMarker
+        {
+            get => _expandMarker;
+            set
+            {
+                if (string.Equals(_expandMarker, value, StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                _expandMarker = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ExpandMarker)));
+            }
+        }
+
+        public string StockQtyDisplay => FormatQtyWithUom(StockQty, BaseUom);
+        public string FreeQtyDisplay => FormatQtyWithUom(FreeQty, BaseUom);
+        public string ReservedQtyDisplay => FormatQtyWithUom(ReservedQty, BaseUom);
+        public string MinStockQtyDisplay => FormatQtyWithUom(MinStockQty, BaseUom);
+        public string BelowMinQtyDisplay => FormatQtyWithUom(BelowMinQty, BaseUom);
+        public string CustomerOpenDemandQtyDisplay => FormatQtyWithUom(CustomerOpenDemandQty, BaseUom);
+        public string PrdPlannedQtyDisplay => FormatQtyWithUom(PrdPlannedQty, BaseUom);
+        public string PrdFilledQtyDisplay => FormatQtyWithUom(PrdFilledQty, BaseUom);
+        public string RemainingNeedQtyDisplay => FormatQtyWithUom(RemainingNeedQty, BaseUom);
+        public string ProductSubline
+        {
+            get
+            {
+                var sku = !string.IsNullOrWhiteSpace(Barcode)
+                    ? $"ШК: {Barcode}"
+                    : !string.IsNullOrWhiteSpace(Gtin)
+                        ? $"GTIN: {Gtin}"
+                        : string.Empty;
+                return string.IsNullOrWhiteSpace(sku) ? ItemTypeName : $"{sku} · {ItemTypeName}";
+            }
+        }
+        public string MinStockSummary => MinStockQty > 0.000001d
+            ? FormatQtyWithUom(MinStockQty, BaseUom)
+            : "—";
+        public string NeedSummary => CombineNonEmptyLines(
+            CustomerOpenDemandQty > 0.000001d
+                ? $"Всего в заказах для клиентов: {FormatQtyWithUom(CustomerOpenDemandQty, BaseUom)}"
+                : string.Empty,
+            BelowMinQty > 0.000001d
+                ? $"До минимума: {FormatQtyWithUom(BelowMinQty, BaseUom)}"
+                : string.Empty);
+        public string PlanSummary => CombineNonEmptyLines(
+            InternalRemainingQty > 0.000001d
+                ? $"Во внутренних заказах: {FormatQtyWithUom(InternalRemainingQty, BaseUom)}"
+                : string.Empty,
+            PrdPlannedQty > 0.000001d
+                ? $"В PRD/плане: {FormatQtyWithUom(PrdPlannedQty, BaseUom)}"
+                : string.Empty);
+        public string FilledSummary => PrdFilledQty > 0.000001d
+            ? FormatQtyWithUom(PrdFilledQty, BaseUom)
+            : "—";
+        public string RemainingNeedSummary
+        {
+            get
+            {
+                if (RemainingNeedQty > 0.000001d)
+                {
+                    return $"Произвести: {FormatQtyWithUom(RemainingNeedQty, BaseUom)}";
+                }
+
+                var hasNeedOrPlan = CustomerOpenDemandQty > 0.000001d
+                                    || BelowMinQty > 0.000001d
+                                    || InternalRemainingQty > 0.000001d
+                                    || PrdPlannedQty > 0.000001d
+                                    || PrdFilledQty > 0.000001d;
+                return hasNeedOrPlan ? "Покрыто" : "—";
+            }
+        }
+        public System.Windows.Media.Brush RemainingNeedBrush => RemainingNeedQty > 0.000001d
+            ? System.Windows.Media.Brushes.DarkOrange
+            : System.Windows.Media.Brushes.ForestGreen;
+        public FontWeight RemainingNeedFontWeight => RemainingNeedQty > 0.000001d
+            ? FontWeights.SemiBold
+            : FontWeights.Normal;
+    }
+
+    private sealed record WarehouseProductionStateHuDisplayRow
+    {
+        public string Location { get; init; } = string.Empty;
+        public string HuCode { get; init; } = string.Empty;
+        public string QtyDisplay { get; init; } = string.Empty;
+        public string ReservedOrderDisplay { get; init; } = string.Empty;
+        public string ReservedCustomerDisplay { get; init; } = string.Empty;
+        public string StockStatus { get; init; } = string.Empty;
+    }
+
+    private sealed record WarehouseProductionStateCustomerOrderDisplayRow
+    {
+        public string OrderRef { get; init; } = string.Empty;
+        public string PartnerName { get; init; } = string.Empty;
+        public string Status { get; init; } = string.Empty;
+        public string QtyOrderedDisplay { get; init; } = string.Empty;
+        public string ShippedQtyDisplay { get; init; } = string.Empty;
+        public string RemainingQtyDisplay { get; init; } = string.Empty;
+    }
+
+    private sealed record WarehouseProductionStateInternalOrderDisplayRow
+    {
+        public string OrderRef { get; init; } = string.Empty;
+        public string Status { get; init; } = string.Empty;
+        public string QtyOrderedDisplay { get; init; } = string.Empty;
+        public string ProducedQtyDisplay { get; init; } = string.Empty;
+        public string RemainingQtyDisplay { get; init; } = string.Empty;
+    }
+
+    private sealed record WarehouseProductionStatePalletDisplayRow
+    {
+        public string PrdRef { get; init; } = string.Empty;
+        public string HuCode { get; init; } = string.Empty;
+        public string PalletStatus { get; init; } = string.Empty;
+        public string PlannedQtyDisplay { get; init; } = string.Empty;
+        public string FilledQtyDisplay { get; init; } = string.Empty;
+        public string StockEffect { get; init; } = string.Empty;
+        public string Composition { get; init; } = string.Empty;
+    }
+
+    private sealed record WarehouseProductionStateNeedBreakdownDisplayRow
+    {
+        public string DemandToCloseDisplay { get; init; } = string.Empty;
+        public string DemandToMinDisplay { get; init; } = string.Empty;
+        public string AlreadyPlannedInternalDisplay { get; init; } = string.Empty;
+        public string AlreadyPlannedPrdDisplay { get; init; } = string.Empty;
+        public string FilledDisplay { get; init; } = string.Empty;
+        public string RemainingToCreateDisplay { get; init; } = string.Empty;
+        public string NeedReason { get; init; } = string.Empty;
     }
 
     private sealed record WarehouseBundleFilterOption(string? Status, string Label);
