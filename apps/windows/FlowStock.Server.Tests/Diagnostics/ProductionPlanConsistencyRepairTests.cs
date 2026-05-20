@@ -103,7 +103,107 @@ public sealed class ProductionPlanConsistencyRepairTests
             item => item.OrderId == 67 && item.ProblemCode == ProductionPlanConsistencyProblemCode.OrderZeroButPalletsExist);
         Assert.DoesNotContain(
             result.DiagnosticsAfter,
-            item => item.OrderId == 72 && item.ProblemCode == ProductionPlanConsistencyProblemCode.PalletsExceedOrderQty);
+            item => item.OrderId == 72
+                      && item.ItemId == 6
+                      && (item.ProblemCode == ProductionPlanConsistencyProblemCode.PalletsExceedOrderQty
+                          || item.ProblemCode == ProductionPlanConsistencyProblemCode.PrdLinesExceedOrderQty));
+
+        var item072 = result.DiagnosticsAfter.SingleOrDefault(item => item.OrderId == 72 && item.ItemId == 6);
+        if (item072 != null)
+        {
+            Assert.Equal(1200, item072.OpenPrdDocQty);
+            Assert.Equal(1200, item072.OpenPalletPlannedQty);
+            Assert.Equal(1200, item072.PalletFilledQty);
+            Assert.Equal(1200, item072.LedgerOpenPrdQty);
+        }
+    }
+
+    [Fact]
+    public void Repair_Apply_CancelEmptyPalletAlsoTombstonesLinkedActivePrdDocLine()
+    {
+        var harness = SeedRepairScenario();
+
+        new ProductionPlanConsistencyRepairService(harness.Store)
+            .Repair(ProductionPlanConsistencyRepairService.Repair067072MustardMode, apply: true);
+
+        Assert.DoesNotContain(harness.GetDocLines(181), line => line.Id is 18101 or 18102);
+        Assert.Contains(
+            harness.GetAllDocLines(181),
+            line => line.ReplacesLineId == 18101 && line.Qty <= StockQuantityRules.QtyTolerance);
+        Assert.Contains(
+            harness.GetAllDocLines(181),
+            line => line.ReplacesLineId == 18102 && line.Qty <= StockQuantityRules.QtyTolerance);
+    }
+
+    [Fact]
+    public void Repair_RepeatedApply_DoesNotDuplicateTombstoneLines()
+    {
+        var harness = SeedRepairScenario();
+
+        new ProductionPlanConsistencyRepairService(harness.Store)
+            .Repair(ProductionPlanConsistencyRepairService.Repair067072MustardMode, apply: true);
+
+        var lineCountAfterFirst = harness.GetAllDocLines(181).Count;
+        var result = new ProductionPlanConsistencyRepairService(harness.Store)
+            .Repair(ProductionPlanConsistencyRepairService.Repair067072MustardMode, apply: true);
+
+        Assert.True(result.Ok);
+        Assert.Equal(lineCountAfterFirst, harness.GetAllDocLines(181).Count);
+        Assert.Single(harness.GetAllDocLines(181), line => line.ReplacesLineId == 18101);
+        Assert.Single(harness.GetAllDocLines(181), line => line.ReplacesLineId == 18102);
+        Assert.Contains(
+            result.Steps,
+            step => step.Action == "tombstone_prd_doc_line"
+                    && step.Target == "doc_line 18101"
+                    && step.Skipped);
+        Assert.Contains(
+            result.Steps,
+            step => step.Action == "tombstone_prd_doc_line"
+                    && step.Target == "doc_line 18102"
+                    && step.Skipped);
+    }
+
+    [Fact]
+    public void Repair_Apply_TombstonesDocLinesWhenPalletsAlreadyCancelled()
+    {
+        var harness = SeedRepairScenario();
+        var palletsToCancel = harness.Store.GetProductionPalletsByDoc(181)
+            .Where(pallet => pallet.HuCode is "HU-0000476" or "HU-0000477")
+            .Select(pallet => pallet.Id)
+            .ToArray();
+        harness.Store.CancelProductionPallets(palletsToCancel);
+
+        var result = new ProductionPlanConsistencyRepairService(harness.Store)
+            .Repair(ProductionPlanConsistencyRepairService.Repair067072MustardMode, apply: true);
+
+        Assert.True(result.Ok);
+        Assert.DoesNotContain(harness.GetDocLines(181), line => line.Id is 18101 or 18102);
+        Assert.Contains(
+            result.Steps,
+            step => step.Action == "cancel_empty_pallet"
+                    && step.Target == "HU-0000476"
+                    && step.Skipped);
+        Assert.Contains(
+            result.Steps,
+            step => step.Action == "tombstone_prd_doc_line"
+                    && step.Target == "doc_line 18101"
+                    && !step.Skipped);
+    }
+
+    [Fact]
+    public void Repair_DryRun_PlanIncludesTombstoneForCancelledPalletDocLines()
+    {
+        var harness = SeedRepairScenario();
+
+        var result = new ProductionPlanConsistencyRepairService(harness.Store)
+            .Repair(ProductionPlanConsistencyRepairService.Repair067072MustardMode, apply: false);
+
+        Assert.Contains(
+            result.Steps,
+            step => step.Action == "tombstone_prd_doc_line" && step.Target == "doc_line 18101" && !step.Skipped);
+        Assert.Contains(
+            result.Steps,
+            step => step.Action == "tombstone_prd_doc_line" && step.Target == "doc_line 18102" && !step.Skipped);
     }
 
     private static CloseDocumentHarness SeedRepairScenario()
