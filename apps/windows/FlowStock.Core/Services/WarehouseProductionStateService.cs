@@ -73,11 +73,15 @@ public sealed class WarehouseProductionStateService(IDataStore dataStore)
             var reservedQty = stock?.ReservedQty ?? 0d;
             var freeQty = stock?.FreeQty ?? (stockQty - reservedQty);
             var belowMinQty = minStockQty > QtyTolerance ? Math.Max(0d, minStockQty - freeQty) : 0d;
-            var customerOpenDemandQty = need?.ToCloseOrdersQty ?? 0d;
             var internalOpenQty = need?.OpenInternalOrderQty ?? internalOrders.Sum(row => row.RemainingQty);
             var internalRemainingQty = internalOpenQty;
-            var remainingNeedQty = need?.TotalToMakeQty ?? Math.Max(0d, customerOpenDemandQty + belowMinQty - internalOpenQty);
             var customerRemainingToShipQty = customerOrders.Sum(row => row.RemainingQty);
+            var rawCustomerOpenDemandQty = need?.ToCloseOrdersQty ?? 0d;
+            var customerOpenDemandQty = customerRemainingToShipQty > QtyTolerance
+                ? Math.Min(rawCustomerOpenDemandQty, customerRemainingToShipQty)
+                : 0d;
+            var rawRemainingNeedQty = need?.TotalToMakeQty ?? Math.Max(0d, rawCustomerOpenDemandQty + belowMinQty - internalOpenQty);
+            var remainingNeedQty = Math.Max(0d, rawRemainingNeedQty - rawCustomerOpenDemandQty + customerOpenDemandQty);
             var warnings = BuildWarnings(
                 belowMinQty,
                 customerOpenDemandQty,
@@ -202,24 +206,13 @@ public sealed class WarehouseProductionStateService(IDataStore dataStore)
         foreach (var order in activeOrders)
         {
             var lines = _dataStore.GetOrderLines(order.Id);
-            var shipmentRemaining = _dataStore.GetOrderShipmentRemaining(order.Id)
-                .ToDictionary(line => line.OrderLineId);
+            var shippedByLine = _dataStore.GetShippedTotalsByOrderLine(order.Id);
 
             foreach (var lineGroup in lines.GroupBy(line => line.ItemId))
             {
                 var qtyOrdered = lineGroup.Sum(line => line.QtyOrdered);
-                var shippedQty = lineGroup.Sum(line =>
-                {
-                    return shipmentRemaining.TryGetValue(line.Id, out var shipment)
-                        ? shipment.QtyShipped
-                        : 0d;
-                });
-                var remainingQty = lineGroup.Sum(line =>
-                {
-                    return shipmentRemaining.TryGetValue(line.Id, out var shipment)
-                        ? shipment.QtyRemaining
-                        : Math.Max(0d, line.QtyOrdered);
-                });
+                var shippedQty = lineGroup.Sum(line => shippedByLine.TryGetValue(line.Id, out var shipped) ? shipped : 0d);
+                var remainingQty = lineGroup.Sum(line => Math.Max(0d, line.QtyOrdered - (shippedByLine.TryGetValue(line.Id, out var shipped) ? shipped : 0d)));
                 if (remainingQty <= QtyTolerance)
                 {
                     continue;

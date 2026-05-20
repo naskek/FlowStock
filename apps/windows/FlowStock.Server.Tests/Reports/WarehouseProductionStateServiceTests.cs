@@ -174,6 +174,40 @@ public sealed class WarehouseProductionStateServiceTests
     }
 
     [Fact]
+    public void WarehouseProductionState_FullyShippedStaleCustomerOrder_DoesNotShowCustomerDemand()
+    {
+        var harness = CreateBaseHarness(minStockQty: 3600);
+        harness.SeedLedgerEntry(500, 1001, 1, 3600);
+        SeedCustomerOrder(harness, 61, 6101, 1001, 1800, 0, OrderStatus.InProgress, shippedQty: 1800);
+
+        var row = Assert.Single(new WarehouseProductionStateService(harness.Store).GetRows(includeZero: true));
+
+        Assert.Equal(3600, row.StockQty);
+        Assert.Equal(3600, row.FreeQty);
+        Assert.Equal(3600, row.MinStockQty);
+        Assert.Equal(0, row.BelowMinQty);
+        Assert.Equal(0, row.CustomerOpenDemandQty);
+        Assert.Equal(0, row.CustomerRemainingToShipQty);
+        Assert.Equal(0, row.NeedBreakdown.DemandToCloseCustomerOrders);
+        Assert.Equal(0, row.RemainingNeedQty);
+    }
+
+    [Fact]
+    public void WarehouseProductionState_OverShippedClosedCustomerOrder_RemainingStaysZero()
+    {
+        var harness = CreateBaseHarness(minStockQty: 3600);
+        harness.SeedLedgerEntry(500, 1001, 1, 3600);
+        SeedCustomerOrder(harness, 25, 2501, 1001, 3000, 0, OrderStatus.Accepted, shippedQty: 5400);
+
+        var row = Assert.Single(new WarehouseProductionStateService(harness.Store).GetRows(includeZero: true));
+
+        Assert.Equal(0, row.CustomerOpenDemandQty);
+        Assert.Equal(0, row.CustomerRemainingToShipQty);
+        Assert.Equal(0, row.NeedBreakdown.DemandToCloseCustomerOrders);
+        Assert.Equal(0, row.RemainingNeedQty);
+    }
+
+    [Fact]
     public void ItemWithoutMinStock_NoMinStockNeed()
     {
         var harness = CreateBaseHarness(minStockQty: 0, enableMinStockControl: false);

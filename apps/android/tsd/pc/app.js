@@ -570,28 +570,11 @@
       '  <div class="section-title">Состояние склада</div>' +
       '  <div class="pc-toolbar">' +
       '    <div class="pc-toolbar-actions">' +
-      '      <button id="stockRefreshBtn" class="btn btn-outline" type="button">Обновить</button>' +
       '      <button id="stockCreateProductionOrderBtn" class="btn btn-primary" type="button">Сформировать заказ</button>' +
       "    </div>" +
       '    <div class="form-field">' +
       '      <label class="form-label" for="stockSearchInput">Поиск</label>' +
       '      <input class="form-input" id="stockSearchInput" type="text" autocomplete="off" placeholder="Название, бренд, объем, SKU, GTIN, штрихкод" />' +
-      "    </div>" +
-      '    <div class="form-field">' +
-      '      <label class="form-label" for="stockLocationFilter">Место хранения</label>' +
-      '      <select class="form-input" id="stockLocationFilter"></select>' +
-      "    </div>" +
-      '    <div class="form-field">' +
-      '      <label class="form-label" for="stockTypeFilter">Тип</label>' +
-      '      <select class="form-input" id="stockTypeFilter"></select>' +
-      "    </div>" +
-      '    <div class="form-field">' +
-      '      <label class="form-label" for="stockHuInput">HU (только цифры)</label>' +
-      '      <div class="pc-hu-inline">' +
-      '        <span class="pc-hu-prefix">HU-</span>' +
-      '        <input class="form-input" id="stockHuInput" type="text" autocomplete="off" inputmode="numeric" placeholder="например, 00010" />' +
-      "      </div>" +
-      '      <div id="stockHuHint" class="pc-input-hint" hidden>Можно вводить только цифры.</div>' +
       "    </div>" +
       '    <div id="stockStatus" class="pc-status"></div>' +
       "  </div>" +
@@ -1604,14 +1587,10 @@
   function loadStockData() {
     return Promise.all([
       fetchJson("/api/items"),
-      fetchJson("/api/locations"),
       fetchJson("/api/reports/warehouse-production-state"),
-      fetchJson("/api/item-types?include_inactive=0"),
     ]).then(function (payloads) {
       setCachedItems(payloads[0]);
-      setCachedLocations(payloads[1]);
-      cachedItemTypes = Array.isArray(payloads[3]) ? payloads[3] : [];
-      cachedStockRows = Array.isArray(payloads[2]) ? payloads[2].map(mapWarehouseProductionStateRow) : [];
+      cachedStockRows = Array.isArray(payloads[1]) ? payloads[1].map(mapWarehouseProductionStateRow) : [];
       cachedHuRows = [];
       cachedStockRowsForMin = [];
       cachedCombinedRows = cachedStockRows.slice();
@@ -1656,11 +1635,6 @@
 
   function wireStock() {
     var searchInput = document.getElementById("stockSearchInput");
-    var locationSelect = document.getElementById("stockLocationFilter");
-    var typeFilter = document.getElementById("stockTypeFilter");
-    var huInput = document.getElementById("stockHuInput");
-    var huHint = document.getElementById("stockHuHint");
-    var refreshBtn = document.getElementById("stockRefreshBtn");
     var createOrdersBtn = document.getElementById("stockCreateProductionOrderBtn");
     var statusEl = document.getElementById("stockStatus");
     var lowWrap = document.getElementById("stockLowWrap");
@@ -1674,139 +1648,12 @@
       }
     }
 
-    function setHuValidationState(isValid) {
-      if (!huInput) {
-        return;
-      }
-      huInput.classList.toggle("form-input-error", !isValid);
-      if (huHint) {
-        huHint.hidden = isValid;
-      }
-    }
-
-    function getHuDigitsFilter() {
-      if (!huInput) {
-        return "";
-      }
-      var raw = String(huInput.value || "").trim();
-      var isValid = /^\d*$/.test(raw);
-      setHuValidationState(isValid);
-      if (!isValid) {
-        return "";
-      }
-      return raw;
-    }
-
-    function getTypeFilterId() {
-      if (!typeFilter) {
-        return 0;
-      }
-      return Number(typeFilter.value || 0) || 0;
-    }
-
-    function buildLowStockRows(typeId) {
-      var physicalTotalsByItem = {};
-      cachedStockRows.forEach(function (row) {
-        var itemId = Number(row.itemId) || 0;
-        if (!itemId) {
-          return;
-        }
-        physicalTotalsByItem[itemId] = (physicalTotalsByItem[itemId] || 0) + (Number(row.qty) || 0);
-      });
-      var availableForMinByItem = {};
-      var usesOrderBindingByItem = {};
-      cachedStockRowsForMin.forEach(function (row) {
-        var itemId = Number(row.itemId) || 0;
-        if (!itemId) {
-          return;
-        }
-        var availableQty = Number(row.availableForMinStockQty);
-        if (isFinite(availableQty)) {
-          availableForMinByItem[itemId] = availableQty;
-        }
-        usesOrderBindingByItem[itemId] = row.itemTypeMinStockUsesOrderBinding === true;
-      });
-
-      return cachedItems
-        .map(function (item) {
-          var itemId = Number(item.id) || 0;
-          var cached = cachedItemsById[itemId] || {};
-          var minStockQty = Number(cached.minStockQty);
-          var itemTypeId = Number(cached.itemTypeId) || 0;
-          if (typeId && itemTypeId !== typeId) {
-            return null;
-          }
-          if (!(cached.itemTypeEnableMinStockControl === true) || !isFinite(minStockQty)) {
-            return null;
-          }
-
-          var qty = Number(physicalTotalsByItem[itemId] || 0);
-          var usesOrderBindingForMin =
-            cached.itemTypeMinStockUsesOrderBinding === true ||
-            usesOrderBindingByItem[itemId] === true;
-          if (usesOrderBindingForMin && isFinite(Number(availableForMinByItem[itemId]))) {
-            qty = Number(availableForMinByItem[itemId]);
-          }
-          if (qty >= minStockQty) {
-            return null;
-          }
-
-          var shortage = Math.max(0, minStockQty - qty);
-          return {
-            itemName: cached.name || item.name || "-",
-            itemTypeName: cached.itemTypeName || "-",
-            qtyDisplay: formatQtyDisplay(qty, itemId),
-            minStockDisplay: formatQtyDisplay(minStockQty, itemId),
-            shortageDisplay: formatQtyDisplay(shortage, itemId),
-            shortage: shortage,
-          };
-        })
-        .filter(function (row) {
-          return !!row;
-        })
-        .sort(function (a, b) {
-          if (b.shortage !== a.shortage) {
-            return b.shortage - a.shortage;
-          }
-          return String(a.itemName || "").localeCompare(String(b.itemName || ""), "ru");
-        });
-    }
-
-    function renderLowStock() {
-      if (!lowWrap) {
-        return;
-      }
-      var lowRows = buildLowStockRows(getTypeFilterId());
-      lowWrap.innerHTML = renderLowStockTable(lowRows);
-    }
-
     function renderRows() {
       if (!tableWrap) {
         return;
       }
       var query = normalizeSearchQuery(searchInput ? searchInput.value : "");
-      var locationId = locationSelect ? Number(locationSelect.value) : 0;
-      var location = locationId ? cachedLocationsById[locationId] || {} : {};
-      var locationNeedle = String(location.code || location.name || "").trim().toLowerCase();
-      var typeId = getTypeFilterId();
-      var huDigits = getHuDigitsFilter();
-      var source = cachedStockRows.slice();
-
-      var filteredRows = source.filter(function (row) {
-        if (locationNeedle && !(row.huRows || []).some(function (hu) {
-          var locationText = String((hu && hu.location) || "").toLowerCase();
-          return locationText.indexOf(locationNeedle) !== -1;
-        })) {
-          return false;
-        }
-        if (typeId && Number(row.itemTypeId) !== typeId) {
-          return false;
-        }
-        if (huDigits && !(row.huRows || []).some(function (hu) {
-          return String((hu && hu.huCode) || "").indexOf(huDigits) !== -1;
-        })) {
-          return false;
-        }
+      var filteredRows = cachedStockRows.filter(function (row) {
         return matchesItemSearch(row, query, true);
       });
 
@@ -1849,66 +1696,6 @@
       });
     }
 
-    function fillTypeFilter() {
-      if (!typeFilter) {
-        return;
-      }
-
-      var previous = String(typeFilter.value || "");
-      var options =
-        '<option value="">Все типы</option>' +
-        cachedItemTypes
-          .slice()
-          .sort(function (left, right) {
-            var leftOrder = Number(left && left.sort_order) || 0;
-            var rightOrder = Number(right && right.sort_order) || 0;
-            if (leftOrder !== rightOrder) {
-              return leftOrder - rightOrder;
-            }
-            var leftName = String((left && left.name) || "").toLowerCase();
-            var rightName = String((right && right.name) || "").toLowerCase();
-            return leftName < rightName ? -1 : leftName > rightName ? 1 : 0;
-          })
-          .map(function (type) {
-            var id = Number(type && type.id) || 0;
-            var name = String((type && type.name) || "").trim() || "Без названия";
-            return '<option value="' + escapeHtml(String(id)) + '">' + escapeHtml(name) + "</option>";
-          })
-          .join("");
-
-      typeFilter.innerHTML = options;
-      if (previous) {
-        var hasPrevious = Array.prototype.some.call(typeFilter.options || [], function (option) {
-          return String(option.value || "") === previous;
-        });
-        if (hasPrevious) {
-          typeFilter.value = previous;
-        }
-      }
-    }
-
-    function fillFilters() {
-      if (locationSelect) {
-        var options =
-          '<option value="">Все места</option>' +
-          cachedLocations
-            .map(function (loc) {
-              var label = loc.code ? loc.code + " — " + (loc.name || "") : loc.name || "";
-              return (
-                '<option value="' +
-                escapeHtml(String(loc.id)) +
-                '">' +
-                escapeHtml(label) +
-                "</option>"
-              );
-            })
-            .join("");
-        locationSelect.innerHTML = options;
-      }
-
-      fillTypeFilter();
-    }
-
     function scheduleRender() {
       if (debounce) {
         clearTimeout(debounce);
@@ -1920,7 +1707,6 @@
       setStatus("Загрузка...");
       loadStockData()
         .then(function () {
-          fillFilters();
           renderRows();
         })
         .catch(function () {
@@ -1933,18 +1719,6 @@
 
     if (searchInput) {
       searchInput.addEventListener("input", scheduleRender);
-    }
-    if (locationSelect) {
-      locationSelect.addEventListener("change", renderRows);
-    }
-    if (typeFilter) {
-      typeFilter.addEventListener("change", renderRows);
-    }
-    if (huInput) {
-      huInput.addEventListener("input", scheduleRender);
-    }
-    if (refreshBtn) {
-      refreshBtn.addEventListener("click", loadAndRender);
     }
     if (createOrdersBtn) {
       createOrdersBtn.addEventListener("click", function () {

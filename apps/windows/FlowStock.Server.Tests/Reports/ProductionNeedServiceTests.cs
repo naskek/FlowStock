@@ -176,6 +176,7 @@ public sealed class ProductionNeedServiceTests
         store.Verify(s => s.GetStock(null), Times.Once);
         store.Verify(s => s.GetOrders(), Times.Exactly(3));
         store.Verify(s => s.GetOrderReceiptRemaining(1), Times.Once);
+        store.Verify(s => s.GetShippedTotalsByOrderLine(1), Times.Once);
         store.Verify(s => s.GetActiveProductionPalletWorkItems(), Times.Once);
         store.VerifyNoOtherCalls();
     }
@@ -302,6 +303,58 @@ public sealed class ProductionNeedServiceTests
 
         Assert.Equal(1080, row.ToCloseOrdersQty);
         Assert.Equal(1080, row.TotalToMakeQty);
+    }
+
+    [Fact]
+    public void ProductionNeed_IgnoresFullyShippedCustomerOrder_WithStaleInProgressStatus()
+    {
+        var service = BuildService(
+            itemId: 64,
+            physicalStockQty: 0,
+            minStockQty: 0,
+            orderScenarios:
+            [
+                new OrderScenario(
+                    OrderId: 61,
+                    LineId: 6100,
+                    QtyOrdered: 1800,
+                    QtyReserved: 0,
+                    DueDate: DateTime.Today,
+                    QtyShipped: 1800,
+                    Status: OrderStatus.InProgress)
+            ],
+            store: out _);
+
+        var row = service.GetRows(includeZeroNeed: true).Single();
+
+        Assert.Equal(0, row.ToCloseOrdersQty);
+        Assert.Equal(0, row.TotalToMakeQty);
+    }
+
+    [Fact]
+    public void ProductionNeed_ClampsOverShippedCustomerLineRemainingToZero()
+    {
+        var service = BuildService(
+            itemId: 64,
+            physicalStockQty: 0,
+            minStockQty: 0,
+            orderScenarios:
+            [
+                new OrderScenario(
+                    OrderId: 25,
+                    LineId: 2500,
+                    QtyOrdered: 3000,
+                    QtyReserved: 0,
+                    DueDate: DateTime.Today,
+                    QtyShipped: 5400,
+                    Status: OrderStatus.Accepted)
+            ],
+            store: out _);
+
+        var row = service.GetRows(includeZeroNeed: true).Single();
+
+        Assert.Equal(0, row.ToCloseOrdersQty);
+        Assert.Equal(0, row.TotalToMakeQty);
     }
 
     [Fact]
@@ -533,6 +586,10 @@ public sealed class ProductionNeedServiceTests
                     QtyRemaining = Math.Max(0, scenario.QtyOrdered - scenario.QtyProducedEffective - scenario.QtyReserved)
                 }
             ]);
+            store.Setup(s => s.GetShippedTotalsByOrderLine(scenario.OrderId)).Returns(
+                scenario.QtyShipped > 0
+                    ? new Dictionary<long, double> { [scenario.LineId] = scenario.QtyShipped }
+                    : new Dictionary<long, double>());
         }
 
         foreach (var scenario in planned)
@@ -586,6 +643,7 @@ public sealed class ProductionNeedServiceTests
         double QtyReserved,
         DateTime? DueDate,
         double QtyProducedEffective = 0,
+        double QtyShipped = 0,
         OrderStatus Status = OrderStatus.InProgress);
 
     private sealed record PlannedScenario(

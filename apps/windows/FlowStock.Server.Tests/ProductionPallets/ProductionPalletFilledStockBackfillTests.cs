@@ -30,7 +30,7 @@ public sealed class ProductionPalletFilledStockBackfillTests
         var apply = service.BackfillFilledStock(dryRun: false);
         Assert.Equal(0, apply.LedgerRowsWritten);
         Assert.Empty(apply.Applied);
-        Assert.Empty(harness.LedgerEntries.Where(entry => entry.QtyDelta > 0));
+        Assert.DoesNotContain(harness.LedgerEntries, entry => entry.QtyDelta > 0);
     }
 
     [Fact]
@@ -208,7 +208,7 @@ public sealed class ProductionPalletFilledStockBackfillTests
         var dryRun = service.BackfillFilledStock(dryRun: true);
         Assert.True(dryRun.DryRun);
         Assert.Single(dryRun.Applied);
-        Assert.Empty(harness.LedgerEntries.Where(entry => entry.DocId == 153));
+        Assert.DoesNotContain(harness.LedgerEntries, entry => entry.DocId == 153);
     }
 
     private static CloseDocumentHarness CreateFilledPalletHarness(

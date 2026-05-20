@@ -74,6 +74,7 @@ public partial class MainWindow : Window
     private const int TabPartnersIndex = 7;
     private const int TabKmIndex = 8;
     private const int OrdersPageSize = 15;
+    private int _ordersPagedDepth;
     private bool _ordersHasMore;
 
     public MainWindow(AppServices services)
@@ -402,7 +403,7 @@ public partial class MainWindow : Window
                     LoadDocs();
                     break;
                 case TabOrdersIndex:
-                    LoadOrders();
+                    RefreshOrdersKeepingPagedDepth();
                     break;
                 case TabTasksIndex:
                     if (ExperimentalFeatureFlags.WarehouseTasksEnabled)
@@ -728,12 +729,60 @@ public partial class MainWindow : Window
         }
 
         _ordersHasMore = page.Count >= OrdersPageSize;
+        _ordersPagedDepth = _orders.Count;
         UpdateLoadMoreOrdersButton();
         if (reset)
         {
             RestoreOrderSelection(selectedId);
         }
 
+        UpdateDeleteButtonsAvailability();
+    }
+
+    private void RefreshOrdersKeepingPagedDepth()
+    {
+        var selectedId = (OrdersGrid.SelectedItem as Order)?.Id;
+        var targetCount = Math.Max(_ordersPagedDepth, OrdersPageSize);
+        var includeCancelledMerged = ShowCancelledMergedOrdersCheckBox.IsChecked == true;
+
+        _orders.Clear();
+        var offset = 0;
+        IReadOnlyList<Order> lastPage = Array.Empty<Order>();
+        while (_orders.Count < targetCount)
+        {
+            if (!_services.WpfReadApi.TryGetOrdersPage(
+                    includeInternal: true,
+                    search: null,
+                    limit: OrdersPageSize,
+                    offset: offset,
+                    includeCancelledMerged: includeCancelledMerged,
+                    out var apiOrders))
+            {
+                break;
+            }
+
+            lastPage = apiOrders;
+            if (lastPage.Count == 0)
+            {
+                break;
+            }
+
+            foreach (var order in lastPage)
+            {
+                _orders.Add(order);
+            }
+
+            offset += lastPage.Count;
+            if (lastPage.Count < OrdersPageSize)
+            {
+                break;
+            }
+        }
+
+        _ordersHasMore = lastPage.Count >= OrdersPageSize;
+        _ordersPagedDepth = _orders.Count;
+        UpdateLoadMoreOrdersButton();
+        RestoreOrderSelection(selectedId);
         UpdateDeleteButtonsAvailability();
     }
 

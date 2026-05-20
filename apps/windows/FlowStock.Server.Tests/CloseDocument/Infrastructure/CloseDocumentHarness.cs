@@ -1057,6 +1057,14 @@ internal sealed class CloseDocumentHarness
                 ? new Dictionary<long, double>(totals)
                 : BuildShippedTotalsByOrderLine(orderId));
 
+        _store.As<IOverShippedOrderDiagnosticsStore>()
+            .Setup(store => store.GetOverShippedOrderDiagnostics())
+            .Returns(() => BuildOverShippedOrderDiagnostics());
+
+        _store.As<IProductionPlanConsistencyDiagnosticsStore>()
+            .Setup(store => store.GetProductionPlanConsistencyDiagnostics())
+            .Returns(() => BuildProductionPlanConsistencyDiagnostics());
+
         _store.Setup(store => store.GetOrderShippedAt(It.IsAny<long>()))
             .Returns<long>(orderId => GetOrderShippedAtInternal(orderId));
 
@@ -2178,7 +2186,9 @@ internal sealed class CloseDocumentHarness
             return Array.Empty<OrderShipmentLine>();
         }
 
-        var shippedTotals = BuildShippedTotalsByOrderLine(orderId);
+        var shippedTotals = _shippedTotalsByOrderLine.TryGetValue(orderId, out var seededTotals)
+            ? seededTotals
+            : BuildShippedTotalsByOrderLine(orderId);
         return lines
             .Select(line =>
             {
@@ -2202,6 +2212,517 @@ internal sealed class CloseDocumentHarness
             })
             .Where(line => line.QtyRemaining > 0.000001)
             .ToArray();
+    }
+
+    private IReadOnlyList<OverShippedOrderDiagnosticItem> BuildOverShippedOrderDiagnostics()
+    {
+        var result = new List<OverShippedOrderDiagnosticItem>();
+        foreach (var order in _orders.Values
+                     .Where(order => order.Type == OrderType.Customer
+                                     && order.Status is not OrderStatus.Cancelled and not OrderStatus.Merged)
+                     .OrderBy(order => order.OrderRef, StringComparer.OrdinalIgnoreCase)
+                     .ThenBy(order => order.Id))
+        {
+            if (!_orderLinesByOrder.TryGetValue(order.Id, out var orderLines))
+            {
+                continue;
+            }
+
+            var shippedByLine = _shippedTotalsByOrderLine.TryGetValue(order.Id, out var seededTotals)
+                ? new Dictionary<long, double>(seededTotals)
+                : BuildShippedTotalsByOrderLine(order.Id);
+            var closedOutboundDocs = _docs.Values
+                .Where(doc => doc.OrderId == order.Id
+                              && doc.Type == DocType.Outbound
+                              && doc.Status == DocStatus.Closed)
+                .ToArray();
+            var activeOutboundLines = closedOutboundDocs
+                .SelectMany(doc => GetActiveDocLines(doc.Id).Select(line => (Doc: doc, Line: line)))
+                .Where(row => row.Line.OrderLineId.HasValue && row.Line.Qty > 0)
+                .ToArray();
+            var ledgerEntries = closedOutboundDocs
+                .SelectMany(doc => _postedLedger.Where(entry => entry.DocId == doc.Id))
+                .ToArray();
+
+            foreach (var group in orderLines.Where(line => line.QtyOrdered > StockQuantityRules.QtyTolerance)
+                         .GroupBy(line => line.ItemId)
+                         .OrderBy(group => _items.TryGetValue(group.Key, out var item) ? item.Name : string.Empty, StringComparer.OrdinalIgnoreCase)
+                         .ThenBy(group => group.Key))
+            {
+                var lineIds = group.Select(line => line.Id).ToHashSet();
+                var qtyOrdered = group.Sum(line => Math.Max(0d, line.QtyOrdered));
+                var shippedByApiReadModel = group.Sum(line => shippedByLine.TryGetValue(line.Id, out var shipped) ? Math.Max(0d, shipped) : 0d);
+                var shippedByClosedOutbound = activeOutboundLines
+                    .Where(row => row.Line.ItemId == group.Key && lineIds.Contains(row.Line.OrderLineId!.Value))
+                    .Sum(row => row.Line.Qty);
+                var shippedByLedger = ledgerEntries
+                    .Where(entry => entry.ItemId == group.Key && entry.QtyDelta < 0)
+                    .Sum(entry => -entry.QtyDelta);
+                var overShippedQty = Math.Max(0d, Math.Max(shippedByApiReadModel, Math.Max(shippedByClosedOutbound, shippedByLedger)) - qtyOrdered);
+                if (overShippedQty <= StockQuantityRules.QtyTolerance)
+                {
+                    continue;
+                }
+
+                var itemName = _items.TryGetValue(group.Key, out var item)
+                    ? item.Name
+                    : string.Empty;
+                var row = new OverShippedOrderDiagnosticItem
+                {
+                    OrderId = order.Id,
+                    OrderRef = order.OrderRef,
+                    ItemId = group.Key,
+                    ItemName = itemName,
+                    QtyOrdered = qtyOrdered,
+                    ShippedByApiReadModel = shippedByApiReadModel,
+                    ShippedByClosedOutbound = shippedByClosedOutbound,
+                    ShippedByLedger = shippedByLedger,
+                    OverShippedQty = overShippedQty,
+                    OutboundDocs = activeOutboundLines
+                        .Where(entry => entry.Line.ItemId == group.Key && lineIds.Contains(entry.Line.OrderLineId!.Value))
+                        .OrderBy(entry => entry.Doc.Id)
+                        .ThenBy(entry => entry.Line.Id)
+                        .Select(entry => new OverShippedOutboundDocLine
+                        {
+                            DocId = entry.Doc.Id,
+                            DocRef = entry.Doc.DocRef,
+                            Status = "CLOSED",
+                            ClosedAt = entry.Doc.ClosedAt,
+                            DocLineId = entry.Line.Id,
+                            Qty = entry.Line.Qty,
+                            FromHu = entry.Line.FromHu,
+                            OrderLineId = entry.Line.OrderLineId
+                        })
+                        .ToArray(),
+                    LedgerEntries = ledgerEntries
+                        .Where(entry => entry.ItemId == group.Key)
+                        .OrderBy(entry => entry.Id)
+                        .Select(entry => new OverShippedLedgerEntry
+                        {
+                            LedgerId = entry.Id,
+                            DocId = entry.DocId,
+                            ItemId = entry.ItemId,
+                            HuCode = entry.HuCode,
+                            QtyDelta = entry.QtyDelta
+                        })
+                        .ToArray()
+                };
+
+                result.Add(new OverShippedOrderDiagnosticItem
+                {
+                    OrderId = row.OrderId,
+                    OrderRef = row.OrderRef,
+                    ItemId = row.ItemId,
+                    ItemName = row.ItemName,
+                    QtyOrdered = row.QtyOrdered,
+                    ShippedByApiReadModel = row.ShippedByApiReadModel,
+                    ShippedByClosedOutbound = row.ShippedByClosedOutbound,
+                    ShippedByLedger = row.ShippedByLedger,
+                    OverShippedQty = row.OverShippedQty,
+                    OutboundDocs = row.OutboundDocs,
+                    LedgerEntries = row.LedgerEntries,
+                    Recommendation = BuildOverShippedRecommendation(row)
+                });
+            }
+        }
+
+        return result;
+    }
+
+    private static string BuildOverShippedRecommendation(OverShippedOrderDiagnosticItem row)
+    {
+        var activeOver = row.ShippedByClosedOutbound - row.QtyOrdered > StockQuantityRules.QtyTolerance;
+        var ledgerOver = row.ShippedByLedger - row.QtyOrdered > StockQuantityRules.QtyTolerance;
+        if (activeOver && ledgerOver)
+        {
+            return "REAL_OVER_SHIPMENT_REVIEW_REQUIRED";
+        }
+
+        if (activeOver)
+        {
+            return "DOC_LINES_OVER_ORDERED_LEDGER_NOT_OVER_SHIPPED_REVIEW_DOC_LINES";
+        }
+
+        if (ledgerOver)
+        {
+            return "LEDGER_OVER_ORDERED_REVIEW_LEDGER_AND_CREATE_CORRECTION_DRAFT_IF_CONFIRMED";
+        }
+
+        return "NO_ACTION";
+    }
+
+    private IReadOnlyList<ProductionPlanConsistencyDiagnosticItem> BuildProductionPlanConsistencyDiagnostics()
+    {
+        var allOrderLines = _orderLinesByOrder.Values
+            .SelectMany(lines => lines)
+            .ToDictionary(line => line.Id, line => line);
+        var keys = new HashSet<(long OrderId, long ItemId)>();
+        foreach (var line in allOrderLines.Values)
+        {
+            keys.Add((line.OrderId, line.ItemId));
+        }
+
+        var prdRows = BuildProductionPlanConsistencyPrdRows(allOrderLines);
+        foreach (var row in prdRows)
+        {
+            keys.Add((row.OrderId, row.ItemId));
+        }
+
+        var palletRows = BuildProductionPlanConsistencyPalletRows();
+        foreach (var row in palletRows)
+        {
+            keys.Add((row.OrderId, row.ItemId));
+        }
+
+        var ledgerQtyByKey = BuildProductionPlanConsistencyLedgerQty();
+        foreach (var key in ledgerQtyByKey.Keys)
+        {
+            keys.Add(key);
+        }
+
+        var result = new List<ProductionPlanConsistencyDiagnosticItem>();
+        foreach (var key in keys.OrderBy(key => _orders.TryGetValue(key.OrderId, out var order) ? order.OrderRef : string.Empty, StringComparer.OrdinalIgnoreCase)
+                     .ThenBy(key => _items.TryGetValue(key.ItemId, out var item) ? item.Name : string.Empty, StringComparer.OrdinalIgnoreCase)
+                     .ThenBy(key => key.ItemId))
+        {
+            if (!_orders.TryGetValue(key.OrderId, out var order))
+            {
+                continue;
+            }
+
+            var orderQty = _orderLinesByOrder.TryGetValue(key.OrderId, out var orderLines)
+                ? orderLines.Where(line => line.ItemId == key.ItemId).Sum(line => Math.Max(0d, line.QtyOrdered))
+                : 0d;
+            var itemPrdRows = prdRows
+                .Where(row => row.OrderId == key.OrderId && row.ItemId == key.ItemId)
+                .ToArray();
+            var itemPalletRows = palletRows
+                .Where(row => row.OrderId == key.OrderId && row.ItemId == key.ItemId)
+                .ToArray();
+            var openPrdDocQty = itemPrdRows
+                .Where(row => !string.Equals(row.PrdDoc.Status, "CLOSED", StringComparison.OrdinalIgnoreCase))
+                .Sum(row => row.Qty);
+            var closedPrdDocQty = itemPrdRows
+                .Where(row => string.Equals(row.PrdDoc.Status, "CLOSED", StringComparison.OrdinalIgnoreCase))
+                .Sum(row => row.Qty);
+            var prdDocQty = openPrdDocQty + closedPrdDocQty;
+            var openPalletRows = itemPalletRows
+                .Where(row => _docs.TryGetValue(row.Pallet.PrdDocId, out var doc) && doc.Status != DocStatus.Closed)
+                .ToArray();
+            var openPalletPlannedQty = openPalletRows.Sum(row => row.PlannedQty);
+            var palletPlannedQty = itemPalletRows.Sum(row => row.PlannedQty);
+            var palletFilledQty = itemPalletRows.Sum(row => row.FilledQty);
+            var openPalletFilledQty = openPalletRows.Sum(row => row.FilledQty);
+            var ledgerQtyByDocStatus = BuildProductionPlanConsistencyLedgerQtyByDocStatus(key);
+            var ledgerClosedPrdQty = ledgerQtyByDocStatus.ClosedQty;
+            var ledgerOpenPrdQty = ledgerQtyByDocStatus.OpenQty;
+            var ledgerPrdQty = ledgerClosedPrdQty + ledgerOpenPrdQty;
+            var hasOpenPrd = openPrdDocQty > StockQuantityRules.QtyTolerance;
+            var hasClosedPrd = closedPrdDocQty > StockQuantityRules.QtyTolerance;
+            var openPrdMatchesOpenPallets = openPrdDocQty <= StockQuantityRules.QtyTolerance
+                                            || Math.Abs(openPrdDocQty - openPalletPlannedQty) <= StockQuantityRules.QtyTolerance;
+            var openPalletsMatchFill = openPalletPlannedQty <= StockQuantityRules.QtyTolerance
+                                       || Math.Abs(openPalletPlannedQty - openPalletFilledQty) <= StockQuantityRules.QtyTolerance;
+
+            var problemCode = ResolveProductionPlanConsistencyProblemCode(
+                order,
+                orderQty,
+                openPrdDocQty,
+                closedPrdDocQty,
+                openPalletPlannedQty,
+                palletFilledQty,
+                ledgerClosedPrdQty,
+                hasOpenPrd,
+                hasClosedPrd);
+            if (string.IsNullOrWhiteSpace(problemCode))
+            {
+                continue;
+            }
+
+            var severity = ResolveProductionPlanConsistencySeverity(
+                order,
+                problemCode,
+                hasOpenPrd,
+                openPalletPlannedQty,
+                palletFilledQty,
+                ledgerOpenPrdQty,
+                openPrdMatchesOpenPallets,
+                openPalletsMatchFill);
+
+            result.Add(new ProductionPlanConsistencyDiagnosticItem
+            {
+                OrderId = order.Id,
+                OrderRef = order.OrderRef,
+                OrderType = OrderStatusMapper.TypeToString(order.Type),
+                OrderStatus = OrderStatusMapper.StatusToString(order.Status),
+                ItemId = key.ItemId,
+                ItemName = _items.TryGetValue(key.ItemId, out var item) ? item.Name : string.Empty,
+                OrderQty = orderQty,
+                OpenPrdDocQty = openPrdDocQty,
+                ClosedPrdDocQty = closedPrdDocQty,
+                PrdDocQty = prdDocQty,
+                OpenPalletPlannedQty = openPalletPlannedQty,
+                PalletPlannedQty = palletPlannedQty,
+                PalletFilledQty = palletFilledQty,
+                LedgerClosedPrdQty = ledgerClosedPrdQty,
+                LedgerOpenPrdQty = ledgerOpenPrdQty,
+                LedgerPrdQty = ledgerPrdQty,
+                Severity = severity,
+                ProblemCode = problemCode,
+                Recommendation = BuildProductionPlanConsistencyRecommendation(problemCode),
+                Pallets = itemPalletRows.Select(row => row.Pallet).ToArray(),
+                PrdDocs = itemPrdRows.Select(row => row.PrdDoc).ToArray()
+            });
+        }
+
+        return result;
+    }
+
+    private IReadOnlyList<(long OrderId, long ItemId, ProductionPlanConsistencyPrdDocRow PrdDoc, double Qty)> BuildProductionPlanConsistencyPrdRows(
+        IReadOnlyDictionary<long, OrderLine> orderLinesById)
+    {
+        var rows = new List<(long OrderId, long ItemId, ProductionPlanConsistencyPrdDocRow PrdDoc, double Qty)>();
+        foreach (var doc in _docs.Values.Where(doc => doc.Type == DocType.ProductionReceipt && doc.OrderId.HasValue))
+        {
+            foreach (var line in GetActiveDocLines(doc.Id).Where(line => line.Qty > StockQuantityRules.QtyTolerance))
+            {
+                var orderId = line.OrderLineId.HasValue && orderLinesById.TryGetValue(line.OrderLineId.Value, out var orderLine)
+                    ? orderLine.OrderId
+                    : doc.OrderId!.Value;
+                var row = new ProductionPlanConsistencyPrdDocRow
+                {
+                    DocId = doc.Id,
+                    DocRef = doc.DocRef,
+                    Status = DocTypeMapper.StatusToString(doc.Status),
+                    ClosedAt = doc.ClosedAt,
+                    DocLineId = line.Id,
+                    OrderLineId = line.OrderLineId,
+                    ItemId = line.ItemId,
+                    Qty = line.Qty
+                };
+                rows.Add((orderId, line.ItemId, row, line.Qty));
+            }
+        }
+
+        return rows;
+    }
+
+    private IReadOnlyList<(long OrderId, long ItemId, ProductionPlanConsistencyPalletRow Pallet, double PlannedQty, double FilledQty)> BuildProductionPlanConsistencyPalletRows()
+    {
+        var rows = new List<(long OrderId, long ItemId, ProductionPlanConsistencyPalletRow Pallet, double PlannedQty, double FilledQty)>();
+        foreach (var pallet in _productionPallets.Values
+                     .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                     .OrderBy(pallet => pallet.Id))
+        {
+            var doc = _docs.TryGetValue(pallet.PrdDocId, out var foundDoc) ? foundDoc : null;
+            var orderId = pallet.OrderId ?? doc?.OrderId;
+            if (!orderId.HasValue)
+            {
+                continue;
+            }
+
+            var lines = pallet.Lines.Count > 0
+                ? pallet.Lines
+                : new[]
+                {
+                    new ProductionPalletComponentLine
+                    {
+                        DocLineId = pallet.DocLineId,
+                        OrderLineId = pallet.OrderLineId,
+                        ItemId = pallet.ItemId,
+                        PlannedQty = pallet.PlannedQty,
+                        FilledQty = string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase) ? pallet.PlannedQty : 0d
+                    }
+                };
+            foreach (var line in lines)
+            {
+                var plannedQty = line.PlannedQty;
+                var filledQty = line.FilledQty;
+                rows.Add((orderId.Value, line.ItemId, new ProductionPlanConsistencyPalletRow
+                {
+                    PalletId = pallet.Id,
+                    PrdDocId = pallet.PrdDocId,
+                    PrdDocRef = doc?.DocRef,
+                    DocLineId = line.DocLineId,
+                    OrderLineId = line.OrderLineId,
+                    ItemId = line.ItemId,
+                    HuCode = pallet.HuCode,
+                    Status = pallet.Status,
+                    PlannedQty = plannedQty,
+                    FilledQty = filledQty
+                }, plannedQty, filledQty));
+            }
+        }
+
+        return rows;
+    }
+
+    private Dictionary<(long OrderId, long ItemId), double> BuildProductionPlanConsistencyLedgerQty()
+    {
+        return BuildProductionPlanConsistencyLedgerQtyByDocStatusInternal()
+            .ToDictionary(pair => pair.Key, pair => pair.Value.ClosedQty + pair.Value.OpenQty);
+    }
+
+    private (double ClosedQty, double OpenQty) BuildProductionPlanConsistencyLedgerQtyByDocStatus((long OrderId, long ItemId) key)
+    {
+        return BuildProductionPlanConsistencyLedgerQtyByDocStatusInternal().TryGetValue(key, out var totals)
+            ? totals
+            : (0d, 0d);
+    }
+
+    private Dictionary<(long OrderId, long ItemId), (double ClosedQty, double OpenQty)> BuildProductionPlanConsistencyLedgerQtyByDocStatusInternal()
+    {
+        var result = new Dictionary<(long OrderId, long ItemId), (double ClosedQty, double OpenQty)>();
+        foreach (var entry in _postedLedger.Where(entry => entry.QtyDelta > StockQuantityRules.QtyTolerance))
+        {
+            if (!_docs.TryGetValue(entry.DocId, out var doc)
+                || doc.Type != DocType.ProductionReceipt
+                || !doc.OrderId.HasValue)
+            {
+                continue;
+            }
+
+            var huCode = NormalizeHu(entry.HuCode);
+            var pallet = _productionPallets.Values.FirstOrDefault(pallet =>
+                pallet.PrdDocId == doc.Id
+                && string.Equals(NormalizeHu(pallet.HuCode), huCode, StringComparison.OrdinalIgnoreCase)
+                && (pallet.ItemId == entry.ItemId || pallet.Lines.Any(line => line.ItemId == entry.ItemId)));
+            var orderId = pallet?.OrderId ?? doc.OrderId.Value;
+            var key = (orderId, entry.ItemId);
+            if (!result.TryGetValue(key, out var totals))
+            {
+                totals = (0d, 0d);
+            }
+
+            if (doc.Status == DocStatus.Closed)
+            {
+                totals.ClosedQty += entry.QtyDelta;
+            }
+            else
+            {
+                totals.OpenQty += entry.QtyDelta;
+            }
+
+            result[key] = totals;
+        }
+
+        return result;
+    }
+
+    private static string? ResolveProductionPlanConsistencyProblemCode(
+        Order order,
+        double orderQty,
+        double openPrdDocQty,
+        double closedPrdDocQty,
+        double openPalletPlannedQty,
+        double palletFilledQty,
+        double ledgerClosedPrdQty,
+        bool hasOpenPrd,
+        bool hasClosedPrd)
+    {
+        if (order.Status == OrderStatus.Merged && openPalletPlannedQty > StockQuantityRules.QtyTolerance)
+        {
+            return ProductionPlanConsistencyProblemCode.MergedOrderWithPalletPlan;
+        }
+
+        if (order.Type == OrderType.Customer && order.Status == OrderStatus.Shipped && hasOpenPrd)
+        {
+            return ProductionPlanConsistencyProblemCode.ShippedCustomerWithOpenPrd;
+        }
+
+        if (orderQty <= StockQuantityRules.QtyTolerance && openPalletPlannedQty > StockQuantityRules.QtyTolerance)
+        {
+            return ProductionPlanConsistencyProblemCode.OrderZeroButPalletsExist;
+        }
+
+        if (hasOpenPrd
+            && !(order.Type == OrderType.Customer && order.Status == OrderStatus.Shipped)
+            && openPalletPlannedQty - orderQty > StockQuantityRules.QtyTolerance)
+        {
+            return ProductionPlanConsistencyProblemCode.PalletsExceedOrderQty;
+        }
+
+        if (hasOpenPrd
+            && !(order.Type == OrderType.Customer && order.Status == OrderStatus.Shipped)
+            && openPrdDocQty - orderQty > StockQuantityRules.QtyTolerance)
+        {
+            return ProductionPlanConsistencyProblemCode.PrdLinesExceedOrderQty;
+        }
+
+        if (hasClosedPrd && Math.Abs(closedPrdDocQty - ledgerClosedPrdQty) > StockQuantityRules.QtyTolerance)
+        {
+            return ProductionPlanConsistencyProblemCode.ClosedPrdLedgerMismatch;
+        }
+
+        if (palletFilledQty > StockQuantityRules.QtyTolerance && hasOpenPrd)
+        {
+            return ProductionPlanConsistencyProblemCode.FilledPalletsWithDraftPrd;
+        }
+
+        return null;
+    }
+
+    private static string ResolveProductionPlanConsistencySeverity(
+        Order order,
+        string problemCode,
+        bool hasOpenPrd,
+        double openPalletPlannedQty,
+        double palletFilledQty,
+        double ledgerOpenPrdQty,
+        bool openPrdMatchesOpenPallets,
+        bool openPalletsMatchFill)
+    {
+        if (string.Equals(problemCode, ProductionPlanConsistencyProblemCode.ShippedCustomerWithOpenPrd, StringComparison.Ordinal)
+            && order.Type == OrderType.Customer
+            && order.Status == OrderStatus.Shipped
+            && hasOpenPrd)
+        {
+            if (openPalletPlannedQty <= StockQuantityRules.QtyTolerance
+                && palletFilledQty <= StockQuantityRules.QtyTolerance
+                && ledgerOpenPrdQty <= StockQuantityRules.QtyTolerance)
+            {
+                return ProductionPlanConsistencySeverity.Warning;
+            }
+
+            if ((openPalletPlannedQty > StockQuantityRules.QtyTolerance
+                 || palletFilledQty > StockQuantityRules.QtyTolerance
+                 || ledgerOpenPrdQty > StockQuantityRules.QtyTolerance)
+                && (!openPrdMatchesOpenPallets || !openPalletsMatchFill))
+            {
+                return ProductionPlanConsistencySeverity.Error;
+            }
+
+            return ProductionPlanConsistencySeverity.Warning;
+        }
+
+        if (string.Equals(problemCode, ProductionPlanConsistencyProblemCode.FilledPalletsWithDraftPrd, StringComparison.Ordinal))
+        {
+            return ProductionPlanConsistencySeverity.Warning;
+        }
+
+        return ProductionPlanConsistencySeverity.Error;
+    }
+
+    private static string BuildProductionPlanConsistencyRecommendation(string problemCode)
+    {
+        return problemCode switch
+        {
+            ProductionPlanConsistencyProblemCode.OrderZeroButPalletsExist =>
+                "Order line quantity is zero but active pallet plan remains. Review merge/redistribution history and create a manual repair plan before closing PRD.",
+            ProductionPlanConsistencyProblemCode.PalletsExceedOrderQty =>
+                "Active pallet plan exceeds current order quantity. Do not close PRD until pallet plan is cancelled, transferred, or manually repaired.",
+            ProductionPlanConsistencyProblemCode.PrdLinesExceedOrderQty =>
+                "Active PRD document lines exceed current order quantity. Review draft PRD lines and order redistribution before closing.",
+            ProductionPlanConsistencyProblemCode.FilledPalletsWithDraftPrd =>
+                "Filled pallet ledger exists while PRD is still open. If quantities are aligned, close the PRD; otherwise review diagnostics before closing.",
+            ProductionPlanConsistencyProblemCode.ShippedCustomerWithOpenPrd =>
+                "Customer order is already shipped but has an open PRD/pallet plan. Review and cancel or repair the open production plan.",
+            ProductionPlanConsistencyProblemCode.MergedOrderWithPalletPlan =>
+                "Merged order still has active pallet plan. Manual review is required; do not silently edit production pallets.",
+            ProductionPlanConsistencyProblemCode.ClosedPrdLedgerMismatch =>
+                "Closed PRD ledger does not match PRD/pallet quantities. Do not edit ledger manually; create an explicit correction document if confirmed.",
+            _ => "Review production plan consistency diagnostics."
+        };
     }
 
     private IReadOnlyList<HuOrderContextRow> BuildHuOrderContextRows()

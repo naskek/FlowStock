@@ -129,16 +129,35 @@ assert(
   "final pallet fill should tell the operator that the order is closed"
 );
 assert(
-  appJs.includes("TsdStorage.apiGetOrderShipmentRemaining(orderId)") &&
-    appJs.includes("isOrderAvailableForShipment(order)") &&
-    appJs.includes("order.hasShipmentRemaining === true"),
-  "TSD outbound should select only shipment-ready customer orders and load shipment remaining lines"
+  appJs.includes('<button class="btn menu-btn" data-route="outbound">Отгрузка</button>') &&
+    appJs.includes("TsdStorage.apiGetOutboundPickingOrders()") &&
+    appJs.includes("renderOutboundPickingList(orders || [])") &&
+    appJs.includes('navigate("/outbound")'),
+  "TSD outbound should open the new order pallet picking list"
 );
 assert(
-  storageJs.includes('"/shipment-remaining"') &&
-    storageJs.includes("hasShipmentRemaining") &&
-    storageJs.includes("order.has_shipment_remaining === true"),
-  "TSD storage should normalize shipment availability and call /shipment-remaining"
+  storageJs.includes('"/api/tsd/outbound/orders"') &&
+    storageJs.includes("apiGetOutboundPickingOrders") &&
+    storageJs.includes("apiScanOutboundPickingHu") &&
+    storageJs.includes("apiCompleteOutboundPicking"),
+  "TSD storage should call the outbound picking endpoints"
+);
+assert(
+  appJs.includes('data-outbound-order="') &&
+    appJs.includes("Подобрано") &&
+    appJs.includes("Нет готовых клиентских заказов с ожидаемыми HU к отгрузке."),
+  "outbound picking list should show accepted customer orders with picked progress"
+);
+assert(
+  appJs.includes('id="outboundPickingScanInput"') &&
+    appJs.includes("TsdStorage.apiScanOutboundPickingHu(orderId, huCode)") &&
+    appJs.includes("HU не ожидается для выбранного заказа."),
+  "outbound order screen should scan expected HU through the server"
+);
+assert(
+  appJs.includes("TsdStorage.apiCompleteOutboundPicking(orderId)") &&
+    appJs.includes("Все паллеты подобраны. Ожидает проведения в WPF."),
+  "outbound picking complete should wait for WPF close instead of posting ledger"
 );
 assert(
   appJs.includes("Микс-паллета") &&

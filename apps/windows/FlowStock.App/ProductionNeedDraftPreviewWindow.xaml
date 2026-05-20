@@ -8,14 +8,20 @@
         MinWidth="980"
         WindowStartupLocation="CenterOwner"
         ResizeMode="CanResize">
-    <DockPanel Margin="12">
-        <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <StackPanel Grid.Row="0" Margin="0,0,0,8">
             <TextBlock Text="Будущие строки внутреннего заказа" FontSize="16" FontWeight="SemiBold" />
             <TextBlock Text="Количество можно изменить. Строки с количеством 0 не будут созданы."
                        Margin="0,4,0,0"
                        Foreground="#475467" />
         </StackPanel>
         <DataGrid x:Name="RowsGrid"
+                  Grid.Row="1"
                   AutoGenerateColumns="False"
                   CanUserAddRows="False"
                   CanUserDeleteRows="False"
@@ -42,17 +48,21 @@
                 <DataGridTextColumn Header="Количество" Binding="{Binding QtyOrdered, StringFormat={}{0:0.###}}" Width="150" MinWidth="130" />
             </DataGrid.Columns>
         </DataGrid>
-        <StackPanel DockPanel.Dock="Bottom"
+        <StackPanel Grid.Row="2"
                     Orientation="Horizontal"
                     HorizontalAlignment="Right">
             <Button Content="Отмена"
                     Width="120"
+                    Height="32"
+                    VerticalAlignment="Center"
                     Margin="0,0,8,0"
                     IsCancel="True" />
             <Button Content="Подтвердить"
                     Width="140"
+                    Height="32"
+                    VerticalAlignment="Center"
                     IsDefault="True"
                     Click="Confirm_Click" />
         </StackPanel>
-    </DockPanel>
+    </Grid>
 </Window>

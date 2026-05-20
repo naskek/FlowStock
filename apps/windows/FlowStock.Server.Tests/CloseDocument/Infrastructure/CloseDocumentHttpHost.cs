@@ -37,6 +37,7 @@ internal sealed class CloseDocumentHttpHost : IAsyncDisposable
         builder.Services.AddSingleton(harness.Store);
         builder.Services.AddSingleton<IApiDocStore>(apiStore);
         builder.Services.AddSingleton<DocumentService>();
+        builder.Services.AddSingleton<OutboundPickingService>();
         builder.Services.AddSingleton<MarkingExcelService>();
 
         var app = builder.Build();
@@ -51,6 +52,10 @@ internal sealed class CloseDocumentHttpHost : IAsyncDisposable
         CloseDocumentEndpoint.Map(app);
         OpsEndpoint.Map(app);
         WarehouseProductionStateEndpoint.Map(app);
+        TsdOutboundPickingEndpoints.Map(app);
+        OrderStatusDiagnosticsEndpoint.Map(app);
+        OverShippedOrderDiagnosticsEndpoint.Map(app);
+        ProductionPlanConsistencyDiagnosticsEndpoint.Map(app);
         app.MapPost("/api/orders/requests/{requestId:long}/resolve", (long requestId, ResolveOrderRequestRequest request, IDataStore store) =>
         {
             var existing = store.GetOrderRequests(true).FirstOrDefault(entry => entry.Id == requestId);

@@ -121,6 +121,17 @@ public sealed class OrderRedistributionService
                 "Нельзя перенести больше, чем незакрытый остаток внутреннего заказа с учетом уже выпущенного объема.");
         }
 
+        var activeSourcePallets = newSourceQty <= QtyTolerance
+            ? CollectActiveSourcePallets(store, sourceInternalOrderId, sourceLine.Id, itemId)
+            : Array.Empty<SourceProductionPallet>();
+        if (activeSourcePallets.Any(row => row.DocStatus == DocStatus.Closed
+                                          || row.DocLedgerCount > 0
+                                          || string.Equals(row.Pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidOperationException(
+                "План паллет не соответствует строкам заказа. Запустите диагностику production-plan-consistency.");
+        }
+
         var sourcePlanBefore = store.GetOrderReceiptPlanLines(sourceInternalOrderId).ToList();
         var transferredPlanSegments = PeelSourceReceiptPlan(
             sourcePlanBefore,
@@ -182,6 +193,14 @@ public sealed class OrderRedistributionService
             .Cast<string>()
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+        if (newSourceQty <= QtyTolerance && activeSourcePallets.Count > 0)
+        {
+            transferredHuCodes = transferredHuCodes
+                .Concat(activeSourcePallets.Select(row => NormalizeHu(row.Pallet.HuCode)))
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
 
         if (targetOrder.UseReservedStock && ItemTypeUsesOrderReservation(store, itemId))
         {
@@ -235,6 +254,31 @@ public sealed class OrderRedistributionService
             TransferredHuCodes = transferredHuCodes,
             SourceMergeResult = mergeResult
         };
+    }
+
+    private static IReadOnlyList<SourceProductionPallet> CollectActiveSourcePallets(
+        IDataStore store,
+        long sourceInternalOrderId,
+        long sourceOrderLineId,
+        long itemId)
+    {
+        var result = new List<SourceProductionPallet>();
+        foreach (var doc in store.GetDocsByOrder(sourceInternalOrderId)
+                     .Where(doc => doc.Type == DocType.ProductionReceipt))
+        {
+            foreach (var pallet in store.GetProductionPalletsByDoc(doc.Id)
+                         .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                         .Where(pallet => pallet.ItemId == itemId || pallet.Lines.Any(line => line.ItemId == itemId))
+                         .Where(pallet => pallet.OrderLineId == sourceOrderLineId || pallet.Lines.Any(line => line.OrderLineId == sourceOrderLineId)))
+            {
+                result.Add(new SourceProductionPallet(
+                    pallet,
+                    doc.Status,
+                    store.CountLedgerEntriesByDocId(doc.Id)));
+            }
+        }
+
+        return result;
     }
 
     private static List<OrderReceiptPlanLine> NormalizeInternalPlanAfterTransfer(
@@ -461,6 +505,8 @@ public sealed class OrderRedistributionService
     }
 
     private sealed record PlanTransferSegment(string? HuCode, long? LocationId, double Qty);
+
+    private sealed record SourceProductionPallet(ProductionPallet Pallet, DocStatus DocStatus, int DocLedgerCount);
 
     private static double GetBindableStockQtyFromSource(
         IDataStore store,

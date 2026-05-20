@@ -1,6 +1,7 @@
 <Window x:Class="FlowStock.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:FlowStock.App"
         Title="FlowStock" Height="720" Width="1100"
         PreviewKeyDown="MainWindow_PreviewKeyDown">
     <DockPanel>
@@ -166,8 +167,22 @@
                               RowDetailsVisibilityMode="Collapsed"
                               SelectionMode="Single"
                               SelectionUnit="FullRow"
+                              MinColumnWidth="24"
+                              local:ResponsiveDataGridBehavior.IsEnabled="False"
                               MouseDoubleClick="WarehouseProductionStateGrid_MouseDoubleClick"
                               Visibility="Visible">
+                        <DataGrid.CellStyle>
+                            <Style TargetType="DataGridCell">
+                                <Setter Property="Padding" Value="4,2" />
+                                <Setter Property="VerticalContentAlignment" Value="Center" />
+                            </Style>
+                        </DataGrid.CellStyle>
+                        <DataGrid.ColumnHeaderStyle>
+                            <Style TargetType="DataGridColumnHeader">
+                                <Setter Property="Padding" Value="4,3" />
+                                <Setter Property="HorizontalContentAlignment" Value="Left" />
+                            </Style>
+                        </DataGrid.ColumnHeaderStyle>
                         <DataGrid.RowStyle>
                             <Style TargetType="DataGridRow">
                                 <Setter Property="DetailsVisibility" Value="Collapsed" />
@@ -228,29 +243,135 @@
                             </DataTemplate>
                         </DataGrid.RowDetailsTemplate>
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="" Binding="{Binding ExpandMarker}" Width="40" />
-                            <DataGridTemplateColumn Header="Товар" Width="*">
+                            <DataGridTemplateColumn Width="26"
+                                                    MinWidth="26"
+                                                    MaxWidth="26"
+                                                    CanUserResize="False">
+                                <DataGridTemplateColumn.CellStyle>
+                                    <Style TargetType="DataGridCell">
+                                        <Setter Property="Padding" Value="0" />
+                                        <Setter Property="HorizontalContentAlignment" Value="Center" />
+                                        <Setter Property="VerticalContentAlignment" Value="Center" />
+                                    </Style>
+                                </DataGridTemplateColumn.CellStyle>
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
-                                        <StackPanel Margin="0,2,0,2">
-                                            <TextBlock Text="{Binding ItemName}" TextWrapping="Wrap" />
-                                            <TextBlock Text="{Binding ProductSubline}" Foreground="#667784" FontSize="11" />
+                                        <TextBlock Text="{Binding ExpandMarker}"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center"
+                                                   FontSize="11"
+                                                   Margin="0" />
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTemplateColumn Header="Товар" Width="2*" MinWidth="240">
+                                <DataGridTemplateColumn.CellStyle>
+                                    <Style TargetType="DataGridCell">
+                                        <Setter Property="Padding" Value="4,2" />
+                                        <Setter Property="VerticalContentAlignment" Value="Top" />
+                                    </Style>
+                                </DataGridTemplateColumn.CellStyle>
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <StackPanel VerticalAlignment="Top">
+                                            <TextBlock Text="{Binding ItemName}"
+                                                       TextWrapping="Wrap"
+                                                       LineHeight="16"
+                                                       MaxHeight="32"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       ToolTip="{Binding ItemName}" />
+                                            <TextBlock Text="{Binding ProductSubline}"
+                                                       Foreground="#667784"
+                                                       FontSize="11"
+                                                       Margin="0,1,0,0"
+                                                       TextWrapping="NoWrap"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       ToolTip="{Binding ProductSubline}" />
                                         </StackPanel>
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
-                            <DataGridTextColumn Header="На складе" Binding="{Binding StockQtyDisplay}" Width="110" />
-                            <DataGridTextColumn Header="Минимум" Binding="{Binding MinStockSummary}" Width="120" />
-                            <DataGridTextColumn Header="Потребность" Binding="{Binding NeedSummary}" Width="180" />
-                            <DataGridTextColumn Header="План" Binding="{Binding PlanSummary}" Width="180" />
-                            <DataGridTextColumn Header="Выпущено / наполнено" Binding="{Binding FilledSummary}" Width="150" />
-                            <DataGridTemplateColumn Header="Осталось выпустить" Width="150">
+                            <DataGridTextColumn Header="На складе"
+                                                Binding="{Binding StockQtyDisplay}"
+                                                Width="Auto"
+                                                MinWidth="72"
+                                                MaxWidth="96">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="TextWrapping" Value="NoWrap" />
+                                        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                        <Setter Property="VerticalAlignment" Value="Center" />
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="Минимум"
+                                                Binding="{Binding MinStockSummary}"
+                                                Width="Auto"
+                                                MinWidth="80"
+                                                MaxWidth="110">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="TextWrapping" Value="NoWrap" />
+                                        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                        <Setter Property="VerticalAlignment" Value="Center" />
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="Потребность"
+                                                Binding="{Binding NeedSummary}"
+                                                Width="Auto"
+                                                MinWidth="92"
+                                                MaxWidth="130">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="TextWrapping" Value="NoWrap" />
+                                        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                        <Setter Property="ToolTip" Value="{Binding NeedSummary}" />
+                                        <Setter Property="VerticalAlignment" Value="Center" />
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="План"
+                                                Binding="{Binding PlanSummary}"
+                                                Width="Auto"
+                                                MinWidth="72"
+                                                MaxWidth="120">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="TextWrapping" Value="NoWrap" />
+                                        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                        <Setter Property="ToolTip" Value="{Binding PlanSummary}" />
+                                        <Setter Property="VerticalAlignment" Value="Center" />
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="Выпущено / наполнено"
+                                                Binding="{Binding FilledSummary}"
+                                                Width="Auto"
+                                                MinWidth="100"
+                                                MaxWidth="132">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="TextWrapping" Value="NoWrap" />
+                                        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                        <Setter Property="ToolTip" Value="{Binding FilledSummary}" />
+                                        <Setter Property="VerticalAlignment" Value="Center" />
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTemplateColumn Header="Осталось выпустить"
+                                                    Width="Auto"
+                                                    MinWidth="96"
+                                                    MaxWidth="128">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                         <TextBlock Text="{Binding RemainingNeedSummary}"
                                                    Foreground="{Binding RemainingNeedBrush}"
                                                    FontWeight="{Binding RemainingNeedFontWeight}"
-                                                   TextWrapping="Wrap" />
+                                                   TextWrapping="NoWrap"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding RemainingNeedSummary}"
+                                                   VerticalAlignment="Center" />
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>

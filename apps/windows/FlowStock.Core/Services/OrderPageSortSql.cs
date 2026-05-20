@@ -11,10 +11,10 @@ public static class OrderPageSortSql
 
     private static string BuildActiveOnly(string statusColumn) => $@"
 CASE {statusColumn}
-    WHEN 'IN_PROGRESS' THEN 1
-    WHEN 'ACCEPTED' THEN 2
-    WHEN 'SHIPPED' THEN 3
-    WHEN 'DRAFT' THEN 4
+    WHEN 'DRAFT' THEN 1
+    WHEN 'IN_PROGRESS' THEN 2
+    WHEN 'ACCEPTED' THEN 3
+    WHEN 'SHIPPED' THEN 4
     ELSE 5
 END";
 
@@ -26,10 +26,10 @@ END,
 CASE {statusColumn}
     WHEN 'CANCELLED' THEN 1
     WHEN 'MERGED' THEN 2
-    WHEN 'IN_PROGRESS' THEN 3
-    WHEN 'ACCEPTED' THEN 4
-    WHEN 'SHIPPED' THEN 5
-    WHEN 'DRAFT' THEN 6
+    WHEN 'DRAFT' THEN 3
+    WHEN 'IN_PROGRESS' THEN 4
+    WHEN 'ACCEPTED' THEN 5
+    WHEN 'SHIPPED' THEN 6
     ELSE 99
 END";
 }

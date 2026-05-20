@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Windows;
+using System.Windows.Controls;
 
 namespace FlowStock.App;
 
@@ -51,6 +52,9 @@ public partial class ProductionNeedDraftPreviewWindow : Window
 
     private void Confirm_Click(object sender, RoutedEventArgs e)
     {
+        RowsGrid.CommitEdit(DataGridEditingUnit.Cell, true);
+        RowsGrid.CommitEdit(DataGridEditingUnit.Row, true);
+
         foreach (var row in _rows)
         {
             if (double.IsNaN(row.QtyOrdered) || double.IsInfinity(row.QtyOrdered) || row.QtyOrdered < 0)
