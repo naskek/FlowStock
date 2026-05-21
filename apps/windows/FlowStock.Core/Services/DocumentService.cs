@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Diagnostics;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 
@@ -225,13 +226,18 @@ public sealed class DocumentService
 
     public CloseDocResult TryCloseDoc(long docId, bool allowNegative)
     {
+        var timing = new CloseDocTiming();
+        var buildCheckStopwatch = Stopwatch.StartNew();
         var check = BuildCloseDocCheck(docId);
+        buildCheckStopwatch.Stop();
+        timing.ValidateBuildCheckMs = buildCheckStopwatch.ElapsedMilliseconds;
         if (check.Errors.Count > 0)
         {
             return new CloseDocResult
             {
                 Success = false,
-                Errors = check.Errors
+                Errors = check.Errors,
+                Timing = timing
             };
         }
 
@@ -240,12 +246,14 @@ public sealed class DocumentService
             return new CloseDocResult
             {
                 Success = false,
-                Warnings = check.Warnings
+                Warnings = check.Warnings,
+                Timing = timing
             };
         }
 
         var closedAt = DateTime.Now;
 
+        var transactionStopwatch = Stopwatch.StartNew();
         _data.ExecuteInTransaction(store =>
         {
             var doc = store.GetDoc(docId);
@@ -518,10 +526,12 @@ public sealed class DocumentService
             }
 
             store.UpdateDocStatus(docId, DocStatus.Closed, closedAt);
-            TryRefreshLinkedOrderStatus(store, doc, lines);
+            TryRefreshLinkedOrderStatus(store, doc, lines, timing);
         });
+        transactionStopwatch.Stop();
+        timing.LedgerTransactionMs = transactionStopwatch.ElapsedMilliseconds;
 
-        return new CloseDocResult { Success = true };
+        return new CloseDocResult { Success = true, Timing = timing };
     }
 
     public void UpdateDocHeader(long docId, long? partnerId, string? orderRef, string? shippingRef)
@@ -2239,7 +2249,11 @@ public sealed class DocumentService
         return result;
     }
 
-    private static void TryRefreshLinkedOrderStatus(IDataStore store, Doc doc, IReadOnlyList<DocLine> lines)
+    private static void TryRefreshLinkedOrderStatus(
+        IDataStore store,
+        Doc doc,
+        IReadOnlyList<DocLine> lines,
+        CloseDocTiming? timing = null)
     {
         if (doc.Type is not (DocType.Outbound or DocType.ProductionReceipt))
         {
@@ -2249,18 +2263,37 @@ public sealed class DocumentService
         try
         {
             var orderService = new OrderService(store);
+            var collectStopwatch = Stopwatch.StartNew();
             var affectedOrderIds = CollectAffectedOrderIds(store, doc, lines);
+            collectStopwatch.Stop();
+            if (timing != null)
+            {
+                timing.CollectAffectedOrdersMs = collectStopwatch.ElapsedMilliseconds;
+            }
+
             if (affectedOrderIds.Count == 0)
             {
                 return;
             }
 
+            var refreshStatusStopwatch = Stopwatch.StartNew();
             foreach (var orderId in affectedOrderIds)
             {
                 orderService.RefreshPersistedStatus(orderId);
             }
+            refreshStatusStopwatch.Stop();
+            if (timing != null)
+            {
+                timing.RefreshStatusMs = refreshStatusStopwatch.ElapsedMilliseconds;
+            }
 
-            OrderService.RefreshCustomerReceiptPlansCore(store);
+            var refreshReceiptPlansStopwatch = Stopwatch.StartNew();
+            OrderService.RefreshCustomerReceiptPlansCore(store, affectedOrderIds);
+            refreshReceiptPlansStopwatch.Stop();
+            if (timing != null)
+            {
+                timing.RefreshReceiptPlansMs = refreshReceiptPlansStopwatch.ElapsedMilliseconds;
+            }
         }
         catch (Exception ex) when (IsMockStoreException(ex))
         {
@@ -2285,12 +2318,10 @@ public sealed class DocumentService
             return result;
         }
 
-        foreach (var order in store.GetOrders())
+        var orderIdsByLineId = store.GetOrderIdsByOrderLineIds(orderLineIds);
+        foreach (var orderId in orderIdsByLineId.Values)
         {
-            if (store.GetOrderLines(order.Id).Any(line => orderLineIds.Contains(line.Id)))
-            {
-                result.Add(order.Id);
-            }
+            result.Add(orderId);
         }
 
         return result;

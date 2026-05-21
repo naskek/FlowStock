@@ -163,6 +163,36 @@ public sealed class OrderService
         return lines;
     }
 
+    public IReadOnlyDictionary<long, IReadOnlyList<OrderLineView>> GetOrderLineViewsByOrderIds(IReadOnlyCollection<long> orderIds)
+    {
+        var ids = NormalizeOrderIds(orderIds);
+        var result = ids.ToDictionary(id => id, _ => (IReadOnlyList<OrderLineView>)Array.Empty<OrderLineView>());
+        if (ids.Count == 0)
+        {
+            return result;
+        }
+
+        if (_data is IOptimizedOrderLinesStore optimizedStore)
+        {
+            var linesByOrder = optimizedStore.GetOrderLineViewsByOrderIds(ids);
+            foreach (var orderId in ids)
+            {
+                result[orderId] = linesByOrder.TryGetValue(orderId, out var lines)
+                    ? lines
+                    : Array.Empty<OrderLineView>();
+            }
+
+            return result;
+        }
+
+        foreach (var orderId in ids)
+        {
+            result[orderId] = GetOrderLineViews(orderId);
+        }
+
+        return result;
+    }
+
     public IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemainingDetailed(long orderId, bool includeReservedStock = true)
     {
         var order = _data.GetOrder(orderId);
@@ -813,6 +843,28 @@ public sealed class OrderService
         }
     }
 
+    private static IReadOnlyList<long> NormalizeOrderIds(IReadOnlyCollection<long> orderIds)
+    {
+        if (orderIds.Count == 0)
+        {
+            return Array.Empty<long>();
+        }
+
+        var seen = new HashSet<long>();
+        var result = new List<long>(orderIds.Count);
+        foreach (var orderId in orderIds)
+        {
+            if (orderId <= 0 || !seen.Add(orderId))
+            {
+                continue;
+            }
+
+            result.Add(orderId);
+        }
+
+        return result;
+    }
+
     private IReadOnlyDictionary<long, double> GetReservedOutstandingByItemForCustomerOrders()
     {
         var reserved = new Dictionary<long, double>();
@@ -1267,12 +1319,42 @@ public sealed class OrderService
 
     internal static void RefreshCustomerReceiptPlansCore(IDataStore store, long? preserveOrderId = null)
     {
+        RefreshCustomerReceiptPlansCoreScoped(store, null, preserveOrderId);
+    }
+
+    internal static void RefreshCustomerReceiptPlansCore(
+        IDataStore store,
+        IReadOnlyCollection<long> affectedOrderIds,
+        long? preserveOrderId = null)
+    {
+        if (affectedOrderIds.Count == 0)
+        {
+            return;
+        }
+
+        RefreshCustomerReceiptPlansCoreScoped(store, affectedOrderIds, preserveOrderId);
+    }
+
+    private static void RefreshCustomerReceiptPlansCoreScoped(
+        IDataStore store,
+        IReadOnlyCollection<long>? affectedOrderIds,
+        long? preserveOrderId)
+    {
         var service = new OrderService(store);
-        var customerOrders = store.GetOrders()
-            .Where(order => order.Type == OrderType.Customer)
-            .OrderBy(order => order.CreatedAt)
-            .ThenBy(order => order.Id)
-            .ToList();
+        var customerOrders = affectedOrderIds == null
+            ? store.GetOrders()
+                .Where(order => order.Type == OrderType.Customer)
+                .OrderBy(order => order.CreatedAt)
+                .ThenBy(order => order.Id)
+                .ToList()
+            : affectedOrderIds
+                .Distinct()
+                .Select(store.GetOrder)
+                .Where(order => order?.Type == OrderType.Customer)
+                .Cast<Order>()
+                .OrderBy(order => order.CreatedAt)
+                .ThenBy(order => order.Id)
+                .ToList();
         if (customerOrders.Count == 0)
         {
             return;

@@ -1,3 +1,4 @@
+using System.Reflection;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 using FlowStock.Core.Services;
@@ -8,6 +9,130 @@ namespace FlowStock.Server.Tests.CloseDocument;
 
 public sealed class OrderStatusRefreshTests
 {
+    [Fact]
+    public void CollectAffectedOrderIds_UsesBatchOrderLineLookup_WithoutScanningAllOrders()
+    {
+        var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(s => s.GetOrderIdsByOrderLineIds(It.Is<IReadOnlyCollection<long>>(ids =>
+                ids.Count == 2 && ids.Contains(101) && ids.Contains(202))))
+            .Returns(new Dictionary<long, long>
+            {
+                [101] = 10,
+                [202] = 20
+            });
+
+        var method = typeof(DocumentService).GetMethod(
+            "CollectAffectedOrderIds",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        var result = Assert.IsType<HashSet<long>>(method!.Invoke(null, new object[]
+        {
+            store.Object,
+            new Doc { Id = 1 },
+            new[]
+            {
+                new DocLine { Id = 1, OrderLineId = 101, ItemId = 1001, Qty = 1 },
+                new DocLine { Id = 2, OrderLineId = 202, ItemId = 1002, Qty = 1 },
+                new DocLine { Id = 3, OrderLineId = 101, ItemId = 1001, Qty = 1 }
+            }
+        })!);
+
+        Assert.Equal([10, 20], result.OrderBy(id => id).ToArray());
+        store.Verify(s => s.GetOrderIdsByOrderLineIds(It.IsAny<IReadOnlyCollection<long>>()), Times.Once);
+        store.Verify(s => s.GetOrders(), Times.Never);
+        store.Verify(s => s.GetOrderLines(It.IsAny<long>()), Times.Never);
+    }
+
+    [Fact]
+    public void CloseProductionReceipt_ByOrderLineId_RefreshesOnlyAffectedCustomerReceiptPlan()
+    {
+        var harness = CreateCustomerOrderHarness();
+        harness.SeedOrder(new Order
+        {
+            Id = 10,
+            OrderRef = "SO-001",
+            Type = OrderType.Customer,
+            Status = OrderStatus.InProgress,
+            PartnerId = 200,
+            UseReservedStock = true,
+            CreatedAt = new DateTime(2026, 5, 8, 9, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedOrder(new Order
+        {
+            Id = 20,
+            OrderRef = "SO-020",
+            Type = OrderType.Customer,
+            Status = OrderStatus.InProgress,
+            PartnerId = 200,
+            UseReservedStock = true,
+            CreatedAt = new DateTime(2026, 5, 8, 9, 30, 0, DateTimeKind.Utc)
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 201,
+            OrderId = 20,
+            ItemId = 1001,
+            QtyOrdered = 5,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder
+        });
+        harness.SeedOrderReceiptPlanLines(10, new OrderReceiptPlanLine
+        {
+            Id = 1,
+            OrderId = 10,
+            OrderLineId = 101,
+            ItemId = 1001,
+            QtyPlanned = 1,
+            ToLocationId = 1,
+            ToHu = "HU-AFFECTED",
+            SortOrder = 1
+        });
+        harness.SeedOrderReceiptPlanLines(20, new OrderReceiptPlanLine
+        {
+            Id = 2,
+            OrderId = 20,
+            OrderLineId = 201,
+            ItemId = 1001,
+            QtyPlanned = 5,
+            ToLocationId = 1,
+            ToHu = "HU-UNRELATED",
+            SortOrder = 1
+        });
+        harness.SeedDoc(new Doc
+        {
+            Id = 400,
+            DocRef = "PRD-2026-000400",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 10,
+            OrderRef = "SO-001",
+            CreatedAt = new DateTime(2026, 5, 8, 15, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 401,
+            DocId = 400,
+            OrderLineId = 101,
+            ItemId = 1001,
+            Qty = 4,
+            ToLocationId = 1,
+            ToHu = "HU-PRD-401"
+        });
+
+        var result = harness.CreateService().TryCloseDoc(400, allowNegative: false);
+
+        Assert.True(result.Success, string.Join("; ", result.Errors));
+        Assert.NotNull(result.Timing);
+        Assert.InRange(result.Timing!.ValidateBuildCheckMs ?? -1, 0, long.MaxValue);
+        Assert.InRange(result.Timing.LedgerTransactionMs ?? -1, 0, long.MaxValue);
+        Assert.InRange(result.Timing.CollectAffectedOrdersMs ?? -1, 0, long.MaxValue);
+        Assert.InRange(result.Timing.RefreshStatusMs ?? -1, 0, long.MaxValue);
+        Assert.InRange(result.Timing.RefreshReceiptPlansMs ?? -1, 0, long.MaxValue);
+        Assert.Empty(harness.GetOrderReceiptPlanLines(10));
+        var unrelatedPlan = Assert.Single(harness.GetOrderReceiptPlanLines(20));
+        Assert.Equal("HU-UNRELATED", unrelatedPlan.ToHu);
+        Mock.Get(harness.Store).Verify(store => store.GetOrders(), Times.Never);
+    }
+
     [Fact]
     public void CloseProductionReceipt_FullDraftInternalOrder_BecomesShipped()
     {

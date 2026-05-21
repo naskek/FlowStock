@@ -3147,7 +3147,7 @@
     );
   }
 
-  function loadOrderReadiness(order) {
+  function getOrderReadinessNeeds(order) {
     var needsReadiness = isActiveShipmentOrder(order);
     var palletPresentation = getOrderPalletFillingPresentation(order);
     var needsPalletFallback = !!(
@@ -3157,23 +3157,66 @@
       !palletPresentation.label &&
       !palletPresentation.iconOnly
     );
-    if (!needsReadiness && !needsPalletFallback) {
+    return {
+      needsReadiness: needsReadiness,
+      needsPalletFallback: needsPalletFallback,
+      needsLines: needsReadiness || needsPalletFallback,
+    };
+  }
+
+  function applyOrderReadinessFromLines(order, lines, needs) {
+    var state = needs || getOrderReadinessNeeds(order);
+    if (state.needsReadiness) {
+      order.shipment_readiness = getShipmentReadiness(lines);
+    }
+    applyOrderLineShipmentPalletReadiness(order, lines);
+    if (state.needsPalletFallback) {
+      applyOrderLinePalletFillingFallback(order, lines);
+    }
+    return order;
+  }
+
+  function fetchOrderLinesBatch(orderIds) {
+    var ids = (Array.isArray(orderIds) ? orderIds : [])
+      .map(function (id) { return Number(id) || 0; })
+      .filter(function (id, index, source) {
+        return id > 0 && source.indexOf(id) === index;
+      });
+    if (!ids.length) {
+      return Promise.resolve({});
+    }
+
+    return fetchJson("/api/orders/lines?ids=" + encodeURIComponent(ids.join(",")))
+      .then(function (payload) {
+        var result = {};
+        if (!Array.isArray(payload)) {
+          return result;
+        }
+
+        payload.forEach(function (entry) {
+          var orderId = Number(entry && entry.order_id) || 0;
+          if (!orderId) {
+            return;
+          }
+
+          result[String(orderId)] = Array.isArray(entry.lines) ? entry.lines : [];
+        });
+        return result;
+      });
+  }
+
+  function loadOrderReadiness(order) {
+    var needs = getOrderReadinessNeeds(order);
+    if (!needs.needsLines) {
       return Promise.resolve(order);
     }
 
     return fetchJson("/api/orders/" + encodeURIComponent(order.id) + "/lines")
       .then(function (lines) {
-        if (needsReadiness) {
-          order.shipment_readiness = getShipmentReadiness(lines);
-        }
-        applyOrderLineShipmentPalletReadiness(order, lines);
-        if (needsPalletFallback) {
-          applyOrderLinePalletFillingFallback(order, lines);
-        }
-        return order;
+        return applyOrderReadinessFromLines(order, lines, needs);
       })
       .catch(function () {
-        if (needsReadiness) {
+        if (needs.needsReadiness) {
           order.shipment_readiness = null;
         }
         return order;
@@ -3182,11 +3225,49 @@
 
   function enrichOrdersWithReadiness(rows) {
     var source = Array.isArray(rows) ? rows : [];
-    return Promise.all(
-      source.map(function (order) {
-        return loadOrderReadiness(order);
+    var needsByOrderId = {};
+    var ids = [];
+    source.forEach(function (order) {
+      var needs = getOrderReadinessNeeds(order);
+      if (!needs.needsLines) {
+        return;
+      }
+
+      var orderId = Number(order && order.id) || 0;
+      if (!orderId) {
+        return;
+      }
+
+      needsByOrderId[String(orderId)] = needs;
+      ids.push(orderId);
+    });
+
+    if (!ids.length) {
+      return Promise.resolve(source);
+    }
+
+    return fetchOrderLinesBatch(ids)
+      .then(function (linesByOrderId) {
+        return source.map(function (order) {
+          var orderId = String(Number(order && order.id) || 0);
+          var needs = needsByOrderId[orderId];
+          if (!needs) {
+            return order;
+          }
+
+          return applyOrderReadinessFromLines(order, linesByOrderId[orderId] || [], needs);
+        });
       })
-    );
+      .catch(function () {
+        return source.map(function (order) {
+          var orderId = String(Number(order && order.id) || 0);
+          var needs = needsByOrderId[orderId];
+          if (needs && needs.needsReadiness) {
+            order.shipment_readiness = null;
+          }
+          return order;
+        });
+      });
   }
 
   function openNewOrderModal(onSubmitted) {

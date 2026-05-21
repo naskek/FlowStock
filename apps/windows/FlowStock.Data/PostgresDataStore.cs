@@ -9,7 +9,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore
+public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore
 {
     private readonly string _connectionString;
     private readonly NpgsqlConnection? _connection;
@@ -4575,6 +4575,37 @@ WHERE id = @id
         });
     }
 
+    public IReadOnlyDictionary<long, long> GetOrderIdsByOrderLineIds(IReadOnlyCollection<long> orderLineIds)
+    {
+        var ids = orderLineIds
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
+        if (ids.Length == 0)
+        {
+            return new Dictionary<long, long>();
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT id, order_id
+FROM order_lines
+WHERE id = ANY(@ids)
+ORDER BY id;
+");
+            command.Parameters.Add("@ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint).Value = ids;
+            using var reader = command.ExecuteReader();
+            var result = new Dictionary<long, long>();
+            while (reader.Read())
+            {
+                result[reader.GetInt64(0)] = reader.GetInt64(1);
+            }
+
+            return result;
+        });
+    }
+
     public IReadOnlyList<OrderLineView> GetOrderLineViews(long orderId)
     {
         return WithConnection(connection =>
@@ -4637,6 +4668,326 @@ ORDER BY i.name, ol.id;
             }
 
             return lines;
+        });
+    }
+
+    public IReadOnlyDictionary<long, IReadOnlyList<OrderLineView>> GetOrderLineViewsByOrderIds(IReadOnlyCollection<long> orderIds)
+    {
+        var ids = orderIds.Where(id => id > 0).Distinct().ToArray();
+        var result = ids.ToDictionary(id => id, _ => (IReadOnlyList<OrderLineView>)new List<OrderLineView>());
+        if (ids.Length == 0)
+        {
+            return result;
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH line_scope AS (
+    SELECT ol.id,
+           ol.order_id,
+           ol.item_id,
+           i.name AS item_name,
+           i.barcode,
+           i.gtin,
+           ol.qty_ordered,
+           ol.production_purpose,
+           ol.production_pallet_group,
+           o.order_type,
+           COALESCE(o.bind_reserved_stock, FALSE) AS bind_reserved_stock,
+           COALESCE(it.enable_order_reservation, FALSE) AS enable_order_reservation
+    FROM order_lines ol
+    INNER JOIN orders o ON o.id = ol.order_id
+    INNER JOIN items i ON i.id = ol.item_id
+    LEFT JOIN item_types it ON it.id = i.item_type_id
+    WHERE ol.order_id = ANY(@order_ids)
+),
+pallet_metrics AS (
+    SELECT pll.order_line_id,
+           COUNT(DISTINCT pp.id) FILTER (WHERE pp.status <> @pallet_cancelled_status)::int AS planned_pallet_count,
+           COUNT(DISTINCT pp.id) FILTER (WHERE pp.status = @pallet_filled_status)::int AS filled_pallet_count,
+           COALESCE(SUM(pll.planned_qty) FILTER (WHERE pp.status <> @pallet_cancelled_status), 0)::double precision AS planned_pallet_qty,
+           COALESCE(SUM(pll.planned_qty) FILTER (WHERE pp.status = @pallet_filled_status), 0)::double precision AS filled_pallet_qty
+    FROM production_pallet_lines pll
+    INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
+    INNER JOIN line_scope ls ON ls.id = pll.order_line_id
+    WHERE pll.order_line_id IS NOT NULL
+    GROUP BY pll.order_line_id
+),
+available_by_item AS (
+    SELECT l.item_id,
+           COALESCE(SUM(l.qty_delta), 0)::double precision AS qty_available
+    FROM ledger l
+    INNER JOIN (SELECT DISTINCT item_id FROM line_scope) items ON items.item_id = l.item_id
+    GROUP BY l.item_id
+),
+shipped_totals AS (
+    SELECT dl.order_line_id,
+           COALESCE(SUM(dl.qty), 0)::double precision AS qty_shipped
+    FROM doc_lines dl
+    INNER JOIN docs d ON d.id = dl.doc_id
+    INNER JOIN line_scope ls ON ls.id = dl.order_line_id
+    WHERE d.type = @outbound_doc_type
+      AND d.status = @closed_doc_status
+      AND d.order_id = ls.order_id
+      AND dl.order_line_id IS NOT NULL
+      AND dl.qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+    GROUP BY dl.order_line_id
+),
+legacy_receipt_totals AS (
+    SELECT dl.order_line_id,
+           COALESCE(SUM(dl.qty), 0)::double precision AS qty_received
+    FROM doc_lines dl
+    INNER JOIN docs d ON d.id = dl.doc_id
+    INNER JOIN line_scope ls ON ls.id = dl.order_line_id
+    WHERE d.status = @closed_doc_status
+      AND d.type = @production_doc_type
+      AND dl.order_line_id IS NOT NULL
+      AND dl.qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM production_pallets pp
+          WHERE pp.prd_doc_id = d.id
+            AND pp.status <> @pallet_cancelled_status
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+    GROUP BY dl.order_line_id
+),
+filled_pallet_receipt_totals AS (
+    SELECT pll.order_line_id,
+           COALESCE(SUM(pll.planned_qty), 0)::double precision AS qty_received
+    FROM production_pallet_lines pll
+    INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
+    INNER JOIN line_scope ls ON ls.id = pll.order_line_id
+    WHERE pp.status = @pallet_filled_status
+      AND pll.planned_qty > 0
+    GROUP BY pll.order_line_id
+),
+receipt_totals AS (
+    SELECT order_line_id,
+           COALESCE(SUM(qty_received), 0)::double precision AS qty_received
+    FROM (
+        SELECT order_line_id, qty_received
+        FROM legacy_receipt_totals
+        UNION ALL
+        SELECT order_line_id, qty_received
+        FROM filled_pallet_receipt_totals
+    ) receipt_sources
+    GROUP BY order_line_id
+),
+reserved_totals AS (
+    SELECT p.order_line_id,
+           COALESCE(SUM(p.qty_planned), 0)::double precision AS qty_reserved
+    FROM order_receipt_plan_lines p
+    INNER JOIN line_scope ls ON ls.id = p.order_line_id
+    WHERE p.qty_planned > 0
+      AND p.to_hu IS NOT NULL
+      AND p.to_hu <> ''
+    GROUP BY p.order_line_id
+),
+line_totals AS (
+    SELECT ls.*,
+           COALESCE(pm.planned_pallet_count, 0) AS planned_pallet_count,
+           COALESCE(pm.filled_pallet_count, 0) AS filled_pallet_count,
+           COALESCE(pm.planned_pallet_qty, 0)::double precision AS planned_pallet_qty,
+           COALESCE(pm.filled_pallet_qty, 0)::double precision AS filled_pallet_qty,
+           COALESCE(available.qty_available, 0)::double precision AS qty_available,
+           COALESCE(shipped.qty_shipped, 0)::double precision AS qty_shipped,
+           (COALESCE(receipt.qty_received, 0)
+            + CASE
+                  WHEN ls.order_type = @customer_order_type THEN COALESCE(reserved.qty_reserved, 0)
+                  ELSE 0
+              END)::double precision AS qty_produced
+    FROM line_scope ls
+    LEFT JOIN pallet_metrics pm ON pm.order_line_id = ls.id
+    LEFT JOIN available_by_item available ON available.item_id = ls.item_id
+    LEFT JOIN shipped_totals shipped ON shipped.order_line_id = ls.id
+    LEFT JOIN receipt_totals receipt ON receipt.order_line_id = ls.id
+    LEFT JOIN reserved_totals reserved ON reserved.order_line_id = ls.id
+)
+SELECT id,
+       order_id,
+       item_id,
+       item_name,
+       barcode,
+       gtin,
+       qty_ordered,
+       production_purpose,
+       production_pallet_group,
+       planned_pallet_count,
+       filled_pallet_count,
+       planned_pallet_qty,
+       filled_pallet_qty,
+       CASE
+           WHEN order_type = @internal_order_type THEN qty_produced
+           ELSE qty_shipped
+       END AS qty_shipped,
+       qty_produced,
+       qty_available,
+       CASE
+           WHEN order_type = @internal_order_type THEN GREATEST(0, qty_ordered - qty_produced)
+           ELSE GREATEST(0, qty_ordered - qty_shipped)
+       END AS qty_remaining,
+       CASE
+           WHEN order_type = @internal_order_type THEN 0
+           ELSE LEAST(
+               GREATEST(0, qty_ordered - qty_shipped),
+               CASE
+                   WHEN bind_reserved_stock AND enable_order_reservation THEN GREATEST(0, qty_produced - qty_shipped)
+                   ELSE GREATEST(0, qty_available)
+               END)
+       END AS can_ship_now,
+       CASE
+           WHEN order_type = @internal_order_type THEN 0
+           ELSE GREATEST(
+               0,
+               GREATEST(0, qty_ordered - qty_shipped)
+               - CASE
+                     WHEN bind_reserved_stock AND enable_order_reservation THEN GREATEST(0, qty_produced - qty_shipped)
+                     ELSE GREATEST(0, qty_available)
+                 END)
+       END AS shortage,
+       order_type
+FROM line_totals
+ORDER BY order_id, item_name, id;
+");
+            command.Parameters.Add("@order_ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint).Value = ids;
+            command.Parameters.AddWithValue("@closed_doc_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+            command.Parameters.AddWithValue("@outbound_doc_type", DocTypeMapper.ToOpString(DocType.Outbound));
+            command.Parameters.AddWithValue("@production_doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+            command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+            command.Parameters.AddWithValue("@internal_order_type", OrderStatusMapper.TypeToString(OrderType.Internal));
+            command.Parameters.AddWithValue("@pallet_filled_status", ProductionPalletStatus.Filled);
+            command.Parameters.AddWithValue("@pallet_cancelled_status", ProductionPalletStatus.Cancelled);
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var orderId = reader.GetInt64(1);
+                if (!result.TryGetValue(orderId, out var existing))
+                {
+                    continue;
+                }
+
+                var lines = (List<OrderLineView>)existing;
+                var line = new OrderLineView
+                {
+                    Id = reader.GetInt64(0),
+                    OrderId = orderId,
+                    ItemId = reader.GetInt64(2),
+                    ItemName = reader.GetString(3),
+                    Barcode = reader.IsDBNull(4) ? null : reader.GetString(4),
+                    Gtin = reader.IsDBNull(5) ? null : reader.GetString(5),
+                    QtyOrdered = reader.GetDouble(6),
+                    ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(reader.IsDBNull(7) ? null : reader.GetString(7)),
+                    ProductionPalletGroup = reader.IsDBNull(8) ? null : reader.GetString(8),
+                    PlannedPalletCount = reader.GetInt32(9),
+                    FilledPalletCount = reader.GetInt32(10),
+                    PlannedPalletQty = reader.GetDouble(11),
+                    FilledPalletQty = reader.GetDouble(12),
+                    QtyShipped = reader.GetDouble(13),
+                    QtyProduced = reader.GetDouble(14),
+                    QtyAvailable = reader.GetDouble(15),
+                    QtyRemaining = reader.GetDouble(16),
+                    CanShipNow = reader.GetDouble(17),
+                    Shortage = reader.GetDouble(18)
+                };
+                var orderType = OrderStatusMapper.TypeFromString(reader.GetString(19)) ?? OrderType.Customer;
+                OrderLinePalletFillPresentationService.Apply(new Order
+                {
+                    Id = orderId,
+                    Type = orderType
+                }, line);
+                lines.Add(line);
+            }
+
+            return result;
+        });
+    }
+
+    public IReadOnlyDictionary<long, string[]> GetProductionHuCodesByOrderLineIds(IReadOnlyCollection<long> orderLineIds)
+    {
+        var ids = orderLineIds.Where(id => id > 0).Distinct().ToArray();
+        if (ids.Length == 0)
+        {
+            return new Dictionary<long, string[]>();
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH line_scope AS (
+    SELECT id
+    FROM order_lines
+    WHERE id = ANY(@order_line_ids)
+),
+hu_sources AS (
+    SELECT p.order_line_id,
+           BTRIM(p.to_hu) AS hu_code
+    FROM order_receipt_plan_lines p
+    INNER JOIN line_scope ls ON ls.id = p.order_line_id
+    WHERE p.qty_planned > 0
+      AND p.to_hu IS NOT NULL
+      AND BTRIM(p.to_hu) <> ''
+    UNION
+    SELECT pll.order_line_id,
+           BTRIM(pp.hu_code) AS hu_code
+    FROM production_pallet_lines pll
+    INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
+    INNER JOIN docs d ON d.id = pp.prd_doc_id
+    INNER JOIN line_scope ls ON ls.id = pll.order_line_id
+    WHERE pp.status <> @pallet_cancelled_status
+      AND d.type = @production_doc_type
+      AND pp.hu_code IS NOT NULL
+      AND BTRIM(pp.hu_code) <> ''
+    UNION
+    SELECT pp.order_line_id,
+           BTRIM(pp.hu_code) AS hu_code
+    FROM production_pallets pp
+    INNER JOIN docs d ON d.id = pp.prd_doc_id
+    INNER JOIN line_scope ls ON ls.id = pp.order_line_id
+    WHERE pp.status <> @pallet_cancelled_status
+      AND d.type = @production_doc_type
+      AND pp.order_line_id IS NOT NULL
+      AND pp.hu_code IS NOT NULL
+      AND BTRIM(pp.hu_code) <> ''
+      AND NOT EXISTS (
+          SELECT 1
+          FROM production_pallet_lines pll
+          WHERE pll.production_pallet_id = pp.id
+      )
+)
+SELECT order_line_id, hu_code
+FROM hu_sources
+ORDER BY order_line_id, LOWER(hu_code), hu_code;
+");
+            command.Parameters.Add("@order_line_ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint).Value = ids;
+            command.Parameters.AddWithValue("@production_doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+            command.Parameters.AddWithValue("@pallet_cancelled_status", ProductionPalletStatus.Cancelled);
+            using var reader = command.ExecuteReader();
+            var rows = new Dictionary<long, SortedSet<string>>();
+            while (reader.Read())
+            {
+                var orderLineId = reader.GetInt64(0);
+                var huCode = reader.GetString(1);
+                if (!rows.TryGetValue(orderLineId, out var huCodes))
+                {
+                    huCodes = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+                    rows[orderLineId] = huCodes;
+                }
+
+                huCodes.Add(huCode);
+            }
+
+            return rows.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray());
         });
     }
 
@@ -5184,6 +5535,488 @@ ORDER BY
 
             return rows;
         });
+    }
+
+    public IReadOnlyDictionary<long, IReadOnlyList<WarehouseProductionStateCustomerOrderRow>> GetWarehouseProductionStateCustomerOrdersByItem()
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH active_doc_lines AS (
+    SELECT dl.doc_id,
+           dl.order_line_id,
+           dl.qty
+    FROM doc_lines dl
+    WHERE dl.qty > 0
+      AND dl.order_line_id IS NOT NULL
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+),
+customer_order_lines AS (
+    SELECT ol.id,
+           ol.order_id,
+           ol.item_id,
+           ol.qty_ordered,
+           o.order_ref,
+           o.status,
+           p.name AS partner_name
+    FROM order_lines ol
+    INNER JOIN orders o ON o.id = ol.order_id
+    LEFT JOIN partners p ON p.id = o.partner_id
+    WHERE o.order_type = @customer_order_type
+      AND o.status NOT IN (@draft_order_status, @shipped_order_status, @cancelled_order_status, @merged_order_status)
+),
+shipped_by_line AS (
+    SELECT dl.order_line_id,
+           SUM(dl.qty) AS qty_shipped
+    FROM active_doc_lines dl
+    INNER JOIN docs d ON d.id = dl.doc_id
+    INNER JOIN customer_order_lines col ON col.id = dl.order_line_id
+    WHERE d.type = @outbound_doc_type
+      AND d.status = @closed_doc_status
+      AND d.order_id = col.order_id
+    GROUP BY dl.order_line_id
+)
+SELECT col.item_id,
+       col.order_id,
+       col.order_ref,
+       col.partner_name,
+       col.status,
+       SUM(col.qty_ordered) AS qty_ordered,
+       SUM(COALESCE(shipped.qty_shipped, 0)) AS shipped_qty,
+       SUM(GREATEST(0, col.qty_ordered - COALESCE(shipped.qty_shipped, 0))) AS remaining_qty
+FROM customer_order_lines col
+LEFT JOIN shipped_by_line shipped ON shipped.order_line_id = col.id
+GROUP BY col.item_id,
+         col.order_id,
+         col.order_ref,
+         col.partner_name,
+         col.status
+HAVING SUM(GREATEST(0, col.qty_ordered - COALESCE(shipped.qty_shipped, 0))) > @qty_tolerance
+ORDER BY col.item_id,
+         col.order_ref;
+");
+            AddWarehouseProductionStateParameters(command);
+            using var reader = command.ExecuteReader();
+            var result = new Dictionary<long, List<WarehouseProductionStateCustomerOrderRow>>();
+            while (reader.Read())
+            {
+                var itemId = reader.GetInt64(0);
+                if (!result.TryGetValue(itemId, out var bucket))
+                {
+                    bucket = new List<WarehouseProductionStateCustomerOrderRow>();
+                    result[itemId] = bucket;
+                }
+
+                var status = OrderStatusMapper.StatusFromString(reader.GetString(4)) ?? OrderStatus.InProgress;
+                bucket.Add(new WarehouseProductionStateCustomerOrderRow
+                {
+                    OrderId = reader.GetInt64(1),
+                    OrderRef = reader.GetString(2),
+                    PartnerName = reader.IsDBNull(3) ? null : reader.GetString(3),
+                    Status = OrderStatusMapper.StatusToDisplayName(status, OrderType.Customer),
+                    QtyOrdered = reader.GetDouble(5),
+                    ShippedQty = reader.GetDouble(6),
+                    RemainingQty = reader.GetDouble(7)
+                });
+            }
+
+            return result.ToDictionary(
+                pair => pair.Key,
+                pair => (IReadOnlyList<WarehouseProductionStateCustomerOrderRow>)pair.Value
+                    .OrderBy(row => row.OrderRef, StringComparer.OrdinalIgnoreCase)
+                    .ToList());
+        });
+    }
+
+    public IReadOnlyDictionary<long, IReadOnlyList<WarehouseProductionStateInternalOrderRow>> GetWarehouseProductionStateInternalOrdersByItem()
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH active_doc_lines AS (
+    SELECT dl.id,
+           dl.doc_id,
+           dl.order_line_id,
+           dl.item_id,
+           dl.qty
+    FROM doc_lines dl
+    WHERE dl.qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+),
+internal_order_lines AS (
+    SELECT ol.id,
+           ol.order_id,
+           ol.item_id,
+           ol.qty_ordered,
+           o.order_ref,
+           o.status
+    FROM order_lines ol
+    INNER JOIN orders o ON o.id = ol.order_id
+    WHERE o.order_type = @internal_order_type
+      AND o.status NOT IN (@shipped_order_status, @cancelled_order_status, @merged_order_status)
+),
+linked_receipt_by_line AS (
+    SELECT dl.order_line_id,
+           SUM(dl.qty) AS qty_received
+    FROM active_doc_lines dl
+    INNER JOIN docs d ON d.id = dl.doc_id
+    INNER JOIN internal_order_lines iol ON iol.id = dl.order_line_id
+    WHERE d.status = @closed_doc_status
+      AND d.type = @production_doc_type
+      AND dl.order_line_id IS NOT NULL
+      AND NOT EXISTS (
+          SELECT 1
+          FROM production_pallets pp
+          WHERE pp.prd_doc_id = d.id
+            AND pp.status <> @cancelled_pallet_status
+      )
+    GROUP BY dl.order_line_id
+),
+filled_pallet_by_line AS (
+    SELECT pll.order_line_id,
+           SUM(pll.planned_qty) AS qty_received
+    FROM production_pallet_lines pll
+    INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
+    INNER JOIN internal_order_lines iol ON iol.id = pll.order_line_id
+    WHERE pp.status = @filled_pallet_status
+      AND pll.planned_qty > 0
+    GROUP BY pll.order_line_id
+),
+receipt_by_line AS (
+    SELECT order_line_id,
+           SUM(qty_received) AS qty_received
+    FROM (
+        SELECT order_line_id, qty_received
+        FROM linked_receipt_by_line
+        UNION ALL
+        SELECT order_line_id, qty_received
+        FROM filled_pallet_by_line
+    ) receipt_sources
+    GROUP BY order_line_id
+),
+unlinked_by_item AS (
+    SELECT d.order_id,
+           dl.item_id,
+           SUM(dl.qty) AS qty_received
+    FROM docs d
+    INNER JOIN active_doc_lines dl ON dl.doc_id = d.id
+    INNER JOIN orders o ON o.id = d.order_id
+    WHERE o.order_type = @internal_order_type
+      AND o.status NOT IN (@shipped_order_status, @cancelled_order_status, @merged_order_status)
+      AND d.status = @closed_doc_status
+      AND d.type = @production_doc_type
+      AND dl.order_line_id IS NULL
+      AND NOT EXISTS (
+          SELECT 1
+          FROM production_pallets pp
+          WHERE pp.prd_doc_id = d.id
+            AND pp.status <> @cancelled_pallet_status
+      )
+    GROUP BY d.order_id,
+             dl.item_id
+),
+line_seed AS (
+    SELECT iol.order_id,
+           iol.order_ref,
+           iol.status,
+           iol.id AS order_line_id,
+           iol.item_id,
+           iol.qty_ordered,
+           COALESCE(receipt.qty_received, 0) AS qty_direct_received,
+           COALESCE(unlinked.qty_received, 0) AS qty_unlinked_item_received,
+           GREATEST(0, iol.qty_ordered - COALESCE(receipt.qty_received, 0)) AS qty_direct_unfilled,
+           ROW_NUMBER() OVER (
+               PARTITION BY iol.order_id, iol.item_id
+               ORDER BY iol.id DESC
+           ) AS item_line_desc_rank,
+           COALESCE(SUM(GREATEST(0, iol.qty_ordered - COALESCE(receipt.qty_received, 0))) OVER (
+               PARTITION BY iol.order_id, iol.item_id
+               ORDER BY iol.id
+               ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+           ), 0) AS qty_direct_unfilled_before
+    FROM internal_order_lines iol
+    LEFT JOIN receipt_by_line receipt ON receipt.order_line_id = iol.id
+    LEFT JOIN unlinked_by_item unlinked ON unlinked.order_id = iol.order_id
+                                      AND unlinked.item_id = iol.item_id
+),
+line_remaining AS (
+    SELECT order_id,
+           order_ref,
+           status,
+           item_id,
+           qty_ordered,
+           GREATEST(0, qty_ordered - (
+               qty_direct_received
+               + CASE
+                     WHEN qty_unlinked_item_received <= 0 THEN 0
+                     WHEN item_line_desc_rank = 1 THEN GREATEST(0, qty_unlinked_item_received - qty_direct_unfilled_before)
+                     ELSE GREATEST(0, LEAST(qty_unlinked_item_received - qty_direct_unfilled_before, qty_direct_unfilled))
+                 END
+           )) AS qty_remaining
+    FROM line_seed
+)
+SELECT item_id,
+       order_id,
+       order_ref,
+       status,
+       SUM(qty_ordered) AS qty_ordered,
+       SUM(GREATEST(0, qty_ordered - qty_remaining)) AS produced_qty,
+       SUM(qty_remaining) AS remaining_qty
+FROM line_remaining
+GROUP BY item_id,
+         order_id,
+         order_ref,
+         status
+HAVING SUM(qty_remaining) > @qty_tolerance
+ORDER BY item_id,
+         order_ref;
+");
+            AddWarehouseProductionStateParameters(command);
+            using var reader = command.ExecuteReader();
+            var result = new Dictionary<long, List<WarehouseProductionStateInternalOrderRow>>();
+            while (reader.Read())
+            {
+                var itemId = reader.GetInt64(0);
+                if (!result.TryGetValue(itemId, out var bucket))
+                {
+                    bucket = new List<WarehouseProductionStateInternalOrderRow>();
+                    result[itemId] = bucket;
+                }
+
+                var status = OrderStatusMapper.StatusFromString(reader.GetString(3)) ?? OrderStatus.InProgress;
+                bucket.Add(new WarehouseProductionStateInternalOrderRow
+                {
+                    OrderId = reader.GetInt64(1),
+                    OrderRef = reader.GetString(2),
+                    Status = OrderStatusMapper.StatusToDisplayName(status, OrderType.Internal),
+                    QtyOrdered = reader.GetDouble(4),
+                    ProducedQty = reader.GetDouble(5),
+                    RemainingQty = reader.GetDouble(6)
+                });
+            }
+
+            return result.ToDictionary(
+                pair => pair.Key,
+                pair => (IReadOnlyList<WarehouseProductionStateInternalOrderRow>)pair.Value
+                    .OrderBy(row => row.OrderRef, StringComparer.OrdinalIgnoreCase)
+                    .ToList());
+        });
+    }
+
+    public IReadOnlyDictionary<long, WarehouseProductionStatePalletAggregate> GetWarehouseProductionStatePalletsByItem()
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH work_docs AS (
+    SELECT d.id,
+           d.doc_ref,
+           d.order_id,
+           o.order_type,
+           o.status AS order_status
+    FROM production_pallets pp
+    INNER JOIN docs d ON d.id = pp.prd_doc_id
+    LEFT JOIN orders o ON o.id = d.order_id
+    WHERE d.type = @production_doc_type
+      AND d.status <> @closed_doc_status
+      AND pp.status <> @cancelled_pallet_status
+      AND (o.id IS NULL OR o.status NOT IN (@shipped_order_status, @cancelled_order_status, @merged_order_status))
+    GROUP BY d.id,
+             d.doc_ref,
+             d.order_id,
+             o.order_type,
+             o.status
+    HAVING COUNT(*) FILTER (WHERE pp.status = @filled_pallet_status) < COUNT(*)
+),
+pallet_composition AS (
+    SELECT pp.id AS pallet_id,
+           STRING_AGG(i.name || ' ' || TO_CHAR(pll.planned_qty, 'FM999999999990.999'), ', ' ORDER BY i.name, pll.id) AS composition
+    FROM production_pallets pp
+    INNER JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
+    INNER JOIN items i ON i.id = pll.item_id
+    GROUP BY pp.id
+),
+pallet_component_counts AS (
+    SELECT production_pallet_id AS pallet_id,
+           COUNT(*) AS line_count
+    FROM production_pallet_lines
+    GROUP BY production_pallet_id
+),
+ledger_balance AS (
+    SELECT item_id,
+           location_id,
+           UPPER(BTRIM(COALESCE(hu_code, hu))) AS hu_code,
+           SUM(qty_delta) AS qty
+    FROM ledger
+    WHERE COALESCE(hu_code, hu) IS NOT NULL
+      AND BTRIM(COALESCE(hu_code, hu)) <> ''
+    GROUP BY item_id,
+             location_id,
+             UPPER(BTRIM(COALESCE(hu_code, hu)))
+),
+pallet_rows AS (
+    SELECT wd.id AS prd_doc_id,
+           wd.doc_ref AS prd_ref,
+           wd.order_type,
+           wd.order_status,
+           pp.id AS pallet_id,
+           pp.hu_code,
+           pp.status AS pallet_status,
+           COALESCE(pll.item_id, pp.item_id) AS item_id,
+           COALESCE(line_item.name, header_item.name, '') AS item_name,
+           CASE WHEN pll.id IS NULL THEN pp.planned_qty ELSE pll.planned_qty END AS planned_qty,
+           CASE
+               WHEN pp.status <> @filled_pallet_status THEN GREATEST(0, COALESCE(pll.filled_qty, 0))
+               WHEN pll.id IS NULL THEN GREATEST(0, pp.planned_qty)
+               WHEN COALESCE(pll.filled_qty, 0) > @qty_tolerance THEN GREATEST(0, pll.filled_qty)
+               ELSE GREATEST(0, pll.planned_qty)
+           END AS filled_qty,
+           pp.to_location_id,
+           l.code AS location_code,
+           pp.status = @filled_pallet_status AS is_filled,
+           COALESCE(pcc.line_count, 0) > 1 AS is_mixed_pallet,
+           CASE
+               WHEN COALESCE(pcc.line_count, 0) > 1 THEN COALESCE(pc.composition, COALESCE(line_item.name, header_item.name, ''))
+               ELSE COALESCE(line_item.name, header_item.name, '')
+           END AS composition,
+           COALESCE(lb.qty, 0) > @qty_tolerance AS in_ledger
+    FROM work_docs wd
+    INNER JOIN production_pallets pp ON pp.prd_doc_id = wd.id
+    LEFT JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
+    LEFT JOIN items line_item ON line_item.id = pll.item_id
+    LEFT JOIN items header_item ON header_item.id = pp.item_id
+    LEFT JOIN locations l ON l.id = pp.to_location_id
+    LEFT JOIN pallet_composition pc ON pc.pallet_id = pp.id
+    LEFT JOIN pallet_component_counts pcc ON pcc.pallet_id = pp.id
+    LEFT JOIN ledger_balance lb ON lb.item_id = COALESCE(pll.item_id, pp.item_id)
+                               AND lb.location_id = pp.to_location_id
+                               AND lb.hu_code = UPPER(BTRIM(pp.hu_code))
+    WHERE pp.status <> @cancelled_pallet_status
+)
+SELECT prd_doc_id,
+       prd_ref,
+       order_type,
+       order_status,
+       pallet_id,
+       hu_code,
+       pallet_status,
+       item_id,
+       item_name,
+       planned_qty,
+       filled_qty,
+       location_code,
+       is_filled,
+       is_mixed_pallet,
+       composition,
+       in_ledger
+FROM pallet_rows
+ORDER BY item_id,
+         prd_ref,
+         hu_code;
+");
+            AddWarehouseProductionStateParameters(command);
+            using var reader = command.ExecuteReader();
+            var aggregates = new Dictionary<long, WarehouseProductionStatePalletAggregateBuilder>();
+            while (reader.Read())
+            {
+                var itemId = reader.GetInt64(7);
+                if (!aggregates.TryGetValue(itemId, out var aggregate))
+                {
+                    aggregate = new WarehouseProductionStatePalletAggregateBuilder();
+                    aggregates[itemId] = aggregate;
+                }
+
+                var palletId = reader.GetInt64(4);
+                var plannedQty = reader.GetDouble(9);
+                var filledQty = reader.GetDouble(10);
+                var isFilled = reader.GetBoolean(12);
+                var isMixed = reader.GetBoolean(13);
+                var inLedger = reader.GetBoolean(15);
+                var orderType = reader.IsDBNull(2) ? null : OrderStatusMapper.TypeFromString(reader.GetString(2));
+                var orderStatus = reader.IsDBNull(3) ? null : OrderStatusMapper.StatusFromString(reader.GetString(3));
+
+                aggregate.Rows.Add(new WarehouseProductionStatePalletRow
+                {
+                    PrdDocId = reader.GetInt64(0),
+                    PrdRef = reader.GetString(1),
+                    PalletId = palletId,
+                    HuCode = reader.GetString(5),
+                    PalletStatus = reader.GetString(6),
+                    PlannedQty = Math.Max(0d, plannedQty),
+                    FilledQty = Math.Max(0d, filledQty),
+                    StockEffect = inLedger ? "в остатках" : "запланировано, не склад",
+                    IsMixedPallet = isMixed,
+                    Composition = reader.GetString(14),
+                    Location = reader.IsDBNull(11) ? null : reader.GetString(11)
+                });
+                aggregate.PlannedQty += Math.Max(0d, plannedQty);
+                aggregate.FilledQty += Math.Max(0d, filledQty);
+                aggregate.PlannedPalletIds.Add(palletId);
+                if (isFilled)
+                {
+                    aggregate.FilledPalletIds.Add(palletId);
+                }
+
+                aggregate.HasFilledWithoutLedger |= isFilled && !inLedger;
+                aggregate.HasStalePalletAfterFullShipment |= orderType == OrderType.Customer && orderStatus == OrderStatus.Shipped;
+            }
+
+            return aggregates.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value.ToAggregate());
+        });
+    }
+
+    private static void AddWarehouseProductionStateParameters(NpgsqlCommand command)
+    {
+        command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+        command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+        command.Parameters.AddWithValue("@internal_order_type", OrderStatusMapper.TypeToString(OrderType.Internal));
+        command.Parameters.AddWithValue("@draft_order_status", OrderStatusMapper.StatusToString(OrderStatus.Draft));
+        command.Parameters.AddWithValue("@shipped_order_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+        command.Parameters.AddWithValue("@cancelled_order_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+        command.Parameters.AddWithValue("@merged_order_status", OrderStatusMapper.StatusToString(OrderStatus.Merged));
+        command.Parameters.AddWithValue("@closed_doc_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+        command.Parameters.AddWithValue("@outbound_doc_type", DocTypeMapper.ToOpString(DocType.Outbound));
+        command.Parameters.AddWithValue("@production_doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+        command.Parameters.AddWithValue("@filled_pallet_status", ProductionPalletStatus.Filled);
+        command.Parameters.AddWithValue("@cancelled_pallet_status", ProductionPalletStatus.Cancelled);
+    }
+
+    private sealed class WarehouseProductionStatePalletAggregateBuilder
+    {
+        public List<WarehouseProductionStatePalletRow> Rows { get; } = new();
+        public double PlannedQty { get; set; }
+        public double FilledQty { get; set; }
+        public HashSet<long> PlannedPalletIds { get; } = new();
+        public HashSet<long> FilledPalletIds { get; } = new();
+        public bool HasFilledWithoutLedger { get; set; }
+        public bool HasStalePalletAfterFullShipment { get; set; }
+
+        public WarehouseProductionStatePalletAggregate ToAggregate()
+        {
+            return new WarehouseProductionStatePalletAggregate
+            {
+                Rows = Rows
+                    .OrderBy(row => row.PrdRef, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(row => row.HuCode, StringComparer.OrdinalIgnoreCase)
+                    .ToArray(),
+                PlannedQty = PlannedQty,
+                FilledQty = FilledQty,
+                PlannedCount = PlannedPalletIds.Count,
+                FilledCount = FilledPalletIds.Count,
+                HasFilledWithoutLedger = HasFilledWithoutLedger,
+                HasStalePalletAfterFullShipment = HasStalePalletAfterFullShipment
+            };
+        }
     }
 
     public IReadOnlyList<OrderReceiptPlanLine> GetOrderReceiptPlanLines(long orderId)
