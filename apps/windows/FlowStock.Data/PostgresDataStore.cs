@@ -334,7 +334,8 @@ needed_marking_keys AS (
     WHERE qty_for_marking > 0
 ),
 free_code_stats AS (
-    SELECT COALESCE(mo.item_id, 0) AS item_id,
+    SELECT COALESCE(mo.order_id, mo.source_order_id) AS order_id,
+           COALESCE(mo.item_id, 0) AS item_id,
            COALESCE(NULLIF(BTRIM(COALESCE(mo.gtin, c.gtin)), ''), '') AS gtin,
            COUNT(*) AS codes_total
     FROM marking_code c
@@ -345,14 +346,17 @@ free_code_stats AS (
       AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
       AND (mo.source_type IN (@production_need_source_type, @production_order_source_type)
            OR mo.order_id IS NOT NULL)
+      AND COALESCE(mo.order_id, mo.source_order_id) IS NOT NULL
       AND EXISTS (
           SELECT 1
-          FROM needed_marking_keys need
-          WHERE COALESCE(mo.item_id, 0) = need.item_id
+          FROM markable_item_need need
+          WHERE need.order_id = COALESCE(mo.order_id, mo.source_order_id)
+            AND (COALESCE(mo.item_id, 0) = need.item_id
              OR (need.gtin IS NOT NULL
-                 AND COALESCE(NULLIF(BTRIM(COALESCE(mo.gtin, c.gtin)), ''), '') = COALESCE(need.gtin, ''))
+                 AND COALESCE(NULLIF(BTRIM(COALESCE(mo.gtin, c.gtin)), ''), '') = COALESCE(need.gtin, '')))
       )
-    GROUP BY COALESCE(mo.item_id, 0),
+    GROUP BY COALESCE(mo.order_id, mo.source_order_id),
+             COALESCE(mo.item_id, 0),
              COALESCE(NULLIF(BTRIM(COALESCE(mo.gtin, c.gtin)), ''), '')
 ),
 bound_code_stats AS (
@@ -399,8 +403,9 @@ marking_rollup AS (
                LEFT JOIN LATERAL (
                    SELECT COALESCE(SUM(free.codes_total), 0) AS total
                    FROM free_code_stats free
-                   WHERE free.item_id = need.item_id
-                      OR (need.gtin IS NOT NULL AND free.gtin = COALESCE(need.gtin, ''))
+                   WHERE free.order_id = need.order_id
+                     AND (free.item_id = need.item_id
+                          OR (need.gtin IS NOT NULL AND free.gtin = COALESCE(need.gtin, '')))
                ) free_total ON TRUE
                LEFT JOIN LATERAL (
                    SELECT COALESCE(SUM(bound.codes_total), 0) AS total

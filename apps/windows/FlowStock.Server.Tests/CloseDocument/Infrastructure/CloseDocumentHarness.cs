@@ -2179,7 +2179,7 @@ internal sealed class CloseDocumentHarness
                 }
 
                 var item = _items[group.ItemId];
-                var freeCodes = CountFreeMarkingCodesForItem(group.ItemId, item.Gtin);
+                var freeCodes = CountFreeMarkingCodesForOrderItem(order.Id, group.ItemId, item.Gtin);
                 var boundCodes = group.Lines.Sum(line => CountBoundMarkingCodesForOrderLine(line.Id));
                 return freeCodes + boundCodes + 0.000001 >= group.RequiredQty;
             });
@@ -2969,6 +2969,23 @@ internal sealed class CloseDocumentHarness
             .Select(code => (Code: code, Order: _markingOrders.TryGetValue(code.MarkingOrderId, out var order) ? order : null))
             .Count(pair => pair.Order != null
                            && pair.Order.Status is not MarkingOrderStatus.Cancelled and not MarkingOrderStatus.Failed
+                           && (pair.Order.ItemId == itemId
+                               || (!string.IsNullOrWhiteSpace(normalizedGtin)
+                                   && (string.Equals(NormalizeText(pair.Order.Gtin), normalizedGtin, StringComparison.OrdinalIgnoreCase)
+                                       || string.Equals(NormalizeText(pair.Code.Gtin), normalizedGtin, StringComparison.OrdinalIgnoreCase)))));
+    }
+
+    private int CountFreeMarkingCodesForOrderItem(long orderId, long itemId, string? gtin)
+    {
+        var normalizedGtin = NormalizeText(gtin);
+        return _markingCodes.Values
+            .Where(code => code.ReceiptDocId == null
+                           && code.ReceiptLineId == null
+                           && code.Status is MarkingCodeStatus.Reserved or MarkingCodeStatus.Printed)
+            .Select(code => (Code: code, Order: _markingOrders.TryGetValue(code.MarkingOrderId, out var order) ? order : null))
+            .Count(pair => pair.Order != null
+                           && pair.Order.Status is not MarkingOrderStatus.Cancelled and not MarkingOrderStatus.Failed
+                           && (pair.Order.OrderId == orderId || pair.Order.SourceOrderId == orderId)
                            && (pair.Order.ItemId == itemId
                                || (!string.IsNullOrWhiteSpace(normalizedGtin)
                                    && (string.Equals(NormalizeText(pair.Order.Gtin), normalizedGtin, StringComparison.OrdinalIgnoreCase)

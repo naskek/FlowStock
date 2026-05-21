@@ -24,6 +24,8 @@ public sealed class OrderMarkingExportTests
         Assert.Equal(10, markingOrder.SourceOrderId);
         Assert.Equal(10, markingOrder.OrderId);
         Assert.Equal(3600, harness.MarkingCodes.Count(code => code.MarkingOrderId == markingOrder.Id));
+        Assert.True(harness.GetOrder(10).MarkingCompleted);
+        Assert.Equal(MarkingStatus.Printed, harness.GetOrder(10).EffectiveMarkingStatus);
     }
 
     [Fact]
@@ -91,6 +93,34 @@ public sealed class OrderMarkingExportTests
         Assert.False(order.MarkingCompleted);
         Assert.Equal(MarkingStatus.Required, order.EffectiveMarkingStatus);
         Assert.Equal("Маркировка не проведена", order.MarkingLabel);
+    }
+
+    [Fact]
+    public void NewInternalMarkingOrder_WithUnrelatedFreeCodes_IsNotCompleted()
+    {
+        var harness = CreateOrderHarness(OrderType.Internal, qty: 3600, status: OrderStatus.InProgress);
+        var markingOrderId = Guid.NewGuid();
+        harness.SeedMarkingOrder(new MarkingOrder
+        {
+            Id = markingOrderId,
+            OrderId = null,
+            SourceOrderId = null,
+            SourceType = MarkingNeedCreationService.ProductionNeedSourceType,
+            ItemId = 1,
+            Gtin = "04601234567890",
+            RequestedQuantity = 3600,
+            Status = MarkingOrderStatus.Printed,
+            CreatedAt = new DateTime(2026, 5, 20, 10, 0, 0, DateTimeKind.Utc),
+            UpdatedAt = new DateTime(2026, 5, 20, 10, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedMarkingCodes(markingOrderId, count: 3600, gtin: "04601234567890");
+
+        var order = harness.GetOrder(10);
+
+        Assert.True(order.MarkingApplies);
+        Assert.True(order.MarkingRequired);
+        Assert.False(order.MarkingCompleted);
+        Assert.Equal(MarkingStatus.Required, order.EffectiveMarkingStatus);
     }
 
     [Fact]

@@ -36,6 +36,16 @@ public sealed class OrderGetOrdersPageSqlTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void OrderListMarkingRollup_CountsOnlyOrderLinkedFreeCodesAsCoverage()
+    {
+        var sql = File.ReadAllText(GetPostgresDataStorePath()).Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        Assert.Contains("SELECT COALESCE(mo.order_id, mo.source_order_id) AS order_id", sql, StringComparison.Ordinal);
+        Assert.Contains("AND COALESCE(mo.order_id, mo.source_order_id) IS NOT NULL", sql, StringComparison.Ordinal);
+        Assert.Contains("WHERE free.order_id = need.order_id", sql, StringComparison.Ordinal);
+    }
+
     private static string GetPostgresDataStorePath()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
