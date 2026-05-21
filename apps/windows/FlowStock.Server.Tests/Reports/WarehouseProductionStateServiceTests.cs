@@ -1,14 +1,72 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 using FlowStock.Core.Services;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
+using Moq;
 
 namespace FlowStock.Server.Tests.Reports;
 
 public sealed class WarehouseProductionStateServiceTests
 {
+    [Fact]
+    public void WarehouseProductionState_OptimizedReadModel_MatchesFallbackGoldenRow()
+    {
+        var harness = CreateBaseHarness(minStockQty: 100);
+        harness.SeedLedgerEntry(500, 1001, 1, 20);
+        SeedCustomerOrder(harness, 20, 201, 1001, 30, 0, OrderStatus.InProgress);
+        SeedInternalOrder(harness, 10, 101, 1001, 40, 0, OrderStatus.InProgress);
+        SeedProductionReceiptDoc(harness, 700, 10, "PRD-700");
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 1,
+            PrdDocId = 700,
+            DocLineId = 7001,
+            OrderId = 10,
+            OrderLineId = 101,
+            ItemId = 1001,
+            ItemName = "Горчица",
+            HuCode = "HU-000001",
+            PlannedQty = 40,
+            ToLocationId = 1,
+            ToLocationCode = "FG-01",
+            Status = ProductionPalletStatus.Planned,
+            CreatedAt = DateTime.UtcNow
+        });
+
+        var fallbackRow = Assert.Single(new WarehouseProductionStateService(harness.Store).GetRows(includeZero: false));
+        var optimizedStore = CreateOptimizedStoreFromGoldenRows(harness, fallbackRow);
+
+        var optimizedRow = Assert.Single(new WarehouseProductionStateService(optimizedStore.Object).GetRows(includeZero: false));
+
+        Assert.Equal(fallbackRow.ItemId, optimizedRow.ItemId);
+        Assert.Equal(fallbackRow.StockQty, optimizedRow.StockQty);
+        Assert.Equal(fallbackRow.CustomerOpenDemandQty, optimizedRow.CustomerOpenDemandQty);
+        Assert.Equal(fallbackRow.CustomerRemainingToShipQty, optimizedRow.CustomerRemainingToShipQty);
+        Assert.Equal(fallbackRow.InternalRemainingQty, optimizedRow.InternalRemainingQty);
+        Assert.Equal(fallbackRow.PrdPlannedQty, optimizedRow.PrdPlannedQty);
+        Assert.Equal(fallbackRow.RemainingNeedQty, optimizedRow.RemainingNeedQty);
+        Assert.Equal(fallbackRow.CustomerOrders.Select(row => row.OrderId), optimizedRow.CustomerOrders.Select(row => row.OrderId));
+        Assert.Equal(fallbackRow.InternalOrders.Select(row => row.OrderId), optimizedRow.InternalOrders.Select(row => row.OrderId));
+        Assert.Equal(fallbackRow.ProductionReceipts.Select(row => row.PalletId), optimizedRow.ProductionReceipts.Select(row => row.PalletId));
+    }
+
+    [Fact]
+    public void WarehouseProductionState_OptimizedStore_DoesNotUseFullOrderScanPath()
+    {
+        var harness = CreateBaseHarness(minStockQty: 0);
+        var store = CreateOptimizedStoreFromGoldenRows(harness);
+
+        var rows = new WarehouseProductionStateService(store.Object).GetRows(includeZero: true);
+
+        Assert.Single(rows);
+        store.Verify(data => data.GetOrders(), Times.Never);
+        store.Verify(data => data.GetOrderLines(It.IsAny<long>()), Times.Never);
+        store.Verify(data => data.GetShippedTotalsByOrderLine(It.IsAny<long>()), Times.Never);
+    }
+
     [Fact]
     public void WarehouseProductionState_StockOnlyFromLedger()
     {
@@ -520,5 +578,54 @@ public sealed class WarehouseProductionStateServiceTests
             OrderRef = orderId.ToString(),
             CreatedAt = DateTime.UtcNow
         });
+    }
+
+    private static Mock<IDataStore> CreateOptimizedStoreFromGoldenRows(
+        CloseDocumentHarness harness,
+        params WarehouseProductionStateRow[] rows)
+    {
+        var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(data => data.GetItems(null)).Returns(harness.Store.GetItems(null));
+        store.Setup(data => data.GetLocations()).Returns(harness.Store.GetLocations());
+        store.Setup(data => data.GetStock(null)).Returns(harness.Store.GetStock(null));
+        store.Setup(data => data.GetHuOrderContextRows()).Returns(harness.Store.GetHuOrderContextRows());
+        store.Setup(data => data.GetHuStockRows()).Returns(harness.Store.GetHuStockRows());
+
+        var productionNeedRows = new ProductionNeedService(harness.Store).GetRows(includeZeroNeed: true);
+        store.As<IOptimizedOrderReadModelStore>()
+            .Setup(data => data.GetProductionNeedRows(true))
+            .Returns(productionNeedRows);
+
+        store.As<IOptimizedWarehouseProductionStateStore>()
+            .Setup(data => data.GetWarehouseProductionStateCustomerOrdersByItem())
+            .Returns(rows
+                .Where(row => row.CustomerOrders.Count > 0)
+                .ToDictionary(row => row.ItemId, row => row.CustomerOrders));
+        store.As<IOptimizedWarehouseProductionStateStore>()
+            .Setup(data => data.GetWarehouseProductionStateInternalOrdersByItem())
+            .Returns(rows
+                .Where(row => row.InternalOrders.Count > 0)
+                .ToDictionary(row => row.ItemId, row => row.InternalOrders));
+        store.As<IOptimizedWarehouseProductionStateStore>()
+            .Setup(data => data.GetWarehouseProductionStatePalletsByItem())
+            .Returns(rows
+                .Where(row => row.ProductionReceipts.Count > 0)
+                .ToDictionary(row => row.ItemId, ToPalletAggregate));
+
+        return store;
+    }
+
+    private static WarehouseProductionStatePalletAggregate ToPalletAggregate(WarehouseProductionStateRow row)
+    {
+        return new WarehouseProductionStatePalletAggregate
+        {
+            Rows = row.ProductionReceipts,
+            PlannedQty = row.PrdPlannedQty,
+            FilledQty = row.PrdFilledQty,
+            PlannedCount = row.PalletPlannedCount,
+            FilledCount = row.PalletFilledCount,
+            HasFilledWithoutLedger = row.Warnings.Contains("FILLED_PALLET_WITHOUT_LEDGER"),
+            HasStalePalletAfterFullShipment = row.Warnings.Contains("STALE_PALLET_AFTER_FULL_SHIPMENT")
+        };
     }
 }

@@ -22,6 +22,7 @@ public sealed class WarehouseProductionStateService(IDataStore dataStore)
         var huRows = _dataStore.GetHuStockRows();
         var needRows = new ProductionNeedService(_dataStore).GetRows(includeZeroNeed: true)
             .ToDictionary(row => row.ItemId);
+        var optimizedStore = _dataStore as IOptimizedWarehouseProductionStateStore;
 
         var stockByItem = stockRows
             .GroupBy(row => row.ItemId)
@@ -38,9 +39,12 @@ public sealed class WarehouseProductionStateService(IDataStore dataStore)
                 });
 
         var huRowsByItem = BuildHuRowsByItem(huRows, huContextByKey, locationsById);
-        var customerOrdersByItem = BuildCustomerOrdersByItem();
-        var internalOrdersByItem = BuildInternalOrdersByItem();
-        var palletByItem = BuildPalletRowsByItem();
+        var customerOrdersByItem = optimizedStore?.GetWarehouseProductionStateCustomerOrdersByItem()
+                                   ?? BuildCustomerOrdersByItem();
+        var internalOrdersByItem = optimizedStore?.GetWarehouseProductionStateInternalOrdersByItem()
+                                   ?? BuildInternalOrdersByItem();
+        var palletByItem = optimizedStore?.GetWarehouseProductionStatePalletsByItem()
+                           ?? BuildPalletRowsByItem();
 
         var itemIds = new HashSet<long>(itemsById.Keys);
         itemIds.UnionWith(stockByItem.Keys);
@@ -63,7 +67,7 @@ public sealed class WarehouseProductionStateService(IDataStore dataStore)
             itemHuRows ??= Array.Empty<WarehouseProductionStateHuRow>();
             customerOrders ??= Array.Empty<WarehouseProductionStateCustomerOrderRow>();
             internalOrders ??= Array.Empty<WarehouseProductionStateInternalOrderRow>();
-            palletAggregate ??= PallettAggregate.Empty;
+            palletAggregate ??= WarehouseProductionStatePalletAggregate.Empty;
 
             var minStockQty = need?.MinStockQty
                               ?? (item?.ItemTypeEnableMinStockControl == true && (item.MinStockQty ?? 0) > QtyTolerance
@@ -296,7 +300,7 @@ public sealed class WarehouseProductionStateService(IDataStore dataStore)
                 .ToList());
     }
 
-    private Dictionary<long, PallettAggregate> BuildPalletRowsByItem()
+    private Dictionary<long, WarehouseProductionStatePalletAggregate> BuildPalletRowsByItem()
     {
         var result = new Dictionary<long, PallettAggregate>();
         foreach (var workItem in _dataStore.GetActiveProductionPalletWorkItems())
@@ -326,7 +330,18 @@ public sealed class WarehouseProductionStateService(IDataStore dataStore)
             }
         }
 
-        return result;
+        return result.ToDictionary(
+            pair => pair.Key,
+            pair => new WarehouseProductionStatePalletAggregate
+            {
+                Rows = pair.Value.Rows,
+                PlannedQty = pair.Value.PlannedQty,
+                FilledQty = pair.Value.FilledQty,
+                PlannedCount = pair.Value.PlannedCount,
+                FilledCount = pair.Value.FilledCount,
+                HasFilledWithoutLedger = pair.Value.HasFilledWithoutLedger,
+                HasStalePalletAfterFullShipment = pair.Value.HasStalePalletAfterFullShipment
+            });
     }
 
     private void AddPalletRow(

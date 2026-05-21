@@ -91,3 +91,16 @@ public sealed class WarehouseProductionStateNeedBreakdownRow
     public double AlreadyPlannedPrd { get; init; }
     public double RemainingToCreate { get; init; }
 }
+
+public sealed class WarehouseProductionStatePalletAggregate
+{
+    public IReadOnlyList<WarehouseProductionStatePalletRow> Rows { get; init; } = Array.Empty<WarehouseProductionStatePalletRow>();
+    public double PlannedQty { get; init; }
+    public double FilledQty { get; init; }
+    public int PlannedCount { get; init; }
+    public int FilledCount { get; init; }
+    public bool HasFilledWithoutLedger { get; init; }
+    public bool HasStalePalletAfterFullShipment { get; init; }
+
+    public static WarehouseProductionStatePalletAggregate Empty { get; } = new();
+}

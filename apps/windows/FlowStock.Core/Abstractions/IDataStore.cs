@@ -132,6 +132,7 @@ public interface IDataStore
     void MarkOrdersPrinted(IReadOnlyCollection<long> orderIds, DateTime printedAt);
     void UpdateOrderMarkingStatusForBackfill(long orderId, MarkingStatus status, DateTime timestamp);
     IReadOnlyList<OrderLine> GetOrderLines(long orderId);
+    IReadOnlyDictionary<long, long> GetOrderIdsByOrderLineIds(IReadOnlyCollection<long> orderLineIds);
     IReadOnlyList<OrderLineView> GetOrderLineViews(long orderId);
     IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemaining(long orderId);
     IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemainingWithoutReservedStock(long orderId);

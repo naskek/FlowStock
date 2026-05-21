@@ -17,6 +17,7 @@ internal sealed class CloseDocumentHarness
     private readonly Dictionary<long, Partner> _partners = new();
     private readonly Dictionary<long, Order> _orders = new();
     private readonly Dictionary<long, List<OrderLine>> _orderLinesByOrder = new();
+    private readonly Dictionary<long, long> _orderIdByOrderLineId = new();
     private readonly Dictionary<long, ItemRequest> _itemRequests = new();
     private readonly Dictionary<long, OrderRequest> _orderRequests = new();
     private readonly Dictionary<long, IReadOnlyList<OrderReceiptLine>> _orderReceiptRemaining = new();
@@ -124,6 +125,16 @@ internal sealed class CloseDocumentHarness
                 .Select(CloneDocLine)
                 .ToArray()
             : Array.Empty<DocLine>();
+    }
+
+    public IReadOnlyList<OrderReceiptPlanLine> GetOrderReceiptPlanLines(long orderId)
+    {
+        return _orderReceiptPlanLines.TryGetValue(orderId, out var lines)
+            ? lines
+                .OrderBy(line => line.SortOrder)
+                .Select(CloneOrderReceiptPlanLine)
+                .ToArray()
+            : Array.Empty<OrderReceiptPlanLine>();
     }
 
     private IReadOnlyList<DocLine> GetActiveDocLines(long docId)
@@ -385,6 +396,7 @@ internal sealed class CloseDocumentHarness
         }
 
         lines.Add(CloneOrderLine(line));
+        _orderIdByOrderLineId[line.Id] = line.OrderId;
         _nextOrderLineId = Math.Max(_nextOrderLineId, line.Id + 1);
     }
 
@@ -766,6 +778,21 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.GetOrderLines(It.IsAny<long>()))
             .Returns<long>(orderId => GetOrderLines(orderId));
 
+        _store.Setup(store => store.GetOrderIdsByOrderLineIds(It.IsAny<IReadOnlyCollection<long>>()))
+            .Returns<IReadOnlyCollection<long>>(orderLineIds =>
+            {
+                var result = new Dictionary<long, long>();
+                foreach (var orderLineId in orderLineIds.Distinct())
+                {
+                    if (_orderIdByOrderLineId.TryGetValue(orderLineId, out var orderId))
+                    {
+                        result[orderLineId] = orderId;
+                    }
+                }
+
+                return result;
+            });
+
         _store.Setup(store => store.GetOrderLineViews(It.IsAny<long>()))
             .Returns<long>(orderId =>
             {
@@ -840,6 +867,7 @@ internal sealed class CloseDocumentHarness
                     ProductionPurpose = line.ProductionPurpose,
                     ProductionPalletGroup = line.ProductionPalletGroup
                 });
+                _orderIdByOrderLineId[orderLineId] = line.OrderId;
 
                 return orderLineId;
             });
@@ -932,6 +960,8 @@ internal sealed class CloseDocumentHarness
                 {
                     pair.Value.RemoveAll(line => line.Id == orderLineId);
                 }
+
+                _orderIdByOrderLineId.Remove(orderLineId);
             });
 
         _store.Setup(store => store.DeleteOrderLines(It.IsAny<long>()))
@@ -939,6 +969,11 @@ internal sealed class CloseDocumentHarness
             {
                 if (_orderLinesByOrder.ContainsKey(orderId))
                 {
+                    foreach (var line in _orderLinesByOrder[orderId])
+                    {
+                        _orderIdByOrderLineId.Remove(line.Id);
+                    }
+
                     _orderLinesByOrder[orderId].Clear();
                 }
             });
@@ -948,6 +983,10 @@ internal sealed class CloseDocumentHarness
             {
                 _orders.Remove(orderId);
                 _orderLinesByOrder.Remove(orderId);
+                foreach (var pair in _orderIdByOrderLineId.Where(pair => pair.Value == orderId).ToArray())
+                {
+                    _orderIdByOrderLineId.Remove(pair.Key);
+                }
             });
 
         _store.Setup(store => store.AddOrderRequest(It.IsAny<OrderRequest>()))

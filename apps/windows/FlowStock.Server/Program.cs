@@ -60,6 +60,7 @@ OrderStatusEndpoint.Map(app);
 OrderRedistributionEndpoint.Map(app);
 OrderAutoRedistributionEndpoint.Map(app);
 OrderMarkingExportEndpoint.Map(app);
+OrderLinesEndpoint.Map(app);
 ProductionNeedCreateOrdersEndpoint.Map(app);
 MaintenanceBackfillEndpoints.Map(app);
 app.MapGet("/api/version", () => Results.Ok(new { version = appVersion }));
@@ -1986,55 +1987,6 @@ app.MapGet("/api/orders/{orderId:long}", (long orderId, IDataStore store) =>
     return Results.Ok(MapOrdersWithShipmentRemaining([order], store).First());
 });
 
-app.MapGet("/api/orders/{orderId:long}/lines", (long orderId, IDataStore store) =>
-{
-    var orderService = new OrderService(store);
-    var order = orderService.GetOrder(orderId);
-    if (order == null)
-    {
-        return Results.NotFound(new ApiResult(false, "ORDER_NOT_FOUND"));
-    }
-
-    var productionHusByOrderLine = BuildProductionHuCodesByOrderLine(store, orderId);
-    var lines = orderService.GetOrderLineViews(orderId)
-        .Select(line => new
-        {
-            id = line.Id,
-            order_id = line.OrderId,
-            item_id = line.ItemId,
-            item_name = line.ItemName,
-            barcode = line.Barcode,
-            gtin = line.Gtin,
-            qty_ordered = line.QtyOrdered,
-            production_purpose = ProductionLinePurposeMapper.ToDbValue(line.ProductionPurpose),
-            production_purpose_display = line.ProductionPurposeDisplay,
-            production_pallet_group = line.ProductionPalletGroup,
-            production_hu_codes = productionHusByOrderLine.TryGetValue(line.Id, out var huCodes) ? huCodes : Array.Empty<string>(),
-            production_hu_codes_display = productionHusByOrderLine.TryGetValue(line.Id, out var huCodesDisplay) ? string.Join(", ", huCodesDisplay) : string.Empty,
-            qty_shipped = line.QtyShipped,
-            qty_produced = line.QtyProduced,
-            qty_left = line.QtyRemaining,
-            qty_available = line.QtyAvailable,
-            can_ship_now = line.CanShipNow,
-            shortage = line.Shortage,
-            planned_pallet_count = line.PlannedPalletCount,
-            filled_pallet_count = line.FilledPalletCount,
-            pallet_planned_qty = line.PlannedPalletQty,
-            pallet_filled_qty = line.FilledPalletQty,
-            line_fully_shipped = line.LineFullyShipped,
-            hide_pallet_fill_indicator = line.HidePalletFillIndicator,
-            show_pallet_completed_icon = line.ShowPalletCompletedIcon,
-            blocking_fill_required = line.BlockingFillRequired,
-            fulfillment_status = line.FulfillmentStatus,
-            pallet_fill_label = line.PalletFillLabel,
-            pallet_fill_tone = line.PalletFillTone,
-            pallet_fill_title = line.PalletFillTitle
-        })
-        .ToList();
-
-    return Results.Ok(lines);
-});
-
 app.MapGet("/api/orders/{orderId:long}/shipment-remaining", (long orderId, IDataStore store) =>
 {
     var orderService = new OrderService(store);
@@ -2235,68 +2187,6 @@ app.MapPost("/api/orders/requests/create", async (HttpRequest request, IDataStor
         status = OrderRequestStatus.Pending
         });
 });
-
-static Dictionary<long, string[]> BuildProductionHuCodesByOrderLine(IDataStore store, long orderId)
-{
-    var result = new Dictionary<long, string[]>();
-    var rows = new Dictionary<long, SortedSet<string>>();
-
-    foreach (var reservedLine in store.GetOrderReceiptPlanLines(orderId)
-                 .Where(line => line.QtyPlanned > 0))
-    {
-        if (reservedLine.OrderLineId <= 0 || string.IsNullOrWhiteSpace(reservedLine.ToHu))
-        {
-            continue;
-        }
-
-        if (!rows.TryGetValue(reservedLine.OrderLineId, out var huCodes))
-        {
-            huCodes = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
-            rows[reservedLine.OrderLineId] = huCodes;
-        }
-
-        huCodes.Add(reservedLine.ToHu.Trim());
-    }
-
-    foreach (var doc in store.GetDocsByOrder(orderId).Where(doc => doc.Type == DocType.ProductionReceipt))
-    {
-        foreach (var pallet in store.GetProductionPalletsByDoc(doc.Id)
-                     .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)))
-        {
-            var componentLines = pallet.Lines.Count > 0
-                ? pallet.Lines
-                : new[]
-                {
-                    new ProductionPalletComponentLine
-                    {
-                        OrderLineId = pallet.OrderLineId
-                    }
-                };
-            foreach (var line in componentLines)
-            {
-                if (!line.OrderLineId.HasValue || string.IsNullOrWhiteSpace(pallet.HuCode))
-                {
-                    continue;
-                }
-
-                if (!rows.TryGetValue(line.OrderLineId.Value, out var huCodes))
-                {
-                    huCodes = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
-                    rows[line.OrderLineId.Value] = huCodes;
-                }
-
-                huCodes.Add(pallet.HuCode);
-            }
-        }
-    }
-
-    foreach (var pair in rows)
-    {
-        result[pair.Key] = pair.Value.ToArray();
-    }
-
-    return result;
-}
 
 app.MapPost("/api/orders/requests/status", () =>
 {

@@ -26,6 +26,7 @@ public static class CloseDocumentEndpoint
         var logger = loggerFactory.CreateLogger("FlowStock.Server.DocumentLifecycle");
         var started = Stopwatch.StartNew();
         var path = request.Path.Value ?? "/api/docs/{docUid}/close";
+        CloseDocTiming? closeTiming = null;
 
         IResult LogAndReturn(
             IResult result,
@@ -66,6 +67,11 @@ public static class CloseDocumentEndpoint
                 idempotentReplay: idempotentReplay,
                 alreadyClosed: alreadyClosed,
                 elapsedMs: started.ElapsedMilliseconds,
+                validateBuildCheckMs: closeTiming?.ValidateBuildCheckMs,
+                ledgerTransactionMs: closeTiming?.LedgerTransactionMs,
+                collectAffectedOrdersMs: closeTiming?.CollectAffectedOrdersMs,
+                refreshStatusMs: closeTiming?.RefreshStatusMs,
+                refreshReceiptPlansMs: closeTiming?.RefreshReceiptPlansMs,
                 errors: errors);
             return result;
         }
@@ -193,7 +199,8 @@ public static class CloseDocumentEndpoint
             {
                 apiStore.UpdateApiDocStatus(docUid, "CLOSED");
                 apiStore.RecordEvent(closeRequest.EventId, "DOC_CLOSE", docUid, closeRequest.DeviceId, rawJson);
-            });
+            },
+            timing => closeTiming = timing);
 
         var currentDocAfter = store.GetDoc(docInfo.DocId);
         var lineCountAfter = currentDocAfter?.LineCount ?? lineCountBefore;

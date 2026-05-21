@@ -34,7 +34,8 @@ internal static class CanonicalCloseBehavior
         string? docRefHint,
         IDataStore store,
         DocumentService docs,
-        Action onAcceptedClose)
+        Action onAcceptedClose,
+        Action<CloseDocTiming>? onCloseTiming = null)
     {
         var currentDoc = store.GetDoc(docId);
         if (currentDoc == null)
@@ -68,6 +69,11 @@ internal static class CanonicalCloseBehavior
         }
 
         var result = docs.TryCloseDoc(docId, allowNegative: false);
+        if (result.Timing != null)
+        {
+            onCloseTiming?.Invoke(result.Timing);
+        }
+
         if (!result.Success)
         {
             currentDoc = store.GetDoc(docId) ?? currentDoc;
