@@ -2980,41 +2980,24 @@ paged_orders.order_ref DESC");
         {
             var normalized = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
             var effectiveLimit = Math.Clamp(limit, 1, 50);
-            var scopeSql = @"
-SELECT o.id
-FROM orders o
-LEFT JOIN partners p ON p.id = o.partner_id
-WHERE o.status NOT IN (@cancelled_status, @merged_status)
-  AND (@doc_type <> @outbound_doc_type OR o.order_type = @customer_order_type)
-  AND (
-      @query IS NULL
-      OR o.order_ref ILIKE @query_pattern
-      OR p.name ILIKE @query_pattern
-      OR p.code ILIKE @query_pattern
-  )";
+            var requireCustomerOrders = docType == DocType.Outbound;
+            var requireReceiptRemaining = docType == DocType.ProductionReceipt;
+            var requireShipmentRemaining = docType == DocType.Outbound;
+            var scopeSql = OperationOrderCandidateSql.BuildOrderScopeSql(
+                requireCustomerOrders,
+                requireReceiptRemaining,
+                requireShipmentRemaining);
             using var command = CreateCommand(connection, $@"
 SELECT *
 FROM (
 {BuildOrderSelectSql(scopeSql)}
 ) candidate_orders
-WHERE (
-        @doc_type = @production_receipt_doc_type
-        AND candidate_orders.status NOT IN (@shipped_status, @cancelled_status, @merged_status)
-        AND candidate_orders.has_receipt_remaining
-      )
-   OR (
-        @doc_type = @outbound_doc_type
-        AND candidate_orders.order_type = @customer_order_type
-        AND candidate_orders.status NOT IN (@shipped_status, @cancelled_status, @merged_status)
-        AND candidate_orders.has_shipment_remaining
-      )
 ORDER BY candidate_orders.created_at DESC,
-         candidate_orders.order_ref DESC
-LIMIT @limit;");
+         candidate_orders.order_ref DESC");
             AddOrderSelectParameters(command);
-            command.Parameters.AddWithValue("@doc_type", DocTypeMapper.ToOpString(docType));
-            command.Parameters.AddWithValue("@production_receipt_doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
-            command.Parameters.AddWithValue("@outbound_doc_type", DocTypeMapper.ToOpString(DocType.Outbound));
+            command.Parameters.AddWithValue("@require_customer_orders", requireCustomerOrders);
+            command.Parameters.AddWithValue("@require_receipt_remaining", requireReceiptRemaining);
+            command.Parameters.AddWithValue("@require_shipment_remaining", requireShipmentRemaining);
             command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
             command.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
             command.Parameters.AddWithValue("@cancelled_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
