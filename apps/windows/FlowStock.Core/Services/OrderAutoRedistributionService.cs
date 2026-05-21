@@ -155,41 +155,75 @@ public sealed class OrderAutoRedistributionService
                     continue;
                 }
 
+                var producedByLine = OrderReceiptRemainingCalculator.BuildProducedTotalsByOrderLine(
+                    store,
+                    internalOrder.Id,
+                    new[] { internalLine });
+                var producedQty = producedByLine.TryGetValue(internalLine.Id, out var producedValue) ? producedValue : 0d;
+                var bindableProducedQty = targetOrder.UseReservedStock
+                    ? OrderRedistributionService.GetBindableStockQtyFromSource(
+                        store,
+                        internalOrder.Id,
+                        targetCustomerOrderId,
+                        customerLine.ItemId)
+                    : 0d;
+                var unproducedRemaining = Math.Max(0, internalLine.QtyOrdered - producedQty);
+                var redistributionGuard = InternalOrderRedistributionGuard.Evaluate(store, internalOrder.Id);
+                if (redistributionGuard.IsBlocked)
+                {
+                    transferQty = Math.Min(transferQty, bindableProducedQty);
+                    if (transferQty <= QtyTolerance)
+                    {
+                        result.IgnoredAttempts.Add(new OrderAutoRedistributionIgnoredAttempt
+                        {
+                            SourceOrderId = internalOrder.Id,
+                            SourceOrderRef = internalOrder.OrderRef,
+                            ItemId = customerLine.ItemId,
+                            Qty = Math.Min(remainingCap, internalLine.QtyOrdered),
+                            Reason = InternalOrderRedistributionGuardResult.BlockedMessage,
+                            Guard = redistributionGuard
+                        });
+                        continue;
+                    }
+                }
+                else
+                {
+                    transferQty = Math.Min(transferQty, bindableProducedQty + unproducedRemaining);
+                }
+
+                if (transferQty <= QtyTolerance)
+                {
+                    continue;
+                }
+
                 var customerQtyBefore = store.GetOrderLines(targetCustomerOrderId)
                     .Where(line => line.Id == customerLine.Id)
                     .Select(line => line.QtyOrdered)
                     .FirstOrDefault();
-
-                if (customerQtyBefore <= QtyTolerance)
-                {
-                    break;
-                }
-
-                var preDecrementQty = Math.Min(transferQty, customerQtyBefore);
-                var redistributionGuard = InternalOrderRedistributionGuard.Evaluate(store, internalOrder.Id);
-                if (redistributionGuard.IsBlocked)
-                {
-                    result.IgnoredAttempts.Add(new OrderAutoRedistributionIgnoredAttempt
-                    {
-                        SourceOrderId = internalOrder.Id,
-                        SourceOrderRef = internalOrder.OrderRef,
-                        ItemId = customerLine.ItemId,
-                        Qty = preDecrementQty,
-                        Reason = InternalOrderRedistributionGuardResult.BlockedMessage,
-                        Guard = redistributionGuard
-                    });
-                    continue;
-                }
-
-                store.UpdateOrderLineQty(customerLine.Id, customerQtyBefore - preDecrementQty);
-
+                double qtyFromUnproduced = 0;
                 try
                 {
+                    var split = OrderRedistributionService.ComputeTransferQuantities(
+                        store,
+                        internalOrder,
+                        targetOrder,
+                        internalOrder.Id,
+                        targetCustomerOrderId,
+                        customerLine.ItemId,
+                        transferQty);
+                    qtyFromUnproduced = split.QtyFromUnproduced;
+                    if (qtyFromUnproduced > QtyTolerance && customerQtyBefore > QtyTolerance)
+                    {
+                        store.UpdateOrderLineQty(
+                            customerLine.Id,
+                            customerQtyBefore - Math.Min(qtyFromUnproduced, customerQtyBefore));
+                    }
+
                     var redistributeResult = redistribution.Redistribute(
                         internalOrder.Id,
                         targetCustomerOrderId,
                         customerLine.ItemId,
-                        preDecrementQty);
+                        transferQty);
 
                     transfers.Add(new OrderAutoRedistributionTransfer
                     {
@@ -210,29 +244,44 @@ public sealed class OrderAutoRedistributionService
                         sourceMergeResults[redistributeResult.SourceOrderId] = mergeResult;
                     }
 
-                    remainingCap -= preDecrementQty;
+                    remainingCap -= redistributeResult.QtyTransferred;
                 }
                 catch (InvalidOperationException ex)
                 {
-                    store.UpdateOrderLineQty(customerLine.Id, customerQtyBefore);
+                    if (qtyFromUnproduced > QtyTolerance && customerQtyBefore > QtyTolerance)
+                    {
+                        store.UpdateOrderLineQty(customerLine.Id, customerQtyBefore);
+                    }
+
+                    var guard = string.Equals(
+                        ex.Message,
+                        InternalOrderRedistributionGuardResult.BlockedMessage,
+                        StringComparison.Ordinal)
+                        ? InternalOrderRedistributionGuard.Evaluate(store, internalOrder.Id)
+                        : null;
                     result.IgnoredAttempts.Add(new OrderAutoRedistributionIgnoredAttempt
                     {
                         SourceOrderId = internalOrder.Id,
                         SourceOrderRef = internalOrder.OrderRef,
                         ItemId = customerLine.ItemId,
-                        Qty = preDecrementQty,
-                        Reason = ex.Message
+                        Qty = transferQty,
+                        Reason = ex.Message,
+                        Guard = guard
                     });
                 }
                 catch (ArgumentException ex)
                 {
-                    store.UpdateOrderLineQty(customerLine.Id, customerQtyBefore);
+                    if (qtyFromUnproduced > QtyTolerance && customerQtyBefore > QtyTolerance)
+                    {
+                        store.UpdateOrderLineQty(customerLine.Id, customerQtyBefore);
+                    }
+
                     result.IgnoredAttempts.Add(new OrderAutoRedistributionIgnoredAttempt
                     {
                         SourceOrderId = internalOrder.Id,
                         SourceOrderRef = internalOrder.OrderRef,
                         ItemId = customerLine.ItemId,
-                        Qty = preDecrementQty,
+                        Qty = transferQty,
                         Reason = ex.Message
                     });
                 }

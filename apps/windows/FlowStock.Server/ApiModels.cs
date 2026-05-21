@@ -909,6 +909,57 @@ public sealed class OperationEventRequest
     public string? ReasonCode { get; set; }
 }
 
+public sealed class OrderReserveProducedHuRequest
+{
+    [JsonPropertyName("source_internal_order_id")]
+    public long SourceInternalOrderId { get; set; }
+
+    [JsonPropertyName("item_id")]
+    public long ItemId { get; set; }
+
+    [JsonPropertyName("target_order_line_id")]
+    public long? TargetOrderLineId { get; set; }
+
+    [JsonPropertyName("hu_codes")]
+    public IReadOnlyList<string>? HuCodes { get; set; }
+
+    [JsonPropertyName("qty")]
+    public double Qty { get; set; }
+}
+
+public sealed class OrderReserveProducedHuEnvelope
+{
+    [JsonPropertyName("ok")]
+    public bool Ok { get; init; }
+
+    [JsonPropertyName("result")]
+    public string Result { get; init; } = string.Empty;
+
+    [JsonPropertyName("source_internal_order_id")]
+    public long SourceInternalOrderId { get; init; }
+
+    [JsonPropertyName("target_customer_order_id")]
+    public long TargetCustomerOrderId { get; init; }
+
+    [JsonPropertyName("item_id")]
+    public long ItemId { get; init; }
+
+    [JsonPropertyName("target_order_line_id")]
+    public long TargetOrderLineId { get; init; }
+
+    [JsonPropertyName("qty_reserved")]
+    public double QtyReserved { get; init; }
+
+    [JsonPropertyName("source_qty_ordered")]
+    public double SourceQtyOrdered { get; init; }
+
+    [JsonPropertyName("source_produced_qty")]
+    public double SourceProducedQty { get; init; }
+
+    [JsonPropertyName("reserved_hu_codes")]
+    public IReadOnlyList<string> ReservedHuCodes { get; init; } = Array.Empty<string>();
+}
+
 public sealed class OrderRedistributeRequest
 {
     [JsonPropertyName("source_internal_order_id")]

@@ -357,12 +357,16 @@ public sealed class OrderRedistributionTests
         store.Setup(s => s.GetOrderReceiptPlanLines(internalOrderId)).Returns(Array.Empty<OrderReceiptPlanLine>());
         store.Setup(s => s.GetHuStockRows()).Returns(Array.Empty<HuStockRow>());
         store.Setup(s => s.GetHuOrderContextRows()).Returns(Array.Empty<HuOrderContextRow>());
+        store.Setup(s => s.FindItemById(itemId))
+            .Returns(new Item { Id = itemId, Name = "Item 1", ItemTypeId = 1 });
+        store.Setup(s => s.GetItemType(1))
+            .Returns(new ItemType { Id = 1, Name = "Товар", EnableOrderReservation = true });
 
         var service = new OrderRedistributionService(store.Object);
 
         var ex = Assert.Throws<InvalidOperationException>(() =>
             service.Redistribute(internalOrderId, customerOrderId, itemId, 350));
 
-        Assert.Contains("Недостаточно выпущенного", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("Недостаточно", ex.Message, StringComparison.Ordinal);
     }
 }

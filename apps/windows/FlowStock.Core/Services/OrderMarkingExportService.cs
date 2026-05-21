@@ -152,10 +152,7 @@ public sealed class OrderMarkingExportService
             ? _data.GetShippedTotalsByOrderLine(order.Id)
             : new Dictionary<long, double>();
         var reservedByLine = order.Type == OrderType.Customer
-            ? _data.GetOrderReceiptPlanLines(order.Id)
-                .Where(line => line.QtyPlanned > 0)
-                .GroupBy(line => line.OrderLineId)
-                .ToDictionary(group => group.Key, group => group.Sum(line => line.QtyPlanned))
+            ? _data.GetReservedFilledHuQtyByOrderLine(order.Id)
             : new Dictionary<long, double>();
 
         var markableLines = orderLines

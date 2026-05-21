@@ -143,16 +143,15 @@ public sealed class OrderMarkingExportTests
     public async Task CustomerOrderExport_UsesShortageAfterReservedStock()
     {
         var harness = CreateOrderHarness(OrderType.Customer, qty: 7200);
-        harness.SeedOrderReceiptPlanLines(10, new OrderReceiptPlanLine
-        {
-            Id = 1,
-            OrderId = 10,
-            OrderLineId = 100,
-            ItemId = 1,
-            ItemName = "Маркируемый товар",
-            QtyPlanned = 3600,
-            ToLocationId = 1
-        });
+        SeedFilledHuReservation(
+            harness,
+            orderId: 10,
+            orderLineId: 100,
+            itemId: 1,
+            locationId: 1,
+            huCode: "HU-RES-3600",
+            qty: 3600,
+            prdDocId: 900);
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
 
         var response = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
@@ -167,16 +166,15 @@ public sealed class OrderMarkingExportTests
     public async Task CustomerOrderExport_FullyCoveredByReservedStock_CreatesNoCodesAndMarksCompleted()
     {
         var harness = CreateOrderHarness(OrderType.Customer, qty: 7200);
-        harness.SeedOrderReceiptPlanLines(10, new OrderReceiptPlanLine
-        {
-            Id = 1,
-            OrderId = 10,
-            OrderLineId = 100,
-            ItemId = 1,
-            ItemName = "Маркируемый товар",
-            QtyPlanned = 7200,
-            ToLocationId = 1
-        });
+        SeedFilledHuReservation(
+            harness,
+            orderId: 10,
+            orderLineId: 100,
+            itemId: 1,
+            locationId: 1,
+            huCode: "HU-RES-7200",
+            qty: 7200,
+            prdDocId: 901);
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
 
         var response = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
@@ -222,7 +220,181 @@ public sealed class OrderMarkingExportTests
         Assert.True(result.IsSuccess);
         Assert.Equal(4, result.LineCount);
         Assert.Equal(4, result.Lines.Count);
-        Assert.Contains(result.Lines, line => line.OrderLineId == 100 && line.ExportQty == 0);
+        Assert.Contains(result.Lines, line => line.OrderLineId == 100 && line.ExportQty == 10);
+    }
+
+    [Fact]
+    public async Task CustomerOrderExport_M1_ReservedFilledHu_ReducesExportQty()
+    {
+        var harness = CreateOrderHarness(OrderType.Customer, qty: 200);
+        SeedFilledHuReservation(
+            harness,
+            orderId: 10,
+            orderLineId: 100,
+            itemId: 1,
+            locationId: 1,
+            huCode: "HU-RES-100",
+            qty: 100,
+            prdDocId: 902);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        var response = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
+
+        Assert.True(response.IsSuccessStatusCode);
+        var markingOrder = Assert.Single(harness.MarkingOrders);
+        Assert.Equal(100, markingOrder.RequestedQuantity);
+        Assert.Equal(100, harness.MarkingCodes.Count(code => code.MarkingOrderId == markingOrder.Id));
+    }
+
+    [Fact]
+    public async Task CustomerOrderExport_M2_SecondExport_IsIdempotentWithoutNewCodes()
+    {
+        var harness = CreateOrderHarness(OrderType.Customer, qty: 200);
+        SeedFilledHuReservation(
+            harness,
+            orderId: 10,
+            orderLineId: 100,
+            itemId: 1,
+            locationId: 1,
+            huCode: "HU-RES-100",
+            qty: 100,
+            prdDocId: 903);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        var first = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
+        var codeCountAfterFirst = harness.MarkingCodes.Count;
+
+        var second = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
+
+        Assert.True(first.IsSuccessStatusCode);
+        Assert.True(second.IsSuccessStatusCode);
+        Assert.Equal(codeCountAfterFirst, harness.MarkingCodes.Count);
+    }
+
+    [Fact]
+    public async Task CustomerOrderExport_M3_ReservedOnOtherLine_DoesNotReduceTargetLineShortage()
+    {
+        var harness = CreateOrderHarness(OrderType.Customer, qty: 200);
+        harness.SeedItem(CreateMarkableItem(2));
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 101,
+            OrderId = 10,
+            ItemId = 2,
+            QtyOrdered = 50
+        });
+        SeedFilledHuReservation(
+            harness,
+            orderId: 10,
+            orderLineId: 101,
+            itemId: 2,
+            locationId: 1,
+            huCode: "HU-OTHER-ITEM",
+            qty: 50,
+            prdDocId: 904);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        var response = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
+
+        Assert.True(response.IsSuccessStatusCode);
+        var markingOrder = Assert.Single(harness.MarkingOrders);
+        Assert.Equal(200, markingOrder.RequestedQuantity);
+    }
+
+    [Fact]
+    public async Task CustomerOrderExport_M4_PlannedReservationWithoutFill_DoesNotReduceShortage()
+    {
+        var harness = CreateOrderHarness(OrderType.Customer, qty: 200);
+        harness.SeedOrderReceiptPlanLines(10, new OrderReceiptPlanLine
+        {
+            Id = 1,
+            OrderId = 10,
+            OrderLineId = 100,
+            ItemId = 1,
+            ItemName = "Маркируемый товар",
+            QtyPlanned = 100,
+            ToLocationId = 1,
+            ToHu = "HU-PLANNED-ONLY"
+        });
+        harness.SeedDoc(new Doc
+        {
+            Id = 905,
+            DocRef = "PRD-PLANNED",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Closed,
+            OrderId = 11,
+            CreatedAt = new DateTime(2026, 5, 8, 10, 0, 0, DateTimeKind.Utc),
+            ClosedAt = new DateTime(2026, 5, 8, 11, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 9051,
+            PrdDocId = 905,
+            DocLineId = 1,
+            OrderId = 11,
+            ItemId = 1,
+            HuCode = "HU-PLANNED-ONLY",
+            PlannedQty = 100,
+            ToLocationId = 1,
+            Status = ProductionPalletStatus.Planned,
+            CreatedAt = new DateTime(2026, 5, 8, 10, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedBalance(1, 1, 100, "HU-PLANNED-ONLY");
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        var response = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
+
+        Assert.True(response.IsSuccessStatusCode);
+        var markingOrder = Assert.Single(harness.MarkingOrders);
+        Assert.Equal(200, markingOrder.RequestedQuantity);
+    }
+
+    private static void SeedFilledHuReservation(
+        CloseDocumentHarness harness,
+        long orderId,
+        long orderLineId,
+        long itemId,
+        long locationId,
+        string huCode,
+        double qty,
+        long prdDocId)
+    {
+        harness.SeedOrderReceiptPlanLines(orderId, new OrderReceiptPlanLine
+        {
+            Id = prdDocId,
+            OrderId = orderId,
+            OrderLineId = orderLineId,
+            ItemId = itemId,
+            ItemName = $"Маркируемый товар {itemId}",
+            QtyPlanned = qty,
+            ToLocationId = locationId,
+            ToHu = huCode
+        });
+        harness.SeedDoc(new Doc
+        {
+            Id = prdDocId,
+            DocRef = $"PRD-{prdDocId}",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Closed,
+            OrderId = 11,
+            CreatedAt = new DateTime(2026, 5, 8, 10, 0, 0, DateTimeKind.Utc),
+            ClosedAt = new DateTime(2026, 5, 8, 11, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = prdDocId * 10,
+            PrdDocId = prdDocId,
+            DocLineId = 1,
+            OrderId = 11,
+            ItemId = itemId,
+            HuCode = huCode,
+            PlannedQty = qty,
+            ToLocationId = locationId,
+            Status = ProductionPalletStatus.Filled,
+            FilledAt = new DateTime(2026, 5, 8, 12, 0, 0, DateTimeKind.Utc),
+            CreatedAt = new DateTime(2026, 5, 8, 11, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedBalance(itemId, locationId, qty, huCode);
     }
 
     private static CloseDocumentHarness CreateOrderHarness(

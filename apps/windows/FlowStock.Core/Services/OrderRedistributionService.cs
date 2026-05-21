@@ -70,12 +70,240 @@ public sealed class OrderRedistributionService
             throw new InvalidOperationException("Нельзя перераспределить позицию в тот же заказ.");
         }
 
-        var redistributionGuard = InternalOrderRedistributionGuard.Evaluate(store, sourceInternalOrderId);
-        if (redistributionGuard.IsBlocked)
+        var split = ComputeTransferQuantities(
+            store,
+            sourceOrder,
+            targetOrder,
+            sourceInternalOrderId,
+            targetCustomerOrderId,
+            itemId,
+            qty);
+        var sourceLine = split.SourceLine;
+        var transferQty = split.TransferQty;
+        var qtyFromProduced = split.QtyFromProduced;
+        var qtyFromUnproduced = split.QtyFromUnproduced;
+        var produced = split.ProducedQty;
+
+        var newSourceQty = sourceLine.QtyOrdered - qtyFromUnproduced;
+        if (newSourceQty + QtyTolerance < produced)
         {
-            throw new InvalidOperationException(InternalOrderRedistributionGuardResult.BlockedMessage);
+            throw new InvalidOperationException(
+                "Нельзя перенести больше, чем незакрытый остаток внутреннего заказа с учетом уже выпущенного объема.");
         }
 
+        var targetLines = store.GetOrderLines(targetCustomerOrderId)
+            .Where(line => line.ItemId == itemId)
+            .OrderBy(line => line.Id)
+            .ToList();
+        long targetLineId;
+        double targetQtyAfter;
+        if (targetLines.Count > 0)
+        {
+            var targetLine = targetLines[0];
+            targetLineId = targetLine.Id;
+            targetQtyAfter = targetLine.QtyOrdered + qtyFromUnproduced;
+            for (var i = 1; i < targetLines.Count; i++)
+            {
+                store.DeleteOrderLine(targetLines[i].Id);
+            }
+        }
+        else if (qtyFromUnproduced > QtyTolerance)
+        {
+            targetLineId = store.AddOrderLine(new OrderLine
+            {
+                OrderId = targetCustomerOrderId,
+                ItemId = itemId,
+                QtyOrdered = qtyFromUnproduced,
+                ProductionPurpose = ProductionLinePurpose.CustomerOrder
+            });
+            targetQtyAfter = qtyFromUnproduced;
+        }
+        else
+        {
+            var reserveTargetLine = store.GetOrderLines(targetCustomerOrderId)
+                .Where(line => line.ItemId == itemId)
+                .OrderBy(line => line.Id)
+                .FirstOrDefault();
+            if (reserveTargetLine == null)
+            {
+                throw new InvalidOperationException("Позиция не найдена в клиентском заказе.");
+            }
+
+            targetLineId = reserveTargetLine.Id;
+            targetQtyAfter = reserveTargetLine.QtyOrdered;
+        }
+
+        var reservedHuCodes = new List<string>();
+        if (qtyFromProduced > QtyTolerance)
+        {
+            var reserveResult = OrderProducedHuReservationService.ReserveCore(
+                store,
+                new OrderProducedHuReservationRequest
+                {
+                    SourceInternalOrderId = sourceInternalOrderId,
+                    TargetCustomerOrderId = targetCustomerOrderId,
+                    ItemId = itemId,
+                    TargetOrderLineId = targetLineId,
+                    Qty = qtyFromProduced
+                });
+            reservedHuCodes.AddRange(reserveResult.ReservedHuCodes);
+            qtyFromProduced = reserveResult.QtyReserved;
+        }
+
+        var transferredPlanSegments = new List<PlanTransferSegment>();
+        var transferredHuCodes = new List<string>(reservedHuCodes);
+        InternalOrderMergeResult? mergeResult = null;
+
+        if (qtyFromUnproduced > QtyTolerance)
+        {
+            var redistributionGuard = InternalOrderRedistributionGuard.Evaluate(store, sourceInternalOrderId);
+            if (redistributionGuard.IsBlocked)
+            {
+                if (qtyFromProduced <= QtyTolerance)
+                {
+                    throw new InvalidOperationException(InternalOrderRedistributionGuardResult.BlockedMessage);
+                }
+
+                qtyFromUnproduced = 0;
+                newSourceQty = sourceLine.QtyOrdered;
+                targetQtyAfter = targetLines.Count > 0
+                    ? targetLines[0].QtyOrdered
+                    : targetQtyAfter;
+            }
+
+            if (qtyFromUnproduced <= QtyTolerance)
+            {
+                // produced-only path already handled above
+            }
+            else
+            {
+            var activeSourcePallets = newSourceQty <= QtyTolerance
+                ? CollectActiveSourcePallets(store, sourceInternalOrderId, sourceLine.Id, itemId)
+                : Array.Empty<SourceProductionPallet>();
+            if (activeSourcePallets.Any(row => row.DocStatus == DocStatus.Closed
+                                              || row.DocLedgerCount > 0
+                                              || string.Equals(
+                                                  row.Pallet.Status,
+                                                  ProductionPalletStatus.Filled,
+                                                  StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidOperationException(
+                    "План паллет не соответствует строкам заказа. Запустите диагностику production-plan-consistency.");
+            }
+
+            var sourcePlanBefore = store.GetOrderReceiptPlanLines(sourceInternalOrderId).ToList();
+            transferredPlanSegments = PeelSourceReceiptPlan(
+                sourcePlanBefore,
+                sourceLine.Id,
+                itemId,
+                qtyFromUnproduced,
+                out var remainingSourcePlan);
+
+            store.UpdateOrderLineQty(sourceLine.Id, newSourceQty);
+            if (targetLines.Count > 0)
+            {
+                store.UpdateOrderLineQty(targetLineId, targetQtyAfter);
+            }
+
+            var normalizedRemainingPlan = NormalizeInternalPlanAfterTransfer(
+                remainingSourcePlan,
+                sourceLine.Id,
+                itemId,
+                newSourceQty);
+            store.ReplaceOrderReceiptPlanLines(sourceInternalOrderId, normalizedRemainingPlan);
+
+            var remainingPlanQty = normalizedRemainingPlan
+                .Where(line => line.OrderLineId == sourceLine.Id && line.ItemId == itemId)
+                .Sum(line => line.QtyPlanned);
+            if (newSourceQty > QtyTolerance && remainingPlanQty + QtyTolerance < newSourceQty)
+            {
+                var orderService = new OrderService(store);
+                orderService.TryRebuildOrderReceiptPlan(store, sourceInternalOrderId);
+            }
+
+            var unproducedHuCodes = transferredPlanSegments
+                .Select(segment => segment.HuCode)
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Cast<string>()
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (newSourceQty <= QtyTolerance && activeSourcePallets.Count > 0)
+            {
+                unproducedHuCodes = unproducedHuCodes
+                    .Concat(activeSourcePallets.Select(row => NormalizeHu(row.Pallet.HuCode)))
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+
+            if (targetOrder.UseReservedStock && ItemTypeUsesOrderReservation(store, itemId))
+            {
+                ApplyTransferredPlanToCustomer(
+                    store,
+                    targetCustomerOrderId,
+                    targetLineId,
+                    itemId,
+                    transferredPlanSegments);
+            }
+
+            if (unproducedHuCodes.Count > 0)
+            {
+                store.ReassignOpenProductionPalletsByHu(
+                    sourceInternalOrderId,
+                    targetCustomerOrderId,
+                    targetLineId,
+                    itemId,
+                    unproducedHuCodes);
+                transferredHuCodes.AddRange(unproducedHuCodes);
+            }
+
+            mergeResult = InternalOrderMergeService.TryMarkAsMerged(
+                store,
+                sourceInternalOrderId,
+                targetCustomerOrderId,
+                targetOrder.OrderRef);
+            EmptyDraftProductionReceiptCleanup.CleanupEmptyDraftProductionReceiptsForOrder(store, sourceInternalOrderId);
+            }
+        }
+        else
+        {
+            newSourceQty = sourceLine.QtyOrdered;
+            targetQtyAfter = targetLines.Count > 0
+                ? targetLines[0].QtyOrdered
+                : targetQtyAfter;
+        }
+
+        if (transferQty > QtyTolerance)
+        {
+            OrderService.RefreshCustomerReceiptPlansCore(store, preserveOrderId: targetCustomerOrderId);
+        }
+
+        return new OrderRedistributionResult
+        {
+            SourceOrderId = sourceInternalOrderId,
+            TargetOrderId = targetCustomerOrderId,
+            ItemId = itemId,
+            QtyTransferred = qtyFromUnproduced + qtyFromProduced,
+            QtyFromUnproduced = qtyFromUnproduced,
+            QtyFromProducedStock = qtyFromProduced,
+            SourceQtyOrderedAfter = newSourceQty,
+            TargetQtyOrderedAfter = targetQtyAfter,
+            TransferredHuCodes = transferredHuCodes
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList(),
+            SourceMergeResult = mergeResult
+        };
+    }
+
+    internal static OrderTransferQuantitySplit ComputeTransferQuantities(
+        IDataStore store,
+        Order sourceOrder,
+        Order targetOrder,
+        long sourceInternalOrderId,
+        long targetCustomerOrderId,
+        long itemId,
+        double qty)
+    {
         var sourceLine = store.GetOrderLines(sourceInternalOrderId)
             .Where(line => line.ItemId == itemId && line.QtyOrdered > QtyTolerance)
             .OrderBy(line => line.Id)
@@ -87,26 +315,19 @@ public sealed class OrderRedistributionService
             sourceInternalOrderId,
             new[] { sourceLine });
         var produced = producedByLine.TryGetValue(sourceLine.Id, out var producedQty) ? producedQty : 0d;
-        var maxTransfer = sourceLine.QtyOrdered;
-        var transferQty = Math.Min(qty, maxTransfer);
+        var transferQty = Math.Min(qty, sourceLine.QtyOrdered);
         if (transferQty <= QtyTolerance)
         {
             throw new InvalidOperationException("Нет доступного объема для переноса по внутреннему заказу.");
         }
 
-        var unproducedRemaining = Math.Max(0, sourceLine.QtyOrdered - produced);
-        var qtyFromUnproduced = Math.Min(transferQty, unproducedRemaining);
-        var qtyFromProduced = transferQty - qtyFromUnproduced;
+        var bindableProducedQty = targetOrder.UseReservedStock && ItemTypeUsesOrderReservation(store, itemId)
+            ? GetBindableStockQtyFromSource(store, sourceInternalOrderId, targetCustomerOrderId, itemId)
+            : 0d;
+        var qtyFromProduced = Math.Min(transferQty, bindableProducedQty);
+        var qtyFromUnproduced = transferQty - qtyFromProduced;
         if (qtyFromProduced > QtyTolerance)
         {
-            var bindableQty = GetBindableStockQtyFromSource(store, sourceInternalOrderId, targetCustomerOrderId, itemId);
-            if (bindableQty + QtyTolerance < qtyFromProduced)
-            {
-                throw new InvalidOperationException(
-                    "Недостаточно выпущенного товара на складе по внутреннему заказу для переноса с привязкой HU. " +
-                    $"Доступно: {bindableQty:0.###}, требуется: {qtyFromProduced:0.###}.");
-            }
-
             if (!targetOrder.UseReservedStock)
             {
                 throw new InvalidOperationException(
@@ -120,146 +341,22 @@ public sealed class OrderRedistributionService
             }
         }
 
-        var newSourceQty = sourceLine.QtyOrdered - transferQty;
-        if (newSourceQty + QtyTolerance < produced)
+        if (qtyFromUnproduced > QtyTolerance)
         {
-            throw new InvalidOperationException(
-                "Нельзя перенести больше, чем незакрытый остаток внутреннего заказа с учетом уже выпущенного объема.");
+            var unproducedRemaining = Math.Max(0, sourceLine.QtyOrdered - produced);
+            if (unproducedRemaining + QtyTolerance < qtyFromUnproduced)
+            {
+                throw new InvalidOperationException(
+                    "Недостаточно незакрытого объема во внутреннем заказе для переноса незаполненной части.");
+            }
         }
 
-        var activeSourcePallets = newSourceQty <= QtyTolerance
-            ? CollectActiveSourcePallets(store, sourceInternalOrderId, sourceLine.Id, itemId)
-            : Array.Empty<SourceProductionPallet>();
-        if (activeSourcePallets.Any(row => row.DocStatus == DocStatus.Closed
-                                          || row.DocLedgerCount > 0
-                                          || string.Equals(row.Pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
-        {
-            throw new InvalidOperationException(
-                "План паллет не соответствует строкам заказа. Запустите диагностику production-plan-consistency.");
-        }
-
-        var sourcePlanBefore = store.GetOrderReceiptPlanLines(sourceInternalOrderId).ToList();
-        var transferredPlanSegments = PeelSourceReceiptPlan(
-            sourcePlanBefore,
-            sourceLine.Id,
-            itemId,
+        return new OrderTransferQuantitySplit(
+            sourceLine,
             transferQty,
-            out var remainingSourcePlan);
-
-        store.UpdateOrderLineQty(sourceLine.Id, newSourceQty);
-
-        long targetLineId;
-        double targetQtyAfter;
-        var targetLines = store.GetOrderLines(targetCustomerOrderId)
-            .Where(line => line.ItemId == itemId)
-            .OrderBy(line => line.Id)
-            .ToList();
-        if (targetLines.Count > 0)
-        {
-            var targetLine = targetLines[0];
-            targetLineId = targetLine.Id;
-            targetQtyAfter = targetLine.QtyOrdered + transferQty;
-            store.UpdateOrderLineQty(targetLine.Id, targetQtyAfter);
-            for (var i = 1; i < targetLines.Count; i++)
-            {
-                store.DeleteOrderLine(targetLines[i].Id);
-            }
-        }
-        else
-        {
-            targetLineId = store.AddOrderLine(new OrderLine
-            {
-                OrderId = targetCustomerOrderId,
-                ItemId = itemId,
-                QtyOrdered = transferQty,
-                ProductionPurpose = ProductionLinePurpose.CustomerOrder
-            });
-            targetQtyAfter = transferQty;
-        }
-
-        var normalizedRemainingPlan = NormalizeInternalPlanAfterTransfer(
-            remainingSourcePlan,
-            sourceLine.Id,
-            itemId,
-            newSourceQty);
-        store.ReplaceOrderReceiptPlanLines(sourceInternalOrderId, normalizedRemainingPlan);
-
-        var remainingPlanQty = normalizedRemainingPlan
-            .Where(line => line.OrderLineId == sourceLine.Id && line.ItemId == itemId)
-            .Sum(line => line.QtyPlanned);
-        if (newSourceQty > QtyTolerance && remainingPlanQty + QtyTolerance < newSourceQty)
-        {
-            var orderService = new OrderService(store);
-            orderService.TryRebuildOrderReceiptPlan(store, sourceInternalOrderId);
-        }
-
-        var transferredHuCodes = transferredPlanSegments
-            .Select(segment => segment.HuCode)
-            .Where(code => !string.IsNullOrWhiteSpace(code))
-            .Cast<string>()
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        if (newSourceQty <= QtyTolerance && activeSourcePallets.Count > 0)
-        {
-            transferredHuCodes = transferredHuCodes
-                .Concat(activeSourcePallets.Select(row => NormalizeHu(row.Pallet.HuCode)))
-                .Where(code => !string.IsNullOrWhiteSpace(code))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-        }
-
-        if (targetOrder.UseReservedStock && ItemTypeUsesOrderReservation(store, itemId))
-        {
-            ApplyTransferredPlanToCustomer(
-                store,
-                targetCustomerOrderId,
-                targetLineId,
-                itemId,
-                transferredPlanSegments);
-
-            if (qtyFromProduced > QtyTolerance)
-            {
-                AppendStockReservationFromSource(
-                    store,
-                    sourceInternalOrderId,
-                    targetCustomerOrderId,
-                    targetLineId,
-                    itemId,
-                    qtyFromProduced);
-            }
-        }
-
-        if (transferredHuCodes.Count > 0)
-        {
-            store.ReassignOpenProductionPalletsByHu(
-                sourceInternalOrderId,
-                targetCustomerOrderId,
-                targetLineId,
-                itemId,
-                transferredHuCodes);
-        }
-
-        OrderService.RefreshCustomerReceiptPlansCore(store, preserveOrderId: targetCustomerOrderId);
-        var mergeResult = InternalOrderMergeService.TryMarkAsMerged(
-            store,
-            sourceInternalOrderId,
-            targetCustomerOrderId,
-            targetOrder.OrderRef);
-        EmptyDraftProductionReceiptCleanup.CleanupEmptyDraftProductionReceiptsForOrder(store, sourceInternalOrderId);
-
-        return new OrderRedistributionResult
-        {
-            SourceOrderId = sourceInternalOrderId,
-            TargetOrderId = targetCustomerOrderId,
-            ItemId = itemId,
-            QtyTransferred = transferQty,
-            QtyFromUnproduced = qtyFromUnproduced,
-            QtyFromProducedStock = qtyFromProduced,
-            SourceQtyOrderedAfter = newSourceQty,
-            TargetQtyOrderedAfter = targetQtyAfter,
-            TransferredHuCodes = transferredHuCodes,
-            SourceMergeResult = mergeResult
-        };
+            qtyFromProduced,
+            qtyFromUnproduced,
+            produced);
     }
 
     private static IReadOnlyList<SourceProductionPallet> CollectActiveSourcePallets(
@@ -514,7 +611,7 @@ public sealed class OrderRedistributionService
 
     private sealed record SourceProductionPallet(ProductionPallet Pallet, DocStatus DocStatus, int DocLedgerCount);
 
-    private static double GetBindableStockQtyFromSource(
+    internal static double GetBindableStockQtyFromSource(
         IDataStore store,
         long sourceInternalOrderId,
         long targetCustomerOrderId,
@@ -620,6 +717,13 @@ public sealed class OrderRedistributionService
         return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim().ToUpperInvariant();
     }
 }
+
+internal sealed record OrderTransferQuantitySplit(
+    OrderLine SourceLine,
+    double TransferQty,
+    double QtyFromProduced,
+    double QtyFromUnproduced,
+    double ProducedQty);
 
 public sealed class OrderRedistributionResult
 {

@@ -115,7 +115,8 @@
   - `POST /api/production-needs/create-orders` не создает `marking_order`, не создает synthetic `marking_code`, не трогает Excel ЧЗ и не выполняет side effects маркировки.
   - Если `to_min_stock_qty = 0`, `INTERNAL`-черновик не создается даже при наличии `to_close_orders_qty > 0`.
 - Основной workflow ЧЗ запускается из карточки заказа через `POST /api/orders/{orderId}/marking/export`; источником расчета являются серверные `orders` и `order_lines`, а не очередь производственной потребности.
-  - Для `CUSTOMER` Excel ЧЗ создается только на нехватку маркируемых строк после учета уже покрытого объема: `export_qty = max(0, qty_ordered - shipped_qty - reserved_qty - existing_order_code_qty)`.
+  - Для `CUSTOMER` Excel ЧЗ создается только на нехватку маркируемых строк после учета уже покрытого объема: `export_qty = max(0, qty_ordered - shipped_qty - reserved_filled_hu_qty - existing_order_code_qty)`.
+  - `reserved_filled_hu_qty` учитывает только строки `order_receipt_plan_lines` с `to_hu`, для которых HU имеет `production_pallets.status = FILLED` и положительный остаток в `ledger`; planned/unfilled резерв в маркировку не входит.
   - Для `INTERNAL` Excel ЧЗ создается на объем выпуска внутреннего заказа: `export_qty = max(0, qty_ordered - existing_codes_for_this_internal_order)`.
   - Новый endpoint создает/переиспользует `marking_order` с `source_type = PRODUCTION_ORDER`, `source_order_id = order.id` и временные synthetic `marking_code` через существующий Excel workflow.
   - Повторный export идемпотентен: если коды по этому заказу уже покрывают расчетный объем, новые задачи и коды не создаются.
@@ -192,7 +193,7 @@ Production Docker Compose wrapper:
 
 Основной workflow маркировки теперь order-based: оператор открывает заказ и запускает `Сформировать Excel ЧЗ`, WPF вызывает `POST /api/orders/{orderId}/marking/export`, а сервер сам читает заказ и строки.
 
-Для `CUSTOMER`-заказа расчет идет по маркируемым строкам заказа. `required_qty = qty_ordered`; покрытым считается уже отгруженный/зарезервированный складской объем и уже созданные коды, явно связанные с этим заказом. Excel создается только на нехватку: если заказано `7200`, а `3600` уже покрыто резервом, в Excel попадает `3600`.
+Для `CUSTOMER`-заказа расчет идет по маркируемым строкам заказа. `required_qty = qty_ordered`; покрытым считается уже отгруженный объем, резерв готовых HU (`reserved_filled_hu_qty`: FILLED паллета + положительный `ledger` по HU) и уже созданные коды, явно связанные с этим заказом. Excel создается только на нехватку: если заказано `7200`, а `3600` уже покрыто таким резервом, в Excel попадает `3600`. Плановый резерв без FILLED/ledger shortage не уменьшает.
 
 Для `INTERNAL`-заказа расчет идет на весь объем выпуска строк внутреннего заказа. Уже созданные коды для этого production order не дублируются, а новые order-based задачи создаются с `source_type = PRODUCTION_ORDER`, `source_order_id = order.id` и `order_id = order.id`.
 

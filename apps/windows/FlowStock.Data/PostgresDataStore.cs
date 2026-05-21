@@ -21,6 +21,25 @@ public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStor
         "LEFT JOIN partners p ON p.id = d.partner_id " +
         "LEFT JOIN (SELECT dl.doc_id, COUNT(*) AS line_count FROM doc_lines dl WHERE dl.qty > 0 AND NOT EXISTS (SELECT 1 FROM doc_lines newer WHERE newer.replaces_line_id = dl.id) GROUP BY dl.doc_id) dl ON dl.doc_id = d.id " +
         "LEFT JOIN (SELECT doc_id, MAX(device_id) AS device_id, MAX(doc_uid) AS doc_uid FROM api_docs GROUP BY doc_id) ad ON ad.doc_id = d.id";
+    private const string MarkingReservedFilledLedgerStockCte = @"
+ledger_stock_by_hu AS (
+    SELECT l.item_id,
+           UPPER(BTRIM(COALESCE(l.hu_code, l.hu))) AS hu_code,
+           SUM(l.qty_delta) AS qty
+    FROM ledger l
+    GROUP BY l.item_id, UPPER(BTRIM(COALESCE(l.hu_code, l.hu)))
+    HAVING SUM(l.qty_delta) > 0.000001
+),
+filled_pallet_by_hu AS (
+    SELECT pp.item_id,
+           UPPER(BTRIM(pp.hu_code)) AS hu_code,
+           MAX(pp.planned_qty) AS filled_qty
+    FROM production_pallets pp
+    WHERE UPPER(BTRIM(COALESCE(pp.status, ''))) = 'FILLED'
+      AND pp.hu_code IS NOT NULL
+      AND BTRIM(pp.hu_code) <> ''
+    GROUP BY pp.item_id, UPPER(BTRIM(pp.hu_code))
+)";
     private const string ProductionPalletSelectSql = @"
 SELECT p.id,
        p.prd_doc_id,
@@ -268,17 +287,34 @@ pallet_summary AS (
     INNER JOIN order_scope os ON os.id = ps.order_id
     GROUP BY ps.order_id
 ),
+" + MarkingReservedFilledLedgerStockCte + @",
+reserved_filled_hu_by_line AS (
+    SELECT p.order_line_id,
+           SUM(LEAST(p.qty_planned, ls.qty, fp.filled_qty)) AS reserved_filled_hu_qty
+    FROM order_receipt_plan_lines p
+    INNER JOIN order_lines_scope ols ON ols.id = p.order_line_id
+    INNER JOIN order_base ob ON ob.id = p.order_id AND ob.order_type = 'CUSTOMER'
+    INNER JOIN ledger_stock_by_hu ls ON ls.item_id = p.item_id
+                                    AND ls.hu_code = UPPER(BTRIM(p.to_hu))
+    INNER JOIN filled_pallet_by_hu fp ON fp.item_id = p.item_id
+                                     AND fp.hu_code = UPPER(BTRIM(p.to_hu))
+    WHERE p.qty_planned > 0
+      AND p.to_hu IS NOT NULL
+      AND BTRIM(p.to_hu) <> ''
+    GROUP BY p.order_line_id
+),
 markable_line_need AS (
     SELECT olm.order_id,
            olm.item_id,
            NULLIF(BTRIM(i.gtin), '') AS gtin,
            CASE
                WHEN olm.order_type = 'INTERNAL' THEN GREATEST(0, olm.qty_ordered)
-               ELSE GREATEST(0, olm.qty_ordered - olm.qty_shipped - olm.qty_reserved)
+               ELSE GREATEST(0, olm.qty_ordered - olm.qty_shipped - COALESCE(rff.reserved_filled_hu_qty, 0))
            END AS qty_for_marking
     FROM order_line_metrics olm
     INNER JOIN items i ON i.id = olm.item_id
     INNER JOIN item_types it ON it.id = i.item_type_id
+    LEFT JOIN reserved_filled_hu_by_line rff ON rff.order_line_id = olm.order_line_id
     WHERE COALESCE(it.enable_marking, FALSE) = TRUE
       AND NULLIF(BTRIM(i.gtin), '') IS NOT NULL
 ),
@@ -4145,21 +4181,38 @@ WITH shipped AS (
       )
     GROUP BY dl.order_line_id
 ),
-reserved AS (
-    SELECT order_line_id, SUM(qty_planned) AS qty_reserved
-    FROM order_receipt_plan_lines
-    WHERE qty_planned > 0
-    GROUP BY order_line_id
+" + MarkingReservedFilledLedgerStockCte + @",
+reserved_filled AS (
+    SELECT p.order_line_id,
+           SUM(LEAST(p.qty_planned, ls.qty, fp.filled_qty)) AS qty_reserved_filled
+    FROM order_receipt_plan_lines p
+    INNER JOIN orders o ON o.id = p.order_id AND o.order_type = 'CUSTOMER'
+    INNER JOIN ledger_stock_by_hu ls ON ls.item_id = p.item_id
+                                    AND ls.hu_code = UPPER(BTRIM(p.to_hu))
+    INNER JOIN filled_pallet_by_hu fp ON fp.item_id = p.item_id
+                                     AND fp.hu_code = UPPER(BTRIM(p.to_hu))
+    WHERE p.qty_planned > 0
+      AND p.to_hu IS NOT NULL
+      AND BTRIM(p.to_hu) <> ''
+    GROUP BY p.order_line_id
 ),
 line_need AS (
     SELECT ol.order_id,
            ol.id AS order_line_id,
-           GREATEST(0, ol.qty_ordered - COALESCE(shipped.qty_shipped, 0) - COALESCE(reserved.qty_reserved, 0)) AS qty_for_marking
+           GREATEST(
+               0,
+               ol.qty_ordered
+               - COALESCE(shipped.qty_shipped, 0)
+               - CASE
+                     WHEN o.order_type = 'CUSTOMER' THEN COALESCE(reserved_filled.qty_reserved_filled, 0)
+                     ELSE 0
+                 END) AS qty_for_marking
     FROM order_lines ol
+    INNER JOIN orders o ON o.id = ol.order_id
     INNER JOIN items i ON i.id = ol.item_id
     INNER JOIN item_types it ON it.id = i.item_type_id
     LEFT JOIN shipped ON shipped.order_line_id = ol.id
-    LEFT JOIN reserved ON reserved.order_line_id = ol.id
+    LEFT JOIN reserved_filled ON reserved_filled.order_line_id = ol.id
     WHERE COALESCE(it.enable_marking, FALSE) = TRUE
       AND NULLIF(BTRIM(i.gtin), '') IS NOT NULL
 ),
@@ -4372,11 +4425,20 @@ shipped AS (
       )
     GROUP BY dl.order_line_id
 ),
-reserved AS (
-    SELECT order_line_id, SUM(qty_planned) AS qty_reserved
-    FROM order_receipt_plan_lines
-    WHERE qty_planned > 0
-    GROUP BY order_line_id
+" + MarkingReservedFilledLedgerStockCte + @",
+reserved_filled AS (
+    SELECT p.order_line_id,
+           SUM(LEAST(p.qty_planned, ls.qty, fp.filled_qty)) AS qty_reserved_filled
+    FROM order_receipt_plan_lines p
+    INNER JOIN orders o ON o.id = p.order_id AND o.order_type = 'CUSTOMER'
+    INNER JOIN ledger_stock_by_hu ls ON ls.item_id = p.item_id
+                                    AND ls.hu_code = UPPER(BTRIM(p.to_hu))
+    INNER JOIN filled_pallet_by_hu fp ON fp.item_id = p.item_id
+                                     AND fp.hu_code = UPPER(BTRIM(p.to_hu))
+    WHERE p.qty_planned > 0
+      AND p.to_hu IS NOT NULL
+      AND BTRIM(p.to_hu) <> ''
+    GROUP BY p.order_line_id
 )
 SELECT ol.order_id,
        ol.id,
@@ -4384,15 +4446,25 @@ SELECT ol.order_id,
        BTRIM(i.gtin) AS gtin,
        ol.qty_ordered,
        COALESCE(shipped.qty_shipped, 0) AS qty_shipped,
-       COALESCE(reserved.qty_reserved, 0) AS qty_reserved,
-       GREATEST(0, ol.qty_ordered - COALESCE(shipped.qty_shipped, 0) - COALESCE(reserved.qty_reserved, 0)) AS qty_for_marking
+       CASE
+           WHEN o.order_type = 'CUSTOMER' THEN COALESCE(reserved_filled.qty_reserved_filled, 0)
+           ELSE 0
+       END AS qty_reserved,
+       GREATEST(
+           0,
+           ol.qty_ordered
+           - COALESCE(shipped.qty_shipped, 0)
+           - CASE
+                 WHEN o.order_type = 'CUSTOMER' THEN COALESCE(reserved_filled.qty_reserved_filled, 0)
+                 ELSE 0
+             END) AS qty_for_marking
 FROM order_lines ol
 INNER JOIN selected_orders so ON so.order_id = ol.order_id
 INNER JOIN orders o ON o.id = ol.order_id
 INNER JOIN items i ON i.id = ol.item_id
 INNER JOIN item_types it ON it.id = i.item_type_id
 LEFT JOIN shipped ON shipped.order_line_id = ol.id
-LEFT JOIN reserved ON reserved.order_line_id = ol.id
+LEFT JOIN reserved_filled ON reserved_filled.order_line_id = ol.id
 WHERE o.status IN (@in_progress_status, @accepted_status)
   AND COALESCE(it.enable_marking, FALSE) = TRUE
   AND NULLIF(BTRIM(i.gtin), '') IS NOT NULL
@@ -6472,6 +6544,41 @@ GROUP BY dl.order_line_id;
             command.Parameters.AddWithValue("@type", DocTypeMapper.ToOpString(DocType.Outbound));
             command.Parameters.AddWithValue("@status", DocTypeMapper.StatusToString(DocStatus.Closed));
             command.Parameters.AddWithValue("@order_id", orderId);
+            using var reader = command.ExecuteReader();
+            var totals = new Dictionary<long, double>();
+            while (reader.Read())
+            {
+                totals[reader.GetInt64(0)] = reader.GetDouble(1);
+            }
+
+            return totals;
+        });
+    }
+
+    public IReadOnlyDictionary<long, double> GetReservedFilledHuQtyByOrderLine(long customerOrderId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, $@"
+WITH {MarkingReservedFilledLedgerStockCte},
+reserved_filled_hu_by_line AS (
+    SELECT p.order_line_id,
+           SUM(LEAST(p.qty_planned, ls.qty, fp.filled_qty)) AS reserved_filled_hu_qty
+    FROM order_receipt_plan_lines p
+    INNER JOIN ledger_stock_by_hu ls ON ls.item_id = p.item_id
+                                    AND ls.hu_code = UPPER(BTRIM(p.to_hu))
+    INNER JOIN filled_pallet_by_hu fp ON fp.item_id = p.item_id
+                                     AND fp.hu_code = UPPER(BTRIM(p.to_hu))
+    WHERE p.order_id = @order_id
+      AND p.qty_planned > 0
+      AND p.to_hu IS NOT NULL
+      AND BTRIM(p.to_hu) <> ''
+    GROUP BY p.order_line_id
+)
+SELECT order_line_id, reserved_filled_hu_qty
+FROM reserved_filled_hu_by_line;
+");
+            command.Parameters.AddWithValue("@order_id", customerOrderId);
             using var reader = command.ExecuteReader();
             var totals = new Dictionary<long, double>();
             while (reader.Read())

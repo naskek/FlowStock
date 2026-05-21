@@ -827,6 +827,9 @@ internal sealed class CloseDocumentHarness
                     .ToArray()
                 : Array.Empty<OrderReceiptPlanLine>());
 
+        _store.Setup(store => store.GetReservedFilledHuQtyByOrderLine(It.IsAny<long>()))
+            .Returns<long>(orderId => ReservedFilledHuMarkingCalculator.GetQtyByOrderLine(_store.Object, orderId));
+
         _store.Setup(store => store.ReplaceOrderReceiptPlanLines(It.IsAny<long>(), It.IsAny<IReadOnlyList<OrderReceiptPlanLine>>()))
             .Callback<long, IReadOnlyList<OrderReceiptPlanLine>>((orderId, lines) =>
             {
@@ -2890,7 +2893,27 @@ internal sealed class CloseDocumentHarness
 
         return result
             .GroupBy(row => (row.ItemId, HuCode: NormalizeHu(row.HuCode)))
-            .Select(group => group.First())
+            .Select(group =>
+            {
+                var rows = group.ToList();
+                var merged = rows[0];
+                foreach (var row in rows.Skip(1))
+                {
+                    merged = new HuOrderContextRow
+                    {
+                        HuCode = merged.HuCode,
+                        ItemId = merged.ItemId,
+                        OriginInternalOrderId = merged.OriginInternalOrderId ?? row.OriginInternalOrderId,
+                        OriginInternalOrderRef = merged.OriginInternalOrderRef ?? row.OriginInternalOrderRef,
+                        ReservedCustomerOrderId = merged.ReservedCustomerOrderId ?? row.ReservedCustomerOrderId,
+                        ReservedCustomerOrderRef = merged.ReservedCustomerOrderRef ?? row.ReservedCustomerOrderRef,
+                        ReservedCustomerId = merged.ReservedCustomerId ?? row.ReservedCustomerId,
+                        ReservedCustomerName = merged.ReservedCustomerName ?? row.ReservedCustomerName
+                    };
+                }
+
+                return merged;
+            })
             .ToArray();
     }
 
