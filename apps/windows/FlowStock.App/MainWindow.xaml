@@ -251,8 +251,6 @@
                                                 <DataGridTextColumn Header="Всего в заказах для клиентов" Binding="{Binding DemandToCloseDisplay}" Width="190" />
                                                 <DataGridTextColumn Header="До минимума" Binding="{Binding DemandToMinDisplay}" Width="120" />
                                                 <DataGridTextColumn Header="Во внутренних заказах" Binding="{Binding AlreadyPlannedInternalDisplay}" Width="150" />
-                                                <DataGridTextColumn Header="Выпущено" Binding="{Binding FilledDisplay}" Width="120" />
-                                                <DataGridTextColumn Header="Осталось выпустить" Binding="{Binding RemainingToCreateDisplay}" Width="150" />
                                             </DataGrid.Columns>
                                         </DataGrid>
                                     </StackPanel>
@@ -362,36 +360,6 @@
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Выпущено / наполнено"
-                                                Binding="{Binding FilledSummary}"
-                                                Width="Auto"
-                                                MinWidth="100"
-                                                MaxWidth="132">
-                                <DataGridTextColumn.ElementStyle>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="TextWrapping" Value="NoWrap" />
-                                        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
-                                        <Setter Property="ToolTip" Value="{Binding FilledSummary}" />
-                                        <Setter Property="VerticalAlignment" Value="Center" />
-                                    </Style>
-                                </DataGridTextColumn.ElementStyle>
-                            </DataGridTextColumn>
-                            <DataGridTemplateColumn Header="Осталось выпустить"
-                                                    Width="Auto"
-                                                    MinWidth="96"
-                                                    MaxWidth="128">
-                                <DataGridTemplateColumn.CellTemplate>
-                                    <DataTemplate>
-                                        <TextBlock Text="{Binding RemainingNeedSummary}"
-                                                   Foreground="{Binding RemainingNeedBrush}"
-                                                   FontWeight="{Binding RemainingNeedFontWeight}"
-                                                   TextWrapping="NoWrap"
-                                                   TextTrimming="CharacterEllipsis"
-                                                   ToolTip="{Binding RemainingNeedSummary}"
-                                                   VerticalAlignment="Center" />
-                                    </DataTemplate>
-                                </DataGridTemplateColumn.CellTemplate>
-                            </DataGridTemplateColumn>
                         </DataGrid.Columns>
                     </DataGrid>
                     <TextBlock x:Name="StockEmptyText"

@@ -555,15 +555,15 @@ assert.match(expandedStockHtml, /На складе/);
 assert.match(expandedStockHtml, /Минимум/);
 assert.match(expandedStockHtml, /Потребность/);
 assert.match(expandedStockHtml, /План/);
-assert.match(expandedStockHtml, /Выпущено \/ наполнено/);
-assert.match(expandedStockHtml, /Осталось выпустить/);
+assert.doesNotMatch(expandedStockHtml, /Выпущено \/ наполнено/);
+assert.doesNotMatch(expandedStockHtml, /Осталось выпустить/);
 assert.match(expandedStockHtml, /Клиенты: 5 шт/);
 assert.match(expandedStockHtml, /До мин.: 8 шт/);
 assert.match(expandedStockHtml, /Внутр.: 6 шт/);
 assert.match(expandedStockHtml, /PRD: 4 шт/);
 assert.match(expandedStockHtml, /2 шт/);
-assert.match(expandedStockHtml, /Произвести: 3 шт/);
-assert.match(expandedStockHtml, /colspan="7" class="pc-stock-detail-cell"/);
+assert.doesNotMatch(expandedStockHtml, /Произвести: 3 шт/);
+assert.match(expandedStockHtml, /colspan="5" class="pc-stock-detail-cell"/);
 assert.match(expandedStockHtml, />Складские HU</);
 assert.match(expandedStockHtml, />План \/ производство</);
 assert.match(expandedStockHtml, />Расчёт потребности</);
@@ -578,23 +578,26 @@ assert.match(expandedStockHtml, /Наполнена/);
 assert.match(expandedStockHtml, /Всего в заказах для клиентов/);
 assert.match(expandedStockHtml, /До минимума/);
 assert.match(expandedStockHtml, /Во внутренних заказах/);
-assert.match(expandedStockHtml, /Выпущено/);
-assert.match(expandedStockHtml, /Осталось выпустить/);
-assert.doesNotMatch(expandedStockHtml, /pc-stock-plan-cell[^>]*>[\s\S]*12 шт[\s\S]*<\/td>/, "planned/internal/PRD values must not appear as stock");
+assert.doesNotMatch(expandedStockHtml, /<th class="pc-num">Выпущено<\/th>/);
+assert.doesNotMatch(expandedStockHtml, /<th class="pc-num">Осталось выпустить<\/th>/);
+assert.match(
+  expandedStockHtml,
+  /pc-stock-plan-cell"><div class="pc-stock-summary-line">Внутр\.: 6 шт<\/div><div class="pc-stock-summary-line">PRD: 4 шт<\/div><\/td>/
+);
 
-const coveredStockHtml = pc.renderStockTable([
-  pc.mapWarehouseProductionStateRow({
-    item_id: 11,
-    item_name: "Покрытый товар",
-    base_uom: "шт",
-    stock_qty: 10,
-    internal_remaining_qty: 5,
-    remaining_need_qty: 0,
-    need_breakdown: { already_planned_internal: 5, remaining_to_create: 0 },
-    production_receipts: []
-  })
-], { 11: true });
-assert.match(coveredStockHtml, /Покрыто/);
+const coveredStockRow = pc.mapWarehouseProductionStateRow({
+  item_id: 11,
+  item_name: "Покрытый товар",
+  base_uom: "шт",
+  stock_qty: 10,
+  internal_remaining_qty: 5,
+  remaining_need_qty: 0,
+  need_breakdown: { already_planned_internal: 5, remaining_to_create: 0 },
+  production_receipts: []
+});
+assert.strictEqual(coveredStockRow.remainingNeedSummary, "Покрыто");
+const coveredStockHtml = pc.renderStockTable([coveredStockRow], { 11: true });
+assert.doesNotMatch(coveredStockHtml, /Покрыто/);
 assert.match(coveredStockHtml, /План \/ производство не сформирован/);
 
 const noNeedStockHtml = pc.renderStockTable([

@@ -632,7 +632,7 @@
         if (isExpanded) {
           detailRow =
             '<tr class="pc-stock-detail-row">' +
-            '<td colspan="7" class="pc-stock-detail-cell">' +
+            '<td colspan="5" class="pc-stock-detail-cell">' +
             '<div class="pc-stock-detail-block">' +
             '<section class="pc-stock-detail-section">' +
             '<div class="pc-stock-detail-title">Складские HU</div>' +
@@ -682,12 +682,6 @@
           '<td class="pc-stock-plan-cell">' +
           renderSummaryLines(row.planSummaryLines) +
           "</td>" +
-          "<td>" +
-          escapeHtml(row.filledSummary || "—") +
-          "</td>" +
-          '<td><span class="' + escapeHtml(row.remainingNeedClass || "") + '">' +
-          escapeHtml(row.remainingNeedSummary || "—") +
-          "</span></td>" +
           "</tr>" +
           detailRow
         );
@@ -701,8 +695,6 @@
       '<col class="pc-stock-col-min" />' +
       '<col class="pc-stock-col-need" />' +
       '<col class="pc-stock-col-plan" />' +
-      '<col class="pc-stock-col-filled" />' +
-      '<col class="pc-stock-col-remaining" />' +
       "</colgroup>" +
       "<thead><tr>" +
       renderSortableHeader("stock", "itemName", "Товар") +
@@ -710,8 +702,6 @@
       renderSortableHeader("stock", "minStockQty", "Минимум") +
       '<th>Потребность</th>' +
       '<th>План</th>' +
-      renderSortableHeader("stock", "prdFilledQty", "Выпущено / наполнено") +
-      renderSortableHeader("stock", "remainingNeedQty", "Осталось выпустить") +
       "</tr></thead>" +
       "<tbody>" +
       body +
@@ -818,15 +808,11 @@
       '<th class="pc-num">Всего в заказах для клиентов</th>' +
       '<th class="pc-num">До минимума</th>' +
       '<th class="pc-num">Во внутренних заказах</th>' +
-      '<th class="pc-num">Выпущено</th>' +
-      '<th class="pc-num">Осталось выпустить</th>' +
       "</tr></thead>" +
       "<tbody><tr>" +
       '<td class="pc-num">' + escapeHtml(row.customerDemandDisplay || "—") + "</td>" +
       '<td class="pc-num">' + escapeHtml(row.minDemandDisplay || "—") + "</td>" +
       '<td class="pc-num">' + escapeHtml(row.internalPlanDisplay || "—") + "</td>" +
-      '<td class="pc-num">' + escapeHtml(row.filledSummary || "—") + "</td>" +
-      '<td class="pc-num">' + escapeHtml(row.remainingNeedQty > 0 ? row.remainingNeedQtyDisplay : "—") + "</td>" +
       "</tr></tbody>" +
       "</table>" +
       "</div>"
