@@ -3996,6 +3996,26 @@
       }
     }
 
+    function focusLineItemQuery(index) {
+      if (!refs.linesWrap) {
+        return;
+      }
+
+      var itemInput = refs.linesWrap.querySelector('.line-item-query[data-index="' + index + '"]');
+      if (!itemInput) {
+        return;
+      }
+
+      itemInput.focus();
+      if (typeof itemInput.setSelectionRange === "function") {
+        var length = String(itemInput.value || "").length;
+        itemInput.setSelectionRange(length, length);
+      }
+      if (typeof itemInput.scrollIntoView === "function") {
+        itemInput.scrollIntoView({ block: "nearest" });
+      }
+    }
+
     function renderLines() {
       if (!refs.linesWrap) {
         return;
@@ -4184,6 +4204,7 @@
           linesState.push(createEmptyLine());
           activeLineIndex = linesState.length - 1;
           renderLines();
+          focusLineItemQuery(activeLineIndex);
         });
       }
     }
