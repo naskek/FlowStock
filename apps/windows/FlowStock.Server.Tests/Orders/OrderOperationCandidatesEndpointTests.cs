@@ -93,16 +93,26 @@ public sealed class OrderOperationCandidatesEndpointTests
     }
 
     [Fact]
-    public void PostgresDataStore_GetOperationOrderCandidates_FiltersByDocTypeInSql()
+    public void PostgresDataStore_GetOperationOrderCandidates_UsesEarlyLimitedCandidateScope()
     {
-        var source = File.ReadAllText(GetPostgresDataStorePath());
+        var storeSource = File.ReadAllText(GetPostgresDataStorePath());
+        var sqlSource = File.ReadAllText(GetOperationOrderCandidateSqlPath());
 
-        Assert.Contains("public IReadOnlyList<Order> GetOperationOrderCandidates(DocType docType, string? query, int limit)", source, StringComparison.Ordinal);
-        Assert.Contains("@doc_type = @production_receipt_doc_type", source, StringComparison.Ordinal);
-        Assert.Contains("candidate_orders.has_receipt_remaining", source, StringComparison.Ordinal);
-        Assert.Contains("@doc_type = @outbound_doc_type", source, StringComparison.Ordinal);
-        Assert.Contains("candidate_orders.has_shipment_remaining", source, StringComparison.Ordinal);
-        Assert.Contains("Math.Clamp(limit, 1, 50)", source, StringComparison.Ordinal);
+        var methodSource = ExtractMethodSource(storeSource, "GetOperationOrderCandidates");
+
+        Assert.Contains("OperationOrderCandidateSql.BuildOrderScopeSql", methodSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("candidate_orders.has_receipt_remaining", methodSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("@doc_type = @production_receipt_doc_type", methodSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("SELECT o.id\r\nFROM orders o", methodSource, StringComparison.Ordinal);
+        Assert.Contains("Math.Clamp(limit, 1, 50)", storeSource, StringComparison.Ordinal);
+
+        Assert.Contains("limited_candidate_ids", sqlSource, StringComparison.Ordinal);
+        Assert.Contains("order_list_flags", sqlSource, StringComparison.Ordinal);
+        Assert.Contains("ProductionReceiptCandidateMetricsCte", sqlSource, StringComparison.Ordinal);
+        Assert.Contains("OutboundCandidateMetricsCte", sqlSource, StringComparison.Ordinal);
+        Assert.Contains("has_receipt_remaining", sqlSource, StringComparison.Ordinal);
+        Assert.Contains("has_shipment_remaining", sqlSource, StringComparison.Ordinal);
+        Assert.Contains("LIMIT @limit", sqlSource, StringComparison.Ordinal);
     }
 
     private static Mock<IDataStore> CreateStore()
@@ -142,12 +152,28 @@ public sealed class OrderOperationCandidatesEndpointTests
         return document.RootElement.Clone();
     }
 
+    private static string ExtractMethodSource(string source, string methodName)
+    {
+        var marker = $"public IReadOnlyList<Order> {methodName}";
+        var start = source.IndexOf(marker, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"Method {methodName} was not found.");
+
+        var nextMethod = source.IndexOf("\n    public ", start + marker.Length, StringComparison.Ordinal);
+        return nextMethod < 0 ? source[start..] : source[start..nextMethod];
+    }
+
     private static string GetPostgresDataStorePath()
+        => GetRepoFilePath("apps", "windows", "FlowStock.Data", "PostgresDataStore.cs");
+
+    private static string GetOperationOrderCandidateSqlPath()
+        => GetRepoFilePath("apps", "windows", "FlowStock.Data", "OperationOrderCandidateSql.cs");
+
+    private static string GetRepoFilePath(params string[] parts)
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir != null)
         {
-            var candidate = Path.Combine(dir.FullName, "apps", "windows", "FlowStock.Data", "PostgresDataStore.cs");
+            var candidate = Path.Combine(new[] { dir.FullName }.Concat(parts).ToArray());
             if (File.Exists(candidate))
             {
                 return candidate;
@@ -156,7 +182,7 @@ public sealed class OrderOperationCandidatesEndpointTests
             dir = dir.Parent;
         }
 
-        throw new FileNotFoundException("PostgresDataStore.cs not found from test output directory.");
+        throw new FileNotFoundException(string.Join(Path.DirectorySeparatorChar, parts));
     }
 
     private sealed class OrderOperationCandidatesHost : IAsyncDisposable
