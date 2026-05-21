@@ -156,6 +156,29 @@ public sealed class WpfReadApiService
             out orders);
     }
 
+    public bool TryGetOperationOrderCandidates(
+        DocType docType,
+        string? search,
+        out IReadOnlyList<Order> orders,
+        int limit = OperationOrderCandidatesApiQuery.DefaultLimit)
+    {
+        orders = Array.Empty<Order>();
+        if (docType is not (DocType.ProductionReceipt or DocType.Outbound))
+        {
+            return false;
+        }
+
+        return TryRead(
+            OperationOrderCandidatesApiQuery.BuildPath(docType, search, limit),
+            root => root.ValueKind == JsonValueKind.Array
+                ? root.EnumerateArray()
+                    .Select(MapOrder)
+                    .ToList()
+                : new List<Order>(),
+            "operation-order-candidates",
+            out orders);
+    }
+
     public bool TryGetOrder(long orderId, out Order? order)
     {
         order = null;

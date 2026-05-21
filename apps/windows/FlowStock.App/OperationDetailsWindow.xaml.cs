@@ -50,7 +50,6 @@ public partial class OperationDetailsWindow : Window
     private bool _discardEmptyDraftAttempted;
     private bool _hasProductionPalletPlan;
     private const double QtyTolerance = 0.000001;
-    private const int OrderLookupPageSize = 100;
 
     public OperationDetailsWindow(AppServices services, long docId, string? createdDraftDocUid = null)
     {
@@ -211,15 +210,29 @@ public partial class OperationDetailsWindow : Window
         var isProductionReceipt = _doc?.Type == DocType.ProductionReceipt;
         var isOutbound = _doc?.Type == DocType.Outbound;
         var normalizedSearch = string.IsNullOrWhiteSpace(search) ? null : search.Trim();
-        var orders = _services.WpfReadApi.TryGetOrdersPage(
-            includeInternal: true,
-            search: normalizedSearch,
-            limit: OrderLookupPageSize,
-            offset: 0,
-            includeCancelledMerged: false,
-            out var apiOrders)
-            ? apiOrders
-            : Array.Empty<Order>();
+        IReadOnlyList<Order> orders;
+        if (isProductionReceipt)
+        {
+            orders = _services.WpfReadApi.TryGetOperationOrderCandidates(
+                DocType.ProductionReceipt,
+                normalizedSearch,
+                out var productionOrders)
+                ? productionOrders
+                : Array.Empty<Order>();
+        }
+        else if (isOutbound)
+        {
+            orders = _services.WpfReadApi.TryGetOperationOrderCandidates(
+                DocType.Outbound,
+                normalizedSearch,
+                out var outboundOrders)
+                ? outboundOrders
+                : Array.Empty<Order>();
+        }
+        else
+        {
+            orders = Array.Empty<Order>();
+        }
 
         var candidates = orders.ToList();
         if (_doc?.OrderId is long currentOrderId

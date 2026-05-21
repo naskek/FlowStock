@@ -1967,6 +1967,33 @@ app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>
     return Results.Ok(list);
 });
 
+app.MapGet("/api/orders/candidates", (HttpRequest request, IDataStore store) =>
+{
+    var docType = DocTypeMapper.FromOpString(request.Query["doc_type"].ToString());
+    if (docType is not (DocType.ProductionReceipt or DocType.Outbound))
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_DOC_TYPE"));
+    }
+
+    var query = request.Query["q"].ToString();
+    var normalized = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
+    var limit = Math.Clamp(TryReadNonNegativeInt(request.Query["limit"]) ?? 50, 1, 50);
+    IReadOnlyList<Order> orders;
+    if (store is IOptimizedOperationOrderCandidatesStore optimizedStore)
+    {
+        orders = optimizedStore.GetOperationOrderCandidates(docType.Value, normalized, limit);
+    }
+    else
+    {
+        orders = new OrderService(store)
+            .GetOrdersPage(includeInternal: true, normalized, limit, 0)
+            .Where(order => OperationOrderCandidatePolicy.IsCandidate(order, docType.Value))
+            .ToList();
+    }
+
+    return Results.Ok(MapOrdersWithShipmentRemaining(orders, store));
+});
+
 app.MapGet("/api/orders/next-ref", (IDataStore store) =>
 {
     return Results.Ok(new
