@@ -25,6 +25,17 @@ public sealed class OrderGetOrdersPageSqlTests
         Assert.Contains("LIMIT @limit OFFSET @offset", sql, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void OrderListMarkingRollup_DoesNotCompleteZeroNeedMarkedOrders()
+    {
+        var sql = File.ReadAllText(GetPostgresDataStorePath()).Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        Assert.Contains(
+            "AND EXISTS (\n               SELECT 1\n               FROM markable_line_need mln\n               WHERE mln.order_id = ob.id\n                 AND mln.qty_ordered > 0\n           )\n           AND NOT EXISTS",
+            sql,
+            StringComparison.Ordinal);
+    }
+
     private static string GetPostgresDataStorePath()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

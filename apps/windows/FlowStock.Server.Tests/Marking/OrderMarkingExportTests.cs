@@ -80,6 +80,20 @@ public sealed class OrderMarkingExportTests
     }
 
     [Fact]
+    public void NewInternalMarkingOrder_WithZeroNeedAndNoCodes_IsNotCompleted()
+    {
+        var harness = CreateOrderHarness(OrderType.Internal, qty: 0, status: OrderStatus.InProgress);
+
+        var order = harness.GetOrder(10);
+
+        Assert.True(order.MarkingApplies);
+        Assert.True(order.MarkingRequired);
+        Assert.False(order.MarkingCompleted);
+        Assert.Equal(MarkingStatus.Required, order.EffectiveMarkingStatus);
+        Assert.Equal("Маркировка не проведена", order.MarkingLabel);
+    }
+
+    [Fact]
     public void FilledPallet_DoesNotMakeInternalOrderMarkingCompleted()
     {
         var harness = CreateOrderHarness(OrderType.Internal, qty: 3600, status: OrderStatus.InProgress);

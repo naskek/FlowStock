@@ -2159,20 +2159,29 @@ internal sealed class CloseDocumentHarness
             .Where(line => _items.TryGetValue(line.ItemId, out var item) && item.IsChestnyZnakMarkingRequired)
             .ToArray();
         var markingApplies = markableLines.Length > 0;
-        var markingCodeCovered = markingApplies && markableLines
+        var markingNeedsByItem = markableLines
             .GroupBy(line => line.ItemId)
+            .Select(group => new
+            {
+                ItemId = group.Key,
+                OrderedQty = group.Sum(line => Math.Max(0, line.QtyOrdered)),
+                RequiredQty = group.Sum(line => GetRequiredMarkingQty(order, line)),
+                Lines = group.ToArray()
+            })
+            .ToArray();
+        var markingCodeCovered = markingNeedsByItem.Any(group => group.OrderedQty > 0.000001)
+                                  && markingNeedsByItem
             .All(group =>
             {
-                var item = _items[group.Key];
-                var requiredQty = group.Sum(line => GetRequiredMarkingQty(order, line));
-                if (requiredQty <= 0.000001)
+                if (group.RequiredQty <= 0.000001)
                 {
                     return true;
                 }
 
-                var freeCodes = CountFreeMarkingCodesForItem(group.Key, item.Gtin);
-                var boundCodes = group.Sum(line => CountBoundMarkingCodesForOrderLine(line.Id));
-                return freeCodes + boundCodes + 0.000001 >= requiredQty;
+                var item = _items[group.ItemId];
+                var freeCodes = CountFreeMarkingCodesForItem(group.ItemId, item.Gtin);
+                var boundCodes = group.Lines.Sum(line => CountBoundMarkingCodesForOrderLine(line.Id));
+                return freeCodes + boundCodes + 0.000001 >= group.RequiredQty;
             });
 
         return new Order

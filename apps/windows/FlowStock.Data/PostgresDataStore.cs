@@ -306,6 +306,7 @@ reserved_filled_hu_by_line AS (
 markable_line_need AS (
     SELECT olm.order_id,
            olm.item_id,
+           olm.qty_ordered,
            NULLIF(BTRIM(i.gtin), '') AS gtin,
            CASE
                WHEN olm.order_type = 'INTERNAL' THEN GREATEST(0, olm.qty_ordered)
@@ -385,6 +386,12 @@ marking_rollup AS (
                SELECT 1
                FROM markable_line_need mln
                WHERE mln.order_id = ob.id
+           )
+           AND EXISTS (
+               SELECT 1
+               FROM markable_line_need mln
+               WHERE mln.order_id = ob.id
+                 AND mln.qty_ordered > 0
            )
            AND NOT EXISTS (
                SELECT 1
