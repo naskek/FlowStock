@@ -219,13 +219,94 @@ public sealed class HuReservationCandidatesEndpointTests
     }
 
     [Fact]
+    public async Task HuWithPositiveLedger_ReturnsOnlyLedgerStock_NotInternalFilled()
+    {
+        var store = CreateStore(
+        [
+            Source("LEDGER_STOCK", "HU-SHARED", itemId: 6, qty: 4800, shipReady: true)
+        ]);
+        await using var host = await HuReservationCandidatesHost.StartAsync(store.Object);
+
+        using var document = await PostAsync(host.Client, new
+        {
+            order_id = 78L,
+            lines = new[] { new { client_line_key = "line-1", order_line_id = (long?)null, item_id = 6L, qty_ordered = 4800d } },
+            exclude_hu_codes = Array.Empty<string>()
+        });
+
+        var candidates = GetCandidates(document, "line-1").ToArray();
+        Assert.Single(candidates);
+        Assert.Equal("LEDGER_STOCK", candidates[0].GetProperty("source").GetString());
+        Assert.DoesNotContain(candidates, row => row.GetProperty("source").GetString() == "INTERNAL_FILLED");
+    }
+
+    [Fact]
+    public async Task AvailableQty_DoesNotIncludeHistoricalInternalFilled()
+    {
+        var store = CreateStore(
+        [
+            Source("LEDGER_STOCK", "HU-A", itemId: 6, qty: 1200, shipReady: true),
+            Source("LEDGER_STOCK", "HU-B", itemId: 6, qty: 1200, shipReady: true),
+            Source("LEDGER_STOCK", "HU-C", itemId: 6, qty: 1200, shipReady: true),
+            Source("LEDGER_STOCK", "HU-D", itemId: 6, qty: 1200, shipReady: true)
+        ]);
+        await using var host = await HuReservationCandidatesHost.StartAsync(store.Object);
+
+        using var document = await PostAsync(host.Client, new
+        {
+            order_id = 78L,
+            lines = new[] { new { client_line_key = "line-1", order_line_id = (long?)null, item_id = 6L, qty_ordered = 4800d } },
+            exclude_hu_codes = Array.Empty<string>()
+        });
+
+        var line = document.RootElement.GetProperty("lines").EnumerateArray().Single();
+        Assert.Equal(4800, line.GetProperty("available_qty").GetDouble(), 3);
+        Assert.Equal(4800, line.GetProperty("auto_selected_qty").GetDouble(), 3);
+        Assert.DoesNotContain(
+            line.GetProperty("candidates").EnumerateArray(),
+            candidate => candidate.GetProperty("source").GetString() == "INTERNAL_FILLED");
+    }
+
+    [Fact]
+    public async Task OpenInternalDraftPrdFilled_ReturnsInternalFilledWithNote()
+    {
+        var store = CreateStore(
+        [
+            Source(
+                "INTERNAL_FILLED",
+                "HU-OPEN",
+                itemId: 6,
+                qty: 600,
+                shipReady: false,
+                sourceOrderId: 90,
+                sourceOrderRef: "090",
+                sourcePrdDocId: 200,
+                sourcePrdRef: "PRD-OPEN",
+                note: "FILLED, PRD не закрыт")
+        ]);
+        await using var host = await HuReservationCandidatesHost.StartAsync(store.Object);
+
+        using var document = await PostAsync(host.Client, new
+        {
+            order_id = 78L,
+            lines = new[] { new { client_line_key = "line-1", order_line_id = (long?)null, item_id = 6L, qty_ordered = 600d } },
+            exclude_hu_codes = Array.Empty<string>()
+        });
+
+        var candidate = Assert.Single(GetCandidates(document, "line-1"));
+        Assert.Equal("INTERNAL_FILLED", candidate.GetProperty("source").GetString());
+        Assert.Equal("FILLED, PRD не закрыт", candidate.GetProperty("note").GetString());
+        Assert.Equal("090", candidate.GetProperty("source_order_ref").GetString());
+    }
+
+    [Fact]
     public void PostgresHuReservationCandidatesReadModel_UsesBatchSqlByItemIds()
     {
         var sql = File.ReadAllText(GetHuReservationCandidateSqlPath());
         var storeSource = File.ReadAllText(GetPostgresDataStorePath());
         var methodStart = storeSource.IndexOf("GetHuReservationCandidateSources", StringComparison.Ordinal);
         Assert.True(methodStart >= 0);
-        var methodSlice = storeSource[methodStart..Math.Min(methodStart + 2500, storeSource.Length)];
+        var methodSlice = storeSource[methodStart..Math.Min(methodStart + 2800, storeSource.Length)];
 
         Assert.Contains("HuReservationCandidateSql.SelectSources", methodSlice);
         Assert.Contains("UNNEST(@item_ids::bigint[])", sql);
@@ -234,6 +315,8 @@ public sealed class HuReservationCandidatesEndpointTests
         Assert.Contains("reserved_map", sql);
         Assert.Contains("order_receipt_plan_lines", sql);
         Assert.Contains("pp.status = @filled_status", sql);
+        Assert.Contains("o.status IN (@draft_order_status, @in_progress_order_status)", sql);
+        Assert.Contains("d.status = @draft_doc_status", sql);
         Assert.DoesNotContain("PRINTED", sql, StringComparison.Ordinal);
         Assert.DoesNotContain("PLANNED", sql, StringComparison.Ordinal);
         Assert.DoesNotContain("GetOrders(", methodSlice);

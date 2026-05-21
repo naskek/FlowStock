@@ -92,8 +92,9 @@ filled_pallet_items AS (
     INNER JOIN requested_items ri ON ri.item_id = COALESCE(pll.item_id, pp.item_id)
     WHERE pp.status = @filled_status
       AND o.order_type = @internal_order_type
-      AND o.status <> @cancelled_status
-      AND o.status <> @merged_status
+      AND o.status IN (@draft_order_status, @in_progress_order_status)
+      AND d.status = @draft_doc_status
+      AND d.status <> @closed_status
       AND NULLIF(BTRIM(pp.hu_code), '') IS NOT NULL
 ),
 internal_candidates AS (
@@ -106,10 +107,7 @@ internal_candidates AS (
            fpi.prd_doc_id AS source_prd_doc_id,
            fpi.prd_doc_ref AS source_prd_ref,
            FALSE AS ship_ready,
-           CASE
-               WHEN BOOL_OR(fpi.prd_status <> @closed_status) THEN 'FILLED, PRD не закрыт'
-               ELSE ''
-           END AS note
+           'FILLED, PRD не закрыт'::text AS note
     FROM filled_pallet_items fpi
     LEFT JOIN ledger_by_hu_item lb ON lb.item_id = fpi.item_id
                                  AND lb.hu_code = fpi.hu_code
