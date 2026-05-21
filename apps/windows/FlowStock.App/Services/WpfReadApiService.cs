@@ -590,12 +590,115 @@ public sealed class WpfReadApiService
             && !string.IsNullOrWhiteSpace(orderRef);
     }
 
+    public bool TryGetHuReservationCandidates(
+        long? orderId,
+        IReadOnlyList<WpfHuReservationCandidatesLineRequest> lines,
+        IReadOnlyList<string> excludeHuCodes,
+        out WpfHuReservationCandidatesResult result)
+    {
+        result = new WpfHuReservationCandidatesResult();
+        if (lines.Count == 0)
+        {
+            return true;
+        }
+
+        var request = new WpfHuReservationCandidatesRequest
+        {
+            OrderId = orderId ?? 0,
+            Lines = lines,
+            ExcludeHuCodes = excludeHuCodes
+        };
+
+        return TryPost(
+            "/api/orders/hu-reservation-candidates",
+            request,
+            MapHuReservationCandidatesResult,
+            "hu-reservation-candidates",
+            out result);
+    }
+
+    public bool TryApplyHuReservations(
+        long customerOrderId,
+        IReadOnlyList<WpfHuReservationApplyLineRequest> lines,
+        out WpfHuReservationApplyResult? result,
+        out WpfHuReservationApplyError? error)
+    {
+        result = null;
+        error = null;
+        var request = new WpfHuReservationApplyRequest { Lines = lines };
+
+        try
+        {
+            var configuration = LoadConfiguration();
+            if (!configuration.IsConfigured)
+            {
+                _logger.Info("WPF read API skipped for hu-reservations-apply: server base URL is not configured.");
+                return false;
+            }
+
+            var path = $"/api/orders/{customerOrderId}/hu-reservations/apply";
+            if (!TrySendRequest(path, configuration, HttpMethod.Post, request, out var statusCode, out var json))
+            {
+                if (!string.IsNullOrWhiteSpace(json))
+                {
+                    TryMapHuReservationApplyError(json, out error);
+                }
+
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return false;
+            }
+
+            using var payload = JsonDocument.Parse(json);
+            return TryMapHuReservationApplySuccess(payload.RootElement, out result);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("WPF read API failed for hu-reservations-apply", ex);
+            return false;
+        }
+    }
+
     private bool TryRead<T>(
         string relativePath,
         Func<JsonElement, T> map,
         string operationName,
         out T value,
         HttpMethod? method = null)
+    {
+        value = default!;
+        return TryRequest(
+            relativePath,
+            method ?? HttpMethod.Get,
+            null,
+            map,
+            operationName,
+            out value);
+    }
+
+    private bool TryPost<T>(
+        string relativePath,
+        object body,
+        Func<JsonElement, T> map,
+        string operationName,
+        out T value,
+        Func<int, string, bool>? onFailure = null)
+    {
+        value = default!;
+        return TryRequest(relativePath, HttpMethod.Post, body, map, operationName, out value, onFailure);
+    }
+
+    private bool TryRequest<T>(
+        string relativePath,
+        HttpMethod method,
+        object? body,
+        Func<JsonElement, T> map,
+        string operationName,
+        out T value,
+        Func<int, string, bool>? onFailure = null)
     {
         value = default!;
 
@@ -608,12 +711,22 @@ public sealed class WpfReadApiService
                 return false;
             }
 
-            var payload = SendRequest(relativePath, configuration, method ?? HttpMethod.Get);
-            if (payload == null)
+            if (!TrySendRequest(relativePath, configuration, method, body, out var statusCode, out var json))
+            {
+                if (!string.IsNullOrWhiteSpace(json) && onFailure != null && onFailure(statusCode, json))
+                {
+                    return false;
+                }
+
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(json))
             {
                 return false;
             }
 
+            using var payload = JsonDocument.Parse(json);
             value = map(payload.RootElement);
             return true;
         }
@@ -624,11 +737,16 @@ public sealed class WpfReadApiService
         }
     }
 
-    private JsonDocument? SendRequest(
+    private bool TrySendRequest(
         string relativePath,
         WpfReadApiConfiguration configuration,
-        HttpMethod method)
+        HttpMethod method,
+        object? body,
+        out int statusCode,
+        out string? json)
     {
+        statusCode = 0;
+        json = null;
         using var handler = CreateHandler(configuration);
         using var client = new HttpClient(handler)
         {
@@ -636,7 +754,11 @@ public sealed class WpfReadApiService
             Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
         };
         using var request = new HttpRequestMessage(method, relativePath);
-        if (method == HttpMethod.Post)
+        if (body != null)
+        {
+            request.Content = JsonContent.Create(body, options: JsonOptions);
+        }
+        else if (method == HttpMethod.Post)
         {
             request.Content = new StringContent(string.Empty);
         }
@@ -645,19 +767,113 @@ public sealed class WpfReadApiService
             .ConfigureAwait(false)
             .GetAwaiter()
             .GetResult();
-
-        if (!response.IsSuccessStatusCode)
-        {
-            _logger.Warn($"WPF read API request failed: {relativePath} -> {(int)response.StatusCode} {response.ReasonPhrase}");
-            return null;
-        }
-
-        var json = response.Content.ReadAsStringAsync()
+        statusCode = (int)response.StatusCode;
+        json = response.Content.ReadAsStringAsync()
             .ConfigureAwait(false)
             .GetAwaiter()
             .GetResult();
 
-        return JsonDocument.Parse(json);
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.Warn($"WPF read API request failed: {relativePath} -> {statusCode} {response.ReasonPhrase}");
+            return false;
+        }
+
+        return true;
+    }
+
+    private static WpfHuReservationCandidatesResult MapHuReservationCandidatesResult(JsonElement root)
+    {
+        var lines = root.TryGetProperty("lines", out var linesElement) && linesElement.ValueKind == JsonValueKind.Array
+            ? linesElement.EnumerateArray().Select(MapHuReservationCandidatesLine).ToArray()
+            : Array.Empty<WpfHuReservationCandidatesLineResult>();
+        return new WpfHuReservationCandidatesResult { Lines = lines };
+    }
+
+    private static WpfHuReservationCandidatesLineResult MapHuReservationCandidatesLine(JsonElement element)
+    {
+        var candidates = element.TryGetProperty("candidates", out var candidatesElement) && candidatesElement.ValueKind == JsonValueKind.Array
+            ? candidatesElement.EnumerateArray().Select(MapHuReservationCandidate).ToArray()
+            : Array.Empty<WpfHuReservationCandidateRow>();
+        return new WpfHuReservationCandidatesLineResult
+        {
+            ClientLineKey = ReadString(element, "client_line_key") ?? string.Empty,
+            OrderLineId = ReadNullableInt64(element, "order_line_id"),
+            ItemId = ReadInt64(element, "item_id"),
+            QtyOrdered = ReadDouble(element, "qty_ordered"),
+            AvailableQty = ReadDouble(element, "available_qty"),
+            AutoSelectedQty = ReadDouble(element, "auto_selected_qty"),
+            Candidates = candidates
+        };
+    }
+
+    private static WpfHuReservationCandidateRow MapHuReservationCandidate(JsonElement element) =>
+        new()
+        {
+            HuCode = ReadString(element, "hu_code") ?? string.Empty,
+            Source = ReadString(element, "source") ?? string.Empty,
+            SourceOrderId = ReadNullableInt64(element, "source_order_id"),
+            SourceOrderRef = ReadString(element, "source_order_ref"),
+            SourcePrdDocId = ReadNullableInt64(element, "source_prd_doc_id"),
+            SourcePrdRef = ReadString(element, "source_prd_ref"),
+            Qty = ReadDouble(element, "qty"),
+            ShipReady = ReadBool(element, "ship_ready"),
+            AutoSelected = ReadBool(element, "auto_selected"),
+            ReservedByOrderId = ReadNullableInt64(element, "reserved_by_order_id"),
+            ReservedByOrderRef = ReadString(element, "reserved_by_order_ref"),
+            Note = ReadString(element, "note") ?? string.Empty
+        };
+
+    private static bool TryMapHuReservationApplySuccess(JsonElement root, out WpfHuReservationApplyResult? result)
+    {
+        if (!ReadBool(root, "ok"))
+        {
+            result = null;
+            return false;
+        }
+
+        var appliedLines = root.TryGetProperty("applied_lines", out var linesElement) && linesElement.ValueKind == JsonValueKind.Array
+            ? linesElement.EnumerateArray().Select(MapHuReservationApplyLine).ToArray()
+            : Array.Empty<WpfHuReservationApplyLineResult>();
+        result = new WpfHuReservationApplyResult
+        {
+            Ok = true,
+            OrderId = ReadInt64(root, "order_id"),
+            AppliedLines = appliedLines,
+            Warnings = ReadStringArray(root, "warnings")
+        };
+        return true;
+    }
+
+    private static WpfHuReservationApplyLineResult MapHuReservationApplyLine(JsonElement element) =>
+        new()
+        {
+            OrderLineId = ReadInt64(element, "order_line_id"),
+            ItemId = ReadInt64(element, "item_id"),
+            OrderedQty = ReadDouble(element, "ordered_qty"),
+            ReservedQty = ReadDouble(element, "reserved_qty"),
+            SelectedHuCount = ReadInt32(element, "selected_hu_count")
+        };
+
+    private static bool TryMapHuReservationApplyError(string json, out WpfHuReservationApplyError? error)
+    {
+        error = null;
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            error = new WpfHuReservationApplyError
+            {
+                ErrorCode = ReadString(root, "error") ?? string.Empty,
+                Message = ReadString(root, "message") ?? string.Empty,
+                Problems = ReadStringArray(root, "problems")
+            };
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static WpfCustomerOrderSaveFollowUpError? TryParseFollowUpError(string json)

@@ -158,6 +158,19 @@
                         <DataGridTextColumn Header="SKU / ШК" Binding="{Binding Barcode}" Width="150" IsReadOnly="True" />
                         <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="150" IsReadOnly="True" />
                         <DataGridTextColumn Header="Заказано (база)" Binding="{Binding QtyOrdered}" Width="140" IsReadOnly="True" />
+                        <DataGridTextColumn x:Name="HuAvailableColumn" Header="Доступно HU" Binding="{Binding AvailableHuDisplay}" Width="120" IsReadOnly="True" />
+                        <DataGridTextColumn x:Name="HuBoundColumn" Header="Привязано HU" Binding="{Binding BoundHuDisplay}" Width="130" IsReadOnly="True" />
+                        <DataGridTextColumn x:Name="HuRemainingColumn" Header="Осталось HU" Binding="{Binding RemainingHuDisplay}" Width="120" IsReadOnly="True" />
+                        <DataGridTemplateColumn x:Name="HuPickerColumn" Header="HU" Width="120">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <Button Content="{Binding HuPickerLabel}"
+                                            Padding="6,2"
+                                            Click="HuPickerButton_Click"
+                                            IsEnabled="{Binding IsHuPickerEnabled}" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
                         <DataGridTemplateColumn Header="Общий HU" Width="100">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
