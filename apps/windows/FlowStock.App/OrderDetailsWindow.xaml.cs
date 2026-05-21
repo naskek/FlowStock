@@ -1803,7 +1803,13 @@ public partial class OrderDetailsWindow : Window
     private bool TryValidateOrderRefUnique(string orderRef)
     {
         var normalized = orderRef.Trim();
-        var orders = _services.WpfReadApi.TryGetOrders(includeInternal: true, search: null, out var apiOrders)
+        var orders = _services.WpfReadApi.TryGetOrdersPage(
+            includeInternal: true,
+            search: normalized,
+            limit: 50,
+            offset: 0,
+            includeCancelledMerged: true,
+            out var apiOrders)
             ? apiOrders
             : Array.Empty<Order>();
         var duplicate = orders
@@ -1866,21 +1872,37 @@ public partial class OrderDetailsWindow : Window
     private string GenerateNextOrderRef()
     {
         var max = 0L;
-        var orders = _services.WpfReadApi.TryGetOrders(includeInternal: true, search: null, out var apiOrders)
-            ? apiOrders
-            : Array.Empty<Order>();
-        foreach (var order in orders)
+        const int pageSize = 200;
+        var offset = 0;
+        while (_services.WpfReadApi.TryGetOrdersPage(
+                   includeInternal: true,
+                   search: null,
+                   limit: pageSize,
+                   offset: offset,
+                   includeCancelledMerged: true,
+                   out var apiOrders)
+               && apiOrders.Count > 0)
         {
-            var orderRef = order.OrderRef?.Trim();
-            if (string.IsNullOrWhiteSpace(orderRef) || !IsDigitsOnly(orderRef))
+            foreach (var order in apiOrders)
             {
-                continue;
+                var orderRef = order.OrderRef?.Trim();
+                if (string.IsNullOrWhiteSpace(orderRef) || !IsDigitsOnly(orderRef))
+                {
+                    continue;
+                }
+
+                if (long.TryParse(orderRef, NumberStyles.None, CultureInfo.InvariantCulture, out var value) && value > max)
+                {
+                    max = value;
+                }
             }
 
-            if (long.TryParse(orderRef, NumberStyles.None, CultureInfo.InvariantCulture, out var value) && value > max)
+            if (apiOrders.Count < pageSize)
             {
-                max = value;
+                break;
             }
+
+            offset += apiOrders.Count;
         }
 
         return (max + 1).ToString("D3", CultureInfo.InvariantCulture);

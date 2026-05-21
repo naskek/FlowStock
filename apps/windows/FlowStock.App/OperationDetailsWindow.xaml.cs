@@ -50,6 +50,7 @@ public partial class OperationDetailsWindow : Window
     private bool _discardEmptyDraftAttempted;
     private bool _hasProductionPalletPlan;
     private const double QtyTolerance = 0.000001;
+    private const int OrderLookupPageSize = 100;
 
     public OperationDetailsWindow(AppServices services, long docId, string? createdDraftDocUid = null)
     {
@@ -75,7 +76,6 @@ public partial class OperationDetailsWindow : Window
 
         LoadWriteOffReasons();
         LoadCatalog();
-        LoadOrders();
         LoadDoc();
     }
 
@@ -205,15 +205,32 @@ public partial class OperationDetailsWindow : Window
         ApplyPartnerFilter();
     }
 
-    private void LoadOrders()
+    private void LoadOrders(string? search = null)
     {
         _ordersAll.Clear();
         var isProductionReceipt = _doc?.Type == DocType.ProductionReceipt;
         var isOutbound = _doc?.Type == DocType.Outbound;
-        var orders = _services.WpfReadApi.TryGetOrders(includeInternal: true, search: null, out var apiOrders)
+        var normalizedSearch = string.IsNullOrWhiteSpace(search) ? null : search.Trim();
+        var orders = _services.WpfReadApi.TryGetOrdersPage(
+            includeInternal: true,
+            search: normalizedSearch,
+            limit: OrderLookupPageSize,
+            offset: 0,
+            includeCancelledMerged: false,
+            out var apiOrders)
             ? apiOrders
             : Array.Empty<Order>();
-        foreach (var order in orders)
+
+        var candidates = orders.ToList();
+        if (_doc?.OrderId is long currentOrderId
+            && candidates.All(order => order.Id != currentOrderId)
+            && _services.WpfReadApi.TryGetOrder(currentOrderId, out var currentOrder)
+            && currentOrder != null)
+        {
+            candidates.Add(currentOrder);
+        }
+
+        foreach (var order in candidates)
         {
             if (order.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
             {
@@ -222,19 +239,23 @@ public partial class OperationDetailsWindow : Window
 
             if (isProductionReceipt)
             {
-                var hasReceiptRemaining = GetOrderReceiptRemaining(order.Id)
-                    .Any(line => line.QtyRemaining > QtyTolerance);
-                if (!hasReceiptRemaining)
+                if (!order.NeedsProductionPalletPlan && order.Id != _doc?.OrderId)
                 {
                     continue;
                 }
             }
 
-            var hasShipmentRemaining = true;
+            var hasShipmentRemaining = order.HasShipmentRemaining;
             if (isOutbound)
             {
-                hasShipmentRemaining = GetOrderShipmentRemaining(order.Id)
-                    .Any(line => line.QtyRemaining > QtyTolerance);
+                if (!hasShipmentRemaining && order.Id != _doc?.OrderId)
+                {
+                    continue;
+                }
+            }
+            else
+            {
+                hasShipmentRemaining = true;
             }
 
             _ordersAll.Add(new OrderOption(
@@ -2405,6 +2426,13 @@ public partial class OperationDetailsWindow : Window
         }
         else if (!_suppressDirtyTracking && _doc?.Status == DocStatus.Draft && DocOrderCombo.SelectedItem == null)
         {
+            var search = DocOrderCombo.Text?.Trim();
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                LoadOrders(search);
+                DocOrderCombo.IsDropDownOpen = _orders.Count > 0;
+            }
+
             MarkHeaderDirty();
         }
     }
