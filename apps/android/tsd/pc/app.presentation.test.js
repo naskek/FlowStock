@@ -564,12 +564,14 @@ assert.match(expandedStockHtml, /PRD: 4 шт/);
 assert.match(expandedStockHtml, /2 шт/);
 assert.match(expandedStockHtml, /Произвести: 3 шт/);
 assert.match(expandedStockHtml, /colspan="7" class="pc-stock-detail-cell"/);
-assert.match(expandedStockHtml, />Паллеты</);
+assert.match(expandedStockHtml, />Складские HU</);
+assert.match(expandedStockHtml, />План \/ производство</);
 assert.match(expandedStockHtml, />Расчёт потребности</);
 assert.doesNotMatch(expandedStockHtml, /Реальный склад \/ HU/);
 assert.doesNotMatch(expandedStockHtml, /Клиентские заказы/);
 assert.doesNotMatch(expandedStockHtml, /Внутренние заказы/);
-assert.match(expandedStockHtml, /<th>HU<\/th><th>Статус<\/th><th class="pc-num">План<\/th><th class="pc-num">Наполнено<\/th><th>Товар<\/th>/);
+assert.match(expandedStockHtml, /<th>HU<\/th><th class="pc-num">Кол-во<\/th><th>Статус<\/th><th>Локация<\/th>/);
+assert.match(expandedStockHtml, /<th>HU<\/th><th>Статус<\/th><th class="pc-num">Кол-во<\/th><th>Заказ<\/th><th>PRD<\/th><th>Примечание<\/th>/);
 assert.match(expandedStockHtml, /Ожидает/);
 assert.match(expandedStockHtml, /Этикетка напечатана/);
 assert.match(expandedStockHtml, /Наполнена/);
@@ -593,7 +595,7 @@ const coveredStockHtml = pc.renderStockTable([
   })
 ], { 11: true });
 assert.match(coveredStockHtml, /Покрыто/);
-assert.match(coveredStockHtml, /Паллетный план не сформирован/);
+assert.match(coveredStockHtml, /План \/ производство не сформирован/);
 
 const noNeedStockHtml = pc.renderStockTable([
   pc.mapWarehouseProductionStateRow({

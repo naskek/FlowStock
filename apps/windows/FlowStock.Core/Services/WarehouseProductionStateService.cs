@@ -194,7 +194,10 @@ public sealed class WarehouseProductionStateService(IDataStore dataStore)
                             ReservedCustomerOrderRef = context?.ReservedCustomerOrderRef,
                             ReservedCustomerId = context?.ReservedCustomerId,
                             ReservedCustomerName = context?.ReservedCustomerName,
-                            StockStatus = row.Qty < -QtyTolerance ? "отрицательный остаток" : "в остатках"
+                            StockStatus = WarehouseProductionStatePresentation.BuildWarehouseHuStatus(
+                                row.Qty,
+                                context?.ReservedCustomerOrderRef,
+                                context?.ReservedCustomerName)
                         };
                     })
                     .ToList());
@@ -303,13 +306,30 @@ public sealed class WarehouseProductionStateService(IDataStore dataStore)
     private Dictionary<long, WarehouseProductionStatePalletAggregate> BuildPalletRowsByItem()
     {
         var result = new Dictionary<long, PallettAggregate>();
-        foreach (var workItem in _dataStore.GetActiveProductionPalletWorkItems())
+        foreach (var doc in _dataStore.GetDocs()
+                     .Where(doc => doc.Type == DocType.ProductionReceipt
+                                   && doc.Status != DocStatus.Closed))
         {
-            var pallets = _dataStore.GetProductionPalletsByDoc(workItem.PrdDocId)
-                .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+            var linkedOrder = doc.OrderId.HasValue ? _dataStore.GetOrder(doc.OrderId.Value) : null;
+            if (linkedOrder != null
+                && (linkedOrder.Type != OrderType.Internal
+                    || linkedOrder.Status is not (OrderStatus.Draft or OrderStatus.InProgress)))
+            {
+                continue;
+            }
+
+            var workItem = new ProductionPalletWorkItem
+            {
+                PrdDocId = doc.Id,
+                PrdDocRef = doc.DocRef,
+                PrdStatus = DocTypeMapper.StatusToString(doc.Status),
+                OrderId = doc.OrderId,
+                OrderRef = doc.OrderRef ?? linkedOrder?.OrderRef
+            };
+            var pallets = _dataStore.GetProductionPalletsByDoc(doc.Id)
+                .Where(pallet => IsOpenProductionPalletStatus(pallet.Status))
                 .ToList();
 
-            var linkedOrder = workItem.OrderId.HasValue ? _dataStore.GetOrder(workItem.OrderId.Value) : null;
             var hasStalePalletAfterFullShipment = linkedOrder?.Type == OrderType.Customer
                                                   && linkedOrder.Status == OrderStatus.Shipped
                                                   && pallets.Count > 0;
@@ -357,7 +377,16 @@ public sealed class WarehouseProductionStateService(IDataStore dataStore)
         var locationText = string.IsNullOrWhiteSpace(pallet.ToLocationCode) ? null : pallet.ToLocationCode;
         var inLedger = pallet.ToLocationId.HasValue
                        && _dataStore.GetLedgerBalance(itemId, pallet.ToLocationId.Value, pallet.HuCode) > QtyTolerance;
-        var stockEffect = inLedger ? "в остатках" : "запланировано, не склад";
+        if (inLedger)
+        {
+            return;
+        }
+
+        var prdIsOpen = !string.Equals(
+            workItem.PrdStatus,
+            DocTypeMapper.StatusToString(DocStatus.Closed),
+            StringComparison.OrdinalIgnoreCase);
+        var displayQty = WarehouseProductionStatePresentation.ResolvePalletDisplayQty(pallet.Status, plannedQty, filledQty);
         var composition = pallet.IsMixedPallet
             ? string.Join(", ", pallet.Lines.Select(line => $"{line.ItemName} {FormatQty(line.PlannedQty)}"))
             : itemName;
@@ -368,9 +397,13 @@ public sealed class WarehouseProductionStateService(IDataStore dataStore)
             PalletId = pallet.Id,
             HuCode = pallet.HuCode,
             PalletStatus = pallet.Status,
+            PalletStatusDisplay = WarehouseProductionStatePresentation.MapPalletStatusDisplay(pallet.Status),
+            SourceOrderRef = workItem.OrderRef,
             PlannedQty = Math.Max(0d, plannedQty),
             FilledQty = Math.Max(0d, filledQty),
-            StockEffect = stockEffect,
+            Qty = displayQty,
+            StockEffect = "план / производство",
+            StatusNote = WarehouseProductionStatePresentation.BuildPalletStatusNote(pallet.Status, prdIsOpen, inLedger),
             IsMixedPallet = pallet.IsMixedPallet,
             Composition = composition,
             Location = locationText
@@ -522,6 +555,13 @@ public sealed class WarehouseProductionStateService(IDataStore dataStore)
     private static string FormatQty(double value)
     {
         return value.ToString("0.###");
+    }
+
+    private static bool IsOpenProductionPalletStatus(string? status)
+    {
+        return string.Equals(status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase);
     }
 
     private sealed record StockAggregate(double StockQty, double ReservedQty, double FreeQty);

@@ -75,9 +75,13 @@ public sealed class WarehouseProductionStatePalletRow
     public long PalletId { get; init; }
     public string HuCode { get; init; } = string.Empty;
     public string PalletStatus { get; init; } = string.Empty;
+    public string PalletStatusDisplay { get; init; } = string.Empty;
+    public string? SourceOrderRef { get; init; }
     public double PlannedQty { get; init; }
     public double FilledQty { get; init; }
+    public double Qty { get; init; }
     public string StockEffect { get; init; } = string.Empty;
+    public string StatusNote { get; init; } = string.Empty;
     public bool IsMixedPallet { get; init; }
     public string Composition { get; init; } = string.Empty;
     public string? Location { get; init; }

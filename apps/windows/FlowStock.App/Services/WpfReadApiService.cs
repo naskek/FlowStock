@@ -1218,9 +1218,13 @@ public sealed class WpfReadApiService
             PalletId = ReadInt64(element, "pallet_id"),
             HuCode = ReadString(element, "hu_code") ?? string.Empty,
             PalletStatus = ReadString(element, "pallet_status") ?? string.Empty,
+            PalletStatusDisplay = ReadString(element, "pallet_status_display") ?? string.Empty,
+            SourceOrderRef = ReadString(element, "source_order_ref"),
             PlannedQty = ReadDouble(element, "planned_qty"),
             FilledQty = ReadDouble(element, "filled_qty"),
+            Qty = ReadDouble(element, "qty"),
             StockEffect = ReadString(element, "stock_effect") ?? string.Empty,
+            StatusNote = ReadString(element, "status_note") ?? string.Empty,
             IsMixedPallet = ReadBool(element, "is_mixed_pallet"),
             Composition = ReadString(element, "composition") ?? string.Empty,
             Location = ReadString(element, "location")

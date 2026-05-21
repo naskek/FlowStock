@@ -885,7 +885,7 @@ public partial class MainWindow : Window
                 Warnings = row.Warnings,
                 IsExpanded = _expandedStockItemIds.Contains(row.ItemId),
                 ExpandMarker = _expandedStockItemIds.Contains(row.ItemId) ? "▼" : "▶",
-                HuRows = row.HuRows.Select(hu => new WarehouseProductionStateHuDisplayRow
+                WarehouseHuRows = row.HuRows.Select(hu => new WarehouseProductionStateHuDisplayRow
                 {
                     Location = hu.Location,
                     HuCode = string.IsNullOrWhiteSpace(hu.HuCode) ? "Без HU" : hu.HuCode,
@@ -915,7 +915,12 @@ public partial class MainWindow : Window
                 {
                     PrdRef = prd.PrdRef,
                     HuCode = prd.HuCode,
-                    PalletStatus = TranslatePalletStatus(prd.PalletStatus),
+                    PalletStatus = string.IsNullOrWhiteSpace(prd.PalletStatusDisplay)
+                        ? TranslatePalletStatus(prd.PalletStatus)
+                        : prd.PalletStatusDisplay,
+                    QtyDisplay = FormatQtyWithUom(prd.Qty > 0 ? prd.Qty : prd.PlannedQty, row.BaseUom),
+                    SourceOrderRef = string.IsNullOrWhiteSpace(prd.SourceOrderRef) ? "—" : prd.SourceOrderRef,
+                    StatusNote = prd.StatusNote,
                     PlannedQtyDisplay = FormatQtyWithUom(prd.PlannedQty, row.BaseUom),
                     FilledQtyDisplay = FormatQtyWithUom(prd.FilledQty, row.BaseUom),
                     StockEffect = prd.StockEffect,
@@ -3158,7 +3163,7 @@ public partial class MainWindow : Window
         public double RemainingNeedQty { get; init; }
         public string NeedReason { get; init; } = string.Empty;
         public IReadOnlyList<string> Warnings { get; init; } = Array.Empty<string>();
-        public IReadOnlyList<WarehouseProductionStateHuDisplayRow> HuRows { get; init; } = Array.Empty<WarehouseProductionStateHuDisplayRow>();
+        public IReadOnlyList<WarehouseProductionStateHuDisplayRow> WarehouseHuRows { get; init; } = Array.Empty<WarehouseProductionStateHuDisplayRow>();
         public IReadOnlyList<WarehouseProductionStateCustomerOrderDisplayRow> CustomerOrders { get; init; } = Array.Empty<WarehouseProductionStateCustomerOrderDisplayRow>();
         public IReadOnlyList<WarehouseProductionStateInternalOrderDisplayRow> InternalOrders { get; init; } = Array.Empty<WarehouseProductionStateInternalOrderDisplayRow>();
         public IReadOnlyList<WarehouseProductionStatePalletDisplayRow> ProductionReceipts { get; init; } = Array.Empty<WarehouseProductionStatePalletDisplayRow>();
@@ -3294,6 +3299,9 @@ public partial class MainWindow : Window
         public string PrdRef { get; init; } = string.Empty;
         public string HuCode { get; init; } = string.Empty;
         public string PalletStatus { get; init; } = string.Empty;
+        public string QtyDisplay { get; init; } = string.Empty;
+        public string SourceOrderRef { get; init; } = string.Empty;
+        public string StatusNote { get; init; } = string.Empty;
         public string PlannedQtyDisplay { get; init; } = string.Empty;
         public string FilledQtyDisplay { get; init; } = string.Empty;
         public string StockEffect { get; init; } = string.Empty;

@@ -206,7 +206,23 @@
                                         Background="#FAFAFA"
                                         CornerRadius="4">
                                     <StackPanel>
-                                        <TextBlock Text="Паллеты" FontWeight="SemiBold" Margin="0,0,0,6" />
+                                        <TextBlock Text="Складские HU" FontWeight="SemiBold" Margin="0,0,0,6" />
+                                        <DataGrid AutoGenerateColumns="False"
+                                                  IsReadOnly="True"
+                                                  CanUserAddRows="False"
+                                                  CanUserDeleteRows="False"
+                                                  HeadersVisibility="Column"
+                                                  Margin="0,0,0,10"
+                                                  ItemsSource="{Binding WarehouseHuRows}">
+                                            <DataGrid.Columns>
+                                                <DataGridTextColumn Header="HU" Binding="{Binding HuCode}" Width="180" />
+                                                <DataGridTextColumn Header="Кол-во" Binding="{Binding QtyDisplay}" Width="110" />
+                                                <DataGridTextColumn Header="Статус" Binding="{Binding StockStatus}" Width="220" />
+                                                <DataGridTextColumn Header="Локация" Binding="{Binding Location}" Width="*" />
+                                            </DataGrid.Columns>
+                                        </DataGrid>
+
+                                        <TextBlock Text="План / производство" FontWeight="SemiBold" Margin="0,0,0,6" />
                                         <DataGrid AutoGenerateColumns="False"
                                                   IsReadOnly="True"
                                                   CanUserAddRows="False"
@@ -215,11 +231,12 @@
                                                   Margin="0,0,0,10"
                                                   ItemsSource="{Binding ProductionReceipts}">
                                             <DataGrid.Columns>
-                                                <DataGridTextColumn Header="HU" Binding="{Binding HuCode}" Width="180" />
-                                                <DataGridTextColumn Header="Статус" Binding="{Binding PalletStatus}" Width="110" />
-                                                <DataGridTextColumn Header="План" Binding="{Binding PlannedQtyDisplay}" Width="110" />
-                                                <DataGridTextColumn Header="Наполнено" Binding="{Binding FilledQtyDisplay}" Width="110" />
-                                                <DataGridTextColumn Header="Товар" Binding="{Binding Composition}" Width="*" />
+                                                <DataGridTextColumn Header="HU" Binding="{Binding HuCode}" Width="150" />
+                                                <DataGridTextColumn Header="Статус" Binding="{Binding PalletStatus}" Width="150" />
+                                                <DataGridTextColumn Header="Кол-во" Binding="{Binding QtyDisplay}" Width="90" />
+                                                <DataGridTextColumn Header="Заказ" Binding="{Binding SourceOrderRef}" Width="90" />
+                                                <DataGridTextColumn Header="PRD" Binding="{Binding PrdRef}" Width="150" />
+                                                <DataGridTextColumn Header="Примечание" Binding="{Binding StatusNote}" Width="*" />
                                             </DataGrid.Columns>
                                         </DataGrid>
 

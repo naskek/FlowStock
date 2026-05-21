@@ -102,9 +102,13 @@ public static class WarehouseProductionStateEndpoint
                 pallet_id = prd.PalletId,
                 hu_code = prd.HuCode,
                 pallet_status = prd.PalletStatus,
+                pallet_status_display = prd.PalletStatusDisplay,
+                source_order_ref = prd.SourceOrderRef,
                 planned_qty = prd.PlannedQty,
                 filled_qty = prd.FilledQty,
+                qty = prd.Qty,
                 stock_effect = prd.StockEffect,
+                status_note = prd.StatusNote,
                 is_mixed_pallet = prd.IsMixedPallet,
                 composition = prd.Composition,
                 location = prd.Location

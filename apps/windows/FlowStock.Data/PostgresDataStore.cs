@@ -5951,21 +5951,31 @@ WITH work_docs AS (
     SELECT d.id,
            d.doc_ref,
            d.order_id,
+           COALESCE(o.order_ref, d.order_ref) AS source_order_ref,
            o.order_type,
-           o.status AS order_status
+           o.status AS order_status,
+           d.status AS prd_status
     FROM production_pallets pp
     INNER JOIN docs d ON d.id = pp.prd_doc_id
-    LEFT JOIN orders o ON o.id = d.order_id
+    LEFT JOIN orders o ON o.id = COALESCE(pp.order_id, d.order_id)
     WHERE d.type = @production_doc_type
-      AND d.status <> @closed_doc_status
+      AND d.status = @draft_doc_status
       AND pp.status <> @cancelled_pallet_status
-      AND (o.id IS NULL OR o.status NOT IN (@shipped_order_status, @cancelled_order_status, @merged_order_status))
+      AND pp.status IN (@planned_pallet_status, @printed_pallet_status, @filled_pallet_status)
+      AND (
+          o.id IS NULL
+          OR (
+              o.order_type = @internal_order_type
+              AND o.status IN (@draft_order_status, @in_progress_order_status)
+          )
+      )
     GROUP BY d.id,
              d.doc_ref,
              d.order_id,
+             COALESCE(o.order_ref, d.order_ref),
              o.order_type,
-             o.status
-    HAVING COUNT(*) FILTER (WHERE pp.status = @filled_pallet_status) < COUNT(*)
+             o.status,
+             d.status
 ),
 pallet_composition AS (
     SELECT pp.id AS pallet_id,
@@ -5996,6 +6006,8 @@ ledger_balance AS (
 pallet_rows AS (
     SELECT wd.id AS prd_doc_id,
            wd.doc_ref AS prd_ref,
+           wd.source_order_ref,
+           wd.prd_status,
            wd.order_type,
            wd.order_status,
            pp.id AS pallet_id,
@@ -6031,9 +6043,12 @@ pallet_rows AS (
                                AND lb.location_id = pp.to_location_id
                                AND lb.hu_code = UPPER(BTRIM(pp.hu_code))
     WHERE pp.status <> @cancelled_pallet_status
+      AND pp.status IN (@planned_pallet_status, @printed_pallet_status, @filled_pallet_status)
 )
 SELECT prd_doc_id,
        prd_ref,
+       source_order_ref,
+       prd_status,
        order_type,
        order_status,
        pallet_id,
@@ -6049,6 +6064,7 @@ SELECT prd_doc_id,
        composition,
        in_ledger
 FROM pallet_rows
+WHERE NOT in_ledger
 ORDER BY item_id,
          prd_ref,
          hu_code;
@@ -6058,35 +6074,48 @@ ORDER BY item_id,
             var aggregates = new Dictionary<long, WarehouseProductionStatePalletAggregateBuilder>();
             while (reader.Read())
             {
-                var itemId = reader.GetInt64(7);
+                var itemId = reader.GetInt64(9);
                 if (!aggregates.TryGetValue(itemId, out var aggregate))
                 {
                     aggregate = new WarehouseProductionStatePalletAggregateBuilder();
                     aggregates[itemId] = aggregate;
                 }
 
-                var palletId = reader.GetInt64(4);
-                var plannedQty = reader.GetDouble(9);
-                var filledQty = reader.GetDouble(10);
-                var isFilled = reader.GetBoolean(12);
-                var isMixed = reader.GetBoolean(13);
-                var inLedger = reader.GetBoolean(15);
-                var orderType = reader.IsDBNull(2) ? null : OrderStatusMapper.TypeFromString(reader.GetString(2));
-                var orderStatus = reader.IsDBNull(3) ? null : OrderStatusMapper.StatusFromString(reader.GetString(3));
+                var palletId = reader.GetInt64(6);
+                var palletStatus = reader.GetString(8);
+                var plannedQty = reader.GetDouble(11);
+                var filledQty = reader.GetDouble(12);
+                var isFilled = reader.GetBoolean(14);
+                var isMixed = reader.GetBoolean(15);
+                var orderType = reader.IsDBNull(4) ? null : OrderStatusMapper.TypeFromString(reader.GetString(4));
+                var orderStatus = reader.IsDBNull(5) ? null : OrderStatusMapper.StatusFromString(reader.GetString(5));
+                var prdStatus = reader.GetString(3);
+                var prdIsOpen = !string.Equals(
+                    prdStatus,
+                    DocTypeMapper.StatusToString(DocStatus.Closed),
+                    StringComparison.OrdinalIgnoreCase);
+                var displayQty = WarehouseProductionStatePresentation.ResolvePalletDisplayQty(
+                    palletStatus,
+                    plannedQty,
+                    filledQty);
 
                 aggregate.Rows.Add(new WarehouseProductionStatePalletRow
                 {
                     PrdDocId = reader.GetInt64(0),
                     PrdRef = reader.GetString(1),
                     PalletId = palletId,
-                    HuCode = reader.GetString(5),
-                    PalletStatus = reader.GetString(6),
+                    HuCode = reader.GetString(7),
+                    PalletStatus = palletStatus,
+                    PalletStatusDisplay = WarehouseProductionStatePresentation.MapPalletStatusDisplay(palletStatus),
+                    SourceOrderRef = reader.IsDBNull(2) ? null : reader.GetString(2),
                     PlannedQty = Math.Max(0d, plannedQty),
                     FilledQty = Math.Max(0d, filledQty),
-                    StockEffect = inLedger ? "в остатках" : "запланировано, не склад",
+                    Qty = displayQty,
+                    StockEffect = "план / производство",
+                    StatusNote = WarehouseProductionStatePresentation.BuildPalletStatusNote(palletStatus, prdIsOpen, inLedger: false),
                     IsMixedPallet = isMixed,
-                    Composition = reader.GetString(14),
-                    Location = reader.IsDBNull(11) ? null : reader.GetString(11)
+                    Composition = reader.GetString(16),
+                    Location = reader.IsDBNull(13) ? null : reader.GetString(13)
                 });
                 aggregate.PlannedQty += Math.Max(0d, plannedQty);
                 aggregate.FilledQty += Math.Max(0d, filledQty);
@@ -6096,7 +6125,7 @@ ORDER BY item_id,
                     aggregate.FilledPalletIds.Add(palletId);
                 }
 
-                aggregate.HasFilledWithoutLedger |= isFilled && !inLedger;
+                aggregate.HasFilledWithoutLedger |= isFilled;
                 aggregate.HasStalePalletAfterFullShipment |= orderType == OrderType.Customer && orderStatus == OrderStatus.Shipped;
             }
 
@@ -6119,7 +6148,11 @@ ORDER BY item_id,
         command.Parameters.AddWithValue("@outbound_doc_type", DocTypeMapper.ToOpString(DocType.Outbound));
         command.Parameters.AddWithValue("@production_doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
         command.Parameters.AddWithValue("@filled_pallet_status", ProductionPalletStatus.Filled);
+        command.Parameters.AddWithValue("@planned_pallet_status", ProductionPalletStatus.Planned);
+        command.Parameters.AddWithValue("@printed_pallet_status", ProductionPalletStatus.Printed);
         command.Parameters.AddWithValue("@cancelled_pallet_status", ProductionPalletStatus.Cancelled);
+        command.Parameters.AddWithValue("@draft_doc_status", DocTypeMapper.StatusToString(DocStatus.Draft));
+        command.Parameters.AddWithValue("@in_progress_order_status", OrderStatusMapper.StatusToString(OrderStatus.InProgress));
     }
 
     private sealed class WarehouseProductionStatePalletAggregateBuilder
