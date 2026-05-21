@@ -92,7 +92,7 @@ public sealed class CloseDocumentHttpIntegrationTests
     }
 
     [Fact]
-    public async Task HttpClose_InternalProductionReceiptWithMarkableItemWithoutKmCodes_IsRejected()
+    public async Task HttpClose_InternalProductionReceiptWithMarkableItemWithoutKmCodes_Closes()
     {
         var (harness, apiStore, docUid) = CreateInternalProductionReceiptScenario(markable: true, kmCodes: 0);
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
@@ -104,13 +104,13 @@ public sealed class CloseDocumentHttpIntegrationTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         var payload = await ReadCloseResponseAsync(response);
-        Assert.False(payload.Ok);
-        Assert.False(payload.Closed);
-        Assert.Equal("VALIDATION_FAILED", payload.Result);
-        Assert.Contains("Строка 1 (Маркируемый товар): требуется 5 код(ов) КМ, привязано 0, доступно свободных 0.", payload.Errors);
-        Assert.Empty(harness.LedgerEntries);
-        Assert.Equal(DocStatus.Draft, harness.GetDoc(1).Status);
-        Assert.Equal("DRAFT", apiStore.GetApiDoc(docUid)?.Status);
+        Assert.True(payload.Ok);
+        Assert.True(payload.Closed);
+        Assert.Equal("CLOSED", payload.Result);
+        Assert.Empty(payload.Errors);
+        Assert.Single(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Closed, harness.GetDoc(1).Status);
+        Assert.Equal("CLOSED", apiStore.GetApiDoc(docUid)?.Status);
     }
 
     [Fact]

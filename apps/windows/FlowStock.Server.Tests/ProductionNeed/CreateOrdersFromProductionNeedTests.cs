@@ -849,7 +849,7 @@ public sealed class CreateOrdersFromProductionNeedTests
     }
 
     [Fact]
-    public async Task CreateOrdersFromProductionNeed_ForMarkableItem_CreatesInternalDraftThatRequiresKmOnReceipt()
+    public async Task CreateOrdersFromProductionNeed_ForMarkableItem_InternalReceiptClosesWithoutKmCodes()
     {
         var (harness, apiStore) = CreateMixedNeedScenario();
         harness.SeedItem(new Item
@@ -902,11 +902,9 @@ public sealed class CreateOrdersFromProductionNeedTests
 
         var result = harness.CreateService().TryCloseDoc(50, allowNegative: false);
 
-        Assert.False(result.Success);
-        Assert.Contains(
-            "Строка 1 (Горчица): требуется 1134 код(ов) КМ, привязано 0, доступно свободных 0.",
-            result.Errors);
-        Assert.Equal(DocStatus.Draft, harness.GetDoc(50).Status);
+        Assert.True(result.Success);
+        Assert.Empty(result.Errors);
+        Assert.Equal(DocStatus.Closed, harness.GetDoc(50).Status);
     }
 
     [Fact]

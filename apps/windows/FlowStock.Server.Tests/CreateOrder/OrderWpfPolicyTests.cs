@@ -20,6 +20,28 @@ public sealed class OrderWpfPolicyTests
     }
 
     [Fact]
+    public void MarkingExportButtonPolicy_RemainsAvailableWhenCodesAreMissing()
+    {
+        var lines = new[]
+        {
+            new OrderLineView { Id = 1, ItemId = 10, Gtin = "04601234567890", QtyOrdered = 10 }
+        };
+        var order = new Order
+        {
+            Id = 20,
+            OrderRef = "ORD-20",
+            Type = OrderType.Internal,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 5, 8, 10, 0, 0),
+            MarkingApplies = true,
+            MarkingRequired = true,
+            MarkingCodeCovered = false
+        };
+
+        Assert.True(OrderMarkingExportUiPolicy.CanExport(order, lines));
+    }
+
+    [Fact]
     public void HuBindPromptPolicy_DoesNotPromptWhenOrderAlreadyHasBoundHu()
     {
         var lines = new[]
