@@ -172,9 +172,11 @@
                               EnableColumnVirtualization="True"
                               VirtualizingPanel.IsVirtualizing="True"
                               VirtualizingPanel.VirtualizationMode="Recycling"
-                              ScrollViewer.CanContentScroll="True"
-                              ScrollViewer.IsDeferredScrollingEnabled="True"
+                              VirtualizingPanel.ScrollUnit="Pixel"
+                              ScrollViewer.CanContentScroll="False"
+                              ScrollViewer.IsDeferredScrollingEnabled="False"
                               local:ResponsiveDataGridBehavior.IsEnabled="False"
+                              PreviewMouseWheel="WarehouseProductionStateGrid_PreviewMouseWheel"
                               MouseDoubleClick="WarehouseProductionStateGrid_MouseDoubleClick"
                               Visibility="Visible">
                         <DataGrid.CellStyle>
@@ -213,6 +215,8 @@
                                         CornerRadius="4">
                                     <ScrollViewer VerticalScrollBarVisibility="Auto"
                                                   HorizontalScrollBarVisibility="Disabled"
+                                                  ScrollViewer.CanContentScroll="False"
+                                                  ScrollViewer.IsDeferredScrollingEnabled="False"
                                                   MaxHeight="420">
                                     <StackPanel>
                                         <TextBlock Text="Складские HU" FontWeight="SemiBold" Margin="0,0,0,6" />
@@ -224,7 +228,8 @@
                                                   Margin="0,0,0,10"
                                                   MaxHeight="160"
                                                   ScrollViewer.VerticalScrollBarVisibility="Auto"
-                                                  ScrollViewer.CanContentScroll="True"
+                                                  ScrollViewer.CanContentScroll="False"
+                                                  ScrollViewer.IsDeferredScrollingEnabled="False"
                                                   EnableRowVirtualization="True"
                                                   VirtualizingPanel.IsVirtualizing="True"
                                                   VirtualizingPanel.VirtualizationMode="Recycling"
@@ -246,7 +251,8 @@
                                                   Margin="0,0,0,10"
                                                   MaxHeight="160"
                                                   ScrollViewer.VerticalScrollBarVisibility="Auto"
-                                                  ScrollViewer.CanContentScroll="True"
+                                                  ScrollViewer.CanContentScroll="False"
+                                                  ScrollViewer.IsDeferredScrollingEnabled="False"
                                                   EnableRowVirtualization="True"
                                                   VirtualizingPanel.IsVirtualizing="True"
                                                   VirtualizingPanel.VirtualizationMode="Recycling"

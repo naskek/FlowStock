@@ -1683,41 +1683,27 @@ public partial class MainWindow : Window
             _expandedStockItemIds.Remove(row.ItemId);
         }
 
-        if (nextExpanded && row is WarehouseProductionStateDisplayRow warehouseRow)
-        {
-            CollapseOtherWarehouseProductionStateRows(warehouseRow.ItemId);
-            warehouseRow.EnsureDetailsLoaded();
-        }
-
         row.IsExpanded = nextExpanded;
         row.ExpandMarker = nextExpanded ? "▼" : "▶";
         clickedRow.DetailsVisibility = nextExpanded ? Visibility.Visible : Visibility.Collapsed;
 
-        if (!nextExpanded && row is WarehouseProductionStateDisplayRow collapsedRow)
+        if (row is WarehouseProductionStateDisplayRow warehouseRow)
         {
-            collapsedRow.ClearDetailRows();
+            if (nextExpanded)
+            {
+                warehouseRow.EnsureDetailsLoaded();
+            }
+            else
+            {
+                warehouseRow.ClearDetailRows();
+            }
         }
     }
 
-    private void CollapseOtherWarehouseProductionStateRows(long expandedItemId)
+    private void WarehouseProductionStateGrid_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
-        foreach (var row in _warehouseProductionStateRows)
-        {
-            if (row.ItemId == expandedItemId || !row.IsExpanded)
-            {
-                continue;
-            }
-
-            _expandedStockItemIds.Remove(row.ItemId);
-            row.IsExpanded = false;
-            row.ExpandMarker = "▶";
-            row.ClearDetailRows();
-
-            if (WarehouseProductionStateGrid.ItemContainerGenerator.ContainerFromItem(row) is System.Windows.Controls.DataGridRow gridRow)
-            {
-                gridRow.DetailsVisibility = Visibility.Collapsed;
-            }
-        }
+        AttachWarehouseProductionStateGridScrollTracking();
+        ScrollViewerWheelBubble.HandlePreviewMouseWheel(e, _warehouseProductionStateScrollViewer);
     }
 
     private static T? FindVisualParent<T>(DependencyObject? source)
