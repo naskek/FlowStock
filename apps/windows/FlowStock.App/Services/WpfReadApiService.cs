@@ -1012,6 +1012,9 @@ public sealed class WpfReadApiService
             MarkingCodeCovered = ReadBool(element, "marking_completed"),
             MarkingExcelGeneratedAt = ReadDateTime(element, "marking_excel_generated_at"),
             MarkingPrintedAt = ReadDateTime(element, "marking_printed_at"),
+            ListMetricsLoaded = element.TryGetProperty("has_shipment_remaining", out _)
+                                || element.TryGetProperty("needs_production_pallet_plan", out _),
+            HasShipmentRemaining = ReadBool(element, "has_shipment_remaining"),
             HasProductionPalletPlan = ReadBool(element, "has_production_pallet_plan"),
             NeedsProductionPalletPlan = ReadBool(element, "needs_production_pallet_plan"),
             PlannedPalletCount = ReadInt32(element, "planned_pallet_count"),

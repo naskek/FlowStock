@@ -660,19 +660,32 @@
 
   function apiGetOrders(query) {
     var q = String(query || "").trim();
-    return getBaseUrl()
-      .then(function (baseUrl) {
-        var queryParts = ["include_internal=1"];
-        if (q) {
-          queryParts.push("q=" + encodeURIComponent(q));
-        }
-        var url = baseUrl + "/api/orders?" + queryParts.join("&");
-        return fetchJsonWithTimeout(url, { method: "GET" });
-      })
-      .then(function (payload) {
+    var pageSize = 100;
+    var rows = [];
+
+    function loadPage(baseUrl, offset) {
+      var queryParts = ["include_internal=1", "limit=" + encodeURIComponent(pageSize), "offset=" + encodeURIComponent(offset)];
+      if (q) {
+        queryParts.push("q=" + encodeURIComponent(q));
+      }
+      var url = baseUrl + "/api/orders?" + queryParts.join("&");
+      return fetchJsonWithTimeout(url, { method: "GET" }).then(function (payload) {
         if (!Array.isArray(payload)) {
           throw new Error("INVALID_ORDERS");
         }
+
+        rows = rows.concat(payload);
+        if (payload.length < pageSize) {
+          return rows;
+        }
+
+        return loadPage(baseUrl, offset + payload.length);
+      });
+    }
+
+    return getBaseUrl()
+      .then(function (baseUrl) { return loadPage(baseUrl, 0); })
+      .then(function (payload) {
         return payload
           .map(normalizeApiOrder)
           .filter(function (order) {
