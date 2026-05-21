@@ -168,6 +168,12 @@
                               SelectionMode="Single"
                               SelectionUnit="FullRow"
                               MinColumnWidth="24"
+                              EnableRowVirtualization="True"
+                              EnableColumnVirtualization="True"
+                              VirtualizingPanel.IsVirtualizing="True"
+                              VirtualizingPanel.VirtualizationMode="Recycling"
+                              ScrollViewer.CanContentScroll="True"
+                              ScrollViewer.IsDeferredScrollingEnabled="True"
                               local:ResponsiveDataGridBehavior.IsEnabled="False"
                               MouseDoubleClick="WarehouseProductionStateGrid_MouseDoubleClick"
                               Visibility="Visible">
@@ -205,6 +211,9 @@
                                         BorderThickness="1"
                                         Background="#FAFAFA"
                                         CornerRadius="4">
+                                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                                  HorizontalScrollBarVisibility="Disabled"
+                                                  MaxHeight="420">
                                     <StackPanel>
                                         <TextBlock Text="Складские HU" FontWeight="SemiBold" Margin="0,0,0,6" />
                                         <DataGrid AutoGenerateColumns="False"
@@ -213,6 +222,12 @@
                                                   CanUserDeleteRows="False"
                                                   HeadersVisibility="Column"
                                                   Margin="0,0,0,10"
+                                                  MaxHeight="160"
+                                                  ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                                  ScrollViewer.CanContentScroll="True"
+                                                  EnableRowVirtualization="True"
+                                                  VirtualizingPanel.IsVirtualizing="True"
+                                                  VirtualizingPanel.VirtualizationMode="Recycling"
                                                   ItemsSource="{Binding WarehouseHuRows}">
                                             <DataGrid.Columns>
                                                 <DataGridTextColumn Header="HU" Binding="{Binding HuCode}" Width="180" />
@@ -229,6 +244,12 @@
                                                   CanUserDeleteRows="False"
                                                   HeadersVisibility="Column"
                                                   Margin="0,0,0,10"
+                                                  MaxHeight="160"
+                                                  ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                                  ScrollViewer.CanContentScroll="True"
+                                                  EnableRowVirtualization="True"
+                                                  VirtualizingPanel.IsVirtualizing="True"
+                                                  VirtualizingPanel.VirtualizationMode="Recycling"
                                                   ItemsSource="{Binding ProductionReceipts}">
                                             <DataGrid.Columns>
                                                 <DataGridTextColumn Header="HU" Binding="{Binding HuCode}" Width="150" />
@@ -254,6 +275,7 @@
                                             </DataGrid.Columns>
                                         </DataGrid>
                                     </StackPanel>
+                                    </ScrollViewer>
                                 </Border>
                             </DataTemplate>
                         </DataGrid.RowDetailsTemplate>

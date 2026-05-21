@@ -7,6 +7,7 @@ using System.Linq;
 using System.Net.Http;
 using System.Text;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -45,10 +46,19 @@ public partial class MainWindow : Window
     private static bool _excelEncodingRegistered;
     private static readonly TimeSpan AutoRefreshInterval = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan StockRefreshDebounceInterval = TimeSpan.FromMilliseconds(200);
+    private static readonly TimeSpan StockGridScrollIdleDelay = TimeSpan.FromSeconds(1.5);
+    private static readonly TimeSpan StockRefreshDeferWhileScrolling = TimeSpan.FromSeconds(2);
     private DispatcherTimer? _stockRefreshDebounceTimer;
     private bool _stockRefreshDebounceTickAttached;
+    private DispatcherTimer? _stockGridScrollIdleTimer;
+    private DispatcherTimer? _deferredStockRefreshTimer;
+    private bool _deferredStockRefreshTickAttached;
     private string? _pendingStockSearch;
     private string? _warehouseProductionStateFingerprint;
+    private bool _warehouseProductionStateLoadInProgress;
+    private bool _stockGridScrollTrackingAttached;
+    private System.Windows.Controls.ScrollViewer? _warehouseProductionStateScrollViewer;
+    private bool _stockGridUserScrolling;
     private readonly List<DocTypeFilterOption> _docTypeFilters = new()
     {
         new DocTypeFilterOption(null, "Все"),
@@ -280,12 +290,86 @@ public partial class MainWindow : Window
 
     private void MainWindow_Loaded(object? sender, RoutedEventArgs e)
     {
+        AttachWarehouseProductionStateGridScrollTracking();
+
         if (_serverApiUnavailableAtStartup)
         {
             return;
         }
 
         _autoRefreshTimer.Start();
+    }
+
+    private void AttachWarehouseProductionStateGridScrollTracking()
+    {
+        if (_stockGridScrollTrackingAttached)
+        {
+            return;
+        }
+
+        _warehouseProductionStateScrollViewer = FindVisualChild<System.Windows.Controls.ScrollViewer>(WarehouseProductionStateGrid);
+        if (_warehouseProductionStateScrollViewer == null)
+        {
+            return;
+        }
+
+        _warehouseProductionStateScrollViewer.ScrollChanged += OnWarehouseProductionStateGridScrollChanged;
+        _stockGridScrollTrackingAttached = true;
+    }
+
+    private void OnWarehouseProductionStateGridScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        if (Math.Abs(e.VerticalChange) < 0.01d && Math.Abs(e.ViewportHeightChange) < 0.01d)
+        {
+            return;
+        }
+
+        _stockGridUserScrolling = true;
+        _stockGridScrollIdleTimer ??= new DispatcherTimer { Interval = StockGridScrollIdleDelay };
+        _stockGridScrollIdleTimer.Tick -= OnStockGridScrollIdleTimerTick;
+        _stockGridScrollIdleTimer.Tick += OnStockGridScrollIdleTimerTick;
+        _stockGridScrollIdleTimer.Stop();
+        _stockGridScrollIdleTimer.Start();
+    }
+
+    private void OnStockGridScrollIdleTimerTick(object? sender, EventArgs e)
+    {
+        _stockGridScrollIdleTimer?.Stop();
+        _stockGridUserScrolling = false;
+
+        if (!string.IsNullOrEmpty(_pendingStockSearch) || _deferredStockRefreshTimer?.IsEnabled == true)
+        {
+            ScheduleDeferredStockRefresh(_pendingStockSearch ?? StatusSearchBox.Text);
+        }
+    }
+
+    private bool ShouldDeferStockRefresh()
+    {
+        return _stockGridUserScrolling || _warehouseProductionStateLoadInProgress;
+    }
+
+    private void ScheduleDeferredStockRefresh(string? search)
+    {
+        _pendingStockSearch = search;
+        _deferredStockRefreshTimer ??= new DispatcherTimer { Interval = StockRefreshDeferWhileScrolling };
+        if (!_deferredStockRefreshTickAttached)
+        {
+            _deferredStockRefreshTimer.Tick += (_, _) =>
+            {
+                _deferredStockRefreshTimer!.Stop();
+                if (ShouldDeferStockRefresh())
+                {
+                    ScheduleDeferredStockRefresh(_pendingStockSearch);
+                    return;
+                }
+
+                LoadStock(_pendingStockSearch);
+            };
+            _deferredStockRefreshTickAttached = true;
+        }
+
+        _deferredStockRefreshTimer.Stop();
+        _deferredStockRefreshTimer.Start();
     }
 
     private bool TryCheckServerApiAvailable(out string error)
@@ -398,6 +482,12 @@ public partial class MainWindow : Window
             switch (MainTabs.SelectedIndex)
             {
                 case TabStatusIndex:
+                    if (ShouldDeferStockRefresh())
+                    {
+                        ScheduleDeferredStockRefresh(StatusSearchBox.Text);
+                        break;
+                    }
+
                     LoadItemTypes();
                     LoadStock(StatusSearchBox.Text, debounce: true);
                     break;
@@ -829,9 +919,16 @@ public partial class MainWindow : Window
 
     private void LoadStock(string? search, bool debounce = false)
     {
+        _pendingStockSearch = search;
+
+        if (ShouldDeferStockRefresh())
+        {
+            ScheduleDeferredStockRefresh(search);
+            return;
+        }
+
         if (debounce)
         {
-            _pendingStockSearch = search;
             _stockRefreshDebounceTimer ??= new DispatcherTimer { Interval = StockRefreshDebounceInterval };
             if (!_stockRefreshDebounceTickAttached)
             {
@@ -853,6 +950,25 @@ public partial class MainWindow : Window
     }
 
     private void LoadWarehouseProductionState(string? search)
+    {
+        if (_warehouseProductionStateLoadInProgress)
+        {
+            ScheduleDeferredStockRefresh(search);
+            return;
+        }
+
+        _warehouseProductionStateLoadInProgress = true;
+        try
+        {
+            LoadWarehouseProductionStateCore(search);
+        }
+        finally
+        {
+            _warehouseProductionStateLoadInProgress = false;
+        }
+    }
+
+    private void LoadWarehouseProductionStateCore(string? search)
     {
         var belowMinOnly = StockBelowMinOnlyCheckBox.IsChecked == true;
         var itemTypeId = GetSelectedStockItemTypeId();
@@ -897,6 +1013,7 @@ public partial class MainWindow : Window
         var scrollOffset = GetDataGridVerticalScrollOffset(WarehouseProductionStateGrid);
         var existingByItemId = _warehouseProductionStateRows.ToDictionary(row => row.ItemId);
         var nextRows = new List<WarehouseProductionStateDisplayRow>(filteredRows.Count);
+        var addedAny = false;
         foreach (var row in filteredRows)
         {
             if (existingByItemId.TryGetValue(row.ItemId, out var existing))
@@ -906,16 +1023,42 @@ public partial class MainWindow : Window
                 continue;
             }
 
+            addedAny = true;
             nextRows.Add(CreateWarehouseProductionStateDisplayRow(row));
         }
 
+        var removedAny = false;
         for (var index = _warehouseProductionStateRows.Count - 1; index >= 0; index--)
         {
             var itemId = _warehouseProductionStateRows[index].ItemId;
             if (nextRows.All(row => row.ItemId != itemId))
             {
                 _warehouseProductionStateRows.RemoveAt(index);
+                removedAny = true;
             }
+        }
+
+        var orderChanged = SyncWarehouseProductionStateRowOrder(nextRows);
+        var structureChanged = removedAny || addedAny || orderChanged;
+
+        UpdateStockEmptyState(search);
+        StockGrid.Visibility = Visibility.Collapsed;
+        WarehouseProductionStateGrid.Visibility = Visibility.Visible;
+        LowStockGrid.Visibility = Visibility.Collapsed;
+        LowStockPanel.Visibility = Visibility.Collapsed;
+        LowStockSummaryText.Text = string.Empty;
+
+        if (structureChanged)
+        {
+            RestoreWarehouseProductionStateGridViewState(selectedItemId, scrollOffset);
+        }
+    }
+
+    private bool SyncWarehouseProductionStateRowOrder(IReadOnlyList<WarehouseProductionStateDisplayRow> nextRows)
+    {
+        if (IsWarehouseProductionStateOrderUnchanged(nextRows))
+        {
+            return false;
         }
 
         for (var targetIndex = 0; targetIndex < nextRows.Count; targetIndex++)
@@ -934,21 +1077,39 @@ public partial class MainWindow : Window
             }
         }
 
-        UpdateStockEmptyState(search);
-        StockGrid.Visibility = Visibility.Collapsed;
-        WarehouseProductionStateGrid.Visibility = Visibility.Visible;
-        LowStockGrid.Visibility = Visibility.Collapsed;
-        LowStockPanel.Visibility = Visibility.Collapsed;
-        LowStockSummaryText.Text = string.Empty;
-        RestoreWarehouseProductionStateGridViewState(selectedItemId, scrollOffset);
+        return true;
+    }
+
+    private bool IsWarehouseProductionStateOrderUnchanged(IReadOnlyList<WarehouseProductionStateDisplayRow> nextRows)
+    {
+        if (_warehouseProductionStateRows.Count != nextRows.Count)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < nextRows.Count; index++)
+        {
+            if (!ReferenceEquals(_warehouseProductionStateRows[index], nextRows[index]))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private WarehouseProductionStateDisplayRow CreateWarehouseProductionStateDisplayRow(WarehouseProductionStateRow row)
     {
         var displayRow = new WarehouseProductionStateDisplayRow { ItemId = row.ItemId };
+        var isExpanded = _expandedStockItemIds.Contains(row.ItemId);
+        displayRow.IsExpanded = isExpanded;
+        displayRow.ExpandMarker = isExpanded ? "▼" : "▶";
         displayRow.ApplyFrom(row);
-        displayRow.IsExpanded = _expandedStockItemIds.Contains(row.ItemId);
-        displayRow.ExpandMarker = displayRow.IsExpanded ? "▼" : "▶";
+        if (isExpanded)
+        {
+            displayRow.EnsureDetailsLoaded();
+        }
+
         return displayRow;
     }
 
@@ -974,7 +1135,20 @@ public partial class MainWindow : Window
                 .Append('|').Append(row.InternalRemainingQty.ToString("F3", CultureInfo.InvariantCulture))
                 .Append('|').Append(row.RemainingNeedQty.ToString("F3", CultureInfo.InvariantCulture))
                 .Append('|').Append(row.HuRows.Count)
-                .Append('|').Append(row.ProductionReceipts.Count)
+                .Append('|').Append(row.ProductionReceipts.Count);
+            foreach (var hu in row.HuRows.OrderBy(current => current.HuCode, StringComparer.OrdinalIgnoreCase))
+            {
+                builder.Append('|').Append(hu.HuCode)
+                    .Append(':').Append(hu.Qty.ToString("F3", CultureInfo.InvariantCulture));
+            }
+
+            foreach (var prd in row.ProductionReceipts.OrderBy(current => current.HuCode, StringComparer.OrdinalIgnoreCase))
+            {
+                builder.Append('|').Append(prd.HuCode)
+                    .Append(':').Append(prd.Qty.ToString("F3", CultureInfo.InvariantCulture));
+            }
+
+            builder
                 .Append('|').Append(row.NeedBreakdown.DemandToCloseCustomerOrders.ToString("F3", CultureInfo.InvariantCulture))
                 .Append('|').Append(row.NeedBreakdown.DemandToMinStock.ToString("F3", CultureInfo.InvariantCulture))
                 .Append('|').Append(row.NeedBreakdown.AlreadyPlannedInternal.ToString("F3", CultureInfo.InvariantCulture))
@@ -985,10 +1159,15 @@ public partial class MainWindow : Window
         return builder.ToString();
     }
 
-    private static double? GetDataGridVerticalScrollOffset(System.Windows.Controls.DataGrid grid)
+    private double? GetDataGridVerticalScrollOffset(System.Windows.Controls.DataGrid grid)
     {
-        var scrollViewer = FindVisualChild<System.Windows.Controls.ScrollViewer>(grid);
-        return scrollViewer?.VerticalOffset;
+        AttachWarehouseProductionStateGridScrollTracking();
+        if (ReferenceEquals(grid, WarehouseProductionStateGrid) && _warehouseProductionStateScrollViewer != null)
+        {
+            return _warehouseProductionStateScrollViewer.VerticalOffset;
+        }
+
+        return FindVisualChild<System.Windows.Controls.ScrollViewer>(grid)?.VerticalOffset;
     }
 
     private void RestoreWarehouseProductionStateGridViewState(long? selectedItemId, double? scrollOffset)
@@ -996,22 +1175,28 @@ public partial class MainWindow : Window
         if (selectedItemId.HasValue)
         {
             var selectedRow = _warehouseProductionStateRows.FirstOrDefault(row => row.ItemId == selectedItemId.Value);
-            if (selectedRow != null)
+            if (selectedRow != null && !ReferenceEquals(WarehouseProductionStateGrid.SelectedItem, selectedRow))
             {
                 WarehouseProductionStateGrid.SelectedItem = selectedRow;
             }
         }
 
-        if (!scrollOffset.HasValue)
+        if (!scrollOffset.HasValue || _stockGridUserScrolling)
         {
             return;
         }
 
+        var targetOffset = scrollOffset.Value;
         Dispatcher.BeginInvoke(new Action(() =>
         {
-            var scrollViewer = FindVisualChild<System.Windows.Controls.ScrollViewer>(WarehouseProductionStateGrid);
-            scrollViewer?.ScrollToVerticalOffset(scrollOffset.Value);
-        }), DispatcherPriority.Loaded);
+            if (_stockGridUserScrolling)
+            {
+                return;
+            }
+
+            AttachWarehouseProductionStateGridScrollTracking();
+            _warehouseProductionStateScrollViewer?.ScrollToVerticalOffset(targetOffset);
+        }), DispatcherPriority.Background);
     }
 
     private static T? FindVisualChild<T>(DependencyObject parent)
@@ -1498,9 +1683,41 @@ public partial class MainWindow : Window
             _expandedStockItemIds.Remove(row.ItemId);
         }
 
+        if (nextExpanded && row is WarehouseProductionStateDisplayRow warehouseRow)
+        {
+            CollapseOtherWarehouseProductionStateRows(warehouseRow.ItemId);
+            warehouseRow.EnsureDetailsLoaded();
+        }
+
         row.IsExpanded = nextExpanded;
         row.ExpandMarker = nextExpanded ? "▼" : "▶";
         clickedRow.DetailsVisibility = nextExpanded ? Visibility.Visible : Visibility.Collapsed;
+
+        if (!nextExpanded && row is WarehouseProductionStateDisplayRow collapsedRow)
+        {
+            collapsedRow.ClearDetailRows();
+        }
+    }
+
+    private void CollapseOtherWarehouseProductionStateRows(long expandedItemId)
+    {
+        foreach (var row in _warehouseProductionStateRows)
+        {
+            if (row.ItemId == expandedItemId || !row.IsExpanded)
+            {
+                continue;
+            }
+
+            _expandedStockItemIds.Remove(row.ItemId);
+            row.IsExpanded = false;
+            row.ExpandMarker = "▶";
+            row.ClearDetailRows();
+
+            if (WarehouseProductionStateGrid.ItemContainerGenerator.ContainerFromItem(row) is System.Windows.Controls.DataGridRow gridRow)
+            {
+                gridRow.DetailsVisibility = Visibility.Collapsed;
+            }
+        }
     }
 
     private static T? FindVisualParent<T>(DependencyObject? source)
@@ -3222,8 +3439,15 @@ public partial class MainWindow : Window
 
     private sealed class WarehouseProductionStateDisplayRow : IExpandableStockRow, INotifyPropertyChanged
     {
+        private static readonly IReadOnlyList<WarehouseProductionStateHuDisplayRow> EmptyHuRows = Array.Empty<WarehouseProductionStateHuDisplayRow>();
+        private static readonly IReadOnlyList<WarehouseProductionStatePalletDisplayRow> EmptyProductionReceipts = Array.Empty<WarehouseProductionStatePalletDisplayRow>();
+
         private bool _isExpanded;
         private string _expandMarker = "▶";
+        private WarehouseProductionStateRow? _sourceRow;
+        private string _summaryFingerprint = string.Empty;
+        private string _detailsFingerprint = string.Empty;
+        private bool _detailsLoaded;
 
         public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -3255,24 +3479,101 @@ public partial class MainWindow : Window
 
         public void ApplyFrom(WarehouseProductionStateRow row)
         {
-            ItemName = row.ItemName;
-            Barcode = row.Barcode;
-            Gtin = row.Gtin;
-            ItemTypeName = string.IsNullOrWhiteSpace(row.ItemType) ? "Без типа" : row.ItemType;
-            Brand = row.Brand;
-            BaseUom = string.IsNullOrWhiteSpace(row.BaseUom) ? "шт" : row.BaseUom;
-            StockQty = row.StockQty;
-            FreeQty = row.FreeQty;
-            ReservedQty = row.ReservedQty;
-            MinStockQty = row.MinStockQty;
-            BelowMinQty = row.BelowMinQty;
-            CustomerOpenDemandQty = row.CustomerOpenDemandQty;
-            PrdPlannedQty = row.PrdPlannedQty;
-            PrdFilledQty = row.PrdFilledQty;
-            InternalRemainingQty = row.InternalRemainingQty;
-            RemainingNeedQty = row.RemainingNeedQty;
-            NeedReason = row.NeedReason;
-            Warnings = row.Warnings;
+            _sourceRow = row;
+            var summaryFingerprint = BuildSummaryFingerprint(row);
+            if (!string.Equals(summaryFingerprint, _summaryFingerprint, StringComparison.Ordinal))
+            {
+                ItemName = row.ItemName;
+                Barcode = row.Barcode;
+                Gtin = row.Gtin;
+                ItemTypeName = string.IsNullOrWhiteSpace(row.ItemType) ? "Без типа" : row.ItemType;
+                Brand = row.Brand;
+                BaseUom = string.IsNullOrWhiteSpace(row.BaseUom) ? "шт" : row.BaseUom;
+                StockQty = row.StockQty;
+                FreeQty = row.FreeQty;
+                ReservedQty = row.ReservedQty;
+                MinStockQty = row.MinStockQty;
+                BelowMinQty = row.BelowMinQty;
+                CustomerOpenDemandQty = row.CustomerOpenDemandQty;
+                PrdPlannedQty = row.PrdPlannedQty;
+                PrdFilledQty = row.PrdFilledQty;
+                InternalRemainingQty = row.InternalRemainingQty;
+                RemainingNeedQty = row.RemainingNeedQty;
+                NeedReason = row.NeedReason;
+                Warnings = row.Warnings;
+                _summaryFingerprint = summaryFingerprint;
+                NotifySummaryPropertiesChanged();
+            }
+
+            UpdateNeedBreakdownRows(row);
+
+            if (IsExpanded)
+            {
+                EnsureDetailsLoaded();
+            }
+            else if (_detailsLoaded)
+            {
+                ClearDetailRows();
+            }
+        }
+
+        public void EnsureDetailsLoaded()
+        {
+            if (_sourceRow == null)
+            {
+                return;
+            }
+
+            var detailsFingerprint = BuildDetailFingerprint(_sourceRow);
+            if (_detailsLoaded && string.Equals(detailsFingerprint, _detailsFingerprint, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            LoadDetailRows(_sourceRow);
+            _detailsFingerprint = detailsFingerprint;
+            _detailsLoaded = true;
+            NotifyDetailPropertiesChanged();
+        }
+
+        public void ClearDetailRows()
+        {
+            if (!_detailsLoaded
+                && ReferenceEquals(WarehouseHuRows, EmptyHuRows)
+                && ReferenceEquals(ProductionReceipts, EmptyProductionReceipts))
+            {
+                return;
+            }
+
+            WarehouseHuRows = EmptyHuRows;
+            ProductionReceipts = EmptyProductionReceipts;
+            CustomerOrders = Array.Empty<WarehouseProductionStateCustomerOrderDisplayRow>();
+            InternalOrders = Array.Empty<WarehouseProductionStateInternalOrderDisplayRow>();
+            _detailsLoaded = false;
+            _detailsFingerprint = string.Empty;
+            NotifyDetailPropertiesChanged();
+        }
+
+        private void UpdateNeedBreakdownRows(WarehouseProductionStateRow row)
+        {
+            NeedBreakdownRows =
+            [
+                new WarehouseProductionStateNeedBreakdownDisplayRow
+                {
+                    DemandToCloseDisplay = FormatQtyWithUom(row.NeedBreakdown.DemandToCloseCustomerOrders, row.BaseUom),
+                    DemandToMinDisplay = FormatQtyWithUom(row.NeedBreakdown.DemandToMinStock, row.BaseUom),
+                    AlreadyPlannedInternalDisplay = FormatQtyWithUom(row.NeedBreakdown.AlreadyPlannedInternal, row.BaseUom),
+                    AlreadyPlannedPrdDisplay = FormatQtyWithUom(row.NeedBreakdown.AlreadyPlannedPrd, row.BaseUom),
+                    FilledDisplay = FormatQtyWithUom(row.PrdFilledQty, row.BaseUom),
+                    RemainingToCreateDisplay = FormatQtyWithUom(row.NeedBreakdown.RemainingToCreate, row.BaseUom),
+                    NeedReason = row.NeedReason
+                }
+            ];
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(NeedBreakdownRows)));
+        }
+
+        private void LoadDetailRows(WarehouseProductionStateRow row)
+        {
             WarehouseHuRows = row.HuRows.Select(hu => new WarehouseProductionStateHuDisplayRow
             {
                 Location = hu.Location,
@@ -3314,25 +3615,91 @@ public partial class MainWindow : Window
                 StockEffect = prd.StockEffect,
                 Composition = prd.Composition
             }).ToList();
-            NeedBreakdownRows =
-            [
-                new WarehouseProductionStateNeedBreakdownDisplayRow
-                {
-                    DemandToCloseDisplay = FormatQtyWithUom(row.NeedBreakdown.DemandToCloseCustomerOrders, row.BaseUom),
-                    DemandToMinDisplay = FormatQtyWithUom(row.NeedBreakdown.DemandToMinStock, row.BaseUom),
-                    AlreadyPlannedInternalDisplay = FormatQtyWithUom(row.NeedBreakdown.AlreadyPlannedInternal, row.BaseUom),
-                    AlreadyPlannedPrdDisplay = FormatQtyWithUom(row.NeedBreakdown.AlreadyPlannedPrd, row.BaseUom),
-                    FilledDisplay = FormatQtyWithUom(row.PrdFilledQty, row.BaseUom),
-                    RemainingToCreateDisplay = FormatQtyWithUom(row.NeedBreakdown.RemainingToCreate, row.BaseUom),
-                    NeedReason = row.NeedReason
-                }
-            ];
-            NotifyDisplayPropertiesChanged();
         }
 
-        private void NotifyDisplayPropertiesChanged()
+        private static string BuildSummaryFingerprint(WarehouseProductionStateRow row)
         {
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(string.Empty));
+            return string.Create(CultureInfo.InvariantCulture, $"""
+                {row.ItemName}|{row.Barcode}|{row.Gtin}|{row.ItemType}|{row.Brand}|{row.BaseUom}|
+                {row.StockQty:F3}|{row.FreeQty:F3}|{row.ReservedQty:F3}|{row.MinStockQty:F3}|{row.BelowMinQty:F3}|
+                {row.CustomerOpenDemandQty:F3}|{row.PrdPlannedQty:F3}|{row.PrdFilledQty:F3}|{row.InternalRemainingQty:F3}|{row.RemainingNeedQty:F3}|
+                {row.NeedReason}|{row.HuRows.Count}|{row.ProductionReceipts.Count}|
+                {row.NeedBreakdown.DemandToCloseCustomerOrders:F3}|{row.NeedBreakdown.DemandToMinStock:F3}|{row.NeedBreakdown.AlreadyPlannedInternal:F3}|{row.NeedBreakdown.RemainingToCreate:F3}
+                """);
+        }
+
+        private static string BuildDetailFingerprint(WarehouseProductionStateRow row)
+        {
+            var builder = new StringBuilder(256);
+            foreach (var hu in row.HuRows.OrderBy(current => current.HuCode, StringComparer.OrdinalIgnoreCase))
+            {
+                builder.Append(hu.HuCode)
+                    .Append('|').Append(hu.Location)
+                    .Append('|').Append(hu.Qty.ToString("F3", CultureInfo.InvariantCulture))
+                    .Append('|').Append(hu.StockStatus)
+                    .Append(';');
+            }
+
+            builder.Append('#');
+            foreach (var prd in row.ProductionReceipts.OrderBy(current => current.HuCode, StringComparer.OrdinalIgnoreCase))
+            {
+                builder.Append(prd.HuCode)
+                    .Append('|').Append(prd.PrdRef)
+                    .Append('|').Append(prd.PalletStatus)
+                    .Append('|').Append(prd.Qty.ToString("F3", CultureInfo.InvariantCulture))
+                    .Append('|').Append(prd.PlannedQty.ToString("F3", CultureInfo.InvariantCulture))
+                    .Append(';');
+            }
+
+            return builder.ToString();
+        }
+
+        private void NotifySummaryPropertiesChanged()
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ItemName)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Barcode)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Gtin)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ItemTypeName)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Brand)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(BaseUom)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(StockQty)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(FreeQty)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ReservedQty)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(MinStockQty)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(BelowMinQty)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CustomerOpenDemandQty)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PrdPlannedQty)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PrdFilledQty)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(InternalRemainingQty)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RemainingNeedQty)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(NeedReason)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Warnings)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsBelowMin)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(StockQtyDisplay)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(FreeQtyDisplay)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ReservedQtyDisplay)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(MinStockQtyDisplay)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(BelowMinQtyDisplay)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CustomerOpenDemandQtyDisplay)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PrdPlannedQtyDisplay)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PrdFilledQtyDisplay)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RemainingNeedQtyDisplay)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ProductSubline)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(MinStockSummary)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(NeedSummary)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PlanSummary)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(FilledSummary)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RemainingNeedSummary)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RemainingNeedBrush)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RemainingNeedFontWeight)));
+        }
+
+        private void NotifyDetailPropertiesChanged()
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(WarehouseHuRows)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CustomerOrders)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(InternalOrders)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ProductionReceipts)));
         }
         public bool IsExpanded
         {
