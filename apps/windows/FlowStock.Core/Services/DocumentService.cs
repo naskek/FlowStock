@@ -502,6 +502,11 @@ public sealed class DocumentService
                 }
             }
 
+            if (doc.Type == DocType.ProductionReceipt && hasProductionPallets)
+            {
+                AddProductionPalletLedgerEntries(store, docId, closedAt, store.GetProductionPalletsByDoc(docId), lines);
+            }
+
             if (inventoryTotals != null)
             {
                 foreach (var entry in inventoryTotals)
@@ -1784,18 +1789,26 @@ public sealed class DocumentService
                 }
             }
 
-            if (doc.Type == DocType.Outbound && doc.OrderId.HasValue)
+            if (doc.Type == DocType.Outbound)
             {
                 var normalizedFromHu = NormalizeHuValue(fromHu);
                 if (!string.IsNullOrWhiteSpace(normalizedFromHu))
                 {
-                    var allowedHuCodes = orderBoundHuByItem != null
-                                         && orderBoundHuByItem.TryGetValue(line.ItemId, out var set)
-                        ? (IReadOnlySet<string>)set
-                        : EmptyHuSet;
-                    if (!allowedHuCodes.Contains(normalizedFromHu))
+                    if (doc.OrderId.HasValue)
                     {
-                        check.Errors.Add($"{rowLabel}: HU {normalizedFromHu} не выпущен под выбранный заказ.");
+                        var allowedHuCodes = orderBoundHuByItem != null
+                                             && orderBoundHuByItem.TryGetValue(line.ItemId, out var set)
+                            ? (IReadOnlySet<string>)set
+                            : EmptyHuSet;
+                        if (!allowedHuCodes.Contains(normalizedFromHu))
+                        {
+                            check.Errors.Add($"{rowLabel}: HU {normalizedFromHu} не выпущен под выбранный заказ.");
+                        }
+                    }
+
+                    if (IsHuFromOpenProductionReceipt(_data, normalizedFromHu, line.ItemId))
+                    {
+                        check.Errors.Add($"{rowLabel}: HU {normalizedFromHu} ожидает закрытия PRD и пока не может быть отгружен.");
                     }
                 }
             }
@@ -1938,12 +1951,34 @@ public sealed class DocumentService
 
         if (doc.Type == DocType.ProductionReceipt && hasProductionPallets)
         {
+            if (_data.CountLedgerEntriesByDocId(docId) > 0)
+            {
+                check.Errors.Add("Нельзя закрыть palletized PRD: у открытого выпуска уже есть строки ledger. Запустите диагностику и repair.");
+            }
+
             var pallets = _data.GetProductionPalletsByDoc(docId)
                 .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
                 .ToList();
             if (pallets.Any(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
             {
                 check.Errors.Add("Нельзя закрыть выпуск: есть ненаполненные паллеты");
+            }
+
+            var docLinesById = lines.ToDictionary(line => line.Id, line => line);
+            foreach (var pallet in pallets.Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
+            {
+                foreach (var entry in BuildProductionPalletLedgerDrafts(pallet, docLinesById))
+                {
+                    if (!entry.LocationId.HasValue)
+                    {
+                        check.Errors.Add($"HU {pallet.HuCode}: не указано место хранения для записи выпуска.");
+                    }
+
+                    if (entry.Qty <= QtyTolerance)
+                    {
+                        check.Errors.Add($"HU {pallet.HuCode}: количество выпуска должно быть > 0.");
+                    }
+                }
             }
 
             if (new ProductionPlanConsistencyDiagnosticsService(_data).BlocksPrdClose(docId))
@@ -2930,6 +2965,89 @@ public sealed class DocumentService
         }
     }
 
+    private static void AddProductionPalletLedgerEntries(
+        IDataStore store,
+        long docId,
+        DateTime closedAt,
+        IReadOnlyList<ProductionPallet> pallets,
+        IReadOnlyList<DocLine> docLines)
+    {
+        var docLinesById = docLines.ToDictionary(line => line.Id, line => line);
+        foreach (var pallet in pallets
+                     .Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
+        {
+            foreach (var entry in BuildProductionPalletLedgerDrafts(pallet, docLinesById))
+            {
+                if (!entry.LocationId.HasValue || entry.Qty <= QtyTolerance)
+                {
+                    continue;
+                }
+
+                store.AddLedgerEntry(new LedgerEntry
+                {
+                    Timestamp = closedAt,
+                    DocId = docId,
+                    ItemId = entry.ItemId,
+                    LocationId = entry.LocationId.Value,
+                    QtyDelta = entry.Qty,
+                    HuCode = pallet.HuCode
+                });
+            }
+        }
+    }
+
+    private static IReadOnlyList<ProductionPalletLedgerDraft> BuildProductionPalletLedgerDrafts(
+        ProductionPallet pallet,
+        IReadOnlyDictionary<long, DocLine> docLinesById)
+    {
+        if (pallet.Lines.Count == 0)
+        {
+            docLinesById.TryGetValue(pallet.DocLineId, out var docLine);
+            return
+            [
+                new ProductionPalletLedgerDraft(
+                    pallet.ItemId,
+                    ResolveProductionPalletLocationId(pallet, docLine),
+                    pallet.PlannedQty)
+            ];
+        }
+
+        var result = new List<ProductionPalletLedgerDraft>(pallet.Lines.Count);
+        foreach (var line in pallet.Lines)
+        {
+            docLinesById.TryGetValue(line.DocLineId, out var docLine);
+            var qty = line.FilledQty > QtyTolerance ? line.FilledQty : line.PlannedQty;
+            result.Add(new ProductionPalletLedgerDraft(
+                line.ItemId,
+                ResolveProductionPalletLocationId(pallet, docLine),
+                qty));
+        }
+
+        return result;
+    }
+
+    private static long? ResolveProductionPalletLocationId(ProductionPallet pallet, DocLine? docLine)
+    {
+        return pallet.ToLocationId ?? docLine?.ToLocationId;
+    }
+
+    private static bool IsHuFromOpenProductionReceipt(IDataStore store, string huCode, long itemId)
+    {
+        var pallet = store.GetProductionPalletByHu(huCode);
+        if (pallet == null || !ProductionPalletContainsItem(pallet, itemId))
+        {
+            return false;
+        }
+
+        var prd = store.GetDoc(pallet.PrdDocId);
+        return prd?.Type == DocType.ProductionReceipt && prd.Status != DocStatus.Closed;
+    }
+
+    private static bool ProductionPalletContainsItem(ProductionPallet pallet, long itemId)
+    {
+        return pallet.ItemId == itemId || pallet.Lines.Any(line => line.ItemId == itemId);
+    }
+
     private static string? NormalizeGtinForKm(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -2956,6 +3074,8 @@ public sealed class DocumentService
     private readonly record struct ItemLocationKey(long ItemId, long LocationId);
 
     private readonly record struct OutboundStockSource(long LocationId, string? HuCode, double Qty);
+
+    private readonly record struct ProductionPalletLedgerDraft(long ItemId, long? LocationId, double Qty);
 
     private sealed class CloseDocCheck
     {

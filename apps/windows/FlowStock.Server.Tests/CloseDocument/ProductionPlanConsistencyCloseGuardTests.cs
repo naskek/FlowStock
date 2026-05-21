@@ -47,7 +47,7 @@ public sealed class ProductionPlanConsistencyCloseGuardTests
             palletCount: 2,
             palletQty: 600,
             palletStatus: ProductionPalletStatus.Filled,
-            seedLedger: true);
+            seedLedger: false);
 
         var result = new DocumentService(harness.Store).TryCloseDoc(720, allowNegative: false);
 
@@ -152,7 +152,7 @@ public sealed class ProductionPlanConsistencyCloseGuardTests
             palletCount: 4,
             palletQty: 600,
             palletStatus: ProductionPalletStatus.Filled,
-            seedLedger: true);
+            seedLedger: false);
 
         var diagnostics = new ProductionPlanConsistencyDiagnosticsService(harness.Store).GetItems();
         var warning = Assert.Single(diagnostics);

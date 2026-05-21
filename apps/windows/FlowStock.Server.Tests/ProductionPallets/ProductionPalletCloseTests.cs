@@ -21,14 +21,14 @@ public sealed class ProductionPalletCloseTests
     }
 
     [Fact]
-    public void CloseProductionReceipt_WithFilledProductionPallets_DoesNotDuplicateLedger()
+    public void CloseProductionReceipt_WithFilledProductionPallets_WritesLedgerOnce()
     {
         var harness = CreateHarness();
         harness.SeedProductionPallet(BuildPallet(ProductionPalletStatus.Planned));
         var palletService = new ProductionPalletService(harness.Store);
         var fill = palletService.Fill("HU-000001", "TSD-01");
         Assert.True(fill.Success);
-        Assert.Single(harness.LedgerEntries);
+        Assert.Empty(harness.LedgerEntries);
 
         var close = harness.CreateService().TryCloseDoc(20, allowNegative: false);
 
@@ -104,7 +104,7 @@ public sealed class ProductionPalletCloseTests
     }
 
     [Fact]
-    public void FillPallet_UsesPlannedHuOnly()
+    public void FillPallet_UsesPlannedHuOnly_WithoutWritingLedger()
     {
         var harness = CreateTwoPalletHarness();
         var palletService = new ProductionPalletService(harness.Store);
@@ -112,10 +112,9 @@ public sealed class ProductionPalletCloseTests
         var fill = palletService.Fill("HU-PLAN-001", "TSD-01");
 
         Assert.True(fill.Success);
-        var entry = Assert.Single(harness.LedgerEntries);
-        Assert.Equal("HU-PLAN-001", entry.HuCode);
-        Assert.Equal(600, entry.QtyDelta);
-        Assert.DoesNotContain(harness.LedgerEntries, row => string.Equals(row.HuCode, "HU-PLAN-002", StringComparison.OrdinalIgnoreCase));
+        Assert.Empty(harness.LedgerEntries);
+        var filled = harness.Store.GetProductionPalletsByDoc(20).Single(row => row.HuCode == "HU-PLAN-001");
+        Assert.Equal(ProductionPalletStatus.Filled, filled.Status);
     }
 
     [Fact]
@@ -125,7 +124,7 @@ public sealed class ProductionPalletCloseTests
         var palletService = new ProductionPalletService(harness.Store);
         Assert.True(palletService.Fill("HU-PLAN-001", "TSD-01").Success);
         Assert.True(palletService.Fill("HU-PLAN-002", "TSD-01").Success);
-        Assert.Equal(2, harness.LedgerEntries.Count);
+        Assert.Empty(harness.LedgerEntries);
 
         var close = harness.CreateService().TryCloseDoc(20, allowNegative: false);
 
@@ -138,6 +137,31 @@ public sealed class ProductionPalletCloseTests
             && !string.Equals(row.HuCode, "HU-PLAN-002", StringComparison.OrdinalIgnoreCase));
         Assert.Equal(DocStatus.Closed, harness.GetDoc(20).Status);
         Assert.Equal(OrderStatus.Shipped, harness.GetOrder(10).Status);
+    }
+
+    [Fact]
+    public void CloseProductionReceipt_WithDraftPalletLedgerRows_FailsToPreventDoubleLedger()
+    {
+        var harness = CreateHarness();
+        harness.SeedProductionPallet(BuildPallet(ProductionPalletStatus.Planned));
+        var palletService = new ProductionPalletService(harness.Store);
+        Assert.True(palletService.Fill("HU-000001", "TSD-01").Success);
+        harness.Store.AddLedgerEntry(new LedgerEntry
+        {
+            Timestamp = new DateTime(2026, 5, 13, 10, 0, 0),
+            DocId = 20,
+            ItemId = 100,
+            LocationId = 1,
+            QtyDelta = 600,
+            HuCode = "HU-000001"
+        });
+
+        var result = harness.CreateService().TryCloseDoc(20, allowNegative: false);
+
+        Assert.False(result.Success);
+        Assert.Contains(result.Errors, error => error.Contains("у открытого выпуска уже есть строки ledger", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(DocStatus.Draft, harness.GetDoc(20).Status);
+        Assert.Single(harness.LedgerEntries);
     }
 
     [Fact]
@@ -184,6 +208,46 @@ public sealed class ProductionPalletCloseTests
         Assert.Equal(1200, fullAfterClose.QtyReceived);
         Assert.Equal(0, fullAfterClose.QtyRemaining);
         Assert.Equal(2, harness.LedgerEntries.Count);
+    }
+
+    [Fact]
+    public void OutboundClose_RejectsHuFromOpenProductionReceiptEvenIfBrokenLedgerExists()
+    {
+        var harness = CreateHarness();
+        harness.SeedProductionPallet(BuildPallet(ProductionPalletStatus.Planned));
+        var palletService = new ProductionPalletService(harness.Store);
+        Assert.True(palletService.Fill("HU-000001", "TSD-01").Success);
+        harness.Store.AddLedgerEntry(new LedgerEntry
+        {
+            Timestamp = new DateTime(2026, 5, 13, 10, 0, 0),
+            DocId = 20,
+            ItemId = 100,
+            LocationId = 1,
+            QtyDelta = 600,
+            HuCode = "HU-000001"
+        });
+        harness.SeedDoc(new Doc
+        {
+            Id = 30,
+            DocRef = "OUT-2026-000001",
+            Type = DocType.Outbound,
+            Status = DocStatus.Draft,
+            CreatedAt = new DateTime(2026, 5, 13, 12, 0, 0)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 301,
+            DocId = 30,
+            ItemId = 100,
+            Qty = 600,
+            FromLocationId = 1,
+            FromHu = "HU-000001"
+        });
+
+        var result = harness.CreateService().TryCloseDoc(30, allowNegative: false);
+
+        Assert.False(result.Success);
+        Assert.Contains(result.Errors, error => error.Contains("ожидает закрытия PRD", StringComparison.OrdinalIgnoreCase));
     }
 
     private static CloseDocumentHarness CreateTwoPalletHarness()
