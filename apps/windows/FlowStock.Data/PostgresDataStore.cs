@@ -9,7 +9,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOperationOrderCandidatesStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore
+public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore
 {
     private readonly string _connectionString;
     private readonly NpgsqlConnection? _connection;
@@ -6920,6 +6920,72 @@ GROUP BY COALESCE(hu_code, hu);
             }
 
             return totals;
+        });
+    }
+
+    public IReadOnlyList<HuReservationCandidateSourceRow> GetHuReservationCandidateSources(
+        long? customerOrderId,
+        IReadOnlyCollection<long> itemIds,
+        IReadOnlyCollection<string> excludeHuCodes)
+    {
+        if (itemIds == null || itemIds.Count == 0)
+        {
+            return Array.Empty<HuReservationCandidateSourceRow>();
+        }
+
+        var normalizedItemIds = itemIds
+            .Where(itemId => itemId > 0)
+            .Distinct()
+            .ToArray();
+        if (normalizedItemIds.Length == 0)
+        {
+            return Array.Empty<HuReservationCandidateSourceRow>();
+        }
+
+        var normalizedExcludeHuCodes = (excludeHuCodes ?? Array.Empty<string>())
+            .Select(code => string.IsNullOrWhiteSpace(code) ? null : code.Trim().ToUpperInvariant())
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Cast<string>()
+            .ToArray();
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, HuReservationCandidateSql.SelectSources);
+            command.Parameters.AddWithValue("@item_ids", normalizedItemIds);
+            command.Parameters.AddWithValue("@exclude_hu_codes", normalizedExcludeHuCodes);
+            command.Parameters.AddWithValue("@customer_order_id", customerOrderId.HasValue ? customerOrderId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+            command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+            command.Parameters.AddWithValue("@internal_order_type", OrderStatusMapper.TypeToString(OrderType.Internal));
+            command.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
+            command.Parameters.AddWithValue("@closed_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+            command.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+            command.Parameters.AddWithValue("@cancelled_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+            command.Parameters.AddWithValue("@merged_status", OrderStatusMapper.StatusToString(OrderStatus.Merged));
+
+            using var reader = command.ExecuteReader();
+            var rows = new List<HuReservationCandidateSourceRow>();
+            while (reader.Read())
+            {
+                rows.Add(new HuReservationCandidateSourceRow
+                {
+                    Source = reader.GetString(0),
+                    HuCode = reader.GetString(1),
+                    ItemId = reader.GetInt64(2),
+                    Qty = reader.GetDouble(3),
+                    SourceOrderId = reader.IsDBNull(4) ? null : reader.GetInt64(4),
+                    SourceOrderRef = reader.IsDBNull(5) ? null : reader.GetString(5),
+                    SourcePrdDocId = reader.IsDBNull(6) ? null : reader.GetInt64(6),
+                    SourcePrdRef = reader.IsDBNull(7) ? null : reader.GetString(7),
+                    ShipReady = reader.GetBoolean(8),
+                    ReservedByOrderId = reader.IsDBNull(9) ? null : reader.GetInt64(9),
+                    ReservedByOrderRef = reader.IsDBNull(10) ? null : reader.GetString(10),
+                    Note = reader.IsDBNull(11) ? string.Empty : reader.GetString(11)
+                });
+            }
+
+            return rows;
         });
     }
 
