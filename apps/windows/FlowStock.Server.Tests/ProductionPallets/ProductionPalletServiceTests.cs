@@ -99,6 +99,86 @@ public sealed class ProductionPalletServiceTests
     }
 
     [Fact]
+    public void PlanOrder_TwoMixedGroups_CreatesTwoDistinctHus_WithCapacityPerGroup()
+    {
+        var harness = CreateHarnessWithFourLineTwoMixedGroups();
+        var service = new ProductionPalletService(harness.Store);
+
+        var result = service.PlanOrder(10);
+
+        Assert.Equal(2, result.Summary.PlannedPalletCount);
+        Assert.Equal(1000, result.Summary.PlannedQty);
+        var pallets = harness.Store.GetProductionPalletsByDoc(result.PrdDocId).OrderBy(pallet => pallet.Id).ToArray();
+        Assert.Equal(2, pallets.Length);
+        Assert.Equal(2, pallets.Select(pallet => pallet.HuCode).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        Assert.All(pallets, pallet =>
+        {
+            Assert.True(pallet.IsMixedPallet);
+            Assert.Equal(2, pallet.Lines.Count);
+        });
+        Assert.Equal(new[] { 101L, 102L }, pallets[0].Lines.Select(line => line.OrderLineId!.Value).Order().ToArray());
+        Assert.Equal(new[] { 103L, 104L }, pallets[1].Lines.Select(line => line.OrderLineId!.Value).Order().ToArray());
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void PlanOrder_SingleMixedGroupOverCapacity_Throws()
+    {
+        var harness = CreateHarnessWithFourLineSingleMixedGroupOverCapacity();
+        var service = new ProductionPalletService(harness.Store);
+
+        var ex = Assert.Throws<InvalidOperationException>(() => service.PlanOrder(10));
+
+        Assert.Equal("Микс-паллета превышает вместимость. Разделите группу паллеты.", ex.Message);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void PlanOrder_AfterFilledMixedPlan_DoesNotReassignHu()
+    {
+        var harness = CreateHarnessWithFourLineTwoMixedGroups();
+        var service = new ProductionPalletService(harness.Store);
+        var plan = service.PlanOrder(10);
+        var pallets = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).OrderBy(pallet => pallet.Id).ToArray();
+        var huCodesBefore = pallets.Select(pallet => pallet.HuCode).ToArray();
+
+        service.Fill(pallets[0].HuCode, "TSD-01");
+        var ex = Assert.Throws<InvalidOperationException>(() => service.PlanOrder(10));
+
+        Assert.Equal("План паллет уже напечатан или наполнен. Переназначение HU запрещено.", ex.Message);
+        var huCodesAfter = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId)
+            .OrderBy(pallet => pallet.Id)
+            .Select(pallet => pallet.HuCode)
+            .ToArray();
+        Assert.Equal(huCodesBefore, huCodesAfter);
+    }
+
+    [Fact]
+    public void ScanAndFill_TwoMixedGroups_WritesLedgerPerHuWithAllComponentLines()
+    {
+        var harness = CreateHarnessWithFourLineTwoMixedGroups();
+        var service = new ProductionPalletService(harness.Store);
+        var plan = service.PlanOrder(10);
+        var pallets = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).OrderBy(pallet => pallet.Id).ToArray();
+
+        foreach (var pallet in pallets)
+        {
+            var scan = service.Scan(10, plan.PrdDocId, pallet.HuCode);
+            Assert.True(scan.Success);
+            Assert.True(scan.IsMixedPallet);
+            Assert.Equal(2, scan.Lines.Count);
+
+            var fill = service.Fill(pallet.HuCode, "TSD-01");
+            Assert.True(fill.Success);
+            Assert.False(fill.AlreadyFilled);
+        }
+
+        Assert.Equal(4, harness.LedgerEntries.Count);
+        Assert.Equal(1000, harness.LedgerEntries.Sum(entry => entry.QtyDelta));
+        Assert.Equal(2, harness.LedgerEntries.Select(entry => entry.HuCode).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+    }
+
+    [Fact]
     public void PlanOrder_MixedLines_CreateOneHuWithMultipleComponentLines_AndNoLedger()
     {
         var harness = CreateHarnessWithMixedOrderOnly();
@@ -847,6 +927,49 @@ public sealed class ProductionPalletServiceTests
         var ex = Assert.Throws<ProductionPalletPlanAdoptionException>(() => service.AdoptPlanFromInternal(67, 66));
 
         Assert.Equal("TARGET_LINE_NOT_FOUND", ex.Code);
+    }
+
+    private static CloseDocumentHarness CreateHarnessWithFourLineTwoMixedGroups()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedLocation(new Location { Id = 1, Code = "MAIN", Name = "Основной склад" });
+        harness.SeedItem(new Item
+        {
+            Id = 100,
+            Name = "Товар A",
+            Brand = "Печагин",
+            BaseUom = "шт",
+            MaxQtyPerHu = 600
+        });
+        harness.SeedItem(new Item
+        {
+            Id = 200,
+            Name = "Товар B",
+            Brand = "Печагин",
+            BaseUom = "шт",
+            MaxQtyPerHu = 400
+        });
+        harness.SeedOrder(new Order
+        {
+            Id = 10,
+            OrderRef = "056",
+            Type = OrderType.Internal,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 5, 13, 8, 0, 0)
+        });
+        harness.SeedOrderLine(new OrderLine { Id = 101, OrderId = 10, ItemId = 100, QtyOrdered = 300, ProductionPalletGroup = "MIX-1" });
+        harness.SeedOrderLine(new OrderLine { Id = 102, OrderId = 10, ItemId = 200, QtyOrdered = 200, ProductionPalletGroup = "MIX-1" });
+        harness.SeedOrderLine(new OrderLine { Id = 103, OrderId = 10, ItemId = 100, QtyOrdered = 300, ProductionPalletGroup = "MIX-2" });
+        harness.SeedOrderLine(new OrderLine { Id = 104, OrderId = 10, ItemId = 200, QtyOrdered = 200, ProductionPalletGroup = "MIX-2" });
+        return harness;
+    }
+
+    private static CloseDocumentHarness CreateHarnessWithFourLineSingleMixedGroupOverCapacity()
+    {
+        var harness = CreateHarnessWithFourLineTwoMixedGroups();
+        harness.Store.UpdateOrderLineProductionPalletGroup(103, "MIX-1");
+        harness.Store.UpdateOrderLineProductionPalletGroup(104, "MIX-1");
+        return harness;
     }
 
     private static CloseDocumentHarness CreateHarnessWithMixedOrderOnly()

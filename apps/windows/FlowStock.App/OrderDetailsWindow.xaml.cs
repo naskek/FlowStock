@@ -10,6 +10,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using System.Windows.Input;
 using FlowStock.Core.Models;
+using FlowStock.Core.Services;
 using Microsoft.Win32;
 
 namespace FlowStock.App;
@@ -200,6 +201,7 @@ public partial class OrderDetailsWindow : Window
             : Array.Empty<OrderLineView>();
         foreach (var line in lines)
         {
+            line.MixedPalletGroupNumber = ProductionPalletGroupHelper.ParseNumber(line.ProductionPalletGroup);
             _lines.Add(line);
         }
         _productionPalletHuLocked = HasPrintedOrFilledProductionPallets(_order.Id);
@@ -1171,12 +1173,66 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        line.ProductionPalletGroup = checkBox.IsChecked == true
-            ? "MIX-1"
-            : null;
+        if (checkBox.IsChecked == true)
+        {
+            if (line.MixedPalletGroupNumber < 1)
+            {
+                line.MixedPalletGroupNumber = 1;
+            }
+
+            line.ProductionPalletGroup = ProductionPalletGroupHelper.Format(line.MixedPalletGroupNumber);
+        }
+        else
+        {
+            line.ProductionPalletGroup = null;
+        }
+
         MarkDirty();
         OrderLinesGrid.Items.Refresh();
         UpdatePalletButtons();
+    }
+
+    private void MixedPalletGroupTextBox_PreviewTextInput(object sender, TextCompositionEventArgs e)
+    {
+        e.Handled = e.Text.Length != 1 || e.Text[0] < '1' || e.Text[0] > '9';
+    }
+
+    private void MixedPalletGroupTextBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (!EnsureEditable(false))
+        {
+            return;
+        }
+
+        if (_productionPalletHuLocked)
+        {
+            return;
+        }
+
+        if (sender is not System.Windows.Controls.TextBox textBox || textBox.DataContext is not OrderLineView line)
+        {
+            return;
+        }
+
+        if (!line.IsMixedPalletLine)
+        {
+            return;
+        }
+
+        if (!int.TryParse(textBox.Text, out var groupNumber) || groupNumber < 1)
+        {
+            groupNumber = 1;
+            line.MixedPalletGroupNumber = groupNumber;
+            textBox.Text = groupNumber.ToString();
+        }
+        else
+        {
+            line.MixedPalletGroupNumber = groupNumber;
+        }
+
+        line.ProductionPalletGroup = ProductionPalletGroupHelper.Format(line.MixedPalletGroupNumber);
+        MarkDirty();
+        OrderLinesGrid.Items.Refresh();
     }
 
     private void OrderLinesGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)

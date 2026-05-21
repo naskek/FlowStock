@@ -11,6 +11,7 @@ public sealed class OrderLineView
     public double QtyOrdered { get; set; }
     public ProductionLinePurpose ProductionPurpose { get; set; } = ProductionLinePurpose.InternalStock;
     public string? ProductionPalletGroup { get; set; }
+    public int MixedPalletGroupNumber { get; set; } = 1;
     public string ProductionHuCodes { get; set; } = string.Empty;
     public double QtyShipped { get; set; }
     public double QtyProduced { get; set; }

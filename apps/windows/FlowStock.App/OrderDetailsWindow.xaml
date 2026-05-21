@@ -165,7 +165,20 @@
                                               Click="MixedPalletCheckBox_Click"
                                               HorizontalAlignment="Center"
                                               IsEnabled="{Binding RelativeSource={RelativeSource AncestorType=DataGrid}, Path=Tag}"
-                                              ToolTip="Строки с включенным общим HU попадут в одну микс-паллету до печати этикеток." />
+                                              ToolTip="Строки с одинаковым номером группы HU планируются на одну микс-паллету до печати этикеток." />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTemplateColumn Header="Группа HU" Width="90">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBox Text="{Binding MixedPalletGroupNumber, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}"
+                                             Width="48"
+                                             HorizontalAlignment="Center"
+                                             HorizontalContentAlignment="Center"
+                                             LostFocus="MixedPalletGroupTextBox_LostFocus"
+                                             PreviewTextInput="MixedPalletGroupTextBox_PreviewTextInput"
+                                             IsEnabled="{Binding IsMixedPalletLine}" />
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
