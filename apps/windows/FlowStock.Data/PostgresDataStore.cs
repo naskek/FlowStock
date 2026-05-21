@@ -6374,6 +6374,135 @@ VALUES(@order_id, @order_line_id, @item_id, @qty_planned, @to_location_id, @to_h
         });
     }
 
+    public void ReplaceOrderReceiptPlanLinesForOrderLines(
+        long orderId,
+        IReadOnlyCollection<long> orderLineIds,
+        IReadOnlyList<OrderReceiptPlanLine> replacementLines)
+    {
+        var affectedLineIds = (orderLineIds ?? Array.Empty<long>())
+            .Where(lineId => lineId > 0)
+            .Distinct()
+            .ToArray();
+        var lines = replacementLines ?? Array.Empty<OrderReceiptPlanLine>();
+
+        WithConnection(connection =>
+        {
+            var ownsTransaction = _transaction == null;
+            if (ownsTransaction)
+            {
+                using var begin = connection.CreateCommand();
+                begin.CommandText = "BEGIN;";
+                begin.ExecuteNonQuery();
+            }
+
+            try
+            {
+                var normalizedHuCodes = lines
+                    .Where(line => line.QtyPlanned > 0 && !string.IsNullOrWhiteSpace(line.ToHu))
+                    .Select(line => line.ToHu!.Trim().ToUpperInvariant())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+
+                if (normalizedHuCodes.Length > 0)
+                {
+                    using var orderTypeCommand = CreateCommand(connection, @"
+SELECT order_type
+FROM orders
+WHERE id = @order_id
+LIMIT 1;
+");
+                    orderTypeCommand.Parameters.AddWithValue("@order_id", orderId);
+                    var orderTypeValue = orderTypeCommand.ExecuteScalar() as string;
+                    if (string.IsNullOrWhiteSpace(orderTypeValue))
+                    {
+                        throw new InvalidOperationException("Заказ не найден.");
+                    }
+
+                    if (string.Equals(orderTypeValue, OrderStatusMapper.TypeToString(OrderType.Customer), StringComparison.OrdinalIgnoreCase))
+                    {
+                        using var conflictCommand = CreateCommand(connection, @"
+SELECT p.to_hu, o.order_ref
+FROM order_receipt_plan_lines p
+INNER JOIN orders o ON o.id = p.order_id
+WHERE p.order_id <> @order_id
+  AND p.to_hu IS NOT NULL
+  AND p.to_hu <> ''
+  AND o.order_type = @customer_order_type
+  AND o.status <> @shipped_status
+  AND o.status <> @cancelled_status
+  AND UPPER(TRIM(p.to_hu)) = ANY(@hu_codes)
+LIMIT 1;
+");
+                        conflictCommand.Parameters.AddWithValue("@order_id", orderId);
+                        conflictCommand.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+                        conflictCommand.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+                        conflictCommand.Parameters.AddWithValue("@cancelled_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+                        conflictCommand.Parameters.AddWithValue("@hu_codes", normalizedHuCodes);
+                        using var conflictReader = conflictCommand.ExecuteReader();
+                        if (conflictReader.Read())
+                        {
+                            var huCode = conflictReader.IsDBNull(0) ? string.Empty : conflictReader.GetString(0);
+                            var orderRef = conflictReader.IsDBNull(1) ? string.Empty : conflictReader.GetString(1);
+                            throw new InvalidOperationException($"HU '{huCode}' уже зарезервирован за активным клиентским заказом '{orderRef}'.");
+                        }
+                    }
+                }
+
+                if (affectedLineIds.Length > 0)
+                {
+                    using var deleteCommand = CreateCommand(connection, @"
+DELETE FROM order_receipt_plan_lines
+WHERE order_id = @order_id
+  AND order_line_id = ANY(@order_line_ids);
+");
+                    deleteCommand.Parameters.AddWithValue("@order_id", orderId);
+                    deleteCommand.Parameters.AddWithValue("@order_line_ids", affectedLineIds);
+                    deleteCommand.ExecuteNonQuery();
+                }
+
+                if (lines.Count > 0)
+                {
+                    using var insertCommand = CreateCommand(connection, @"
+INSERT INTO order_receipt_plan_lines(order_id, order_line_id, item_id, qty_planned, to_location_id, to_hu, sort_order)
+VALUES(@order_id, @order_line_id, @item_id, @qty_planned, @to_location_id, @to_hu, @sort_order);
+");
+                    foreach (var line in lines)
+                    {
+                        insertCommand.Parameters.Clear();
+                        insertCommand.Parameters.AddWithValue("@order_id", orderId);
+                        insertCommand.Parameters.AddWithValue("@order_line_id", line.OrderLineId);
+                        insertCommand.Parameters.AddWithValue("@item_id", line.ItemId);
+                        insertCommand.Parameters.AddWithValue("@qty_planned", line.QtyPlanned);
+                        insertCommand.Parameters.AddWithValue("@to_location_id", line.ToLocationId.HasValue ? line.ToLocationId.Value : DBNull.Value);
+                        insertCommand.Parameters.AddWithValue("@to_hu", string.IsNullOrWhiteSpace(line.ToHu) ? DBNull.Value : line.ToHu.Trim());
+                        insertCommand.Parameters.AddWithValue("@sort_order", line.SortOrder);
+                        insertCommand.ExecuteNonQuery();
+                    }
+                }
+
+                if (ownsTransaction)
+                {
+                    using var commit = connection.CreateCommand();
+                    commit.CommandText = "COMMIT;";
+                    commit.ExecuteNonQuery();
+                }
+            }
+            catch
+            {
+                if (ownsTransaction)
+                {
+                    using var rollback = connection.CreateCommand();
+                    rollback.CommandText = "ROLLBACK;";
+                    rollback.ExecuteNonQuery();
+                }
+
+                throw;
+            }
+
+            return 0;
+        });
+    }
+
     public IReadOnlyList<OrderShipmentLine> GetOrderShipmentRemaining(long orderId)
     {
         return WithConnection(connection =>

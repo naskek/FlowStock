@@ -141,6 +141,10 @@ public interface IDataStore
     IReadOnlyDictionary<long, double> GetReservedFilledHuQtyByOrderLine(long customerOrderId);
     IReadOnlyCollection<string> GetReservedOrderReceiptHuCodes(long? excludeOrderId = null);
     void ReplaceOrderReceiptPlanLines(long orderId, IReadOnlyList<OrderReceiptPlanLine> lines);
+    void ReplaceOrderReceiptPlanLinesForOrderLines(
+        long orderId,
+        IReadOnlyCollection<long> orderLineIds,
+        IReadOnlyList<OrderReceiptPlanLine> replacementLines);
     IReadOnlyList<OrderShipmentLine> GetOrderShipmentRemaining(long orderId);
     long AddOrderLine(OrderLine line);
     void UpdateOrderLineQty(long orderLineId, double qtyOrdered);

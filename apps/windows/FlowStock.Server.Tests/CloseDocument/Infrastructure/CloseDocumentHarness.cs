@@ -838,6 +838,24 @@ internal sealed class CloseDocumentHarness
                     .ToArray();
             });
 
+        _store.Setup(store => store.ReplaceOrderReceiptPlanLinesForOrderLines(
+                It.IsAny<long>(),
+                It.IsAny<IReadOnlyCollection<long>>(),
+                It.IsAny<IReadOnlyList<OrderReceiptPlanLine>>()))
+            .Callback<long, IReadOnlyCollection<long>, IReadOnlyList<OrderReceiptPlanLine>>((orderId, orderLineIds, replacementLines) =>
+            {
+                if (!_orderReceiptPlanLines.TryGetValue(orderId, out var current))
+                {
+                    current = [];
+                    _orderReceiptPlanLines[orderId] = current;
+                }
+
+                var affected = orderLineIds.ToHashSet();
+                var kept = current.Where(line => !affected.Contains(line.OrderLineId)).ToList();
+                kept.AddRange((replacementLines ?? Array.Empty<OrderReceiptPlanLine>()).Select(CloneOrderReceiptPlanLine));
+                _orderReceiptPlanLines[orderId] = kept;
+            });
+
         _store.Setup(store => store.GetReservedOrderReceiptHuCodes(It.IsAny<long?>()))
             .Returns<long?>(excludeOrderId => _orderReceiptPlanLines
                 .Where(pair => !excludeOrderId.HasValue || pair.Key != excludeOrderId.Value)
