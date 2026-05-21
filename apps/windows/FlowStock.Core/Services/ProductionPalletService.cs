@@ -59,8 +59,19 @@ public sealed class ProductionPalletService
 
             var itemsById = store.GetItems(null).ToDictionary(item => item.Id, item => item);
             var orderLinesById = store.GetOrderLines(orderId).ToDictionary(line => line.Id, line => line);
+            var manualMixedLineIds = GetManualMixedOrderLineIds(remainingLines, orderLinesById);
             foreach (var line in remainingLines)
             {
+                if (!itemsById.ContainsKey(line.ItemId))
+                {
+                    throw new InvalidOperationException("Номенклатура строки заказа не найдена.");
+                }
+
+                if (manualMixedLineIds.Contains(line.OrderLineId))
+                {
+                    continue;
+                }
+
                 if (!itemsById.TryGetValue(line.ItemId, out var item)
                     || !item.MaxQtyPerHu.HasValue
                     || item.MaxQtyPerHu.Value <= QtyTolerance)
@@ -77,28 +88,16 @@ public sealed class ProductionPalletService
 
             var mixedLineIds = new HashSet<long>();
             foreach (var group in remainingLines
-                         .Where(line => orderLinesById.TryGetValue(line.OrderLineId, out var orderLine)
-                                        && !string.IsNullOrWhiteSpace(orderLine.ProductionPalletGroup))
-                         .GroupBy(line => orderLinesById[line.OrderLineId].ProductionPalletGroup!.Trim().ToUpperInvariant())
-                         .Where(group => group.Count() > 1))
+                         .Where(line => manualMixedLineIds.Contains(line.OrderLineId))
+                         .GroupBy(line => orderLinesById[line.OrderLineId].ProductionPalletGroup!.Trim().ToUpperInvariant()))
             {
                 var groupLines = group.OrderBy(line => line.OrderLineId).ToList();
-                var load = 0d;
                 foreach (var line in groupLines)
                 {
-                    if (!itemsById.TryGetValue(line.ItemId, out var item)
-                        || !item.MaxQtyPerHu.HasValue
-                        || item.MaxQtyPerHu.Value <= QtyTolerance)
+                    if (!itemsById.ContainsKey(line.ItemId))
                     {
-                        throw new InvalidOperationException("Не задано правило вместимости для микс-паллеты");
+                        throw new InvalidOperationException("Номенклатура строки заказа не найдена.");
                     }
-
-                    load += line.QtyRemaining / item.MaxQtyPerHu.Value;
-                }
-
-                if (load > 1d + QtyTolerance)
-                {
-                    throw new InvalidOperationException("Микс-паллета превышает вместимость. Разделите группу паллеты.");
                 }
 
                 AddMixedPlannedPalletLines(store, prdDocId, groupLines, targetLocation.Id);
@@ -673,19 +672,6 @@ public sealed class ProductionPalletService
             }
 
             var filledAt = DateTime.Now;
-            foreach (var palletLine in palletLines)
-            {
-                var docLine = docLinesById[palletLine.DocLineId];
-                store.AddLedgerEntry(new LedgerEntry
-                {
-                    Timestamp = filledAt,
-                    DocId = doc.Id,
-                    ItemId = palletLine.ItemId,
-                    LocationId = docLine.ToLocationId!.Value,
-                    QtyDelta = palletLine.PlannedQty,
-                    HuCode = pallet.HuCode
-                });
-            }
             store.MarkProductionPalletFilled(pallet.Id, filledAt, NormalizeDeviceId(deviceId));
 
             var filledPallet = store.GetProductionPalletByHu(normalizedHu) ?? pallet;
@@ -939,6 +925,26 @@ public sealed class ProductionPalletService
 
             remainingQty -= chunkQty;
         }
+    }
+
+    private static HashSet<long> GetManualMixedOrderLineIds(
+        IReadOnlyList<OrderReceiptLine> remainingLines,
+        IReadOnlyDictionary<long, OrderLine> orderLinesById)
+    {
+        var manualMixedLineIds = new HashSet<long>();
+        foreach (var group in remainingLines
+                     .Where(line => orderLinesById.TryGetValue(line.OrderLineId, out var orderLine)
+                                    && !string.IsNullOrWhiteSpace(orderLine.ProductionPalletGroup))
+                     .GroupBy(line => orderLinesById[line.OrderLineId].ProductionPalletGroup!.Trim().ToUpperInvariant())
+                     .Where(group => group.Count() > 1))
+        {
+            foreach (var line in group)
+            {
+                manualMixedLineIds.Add(line.OrderLineId);
+            }
+        }
+
+        return manualMixedLineIds;
     }
 
     private static void AddMixedPlannedPalletLines(

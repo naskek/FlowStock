@@ -31,6 +31,19 @@ public sealed class OrderListClientPerfGuardTests
     }
 
     [Fact]
+    public void WpfCustomerOrderFlow_DoesNotCallLegacyRedistributionEndpoints()
+    {
+        var orderDetails = File.ReadAllText(GetRepoPath("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs"));
+        var readApi = File.ReadAllText(GetRepoPath("apps", "windows", "FlowStock.App", "Services", "WpfReadApiService.cs"));
+        var combined = orderDetails + Environment.NewLine + readApi;
+
+        Assert.DoesNotContain("auto-redistribute-from-internal", combined, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("reserve-produced-hu", combined, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("/redistribute", combined, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("ApplyCustomerOrderSaveFollowUp", combined, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TsdStorage_OrderListUsesPagedApi()
     {
         var source = File.ReadAllText(GetRepoPath("apps", "android", "tsd", "storage.js"));
