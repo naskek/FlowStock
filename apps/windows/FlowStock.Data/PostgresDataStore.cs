@@ -9,7 +9,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore
+public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOperationOrderCandidatesStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore
 {
     private readonly string _connectionString;
     private readonly NpgsqlConnection? _connection;
@@ -2935,6 +2935,70 @@ paged_orders.order_ref DESC");
             command.Parameters.Add("@query_pattern", NpgsqlDbType.Text).Value = string.IsNullOrWhiteSpace(normalized) ? DBNull.Value : $"%{normalized}%";
             command.Parameters.AddWithValue("@limit", limit);
             command.Parameters.AddWithValue("@offset", offset);
+            using var reader = command.ExecuteReader();
+            var orders = new List<Order>();
+            while (reader.Read())
+            {
+                orders.Add(ReadOrder(reader));
+            }
+
+            return orders;
+        });
+    }
+
+    public IReadOnlyList<Order> GetOperationOrderCandidates(DocType docType, string? query, int limit)
+    {
+        if (docType is not (DocType.ProductionReceipt or DocType.Outbound))
+        {
+            return Array.Empty<Order>();
+        }
+
+        return WithConnection(connection =>
+        {
+            var normalized = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
+            var effectiveLimit = Math.Clamp(limit, 1, 50);
+            var scopeSql = @"
+SELECT o.id
+FROM orders o
+LEFT JOIN partners p ON p.id = o.partner_id
+WHERE o.status NOT IN (@cancelled_status, @merged_status)
+  AND (@doc_type <> @outbound_doc_type OR o.order_type = @customer_order_type)
+  AND (
+      @query IS NULL
+      OR o.order_ref ILIKE @query_pattern
+      OR p.name ILIKE @query_pattern
+      OR p.code ILIKE @query_pattern
+  )";
+            using var command = CreateCommand(connection, $@"
+SELECT *
+FROM (
+{BuildOrderSelectSql(scopeSql)}
+) candidate_orders
+WHERE (
+        @doc_type = @production_receipt_doc_type
+        AND candidate_orders.status NOT IN (@shipped_status, @cancelled_status, @merged_status)
+        AND candidate_orders.has_receipt_remaining
+      )
+   OR (
+        @doc_type = @outbound_doc_type
+        AND candidate_orders.order_type = @customer_order_type
+        AND candidate_orders.status NOT IN (@shipped_status, @cancelled_status, @merged_status)
+        AND candidate_orders.has_shipment_remaining
+      )
+ORDER BY candidate_orders.created_at DESC,
+         candidate_orders.order_ref DESC
+LIMIT @limit;");
+            AddOrderSelectParameters(command);
+            command.Parameters.AddWithValue("@doc_type", DocTypeMapper.ToOpString(docType));
+            command.Parameters.AddWithValue("@production_receipt_doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+            command.Parameters.AddWithValue("@outbound_doc_type", DocTypeMapper.ToOpString(DocType.Outbound));
+            command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+            command.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+            command.Parameters.AddWithValue("@cancelled_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+            command.Parameters.AddWithValue("@merged_status", OrderStatusMapper.StatusToString(OrderStatus.Merged));
+            command.Parameters.Add("@query", NpgsqlDbType.Text).Value = string.IsNullOrWhiteSpace(normalized) ? DBNull.Value : normalized;
+            command.Parameters.Add("@query_pattern", NpgsqlDbType.Text).Value = string.IsNullOrWhiteSpace(normalized) ? DBNull.Value : $"%{normalized}%";
+            command.Parameters.AddWithValue("@limit", effectiveLimit);
             using var reader = command.ExecuteReader();
             var orders = new List<Order>();
             while (reader.Read())
