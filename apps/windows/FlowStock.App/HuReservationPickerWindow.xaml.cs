@@ -3,25 +3,29 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Windows;
+using System.Windows.Controls;
 
 namespace FlowStock.App;
 
 public partial class HuReservationPickerWindow : Window
 {
-    private const double QtyTolerance = 0.000001;
     private readonly ObservableCollection<HuReservationPickerRow> _ledgerRows = new();
     private readonly ObservableCollection<HuReservationPickerRow> _internalRows = new();
     private readonly double _lineRemainingQty;
+    private readonly IReadOnlySet<string> _selectedOnOtherLines;
+    private readonly IReadOnlyList<HuReservationPickerRow> _allRows;
 
     public HuReservationPickerWindow(
         string itemName,
         double qtyOrdered,
         double lineRemainingQty,
         IReadOnlyList<WpfHuReservationCandidateRow> candidates,
-        IReadOnlyCollection<string> selectedHuCodes)
+        IReadOnlyCollection<string> selectedHuCodes,
+        IReadOnlySet<string> selectedOnOtherLines)
     {
         InitializeComponent();
         _lineRemainingQty = lineRemainingQty;
+        _selectedOnOtherLines = selectedOnOtherLines;
         HeaderText.Text = $"{itemName} — заказано {FormatQty(qtyOrdered)}, осталось по строке {FormatQty(lineRemainingQty)}";
         LedgerCandidatesList.ItemsSource = _ledgerRows;
         InternalCandidatesList.ItemsSource = _internalRows;
@@ -41,33 +45,41 @@ public partial class HuReservationPickerWindow : Window
             }
         }
 
+        _allRows = _ledgerRows.Concat(_internalRows).ToArray();
+        CustomerOrderHuPickerRules.ApplyRowEnablement(_allRows, _lineRemainingQty, _selectedOnOtherLines);
         UpdateSummary();
     }
 
     public IReadOnlyList<string> SelectedHuCodes =>
-        _ledgerRows.Concat(_internalRows)
+        _allRows
             .Where(row => row.IsSelected)
             .Select(row => row.HuCode)
             .ToArray();
 
     private void PickerRow_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(HuReservationPickerRow.IsSelected))
+        if (sender is not HuReservationPickerRow row || e.PropertyName != nameof(HuReservationPickerRow.IsSelected))
         {
-            UpdateSummary();
+            return;
         }
+
+        if (row.IsSelected && !CustomerOrderHuPickerRules.TrySelectRow(row, _allRows, _lineRemainingQty, true))
+        {
+            row.SuppressChange(() => row.IsSelected = false);
+            return;
+        }
+
+        CustomerOrderHuPickerRules.ApplyRowEnablement(_allRows, _lineRemainingQty, _selectedOnOtherLines);
+        UpdateSummary();
     }
 
     private void UpdateSummary()
     {
-        var selectedQty = _ledgerRows.Concat(_internalRows)
-            .Where(row => row.IsSelected)
-            .Sum(row => row.Qty);
-        SummaryText.Text =
-            $"Выбрано HU: {_ledgerRows.Count(row => row.IsSelected) + _internalRows.Count(row => row.IsSelected)} | " +
-            $"Сумма: {FormatQty(selectedQty)}";
+        var selectedQty = CustomerOrderHuPickerRules.SumSelectedQty(_allRows);
+        var selectedCount = _allRows.Count(row => row.IsSelected);
+        SummaryText.Text = $"Выбрано HU: {selectedCount} | Сумма: {FormatQty(selectedQty)}";
 
-        if (selectedQty > _lineRemainingQty + QtyTolerance)
+        if (selectedQty > _lineRemainingQty + CustomerOrderHuPickerRules.QtyTolerance)
         {
             WarningText.Text =
                 $"Выбрано {FormatQty(selectedQty)}, а по строке осталось {FormatQty(_lineRemainingQty)}. Сервер отклонит лишнее количество при сохранении.";
@@ -95,12 +107,17 @@ public partial class HuReservationPickerWindow : Window
         qty.ToString("0.###", CultureInfo.InvariantCulture);
 }
 
-internal sealed class HuReservationPickerRow : INotifyPropertyChanged
+public sealed class HuReservationPickerRow : INotifyPropertyChanged
 {
+    private readonly WpfHuReservationCandidateRow _candidate;
     private bool _isSelected;
+    private bool _isEnabled = true;
+    private string? _disableReason;
+    private bool _suppressChange;
 
     public HuReservationPickerRow(WpfHuReservationCandidateRow candidate, bool isSelected)
     {
+        _candidate = candidate;
         HuCode = candidate.HuCode;
         Qty = candidate.Qty;
         Source = candidate.Source;
@@ -116,12 +133,42 @@ internal sealed class HuReservationPickerRow : INotifyPropertyChanged
 
     public string DisplayText { get; }
 
+    public bool IsEnabled
+    {
+        get => _isEnabled;
+        private set
+        {
+            if (_isEnabled == value)
+            {
+                return;
+            }
+
+            _isEnabled = value;
+            OnPropertyChanged();
+        }
+    }
+
+    public string? DisableReason
+    {
+        get => _disableReason;
+        private set
+        {
+            if (string.Equals(_disableReason, value, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _disableReason = value;
+            OnPropertyChanged();
+        }
+    }
+
     public bool IsSelected
     {
         get => _isSelected;
         set
         {
-            if (_isSelected == value)
+            if (_isSelected == value || _suppressChange)
             {
                 return;
             }
@@ -132,6 +179,25 @@ internal sealed class HuReservationPickerRow : INotifyPropertyChanged
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
+
+    public void SetEnablement(bool enabled, string? reason)
+    {
+        IsEnabled = enabled;
+        DisableReason = reason;
+    }
+
+    public void SuppressChange(Action action)
+    {
+        _suppressChange = true;
+        try
+        {
+            action();
+        }
+        finally
+        {
+            _suppressChange = false;
+        }
+    }
 
     private static string BuildDisplayText(WpfHuReservationCandidateRow candidate)
     {

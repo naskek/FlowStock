@@ -762,13 +762,24 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
+        if (!_huBinding.EnsureLineCandidatesLoaded(state.ClientLineKey))
+        {
+            MessageBox.Show(
+                "Не удалось загрузить доступные HU. Проверьте связь с сервером и повторите.",
+                "Привязка HU",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
         var remaining = Math.Max(0, state.Line.QtyRemaining > QtyTolerance ? state.Line.QtyRemaining : state.Line.QtyOrdered);
         var picker = new HuReservationPickerWindow(
             state.Line.ItemName,
             state.Line.QtyOrdered,
             remaining,
-            state.Candidates,
-            state.SelectedHuCodes)
+            state.GetPickerCandidates(),
+            state.SelectedHuCodes,
+            _huBinding.GetSelectedHuCodesOnOtherLines(state.ClientLineKey))
         {
             Owner = this
         };

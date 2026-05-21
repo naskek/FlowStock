@@ -54,6 +54,27 @@ public sealed class CustomerOrderHuBindingCoordinator : IDisposable
     public void EndLoad()
     {
         _isLoading = false;
+        ScheduleCandidatesRefresh();
+    }
+
+    public bool EnsureLineCandidatesLoaded(string clientLineKey)
+    {
+        if (!_isCustomerOrder)
+        {
+            return false;
+        }
+
+        _debounceTimer.Stop();
+        RefreshCandidatesAsync().ConfigureAwait(false).GetAwaiter().GetResult();
+        return _states.TryGetValue(clientLineKey, out var state)
+               && (state.Candidates.Count > 0 || state.SelectedHuCodes.Count > 0);
+    }
+
+    public IReadOnlySet<string> GetSelectedHuCodesOnOtherLines(string clientLineKey)
+    {
+        return CustomerOrderHuPickerRules
+            .BuildExcludeHuCodesForOtherLines(_states.Values, clientLineKey)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
     public void SetOrderContext(long? orderId, OrderType orderType, IEnumerable<OrderLineView> lines)
@@ -101,7 +122,7 @@ public sealed class CustomerOrderHuBindingCoordinator : IDisposable
             return;
         }
 
-        var key = ResolveClientLineKey(line, Lines.Count);
+        var key = FindClientLineKey(line) ?? ResolveClientLineKey(line, Lines.Count);
         if (!_states.TryGetValue(key, out var state))
         {
             state = new CustomerOrderLineHuState(key);
@@ -140,7 +161,6 @@ public sealed class CustomerOrderHuBindingCoordinator : IDisposable
         }
 
         state.ApplyManualSelection(selectedHuCodes);
-        ScheduleCandidatesRefresh();
     }
 
     public IReadOnlyList<WpfHuReservationApplyLineRequest> BuildApplyLines()
@@ -261,11 +281,10 @@ public sealed class CustomerOrderHuBindingCoordinator : IDisposable
             return Task.CompletedTask;
         }
 
-        var excludeHuCodes = BuildExcludeHuCodes();
         if (!_readApi.TryGetHuReservationCandidates(
                 _orderId,
                 requestLines,
-                excludeHuCodes,
+                Array.Empty<string>(),
                 out var result))
         {
             foreach (var state in _states.Values)
@@ -295,20 +314,6 @@ public sealed class CustomerOrderHuBindingCoordinator : IDisposable
         }
 
         return Task.CompletedTask;
-    }
-
-    private IReadOnlyList<string> BuildExcludeHuCodes()
-    {
-        var selected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var state in _states.Values)
-        {
-            foreach (var huCode in state.SelectedHuCodes)
-            {
-                selected.Add(huCode);
-            }
-        }
-
-        return selected.ToArray();
     }
 
     private string? FindClientLineKey(OrderLineView line)
@@ -355,7 +360,36 @@ public sealed class CustomerOrderLineHuState : INotifyPropertyChanged
 
     public IReadOnlyList<WpfHuReservationCandidateRow> Candidates => _candidates;
 
+    public IReadOnlyList<WpfHuReservationCandidateRow> GetPickerCandidates()
+    {
+        var rows = _candidates.ToList();
+        var known = new HashSet<string>(_candidateByHu.Keys, StringComparer.OrdinalIgnoreCase);
+        foreach (var huCode in _selectedHuCodes)
+        {
+            if (known.Contains(huCode))
+            {
+                continue;
+            }
+
+            var source = _existingOnlyReservations.TryGetValue(huCode, out var snapshot)
+                ? snapshot.Source
+                : "CURRENT_RESERVATION";
+            rows.Add(new WpfHuReservationCandidateRow
+            {
+                HuCode = huCode,
+                Source = source,
+                Qty = _selectedQtyByHu.TryGetValue(huCode, out var qty) ? qty : 0,
+                ShipReady = string.Equals(source, "LEDGER_STOCK", StringComparison.OrdinalIgnoreCase),
+                Note = "Выбранный HU"
+            });
+        }
+
+        return rows;
+    }
+
     public IReadOnlyCollection<string> SelectedHuCodes => _selectedHuCodes;
+
+    public bool ManualSelectionTouched => _manualSelectionTouched;
 
     public bool ShouldSendOnApply =>
         _manualSelectionTouched
@@ -475,30 +509,18 @@ public sealed class CustomerOrderLineHuState : INotifyPropertyChanged
 
         if (!_manualSelectionTouched)
         {
-            _selectedHuCodes.Clear();
-            _selectedQtyByHu.Clear();
-            foreach (var candidate in lineResult.Candidates.Where(candidate => candidate.AutoSelected))
-            {
-                var normalized = candidate.HuCode.Trim().ToUpperInvariant();
-                if (string.IsNullOrWhiteSpace(normalized) || !_selectedHuCodes.Add(normalized))
-                {
-                    continue;
-                }
-
-                _selectedQtyByHu[normalized] = candidate.Qty;
-            }
-
             if (_selectedHuCodes.Count == 0)
             {
-                foreach (var existing in _existingOnlyReservations.Keys)
-                {
-                    _selectedHuCodes.Add(existing);
-                    _selectedQtyByHu[existing] = _existingOnlyReservations[existing].Qty;
-                }
+                ApplyInitialAutoSelection(lineResult);
+            }
+            else
+            {
+                SyncSelectedQtyFromCandidates();
             }
         }
         else
         {
+            PruneSelectionToKnownCandidates();
             SyncSelectedQtyFromCandidates();
         }
 
@@ -539,6 +561,65 @@ public sealed class CustomerOrderLineHuState : INotifyPropertyChanged
                 huCode,
                 _selectedQtyByHu.TryGetValue(huCode, out var qty) ? qty : 0,
                 _candidateByHu.TryGetValue(huCode, out var candidate) ? candidate.Source : "CURRENT_RESERVATION");
+        }
+    }
+
+    private void ApplyInitialAutoSelection(WpfHuReservationCandidatesLineResult lineResult)
+    {
+        _selectedHuCodes.Clear();
+        _selectedQtyByHu.Clear();
+
+        var remaining = _lineRemainingQty;
+        foreach (var candidate in lineResult.Candidates.Where(candidate => candidate.AutoSelected))
+        {
+            var normalized = candidate.HuCode.Trim().ToUpperInvariant();
+            if (string.IsNullOrWhiteSpace(normalized)
+                || !_selectedHuCodes.Add(normalized)
+                || candidate.Qty <= CustomerOrderHuPickerRules.QtyTolerance)
+            {
+                continue;
+            }
+
+            var allocated = Math.Min(remaining, candidate.Qty);
+            if (allocated <= CustomerOrderHuPickerRules.QtyTolerance)
+            {
+                _selectedHuCodes.Remove(normalized);
+                continue;
+            }
+
+            _selectedQtyByHu[normalized] = allocated;
+            remaining -= allocated;
+            if (remaining <= CustomerOrderHuPickerRules.QtyTolerance)
+            {
+                break;
+            }
+        }
+
+        if (_selectedHuCodes.Count == 0)
+        {
+            foreach (var existing in _existingOnlyReservations.Values)
+            {
+                if (!_selectedHuCodes.Add(existing.HuCode))
+                {
+                    continue;
+                }
+
+                _selectedQtyByHu[existing.HuCode] = existing.Qty;
+            }
+        }
+    }
+
+    private void PruneSelectionToKnownCandidates()
+    {
+        foreach (var huCode in _selectedHuCodes.ToArray())
+        {
+            if (_candidateByHu.ContainsKey(huCode) || _existingOnlyReservations.ContainsKey(huCode))
+            {
+                continue;
+            }
+
+            _selectedHuCodes.Remove(huCode);
+            _selectedQtyByHu.Remove(huCode);
         }
     }
 

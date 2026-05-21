@@ -23,6 +23,8 @@
                             <DataTemplate>
                                 <CheckBox Margin="0,4"
                                           IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                                          IsEnabled="{Binding IsEnabled}"
+                                          ToolTip="{Binding DisableReason}"
                                           Content="{Binding DisplayText}" />
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
@@ -34,6 +36,8 @@
                             <DataTemplate>
                                 <CheckBox Margin="0,4"
                                           IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                                          IsEnabled="{Binding IsEnabled}"
+                                          ToolTip="{Binding DisableReason}"
                                           Content="{Binding DisplayText}" />
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
