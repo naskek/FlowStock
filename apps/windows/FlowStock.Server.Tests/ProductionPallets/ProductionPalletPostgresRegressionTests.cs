@@ -23,10 +23,53 @@ public sealed class ProductionPalletPostgresRegressionTests
         var methodBody = source[methodIndex..methodEnd];
         Assert.Contains("@exclude_pallet_id::bigint IS NULL", methodBody, StringComparison.Ordinal);
         Assert.Contains("pp.id <> @exclude_pallet_id::bigint", methodBody, StringComparison.Ordinal);
+        Assert.Contains("WHEN EXISTS (", methodBody, StringComparison.Ordinal);
+        Assert.Contains("FROM production_pallet_lines pll", methodBody, StringComparison.Ordinal);
+        Assert.Contains("WHEN pp.order_line_id = @order_line_id THEN pp.planned_qty", methodBody, StringComparison.Ordinal);
         Assert.DoesNotContain(
             "(@exclude_pallet_id IS NULL OR pp.id <> @exclude_pallet_id)",
             methodBody,
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PlanProductionPallets_Sql_SkipsDocLinesAlreadyLinkedToAnyPallet()
+    {
+        var source = File.ReadAllText(GetPostgresDataStorePath());
+        var methodIndex = source.IndexOf(
+            "public IReadOnlyList<ProductionPallet> PlanProductionPallets",
+            StringComparison.Ordinal);
+        Assert.True(methodIndex >= 0);
+
+        var methodEnd = source.IndexOf(
+            "public double GetFilledProductionPalletQtyByOrderLine",
+            methodIndex,
+            StringComparison.Ordinal);
+        Assert.True(methodEnd > methodIndex);
+
+        var methodBody = source[methodIndex..methodEnd];
+        Assert.Contains("WHERE pp.doc_line_id = dl.id", methodBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RemoveDocLinesForProductionPallets_Sql_DoesNotDeleteLinesStillReferencedByCancelledPallets()
+    {
+        var source = File.ReadAllText(GetPostgresDataStorePath());
+        var methodIndex = source.IndexOf(
+            "public int RemoveDocLinesForProductionPallets",
+            StringComparison.Ordinal);
+        Assert.True(methodIndex >= 0);
+
+        var methodEnd = source.IndexOf(
+            "public void UpdateProductionPalletHu",
+            methodIndex,
+            StringComparison.Ordinal);
+        Assert.True(methodEnd > methodIndex);
+
+        var methodBody = source[methodIndex..methodEnd];
+        Assert.Contains("FROM production_pallets pp", methodBody, StringComparison.Ordinal);
+        Assert.Contains("WHERE pp.doc_line_id = dl.id", methodBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("pp.status <> @cancelled_status", methodBody, StringComparison.Ordinal);
     }
 
     [Fact]

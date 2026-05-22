@@ -259,7 +259,8 @@ public static class OrderUpdateEndpoint
             return "HU_RESERVATION_CONFLICT";
         }
 
-        if (ex.Message.Contains("Нельзя уменьшить количество ниже уже заполненного/отгруженного объема", StringComparison.OrdinalIgnoreCase))
+        if (ex.Message.Contains("Нельзя уменьшить количество ниже уже заполненного/отгруженного объема", StringComparison.OrdinalIgnoreCase)
+            || ex.Message.Contains("Нельзя уменьшить количество ниже уже заполненного/выпущенного объема", StringComparison.OrdinalIgnoreCase))
         {
             return "ORDER_LINE_QTY_BELOW_COVERAGE";
         }

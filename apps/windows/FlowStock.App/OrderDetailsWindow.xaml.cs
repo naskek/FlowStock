@@ -170,6 +170,16 @@ public partial class OrderDetailsWindow : Window
         EndLoad();
     }
 
+    private void ReloadCanonicalOrderStateAfterPersist()
+    {
+        if (!_orderId.HasValue)
+        {
+            return;
+        }
+
+        LoadOrder();
+    }
+
     private void LoadOrder()
     {
         if (!_orderId.HasValue)
@@ -553,6 +563,11 @@ public partial class OrderDetailsWindow : Window
 
         if (!result.IsSuccess)
         {
+            if (OrderLineEditPrevalidation.ShouldReloadLineMetricsAfterFailedPersist(false))
+            {
+                TryRefreshPersistedOrderLineMetricsFromApi(type);
+            }
+
             var icon = result.Kind is WpfUpdateOrderResultKind.Timeout or WpfUpdateOrderResultKind.ServerUnavailable
                 ? MessageBoxImage.Error
                 : MessageBoxImage.Warning;
@@ -567,7 +582,7 @@ public partial class OrderDetailsWindow : Window
         }
 
         _orderId = result.Response.OrderId;
-        LoadOrder();
+        ReloadCanonicalOrderStateAfterPersist();
 
         if (!string.IsNullOrWhiteSpace(result.Message))
         {
@@ -875,15 +890,41 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        _selectedLine.QtyOrdered = qtyDialog.QtyBase;
+        var newQty = qtyDialog.QtyBase;
+        var orderType = GetSelectedOrderType();
+        if (OrderLineEditPrevalidation.ShouldBlockLocalQtyApply(
+                TryValidateLineQtyChange(_selectedLine, newQty, orderType, out var validationMessage)))
+        {
+            MessageBox.Show(
+                validationMessage ?? "Нельзя уменьшить количество ниже уже заполненного/выпущенного объема.",
+                "Заказы",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        _selectedLine.QtyOrdered = newQty;
         RefreshLineMetrics();
-        if (GetSelectedOrderType() == OrderType.Customer)
+        if (orderType == OrderType.Customer)
         {
             _huBinding.NotifyLineChanged(_selectedLine);
         }
 
         MarkDirty();
         OrderLinesGrid.Items.Refresh();
+    }
+
+    private static bool TryValidateLineQtyChange(
+        OrderLineView line,
+        double newQty,
+        OrderType orderType,
+        out string? validationMessage)
+    {
+        return OrderLineEditPrevalidation.TryValidateQtyChange(
+            newQty,
+            line,
+            orderType,
+            out validationMessage);
     }
 
     private void DeleteLine_Click(object sender, RoutedEventArgs e)
@@ -1111,16 +1152,36 @@ public partial class OrderDetailsWindow : Window
                 return false;
             }
 
+            line.QtyOrdered = persisted.QtyOrdered;
             line.QtyAvailable = persisted.QtyAvailable;
             line.QtyProduced = persisted.QtyProduced;
             line.QtyShipped = persisted.QtyShipped;
             line.QtyRemaining = persisted.QtyRemaining;
             line.CanShipNow = type == OrderType.Internal ? 0 : persisted.CanShipNow;
             line.Shortage = type == OrderType.Internal ? 0 : persisted.Shortage;
+            line.ProductionHuCodes = persisted.ProductionHuCodes;
+            line.PlannedPalletCount = persisted.PlannedPalletCount;
+            line.FilledPalletCount = persisted.FilledPalletCount;
+            line.PlannedPalletQty = persisted.PlannedPalletQty;
+            line.FilledPalletQty = persisted.FilledPalletQty;
+            line.LineFullyShipped = persisted.LineFullyShipped;
+            line.HidePalletFillIndicator = persisted.HidePalletFillIndicator;
+            line.ShowPalletCompletedIcon = persisted.ShowPalletCompletedIcon;
+            line.BlockingFillRequired = persisted.BlockingFillRequired;
+            line.FulfillmentStatus = persisted.FulfillmentStatus;
+            line.PalletFillLabel = persisted.PalletFillLabel;
+            line.PalletFillTone = persisted.PalletFillTone;
+            line.PalletFillTitle = persisted.PalletFillTitle;
+        }
+
+        if (_order != null)
+        {
+            _productionPalletHuLocked = HasPrintedOrFilledProductionPallets(_order.Id);
         }
 
         UpdateEmptyState();
         OrderLinesGrid.Items.Refresh();
+        UpdatePalletButtons();
         SyncHuBindingLines();
         return true;
     }
