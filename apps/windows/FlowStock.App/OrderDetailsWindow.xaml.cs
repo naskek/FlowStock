@@ -563,6 +563,11 @@ public partial class OrderDetailsWindow : Window
 
         if (!result.IsSuccess)
         {
+            if (OrderLineEditPrevalidation.ShouldReloadLineMetricsAfterFailedPersist(false))
+            {
+                TryRefreshPersistedOrderLineMetricsFromApi(type);
+            }
+
             var icon = result.Kind is WpfUpdateOrderResultKind.Timeout or WpfUpdateOrderResultKind.ServerUnavailable
                 ? MessageBoxImage.Error
                 : MessageBoxImage.Warning;
@@ -887,8 +892,8 @@ public partial class OrderDetailsWindow : Window
 
         var newQty = qtyDialog.QtyBase;
         var orderType = GetSelectedOrderType();
-        if (!TryValidateLineQtyChange(_selectedLine, newQty, orderType, out var validationMessage)
-            || string.IsNullOrWhiteSpace(validationMessage))
+        if (OrderLineEditPrevalidation.ShouldBlockLocalQtyApply(
+                TryValidateLineQtyChange(_selectedLine, newQty, orderType, out var validationMessage)))
         {
             MessageBox.Show(
                 validationMessage ?? "Нельзя уменьшить количество ниже уже заполненного/выпущенного объема.",
@@ -915,12 +920,9 @@ public partial class OrderDetailsWindow : Window
         OrderType orderType,
         out string? validationMessage)
     {
-        return OrderLineQtyChangeRules.TryValidateQtyChangeForPresentation(
+        return OrderLineEditPrevalidation.TryValidateQtyChange(
             newQty,
-            line.QtyShipped,
-            line.QtyProduced,
-            line.FilledPalletQty,
-            reservedPlanQty: 0,
+            line,
             orderType,
             out validationMessage);
     }

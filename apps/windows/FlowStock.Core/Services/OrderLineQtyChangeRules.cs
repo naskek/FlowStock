@@ -15,10 +15,15 @@ public static class OrderLineQtyChangeRules
     {
         if (orderType == OrderType.Internal)
         {
-            // Для INTERNAL API кладёт qty_produced в поле qty_shipped; не складывать с pallet_filled_qty.
-            var produced = Math.Max(0, qtyProduced);
+            // INTERNAL: только фактический выпуск. qty_shipped/HU/plan не участвуют.
+            // Приоритет: filled pallets, иначе produced; не суммировать и не использовать shipped.
             var filled = Math.Max(0, filledPalletQty);
-            return Math.Max(produced, filled);
+            if (filled > QtyTolerance)
+            {
+                return filled;
+            }
+
+            return Math.Max(0, qtyProduced);
         }
 
         return ResolveFactualLockedQty(qtyShipped, filledPalletQty, reservedPlanQty, orderType);

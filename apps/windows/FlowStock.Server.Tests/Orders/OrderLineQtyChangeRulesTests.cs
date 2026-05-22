@@ -86,6 +86,44 @@ public sealed class OrderLineQtyChangeRulesTests
     }
 
     [Fact]
+    public void Internal_PlannedOnly_ResolvedLockedQty_IsZero()
+    {
+        var locked = OrderLineQtyChangeRules.ResolveFactualLockedQtyForPresentation(
+            qtyShipped: 1200,
+            qtyProduced: 0,
+            filledPalletQty: 0,
+            reservedPlanQty: 0,
+            OrderType.Internal);
+
+        Assert.Equal(0, locked, 3);
+
+        var allowed = OrderLineQtyChangeRules.TryValidateQtyChangeForPresentation(
+            newQty: 600,
+            qtyShipped: 1200,
+            qtyProduced: 0,
+            filledPalletQty: 0,
+            reservedPlanQty: 0,
+            OrderType.Internal,
+            out var message);
+
+        Assert.True(allowed);
+        Assert.Null(message);
+    }
+
+    [Fact]
+    public void Internal_FilledQtyTakesPriority_OverZeroProduced()
+    {
+        var locked = OrderLineQtyChangeRules.ResolveFactualLockedQtyForPresentation(
+            qtyShipped: 0,
+            qtyProduced: 0,
+            filledPalletQty: 1200,
+            reservedPlanQty: 0,
+            OrderType.Internal);
+
+        Assert.Equal(1200, locked, 3);
+    }
+
+    [Fact]
     public void Internal_PrintedSurplusDoesNotBlockDecrease()
     {
         var allowed = OrderLineQtyChangeRules.TryValidateQtyChange(
