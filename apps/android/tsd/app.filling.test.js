@@ -5,6 +5,9 @@ const assert = require("assert");
 const appJs = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
 const storageJs = fs.readFileSync(path.join(__dirname, "storage.js"), "utf8");
 const serviceWorkerJs = fs.readFileSync(path.join(__dirname, "service-worker.js"), "utf8");
+const swUpdateJs = fs.readFileSync(path.join(__dirname, "sw-update.js"), "utf8");
+const appVersionJs = fs.readFileSync(path.join(__dirname, "app-version.js"), "utf8");
+const indexHtml = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
 const scannerJs = fs.readFileSync(path.join(__dirname, "scanner.js"), "utf8");
 
 function extractFunctionBody(source, name) {
@@ -174,8 +177,33 @@ assert(
   "TSD filling should not call the old start-filling flow"
 );
 assert(
-  /CACHE_NAME\s*=\s*"tsd-shell-v\d+"/.test(serviceWorkerJs) && serviceWorkerJs.includes('"./app.js"'),
-  "service worker should version and cache app.js"
+  appVersionJs.includes('flowstock-tsd-v') && appVersionJs.includes("TSD_CACHE_NAME"),
+  "app-version.js should define shared cache version"
+);
+assert(
+  serviceWorkerJs.includes('importScripts("./app-version.js")') &&
+    serviceWorkerJs.includes("SKIP_WAITING") &&
+    serviceWorkerJs.includes("self.skipWaiting()") &&
+    !serviceWorkerJs.includes(".then(() => self.skipWaiting())"),
+  "service worker should use versioned cache and activate only after SKIP_WAITING"
+);
+assert(
+  serviceWorkerJs.includes('"./app.js"') && serviceWorkerJs.includes('"./sw-update.js"'),
+  "service worker should cache shell assets including sw-update.js"
+);
+assert(
+  swUpdateJs.includes("Доступна новая версия приложения") &&
+    swUpdateJs.includes("SKIP_WAITING") &&
+    swUpdateJs.includes("controllerchange"),
+  "sw-update.js should offer manual refresh lifecycle"
+);
+assert(
+  indexHtml.includes("sw-update.js") && indexHtml.includes("TsdSwUpdate.init"),
+  "index.html should bootstrap PWA update UI"
+);
+assert(
+  appJs.includes("FlowStockTsdIsBusy") && !appJs.includes("window.location.reload();\n        return true;"),
+  "app.js should expose busy guard and avoid forced API-version reload"
 );
 
 console.log("TSD filling presentation tests passed.");

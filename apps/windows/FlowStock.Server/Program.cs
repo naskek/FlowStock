@@ -141,6 +141,38 @@ app.Use(async (context, next) =>
     liveHub.Publish("api_write", path);
 });
 
+static void ApplyTsdStaticCacheHeaders(HttpContext context)
+{
+    var path = context.Request.Path.Value ?? string.Empty;
+    if (path.EndsWith("/service-worker.js", StringComparison.OrdinalIgnoreCase))
+    {
+        context.Response.Headers.CacheControl = "no-store";
+        return;
+    }
+
+    if (path.EndsWith("/index.html", StringComparison.OrdinalIgnoreCase)
+        || path.EndsWith("/manifest.json", StringComparison.OrdinalIgnoreCase)
+        || path.EndsWith("/manifest.webmanifest", StringComparison.OrdinalIgnoreCase))
+    {
+        context.Response.Headers.CacheControl = "no-cache";
+        return;
+    }
+
+    var fileName = Path.GetFileName(path);
+    if (fileName.Contains('.', StringComparison.Ordinal)
+        && System.Text.RegularExpressions.Regex.IsMatch(fileName, @"\.[0-9a-f]{8,}\.(js|css)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+    {
+        context.Response.Headers.CacheControl = "public, max-age=31536000, immutable";
+        return;
+    }
+
+    if (path.EndsWith(".js", StringComparison.OrdinalIgnoreCase)
+        || path.EndsWith(".css", StringComparison.OrdinalIgnoreCase))
+    {
+        context.Response.Headers.CacheControl = "no-cache";
+    }
+}
+
 var tsdRoot = ServerPaths.TsdRoot;
 var tsdIndexPath = Path.Combine(tsdRoot, "index.html");
 var pcRoot = ServerPaths.PcRoot;
@@ -159,7 +191,8 @@ if (Directory.Exists(tsdRoot) && File.Exists(tsdIndexPath))
         tsdApp.UseStaticFiles(new StaticFileOptions
         {
             FileProvider = tsdProvider,
-            ContentTypeProvider = tsdContentTypes
+            ContentTypeProvider = tsdContentTypes,
+            OnPrepareResponse = ctx => ApplyTsdStaticCacheHeaders(ctx.Context)
         });
         tsdApp.Use(async (context, next) =>
         {

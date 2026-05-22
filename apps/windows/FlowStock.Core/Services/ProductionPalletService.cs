@@ -438,13 +438,15 @@ public sealed class ProductionPalletService
 
     public IReadOnlyList<ProductionPalletWorkItem> GetActiveWorkItems()
     {
-        return _data.GetActiveProductionPalletWorkItems();
+        return _data.GetActiveProductionPalletWorkItems()
+            .Where(item => item.Summary.RemainingPalletCount > 0)
+            .ToList();
     }
 
     public IReadOnlyList<ProductionFillingOrder> GetFillingOrders()
     {
         return _data.GetActiveProductionPalletWorkItems()
-            .Where(item => item.OrderId.HasValue)
+            .Where(item => item.OrderId.HasValue && item.Summary.RemainingPalletCount > 0)
             .GroupBy(item => item.OrderId!.Value)
             .Select(group => BuildFillingOrder(group.Key, group.ToList()))
             .Where(row => row != null && row.OrderStatus != OrderStatusMapper.StatusToString(OrderStatus.Merged))
@@ -470,13 +472,14 @@ public sealed class ProductionPalletService
                 : "Заказ недоступен для наполнения.");
         }
 
-        var openDoc = FindPreparedOpenProductionReceipt(_data, orderId, requireRemaining: true);
+        var openDoc = FindPreparedOpenProductionReceipt(_data, orderId, requireRemaining: false);
         if (openDoc == null)
         {
             throw new InvalidOperationException("Для заказа не сформирован план паллет. Сформируйте и напечатайте паллетные этикетки перед наполнением.");
         }
 
-        return BuildFillingContext(orderId, openDoc.Id);
+        var pallets = _data.GetProductionPalletsByDoc(openDoc.Id);
+        return BuildFillingContext(orderId, openDoc.Id, pallets);
     }
 
     public IReadOnlyList<ProductionPalletPrintRow> GetPrintRows(long orderId)
@@ -641,9 +644,9 @@ public sealed class ProductionPalletService
             return ProductionPalletScanResult.Failure("Документ выпуска уже закрыт.");
         }
 
-        if (string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+        if (IsCancelledPallet(pallet))
         {
-            return ProductionPalletScanResult.Failure("Паллета отменена");
+            return ProductionPalletScanResult.Failure("Паллета отменена и не может быть наполнена.");
         }
 
         var palletLines = GetPalletLines(pallet);
@@ -719,7 +722,7 @@ public sealed class ProductionPalletService
             PalletIndex = index >= 0 ? index + 1 : 0,
             PalletCount = activePallets.Count,
             PalletStatus = pallet.Status,
-            Document = BuildDocument(doc.Id, pallets)
+            Document = BuildFillingDocument(doc.Id, pallets)
         };
     }
 
@@ -761,9 +764,9 @@ public sealed class ProductionPalletService
                 return;
             }
 
-            if (string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+            if (IsCancelledPallet(pallet))
             {
-                result = ProductionPalletFillResult.Failure("Паллета отменена.");
+                result = ProductionPalletFillResult.Failure("Паллета отменена и не может быть наполнена.");
                 return;
             }
 
@@ -774,7 +777,7 @@ public sealed class ProductionPalletService
                     Success = true,
                     AlreadyFilled = true,
                     Pallet = pallet,
-                    Document = BuildDocument(doc.Id, store.GetProductionPalletsByDoc(doc.Id))
+                    Document = BuildFillingDocument(doc.Id, store.GetProductionPalletsByDoc(doc.Id))
                 };
                 return;
             }
@@ -829,7 +832,7 @@ public sealed class ProductionPalletService
                 Success = true,
                 AlreadyFilled = false,
                 Pallet = filledPallet,
-                Document = BuildDocument(doc.Id, store.GetProductionPalletsByDoc(doc.Id))
+                Document = BuildFillingDocument(doc.Id, store.GetProductionPalletsByDoc(doc.Id))
             };
         });
 
@@ -885,7 +888,10 @@ public sealed class ProductionPalletService
         };
     }
 
-    private ProductionFillingContext BuildFillingContext(long orderId, long prdDocId)
+    private ProductionFillingContext BuildFillingContext(
+        long orderId,
+        long prdDocId,
+        IReadOnlyList<ProductionPallet> pallets)
     {
         var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
         var doc = _data.GetDoc(prdDocId) ?? throw new InvalidOperationException("Документ выпуска не найден.");
@@ -900,7 +906,7 @@ public sealed class ProductionPalletService
             PartnerName = order.PartnerDisplay,
             PrdDocId = doc.Id,
             PrdDocRef = doc.DocRef,
-            Document = Get(doc.Id)
+            Document = BuildFillingDocument(doc.Id, pallets)
         };
     }
 
@@ -1264,10 +1270,16 @@ public sealed class ProductionPalletService
         }
     }
 
+    private ProductionPalletDocument BuildFillingDocument(long docId, IReadOnlyList<ProductionPallet> pallets)
+    {
+        return BuildDocument(docId, ExcludeCancelledPallets(pallets));
+    }
+
     private ProductionPalletDocument BuildDocument(long docId, IReadOnlyList<ProductionPallet> pallets)
     {
-        var summary = BuildSummary(pallets);
-        var palletLineRows = pallets
+        var activePallets = ExcludeCancelledPallets(pallets);
+        var summary = BuildSummary(activePallets);
+        var palletLineRows = activePallets
             .SelectMany(pallet => GetPalletLines(pallet).Select(line => new { Pallet = pallet, Line = line }))
             .ToList();
         var orderLineIds = palletLineRows
@@ -1297,9 +1309,13 @@ public sealed class ProductionPalletService
                 var filledRows = groupRows
                     .Where(row => string.Equals(row.Pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
                     .ToList();
+                var pendingRows = groupRows
+                    .Where(row => IsPendingFillPallet(row.Pallet))
+                    .ToList();
                 var filledPalletCount = filledRows.Select(row => row.Pallet.Id).Distinct().Count();
                 var plannedQty = groupRows.Sum(row => row.Line.PlannedQty);
                 var filledQty = filledRows.Sum(row => row.Line.PlannedQty);
+                var pendingPalletCount = pendingRows.Select(row => row.Pallet.Id).Distinct().Count();
                 return new ProductionPalletLineSummary
                 {
                     OrderLineId = group.Key.OrderLineId,
@@ -1310,7 +1326,7 @@ public sealed class ProductionPalletService
                     PlannedQty = plannedQty,
                     FilledPalletCount = filledPalletCount,
                     FilledQty = filledQty,
-                    RemainingPalletCount = plannedPalletCount - filledPalletCount,
+                    RemainingPalletCount = pendingPalletCount,
                     RemainingQty = Math.Max(0, orderedQty - filledQty)
                 };
             })
@@ -1323,17 +1339,18 @@ public sealed class ProductionPalletService
             PrdDocId = docId,
             Summary = summary,
             Lines = lines,
-            Pallets = pallets
+            Pallets = activePallets
         };
     }
 
     public static ProductionPalletSummary BuildSummary(IReadOnlyList<ProductionPallet> pallets)
     {
-        var active = pallets
-            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        var active = ExcludeCancelledPallets(pallets);
         var filled = active
             .Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        var pending = active
+            .Where(IsPendingFillPallet)
             .ToList();
         return new ProductionPalletSummary
         {
@@ -1341,9 +1358,27 @@ public sealed class ProductionPalletService
             PlannedQty = active.Sum(pallet => pallet.PlannedQty),
             FilledPalletCount = filled.Count,
             FilledQty = filled.Sum(pallet => pallet.PlannedQty),
-            RemainingPalletCount = active.Count - filled.Count,
-            RemainingQty = Math.Max(0, active.Sum(pallet => pallet.PlannedQty) - filled.Sum(pallet => pallet.PlannedQty))
+            RemainingPalletCount = pending.Count,
+            RemainingQty = pending.Sum(pallet => pallet.PlannedQty)
         };
+    }
+
+    private static bool IsCancelledPallet(ProductionPallet pallet)
+    {
+        return string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsPendingFillPallet(ProductionPallet pallet)
+    {
+        return string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static IReadOnlyList<ProductionPallet> ExcludeCancelledPallets(IReadOnlyList<ProductionPallet> pallets)
+    {
+        return pallets
+            .Where(pallet => !IsCancelledPallet(pallet))
+            .ToList();
     }
 
     private static ProductionPalletSummary CombineSummary(IEnumerable<ProductionPalletSummary> summaries)

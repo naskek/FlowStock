@@ -44,17 +44,17 @@
       autocorrect="off"
       spellcheck="false"
     />
+    <script src="app-version.js"></script>
     <script src="storage.js"></script>
     <script src="scanner.js"></script>
     <script src="app.js"></script>
+    <script src="sw-update.js"></script>
     <script>
-      if ("serviceWorker" in navigator) {
-        window.addEventListener("load", function () {
-          navigator.serviceWorker.register("./service-worker.js").catch(function () {
-            // ignore
-          });
-        });
-      }
+      window.addEventListener("load", function () {
+        if (window.TsdSwUpdate && typeof window.TsdSwUpdate.init === "function") {
+          window.TsdSwUpdate.init();
+        }
+      });
     </script>
   </body>
 </html>

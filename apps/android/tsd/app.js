@@ -644,6 +644,27 @@
       });
   }
 
+  function isSensitiveOperationActive() {
+    if (scanHandlerActive || pendingScanHandler) {
+      return true;
+    }
+    if (document.querySelector(".filling-preview-overlay")) {
+      return true;
+    }
+    if (!currentRoute) {
+      return false;
+    }
+    return (
+      currentRoute.name === "fillingDoc" ||
+      currentRoute.name === "outboundOrder" ||
+      currentRoute.name === "doc" ||
+      currentRoute.name === "new" ||
+      currentRoute.name === "taskDoc"
+    );
+  }
+
+  window.FlowStockTsdIsBusy = isSensitiveOperationActive;
+
   function checkServerVersionAndReloadIfNeeded() {
     return fetchServerVersion().then(function (version) {
       if (!version) {
@@ -652,13 +673,20 @@
 
       if (!knownServerVersion) {
         knownServerVersion = version;
+        console.info("[TSD PWA] Версия API сервера: " + version);
         return false;
       }
 
       if (version !== knownServerVersion) {
         knownServerVersion = version;
-        window.location.reload();
-        return true;
+        console.info(
+          "[TSD PWA] На сервере новая версия API (" +
+            version +
+            "). Обновление shell выполняется через service worker."
+        );
+        if (window.TsdSwUpdate && typeof window.TsdSwUpdate.checkForUpdates === "function") {
+          window.TsdSwUpdate.checkForUpdates();
+        }
       }
 
       return false;
@@ -5911,7 +5939,7 @@
     if (message === "Эта паллета относится к другому заказу") {
       return message;
     }
-    if (message === "Паллета отменена") {
+    if (message === "Паллета отменена" || message === "Паллета отменена и не может быть наполнена.") {
       return message;
     }
     if (message === "Выпуск превышает остаток по строке заказа") {
