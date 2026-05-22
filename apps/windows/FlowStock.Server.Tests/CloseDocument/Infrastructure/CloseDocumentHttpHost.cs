@@ -43,6 +43,7 @@ internal sealed class CloseDocumentHttpHost : IAsyncDisposable
         var app = builder.Build();
         OrderCreateEndpoint.Map(app);
         OrderUpdateEndpoint.Map(app);
+        OrderLinesEndpoint.Map(app);
         OrderDeleteEndpoint.Map(app);
         OrderStatusEndpoint.Map(app);
         OrderMarkingExportEndpoint.Map(app);

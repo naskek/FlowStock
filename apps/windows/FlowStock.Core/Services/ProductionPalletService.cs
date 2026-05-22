@@ -46,8 +46,29 @@ public sealed class ProductionPalletService
 
         _data.ExecuteInTransaction(store =>
         {
+            var filledQty = Math.Max(0, store.GetFilledProductionPalletQtyByOrderLine(orderLineId));
+            var openQty = GetOpenProductionPalletsForOrderLine(store, orderId, orderLineId)
+                .Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
+            var missingBeforeTrim = Math.Max(0, orderedQty - filledQty - openQty);
+
             TrimSurplusOpenPallets(store, orderId, orderLineId, orderedQty);
-            PlanOrder(orderId, [orderLineId]);
+
+            var openQtyAfterTrim = GetOpenProductionPalletsForOrderLine(store, orderId, orderLineId)
+                .Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
+            var missingAfterTrim = Math.Max(0, orderedQty - filledQty - openQtyAfterTrim);
+            var action = missingAfterTrim > QtyTolerance
+                ? "append_planned"
+                : openQty > openQtyAfterTrim + QtyTolerance
+                    ? "trim_open"
+                    : "noop";
+
+            System.Diagnostics.Trace.WriteLine(
+                $"[ProductionPalletPlanSync] order_id={orderId} order_line_id={orderLineId} ordered_qty={orderedQty:0.###} filled_qty={filledQty:0.###} active_planned_qty={openQtyAfterTrim:0.###} missing_qty={missingAfterTrim:0.###} action={action}");
+
+            if (missingAfterTrim > QtyTolerance)
+            {
+                PlanOrder(orderId, [orderLineId]);
+            }
         });
     }
 
@@ -1137,9 +1158,18 @@ public sealed class ProductionPalletService
     {
         return pallets
             .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
-            .SelectMany(GetPalletLines)
-            .Where(line => line.OrderLineId == orderLineId)
-            .Sum(line => Math.Max(0, line.PlannedQty));
+            .Where(pallet => PalletAppliesToOrderLine(pallet, orderLineId))
+            .Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
+    }
+
+    private static bool PalletAppliesToOrderLine(ProductionPallet pallet, long orderLineId)
+    {
+        if (pallet.OrderLineId == orderLineId)
+        {
+            return true;
+        }
+
+        return GetPalletLines(pallet).Any(line => line.OrderLineId == orderLineId);
     }
 
     private static void AddMixedPlannedPalletLines(
