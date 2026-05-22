@@ -194,8 +194,15 @@ assert(
 assert(
   swUpdateJs.includes("Доступна новая версия приложения") &&
     swUpdateJs.includes("SKIP_WAITING") &&
-    swUpdateJs.includes("controllerchange"),
-  "sw-update.js should offer manual refresh lifecycle"
+    swUpdateJs.includes("controllerchange") &&
+    swUpdateJs.includes("checkNow") &&
+    swUpdateJs.includes("applyUpdate") &&
+    swUpdateJs.includes("Ручная проверка обновления"),
+  "sw-update.js should offer manual and automatic refresh lifecycle"
+);
+assert(
+  appJs.includes('id="pwaCheckUpdateBtn"') && appJs.includes("Проверить обновления"),
+  "settings should include manual PWA update check button"
 );
 assert(
   indexHtml.includes("sw-update.js") && indexHtml.includes("TsdSwUpdate.init"),

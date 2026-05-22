@@ -4951,7 +4951,9 @@
       "      </span>" +
       "    </label>" +
       (debugPanel ? debugPanel : "") +
-      '    <div class="version">Версия приложения: 0.1</div>' +
+      '    <div class="version" id="pwaAppVersion"></div>' +
+      '    <button class="btn btn-outline" type="button" id="pwaCheckUpdateBtn">Проверить обновления</button>' +
+      '    <div class="field-hint" id="pwaUpdateStatus"></div>' +
       "  </div>" +
       "</section>"
     );
@@ -10173,6 +10175,9 @@
     var scanDebugStateBtn = document.getElementById("scanDebugStateBtn");
     var scanDebugClearBtn = document.getElementById("scanDebugClearBtn");
     var scanDebugCopyBtn = document.getElementById("scanDebugCopyBtn");
+    var pwaAppVersion = document.getElementById("pwaAppVersion");
+    var pwaCheckUpdateBtn = document.getElementById("pwaCheckUpdateBtn");
+    var pwaUpdateStatus = document.getElementById("pwaUpdateStatus");
 
     function renderDeviceId(value) {
       if (!deviceIdValue) {
@@ -10228,6 +10233,47 @@
         TsdStorage.setSetting(SOFT_KEYBOARD_KEY, enabled).catch(function () {
           return false;
         });
+      });
+    }
+
+    if (pwaAppVersion) {
+      pwaAppVersion.textContent =
+        window.TsdSwUpdate && typeof window.TsdSwUpdate.getAppVersionLabel === "function"
+          ? window.TsdSwUpdate.getAppVersionLabel()
+          : window.TSD_PWA_VERSION
+            ? "Версия приложения: " + String(window.TSD_PWA_VERSION)
+            : "Версия приложения: неизвестно";
+    }
+
+    function setPwaUpdateStatus(message) {
+      if (!pwaUpdateStatus) {
+        return;
+      }
+      pwaUpdateStatus.textContent = message || "";
+    }
+
+    if (pwaCheckUpdateBtn) {
+      pwaCheckUpdateBtn.addEventListener("click", function () {
+        if (!window.TsdSwUpdate || typeof window.TsdSwUpdate.checkNow !== "function") {
+          setPwaUpdateStatus("Проверка обновлений недоступна");
+          return;
+        }
+        pwaCheckUpdateBtn.disabled = true;
+        setPwaUpdateStatus("Проверка обновления...");
+        window.TsdSwUpdate.checkNow()
+          .then(function (result) {
+            result = result || {};
+            setPwaUpdateStatus(result.message || "Новая версия не найдена");
+            if (result.status === "update_available" && typeof window.TsdSwUpdate.showUpdateBanner === "function") {
+              window.TsdSwUpdate.showUpdateBanner();
+            }
+          })
+          .catch(function () {
+            setPwaUpdateStatus("Не удалось проверить обновление");
+          })
+          .then(function () {
+            pwaCheckUpdateBtn.disabled = false;
+          });
       });
     }
 

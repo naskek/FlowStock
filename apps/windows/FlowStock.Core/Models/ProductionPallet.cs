@@ -165,8 +165,15 @@ public sealed class ProductionPalletPlanAdoptionWarning
     public string Message { get; init; } = string.Empty;
 }
 
+public static class ProductionPalletPrintSourceType
+{
+    public const string ProductionPallet = "production_pallet";
+    public const string ReservedHu = "reserved_hu";
+}
+
 public sealed class ProductionPalletPrintRow
 {
+    public string SourceType { get; init; } = ProductionPalletPrintSourceType.ProductionPallet;
     public long PalletId { get; init; }
     public long OrderId { get; init; }
     public string OrderRef { get; init; } = string.Empty;

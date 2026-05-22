@@ -40,7 +40,8 @@ public static class PalletLabelPrintSelectionService
     public static IReadOnlyList<long> ResolveDefaultSelectedPalletIds(IReadOnlyList<ProductionPalletPrintRow> rows)
     {
         return rows
-            .Where(row => string.Equals(row.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase))
+            .Where(row => IsReservedHuRow(row)
+                          || string.Equals(row.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase))
             .Select(row => row.PalletId)
             .ToArray();
     }
@@ -67,6 +68,19 @@ public static class PalletLabelPrintSelectionService
 
     private static PalletLabelPrintSelectionRow MapRow(ProductionPalletPrintRow row)
     {
+        if (IsReservedHuRow(row))
+        {
+            return new PalletLabelPrintSelectionRow
+            {
+                PalletId = row.PalletId,
+                HuCode = row.HuCode,
+                Qty = row.Qty,
+                Status = "BOUND",
+                IsSelectedByDefault = true,
+                DisplayText = $"{row.HuCode}, {FormatQty(row.Qty)} шт, привязан"
+            };
+        }
+
         var statusLabel = FormatStatusLabel(row.Status);
         var printedLabel = string.Equals(statusLabel, "PRINTED", StringComparison.OrdinalIgnoreCase)
                            || string.Equals(statusLabel, "FILLED", StringComparison.OrdinalIgnoreCase)
@@ -81,6 +95,11 @@ public static class PalletLabelPrintSelectionService
             IsSelectedByDefault = string.Equals(statusLabel, "PLANNED", StringComparison.OrdinalIgnoreCase),
             DisplayText = $"{row.HuCode}, {FormatQty(row.Qty)} шт, {statusLabel}/{printedLabel}"
         };
+    }
+
+    private static bool IsReservedHuRow(ProductionPalletPrintRow row)
+    {
+        return string.Equals(row.SourceType, ProductionPalletPrintSourceType.ReservedHu, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string FormatQty(double value)

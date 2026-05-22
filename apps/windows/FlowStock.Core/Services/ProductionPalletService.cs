@@ -485,6 +485,121 @@ public sealed class ProductionPalletService
     public IReadOnlyList<ProductionPalletPrintRow> GetPrintRows(long orderId)
     {
         var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+        if (order.Type == OrderType.Customer)
+        {
+            return GetCustomerBoundHuPrintRows(order);
+        }
+
+        return GetProductionPalletPrintRows(order);
+    }
+
+    private IReadOnlyList<ProductionPalletPrintRow> GetCustomerBoundHuPrintRows(Order order)
+    {
+        var entries = new List<CustomerHuPrintEntry>();
+        var boundHu = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var locationsById = _data.GetLocations().ToDictionary(location => location.Id, location => location.Code);
+
+        foreach (var planLine in _data.GetOrderReceiptPlanLines(order.Id)
+                     .Where(line => line.QtyPlanned > QtyTolerance && !string.IsNullOrWhiteSpace(NormalizeHu(line.ToHu)))
+                     .OrderBy(line => line.SortOrder)
+                     .ThenBy(line => line.Id))
+        {
+            var huCode = NormalizeHu(planLine.ToHu)!;
+            boundHu.Add(huCode);
+            entries.Add(new CustomerHuPrintEntry(
+                planLine.Id,
+                planLine.ItemId,
+                planLine.ItemName,
+                huCode,
+                planLine.QtyPlanned,
+                planLine.ToLocationCode));
+        }
+
+        foreach (var doc in _data.GetDocsByOrder(order.Id)
+                     .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status == DocStatus.Closed)
+                     .OrderByDescending(doc => doc.Id))
+        {
+            foreach (var line in _data.GetDocLines(doc.Id).OrderBy(line => line.Id))
+            {
+                if (line.Qty <= QtyTolerance)
+                {
+                    continue;
+                }
+
+                var huCode = NormalizeHu(line.ToHu);
+                if (string.IsNullOrWhiteSpace(huCode) || !boundHu.Add(huCode))
+                {
+                    continue;
+                }
+
+                var locationCode = line.ToLocationId.HasValue
+                                     && locationsById.TryGetValue(line.ToLocationId.Value, out var code)
+                    ? code
+                    : string.Empty;
+                entries.Add(new CustomerHuPrintEntry(
+                    -line.Id,
+                    line.ItemId,
+                    string.Empty,
+                    huCode,
+                    line.Qty,
+                    locationCode));
+            }
+        }
+
+        if (entries.Count == 0)
+        {
+            return Array.Empty<ProductionPalletPrintRow>();
+        }
+
+        var itemsById = entries
+            .Select(entry => entry.ItemId)
+            .Distinct()
+            .Select(id => _data.FindItemById(id))
+            .Where(item => item != null)
+            .ToDictionary(item => item!.Id, item => item!);
+
+        var rows = new List<ProductionPalletPrintRow>(entries.Count);
+        for (var index = 0; index < entries.Count; index++)
+        {
+            var entry = entries[index];
+            itemsById.TryGetValue(entry.ItemId, out var item);
+            var itemName = !string.IsNullOrWhiteSpace(entry.ItemName)
+                ? entry.ItemName
+                : item?.Name ?? "Товар";
+            var uom = string.IsNullOrWhiteSpace(item?.BaseUom) ? "шт" : item!.BaseUom!;
+            var printLine = new ProductionPalletPrintLine
+            {
+                ItemName = itemName,
+                Qty = entry.Qty,
+                Uom = uom
+            };
+            rows.Add(new ProductionPalletPrintRow
+            {
+                SourceType = ProductionPalletPrintSourceType.ReservedHu,
+                PalletId = entry.PalletId,
+                OrderId = order.Id,
+                OrderRef = order.OrderRef,
+                ClientName = order.PartnerName ?? string.Empty,
+                HuCode = entry.HuCode,
+                ItemId = entry.ItemId,
+                ItemName = itemName,
+                Brand = item?.Brand ?? string.Empty,
+                Qty = entry.Qty,
+                Uom = uom,
+                PalletNo = index + 1,
+                PalletCount = entries.Count,
+                StoragePlace = entry.LocationCode ?? string.Empty,
+                Lines = new[] { printLine },
+                Composition = $"{itemName} - {FormatQty(entry.Qty)} {uom}",
+                Status = "BOUND"
+            });
+        }
+
+        return rows;
+    }
+
+    private IReadOnlyList<ProductionPalletPrintRow> GetProductionPalletPrintRows(Order order)
+    {
         var doc = FindPrintableProductionReceipt(_data, order);
         if (doc == null)
         {
@@ -551,6 +666,7 @@ public sealed class ProductionPalletService
 
             rows.Add(new ProductionPalletPrintRow
             {
+                SourceType = ProductionPalletPrintSourceType.ProductionPallet,
                 PalletId = pallet.Id,
                 OrderId = order.Id,
                 OrderRef = order.OrderRef,
@@ -587,6 +703,12 @@ public sealed class ProductionPalletService
 
     public int MarkPrinted(long orderId, IReadOnlyCollection<long>? palletIds, DateTime printedAt)
     {
+        var order = _data.GetOrder(orderId);
+        if (order?.Type == OrderType.Customer)
+        {
+            return 0;
+        }
+
         if (palletIds is { Count: > 0 })
         {
             var rows = GetPrintRows(orderId);
@@ -1455,6 +1577,14 @@ public sealed class ProductionPalletService
     {
         return value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
     }
+
+    private sealed record CustomerHuPrintEntry(
+        long PalletId,
+        long ItemId,
+        string ItemName,
+        string HuCode,
+        double Qty,
+        string? LocationCode);
 }
 
 public sealed class ProductionPalletPlanAdoptionException : InvalidOperationException

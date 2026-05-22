@@ -437,7 +437,10 @@ public partial class OrderDetailsWindow : Window
 
             if (rowsResult.Rows.Count == 0)
             {
-                MessageBox.Show("Сначала сформируйте план паллет", "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
+                var emptyMessage = _order?.Type == OrderType.Customer
+                    ? "Нет привязанных HU для печати. Сначала привяжите HU к заказу."
+                    : "Сначала сформируйте план паллет";
+                MessageBox.Show(emptyMessage, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
 
@@ -464,7 +467,8 @@ public partial class OrderDetailsWindow : Window
                     Comment = row.Comment,
                     IsMixedPallet = row.IsMixedPallet,
                     Composition = row.Composition,
-                    Status = row.Status
+                    Status = row.Status,
+                    SourceType = row.SourceType
                 })
                 .ToArray();
             var groups = FlowStock.Core.Services.PalletLabelPrintSelectionService.BuildGroups(coreRows);
@@ -491,16 +495,19 @@ public partial class OrderDetailsWindow : Window
                 return;
             }
 
-            var selectedPalletIds = dialog.SelectedPalletIds;
-            var markResult = await _services.WpfProductionPalletApi.TryMarkPrintedAsync(_orderId.Value, selectedPalletIds).ConfigureAwait(true);
-            if (!markResult.IsSuccess)
+            if (_order?.Type != OrderType.Customer)
             {
-                MessageBox.Show(
-                    $"Паллетные этикетки отправлены на печать, но сервер не подтвердил статус PRINTED: {markResult.Error}",
-                    "Паллеты",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
-                return;
+                var selectedPalletIds = dialog.SelectedPalletIds;
+                var markResult = await _services.WpfProductionPalletApi.TryMarkPrintedAsync(_orderId.Value, selectedPalletIds).ConfigureAwait(true);
+                if (!markResult.IsSuccess)
+                {
+                    MessageBox.Show(
+                        $"Паллетные этикетки отправлены на печать, но сервер не подтвердил статус PRINTED: {markResult.Error}",
+                        "Паллеты",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                    return;
+                }
             }
 
             MessageBox.Show("Паллетные этикетки отправлены на печать", "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);

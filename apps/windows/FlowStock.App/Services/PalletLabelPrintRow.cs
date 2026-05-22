@@ -28,6 +28,7 @@ public sealed class PalletLabelPrintRow
     public string Line3ItemName { get; init; } = string.Empty;
     public double Line3Qty { get; init; }
     public string Status { get; init; } = string.Empty;
+    public string SourceType { get; init; } = string.Empty;
 
     public IReadOnlyDictionary<string, string> ToNamedSubStrings()
     {
