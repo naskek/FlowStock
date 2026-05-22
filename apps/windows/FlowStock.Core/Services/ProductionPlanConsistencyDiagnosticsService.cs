@@ -29,7 +29,8 @@ public sealed class ProductionPlanConsistencyDiagnosticsService(IDataStore dataS
             .Where(item => IsBlockingSeverity(item.Severity)
                            && IsBlockingProblem(item.ProblemCode)
                            && (item.PrdDocs.Any(doc => doc.DocId == prdDocId)
-                               || item.Pallets.Any(pallet => pallet.PrdDocId == prdDocId)))
+                               || item.Pallets.Any(pallet => pallet.PrdDocId == prdDocId))
+                           && !IsCustomerTakenReplacementExceed(item, prdDocId))
             .ToArray();
     }
 
@@ -88,6 +89,84 @@ public sealed class ProductionPlanConsistencyDiagnosticsService(IDataStore dataS
             docLines.TryGetValue(itemId, out var docQty);
             palletLines.TryGetValue(itemId, out var palletQty);
             if (Math.Abs(docQty - palletQty) > StockQuantityRules.QtyTolerance)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool IsCustomerTakenReplacementExceed(ProductionPlanConsistencyDiagnosticItem item, long prdDocId)
+    {
+        if (item.ProblemCode is not (ProductionPlanConsistencyProblemCode.PalletsExceedOrderQty
+            or ProductionPlanConsistencyProblemCode.PrdLinesExceedOrderQty))
+        {
+            return false;
+        }
+
+        if (!string.Equals(item.OrderType, "INTERNAL", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var takenQty = item.Pallets
+            .Where(pallet => pallet.PrdDocId == prdDocId
+                             && pallet.ItemId == item.ItemId
+                             && string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)
+                             && IsHuTakenByCustomer(pallet.HuCode))
+            .Sum(pallet => pallet.PlannedQty);
+        if (takenQty <= StockQuantityRules.QtyTolerance)
+        {
+            return false;
+        }
+
+        var adjustedPalletQty = Math.Max(0, item.OpenPalletPlannedQty - takenQty);
+        var adjustedPrdDocQty = Math.Max(0, item.OpenPrdDocQty - takenQty);
+        return item.ProblemCode switch
+        {
+            ProductionPlanConsistencyProblemCode.PalletsExceedOrderQty =>
+                adjustedPalletQty <= item.OrderQty + StockQuantityRules.QtyTolerance,
+            ProductionPlanConsistencyProblemCode.PrdLinesExceedOrderQty =>
+                adjustedPrdDocQty <= item.OrderQty + StockQuantityRules.QtyTolerance,
+            _ => false
+        };
+    }
+
+    private bool IsHuTakenByCustomer(string? huCode)
+    {
+        if (string.IsNullOrWhiteSpace(huCode))
+        {
+            return false;
+        }
+
+        var normalizedHu = huCode.Trim();
+        foreach (var order in _dataStore.GetOrders().Where(order => order.Type == OrderType.Customer))
+        {
+            if (_dataStore.GetOrderReceiptPlanLines(order.Id)
+                .Any(line => line.QtyPlanned > StockQuantityRules.QtyTolerance
+                             && string.Equals(line.ToHu?.Trim(), normalizedHu, StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+        }
+
+        foreach (var doc in _dataStore.GetDocs().Where(doc => doc.Type == DocType.Outbound))
+        {
+            if (!doc.OrderId.HasValue)
+            {
+                continue;
+            }
+
+            var order = _dataStore.GetOrder(doc.OrderId.Value);
+            if (order?.Type != OrderType.Customer)
+            {
+                continue;
+            }
+
+            if (_dataStore.GetDocLines(doc.Id)
+                .Any(line => line.Qty > StockQuantityRules.QtyTolerance
+                             && string.Equals(line.FromHu?.Trim(), normalizedHu, StringComparison.OrdinalIgnoreCase)))
             {
                 return true;
             }

@@ -936,7 +936,10 @@ public sealed class ProductionPalletService
                         return;
                     }
 
-                    var alreadyFilled = store.GetFilledProductionPalletQtyByOrderLine(orderLine.Id, pallet.Id);
+                    var alreadyFilled = Math.Max(
+                        0,
+                        store.GetFilledProductionPalletQtyByOrderLine(orderLine.Id, pallet.Id)
+                        - GetCustomerTakenFilledQtyForOrderLine(store, orderLine.Id, pallet.Id));
                     if (alreadyFilled + palletLine.PlannedQty > orderLine.QtyOrdered + QtyTolerance)
                     {
                         result = ProductionPalletFillResult.Failure("Выпуск превышает остаток по строке заказа");
@@ -959,6 +962,75 @@ public sealed class ProductionPalletService
         });
 
         return result ?? ProductionPalletFillResult.Failure("Не удалось наполнить паллету.");
+    }
+
+    private static double GetCustomerTakenFilledQtyForOrderLine(
+        IDataStore store,
+        long sourceOrderLineId,
+        long? excludePalletId)
+    {
+        var takenHuCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var order in store.GetOrders().Where(order => order.Type == OrderType.Customer))
+        {
+            foreach (var planLine in store.GetOrderReceiptPlanLines(order.Id)
+                         .Where(line => line.QtyPlanned > QtyTolerance && !string.IsNullOrWhiteSpace(line.ToHu)))
+            {
+                takenHuCodes.Add(planLine.ToHu!.Trim());
+            }
+        }
+
+        foreach (var doc in store.GetDocs().Where(doc => doc.Type == DocType.Outbound))
+        {
+            if (!doc.OrderId.HasValue)
+            {
+                continue;
+            }
+
+            var order = store.GetOrder(doc.OrderId.Value);
+            if (order?.Type != OrderType.Customer)
+            {
+                continue;
+            }
+
+            foreach (var line in store.GetDocLines(doc.Id)
+                         .Where(line => line.Qty > QtyTolerance && !string.IsNullOrWhiteSpace(line.FromHu)))
+            {
+                takenHuCodes.Add(line.FromHu!.Trim());
+            }
+        }
+
+        if (takenHuCodes.Count == 0)
+        {
+            return 0d;
+        }
+
+        var total = 0d;
+        foreach (var huCode in takenHuCodes)
+        {
+            var pallet = store.GetProductionPalletByHu(huCode);
+            if (pallet == null
+                || excludePalletId.HasValue && pallet.Id == excludePalletId.Value
+                || !string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var componentQty = pallet.Lines
+                .Where(line => line.OrderLineId == sourceOrderLineId)
+                .Sum(line => line.PlannedQty);
+            if (componentQty > QtyTolerance)
+            {
+                total += componentQty;
+                continue;
+            }
+
+            if (pallet.OrderLineId == sourceOrderLineId)
+            {
+                total += pallet.PlannedQty;
+            }
+        }
+
+        return total;
     }
 
     private Doc RequireProductionReceipt(long docId)

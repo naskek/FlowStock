@@ -92,6 +92,107 @@ public sealed class ReserveProducedHuForCustomerTests
     }
 
     [Fact]
+    public void InternalFilledHuMovedToCustomerCreatesReplacementPlannedHu()
+    {
+        var harness = BuildOpenInternalCustomerHarness();
+        var service = new OrderProducedHuReservationService(harness.Store);
+
+        service.Reserve(new OrderProducedHuReservationRequest
+        {
+            SourceInternalOrderId = 10,
+            TargetCustomerOrderId = 20,
+            ItemId = 100,
+            TargetOrderLineId = 201,
+            HuCodes = new[] { "HU-OLD" }
+        });
+
+        var pallets = harness.Store.GetProductionPalletsByDoc(1000);
+        Assert.Contains(pallets, pallet =>
+            string.Equals(pallet.HuCode, "HU-OLD", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase));
+        var replacement = Assert.Single(pallets, pallet =>
+            !string.Equals(pallet.HuCode, "HU-OLD", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(ProductionPalletStatus.Planned, replacement.Status, ignoreCase: true);
+        Assert.Equal(10, replacement.OrderId);
+        Assert.Equal(101, replacement.OrderLineId);
+        Assert.Equal(600, replacement.PlannedQty, 3);
+    }
+
+    [Fact]
+    public void InternalOrderQuantityIsNotReducedWhenHuIsTakenByCustomer()
+    {
+        var harness = BuildOpenInternalCustomerHarness();
+        var qtyBefore = harness.GetOrderLines(10).Single().QtyOrdered;
+
+        new OrderProducedHuReservationService(harness.Store).Reserve(new OrderProducedHuReservationRequest
+        {
+            SourceInternalOrderId = 10,
+            TargetCustomerOrderId = 20,
+            ItemId = 100,
+            TargetOrderLineId = 201,
+            HuCodes = new[] { "HU-OLD" }
+        });
+
+        Assert.Equal(qtyBefore, harness.GetOrderLines(10).Single().QtyOrdered, 3);
+    }
+
+    [Fact]
+    public void InternalCannotCompleteUntilReplacementHuFilled()
+    {
+        var harness = BuildOpenInternalCustomerHarness();
+        new OrderProducedHuReservationService(harness.Store).Reserve(new OrderProducedHuReservationRequest
+        {
+            SourceInternalOrderId = 10,
+            TargetCustomerOrderId = 20,
+            ItemId = 100,
+            TargetOrderLineId = 201,
+            HuCodes = new[] { "HU-OLD" }
+        });
+
+        var close = harness.CreateService().TryCloseDoc(1000, allowNegative: false);
+
+        Assert.False(close.Success);
+        Assert.Contains(close.Errors, error => error.Contains("ненаполненные паллеты", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void InternalCloseAfterCustomerOutDoesNotDuplicateLedger()
+    {
+        var harness = BuildOpenInternalCustomerHarness();
+        var documentService = harness.CreateService();
+        new OrderProducedHuReservationService(harness.Store).Reserve(new OrderProducedHuReservationRequest
+        {
+            SourceInternalOrderId = 10,
+            TargetCustomerOrderId = 20,
+            ItemId = 100,
+            TargetOrderLineId = 201,
+            HuCodes = new[] { "HU-OLD" }
+        });
+        var outDocId = documentService.CreateDoc(
+            DocType.Outbound,
+            "OUT-2026-000900",
+            null,
+            500,
+            "SO-20",
+            null,
+            20,
+            hydrateOrderLines: true);
+        var closeOut = documentService.TryCloseDoc(outDocId, allowNegative: false);
+        Assert.True(closeOut.Success, string.Join("; ", closeOut.Errors));
+
+        var replacement = harness.Store.GetProductionPalletsByDoc(1000)
+            .Single(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase));
+        var fill = new ProductionPalletService(harness.Store).Fill(replacement.HuCode, "TSD-01");
+        Assert.True(fill.Success, fill.Error);
+        var closePrd = documentService.TryCloseDoc(1000, allowNegative: false);
+
+        Assert.True(closePrd.Success, string.Join("; ", closePrd.Errors));
+        Assert.Single(harness.LedgerEntries, entry => entry.HuCode == "HU-OLD" && entry.QtyDelta > 0);
+        Assert.Single(harness.LedgerEntries, entry => entry.HuCode == "HU-OLD" && entry.QtyDelta < 0);
+        Assert.Single(harness.LedgerEntries, entry => entry.HuCode == replacement.HuCode && entry.QtyDelta > 0);
+    }
+
+    [Fact]
     public void Redistribute_WhenOnlyProducedStock_DoesNotDecreaseInternalQtyOrdered()
     {
         const long internalOrderId = 10;
@@ -305,6 +406,73 @@ public sealed class ReserveProducedHuForCustomerTests
         harness.SeedProductionPallet(BuildFilledPallet(2, prdDocId, internalOrderId, internalLineId, itemId, huCode2, palletQty, locationId));
         harness.SeedBalance(itemId, locationId, palletQty, huCode1);
         harness.SeedBalance(itemId, locationId, palletQty, huCode2);
+        return harness;
+    }
+
+    private static CloseDocumentHarness BuildOpenInternalCustomerHarness()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedLocation(new Location { Id = 1, Code = "MAIN", Name = "Основной склад", AutoHuDistributionEnabled = true });
+        harness.SeedPartner(new Partner { Id = 500, Code = "CUST", Name = "Клиент" });
+        harness.SeedItemType(new ItemType { Id = 1, Name = "Товар", EnableOrderReservation = true });
+        harness.SeedItem(new Item
+        {
+            Id = 100,
+            Name = "Товар",
+            ItemTypeId = 1,
+            BaseUom = "шт",
+            MaxQtyPerHu = 600
+        });
+        harness.SeedOrder(new Order
+        {
+            Id = 10,
+            OrderRef = "INT-10",
+            Type = OrderType.Internal,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 1, 1)
+        });
+        harness.SeedOrderLine(new OrderLine { Id = 101, OrderId = 10, ItemId = 100, QtyOrdered = 600 });
+        harness.SeedOrder(new Order
+        {
+            Id = 20,
+            OrderRef = "SO-20",
+            Type = OrderType.Customer,
+            Status = OrderStatus.Accepted,
+            PartnerId = 500,
+            PartnerName = "Клиент",
+            UseReservedStock = true,
+            CreatedAt = new DateTime(2026, 1, 2)
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 201,
+            OrderId = 20,
+            ItemId = 100,
+            QtyOrdered = 600,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder
+        });
+        harness.SeedDoc(new Doc
+        {
+            Id = 1000,
+            DocRef = "PRD-INT-10",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 10,
+            OrderRef = "INT-10",
+            CreatedAt = new DateTime(2026, 1, 1, 8, 0, 0)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 10001,
+            DocId = 1000,
+            OrderLineId = 101,
+            ItemId = 100,
+            Qty = 600,
+            ToLocationId = 1,
+            ToHu = "HU-OLD"
+        });
+        harness.SeedProductionPallet(BuildFilledPallet(1, 1000, 10, 101, 100, "HU-OLD", 600, 1));
+        harness.SeedLedgerEntry(1000, 100, 1, 600, "HU-OLD");
         return harness;
     }
 

@@ -34,6 +34,30 @@ public sealed class OutboundPickingServiceTests
     }
 
     [Fact]
+    public void TsdOutboundReadyStateRequiresPhysicalStockAndScanState()
+    {
+        var harness = CreateBasicPickingHarness(seedPhysicalStock: false);
+        var service = CreatePickingService(harness);
+
+        var rows = service.GetOrders();
+
+        Assert.Empty(rows);
+
+        harness.SeedBalance(1001, 1, 5, "HU-000001");
+        var details = service.GetDetails(20);
+        var hu = Assert.Single(details.Hus);
+        Assert.Equal(OutboundPickingHuStatus.Pending, hu.Status);
+        Assert.Equal(0, details.PickedHuCount);
+
+        var scan = service.Scan(20, "HU-000001", "TSD-01");
+
+        Assert.True(scan.Success);
+        var pickedHu = Assert.Single(scan.Order!.Hus);
+        Assert.Equal(OutboundPickingHuStatus.Picked, pickedHu.Status);
+        Assert.Equal(1, scan.Order.PickedHuCount);
+    }
+
+    [Fact]
     public void ScanCreatesDraftOutboundAndDocLinesWithoutLedger()
     {
         var harness = CreateBasicPickingHarness();
@@ -257,7 +281,7 @@ public sealed class OutboundPickingServiceTests
         return new OutboundPickingService(harness.Store, harness.CreateService());
     }
 
-    private static CloseDocumentHarness CreateBasicPickingHarness()
+    private static CloseDocumentHarness CreateBasicPickingHarness(bool seedPhysicalStock = true)
     {
         var harness = new CloseDocumentHarness();
         harness.SeedLocation(new Location
@@ -281,7 +305,7 @@ public sealed class OutboundPickingServiceTests
             ItemTypeName = "Готовая продукция",
             ItemTypeEnableMarking = false
         });
-        SeedOrder(harness, 20, 201, "SO-020", OrderType.Customer, OrderStatus.Accepted, "HU-000001", 5);
+        SeedOrder(harness, 20, 201, "SO-020", OrderType.Customer, OrderStatus.Accepted, "HU-000001", 5, seedPhysicalStock);
         return harness;
     }
 
@@ -293,7 +317,8 @@ public sealed class OutboundPickingServiceTests
         OrderType type,
         OrderStatus status,
         string huCode,
-        double qty)
+        double qty,
+        bool seedPhysicalStock = true)
     {
         harness.SeedOrder(new Order
         {
@@ -319,7 +344,10 @@ public sealed class OutboundPickingServiceTests
             Status = "ACTIVE",
             CreatedAt = new DateTime(2026, 5, 8, 10, 0, 0, DateTimeKind.Utc)
         });
-        harness.SeedBalance(1001, 1, qty, huCode);
+        if (seedPhysicalStock)
+        {
+            harness.SeedBalance(1001, 1, qty, huCode);
+        }
         harness.SeedOrderReceiptPlanLines(orderId, new OrderReceiptPlanLine
         {
             Id = orderId,
