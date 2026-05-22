@@ -551,7 +551,7 @@ public sealed class OrderService
             var incomingKeys = normalized
                 .Select(line => (line.ItemId, ProductionPurpose: ResolveLinePurpose(type, line.ProductionPurpose)))
                 .ToHashSet();
-            var internalLinesNeedingPalletSync = new List<(long OrderLineId, double OrderedQty)>();
+            var internalLinesNeedingPalletSync = new List<(long OrderLineId, double OrderedQty, double OldOrderedQty)>();
 
             foreach (var entry in existingByItem)
             {
@@ -584,7 +584,7 @@ public sealed class OrderService
                         store.UpdateOrderLineQty(primary.Id, line.QtyOrdered);
                         if (type == OrderType.Internal)
                         {
-                            internalLinesNeedingPalletSync.Add((primary.Id, line.QtyOrdered));
+                            internalLinesNeedingPalletSync.Add((primary.Id, line.QtyOrdered, primary.QtyOrdered));
                         }
                     }
 
@@ -621,7 +621,7 @@ public sealed class OrderService
                 });
                 if (type == OrderType.Internal)
                 {
-                    internalLinesNeedingPalletSync.Add((addedLineId, line.QtyOrdered));
+                    internalLinesNeedingPalletSync.Add((addedLineId, line.QtyOrdered, 0d));
                 }
             }
 
@@ -647,9 +647,9 @@ public sealed class OrderService
             else
             {
                 TryRebuildOrderReceiptPlan(store, orderId);
-                foreach (var (orderLineId, orderedQty) in internalLinesNeedingPalletSync)
+                foreach (var (orderLineId, orderedQty, oldOrderedQty) in internalLinesNeedingPalletSync)
                 {
-                    TrySyncProductionPalletPlanForOrderLine(store, orderId, orderLineId, orderedQty);
+                    TrySyncProductionPalletPlanForOrderLine(store, orderId, orderLineId, orderedQty, oldOrderedQty);
                 }
 
                 if (existing.Type == OrderType.Customer && existing.UseReservedStock)
@@ -1559,7 +1559,8 @@ public sealed class OrderService
         IDataStore store,
         long orderId,
         long orderLineId,
-        double orderedQty)
+        double orderedQty,
+        double? oldOrderedQty = null)
     {
         try
         {
@@ -1572,7 +1573,13 @@ public sealed class OrderService
             }
 
             var palletService = new ProductionPalletService(store);
-            palletService.SyncOrderLinePlan(orderId, orderLineId, orderedQty);
+            palletService.SyncOrderLinePlanInStore(
+                store,
+                orderId,
+                orderLineId,
+                orderedQty,
+                oldOrderedQty,
+                "UpdateOrder");
         }
         catch (InvalidOperationException ex) when (IsBenignAppendPlanException(ex))
         {

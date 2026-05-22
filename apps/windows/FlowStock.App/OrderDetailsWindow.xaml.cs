@@ -36,6 +36,7 @@ public partial class OrderDetailsWindow : Window
     private bool _allowCloseWithoutPrompt;
     private bool _suppressPartnerFilter;
     private bool _productionPalletHuLocked;
+    private bool _isQtyPersistInProgress;
     private readonly CustomerOrderHuBindingCoordinator _huBinding;
 
     public OrderDetailsWindow(AppServices services)
@@ -546,7 +547,8 @@ public partial class OrderDetailsWindow : Window
         long? partnerId,
         DateTime? dueDate,
         string? comment,
-        bool showFeedback)
+        bool showFeedback,
+        IReadOnlyList<OrderLineView>? linesOverride = null)
     {
         var result = _services.WpfUpdateOrders.UpdateOrderAsync(
                 new WpfUpdateOrderContext(
@@ -557,7 +559,7 @@ public partial class OrderDetailsWindow : Window
                     dueDate,
                     OrderStatus.InProgress,
                     comment,
-                    _lines.ToList(),
+                    linesOverride ?? _lines.ToList(),
                     false))
             .ConfigureAwait(false)
             .GetAwaiter()
@@ -890,9 +892,9 @@ public partial class OrderDetailsWindow : Window
         UpdateEmptyState();
     }
 
-    private void EditLine_Click(object sender, RoutedEventArgs e)
+    private async void EditLine_Click(object sender, RoutedEventArgs e)
     {
-        if (!EnsureEditable())
+        if (_isQtyPersistInProgress || !EnsureEditable())
         {
             return;
         }
@@ -915,7 +917,8 @@ public partial class OrderDetailsWindow : Window
             ? apiPackagings
             : Array.Empty<ItemPackaging>();
         var defaultUomCode = ResolveDefaultUomCode(item, packagings);
-        var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, _selectedLine.QtyOrdered, defaultUomCode)
+        var oldQty = _selectedLine.QtyOrdered;
+        var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, oldQty, defaultUomCode)
         {
             Owner = this
         };
@@ -937,15 +940,122 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        _selectedLine.QtyOrdered = newQty;
+        if (orderType == OrderType.Internal
+            && _orderId.HasValue
+            && _selectedLine.Id > 0
+            && Math.Abs(oldQty - newQty) > QtyTolerance)
+        {
+            await TryPersistInternalLineQtyChangeAsync(_selectedLine.Id, oldQty, newQty).ConfigureAwait(true);
+            return;
+        }
+
+        ApplyLocalLineQtyChange(_selectedLine, newQty, orderType);
+    }
+
+    private void ApplyLocalLineQtyChange(OrderLineView line, double newQty, OrderType orderType)
+    {
+        line.QtyOrdered = newQty;
         RefreshLineMetrics();
         if (orderType == OrderType.Customer)
         {
-            _huBinding.NotifyLineChanged(_selectedLine);
+            _huBinding.NotifyLineChanged(line);
         }
 
         MarkDirty();
         OrderLinesGrid.Items.Refresh();
+    }
+
+    private async Task<bool> TryPersistInternalLineQtyChangeAsync(long orderLineId, double oldQty, double newQty)
+    {
+        if (!_orderId.HasValue
+            || !TryGetHeaderValues(allowBlankOrderRef: true, out var orderRef, out var type, out var partnerId, out var dueDate, out var comment))
+        {
+            return false;
+        }
+
+        var line = _lines.FirstOrDefault(candidate => candidate.Id == orderLineId);
+        if (line == null)
+        {
+            return false;
+        }
+
+        var huBefore = line.ProductionHuCodes;
+        var payloadLines = OrderLineQtyPersistFlow.BuildLinesForPersist(_lines.ToList(), orderLineId, newQty);
+        var payloadLine = payloadLines.First(candidate => candidate.Id == orderLineId);
+        var logEntry = new OrderLineQtyEditLogEntry
+        {
+            OrderId = _orderId.Value,
+            OrderLineId = orderLineId,
+            OldQty = oldQty,
+            NewQty = newQty,
+            PayloadQty = payloadLine.QtyOrdered,
+            HuCodesBefore = huBefore
+        };
+
+        _isQtyPersistInProgress = true;
+        EditLineButton.IsEnabled = false;
+        try
+        {
+            var result = await _services.WpfUpdateOrders.UpdateOrderAsync(
+                    new WpfUpdateOrderContext(
+                        _orderId.Value,
+                        string.IsNullOrWhiteSpace(orderRef) ? null : orderRef,
+                        type,
+                        partnerId,
+                        dueDate,
+                        OrderStatus.InProgress,
+                        comment,
+                        payloadLines,
+                        false))
+                .ConfigureAwait(true);
+
+            logEntry = logEntry with
+            {
+                PutStatus = result.IsSuccess ? 200 : (int)result.Kind
+            };
+
+            if (!result.IsSuccess)
+            {
+                _services.AppLogger.Info(OrderLineQtyPersistFlow.FormatQtyEditLogLine(logEntry));
+                if (OrderLineEditPrevalidation.ShouldReloadLineMetricsAfterFailedPersist(false))
+                {
+                    TryRefreshPersistedOrderLineMetricsFromApi(type);
+                }
+
+                var icon = result.Kind is WpfUpdateOrderResultKind.Timeout or WpfUpdateOrderResultKind.ServerUnavailable
+                    ? MessageBoxImage.Error
+                    : MessageBoxImage.Warning;
+                MessageBox.Show(result.Message, "Заказы", MessageBoxButton.OK, icon);
+                return false;
+            }
+
+            if (result.Response == null || result.Response.OrderId <= 0)
+            {
+                _services.AppLogger.Info(OrderLineQtyPersistFlow.FormatQtyEditLogLine(logEntry));
+                MessageBox.Show("Сервер вернул неполный ответ при обновлении заказа.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return false;
+            }
+
+            logEntry = logEntry with { ReloadStarted = true };
+            _orderId = result.Response.OrderId;
+            ReloadCanonicalOrderStateAfterPersist(orderLineId);
+            logEntry = logEntry with
+            {
+                ReloadFinished = true,
+                HuCodesAfter = _lines.FirstOrDefault(candidate => candidate.Id == orderLineId)?.ProductionHuCodes
+            };
+            _services.AppLogger.Info(OrderLineQtyPersistFlow.FormatQtyEditLogLine(logEntry));
+
+            _hasUnsavedChanges = false;
+            SaveStatusText.Text = "Сохранено";
+            ForceOrderLinesGridRefresh();
+            return true;
+        }
+        finally
+        {
+            _isQtyPersistInProgress = false;
+            EditLineButton.IsEnabled = EnsureEditable(false);
+        }
     }
 
     private static bool TryValidateLineQtyChange(
