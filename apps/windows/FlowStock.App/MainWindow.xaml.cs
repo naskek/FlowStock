@@ -7,6 +7,7 @@ using System.Linq;
 using System.Net.Http;
 using System.Text;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -44,6 +45,20 @@ public partial class MainWindow : Window
     private bool _suppressStockFilterSelectionChanged;
     private static bool _excelEncodingRegistered;
     private static readonly TimeSpan AutoRefreshInterval = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan StockRefreshDebounceInterval = TimeSpan.FromMilliseconds(200);
+    private static readonly TimeSpan StockGridScrollIdleDelay = TimeSpan.FromSeconds(1.5);
+    private static readonly TimeSpan StockRefreshDeferWhileScrolling = TimeSpan.FromSeconds(2);
+    private DispatcherTimer? _stockRefreshDebounceTimer;
+    private bool _stockRefreshDebounceTickAttached;
+    private DispatcherTimer? _stockGridScrollIdleTimer;
+    private DispatcherTimer? _deferredStockRefreshTimer;
+    private bool _deferredStockRefreshTickAttached;
+    private string? _pendingStockSearch;
+    private string? _warehouseProductionStateFingerprint;
+    private bool _warehouseProductionStateLoadInProgress;
+    private bool _stockGridScrollTrackingAttached;
+    private System.Windows.Controls.ScrollViewer? _warehouseProductionStateScrollViewer;
+    private bool _stockGridUserScrolling;
     private readonly List<DocTypeFilterOption> _docTypeFilters = new()
     {
         new DocTypeFilterOption(null, "Все"),
@@ -275,12 +290,86 @@ public partial class MainWindow : Window
 
     private void MainWindow_Loaded(object? sender, RoutedEventArgs e)
     {
+        AttachWarehouseProductionStateGridScrollTracking();
+
         if (_serverApiUnavailableAtStartup)
         {
             return;
         }
 
         _autoRefreshTimer.Start();
+    }
+
+    private void AttachWarehouseProductionStateGridScrollTracking()
+    {
+        if (_stockGridScrollTrackingAttached)
+        {
+            return;
+        }
+
+        _warehouseProductionStateScrollViewer = FindVisualChild<System.Windows.Controls.ScrollViewer>(WarehouseProductionStateGrid);
+        if (_warehouseProductionStateScrollViewer == null)
+        {
+            return;
+        }
+
+        _warehouseProductionStateScrollViewer.ScrollChanged += OnWarehouseProductionStateGridScrollChanged;
+        _stockGridScrollTrackingAttached = true;
+    }
+
+    private void OnWarehouseProductionStateGridScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        if (Math.Abs(e.VerticalChange) < 0.01d && Math.Abs(e.ViewportHeightChange) < 0.01d)
+        {
+            return;
+        }
+
+        _stockGridUserScrolling = true;
+        _stockGridScrollIdleTimer ??= new DispatcherTimer { Interval = StockGridScrollIdleDelay };
+        _stockGridScrollIdleTimer.Tick -= OnStockGridScrollIdleTimerTick;
+        _stockGridScrollIdleTimer.Tick += OnStockGridScrollIdleTimerTick;
+        _stockGridScrollIdleTimer.Stop();
+        _stockGridScrollIdleTimer.Start();
+    }
+
+    private void OnStockGridScrollIdleTimerTick(object? sender, EventArgs e)
+    {
+        _stockGridScrollIdleTimer?.Stop();
+        _stockGridUserScrolling = false;
+
+        if (!string.IsNullOrEmpty(_pendingStockSearch) || _deferredStockRefreshTimer?.IsEnabled == true)
+        {
+            ScheduleDeferredStockRefresh(_pendingStockSearch ?? StatusSearchBox.Text);
+        }
+    }
+
+    private bool ShouldDeferStockRefresh()
+    {
+        return _stockGridUserScrolling || _warehouseProductionStateLoadInProgress;
+    }
+
+    private void ScheduleDeferredStockRefresh(string? search)
+    {
+        _pendingStockSearch = search;
+        _deferredStockRefreshTimer ??= new DispatcherTimer { Interval = StockRefreshDeferWhileScrolling };
+        if (!_deferredStockRefreshTickAttached)
+        {
+            _deferredStockRefreshTimer.Tick += (_, _) =>
+            {
+                _deferredStockRefreshTimer!.Stop();
+                if (ShouldDeferStockRefresh())
+                {
+                    ScheduleDeferredStockRefresh(_pendingStockSearch);
+                    return;
+                }
+
+                LoadStock(_pendingStockSearch);
+            };
+            _deferredStockRefreshTickAttached = true;
+        }
+
+        _deferredStockRefreshTimer.Stop();
+        _deferredStockRefreshTimer.Start();
     }
 
     private bool TryCheckServerApiAvailable(out string error)
@@ -393,8 +482,14 @@ public partial class MainWindow : Window
             switch (MainTabs.SelectedIndex)
             {
                 case TabStatusIndex:
+                    if (ShouldDeferStockRefresh())
+                    {
+                        ScheduleDeferredStockRefresh(StatusSearchBox.Text);
+                        break;
+                    }
+
                     LoadItemTypes();
-                    LoadStock(StatusSearchBox.Text);
+                    LoadStock(StatusSearchBox.Text, debounce: true);
                     break;
                 case TabProductionNeedIndex:
                     LoadProductionNeedRows();
@@ -822,17 +917,59 @@ public partial class MainWindow : Window
         LoadMoreOrdersButton.Visibility = Visibility.Collapsed;
     }
 
-    private void LoadStock(string? search)
+    private void LoadStock(string? search, bool debounce = false)
     {
+        _pendingStockSearch = search;
+
+        if (ShouldDeferStockRefresh())
+        {
+            ScheduleDeferredStockRefresh(search);
+            return;
+        }
+
+        if (debounce)
+        {
+            _stockRefreshDebounceTimer ??= new DispatcherTimer { Interval = StockRefreshDebounceInterval };
+            if (!_stockRefreshDebounceTickAttached)
+            {
+                _stockRefreshDebounceTimer.Tick += (_, _) =>
+                {
+                    _stockRefreshDebounceTimer!.Stop();
+                    LoadStock(_pendingStockSearch);
+                };
+                _stockRefreshDebounceTickAttached = true;
+            }
+
+            _stockRefreshDebounceTimer.Stop();
+            _stockRefreshDebounceTimer.Start();
+            return;
+        }
+
         LoadWarehouseProductionState(search);
         LoadProductionNeedRows();
     }
 
     private void LoadWarehouseProductionState(string? search)
     {
-        _stock.Clear();
-        _warehouseProductionStateRows.Clear();
+        if (_warehouseProductionStateLoadInProgress)
+        {
+            ScheduleDeferredStockRefresh(search);
+            return;
+        }
 
+        _warehouseProductionStateLoadInProgress = true;
+        try
+        {
+            LoadWarehouseProductionStateCore(search);
+        }
+        finally
+        {
+            _warehouseProductionStateLoadInProgress = false;
+        }
+    }
+
+    private void LoadWarehouseProductionStateCore(string? search)
+    {
         var belowMinOnly = StockBelowMinOnlyCheckBox.IsChecked == true;
         var itemTypeId = GetSelectedStockItemTypeId();
         if (!_services.WpfReadApi.TryGetWarehouseProductionStateRows(
@@ -841,6 +978,8 @@ public partial class MainWindow : Window
                 belowMinOnly,
                 out var rows))
         {
+            _warehouseProductionStateFingerprint = null;
+            _warehouseProductionStateRows.Clear();
             UpdateStockEmptyState(search);
             StockEmptyText.Text = "Не удалось загрузить производственный dashboard. Проверьте доступность FlowStock Server API.";
             LowStockGrid.Visibility = Visibility.Collapsed;
@@ -852,90 +991,55 @@ public partial class MainWindow : Window
             .ToDictionary(item => item.Id, item => item.ItemTypeId);
         var locationCode = GetSelectedStockLocationCode();
         var huCode = GetSelectedStockHuCode();
+        var filteredRows = rows
+            .Where(row => !itemTypeId.HasValue
+                          || itemTypeByItemId.TryGetValue(row.ItemId, out var currentItemTypeId)
+                          && currentItemTypeId == itemTypeId.Value)
+            .Where(row => string.IsNullOrWhiteSpace(locationCode)
+                          || row.HuRows.Any(hu => string.Equals(hu.Location, locationCode, StringComparison.OrdinalIgnoreCase)))
+            .Where(row => string.IsNullOrWhiteSpace(huCode)
+                          || row.HuRows.Any(hu => string.Equals(hu.HuCode, huCode, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
 
-        foreach (var row in rows
-                     .Where(row => !itemTypeId.HasValue
-                                   || itemTypeByItemId.TryGetValue(row.ItemId, out var currentItemTypeId)
-                                   && currentItemTypeId == itemTypeId.Value)
-                     .Where(row => string.IsNullOrWhiteSpace(locationCode)
-                                   || row.HuRows.Any(hu => string.Equals(hu.Location, locationCode, StringComparison.OrdinalIgnoreCase)))
-                     .Where(row => string.IsNullOrWhiteSpace(huCode)
-                                   || row.HuRows.Any(hu => string.Equals(hu.HuCode, huCode, StringComparison.OrdinalIgnoreCase))))
+        var fingerprint = BuildWarehouseProductionStateFingerprint(filteredRows);
+        if (string.Equals(fingerprint, _warehouseProductionStateFingerprint, StringComparison.Ordinal))
         {
-            _warehouseProductionStateRows.Add(new WarehouseProductionStateDisplayRow
-            {
-                ItemId = row.ItemId,
-                ItemName = row.ItemName,
-                Barcode = row.Barcode,
-                Gtin = row.Gtin,
-                ItemTypeName = string.IsNullOrWhiteSpace(row.ItemType) ? "Без типа" : row.ItemType,
-                Brand = row.Brand,
-                BaseUom = string.IsNullOrWhiteSpace(row.BaseUom) ? "шт" : row.BaseUom,
-                StockQty = row.StockQty,
-                FreeQty = row.FreeQty,
-                ReservedQty = row.ReservedQty,
-                MinStockQty = row.MinStockQty,
-                BelowMinQty = row.BelowMinQty,
-                CustomerOpenDemandQty = row.CustomerOpenDemandQty,
-                PrdPlannedQty = row.PrdPlannedQty,
-                PrdFilledQty = row.PrdFilledQty,
-                InternalRemainingQty = row.InternalRemainingQty,
-                RemainingNeedQty = row.RemainingNeedQty,
-                NeedReason = row.NeedReason,
-                Warnings = row.Warnings,
-                IsExpanded = _expandedStockItemIds.Contains(row.ItemId),
-                ExpandMarker = _expandedStockItemIds.Contains(row.ItemId) ? "▼" : "▶",
-                HuRows = row.HuRows.Select(hu => new WarehouseProductionStateHuDisplayRow
-                {
-                    Location = hu.Location,
-                    HuCode = string.IsNullOrWhiteSpace(hu.HuCode) ? "Без HU" : hu.HuCode,
-                    QtyDisplay = FormatQtyWithUom(hu.Qty, row.BaseUom),
-                    ReservedOrderDisplay = string.IsNullOrWhiteSpace(hu.ReservedCustomerOrderRef) ? "не зарезервировано" : hu.ReservedCustomerOrderRef!,
-                    ReservedCustomerDisplay = string.IsNullOrWhiteSpace(hu.ReservedCustomerName) ? "не зарезервировано" : hu.ReservedCustomerName!,
-                    StockStatus = hu.StockStatus
-                }).ToList(),
-                CustomerOrders = row.CustomerOrders.Select(order => new WarehouseProductionStateCustomerOrderDisplayRow
-                {
-                    OrderRef = order.OrderRef,
-                    PartnerName = string.IsNullOrWhiteSpace(order.PartnerName) ? "—" : order.PartnerName!,
-                    Status = order.Status,
-                    QtyOrderedDisplay = FormatQtyWithUom(order.QtyOrdered, row.BaseUom),
-                    ShippedQtyDisplay = FormatQtyWithUom(order.ShippedQty, row.BaseUom),
-                    RemainingQtyDisplay = FormatQtyWithUom(order.RemainingQty, row.BaseUom)
-                }).ToList(),
-                InternalOrders = row.InternalOrders.Select(order => new WarehouseProductionStateInternalOrderDisplayRow
-                {
-                    OrderRef = order.OrderRef,
-                    Status = order.Status,
-                    QtyOrderedDisplay = FormatQtyWithUom(order.QtyOrdered, row.BaseUom),
-                    ProducedQtyDisplay = FormatQtyWithUom(order.ProducedQty, row.BaseUom),
-                    RemainingQtyDisplay = FormatQtyWithUom(order.RemainingQty, row.BaseUom)
-                }).ToList(),
-                ProductionReceipts = row.ProductionReceipts.Select(prd => new WarehouseProductionStatePalletDisplayRow
-                {
-                    PrdRef = prd.PrdRef,
-                    HuCode = prd.HuCode,
-                    PalletStatus = TranslatePalletStatus(prd.PalletStatus),
-                    PlannedQtyDisplay = FormatQtyWithUom(prd.PlannedQty, row.BaseUom),
-                    FilledQtyDisplay = FormatQtyWithUom(prd.FilledQty, row.BaseUom),
-                    StockEffect = prd.StockEffect,
-                    Composition = prd.Composition
-                }).ToList(),
-                NeedBreakdownRows =
-                [
-                    new WarehouseProductionStateNeedBreakdownDisplayRow
-                    {
-                        DemandToCloseDisplay = FormatQtyWithUom(row.NeedBreakdown.DemandToCloseCustomerOrders, row.BaseUom),
-                        DemandToMinDisplay = FormatQtyWithUom(row.NeedBreakdown.DemandToMinStock, row.BaseUom),
-                        AlreadyPlannedInternalDisplay = FormatQtyWithUom(row.NeedBreakdown.AlreadyPlannedInternal, row.BaseUom),
-                        AlreadyPlannedPrdDisplay = FormatQtyWithUom(row.NeedBreakdown.AlreadyPlannedPrd, row.BaseUom),
-                        FilledDisplay = FormatQtyWithUom(row.PrdFilledQty, row.BaseUom),
-                        RemainingToCreateDisplay = FormatQtyWithUom(row.NeedBreakdown.RemainingToCreate, row.BaseUom),
-                        NeedReason = row.NeedReason
-                    }
-                ]
-            });
+            UpdateStockEmptyState(search);
+            return;
         }
+
+        _warehouseProductionStateFingerprint = fingerprint;
+        var selectedItemId = (WarehouseProductionStateGrid.SelectedItem as WarehouseProductionStateDisplayRow)?.ItemId;
+        var scrollOffset = GetDataGridVerticalScrollOffset(WarehouseProductionStateGrid);
+        var existingByItemId = _warehouseProductionStateRows.ToDictionary(row => row.ItemId);
+        var nextRows = new List<WarehouseProductionStateDisplayRow>(filteredRows.Count);
+        var addedAny = false;
+        foreach (var row in filteredRows)
+        {
+            if (existingByItemId.TryGetValue(row.ItemId, out var existing))
+            {
+                existing.ApplyFrom(row);
+                nextRows.Add(existing);
+                continue;
+            }
+
+            addedAny = true;
+            nextRows.Add(CreateWarehouseProductionStateDisplayRow(row));
+        }
+
+        var removedAny = false;
+        for (var index = _warehouseProductionStateRows.Count - 1; index >= 0; index--)
+        {
+            var itemId = _warehouseProductionStateRows[index].ItemId;
+            if (nextRows.All(row => row.ItemId != itemId))
+            {
+                _warehouseProductionStateRows.RemoveAt(index);
+                removedAny = true;
+            }
+        }
+
+        var orderChanged = SyncWarehouseProductionStateRowOrder(nextRows);
+        var structureChanged = removedAny || addedAny || orderChanged;
 
         UpdateStockEmptyState(search);
         StockGrid.Visibility = Visibility.Collapsed;
@@ -943,7 +1047,177 @@ public partial class MainWindow : Window
         LowStockGrid.Visibility = Visibility.Collapsed;
         LowStockPanel.Visibility = Visibility.Collapsed;
         LowStockSummaryText.Text = string.Empty;
-        ApplyExpandedStockRowDetailsVisibility();
+
+        if (structureChanged)
+        {
+            RestoreWarehouseProductionStateGridViewState(selectedItemId, scrollOffset);
+        }
+    }
+
+    private bool SyncWarehouseProductionStateRowOrder(IReadOnlyList<WarehouseProductionStateDisplayRow> nextRows)
+    {
+        if (IsWarehouseProductionStateOrderUnchanged(nextRows))
+        {
+            return false;
+        }
+
+        for (var targetIndex = 0; targetIndex < nextRows.Count; targetIndex++)
+        {
+            var desiredRow = nextRows[targetIndex];
+            var currentIndex = _warehouseProductionStateRows.IndexOf(desiredRow);
+            if (currentIndex < 0)
+            {
+                _warehouseProductionStateRows.Insert(targetIndex, desiredRow);
+                continue;
+            }
+
+            if (currentIndex != targetIndex)
+            {
+                _warehouseProductionStateRows.Move(currentIndex, targetIndex);
+            }
+        }
+
+        return true;
+    }
+
+    private bool IsWarehouseProductionStateOrderUnchanged(IReadOnlyList<WarehouseProductionStateDisplayRow> nextRows)
+    {
+        if (_warehouseProductionStateRows.Count != nextRows.Count)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < nextRows.Count; index++)
+        {
+            if (!ReferenceEquals(_warehouseProductionStateRows[index], nextRows[index]))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private WarehouseProductionStateDisplayRow CreateWarehouseProductionStateDisplayRow(WarehouseProductionStateRow row)
+    {
+        var displayRow = new WarehouseProductionStateDisplayRow { ItemId = row.ItemId };
+        var isExpanded = _expandedStockItemIds.Contains(row.ItemId);
+        displayRow.IsExpanded = isExpanded;
+        displayRow.ExpandMarker = isExpanded ? "▼" : "▶";
+        displayRow.ApplyFrom(row);
+        if (isExpanded)
+        {
+            displayRow.EnsureDetailsLoaded();
+        }
+
+        return displayRow;
+    }
+
+    private static string BuildWarehouseProductionStateFingerprint(IReadOnlyList<WarehouseProductionStateRow> rows)
+    {
+        if (rows.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder(rows.Count * 48);
+        foreach (var row in rows.OrderBy(current => current.ItemId))
+        {
+            builder.Append(row.ItemId)
+                .Append('|').Append(row.StockQty.ToString("F3", CultureInfo.InvariantCulture))
+                .Append('|').Append(row.FreeQty.ToString("F3", CultureInfo.InvariantCulture))
+                .Append('|').Append(row.ReservedQty.ToString("F3", CultureInfo.InvariantCulture))
+                .Append('|').Append(row.MinStockQty.ToString("F3", CultureInfo.InvariantCulture))
+                .Append('|').Append(row.BelowMinQty.ToString("F3", CultureInfo.InvariantCulture))
+                .Append('|').Append(row.CustomerOpenDemandQty.ToString("F3", CultureInfo.InvariantCulture))
+                .Append('|').Append(row.PrdPlannedQty.ToString("F3", CultureInfo.InvariantCulture))
+                .Append('|').Append(row.PrdFilledQty.ToString("F3", CultureInfo.InvariantCulture))
+                .Append('|').Append(row.InternalRemainingQty.ToString("F3", CultureInfo.InvariantCulture))
+                .Append('|').Append(row.RemainingNeedQty.ToString("F3", CultureInfo.InvariantCulture))
+                .Append('|').Append(row.HuRows.Count)
+                .Append('|').Append(row.ProductionReceipts.Count);
+            foreach (var hu in row.HuRows.OrderBy(current => current.HuCode, StringComparer.OrdinalIgnoreCase))
+            {
+                builder.Append('|').Append(hu.HuCode)
+                    .Append(':').Append(hu.Qty.ToString("F3", CultureInfo.InvariantCulture));
+            }
+
+            foreach (var prd in row.ProductionReceipts.OrderBy(current => current.HuCode, StringComparer.OrdinalIgnoreCase))
+            {
+                builder.Append('|').Append(prd.HuCode)
+                    .Append(':').Append(prd.Qty.ToString("F3", CultureInfo.InvariantCulture));
+            }
+
+            builder
+                .Append('|').Append(row.NeedBreakdown.DemandToCloseCustomerOrders.ToString("F3", CultureInfo.InvariantCulture))
+                .Append('|').Append(row.NeedBreakdown.DemandToMinStock.ToString("F3", CultureInfo.InvariantCulture))
+                .Append('|').Append(row.NeedBreakdown.AlreadyPlannedInternal.ToString("F3", CultureInfo.InvariantCulture))
+                .Append('|').Append(row.NeedBreakdown.RemainingToCreate.ToString("F3", CultureInfo.InvariantCulture))
+                .Append(';');
+        }
+
+        return builder.ToString();
+    }
+
+    private double? GetDataGridVerticalScrollOffset(System.Windows.Controls.DataGrid grid)
+    {
+        AttachWarehouseProductionStateGridScrollTracking();
+        if (ReferenceEquals(grid, WarehouseProductionStateGrid) && _warehouseProductionStateScrollViewer != null)
+        {
+            return _warehouseProductionStateScrollViewer.VerticalOffset;
+        }
+
+        return FindVisualChild<System.Windows.Controls.ScrollViewer>(grid)?.VerticalOffset;
+    }
+
+    private void RestoreWarehouseProductionStateGridViewState(long? selectedItemId, double? scrollOffset)
+    {
+        if (selectedItemId.HasValue)
+        {
+            var selectedRow = _warehouseProductionStateRows.FirstOrDefault(row => row.ItemId == selectedItemId.Value);
+            if (selectedRow != null && !ReferenceEquals(WarehouseProductionStateGrid.SelectedItem, selectedRow))
+            {
+                WarehouseProductionStateGrid.SelectedItem = selectedRow;
+            }
+        }
+
+        if (!scrollOffset.HasValue || _stockGridUserScrolling)
+        {
+            return;
+        }
+
+        var targetOffset = scrollOffset.Value;
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (_stockGridUserScrolling)
+            {
+                return;
+            }
+
+            AttachWarehouseProductionStateGridScrollTracking();
+            _warehouseProductionStateScrollViewer?.ScrollToVerticalOffset(targetOffset);
+        }), DispatcherPriority.Background);
+    }
+
+    private static T? FindVisualChild<T>(DependencyObject parent)
+        where T : DependencyObject
+    {
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, index);
+            if (child is T match)
+            {
+                return match;
+            }
+
+            var nested = FindVisualChild<T>(child);
+            if (nested != null)
+            {
+                return nested;
+            }
+        }
+
+        return null;
     }
 
     private Dictionary<string, HuStockContextRow> BuildHuContextMap()
@@ -1412,7 +1686,24 @@ public partial class MainWindow : Window
         row.IsExpanded = nextExpanded;
         row.ExpandMarker = nextExpanded ? "▼" : "▶";
         clickedRow.DetailsVisibility = nextExpanded ? Visibility.Visible : Visibility.Collapsed;
-        ApplyExpandedStockRowDetailsVisibility();
+
+        if (row is WarehouseProductionStateDisplayRow warehouseRow)
+        {
+            if (nextExpanded)
+            {
+                warehouseRow.EnsureDetailsLoaded();
+            }
+            else
+            {
+                warehouseRow.ClearDetailRows();
+            }
+        }
+    }
+
+    private void WarehouseProductionStateGrid_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        AttachWarehouseProductionStateGridScrollTracking();
+        ScrollViewerWheelBubble.HandlePreviewMouseWheel(e, _warehouseProductionStateScrollViewer);
     }
 
     private static T? FindVisualParent<T>(DependencyObject? source)
@@ -3132,38 +3423,270 @@ public partial class MainWindow : Window
         public string ReservedCustomerDisplay { get; init; } = "не зарезервировано";
     }
 
-    private sealed class WarehouseProductionStateDisplayRow : IExpandableStockRow
+    private sealed class WarehouseProductionStateDisplayRow : IExpandableStockRow, INotifyPropertyChanged
     {
+        private static readonly IReadOnlyList<WarehouseProductionStateHuDisplayRow> EmptyHuRows = Array.Empty<WarehouseProductionStateHuDisplayRow>();
+        private static readonly IReadOnlyList<WarehouseProductionStatePalletDisplayRow> EmptyProductionReceipts = Array.Empty<WarehouseProductionStatePalletDisplayRow>();
+
         private bool _isExpanded;
         private string _expandMarker = "▶";
+        private WarehouseProductionStateRow? _sourceRow;
+        private string _summaryFingerprint = string.Empty;
+        private string _detailsFingerprint = string.Empty;
+        private bool _detailsLoaded;
 
         public event PropertyChangedEventHandler? PropertyChanged;
 
         public long ItemId { get; init; }
-        public string ItemName { get; init; } = string.Empty;
-        public string? Barcode { get; init; }
-        public string? Gtin { get; init; }
-        public string ItemTypeName { get; init; } = string.Empty;
-        public string? Brand { get; init; }
-        public string BaseUom { get; init; } = "шт";
-        public double StockQty { get; init; }
-        public double FreeQty { get; init; }
-        public double ReservedQty { get; init; }
-        public double MinStockQty { get; init; }
-        public double BelowMinQty { get; init; }
-        public double CustomerOpenDemandQty { get; init; }
-        public double PrdPlannedQty { get; init; }
-        public double PrdFilledQty { get; init; }
-        public double InternalRemainingQty { get; init; }
-        public double RemainingNeedQty { get; init; }
-        public string NeedReason { get; init; } = string.Empty;
-        public IReadOnlyList<string> Warnings { get; init; } = Array.Empty<string>();
-        public IReadOnlyList<WarehouseProductionStateHuDisplayRow> HuRows { get; init; } = Array.Empty<WarehouseProductionStateHuDisplayRow>();
-        public IReadOnlyList<WarehouseProductionStateCustomerOrderDisplayRow> CustomerOrders { get; init; } = Array.Empty<WarehouseProductionStateCustomerOrderDisplayRow>();
-        public IReadOnlyList<WarehouseProductionStateInternalOrderDisplayRow> InternalOrders { get; init; } = Array.Empty<WarehouseProductionStateInternalOrderDisplayRow>();
-        public IReadOnlyList<WarehouseProductionStatePalletDisplayRow> ProductionReceipts { get; init; } = Array.Empty<WarehouseProductionStatePalletDisplayRow>();
-        public IReadOnlyList<WarehouseProductionStateNeedBreakdownDisplayRow> NeedBreakdownRows { get; init; } = Array.Empty<WarehouseProductionStateNeedBreakdownDisplayRow>();
+        public string ItemName { get; private set; } = string.Empty;
+        public string? Barcode { get; private set; }
+        public string? Gtin { get; private set; }
+        public string ItemTypeName { get; private set; } = string.Empty;
+        public string? Brand { get; private set; }
+        public string BaseUom { get; private set; } = "шт";
+        public double StockQty { get; private set; }
+        public double FreeQty { get; private set; }
+        public double ReservedQty { get; private set; }
+        public double MinStockQty { get; private set; }
+        public double BelowMinQty { get; private set; }
+        public double CustomerOpenDemandQty { get; private set; }
+        public double PrdPlannedQty { get; private set; }
+        public double PrdFilledQty { get; private set; }
+        public double InternalRemainingQty { get; private set; }
+        public double RemainingNeedQty { get; private set; }
+        public string NeedReason { get; private set; } = string.Empty;
+        public IReadOnlyList<string> Warnings { get; private set; } = Array.Empty<string>();
+        public IReadOnlyList<WarehouseProductionStateHuDisplayRow> WarehouseHuRows { get; private set; } = Array.Empty<WarehouseProductionStateHuDisplayRow>();
+        public IReadOnlyList<WarehouseProductionStateCustomerOrderDisplayRow> CustomerOrders { get; private set; } = Array.Empty<WarehouseProductionStateCustomerOrderDisplayRow>();
+        public IReadOnlyList<WarehouseProductionStateInternalOrderDisplayRow> InternalOrders { get; private set; } = Array.Empty<WarehouseProductionStateInternalOrderDisplayRow>();
+        public IReadOnlyList<WarehouseProductionStatePalletDisplayRow> ProductionReceipts { get; private set; } = Array.Empty<WarehouseProductionStatePalletDisplayRow>();
+        public IReadOnlyList<WarehouseProductionStateNeedBreakdownDisplayRow> NeedBreakdownRows { get; private set; } = Array.Empty<WarehouseProductionStateNeedBreakdownDisplayRow>();
         public bool IsBelowMin => BelowMinQty > 0.000001d;
+
+        public void ApplyFrom(WarehouseProductionStateRow row)
+        {
+            _sourceRow = row;
+            var summaryFingerprint = BuildSummaryFingerprint(row);
+            if (!string.Equals(summaryFingerprint, _summaryFingerprint, StringComparison.Ordinal))
+            {
+                ItemName = row.ItemName;
+                Barcode = row.Barcode;
+                Gtin = row.Gtin;
+                ItemTypeName = string.IsNullOrWhiteSpace(row.ItemType) ? "Без типа" : row.ItemType;
+                Brand = row.Brand;
+                BaseUom = string.IsNullOrWhiteSpace(row.BaseUom) ? "шт" : row.BaseUom;
+                StockQty = row.StockQty;
+                FreeQty = row.FreeQty;
+                ReservedQty = row.ReservedQty;
+                MinStockQty = row.MinStockQty;
+                BelowMinQty = row.BelowMinQty;
+                CustomerOpenDemandQty = row.CustomerOpenDemandQty;
+                PrdPlannedQty = row.PrdPlannedQty;
+                PrdFilledQty = row.PrdFilledQty;
+                InternalRemainingQty = row.InternalRemainingQty;
+                RemainingNeedQty = row.RemainingNeedQty;
+                NeedReason = row.NeedReason;
+                Warnings = row.Warnings;
+                _summaryFingerprint = summaryFingerprint;
+                NotifySummaryPropertiesChanged();
+            }
+
+            UpdateNeedBreakdownRows(row);
+
+            if (IsExpanded)
+            {
+                EnsureDetailsLoaded();
+            }
+            else if (_detailsLoaded)
+            {
+                ClearDetailRows();
+            }
+        }
+
+        public void EnsureDetailsLoaded()
+        {
+            if (_sourceRow == null)
+            {
+                return;
+            }
+
+            var detailsFingerprint = BuildDetailFingerprint(_sourceRow);
+            if (_detailsLoaded && string.Equals(detailsFingerprint, _detailsFingerprint, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            LoadDetailRows(_sourceRow);
+            _detailsFingerprint = detailsFingerprint;
+            _detailsLoaded = true;
+            NotifyDetailPropertiesChanged();
+        }
+
+        public void ClearDetailRows()
+        {
+            if (!_detailsLoaded
+                && ReferenceEquals(WarehouseHuRows, EmptyHuRows)
+                && ReferenceEquals(ProductionReceipts, EmptyProductionReceipts))
+            {
+                return;
+            }
+
+            WarehouseHuRows = EmptyHuRows;
+            ProductionReceipts = EmptyProductionReceipts;
+            CustomerOrders = Array.Empty<WarehouseProductionStateCustomerOrderDisplayRow>();
+            InternalOrders = Array.Empty<WarehouseProductionStateInternalOrderDisplayRow>();
+            _detailsLoaded = false;
+            _detailsFingerprint = string.Empty;
+            NotifyDetailPropertiesChanged();
+        }
+
+        private void UpdateNeedBreakdownRows(WarehouseProductionStateRow row)
+        {
+            NeedBreakdownRows =
+            [
+                new WarehouseProductionStateNeedBreakdownDisplayRow
+                {
+                    DemandToCloseDisplay = FormatQtyWithUom(row.NeedBreakdown.DemandToCloseCustomerOrders, row.BaseUom),
+                    DemandToMinDisplay = FormatQtyWithUom(row.NeedBreakdown.DemandToMinStock, row.BaseUom),
+                    AlreadyPlannedInternalDisplay = FormatQtyWithUom(row.NeedBreakdown.AlreadyPlannedInternal, row.BaseUom),
+                    AlreadyPlannedPrdDisplay = FormatQtyWithUom(row.NeedBreakdown.AlreadyPlannedPrd, row.BaseUom),
+                    FilledDisplay = FormatQtyWithUom(row.PrdFilledQty, row.BaseUom),
+                    RemainingToCreateDisplay = FormatQtyWithUom(row.NeedBreakdown.RemainingToCreate, row.BaseUom),
+                    NeedReason = row.NeedReason
+                }
+            ];
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(NeedBreakdownRows)));
+        }
+
+        private void LoadDetailRows(WarehouseProductionStateRow row)
+        {
+            WarehouseHuRows = row.HuRows.Select(hu => new WarehouseProductionStateHuDisplayRow
+            {
+                Location = hu.Location,
+                HuCode = string.IsNullOrWhiteSpace(hu.HuCode) ? "Без HU" : hu.HuCode,
+                QtyDisplay = FormatQtyWithUom(hu.Qty, row.BaseUom),
+                ReservedOrderDisplay = string.IsNullOrWhiteSpace(hu.ReservedCustomerOrderRef) ? "не зарезервировано" : hu.ReservedCustomerOrderRef!,
+                ReservedCustomerDisplay = string.IsNullOrWhiteSpace(hu.ReservedCustomerName) ? "не зарезервировано" : hu.ReservedCustomerName!,
+                StockStatus = hu.StockStatus
+            }).ToList();
+            CustomerOrders = row.CustomerOrders.Select(order => new WarehouseProductionStateCustomerOrderDisplayRow
+            {
+                OrderRef = order.OrderRef,
+                PartnerName = string.IsNullOrWhiteSpace(order.PartnerName) ? "—" : order.PartnerName!,
+                Status = order.Status,
+                QtyOrderedDisplay = FormatQtyWithUom(order.QtyOrdered, row.BaseUom),
+                ShippedQtyDisplay = FormatQtyWithUom(order.ShippedQty, row.BaseUom),
+                RemainingQtyDisplay = FormatQtyWithUom(order.RemainingQty, row.BaseUom)
+            }).ToList();
+            InternalOrders = row.InternalOrders.Select(order => new WarehouseProductionStateInternalOrderDisplayRow
+            {
+                OrderRef = order.OrderRef,
+                Status = order.Status,
+                QtyOrderedDisplay = FormatQtyWithUom(order.QtyOrdered, row.BaseUom),
+                ProducedQtyDisplay = FormatQtyWithUom(order.ProducedQty, row.BaseUom),
+                RemainingQtyDisplay = FormatQtyWithUom(order.RemainingQty, row.BaseUom)
+            }).ToList();
+            ProductionReceipts = row.ProductionReceipts.Select(prd => new WarehouseProductionStatePalletDisplayRow
+            {
+                PrdRef = prd.PrdRef,
+                HuCode = prd.HuCode,
+                PalletStatus = string.IsNullOrWhiteSpace(prd.PalletStatusDisplay)
+                    ? TranslatePalletStatus(prd.PalletStatus)
+                    : prd.PalletStatusDisplay,
+                QtyDisplay = FormatQtyWithUom(prd.Qty > 0 ? prd.Qty : prd.PlannedQty, row.BaseUom),
+                SourceOrderRef = string.IsNullOrWhiteSpace(prd.SourceOrderRef) ? "—" : prd.SourceOrderRef,
+                StatusNote = prd.StatusNote,
+                PlannedQtyDisplay = FormatQtyWithUom(prd.PlannedQty, row.BaseUom),
+                FilledQtyDisplay = FormatQtyWithUom(prd.FilledQty, row.BaseUom),
+                StockEffect = prd.StockEffect,
+                Composition = prd.Composition
+            }).ToList();
+        }
+
+        private static string BuildSummaryFingerprint(WarehouseProductionStateRow row)
+        {
+            return string.Create(CultureInfo.InvariantCulture, $"""
+                {row.ItemName}|{row.Barcode}|{row.Gtin}|{row.ItemType}|{row.Brand}|{row.BaseUom}|
+                {row.StockQty:F3}|{row.FreeQty:F3}|{row.ReservedQty:F3}|{row.MinStockQty:F3}|{row.BelowMinQty:F3}|
+                {row.CustomerOpenDemandQty:F3}|{row.PrdPlannedQty:F3}|{row.PrdFilledQty:F3}|{row.InternalRemainingQty:F3}|{row.RemainingNeedQty:F3}|
+                {row.NeedReason}|{row.HuRows.Count}|{row.ProductionReceipts.Count}|
+                {row.NeedBreakdown.DemandToCloseCustomerOrders:F3}|{row.NeedBreakdown.DemandToMinStock:F3}|{row.NeedBreakdown.AlreadyPlannedInternal:F3}|{row.NeedBreakdown.RemainingToCreate:F3}
+                """);
+        }
+
+        private static string BuildDetailFingerprint(WarehouseProductionStateRow row)
+        {
+            var builder = new StringBuilder(256);
+            foreach (var hu in row.HuRows.OrderBy(current => current.HuCode, StringComparer.OrdinalIgnoreCase))
+            {
+                builder.Append(hu.HuCode)
+                    .Append('|').Append(hu.Location)
+                    .Append('|').Append(hu.Qty.ToString("F3", CultureInfo.InvariantCulture))
+                    .Append('|').Append(hu.StockStatus)
+                    .Append(';');
+            }
+
+            builder.Append('#');
+            foreach (var prd in row.ProductionReceipts.OrderBy(current => current.HuCode, StringComparer.OrdinalIgnoreCase))
+            {
+                builder.Append(prd.HuCode)
+                    .Append('|').Append(prd.PrdRef)
+                    .Append('|').Append(prd.PalletStatus)
+                    .Append('|').Append(prd.Qty.ToString("F3", CultureInfo.InvariantCulture))
+                    .Append('|').Append(prd.PlannedQty.ToString("F3", CultureInfo.InvariantCulture))
+                    .Append(';');
+            }
+
+            return builder.ToString();
+        }
+
+        private void NotifySummaryPropertiesChanged()
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ItemName)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Barcode)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Gtin)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ItemTypeName)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Brand)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(BaseUom)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(StockQty)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(FreeQty)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ReservedQty)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(MinStockQty)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(BelowMinQty)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CustomerOpenDemandQty)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PrdPlannedQty)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PrdFilledQty)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(InternalRemainingQty)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RemainingNeedQty)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(NeedReason)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Warnings)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsBelowMin)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(StockQtyDisplay)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(FreeQtyDisplay)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ReservedQtyDisplay)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(MinStockQtyDisplay)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(BelowMinQtyDisplay)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CustomerOpenDemandQtyDisplay)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PrdPlannedQtyDisplay)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PrdFilledQtyDisplay)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RemainingNeedQtyDisplay)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ProductSubline)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(MinStockSummary)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(NeedSummary)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PlanSummary)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(FilledSummary)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RemainingNeedSummary)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RemainingNeedBrush)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RemainingNeedFontWeight)));
+        }
+
+        private void NotifyDetailPropertiesChanged()
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(WarehouseHuRows)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CustomerOrders)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(InternalOrders)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ProductionReceipts)));
+        }
         public bool IsExpanded
         {
             get => _isExpanded;
@@ -3294,6 +3817,9 @@ public partial class MainWindow : Window
         public string PrdRef { get; init; } = string.Empty;
         public string HuCode { get; init; } = string.Empty;
         public string PalletStatus { get; init; } = string.Empty;
+        public string QtyDisplay { get; init; } = string.Empty;
+        public string SourceOrderRef { get; init; } = string.Empty;
+        public string StatusNote { get; init; } = string.Empty;
         public string PlannedQtyDisplay { get; init; } = string.Empty;
         public string FilledQtyDisplay { get; init; } = string.Empty;
         public string StockEffect { get; init; } = string.Empty;

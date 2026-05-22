@@ -24,6 +24,8 @@ public sealed class OrderMarkingExportTests
         Assert.Equal(10, markingOrder.SourceOrderId);
         Assert.Equal(10, markingOrder.OrderId);
         Assert.Equal(3600, harness.MarkingCodes.Count(code => code.MarkingOrderId == markingOrder.Id));
+        Assert.True(harness.GetOrder(10).MarkingCompleted);
+        Assert.Equal(MarkingStatus.Printed, harness.GetOrder(10).EffectiveMarkingStatus);
     }
 
     [Fact]
@@ -63,6 +65,110 @@ public sealed class OrderMarkingExportTests
 
         Assert.True(response.IsSuccessStatusCode);
         Assert.Single(harness.MarkingOrders);
+    }
+
+    [Fact]
+    public void NewInternalMarkingOrder_WithoutExcelOrCodes_IsNotCompleted()
+    {
+        var harness = CreateOrderHarness(OrderType.Internal, qty: 3600, status: OrderStatus.InProgress);
+
+        var order = harness.GetOrder(10);
+
+        Assert.True(order.MarkingApplies);
+        Assert.True(order.MarkingRequired);
+        Assert.False(order.MarkingCompleted);
+        Assert.Equal(MarkingStatus.Required, order.EffectiveMarkingStatus);
+        Assert.Equal("Маркировка не проведена", order.MarkingLabel);
+    }
+
+    [Fact]
+    public void NewInternalMarkingOrder_WithZeroNeedAndNoCodes_IsNotCompleted()
+    {
+        var harness = CreateOrderHarness(OrderType.Internal, qty: 0, status: OrderStatus.InProgress);
+
+        var order = harness.GetOrder(10);
+
+        Assert.True(order.MarkingApplies);
+        Assert.True(order.MarkingRequired);
+        Assert.False(order.MarkingCompleted);
+        Assert.Equal(MarkingStatus.Required, order.EffectiveMarkingStatus);
+        Assert.Equal("Маркировка не проведена", order.MarkingLabel);
+    }
+
+    [Fact]
+    public void NewInternalMarkingOrder_WithUnrelatedFreeCodes_IsNotCompleted()
+    {
+        var harness = CreateOrderHarness(OrderType.Internal, qty: 3600, status: OrderStatus.InProgress);
+        var markingOrderId = Guid.NewGuid();
+        harness.SeedMarkingOrder(new MarkingOrder
+        {
+            Id = markingOrderId,
+            OrderId = null,
+            SourceOrderId = null,
+            SourceType = MarkingNeedCreationService.ProductionNeedSourceType,
+            ItemId = 1,
+            Gtin = "04601234567890",
+            RequestedQuantity = 3600,
+            Status = MarkingOrderStatus.Printed,
+            CreatedAt = new DateTime(2026, 5, 20, 10, 0, 0, DateTimeKind.Utc),
+            UpdatedAt = new DateTime(2026, 5, 20, 10, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedMarkingCodes(markingOrderId, count: 3600, gtin: "04601234567890");
+
+        var order = harness.GetOrder(10);
+
+        Assert.True(order.MarkingApplies);
+        Assert.True(order.MarkingRequired);
+        Assert.False(order.MarkingCompleted);
+        Assert.Equal(MarkingStatus.Required, order.EffectiveMarkingStatus);
+    }
+
+    [Fact]
+    public void FilledPallet_DoesNotMakeInternalOrderMarkingCompleted()
+    {
+        var harness = CreateOrderHarness(OrderType.Internal, qty: 3600, status: OrderStatus.InProgress);
+        harness.SeedDoc(new Doc
+        {
+            Id = 20,
+            DocRef = "PRD-2026-000020",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 10,
+            OrderRef = "INT-010",
+            CreatedAt = new DateTime(2026, 5, 8, 12, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 21,
+            DocId = 20,
+            OrderLineId = 100,
+            ItemId = 1,
+            Qty = 3600,
+            ToLocationId = 1,
+            ToHu = "HU-FILLED-CHZ-001"
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 2001,
+            PrdDocId = 20,
+            DocLineId = 21,
+            OrderId = 10,
+            OrderLineId = 100,
+            ItemId = 1,
+            HuCode = "HU-FILLED-CHZ-001",
+            PlannedQty = 3600,
+            ToLocationId = 1,
+            Status = ProductionPalletStatus.Filled,
+            FilledAt = new DateTime(2026, 5, 8, 13, 0, 0, DateTimeKind.Utc),
+            CreatedAt = new DateTime(2026, 5, 8, 12, 0, 0, DateTimeKind.Utc)
+        });
+
+        var order = harness.GetOrder(10);
+
+        Assert.True(order.MarkingApplies);
+        Assert.True(order.MarkingRequired);
+        Assert.False(order.MarkingCompleted);
+        Assert.Equal(MarkingStatus.Required, order.EffectiveMarkingStatus);
     }
 
     [Fact]

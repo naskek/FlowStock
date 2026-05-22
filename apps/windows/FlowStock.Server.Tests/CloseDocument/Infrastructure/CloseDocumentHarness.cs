@@ -838,6 +838,24 @@ internal sealed class CloseDocumentHarness
                     .ToArray();
             });
 
+        _store.Setup(store => store.ReplaceOrderReceiptPlanLinesForOrderLines(
+                It.IsAny<long>(),
+                It.IsAny<IReadOnlyCollection<long>>(),
+                It.IsAny<IReadOnlyList<OrderReceiptPlanLine>>()))
+            .Callback<long, IReadOnlyCollection<long>, IReadOnlyList<OrderReceiptPlanLine>>((orderId, orderLineIds, replacementLines) =>
+            {
+                if (!_orderReceiptPlanLines.TryGetValue(orderId, out var current))
+                {
+                    current = [];
+                    _orderReceiptPlanLines[orderId] = current;
+                }
+
+                var affected = orderLineIds.ToHashSet();
+                var kept = current.Where(line => !affected.Contains(line.OrderLineId)).ToList();
+                kept.AddRange((replacementLines ?? Array.Empty<OrderReceiptPlanLine>()).Select(CloneOrderReceiptPlanLine));
+                _orderReceiptPlanLines[orderId] = kept;
+            });
+
         _store.Setup(store => store.GetReservedOrderReceiptHuCodes(It.IsAny<long?>()))
             .Returns<long?>(excludeOrderId => _orderReceiptPlanLines
                 .Where(pair => !excludeOrderId.HasValue || pair.Key != excludeOrderId.Value)
@@ -2159,20 +2177,29 @@ internal sealed class CloseDocumentHarness
             .Where(line => _items.TryGetValue(line.ItemId, out var item) && item.IsChestnyZnakMarkingRequired)
             .ToArray();
         var markingApplies = markableLines.Length > 0;
-        var markingCodeCovered = markingApplies && markableLines
+        var markingNeedsByItem = markableLines
             .GroupBy(line => line.ItemId)
+            .Select(group => new
+            {
+                ItemId = group.Key,
+                OrderedQty = group.Sum(line => Math.Max(0, line.QtyOrdered)),
+                RequiredQty = group.Sum(line => GetRequiredMarkingQty(order, line)),
+                Lines = group.ToArray()
+            })
+            .ToArray();
+        var markingCodeCovered = markingNeedsByItem.Any(group => group.OrderedQty > 0.000001)
+                                  && markingNeedsByItem
             .All(group =>
             {
-                var item = _items[group.Key];
-                var requiredQty = group.Sum(line => GetRequiredMarkingQty(order, line));
-                if (requiredQty <= 0.000001)
+                if (group.RequiredQty <= 0.000001)
                 {
                     return true;
                 }
 
-                var freeCodes = CountFreeMarkingCodesForItem(group.Key, item.Gtin);
-                var boundCodes = group.Sum(line => CountBoundMarkingCodesForOrderLine(line.Id));
-                return freeCodes + boundCodes + 0.000001 >= requiredQty;
+                var item = _items[group.ItemId];
+                var freeCodes = CountFreeMarkingCodesForOrderItem(order.Id, group.ItemId, item.Gtin);
+                var boundCodes = group.Lines.Sum(line => CountBoundMarkingCodesForOrderLine(line.Id));
+                return freeCodes + boundCodes + 0.000001 >= group.RequiredQty;
             });
 
         return new Order
@@ -2960,6 +2987,23 @@ internal sealed class CloseDocumentHarness
             .Select(code => (Code: code, Order: _markingOrders.TryGetValue(code.MarkingOrderId, out var order) ? order : null))
             .Count(pair => pair.Order != null
                            && pair.Order.Status is not MarkingOrderStatus.Cancelled and not MarkingOrderStatus.Failed
+                           && (pair.Order.ItemId == itemId
+                               || (!string.IsNullOrWhiteSpace(normalizedGtin)
+                                   && (string.Equals(NormalizeText(pair.Order.Gtin), normalizedGtin, StringComparison.OrdinalIgnoreCase)
+                                       || string.Equals(NormalizeText(pair.Code.Gtin), normalizedGtin, StringComparison.OrdinalIgnoreCase)))));
+    }
+
+    private int CountFreeMarkingCodesForOrderItem(long orderId, long itemId, string? gtin)
+    {
+        var normalizedGtin = NormalizeText(gtin);
+        return _markingCodes.Values
+            .Where(code => code.ReceiptDocId == null
+                           && code.ReceiptLineId == null
+                           && code.Status is MarkingCodeStatus.Reserved or MarkingCodeStatus.Printed)
+            .Select(code => (Code: code, Order: _markingOrders.TryGetValue(code.MarkingOrderId, out var order) ? order : null))
+            .Count(pair => pair.Order != null
+                           && pair.Order.Status is not MarkingOrderStatus.Cancelled and not MarkingOrderStatus.Failed
+                           && (pair.Order.OrderId == orderId || pair.Order.SourceOrderId == orderId)
                            && (pair.Order.ItemId == itemId
                                || (!string.IsNullOrWhiteSpace(normalizedGtin)
                                    && (string.Equals(NormalizeText(pair.Order.Gtin), normalizedGtin, StringComparison.OrdinalIgnoreCase)

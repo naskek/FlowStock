@@ -1698,7 +1698,9 @@ public sealed class DocumentService
                     $"{rowLabel}: количество {FormatQty(line.Qty)} превышает лимит {FormatQty(maxQtyPerHu)} на один HU. Разбейте строку на несколько HU.");
             }
 
-            if (doc.Type == DocType.ProductionReceipt && item?.IsChestnyZnakMarkingRequired == true)
+            if (KmWorkflowEnabled
+                && doc.Type == DocType.ProductionReceipt
+                && item?.IsChestnyZnakMarkingRequired == true)
             {
                 var rounded = Math.Round(line.Qty);
                 if (Math.Abs(line.Qty - rounded) > 0.0001)
@@ -2765,7 +2767,7 @@ public sealed class DocumentService
             var rounded = Math.Round(line.Qty);
             if (Math.Abs(line.Qty - rounded) > 0.0001)
             {
-                throw new InvalidOperationException($"Строка {index + 1} ({item.Name}): количество для маркируемого товара должно быть целым.");
+                continue;
             }
 
             var required = (int)rounded;
@@ -2828,21 +2830,12 @@ public sealed class DocumentService
                 line.ItemId,
                 item.Gtin,
                 missing);
-            if (ids.Count < missing)
+            if (ids.Count == 0)
             {
-                throw new InvalidOperationException(
-                    $"Строка {index + 1} ({item.Name}): требуется {required} код(ов) КМ, " +
-                    $"привязано {assigned}, доступно свободных {ids.Count}.");
+                continue;
             }
 
-            var bound = store.AssignProductionMarkingCodesToReceipt(ids, doc.Id, line.Id, appliedAt);
-            assigned = CountReceiptMarkingCodes(store, line.Id);
-            if (assigned < required)
-            {
-                throw new InvalidOperationException(
-                    $"Строка {index + 1} ({item.Name}): требуется {required} код(ов) КМ, " +
-                    $"привязано {assigned}, доступно свободных {Math.Max(0, ids.Count - bound)}.");
-            }
+            store.AssignProductionMarkingCodesToReceipt(ids, doc.Id, line.Id, appliedAt);
         }
     }
 

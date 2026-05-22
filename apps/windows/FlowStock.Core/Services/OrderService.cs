@@ -1595,7 +1595,7 @@ public sealed class OrderService
         if (order.Type == OrderType.Internal)
         {
             var orderLines = _data.GetOrderLines(order.Id);
-            var internalProducedByLine = OrderReceiptRemainingCalculator.BuildProducedTotalsByOrderLine(_data, order.Id, orderLines);
+            var internalProducedByLine = OrderReceiptRemainingCalculator.BuildClosedProductionTotalsByOrderLine(_data, order.Id, orderLines);
             var anyProduced = orderLines.Any(line =>
             {
                 var produced = internalProducedByLine.TryGetValue(line.Id, out var qty) ? qty : 0d;

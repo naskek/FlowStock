@@ -88,6 +88,44 @@ internal static class OrderReceiptRemainingCalculator
         return totals;
     }
 
+    public static IReadOnlyDictionary<long, double> BuildClosedProductionTotalsByOrderLine(
+        IDataStore dataStore,
+        long orderId,
+        IReadOnlyList<OrderLine>? orderLines = null)
+    {
+        var lines = (orderLines ?? dataStore.GetOrderLines(orderId))
+            .OrderBy(line => line.Id)
+            .ToList();
+        var linesByItem = lines
+            .GroupBy(line => line.ItemId)
+            .ToDictionary(group => group.Key, group => group.OrderBy(line => line.Id).ToList());
+        var totals = lines.ToDictionary(line => line.Id, _ => 0d);
+
+        try
+        {
+            foreach (var doc in dataStore.GetDocsByOrder(orderId)
+                         .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status == DocStatus.Closed))
+            {
+                foreach (var line in dataStore.GetDocLines(doc.Id).Where(line => line.Qty > QtyTolerance))
+                {
+                    if (line.OrderLineId.HasValue && totals.ContainsKey(line.OrderLineId.Value))
+                    {
+                        AddProducedQty(totals, line.OrderLineId.Value, line.Qty);
+                        continue;
+                    }
+
+                    DistributeUnlinkedQtyByItem(totals, linesByItem, line.ItemId, line.Qty);
+                }
+            }
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            return totals;
+        }
+
+        return totals;
+    }
+
     private static void DistributeUnlinkedQtyByItem(
         IDictionary<long, double> totals,
         IReadOnlyDictionary<long, List<OrderLine>> linesByItem,

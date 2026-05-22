@@ -168,7 +168,15 @@
                               SelectionMode="Single"
                               SelectionUnit="FullRow"
                               MinColumnWidth="24"
+                              EnableRowVirtualization="True"
+                              EnableColumnVirtualization="True"
+                              VirtualizingPanel.IsVirtualizing="True"
+                              VirtualizingPanel.VirtualizationMode="Recycling"
+                              VirtualizingPanel.ScrollUnit="Pixel"
+                              ScrollViewer.CanContentScroll="False"
+                              ScrollViewer.IsDeferredScrollingEnabled="False"
                               local:ResponsiveDataGridBehavior.IsEnabled="False"
+                              PreviewMouseWheel="WarehouseProductionStateGrid_PreviewMouseWheel"
                               MouseDoubleClick="WarehouseProductionStateGrid_MouseDoubleClick"
                               Visibility="Visible">
                         <DataGrid.CellStyle>
@@ -205,21 +213,57 @@
                                         BorderThickness="1"
                                         Background="#FAFAFA"
                                         CornerRadius="4">
+                                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                                  HorizontalScrollBarVisibility="Disabled"
+                                                  ScrollViewer.CanContentScroll="False"
+                                                  ScrollViewer.IsDeferredScrollingEnabled="False"
+                                                  MaxHeight="420">
                                     <StackPanel>
-                                        <TextBlock Text="Паллеты" FontWeight="SemiBold" Margin="0,0,0,6" />
+                                        <TextBlock Text="Складские HU" FontWeight="SemiBold" Margin="0,0,0,6" />
                                         <DataGrid AutoGenerateColumns="False"
                                                   IsReadOnly="True"
                                                   CanUserAddRows="False"
                                                   CanUserDeleteRows="False"
                                                   HeadersVisibility="Column"
                                                   Margin="0,0,0,10"
-                                                  ItemsSource="{Binding ProductionReceipts}">
+                                                  MaxHeight="160"
+                                                  ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                                  ScrollViewer.CanContentScroll="False"
+                                                  ScrollViewer.IsDeferredScrollingEnabled="False"
+                                                  EnableRowVirtualization="True"
+                                                  VirtualizingPanel.IsVirtualizing="True"
+                                                  VirtualizingPanel.VirtualizationMode="Recycling"
+                                                  ItemsSource="{Binding WarehouseHuRows}">
                                             <DataGrid.Columns>
                                                 <DataGridTextColumn Header="HU" Binding="{Binding HuCode}" Width="180" />
-                                                <DataGridTextColumn Header="Статус" Binding="{Binding PalletStatus}" Width="110" />
-                                                <DataGridTextColumn Header="План" Binding="{Binding PlannedQtyDisplay}" Width="110" />
-                                                <DataGridTextColumn Header="Наполнено" Binding="{Binding FilledQtyDisplay}" Width="110" />
-                                                <DataGridTextColumn Header="Товар" Binding="{Binding Composition}" Width="*" />
+                                                <DataGridTextColumn Header="Кол-во" Binding="{Binding QtyDisplay}" Width="110" />
+                                                <DataGridTextColumn Header="Статус" Binding="{Binding StockStatus}" Width="220" />
+                                                <DataGridTextColumn Header="Локация" Binding="{Binding Location}" Width="*" />
+                                            </DataGrid.Columns>
+                                        </DataGrid>
+
+                                        <TextBlock Text="План / производство" FontWeight="SemiBold" Margin="0,0,0,6" />
+                                        <DataGrid AutoGenerateColumns="False"
+                                                  IsReadOnly="True"
+                                                  CanUserAddRows="False"
+                                                  CanUserDeleteRows="False"
+                                                  HeadersVisibility="Column"
+                                                  Margin="0,0,0,10"
+                                                  MaxHeight="160"
+                                                  ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                                  ScrollViewer.CanContentScroll="False"
+                                                  ScrollViewer.IsDeferredScrollingEnabled="False"
+                                                  EnableRowVirtualization="True"
+                                                  VirtualizingPanel.IsVirtualizing="True"
+                                                  VirtualizingPanel.VirtualizationMode="Recycling"
+                                                  ItemsSource="{Binding ProductionReceipts}">
+                                            <DataGrid.Columns>
+                                                <DataGridTextColumn Header="HU" Binding="{Binding HuCode}" Width="150" />
+                                                <DataGridTextColumn Header="Статус" Binding="{Binding PalletStatus}" Width="150" />
+                                                <DataGridTextColumn Header="Кол-во" Binding="{Binding QtyDisplay}" Width="90" />
+                                                <DataGridTextColumn Header="Заказ" Binding="{Binding SourceOrderRef}" Width="90" />
+                                                <DataGridTextColumn Header="PRD" Binding="{Binding PrdRef}" Width="150" />
+                                                <DataGridTextColumn Header="Примечание" Binding="{Binding StatusNote}" Width="*" />
                                             </DataGrid.Columns>
                                         </DataGrid>
 
@@ -234,11 +278,10 @@
                                                 <DataGridTextColumn Header="Всего в заказах для клиентов" Binding="{Binding DemandToCloseDisplay}" Width="190" />
                                                 <DataGridTextColumn Header="До минимума" Binding="{Binding DemandToMinDisplay}" Width="120" />
                                                 <DataGridTextColumn Header="Во внутренних заказах" Binding="{Binding AlreadyPlannedInternalDisplay}" Width="150" />
-                                                <DataGridTextColumn Header="Выпущено" Binding="{Binding FilledDisplay}" Width="120" />
-                                                <DataGridTextColumn Header="Осталось выпустить" Binding="{Binding RemainingToCreateDisplay}" Width="150" />
                                             </DataGrid.Columns>
                                         </DataGrid>
                                     </StackPanel>
+                                    </ScrollViewer>
                                 </Border>
                             </DataTemplate>
                         </DataGrid.RowDetailsTemplate>
@@ -345,36 +388,6 @@
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Выпущено / наполнено"
-                                                Binding="{Binding FilledSummary}"
-                                                Width="Auto"
-                                                MinWidth="100"
-                                                MaxWidth="132">
-                                <DataGridTextColumn.ElementStyle>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="TextWrapping" Value="NoWrap" />
-                                        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
-                                        <Setter Property="ToolTip" Value="{Binding FilledSummary}" />
-                                        <Setter Property="VerticalAlignment" Value="Center" />
-                                    </Style>
-                                </DataGridTextColumn.ElementStyle>
-                            </DataGridTextColumn>
-                            <DataGridTemplateColumn Header="Осталось выпустить"
-                                                    Width="Auto"
-                                                    MinWidth="96"
-                                                    MaxWidth="128">
-                                <DataGridTemplateColumn.CellTemplate>
-                                    <DataTemplate>
-                                        <TextBlock Text="{Binding RemainingNeedSummary}"
-                                                   Foreground="{Binding RemainingNeedBrush}"
-                                                   FontWeight="{Binding RemainingNeedFontWeight}"
-                                                   TextWrapping="NoWrap"
-                                                   TextTrimming="CharacterEllipsis"
-                                                   ToolTip="{Binding RemainingNeedSummary}"
-                                                   VerticalAlignment="Center" />
-                                    </DataTemplate>
-                                </DataGridTemplateColumn.CellTemplate>
-                            </DataGridTemplateColumn>
                         </DataGrid.Columns>
                     </DataGrid>
                     <TextBlock x:Name="StockEmptyText"

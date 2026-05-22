@@ -36,10 +36,14 @@ public partial class OrderDetailsWindow : Window
     private bool _allowCloseWithoutPrompt;
     private bool _suppressPartnerFilter;
     private bool _productionPalletHuLocked;
+    private readonly CustomerOrderHuBindingCoordinator _huBinding;
 
     public OrderDetailsWindow(AppServices services)
     {
         _services = services;
+        _huBinding = new CustomerOrderHuBindingCoordinator(
+            services.WpfReadApi,
+            orderId => services.DataStore.GetOrderReceiptPlanLines(orderId));
         InitializeComponent();
         InitializeData();
         LoadPartners();
@@ -49,6 +53,9 @@ public partial class OrderDetailsWindow : Window
     public OrderDetailsWindow(AppServices services, long orderId)
     {
         _services = services;
+        _huBinding = new CustomerOrderHuBindingCoordinator(
+            services.WpfReadApi,
+            id => services.DataStore.GetOrderReceiptPlanLines(id));
         _orderId = orderId;
         InitializeComponent();
         InitializeData();
@@ -58,7 +65,7 @@ public partial class OrderDetailsWindow : Window
 
     private void InitializeData()
     {
-        OrderLinesGrid.ItemsSource = _lines;
+        OrderLinesGrid.ItemsSource = _huBinding.Lines;
         PartnerCombo.ItemsSource = _partners;
         TypeCombo.ItemsSource = _typeOptions;
 
@@ -153,6 +160,7 @@ public partial class OrderDetailsWindow : Window
         OrderStatusText.Text = OrderStatusMapper.StatusToDisplayName(OrderStatus.Draft, OrderType.Customer);
         _lines.Clear();
         _productionPalletHuLocked = false;
+        _huBinding.ResetForNewOrder();
         UpdateTypeUi();
         RefreshLineMetrics();
         SetEditingEnabled(true);
@@ -171,6 +179,7 @@ public partial class OrderDetailsWindow : Window
         }
 
         BeginLoad();
+        _huBinding.BeginLoad();
         _order = _services.WpfReadApi.TryGetOrder(_orderId.Value, out var apiOrder)
             ? apiOrder
             : null;
@@ -212,6 +221,8 @@ public partial class OrderDetailsWindow : Window
         SetEditingEnabled(!isFinalStatus);
         UpdateMarkingExportButton();
         UpdatePalletButtons();
+        SyncHuBindingLines();
+        _huBinding.EndLoad();
         EndLoad();
     }
 
@@ -523,19 +534,14 @@ public partial class OrderDetailsWindow : Window
             return false;
         }
 
-        if (!TryResolveBindReservedStockForSave(orderRef, type, partnerId, out var bindReservedStockForCustomer))
-        {
-            return false;
-        }
-
         try
         {
             if (_orderId.HasValue)
             {
-                return TryUpdateOrderViaServer(_orderId.Value, orderRef, type, partnerId, dueDate, comment, bindReservedStockForCustomer, showFeedback);
+                return TryUpdateOrderViaServer(_orderId.Value, orderRef, type, partnerId, dueDate, comment, showFeedback);
             }
 
-            return TryCreateOrderViaServer(orderRef, type, partnerId, dueDate, comment, bindReservedStockForCustomer, showFeedback);
+            return TryCreateOrderViaServer(orderRef, type, partnerId, dueDate, comment, showFeedback);
         }
         catch (ArgumentException ex)
         {
@@ -556,7 +562,6 @@ public partial class OrderDetailsWindow : Window
         long? partnerId,
         DateTime? dueDate,
         string? comment,
-        bool? bindReservedStockForCustomer,
         bool showFeedback)
     {
         var result = _services.WpfUpdateOrders.UpdateOrderAsync(
@@ -569,7 +574,7 @@ public partial class OrderDetailsWindow : Window
                     OrderStatus.InProgress,
                     comment,
                     _lines.ToList(),
-                    bindReservedStockForCustomer))
+                    false))
             .ConfigureAwait(false)
             .GetAwaiter()
             .GetResult();
@@ -597,6 +602,11 @@ public partial class OrderDetailsWindow : Window
             MessageBox.Show(result.Message, "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
+        if (type == OrderType.Customer && !TryApplyHuReservationsAfterSave())
+        {
+            return false;
+        }
+
         if (showFeedback)
         {
             SaveStatusText.Text = "Сохранено";
@@ -611,7 +621,6 @@ public partial class OrderDetailsWindow : Window
         long? partnerId,
         DateTime? dueDate,
         string? comment,
-        bool? bindReservedStockForCustomer,
         bool showFeedback)
     {
         var result = _services.WpfCreateOrders.CreateOrderAsync(
@@ -623,7 +632,7 @@ public partial class OrderDetailsWindow : Window
                     OrderStatus.InProgress,
                     comment,
                     _lines.ToList(),
-                    bindReservedStockForCustomer))
+                    false))
             .ConfigureAwait(false)
             .GetAwaiter()
             .GetResult();
@@ -651,6 +660,11 @@ public partial class OrderDetailsWindow : Window
             MessageBox.Show(result.Message, "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
+        if (type == OrderType.Customer && !TryApplyHuReservationsAfterSave())
+        {
+            return false;
+        }
+
         if (showFeedback)
         {
             SaveStatusText.Text = "Сохранено";
@@ -659,167 +673,133 @@ public partial class OrderDetailsWindow : Window
         return true;
     }
 
-    private bool TryResolveBindReservedStockForSave(
-        string orderRef,
-        OrderType type,
-        long? partnerId,
-        out bool? bindReservedStockForCustomer)
+    private bool TryApplyHuReservationsAfterSave()
     {
-        bindReservedStockForCustomer = null;
-        if (type != OrderType.Customer)
+        if (GetSelectedOrderType() != OrderType.Customer || !_orderId.HasValue)
         {
             return true;
         }
 
-        var currentValue = _order?.Type == OrderType.Customer
-            ? _order.UseReservedStock
-            : false;
-
-        const string previewChoiceExplanation =
-            "Да — закрепить найденные HU и выполнить автоперенос с подходящих INTERNAL-заказов.\n" +
-            "Нет — сохранить без резерва HU; автоперенос с INTERNAL выполнен не будет.";
-
-        const string fallbackChoiceExplanation =
-            "Да — сервер попробует закрепить доступные HU и перенести потребность с подходящих INTERNAL-заказов.\n" +
-            "Нет — сохранить без резерва HU; автоперенос с INTERNAL выполнен не будет.";
-
-        string dialogText;
-        if (TryBuildReservationPreview(orderRef, partnerId, out var previewText))
+        SyncHuBindingLines();
+        _huBinding.RefreshCandidatesForApply();
+        var applyLines = _huBinding.BuildApplyLines();
+        if (applyLines.Count == 0)
         {
-            dialogText = previewText + "\n\n" + previewChoiceExplanation;
-        }
-        else
-        {
-            var partnerDisplay = !partnerId.HasValue
-                ? "контрагента"
-                : (_partnersAll.FirstOrDefault(partner => partner.Id == partnerId.Value)?.DisplayName ?? $"ID {partnerId.Value}");
-            dialogText =
-                $"Включить резерв складских HU и автоперенос с внутренних заказов для заказа №{orderRef.Trim()} для {partnerDisplay}?\n\n"
-                + fallbackChoiceExplanation;
+            return true;
         }
 
-        var confirm = MessageBox.Show(
-            dialogText,
-            "Заказы",
-            MessageBoxButton.YesNoCancel,
-            MessageBoxImage.Question,
-            currentValue ? MessageBoxResult.Yes : MessageBoxResult.No);
-        if (confirm == MessageBoxResult.Cancel)
+        if (!_services.WpfReadApi.TryApplyHuReservations(_orderId.Value, applyLines, out var result, out var error))
         {
+            MessageBox.Show(
+                BuildHuReservationApplyErrorMessage(error),
+                "Привязка HU",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
             return false;
         }
 
-        bindReservedStockForCustomer = confirm == MessageBoxResult.Yes;
+        if (result?.Warnings.Count > 0)
+        {
+            MessageBox.Show(
+                string.Join(Environment.NewLine, result.Warnings),
+                "Привязка HU",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+
+        _huBinding.MarkApplyCommitted();
+        SyncHuBindingLines();
         return true;
     }
 
-    private bool TryBuildReservationPreview(string orderRef, long? partnerId, out string previewText)
+    private static string BuildHuReservationApplyErrorMessage(WpfHuReservationApplyError? error)
     {
-        previewText = string.Empty;
-        if (_lines.Count == 0)
+        if (error == null)
         {
-            return false;
+            return "Сервер отклонил привязку HU. Проверьте выбор HU и повторите сохранение.";
         }
 
-        if (!_services.WpfReadApi.TryGetHuStockRows(out var huStockRows))
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(error.Message))
         {
-            if (!TryHasStockForCurrentOrderLines(out var hasStock) || !hasStock)
-            {
-                return false;
-            }
-
-            var partnerFallback = !partnerId.HasValue
-                ? "контрагента"
-                : (_partnersAll.FirstOrDefault(partner => partner.Id == partnerId.Value)?.DisplayName ?? $"ID {partnerId.Value}");
-            previewText = $"Найден складской остаток. Закрепить его для заказа №{orderRef.Trim()} для контрагента {partnerFallback}?";
-            return true;
+            parts.Add(error.Message);
+        }
+        else if (!string.IsNullOrWhiteSpace(error.ErrorCode))
+        {
+            parts.Add(error.ErrorCode);
         }
 
-        var requiredByItem = _lines
-            .GroupBy(line => line.ItemId)
-            .ToDictionary(group => group.Key, group => group.Sum(line => line.QtyOrdered));
-        if (requiredByItem.Count == 0)
+        if (error.Problems.Count > 0)
         {
-            return false;
+            parts.Add(string.Join(Environment.NewLine, error.Problems));
         }
 
-        var reservationEnabledItems = GetOrderReservationEnabledItemIds(requiredByItem.Keys);
-        if (reservationEnabledItems.Count == 0)
-        {
-            return false;
-        }
-
-        var partnerName = partnerId.HasValue
-            ? _partnersAll.FirstOrDefault(partner => partner.Id == partnerId.Value)?.DisplayName
-            : null;
-
-        if (!OrderReservationPromptPolicy.ShouldPrompt(
-                _lines.ToList(),
-                huStockRows,
-                reservationEnabledItems,
-                _orderId,
-                out var huList))
-        {
-            return false;
-        }
-
-        var partnerDisplay = !string.IsNullOrWhiteSpace(partnerName) ? partnerName : "контрагента";
-        previewText =
-            $"Найдены остатки {string.Join(", ", huList)}. " +
-            $"Закрепить их для заказа №{orderRef.Trim()} для контрагента {partnerDisplay}?";
-        return true;
+        return parts.Count == 0
+            ? "Сервер отклонил привязку HU."
+            : string.Join(Environment.NewLine + Environment.NewLine, parts);
     }
 
-    private HashSet<long> GetOrderReservationEnabledItemIds(IEnumerable<long> itemIds)
+    private void HuPickerButton_Click(object sender, RoutedEventArgs e)
     {
-        var targetItemIds = itemIds.ToHashSet();
-        if (targetItemIds.Count == 0)
+        if (sender is not System.Windows.Controls.Button button || button.DataContext is not CustomerOrderLinePresentation row)
         {
-            return [];
+            return;
         }
 
-        if (!_services.WpfReadApi.TryGetItems(null, out var items)
-            || !_services.WpfCatalogApi.TryGetItemTypes(includeInactive: true, out var itemTypes))
+        if (!EnsureEditable())
         {
-            return [];
+            return;
         }
 
-        var reservationTypeIds = itemTypes
-            .Where(type => type.EnableOrderReservation)
-            .Select(type => type.Id)
-            .ToHashSet();
+        var state = row.State;
+        if (!state.IsHuPickerEnabled)
+        {
+            MessageBox.Show(
+                "Привязка HU доступна после сохранения заказа и для строк с положительным количеством.",
+                "Привязка HU",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
 
-        return items
-            .Where(item => targetItemIds.Contains(item.Id))
-            .Where(item => item.ItemTypeId.HasValue && reservationTypeIds.Contains(item.ItemTypeId.Value))
-            .Select(item => item.Id)
-            .ToHashSet();
+        if (!_huBinding.EnsureLineCandidatesLoaded(state.ClientLineKey))
+        {
+            MessageBox.Show(
+                "Не удалось загрузить доступные HU. Проверьте связь с сервером и повторите.",
+                "Привязка HU",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        var remaining = Math.Max(0, state.Line.QtyRemaining > QtyTolerance ? state.Line.QtyRemaining : state.Line.QtyOrdered);
+        var picker = new HuReservationPickerWindow(
+            state.Line.ItemName,
+            state.Line.QtyOrdered,
+            remaining,
+            state.GetPickerCandidates(),
+            state.SelectedHuCodes,
+            _huBinding.GetSelectedHuCodesOnOtherLines(state.ClientLineKey))
+        {
+            Owner = this
+        };
+        if (picker.ShowDialog() != true)
+        {
+            return;
+        }
+
+        _huBinding.ApplyPickerSelection(state.ClientLineKey, picker.SelectedHuCodes);
+        MarkDirty();
     }
 
-    private bool TryHasStockForCurrentOrderLines(out bool hasStock)
+    private void SyncHuBindingLines()
     {
-        hasStock = false;
-        if (_lines.Count == 0)
+        if (GetSelectedOrderType() != OrderType.Customer)
         {
-            return true;
+            return;
         }
 
-        var reservationEnabledItems = GetOrderReservationEnabledItemIds(_lines.Select(line => line.ItemId));
-        if (reservationEnabledItems.Count == 0)
-        {
-            return true;
-        }
-
-        if (!_services.WpfReadApi.TryGetItemAvailability(out var availability))
-        {
-            return false;
-        }
-
-        hasStock = _lines
-            .GroupBy(line => line.ItemId)
-            .Where(group => reservationEnabledItems.Contains(group.Key))
-            .Any(group => availability.TryGetValue(group.Key, out var qty) && qty > QtyTolerance);
-        return true;
+        _huBinding.SetOrderContext(_orderId, OrderType.Customer, _lines);
     }
 
     private void AddLine_Click(object sender, RoutedEventArgs e)
@@ -870,7 +850,7 @@ public partial class OrderDetailsWindow : Window
         }
 
         var qtyBase = qtyDialog.QtyBase;
-        _lines.Add(new OrderLineView
+        var line = new OrderLineView
         {
             ItemId = item.Id,
             ItemName = item.Name,
@@ -878,9 +858,15 @@ public partial class OrderDetailsWindow : Window
             Gtin = item.Gtin,
             QtyOrdered = qtyBase,
             ProductionPurpose = purpose
-        });
+        };
+        _lines.Add(line);
 
         RefreshLineMetrics();
+        if (orderType == OrderType.Customer)
+        {
+            _huBinding.NotifyLineChanged(line);
+        }
+
         MarkDirty();
     }
 
@@ -928,6 +914,11 @@ public partial class OrderDetailsWindow : Window
 
         _selectedLine.QtyOrdered = qtyDialog.QtyBase;
         RefreshLineMetrics();
+        if (GetSelectedOrderType() == OrderType.Customer)
+        {
+            _huBinding.NotifyLineChanged(_selectedLine);
+        }
+
         MarkDirty();
         OrderLinesGrid.Items.Refresh();
     }
@@ -943,6 +934,11 @@ public partial class OrderDetailsWindow : Window
         {
             MessageBox.Show("Выберите строку.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
+        }
+
+        if (GetSelectedOrderType() == OrderType.Customer)
+        {
+            _huBinding.RemoveLine(_selectedLine);
         }
 
         _lines.Remove(_selectedLine);
@@ -965,7 +961,7 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        if (sender is not System.Windows.Controls.CheckBox checkBox || checkBox.DataContext is not OrderLineView line)
+        if (sender is not System.Windows.Controls.CheckBox checkBox || TryGetLineFromGridContext(checkBox.DataContext, out var line) == false)
         {
             MessageBox.Show("Выберите строку.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
@@ -1007,7 +1003,7 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        if (sender is not System.Windows.Controls.TextBox textBox || textBox.DataContext is not OrderLineView line)
+        if (sender is not System.Windows.Controls.TextBox textBox || TryGetLineFromGridContext(textBox.DataContext, out var line) == false)
         {
             return;
         }
@@ -1035,10 +1031,36 @@ public partial class OrderDetailsWindow : Window
 
     private void OrderLinesGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
-        _selectedLine = OrderLinesGrid.SelectedItem as OrderLineView;
+        _selectedLine = GetSelectedOrderLine();
         DeleteLineButton.IsEnabled = _selectedLine != null && EnsureEditable(false);
         EditLineButton.IsEnabled = _selectedLine != null && EnsureEditable(false);
         UpdateMarkingExportButton();
+    }
+
+    private OrderLineView? GetSelectedOrderLine()
+    {
+        return OrderLinesGrid.SelectedItem switch
+        {
+            CustomerOrderLinePresentation row => row.Line,
+            OrderLineView line => line,
+            _ => null
+        };
+    }
+
+    private static bool TryGetLineFromGridContext(object? dataContext, out OrderLineView line)
+    {
+        line = null!;
+        switch (dataContext)
+        {
+            case CustomerOrderLinePresentation row:
+                line = row.Line;
+                return true;
+            case OrderLineView direct:
+                line = direct;
+                return true;
+            default:
+                return false;
+        }
     }
 
     private void OrderLinesGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
@@ -1108,6 +1130,7 @@ public partial class OrderDetailsWindow : Window
         UpdateEmptyState();
         OrderLinesGrid.Items.Refresh();
         UpdateMarkingExportButton();
+        SyncHuBindingLines();
     }
 
     private bool TryRefreshPersistedOrderLineMetricsFromApi(OrderType type)
@@ -1135,6 +1158,7 @@ public partial class OrderDetailsWindow : Window
 
         UpdateEmptyState();
         OrderLinesGrid.Items.Refresh();
+        SyncHuBindingLines();
         return true;
     }
 
@@ -1489,6 +1513,17 @@ public partial class OrderDetailsWindow : Window
         AvailableQtyColumn.Header = type == OrderType.Internal ? "В наличии ГП" : "В наличии";
         CanShipNowColumn.Visibility = type == OrderType.Internal ? Visibility.Collapsed : Visibility.Visible;
         ShortageColumn.Visibility = type == OrderType.Internal ? Visibility.Collapsed : Visibility.Visible;
+
+        var isCustomer = type == OrderType.Customer;
+        OrderLinesGrid.ItemsSource = isCustomer ? _huBinding.Lines : _lines;
+        HuAvailableColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;
+        HuBoundColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;
+        HuRemainingColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;
+        HuPickerColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;
+        if (isCustomer)
+        {
+            SyncHuBindingLines();
+        }
     }
 
     private OrderType GetSelectedOrderType()
@@ -1521,6 +1556,7 @@ public partial class OrderDetailsWindow : Window
     private void BeginLoad()
     {
         _isLoading = true;
+        _huBinding.BeginLoad();
     }
 
     private void EndLoad()

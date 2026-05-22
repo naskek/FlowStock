@@ -181,10 +181,12 @@ public sealed class WarehouseProductionStateServiceTests
         harness.SeedLedgerEntry(700, 1001, 1, 40, "HU-000001");
 
         var row = Assert.Single(new WarehouseProductionStateService(harness.Store).GetRows(includeZero: false));
-        var filled = Assert.Single(row.ProductionReceipts.Where(pallet => pallet.HuCode == "HU-000001"));
+        var warehouseHu = Assert.Single(row.HuRows, hu => string.Equals(hu.HuCode, "HU-000001", StringComparison.OrdinalIgnoreCase));
 
         Assert.Equal(40, row.StockQty);
-        Assert.Equal("в остатках", filled.StockEffect);
+        Assert.Equal(40, warehouseHu.Qty, 3);
+        Assert.Equal("На складе", warehouseHu.StockStatus);
+        Assert.DoesNotContain(row.ProductionReceipts, pallet => string.Equals(pallet.HuCode, "HU-000001", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain("FILLED_PALLET_WITHOUT_LEDGER", row.Warnings);
     }
 
@@ -215,7 +217,7 @@ public sealed class WarehouseProductionStateServiceTests
         var planned = Assert.Single(row.ProductionReceipts);
 
         Assert.Equal(0, row.StockQty);
-        Assert.Equal("запланировано, не склад", planned.StockEffect);
+        Assert.Equal("план / производство", planned.StockEffect);
     }
 
     [Fact]

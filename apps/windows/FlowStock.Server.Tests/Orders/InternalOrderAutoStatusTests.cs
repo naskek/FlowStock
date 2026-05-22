@@ -68,6 +68,44 @@ public sealed class InternalOrderAutoStatusTests
     }
 
     [Fact]
+    public void RefreshPersistedStatus_WhenAllPalletsFilledButProductionReceiptOpen_StaysInProgress()
+    {
+        const long orderId = 69;
+        const long lineId = 6901;
+
+        var store = CreateStore(orderId, OrderStatus.InProgress, [
+            new OrderLine { Id = lineId, OrderId = orderId, ItemId = 6, QtyOrdered = 3600 }
+        ], [
+            new OrderReceiptLine
+            {
+                OrderLineId = lineId,
+                OrderId = orderId,
+                ItemId = 6,
+                QtyOrdered = 3600,
+                QtyReceived = 3600,
+                QtyRemaining = 0
+            }
+        ]);
+        store.Setup(s => s.GetDocsByOrder(orderId))
+            .Returns([
+                new Doc
+                {
+                    Id = 690,
+                    Type = DocType.ProductionReceipt,
+                    Status = DocStatus.Draft,
+                    OrderId = orderId
+                }
+            ]);
+
+        var service = new OrderService(store.Object);
+        var status = service.RefreshPersistedStatus(orderId);
+
+        Assert.Equal(OrderStatus.InProgress, status);
+        store.Verify(s => s.UpdateOrderStatus(orderId, OrderStatus.Shipped), Times.Never);
+        store.Verify(s => s.GetDocLines(690), Times.Never);
+    }
+
+    [Fact]
     public void RefreshPersistedStatus_WhenStaleShippedStatusAndQtyZero_BecomesInProgress()
     {
         const long orderId = 66;
@@ -313,7 +351,28 @@ public sealed class InternalOrderAutoStatusTests
                 QtyRemaining = 0
             }
         ]);
-        store.Setup(s => s.GetDocsByOrder(orderId)).Returns(Array.Empty<Doc>());
+        store.Setup(s => s.GetDocsByOrder(orderId))
+            .Returns([
+                new Doc
+                {
+                    Id = 680,
+                    Type = DocType.ProductionReceipt,
+                    Status = DocStatus.Closed,
+                    OrderId = orderId,
+                    ClosedAt = new DateTime(2026, 1, 2)
+                }
+            ]);
+        store.Setup(s => s.GetDocLines(680))
+            .Returns([
+                new DocLine
+                {
+                    Id = 6801,
+                    DocId = 680,
+                    OrderLineId = lineId,
+                    ItemId = 6,
+                    Qty = 3600
+                }
+            ]);
 
         var service = new OrderService(store.Object);
         var status = service.RefreshPersistedStatus(orderId);

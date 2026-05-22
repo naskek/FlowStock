@@ -578,7 +578,7 @@ public sealed class CreateOrdersFromProductionNeedTests
     }
 
     [Fact]
-    public async Task ExportMarkingExcel_CreatesSyntheticCodes_AndOrderDtoShowsCompleted()
+    public async Task ExportProductionNeedMarkingExcel_DoesNotCompleteUnlinkedInternalOrder()
     {
         var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 1200, minStockQty: 3600);
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
@@ -595,9 +595,9 @@ public sealed class CreateOrdersFromProductionNeedTests
         var internalDraft = Assert.Single(harness.Store.GetOrders().Where(order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft));
         var json = SerializeOrderDto(new OrderService(harness.Store).GetOrder(internalDraft.Id));
 
-        Assert.True(json.GetProperty("marking_completed").GetBoolean());
-        Assert.Equal("PRINTED", json.GetProperty("marking_effective_status").GetString());
-        Assert.Equal("Маркировка проведена", json.GetProperty("marking_label").GetString());
+        Assert.False(json.GetProperty("marking_completed").GetBoolean());
+        Assert.Equal("REQUIRED", json.GetProperty("marking_effective_status").GetString());
+        Assert.Equal("Маркировка не проведена", json.GetProperty("marking_label").GetString());
     }
 
     [Fact]
@@ -849,7 +849,7 @@ public sealed class CreateOrdersFromProductionNeedTests
     }
 
     [Fact]
-    public async Task CreateOrdersFromProductionNeed_ForMarkableItem_CreatesInternalDraftThatRequiresKmOnReceipt()
+    public async Task CreateOrdersFromProductionNeed_ForMarkableItem_InternalReceiptClosesWithoutKmCodes()
     {
         var (harness, apiStore) = CreateMixedNeedScenario();
         harness.SeedItem(new Item
@@ -902,11 +902,9 @@ public sealed class CreateOrdersFromProductionNeedTests
 
         var result = harness.CreateService().TryCloseDoc(50, allowNegative: false);
 
-        Assert.False(result.Success);
-        Assert.Contains(
-            "Строка 1 (Горчица): требуется 1134 код(ов) КМ, привязано 0, доступно свободных 0.",
-            result.Errors);
-        Assert.Equal(DocStatus.Draft, harness.GetDoc(50).Status);
+        Assert.True(result.Success);
+        Assert.Empty(result.Errors);
+        Assert.Equal(DocStatus.Closed, harness.GetDoc(50).Status);
     }
 
     [Fact]

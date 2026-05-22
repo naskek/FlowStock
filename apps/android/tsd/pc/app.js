@@ -625,16 +625,21 @@
       .map(function (row) {
         var itemId = Number(row.itemId) || 0;
         var isExpanded = !!(expandedItemIds && expandedItemIds[itemId]);
+        var warehouseHuHtml = renderWarehouseStateWarehouseHus(row.warehouseHuRows || row.huRows || []);
         var palletsHtml = renderWarehouseStatePallets(row.productionReceipts || []);
         var needHtml = renderWarehouseStateNeedBreakdown(row);
         var detailRow = "";
         if (isExpanded) {
           detailRow =
             '<tr class="pc-stock-detail-row">' +
-            '<td colspan="7" class="pc-stock-detail-cell">' +
+            '<td colspan="5" class="pc-stock-detail-cell">' +
             '<div class="pc-stock-detail-block">' +
             '<section class="pc-stock-detail-section">' +
-            '<div class="pc-stock-detail-title">Паллеты</div>' +
+            '<div class="pc-stock-detail-title">Складские HU</div>' +
+            warehouseHuHtml +
+            "</section>" +
+            '<section class="pc-stock-detail-section">' +
+            '<div class="pc-stock-detail-title">План / производство</div>' +
             palletsHtml +
             "</section>" +
             '<section class="pc-stock-detail-section">' +
@@ -677,12 +682,6 @@
           '<td class="pc-stock-plan-cell">' +
           renderSummaryLines(row.planSummaryLines) +
           "</td>" +
-          "<td>" +
-          escapeHtml(row.filledSummary || "—") +
-          "</td>" +
-          '<td><span class="' + escapeHtml(row.remainingNeedClass || "") + '">' +
-          escapeHtml(row.remainingNeedSummary || "—") +
-          "</span></td>" +
           "</tr>" +
           detailRow
         );
@@ -696,8 +695,6 @@
       '<col class="pc-stock-col-min" />' +
       '<col class="pc-stock-col-need" />' +
       '<col class="pc-stock-col-plan" />' +
-      '<col class="pc-stock-col-filled" />' +
-      '<col class="pc-stock-col-remaining" />' +
       "</colgroup>" +
       "<thead><tr>" +
       renderSortableHeader("stock", "itemName", "Товар") +
@@ -705,8 +702,6 @@
       renderSortableHeader("stock", "minStockQty", "Минимум") +
       '<th>Потребность</th>' +
       '<th>План</th>' +
-      renderSortableHeader("stock", "prdFilledQty", "Выпущено / наполнено") +
-      renderSortableHeader("stock", "remainingNeedQty", "Осталось выпустить") +
       "</tr></thead>" +
       "<tbody>" +
       body +
@@ -727,9 +722,44 @@
       .join("");
   }
 
+  function renderWarehouseStateWarehouseHus(huRows) {
+    if (!Array.isArray(huRows) || !huRows.length) {
+      return '<div class="pc-stock-details-empty">Складские HU отсутствуют.</div>';
+    }
+
+    var body = huRows
+      .map(function (hu) {
+        return (
+          "<tr>" +
+          "<td>" + escapeHtml(hu.huCode || "—") + "</td>" +
+          '<td class="pc-num">' + escapeHtml(hu.qtyDisplay || "—") + "</td>" +
+          "<td>" + escapeHtml(hu.stockStatus || "—") + "</td>" +
+          "<td>" + escapeHtml(hu.location || "—") + "</td>" +
+          "</tr>"
+        );
+      })
+      .join("");
+
+    return (
+      '<div class="pc-stock-detail-table-wrap">' +
+      '<table class="pc-table pc-stock-detail-table">' +
+      "<thead><tr>" +
+      "<th>HU</th>" +
+      '<th class="pc-num">Кол-во</th>' +
+      "<th>Статус</th>" +
+      "<th>Локация</th>" +
+      "</tr></thead>" +
+      "<tbody>" +
+      body +
+      "</tbody>" +
+      "</table>" +
+      "</div>"
+    );
+  }
+
   function renderWarehouseStatePallets(pallets) {
     if (!Array.isArray(pallets) || !pallets.length) {
-      return '<div class="pc-stock-details-empty">Паллетный план не сформирован.</div>';
+      return '<div class="pc-stock-details-empty">План / производство не сформирован.</div>';
     }
 
     var body = pallets
@@ -738,9 +768,10 @@
           "<tr>" +
           "<td>" + escapeHtml(pallet.huCode || "—") + "</td>" +
           "<td>" + escapeHtml(pallet.palletStatus || "—") + "</td>" +
-          '<td class="pc-num">' + escapeHtml(pallet.plannedQtyDisplay || "—") + "</td>" +
-          '<td class="pc-num">' + escapeHtml(pallet.filledQtyDisplay || "—") + "</td>" +
-          "<td>" + escapeHtml(pallet.composition || "—") + "</td>" +
+          '<td class="pc-num">' + escapeHtml(pallet.qtyDisplay || "—") + "</td>" +
+          "<td>" + escapeHtml(pallet.sourceOrderRef || "—") + "</td>" +
+          "<td>" + escapeHtml(pallet.prdRef || "—") + "</td>" +
+          "<td>" + escapeHtml(pallet.statusNote || "—") + "</td>" +
           "</tr>"
         );
       })
@@ -752,9 +783,10 @@
       "<thead><tr>" +
       "<th>HU</th>" +
       "<th>Статус</th>" +
-      '<th class="pc-num">План</th>' +
-      '<th class="pc-num">Наполнено</th>' +
-      "<th>Товар</th>" +
+      '<th class="pc-num">Кол-во</th>' +
+      "<th>Заказ</th>" +
+      "<th>PRD</th>" +
+      "<th>Примечание</th>" +
       "</tr></thead>" +
       "<tbody>" +
       body +
@@ -776,15 +808,11 @@
       '<th class="pc-num">Всего в заказах для клиентов</th>' +
       '<th class="pc-num">До минимума</th>' +
       '<th class="pc-num">Во внутренних заказах</th>' +
-      '<th class="pc-num">Выпущено</th>' +
-      '<th class="pc-num">Осталось выпустить</th>' +
       "</tr></thead>" +
       "<tbody><tr>" +
       '<td class="pc-num">' + escapeHtml(row.customerDemandDisplay || "—") + "</td>" +
       '<td class="pc-num">' + escapeHtml(row.minDemandDisplay || "—") + "</td>" +
       '<td class="pc-num">' + escapeHtml(row.internalPlanDisplay || "—") + "</td>" +
-      '<td class="pc-num">' + escapeHtml(row.filledSummary || "—") + "</td>" +
-      '<td class="pc-num">' + escapeHtml(row.remainingNeedQty > 0 ? row.remainingNeedQtyDisplay : "—") + "</td>" +
       "</tr></tbody>" +
       "</table>" +
       "</div>"
@@ -1482,24 +1510,40 @@
       remainingToCreate = remainingNeedQty;
     }
 
-    var huRows = Array.isArray(row && row.hu_rows)
+    var warehouseHuRows = Array.isArray(row && row.hu_rows)
       ? row.hu_rows.map(function (hu) {
+          var qty = Number(hu && hu.qty) || 0;
           return {
             location: String((hu && hu.location) || "").trim(),
             huCode: String((hu && hu.hu_code) || "").trim(),
+            qty: qty,
+            qtyDisplay: formatWarehouseStateQty(qty, baseUom),
+            stockStatus: String((hu && hu.stock_status) || "На складе").trim() || "На складе",
           };
         })
       : [];
 
     var productionReceipts = Array.isArray(row && row.production_receipts)
       ? row.production_receipts.map(function (pallet) {
+          var plannedQty = Number(pallet && pallet.planned_qty) || 0;
+          var filledQty = Number(pallet && pallet.filled_qty) || 0;
+          var qty = Number(pallet && pallet.qty);
+          if (!isFinite(qty) || qty <= 0) {
+            qty = filledQty > 0.000001 ? filledQty : plannedQty;
+          }
+          var statusDisplay = String((pallet && pallet.pallet_status_display) || "").trim();
           return {
             huCode: String((pallet && pallet.hu_code) || "").trim() || "—",
-            palletStatus: translatePalletStatus((pallet && pallet.pallet_status) || ""),
-            plannedQty: Number(pallet && pallet.planned_qty) || 0,
-            filledQty: Number(pallet && pallet.filled_qty) || 0,
-            plannedQtyDisplay: formatWarehouseStateQty(Number(pallet && pallet.planned_qty) || 0, baseUom),
-            filledQtyDisplay: formatWarehouseStateQty(Number(pallet && pallet.filled_qty) || 0, baseUom),
+            prdRef: String((pallet && pallet.prd_ref) || "").trim() || "—",
+            palletStatus: statusDisplay || translatePalletStatus((pallet && pallet.pallet_status) || ""),
+            sourceOrderRef: String((pallet && pallet.source_order_ref) || "").trim() || "—",
+            statusNote: String((pallet && pallet.status_note) || "").trim(),
+            plannedQty: plannedQty,
+            filledQty: filledQty,
+            qty: qty,
+            qtyDisplay: formatWarehouseStateQty(qty, baseUom),
+            plannedQtyDisplay: formatWarehouseStateQty(plannedQty, baseUom),
+            filledQtyDisplay: formatWarehouseStateQty(filledQty, baseUom),
             composition: String((pallet && pallet.composition) || (row && row.item_name) || cachedItem.name || "—").trim(),
           };
         })
@@ -1578,7 +1622,8 @@
         ? "pc-stock-remaining-need"
         : (hasNeedOrPlan ? "pc-stock-covered" : ""),
       productMeta: productMetaParts.join(" · "),
-      huRows: huRows,
+      warehouseHuRows: warehouseHuRows,
+      huRows: warehouseHuRows,
       productionReceipts: productionReceipts,
       hasNeedBreakdown: hasNeedOrPlan,
     };

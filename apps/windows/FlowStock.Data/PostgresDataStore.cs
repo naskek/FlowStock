@@ -9,7 +9,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOperationOrderCandidatesStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore
+public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore
 {
     private readonly string _connectionString;
     private readonly NpgsqlConnection? _connection;
@@ -306,6 +306,7 @@ reserved_filled_hu_by_line AS (
 markable_line_need AS (
     SELECT olm.order_id,
            olm.item_id,
+           olm.qty_ordered,
            NULLIF(BTRIM(i.gtin), '') AS gtin,
            CASE
                WHEN olm.order_type = 'INTERNAL' THEN GREATEST(0, olm.qty_ordered)
@@ -333,7 +334,8 @@ needed_marking_keys AS (
     WHERE qty_for_marking > 0
 ),
 free_code_stats AS (
-    SELECT COALESCE(mo.item_id, 0) AS item_id,
+    SELECT COALESCE(mo.order_id, mo.source_order_id) AS order_id,
+           COALESCE(mo.item_id, 0) AS item_id,
            COALESCE(NULLIF(BTRIM(COALESCE(mo.gtin, c.gtin)), ''), '') AS gtin,
            COUNT(*) AS codes_total
     FROM marking_code c
@@ -344,14 +346,17 @@ free_code_stats AS (
       AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
       AND (mo.source_type IN (@production_need_source_type, @production_order_source_type)
            OR mo.order_id IS NOT NULL)
+      AND COALESCE(mo.order_id, mo.source_order_id) IS NOT NULL
       AND EXISTS (
           SELECT 1
-          FROM needed_marking_keys need
-          WHERE COALESCE(mo.item_id, 0) = need.item_id
+          FROM markable_item_need need
+          WHERE need.order_id = COALESCE(mo.order_id, mo.source_order_id)
+            AND (COALESCE(mo.item_id, 0) = need.item_id
              OR (need.gtin IS NOT NULL
-                 AND COALESCE(NULLIF(BTRIM(COALESCE(mo.gtin, c.gtin)), ''), '') = COALESCE(need.gtin, ''))
+                 AND COALESCE(NULLIF(BTRIM(COALESCE(mo.gtin, c.gtin)), ''), '') = COALESCE(need.gtin, '')))
       )
-    GROUP BY COALESCE(mo.item_id, 0),
+    GROUP BY COALESCE(mo.order_id, mo.source_order_id),
+             COALESCE(mo.item_id, 0),
              COALESCE(NULLIF(BTRIM(COALESCE(mo.gtin, c.gtin)), ''), '')
 ),
 bound_code_stats AS (
@@ -386,14 +391,21 @@ marking_rollup AS (
                FROM markable_line_need mln
                WHERE mln.order_id = ob.id
            )
+           AND EXISTS (
+               SELECT 1
+               FROM markable_line_need mln
+               WHERE mln.order_id = ob.id
+                 AND mln.qty_ordered > 0
+           )
            AND NOT EXISTS (
                SELECT 1
                FROM markable_item_need need
                LEFT JOIN LATERAL (
                    SELECT COALESCE(SUM(free.codes_total), 0) AS total
                    FROM free_code_stats free
-                   WHERE free.item_id = need.item_id
-                      OR (need.gtin IS NOT NULL AND free.gtin = COALESCE(need.gtin, ''))
+                   WHERE free.order_id = need.order_id
+                     AND (free.item_id = need.item_id
+                          OR (need.gtin IS NOT NULL AND free.gtin = COALESCE(need.gtin, '')))
                ) free_total ON TRUE
                LEFT JOIN LATERAL (
                    SELECT COALESCE(SUM(bound.codes_total), 0) AS total
@@ -5939,21 +5951,31 @@ WITH work_docs AS (
     SELECT d.id,
            d.doc_ref,
            d.order_id,
+           COALESCE(o.order_ref, d.order_ref) AS source_order_ref,
            o.order_type,
-           o.status AS order_status
+           o.status AS order_status,
+           d.status AS prd_status
     FROM production_pallets pp
     INNER JOIN docs d ON d.id = pp.prd_doc_id
-    LEFT JOIN orders o ON o.id = d.order_id
+    LEFT JOIN orders o ON o.id = COALESCE(pp.order_id, d.order_id)
     WHERE d.type = @production_doc_type
-      AND d.status <> @closed_doc_status
+      AND d.status = @draft_doc_status
       AND pp.status <> @cancelled_pallet_status
-      AND (o.id IS NULL OR o.status NOT IN (@shipped_order_status, @cancelled_order_status, @merged_order_status))
+      AND pp.status IN (@planned_pallet_status, @printed_pallet_status, @filled_pallet_status)
+      AND (
+          o.id IS NULL
+          OR (
+              o.order_type = @internal_order_type
+              AND o.status IN (@draft_order_status, @in_progress_order_status)
+          )
+      )
     GROUP BY d.id,
              d.doc_ref,
              d.order_id,
+             COALESCE(o.order_ref, d.order_ref),
              o.order_type,
-             o.status
-    HAVING COUNT(*) FILTER (WHERE pp.status = @filled_pallet_status) < COUNT(*)
+             o.status,
+             d.status
 ),
 pallet_composition AS (
     SELECT pp.id AS pallet_id,
@@ -5984,6 +6006,8 @@ ledger_balance AS (
 pallet_rows AS (
     SELECT wd.id AS prd_doc_id,
            wd.doc_ref AS prd_ref,
+           wd.source_order_ref,
+           wd.prd_status,
            wd.order_type,
            wd.order_status,
            pp.id AS pallet_id,
@@ -6019,9 +6043,12 @@ pallet_rows AS (
                                AND lb.location_id = pp.to_location_id
                                AND lb.hu_code = UPPER(BTRIM(pp.hu_code))
     WHERE pp.status <> @cancelled_pallet_status
+      AND pp.status IN (@planned_pallet_status, @printed_pallet_status, @filled_pallet_status)
 )
 SELECT prd_doc_id,
        prd_ref,
+       source_order_ref,
+       prd_status,
        order_type,
        order_status,
        pallet_id,
@@ -6037,6 +6064,7 @@ SELECT prd_doc_id,
        composition,
        in_ledger
 FROM pallet_rows
+WHERE NOT in_ledger
 ORDER BY item_id,
          prd_ref,
          hu_code;
@@ -6046,35 +6074,48 @@ ORDER BY item_id,
             var aggregates = new Dictionary<long, WarehouseProductionStatePalletAggregateBuilder>();
             while (reader.Read())
             {
-                var itemId = reader.GetInt64(7);
+                var itemId = reader.GetInt64(9);
                 if (!aggregates.TryGetValue(itemId, out var aggregate))
                 {
                     aggregate = new WarehouseProductionStatePalletAggregateBuilder();
                     aggregates[itemId] = aggregate;
                 }
 
-                var palletId = reader.GetInt64(4);
-                var plannedQty = reader.GetDouble(9);
-                var filledQty = reader.GetDouble(10);
-                var isFilled = reader.GetBoolean(12);
-                var isMixed = reader.GetBoolean(13);
-                var inLedger = reader.GetBoolean(15);
-                var orderType = reader.IsDBNull(2) ? null : OrderStatusMapper.TypeFromString(reader.GetString(2));
-                var orderStatus = reader.IsDBNull(3) ? null : OrderStatusMapper.StatusFromString(reader.GetString(3));
+                var palletId = reader.GetInt64(6);
+                var palletStatus = reader.GetString(8);
+                var plannedQty = reader.GetDouble(11);
+                var filledQty = reader.GetDouble(12);
+                var isFilled = reader.GetBoolean(14);
+                var isMixed = reader.GetBoolean(15);
+                var orderType = reader.IsDBNull(4) ? null : OrderStatusMapper.TypeFromString(reader.GetString(4));
+                var orderStatus = reader.IsDBNull(5) ? null : OrderStatusMapper.StatusFromString(reader.GetString(5));
+                var prdStatus = reader.GetString(3);
+                var prdIsOpen = !string.Equals(
+                    prdStatus,
+                    DocTypeMapper.StatusToString(DocStatus.Closed),
+                    StringComparison.OrdinalIgnoreCase);
+                var displayQty = WarehouseProductionStatePresentation.ResolvePalletDisplayQty(
+                    palletStatus,
+                    plannedQty,
+                    filledQty);
 
                 aggregate.Rows.Add(new WarehouseProductionStatePalletRow
                 {
                     PrdDocId = reader.GetInt64(0),
                     PrdRef = reader.GetString(1),
                     PalletId = palletId,
-                    HuCode = reader.GetString(5),
-                    PalletStatus = reader.GetString(6),
+                    HuCode = reader.GetString(7),
+                    PalletStatus = palletStatus,
+                    PalletStatusDisplay = WarehouseProductionStatePresentation.MapPalletStatusDisplay(palletStatus),
+                    SourceOrderRef = reader.IsDBNull(2) ? null : reader.GetString(2),
                     PlannedQty = Math.Max(0d, plannedQty),
                     FilledQty = Math.Max(0d, filledQty),
-                    StockEffect = inLedger ? "в остатках" : "запланировано, не склад",
+                    Qty = displayQty,
+                    StockEffect = "план / производство",
+                    StatusNote = WarehouseProductionStatePresentation.BuildPalletStatusNote(palletStatus, prdIsOpen, inLedger: false),
                     IsMixedPallet = isMixed,
-                    Composition = reader.GetString(14),
-                    Location = reader.IsDBNull(11) ? null : reader.GetString(11)
+                    Composition = reader.GetString(16),
+                    Location = reader.IsDBNull(13) ? null : reader.GetString(13)
                 });
                 aggregate.PlannedQty += Math.Max(0d, plannedQty);
                 aggregate.FilledQty += Math.Max(0d, filledQty);
@@ -6084,7 +6125,7 @@ ORDER BY item_id,
                     aggregate.FilledPalletIds.Add(palletId);
                 }
 
-                aggregate.HasFilledWithoutLedger |= isFilled && !inLedger;
+                aggregate.HasFilledWithoutLedger |= isFilled;
                 aggregate.HasStalePalletAfterFullShipment |= orderType == OrderType.Customer && orderStatus == OrderStatus.Shipped;
             }
 
@@ -6107,7 +6148,11 @@ ORDER BY item_id,
         command.Parameters.AddWithValue("@outbound_doc_type", DocTypeMapper.ToOpString(DocType.Outbound));
         command.Parameters.AddWithValue("@production_doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
         command.Parameters.AddWithValue("@filled_pallet_status", ProductionPalletStatus.Filled);
+        command.Parameters.AddWithValue("@planned_pallet_status", ProductionPalletStatus.Planned);
+        command.Parameters.AddWithValue("@printed_pallet_status", ProductionPalletStatus.Printed);
         command.Parameters.AddWithValue("@cancelled_pallet_status", ProductionPalletStatus.Cancelled);
+        command.Parameters.AddWithValue("@draft_doc_status", DocTypeMapper.StatusToString(DocStatus.Draft));
+        command.Parameters.AddWithValue("@in_progress_order_status", OrderStatusMapper.StatusToString(OrderStatus.InProgress));
     }
 
     private sealed class WarehouseProductionStatePalletAggregateBuilder
@@ -6323,6 +6368,135 @@ VALUES(@order_id, @order_line_id, @item_id, @qty_planned, @to_location_id, @to_h
                 insertCommand.Parameters.AddWithValue("@to_hu", string.IsNullOrWhiteSpace(line.ToHu) ? DBNull.Value : line.ToHu.Trim());
                 insertCommand.Parameters.AddWithValue("@sort_order", line.SortOrder);
                 insertCommand.ExecuteNonQuery();
+            }
+
+            return 0;
+        });
+    }
+
+    public void ReplaceOrderReceiptPlanLinesForOrderLines(
+        long orderId,
+        IReadOnlyCollection<long> orderLineIds,
+        IReadOnlyList<OrderReceiptPlanLine> replacementLines)
+    {
+        var affectedLineIds = (orderLineIds ?? Array.Empty<long>())
+            .Where(lineId => lineId > 0)
+            .Distinct()
+            .ToArray();
+        var lines = replacementLines ?? Array.Empty<OrderReceiptPlanLine>();
+
+        WithConnection(connection =>
+        {
+            var ownsTransaction = _transaction == null;
+            if (ownsTransaction)
+            {
+                using var begin = connection.CreateCommand();
+                begin.CommandText = "BEGIN;";
+                begin.ExecuteNonQuery();
+            }
+
+            try
+            {
+                var normalizedHuCodes = lines
+                    .Where(line => line.QtyPlanned > 0 && !string.IsNullOrWhiteSpace(line.ToHu))
+                    .Select(line => line.ToHu!.Trim().ToUpperInvariant())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+
+                if (normalizedHuCodes.Length > 0)
+                {
+                    using var orderTypeCommand = CreateCommand(connection, @"
+SELECT order_type
+FROM orders
+WHERE id = @order_id
+LIMIT 1;
+");
+                    orderTypeCommand.Parameters.AddWithValue("@order_id", orderId);
+                    var orderTypeValue = orderTypeCommand.ExecuteScalar() as string;
+                    if (string.IsNullOrWhiteSpace(orderTypeValue))
+                    {
+                        throw new InvalidOperationException("Заказ не найден.");
+                    }
+
+                    if (string.Equals(orderTypeValue, OrderStatusMapper.TypeToString(OrderType.Customer), StringComparison.OrdinalIgnoreCase))
+                    {
+                        using var conflictCommand = CreateCommand(connection, @"
+SELECT p.to_hu, o.order_ref
+FROM order_receipt_plan_lines p
+INNER JOIN orders o ON o.id = p.order_id
+WHERE p.order_id <> @order_id
+  AND p.to_hu IS NOT NULL
+  AND p.to_hu <> ''
+  AND o.order_type = @customer_order_type
+  AND o.status <> @shipped_status
+  AND o.status <> @cancelled_status
+  AND UPPER(TRIM(p.to_hu)) = ANY(@hu_codes)
+LIMIT 1;
+");
+                        conflictCommand.Parameters.AddWithValue("@order_id", orderId);
+                        conflictCommand.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+                        conflictCommand.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+                        conflictCommand.Parameters.AddWithValue("@cancelled_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+                        conflictCommand.Parameters.AddWithValue("@hu_codes", normalizedHuCodes);
+                        using var conflictReader = conflictCommand.ExecuteReader();
+                        if (conflictReader.Read())
+                        {
+                            var huCode = conflictReader.IsDBNull(0) ? string.Empty : conflictReader.GetString(0);
+                            var orderRef = conflictReader.IsDBNull(1) ? string.Empty : conflictReader.GetString(1);
+                            throw new InvalidOperationException($"HU '{huCode}' уже зарезервирован за активным клиентским заказом '{orderRef}'.");
+                        }
+                    }
+                }
+
+                if (affectedLineIds.Length > 0)
+                {
+                    using var deleteCommand = CreateCommand(connection, @"
+DELETE FROM order_receipt_plan_lines
+WHERE order_id = @order_id
+  AND order_line_id = ANY(@order_line_ids);
+");
+                    deleteCommand.Parameters.AddWithValue("@order_id", orderId);
+                    deleteCommand.Parameters.AddWithValue("@order_line_ids", affectedLineIds);
+                    deleteCommand.ExecuteNonQuery();
+                }
+
+                if (lines.Count > 0)
+                {
+                    using var insertCommand = CreateCommand(connection, @"
+INSERT INTO order_receipt_plan_lines(order_id, order_line_id, item_id, qty_planned, to_location_id, to_hu, sort_order)
+VALUES(@order_id, @order_line_id, @item_id, @qty_planned, @to_location_id, @to_hu, @sort_order);
+");
+                    foreach (var line in lines)
+                    {
+                        insertCommand.Parameters.Clear();
+                        insertCommand.Parameters.AddWithValue("@order_id", orderId);
+                        insertCommand.Parameters.AddWithValue("@order_line_id", line.OrderLineId);
+                        insertCommand.Parameters.AddWithValue("@item_id", line.ItemId);
+                        insertCommand.Parameters.AddWithValue("@qty_planned", line.QtyPlanned);
+                        insertCommand.Parameters.AddWithValue("@to_location_id", line.ToLocationId.HasValue ? line.ToLocationId.Value : DBNull.Value);
+                        insertCommand.Parameters.AddWithValue("@to_hu", string.IsNullOrWhiteSpace(line.ToHu) ? DBNull.Value : line.ToHu.Trim());
+                        insertCommand.Parameters.AddWithValue("@sort_order", line.SortOrder);
+                        insertCommand.ExecuteNonQuery();
+                    }
+                }
+
+                if (ownsTransaction)
+                {
+                    using var commit = connection.CreateCommand();
+                    commit.CommandText = "COMMIT;";
+                    commit.ExecuteNonQuery();
+                }
+            }
+            catch
+            {
+                if (ownsTransaction)
+                {
+                    using var rollback = connection.CreateCommand();
+                    rollback.CommandText = "ROLLBACK;";
+                    rollback.ExecuteNonQuery();
+                }
+
+                throw;
             }
 
             return 0;
@@ -6908,6 +7082,75 @@ GROUP BY COALESCE(hu_code, hu);
             }
 
             return totals;
+        });
+    }
+
+    public IReadOnlyList<HuReservationCandidateSourceRow> GetHuReservationCandidateSources(
+        long? customerOrderId,
+        IReadOnlyCollection<long> itemIds,
+        IReadOnlyCollection<string> excludeHuCodes)
+    {
+        if (itemIds == null || itemIds.Count == 0)
+        {
+            return Array.Empty<HuReservationCandidateSourceRow>();
+        }
+
+        var normalizedItemIds = itemIds
+            .Where(itemId => itemId > 0)
+            .Distinct()
+            .ToArray();
+        if (normalizedItemIds.Length == 0)
+        {
+            return Array.Empty<HuReservationCandidateSourceRow>();
+        }
+
+        var normalizedExcludeHuCodes = (excludeHuCodes ?? Array.Empty<string>())
+            .Select(code => string.IsNullOrWhiteSpace(code) ? null : code.Trim().ToUpperInvariant())
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Cast<string>()
+            .ToArray();
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, HuReservationCandidateSql.SelectSources);
+            command.Parameters.AddWithValue("@item_ids", normalizedItemIds);
+            command.Parameters.AddWithValue("@exclude_hu_codes", normalizedExcludeHuCodes);
+            command.Parameters.AddWithValue("@customer_order_id", customerOrderId.HasValue ? customerOrderId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+            command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+            command.Parameters.AddWithValue("@internal_order_type", OrderStatusMapper.TypeToString(OrderType.Internal));
+            command.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
+            command.Parameters.AddWithValue("@closed_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+            command.Parameters.AddWithValue("@draft_doc_status", DocTypeMapper.StatusToString(DocStatus.Draft));
+            command.Parameters.AddWithValue("@draft_order_status", OrderStatusMapper.StatusToString(OrderStatus.Draft));
+            command.Parameters.AddWithValue("@in_progress_order_status", OrderStatusMapper.StatusToString(OrderStatus.InProgress));
+            command.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+            command.Parameters.AddWithValue("@cancelled_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+            command.Parameters.AddWithValue("@merged_status", OrderStatusMapper.StatusToString(OrderStatus.Merged));
+
+            using var reader = command.ExecuteReader();
+            var rows = new List<HuReservationCandidateSourceRow>();
+            while (reader.Read())
+            {
+                rows.Add(new HuReservationCandidateSourceRow
+                {
+                    Source = reader.GetString(0),
+                    HuCode = reader.GetString(1),
+                    ItemId = reader.GetInt64(2),
+                    Qty = reader.GetDouble(3),
+                    SourceOrderId = reader.IsDBNull(4) ? null : reader.GetInt64(4),
+                    SourceOrderRef = reader.IsDBNull(5) ? null : reader.GetString(5),
+                    SourcePrdDocId = reader.IsDBNull(6) ? null : reader.GetInt64(6),
+                    SourcePrdRef = reader.IsDBNull(7) ? null : reader.GetString(7),
+                    ShipReady = reader.GetBoolean(8),
+                    ReservedByOrderId = reader.IsDBNull(9) ? null : reader.GetInt64(9),
+                    ReservedByOrderRef = reader.IsDBNull(10) ? null : reader.GetString(10),
+                    Note = reader.IsDBNull(11) ? string.Empty : reader.GetString(11)
+                });
+            }
+
+            return rows;
         });
     }
 

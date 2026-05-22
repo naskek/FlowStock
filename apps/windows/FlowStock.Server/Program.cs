@@ -62,6 +62,8 @@ OrderProducedHuReservationEndpoint.Map(app);
 OrderAutoRedistributionEndpoint.Map(app);
 OrderMarkingExportEndpoint.Map(app);
 OrderLinesEndpoint.Map(app);
+OrderHuReservationCandidatesEndpoint.Map(app);
+OrderHuReservationApplyEndpoint.Map(app);
 ProductionNeedCreateOrdersEndpoint.Map(app);
 MaintenanceBackfillEndpoints.Map(app);
 app.MapGet("/api/version", () => Results.Ok(new { version = appVersion }));
