@@ -185,7 +185,7 @@ const orderLinesWithPalletHtml = pc.renderOrderLinesTable(
   ],
   { order_type: "INTERNAL", order_status: "IN_PROGRESS" }
 );
-assert.match(orderLinesWithPalletHtml, /pc-order-line-pallet-filled/);
+assert.doesNotMatch(orderLinesWithPalletHtml, /pc-order-line-coverage-covered/);
 assert.match(orderLinesWithPalletHtml, /Наполнение/);
 assert.match(orderLinesWithPalletHtml, /Наполнено 1 \/ 2/);
 
@@ -206,8 +206,66 @@ const orderLinesCompletePalletHtml = pc.renderOrderLinesTable(
   ],
   { order_type: "INTERNAL", order_status: "IN_PROGRESS" }
 );
+assert.match(orderLinesCompletePalletHtml, /pc-order-line-coverage-covered/);
 assert.match(orderLinesCompletePalletHtml, /pc-icon-status/);
 assert.doesNotMatch(orderLinesCompletePalletHtml, />Наполнено 2 \/ 2</);
+
+const internalPlannedOnlyHtml = pc.renderOrderLinesTable(
+  [
+    {
+      item_name: "Горчица",
+      barcode: "SKU-001",
+      gtin: "04607186951520",
+      production_purpose: "INTERNAL_STOCK",
+      qty_ordered: 3648,
+      qty_produced: 0,
+      planned_pallet_count: 6,
+      filled_pallet_count: 0,
+      pallet_planned_qty: 3648,
+      pallet_filled_qty: 0,
+    },
+  ],
+  { order_type: "INTERNAL", order_status: "IN_PROGRESS" }
+);
+assert.doesNotMatch(internalPlannedOnlyHtml, /pc-order-line-coverage-covered/);
+
+const customerFullHuCoverageHtml = pc.renderOrderLinesTable(
+  [
+    {
+      item_name: "Горчица",
+      barcode: "SKU-001",
+      gtin: "04607186951520",
+      production_purpose: "CUSTOMER_ORDER",
+      qty_ordered: 1800,
+      qty_shipped: 0,
+      qty_produced: 1800,
+      qty_left: 1800,
+      qty_available: 0,
+    },
+  ],
+  { order_type: "CUSTOMER", order_status: "IN_PROGRESS" }
+);
+assert.match(customerFullHuCoverageHtml, /pc-order-line-coverage-covered/);
+assert.match(customerFullHuCoverageHtml, /Горчица: привязано 1800 из 1800/);
+
+const customerPartialHuCoverageHtml = pc.renderOrderLinesTable(
+  [
+    {
+      item_name: "Горчица",
+      barcode: "SKU-001",
+      gtin: "04607186951520",
+      production_purpose: "CUSTOMER_ORDER",
+      qty_ordered: 1800,
+      qty_shipped: 0,
+      qty_produced: 1200,
+      qty_left: 1800,
+      qty_available: 9999,
+    },
+  ],
+  { order_type: "CUSTOMER", order_status: "IN_PROGRESS" }
+);
+assert.match(customerPartialHuCoverageHtml, /pc-order-line-coverage-missing/);
+assert.match(customerPartialHuCoverageHtml, /не хватает 600/);
 
 const shippedCustomerStalePalletHtml = pc.renderOrderLinesTable(
   [
