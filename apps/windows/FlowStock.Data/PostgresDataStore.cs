@@ -2580,26 +2580,35 @@ WHERE doc_id = @doc_id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT COALESCE(SUM(qty), 0)
-FROM (
-    SELECT pll.planned_qty AS qty
-    FROM production_pallet_lines pll
-    INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
-    WHERE pll.order_line_id = @order_line_id
-      AND pp.status = @filled_status
-      AND (@exclude_pallet_id::bigint IS NULL OR pp.id <> @exclude_pallet_id::bigint)
-    UNION ALL
-    SELECT pp.planned_qty AS qty
-    FROM production_pallets pp
-    WHERE pp.order_line_id = @order_line_id
-      AND pp.status = @filled_status
-      AND (@exclude_pallet_id::bigint IS NULL OR pp.id <> @exclude_pallet_id::bigint)
-      AND NOT EXISTS (
+SELECT COALESCE(SUM(
+    CASE
+        WHEN EXISTS (
+            SELECT 1
+            FROM production_pallet_lines pll
+            WHERE pll.production_pallet_id = pp.id
+              AND pll.order_line_id = @order_line_id
+        ) THEN (
+            SELECT COALESCE(SUM(pll.planned_qty), 0)
+            FROM production_pallet_lines pll
+            WHERE pll.production_pallet_id = pp.id
+              AND pll.order_line_id = @order_line_id
+        )
+        WHEN pp.order_line_id = @order_line_id THEN pp.planned_qty
+        ELSE 0
+    END
+), 0)
+FROM production_pallets pp
+WHERE pp.status = @filled_status
+  AND (@exclude_pallet_id::bigint IS NULL OR pp.id <> @exclude_pallet_id::bigint)
+  AND (
+      pp.order_line_id = @order_line_id
+      OR EXISTS (
           SELECT 1
           FROM production_pallet_lines pll
           WHERE pll.production_pallet_id = pp.id
+            AND pll.order_line_id = @order_line_id
       )
-) filled_qty;
+  );
 ");
             command.Parameters.AddWithValue("@order_line_id", orderLineId);
             command.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
@@ -5012,17 +5021,36 @@ ORDER BY id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-WITH pallet_metrics AS (
-    SELECT pll.order_line_id,
-           COUNT(DISTINCT pp.id) FILTER (WHERE pp.status <> @pallet_cancelled_status)::int AS planned_pallet_count,
-           COUNT(DISTINCT pp.id) FILTER (WHERE pp.status = @pallet_filled_status)::int AS filled_pallet_count,
-           COALESCE(SUM(pll.planned_qty) FILTER (WHERE pp.status <> @pallet_cancelled_status), 0)::double precision AS planned_pallet_qty,
-           COALESCE(SUM(pll.planned_qty) FILTER (WHERE pp.status = @pallet_filled_status), 0)::double precision AS filled_pallet_qty
-    FROM production_pallet_lines pll
-    INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
+WITH pallet_scope AS (
+    SELECT pp.id AS pallet_id,
+           pp.status,
+           COALESCE(pll_agg.order_line_id, pp.order_line_id) AS order_line_id,
+           CASE
+               WHEN pll_agg.line_qty > 0 THEN pll_agg.line_qty
+               WHEN pp.order_line_id IS NOT NULL THEN pp.planned_qty
+               ELSE 0
+           END AS pallet_qty
+    FROM production_pallets pp
+    LEFT JOIN LATERAL (
+        SELECT pll.order_line_id,
+               SUM(pll.planned_qty) AS line_qty
+        FROM production_pallet_lines pll
+        WHERE pll.production_pallet_id = pp.id
+          AND pll.order_line_id IS NOT NULL
+        GROUP BY pll.order_line_id
+    ) pll_agg ON TRUE
     WHERE pp.order_id = @order_id
-      AND pll.order_line_id IS NOT NULL
-    GROUP BY pll.order_line_id
+      AND pp.status <> @pallet_cancelled_status
+      AND COALESCE(pll_agg.order_line_id, pp.order_line_id) IS NOT NULL
+),
+pallet_metrics AS (
+    SELECT order_line_id,
+           COUNT(DISTINCT pallet_id)::int AS planned_pallet_count,
+           COUNT(DISTINCT pallet_id) FILTER (WHERE status = @pallet_filled_status)::int AS filled_pallet_count,
+           COALESCE(SUM(pallet_qty), 0)::double precision AS planned_pallet_qty,
+           COALESCE(SUM(pallet_qty) FILTER (WHERE status = @pallet_filled_status), 0)::double precision AS filled_pallet_qty
+    FROM pallet_scope
+    GROUP BY order_line_id
 )
 SELECT ol.id,
        ol.order_id,
@@ -5103,17 +5131,37 @@ WITH line_scope AS (
     LEFT JOIN item_types it ON it.id = i.item_type_id
     WHERE ol.order_id = ANY(@order_ids)
 ),
+pallet_scope AS (
+    SELECT pp.id AS pallet_id,
+           pp.status,
+           COALESCE(pll_agg.order_line_id, pp.order_line_id) AS order_line_id,
+           CASE
+               WHEN pll_agg.line_qty > 0 THEN pll_agg.line_qty
+               WHEN pp.order_line_id IS NOT NULL THEN pp.planned_qty
+               ELSE 0
+           END AS pallet_qty
+    FROM production_pallets pp
+    INNER JOIN docs d ON d.id = pp.prd_doc_id
+    LEFT JOIN LATERAL (
+        SELECT pll.order_line_id,
+               SUM(pll.planned_qty) AS line_qty
+        FROM production_pallet_lines pll
+        WHERE pll.production_pallet_id = pp.id
+          AND pll.order_line_id IS NOT NULL
+        GROUP BY pll.order_line_id
+    ) pll_agg ON TRUE
+    INNER JOIN line_scope ls ON ls.id = COALESCE(pll_agg.order_line_id, pp.order_line_id)
+    WHERE pp.status <> @pallet_cancelled_status
+      AND COALESCE(pll_agg.order_line_id, pp.order_line_id) IS NOT NULL
+),
 pallet_metrics AS (
-    SELECT pll.order_line_id,
-           COUNT(DISTINCT pp.id) FILTER (WHERE pp.status <> @pallet_cancelled_status)::int AS planned_pallet_count,
-           COUNT(DISTINCT pp.id) FILTER (WHERE pp.status = @pallet_filled_status)::int AS filled_pallet_count,
-           COALESCE(SUM(pll.planned_qty) FILTER (WHERE pp.status <> @pallet_cancelled_status), 0)::double precision AS planned_pallet_qty,
-           COALESCE(SUM(pll.planned_qty) FILTER (WHERE pp.status = @pallet_filled_status), 0)::double precision AS filled_pallet_qty
-    FROM production_pallet_lines pll
-    INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
-    INNER JOIN line_scope ls ON ls.id = pll.order_line_id
-    WHERE pll.order_line_id IS NOT NULL
-    GROUP BY pll.order_line_id
+    SELECT order_line_id,
+           COUNT(DISTINCT pallet_id)::int AS planned_pallet_count,
+           COUNT(DISTINCT pallet_id) FILTER (WHERE status = @pallet_filled_status)::int AS filled_pallet_count,
+           COALESCE(SUM(pallet_qty), 0)::double precision AS planned_pallet_qty,
+           COALESCE(SUM(pallet_qty) FILTER (WHERE status = @pallet_filled_status), 0)::double precision AS filled_pallet_qty
+    FROM pallet_scope
+    GROUP BY order_line_id
 ),
 available_by_item AS (
     SELECT l.item_id,

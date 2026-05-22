@@ -915,12 +915,12 @@ public partial class OrderDetailsWindow : Window
         OrderType orderType,
         out string? validationMessage)
     {
-        var reservedQty = 0d;
-        return OrderLineQtyChangeRules.TryValidateQtyChange(
+        return OrderLineQtyChangeRules.TryValidateQtyChangeForPresentation(
             newQty,
             line.QtyShipped,
+            line.QtyProduced,
             line.FilledPalletQty,
-            reservedQty,
+            reservedPlanQty: 0,
             orderType,
             out validationMessage);
     }

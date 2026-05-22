@@ -23,9 +23,9 @@ public sealed class ProductionPalletPostgresRegressionTests
         var methodBody = source[methodIndex..methodEnd];
         Assert.Contains("@exclude_pallet_id::bigint IS NULL", methodBody, StringComparison.Ordinal);
         Assert.Contains("pp.id <> @exclude_pallet_id::bigint", methodBody, StringComparison.Ordinal);
-        Assert.Contains("pp.planned_qty AS qty", methodBody, StringComparison.Ordinal);
-        Assert.Contains("NOT EXISTS (", methodBody, StringComparison.Ordinal);
+        Assert.Contains("WHEN EXISTS (", methodBody, StringComparison.Ordinal);
         Assert.Contains("FROM production_pallet_lines pll", methodBody, StringComparison.Ordinal);
+        Assert.Contains("WHEN pp.order_line_id = @order_line_id THEN pp.planned_qty", methodBody, StringComparison.Ordinal);
         Assert.DoesNotContain(
             "(@exclude_pallet_id IS NULL OR pp.id <> @exclude_pallet_id)",
             methodBody,
