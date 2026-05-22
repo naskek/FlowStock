@@ -27,6 +27,7 @@
   <ItemGroup>
     <ProjectReference Include="..\\FlowStock.App\\FlowStock.App.csproj" />
     <ProjectReference Include="..\\FlowStock.Core\\FlowStock.Core.csproj" />
+    <ProjectReference Include="..\\FlowStock.Data\\FlowStock.Data.csproj" />
     <ProjectReference Include="..\\FlowStock.Server\\FlowStock.Server.csproj" />
   </ItemGroup>
 </Project>
