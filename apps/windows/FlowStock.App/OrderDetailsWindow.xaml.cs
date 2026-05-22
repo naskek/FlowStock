@@ -428,14 +428,58 @@ public partial class OrderDetailsWindow : Window
                 return;
             }
 
-            var printResult = await Task.Run(() => _services.PalletLabelPrinter.Print(rowsResult.Rows)).ConfigureAwait(true);
+            var printRows = rowsResult.Rows;
+            var coreRows = printRows
+                .Select(row => new FlowStock.Core.Models.ProductionPalletPrintRow
+                {
+                    PalletId = row.PalletId,
+                    OrderId = row.OrderId,
+                    OrderRef = row.OrderRef,
+                    ClientName = row.ClientName,
+                    PrdDocId = 0,
+                    PrdRef = row.PrdRef,
+                    HuCode = row.HuCode,
+                    ItemId = 0,
+                    ItemName = row.ItemName,
+                    Brand = row.Brand,
+                    Qty = row.Qty,
+                    Uom = row.Uom,
+                    PalletNo = row.PalletNo,
+                    PalletCount = row.PalletCount,
+                    StoragePlace = row.StoragePlace,
+                    ProductionDate = row.ProductionDate,
+                    Comment = row.Comment,
+                    IsMixedPallet = row.IsMixedPallet,
+                    Composition = row.Composition,
+                    Status = row.Status
+                })
+                .ToArray();
+            var groups = FlowStock.Core.Services.PalletLabelPrintSelectionService.BuildGroups(coreRows);
+            var dialog = new PalletLabelPrintSelectionWindow(groups)
+            {
+                Owner = this
+            };
+            if (dialog.ShowDialog() != true)
+            {
+                return;
+            }
+
+            var selectedRows = dialog.MapSelectedRows(printRows);
+            if (selectedRows.Count == 0)
+            {
+                MessageBox.Show("Выберите хотя бы одну паллетную этикетку", "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var printResult = await Task.Run(() => _services.PalletLabelPrinter.Print(selectedRows)).ConfigureAwait(true);
             if (!printResult.IsSuccess)
             {
                 MessageBox.Show(printResult.Message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
-            var markResult = await _services.WpfProductionPalletApi.TryMarkPrintedAsync(_orderId.Value).ConfigureAwait(true);
+            var selectedPalletIds = dialog.SelectedPalletIds;
+            var markResult = await _services.WpfProductionPalletApi.TryMarkPrintedAsync(_orderId.Value, selectedPalletIds).ConfigureAwait(true);
             if (!markResult.IsSuccess)
             {
                 MessageBox.Show(

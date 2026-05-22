@@ -263,17 +263,33 @@ public static class ProductionPalletEndpoints
         }
     }
 
-    private static IResult HandleMarkPrinted(long orderId, ProductionPalletService service)
+    private static async Task<IResult> HandleMarkPrinted(
+        long orderId,
+        HttpRequest request,
+        ProductionPalletService service)
     {
         try
         {
-            var updated = service.MarkPrinted(orderId, DateTime.Now);
+            IReadOnlyList<long>? palletIds = null;
+            if (request.ContentLength > 0)
+            {
+                var body = await request.ReadFromJsonAsync<MarkPrintedRequest>();
+                palletIds = body?.PalletIds;
+            }
+
+            var updated = service.MarkPrinted(orderId, palletIds, DateTime.Now);
             return Results.Ok(new { ok = true, updated_count = updated });
         }
         catch (InvalidOperationException ex)
         {
             return Results.BadRequest(new { ok = false, error = ex.Message, message = ex.Message });
         }
+    }
+
+    private sealed class MarkPrintedRequest
+    {
+        [JsonPropertyName("pallet_ids")]
+        public IReadOnlyList<long>? PalletIds { get; init; }
     }
 
     private static IResult HandleGet(long docId, ProductionPalletService service)

@@ -2920,6 +2920,40 @@ WHERE d.id = pp.prd_doc_id
         });
     }
 
+    public int MarkProductionPalletsPrinted(long orderId, IReadOnlyCollection<long> palletIds, DateTime printedAt)
+    {
+        var ids = palletIds
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
+        if (ids.Length == 0)
+        {
+            return 0;
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE production_pallets pp
+SET status = @printed_status,
+    printed_at = @printed_at
+FROM docs d
+WHERE d.id = pp.prd_doc_id
+  AND d.order_id = @order_id
+  AND d.type = @doc_type
+  AND pp.id = ANY(@pallet_ids)
+  AND pp.status = @planned_status;
+");
+            command.Parameters.AddWithValue("@order_id", orderId);
+            command.Parameters.AddWithValue("@doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+            command.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+            command.Parameters.AddWithValue("@printed_status", ProductionPalletStatus.Printed);
+            command.Parameters.AddWithValue("@printed_at", ToDbDate(printedAt));
+            command.Parameters.AddWithValue("@pallet_ids", ids);
+            return command.ExecuteNonQuery();
+        });
+    }
+
     public Order? GetOrder(long id)
     {
         return WithConnection(connection =>

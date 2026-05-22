@@ -2032,6 +2032,49 @@ internal sealed class CloseDocumentHarness
                 return updated;
             });
 
+        _store.Setup(store => store.MarkProductionPalletsPrinted(
+                It.IsAny<long>(),
+                It.IsAny<IReadOnlyCollection<long>>(),
+                It.IsAny<DateTime>()))
+            .Returns<long, IReadOnlyCollection<long>, DateTime>((orderId, palletIds, _) =>
+            {
+                var targetIds = palletIds.Where(id => id > 0).ToHashSet();
+                var updated = 0;
+                foreach (var pair in _productionPallets.ToArray())
+                {
+                    var current = pair.Value;
+                    if (current.OrderId != orderId
+                        || !targetIds.Contains(current.Id)
+                        || !string.Equals(current.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    _productionPallets[pair.Key] = new ProductionPallet
+                    {
+                        Id = current.Id,
+                        PrdDocId = current.PrdDocId,
+                        DocLineId = current.DocLineId,
+                        OrderId = current.OrderId,
+                        OrderLineId = current.OrderLineId,
+                        ItemId = current.ItemId,
+                        ItemName = current.ItemName,
+                        HuCode = current.HuCode,
+                        PlannedQty = current.PlannedQty,
+                        ToLocationId = current.ToLocationId,
+                        ToLocationCode = current.ToLocationCode,
+                        Status = ProductionPalletStatus.Printed,
+                        FilledAt = current.FilledAt,
+                        FilledByDeviceId = current.FilledByDeviceId,
+                        CreatedAt = current.CreatedAt,
+                        Lines = current.Lines
+                    };
+                    updated++;
+                }
+
+                return updated;
+            });
+
         _store.Setup(store => store.CountKmCodesByReceiptLine(It.IsAny<long>()))
             .Returns<long>(docLineId => _kmCodeCountByReceiptLine.TryGetValue(docLineId, out var count) ? count : 0);
 

@@ -269,6 +269,91 @@ public sealed class ProductionPalletServiceTests
     }
 
     [Fact]
+    public void IncreaseOrderLineQty_WithTwoFilledPallets_AppendsOnlyMissingPlannedQty()
+    {
+        var harness = CreateHarnessWithOrderOnly(orderQty: 1200, maxQtyPerHu: 600);
+        var palletService = new ProductionPalletService(harness.Store);
+        var orderService = new OrderService(harness.Store);
+        var plan = palletService.PlanOrder(10);
+        var filledHus = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId)
+            .OrderBy(pallet => pallet.Id)
+            .Select(pallet => pallet.HuCode)
+            .ToArray();
+        Assert.Equal(2, filledHus.Length);
+        foreach (var hu in filledHus)
+        {
+            palletService.Fill(hu, "TSD-01");
+        }
+
+        orderService.UpdateOrder(
+            10,
+            "056",
+            null,
+            null,
+            null,
+            [new OrderLineView { ItemId = 100, QtyOrdered = 2400, ProductionPurpose = ProductionLinePurpose.InternalStock }],
+            OrderType.Internal);
+
+        var pallets = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId);
+        Assert.Equal(4, pallets.Count);
+        Assert.Equal(2, pallets.Count(pallet => pallet.Status == ProductionPalletStatus.Filled));
+        Assert.Equal(2, pallets.Count(pallet => pallet.Status == ProductionPalletStatus.Planned));
+        Assert.Equal(2400, pallets.Sum(pallet => pallet.PlannedQty), 3);
+        Assert.Equal(filledHus, pallets
+            .Where(pallet => pallet.Status == ProductionPalletStatus.Filled)
+            .Select(pallet => pallet.HuCode)
+            .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
+            .ToArray());
+    }
+
+    [Fact]
+    public void PlanOrder_WhenCoverageAlreadyComplete_DoesNotCreateDuplicates()
+    {
+        var harness = CreateHarnessWithOrderOnly(orderQty: 1200, maxQtyPerHu: 600);
+        var palletService = new ProductionPalletService(harness.Store);
+        var orderService = new OrderService(harness.Store);
+        var plan = palletService.PlanOrder(10);
+        foreach (var pallet in harness.Store.GetProductionPalletsByDoc(plan.PrdDocId))
+        {
+            palletService.Fill(pallet.HuCode, "TSD-01");
+        }
+
+        orderService.UpdateOrder(
+            10,
+            "056",
+            null,
+            null,
+            null,
+            [new OrderLineView { ItemId = 100, QtyOrdered = 2400, ProductionPurpose = ProductionLinePurpose.InternalStock }],
+            OrderType.Internal);
+
+        var afterUpdate = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId);
+        palletService.PlanOrder(10);
+        var afterReplan = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId);
+
+        Assert.Equal(afterUpdate.Select(pallet => pallet.Id).OrderBy(id => id), afterReplan.Select(pallet => pallet.Id).OrderBy(id => id));
+        Assert.Equal(4, afterReplan.Count);
+    }
+
+    [Fact]
+    public void PlanOrder_WithFilledPallets_DoesNotThrowReassignmentError()
+    {
+        var harness = CreateHarnessWithOrderOnly(orderQty: 1200, maxQtyPerHu: 600);
+        var palletService = new ProductionPalletService(harness.Store);
+        var plan = palletService.PlanOrder(10);
+        foreach (var pallet in harness.Store.GetProductionPalletsByDoc(plan.PrdDocId))
+        {
+            palletService.Fill(pallet.HuCode, "TSD-01");
+        }
+
+        harness.Store.UpdateOrderLineQty(101, 2400);
+
+        var result = palletService.PlanOrder(10);
+
+        Assert.Equal(4, harness.Store.GetProductionPalletsByDoc(result.PrdDocId).Count);
+    }
+
+    [Fact]
     public void PlanOrder_GeneratesHuAfterExistingHuNumber()
     {
         var harness = CreateHarnessWithOrderOnly(orderQty: 600, maxQtyPerHu: 600);

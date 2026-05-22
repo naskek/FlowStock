@@ -551,6 +551,7 @@ public sealed class OrderService
             var incomingKeys = normalized
                 .Select(line => (line.ItemId, ProductionPurpose: ResolveLinePurpose(type, line.ProductionPurpose)))
                 .ToHashSet();
+            var hasOrderLineQtyIncrease = false;
 
             foreach (var entry in existingByItem)
             {
@@ -580,7 +581,15 @@ public sealed class OrderService
                     if (Math.Abs(primary.QtyOrdered - line.QtyOrdered) > QtyTolerance)
                     {
                         ValidateOrderLineQtyCanChange(store, orderId, primary, line.QtyOrdered);
-                        ClearPlannedProductionPalletsForOrderLine(store, orderId, primary.Id);
+                        if (line.QtyOrdered > primary.QtyOrdered + QtyTolerance)
+                        {
+                            hasOrderLineQtyIncrease = true;
+                        }
+                        else if (line.QtyOrdered + QtyTolerance < primary.QtyOrdered)
+                        {
+                            ClearPlannedProductionPalletsForOrderLine(store, orderId, primary.Id);
+                        }
+
                         store.UpdateOrderLineQty(primary.Id, line.QtyOrdered);
                     }
 
@@ -615,6 +624,7 @@ public sealed class OrderService
                     ProductionPurpose = linePurpose,
                     ProductionPalletGroup = NormalizePalletGroup(line.ProductionPalletGroup)
                 });
+                hasOrderLineQtyIncrease = true;
             }
 
             foreach (var entry in existingByItem)
@@ -639,6 +649,11 @@ public sealed class OrderService
             else
             {
                 TryRebuildOrderReceiptPlan(store, orderId);
+                if (hasOrderLineQtyIncrease)
+                {
+                    TryAppendMissingProductionPallets(store, orderId);
+                }
+
                 if (existing.Type == OrderType.Customer && existing.UseReservedStock)
                 {
                     TryRefreshCustomerReceiptPlans(store);
@@ -1530,6 +1545,37 @@ public sealed class OrderService
         {
             // Compatibility for strict test mocks that do not expose planning methods.
         }
+    }
+
+    internal void TryAppendMissingProductionPallets(IDataStore store, long orderId)
+    {
+        try
+        {
+            var order = store.GetOrder(orderId);
+            if (order == null
+                || order.Type != OrderType.Internal
+                || order.Status is not (OrderStatus.InProgress or OrderStatus.Draft))
+            {
+                return;
+            }
+
+            var palletService = new ProductionPalletService(store);
+            palletService.PlanOrder(orderId);
+        }
+        catch (InvalidOperationException ex) when (IsBenignAppendPlanException(ex))
+        {
+            // Нет недостающего объёма или план уже покрывает заказ — это нормальное состояние после редактирования.
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            // Compatibility for strict test mocks that do not expose planning methods.
+        }
+    }
+
+    private static bool IsBenignAppendPlanException(InvalidOperationException ex)
+    {
+        return ex.Message.Contains("Нет остатка к наполнению", StringComparison.OrdinalIgnoreCase)
+               || ex.Message.Contains("Не задано количество на паллете", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void TryClearOrderReceiptPlan(IDataStore store, long orderId)
