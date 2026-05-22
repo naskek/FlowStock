@@ -18,6 +18,26 @@ namespace FlowStock.Server.Tests.Orders;
 public sealed class HuReservationCandidatesEndpointTests
 {
     [Fact]
+    public async Task CandidatesEndpoint_UsesPostPath()
+    {
+        var store = CreateStore([]);
+        await using var host = await HuReservationCandidatesHost.StartAsync(store.Object);
+
+        using var getResponse = await host.Client.GetAsync("/api/orders/hu-reservation-candidates");
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, getResponse.StatusCode);
+
+        using var postResponse = await host.Client.PostAsJsonAsync(
+            "/api/orders/hu-reservation-candidates",
+            new
+            {
+                order_id = 78L,
+                lines = Array.Empty<object>(),
+                exclude_hu_codes = Array.Empty<string>()
+            });
+        Assert.Equal(HttpStatusCode.OK, postResponse.StatusCode);
+    }
+
+    [Fact]
     public async Task ReturnsLedgerStockCandidates()
     {
         var store = CreateStore(

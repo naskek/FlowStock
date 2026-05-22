@@ -28,6 +28,21 @@ public sealed class OrderHuReservationApplyServiceTests
     }
 
     [Fact]
+    public void ApplyPartialReserve_IsNormalStateWithoutWarning()
+    {
+        var context = CreateContext();
+        context.SeedCustomerOrder(78, 203, itemId: 6, qtyOrdered: 1800, qtyShipped: 0);
+        context.SeedCandidate(Source("LEDGER_STOCK", "HU-0000493", itemId: 6, qty: 1200, shipReady: true));
+
+        var result = context.Apply(78, Line(203, "HU-0000493"));
+
+        var applied = Assert.Single(result.AppliedLines);
+        Assert.Equal(1200, applied.ReservedQty, 3);
+        Assert.Empty(result.Warnings);
+        Assert.Single(context.GetPlanLines(78));
+    }
+
+    [Fact]
     public void ApplyInternalFilledHu_ReservesWithoutMutatingInternal()
     {
         var context = CreateContext();

@@ -698,15 +698,6 @@ public partial class OrderDetailsWindow : Window
             return false;
         }
 
-        if (result?.Warnings.Count > 0)
-        {
-            MessageBox.Show(
-                string.Join(Environment.NewLine, result.Warnings),
-                "Привязка HU",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-        }
-
         _huBinding.MarkApplyCommitted();
         SyncHuBindingLines();
         return true;

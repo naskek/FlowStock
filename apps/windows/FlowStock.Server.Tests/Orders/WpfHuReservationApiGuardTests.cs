@@ -10,6 +10,7 @@ public sealed class WpfHuReservationApiGuardTests
 
         Assert.Contains("TryGetHuReservationCandidates(", source);
         Assert.Contains("/api/orders/hu-reservation-candidates", source);
+        Assert.Contains("TryPost(", source);
         Assert.Contains("[JsonPropertyName(\"order_line_id\")]", models);
         Assert.Contains("[JsonPropertyName(\"selected_hu_codes\")]", models);
         Assert.Contains("[JsonPropertyName(\"client_line_key\")]", models);
@@ -25,6 +26,7 @@ public sealed class WpfHuReservationApiGuardTests
 
         Assert.Contains("TryApplyHuReservations(", source);
         Assert.Contains("/hu-reservations/apply", source);
+        Assert.Contains("HttpMethod.Post", source);
         Assert.Contains("JsonContent.Create(body, options: JsonOptions)", source);
     }
 

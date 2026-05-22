@@ -77,7 +77,7 @@ public sealed class CustomerOrderHuBindingCoordinator : IDisposable
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
-    public void SetOrderContext(long? orderId, OrderType orderType, IEnumerable<OrderLineView> lines)
+    public void SetOrderContext(long? orderId, OrderType orderType, IEnumerable<OrderLineView?>? lines)
     {
         _orderId = orderId;
         _isCustomerOrder = orderType == OrderType.Customer;
@@ -94,8 +94,13 @@ public sealed class CustomerOrderHuBindingCoordinator : IDisposable
         Lines.Clear();
 
         var index = 0;
-        foreach (var line in lines)
+        foreach (var line in lines ?? Array.Empty<OrderLineView>())
         {
+            if (line == null)
+            {
+                continue;
+            }
+
             var key = ResolveClientLineKey(line, index++);
             if (!existingByKey.TryGetValue(key, out var state))
             {
@@ -115,9 +120,14 @@ public sealed class CustomerOrderHuBindingCoordinator : IDisposable
         ScheduleCandidatesRefresh();
     }
 
-    public void NotifyLineChanged(OrderLineView line)
+    public void NotifyLineChanged(OrderLineView? line)
     {
         if (!_isCustomerOrder || _isLoading)
+        {
+            return;
+        }
+
+        if (line == null)
         {
             return;
         }
@@ -138,8 +148,13 @@ public sealed class CustomerOrderHuBindingCoordinator : IDisposable
         ScheduleCandidatesRefresh();
     }
 
-    public void RemoveLine(OrderLineView line)
+    public void RemoveLine(OrderLineView? line)
     {
+        if (line == null)
+        {
+            return;
+        }
+
         var key = FindClientLineKey(line);
         if (key != null && _states.Remove(key, out _))
         {
@@ -214,7 +229,7 @@ public sealed class CustomerOrderHuBindingCoordinator : IDisposable
 
     private void ApplyExistingPlanLines(long orderId)
     {
-        foreach (var planLine in _loadPlanLines(orderId))
+        foreach (var planLine in _loadPlanLines(orderId) ?? Array.Empty<OrderReceiptPlanLine>())
         {
             if (planLine.OrderLineId <= 0 || string.IsNullOrWhiteSpace(planLine.ToHu))
             {
@@ -316,8 +331,13 @@ public sealed class CustomerOrderHuBindingCoordinator : IDisposable
         return Task.CompletedTask;
     }
 
-    private string? FindClientLineKey(OrderLineView line)
+    private string? FindClientLineKey(OrderLineView? line)
     {
+        if (line == null)
+        {
+            return null;
+        }
+
         if (line.Id > 0)
         {
             return $"line-{line.Id}";
@@ -326,8 +346,13 @@ public sealed class CustomerOrderHuBindingCoordinator : IDisposable
         return _states.Values.FirstOrDefault(state => ReferenceEquals(state.Line, line))?.ClientLineKey;
     }
 
-    private static string ResolveClientLineKey(OrderLineView line, int index)
+    private static string ResolveClientLineKey(OrderLineView? line, int index)
     {
+        if (line == null)
+        {
+            return $"draft-missing-{index}";
+        }
+
         return line.Id > 0 ? $"line-{line.Id}" : $"draft-{line.ItemId}-{index}";
     }
 }
@@ -425,16 +450,54 @@ public sealed class CustomerOrderLineHuState : INotifyPropertyChanged
 
     public bool IsSelectionOverRemaining => BoundQty > _lineRemainingQty + QtyTolerance;
 
+    public string HuCoverageTone
+    {
+        get
+        {
+            if (_lineRemainingQty <= QtyTolerance)
+            {
+                return "neutral";
+            }
+
+            return BoundQty + QtyTolerance >= _lineRemainingQty
+                ? "covered"
+                : "missing";
+        }
+    }
+
+    public string HuCoverageToolTip
+    {
+        get
+        {
+            var itemName = string.IsNullOrWhiteSpace(_line.ItemName)
+                ? "Товар без названия"
+                : _line.ItemName.Trim();
+            if (_lineRemainingQty <= QtyTolerance)
+            {
+                return $"{itemName}: остатка к отгрузке нет";
+            }
+
+            var boundQty = Math.Min(BoundQty, _lineRemainingQty);
+            var missingQty = Math.Max(0, _lineRemainingQty - BoundQty);
+            if (missingQty <= QtyTolerance)
+            {
+                return $"{itemName}: привязано {FormatQty(boundQty)} из {FormatQty(_lineRemainingQty)}";
+            }
+
+            return $"{itemName}: привязано {FormatQty(boundQty)} из {FormatQty(_lineRemainingQty)}, не хватает {FormatQty(missingQty)}";
+        }
+    }
+
     public double BoundQty => _selectedHuCodes.Sum(huCode =>
         _selectedQtyByHu.TryGetValue(huCode, out var qty) ? qty : 0);
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    public void AttachLine(OrderLineView line, long? orderId)
+    public void AttachLine(OrderLineView? line, long? orderId)
     {
-        _line = line;
+        _line = line ?? new OrderLineView();
         _orderId = orderId;
-        _lineRemainingQty = Math.Max(0, line.QtyRemaining > QtyTolerance ? line.QtyRemaining : line.QtyOrdered);
+        _lineRemainingQty = Math.Max(0, _line.QtyRemaining > QtyTolerance ? _line.QtyRemaining : _line.QtyOrdered);
         _awaitingSaveForCandidates = !orderId.HasValue;
         RaiseAll();
     }
@@ -657,6 +720,8 @@ public sealed class CustomerOrderLineHuState : INotifyPropertyChanged
         OnPropertyChanged(nameof(HuPickerLabel));
         OnPropertyChanged(nameof(IsHuPickerEnabled));
         OnPropertyChanged(nameof(IsSelectionOverRemaining));
+        OnPropertyChanged(nameof(HuCoverageTone));
+        OnPropertyChanged(nameof(HuCoverageToolTip));
     }
 
     private void OnPropertyChanged([CallerMemberName] string? propertyName = null) =>
@@ -665,11 +730,12 @@ public sealed class CustomerOrderLineHuState : INotifyPropertyChanged
     private sealed record ExistingReservationSnapshot(string HuCode, double Qty, string Source);
 }
 
-public sealed class CustomerOrderLinePresentation
+public sealed class CustomerOrderLinePresentation : INotifyPropertyChanged
 {
     public CustomerOrderLinePresentation(CustomerOrderLineHuState state)
     {
         State = state;
+        State.PropertyChanged += (_, _) => RaiseAll();
     }
 
     public CustomerOrderLineHuState State { get; }
@@ -715,4 +781,37 @@ public sealed class CustomerOrderLinePresentation
     public string HuPickerLabel => State.HuPickerLabel;
 
     public bool IsHuPickerEnabled => State.IsHuPickerEnabled;
+
+    public string HuCoverageTone => State.HuCoverageTone;
+
+    public string HuCoverageToolTip => State.HuCoverageToolTip;
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void RaiseAll()
+    {
+        OnPropertyChanged(nameof(Line));
+        OnPropertyChanged(nameof(ItemName));
+        OnPropertyChanged(nameof(Barcode));
+        OnPropertyChanged(nameof(Gtin));
+        OnPropertyChanged(nameof(QtyOrdered));
+        OnPropertyChanged(nameof(ProductionHuCodes));
+        OnPropertyChanged(nameof(QtyShipped));
+        OnPropertyChanged(nameof(QtyRemaining));
+        OnPropertyChanged(nameof(QtyAvailable));
+        OnPropertyChanged(nameof(CanShipNow));
+        OnPropertyChanged(nameof(Shortage));
+        OnPropertyChanged(nameof(IsMixedPalletLine));
+        OnPropertyChanged(nameof(MixedPalletGroupNumber));
+        OnPropertyChanged(nameof(AvailableHuDisplay));
+        OnPropertyChanged(nameof(BoundHuDisplay));
+        OnPropertyChanged(nameof(RemainingHuDisplay));
+        OnPropertyChanged(nameof(HuPickerLabel));
+        OnPropertyChanged(nameof(IsHuPickerEnabled));
+        OnPropertyChanged(nameof(HuCoverageTone));
+        OnPropertyChanged(nameof(HuCoverageToolTip));
+    }
+
+    private void OnPropertyChanged([CallerMemberName] string? propertyName = null) =>
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
 }
