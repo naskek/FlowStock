@@ -45,6 +45,18 @@ public sealed class WpfHuReservationApiGuardTests
         Assert.DoesNotContain("ApplyCustomerOrderSaveFollowUp", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void OrderDetailsWindow_DoesNotExposeManualPalletPlanAdoption()
+    {
+        var xaml = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml");
+        var codeBehind = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs");
+
+        Assert.DoesNotContain("Перенести план паллет", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Перенести план", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("AdoptPalletPlanButton", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("AdoptPalletPlan_Click", codeBehind, StringComparison.Ordinal);
+    }
+
     private static string ReadRepoFile(params string[] parts)
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

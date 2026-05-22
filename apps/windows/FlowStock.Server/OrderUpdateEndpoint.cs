@@ -193,7 +193,7 @@ public static class OrderUpdateEndpoint
         }
         catch (InvalidOperationException ex)
         {
-            return Results.BadRequest(new ApiResult(false, MapKnownInvalidOperationError(ex)));
+            return Results.BadRequest(new ApiErrorResult(false, MapKnownInvalidOperationError(ex), ex.Message));
         }
 
         var updated = store.GetOrder(orderId);
@@ -257,6 +257,23 @@ public static class OrderUpdateEndpoint
         if (ex.Message.Contains("уже зарезервирован", StringComparison.OrdinalIgnoreCase))
         {
             return "HU_RESERVATION_CONFLICT";
+        }
+
+        if (ex.Message.Contains("Нельзя уменьшить количество ниже уже заполненного/отгруженного объема", StringComparison.OrdinalIgnoreCase))
+        {
+            return "ORDER_LINE_QTY_BELOW_COVERAGE";
+        }
+
+        if (ex.Message.Contains("есть заполненные паллеты/HU", StringComparison.OrdinalIgnoreCase))
+        {
+            return "ORDER_LINE_HAS_FILLED_PALLETS";
+        }
+
+        if (ex.Message.Contains("Автоматически сбрасывать можно только PLANNED-паллеты", StringComparison.OrdinalIgnoreCase)
+            || ex.Message.Contains("паллетный план уже напечатан", StringComparison.OrdinalIgnoreCase)
+            || ex.Message.Contains("находится в фактическом состоянии", StringComparison.OrdinalIgnoreCase))
+        {
+            return "ORDER_LINE_PALLET_PLAN_NOT_PLANNED";
         }
 
         return "ORDER_UPDATE_FAILED";

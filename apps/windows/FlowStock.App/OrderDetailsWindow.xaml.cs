@@ -393,78 +393,6 @@ public partial class OrderDetailsWindow : Window
         }
     }
 
-    private async void AdoptPalletPlan_Click(object sender, RoutedEventArgs e)
-    {
-        if (_order?.Type != OrderType.Customer || !_orderId.HasValue)
-        {
-            MessageBox.Show("Перенос плана паллет доступен только для сохранённого клиентского заказа.", "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        if (!await EnsureSavedForPalletActionAsync().ConfigureAwait(true))
-        {
-            return;
-        }
-
-        var sourceRef = PromptForInternalOrderRef();
-        if (string.IsNullOrWhiteSpace(sourceRef))
-        {
-            return;
-        }
-
-        var sourceOrder = FindInternalOrderByRef(sourceRef);
-        if (sourceOrder == null)
-        {
-            MessageBox.Show("Внутренний заказ с таким номером не найден.", "Паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        var confirm = MessageBox.Show(
-            $"Перенести план паллет с внутреннего заказа №{sourceOrder.OrderRef} на текущий клиентский заказ? Старый план паллет клиентского заказа должен быть удалён заранее.",
-            "Паллеты",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Warning,
-            MessageBoxResult.No);
-        if (confirm != MessageBoxResult.Yes)
-        {
-            return;
-        }
-
-        AdoptPalletPlanButton.IsEnabled = false;
-        PlanPalletsButton.IsEnabled = false;
-        PrintPalletLabelsButton.IsEnabled = false;
-        DeletePalletPlanButton.IsEnabled = false;
-        try
-        {
-            var result = await _services.WpfProductionPalletApi
-                .TryAdoptPlanFromInternalAsync(_orderId.Value, sourceOrder.Id)
-                .ConfigureAwait(true);
-            if (!result.IsSuccess)
-            {
-                MessageBox.Show(result.Message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-
-            var huCodes = result.TransferredHuCodes.Count == 0
-                ? "нет HU"
-                : string.Join(", ", result.TransferredHuCodes);
-            MessageBox.Show(
-                $"{result.Message}{Environment.NewLine}{Environment.NewLine}" +
-                $"Перенесено паллет: {result.TransferredPalletCount}{Environment.NewLine}" +
-                $"Перенесено строк выпуска: {result.TransferredLineCount}{Environment.NewLine}" +
-                $"HU: {huCodes}{Environment.NewLine}" +
-                $"PRD получателя: {result.TargetPrdDocId}",
-                "Паллеты",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-            LoadOrder();
-        }
-        finally
-        {
-            UpdatePalletButtons();
-        }
-    }
-
     private async void PrintPalletLabels_Click(object sender, RoutedEventArgs e)
     {
         if (!EnsurePalletPrintReady())
@@ -1253,9 +1181,6 @@ public partial class OrderDetailsWindow : Window
         PlanPalletsButton.IsEnabled = canPlan;
         PrintPalletLabelsButton.IsEnabled = canPrint;
         DeletePalletPlanButton.IsEnabled = canDeletePlan;
-        AdoptPalletPlanButton.IsEnabled = _orderId.HasValue
-                                          && _order?.Type == OrderType.Customer
-                                          && _order.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged);
         OpenProductionReceiptButton.IsEnabled = _orderId.HasValue && GetProductionReceiptsForOrder(_orderId.Value).Count > 0;
         OrderLinesGrid.Tag = EnsureEditable(false) && !_productionPalletHuLocked;
     }
@@ -1341,84 +1266,6 @@ public partial class OrderDetailsWindow : Window
             _services.AppLogger.Error($"Load production receipts for order_id={orderId} failed", ex);
             return Array.Empty<Doc>();
         }
-    }
-
-    private Order? FindInternalOrderByRef(string orderRef)
-    {
-        var normalized = orderRef.Trim();
-        try
-        {
-            return _services.DataStore.GetOrders()
-                .Where(order => order.Type == OrderType.Internal)
-                .FirstOrDefault(order => string.Equals(order.OrderRef, normalized, StringComparison.OrdinalIgnoreCase));
-        }
-        catch (Exception ex)
-        {
-            _services.AppLogger.Error($"Find internal order by ref failed: {normalized}", ex);
-            return null;
-        }
-    }
-
-    private string? PromptForInternalOrderRef()
-    {
-        var dialog = new Window
-        {
-            Title = "Перенести план паллет",
-            Owner = this,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            SizeToContent = SizeToContent.WidthAndHeight,
-            ResizeMode = ResizeMode.NoResize
-        };
-
-        var input = new System.Windows.Controls.TextBox
-        {
-            MinWidth = 260,
-            Margin = new Thickness(0, 8, 0, 0)
-        };
-        var okButton = new System.Windows.Controls.Button
-        {
-            Content = "OK",
-            Width = 90,
-            IsDefault = true,
-            Margin = new Thickness(0, 12, 8, 0)
-        };
-        var cancelButton = new System.Windows.Controls.Button
-        {
-            Content = "Отмена",
-            Width = 90,
-            IsCancel = true,
-            Margin = new Thickness(0, 12, 0, 0)
-        };
-        okButton.Click += (_, _) =>
-        {
-            dialog.DialogResult = true;
-            dialog.Close();
-        };
-
-        var buttons = new StackPanel
-        {
-            Orientation = System.Windows.Controls.Orientation.Horizontal,
-            HorizontalAlignment = System.Windows.HorizontalAlignment.Right
-        };
-        buttons.Children.Add(okButton);
-        buttons.Children.Add(cancelButton);
-
-        var panel = new StackPanel
-        {
-            Margin = new Thickness(16)
-        };
-        panel.Children.Add(new TextBlock
-        {
-            Text = "Введите номер внутреннего заказа-источника:"
-        });
-        panel.Children.Add(input);
-        panel.Children.Add(buttons);
-        dialog.Content = panel;
-        dialog.Loaded += (_, _) => input.Focus();
-
-        return dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(input.Text)
-            ? input.Text.Trim()
-            : null;
     }
 
     private bool HasMarkableLines()

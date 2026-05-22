@@ -45,15 +45,24 @@ public sealed class ProductionPalletService
             {
                 prdDocId = preparedDoc.Id;
                 wasExisting = true;
-                store.ClearPlannedProductionPalletPlan(preparedDoc.Id);
             }
 
             var remainingLines = OrderReceiptRemainingCalculator.GetRemaining(store, order)
                 .Where(line => line.QtyRemaining > QtyTolerance)
                 .OrderBy(line => line.OrderLineId)
                 .ToList();
+            if (prdDocId != 0)
+            {
+                remainingLines = SubtractExistingPalletCoverage(store.GetProductionPalletsByDoc(prdDocId), remainingLines);
+            }
+
             if (remainingLines.Count == 0)
             {
+                if (prdDocId != 0)
+                {
+                    return;
+                }
+
                 throw new InvalidOperationException("Нет остатка к наполнению по заказу.");
             }
 
@@ -945,6 +954,48 @@ public sealed class ProductionPalletService
         }
 
         return manualMixedLineIds;
+    }
+
+    private static List<OrderReceiptLine> SubtractExistingPalletCoverage(
+        IReadOnlyList<ProductionPallet> pallets,
+        IReadOnlyList<OrderReceiptLine> remainingLines)
+    {
+        var coveredByLine = pallets
+            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+            .SelectMany(GetPalletLines)
+            .Where(line => line.OrderLineId.HasValue)
+            .GroupBy(line => line.OrderLineId!.Value)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Sum(line => Math.Max(0, line.PlannedQty)));
+
+        return remainingLines
+            .Select(line =>
+            {
+                var coveredQty = coveredByLine.TryGetValue(line.OrderLineId, out var covered)
+                    ? covered
+                    : 0d;
+                var qtyRemaining = Math.Max(0, line.QtyRemaining - coveredQty);
+                return new OrderReceiptLine
+                {
+                    OrderLineId = line.OrderLineId,
+                    OrderId = line.OrderId,
+                    ItemId = line.ItemId,
+                    ItemName = line.ItemName,
+                    QtyOrdered = line.QtyOrdered,
+                    QtyReceived = line.QtyReceived,
+                    QtyRemaining = qtyRemaining,
+                    ProductionPurpose = line.ProductionPurpose,
+                    ToLocationId = line.ToLocationId,
+                    ToLocation = line.ToLocation,
+                    ToHu = line.ToHu,
+                    SortOrder = line.SortOrder
+                };
+            })
+            .Where(line => line.QtyRemaining > QtyTolerance)
+            .OrderBy(line => line.OrderLineId)
+            .ToList();
     }
 
     private static void AddMixedPlannedPalletLines(

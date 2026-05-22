@@ -96,6 +96,9 @@ public interface IDataStore
     bool HasProductionPallets(long docId);
     bool HasProductionPalletLinesForDoc(long docId);
     void ClearPlannedProductionPalletPlan(long docId);
+    ProductionPalletPlanCleanupCounts ClearPlannedProductionPalletPlanForOrderLines(
+        long orderId,
+        IReadOnlyCollection<long> orderLineIds);
     int CountLedgerEntriesByDocId(long docId);
     ProductionPalletPlanCleanupCounts CancelProductionPalletPlan(long docId);
     ProductionPalletPlanAdoptionResult AdoptProductionPalletPlan(

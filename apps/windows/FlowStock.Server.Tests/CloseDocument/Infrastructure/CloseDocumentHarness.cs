@@ -1686,6 +1686,11 @@ internal sealed class CloseDocumentHarness
                 ClearProductionPalletPlanInHarness(docId);
             });
 
+        _store.Setup(store => store.ClearPlannedProductionPalletPlanForOrderLines(
+                It.IsAny<long>(),
+                It.IsAny<IReadOnlyCollection<long>>()))
+            .Returns<long, IReadOnlyCollection<long>>(ClearPlannedProductionPalletPlanForOrderLinesInHarness);
+
         _store.Setup(store => store.CountLedgerEntriesByDocId(It.IsAny<long>()))
             .Returns<long>(docId => _postedLedger.Count(entry => entry.DocId == docId));
 
@@ -2962,9 +2967,19 @@ internal sealed class CloseDocumentHarness
         }
 
         total += _productionPallets.Values
-            .Where(pallet => pallet.OrderLineId == orderLineId
-                             && string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
-            .Sum(pallet => pallet.PlannedQty);
+            .Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+            .Sum(pallet =>
+            {
+                var componentQty = pallet.Lines
+                    .Where(line => line.OrderLineId == orderLineId)
+                    .Sum(line => line.PlannedQty);
+                if (componentQty > 0)
+                {
+                    return componentQty;
+                }
+
+                return pallet.OrderLineId == orderLineId ? pallet.PlannedQty : 0;
+            });
 
         return total;
     }
@@ -3418,5 +3433,91 @@ internal sealed class CloseDocumentHarness
         {
             docLines.Clear();
         }
+    }
+
+    private ProductionPalletPlanCleanupCounts ClearPlannedProductionPalletPlanForOrderLinesInHarness(
+        long orderId,
+        IReadOnlyCollection<long> orderLineIds)
+    {
+        var targetLineIds = orderLineIds
+            .Where(id => id > 0)
+            .ToHashSet();
+        if (targetLineIds.Count == 0)
+        {
+            return new ProductionPalletPlanCleanupCounts();
+        }
+
+        var targetPallets = _productionPallets.Values
+            .Where(pallet => pallet.OrderId == orderId
+                             && string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+                             && (pallet.OrderLineId.HasValue && targetLineIds.Contains(pallet.OrderLineId.Value)
+                                 || pallet.Lines.Any(line => line.OrderLineId.HasValue && targetLineIds.Contains(line.OrderLineId.Value))))
+            .ToArray();
+
+        var removedPalletCount = 0;
+        var docLineIdsToDelete = new HashSet<long>();
+        foreach (var pallet in targetPallets)
+        {
+            var targetComponentLines = pallet.Lines
+                .Where(line => line.OrderLineId.HasValue && targetLineIds.Contains(line.OrderLineId.Value))
+                .ToArray();
+            if (pallet.Lines.Count == 0
+                || targetComponentLines.Length == pallet.Lines.Count)
+            {
+                _productionPallets.Remove(pallet.Id);
+                removedPalletCount++;
+                if (pallet.DocLineId > 0)
+                {
+                    docLineIdsToDelete.Add(pallet.DocLineId);
+                }
+
+                foreach (var line in targetComponentLines)
+                {
+                    docLineIdsToDelete.Add(line.DocLineId);
+                }
+
+                continue;
+            }
+
+            var remainingLines = pallet.Lines
+                .Where(line => !line.OrderLineId.HasValue || !targetLineIds.Contains(line.OrderLineId.Value))
+                .ToArray();
+            foreach (var line in targetComponentLines)
+            {
+                docLineIdsToDelete.Add(line.DocLineId);
+            }
+
+            _productionPallets[pallet.Id] = new ProductionPallet
+            {
+                Id = pallet.Id,
+                PrdDocId = pallet.PrdDocId,
+                DocLineId = remainingLines[0].DocLineId,
+                OrderId = pallet.OrderId,
+                OrderLineId = remainingLines.Select(line => line.OrderLineId).Distinct().Count() == 1
+                    ? remainingLines[0].OrderLineId
+                    : null,
+                ItemId = remainingLines[0].ItemId,
+                ItemName = remainingLines[0].ItemName,
+                HuCode = pallet.HuCode,
+                PlannedQty = remainingLines.Sum(line => line.PlannedQty),
+                ToLocationId = pallet.ToLocationId,
+                ToLocationCode = pallet.ToLocationCode,
+                Status = pallet.Status,
+                CreatedAt = pallet.CreatedAt,
+                Lines = remainingLines
+            };
+            removedPalletCount++;
+        }
+
+        foreach (var docLines in _linesByDoc.Values)
+        {
+            docLines.RemoveAll(line => docLineIdsToDelete.Contains(line.Id));
+        }
+
+        return new ProductionPalletPlanCleanupCounts
+        {
+            RemovedPalletCount = removedPalletCount,
+            RemovedLineCount = docLineIdsToDelete.Count
+        };
     }
 }

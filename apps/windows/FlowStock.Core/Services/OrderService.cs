@@ -552,6 +552,24 @@ public sealed class OrderService
                 .Select(line => (line.ItemId, ProductionPurpose: ResolveLinePurpose(type, line.ProductionPurpose)))
                 .ToHashSet();
 
+            foreach (var entry in existingByItem)
+            {
+                if (!incomingKeys.Contains(entry.Key))
+                {
+                    foreach (var staleLine in entry.Value)
+                    {
+                        ValidateOrderLineCanBeDeleted(store, orderId, staleLine);
+                    }
+                }
+                else
+                {
+                    foreach (var duplicateLine in entry.Value.Skip(1))
+                    {
+                        ValidateOrderLineCanBeDeleted(store, orderId, duplicateLine);
+                    }
+                }
+            }
+
             foreach (var line in normalized)
             {
                 var linePurpose = ResolveLinePurpose(type, line.ProductionPurpose);
@@ -561,6 +579,8 @@ public sealed class OrderService
                     var primary = matched[0];
                     if (Math.Abs(primary.QtyOrdered - line.QtyOrdered) > QtyTolerance)
                     {
+                        ValidateOrderLineQtyCanChange(store, orderId, primary, line.QtyOrdered);
+                        ClearPlannedProductionPalletsForOrderLine(store, orderId, primary.Id);
                         store.UpdateOrderLineQty(primary.Id, line.QtyOrdered);
                     }
 
@@ -572,12 +592,16 @@ public sealed class OrderService
                     var incomingGroup = NormalizePalletGroup(line.ProductionPalletGroup);
                     if (!string.Equals(NormalizePalletGroup(primary.ProductionPalletGroup), incomingGroup, StringComparison.OrdinalIgnoreCase))
                     {
+                        EnsureOrderLineHasNoNonPlannedPallets(store, orderId, primary, "изменить настройку общего HU");
+                        ClearPlannedProductionPalletsForOrderLine(store, orderId, primary.Id);
                         store.UpdateOrderLineProductionPalletGroup(primary.Id, incomingGroup);
                     }
 
                     // Legacy cleanup: keep one line per item and purpose, remove accidental duplicates.
                     for (var i = 1; i < matched.Count; i++)
                     {
+                        ValidateOrderLineCanBeDeleted(store, orderId, matched[i]);
+                        ClearPlannedProductionPalletsForOrderLine(store, orderId, matched[i].Id);
                         store.DeleteOrderLine(matched[i].Id);
                     }
                     continue;
@@ -602,6 +626,8 @@ public sealed class OrderService
 
                 foreach (var staleLine in entry.Value)
                 {
+                    ValidateOrderLineCanBeDeleted(store, orderId, staleLine);
+                    ClearPlannedProductionPalletsForOrderLine(store, orderId, staleLine.Id);
                     store.DeleteOrderLine(staleLine.Id);
                 }
             }
@@ -619,6 +645,101 @@ public sealed class OrderService
                 }
             }
         });
+    }
+
+    private static void ValidateOrderLineQtyCanChange(IDataStore store, long orderId, OrderLine line, double newQty)
+    {
+        var shippedTotals = store.GetShippedTotalsByOrderLine(orderId);
+        var shippedQty = shippedTotals.TryGetValue(line.Id, out var shipped)
+            ? Math.Max(0, shipped)
+            : 0d;
+        var filledQty = Math.Max(0, store.GetFilledProductionPalletQtyByOrderLine(line.Id));
+        var reservedQty = store.GetOrderReceiptPlanLines(orderId)
+            .Where(planLine => planLine.OrderLineId == line.Id)
+            .Sum(planLine => Math.Max(0, planLine.QtyPlanned));
+        var protectedCoverage = shippedQty + Math.Max(filledQty, reservedQty);
+        if (newQty + QtyTolerance < protectedCoverage)
+        {
+            throw new InvalidOperationException("Нельзя уменьшить количество ниже уже заполненного/отгруженного объема.");
+        }
+
+        // FILLED остается физическим фактом; вызывающий код сбрасывает только PLANNED-план.
+    }
+
+    private static void ValidateOrderLineCanBeDeleted(IDataStore store, long orderId, OrderLine line)
+    {
+        var activePallets = GetActiveProductionPalletsForOrderLine(store, orderId, line.Id);
+        if (activePallets.Any(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidOperationException(
+                $"{GetOrderLineItemName(store, line)}: нельзя удалить строку, есть заполненные паллеты/HU.");
+        }
+
+        var nonPlanned = activePallets.FirstOrDefault(pallet =>
+            !string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase));
+        if (nonPlanned != null)
+        {
+            throw new InvalidOperationException(
+                $"{GetOrderLineItemName(store, line)}: нельзя удалить строку, паллетный план уже напечатан или находится в фактическом состоянии.");
+        }
+    }
+
+    private static void EnsureOrderLineHasNoNonPlannedPallets(
+        IDataStore store,
+        long orderId,
+        OrderLine line,
+        string action)
+    {
+        var activePallets = GetActiveProductionPalletsForOrderLine(store, orderId, line.Id);
+        var filledQty = activePallets
+            .Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+            .Sum(pallet => Math.Max(0, ResolvePalletQtyForOrderLine(pallet, line.Id)));
+        if (filledQty > QtyTolerance)
+        {
+            throw new InvalidOperationException(
+                $"{GetOrderLineItemName(store, line)}: нельзя {action}, есть заполненные паллеты/HU.");
+        }
+
+        var nonPlanned = activePallets.FirstOrDefault(pallet =>
+            !string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase));
+        if (nonPlanned != null)
+        {
+            throw new InvalidOperationException(
+                $"{GetOrderLineItemName(store, line)}: нельзя {action}, паллетный план уже напечатан или находится в фактическом состоянии.");
+        }
+    }
+
+    private static void ClearPlannedProductionPalletsForOrderLine(IDataStore store, long orderId, long orderLineId)
+    {
+        store.ClearPlannedProductionPalletPlanForOrderLines(orderId, [orderLineId]);
+    }
+
+    private static IReadOnlyList<ProductionPallet> GetActiveProductionPalletsForOrderLine(
+        IDataStore store,
+        long orderId,
+        long orderLineId)
+    {
+        return store.GetDocsByOrder(orderId)
+            .Where(doc => doc.Type == DocType.ProductionReceipt)
+            .SelectMany(doc => store.GetProductionPalletsByDoc(doc.Id))
+            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+            .Where(pallet => pallet.OrderLineId == orderLineId
+                             || pallet.Lines.Any(line => line.OrderLineId == orderLineId))
+            .ToArray();
+    }
+
+    private static double ResolvePalletQtyForOrderLine(ProductionPallet pallet, long orderLineId)
+    {
+        var componentQty = pallet.Lines
+            .Where(line => line.OrderLineId == orderLineId)
+            .Sum(line => Math.Max(0, line.PlannedQty));
+        return componentQty > QtyTolerance ? componentQty : Math.Max(0, pallet.PlannedQty);
+    }
+
+    private static string GetOrderLineItemName(IDataStore store, OrderLine line)
+    {
+        var name = store.FindItemById(line.ItemId)?.Name;
+        return string.IsNullOrWhiteSpace(name) ? "Строка заказа" : name.Trim();
     }
 
     public void DeleteOrder(long orderId)

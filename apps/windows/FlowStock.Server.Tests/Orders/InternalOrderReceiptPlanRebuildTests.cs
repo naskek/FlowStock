@@ -81,6 +81,11 @@ public sealed class InternalOrderReceiptPlanRebuildTests
         store.Setup(s => s.UpdateOrderLineQty(orderLines[0].Id, It.IsAny<double>()))
             .Callback<long, double>((_, qty) => currentQtyOrdered = qty);
         store.Setup(s => s.GetShippedTotalsByOrderLine(order.Id)).Returns(new Dictionary<long, double>());
+        store.Setup(s => s.GetFilledProductionPalletQtyByOrderLine(orderLines[0].Id, null)).Returns(0);
+        store.Setup(s => s.ClearPlannedProductionPalletPlanForOrderLines(
+                order.Id,
+                It.Is<IReadOnlyCollection<long>>(ids => ids.Contains(orderLines[0].Id))))
+            .Returns(new ProductionPalletPlanCleanupCounts());
         store.Setup(s => s.GetDocsByOrder(order.Id)).Returns(Array.Empty<Doc>());
         store.Setup(s => s.GetOrderReceiptRemaining(order.Id))
             .Returns(() =>

@@ -131,8 +131,7 @@
                     <StackPanel Orientation="Vertical">
                         <Button x:Name="PlanPalletsButton" Style="{StaticResource OrderActionButtonStyle}" Content="Сформировать план паллет" Click="PlanPallets_Click" TabIndex="10" />
                         <Button x:Name="PrintPalletLabelsButton" Style="{StaticResource OrderActionButtonStyle}" Content="Печать паллетных этикеток" Click="PrintPalletLabels_Click" TabIndex="11" />
-                        <Button x:Name="DeletePalletPlanButton" Style="{StaticResource OrderActionButtonStyle}" Content="Удалить план паллет" Click="DeletePalletPlan_Click" TabIndex="12" />
-                        <Button x:Name="AdoptPalletPlanButton" Style="{StaticResource OrderActionButtonStyle}" Content="Перенести план паллет" Click="AdoptPalletPlan_Click" TabIndex="13" Margin="0" />
+                        <Button x:Name="DeletePalletPlanButton" Style="{StaticResource OrderActionButtonStyle}" Content="Удалить план паллет" Click="DeletePalletPlan_Click" TabIndex="12" Margin="0" />
                     </StackPanel>
                 </GroupBox>
 
