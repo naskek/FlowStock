@@ -153,6 +153,19 @@
                           SelectionChanged="OrderLinesGrid_SelectionChanged"
                           MouseDoubleClick="OrderLinesGrid_MouseDoubleClick"
                           TabIndex="10">
+                    <DataGrid.RowStyle>
+                        <Style TargetType="DataGridRow">
+                            <Setter Property="ToolTip" Value="{Binding HuCoverageToolTip}" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding HuCoverageTone}" Value="covered">
+                                    <Setter Property="Background" Value="#EAF7EE" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding HuCoverageTone}" Value="missing">
+                                    <Setter Property="Background" Value="#FDEEEF" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </DataGrid.RowStyle>
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" IsReadOnly="True" />
                         <DataGridTextColumn Header="SKU / ШК" Binding="{Binding Barcode}" Width="150" IsReadOnly="True" />

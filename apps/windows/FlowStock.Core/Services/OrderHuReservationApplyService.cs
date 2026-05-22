@@ -79,7 +79,6 @@ public sealed class OrderHuReservationApplyService
         var replacementPlanLines = new List<OrderReceiptPlanLine>();
         var appliedLines = new List<OrderHuReservationApplyLineResult>();
         var huToRequestLine = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
-        var warnings = new List<string>();
 
         foreach (var requestLine in request.Lines)
         {
@@ -202,12 +201,6 @@ public sealed class OrderHuReservationApplyService
                     ]);
             }
 
-            if (reservedQty + StockQuantityRules.QtyTolerance < remainingQty)
-            {
-                warnings.Add(
-                    $"Строка {orderLine.Id}: резерв {reservedQty} покрывает не весь неотгруженный остаток {remainingQty}.");
-            }
-
             appliedLines.Add(BuildAppliedLineResult(orderLine, selectedHu, reservedQty));
         }
 
@@ -220,8 +213,7 @@ public sealed class OrderHuReservationApplyService
         {
             Ok = true,
             OrderId = customerOrderId,
-            AppliedLines = appliedLines,
-            Warnings = warnings
+            AppliedLines = appliedLines
         };
     }
 

@@ -19,6 +19,22 @@ namespace FlowStock.Server.Tests.Orders;
 public sealed class OrderHuReservationApplyEndpointTests
 {
     [Fact]
+    public async Task ApplyEndpoint_UsesOrderScopedPostPath()
+    {
+        var context = new HuReservationApplyTestContext();
+        context.SeedCustomerOrder(78, 203, itemId: 6, qtyOrdered: 600);
+        await using var host = await ApplyHost.StartAsync(context.Store);
+
+        using var getResponse = await host.Client.GetAsync("/api/orders/78/hu-reservations/apply");
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, getResponse.StatusCode);
+
+        using var postResponse = await host.Client.PostAsJsonAsync(
+            "/api/orders/78/hu-reservations/apply",
+            new { lines = new[] { new { order_line_id = 203L, selected_hu_codes = Array.Empty<string>() } } });
+        Assert.Equal(HttpStatusCode.OK, postResponse.StatusCode);
+    }
+
+    [Fact]
     public async Task ApplyEndpoint_ReturnsAppliedLines()
     {
         var context = new HuReservationApplyTestContext();
