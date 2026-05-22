@@ -10,6 +10,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using FlowStock.Core.Models;
+using FlowStock.Core.Services;
 
 namespace FlowStock.App;
 
@@ -3085,9 +3086,6 @@ public partial class OperationDetailsWindow : Window
             return false;
         }
 
-        var contexts = BuildOutboundOrderBatchContexts(selected.Id, null);
-        LogOutboundOrderBoundInfo($"fill from order server branch prepared: order_id={selected.Id}; contexts={contexts.Count}; from_location_id=-; from_hu=-");
-
         var headerSaved = await TryPersistHeaderViaServerAsync(
             selected.PartnerId,
             selected.Id,
@@ -3101,44 +3099,39 @@ public partial class OperationDetailsWindow : Window
             return false;
         }
 
-        var existingLineIds = _docLines
-            .Select(line => line.Id)
-            .ToList();
-        LogOutboundOrderBoundInfo($"fill from order server branch delete phase prepared: order_id={selected.Id}; active_line_count={existingLineIds.Count}");
-        if (!await TryDeleteLinesForServerRebuildAsync(
-                existingLineIds,
-                "Операция",
-                logInfo: message => LogOutboundOrderBoundInfo(message),
-                logWarn: message => LogOutboundOrderBoundWarn(message)))
+        try
         {
+            var replaceAll = !_isPartialShipment;
+            LogOutboundOrderBoundInfo(
+                $"fill from order sync prepared: order_id={selected.Id}; partial={_isPartialShipment}; replace_all={replaceAll}");
+            var addedCount = await Task.Run(() =>
+                    _services.Documents.SyncCustomerOutboundFromBoundHu(_doc.Id, replaceAll))
+                .ConfigureAwait(true);
+            LoadDoc();
+            LoadOrderQuantities(selected.Id);
+            ResetPartialMode();
+
+            if (addedCount == 0 && _docLines.Count == 0)
+            {
+                MessageBox.Show("По заказу нет остатка к отгрузке.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            else if (addedCount > 0)
+            {
+                MessageBox.Show(
+                    $"Добавлено строк отгрузки: {addedCount}",
+                    "Операция",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogOutboundOrderBoundWarn($"fill from order sync failed: order_id={selected.Id}; message={ex.Message}");
+            MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
-
-        var result = await _services.WpfBatchAddDocLines.AddLinesBatchAsync(_doc, contexts);
-        LoadDoc();
-
-        if (!result.IsSuccess)
-        {
-            MessageBox.Show(
-                BuildBatchFailureMessage(result),
-                "Операция",
-                MessageBoxButton.OK,
-                ResolveServerAddLineMessageImage(result.Kind));
-            return false;
-        }
-
-        LoadOrderQuantities(selected.Id);
-        ResetPartialMode();
-        if (result.AddedCount == 0)
-        {
-            MessageBox.Show("По заказу нет остатка к отгрузке.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-        else if (!string.IsNullOrWhiteSpace(result.Message))
-        {
-            MessageBox.Show(result.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-
-        return true;
     }
 
     private async Task TryApplyReceiptOrderSelectionAsync(OrderOption selected)
@@ -3395,118 +3388,23 @@ public partial class OperationDetailsWindow : Window
     private IReadOnlyList<WpfAddDocLineContext> BuildOutboundOrderBatchContexts(long orderId, long? fromLocationId)
     {
         var requestedHu = NormalizeHuValue(GetSelectedHuCode(DocHuCombo));
-        var orderBoundHuByItem = GetOrderBoundHuByItem(orderId);
-        var locationsByCode = _locations
-            .Where(location => !string.IsNullOrWhiteSpace(location.Code))
-            .ToDictionary(location => location.Code, location => location.Id, StringComparer.OrdinalIgnoreCase);
-
-        var sourcePools = new Dictionary<(long ItemId, long LocationId, string HuKey), OutboundSourcePool>();
-        foreach (var row in GetStockRows().Where(row => row.Qty > 0))
-        {
-            if (string.IsNullOrWhiteSpace(row.LocationCode)
-                || !locationsByCode.TryGetValue(row.LocationCode, out var locationId))
-            {
-                continue;
-            }
-
-            var location = _locations.FirstOrDefault(candidate => candidate.Id == locationId);
-            if (location == null)
-            {
-                continue;
-            }
-
-            if (fromLocationId.HasValue && locationId != fromLocationId.Value)
-            {
-                continue;
-            }
-
-            if (!fromLocationId.HasValue && !location.AutoHuDistributionEnabled)
-            {
-                continue;
-            }
-
-            var hu = NormalizeHuValue(row.Hu);
-            if (!string.IsNullOrWhiteSpace(requestedHu)
-                && !string.Equals(hu, requestedHu, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            // Для отгрузки по заказу учитываем только HU, выпущенные под этот заказ.
-            if (!orderBoundHuByItem.TryGetValue(row.ItemId, out var allowedHuCodes)
-                || allowedHuCodes.Count == 0
-                || string.IsNullOrWhiteSpace(hu)
-                || !allowedHuCodes.Contains(hu))
-            {
-                continue;
-            }
-
-            var huKey = hu ?? string.Empty;
-            var key = (row.ItemId, locationId, huKey);
-            if (!sourcePools.TryGetValue(key, out var pool))
-            {
-                pool = new OutboundSourcePool
-                {
-                    ItemId = row.ItemId,
-                    LocationId = locationId,
-                    HuCode = hu,
-                    RemainingQty = 0
-                };
-                sourcePools[key] = pool;
-            }
-
-            pool.RemainingQty += row.Qty;
-        }
-
-        var stockPoolsByItem = sourcePools.Values
-            .GroupBy(pool => pool.ItemId)
-            .ToDictionary(
-                group => group.Key,
-                group => group
-                    .OrderBy(pool => pool.LocationId)
-                    .ThenBy(pool => pool.HuCode ?? string.Empty, StringComparer.OrdinalIgnoreCase)
-                    .ToList());
-
-        var contexts = new List<WpfAddDocLineContext>();
-        foreach (var line in GetOrderShipmentRemaining(orderId).Where(line => line.QtyRemaining > 0))
-        {
-            var qtyRemaining = line.QtyRemaining;
-            if (stockPoolsByItem.TryGetValue(line.ItemId, out var pools))
-            {
-                foreach (var pool in pools)
-                {
-                    if (qtyRemaining <= 0.000001)
-                    {
-                        break;
-                    }
-
-                    if (pool.RemainingQty <= 0.000001)
-                    {
-                        continue;
-                    }
-
-                    var allocatedQty = Math.Min(qtyRemaining, pool.RemainingQty);
-                    contexts.Add(new WpfAddDocLineContext(
-                        line.ItemId,
-                        null,
-                        line.OrderLineId,
-                        ProductionLinePurpose.CustomerOrder,
-                        allocatedQty,
-                        null,
-                        null,
-                        pool.LocationId,
-                        null,
-                        pool.HuCode,
-                        null));
-
-                    pool.RemainingQty -= allocatedQty;
-                    qtyRemaining -= allocatedQty;
-                }
-            }
-
-        }
-
-        return contexts;
+        return CustomerOutboundBoundHuService.GetUnshippedBoundHuLines(_services.DataStore, orderId)
+            .Where(line => !fromLocationId.HasValue || line.FromLocationId == fromLocationId.Value)
+            .Where(line => string.IsNullOrWhiteSpace(requestedHu)
+                           || string.Equals(line.HuCode, requestedHu, StringComparison.OrdinalIgnoreCase))
+            .Select(line => new WpfAddDocLineContext(
+                line.ItemId,
+                null,
+                line.OrderLineId,
+                ProductionLinePurpose.CustomerOrder,
+                line.Qty,
+                null,
+                null,
+                line.FromLocationId,
+                null,
+                line.HuCode,
+                null))
+            .ToArray();
     }
 
     private IReadOnlyDictionary<long, HashSet<string>> GetOrderBoundHuByItem(long orderId)

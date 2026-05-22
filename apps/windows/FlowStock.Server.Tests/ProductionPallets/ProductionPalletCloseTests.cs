@@ -140,7 +140,7 @@ public sealed class ProductionPalletCloseTests
     }
 
     [Fact]
-    public void CloseProductionReceipt_WithDraftPalletLedgerRows_FailsToPreventDoubleLedger()
+    public void CloseProductionReceipt_WithPrefilledLedger_DoesNotDuplicateReceiptOnClose()
     {
         var harness = CreateHarness();
         harness.SeedProductionPallet(BuildPallet(ProductionPalletStatus.Planned));
@@ -158,10 +158,10 @@ public sealed class ProductionPalletCloseTests
 
         var result = harness.CreateService().TryCloseDoc(20, allowNegative: false);
 
-        Assert.False(result.Success);
-        Assert.Contains(result.Errors, error => error.Contains("у открытого выпуска уже есть строки ledger", StringComparison.OrdinalIgnoreCase));
-        Assert.Equal(DocStatus.Draft, harness.GetDoc(20).Status);
+        Assert.True(result.Success);
+        Assert.Equal(DocStatus.Closed, harness.GetDoc(20).Status);
         Assert.Single(harness.LedgerEntries);
+        Assert.Equal(600, harness.LedgerEntries.Single().QtyDelta);
     }
 
     [Fact]
