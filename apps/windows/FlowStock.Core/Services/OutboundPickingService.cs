@@ -222,75 +222,35 @@ public sealed class OutboundPickingService
 
     private IReadOnlyList<ExpectedHu> BuildExpectedHus(Order order)
     {
-        var orderLines = _store.GetOrderLines(order.Id)
-            .GroupBy(line => line.Id)
-            .ToDictionary(group => group.Key, group => group.First());
-        var orderLineIdsByItem = orderLines.Values
-            .GroupBy(line => line.ItemId)
-            .ToDictionary(group => group.Key, group => group.Select(line => line.Id).ToArray());
-
-        var itemNames = _store.GetItems(null).ToDictionary(item => item.Id, item => item.Name);
-        var locations = _store.GetLocations().ToDictionary(location => location.Id, location => location.Code);
-        var contextByKey = _store.GetHuOrderContextRows()
-            .Where(context => context.ReservedCustomerOrderId == order.Id)
-            .GroupBy(context => BuildHuItemKey(context.HuCode, context.ItemId), StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
-
-        return _store.GetHuStockRows()
-            .Where(row => row.Qty > QtyTolerance)
-            .Where(row => contextByKey.ContainsKey(BuildHuItemKey(row.HuCode, row.ItemId)))
-            .GroupBy(row => NormalizeHu(row.HuCode), StringComparer.OrdinalIgnoreCase)
+        var boundLines = CustomerOutboundBoundHuService.GetUnshippedBoundHuLines(_store, order.Id);
+        return boundLines
+            .GroupBy(line => line.HuCode, StringComparer.OrdinalIgnoreCase)
             .Select(group =>
             {
-                var huCode = group.Key ?? string.Empty;
-                var pallet = string.IsNullOrWhiteSpace(huCode) ? null : _store.GetProductionPalletByHu(huCode);
                 var lines = group
-                    .OrderBy(row => row.ItemId)
-                    .Select(row =>
+                    .OrderBy(line => line.OrderLineId)
+                    .Select(line => new OutboundPickingHuLine
                     {
-                        var orderLineId = ResolveOrderLineId(row.ItemId, pallet, orderLines, orderLineIdsByItem);
-                        return new OutboundPickingHuLine
-                        {
-                            ItemId = row.ItemId,
-                            ItemName = itemNames.TryGetValue(row.ItemId, out var itemName) ? itemName : string.Empty,
-                            OrderLineId = orderLineId,
-                            LocationId = row.LocationId,
-                            LocationCode = locations.TryGetValue(row.LocationId, out var locationCode) ? locationCode : string.Empty,
-                            Qty = row.Qty
-                        };
+                        ItemId = line.ItemId,
+                        ItemName = line.ItemName,
+                        OrderLineId = line.OrderLineId,
+                        LocationId = line.FromLocationId ?? 0,
+                        LocationCode = line.FromLocationCode ?? string.Empty,
+                        Qty = line.Qty
                     })
                     .ToArray();
 
                 return new ExpectedHu(
-                    huCode,
+                    group.Key,
                     lines.Sum(line => line.Qty),
-                    string.Join(", ", lines.Select(line => string.IsNullOrWhiteSpace(line.ItemName) ? line.ItemId.ToString() : line.ItemName).Distinct()),
+                    string.Join(
+                        ", ",
+                        lines.Select(line => string.IsNullOrWhiteSpace(line.ItemName) ? line.ItemId.ToString() : line.ItemName)
+                            .Distinct()),
                     lines);
             })
-            .Where(hu => !string.IsNullOrWhiteSpace(hu.HuCode) && hu.Lines.Count > 0)
+            .Where(hu => hu.Lines.Count > 0)
             .ToArray();
-    }
-
-    private static long? ResolveOrderLineId(
-        long itemId,
-        ProductionPallet? pallet,
-        IReadOnlyDictionary<long, OrderLine> orderLines,
-        IReadOnlyDictionary<long, long[]> orderLineIdsByItem)
-    {
-        var palletLine = pallet?.Lines.FirstOrDefault(line => line.ItemId == itemId && line.OrderLineId.HasValue);
-        if (palletLine?.OrderLineId.HasValue == true && orderLines.ContainsKey(palletLine.OrderLineId.Value))
-        {
-            return palletLine.OrderLineId.Value;
-        }
-
-        if (pallet?.OrderLineId.HasValue == true
-            && orderLines.TryGetValue(pallet.OrderLineId.Value, out var orderLine)
-            && orderLine.ItemId == itemId)
-        {
-            return pallet.OrderLineId.Value;
-        }
-
-        return orderLineIdsByItem.TryGetValue(itemId, out var ids) && ids.Length == 1 ? ids[0] : null;
     }
 
     private Dictionary<long, double> BuildOpenPickedQtyByOrderLine(long orderId)
@@ -346,11 +306,6 @@ public sealed class OutboundPickingService
     private static bool IsAcceptedCustomerOrder(Order order)
     {
         return order.Type == OrderType.Customer && order.Status == OrderStatus.Accepted;
-    }
-
-    private static string BuildHuItemKey(string? huCode, long itemId)
-    {
-        return $"{NormalizeHu(huCode)}|{itemId}";
     }
 
     private static string? NormalizeHu(string? value)

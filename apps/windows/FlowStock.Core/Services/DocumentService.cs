@@ -106,6 +106,30 @@ public sealed class DocumentService
             var (fromHu, toHu) = ResolveHeaderHu(doc.Type, doc.ShippingRef);
             if (doc.Type == DocType.Outbound)
             {
+                var orderForOutbound = store.GetOrder(orderId.Value);
+                if (orderForOutbound?.Type == OrderType.Customer)
+                {
+                    foreach (var boundLine in CustomerOutboundBoundHuService.GetUnshippedBoundHuLines(store, orderId.Value))
+                    {
+                        store.AddDocLine(new DocLine
+                        {
+                            DocId = docId,
+                            OrderLineId = boundLine.OrderLineId,
+                            ProductionPurpose = ProductionLinePurpose.CustomerOrder,
+                            ItemId = boundLine.ItemId,
+                            Qty = boundLine.Qty,
+                            QtyInput = null,
+                            UomCode = null,
+                            FromLocationId = boundLine.FromLocationId,
+                            ToLocationId = null,
+                            FromHu = boundLine.HuCode,
+                            ToHu = toHu
+                        });
+                    }
+
+                    return;
+                }
+
                 foreach (var line in store.GetOrderShipmentRemaining(orderId.Value))
                 {
                     if (line.QtyRemaining <= 0)
@@ -631,32 +655,29 @@ public sealed class DocumentService
         {
             store.UpdateDocHeader(docId, order.PartnerId, cleanedOrderRef, doc.ShippingRef);
             store.UpdateDocOrder(docId, order.Id, cleanedOrderRef);
-            store.DeleteDocLines(docId);
-            var (fromHu, toHu) = ResolveHeaderHu(doc.Type, doc.ShippingRef);
+            addedLines = CustomerOutboundBoundHuService.SyncDraftOutboundFromBoundHu(store, docId, replaceAll: true);
+        });
 
-            foreach (var line in store.GetOrderShipmentRemaining(orderId))
-            {
-                if (line.QtyRemaining <= 0)
-                {
-                    continue;
-                }
+        return addedLines;
+    }
 
-                store.AddDocLine(new DocLine
-                {
-                    DocId = docId,
-                    OrderLineId = line.OrderLineId,
-                    ProductionPurpose = ProductionLinePurpose.CustomerOrder,
-                    ItemId = line.ItemId,
-                    Qty = line.QtyRemaining,
-                    QtyInput = null,
-                    UomCode = null,
-                    FromLocationId = null,
-                    ToLocationId = null,
-                    FromHu = fromHu,
-                    ToHu = toHu
-                });
-                addedLines++;
-            }
+    public int SyncCustomerOutboundFromBoundHu(long docId, bool replaceAll = false)
+    {
+        var doc = _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
+        if (doc.Type != DocType.Outbound)
+        {
+            throw new InvalidOperationException("Документ не является отгрузкой.");
+        }
+
+        if (doc.Status != DocStatus.Draft)
+        {
+            throw new InvalidOperationException("Документ уже закрыт.");
+        }
+
+        var addedLines = 0;
+        _data.ExecuteInTransaction(store =>
+        {
+            addedLines = CustomerOutboundBoundHuService.SyncDraftOutboundFromBoundHu(store, docId, replaceAll);
         });
 
         return addedLines;
@@ -1808,7 +1829,12 @@ public sealed class DocumentService
                         }
                     }
 
-                    if (IsHuFromOpenProductionReceipt(_data, normalizedFromHu, line.ItemId))
+                    var boundToCustomerOrder = doc.OrderId.HasValue
+                                               && orderBoundHuByItem != null
+                                               && orderBoundHuByItem.TryGetValue(line.ItemId, out var boundHuCodes)
+                                               && boundHuCodes.Contains(normalizedFromHu);
+                    if (!boundToCustomerOrder
+                        && IsHuFromOpenProductionReceipt(_data, normalizedFromHu, line.ItemId))
                     {
                         check.Errors.Add($"{rowLabel}: HU {normalizedFromHu} ожидает закрытия PRD и пока не может быть отгружен.");
                     }
@@ -1953,11 +1979,6 @@ public sealed class DocumentService
 
         if (doc.Type == DocType.ProductionReceipt && hasProductionPallets)
         {
-            if (_data.CountLedgerEntriesByDocId(docId) > 0)
-            {
-                check.Errors.Add("Нельзя закрыть palletized PRD: у открытого выпуска уже есть строки ledger. Запустите диагностику и repair.");
-            }
-
             var pallets = _data.GetProductionPalletsByDoc(docId)
                 .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
                 .ToList();
@@ -2958,7 +2979,7 @@ public sealed class DocumentService
         }
     }
 
-    private static void AddProductionPalletLedgerEntries(
+    private void AddProductionPalletLedgerEntries(
         IDataStore store,
         long docId,
         DateTime closedAt,
@@ -2966,9 +2987,23 @@ public sealed class DocumentService
         IReadOnlyList<DocLine> docLines)
     {
         var docLinesById = docLines.ToDictionary(line => line.Id, line => line);
+        var metricsByPalletId = store.GetFilledProductionPalletStockMetrics()
+            .Where(metrics => metrics.PrdDocId == docId)
+            .ToDictionary(metrics => metrics.PalletId, metrics => metrics);
+
         foreach (var pallet in pallets
                      .Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
         {
+            metricsByPalletId.TryGetValue(pallet.Id, out var stockMetrics);
+            if (stockMetrics != null)
+            {
+                var analysis = ProductionPalletStockBackfillDecision.Analyze(stockMetrics);
+                if (string.Equals(analysis.Decision, ProductionPalletStockBackfillDecisionCodes.AlreadyShippedSkip, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+            }
+
             foreach (var entry in BuildProductionPalletLedgerDrafts(pallet, docLinesById))
             {
                 if (!entry.LocationId.HasValue || entry.Qty <= QtyTolerance)
@@ -2976,13 +3011,20 @@ public sealed class DocumentService
                     continue;
                 }
 
+                var currentBalance = store.GetLedgerBalance(entry.ItemId, entry.LocationId.Value, pallet.HuCode);
+                if (currentBalance + QtyTolerance >= entry.Qty)
+                {
+                    continue;
+                }
+
+                var missingQty = entry.Qty - currentBalance;
                 store.AddLedgerEntry(new LedgerEntry
                 {
                     Timestamp = closedAt,
                     DocId = docId,
                     ItemId = entry.ItemId,
                     LocationId = entry.LocationId.Value,
-                    QtyDelta = entry.Qty,
+                    QtyDelta = missingQty,
                     HuCode = pallet.HuCode
                 });
             }

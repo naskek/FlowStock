@@ -77,7 +77,7 @@ public sealed class OrderHuReservationApplyEndpointTests
     }
 
     [Fact]
-    public void InternalFilledReservedButOutboundStillBlockedUntilPrdClose()
+    public void CustomerBoundHu_AllowsOutboundCloseWhileInternalPrdStillOpen()
     {
         var harness = CreateHarness();
         harness.SeedProductionPallet(BuildPallet(ProductionPalletStatus.Filled));
@@ -89,6 +89,47 @@ public sealed class OrderHuReservationApplyEndpointTests
             QtyPlanned = 5,
             ToHu = "HU-000001"
         });
+        harness.Store.AddLedgerEntry(new LedgerEntry
+        {
+            Timestamp = new DateTime(2026, 5, 13, 10, 0, 0),
+            DocId = 10,
+            ItemId = 1001,
+            LocationId = 1,
+            QtyDelta = 5,
+            HuCode = "HU-000001"
+        });
+        harness.SeedDoc(new Doc
+        {
+            Id = 30,
+            DocRef = "OUT-2026-000001",
+            Type = DocType.Outbound,
+            Status = DocStatus.Draft,
+            PartnerId = 1,
+            OrderId = 20,
+            CreatedAt = new DateTime(2026, 5, 13, 12, 0, 0)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 301,
+            DocId = 30,
+            OrderLineId = 201,
+            ItemId = 1001,
+            Qty = 5,
+            FromLocationId = 1,
+            FromHu = "HU-000001"
+        });
+
+        var result = harness.CreateService().TryCloseDoc(30, allowNegative: false);
+
+        Assert.True(result.Success);
+        Assert.Equal(DocStatus.Closed, harness.GetDoc(30).Status);
+    }
+
+    [Fact]
+    public void CustomerOutboundWithoutPlanBinding_StillBlockedUntilPrdClose()
+    {
+        var harness = CreateHarness();
+        harness.SeedProductionPallet(BuildPallet(ProductionPalletStatus.Filled));
         harness.Store.AddLedgerEntry(new LedgerEntry
         {
             Timestamp = new DateTime(2026, 5, 13, 10, 0, 0),

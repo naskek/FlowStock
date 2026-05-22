@@ -1418,7 +1418,7 @@ public partial class OrderDetailsWindow : Window
         PlanPalletsButton.IsEnabled = canPlan;
         PrintPalletLabelsButton.IsEnabled = canPrint;
         DeletePalletPlanButton.IsEnabled = canDeletePlan;
-        OpenProductionReceiptButton.IsEnabled = _orderId.HasValue && GetProductionReceiptsForOrder(_orderId.Value).Count > 0;
+        OpenProductionReceiptButton.IsEnabled = _orderId.HasValue && CanOpenProductionReceipt(_orderId.Value);
         OrderLinesGrid.Tag = EnsureEditable(false) && !_productionPalletHuLocked;
     }
 
@@ -1429,22 +1429,25 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        var productionReceipts = GetProductionReceiptsForOrder(_orderId.Value);
-        if (productionReceipts.Count == 0)
+        if (_order?.Type == OrderType.Customer
+            && !CustomerOutboundBoundHuService.HasReceiptProductionNeed(_services.DataStore, _orderId.Value))
         {
             MessageBox.Show(
-                "Черновик выпуска для этого заказа не найден.",
+                "Выпуск не требуется: заказ уже покрыт привязанными HU/остатками.",
                 "Заказы",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
             return;
         }
 
-        var docToOpen = ResolveProductionReceiptToOpen(productionReceipts);
+        var productionReceipts = GetProductionReceiptsForOrder(_orderId.Value);
+        var docToOpen = ResolveProductionReceiptToOpen(productionReceipts, _order?.Type);
         if (docToOpen == null)
         {
             MessageBox.Show(
-                "Черновик выпуска для этого заказа не найден.",
+                _order?.Type == OrderType.Customer
+                    ? "Выпуск не требуется: заказ уже покрыт привязанными HU/остатками."
+                    : "Черновик выпуска для этого заказа не найден.",
                 "Заказы",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
@@ -1471,8 +1474,39 @@ public partial class OrderDetailsWindow : Window
         }
     }
 
-    private static Doc? ResolveProductionReceiptToOpen(IReadOnlyList<Doc> productionReceipts)
+    private bool CanOpenProductionReceipt(long orderId)
     {
+        if (_order?.Type == OrderType.Customer)
+        {
+            return CustomerOutboundBoundHuService.HasReceiptProductionNeed(_services.DataStore, orderId);
+        }
+
+        return GetProductionReceiptsForOrder(orderId).Count > 0;
+    }
+
+    private Doc? ResolveProductionReceiptToOpen(IReadOnlyList<Doc> productionReceipts, OrderType? orderType)
+    {
+        if (orderType == OrderType.Customer)
+        {
+            var draftWithContent = productionReceipts
+                .Where(doc => doc.Status == DocStatus.Draft)
+                .Where(doc => _services.DataStore.GetDocLines(doc.Id).Count > 0
+                              || _services.DataStore.HasProductionPallets(doc.Id))
+                .OrderByDescending(doc => doc.CreatedAt)
+                .ThenByDescending(doc => doc.Id)
+                .FirstOrDefault();
+            if (draftWithContent != null)
+            {
+                return draftWithContent;
+            }
+
+            return productionReceipts
+                .Where(doc => doc.Status == DocStatus.Draft)
+                .OrderByDescending(doc => doc.CreatedAt)
+                .ThenByDescending(doc => doc.Id)
+                .FirstOrDefault();
+        }
+
         var draft = productionReceipts
             .Where(doc => doc.Status == DocStatus.Draft)
             .OrderByDescending(doc => doc.CreatedAt)
