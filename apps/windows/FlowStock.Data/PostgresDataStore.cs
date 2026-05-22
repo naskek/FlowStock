@@ -2794,6 +2794,47 @@ WHERE id = ANY(@pallet_ids)
         });
     }
 
+    public int RemoveDocLinesForProductionPallets(IReadOnlyCollection<long> productionPalletIds)
+    {
+        var ids = productionPalletIds
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
+        if (ids.Length == 0)
+        {
+            return 0;
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH target_doc_lines AS (
+    SELECT DISTINCT pll.doc_line_id AS id
+    FROM production_pallet_lines pll
+    WHERE pll.production_pallet_id = ANY(@pallet_ids)
+    UNION
+    SELECT DISTINCT pp.doc_line_id AS id
+    FROM production_pallets pp
+    WHERE pp.id = ANY(@pallet_ids)
+      AND pp.doc_line_id IS NOT NULL
+)
+DELETE FROM doc_lines dl
+USING target_doc_lines target
+WHERE dl.id = target.id
+  AND NOT EXISTS (
+      SELECT 1
+      FROM production_pallet_lines pll
+      INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
+      WHERE pll.doc_line_id = dl.id
+        AND pp.status <> @cancelled_status
+  );
+");
+            command.Parameters.AddWithValue("@pallet_ids", ids);
+            command.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
+            return command.ExecuteNonQuery();
+        });
+    }
+
     public void UpdateProductionPalletHu(long palletId, string huCode)
     {
         WithConnection(connection =>

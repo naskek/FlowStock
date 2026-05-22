@@ -31,6 +31,26 @@ public sealed class ProductionPalletService
         return PlanOrder(orderId, scopedOrderLineIds: null);
     }
 
+    public void SyncOrderLinePlan(long orderId, long orderLineId, double orderedQty)
+    {
+        var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+        if (order.Type != OrderType.Internal)
+        {
+            return;
+        }
+
+        if (order.Status is not (OrderStatus.InProgress or OrderStatus.Draft))
+        {
+            return;
+        }
+
+        _data.ExecuteInTransaction(store =>
+        {
+            TrimSurplusOpenPallets(store, orderId, orderLineId, orderedQty);
+            PlanOrder(orderId, [orderLineId]);
+        });
+    }
+
     public ProductionPalletOrderPlanResult PlanOrder(long orderId, IReadOnlyCollection<long>? scopedOrderLineIds)
     {
         var prdDocId = 0L;
@@ -1041,6 +1061,76 @@ public sealed class ProductionPalletService
             .Where(line => line.QtyRemaining > QtyTolerance)
             .OrderBy(line => line.OrderLineId)
             .ToList();
+    }
+
+    private static void TrimSurplusOpenPallets(
+        IDataStore store,
+        long orderId,
+        long orderLineId,
+        double orderedQty)
+    {
+        var filledQty = Math.Max(0, store.GetFilledProductionPalletQtyByOrderLine(orderLineId));
+        var plannedAllowedQty = Math.Max(0, orderedQty - filledQty);
+        var openPallets = GetOpenProductionPalletsForOrderLine(store, orderId, orderLineId);
+        var openQty = openPallets.Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
+        if (openQty <= plannedAllowedQty + QtyTolerance)
+        {
+            return;
+        }
+
+        var surplusQty = openQty - plannedAllowedQty;
+        var palletIdsToCancel = new List<long>();
+        foreach (var pallet in openPallets.OrderByDescending(pallet => pallet.Id))
+        {
+            if (surplusQty <= QtyTolerance)
+            {
+                break;
+            }
+
+            var palletQty = ResolvePalletQtyForOrderLine(pallet, orderLineId);
+            if (palletQty <= QtyTolerance)
+            {
+                continue;
+            }
+
+            palletIdsToCancel.Add(pallet.Id);
+            surplusQty -= palletQty;
+        }
+
+        if (palletIdsToCancel.Count == 0)
+        {
+            return;
+        }
+
+        store.CancelProductionPallets(palletIdsToCancel);
+        store.RemoveDocLinesForProductionPallets(palletIdsToCancel);
+    }
+
+    private static IReadOnlyList<ProductionPallet> GetOpenProductionPalletsForOrderLine(
+        IDataStore store,
+        long orderId,
+        long orderLineId)
+    {
+        return store.GetDocsByOrder(orderId)
+            .Where(doc => doc.Type == DocType.ProductionReceipt)
+            .SelectMany(doc => store.GetProductionPalletsByDoc(doc.Id))
+            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+            .Where(pallet =>
+                string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase))
+            .Where(pallet => pallet.OrderLineId == orderLineId
+                             || pallet.Lines.Any(line => line.OrderLineId == orderLineId))
+            .OrderBy(pallet => pallet.Id)
+            .ToArray();
+    }
+
+    private static double ResolvePalletQtyForOrderLine(ProductionPallet pallet, long orderLineId)
+    {
+        var componentQty = pallet.Lines
+            .Where(line => line.OrderLineId == orderLineId)
+            .Sum(line => Math.Max(0, line.PlannedQty));
+        return componentQty > QtyTolerance ? componentQty : Math.Max(0, pallet.PlannedQty);
     }
 
     private static double SumActivePalletQtyForOrderLine(IReadOnlyList<ProductionPallet> pallets, long orderLineId)

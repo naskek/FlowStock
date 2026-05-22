@@ -551,7 +551,7 @@ public sealed class OrderService
             var incomingKeys = normalized
                 .Select(line => (line.ItemId, ProductionPurpose: ResolveLinePurpose(type, line.ProductionPurpose)))
                 .ToHashSet();
-            var hasOrderLineQtyIncrease = false;
+            var internalLinesNeedingPalletSync = new List<(long OrderLineId, double OrderedQty)>();
 
             foreach (var entry in existingByItem)
             {
@@ -580,17 +580,12 @@ public sealed class OrderService
                     var primary = matched[0];
                     if (Math.Abs(primary.QtyOrdered - line.QtyOrdered) > QtyTolerance)
                     {
-                        ValidateOrderLineQtyCanChange(store, orderId, primary, line.QtyOrdered);
-                        if (line.QtyOrdered > primary.QtyOrdered + QtyTolerance)
-                        {
-                            hasOrderLineQtyIncrease = true;
-                        }
-                        else if (line.QtyOrdered + QtyTolerance < primary.QtyOrdered)
-                        {
-                            ClearPlannedProductionPalletsForOrderLine(store, orderId, primary.Id);
-                        }
-
+                        ValidateOrderLineQtyCanChange(store, orderId, primary, line.QtyOrdered, type);
                         store.UpdateOrderLineQty(primary.Id, line.QtyOrdered);
+                        if (type == OrderType.Internal)
+                        {
+                            internalLinesNeedingPalletSync.Add((primary.Id, line.QtyOrdered));
+                        }
                     }
 
                     if (primary.ProductionPurpose != linePurpose)
@@ -616,7 +611,7 @@ public sealed class OrderService
                     continue;
                 }
 
-                store.AddOrderLine(new OrderLine
+                var addedLineId = store.AddOrderLine(new OrderLine
                 {
                     OrderId = orderId,
                     ItemId = line.ItemId,
@@ -624,7 +619,10 @@ public sealed class OrderService
                     ProductionPurpose = linePurpose,
                     ProductionPalletGroup = NormalizePalletGroup(line.ProductionPalletGroup)
                 });
-                hasOrderLineQtyIncrease = true;
+                if (type == OrderType.Internal)
+                {
+                    internalLinesNeedingPalletSync.Add((addedLineId, line.QtyOrdered));
+                }
             }
 
             foreach (var entry in existingByItem)
@@ -649,9 +647,9 @@ public sealed class OrderService
             else
             {
                 TryRebuildOrderReceiptPlan(store, orderId);
-                if (hasOrderLineQtyIncrease)
+                foreach (var (orderLineId, orderedQty) in internalLinesNeedingPalletSync)
                 {
-                    TryAppendMissingProductionPallets(store, orderId);
+                    TrySyncProductionPalletPlanForOrderLine(store, orderId, orderLineId, orderedQty);
                 }
 
                 if (existing.Type == OrderType.Customer && existing.UseReservedStock)
@@ -662,23 +660,37 @@ public sealed class OrderService
         });
     }
 
-    private static void ValidateOrderLineQtyCanChange(IDataStore store, long orderId, OrderLine line, double newQty)
+    private static void ValidateOrderLineQtyCanChange(
+        IDataStore store,
+        long orderId,
+        OrderLine line,
+        double newQty,
+        OrderType orderType)
     {
         var shippedTotals = store.GetShippedTotalsByOrderLine(orderId);
         var shippedQty = shippedTotals.TryGetValue(line.Id, out var shipped)
             ? Math.Max(0, shipped)
             : 0d;
         var filledQty = Math.Max(0, store.GetFilledProductionPalletQtyByOrderLine(line.Id));
-        var reservedQty = store.GetOrderReceiptPlanLines(orderId)
-            .Where(planLine => planLine.OrderLineId == line.Id)
-            .Sum(planLine => Math.Max(0, planLine.QtyPlanned));
-        var protectedCoverage = shippedQty + Math.Max(filledQty, reservedQty);
-        if (newQty + QtyTolerance < protectedCoverage)
+        var factualLockedQty = shippedQty + filledQty;
+        if (orderType == OrderType.Customer)
         {
-            throw new InvalidOperationException("Нельзя уменьшить количество ниже уже заполненного/отгруженного объема.");
+            var reservedQty = store.GetOrderReceiptPlanLines(orderId)
+                .Where(planLine => planLine.OrderLineId == line.Id)
+                .Sum(planLine => Math.Max(0, planLine.QtyPlanned));
+            factualLockedQty = shippedQty + Math.Max(filledQty, reservedQty);
         }
 
-        // FILLED остается физическим фактом; вызывающий код сбрасывает только PLANNED-план.
+        if (newQty + QtyTolerance < factualLockedQty)
+        {
+            throw new InvalidOperationException(
+                $"Нельзя уменьшить количество ниже уже заполненного/выпущенного объема: заполнено {FormatLockedQty(factualLockedQty)}.");
+        }
+    }
+
+    private static string FormatLockedQty(double value)
+    {
+        return value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private static void ValidateOrderLineCanBeDeleted(IDataStore store, long orderId, OrderLine line)
@@ -1547,7 +1559,11 @@ public sealed class OrderService
         }
     }
 
-    internal void TryAppendMissingProductionPallets(IDataStore store, long orderId)
+    internal void TrySyncProductionPalletPlanForOrderLine(
+        IDataStore store,
+        long orderId,
+        long orderLineId,
+        double orderedQty)
     {
         try
         {
@@ -1560,7 +1576,7 @@ public sealed class OrderService
             }
 
             var palletService = new ProductionPalletService(store);
-            palletService.PlanOrder(orderId);
+            palletService.SyncOrderLinePlan(orderId, orderLineId, orderedQty);
         }
         catch (InvalidOperationException ex) when (IsBenignAppendPlanException(ex))
         {
