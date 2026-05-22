@@ -2,6 +2,8 @@ namespace FlowStock.Core.Models;
 
 public sealed class OrderLineView
 {
+    private const double QtyTolerance = 0.000001d;
+
     public long Id { get; init; }
     public long OrderId { get; init; }
     public long ItemId { get; init; }
@@ -34,5 +36,36 @@ public sealed class OrderLineView
     public string ProductionPurposeDisplay => ProductionLinePurposeMapper.ToDisplayName(ProductionPurpose);
     public bool IsMixedPalletLine => !string.IsNullOrWhiteSpace(ProductionPalletGroup);
     public string ProductionPalletGroupDisplay => string.IsNullOrWhiteSpace(ProductionPalletGroup) ? string.Empty : ProductionPalletGroup!;
+    public string HuCoverageTone
+    {
+        get
+        {
+            if (ProductionPurpose != ProductionLinePurpose.InternalStock || QtyOrdered <= QtyTolerance)
+            {
+                return "neutral";
+            }
+
+            return QtyProduced + QtyTolerance >= QtyOrdered ? "covered" : "neutral";
+        }
+    }
+
+    public string? HuCoverageToolTip
+    {
+        get
+        {
+            if (HuCoverageTone != "covered")
+            {
+                return null;
+            }
+
+            var itemName = string.IsNullOrWhiteSpace(ItemName) ? "Товар без названия" : ItemName.Trim();
+            return $"{itemName}: выпущено {FormatQty(QtyProduced)} из {FormatQty(QtyOrdered)}";
+        }
+    }
+
+    private static string FormatQty(double value)
+    {
+        return value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+    }
 }
 

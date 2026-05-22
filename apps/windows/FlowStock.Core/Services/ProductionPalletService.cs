@@ -28,6 +28,11 @@ public sealed class ProductionPalletService
 
     public ProductionPalletOrderPlanResult PlanOrder(long orderId)
     {
+        return PlanOrder(orderId, scopedOrderLineIds: null);
+    }
+
+    public ProductionPalletOrderPlanResult PlanOrder(long orderId, IReadOnlyCollection<long>? scopedOrderLineIds)
+    {
         var prdDocId = 0L;
         var wasExisting = false;
         _data.ExecuteInTransaction(store =>
@@ -40,20 +45,36 @@ public sealed class ProductionPalletService
                     : "Заказ недоступен для планирования паллет.");
             }
 
+            if (order.Type == OrderType.Internal
+                && order.Status is not OrderStatus.InProgress
+                && order.Status is not OrderStatus.Draft)
+            {
+                throw new InvalidOperationException("Дополнение плана паллет доступно только для заказа в статусе «В работе».");
+            }
+
             var preparedDoc = FindPreparedOpenProductionReceipt(store, orderId, requireRemaining: false);
             if (preparedDoc != null)
             {
                 prdDocId = preparedDoc.Id;
                 wasExisting = true;
-                store.ClearPlannedProductionPalletPlan(preparedDoc.Id);
             }
 
-            var remainingLines = OrderReceiptRemainingCalculator.GetRemaining(store, order)
-                .Where(line => line.QtyRemaining > QtyTolerance)
-                .OrderBy(line => line.OrderLineId)
-                .ToList();
+            var remainingLines = GetLinesNeedingPalletAppend(store, order, prdDocId == 0 ? null : prdDocId);
+            if (scopedOrderLineIds is { Count: > 0 })
+            {
+                var scoped = scopedOrderLineIds.Where(id => id > 0).ToHashSet();
+                remainingLines = remainingLines
+                    .Where(line => scoped.Contains(line.OrderLineId))
+                    .ToList();
+            }
+
             if (remainingLines.Count == 0)
             {
+                if (prdDocId != 0)
+                {
+                    return;
+                }
+
                 throw new InvalidOperationException("Нет остатка к наполнению по заказу.");
             }
 
@@ -452,8 +473,30 @@ public sealed class ProductionPalletService
 
     public int MarkPrinted(long orderId, DateTime printedAt)
     {
-        var rows = GetPrintRows(orderId);
-        if (rows.Count == 0)
+        return MarkPrinted(orderId, palletIds: null, printedAt);
+    }
+
+    public int MarkPrinted(long orderId, IReadOnlyCollection<long>? palletIds, DateTime printedAt)
+    {
+        if (palletIds is { Count: > 0 })
+        {
+            var rows = GetPrintRows(orderId);
+            if (rows.Count == 0)
+            {
+                throw new InvalidOperationException("Сначала сформируйте план паллет");
+            }
+
+            var allowedIds = rows.Select(row => row.PalletId).ToHashSet();
+            if (palletIds.Any(id => !allowedIds.Contains(id)))
+            {
+                throw new InvalidOperationException("Выбранные паллеты не найдены в плане заказа.");
+            }
+
+            return _data.MarkProductionPalletsPrinted(orderId, palletIds, printedAt);
+        }
+
+        var allRows = GetPrintRows(orderId);
+        if (allRows.Count == 0)
         {
             throw new InvalidOperationException("Сначала сформируйте план паллет");
         }
@@ -945,6 +988,68 @@ public sealed class ProductionPalletService
         }
 
         return manualMixedLineIds;
+    }
+
+    internal static IReadOnlyList<OrderReceiptLine> GetLinesNeedingPalletAppend(
+        IDataStore store,
+        Order order,
+        long? prdDocId)
+    {
+        var orderLinesById = store.GetOrderLines(order.Id)
+            .Where(line => line.QtyOrdered > QtyTolerance)
+            .ToDictionary(line => line.Id, line => line);
+        if (orderLinesById.Count == 0)
+        {
+            return Array.Empty<OrderReceiptLine>();
+        }
+
+        var pallets = prdDocId.HasValue && prdDocId.Value > 0
+            ? store.GetProductionPalletsByDoc(prdDocId.Value)
+            : Array.Empty<ProductionPallet>();
+
+        if (pallets.Count == 0)
+        {
+            return OrderReceiptRemainingCalculator.GetRemaining(store, order)
+                .Where(line => line.QtyRemaining > QtyTolerance)
+                .OrderBy(line => line.OrderLineId)
+                .ToList();
+        }
+
+        return orderLinesById.Values
+            .Select(orderLine =>
+            {
+                var coveredQty = SumActivePalletQtyForOrderLine(pallets, orderLine.Id);
+                var missingQty = Math.Max(0, orderLine.QtyOrdered - coveredQty);
+                var receiptLine = OrderReceiptRemainingCalculator.GetRemaining(store, order)
+                    .FirstOrDefault(line => line.OrderLineId == orderLine.Id);
+                return new OrderReceiptLine
+                {
+                    OrderLineId = orderLine.Id,
+                    OrderId = order.Id,
+                    ItemId = orderLine.ItemId,
+                    ItemName = receiptLine?.ItemName ?? string.Empty,
+                    QtyOrdered = orderLine.QtyOrdered,
+                    QtyReceived = receiptLine?.QtyReceived ?? 0,
+                    QtyRemaining = missingQty,
+                    ProductionPurpose = orderLine.ProductionPurpose,
+                    ToLocationId = receiptLine?.ToLocationId,
+                    ToLocation = receiptLine?.ToLocation,
+                    ToHu = receiptLine?.ToHu,
+                    SortOrder = receiptLine?.SortOrder ?? 0
+                };
+            })
+            .Where(line => line.QtyRemaining > QtyTolerance)
+            .OrderBy(line => line.OrderLineId)
+            .ToList();
+    }
+
+    private static double SumActivePalletQtyForOrderLine(IReadOnlyList<ProductionPallet> pallets, long orderLineId)
+    {
+        return pallets
+            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+            .SelectMany(GetPalletLines)
+            .Where(line => line.OrderLineId == orderLineId)
+            .Sum(line => Math.Max(0, line.PlannedQty));
     }
 
     private static void AddMixedPlannedPalletLines(

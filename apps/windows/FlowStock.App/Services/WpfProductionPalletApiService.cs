@@ -203,6 +203,14 @@ public sealed class WpfProductionPalletApiService
         long orderId,
         CancellationToken cancellationToken = default)
     {
+        return await TryMarkPrintedAsync(orderId, palletIds: null, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<(bool IsSuccess, string? Error)> TryMarkPrintedAsync(
+        long orderId,
+        IReadOnlyList<long>? palletIds,
+        CancellationToken cancellationToken = default)
+    {
         try
         {
             if (!TryLoadConfiguration(out var configuration))
@@ -213,7 +221,13 @@ public sealed class WpfProductionPalletApiService
 
             using var handler = CreateHandler(configuration);
             using var client = CreateClient(handler, configuration);
-            using var response = await client.PostAsJsonAsync($"/api/orders/{orderId}/production-pallets/mark-printed", new { }, cancellationToken)
+            object body = palletIds is { Count: > 0 }
+                ? new { pallet_ids = palletIds }
+                : new { };
+            using var response = await client.PostAsJsonAsync(
+                    $"/api/orders/{orderId}/production-pallets/mark-printed",
+                    body,
+                    cancellationToken)
                 .ConfigureAwait(false);
             return response.IsSuccessStatusCode
                 ? (true, null)
@@ -339,6 +353,7 @@ public sealed class WpfProductionPalletApiService
         return new PalletLabelPrintRow
         {
             PalletId = row.PalletId,
+            OrderId = row.OrderId,
             OrderRef = row.OrderRef ?? string.Empty,
             ClientName = row.ClientName ?? string.Empty,
             PrdRef = row.PrdRef ?? string.Empty,
@@ -509,6 +524,9 @@ public sealed class WpfProductionPalletApiService
     {
         [JsonPropertyName("pallet_id")]
         public long PalletId { get; init; }
+
+        [JsonPropertyName("order_id")]
+        public long OrderId { get; init; }
 
         [JsonPropertyName("order_ref")]
         public string? OrderRef { get; init; }

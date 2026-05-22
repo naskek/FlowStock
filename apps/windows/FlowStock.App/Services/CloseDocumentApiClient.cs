@@ -212,6 +212,9 @@ public sealed class ApiErrorResponse
 
     [JsonPropertyName("error")]
     public string? Error { get; init; }
+
+    [JsonPropertyName("message")]
+    public string? Message { get; init; }
 }
 
 public sealed class ApiPingResponse

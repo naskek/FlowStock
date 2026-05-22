@@ -455,6 +455,24 @@ body.pc-body::before {
   background: #d9f1e2;
 }
 
+.pc-order-line-coverage-covered td {
+  background: #eaf7ee;
+  border-bottom-color: #c7e8d0;
+}
+
+.pc-order-line-coverage-covered:hover td {
+  background: #ddf1e4;
+}
+
+.pc-order-line-coverage-missing td {
+  background: #fdeeef;
+  border-bottom-color: #f4cbd1;
+}
+
+.pc-order-line-coverage-missing:hover td {
+  background: #fbdfe3;
+}
+
 .pc-stock-parent-row {
   cursor: pointer;
 }

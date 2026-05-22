@@ -96,6 +96,9 @@ public interface IDataStore
     bool HasProductionPallets(long docId);
     bool HasProductionPalletLinesForDoc(long docId);
     void ClearPlannedProductionPalletPlan(long docId);
+    ProductionPalletPlanCleanupCounts ClearPlannedProductionPalletPlanForOrderLines(
+        long orderId,
+        IReadOnlyCollection<long> orderLineIds);
     int CountLedgerEntriesByDocId(long docId);
     ProductionPalletPlanCleanupCounts CancelProductionPalletPlan(long docId);
     ProductionPalletPlanAdoptionResult AdoptProductionPalletPlan(
@@ -115,6 +118,7 @@ public interface IDataStore
     void MarkProductionPalletFilled(long palletId, DateTime filledAt, string? deviceId);
     int CancelProductionPallets(IReadOnlyList<long> palletIds);
     int MarkProductionPalletsPrintedByOrder(long orderId, DateTime printedAt);
+    int MarkProductionPalletsPrinted(long orderId, IReadOnlyCollection<long> palletIds, DateTime printedAt);
     IReadOnlyList<ProductionPallet> GetFilledProductionPalletsByItemAndLocation(long itemId, long locationId);
     IReadOnlyList<FilledProductionPalletStockMetrics> GetFilledProductionPalletStockMetrics();
 

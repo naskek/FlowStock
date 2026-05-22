@@ -2491,6 +2491,71 @@
     };
   }
 
+  function getCustomerLineHuCoverageQty(line) {
+    var explicitKeys = [
+      "hu_reserved_qty",
+      "reserved_hu_qty",
+      "bound_hu_qty",
+      "qty_reserved",
+      "reserved_qty",
+    ];
+    for (var index = 0; index < explicitKeys.length; index++) {
+      var value = Number(line && line[explicitKeys[index]]);
+      if (!isNaN(value)) {
+        return Math.max(0, value);
+      }
+    }
+
+    var producedOrReserved = Number(line && line.qty_produced) || 0;
+    var shipped = Number(line && line.qty_shipped) || 0;
+    return Math.max(0, producedOrReserved - shipped);
+  }
+
+  function getOrderLineHighlightState(line, order) {
+    if (!line) {
+      return { tone: "neutral", className: "", title: "" };
+    }
+
+    var itemName = String(line.item_name || "Товар без названия").trim() || "Товар без названия";
+    if (isInternalOrder(order)) {
+      var ordered = Number(line.qty_ordered) || 0;
+      var produced = Math.max(
+        Number(line.qty_produced) || 0,
+        Number(line.pallet_filled_qty != null ? line.pallet_filled_qty : line.filled_pallet_qty) || 0
+      );
+      if (ordered > 0.000001 && produced + 0.000001 >= ordered) {
+        return {
+          tone: "covered",
+          className: "pc-order-line-coverage-covered",
+          title: itemName + ": выпущено " + formatQuantity(produced) + " из " + formatQuantity(ordered),
+        };
+      }
+
+      return { tone: "neutral", className: "", title: "" };
+    }
+
+    var remaining = getLineRequiredQty(line);
+    if (remaining <= 0.000001) {
+      return { tone: "neutral", className: "", title: "" };
+    }
+
+    var covered = Math.min(getCustomerLineHuCoverageQty(line), remaining);
+    var missing = Math.max(0, remaining - covered);
+    if (missing <= 0.000001) {
+      return {
+        tone: "covered",
+        className: "pc-order-line-coverage-covered",
+        title: itemName + ": привязано " + formatQuantity(covered) + " из " + formatQuantity(remaining),
+      };
+    }
+
+    return {
+      tone: "missing",
+      className: "pc-order-line-coverage-missing",
+      title: itemName + ": привязано " + formatQuantity(covered) + " из " + formatQuantity(remaining) + ", не хватает " + formatQuantity(missing),
+    };
+  }
+
   function getShipmentReadiness(lines) {
     var source = Array.isArray(lines) ? lines : [];
     if (!source.length) {
@@ -4451,14 +4516,13 @@
           ? ""
           : ' title="Не хватает: ' + escapeHtml(formatQuantity(availabilityState.shortage)) + '"';
         var availabilityClass = availabilityState.ready ? "pc-availability-ready" : "pc-availability-short";
-        var palletState = getLinePalletFillingState(line);
-        var showPalletRowHighlight = !isLineFullyShippedForCustomer(line, order) && palletState.hasFilled;
-        var rowClass = showPalletRowHighlight
-          ? ' class="pc-order-line-pallet-filled' + (palletState.complete ? " is-complete" : " is-partial") + '"'
+        var highlightState = getOrderLineHighlightState(line, order);
+        var rowAttributes = highlightState.className
+          ? ' class="' + escapeHtml(highlightState.className) + '" title="' + escapeHtml(highlightState.title) + '"'
           : "";
         return (
           "<tr" +
-          rowClass +
+          rowAttributes +
           ">" +
           "<td>" +
           escapeHtml(line.item_name || "-") +
@@ -4884,6 +4948,7 @@
     window.FlowStockPcTestHooks.renderOrderPalletFillingIndicator = renderOrderPalletFillingIndicator;
     window.FlowStockPcTestHooks.applyOrderLinePalletFillingFallback = applyOrderLinePalletFillingFallback;
     window.FlowStockPcTestHooks.applyOrderLineShipmentPalletReadiness = applyOrderLineShipmentPalletReadiness;
+    window.FlowStockPcTestHooks.getOrderLineHighlightState = getOrderLineHighlightState;
     window.FlowStockPcTestHooks.renderOrdersTable = renderOrdersTable;
     window.FlowStockPcTestHooks.renderOrderLinesTable = renderOrderLinesTable;
     window.FlowStockPcTestHooks.normalizeMarkingTaskRows = normalizeMarkingTaskRows;

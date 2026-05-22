@@ -170,6 +170,16 @@ public sealed class WpfUpdateOrderService
     private static WpfUpdateOrderResult MapHttpError(UpdateOrderApiCallResult apiCall)
     {
         var errorCode = apiCall.Error?.Error;
+        if (!string.IsNullOrWhiteSpace(apiCall.Error?.Message)
+            && (string.Equals(errorCode, "ORDER_LINE_QTY_BELOW_COVERAGE", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(errorCode, "ORDER_LINE_HAS_FILLED_PALLETS", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(errorCode, "ORDER_LINE_PALLET_PLAN_NOT_PLANNED", StringComparison.OrdinalIgnoreCase)))
+        {
+            return WpfUpdateOrderResult.Failure(
+                WpfUpdateOrderResultKind.ValidationFailed,
+                apiCall.Error.Message);
+        }
+
         if (IsHuReservationConflict(errorCode))
         {
             return WpfUpdateOrderResult.Failure(
@@ -199,6 +209,9 @@ public sealed class WpfUpdateOrderService
             "INVALID_QTY_ORDERED" => "Количество в строках заказа должно быть больше нуля.",
             "ITEM_NOT_FOUND" => "Сервер не нашел один из товаров заказа.",
             "MISSING_ORDER_REF" => "Номер заказа обязателен.",
+            "ORDER_LINE_QTY_BELOW_COVERAGE" => "Нельзя уменьшить количество ниже уже заполненного/отгруженного объема.",
+            "ORDER_LINE_HAS_FILLED_PALLETS" => "Нельзя изменить строки заказа: по ним уже есть заполненные паллеты/HU.",
+            "ORDER_LINE_PALLET_PLAN_NOT_PLANNED" => "Нельзя автоматически изменить паллетный план: есть не-PLANNED паллеты/HU.",
             _ => string.IsNullOrWhiteSpace(errorCode)
                 ? $"Сервер вернул ошибку {(int?)apiCall.StatusCode ?? 0}."
                 : $"Сервер вернул ошибку: {errorCode}"
@@ -224,6 +237,9 @@ public sealed class WpfUpdateOrderService
             "INVALID_QTY_ORDERED" => WpfUpdateOrderResultKind.ValidationFailed,
             "ITEM_NOT_FOUND" => WpfUpdateOrderResultKind.ValidationFailed,
             "MISSING_ORDER_REF" => WpfUpdateOrderResultKind.ValidationFailed,
+            "ORDER_LINE_QTY_BELOW_COVERAGE" => WpfUpdateOrderResultKind.ValidationFailed,
+            "ORDER_LINE_HAS_FILLED_PALLETS" => WpfUpdateOrderResultKind.ValidationFailed,
+            "ORDER_LINE_PALLET_PLAN_NOT_PLANNED" => WpfUpdateOrderResultKind.ValidationFailed,
             _ => WpfUpdateOrderResultKind.ServerRejected
         };
 
