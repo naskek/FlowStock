@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 using FlowStock.Core.Models;
 using FlowStock.Core.Services;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
@@ -217,6 +218,39 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
 
         Assert.Equal(afterFirst, afterSecond);
         Assert.Equal(0, ActiveOpenQty(fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId), fixture.OrderLineId), 3);
+    }
+
+    [Fact]
+    public async Task PutIncrease1200To2400_LinesApi_ReturnsFilledAndNewPlannedHuCodes()
+    {
+        var fixture = InternalOrderPalletQtyUpdateScenario.Create(
+            orderedQty: 1200,
+            filledPalletCount: 2,
+            openPalletCount: 0);
+        await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
+
+        var update = await UpdateOrderHttpApi.UpdateAsync(
+            host.Client,
+            fixture.OrderId,
+            InternalOrderPalletQtyUpdateScenario.BuildUpdateRequest(2400));
+        Assert.True(update.Ok);
+
+        using var linesResponse = await host.Client.GetAsync($"/api/orders/{fixture.OrderId}/lines");
+        Assert.Equal(HttpStatusCode.OK, linesResponse.StatusCode);
+        using var document = JsonDocument.Parse(await linesResponse.Content.ReadAsStringAsync());
+        var line = document.RootElement.EnumerateArray().Single();
+        var huCodes = line.GetProperty("production_hu_codes")
+            .EnumerateArray()
+            .Select(element => element.GetString())
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .ToArray();
+
+        Assert.Equal(2400, line.GetProperty("qty_ordered").GetDouble(), 3);
+        Assert.Equal(1200, line.GetProperty("qty_produced").GetDouble(), 3);
+        Assert.True(line.GetProperty("production_hu_codes_display").GetString()?.Length > 0);
+        Assert.Equal(4, huCodes.Length);
+        Assert.Equal(2, fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId)
+            .Count(pallet => pallet.Status == ProductionPalletStatus.Planned));
     }
 
     [Fact]

@@ -1219,7 +1219,9 @@ public sealed class WpfReadApiService
             QtyOrdered = ReadDouble(element, "qty_ordered"),
             ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(ReadString(element, "production_purpose")),
             ProductionPalletGroup = ReadString(element, "production_pallet_group"),
-            ProductionHuCodes = ReadString(element, "production_hu_codes_display") ?? string.Empty,
+            ProductionHuCodes = OrderLineCanonicalPresentation.ResolveProductionHuCodesDisplay(
+                ReadString(element, "production_hu_codes_display"),
+                ReadStringArray(element, "production_hu_codes")),
             QtyShipped = ReadDouble(element, "qty_shipped"),
             QtyProduced = ReadDouble(element, "qty_produced"),
             QtyRemaining = ReadDouble(element, "qty_left"),

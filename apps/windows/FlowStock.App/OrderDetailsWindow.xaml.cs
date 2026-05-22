@@ -170,17 +170,17 @@ public partial class OrderDetailsWindow : Window
         EndLoad();
     }
 
-    private void ReloadCanonicalOrderStateAfterPersist()
+    private void ReloadCanonicalOrderStateAfterPersist(long? reselectLineId = null)
     {
         if (!_orderId.HasValue)
         {
             return;
         }
 
-        LoadOrder();
+        LoadOrder(reselectLineId);
     }
 
-    private void LoadOrder()
+    private void LoadOrder(long? reselectLineId = null)
     {
         if (!_orderId.HasValue)
         {
@@ -234,6 +234,8 @@ public partial class OrderDetailsWindow : Window
         SyncHuBindingLines();
         _huBinding.EndLoad();
         EndLoad();
+        RestoreSelectedOrderLine(reselectLineId ?? _selectedLine?.Id);
+        ForceOrderLinesGridRefresh();
     }
 
     private void Save_Click(object sender, RoutedEventArgs e)
@@ -582,7 +584,7 @@ public partial class OrderDetailsWindow : Window
         }
 
         _orderId = result.Response.OrderId;
-        ReloadCanonicalOrderStateAfterPersist();
+        ReloadCanonicalOrderStateAfterPersist(_selectedLine?.Id);
 
         if (!string.IsNullOrWhiteSpace(result.Message))
         {
@@ -854,6 +856,38 @@ public partial class OrderDetailsWindow : Window
         OrderLinesGrid.ScrollIntoView(line);
         _selectedLine = line;
         EditLineButton.IsEnabled = EnsureEditable(false);
+    }
+
+    private void RestoreSelectedOrderLine(long? lineId)
+    {
+        if (!lineId.HasValue || lineId.Value <= 0)
+        {
+            return;
+        }
+
+        var line = _lines.FirstOrDefault(candidate => candidate.Id == lineId.Value);
+        if (line == null)
+        {
+            _selectedLine = null;
+            return;
+        }
+
+        SelectOrderLine(line);
+    }
+
+    private void ForceOrderLinesGridRefresh()
+    {
+        if (GetSelectedOrderType() == OrderType.Customer)
+        {
+            OrderLinesGrid.ItemsSource = _huBinding.Lines;
+        }
+        else
+        {
+            OrderLinesGrid.ItemsSource = _lines;
+        }
+
+        OrderLinesGrid.Items.Refresh();
+        UpdateEmptyState();
     }
 
     private void EditLine_Click(object sender, RoutedEventArgs e)
@@ -1152,26 +1186,7 @@ public partial class OrderDetailsWindow : Window
                 return false;
             }
 
-            line.QtyOrdered = persisted.QtyOrdered;
-            line.QtyAvailable = persisted.QtyAvailable;
-            line.QtyProduced = persisted.QtyProduced;
-            line.QtyShipped = persisted.QtyShipped;
-            line.QtyRemaining = persisted.QtyRemaining;
-            line.CanShipNow = type == OrderType.Internal ? 0 : persisted.CanShipNow;
-            line.Shortage = type == OrderType.Internal ? 0 : persisted.Shortage;
-            line.ProductionHuCodes = persisted.ProductionHuCodes;
-            line.PlannedPalletCount = persisted.PlannedPalletCount;
-            line.FilledPalletCount = persisted.FilledPalletCount;
-            line.PlannedPalletQty = persisted.PlannedPalletQty;
-            line.FilledPalletQty = persisted.FilledPalletQty;
-            line.LineFullyShipped = persisted.LineFullyShipped;
-            line.HidePalletFillIndicator = persisted.HidePalletFillIndicator;
-            line.ShowPalletCompletedIcon = persisted.ShowPalletCompletedIcon;
-            line.BlockingFillRequired = persisted.BlockingFillRequired;
-            line.FulfillmentStatus = persisted.FulfillmentStatus;
-            line.PalletFillLabel = persisted.PalletFillLabel;
-            line.PalletFillTone = persisted.PalletFillTone;
-            line.PalletFillTitle = persisted.PalletFillTitle;
+            OrderLineCanonicalPresentation.ApplyPersistedLine(line, persisted, type);
         }
 
         if (_order != null)

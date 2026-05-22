@@ -261,6 +261,32 @@ function Assert-PalletMetrics(
     Assert-True ($m.ActiveDuplicateDocLines -eq 0) "[$Label] no duplicate active doc_line_id"
 }
 
+function Get-LineStateSnapshot([long] $LineId, [System.Net.Http.HttpClient] $Client) {
+    $line = (Get-OrderLines $Client $script:OrderId | Select-Object -First 1)
+    $hus = @()
+    if ($null -ne $line.production_hu_codes) { $hus = @($line.production_hu_codes) }
+    elseif ($line.production_hu_codes_display) {
+        $hus = @([string]$line.production_hu_codes_display -split ',\s*')
+    }
+    $metrics = Get-PalletQtyMetrics $LineId
+    return [pscustomobject]@{
+        QtyOrdered = [double]$line.qty_ordered
+        QtyProduced = [double]$line.qty_produced
+        QtyLeft = [double]$line.qty_left
+        PalletFilledQty = [double]$line.pallet_filled_qty
+        PalletPlannedQty = [double]$line.pallet_planned_qty
+        HuCodes = $hus
+        SqlFilled = $metrics.Filled
+        SqlPlannedOpen = $metrics.PlannedOpen
+    }
+}
+
+function Write-LineStateTrace([string] $Label, [long] $LineId, [System.Net.Http.HttpClient] $Client) {
+    $state = Get-LineStateSnapshot $LineId $Client
+    Write-Host "  [$Label] ordered=$($state.QtyOrdered) produced=$($state.QtyProduced) left=$($state.QtyLeft) api_filled=$($state.PalletFilledQty) api_planned=$($state.PalletPlannedQty)"
+    Write-Host "  [$Label] SQL filled=$($state.SqlFilled) SQL planned/open=$($state.SqlPlannedOpen) HU=$($state.HuCodes -join ', ')"
+}
+
 function Get-OrderLines([System.Net.Http.HttpClient] $Client, [long] $OrderId) {
     $resp = Invoke-ApiJson $Client "GET" "/api/orders/$OrderId/lines"
     Assert-True ($resp.StatusCode -eq 200) "GET lines HTTP 200 (got $($resp.StatusCode))"
@@ -383,21 +409,40 @@ try {
     $line = (Get-OrderLines $client $script:OrderId | Select-Object -First 1)
     Assert-Equal 1200 $line.qty_ordered "qty_ordered unchanged after rejected PUT"
 
-    Write-Step "6. Increase 1200 -> 4800"
+    Write-Step "6. PUT 1200 -> 2400 (append planned HU via UpdateOrder sync)"
+    $script:LastStep = "increase-2400"
+    Write-LineStateTrace "BEFORE-PUT-2400" $script:OrderLineId $client
+    $up2400 = Update-OrderQty $client $script:OrderId $script:OrderRef $script:ItemIdUsed 2400
+    if ($up2400.StatusCode -ne 200) { throw "PUT 2400 failed: $($up2400.StatusCode) $($up2400.BodyText)" }
+    Write-LineStateTrace "AFTER-PUT-2400" $script:OrderLineId $client
+    Assert-PalletMetrics $script:OrderLineId 1200 1200 "after-2400"
+    $line = (Get-OrderLines $client $script:OrderId | Select-Object -First 1)
+    Assert-Equal 2400 $line.qty_ordered "qty_ordered 2400"
+    Assert-Equal 1200 ([double]$line.qty_left) "qty_left 1200 after 2400"
+    $hus2400 = @($line.production_hu_codes)
+    if ($hus2400.Count -eq 0 -and $line.production_hu_codes_display) {
+        $hus2400 = @([string]$line.production_hu_codes_display -split ',\s*')
+    }
+    Assert-True ($hus2400.Count -ge 4) "GET lines has filled+planned HU (count=$($hus2400.Count))"
+
+    Write-Step "7. Increase 2400 -> 4800"
     $script:LastStep = "increase-4800"
+    Write-LineStateTrace "BEFORE-PUT-4800" $script:OrderLineId $client
     $up = Update-OrderQty $client $script:OrderId $script:OrderRef $script:ItemIdUsed 4800
     if ($up.StatusCode -ne 200) { throw "PUT 4800 failed: $($up.StatusCode) $($up.BodyText)" }
     Assert-PalletMetrics $script:OrderLineId 1200 3600 "after-4800"
     $line = (Get-OrderLines $client $script:OrderId | Select-Object -First 1)
     Assert-Equal 4800 $line.qty_ordered "qty_ordered 4800"
 
-    Write-Step "7. Decrease 4800 -> 2400"
+    Write-LineStateTrace "AFTER-PUT-4800" $script:OrderLineId $client
+
+    Write-Step "8. Decrease 4800 -> 2400"
     $script:LastStep = "decrease-2400"
     $down = Update-OrderQty $client $script:OrderId $script:OrderRef $script:ItemIdUsed 2400
     if ($down.StatusCode -ne 200) { throw "PUT 2400 failed: $($down.StatusCode) $($down.BodyText)" }
     Assert-PalletMetrics $script:OrderLineId 1200 1200 "after-2400"
 
-    Write-Step "8. Decrease 2400 -> 1200"
+    Write-Step "9. Decrease 2400 -> 1200"
     $script:LastStep = "decrease-1200"
     $down2 = Update-OrderQty $client $script:OrderId $script:OrderRef $script:ItemIdUsed 1200
     if ($down2.StatusCode -ne 200) { throw "PUT 1200 failed: $($down2.StatusCode) $($down2.BodyText)" }
@@ -406,7 +451,7 @@ try {
     $hus = @($line.production_hu_codes)
     Assert-True ($hus.Count -eq 2) "only FILLED HU visible after trim to 1200"
 
-    Write-Step "9. Full cycle 1200 -> 4800 -> 2400 -> 1200 -> 4800"
+    Write-Step "10. Full cycle 1200 -> 4800 -> 2400 -> 1200 -> 4800"
     $script:LastStep = "full-cycle"
     foreach ($pair in @(
             @{ Qty = 4800; Filled = 1200; Open = 3600; Label = "cycle-4800" },
@@ -419,12 +464,12 @@ try {
         Assert-PalletMetrics $script:OrderLineId $pair.Filled $pair.Open $pair.Label
     }
 
-    Write-Step "10. Reject 600 again"
+    Write-Step "11. Reject 600 again"
     $script:LastStep = "reject-600-again"
     $bad2 = Update-OrderQty $client $script:OrderId $script:OrderRef $script:ItemIdUsed 600
     Assert-True ($bad2.StatusCode -eq 400) "PUT 600 still 400"
 
-    Write-Step "11. Idempotent plan POST"
+    Write-Step "12. Idempotent plan POST"
     $script:LastStep = "idempotent-plan"
     $before = Invoke-SqlQuery -Columns @("id", "status", "planned_qty", "doc_line_id") -Sql "SELECT id, status, planned_qty, doc_line_id FROM production_pallets WHERE order_id = $($script:OrderId) ORDER BY id;"
     $plan2 = Invoke-ApiJson $client "POST" "/api/orders/$($script:OrderId)/production-pallets/plan"
