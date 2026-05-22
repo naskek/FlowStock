@@ -40,10 +40,30 @@ public sealed class PalletLabelPrintSelectionServiceTests
         Assert.Equal(new[] { 3L, 4L }, selected);
     }
 
-    private static ProductionPalletPrintRow CreateRow(long palletId, string itemName, string huCode, string status)
+    [Fact]
+    public void ResolveDefaultSelectedPalletIds_SelectsAllReservedHuRows()
+    {
+        var rows = new[]
+        {
+            CreateRow(1, "Товар", "HU-0000478", ProductionPalletStatus.Filled, ProductionPalletPrintSourceType.ReservedHu),
+            CreateRow(2, "Товар", "HU-0000479", ProductionPalletStatus.Filled, ProductionPalletPrintSourceType.ReservedHu)
+        };
+
+        var selected = PalletLabelPrintSelectionService.ResolveDefaultSelectedPalletIds(rows);
+
+        Assert.Equal(new[] { 1L, 2L }, selected);
+    }
+
+    private static ProductionPalletPrintRow CreateRow(
+        long palletId,
+        string itemName,
+        string huCode,
+        string status,
+        string sourceType = ProductionPalletPrintSourceType.ProductionPallet)
     {
         return new ProductionPalletPrintRow
         {
+            SourceType = sourceType,
             PalletId = palletId,
             OrderId = 72,
             OrderRef = "072",

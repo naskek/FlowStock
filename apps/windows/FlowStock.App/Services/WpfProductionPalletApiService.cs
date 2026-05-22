@@ -375,7 +375,8 @@ public sealed class WpfProductionPalletApiService
             Line2Qty = row.Line2Qty,
             Line3ItemName = row.Line3ItemName ?? string.Empty,
             Line3Qty = row.Line3Qty,
-            Status = row.Status ?? string.Empty
+            Status = row.Status ?? string.Empty,
+            SourceType = row.SourceType ?? string.Empty
         };
     }
 
@@ -593,6 +594,9 @@ public sealed class WpfProductionPalletApiService
 
         [JsonPropertyName("status")]
         public string? Status { get; init; }
+
+        [JsonPropertyName("source_type")]
+        public string? SourceType { get; init; }
     }
 
     private sealed class FillResponse

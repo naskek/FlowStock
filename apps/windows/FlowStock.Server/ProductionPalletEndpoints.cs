@@ -470,7 +470,8 @@ public static class ProductionPalletEndpoints
             line2_qty = row.Lines.Count > 1 ? row.Lines[1].Qty : 0,
             line3_item_name = row.Lines.Count > 2 ? row.Lines[2].ItemName : string.Empty,
             line3_qty = row.Lines.Count > 2 ? row.Lines[2].Qty : 0,
-            status = row.Status
+            status = row.Status,
+            source_type = row.SourceType
         };
     }
 

@@ -1090,6 +1090,173 @@ public sealed class ProductionPalletServiceTests
     }
 
     [Fact]
+    public void GetPrintRows_CustomerOrderWithBoundHu_ReturnsReservedHuRows()
+    {
+        var harness = CreateCustomerHarnessWithBoundHu(
+            new OrderReceiptPlanLine
+            {
+                Id = 501,
+                OrderId = 78,
+                OrderLineId = 101,
+                ItemId = 100,
+                ItemName = "Товар",
+                QtyPlanned = 600,
+                ToLocationCode = "MAIN",
+                ToHu = "HU-0000478",
+                SortOrder = 1
+            },
+            new OrderReceiptPlanLine
+            {
+                Id = 502,
+                OrderId = 78,
+                OrderLineId = 101,
+                ItemId = 100,
+                ItemName = "Товар",
+                QtyPlanned = 400,
+                ToLocationCode = "MAIN",
+                ToHu = "HU-0000479",
+                SortOrder = 2
+            });
+        var service = new ProductionPalletService(harness.Store);
+
+        var rows = service.GetPrintRows(78);
+
+        Assert.Equal(2, rows.Count);
+        Assert.All(rows, row => Assert.Equal(ProductionPalletPrintSourceType.ReservedHu, row.SourceType));
+        Assert.Equal("078", rows[0].OrderRef);
+        Assert.Contains(rows, row => string.Equals(row.HuCode, "HU-0000478", StringComparison.OrdinalIgnoreCase) && row.Qty == 600);
+        Assert.Contains(rows, row => string.Equals(row.HuCode, "HU-0000479", StringComparison.OrdinalIgnoreCase) && row.Qty == 400);
+        Assert.Equal(new[] { 501L, 502L }, PalletLabelPrintSelectionService.ResolveDefaultSelectedPalletIds(rows));
+    }
+
+    [Fact]
+    public void GetPrintRows_CustomerOrderWithNoBoundHu_ReturnsEmpty()
+    {
+        var harness = CreateCustomerHarnessWithBoundHu();
+        var service = new ProductionPalletService(harness.Store);
+
+        Assert.Empty(service.GetPrintRows(78));
+    }
+
+    [Fact]
+    public void GetPrintRows_CustomerOrderWithPartialCoverage_ReturnsOnlyBoundHu()
+    {
+        var harness = CreateCustomerHarnessWithBoundHu(
+            new OrderReceiptPlanLine
+            {
+                Id = 501,
+                OrderId = 78,
+                OrderLineId = 101,
+                ItemId = 100,
+                ItemName = "Товар",
+                QtyPlanned = 300,
+                ToHu = "HU-0000485",
+                SortOrder = 1
+            });
+        var service = new ProductionPalletService(harness.Store);
+
+        var rows = service.GetPrintRows(78);
+
+        Assert.Single(rows);
+        Assert.Equal("HU-0000485", rows[0].HuCode);
+        Assert.Equal(300, rows[0].Qty);
+    }
+
+    [Fact]
+    public void GetPrintRows_CustomerOrder_IgnoresProductionPalletsAndUsesBoundHuOnly()
+    {
+        var harness = CreateCustomerHarnessWithBoundHu(
+            new OrderReceiptPlanLine
+            {
+                Id = 501,
+                OrderId = 78,
+                OrderLineId = 101,
+                ItemId = 100,
+                ItemName = "Товар",
+                QtyPlanned = 600,
+                ToHu = "HU-BOUND",
+                SortOrder = 1
+            });
+        harness.SeedDoc(new Doc
+        {
+            Id = 200,
+            DocRef = "PRD-2026-009999",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 78,
+            CreatedAt = new DateTime(2026, 5, 20, 9, 0, 0)
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 90,
+            PrdDocId = 200,
+            DocLineId = 0,
+            OrderId = 78,
+            OrderLineId = 101,
+            ItemId = 100,
+            ItemName = "Товар",
+            HuCode = "HU-PLAN",
+            PlannedQty = 600,
+            Status = ProductionPalletStatus.Planned,
+            CreatedAt = new DateTime(2026, 5, 20, 9, 0, 0)
+        });
+        var service = new ProductionPalletService(harness.Store);
+
+        var rows = service.GetPrintRows(78);
+
+        Assert.Single(rows);
+        Assert.Equal("HU-BOUND", rows[0].HuCode);
+    }
+
+    [Fact]
+    public void GetPrintRows_CustomerOrder_DoesNotCreateProductionPalletsOrLedger()
+    {
+        var harness = CreateCustomerHarnessWithBoundHu(
+            new OrderReceiptPlanLine
+            {
+                Id = 501,
+                OrderId = 78,
+                OrderLineId = 101,
+                ItemId = 100,
+                ItemName = "Товар",
+                QtyPlanned = 600,
+                ToHu = "HU-0000478",
+                SortOrder = 1
+            });
+        var service = new ProductionPalletService(harness.Store);
+        var docsBefore = harness.Store.GetDocsByOrder(78).Count();
+
+        _ = service.GetPrintRows(78);
+
+        Assert.Equal(docsBefore, harness.Store.GetDocsByOrder(78).Count);
+        Assert.False(harness.Store.GetDocsByOrder(78).Any(doc => harness.Store.HasProductionPallets(doc.Id)));
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void MarkPrinted_CustomerOrder_IsNoOp()
+    {
+        var harness = CreateCustomerHarnessWithBoundHu(
+            new OrderReceiptPlanLine
+            {
+                Id = 501,
+                OrderId = 78,
+                OrderLineId = 101,
+                ItemId = 100,
+                ItemName = "Товар",
+                QtyPlanned = 600,
+                ToHu = "HU-0000478",
+                SortOrder = 1
+            });
+        var service = new ProductionPalletService(harness.Store);
+
+        var updated = service.MarkPrinted(78, new[] { 501L }, new DateTime(2026, 5, 20, 12, 0, 0));
+
+        Assert.Equal(0, updated);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
     public void MarkPrinted_ChangesOnlyPlannedPallets()
     {
         var harness = CreateHarnessWithSixPallets(filledCount: 1);
@@ -1109,6 +1276,43 @@ public sealed class ProductionPalletServiceTests
         var harness = new CloseDocumentHarness();
         SeedBase(harness, orderQty: 600, plannedQty: 600, huCode: "HU-000001");
         harness.SeedProductionPallet(BuildPallet(id: 1, huCode: "HU-000001", plannedQty: 600, status: status));
+        return harness;
+    }
+
+    private static CloseDocumentHarness CreateCustomerHarnessWithBoundHu(params OrderReceiptPlanLine[] planLines)
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedLocation(new Location { Id = 1, Code = "MAIN", Name = "Основной склад" });
+        harness.SeedItem(new Item
+        {
+            Id = 100,
+            Name = "Товар",
+            Brand = "Печагин",
+            BaseUom = "шт",
+            MaxQtyPerHu = 600
+        });
+        harness.SeedOrder(new Order
+        {
+            Id = 78,
+            OrderRef = "078",
+            Type = OrderType.Customer,
+            PartnerName = "ПЕЧАГИН ПРОДУКТ",
+            Status = OrderStatus.InProgress,
+            UseReservedStock = true,
+            CreatedAt = new DateTime(2026, 5, 20, 8, 0, 0)
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 101,
+            OrderId = 78,
+            ItemId = 100,
+            QtyOrdered = 1200
+        });
+        if (planLines.Length > 0)
+        {
+            harness.SeedOrderReceiptPlanLines(78, planLines);
+        }
+
         return harness;
     }
 
@@ -1673,7 +1877,7 @@ public sealed class ProductionPalletServiceTests
         {
             Id = 10,
             OrderRef = "056",
-            Type = OrderType.Customer,
+            Type = OrderType.Internal,
             PartnerName = "ПЕЧАГИН ПРОДУКТ",
             Status = OrderStatus.InProgress,
             CreatedAt = new DateTime(2026, 5, 13, 8, 0, 0)
