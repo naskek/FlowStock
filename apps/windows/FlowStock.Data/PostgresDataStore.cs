@@ -2479,6 +2479,42 @@ WHERE dl.doc_id = @source_prd_doc_id
         });
     }
 
+    public void AssignProductionPalletToPrdDoc(long productionPalletId, long targetPrdDocId)
+    {
+        WithConnection(connection =>
+        {
+            using var updatePallet = CreateCommand(connection, @"
+UPDATE production_pallets
+SET prd_doc_id = @target_prd_doc_id
+WHERE id = @production_pallet_id;
+");
+            updatePallet.Parameters.AddWithValue("@target_prd_doc_id", targetPrdDocId);
+            updatePallet.Parameters.AddWithValue("@production_pallet_id", productionPalletId);
+            if (updatePallet.ExecuteNonQuery() == 0)
+            {
+                throw new InvalidOperationException("Паллета не найдена для переноса в отдельный выпуск.");
+            }
+
+            using var updateDocLines = CreateCommand(connection, @"
+UPDATE doc_lines dl
+SET doc_id = @target_prd_doc_id
+WHERE dl.id IN (
+    SELECT pp.doc_line_id
+    FROM production_pallets pp
+    WHERE pp.id = @production_pallet_id
+    UNION
+    SELECT pll.doc_line_id
+    FROM production_pallet_lines pll
+    WHERE pll.production_pallet_id = @production_pallet_id
+);
+");
+            updateDocLines.Parameters.AddWithValue("@target_prd_doc_id", targetPrdDocId);
+            updateDocLines.Parameters.AddWithValue("@production_pallet_id", productionPalletId);
+            updateDocLines.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
     private static void AddTargetLineParameters(NpgsqlCommand command, IReadOnlyDictionary<long, long> targetOrderLineIdByItemId)
     {
         var index = 0;

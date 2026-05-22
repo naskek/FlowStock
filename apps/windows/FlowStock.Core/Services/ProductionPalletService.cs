@@ -8,10 +8,17 @@ public sealed class ProductionPalletService
     private const double QtyTolerance = 0.000001d;
     private const string PlanHuCreatedBy = "PRODUCTION-PALLET-PLAN";
     private readonly IDataStore _data;
+    private readonly ProductionFillCloseService? _fillClose;
 
     public ProductionPalletService(IDataStore data)
+        : this(data, fillClose: null)
+    {
+    }
+
+    public ProductionPalletService(IDataStore data, ProductionFillCloseService? fillClose)
     {
         _data = data;
+        _fillClose = fillClose;
     }
 
     public ProductionPalletDocument Plan(long docId)
@@ -882,6 +889,21 @@ public sealed class ProductionPalletService
 
             if (doc.Status == DocStatus.Closed)
             {
+                if (string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+                {
+                    result = new ProductionPalletFillResult
+                    {
+                        Success = true,
+                        AlreadyFilled = true,
+                        PrdAutoClosed = true,
+                        ClosedPrdDocId = doc.Id,
+                        ClosedPrdDocRef = doc.DocRef,
+                        Pallet = pallet,
+                        Document = BuildFillingDocument(doc.Id, store.GetProductionPalletsByDoc(doc.Id))
+                    };
+                    return;
+                }
+
                 result = ProductionPalletFillResult.Failure("Документ выпуска уже закрыт.");
                 return;
             }
@@ -958,7 +980,45 @@ public sealed class ProductionPalletService
             };
         });
 
+        if (result is { Success: true, Pallet: not null })
+        {
+            result = ApplyAutoCloseAfterFill(result);
+        }
+
         return result ?? ProductionPalletFillResult.Failure("Не удалось наполнить паллету.");
+    }
+
+    private ProductionPalletFillResult ApplyAutoCloseAfterFill(ProductionPalletFillResult fillResult)
+    {
+        if (_fillClose == null || fillResult.Pallet == null)
+        {
+            return fillResult;
+        }
+
+        var autoClose = _fillClose.TryAutoCloseAfterFill(fillResult.Pallet);
+        if (!autoClose.Attempted)
+        {
+            return fillResult;
+        }
+
+        if (!autoClose.Success)
+        {
+            return ProductionPalletFillResult.Failure(
+                autoClose.Error ?? "Не удалось провести выпуск после наполнения.");
+        }
+
+        var pallet = _data.GetProductionPalletByHu(fillResult.Pallet.HuCode) ?? fillResult.Pallet;
+        var prdDocId = autoClose.ClosedPrdDocId ?? pallet.PrdDocId;
+        return new ProductionPalletFillResult
+        {
+            Success = true,
+            AlreadyFilled = fillResult.AlreadyFilled || autoClose.AlreadyClosed,
+            Pallet = pallet,
+            Document = BuildFillingDocument(prdDocId, _data.GetProductionPalletsByDoc(prdDocId)),
+            PrdAutoClosed = true,
+            ClosedPrdDocId = autoClose.ClosedPrdDocId,
+            ClosedPrdDocRef = autoClose.ClosedPrdDocRef
+        };
     }
 
     private Doc RequireProductionReceipt(long docId)

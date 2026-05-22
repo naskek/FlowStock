@@ -43,7 +43,7 @@ public sealed class OrderHuReservationApplyServiceTests
     }
 
     [Fact]
-    public void ApplyInternalFilledHu_ReservesWithoutMutatingInternal()
+    public void ApplyInternalFilledHu_IsRejected()
     {
         var context = CreateContext();
         context.SeedCustomerOrder(78, 203, itemId: 6, qtyOrdered: 600, qtyShipped: 0);
@@ -57,14 +57,10 @@ public sealed class OrderHuReservationApplyServiceTests
             sourceOrderId: 72,
             sourceOrderRef: "072"));
 
-        var result = context.Apply(78, Line(203, "HU-FILLED"));
+        var ex = Assert.Throws<OrderHuReservationApplyException>(() => context.Apply(78, Line(203, "HU-FILLED")));
 
-        Assert.Equal(600, Assert.Single(result.AppliedLines).ReservedQty, 3);
-        Assert.Equal(600, context.GetInternalQtyOrdered(72, 501), 3);
-        Assert.False(context.InternalSourceMutated);
-        var plan = Assert.Single(context.GetPlanLines(78));
-        Assert.Equal("HU-FILLED", plan.ToHu);
-        Assert.False(Assert.Single(result.AppliedLines).SelectedHu.Single().ShipReady);
+        Assert.Equal("HU_NOT_AVAILABLE", ex.ErrorCode);
+        Assert.Empty(context.GetPlanLines(78));
     }
 
     [Fact]

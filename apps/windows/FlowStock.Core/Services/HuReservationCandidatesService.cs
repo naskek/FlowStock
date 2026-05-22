@@ -74,6 +74,11 @@ public sealed class HuReservationCandidatesService
                      .ThenBy(row => row.SourceOrderRef, StringComparer.OrdinalIgnoreCase)
                      .ThenBy(row => row.SourcePrdRef, StringComparer.OrdinalIgnoreCase))
         {
+            if (!string.Equals(row.Source, OrderHuReservationApplyService.SourceLedgerStock, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             var dedupeKey = string.Join(
                 "|",
                 row.ItemId,

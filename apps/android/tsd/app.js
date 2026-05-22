@@ -2872,10 +2872,9 @@
             var remainingPalletCount = nextDocument && nextDocument.summary
               ? Number(nextDocument.summary.remainingPalletCount) || 0
               : 0;
-            var successMessage = remainingPalletCount <= 0
-              ? "Наполнение завершено. Заказ закрыт."
-              : (result && result.alreadyFilled ? "Паллета уже наполнена" : "Паллета наполнена");
-            var successType = result && result.alreadyFilled ? "warn" : "success";
+            var successMessage = buildProductionFillSuccessMessage(result, remainingPalletCount);
+            var successType =
+              result && (result.alreadyFilled || result.already_filled) ? "warn" : "success";
             closeOverlay();
             renderFillingScanScreen(nextContext, {
               message: successMessage,
@@ -3074,7 +3073,7 @@
       "    </div>" +
       messageHtml +
       (complete
-        ? '    <div class="filling-message filling-message-success">Все паллеты подобраны. Ожидает проведения в WPF.</div>'
+        ? '    <div class="filling-message filling-message-success">Все паллеты подобраны. Отгрузка проведена.</div>'
         : "") +
       '    <div class="filling-scan-card">' +
       '      <label class="form-label" for="outboundPickingScanInput">Сканируйте HU</label>' +
@@ -5677,7 +5676,7 @@
     var scanDisabled = status === "EXECUTED" || status === "CONFIRMED" || scanType === "DONE" ? " disabled" : "";
     var doneNotice =
       status === "EXECUTED" || status === "CONFIRMED"
-        ? '<div class="status ok">Задание выполнено на ТСД. Дождитесь подтверждения в WPF.</div>'
+        ? '<div class="status ok">Отгрузка проведена на ТСД.</div>'
         : "";
 
     return (
@@ -5927,6 +5926,32 @@
     });
   }
 
+  function buildProductionFillSuccessMessage(result, remainingPalletCount) {
+    var alreadyFilled = !!(result && (result.alreadyFilled || result.already_filled));
+    var prdRef = result && (result.closedPrdDocRef || result.closed_prd_doc_ref);
+    prdRef = prdRef ? String(prdRef).trim() : "";
+    var prdClosed = !!(result && (result.prdAutoClosed || result.prd_auto_closed));
+    var orderCompleted = Number(remainingPalletCount) <= 0;
+    var parts = [];
+
+    if (prdClosed && prdRef) {
+      parts.push(alreadyFilled ? "Паллета уже проведена." : "Паллета проведена.");
+      parts.push("PRD " + prdRef + " закрыт.");
+      if (orderCompleted) {
+        parts.push("Заказ выполнен: все паллеты наполнены.");
+      }
+      return parts.join(" ");
+    }
+
+    if (orderCompleted) {
+      return alreadyFilled
+        ? "Паллета уже наполнена. Заказ выполнен: все паллеты наполнены."
+        : "Паллета наполнена. Заказ выполнен: все паллеты наполнены.";
+    }
+
+    return alreadyFilled ? "Паллета уже наполнена." : "Паллета наполнена.";
+  }
+
   function mapFillingError(error) {
     var message = String(error && error.message ? error.message : error || "").trim();
     if (!message || message === "Failed to fetch" || message === "AbortError") {
@@ -6163,7 +6188,7 @@
           var complete = nextOrder && nextOrder.isComplete === true;
           renderOutboundPickingOrder(nextOrder, {
             message: complete
-              ? "Все паллеты подобраны. Ожидает проведения в WPF."
+              ? "Все паллеты подобраны. Отгрузка проведена."
               : (result && result.message) || "HU подобрана.",
             messageType: result && result.alreadyPicked ? "warn" : "success",
           });
@@ -6196,7 +6221,7 @@
         TsdStorage.apiCompleteOutboundPicking(orderId)
           .then(function (result) {
             renderOutboundPickingOrder((result && result.order) || order, {
-              message: (result && result.message) || "Все паллеты подобраны. Ожидает проведения в WPF.",
+              message: (result && result.message) || "Все паллеты подобраны. Отгрузка проведена.",
               messageType: "success",
             });
           })

@@ -128,8 +128,15 @@ assert(
   "fill confirmation should open in a separate modal overlay"
 );
 assert(
-  appJs.includes("Наполнение завершено. Заказ закрыт."),
-  "final pallet fill should tell the operator that the order is closed"
+  appJs.includes("function buildProductionFillSuccessMessage(") &&
+    appJs.includes("Паллета проведена.") &&
+    appJs.includes('PRD " + prdRef + " закрыт.') &&
+    appJs.includes("Заказ выполнен: все паллеты наполнены."),
+  "final pallet fill should show pallet posted, PRD closed, and order completed status"
+);
+assert(
+  storageJs.includes("prd_auto_closed") && storageJs.includes("closed_prd_doc_ref"),
+  "fill API mapping should expose auto-closed PRD fields from the server"
 );
 assert(
   appJs.includes('<button class="btn menu-btn" data-route="outbound">Отгрузка</button>') &&
@@ -159,8 +166,8 @@ assert(
 );
 assert(
   appJs.includes("TsdStorage.apiCompleteOutboundPicking(orderId)") &&
-    appJs.includes("Все паллеты подобраны. Ожидает проведения в WPF."),
-  "outbound picking complete should wait for WPF close instead of posting ledger"
+    appJs.includes("Все паллеты подобраны. Отгрузка проведена."),
+  "outbound picking complete should reflect server auto-close message"
 );
 assert(
   appJs.includes("Микс-паллета") &&

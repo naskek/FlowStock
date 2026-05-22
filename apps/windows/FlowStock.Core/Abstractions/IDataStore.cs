@@ -107,6 +107,7 @@ public interface IDataStore
         long sourceOrderId,
         long targetOrderId,
         IReadOnlyDictionary<long, long> targetOrderLineIdByItemId);
+    void AssignProductionPalletToPrdDoc(long productionPalletId, long targetPrdDocId);
     double GetFilledProductionPalletQtyByOrderLine(long orderLineId, long? excludePalletId = null);
     void UpdateProductionPalletHu(long palletId, string huCode);
     void ReassignOpenProductionPalletsByHu(

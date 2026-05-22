@@ -50,6 +50,8 @@ public static class TsdOutboundPickingEndpoints
             ok = true,
             message = result.Message,
             already_picked = result.AlreadyPicked,
+            outbound_closed = result.OutboundClosed,
+            closed_outbound_doc_ref = result.ClosedOutboundDocRef,
             order = result.Order == null ? null : MapOrderDetails(result.Order)
         });
     }
@@ -71,6 +73,9 @@ public static class TsdOutboundPickingEndpoints
         {
             ok = true,
             message = result.Message,
+            outbound_closed = result.OutboundClosed,
+            closed_outbound_doc_id = result.ClosedOutboundDocId,
+            closed_outbound_doc_ref = result.ClosedOutboundDocRef,
             order = result.Order == null ? null : MapOrderDetails(result.Order)
         });
     }

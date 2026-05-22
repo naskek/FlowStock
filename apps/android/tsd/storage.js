@@ -1337,6 +1337,9 @@
         return {
           ok: result && result.ok !== false,
           alreadyFilled: result && result.already_filled === true,
+          prdAutoClosed: !!(result && result.prd_auto_closed),
+          closedPrdDocRef: result && result.closed_prd_doc_ref ? String(result.closed_prd_doc_ref) : "",
+          closedPrdDocId: result && result.closed_prd_doc_id ? Number(result.closed_prd_doc_id) : null,
           pallet: result && result.pallet ? normalizeProductionPallet(result.pallet) : null,
           document: result && result.document ? normalizeProductionPalletDocument(result.document) : null,
         };

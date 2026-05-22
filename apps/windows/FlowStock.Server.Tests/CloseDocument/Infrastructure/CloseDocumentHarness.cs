@@ -1726,6 +1726,9 @@ internal sealed class CloseDocumentHarness
                 };
             });
 
+        _store.Setup(store => store.AssignProductionPalletToPrdDoc(It.IsAny<long>(), It.IsAny<long>()))
+            .Callback<long, long>(AssignProductionPalletToPrdDocInHarness);
+
         _store.Setup(store => store.AdoptProductionPalletPlan(
                 It.IsAny<long>(),
                 It.IsAny<long>(),
@@ -3455,6 +3458,71 @@ internal sealed class CloseDocumentHarness
                 .Select(entry => _docs[entry.DocId].DocRef)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(docRef => docRef, StringComparer.OrdinalIgnoreCase));
+    }
+
+    private void AssignProductionPalletToPrdDocInHarness(long productionPalletId, long targetPrdDocId)
+    {
+        if (!_productionPallets.TryGetValue(productionPalletId, out var pallet))
+        {
+            throw new InvalidOperationException("Паллета не найдена для переноса в отдельный выпуск.");
+        }
+
+        if (!_linesByDoc.TryGetValue(targetPrdDocId, out var targetLines))
+        {
+            targetLines = new List<DocLine>();
+            _linesByDoc[targetPrdDocId] = targetLines;
+        }
+
+        if (_linesByDoc.TryGetValue(pallet.PrdDocId, out var sourceLines))
+        {
+            var lineIds = new HashSet<long> { pallet.DocLineId };
+            foreach (var component in pallet.Lines)
+            {
+                lineIds.Add(component.DocLineId);
+            }
+
+            foreach (var line in sourceLines.Where(line => lineIds.Contains(line.Id)).ToArray())
+            {
+                sourceLines.Remove(line);
+                targetLines.Add(new DocLine
+                {
+                    Id = line.Id,
+                    DocId = targetPrdDocId,
+                    ReplacesLineId = line.ReplacesLineId,
+                    OrderLineId = line.OrderLineId,
+                    ProductionPurpose = line.ProductionPurpose,
+                    ItemId = line.ItemId,
+                    Qty = line.Qty,
+                    QtyInput = line.QtyInput,
+                    UomCode = line.UomCode,
+                    FromLocationId = line.FromLocationId,
+                    ToLocationId = line.ToLocationId,
+                    FromHu = line.FromHu,
+                    ToHu = line.ToHu,
+                    PackSingleHu = line.PackSingleHu
+                });
+            }
+        }
+
+        _productionPallets[productionPalletId] = new ProductionPallet
+        {
+            Id = pallet.Id,
+            PrdDocId = targetPrdDocId,
+            DocLineId = pallet.DocLineId,
+            OrderId = pallet.OrderId,
+            OrderLineId = pallet.OrderLineId,
+            ItemId = pallet.ItemId,
+            ItemName = pallet.ItemName,
+            HuCode = pallet.HuCode,
+            PlannedQty = pallet.PlannedQty,
+            ToLocationId = pallet.ToLocationId,
+            ToLocationCode = pallet.ToLocationCode,
+            Status = pallet.Status,
+            FilledAt = pallet.FilledAt,
+            FilledByDeviceId = pallet.FilledByDeviceId,
+            CreatedAt = pallet.CreatedAt,
+            Lines = pallet.Lines
+        };
     }
 
     private void ClearProductionPalletPlanInHarness(long docId)

@@ -121,7 +121,12 @@
   - `GET /api/tsd/production/filling-docs` сохраняется как compatibility endpoint для старого PRD-ориентированного списка, но новый TSD UX его не использует;
   - `GET /api/docs/{docId}/production-pallets` возвращает паллеты, summary по PRD и summary по строкам заказа;
   - `POST /api/tsd/production/scan-pallet` валидирует выбранную паллету и возвращает read-only preview для подтверждения оператором, включая состав `lines` для mixed pallet, не меняя `ledger`;
-  - `POST /api/tsd/production/fill-pallet` принимает `hu_code` и `device_id`, находит плановую паллету, валидирует остаток по всем строкам состава и пишет складской факт по всем `production_pallet_lines`;
+  - `POST /api/tsd/production/fill-pallet` принимает `hu_code` и `device_id`, находит плановую паллету, валидирует остаток по всем строкам состава, переводит паллету в `FILLED`;
+  - при `FlowStock:ProductionAutoCloseOnFill = true` (ветка `new-ledger-logic`, default) сервер после fill изолирует паллету в отдельный PRD, закрывает его и пишет `ledger` (+qty); WPF close PRD в normal path не требуется;
+  - `PLANNED`/`PRINTED` не являются физическим stock; физический факт — только `ledger` после close PRD;
+  - TSD outbound: при `FlowStock:OutboundAutoCloseOnComplete = true` последний scan/complete закрывает OUT и пишет `ledger` (−qty);
+  - резерв HU для CUSTOMER (`order_receipt_plan_lines`) допускает только `LEDGER_STOCK`; `INTERNAL_FILLED` не используется;
+  - idempotency offline/retry для TSD scan — отдельная таблица событий планируется позже (пока не в схеме БД);
   - в пользовательских текстах используется термин `паллета`, а `HU` остается техническим идентификатором.
 
 ## Неизвестные товары

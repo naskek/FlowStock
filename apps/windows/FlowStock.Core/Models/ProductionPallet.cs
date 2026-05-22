@@ -247,6 +247,9 @@ public sealed class ProductionPalletFillResult
     public bool Success { get; init; }
     public string? Error { get; init; }
     public bool AlreadyFilled { get; init; }
+    public bool PrdAutoClosed { get; init; }
+    public long? ClosedPrdDocId { get; init; }
+    public string? ClosedPrdDocRef { get; init; }
     public ProductionPallet? Pallet { get; init; }
     public ProductionPalletDocument? Document { get; init; }
 

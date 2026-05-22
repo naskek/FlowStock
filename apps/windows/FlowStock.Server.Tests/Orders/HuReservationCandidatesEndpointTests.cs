@@ -63,7 +63,7 @@ public sealed class HuReservationCandidatesEndpointTests
     }
 
     [Fact]
-    public async Task ReturnsInternalFilledCandidates()
+    public async Task InternalFilledOnly_ReturnsNoCandidates()
     {
         var store = CreateStore(
         [
@@ -91,11 +91,7 @@ public sealed class HuReservationCandidatesEndpointTests
             exclude_hu_codes = Array.Empty<string>()
         });
 
-        var candidate = Assert.Single(GetCandidates(document, "line-1"));
-        Assert.Equal("INTERNAL_FILLED", candidate.GetProperty("source").GetString());
-        Assert.False(candidate.GetProperty("ship_ready").GetBoolean());
-        Assert.Equal(72, candidate.GetProperty("source_order_id").GetInt64());
-        Assert.Equal("FILLED, PRD не закрыт", candidate.GetProperty("note").GetString());
+        Assert.Empty(GetCandidates(document, "line-1"));
     }
 
     [Fact]
@@ -170,7 +166,7 @@ public sealed class HuReservationCandidatesEndpointTests
     }
 
     [Fact]
-    public async Task AutoSelectsLedgerBeforeInternalFilled()
+    public async Task AutoSelectsLedgerStock_IgnoringInternalFilledSeed()
     {
         var store = CreateStore(
         [
@@ -186,20 +182,18 @@ public sealed class HuReservationCandidatesEndpointTests
             exclude_hu_codes = Array.Empty<string>()
         });
 
-        var candidates = GetCandidates(document, "line-1").ToArray();
-        Assert.Equal(2, candidates.Length);
-        Assert.Equal("LEDGER_STOCK", candidates[0].GetProperty("source").GetString());
-        Assert.True(candidates[0].GetProperty("auto_selected").GetBoolean());
-        Assert.False(candidates[1].GetProperty("auto_selected").GetBoolean());
+        var candidate = Assert.Single(GetCandidates(document, "line-1"));
+        Assert.Equal("LEDGER_STOCK", candidate.GetProperty("source").GetString());
+        Assert.True(candidate.GetProperty("auto_selected").GetBoolean());
     }
 
     [Fact]
-    public async Task MixedHuReturnsItemSpecificCandidates()
+    public async Task MixedHuLedger_ReturnsItemSpecificCandidates()
     {
         var store = CreateStore(
         [
-            Source("INTERNAL_FILLED", "HU-MIXED", itemId: 6, qty: 600, shipReady: false, sourceOrderId: 72),
-            Source("INTERNAL_FILLED", "HU-MIXED", itemId: 7, qty: 300, shipReady: false, sourceOrderId: 72)
+            Source("LEDGER_STOCK", "HU-MIXED", itemId: 6, qty: 600, shipReady: true),
+            Source("LEDGER_STOCK", "HU-MIXED", itemId: 7, qty: 300, shipReady: true)
         ]);
         await using var host = await HuReservationCandidatesHost.StartAsync(store.Object);
 
@@ -288,7 +282,7 @@ public sealed class HuReservationCandidatesEndpointTests
     }
 
     [Fact]
-    public async Task OpenInternalDraftPrdFilled_ReturnsInternalFilledWithNote()
+    public async Task OpenInternalDraftPrdFilled_ReturnsNoCandidates()
     {
         var store = CreateStore(
         [
@@ -313,10 +307,7 @@ public sealed class HuReservationCandidatesEndpointTests
             exclude_hu_codes = Array.Empty<string>()
         });
 
-        var candidate = Assert.Single(GetCandidates(document, "line-1"));
-        Assert.Equal("INTERNAL_FILLED", candidate.GetProperty("source").GetString());
-        Assert.Equal("FILLED, PRD не закрыт", candidate.GetProperty("note").GetString());
-        Assert.Equal("090", candidate.GetProperty("source_order_ref").GetString());
+        Assert.Empty(GetCandidates(document, "line-1"));
     }
 
     [Fact]
@@ -331,12 +322,9 @@ public sealed class HuReservationCandidatesEndpointTests
         Assert.Contains("HuReservationCandidateSql.SelectSources", methodSlice);
         Assert.Contains("UNNEST(@item_ids::bigint[])", sql);
         Assert.Contains("ledger_candidates", sql);
-        Assert.Contains("internal_candidates", sql);
+        Assert.DoesNotContain("internal_candidates", sql);
         Assert.Contains("reserved_map", sql);
         Assert.Contains("order_receipt_plan_lines", sql);
-        Assert.Contains("pp.status = @filled_status", sql);
-        Assert.Contains("o.status IN (@draft_order_status, @in_progress_order_status)", sql);
-        Assert.Contains("d.status = @draft_doc_status", sql);
         Assert.DoesNotContain("PRINTED", sql, StringComparison.Ordinal);
         Assert.DoesNotContain("PLANNED", sql, StringComparison.Ordinal);
         Assert.DoesNotContain("GetOrders(", methodSlice);

@@ -6,7 +6,6 @@ namespace FlowStock.Core.Services;
 public sealed class OrderHuReservationApplyService
 {
     public const string SourceLedgerStock = "LEDGER_STOCK";
-    public const string SourceInternalFilled = "INTERNAL_FILLED";
 
     private readonly IDataStore _dataStore;
     private readonly HuReservationCandidatesService _candidatesService;
@@ -372,7 +371,6 @@ public sealed class OrderHuReservationApplyService
 
     private static bool IsAllowedSource(string source)
     {
-        return string.Equals(source, SourceLedgerStock, StringComparison.OrdinalIgnoreCase)
-               || string.Equals(source, SourceInternalFilled, StringComparison.OrdinalIgnoreCase);
+        return string.Equals(source, SourceLedgerStock, StringComparison.OrdinalIgnoreCase);
     }
 }
