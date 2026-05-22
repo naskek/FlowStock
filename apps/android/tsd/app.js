@@ -2856,30 +2856,24 @@
             });
           })
           .then(function (result) {
-            var nextDocument = result && result.document ? result.document : context.document;
-            var nextContext = {
-              workItem: {
-                prdDocId: preview.prdDocId || (context.workItem && context.workItem.prdDocId),
-                prdDocRef: preview.prdDocRef || getFillingWorkPrdRef(context.workItem),
-                prdStatus: context.workItem && context.workItem.prdStatus,
-                orderId: preview.orderId || (context.workItem && context.workItem.orderId),
-                orderRef: preview.orderRef || getFillingWorkOrderRef(context.workItem),
-                summary: nextDocument ? nextDocument.summary : context.workItem && context.workItem.summary,
-              },
-              document: nextDocument,
-              doc: context.doc,
-            };
-            var remainingPalletCount = nextDocument && nextDocument.summary
-              ? Number(nextDocument.summary.remainingPalletCount) || 0
-              : 0;
-            var successMessage = buildProductionFillSuccessMessage(result, remainingPalletCount);
-            var successType =
-              result && (result.alreadyFilled || result.already_filled) ? "warn" : "success";
-            closeOverlay();
-            renderFillingScanScreen(nextContext, {
-              message: successMessage,
-              messageType: successType,
-              preview: null,
+            var fillOrderId = resolveFillingOrderId(
+              preview,
+              context.workItem && context.workItem.orderId
+            );
+            return loadFillingContext(fillOrderId).then(function (nextContext) {
+              var remainingPalletCount =
+                nextContext.document && nextContext.document.summary
+                  ? Number(nextContext.document.summary.remainingPalletCount) || 0
+                  : 0;
+              var successMessage = buildProductionFillSuccessMessage(result, remainingPalletCount);
+              var successType =
+                result && (result.alreadyFilled || result.already_filled) ? "warn" : "success";
+              closeOverlay();
+              renderFillingScanScreen(nextContext, {
+                message: successMessage,
+                messageType: successType,
+                preview: null,
+              });
             });
           })
           .catch(function (error) {
@@ -2938,22 +2932,39 @@
     return status || "-";
   }
 
+  function resolveFillingOrderId(source, fallbackOrderId) {
+    if (!source) {
+      return Number(fallbackOrderId) || 0;
+    }
+    var raw =
+      source.orderId != null && source.orderId !== "" ? source.orderId : source.order_id;
+    if (raw != null && raw !== "") {
+      return Number(raw) || Number(fallbackOrderId) || 0;
+    }
+    return Number(fallbackOrderId) || 0;
+  }
+
+  function normalizeOutboundPickingOrderView(order) {
+    return TsdStorage.normalizeOutboundPickingOrder(order || {});
+  }
+
   function renderOutboundPickingList(orders) {
     var rows = (orders || [])
       .map(function (order) {
-        var orderId = order.orderId || order.order_id || 0;
-        var picked = Number(order.pickedHuCount || order.picked_hu_count) || 0;
-        var expected = Number(order.expectedHuCount || order.expected_hu_count) || 0;
+        order = normalizeOutboundPickingOrderView(order);
+        var orderId = order.orderId || 0;
+        var picked = Number(order.pickedHuCount) || 0;
+        var expected = Number(order.expectedHuCount) || 0;
         return (
           '<button class="filling-doc-card outbound-picking-order-card" data-outbound-order="' +
           escapeHtml(orderId) +
           '">' +
           '  <div class="filling-doc-main">' +
           '    <div class="filling-doc-title">Заказ № ' +
-          escapeHtml(order.orderRef || order.order_ref || "-") +
+          escapeHtml(order.orderRef || "-") +
           "</div>" +
-          (order.partnerName || order.partner_name
-            ? '    <div class="filling-doc-meta">Клиент: ' + escapeHtml(order.partnerName || order.partner_name) + "</div>"
+          (order.partnerName
+            ? '    <div class="filling-doc-meta">Клиент: ' + escapeHtml(order.partnerName) + "</div>"
             : "") +
           '    <div class="order-status-pill order-status-accepted">' +
           escapeHtml(order.status || "Готов") +
@@ -3046,9 +3057,10 @@
   }
 
   function renderOutboundPickingOrder(order, state) {
-    var picked = Number(order && order.pickedHuCount) || 0;
-    var expected = Number(order && order.expectedHuCount) || 0;
-    var complete = order && order.isComplete === true;
+    order = normalizeOutboundPickingOrderView(order);
+    var picked = order.pickedHuCount;
+    var expected = order.expectedHuCount;
+    var complete = order.isComplete === true;
     var message = state && state.message ? String(state.message) : "";
     var messageType = state && state.messageType ? String(state.messageType) : "";
     var messageHtml = message
@@ -3061,13 +3073,13 @@
       '    <div class="section-title">Отгрузка</div>' +
       '    <div class="filling-context-card">' +
       '      <div>Заказ: <strong>' +
-      escapeHtml((order && order.orderRef) || "-") +
+      escapeHtml(order.orderRef || "-") +
       "</strong></div>" +
-      (order && order.partnerName ? '      <div>Клиент: <strong>' + escapeHtml(order.partnerName) + "</strong></div>" : "") +
+      (order.partnerName ? '      <div>Клиент: <strong>' + escapeHtml(order.partnerName) + "</strong></div>" : "") +
       '      <div>Подобрано паллет: <strong>' +
       escapeHtml(picked + " / " + expected) +
       "</strong></div>" +
-      (order && order.draftOutboundDocRef
+      (order.draftOutboundDocRef
         ? '      <div>Черновик OUTBOUND: <strong>' + escapeHtml(order.draftOutboundDocRef) + "</strong></div>"
         : "") +
       "    </div>" +
@@ -3079,7 +3091,7 @@
       '      <label class="form-label" for="outboundPickingScanInput">Сканируйте HU</label>' +
       '      <input class="form-input filling-scan-input" id="outboundPickingScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" placeholder="HU-000001" />' +
       "    </div>" +
-      renderOutboundPickingHuList(order && order.hus) +
+      renderOutboundPickingHuList(order.hus) +
       '    <div class="actions-bar">' +
       '      <button class="btn primary-btn" id="outboundPickingCompleteBtn" type="button">Завершить подбор</button>' +
       "    </div>" +
@@ -6037,23 +6049,25 @@
               preview: null,
             });
           }
-          var nextContext = {
-            workItem: {
-              prdDocId: preview.prdDocId || (context.workItem && context.workItem.prdDocId),
-              prdDocRef: preview.prdDocRef || getFillingWorkPrdRef(context.workItem),
-              prdStatus: context.workItem && context.workItem.prdStatus,
-              orderId: preview.orderId || (context.workItem && context.workItem.orderId),
-              orderRef: preview.orderRef || getFillingWorkOrderRef(context.workItem),
-              summary: preview.document ? preview.document.summary : context.workItem && context.workItem.summary,
-            },
-            document: preview.document || context.document,
-            doc: context.doc,
-          };
-          renderFillingScanScreen(nextContext, {
-            message: "",
-            messageType: "",
-            preview: preview,
-          });
+          var scanOrderId = resolveFillingOrderId(
+            preview,
+            context.workItem && context.workItem.orderId
+          );
+          return loadFillingContext(scanOrderId)
+            .then(function (nextContext) {
+              renderFillingScanScreen(nextContext, {
+                message: "",
+                messageType: "",
+                preview: preview,
+              });
+            })
+            .catch(function () {
+              renderFillingScanScreen(context, {
+                message: "",
+                messageType: "",
+                preview: preview,
+              });
+            });
         })
         .catch(function (error) {
           refreshContext({
@@ -6140,9 +6154,10 @@
   }
 
   function wireOutboundPickingOrder(order, state) {
+    order = normalizeOutboundPickingOrderView(order);
     var scanInput = document.getElementById("outboundPickingScanInput");
     var completeBtn = document.getElementById("outboundPickingCompleteBtn");
-    var orderId = order && order.orderId;
+    var orderId = order.orderId;
     var scanBusy = false;
     var completeBusy = false;
 
@@ -6184,8 +6199,10 @@
 
       TsdStorage.apiScanOutboundPickingHu(orderId, huCode)
         .then(function (result) {
-          var nextOrder = result && result.order ? result.order : order;
-          var complete = nextOrder && nextOrder.isComplete === true;
+          var nextOrder = normalizeOutboundPickingOrderView(
+            (result && result.order) || order
+          );
+          var complete = nextOrder.isComplete === true;
           renderOutboundPickingOrder(nextOrder, {
             message: complete
               ? "Все паллеты подобраны. Отгрузка проведена."
@@ -6220,7 +6237,9 @@
         completeBtn.disabled = true;
         TsdStorage.apiCompleteOutboundPicking(orderId)
           .then(function (result) {
-            renderOutboundPickingOrder((result && result.order) || order, {
+            renderOutboundPickingOrder(
+              normalizeOutboundPickingOrderView((result && result.order) || order),
+              {
               message: (result && result.message) || "Все паллеты подобраны. Отгрузка проведена.",
               messageType: "success",
             });

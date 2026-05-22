@@ -138,6 +138,32 @@ assert(
   storageJs.includes("prd_auto_closed") && storageJs.includes("closed_prd_doc_ref"),
   "fill API mapping should expose auto-closed PRD fields from the server"
 );
+
+const wireFillingScan = extractFunctionBody(appJs, "wireFillingScan");
+assert(
+  !wireFillingScan.includes("preview.document"),
+  "production scan should not promote preview.document into the main filling context"
+);
+assert(
+  wireFillingScan.includes("loadFillingContext(scanOrderId)") &&
+    wireFillingScan.includes("preview: preview"),
+  "production scan should reload filling context by order and keep preview only for overlay"
+);
+
+const fillOverlay = extractFunctionBody(appJs, "openFillingPreviewOverlay");
+assert(
+  fillOverlay.includes("loadFillingContext(fillOrderId)") &&
+  !fillOverlay.includes("document: nextDocument") &&
+  !fillOverlay.includes("result.document"),
+  "production fill should reload full order context instead of applying response.document"
+);
+
+const wireOutboundPickingOrder = extractFunctionBody(appJs, "wireOutboundPickingOrder");
+assert(
+  wireOutboundPickingOrder.includes("normalizeOutboundPickingOrderView(order)") &&
+    storageJs.includes('pickOutboundField(row, "orderId", "order_id")'),
+  "outbound scan wire should normalize order id from order_id when orderId is absent"
+);
 assert(
   appJs.includes('<button class="btn menu-btn" data-route="outbound">Отгрузка</button>') &&
     appJs.includes("TsdStorage.apiGetOutboundPickingOrders()") &&
