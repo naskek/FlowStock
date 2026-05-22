@@ -2184,14 +2184,27 @@ body.modal-open {
   box-shadow: var(--shadow);
 }
 
+.pwa-update-banner-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .pwa-update-banner[hidden] {
   display: none !important;
 }
 
 .pwa-update-banner-text {
-  flex: 1;
   font-size: 14px;
   line-height: 1.35;
+}
+
+.pwa-update-banner-status {
+  font-size: 12px;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.88);
 }
 
 .pwa-update-banner-btn {

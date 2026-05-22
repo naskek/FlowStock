@@ -5,9 +5,13 @@
   var waitingWorker = null;
   var bannerEl = null;
   var applyBtn = null;
+  var bannerStatusEl = null;
   var registrationRef = null;
   var registrationBound = false;
   var controllerChangeBound = false;
+  var fallbackReloadTimerId = null;
+  var applyInProgress = false;
+  var FALLBACK_RELOAD_MS = 4000;
 
   function logInfo(message) {
     console.info("[TSD PWA] " + message);
@@ -32,6 +36,27 @@
     return false;
   }
 
+  function clearFallbackReloadTimer() {
+    if (fallbackReloadTimerId != null) {
+      root.clearTimeout(fallbackReloadTimerId);
+      fallbackReloadTimerId = null;
+    }
+  }
+
+  function setBannerStatus(message) {
+    if (bannerStatusEl) {
+      bannerStatusEl.textContent = message || "";
+    }
+  }
+
+  function setApplyButtonState(disabled, label) {
+    if (!applyBtn) {
+      return;
+    }
+    applyBtn.disabled = !!disabled;
+    applyBtn.textContent = label || "Обновить";
+  }
+
   function ensureBanner() {
     if (bannerEl) {
       return;
@@ -41,18 +66,28 @@
     bannerEl.className = "pwa-update-banner";
     bannerEl.hidden = true;
     bannerEl.innerHTML =
+      '<div class="pwa-update-banner-body">' +
       '<div class="pwa-update-banner-text">Доступна новая версия приложения</div>' +
+      '<div class="pwa-update-banner-status" id="pwaUpdateBannerStatus"></div>' +
+      "</div>" +
       '<button type="button" class="btn pwa-update-banner-btn" id="pwaUpdateApplyBtn">Обновить</button>';
     document.body.appendChild(bannerEl);
+    bannerStatusEl = document.getElementById("pwaUpdateBannerStatus");
     applyBtn = document.getElementById("pwaUpdateApplyBtn");
     applyBtn.addEventListener("click", function () {
-      applyUpdate();
+      return applyUpdate().then(function (result) {
+        if (result && !result.ok && !applyInProgress) {
+          setApplyButtonState(false, "Обновить");
+        }
+        return result;
+      });
     });
   }
 
   function showUpdateBanner() {
     ensureBanner();
     bannerEl.hidden = false;
+    setBannerStatus("");
     logInfo("Показано предложение обновить приложение");
   }
 
@@ -60,6 +95,7 @@
     if (bannerEl) {
       bannerEl.hidden = true;
     }
+    setBannerStatus("");
   }
 
   function syncWaitingFromRegistration(registration) {
@@ -90,22 +126,92 @@
     }
   }
 
-  function applyUpdate() {
-    if (!waitingWorker) {
-      logWarn("Обновление недоступно: нет waiting service worker");
-      return { ok: false, message: "Обновление недоступно" };
+  function resolveWaitingWorker() {
+    if (!("serviceWorker" in root.navigator)) {
+      return Promise.resolve(null);
     }
+    return root.navigator.serviceWorker.getRegistration().then(function (registration) {
+      if (!registration) {
+        return null;
+      }
+      bindRegistration(registration);
+      var worker = waitingWorker || registration.waiting;
+      if (worker) {
+        waitingWorker = worker;
+        return worker;
+      }
+      return registration
+        .update()
+        .catch(function (error) {
+          logWarn("Не удалось проверить обновление service worker", error);
+          return null;
+        })
+        .then(function () {
+          worker = waitingWorker || registration.waiting;
+          if (worker) {
+            waitingWorker = worker;
+            return worker;
+          }
+          return null;
+        });
+    });
+  }
+
+  function startApplyWithWorker(worker) {
+    waitingWorker = worker;
+    applyInProgress = true;
+    setBannerStatus("Обновление активируется…");
+    setApplyButtonState(true, "Обновляем…");
+    logInfo("Отправляем SKIP_WAITING");
+    worker.postMessage({ type: "SKIP_WAITING" });
+    clearFallbackReloadTimer();
+    fallbackReloadTimerId = root.setTimeout(function () {
+      fallbackReloadTimerId = null;
+      if (reloadScheduled) {
+        return;
+      }
+      logWarn("controllerchange не сработал, выполняем fallback reload");
+      scheduleReloadOnce();
+    }, FALLBACK_RELOAD_MS);
+  }
+
+  function applyUpdate() {
+    ensureBanner();
+    setBannerStatus("Применяем обновление…");
+    setApplyButtonState(true, "Обновляем…");
+
     if (isBusy()) {
       logInfo("Обновление отложено: активная операция");
-      showUpdateBanner();
-      return {
+      setBannerStatus("Завершите текущую операцию перед обновлением");
+      setApplyButtonState(false, "Обновить");
+      applyInProgress = false;
+      return Promise.resolve({
         ok: false,
         message: "Завершите текущую операцию перед обновлением"
-      };
+      });
     }
-    logInfo("Запрошена активация новой версии (SKIP_WAITING)");
-    waitingWorker.postMessage({ type: "SKIP_WAITING" });
-    return { ok: true, message: "Обновление запущено" };
+
+    return resolveWaitingWorker().then(function (worker) {
+      if (!worker) {
+        logWarn("Обновление не найдено: нет waiting service worker");
+        setBannerStatus(
+          "Обновление не найдено. Нажмите Проверить обновления. " +
+            "Не удалось применить обновление автоматически. Закройте и откройте приложение или очистите данные PWA."
+        );
+        setApplyButtonState(false, "Обновить");
+        applyInProgress = false;
+        return {
+          ok: false,
+          message: "Обновление не найдено. Нажмите Проверить обновления."
+        };
+      }
+
+      startApplyWithWorker(worker);
+      return {
+        ok: true,
+        message: "Обновление активируется…"
+      };
+    });
   }
 
   function scheduleReloadOnce() {
@@ -113,6 +219,8 @@
       return;
     }
     reloadScheduled = true;
+    applyInProgress = false;
+    clearFallbackReloadTimer();
     logInfo("Перезагрузка страницы после активации нового service worker");
     root.location.reload();
   }
@@ -126,6 +234,8 @@
       if (!root.navigator.serviceWorker.controller) {
         return;
       }
+      logInfo("controllerchange, перезагрузка");
+      clearFallbackReloadTimer();
       scheduleReloadOnce();
     });
   }
@@ -317,6 +427,22 @@
     applyPendingUpdate: applyUpdate,
     showUpdateBanner: showUpdateBanner,
     hideUpdateBanner: hideUpdateBanner,
-    getAppVersionLabel: getAppVersionLabel
+    getAppVersionLabel: getAppVersionLabel,
+    _test: {
+      scheduleReloadOnce: scheduleReloadOnce,
+      clearFallbackReloadTimer: clearFallbackReloadTimer,
+      getReloadScheduled: function () {
+        return reloadScheduled;
+      },
+      getFallbackReloadTimerId: function () {
+        return fallbackReloadTimerId;
+      },
+      triggerControllerChangeReload: function () {
+        logInfo("controllerchange, перезагрузка");
+        clearFallbackReloadTimer();
+        scheduleReloadOnce();
+      },
+      FALLBACK_RELOAD_MS: FALLBACK_RELOAD_MS
+    }
   };
 })(window);
