@@ -927,7 +927,7 @@ public sealed class ProductionPalletServiceTests
         var result = service.Scan(orderId: 10, prdDocId: 20, huCode: "HU-000001");
 
         Assert.False(result.Success);
-        Assert.Equal("Паллета отменена", result.Error);
+        Assert.Equal("Паллета отменена и не может быть наполнена.", result.Error);
         Assert.Empty(harness.LedgerEntries);
     }
 
