@@ -1,6 +1,6 @@
-﻿/**
- * Р’РµСЂСЃРёСЏ shell-РєСЌС€Р° TSD PWA. РЈРІРµР»РёС‡РёРІР°Р№С‚Рµ РїСЂРё РєР°Р¶РґРѕРј РґРµРїР»РѕРµ, РµСЃР»Рё РјРµРЅСЏР»РёСЃСЊ
- * index.html, service-worker.js, app.js, styles.css, storage.js РёР»Рё scanner.js.
+/**
+ * TSD PWA shell cache version. Bump on each deploy when shell files change:
+ * index.html, service-worker.js, app.js, styles.css, storage.js or scanner.js.
  */
 (function (root) {
   var version = "16";
