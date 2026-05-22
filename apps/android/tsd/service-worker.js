@@ -1,10 +1,15 @@
-const CACHE_NAME = "tsd-shell-v13";
+importScripts("./app-version.js");
+
+const CACHE_NAME = self.TSD_CACHE_NAME || "flowstock-tsd-v15";
 const ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
   "./storage.js",
+  "./scanner.js",
+  "./sw-update.js",
+  "./app-version.js",
   "./manifest.json",
   "./icons/icon-192.png",
   "./icons/icon-512.png"
@@ -15,8 +20,14 @@ self.addEventListener("install", (event) => {
     caches
       .open(CACHE_NAME)
       .then((cache) => cache.addAll(ASSETS))
-      .then(() => self.skipWaiting())
   );
+});
+
+self.addEventListener("message", (event) => {
+  if (!event.data || event.data.type !== "SKIP_WAITING") {
+    return;
+  }
+  self.skipWaiting();
 });
 
 self.addEventListener("activate", (event) => {

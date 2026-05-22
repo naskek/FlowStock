@@ -2166,3 +2166,38 @@ body.modal-open {
     gap: 6px;
   }
 }
+
+.pwa-update-banner {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(20, 66, 85, 0.96);
+  color: #fff;
+  box-shadow: var(--shadow);
+}
+
+.pwa-update-banner[hidden] {
+  display: none !important;
+}
+
+.pwa-update-banner-text {
+  flex: 1;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.pwa-update-banner-btn {
+  flex: 0 0 auto;
+  min-width: 110px;
+  background: var(--accent);
+  color: #102a43;
+  border: 0;
+}

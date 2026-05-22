@@ -24,11 +24,15 @@ class Handler(SimpleHTTPRequestHandler):
     def end_headers(self):
         path = self.path.split("?", 1)[0]
         # чтобы SW/manifest не залипали в кеше при обновлениях
-        if path.endswith("/service-worker.js") or path.endswith("/manifest.json"):
-            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        if path.endswith("/service-worker.js"):
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Pragma", "no-cache")
             self.send_header("Expires", "0")
-        else:
+        elif path.endswith("/index.html") or path.endswith("/manifest.json"):
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+        elif path.endswith(".js") or path.endswith(".css"):
             self.send_header("Cache-Control", "no-cache")
         super().end_headers()
 
