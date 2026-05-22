@@ -92,6 +92,69 @@ public sealed class ReserveProducedHuForCustomerTests
     }
 
     [Fact]
+    public void ReserveProducedHu_FromOpenInternalPrd_CreatesReplacementAndBlocksCloseUntilFilled()
+    {
+        const long internalOrderId = 10;
+        const long customerOrderId = 20;
+        const long internalLineId = 101;
+        const long customerLineId = 201;
+        const long itemId = 100;
+        const long locationId = 1;
+        const long prdDocId = 1000;
+        const double palletQty = 600;
+        const string huCode1 = "HU-0000001";
+        const string huCode2 = "HU-0000002";
+
+        var harness = BuildProducedInternalCustomerHarness(
+            internalOrderId,
+            customerOrderId,
+            internalLineId,
+            customerLineId,
+            itemId,
+            locationId,
+            prdDocId,
+            orderedQty: palletQty * 2,
+            palletQty,
+            huCode1,
+            huCode2,
+            prdStatus: DocStatus.Draft);
+
+        var reserve = new OrderProducedHuReservationService(harness.Store).Reserve(new OrderProducedHuReservationRequest
+        {
+            SourceInternalOrderId = internalOrderId,
+            TargetCustomerOrderId = customerOrderId,
+            ItemId = itemId,
+            TargetOrderLineId = customerLineId,
+            HuCodes = new[] { huCode1 }
+        });
+
+        Assert.Equal(palletQty, reserve.QtyReserved, 3);
+        Assert.Equal(palletQty * 2, harness.GetOrderLines(internalOrderId).Single().QtyOrdered, 3);
+
+        var pallets = harness.Store.GetProductionPalletsByDoc(prdDocId);
+        Assert.Contains(pallets, pallet => string.Equals(pallet.HuCode, huCode1, StringComparison.OrdinalIgnoreCase)
+                                           && string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase));
+        var replacement = Assert.Single(pallets, pallet => !string.Equals(pallet.HuCode, huCode1, StringComparison.OrdinalIgnoreCase)
+                                                           && !string.Equals(pallet.HuCode, huCode2, StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(ProductionPalletStatus.Planned, replacement.Status);
+        Assert.Equal(internalOrderId, replacement.OrderId);
+        Assert.Equal(internalLineId, replacement.OrderLineId);
+        Assert.Equal(itemId, replacement.ItemId);
+        Assert.Equal(palletQty, replacement.PlannedQty, 3);
+
+        var documentService = harness.CreateService();
+        var blockedClose = documentService.TryCloseDoc(prdDocId, allowNegative: false);
+        Assert.False(blockedClose.Success);
+        Assert.Contains(blockedClose.Errors, error => error.Contains("ненаполненные паллеты", StringComparison.OrdinalIgnoreCase));
+
+        var fill = new ProductionPalletService(harness.Store).Fill(replacement.HuCode, "TSD-01", internalOrderId, prdDocId);
+        Assert.True(fill.Success);
+
+        var finalClose = documentService.TryCloseDoc(prdDocId, allowNegative: false);
+        Assert.True(finalClose.Success);
+    }
+
+    [Fact]
     public void Redistribute_WhenOnlyProducedStock_DoesNotDecreaseInternalQtyOrdered()
     {
         const long internalOrderId = 10;
@@ -224,7 +287,8 @@ public sealed class ReserveProducedHuForCustomerTests
         double orderedQty,
         double palletQty,
         string huCode1,
-        string huCode2)
+        string huCode2,
+        DocStatus prdStatus = DocStatus.Closed)
     {
         var harness = new CloseDocumentHarness();
         harness.SeedLocation(new Location { Id = locationId, Code = "MAIN", Name = "Основной склад" });
@@ -275,11 +339,11 @@ public sealed class ReserveProducedHuForCustomerTests
             Id = prdDocId,
             DocRef = "PRD-INT-10",
             Type = DocType.ProductionReceipt,
-            Status = DocStatus.Closed,
+            Status = prdStatus,
             OrderId = internalOrderId,
             OrderRef = "INT-10",
             CreatedAt = new DateTime(2026, 1, 1, 8, 0, 0),
-            ClosedAt = new DateTime(2026, 1, 1, 9, 0, 0)
+            ClosedAt = prdStatus == DocStatus.Closed ? new DateTime(2026, 1, 1, 9, 0, 0) : null
         });
         harness.SeedLine(new DocLine
         {
@@ -301,8 +365,8 @@ public sealed class ReserveProducedHuForCustomerTests
             ToLocationId = locationId,
             ToHu = huCode2
         });
-        harness.SeedProductionPallet(BuildFilledPallet(1, prdDocId, internalOrderId, internalLineId, itemId, huCode1, palletQty, locationId));
-        harness.SeedProductionPallet(BuildFilledPallet(2, prdDocId, internalOrderId, internalLineId, itemId, huCode2, palletQty, locationId));
+        harness.SeedProductionPallet(BuildFilledPallet(1, prdDocId, 10001, internalOrderId, internalLineId, itemId, huCode1, palletQty, locationId));
+        harness.SeedProductionPallet(BuildFilledPallet(2, prdDocId, 10002, internalOrderId, internalLineId, itemId, huCode2, palletQty, locationId));
         harness.SeedBalance(itemId, locationId, palletQty, huCode1);
         harness.SeedBalance(itemId, locationId, palletQty, huCode2);
         return harness;
@@ -311,6 +375,7 @@ public sealed class ReserveProducedHuForCustomerTests
     private static ProductionPallet BuildFilledPallet(
         long id,
         long prdDocId,
+        long docLineId,
         long orderId,
         long orderLineId,
         long itemId,
@@ -322,7 +387,7 @@ public sealed class ReserveProducedHuForCustomerTests
         {
             Id = id,
             PrdDocId = prdDocId,
-            DocLineId = 10001,
+            DocLineId = docLineId,
             OrderId = orderId,
             OrderLineId = orderLineId,
             ItemId = itemId,

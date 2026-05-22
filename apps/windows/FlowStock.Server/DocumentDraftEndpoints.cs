@@ -892,7 +892,7 @@ public static class DocumentDraftEndpoints
                     requestedOrderRef,
                     resolvedShippingRefNew,
                     requestedOrderId,
-                    hydrateOrderLines: false);
+                    hydrateOrderLines: docType == DocType.ProductionReceipt && requestedOrderId.HasValue);
                 created = true;
                 break;
             }
@@ -904,6 +904,19 @@ public static class DocumentDraftEndpoints
                 }
 
                 docRef = docs.GenerateDocRef(docType.Value, DateTime.Now);
+            }
+            catch (InvalidOperationException ex) when (docType == DocType.ProductionReceipt)
+            {
+                return LogCreateAndReturn(
+                    Results.BadRequest(new ApiErrorResult(false, "NO_RECEIPT_NEED", ex.Message)),
+                    LogLevel.Warning,
+                    outcome: "VALIDATION_FAILED",
+                    docUid: docUid,
+                    docRef: docRef,
+                    docType: docTypeValue,
+                    errors: ["NO_RECEIPT_NEED", ex.Message],
+                    eventId: createRequest.EventId,
+                    deviceId: createRequest.DeviceId);
             }
         }
 

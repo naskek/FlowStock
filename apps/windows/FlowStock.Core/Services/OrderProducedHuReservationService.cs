@@ -6,6 +6,7 @@ namespace FlowStock.Core.Services;
 public sealed class OrderProducedHuReservationService
 {
     private const double QtyTolerance = 0.000001d;
+    private const string ReplacementHuCreatedBy = "INTERNAL-REPLACEMENT";
     private readonly IDataStore _data;
 
     public OrderProducedHuReservationService(IDataStore data)
@@ -114,6 +115,7 @@ public sealed class OrderProducedHuReservationService
             ? 0
             : customerPlan.Max(line => line.SortOrder) + 1;
         var reservedHuCodes = new List<string>();
+        var reservedSourcePallets = new List<ReservedSourcePallet>();
         var reservedQty = 0d;
         var palletOrderIdsBefore = CaptureFilledPalletOrderIds(
             store,
@@ -172,6 +174,7 @@ public sealed class OrderProducedHuReservationService
                 SortOrder = nextSortOrder++
             });
             reservedHuCodes.Add(huCode);
+            reservedSourcePallets.Add(new ReservedSourcePallet(readyPallet!, takeQty));
             reservedQty += takeQty;
         }
 
@@ -181,6 +184,7 @@ public sealed class OrderProducedHuReservationService
         }
 
         store.ReplaceOrderReceiptPlanLines(request.TargetCustomerOrderId, customerPlan);
+        AppendReplacementPalletsForReservedFilledHu(store, sourceOrder, sourceLine, reservedSourcePallets);
 
         var sourceLineAfter = store.GetOrderLines(request.SourceInternalOrderId)
             .First(line => line.Id == sourceLine.Id);
@@ -432,10 +436,57 @@ public sealed class OrderProducedHuReservationService
         return store.GetItemType(itemTypeId)?.EnableOrderReservation == true;
     }
 
+    private static void AppendReplacementPalletsForReservedFilledHu(
+        IDataStore store,
+        Order sourceOrder,
+        OrderLine sourceLine,
+        IReadOnlyCollection<ReservedSourcePallet> reservedSourcePallets)
+    {
+        foreach (var reserved in reservedSourcePallets)
+        {
+            var pallet = reserved.Pallet;
+            if (reserved.Qty <= QtyTolerance)
+            {
+                continue;
+            }
+
+            var prdDoc = store.GetDoc(pallet.PrdDocId);
+            if (prdDoc == null
+                || prdDoc.Type != DocType.ProductionReceipt
+                || prdDoc.Status != DocStatus.Draft
+                || prdDoc.OrderId != sourceOrder.Id)
+            {
+                continue;
+            }
+
+            var replacementHu = store.CreateProductionPalletHuCode(ReplacementHuCreatedBy);
+            store.AddDocLine(new DocLine
+            {
+                DocId = prdDoc.Id,
+                ReplacesLineId = pallet.DocLineId,
+                OrderLineId = sourceLine.Id,
+                ProductionPurpose = sourceLine.ProductionPurpose,
+                ItemId = pallet.ItemId,
+                Qty = reserved.Qty,
+                QtyInput = null,
+                UomCode = null,
+                FromLocationId = null,
+                ToLocationId = pallet.ToLocationId ?? store.GetLocations().FirstOrDefault()?.Id,
+                FromHu = null,
+                ToHu = replacementHu,
+                PackSingleHu = true
+            });
+
+            store.PlanProductionPallets(prdDoc.Id, DateTime.Now);
+        }
+    }
+
     private static string NormalizeHu(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim().ToUpperInvariant();
     }
+
+    private sealed record ReservedSourcePallet(ProductionPallet Pallet, double Qty);
 }
 
 public sealed class OrderProducedHuReservationRequest

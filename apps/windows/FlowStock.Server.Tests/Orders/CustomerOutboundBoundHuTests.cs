@@ -19,6 +19,19 @@ public sealed class CustomerOutboundBoundHuTests
     }
 
     [Fact]
+    public void GetUnshippedBoundHuLines_ExcludesReservationOnlyHuWithoutPhysicalStock()
+    {
+        var harness = CreateOrder078Harness();
+        harness.SeedOrderReceiptPlanLines(
+            78,
+            PlanLine(1, 203, 1001, "Горчица 1 кг", 600, "HU-RESERVATION-ONLY"));
+
+        var lines = CustomerOutboundBoundHuService.GetUnshippedBoundHuLines(harness.Store, 78);
+
+        Assert.Empty(lines);
+    }
+
+    [Fact]
     public void SyncDraftOutbound_AddsMissingBoundHu_ToExistingDraftWithoutDuplicates()
     {
         var harness = CreateOrder078Harness();

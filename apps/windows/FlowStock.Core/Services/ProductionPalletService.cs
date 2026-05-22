@@ -793,7 +793,7 @@ public sealed class ProductionPalletService
 
                 if (!string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
                 {
-                    var alreadyFilled = _data.GetFilledProductionPalletQtyByOrderLine(orderLine.Id, pallet.Id);
+                    var alreadyFilled = GetFillGuardFilledQty(_data, pallet.OrderId.Value, orderLine.Id, pallet.Id);
                     if (alreadyFilled + palletLine.PlannedQty > orderLine.QtyOrdered + QtyTolerance)
                     {
                         return ProductionPalletScanResult.Failure("Выпуск превышает остаток по строке заказа");
@@ -936,7 +936,7 @@ public sealed class ProductionPalletService
                         return;
                     }
 
-                    var alreadyFilled = store.GetFilledProductionPalletQtyByOrderLine(orderLine.Id, pallet.Id);
+                    var alreadyFilled = GetFillGuardFilledQty(store, pallet.OrderId.Value, orderLine.Id, pallet.Id);
                     if (alreadyFilled + palletLine.PlannedQty > orderLine.QtyOrdered + QtyTolerance)
                     {
                         result = ProductionPalletFillResult.Failure("Выпуск превышает остаток по строке заказа");
@@ -959,6 +959,68 @@ public sealed class ProductionPalletService
         });
 
         return result ?? ProductionPalletFillResult.Failure("Не удалось наполнить паллету.");
+    }
+
+    private static double GetFillGuardFilledQty(
+        IDataStore store,
+        long orderId,
+        long orderLineId,
+        long? excludePalletId)
+    {
+        var order = store.GetOrder(orderId);
+        if (order?.Type != OrderType.Internal)
+        {
+            return store.GetFilledProductionPalletQtyByOrderLine(orderLineId, excludePalletId);
+        }
+
+        var reservedHuByItem = store.GetHuOrderContextRows()
+            .Where(row => row.ReservedCustomerOrderId.HasValue && !string.IsNullOrWhiteSpace(row.HuCode))
+            .GroupBy(row => row.ItemId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(row => NormalizeHu(row.HuCode))
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Cast<string>()
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase));
+
+        var qty = 0d;
+        foreach (var doc in store.GetDocsByOrder(orderId).Where(doc => doc.Type == DocType.ProductionReceipt))
+        {
+            var supersededDocLineIds = store.GetDocLines(doc.Id)
+                .Where(line => line.ReplacesLineId.HasValue)
+                .Select(line => line.ReplacesLineId!.Value)
+                .ToHashSet();
+            foreach (var pallet in store.GetProductionPalletsByDoc(doc.Id))
+            {
+                if (excludePalletId.HasValue && pallet.Id == excludePalletId.Value)
+                {
+                    continue;
+                }
+
+                if (supersededDocLineIds.Contains(pallet.DocLineId))
+                {
+                    continue;
+                }
+
+                if (!string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)
+                    || !PalletAppliesToOrderLine(pallet, orderLineId))
+                {
+                    continue;
+                }
+
+                var normalizedHu = NormalizeHu(pallet.HuCode);
+                if (!string.IsNullOrWhiteSpace(normalizedHu)
+                    && reservedHuByItem.TryGetValue(pallet.ItemId, out var reservedHu)
+                    && reservedHu.Contains(normalizedHu))
+                {
+                    continue;
+                }
+
+                qty += ResolvePalletQtyForOrderLine(pallet, orderLineId);
+            }
+        }
+
+        return qty;
     }
 
     private Doc RequireProductionReceipt(long docId)

@@ -2654,6 +2654,19 @@ internal sealed class CloseDocumentHarness
 
     private IReadOnlyList<(long OrderId, long ItemId, ProductionPlanConsistencyPalletRow Pallet, double PlannedQty, double FilledQty)> BuildProductionPlanConsistencyPalletRows()
     {
+        var reservedHuByItem = _orderReceiptPlanLines
+            .Where(pair => _orders.TryGetValue(pair.Key, out var order)
+                           && order.Type == OrderType.Customer)
+            .SelectMany(pair => pair.Value)
+            .Where(line => line.QtyPlanned > StockQuantityRules.QtyTolerance && !string.IsNullOrWhiteSpace(line.ToHu))
+            .GroupBy(line => line.ItemId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(line => NormalizeHu(line.ToHu))
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Cast<string>()
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase));
+
         var rows = new List<(long OrderId, long ItemId, ProductionPlanConsistencyPalletRow Pallet, double PlannedQty, double FilledQty)>();
         foreach (var pallet in _productionPallets.Values
                      .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
@@ -2662,6 +2675,25 @@ internal sealed class CloseDocumentHarness
             var doc = _docs.TryGetValue(pallet.PrdDocId, out var foundDoc) ? foundDoc : null;
             var orderId = pallet.OrderId ?? doc?.OrderId;
             if (!orderId.HasValue)
+            {
+                continue;
+            }
+
+            var supersededDocLineIds = _linesByDoc.TryGetValue(pallet.PrdDocId, out var docLinesForPallet)
+                ? docLinesForPallet
+                    .Where(line => line.ReplacesLineId.HasValue)
+                    .Select(line => line.ReplacesLineId!.Value)
+                    .ToHashSet()
+                : [];
+            if (supersededDocLineIds.Contains(pallet.DocLineId))
+            {
+                continue;
+            }
+
+            var normalizedHu = NormalizeHu(pallet.HuCode);
+            if (!string.IsNullOrWhiteSpace(normalizedHu)
+                && reservedHuByItem.TryGetValue(pallet.ItemId, out var reservedHu)
+                && reservedHu.Contains(normalizedHu))
             {
                 continue;
             }

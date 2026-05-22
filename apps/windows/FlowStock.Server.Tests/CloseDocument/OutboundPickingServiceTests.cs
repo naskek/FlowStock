@@ -94,6 +94,34 @@ public sealed class OutboundPickingServiceTests
     }
 
     [Fact]
+    public void ReservationOnlyHu_IsNotListedAndScanReturnsPhysicalStockError()
+    {
+        var harness = CreateBasicPickingHarness();
+        harness.SeedOrderReceiptPlanLines(20, new OrderReceiptPlanLine
+        {
+            Id = 900,
+            OrderId = 20,
+            OrderLineId = 201,
+            ItemId = 1001,
+            ItemName = "Горчица",
+            QtyPlanned = 5,
+            ToLocationId = 1,
+            ToLocationCode = "FG-01",
+            ToHu = "HU-RESERVATION-ONLY"
+        });
+        var service = CreatePickingService(harness);
+
+        var details = service.GetDetails(20);
+        var scan = service.Scan(20, "HU-RESERVATION-ONLY", "TSD-01");
+
+        Assert.Empty(details.Hus);
+        Assert.False(scan.Success);
+        Assert.Equal("HU_BOUND_WITHOUT_STOCK", scan.ErrorCode);
+        Assert.Contains("физически", scan.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(harness.Store.GetDocsByOrder(20).Where(doc => doc.Type == DocType.Outbound));
+    }
+
+    [Fact]
     public void ScanRejectsHuPickedInOtherOpenOutbound()
     {
         var harness = CreateBasicPickingHarness();

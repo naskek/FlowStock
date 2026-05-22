@@ -31,7 +31,12 @@ public static class CustomerOutboundBoundHuService
         var stockByHuItem = store.GetHuStockRows()
             .Where(row => row.Qty > QtyTolerance)
             .GroupBy(row => BuildHuItemKey(row.HuCode, row.ItemId), StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderBy(row => row.LocationId)
+                    .First(),
+                StringComparer.OrdinalIgnoreCase);
 
         var result = new List<CustomerOutboundBoundHuLine>();
         foreach (var planLine in store.GetOrderReceiptPlanLines(orderId)
@@ -48,30 +53,15 @@ public static class CustomerOutboundBoundHuService
                 continue;
             }
 
-            long? locationId = planLine.ToLocationId;
-            string? locationCode = planLine.ToLocationCode;
-            if (!locationId.HasValue
-                && stockByHuItem.TryGetValue(BuildHuItemKey(huCode, planLine.ItemId), out var stockRow))
+            if (!stockByHuItem.TryGetValue(BuildHuItemKey(huCode, planLine.ItemId), out var stockRow))
             {
-                locationId = stockRow.LocationId;
-                if (locationsById.TryGetValue(stockRow.LocationId, out var stockLocationCode))
-                {
-                    locationCode = stockLocationCode;
-                }
+                continue;
             }
 
-            if (!locationId.HasValue)
-            {
-                var autoLocation = store.GetLocations()
-                    .Where(location => location.AutoHuDistributionEnabled)
-                    .OrderBy(location => location.Code, StringComparer.OrdinalIgnoreCase)
-                    .FirstOrDefault();
-                if (autoLocation != null)
-                {
-                    locationId = autoLocation.Id;
-                    locationCode = autoLocation.Code;
-                }
-            }
+            var locationId = (long?)stockRow.LocationId;
+            var locationCode = locationsById.TryGetValue(stockRow.LocationId, out var stockLocationCode)
+                ? stockLocationCode
+                : stockRow.LocationId.ToString();
 
             result.Add(new CustomerOutboundBoundHuLine
             {

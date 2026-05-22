@@ -136,4 +136,59 @@ public sealed class CanonicalCreateIntegrationTests
         Assert.Matches(@"^IN-\d{4}-\d{6}$", payload.Doc.DocRef ?? string.Empty);
         Assert.Equal(2, harness.DocCount);
     }
+
+    [Fact]
+    public async Task ProductionReceiptCreate_WithOrderNeed_HydratesLinesInsteadOfOpeningEmptyPrd()
+    {
+        var (harness, apiStore) = CreateDocDraftHttpScenario.CreateEmptyScenario();
+        harness.SeedLocation(new Location { Id = 10, Code = "FG", Name = "Готовая продукция" });
+        harness.SeedItem(new Item { Id = 100, Name = "Товар", BaseUom = "шт" });
+        harness.SeedOrder(new Order
+        {
+            Id = 10,
+            OrderRef = "INT-010",
+            Type = OrderType.Internal,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 5, 22, 10, 0, 0)
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 1000,
+            OrderId = 10,
+            ItemId = 100,
+            QtyOrdered = 5,
+            ProductionPurpose = ProductionLinePurpose.InternalStock
+        });
+        harness.SeedOrderReceiptRemaining(10, new OrderReceiptLine
+        {
+            OrderLineId = 1000,
+            OrderId = 10,
+            ItemId = 100,
+            ItemName = "Товар",
+            QtyOrdered = 5,
+            QtyReceived = 0,
+            QtyRemaining = 5,
+            ProductionPurpose = ProductionLinePurpose.InternalStock
+        });
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        var payload = await CreateDocDraftHttpApi.CreateAsync(
+            host.Client,
+            new CreateDocRequest
+            {
+                DocUid = "prd-create-with-need-001",
+                EventId = "evt-prd-create-with-need-001",
+                DeviceId = "WPF-01",
+                Type = "PRODUCTION_RECEIPT",
+                DocRef = "PRD-TEST-WITH-NEED",
+                OrderId = 10,
+                ToLocationId = 10
+            });
+
+        Assert.True(payload.Ok);
+        var line = Assert.Single(harness.GetDocLines(payload.Doc!.Id));
+        Assert.Equal(1000, line.OrderLineId);
+        Assert.Equal(100, line.ItemId);
+        Assert.Equal(5, line.Qty);
+    }
 }

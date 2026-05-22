@@ -88,6 +88,13 @@ public sealed class OutboundPickingService
             var expectedHu = expected.FirstOrDefault(hu => string.Equals(hu.HuCode, normalizedHu, StringComparison.OrdinalIgnoreCase));
             if (expectedHu == null)
             {
+                if (IsBoundHuWithoutPhysicalStock(order.Id, normalizedHu))
+                {
+                    return OutboundPickingScanResult.Failure(
+                        "HU_BOUND_WITHOUT_STOCK",
+                        "HU привязан к заказу, но физически не принят или отсутствует на складе.");
+                }
+
                 return OutboundPickingScanResult.Failure("HU_NOT_EXPECTED", "HU не ожидается для выбранного заказа.");
             }
 
@@ -251,6 +258,33 @@ public sealed class OutboundPickingService
             })
             .Where(hu => hu.Lines.Count > 0)
             .ToArray();
+    }
+
+    private bool IsBoundHuWithoutPhysicalStock(long orderId, string huCode)
+    {
+        var normalizedHu = NormalizeHu(huCode);
+        if (string.IsNullOrWhiteSpace(normalizedHu))
+        {
+            return false;
+        }
+
+        var planLines = _store.GetOrderReceiptPlanLines(orderId)
+            .Where(line => line.QtyPlanned > QtyTolerance
+                           && string.Equals(NormalizeHu(line.ToHu), normalizedHu, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        if (planLines.Length == 0)
+        {
+            return false;
+        }
+
+        var stockByItem = _store.GetHuStockRows()
+            .Where(row => string.Equals(NormalizeHu(row.HuCode), normalizedHu, StringComparison.OrdinalIgnoreCase)
+                          && row.Qty > QtyTolerance)
+            .GroupBy(row => row.ItemId)
+            .ToDictionary(group => group.Key, group => group.Sum(row => row.Qty));
+
+        return planLines.Any(line => !stockByItem.TryGetValue(line.ItemId, out var stockQty)
+                                     || stockQty <= QtyTolerance);
     }
 
     private Dictionary<long, double> BuildOpenPickedQtyByOrderLine(long orderId)

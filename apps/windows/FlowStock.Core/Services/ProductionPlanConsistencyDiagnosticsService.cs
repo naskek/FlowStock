@@ -63,12 +63,28 @@ public sealed class ProductionPlanConsistencyDiagnosticsService(IDataStore dataS
             }
         }
 
-        var docLines = _dataStore.GetDocLines(prdDocId)
-            .Where(line => line.Qty > StockQuantityRules.QtyTolerance)
+        var allDocLines = _dataStore.GetDocLines(prdDocId);
+        var supersededDocLineIds = allDocLines
+            .Where(line => line.ReplacesLineId.HasValue)
+            .Select(line => line.ReplacesLineId!.Value)
+            .ToHashSet();
+        var docLines = allDocLines
+            .Where(line => line.Qty > StockQuantityRules.QtyTolerance && !supersededDocLineIds.Contains(line.Id))
             .GroupBy(line => line.ItemId)
             .ToDictionary(group => group.Key, group => group.Sum(line => line.Qty));
+        var reservedHuByItem = _dataStore.GetHuOrderContextRows()
+            .Where(row => row.ReservedCustomerOrderId.HasValue && !string.IsNullOrWhiteSpace(row.HuCode))
+            .GroupBy(row => row.ItemId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(row => NormalizeHu(row.HuCode))
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Cast<string>()
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase));
         var palletLines = _dataStore.GetProductionPalletsByDoc(prdDocId)
             .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+            .Where(pallet => !supersededDocLineIds.Contains(pallet.DocLineId))
+            .Where(pallet => !IsReservedForCustomer(pallet, reservedHuByItem))
             .SelectMany(pallet => pallet.Lines.Count > 0
                 ? pallet.Lines
                 : new[]
@@ -94,5 +110,20 @@ public sealed class ProductionPlanConsistencyDiagnosticsService(IDataStore dataS
         }
 
         return false;
+    }
+
+    private static bool IsReservedForCustomer(
+        ProductionPallet pallet,
+        IReadOnlyDictionary<long, HashSet<string>> reservedHuByItem)
+    {
+        var huCode = NormalizeHu(pallet.HuCode);
+        return !string.IsNullOrWhiteSpace(huCode)
+               && reservedHuByItem.TryGetValue(pallet.ItemId, out var reservedHu)
+               && reservedHu.Contains(huCode);
+    }
+
+    private static string? NormalizeHu(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToUpperInvariant();
     }
 }
