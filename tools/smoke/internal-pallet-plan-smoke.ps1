@@ -15,7 +15,8 @@ param(
     [string] $DockerContainer = "flowstock-postgres-local",
     [long] $ItemId = 0,
     [double] $MaxQtyPerHu = 600,
-    [switch] $SkipSslCheck
+    [switch] $SkipSslCheck,
+    [switch] $NoManualPlanAfterPut
 )
 
 Set-StrictMode -Version Latest
@@ -469,14 +470,40 @@ try {
     $bad2 = Update-OrderQty $client $script:OrderId $script:OrderRef $script:ItemIdUsed 600
     Assert-True ($bad2.StatusCode -eq 400) "PUT 600 still 400"
 
-    Write-Step "12. Idempotent plan POST"
-    $script:LastStep = "idempotent-plan"
-    $before = Invoke-SqlQuery -Columns @("id", "status", "planned_qty", "doc_line_id") -Sql "SELECT id, status, planned_qty, doc_line_id FROM production_pallets WHERE order_id = $($script:OrderId) ORDER BY id;"
-    $plan2 = Invoke-ApiJson $client "POST" "/api/orders/$($script:OrderId)/production-pallets/plan"
-    if ($plan2.StatusCode -ne 200) { throw "Second plan failed: $($plan2.StatusCode) $($plan2.BodyText)" }
-    $after = Invoke-SqlQuery -Columns @("id", "status", "planned_qty", "doc_line_id") -Sql "SELECT id, status, planned_qty, doc_line_id FROM production_pallets WHERE order_id = $($script:OrderId) ORDER BY id;"
-    Assert-True ($before.Count -eq $after.Count) "plan POST did not add extra pallets (before=$($before.Count) after=$($after.Count))"
-    Assert-PalletMetrics $script:OrderLineId 1200 3600 "after-idempotent-plan"
+    if ($NoManualPlanAfterPut) {
+        Write-Host "`n-- NoManualPlanAfterPut summary --" -ForegroundColor Cyan
+        Write-Host "PUT 1200->2400 WITHOUT POST plan: PASS" -ForegroundColor Green
+        Write-Host "PUT 2400->4800 WITHOUT POST plan: PASS" -ForegroundColor Green
+        Write-Host "PUT 4800->1200 WITHOUT POST plan: PASS" -ForegroundColor Green
+
+        Write-Step "13. Repeat loop without POST plan (3x: 1200->2400->1200->2400->1200)"
+        $script:LastStep = "repeat-no-post"
+        for ($cycle = 1; $cycle -le 3; $cycle++) {
+            foreach ($pair in @(
+                    @{ Qty = 2400; Filled = 1200; Open = 1200; Label = "repeat-cycle$cycle-2400" },
+                    @{ Qty = 1200; Filled = 1200; Open = 0; Label = "repeat-cycle$cycle-1200" },
+                    @{ Qty = 2400; Filled = 1200; Open = 1200; Label = "repeat-cycle$cycle-2400-again" },
+                    @{ Qty = 1200; Filled = 1200; Open = 0; Label = "repeat-cycle$cycle-1200-again" }
+                )) {
+                $r = Update-OrderQty $client $script:OrderId $script:OrderRef $script:ItemIdUsed $pair.Qty
+                if ($r.StatusCode -ne 200) { throw "Repeat PUT $($pair.Qty) failed: $($r.StatusCode) $($r.BodyText)" }
+                Assert-PalletMetrics $script:OrderLineId $pair.Filled $pair.Open $pair.Label
+                $line = (Get-OrderLines $client $script:OrderId | Select-Object -First 1)
+                Assert-Equal $pair.Qty $line.qty_ordered "repeat qty_ordered $($pair.Qty)"
+            }
+        }
+        Write-Host "Repeat loop without POST plan: PASS" -ForegroundColor Green
+    }
+    else {
+        Write-Step "12. Idempotent plan POST"
+        $script:LastStep = "idempotent-plan"
+        $before = Invoke-SqlQuery -Columns @("id", "status", "planned_qty", "doc_line_id") -Sql "SELECT id, status, planned_qty, doc_line_id FROM production_pallets WHERE order_id = $($script:OrderId) ORDER BY id;"
+        $plan2 = Invoke-ApiJson $client "POST" "/api/orders/$($script:OrderId)/production-pallets/plan"
+        if ($plan2.StatusCode -ne 200) { throw "Second plan failed: $($plan2.StatusCode) $($plan2.BodyText)" }
+        $after = Invoke-SqlQuery -Columns @("id", "status", "planned_qty", "doc_line_id") -Sql "SELECT id, status, planned_qty, doc_line_id FROM production_pallets WHERE order_id = $($script:OrderId) ORDER BY id;"
+        Assert-True ($before.Count -eq $after.Count) "plan POST did not add extra pallets (before=$($before.Count) after=$($after.Count))"
+        Assert-PalletMetrics $script:OrderLineId 1200 3600 "after-idempotent-plan"
+    }
 
     Write-Host "`nSmoke summary: PASS=$script:PassCount FAIL=$script:FailCount order_id=$script:OrderId order_line_id=$script:OrderLineId"
     if ($script:FailCount -gt 0) { exit 1 }

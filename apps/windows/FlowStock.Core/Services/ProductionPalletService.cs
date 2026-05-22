@@ -31,7 +31,7 @@ public sealed class ProductionPalletService
         return PlanOrder(orderId, scopedOrderLineIds: null);
     }
 
-    public void SyncOrderLinePlan(long orderId, long orderLineId, double orderedQty)
+    public void SyncOrderLinePlan(long orderId, long orderLineId, double orderedQty, double? oldOrderedQty = null, string source = "UpdateOrder")
     {
         var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
         if (order.Type != OrderType.Internal)
@@ -45,30 +45,75 @@ public sealed class ProductionPalletService
         }
 
         _data.ExecuteInTransaction(store =>
+            SyncOrderLinePlanInStore(store, orderId, orderLineId, orderedQty, oldOrderedQty, source));
+    }
+
+    internal void SyncOrderLinePlanInStore(
+        IDataStore store,
+        long orderId,
+        long orderLineId,
+        double orderedQty,
+        double? oldOrderedQty,
+        string source)
+    {
+        var order = store.GetOrder(orderId);
+        if (order == null
+            || order.Type != OrderType.Internal
+            || order.Status is not (OrderStatus.InProgress or OrderStatus.Draft))
         {
-            var filledQty = Math.Max(0, store.GetFilledProductionPalletQtyByOrderLine(orderLineId));
-            var openQty = GetOpenProductionPalletsForOrderLine(store, orderId, orderLineId)
+            return;
+        }
+
+        var filledQty = Math.Max(0, store.GetFilledProductionPalletQtyByOrderLine(orderLineId));
+        var activePlannedBefore = GetOpenProductionPalletsForOrderLine(store, orderId, orderLineId)
+            .Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
+        var missingBeforeTrim = Math.Max(0, orderedQty - filledQty - activePlannedBefore);
+
+        TrimSurplusOpenPallets(store, orderId, orderLineId, orderedQty);
+
+        var activePlannedAfterTrim = GetOpenProductionPalletsForOrderLine(store, orderId, orderLineId)
+            .Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
+        var cancelledQty = Math.Max(0, activePlannedBefore - activePlannedAfterTrim);
+        var missingAfterTrim = Math.Max(0, orderedQty - filledQty - activePlannedAfterTrim);
+        var createdQty = 0d;
+        var action = missingAfterTrim > QtyTolerance
+            ? "append_planned"
+            : cancelledQty > QtyTolerance
+                ? "trim_open"
+                : "noop";
+
+        if (missingAfterTrim > QtyTolerance)
+        {
+            var openBeforeAppend = activePlannedAfterTrim;
+            var preparedDoc = FindPreparedOpenProductionReceipt(store, orderId, requireRemaining: false);
+            var prdDocIdForAppend = preparedDoc?.Id ?? 0;
+            AppendPlannedPalletsForOrderLinesInStore(
+                store,
+                order,
+                orderId,
+                [orderLineId],
+                allowEmptyRemaining: true,
+                out _,
+                existingPrdDocId: prdDocIdForAppend);
+            activePlannedAfterTrim = GetOpenProductionPalletsForOrderLine(store, orderId, orderLineId)
                 .Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
-            var missingBeforeTrim = Math.Max(0, orderedQty - filledQty - openQty);
+            createdQty = Math.Max(0, activePlannedAfterTrim - openBeforeAppend);
+        }
 
-            TrimSurplusOpenPallets(store, orderId, orderLineId, orderedQty);
-
-            var openQtyAfterTrim = GetOpenProductionPalletsForOrderLine(store, orderId, orderLineId)
-                .Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
-            var missingAfterTrim = Math.Max(0, orderedQty - filledQty - openQtyAfterTrim);
-            var action = missingAfterTrim > QtyTolerance
-                ? "append_planned"
-                : openQty > openQtyAfterTrim + QtyTolerance
-                    ? "trim_open"
-                    : "noop";
-
-            System.Diagnostics.Trace.WriteLine(
-                $"[ProductionPalletPlanSync] order_id={orderId} order_line_id={orderLineId} ordered_qty={orderedQty:0.###} filled_qty={filledQty:0.###} active_planned_qty={openQtyAfterTrim:0.###} missing_qty={missingAfterTrim:0.###} action={action}");
-
-            if (missingAfterTrim > QtyTolerance)
-            {
-                PlanOrder(orderId, [orderLineId]);
-            }
+        ProductionPalletPlanSyncDiagnostics.Log(new ProductionPalletPlanSyncReport
+        {
+            Source = source,
+            OrderId = orderId,
+            OrderLineId = orderLineId,
+            OldQty = oldOrderedQty,
+            NewQty = orderedQty,
+            FilledQty = filledQty,
+            ActivePlannedQtyBefore = activePlannedBefore,
+            MissingQty = missingBeforeTrim > missingAfterTrim ? missingBeforeTrim : missingAfterTrim,
+            CreatedQty = createdQty,
+            CancelledQty = cancelledQty,
+            ActivePlannedQtyAfter = activePlannedAfterTrim,
+            Action = action
         });
     }
 
@@ -100,85 +145,105 @@ public sealed class ProductionPalletService
                 wasExisting = true;
             }
 
-            var remainingLines = GetLinesNeedingPalletAppend(store, order, prdDocId == 0 ? null : prdDocId);
-            if (scopedOrderLineIds is { Count: > 0 })
+            AppendPlannedPalletsForOrderLinesInStore(
+                store,
+                order,
+                orderId,
+                scopedOrderLineIds,
+                allowEmptyRemaining: false,
+                out prdDocId,
+                existingPrdDocId: prdDocId);
+        });
+
+        return BuildOrderPlanResult(orderId, prdDocId, wasExisting);
+    }
+
+    private static void AppendPlannedPalletsForOrderLinesInStore(
+        IDataStore store,
+        Order order,
+        long orderId,
+        IReadOnlyCollection<long>? scopedOrderLineIds,
+        bool allowEmptyRemaining,
+        out long prdDocId,
+        long existingPrdDocId = 0)
+    {
+        prdDocId = existingPrdDocId;
+        var remainingLines = GetLinesNeedingPalletAppend(store, order, prdDocId == 0 ? null : prdDocId);
+        if (scopedOrderLineIds is { Count: > 0 })
+        {
+            var scoped = scopedOrderLineIds.Where(id => id > 0).ToHashSet();
+            remainingLines = remainingLines
+                .Where(line => scoped.Contains(line.OrderLineId))
+                .ToList();
+        }
+
+        if (remainingLines.Count == 0)
+        {
+            if (allowEmptyRemaining || prdDocId != 0)
             {
-                var scoped = scopedOrderLineIds.Where(id => id > 0).ToHashSet();
-                remainingLines = remainingLines
-                    .Where(line => scoped.Contains(line.OrderLineId))
-                    .ToList();
+                return;
             }
 
-            if (remainingLines.Count == 0)
-            {
-                if (prdDocId != 0)
-                {
-                    return;
-                }
+            throw new InvalidOperationException("Нет остатка к наполнению по заказу.");
+        }
 
-                throw new InvalidOperationException("Нет остатка к наполнению по заказу.");
+        var itemsById = store.GetItems(null).ToDictionary(item => item.Id, item => item);
+        var orderLinesById = store.GetOrderLines(orderId).ToDictionary(line => line.Id, line => line);
+        var manualMixedLineIds = GetManualMixedOrderLineIds(remainingLines, orderLinesById);
+        foreach (var line in remainingLines)
+        {
+            if (!itemsById.ContainsKey(line.ItemId))
+            {
+                throw new InvalidOperationException("Номенклатура строки заказа не найдена.");
             }
 
-            var itemsById = store.GetItems(null).ToDictionary(item => item.Id, item => item);
-            var orderLinesById = store.GetOrderLines(orderId).ToDictionary(line => line.Id, line => line);
-            var manualMixedLineIds = GetManualMixedOrderLineIds(remainingLines, orderLinesById);
-            foreach (var line in remainingLines)
+            if (manualMixedLineIds.Contains(line.OrderLineId))
+            {
+                continue;
+            }
+
+            if (!itemsById.TryGetValue(line.ItemId, out var item)
+                || !item.MaxQtyPerHu.HasValue
+                || item.MaxQtyPerHu.Value <= QtyTolerance)
+            {
+                throw new InvalidOperationException("Не задано количество на паллете для номенклатуры");
+            }
+        }
+
+        var targetLocation = ResolveProductionPalletPlanLocation(store);
+        if (prdDocId == 0)
+        {
+            prdDocId = FindReusableEmptyProductionReceipt(store, orderId)?.Id ?? CreateProductionReceipt(store, order).Id;
+        }
+
+        var mixedLineIds = new HashSet<long>();
+        foreach (var group in remainingLines
+                     .Where(line => manualMixedLineIds.Contains(line.OrderLineId))
+                     .GroupBy(line => orderLinesById[line.OrderLineId].ProductionPalletGroup!.Trim().ToUpperInvariant()))
+        {
+            var groupLines = group.OrderBy(line => line.OrderLineId).ToList();
+            foreach (var line in groupLines)
             {
                 if (!itemsById.ContainsKey(line.ItemId))
                 {
                     throw new InvalidOperationException("Номенклатура строки заказа не найдена.");
                 }
-
-                if (manualMixedLineIds.Contains(line.OrderLineId))
-                {
-                    continue;
-                }
-
-                if (!itemsById.TryGetValue(line.ItemId, out var item)
-                    || !item.MaxQtyPerHu.HasValue
-                    || item.MaxQtyPerHu.Value <= QtyTolerance)
-                {
-                    throw new InvalidOperationException("Не задано количество на паллете для номенклатуры");
-                }
             }
 
-            var targetLocation = ResolveProductionPalletPlanLocation(store);
-            if (prdDocId == 0)
+            AddMixedPlannedPalletLines(store, prdDocId, groupLines, targetLocation.Id);
+            foreach (var line in groupLines)
             {
-                prdDocId = FindReusableEmptyProductionReceipt(store, orderId)?.Id ?? CreateProductionReceipt(store, order).Id;
+                mixedLineIds.Add(line.OrderLineId);
             }
+        }
 
-            var mixedLineIds = new HashSet<long>();
-            foreach (var group in remainingLines
-                         .Where(line => manualMixedLineIds.Contains(line.OrderLineId))
-                         .GroupBy(line => orderLinesById[line.OrderLineId].ProductionPalletGroup!.Trim().ToUpperInvariant()))
-            {
-                var groupLines = group.OrderBy(line => line.OrderLineId).ToList();
-                foreach (var line in groupLines)
-                {
-                    if (!itemsById.ContainsKey(line.ItemId))
-                    {
-                        throw new InvalidOperationException("Номенклатура строки заказа не найдена.");
-                    }
-                }
+        foreach (var line in remainingLines.Where(line => !mixedLineIds.Contains(line.OrderLineId)))
+        {
+            var item = itemsById[line.ItemId];
+            AddPlannedPalletLines(store, prdDocId, line, item.MaxQtyPerHu!.Value, targetLocation.Id);
+        }
 
-                AddMixedPlannedPalletLines(store, prdDocId, groupLines, targetLocation.Id);
-                foreach (var line in groupLines)
-                {
-                    mixedLineIds.Add(line.OrderLineId);
-                }
-            }
-
-            foreach (var line in remainingLines.Where(line => !mixedLineIds.Contains(line.OrderLineId)))
-            {
-                var item = itemsById[line.ItemId];
-                AddPlannedPalletLines(store, prdDocId, line, item.MaxQtyPerHu!.Value, targetLocation.Id);
-            }
-
-            store.PlanProductionPallets(prdDocId, DateTime.Now);
-        });
-
-        return BuildOrderPlanResult(orderId, prdDocId, wasExisting);
+        store.PlanProductionPallets(prdDocId, DateTime.Now);
     }
 
     public ProductionPalletCancelPlanResult CancelOrderPlan(long orderId)
