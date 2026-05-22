@@ -2201,3 +2201,13 @@ body.modal-open {
   color: #102a43;
   border: 0;
 }
+
+#pwaCheckUpdateBtn {
+  width: 100%;
+  margin-top: 12px;
+}
+
+#pwaUpdateStatus {
+  margin-top: 8px;
+  min-height: 1.2em;
+}
