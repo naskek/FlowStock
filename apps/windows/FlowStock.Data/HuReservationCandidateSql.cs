@@ -38,7 +38,7 @@ reserved_candidates AS (
       AND o.order_type = @customer_order_type
       AND o.status <> @shipped_status
       AND o.status <> @cancelled_status
-      AND (@customer_order_id IS NULL OR p.order_id <> @customer_order_id)
+      AND (@customer_order_id::bigint IS NULL OR p.order_id <> @customer_order_id::bigint)
 ),
 reserved_map AS (
     SELECT item_id,
