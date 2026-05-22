@@ -2580,7 +2580,7 @@ FROM production_pallet_lines pll
 INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
 WHERE pll.order_line_id = @order_line_id
   AND pp.status = @filled_status
-  AND (@exclude_pallet_id IS NULL OR pp.id <> @exclude_pallet_id);
+  AND (@exclude_pallet_id::bigint IS NULL OR pp.id <> @exclude_pallet_id::bigint);
 ");
             command.Parameters.AddWithValue("@order_line_id", orderLineId);
             command.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
@@ -6470,7 +6470,7 @@ WHERE p.to_hu IS NOT NULL
   AND p.to_hu <> ''
   AND o.status <> @shipped_status
   AND o.status <> @cancelled_status
-  AND (@exclude_order_id IS NULL OR p.order_id <> @exclude_order_id);
+  AND (@exclude_order_id::bigint IS NULL OR p.order_id <> @exclude_order_id::bigint);
 ");
             command.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
             command.Parameters.AddWithValue("@cancelled_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
