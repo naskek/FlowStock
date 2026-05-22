@@ -4119,6 +4119,16 @@ WITH active_doc_lines AS (
           WHERE newer.replaces_line_id = dl.id
       )
 ),
+reserved_customer_hu AS (
+    SELECT DISTINCT p.item_id,
+           UPPER(BTRIM(p.to_hu)) AS hu_key
+    FROM order_receipt_plan_lines p
+    INNER JOIN orders o ON o.id = p.order_id
+    WHERE o.order_type = @customer_order_type
+      AND p.qty_planned > @qty_tolerance
+      AND p.to_hu IS NOT NULL
+      AND BTRIM(p.to_hu) <> ''
+),
 order_qty AS (
     SELECT ol.order_id,
            ol.item_id,
@@ -4165,6 +4175,17 @@ pallet_rows AS (
     LEFT JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
     WHERE pp.status <> @cancelled_pallet_status
       AND COALESCE(pp.order_id, d.order_id) IS NOT NULL
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = COALESCE(pll.doc_line_id, pp.doc_line_id)
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM reserved_customer_hu reserved
+          WHERE reserved.item_id = pp.item_id
+            AND reserved.hu_key = UPPER(BTRIM(pp.hu_code))
+      )
 ),
 pallet_qty AS (
     SELECT order_id,

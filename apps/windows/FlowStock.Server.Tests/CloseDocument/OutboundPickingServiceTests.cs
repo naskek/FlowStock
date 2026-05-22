@@ -34,30 +34,6 @@ public sealed class OutboundPickingServiceTests
     }
 
     [Fact]
-    public void TsdOutboundReadyStateRequiresPhysicalStockAndScanState()
-    {
-        var harness = CreateBasicPickingHarness(seedPhysicalStock: false);
-        var service = CreatePickingService(harness);
-
-        var rows = service.GetOrders();
-
-        Assert.Empty(rows);
-
-        harness.SeedBalance(1001, 1, 5, "HU-000001");
-        var details = service.GetDetails(20);
-        var hu = Assert.Single(details.Hus);
-        Assert.Equal(OutboundPickingHuStatus.Pending, hu.Status);
-        Assert.Equal(0, details.PickedHuCount);
-
-        var scan = service.Scan(20, "HU-000001", "TSD-01");
-
-        Assert.True(scan.Success);
-        var pickedHu = Assert.Single(scan.Order!.Hus);
-        Assert.Equal(OutboundPickingHuStatus.Picked, pickedHu.Status);
-        Assert.Equal(1, scan.Order.PickedHuCount);
-    }
-
-    [Fact]
     public void ScanCreatesDraftOutboundAndDocLinesWithoutLedger()
     {
         var harness = CreateBasicPickingHarness();
@@ -115,6 +91,34 @@ public sealed class OutboundPickingServiceTests
         Assert.False(wrongStatus.Success);
         Assert.Equal("VALIDATION_ERROR", wrongStatus.ErrorCode);
         Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void ReservationOnlyHu_IsNotListedAndScanReturnsPhysicalStockError()
+    {
+        var harness = CreateBasicPickingHarness();
+        harness.SeedOrderReceiptPlanLines(20, new OrderReceiptPlanLine
+        {
+            Id = 900,
+            OrderId = 20,
+            OrderLineId = 201,
+            ItemId = 1001,
+            ItemName = "Горчица",
+            QtyPlanned = 5,
+            ToLocationId = 1,
+            ToLocationCode = "FG-01",
+            ToHu = "HU-RESERVATION-ONLY"
+        });
+        var service = CreatePickingService(harness);
+
+        var details = service.GetDetails(20);
+        var scan = service.Scan(20, "HU-RESERVATION-ONLY", "TSD-01");
+
+        Assert.Empty(details.Hus);
+        Assert.False(scan.Success);
+        Assert.Equal("HU_BOUND_WITHOUT_STOCK", scan.ErrorCode);
+        Assert.Contains("физически", scan.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(harness.Store.GetDocsByOrder(20).Where(doc => doc.Type == DocType.Outbound));
     }
 
     [Fact]
@@ -281,7 +285,7 @@ public sealed class OutboundPickingServiceTests
         return new OutboundPickingService(harness.Store, harness.CreateService());
     }
 
-    private static CloseDocumentHarness CreateBasicPickingHarness(bool seedPhysicalStock = true)
+    private static CloseDocumentHarness CreateBasicPickingHarness()
     {
         var harness = new CloseDocumentHarness();
         harness.SeedLocation(new Location
@@ -305,7 +309,7 @@ public sealed class OutboundPickingServiceTests
             ItemTypeName = "Готовая продукция",
             ItemTypeEnableMarking = false
         });
-        SeedOrder(harness, 20, 201, "SO-020", OrderType.Customer, OrderStatus.Accepted, "HU-000001", 5, seedPhysicalStock);
+        SeedOrder(harness, 20, 201, "SO-020", OrderType.Customer, OrderStatus.Accepted, "HU-000001", 5);
         return harness;
     }
 
@@ -317,8 +321,7 @@ public sealed class OutboundPickingServiceTests
         OrderType type,
         OrderStatus status,
         string huCode,
-        double qty,
-        bool seedPhysicalStock = true)
+        double qty)
     {
         harness.SeedOrder(new Order
         {
@@ -344,10 +347,7 @@ public sealed class OutboundPickingServiceTests
             Status = "ACTIVE",
             CreatedAt = new DateTime(2026, 5, 8, 10, 0, 0, DateTimeKind.Utc)
         });
-        if (seedPhysicalStock)
-        {
-            harness.SeedBalance(1001, 1, qty, huCode);
-        }
+        harness.SeedBalance(1001, 1, qty, huCode);
         harness.SeedOrderReceiptPlanLines(orderId, new OrderReceiptPlanLine
         {
             Id = orderId,

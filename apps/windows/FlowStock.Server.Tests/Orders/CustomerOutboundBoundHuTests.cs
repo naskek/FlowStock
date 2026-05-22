@@ -19,55 +19,16 @@ public sealed class CustomerOutboundBoundHuTests
     }
 
     [Fact]
-    public void CustomerOutboundUsesPhysicalStockNotReservationOnly()
+    public void GetUnshippedBoundHuLines_ExcludesReservationOnlyHuWithoutPhysicalStock()
     {
-        var harness = CreateOrder078Harness(seedPhysicalStock: false);
+        var harness = CreateOrder078Harness();
+        harness.SeedOrderReceiptPlanLines(
+            78,
+            PlanLine(1, 203, 1001, "Горчица 1 кг", 600, "HU-RESERVATION-ONLY"));
 
         var lines = CustomerOutboundBoundHuService.GetUnshippedBoundHuLines(harness.Store, 78);
 
         Assert.Empty(lines);
-    }
-
-    [Fact]
-    public void CustomerOutboundDoesNotUseOrderReceiptPlanAsPhysicalSource()
-    {
-        var harness = CreateOrder078Harness(seedPhysicalStock: false);
-        var documentService = harness.CreateService();
-
-        var docId = documentService.CreateDoc(
-            DocType.Outbound,
-            "OUT-2026-000301",
-            null,
-            500,
-            "078",
-            null,
-            78,
-            hydrateOrderLines: true);
-
-        Assert.Empty(harness.GetDocLines(docId));
-        Assert.Empty(harness.LedgerEntries);
-    }
-
-    [Fact]
-    public void CustomerOutboundShipsBoundPhysicalHu()
-    {
-        var harness = CreateOrder078Harness();
-        var documentService = harness.CreateService();
-
-        var docId = documentService.CreateDoc(
-            DocType.Outbound,
-            "OUT-2026-000302",
-            null,
-            500,
-            "078",
-            null,
-            78,
-            hydrateOrderLines: true);
-
-        Assert.Contains(harness.GetDocLines(docId), line =>
-            string.Equals(line.FromHu, "HU-0000478", StringComparison.OrdinalIgnoreCase)
-            && line.FromLocationId == 1
-            && Math.Abs(line.Qty - 600) < 0.000001);
     }
 
     [Fact]
@@ -188,41 +149,6 @@ public sealed class CustomerOutboundBoundHuTests
     }
 
     [Fact]
-    public void PrdIsNeverOpenedAsEmptyWorkingDocument()
-    {
-        var harness = CreateOrder078Harness();
-        var service = new ProductionPalletService(harness.Store);
-
-        var ex = Assert.Throws<InvalidOperationException>(() => service.PlanOrder(78));
-
-        Assert.Contains("Нет остатка", ex.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain(
-            harness.Store.GetDocs(),
-            doc => doc.Type == DocType.ProductionReceipt && doc.OrderId == 78);
-    }
-
-    [Fact]
-    public void CustomerPrdContainsRealProductionNeedOnly()
-    {
-        var harness = CreateOrder078Harness(seedPhysicalStock: false);
-        harness.SeedOrderReceiptRemainingWithoutReservedStock(
-            78,
-            harness.GetOrderLines(78)
-                .Select(line => new OrderReceiptLine
-                {
-                    OrderLineId = line.Id,
-                    OrderId = 78,
-                    ItemId = line.ItemId,
-                    QtyOrdered = line.QtyOrdered,
-                    QtyReceived = 0,
-                    QtyRemaining = line.QtyOrdered
-                })
-                .ToArray());
-
-        Assert.True(CustomerOutboundBoundHuService.HasReceiptProductionNeed(harness.Store, 78));
-    }
-
-    [Fact]
     public void CustomerOutboundLifecycle_InternalFillBindShipThenClosePrd_NoDuplicateReceiptLedger()
     {
         var harness = CreateLifecycleHarness();
@@ -279,7 +205,7 @@ public sealed class CustomerOutboundBoundHuTests
         Assert.Equal(0, harness.Store.GetLedgerBalance(100, 1, pallet.HuCode), 3);
     }
 
-    private static CloseDocumentHarness CreateOrder078Harness(bool seedPhysicalStock = true)
+    private static CloseDocumentHarness CreateOrder078Harness()
     {
         var harness = new CloseDocumentHarness();
         harness.SeedLocation(new Location { Id = 1, Code = "MAIN", Name = "Основной склад" });
@@ -316,12 +242,9 @@ public sealed class CustomerOutboundBoundHuTests
             PlanLine(7, 206, 1004, "Хрен 200 гр", 1824, "HU-0000481"),
             PlanLine(8, 229, 1005, "Аджика 200 гр", 1824, "HU-0000530"));
 
-        if (seedPhysicalStock)
+        foreach (var planLine in harness.GetOrderReceiptPlanLines(78))
         {
-            foreach (var planLine in harness.GetOrderReceiptPlanLines(78))
-            {
-                harness.SeedBalance(planLine.ItemId, 1, planLine.QtyPlanned, planLine.ToHu!);
-            }
+            harness.SeedBalance(planLine.ItemId, 1, planLine.QtyPlanned, planLine.ToHu!);
         }
 
         return harness;

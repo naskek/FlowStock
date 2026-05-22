@@ -33,11 +33,9 @@ public static class CustomerOutboundBoundHuService
             .GroupBy(row => BuildHuItemKey(row.HuCode, row.ItemId), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(
                 group => group.Key,
-                group =>
-                {
-                    var first = group.OrderBy(row => row.LocationId).First();
-                    return (first.LocationId, Qty: group.Sum(row => row.Qty));
-                },
+                group => group
+                    .OrderBy(row => row.LocationId)
+                    .First(),
                 StringComparer.OrdinalIgnoreCase);
 
         var result = new List<CustomerOutboundBoundHuLine>();
@@ -55,33 +53,22 @@ public static class CustomerOutboundBoundHuService
                 continue;
             }
 
-            var stockKey = BuildHuItemKey(huCode, planLine.ItemId);
-            if (!stockByHuItem.TryGetValue(stockKey, out var stockRow)
-                || stockRow.Qty <= QtyTolerance)
+            if (!stockByHuItem.TryGetValue(BuildHuItemKey(huCode, planLine.ItemId), out var stockRow))
             {
                 continue;
             }
 
-            var physicalQty = Math.Min(remainingQty, stockRow.Qty);
-            if (physicalQty <= QtyTolerance)
-            {
-                continue;
-            }
-            stockByHuItem[stockKey] = (stockRow.LocationId, stockRow.Qty - physicalQty);
-
-            long? locationId = stockRow.LocationId;
-            string? locationCode = planLine.ToLocationCode;
-            if (locationsById.TryGetValue(stockRow.LocationId, out var stockLocationCode))
-            {
-                locationCode = stockLocationCode;
-            }
+            var locationId = (long?)stockRow.LocationId;
+            var locationCode = locationsById.TryGetValue(stockRow.LocationId, out var stockLocationCode)
+                ? stockLocationCode
+                : stockRow.LocationId.ToString();
 
             result.Add(new CustomerOutboundBoundHuLine
             {
                 OrderLineId = planLine.OrderLineId,
                 ItemId = planLine.ItemId,
                 ItemName = planLine.ItemName,
-                Qty = physicalQty,
+                Qty = remainingQty,
                 HuCode = huCode,
                 FromLocationId = locationId,
                 FromLocationCode = locationCode
@@ -164,22 +151,8 @@ public static class CustomerOutboundBoundHuService
             return false;
         }
 
-        if (!includeReservedStock)
-        {
-            return OrderReceiptRemainingCalculator.GetRemaining(store, order, includeReservedStock: false)
-                .Any(line => line.QtyRemaining > QtyTolerance);
-        }
-
-        var physicallyCoveredByOrderLine = GetUnshippedBoundHuLines(store, customerOrderId)
-            .GroupBy(line => line.OrderLineId)
-            .ToDictionary(group => group.Key, group => group.Sum(line => line.Qty));
-
-        return OrderReceiptRemainingCalculator.GetRemaining(store, order, includeReservedStock: false)
-            .Any(line =>
-            {
-                physicallyCoveredByOrderLine.TryGetValue(line.OrderLineId, out var covered);
-                return Math.Max(0, line.QtyRemaining - covered) > QtyTolerance;
-            });
+        return OrderReceiptRemainingCalculator.GetRemaining(store, order, includeReservedStock)
+            .Any(line => line.QtyRemaining > QtyTolerance);
     }
 
     private static Dictionary<(long OrderLineId, string HuCode), double> BuildShippedQtyByOrderLineAndHu(

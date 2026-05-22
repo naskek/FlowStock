@@ -793,7 +793,7 @@ public sealed class ProductionPalletService
 
                 if (!string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
                 {
-                    var alreadyFilled = _data.GetFilledProductionPalletQtyByOrderLine(orderLine.Id, pallet.Id);
+                    var alreadyFilled = GetFillGuardFilledQty(_data, pallet.OrderId.Value, orderLine.Id, pallet.Id);
                     if (alreadyFilled + palletLine.PlannedQty > orderLine.QtyOrdered + QtyTolerance)
                     {
                         return ProductionPalletScanResult.Failure("Выпуск превышает остаток по строке заказа");
@@ -936,10 +936,7 @@ public sealed class ProductionPalletService
                         return;
                     }
 
-                    var alreadyFilled = Math.Max(
-                        0,
-                        store.GetFilledProductionPalletQtyByOrderLine(orderLine.Id, pallet.Id)
-                        - GetCustomerTakenFilledQtyForOrderLine(store, orderLine.Id, pallet.Id));
+                    var alreadyFilled = GetFillGuardFilledQty(store, pallet.OrderId.Value, orderLine.Id, pallet.Id);
                     if (alreadyFilled + palletLine.PlannedQty > orderLine.QtyOrdered + QtyTolerance)
                     {
                         result = ProductionPalletFillResult.Failure("Выпуск превышает остаток по строке заказа");
@@ -964,73 +961,66 @@ public sealed class ProductionPalletService
         return result ?? ProductionPalletFillResult.Failure("Не удалось наполнить паллету.");
     }
 
-    private static double GetCustomerTakenFilledQtyForOrderLine(
+    private static double GetFillGuardFilledQty(
         IDataStore store,
-        long sourceOrderLineId,
+        long orderId,
+        long orderLineId,
         long? excludePalletId)
     {
-        var takenHuCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var order in store.GetOrders().Where(order => order.Type == OrderType.Customer))
+        var order = store.GetOrder(orderId);
+        if (order?.Type != OrderType.Internal)
         {
-            foreach (var planLine in store.GetOrderReceiptPlanLines(order.Id)
-                         .Where(line => line.QtyPlanned > QtyTolerance && !string.IsNullOrWhiteSpace(line.ToHu)))
+            return store.GetFilledProductionPalletQtyByOrderLine(orderLineId, excludePalletId);
+        }
+
+        var reservedHuByItem = store.GetHuOrderContextRows()
+            .Where(row => row.ReservedCustomerOrderId.HasValue && !string.IsNullOrWhiteSpace(row.HuCode))
+            .GroupBy(row => row.ItemId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(row => NormalizeHu(row.HuCode))
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Cast<string>()
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase));
+
+        var qty = 0d;
+        foreach (var doc in store.GetDocsByOrder(orderId).Where(doc => doc.Type == DocType.ProductionReceipt))
+        {
+            var supersededDocLineIds = store.GetDocLines(doc.Id)
+                .Where(line => line.ReplacesLineId.HasValue)
+                .Select(line => line.ReplacesLineId!.Value)
+                .ToHashSet();
+            foreach (var pallet in store.GetProductionPalletsByDoc(doc.Id))
             {
-                takenHuCodes.Add(planLine.ToHu!.Trim());
+                if (excludePalletId.HasValue && pallet.Id == excludePalletId.Value)
+                {
+                    continue;
+                }
+
+                if (supersededDocLineIds.Contains(pallet.DocLineId))
+                {
+                    continue;
+                }
+
+                if (!string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)
+                    || !PalletAppliesToOrderLine(pallet, orderLineId))
+                {
+                    continue;
+                }
+
+                var normalizedHu = NormalizeHu(pallet.HuCode);
+                if (!string.IsNullOrWhiteSpace(normalizedHu)
+                    && reservedHuByItem.TryGetValue(pallet.ItemId, out var reservedHu)
+                    && reservedHu.Contains(normalizedHu))
+                {
+                    continue;
+                }
+
+                qty += ResolvePalletQtyForOrderLine(pallet, orderLineId);
             }
         }
 
-        foreach (var doc in store.GetDocs().Where(doc => doc.Type == DocType.Outbound))
-        {
-            if (!doc.OrderId.HasValue)
-            {
-                continue;
-            }
-
-            var order = store.GetOrder(doc.OrderId.Value);
-            if (order?.Type != OrderType.Customer)
-            {
-                continue;
-            }
-
-            foreach (var line in store.GetDocLines(doc.Id)
-                         .Where(line => line.Qty > QtyTolerance && !string.IsNullOrWhiteSpace(line.FromHu)))
-            {
-                takenHuCodes.Add(line.FromHu!.Trim());
-            }
-        }
-
-        if (takenHuCodes.Count == 0)
-        {
-            return 0d;
-        }
-
-        var total = 0d;
-        foreach (var huCode in takenHuCodes)
-        {
-            var pallet = store.GetProductionPalletByHu(huCode);
-            if (pallet == null
-                || excludePalletId.HasValue && pallet.Id == excludePalletId.Value
-                || !string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            var componentQty = pallet.Lines
-                .Where(line => line.OrderLineId == sourceOrderLineId)
-                .Sum(line => line.PlannedQty);
-            if (componentQty > QtyTolerance)
-            {
-                total += componentQty;
-                continue;
-            }
-
-            if (pallet.OrderLineId == sourceOrderLineId)
-            {
-                total += pallet.PlannedQty;
-            }
-        }
-
-        return total;
+        return qty;
     }
 
     private Doc RequireProductionReceipt(long docId)
