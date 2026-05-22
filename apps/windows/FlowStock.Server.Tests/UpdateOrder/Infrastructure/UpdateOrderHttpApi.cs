@@ -30,6 +30,13 @@ internal static class UpdateOrderHttpApi
         return Assert.IsType<ApiResult>(payload);
     }
 
+    public static async Task<ApiErrorResult> ReadApiErrorResultAsync(HttpResponseMessage response, HttpStatusCode expectedStatusCode)
+    {
+        Assert.Equal(expectedStatusCode, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<ApiErrorResult>();
+        return Assert.IsType<ApiErrorResult>(payload);
+    }
+
     internal sealed class UpdateOrderRequest
     {
         [JsonPropertyName("order_ref")]

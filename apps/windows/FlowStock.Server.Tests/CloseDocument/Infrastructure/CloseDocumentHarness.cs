@@ -1834,21 +1834,38 @@ internal sealed class CloseDocumentHarness
             });
 
         _store.Setup(store => store.GetFilledProductionPalletQtyByOrderLine(It.IsAny<long>(), It.IsAny<long?>()))
-            .Returns<long, long?>((orderLineId, excludePalletId) => _productionPallets.Values
-                .Where(pallet => (!excludePalletId.HasValue || pallet.Id != excludePalletId.Value)
-                                 && string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
-                .SelectMany(pallet => pallet.Lines.Count > 0
-                    ? pallet.Lines
-                    : new[]
+            .Returns<long, long?>((orderLineId, excludePalletId) =>
+            {
+                var total = 0d;
+                foreach (var pallet in _productionPallets.Values)
+                {
+                    if (excludePalletId.HasValue && pallet.Id == excludePalletId.Value)
                     {
-                        new ProductionPalletComponentLine
-                        {
-                            OrderLineId = pallet.OrderLineId,
-                            PlannedQty = pallet.PlannedQty
-                        }
-                    })
-                .Where(line => line.OrderLineId == orderLineId)
-                .Sum(line => line.PlannedQty));
+                        continue;
+                    }
+
+                    if (!string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var componentQty = pallet.Lines
+                        .Where(line => line.OrderLineId == orderLineId)
+                        .Sum(line => line.PlannedQty);
+                    if (componentQty > 0.000001)
+                    {
+                        total += componentQty;
+                        continue;
+                    }
+
+                    if (pallet.Lines.Count == 0 && pallet.OrderLineId == orderLineId)
+                    {
+                        total += pallet.PlannedQty;
+                    }
+                }
+
+                return total;
+            });
 
         _store.Setup(store => store.MarkProductionPalletFilled(It.IsAny<long>(), It.IsAny<DateTime>(), It.IsAny<string?>()))
             .Callback<long, DateTime, string?>((palletId, filledAt, deviceId) =>
@@ -3590,10 +3607,26 @@ internal sealed class CloseDocumentHarness
             }
         }
 
+        var referencedDocLineIds = _productionPallets.Values
+            .SelectMany(pallet =>
+            {
+                var ids = new List<long>();
+                if (pallet.DocLineId > 0)
+                {
+                    ids.Add(pallet.DocLineId);
+                }
+
+                ids.AddRange(pallet.Lines.Select(line => line.DocLineId));
+                return ids;
+            })
+            .ToHashSet();
+
         var removed = 0;
         foreach (var docLines in _linesByDoc.Values)
         {
-            removed += docLines.RemoveAll(line => docLineIdsToDelete.Contains(line.Id));
+            removed += docLines.RemoveAll(line =>
+                docLineIdsToDelete.Contains(line.Id)
+                && !referencedDocLineIds.Contains(line.Id));
         }
 
         return removed;

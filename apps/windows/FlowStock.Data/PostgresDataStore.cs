@@ -2575,12 +2575,26 @@ WHERE doc_id = @doc_id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT COALESCE(SUM(pll.planned_qty), 0)
-FROM production_pallet_lines pll
-INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
-WHERE pll.order_line_id = @order_line_id
-  AND pp.status = @filled_status
-  AND (@exclude_pallet_id::bigint IS NULL OR pp.id <> @exclude_pallet_id::bigint);
+SELECT COALESCE(SUM(qty), 0)
+FROM (
+    SELECT pll.planned_qty AS qty
+    FROM production_pallet_lines pll
+    INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
+    WHERE pll.order_line_id = @order_line_id
+      AND pp.status = @filled_status
+      AND (@exclude_pallet_id::bigint IS NULL OR pp.id <> @exclude_pallet_id::bigint)
+    UNION ALL
+    SELECT pp.planned_qty AS qty
+    FROM production_pallets pp
+    WHERE pp.order_line_id = @order_line_id
+      AND pp.status = @filled_status
+      AND (@exclude_pallet_id::bigint IS NULL OR pp.id <> @exclude_pallet_id::bigint)
+      AND NOT EXISTS (
+          SELECT 1
+          FROM production_pallet_lines pll
+          WHERE pll.production_pallet_id = pp.id
+      )
+) filled_qty;
 ");
             command.Parameters.AddWithValue("@order_line_id", orderLineId);
             command.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
@@ -2823,14 +2837,16 @@ USING target_doc_lines target
 WHERE dl.id = target.id
   AND NOT EXISTS (
       SELECT 1
+      FROM production_pallets pp
+      WHERE pp.doc_line_id = dl.id
+  )
+  AND NOT EXISTS (
+      SELECT 1
       FROM production_pallet_lines pll
-      INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
       WHERE pll.doc_line_id = dl.id
-        AND pp.status <> @cancelled_status
   );
 ");
             command.Parameters.AddWithValue("@pallet_ids", ids);
-            command.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
             return command.ExecuteNonQuery();
         });
     }
