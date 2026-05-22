@@ -672,25 +672,21 @@ public sealed class OrderService
             ? Math.Max(0, shipped)
             : 0d;
         var filledQty = Math.Max(0, store.GetFilledProductionPalletQtyByOrderLine(line.Id));
-        var factualLockedQty = shippedQty + filledQty;
-        if (orderType == OrderType.Customer)
-        {
-            var reservedQty = store.GetOrderReceiptPlanLines(orderId)
+        var reservedQty = orderType == OrderType.Customer
+            ? store.GetOrderReceiptPlanLines(orderId)
                 .Where(planLine => planLine.OrderLineId == line.Id)
-                .Sum(planLine => Math.Max(0, planLine.QtyPlanned));
-            factualLockedQty = shippedQty + Math.Max(filledQty, reservedQty);
-        }
-
-        if (newQty + QtyTolerance < factualLockedQty)
+                .Sum(planLine => Math.Max(0, planLine.QtyPlanned))
+            : 0d;
+        if (!OrderLineQtyChangeRules.TryValidateQtyChange(
+                newQty,
+                shippedQty,
+                filledQty,
+                reservedQty,
+                orderType,
+                out var errorMessage))
         {
-            throw new InvalidOperationException(
-                $"Нельзя уменьшить количество ниже уже заполненного/выпущенного объема: заполнено {FormatLockedQty(factualLockedQty)}.");
+            throw new InvalidOperationException(errorMessage);
         }
-    }
-
-    private static string FormatLockedQty(double value)
-    {
-        return value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private static void ValidateOrderLineCanBeDeleted(IDataStore store, long orderId, OrderLine line)

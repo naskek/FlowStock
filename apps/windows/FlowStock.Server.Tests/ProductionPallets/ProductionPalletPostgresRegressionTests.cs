@@ -33,6 +33,25 @@ public sealed class ProductionPalletPostgresRegressionTests
     }
 
     [Fact]
+    public void PlanProductionPallets_Sql_SkipsDocLinesAlreadyLinkedToAnyPallet()
+    {
+        var source = File.ReadAllText(GetPostgresDataStorePath());
+        var methodIndex = source.IndexOf(
+            "public IReadOnlyList<ProductionPallet> PlanProductionPallets",
+            StringComparison.Ordinal);
+        Assert.True(methodIndex >= 0);
+
+        var methodEnd = source.IndexOf(
+            "public double GetFilledProductionPalletQtyByOrderLine",
+            methodIndex,
+            StringComparison.Ordinal);
+        Assert.True(methodEnd > methodIndex);
+
+        var methodBody = source[methodIndex..methodEnd];
+        Assert.Contains("WHERE pp.doc_line_id = dl.id", methodBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void RemoveDocLinesForProductionPallets_Sql_DoesNotDeleteLinesStillReferencedByCancelledPallets()
     {
         var source = File.ReadAllText(GetPostgresDataStorePath());

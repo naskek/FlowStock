@@ -1853,6 +1853,11 @@ WITH active_lines AS (
           FROM doc_lines newer
           WHERE newer.replaces_line_id = dl.id
       )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM production_pallets pp
+          WHERE pp.doc_line_id = dl.id
+      )
 ),
 grouped AS (
     SELECT prd_doc_id,

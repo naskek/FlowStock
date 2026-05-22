@@ -148,6 +148,78 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
     }
 
     [Fact]
+    public async Task DecreaseThenIncrease4800_FullCycle_CreatesNewPlannedWithoutDuplicateDocLine()
+    {
+        var fixture = InternalOrderPalletQtyUpdateScenario.Create(
+            orderedQty: 4800,
+            filledPalletCount: 2,
+            openPalletCount: 6);
+        await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
+
+        var stepA = await UpdateOrderHttpApi.UpdateAsync(
+            host.Client,
+            fixture.OrderId,
+            InternalOrderPalletQtyUpdateScenario.BuildUpdateRequest(1200));
+        Assert.True(stepA.Ok);
+
+        var afterDecrease = fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId);
+        Assert.Equal(2, afterDecrease.Count(pallet => pallet.Status == ProductionPalletStatus.Filled));
+        Assert.Equal(0, ActiveOpenQty(afterDecrease, fixture.OrderLineId), 3);
+        Assert.Equal(6, afterDecrease.Count(pallet => pallet.Status == ProductionPalletStatus.Cancelled));
+
+        var stepB = await UpdateOrderHttpApi.UpdateAsync(
+            host.Client,
+            fixture.OrderId,
+            InternalOrderPalletQtyUpdateScenario.BuildUpdateRequest(4800));
+        Assert.True(stepB.Ok);
+
+        var afterIncrease = fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId);
+        Assert.Equal(2, afterIncrease.Count(pallet => pallet.Status == ProductionPalletStatus.Filled));
+        Assert.Equal(6, afterIncrease.Count(pallet => pallet.Status == ProductionPalletStatus.Planned));
+        Assert.Equal(6, afterIncrease.Count(pallet => pallet.Status == ProductionPalletStatus.Cancelled));
+        Assert.Equal(4800, ActivePalletQty(afterIncrease, fixture.OrderLineId), 3);
+
+        var activeDocLineIds = afterIncrease
+            .Where(pallet => pallet.Status != ProductionPalletStatus.Cancelled)
+            .Select(pallet => pallet.DocLineId)
+            .ToArray();
+        Assert.Equal(activeDocLineIds.Length, activeDocLineIds.Distinct().Count());
+    }
+
+    [Fact]
+    public async Task RepeatedUpdateWithSameQty_IsIdempotent()
+    {
+        var fixture = InternalOrderPalletQtyUpdateScenario.Create(
+            orderedQty: 4800,
+            filledPalletCount: 2,
+            openPalletCount: 6);
+        await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
+
+        await UpdateOrderHttpApi.UpdateAsync(
+            host.Client,
+            fixture.OrderId,
+            InternalOrderPalletQtyUpdateScenario.BuildUpdateRequest(1200));
+
+        var afterFirst = fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId)
+            .Select(pallet => pallet.Id)
+            .OrderBy(id => id)
+            .ToArray();
+
+        await UpdateOrderHttpApi.UpdateAsync(
+            host.Client,
+            fixture.OrderId,
+            InternalOrderPalletQtyUpdateScenario.BuildUpdateRequest(1200));
+
+        var afterSecond = fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId)
+            .Select(pallet => pallet.Id)
+            .OrderBy(id => id)
+            .ToArray();
+
+        Assert.Equal(afterFirst, afterSecond);
+        Assert.Equal(0, ActiveOpenQty(fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId), fixture.OrderLineId), 3);
+    }
+
+    [Fact]
     public async Task DecreaseBelowFilled_HeadOnlyFilledPallets_StillBlockedByApi()
     {
         var fixture = InternalOrderPalletQtyUpdateScenario.Create(

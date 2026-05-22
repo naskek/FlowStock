@@ -1531,13 +1531,18 @@ internal sealed class CloseDocumentHarness
                              .GroupBy(line => NormalizeHu(line.ToHu), StringComparer.OrdinalIgnoreCase))
                 {
                     if (_productionPallets.Values.Any(pallet => pallet.PrdDocId == docId
-                                                                && string.Equals(NormalizeHu(pallet.HuCode), group.Key, StringComparison.OrdinalIgnoreCase)))
+                                                                && string.Equals(NormalizeHu(pallet.HuCode), group.Key, StringComparison.OrdinalIgnoreCase)
+                                                                && !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)))
                     {
                         continue;
                     }
 
                     var groupLines = group.OrderBy(line => line.Id).ToList();
                     var firstLine = groupLines[0];
+                    if (groupLines.Any(line => _productionPallets.Values.Any(pallet => pallet.DocLineId == line.Id)))
+                    {
+                        continue;
+                    }
                     var item = _items.TryGetValue(firstLine.ItemId, out var foundItem) ? foundItem : null;
                     var location = firstLine.ToLocationId.HasValue && _locations.TryGetValue(firstLine.ToLocationId.Value, out var foundLocation)
                         ? foundLocation
