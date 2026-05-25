@@ -96,8 +96,15 @@ public partial class CustomerReservedHuReductionWindow : Window
 
     private void Cancel_Click(object sender, RoutedEventArgs e)
     {
-        DialogResult = false;
-        Close();
+        try
+        {
+            DialogResult = false;
+            Close();
+        }
+        catch (Exception ex)
+        {
+            FailAndClose($"Не удалось закрыть окно резерва HU.{Environment.NewLine}{ex.Message}");
+        }
     }
 
     private void FailAndClose(string message)
@@ -108,8 +115,15 @@ public partial class CustomerReservedHuReductionWindow : Window
             "Резерв HU",
             MessageBoxButton.OK,
             MessageBoxImage.Warning);
-        DialogResult = false;
-        Close();
+        try
+        {
+            DialogResult = false;
+            Close();
+        }
+        catch
+        {
+            Close();
+        }
     }
 
     private static IReadOnlyList<CustomerReservedHuReductionOption> SelectDefaultKeepSet(

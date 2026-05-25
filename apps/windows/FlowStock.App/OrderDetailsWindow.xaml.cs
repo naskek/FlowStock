@@ -39,6 +39,8 @@ public partial class OrderDetailsWindow : Window
     private bool _isQtyPersistInProgress;
     private readonly CustomerOrderHuBindingCoordinator _huBinding;
 
+    public event EventHandler? OrderStateChanged;
+
     public OrderDetailsWindow(AppServices services)
     {
         _services = services;
@@ -336,6 +338,7 @@ public partial class OrderDetailsWindow : Window
 
             MessageBox.Show(result.Message, "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
             LoadOrder();
+            OrderStateChanged?.Invoke(this, EventArgs.Empty);
         }
         finally
         {
@@ -895,6 +898,7 @@ public partial class OrderDetailsWindow : Window
         }
 
         var state = row.State;
+        var lineId = state.Line.Id;
         if (!state.IsHuPickerEnabled)
         {
             var disabledMessage = string.IsNullOrWhiteSpace(state.HuPickerToolTip)
@@ -942,6 +946,11 @@ public partial class OrderDetailsWindow : Window
         };
         if (picker.ShowDialog() != true)
         {
+            if (picker.HasFatalError)
+            {
+                LoadOrder(lineId > 0 ? lineId : null);
+            }
+
             return;
         }
 
@@ -952,7 +961,7 @@ public partial class OrderDetailsWindow : Window
                     [
                         new WpfHuReservationApplyLineRequest
                         {
-                            OrderLineId = state.Line.Id,
+                            OrderLineId = lineId,
                             SelectedHuCodes = picker.SelectedHuCodes
                         }
                     ],
@@ -969,7 +978,7 @@ public partial class OrderDetailsWindow : Window
                 "Привязка HU",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
-            LoadOrder(state.Line.Id);
+            LoadOrder(lineId > 0 ? lineId : null);
             return;
         }
     }
@@ -2043,7 +2052,7 @@ public partial class OrderDetailsWindow : Window
         var isCustomer = type == OrderType.Customer;
         OrderLinesGrid.ItemsSource = isCustomer ? _huBinding.Lines : _lines;
         HuAvailableColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;
-        HuBoundColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;
+        HuBoundColumn.Visibility = Visibility.Visible;
         HuRemainingColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;
         HuPickerColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;
         if (isCustomer)

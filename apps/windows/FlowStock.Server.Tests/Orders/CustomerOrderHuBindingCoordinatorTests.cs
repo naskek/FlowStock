@@ -178,6 +178,49 @@ public sealed class CustomerOrderHuBindingCoordinatorTests
     }
 
     [Fact]
+    public void SetOrderContext_WithFreshServerPlan_DropsStaleSelectedHu()
+    {
+        using var context = new WpfServiceTestContext();
+        IReadOnlyList<OrderReceiptPlanLine> planLines =
+        [
+            CreatePlanLine(1, "HU-000009"),
+            CreatePlanLine(2, "HU-000010"),
+            CreatePlanLine(3, "HU-000011"),
+            CreatePlanLine(4, "HU-000012")
+        ];
+        using var coordinator = new CustomerOrderHuBindingCoordinator(
+            context.ReadApi,
+            _ => planLines);
+
+        coordinator.BeginLoad();
+        coordinator.SetOrderContext(55, OrderType.Customer, [CreateLine(qtyOrdered: 2400)]);
+        coordinator.EndLoad();
+
+        var initialState = Assert.Single(coordinator.Lines).State;
+        Assert.Equal(
+            new[] { "HU-000009", "HU-000010", "HU-000011", "HU-000012" },
+            initialState.SelectedHuCodes.OrderBy(code => code, StringComparer.OrdinalIgnoreCase).ToArray());
+
+        planLines =
+        [
+            CreatePlanLine(1, "HU-000009"),
+            CreatePlanLine(2, "HU-000010"),
+            CreatePlanLine(3, "HU-000011")
+        ];
+        coordinator.BeginLoad();
+        coordinator.SetOrderContext(55, OrderType.Customer, [CreateLine(qtyOrdered: 1800)]);
+        coordinator.EndLoad();
+
+        var reloadedState = Assert.Single(coordinator.Lines).State;
+        var selected = reloadedState.SelectedHuCodes
+            .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        Assert.Equal(new[] { "HU-000009", "HU-000010", "HU-000011" }, selected);
+        Assert.DoesNotContain("HU-000012", reloadedState.HuDisplayRows.Select(row => row.HuCode));
+        Assert.Equal(3, reloadedState.HuDisplayRows.Count(row => row.Label == "склад"));
+    }
+
+    [Fact]
     public void HuDisplayRows_ShowWarehouseFirstBoldAndProductionSecondRegular()
     {
         var state = new CustomerOrderLineHuState("line-400");
@@ -238,6 +281,35 @@ public sealed class CustomerOrderHuBindingCoordinatorTests
         Assert.Contains("выпущено 3648 из 3648", complete.HuCoverageToolTip, StringComparison.Ordinal);
         Assert.Equal("neutral", plannedOnly.HuCoverageTone);
         Assert.Equal("neutral", customer.HuCoverageTone);
+    }
+
+    private static OrderLineView CreateLine(double qtyOrdered)
+    {
+        return new OrderLineView
+        {
+            Id = 144,
+            OrderId = 55,
+            ItemId = 6,
+            ItemName = "Горчица",
+            QtyOrdered = qtyOrdered,
+            QtyRemaining = qtyOrdered
+        };
+    }
+
+    private static OrderReceiptPlanLine CreatePlanLine(long id, string huCode)
+    {
+        return new OrderReceiptPlanLine
+        {
+            Id = id,
+            OrderId = 55,
+            OrderLineId = 144,
+            ItemId = 6,
+            ItemName = "Горчица",
+            QtyPlanned = 600,
+            ToLocationId = 1,
+            ToHu = huCode,
+            SortOrder = (int)id
+        };
     }
 
     private sealed class WpfServiceTestContext : IDisposable

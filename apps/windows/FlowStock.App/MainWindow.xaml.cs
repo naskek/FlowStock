@@ -1836,6 +1836,7 @@ public partial class MainWindow : Window
     {
         var window = new OrderDetailsWindow(_services);
         window.Owner = this;
+        window.OrderStateChanged += (_, _) => RefreshOrdersKeepingPagedDepth();
         window.ShowDialog();
         LoadOrders();
     }
@@ -1928,6 +1929,7 @@ public partial class MainWindow : Window
 
         var window = new OrderDetailsWindow(_services, order.Id);
         window.Owner = this;
+        window.OrderStateChanged += (_, _) => RefreshOrdersKeepingPagedDepth();
         window.ShowDialog();
 
         LoadOrders();

@@ -50,6 +50,8 @@ public partial class HuReservationPickerWindow : Window
         UpdateSummary();
     }
 
+    public bool HasFatalError { get; private set; }
+
     public IReadOnlyList<string> SelectedHuCodes =>
         _allRows
             .Where(row => row.IsSelected)
@@ -77,11 +79,7 @@ public partial class HuReservationPickerWindow : Window
         catch (Exception ex)
         {
             row.SuppressChange(() => row.IsSelected = !row.IsSelected);
-            MessageBox.Show(
-                $"Не удалось изменить выбор HU.{Environment.NewLine}{ex.Message}",
-                "Привязка HU",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
+            FailAndClose($"Не удалось изменить выбор HU.{Environment.NewLine}{ex.Message}");
         }
     }
 
@@ -105,12 +103,38 @@ public partial class HuReservationPickerWindow : Window
 
     private void Ok_Click(object sender, RoutedEventArgs e)
     {
-        DialogResult = true;
-        Close();
+        try
+        {
+            DialogResult = true;
+            Close();
+        }
+        catch (Exception ex)
+        {
+            FailAndClose($"Не удалось применить выбор HU.{Environment.NewLine}{ex.Message}");
+        }
     }
 
     private void Cancel_Click(object sender, RoutedEventArgs e)
     {
+        try
+        {
+            DialogResult = false;
+            Close();
+        }
+        catch (Exception ex)
+        {
+            FailAndClose($"Не удалось закрыть окно выбора HU.{Environment.NewLine}{ex.Message}");
+        }
+    }
+
+    private void FailAndClose(string message)
+    {
+        HasFatalError = true;
+        MessageBox.Show(
+            message,
+            "Привязка HU",
+            MessageBoxButton.OK,
+            MessageBoxImage.Warning);
         DialogResult = false;
         Close();
     }

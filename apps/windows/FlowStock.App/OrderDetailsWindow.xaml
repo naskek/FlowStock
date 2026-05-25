@@ -108,7 +108,7 @@
         <Grid Grid.Row="1">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
             </Grid.RowDefinitions>
             <Grid Grid.Row="0" Margin="0,0,0,8">
                 <Grid.RowDefinitions>
@@ -148,8 +148,10 @@
                     </Grid>
                 </GroupBox>
             </Grid>
-            <Grid Grid.Row="1" Height="255">
+            <Grid Grid.Row="1" VerticalAlignment="Stretch" HorizontalAlignment="Stretch">
                 <DataGrid x:Name="OrderLinesGrid" AutoGenerateColumns="False" IsReadOnly="True"
+                          VerticalAlignment="Stretch"
+                          HorizontalAlignment="Stretch"
                           SelectionChanged="OrderLinesGrid_SelectionChanged"
                           MouseDoubleClick="OrderLinesGrid_MouseDoubleClick"
                           KeyDown="OrderLinesGrid_KeyDown"
@@ -168,12 +170,12 @@
                         </Style>
                     </DataGrid.RowStyle>
                     <DataGrid.Columns>
-                        <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="240" IsReadOnly="True" />
+                        <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="220" IsReadOnly="True" />
                         <DataGridTextColumn Header="SKU / ШК" Binding="{Binding Barcode}" Width="150" IsReadOnly="True" />
                         <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="150" IsReadOnly="True" />
                         <DataGridTextColumn Header="Заказано (база)" Binding="{Binding QtyOrdered}" Width="140" IsReadOnly="True" />
                         <DataGridTextColumn x:Name="HuAvailableColumn" Header="Доступно HU" Binding="{Binding AvailableHuDisplay}" Width="120" IsReadOnly="True" />
-                        <DataGridTemplateColumn x:Name="HuBoundColumn" Header="HU по строке" Width="320">
+                        <DataGridTemplateColumn x:Name="HuBoundColumn" Header="HU по строке" Width="460" MinWidth="420">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <ItemsControl ItemsSource="{Binding HuDisplayRows}">

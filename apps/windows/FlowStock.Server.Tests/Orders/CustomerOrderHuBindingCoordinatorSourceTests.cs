@@ -11,9 +11,29 @@ public sealed class CustomerOrderHuBindingCoordinatorSourceTests
         Assert.Contains("ScheduleCandidatesRefresh();", source);
         Assert.Contains("ApplyInitialAutoSelection", source);
         Assert.Contains("ManualSelectionTouched", source);
+        Assert.Contains("BeginServerReservationReload", source);
 
         var applyPickerSlice = SliceMethod(source, "public void ApplyPickerSelection");
         Assert.DoesNotContain("ScheduleCandidatesRefresh", applyPickerSlice);
+    }
+
+    [Fact]
+    public void Coordinator_ClearsSelectionsBeforeMergingCanonicalServerPlan()
+    {
+        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "CustomerOrderHuBindingCoordinator.cs");
+
+        var setContext = SliceMethod(source, "public void SetOrderContext");
+        Assert.Contains("state.BeginServerReservationReload();", setContext);
+        Assert.Contains("ApplyExistingPlanLines(orderId.Value);", setContext);
+        Assert.True(
+            setContext.IndexOf("state.BeginServerReservationReload();", StringComparison.Ordinal)
+            < setContext.IndexOf("ApplyExistingPlanLines(orderId.Value);", StringComparison.Ordinal));
+
+        var resetMethod = SliceMethod(source, "public void BeginServerReservationReload");
+        Assert.Contains("_selectedHuCodes.Clear();", resetMethod);
+        Assert.Contains("_selectedQtyByHu.Clear();", resetMethod);
+        Assert.Contains("_existingOnlyReservations.Clear();", resetMethod);
+        Assert.Contains("_manualSelectionTouched = false;", resetMethod);
     }
 
     [Fact]

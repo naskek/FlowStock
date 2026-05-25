@@ -546,7 +546,7 @@ public sealed class OrderService
                         line.QtyOrdered = orderedQty;
                         if (type == OrderType.Customer && orderedQty > primary.QtyOrdered + QtyTolerance)
                         {
-                            TryBindExactWarehouseHuForCustomerShortage(store, orderId, primary, orderedQty);
+                            TryBindBestWarehouseHuForCustomerShortage(store, orderId, primary, orderedQty);
                         }
                         if (type is OrderType.Internal or OrderType.Customer)
                         {
@@ -809,7 +809,7 @@ public sealed class OrderService
         return (long)Math.Round(Math.Max(0, qty) * 1000d, MidpointRounding.AwayFromZero);
     }
 
-    private static void TryBindExactWarehouseHuForCustomerShortage(
+    private static void TryBindBestWarehouseHuForCustomerShortage(
         IDataStore store,
         long orderId,
         OrderLine line,
@@ -852,8 +852,8 @@ public sealed class OrderService
             .Where(candidate => !selectedHu.Contains(candidate.HuCode))
             .OrderBy(candidate => candidate.HuCode, StringComparer.OrdinalIgnoreCase)
             .ToList();
-        var exact = SelectExactHuCandidateSubset(freeCandidates, shortage);
-        if (exact.Count == 0)
+        var selectedFreeHu = SelectBestHuCandidateSubset(freeCandidates, shortage);
+        if (selectedFreeHu.Count == 0)
         {
             return;
         }
@@ -862,7 +862,7 @@ public sealed class OrderService
         var sortOrder = replacement.Count == 0
             ? 0
             : replacement.Max(planLine => planLine.SortOrder) + 1;
-        foreach (var candidate in exact)
+        foreach (var candidate in selectedFreeHu)
         {
             replacement.Add(new OrderReceiptPlanLine
             {
@@ -878,7 +878,7 @@ public sealed class OrderService
         store.ReplaceOrderReceiptPlanLinesForOrderLines(orderId, [line.Id], replacement);
     }
 
-    private static IReadOnlyList<HuReservationCandidateSourceRow> SelectExactHuCandidateSubset(
+    private static IReadOnlyList<HuReservationCandidateSourceRow> SelectBestHuCandidateSubset(
         IReadOnlyList<HuReservationCandidateSourceRow> candidates,
         double targetQty)
     {
@@ -916,8 +916,9 @@ public sealed class OrderService
             }
         }
 
-        return bestByTotal.TryGetValue(targetUnits, out var exact)
-            ? exact
+        var bestTotal = bestByTotal.Keys.Max();
+        return bestTotal > 0
+            ? bestByTotal[bestTotal]
             : Array.Empty<HuReservationCandidateSourceRow>();
     }
 

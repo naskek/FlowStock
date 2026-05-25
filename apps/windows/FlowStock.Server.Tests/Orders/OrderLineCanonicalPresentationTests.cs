@@ -62,4 +62,32 @@ public sealed class OrderLineCanonicalPresentationTests
         Assert.Contains("HU-0000542", target.ProductionHuCodes, StringComparison.Ordinal);
         Assert.Equal(1200, target.QtyRemaining, 3);
     }
+
+    [Fact]
+    public void InternalOrderLine_HuDisplayRows_ExposeProductionHuEntries()
+    {
+        var line = new OrderLineView
+        {
+            Id = 191,
+            OrderId = 58,
+            ItemId = 6,
+            ItemName = "Горчица",
+            ProductionPurpose = ProductionLinePurpose.InternalStock,
+            ProductionHuDisplayEntries =
+            [
+                new OrderLineHuDisplayEntry("HU-0000602", "план", 600, IsWarehouseBound: false, SortOrder: 2),
+                new OrderLineHuDisplayEntry("HU-0000601", "план", 600, IsWarehouseBound: false, SortOrder: 1)
+            ]
+        };
+
+        var rows = line.HuDisplayRows;
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("HU-0000601", rows[0].HuCode);
+        Assert.Equal("план", rows[0].Label);
+        Assert.Equal(600, rows[0].Qty, 3);
+        Assert.False(rows[0].IsBold);
+        Assert.Equal("HU-0000601 · план · 600", rows[0].DisplayText);
+        Assert.Equal("HU-0000602", rows[1].HuCode);
+    }
 }

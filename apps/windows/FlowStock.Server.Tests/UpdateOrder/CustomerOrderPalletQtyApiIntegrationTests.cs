@@ -222,6 +222,51 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
     }
 
     [Fact]
+    public async Task IncreaseCustomerQty_WithPartialFreeWarehouseHu_BindsHuAndPlansResidualOnly()
+    {
+        var fixture = CreateCustomerFixture(orderedQty: 1800);
+        SeedReservedWarehouseHuReservations(fixture, "HU-000009", "HU-000010", "HU-000011");
+        fixture.Harness.SeedBalance(fixture.ItemId, 1, 600, "HU-000012");
+        await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
+
+        var payload = await UpdateOrderHttpApi.UpdateAsync(
+            host.Client,
+            fixture.OrderId,
+            BuildUpdateRequest(fixture, qtyOrdered: 3000));
+
+        Assert.True(payload.Ok);
+        Assert.Equal(3000, Assert.Single(fixture.Harness.Store.GetOrderLines(fixture.OrderId)).QtyOrdered, 3);
+        var planLines = fixture.Harness.Store.GetOrderReceiptPlanLines(fixture.OrderId);
+        Assert.Equal(4, planLines.Count);
+        Assert.Equal(2400, planLines.Sum(line => line.QtyPlanned), 3);
+        Assert.Equal(
+            new[] { "HU-000009", "HU-000010", "HU-000011", "HU-000012" },
+            planLines.Select(line => line.ToHu).OrderBy(code => code, StringComparer.OrdinalIgnoreCase).ToArray());
+        AssertActiveProductionPalletsForOrderLine(fixture, expectedCount: 1, expectedQty: 600);
+    }
+
+    [Fact]
+    public async Task IncreaseCustomerQty_WhenFreeWarehouseHuExceedsShortage_PlansFullResidualWithoutBindingHu()
+    {
+        var fixture = CreateCustomerFixture(orderedQty: 1800);
+        SeedReservedWarehouseHuReservations(fixture, "HU-000009", "HU-000010", "HU-000011");
+        fixture.Harness.SeedBalance(fixture.ItemId, 1, 600, "HU-000012");
+        await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
+
+        var payload = await UpdateOrderHttpApi.UpdateAsync(
+            host.Client,
+            fixture.OrderId,
+            BuildUpdateRequest(fixture, qtyOrdered: 2200));
+
+        Assert.True(payload.Ok);
+        Assert.Equal(2200, Assert.Single(fixture.Harness.Store.GetOrderLines(fixture.OrderId)).QtyOrdered, 3);
+        var planLines = fixture.Harness.Store.GetOrderReceiptPlanLines(fixture.OrderId);
+        Assert.Equal(3, planLines.Count);
+        Assert.DoesNotContain(planLines, line => string.Equals(line.ToHu, "HU-000012", StringComparison.OrdinalIgnoreCase));
+        AssertActiveProductionPalletsForOrderLine(fixture, expectedCount: 1, expectedQty: 400);
+    }
+
+    [Fact]
     public async Task CustomerQtyZero_IsRejectedWithDeleteLineMessage()
     {
         var fixture = CreateCustomerFixture(orderedQty: 2400);
@@ -385,6 +430,38 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
                              || pallet.Lines.Any(line => line.OrderLineId == fixture.OrderLineId))
             .ToArray();
         Assert.Empty(activePallets);
+    }
+
+    private static void AssertActiveProductionPalletsForOrderLine(
+        CustomerFixture fixture,
+        int expectedCount,
+        double expectedQty)
+    {
+        var activePallets = fixture.Harness.Store.GetDocsByOrder(fixture.OrderId)
+            .Where(doc => doc.Type == DocType.ProductionReceipt)
+            .SelectMany(doc => fixture.Harness.Store.GetProductionPalletsByDoc(doc.Id))
+            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+            .Where(pallet => pallet.OrderLineId == fixture.OrderLineId
+                             || pallet.Lines.Any(line => line.OrderLineId == fixture.OrderLineId))
+            .ToArray();
+        Assert.Equal(expectedCount, activePallets.Length);
+        Assert.Equal(expectedQty, activePallets.Sum(pallet => ResolvePalletQtyForOrderLine(pallet, fixture.OrderLineId)), 3);
+        Assert.All(activePallets, pallet => Assert.Equal(ProductionPalletStatus.Planned, pallet.Status));
+    }
+
+    private static double ResolvePalletQtyForOrderLine(ProductionPallet pallet, long orderLineId)
+    {
+        var componentQty = pallet.Lines
+            .Where(line => line.OrderLineId == orderLineId)
+            .Sum(line => Math.Max(0, line.PlannedQty));
+        if (componentQty > 0)
+        {
+            return componentQty;
+        }
+
+        return pallet.OrderLineId == orderLineId
+            ? Math.Max(0, pallet.PlannedQty)
+            : 0;
     }
 
     private static string BuildRawJson(CustomerFixture fixture, double qtyOrdered, IReadOnlyList<string>? selectedHuCodes = null)

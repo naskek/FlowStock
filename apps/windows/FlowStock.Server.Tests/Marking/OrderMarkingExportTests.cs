@@ -208,6 +208,8 @@ public sealed class OrderMarkingExportTests
             second.Content.Headers.ContentType?.MediaType);
         Assert.Single(harness.MarkingOrders);
         Assert.Equal(codeCountAfterFirst, harness.MarkingCodes.Count);
+        Assert.True(harness.GetOrder(10).MarkingCompleted);
+        Assert.Equal("Маркировка проведена", harness.GetOrder(10).MarkingLabel);
     }
 
     [Fact]
@@ -501,6 +503,20 @@ public sealed class OrderMarkingExportTests
         Assert.True(response.IsSuccessStatusCode);
         var markingOrder = Assert.Single(harness.MarkingOrders);
         Assert.Equal(600, markingOrder.RequestedQuantity);
+        Assert.True(harness.GetOrder(10).MarkingCompleted);
+        Assert.Equal(MarkingStatus.Printed, harness.GetOrder(10).EffectiveMarkingStatus);
+        Assert.Equal("Маркировка проведена", harness.GetOrder(10).MarkingLabel);
+    }
+
+    [Fact]
+    public void PostgresOrderReadModel_UsesWarehouseReservedHuForCustomerMarkingStatus()
+    {
+        var source = ReadRepoFile("apps", "windows", "FlowStock.Data", "PostgresDataStore.cs");
+
+        Assert.Contains("reserved_stock_hu_by_line", source);
+        Assert.Contains("SUM(LEAST(p.qty_planned, ls.qty)) AS reserved_stock_hu_qty", source);
+        Assert.Contains("COALESCE(rsh.reserved_stock_hu_qty, 0)", source);
+        Assert.DoesNotContain("COALESCE(rff.reserved_filled_hu_qty, 0)", source);
     }
 
     private static void SeedFilledHuReservation(
@@ -587,6 +603,23 @@ public sealed class OrderMarkingExportTests
             Gtin = $"0460123456789{id % 10}",
             ItemTypeEnableMarking = true
         };
+    }
+
+    private static string ReadRepoFile(params string[] parts)
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null)
+        {
+            var candidate = Path.Combine(new[] { dir.FullName }.Concat(parts).ToArray());
+            if (File.Exists(candidate))
+            {
+                return File.ReadAllText(candidate);
+            }
+
+            dir = dir.Parent;
+        }
+
+        throw new FileNotFoundException(string.Join(Path.DirectorySeparatorChar, parts));
     }
 
     private sealed class OrderMarkingExportPayload

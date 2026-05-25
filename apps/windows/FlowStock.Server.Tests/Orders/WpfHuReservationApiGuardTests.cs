@@ -116,7 +116,8 @@ public sealed class WpfHuReservationApiGuardTests
         var pickerMethod = picker[pickerMethodStart..pickerMethodEnd];
         Assert.Contains("try", pickerMethod);
         Assert.Contains("catch (Exception ex)", pickerMethod);
-        Assert.Contains("MessageBox.Show", pickerMethod);
+        Assert.Contains("FailAndClose", pickerMethod);
+        Assert.Contains("HasFatalError", picker);
 
         var applyStart = orderDetails.IndexOf("private void HuPickerButton_Click", StringComparison.Ordinal);
         Assert.True(applyStart >= 0);
@@ -126,6 +127,8 @@ public sealed class WpfHuReservationApiGuardTests
         Assert.Contains("try", applyMethod);
         Assert.Contains("catch (Exception ex)", applyMethod);
         Assert.Contains("LoadOrder", applyMethod);
+        Assert.Contains("picker.HasFatalError", applyMethod);
+        Assert.Contains("var lineId = state.Line.Id;", applyMethod);
     }
 
     [Fact]
@@ -142,6 +145,22 @@ public sealed class WpfHuReservationApiGuardTests
     }
 
     [Fact]
+    public void OrderDetailsWindow_ReloadsAndNotifiesAfterSuccessfulMarkingExport()
+    {
+        var codeBehind = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs");
+        var mainWindow = ReadRepoFile("apps", "windows", "FlowStock.App", "MainWindow.xaml.cs");
+
+        var exportStart = codeBehind.IndexOf("private async void ExportMarking_Click", StringComparison.Ordinal);
+        Assert.True(exportStart >= 0);
+        var exportEnd = codeBehind.IndexOf("private async void PlanPallets_Click", exportStart, StringComparison.Ordinal);
+        Assert.True(exportEnd > exportStart);
+        var exportMethod = codeBehind[exportStart..exportEnd];
+        Assert.Contains("LoadOrder();", exportMethod);
+        Assert.Contains("OrderStateChanged?.Invoke(this, EventArgs.Empty);", exportMethod);
+        Assert.Contains("window.OrderStateChanged += (_, _) => RefreshOrdersKeepingPagedDepth();", mainWindow);
+    }
+
+    [Fact]
     public void OrderDetailsWindow_DoesNotExposeManualPalletPlanAdoption()
     {
         var xaml = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml");
@@ -151,6 +170,54 @@ public sealed class WpfHuReservationApiGuardTests
         Assert.DoesNotContain("Перенести план", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("AdoptPalletPlanButton", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("AdoptPalletPlan_Click", codeBehind, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OrderDetailsWindow_HuColumnHasReadableDefaultWidth()
+    {
+        var xaml = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml");
+
+        Assert.Contains("Header=\"HU по строке\" Width=\"460\" MinWidth=\"420\"", xaml);
+        Assert.Contains("ItemsSource=\"{Binding HuDisplayRows}\"", xaml);
+    }
+
+    [Fact]
+    public void OrderDetailsWindow_ShowsHuColumnForInternalAndCustomerOrders()
+    {
+        var codeBehind = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs");
+        var model = ReadRepoFile("apps", "windows", "FlowStock.Core", "Models", "OrderLineView.cs");
+
+        Assert.Contains("public IReadOnlyList<OrderLineHuDisplayRow> HuDisplayRows", model);
+        Assert.Contains("ProductionHuDisplayEntries", model);
+
+        var methodStart = codeBehind.IndexOf("private void UpdateTypeUi()", StringComparison.Ordinal);
+        Assert.True(methodStart >= 0);
+        var methodEnd = codeBehind.IndexOf("private OrderType GetSelectedOrderType()", methodStart, StringComparison.Ordinal);
+        Assert.True(methodEnd > methodStart);
+        var method = codeBehind[methodStart..methodEnd];
+
+        Assert.Contains("HuBoundColumn.Visibility = Visibility.Visible;", method);
+        Assert.DoesNotContain("HuBoundColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed", method, StringComparison.Ordinal);
+        Assert.Contains("HuAvailableColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;", method);
+        Assert.Contains("HuPickerColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;", method);
+    }
+
+    [Fact]
+    public void OrderDetailsWindow_OrderLinesGridStretchesVertically()
+    {
+        var xaml = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml");
+
+        Assert.DoesNotContain("Grid.Row=\"1\" Height=\"255\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("<Grid Grid.Row=\"1\" VerticalAlignment=\"Stretch\" HorizontalAlignment=\"Stretch\">", xaml);
+
+        var gridStart = xaml.IndexOf("<DataGrid x:Name=\"OrderLinesGrid\"", StringComparison.Ordinal);
+        Assert.True(gridStart >= 0);
+        var gridEnd = xaml.IndexOf("SelectionChanged=\"OrderLinesGrid_SelectionChanged\"", gridStart, StringComparison.Ordinal);
+        Assert.True(gridEnd > gridStart);
+        var gridHeader = xaml[gridStart..gridEnd];
+        Assert.Contains("VerticalAlignment=\"Stretch\"", gridHeader);
+        Assert.Contains("HorizontalAlignment=\"Stretch\"", gridHeader);
+        Assert.DoesNotContain("Height=", gridHeader, StringComparison.Ordinal);
     }
 
     private static string ReadRepoFile(params string[] parts)

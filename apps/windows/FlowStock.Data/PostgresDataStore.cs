@@ -288,16 +288,14 @@ pallet_summary AS (
     GROUP BY ps.order_id
 ),
 " + MarkingReservedFilledLedgerStockCte + @",
-reserved_filled_hu_by_line AS (
+reserved_stock_hu_by_line AS (
     SELECT p.order_line_id,
-           SUM(LEAST(p.qty_planned, ls.qty, fp.filled_qty)) AS reserved_filled_hu_qty
+           SUM(LEAST(p.qty_planned, ls.qty)) AS reserved_stock_hu_qty
     FROM order_receipt_plan_lines p
     INNER JOIN order_lines_scope ols ON ols.id = p.order_line_id
     INNER JOIN order_base ob ON ob.id = p.order_id AND ob.order_type = 'CUSTOMER'
     INNER JOIN ledger_stock_by_hu ls ON ls.item_id = p.item_id
                                     AND ls.hu_code = UPPER(BTRIM(p.to_hu))
-    INNER JOIN filled_pallet_by_hu fp ON fp.item_id = p.item_id
-                                     AND fp.hu_code = UPPER(BTRIM(p.to_hu))
     WHERE p.qty_planned > 0
       AND p.to_hu IS NOT NULL
       AND BTRIM(p.to_hu) <> ''
@@ -310,12 +308,12 @@ markable_line_need AS (
            NULLIF(BTRIM(i.gtin), '') AS gtin,
            CASE
                WHEN olm.order_type = 'INTERNAL' THEN GREATEST(0, olm.qty_ordered)
-               ELSE GREATEST(0, olm.qty_ordered - olm.qty_shipped - COALESCE(rff.reserved_filled_hu_qty, 0))
+               ELSE GREATEST(0, olm.qty_ordered - olm.qty_shipped - COALESCE(rsh.reserved_stock_hu_qty, 0))
            END AS qty_for_marking
     FROM order_line_metrics olm
     INNER JOIN items i ON i.id = olm.item_id
     INNER JOIN item_types it ON it.id = i.item_type_id
-    LEFT JOIN reserved_filled_hu_by_line rff ON rff.order_line_id = olm.order_line_id
+    LEFT JOIN reserved_stock_hu_by_line rsh ON rsh.order_line_id = olm.order_line_id
     WHERE COALESCE(it.enable_marking, FALSE) = TRUE
       AND NULLIF(BTRIM(i.gtin), '') IS NOT NULL
 ),

@@ -107,6 +107,7 @@ public sealed class CustomerOrderHuBindingCoordinator : IDisposable
             }
 
             state.AttachLine(line, orderId);
+            state.BeginServerReservationReload();
             _states[key] = state;
             Lines.Add(new CustomerOrderLinePresentation(state));
         }
@@ -430,15 +431,15 @@ public sealed class CustomerOrderLineHuState : INotifyPropertyChanged
         ? "0"
         : $"{FormatQty(BoundQty)} ({_selectedHuCodes.Count} HU)";
 
-    public IReadOnlyList<CustomerOrderLineHuDisplayRow> HuDisplayRows =>
+    public IReadOnlyList<OrderLineHuDisplayRow> HuDisplayRows =>
         _selectedHuCodes
-            .Select(huCode => new CustomerOrderLineHuDisplayRow(
+            .Select(huCode => new OrderLineHuDisplayRow(
                 huCode,
                 "склад",
                 _selectedQtyByHu.TryGetValue(huCode, out var qty) ? qty : 0,
                 IsBold: true,
                 SortOrder: 1))
-            .Concat(_line.ProductionHuDisplayEntries.Select(entry => new CustomerOrderLineHuDisplayRow(
+            .Concat(_line.ProductionHuDisplayEntries.Select(entry => new OrderLineHuDisplayRow(
                 entry.HuCode,
                 entry.Label,
                 entry.Qty,
@@ -556,6 +557,15 @@ public sealed class CustomerOrderLineHuState : INotifyPropertyChanged
             _selectedQtyByHu[normalized] = qty;
         }
 
+        RaiseAll();
+    }
+
+    public void BeginServerReservationReload()
+    {
+        _selectedHuCodes.Clear();
+        _selectedQtyByHu.Clear();
+        _existingOnlyReservations.Clear();
+        _manualSelectionTouched = false;
         RaiseAll();
     }
 
@@ -825,7 +835,7 @@ public sealed class CustomerOrderLinePresentation : INotifyPropertyChanged
 
     public string BoundHuDisplay => State.BoundHuDisplay;
 
-    public IReadOnlyList<CustomerOrderLineHuDisplayRow> HuDisplayRows => State.HuDisplayRows;
+    public IReadOnlyList<OrderLineHuDisplayRow> HuDisplayRows => State.HuDisplayRows;
 
     public string RemainingHuDisplay => State.RemainingHuDisplay;
 
@@ -871,12 +881,3 @@ public sealed class CustomerOrderLinePresentation : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
 }
 
-public sealed record CustomerOrderLineHuDisplayRow(
-    string HuCode,
-    string Label,
-    double Qty,
-    bool IsBold,
-    int SortOrder)
-{
-    public string DisplayText => $"{HuCode} · {Label} · {Qty:0.###}";
-}

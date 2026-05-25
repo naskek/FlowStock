@@ -68,8 +68,21 @@ public sealed class OrderLineView : INotifyPropertyChanged
         {
             _productionHuDisplayEntries = value ?? Array.Empty<OrderLineHuDisplayEntry>();
             OnPropertyChanged(nameof(ProductionHuDisplayEntries));
+            OnPropertyChanged(nameof(HuDisplayRows));
         }
     }
+
+    public IReadOnlyList<OrderLineHuDisplayRow> HuDisplayRows =>
+        ProductionHuDisplayEntries
+            .OrderBy(entry => entry.SortOrder)
+            .ThenBy(entry => entry.HuCode, StringComparer.OrdinalIgnoreCase)
+            .Select(entry => new OrderLineHuDisplayRow(
+                entry.HuCode,
+                entry.Label,
+                entry.Qty,
+                IsBold: false,
+                entry.SortOrder <= 0 ? 2 : entry.SortOrder))
+            .ToArray();
 
     public double QtyShipped
     {
@@ -157,6 +170,7 @@ public sealed class OrderLineView : INotifyPropertyChanged
         OnPropertyChanged(nameof(QtyOrdered));
         OnPropertyChanged(nameof(ProductionHuCodes));
         OnPropertyChanged(nameof(ProductionHuDisplayEntries));
+        OnPropertyChanged(nameof(HuDisplayRows));
         OnPropertyChanged(nameof(ProductionPalletGroup));
         OnPropertyChanged(nameof(MixedPalletGroupNumber));
         OnPropertyChanged(nameof(IsMixedPalletLine));
@@ -200,4 +214,14 @@ public sealed record OrderLineHuDisplayEntry(
     double Qty,
     bool IsWarehouseBound,
     int SortOrder);
+
+public sealed record OrderLineHuDisplayRow(
+    string HuCode,
+    string Label,
+    double Qty,
+    bool IsBold,
+    int SortOrder)
+{
+    public string DisplayText => $"{HuCode} · {Label} · {Qty:0.###}";
+}
 

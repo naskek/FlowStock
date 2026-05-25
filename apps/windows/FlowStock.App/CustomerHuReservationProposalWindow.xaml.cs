@@ -18,7 +18,17 @@ public partial class CustomerHuReservationProposalWindow : Window
         foreach (var line in lines)
         {
             var row = new CustomerHuReservationProposalLine(line);
-            row.PropertyChanged += (_, _) => UpdateSummary();
+            row.PropertyChanged += (_, _) =>
+            {
+                try
+                {
+                    UpdateSummary();
+                }
+                catch (Exception ex)
+                {
+                    FailAndClose($"Не удалось обновить итоги привязки HU.{Environment.NewLine}{ex.Message}");
+                }
+            };
             foreach (var candidate in row.Candidates)
             {
                 candidate.PropertyChanged += (_, _) =>
@@ -94,8 +104,15 @@ public partial class CustomerHuReservationProposalWindow : Window
             "Привязка HU",
             MessageBoxButton.OK,
             MessageBoxImage.Warning);
-        DialogResult = false;
-        Close();
+        try
+        {
+            DialogResult = false;
+            Close();
+        }
+        catch
+        {
+            Close();
+        }
     }
 
     private static string FormatQty(double qty) =>
