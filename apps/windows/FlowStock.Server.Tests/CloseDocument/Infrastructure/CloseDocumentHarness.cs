@@ -1699,6 +1699,20 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.CountLedgerEntriesByDocId(It.IsAny<long>()))
             .Returns<long>(docId => _postedLedger.Count(entry => entry.DocId == docId));
 
+        _store.Setup(store => store.CountLedgerEntries())
+            .Returns(() => _postedLedger.Count);
+
+        _store.Setup(store => store.GetLedgerQtyByDocItemHu(It.IsAny<long>(), It.IsAny<long>(), It.IsAny<string?>()))
+            .Returns<long, long, string?>((docId, itemId, huCode) =>
+            {
+                var normalizedHu = NormalizeHu(huCode);
+                return _postedLedger
+                    .Where(entry => entry.DocId == docId
+                                    && entry.ItemId == itemId
+                                    && string.Equals(NormalizeHu(entry.HuCode), normalizedHu, StringComparison.Ordinal))
+                    .Sum(entry => entry.QtyDelta);
+            });
+
         _store.Setup(store => store.CancelProductionPalletPlan(It.IsAny<long>()))
             .Returns<long>(docId =>
             {
@@ -3027,7 +3041,27 @@ internal sealed class CloseDocumentHarness
         return _orderReceiptPlanLines.Values
             .SelectMany(lines => lines)
             .Where(line => line.OrderLineId == orderLineId && line.QtyPlanned > 0)
-            .Sum(line => line.QtyPlanned);
+            .Sum(line =>
+            {
+                var huCode = NormalizeHu(line.ToHu);
+                if (string.IsNullOrWhiteSpace(huCode))
+                {
+                    return line.QtyPlanned;
+                }
+
+                var balance = GetHuBalanceForItem(line.ItemId, huCode);
+                return balance > StockQuantityRules.QtyTolerance
+                    ? Math.Min(line.QtyPlanned, balance)
+                    : 0;
+            });
+    }
+
+    private double GetHuBalanceForItem(long itemId, string huCode)
+    {
+        return BuildHuStockRows()
+            .Where(row => row.ItemId == itemId)
+            .Where(row => string.Equals(NormalizeHu(row.HuCode), huCode, StringComparison.Ordinal))
+            .Sum(row => row.Qty);
     }
 
     private int CountFreeMarkingCodesForItem(long itemId, string? gtin)

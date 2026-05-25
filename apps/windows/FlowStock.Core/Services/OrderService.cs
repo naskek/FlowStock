@@ -324,6 +324,11 @@ public sealed class OrderService
                 continue;
             }
 
+            if (!HasPositiveHuBalance(_data, line.ItemId, huCode))
+            {
+                continue;
+            }
+
             if (!result.TryGetValue(line.ItemId, out var set))
             {
                 set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -334,6 +339,14 @@ public sealed class OrderService
         }
 
         return result;
+    }
+
+    private static bool HasPositiveHuBalance(IDataStore store, long itemId, string huCode)
+    {
+        return store.GetHuStockRows()
+            .Where(row => row.ItemId == itemId)
+            .Where(row => string.Equals(NormalizeHu(row.HuCode), huCode, StringComparison.OrdinalIgnoreCase))
+            .Sum(row => row.Qty) > QtyTolerance;
     }
 
     public long CreateOrder(

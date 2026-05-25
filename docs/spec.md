@@ -13,6 +13,11 @@
   - deploy wrapper: `bash deploy/scripts/backfill_order_reservations.sh [--apply]`.
   - WPF может запускать dry-run/apply только через server API `/api/admin/maintenance/backfill-reservations/*`; apply требует `confirm = "APPLY"`.
   - Команда меняет только `order_receipt_plan_lines`, не пишет в `ledger` и не редактирует закрытые документы.
+- Для перехода на `new-ledger-logic` используется отдельный stage-1 compatibility слой, не legacy backfill:
+  - read-only аудит: `tools/audit/new-ledger-prod-compat-audit.sql`;
+  - dry-run/apply: `POST /api/admin/maintenance/new-ledger-transition/dry-run` и `/apply`, где apply требует `{ "confirm": "APPLY" }`;
+  - endpoint удаляет только stale HU-резервы активных `CUSTOMER`-заказов, у которых текущий ledger balance по HU `<= 0`; `ledger`, `docs`, `production_pallets`, заказы и закрытые документы не изменяются;
+  - `FILLED production_pallets` без receipt ledger и `DRAFT PRD` с ledger rows остаются диагностикой stage-1 и не исправляются автоматически.
 - Исторические статусы ЧЗ для заказов, по которым маркировка была проведена до появления новой модели, заполняются только явной maintenance-командой после backup БД:
   - dry-run: `dotnet FlowStock.Server.dll maintenance backfill-marking-status --created-before YYYY-MM-DD --dry-run`;
   - apply: `dotnet FlowStock.Server.dll maintenance backfill-marking-status --created-before YYYY-MM-DD --apply --confirm APPLY`.
@@ -74,6 +79,7 @@
 
 ## Инварианты
 - Остатки рассчитываются только из `ledger`.
+- `production_pallets` описывает план/факт производственного HU, но не является физическим остатком само по себе. Для отгрузки, CUSTOMER HU reserve/read-model и stage-1 transition пригодность HU подтверждается текущим положительным `ledger` balance; stale HU с балансом `<= 0` не участвует в `qty_produced`, `production_hu_codes` и outbound candidates.
 - Контроль минимального остатка включается флагом типа номенклатуры `enable_min_stock_control`.
   - Если `item_types.min_stock_uses_order_binding = FALSE`, контроль работает по физическому остатку из `ledger` (суммарно по всем локациям и HU для товара).
   - Если `item_types.min_stock_uses_order_binding = TRUE`, контроль работает по свободному остатку:

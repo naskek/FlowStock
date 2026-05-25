@@ -79,6 +79,7 @@ OrderLinesEndpoint.Map(app);
 OrderHuReservationCandidatesEndpoint.Map(app);
 OrderHuReservationApplyEndpoint.Map(app);
 ProductionNeedCreateOrdersEndpoint.Map(app);
+NewLedgerTransitionEndpoints.Map(app);
 MaintenanceBackfillEndpoints.Map(app);
 app.MapGet("/api/version", () => Results.Ok(new { version = appVersion }));
 

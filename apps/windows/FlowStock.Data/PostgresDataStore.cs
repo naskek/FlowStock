@@ -1562,6 +1562,28 @@ ORDER BY dl.id");
         });
     }
 
+    public double GetLedgerQtyByDocItemHu(long docId, long itemId, string? huCode)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT COALESCE(SUM(qty_delta), 0)
+FROM ledger
+WHERE doc_id = @doc_id
+  AND item_id = @item_id
+  AND (
+      (@hu_code IS NULL AND NULLIF(BTRIM(COALESCE(hu_code, hu)), '') IS NULL)
+      OR (@hu_code IS NOT NULL AND UPPER(BTRIM(COALESCE(hu_code, hu))) = @hu_code)
+  );");
+            command.Parameters.AddWithValue("@doc_id", docId);
+            command.Parameters.AddWithValue("@item_id", itemId);
+            command.Parameters.Add("@hu_code", NpgsqlDbType.Text).Value =
+                string.IsNullOrWhiteSpace(huCode) ? DBNull.Value : huCode.Trim().ToUpperInvariant();
+            var result = command.ExecuteScalar();
+            return result == null || result == DBNull.Value ? 0 : Convert.ToDouble(result, CultureInfo.InvariantCulture);
+        });
+    }
+
     public IReadOnlyList<DocLineView> GetDocLineViews(long docId)
     {
         return WithConnection(connection =>
@@ -5167,6 +5189,16 @@ WITH line_scope AS (
     LEFT JOIN item_types it ON it.id = i.item_type_id
     WHERE ol.order_id = ANY(@order_ids)
 ),
+ledger_by_hu_item AS (
+    SELECT l.item_id,
+           UPPER(BTRIM(COALESCE(l.hu_code, l.hu))) AS hu_code,
+           COALESCE(SUM(l.qty_delta), 0)::double precision AS qty
+    FROM ledger l
+    INNER JOIN (SELECT DISTINCT item_id FROM line_scope) items ON items.item_id = l.item_id
+    WHERE NULLIF(BTRIM(COALESCE(l.hu_code, l.hu)), '') IS NOT NULL
+    GROUP BY l.item_id, UPPER(BTRIM(COALESCE(l.hu_code, l.hu)))
+    HAVING COALESCE(SUM(l.qty_delta), 0) > @qty_tolerance
+),
 pallet_scope AS (
     SELECT pp.id AS pallet_id,
            pp.status,
@@ -5249,10 +5281,12 @@ legacy_receipt_totals AS (
 ),
 filled_pallet_receipt_totals AS (
     SELECT pll.order_line_id,
-           COALESCE(SUM(pll.planned_qty), 0)::double precision AS qty_received
+           COALESCE(SUM(LEAST(pll.planned_qty, lb.qty)), 0)::double precision AS qty_received
     FROM production_pallet_lines pll
     INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
     INNER JOIN line_scope ls ON ls.id = pll.order_line_id
+    INNER JOIN ledger_by_hu_item lb ON lb.item_id = pll.item_id
+                                    AND lb.hu_code = UPPER(BTRIM(pp.hu_code))
     WHERE pp.status = @pallet_filled_status
       AND pll.planned_qty > 0
     GROUP BY pll.order_line_id
@@ -5271,9 +5305,11 @@ receipt_totals AS (
 ),
 reserved_totals AS (
     SELECT p.order_line_id,
-           COALESCE(SUM(p.qty_planned), 0)::double precision AS qty_reserved
+           COALESCE(SUM(LEAST(p.qty_planned, lb.qty)), 0)::double precision AS qty_reserved
     FROM order_receipt_plan_lines p
     INNER JOIN line_scope ls ON ls.id = p.order_line_id
+    INNER JOIN ledger_by_hu_item lb ON lb.item_id = p.item_id
+                                    AND lb.hu_code = UPPER(BTRIM(p.to_hu))
     WHERE p.qty_planned > 0
       AND p.to_hu IS NOT NULL
       AND p.to_hu <> ''
@@ -5353,6 +5389,7 @@ ORDER BY order_id, item_name, id;
             command.Parameters.AddWithValue("@internal_order_type", OrderStatusMapper.TypeToString(OrderType.Internal));
             command.Parameters.AddWithValue("@pallet_filled_status", ProductionPalletStatus.Filled);
             command.Parameters.AddWithValue("@pallet_cancelled_status", ProductionPalletStatus.Cancelled);
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
             using var reader = command.ExecuteReader();
             while (reader.Read())
             {
@@ -5410,15 +5447,27 @@ ORDER BY order_id, item_name, id;
         {
             using var command = CreateCommand(connection, @"
 WITH line_scope AS (
-    SELECT id
+    SELECT id, item_id
     FROM order_lines
     WHERE id = ANY(@order_line_ids)
+),
+ledger_by_hu_item AS (
+    SELECT l.item_id,
+           UPPER(BTRIM(COALESCE(l.hu_code, l.hu))) AS hu_code,
+           COALESCE(SUM(l.qty_delta), 0)::double precision AS qty
+    FROM ledger l
+    INNER JOIN (SELECT DISTINCT item_id FROM line_scope) items ON items.item_id = l.item_id
+    WHERE NULLIF(BTRIM(COALESCE(l.hu_code, l.hu)), '') IS NOT NULL
+    GROUP BY l.item_id, UPPER(BTRIM(COALESCE(l.hu_code, l.hu)))
+    HAVING COALESCE(SUM(l.qty_delta), 0) > @qty_tolerance
 ),
 hu_sources AS (
     SELECT p.order_line_id,
            BTRIM(p.to_hu) AS hu_code
     FROM order_receipt_plan_lines p
     INNER JOIN line_scope ls ON ls.id = p.order_line_id
+    INNER JOIN ledger_by_hu_item lb ON lb.item_id = p.item_id
+                                    AND lb.hu_code = UPPER(BTRIM(p.to_hu))
     WHERE p.qty_planned > 0
       AND p.to_hu IS NOT NULL
       AND BTRIM(p.to_hu) <> ''
@@ -5457,6 +5506,7 @@ ORDER BY order_line_id, LOWER(hu_code), hu_code;
             command.Parameters.Add("@order_line_ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint).Value = ids;
             command.Parameters.AddWithValue("@production_doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
             command.Parameters.AddWithValue("@pallet_cancelled_status", ProductionPalletStatus.Cancelled);
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
             using var reader = command.ExecuteReader();
             var rows = new Dictionary<long, SortedSet<string>>();
             while (reader.Read())
@@ -5500,6 +5550,16 @@ WITH order_line_scope AS (
     FROM order_lines ol
     WHERE ol.order_id = @order_id
 ),
+ledger_by_hu_item AS (
+    SELECT l.item_id,
+           UPPER(BTRIM(COALESCE(l.hu_code, l.hu))) AS hu_code,
+           COALESCE(SUM(l.qty_delta), 0)::double precision AS qty
+    FROM ledger l
+    INNER JOIN (SELECT DISTINCT item_id FROM order_line_scope) items ON items.item_id = l.item_id
+    WHERE NULLIF(BTRIM(COALESCE(l.hu_code, l.hu)), '') IS NOT NULL
+    GROUP BY l.item_id, UPPER(BTRIM(COALESCE(l.hu_code, l.hu)))
+    HAVING COALESCE(SUM(l.qty_delta), 0) > @qty_tolerance
+),
 legacy_receipt_totals AS (
     SELECT dl.order_line_id,
            SUM(dl.qty) AS sum_qty
@@ -5525,10 +5585,12 @@ legacy_receipt_totals AS (
 ),
 filled_pallet_totals AS (
     SELECT pll.order_line_id,
-           SUM(pll.planned_qty) AS sum_qty
+           SUM(LEAST(pll.planned_qty, lb.qty)) AS sum_qty
     FROM production_pallet_lines pll
     INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
     INNER JOIN order_line_scope ols ON ols.id = pll.order_line_id
+    INNER JOIN ledger_by_hu_item lb ON lb.item_id = pll.item_id
+                                    AND lb.hu_code = UPPER(BTRIM(pp.hu_code))
     WHERE pp.status = @pallet_filled_status
       AND pll.planned_qty > 0
     GROUP BY pll.order_line_id
@@ -5547,9 +5609,11 @@ receipt_totals AS (
 ),
 reserved_totals AS (
     SELECT p.order_line_id,
-           SUM(p.qty_planned) AS sum_qty
+           SUM(LEAST(p.qty_planned, lb.qty)) AS sum_qty
     FROM order_receipt_plan_lines p
     INNER JOIN order_line_scope ols ON ols.id = p.order_line_id
+    INNER JOIN ledger_by_hu_item lb ON lb.item_id = p.item_id
+                                    AND lb.hu_code = UPPER(BTRIM(p.to_hu))
     WHERE p.qty_planned > 0
       AND p.to_hu IS NOT NULL
       AND p.to_hu <> ''
@@ -5588,6 +5652,7 @@ ORDER BY ols.id;
             command.Parameters.AddWithValue("@include_reserved_stock", includeReservedStock ? 1 : 0);
             command.Parameters.AddWithValue("@pallet_filled_status", ProductionPalletStatus.Filled);
             command.Parameters.AddWithValue("@pallet_cancelled_status", ProductionPalletStatus.Cancelled);
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
             using var reader = command.ExecuteReader();
             var lines = new List<OrderReceiptLine>();
             while (reader.Read())

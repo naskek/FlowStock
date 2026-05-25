@@ -1953,11 +1953,6 @@ public sealed class DocumentService
 
         if (doc.Type == DocType.ProductionReceipt && hasProductionPallets)
         {
-            if (_data.CountLedgerEntriesByDocId(docId) > 0)
-            {
-                check.Errors.Add("Нельзя закрыть palletized PRD: у открытого выпуска уже есть строки ledger. Запустите диагностику и repair.");
-            }
-
             var pallets = _data.GetProductionPalletsByDoc(docId)
                 .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
                 .ToList();
@@ -2270,6 +2265,11 @@ public sealed class DocumentService
 
             var huCode = NormalizeHuValue(line.ToHu);
             if (string.IsNullOrWhiteSpace(huCode))
+            {
+                continue;
+            }
+
+            if (!HasPositiveHuBalance(store, line.ItemId, huCode))
             {
                 continue;
             }
@@ -2976,17 +2976,32 @@ public sealed class DocumentService
                     continue;
                 }
 
+                var existingQty = store.GetLedgerQtyByDocItemHu(docId, entry.ItemId, pallet.HuCode);
+                var missingQty = entry.Qty - Math.Max(0, existingQty);
+                if (missingQty <= QtyTolerance)
+                {
+                    continue;
+                }
+
                 store.AddLedgerEntry(new LedgerEntry
                 {
                     Timestamp = closedAt,
                     DocId = docId,
                     ItemId = entry.ItemId,
                     LocationId = entry.LocationId.Value,
-                    QtyDelta = entry.Qty,
+                    QtyDelta = missingQty,
                     HuCode = pallet.HuCode
                 });
             }
         }
+    }
+
+    private static bool HasPositiveHuBalance(IDataStore store, long itemId, string huCode)
+    {
+        return store.GetHuStockRows()
+            .Where(row => row.ItemId == itemId)
+            .Where(row => string.Equals(NormalizeHuValue(row.HuCode), huCode, StringComparison.OrdinalIgnoreCase))
+            .Sum(row => row.Qty) > QtyTolerance;
     }
 
     private static IReadOnlyList<ProductionPalletLedgerDraft> BuildProductionPalletLedgerDrafts(
