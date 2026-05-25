@@ -7,18 +7,16 @@ namespace FlowStock.Server.Tests.CloseDocument;
 public sealed class OutboundPickingServiceTests
 {
     [Fact]
-    public void ListOnlyAcceptedCustomerOrders()
+    public void ListIncludesAcceptedAndHuCoveredCustomerOrders()
     {
         var harness = CreateBasicPickingHarness();
-        SeedOrder(harness, 30, 301, "SO-DRAFT", OrderType.Customer, OrderStatus.InProgress, "HU-000030", 3);
+        SeedOrder(harness, 30, 301, "SO-COVERED", OrderType.Customer, OrderStatus.InProgress, "HU-000030", 3);
         SeedOrder(harness, 40, 401, "INT-READY", OrderType.Internal, OrderStatus.Accepted, "HU-000040", 4);
 
         var rows = CreatePickingService(harness).GetOrders();
 
-        var row = Assert.Single(rows);
-        Assert.Equal(20, row.OrderId);
-        Assert.Equal("SO-020", row.OrderRef);
-        Assert.Equal(1, row.ExpectedHuCount);
+        Assert.Equal([20, 30], rows.Select(row => row.OrderId).OrderBy(id => id).ToArray());
+        Assert.All(rows, row => Assert.Equal(1, row.ExpectedHuCount));
     }
 
     [Fact]
@@ -80,7 +78,7 @@ public sealed class OutboundPickingServiceTests
     public void ScanRejectsWrongHuOrderAndStatus()
     {
         var harness = CreateBasicPickingHarness();
-        SeedOrder(harness, 30, 301, "SO-030", OrderType.Customer, OrderStatus.InProgress, "HU-000030", 3);
+        SeedOrder(harness, 30, 301, "SO-030", OrderType.Customer, OrderStatus.Draft, "HU-000030", 3);
         var service = CreatePickingService(harness);
 
         var wrongHu = service.Scan(20, "HU-999999", "TSD-01");
@@ -91,6 +89,21 @@ public sealed class OutboundPickingServiceTests
         Assert.False(wrongStatus.Success);
         Assert.Equal("VALIDATION_ERROR", wrongStatus.ErrorCode);
         Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void ScanAllowsInProgressCustomerOrderFullyCoveredByWarehouseHu()
+    {
+        var harness = CreateBasicPickingHarness();
+        SeedOrder(harness, 30, 301, "SO-030", OrderType.Customer, OrderStatus.InProgress, "HU-000030", 3);
+        var service = CreatePickingService(harness);
+
+        var result = service.Scan(30, "HU-000030", "TSD-01");
+
+        Assert.True(result.Success, $"{result.ErrorCode}: {result.Message}");
+        Assert.NotNull(result.Order);
+        Assert.Equal(30, result.Order.OrderId);
+        Assert.Equal(1, result.Order.PickedHuCount);
     }
 
     [Fact]
@@ -118,7 +131,7 @@ public sealed class OutboundPickingServiceTests
         Assert.False(scan.Success);
         Assert.Equal("HU_BOUND_WITHOUT_STOCK", scan.ErrorCode);
         Assert.Contains("физически", scan.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Empty(harness.Store.GetDocsByOrder(20).Where(doc => doc.Type == DocType.Outbound));
+        Assert.DoesNotContain(harness.Store.GetDocsByOrder(20), doc => doc.Type == DocType.Outbound);
     }
 
     [Fact]

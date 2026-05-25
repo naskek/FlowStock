@@ -30,7 +30,7 @@ public sealed class OutboundPickingService
     public IReadOnlyList<OutboundPickingOrderRow> GetOrders()
     {
         return _store.GetOrders()
-            .Where(IsAcceptedCustomerOrder)
+            .Where(IsCustomerOrderReadyForPicking)
             .Select(order => GetDetails(order.Id))
             .Where(details => details.ExpectedHuCount > 0)
             .OrderBy(details => details.OrderRef, StringComparer.CurrentCultureIgnoreCase)
@@ -94,7 +94,7 @@ public sealed class OutboundPickingService
 
         try
         {
-            var order = EnsureAcceptedCustomerOrder(orderId);
+            var order = EnsureCustomerOrderReadyForPicking(orderId);
             var expected = BuildExpectedHus(order);
             var expectedHu = expected.FirstOrDefault(hu => string.Equals(hu.HuCode, normalizedHu, StringComparison.OrdinalIgnoreCase));
             if (expectedHu == null)
@@ -237,7 +237,7 @@ public sealed class OutboundPickingService
                 };
             }
 
-            order = EnsureAcceptedCustomerOrder(orderId);
+            order = EnsureCustomerOrderReadyForPicking(orderId);
             var details = GetDetails(order.Id);
             if (details.ExpectedHuCount == 0)
             {
@@ -449,7 +449,7 @@ public sealed class OutboundPickingService
             .Any(line => string.Equals(NormalizeHu(line.FromHu), normalizedHu, StringComparison.OrdinalIgnoreCase));
     }
 
-    private Order EnsureAcceptedCustomerOrder(long orderId)
+    private Order EnsureCustomerOrderReadyForPicking(long orderId)
     {
         var order = _store.GetOrder(orderId);
         if (order == null)
@@ -457,9 +457,9 @@ public sealed class OutboundPickingService
             throw new InvalidOperationException("Заказ не найден.");
         }
 
-        if (!IsAcceptedCustomerOrder(order))
+        if (!IsCustomerOrderReadyForPicking(order))
         {
-            throw new InvalidOperationException("Для подбора доступны только клиентские заказы в статусе Готов.");
+            throw new InvalidOperationException("Для подбора доступны только клиентские заказы, готовые к отгрузке.");
         }
 
         return order;
@@ -478,17 +478,39 @@ public sealed class OutboundPickingService
             throw new InvalidOperationException("Для подбора доступны только клиентские заказы.");
         }
 
-        if (IsAcceptedCustomerOrder(order) || FindTsdPickingOutbound(orderId) != null)
+        if (IsCustomerOrderReadyForPicking(order) || FindTsdPickingOutbound(orderId) != null)
         {
             return order;
         }
 
-        throw new InvalidOperationException("Для подбора доступны только клиентские заказы в статусе Готов.");
+        throw new InvalidOperationException("Для подбора доступны только клиентские заказы, готовые к отгрузке.");
     }
 
     private static bool IsAcceptedCustomerOrder(Order order)
     {
         return order.Type == OrderType.Customer && order.Status == OrderStatus.Accepted;
+    }
+
+    private static bool IsCustomerOrderCandidateForPicking(Order order)
+    {
+        return order.Type == OrderType.Customer
+               && order.Status is not (OrderStatus.Draft or OrderStatus.Cancelled or OrderStatus.Merged or OrderStatus.Shipped);
+    }
+
+    private bool IsCustomerOrderReadyForPicking(Order order)
+    {
+        if (!IsCustomerOrderCandidateForPicking(order))
+        {
+            return false;
+        }
+
+        if (IsAcceptedCustomerOrder(order))
+        {
+            return true;
+        }
+
+        return CustomerOutboundBoundHuService.GetUnshippedOutboundHuLines(_store, order.Id).Count > 0
+               && !CustomerOutboundBoundHuService.HasReceiptProductionNeed(_store, order.Id);
     }
 
     private static string? NormalizeHu(string? value)
