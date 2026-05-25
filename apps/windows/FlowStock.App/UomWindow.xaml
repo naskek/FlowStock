@@ -1,7 +1,8 @@
 <Window x:Class="FlowStock.App.UomWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Ед. измерения" Height="360" Width="520">
+        Title="Ед. измерения" Height="360" Width="520"
+        PreviewKeyDown="Window_PreviewKeyDown">
     <Grid Margin="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />

@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Windows;
+using System.Windows.Input;
 using FlowStock.Core.Models;
 
 namespace FlowStock.App;
@@ -114,6 +115,19 @@ public partial class UomWindow : Window
     {
         _selectedUom = UomsGrid.SelectedItem as Uom;
         UpdateDeleteButton();
+    }
+
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (!DeleteKeyGesture.IsDeleteGesture(e)
+            || !UomsGrid.IsKeyboardFocusWithin
+            || _selectedUom == null)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        DeleteUom_Click(UomsGrid, new RoutedEventArgs());
     }
 
     private void UpdateDeleteButton()

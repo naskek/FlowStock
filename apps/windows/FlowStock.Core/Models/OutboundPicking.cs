@@ -50,6 +50,8 @@ public sealed class OutboundPickingScanResult
     public string Message { get; init; } = string.Empty;
     public string? ErrorCode { get; init; }
     public bool AlreadyPicked { get; init; }
+    public bool OutboundClosed { get; init; }
+    public string? ClosedOutboundDocRef { get; init; }
     public OutboundPickingOrderDetails? Order { get; init; }
 
     public static OutboundPickingScanResult Failure(string errorCode, string message)
@@ -61,6 +63,9 @@ public sealed class OutboundPickingCompleteResult
     public bool Success { get; init; }
     public string Message { get; init; } = string.Empty;
     public string? ErrorCode { get; init; }
+    public bool OutboundClosed { get; init; }
+    public long? ClosedOutboundDocId { get; init; }
+    public string? ClosedOutboundDocRef { get; init; }
     public OutboundPickingOrderDetails? Order { get; init; }
 
     public static OutboundPickingCompleteResult Failure(string errorCode, string message)

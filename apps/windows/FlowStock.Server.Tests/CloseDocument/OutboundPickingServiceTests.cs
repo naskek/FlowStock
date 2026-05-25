@@ -151,10 +151,24 @@ public sealed class OutboundPickingServiceTests
     }
 
     [Fact]
+    public void ScanRejectsHuReservedForAnotherCustomerOrder()
+    {
+        var harness = CreateBasicPickingHarness();
+        SeedOrder(harness, 30, 301, "SO-030", OrderType.Customer, OrderStatus.Accepted, "HU-000030", 3);
+
+        var result = CreatePickingService(harness).Scan(30, "HU-000001", "TSD-01");
+
+        Assert.False(result.Success);
+        Assert.Equal("HU_NOT_EXPECTED", result.ErrorCode);
+        Assert.DoesNotContain(harness.Store.GetDocsByOrder(30), doc => doc.Type == DocType.Outbound);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
     public void CompleteMarksReadyButDoesNotClose()
     {
         var harness = CreateBasicPickingHarness();
-        var service = CreatePickingService(harness);
+        var service = CreatePickingService(harness, autoClose: false);
         service.Scan(20, "HU-000001", "TSD-01");
 
         var result = service.Complete(20);
@@ -172,10 +186,40 @@ public sealed class OutboundPickingServiceTests
     }
 
     [Fact]
+    public void ScanWithAutoCloseWritesLedgerAndShipsOrder()
+    {
+        var harness = CreateBasicPickingHarness();
+        var picking = CreatePickingService(harness, autoClose: true);
+        var scan = picking.Scan(20, "HU-000001", "TSD-01");
+
+        Assert.True(scan.Success, $"{scan.ErrorCode}: {scan.Message}");
+        Assert.True(scan.OutboundClosed);
+        Assert.NotNull(scan.ClosedOutboundDocRef);
+        var ledger = Assert.Single(harness.LedgerEntries);
+        Assert.Equal(-5, ledger.QtyDelta);
+        Assert.Equal(OrderStatus.Shipped, harness.GetOrder(20).Status);
+    }
+
+    [Fact]
+    public void CompleteAutoClose_IsIdempotentWhenOutboundAlreadyClosed()
+    {
+        var harness = CreateBasicPickingHarness();
+        var picking = CreatePickingService(harness, autoClose: true);
+        Assert.True(picking.Scan(20, "HU-000001", "TSD-01").Success);
+
+        var result = picking.Complete(20);
+
+        Assert.True(result.Success, $"{result.ErrorCode}: {result.Message}");
+        Assert.True(result.OutboundClosed);
+        Assert.Single(harness.LedgerEntries);
+        Assert.Equal(OrderStatus.Shipped, harness.GetOrder(20).Status);
+    }
+
+    [Fact]
     public void WpfCloseAfterPickingWritesLedgerAndShipsOrder()
     {
         var harness = CreateBasicPickingHarness();
-        var picking = CreatePickingService(harness);
+        var picking = CreatePickingService(harness, autoClose: false);
         picking.Scan(20, "HU-000001", "TSD-01");
         picking.Complete(20);
         var draftId = picking.GetDetails(20).DraftOutboundDocId!.Value;
@@ -280,9 +324,12 @@ public sealed class OutboundPickingServiceTests
         Assert.Empty(harness.LedgerEntries);
     }
 
-    private static OutboundPickingService CreatePickingService(CloseDocumentHarness harness)
+    private static OutboundPickingService CreatePickingService(CloseDocumentHarness harness, bool autoClose = false)
     {
-        return new OutboundPickingService(harness.Store, harness.CreateService());
+        return new OutboundPickingService(
+            harness.Store,
+            harness.CreateService(),
+            new FlowStockLedgerFlowOptions { OutboundAutoCloseOnComplete = autoClose });
     }
 
     private static CloseDocumentHarness CreateBasicPickingHarness()

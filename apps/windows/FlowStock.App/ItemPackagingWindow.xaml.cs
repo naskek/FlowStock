@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Windows;
+using System.Windows.Input;
 using FlowStock.Core.Models;
 
 namespace FlowStock.App;
@@ -67,6 +68,19 @@ public partial class ItemPackagingWindow : Window
         PackagingSortBox.Text = _selectedPackaging.SortOrder.ToString(CultureInfo.CurrentCulture);
         PackagingActiveCheck.IsChecked = _selectedPackaging.IsActive;
         UpdateButtons();
+    }
+
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (!DeleteKeyGesture.IsDeleteGesture(e)
+            || !PackagingGrid.IsKeyboardFocusWithin
+            || _selectedPackaging == null)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        DeletePackaging_Click(PackagingGrid, new RoutedEventArgs());
     }
 
     private async void AddPackaging_Click(object sender, RoutedEventArgs e)

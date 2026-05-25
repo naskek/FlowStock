@@ -140,7 +140,7 @@ public sealed class ProductionPalletCloseTests
     }
 
     [Fact]
-    public void CloseProductionReceipt_WithPrefilledLedger_DoesNotDuplicateReceiptOnClose()
+    public void CloseProductionReceipt_WithDraftPalletLedgerRows_DoesNotDuplicateReceiptLedger()
     {
         var harness = CreateHarness();
         harness.SeedProductionPallet(BuildPallet(ProductionPalletStatus.Planned));

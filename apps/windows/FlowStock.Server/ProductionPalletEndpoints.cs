@@ -363,6 +363,9 @@ public static class ProductionPalletEndpoints
             {
                 ok = true,
                 already_filled = result.AlreadyFilled,
+                prd_auto_closed = result.PrdAutoClosed,
+                closed_prd_doc_id = result.ClosedPrdDocId,
+                closed_prd_doc_ref = result.ClosedPrdDocRef,
                 pallet = result.Pallet == null ? null : MapPallet(result.Pallet),
                 document = result.Document == null ? null : MapDocument(result.Document)
             });

@@ -373,6 +373,8 @@ public sealed class InternalOrderAutoStatusTests
                     Qty = 3600
                 }
             ]);
+        store.Setup(s => s.GetProductionPalletsByDoc(680)).Returns(Array.Empty<ProductionPallet>());
+        store.Setup(s => s.GetLedgerQtyByDocItemHu(680, 6, null)).Returns(3600);
 
         var service = new OrderService(store.Object);
         var status = service.RefreshPersistedStatus(orderId);

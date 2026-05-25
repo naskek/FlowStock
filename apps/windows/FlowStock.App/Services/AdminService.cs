@@ -9,9 +9,12 @@ public sealed class AdminService
     {
         "docs",
         "doc_lines",
+        "production_pallets",
+        "production_pallet_lines",
         "ledger",
         "orders",
         "order_lines",
+        "order_receipt_plan_lines",
         "items",
         "locations",
         "partners",
@@ -92,6 +95,64 @@ SET status = 0,
     order_id = NULL;
 UPDATE km_code_batch
 SET order_id = NULL;
+DELETE FROM marking_print_batch_code
+WHERE print_batch_id IN (
+    SELECT mpb.id
+    FROM marking_print_batch mpb
+    INNER JOIN marking_order mo ON mo.id = mpb.marking_order_id
+    WHERE mo.order_id IS NOT NULL
+       OR mo.source_order_id IS NOT NULL
+)
+   OR marking_code_id IN (
+    SELECT mc.id
+    FROM marking_code mc
+    INNER JOIN marking_order mo ON mo.id = mc.marking_order_id
+    WHERE mo.order_id IS NOT NULL
+       OR mo.source_order_id IS NOT NULL
+);
+UPDATE marking_print_batch
+SET reprint_of_batch_id = NULL
+WHERE reprint_of_batch_id IN (
+    SELECT mpb.id
+    FROM marking_print_batch mpb
+    INNER JOIN marking_order mo ON mo.id = mpb.marking_order_id
+    WHERE mo.order_id IS NOT NULL
+       OR mo.source_order_id IS NOT NULL
+);
+DELETE FROM marking_print_batch
+WHERE marking_order_id IN (
+    SELECT id
+    FROM marking_order
+    WHERE order_id IS NOT NULL
+       OR source_order_id IS NOT NULL
+);
+DELETE FROM marking_code
+WHERE marking_order_id IN (
+    SELECT id
+    FROM marking_order
+    WHERE order_id IS NOT NULL
+       OR source_order_id IS NOT NULL
+);
+UPDATE marking_code_import
+SET matched_marking_order_id = NULL
+WHERE matched_marking_order_id IN (
+    SELECT id
+    FROM marking_order
+    WHERE order_id IS NOT NULL
+       OR source_order_id IS NOT NULL
+);
+DELETE FROM marking_order
+WHERE order_id IS NOT NULL
+   OR source_order_id IS NOT NULL;
+UPDATE marking_code
+SET receipt_doc_id = NULL,
+    receipt_line_id = NULL
+WHERE receipt_doc_id IS NOT NULL
+   OR receipt_line_id IS NOT NULL;
+DELETE FROM warehouse_action_bundles;
+DELETE FROM order_receipt_plan_lines;
+DELETE FROM production_pallet_lines;
+DELETE FROM production_pallets;
 DELETE FROM ledger;
 DELETE FROM doc_lines;
 DELETE FROM docs;

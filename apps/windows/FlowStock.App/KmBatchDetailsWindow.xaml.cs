@@ -174,6 +174,19 @@ public partial class KmBatchDetailsWindow : Window
         UpdateDeleteButtonState();
     }
 
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (!DeleteKeyGesture.IsDeleteGesture(e)
+            || !CodesGrid.IsKeyboardFocusWithin
+            || CodesGrid.SelectedItems.Count == 0)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        DeleteSelectedCodes_Click(CodesGrid, new RoutedEventArgs());
+    }
+
     private void SearchBox_KeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Enter)

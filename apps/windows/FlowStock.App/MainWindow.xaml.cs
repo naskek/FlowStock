@@ -534,14 +534,11 @@ public partial class MainWindow : Window
 
     private async void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Delete)
+        if (DeleteKeyGesture.IsDeleteGesture(e))
         {
-            if (MainTabs.SelectedIndex == TabItemsIndex
-                && ItemsGrid.IsKeyboardFocusWithin
-                && ItemsGrid.SelectedItems.Count > 0)
+            if (TryHandleMainGridDeleteGesture())
             {
                 e.Handled = true;
-                DeleteItem_Click(ItemsGrid, new RoutedEventArgs());
             }
 
             return;
@@ -2235,13 +2232,35 @@ public partial class MainWindow : Window
 
     private void ItemsGrid_KeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key != Key.Delete)
+        if (!DeleteKeyGesture.IsDeleteGesture(e))
         {
             return;
         }
 
         e.Handled = true;
         DeleteItem_Click(sender, new RoutedEventArgs());
+    }
+
+    private void LocationsGrid_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (!DeleteKeyGesture.IsDeleteGesture(e))
+        {
+            return;
+        }
+
+        e.Handled = true;
+        DeleteLocation_Click(sender, new RoutedEventArgs());
+    }
+
+    private void PartnersGrid_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (!DeleteKeyGesture.IsDeleteGesture(e))
+        {
+            return;
+        }
+
+        e.Handled = true;
+        DeletePartner_Click(sender, new RoutedEventArgs());
     }
 
     private void ItemsGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
@@ -2558,6 +2577,35 @@ public partial class MainWindow : Window
         return _selectedItem != null ? new List<Item> { _selectedItem } : Array.Empty<Item>();
     }
 
+    private bool TryHandleMainGridDeleteGesture()
+    {
+        if (MainTabs.SelectedIndex == TabItemsIndex
+            && ItemsGrid.IsKeyboardFocusWithin
+            && GetSelectedItemsForDelete().Count > 0)
+        {
+            DeleteItem_Click(ItemsGrid, new RoutedEventArgs());
+            return true;
+        }
+
+        if (MainTabs.SelectedIndex == TabLocationsIndex
+            && LocationsGrid.IsKeyboardFocusWithin
+            && GetSelectedLocationsForDelete().Count > 0)
+        {
+            DeleteLocation_Click(LocationsGrid, new RoutedEventArgs());
+            return true;
+        }
+
+        if (MainTabs.SelectedIndex == TabPartnersIndex
+            && PartnersGrid.IsKeyboardFocusWithin
+            && GetSelectedPartnersForDelete().Count > 0)
+        {
+            DeletePartner_Click(PartnersGrid, new RoutedEventArgs());
+            return true;
+        }
+
+        return false;
+    }
+
     private void LocationsGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
         _selectedLocation = LocationsGrid.SelectedItem as Location;
@@ -2593,13 +2641,17 @@ public partial class MainWindow : Window
 
     private async void DeleteLocation_Click(object sender, RoutedEventArgs e)
     {
-        if (_selectedLocation == null)
+        var locationsToDelete = GetSelectedLocationsForDelete();
+        if (locationsToDelete.Count == 0)
         {
             MessageBox.Show("Выберите место хранения.", "Места хранения", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        var confirm = MessageBox.Show("Удалить выбранное место хранения?", "Места хранения", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+        var confirmMessage = locationsToDelete.Count == 1
+            ? "Удалить выбранное место хранения?"
+            : $"Удалить выбранные места хранения ({locationsToDelete.Count})?";
+        var confirm = MessageBox.Show(confirmMessage, "Места хранения", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
         if (confirm != MessageBoxResult.Yes)
         {
             return;
@@ -2607,19 +2659,46 @@ public partial class MainWindow : Window
 
         try
         {
-            var deleted = await _services.WpfCatalogApi.TryDeleteLocationAsync(_selectedLocation.Id).ConfigureAwait(true);
-            if (!deleted.IsSuccess)
+            var failed = new List<string>();
+            foreach (var location in locationsToDelete)
             {
-                throw new InvalidOperationException(deleted.Error ?? "Не удалось удалить место хранения через сервер.");
+                try
+                {
+                    var deleted = await _services.WpfCatalogApi.TryDeleteLocationAsync(location.Id).ConfigureAwait(true);
+                    if (!deleted.IsSuccess)
+                    {
+                        throw new InvalidOperationException(deleted.Error ?? "Не удалось удалить место хранения через сервер.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    failed.Add($"{location.Code}: {ex.Message}");
+                }
             }
 
             LoadLocations();
             ClearLocationForm();
+
+            if (failed.Count > 0)
+            {
+                var message = "Не удалось удалить:\n" + string.Join("\n", failed);
+                MessageBox.Show(message, "Места хранения", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
         }
         catch (Exception ex)
         {
             MessageBox.Show(ex.Message, "Места хранения", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    private IReadOnlyList<Location> GetSelectedLocationsForDelete()
+    {
+        if (LocationsGrid.SelectedItems != null && LocationsGrid.SelectedItems.Count > 0)
+        {
+            return LocationsGrid.SelectedItems.Cast<Location>().ToList();
+        }
+
+        return _selectedLocation != null ? new List<Location> { _selectedLocation } : Array.Empty<Location>();
     }
 
     private void PartnersGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
@@ -2692,13 +2771,17 @@ public partial class MainWindow : Window
 
     private async void DeletePartner_Click(object sender, RoutedEventArgs e)
     {
-        if (_selectedPartner == null)
+        var partnersToDelete = GetSelectedPartnersForDelete();
+        if (partnersToDelete.Count == 0)
         {
             MessageBox.Show("Выберите контрагента.", "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        var confirm = MessageBox.Show("Удалить выбранного контрагента?", "Контрагенты", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+        var confirmMessage = partnersToDelete.Count == 1
+            ? "Удалить выбранного контрагента?"
+            : $"Удалить выбранных контрагентов ({partnersToDelete.Count})?";
+        var confirm = MessageBox.Show(confirmMessage, "Контрагенты", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
         if (confirm != MessageBoxResult.Yes)
         {
             return;
@@ -2706,19 +2789,49 @@ public partial class MainWindow : Window
 
         try
         {
-            var deleted = await _services.WpfPartnerApi.TryDeletePartnerAsync(_selectedPartner.Id).ConfigureAwait(true);
-            if (!deleted.IsSuccess)
+            var failed = new List<string>();
+            foreach (var partner in partnersToDelete)
             {
-                throw new InvalidOperationException(deleted.Error ?? "Не удалось удалить контрагента через сервер.");
+                try
+                {
+                    var deleted = await _services.WpfPartnerApi.TryDeletePartnerAsync(partner.Id).ConfigureAwait(true);
+                    if (!deleted.IsSuccess)
+                    {
+                        throw new InvalidOperationException(deleted.Error ?? "Не удалось удалить контрагента через сервер.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    failed.Add($"{partner.Name}: {ex.Message}");
+                }
             }
 
             LoadPartners();
             ClearPartnerForm();
+
+            if (failed.Count > 0)
+            {
+                var message = "Не удалось удалить:\n" + string.Join("\n", failed);
+                MessageBox.Show(message, "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
         }
         catch (Exception ex)
         {
             MessageBox.Show(ex.Message, "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    private IReadOnlyList<Partner> GetSelectedPartnersForDelete()
+    {
+        if (PartnersGrid.SelectedItems != null && PartnersGrid.SelectedItems.Count > 0)
+        {
+            return PartnersGrid.SelectedItems
+                .Cast<PartnerRow>()
+                .Select(row => row.Partner)
+                .ToList();
+        }
+
+        return _selectedPartner != null ? new List<Partner> { _selectedPartner } : Array.Empty<Partner>();
     }
 
     private void NewDocMenu_Click(object sender, RoutedEventArgs e)

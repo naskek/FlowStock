@@ -276,6 +276,16 @@ public sealed class HuReservationPlanningTests
                     ToHu = reservedHu
                 }
             ]);
+        store.Setup(s => s.GetHuStockRows())
+            .Returns([
+                new HuStockRow
+                {
+                    ItemId = itemId,
+                    LocationId = 1,
+                    HuCode = reservedHu,
+                    Qty = 3
+                }
+            ]);
 
         var service = new OrderService(store.Object);
         var result = service.GetOrderBoundHuByItem(internalOrderId);

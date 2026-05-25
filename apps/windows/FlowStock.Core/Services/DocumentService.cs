@@ -2295,6 +2295,11 @@ public sealed class DocumentService
                 continue;
             }
 
+            if (!HasPositiveHuBalance(store, line.ItemId, huCode))
+            {
+                continue;
+            }
+
             if (!result.TryGetValue(line.ItemId, out var set))
             {
                 set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -3011,13 +3016,14 @@ public sealed class DocumentService
                     continue;
                 }
 
-                var currentBalance = store.GetLedgerBalance(entry.ItemId, entry.LocationId.Value, pallet.HuCode);
-                if (currentBalance + QtyTolerance >= entry.Qty)
+                var existingQty = store.GetLedgerQtyByDocItemHu(docId, entry.ItemId, pallet.HuCode);
+                var missingQty = entry.Qty - Math.Max(0, existingQty);
+                if (missingQty <= QtyTolerance)
+
                 {
                     continue;
                 }
 
-                var missingQty = entry.Qty - currentBalance;
                 store.AddLedgerEntry(new LedgerEntry
                 {
                     Timestamp = closedAt,
@@ -3029,6 +3035,14 @@ public sealed class DocumentService
                 });
             }
         }
+    }
+
+    private static bool HasPositiveHuBalance(IDataStore store, long itemId, string huCode)
+    {
+        return store.GetHuStockRows()
+            .Where(row => row.ItemId == itemId)
+            .Where(row => string.Equals(NormalizeHuValue(row.HuCode), huCode, StringComparison.OrdinalIgnoreCase))
+            .Sum(row => row.Qty) > QtyTolerance;
     }
 
     private static IReadOnlyList<ProductionPalletLedgerDraft> BuildProductionPalletLedgerDrafts(

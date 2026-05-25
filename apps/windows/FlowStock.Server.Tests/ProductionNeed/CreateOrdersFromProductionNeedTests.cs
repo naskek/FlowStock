@@ -154,6 +154,140 @@ public sealed class CreateOrdersFromProductionNeedTests
     }
 
     [Fact]
+    public async Task CreateProductionNeedOrders_ReturnsOkTrue_WhenInternalOrderCreated()
+    {
+        var (harness, apiStore) = CreateMinStockGapScenario();
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+        using var previewResponse = await host.Client.PostAsJsonAsync("/api/reports/production-need/create-orders/preview", new { });
+        var preview = await previewResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var previewRow = Assert.Single(preview.GetProperty("rows").EnumerateArray());
+
+        var payload = await CreateOrdersAsync(host.Client, new
+        {
+            rows = new[]
+            {
+                new
+                {
+                    item_id = 34,
+                    qty_ordered = 1824d
+                }
+            }
+        });
+
+        Assert.True(preview.GetProperty("ok").GetBoolean());
+        Assert.Equal(34, previewRow.GetProperty("item_id").GetInt64());
+        Assert.Equal(1824, previewRow.GetProperty("qty_to_create").GetDouble());
+        Assert.True(payload.Ok);
+        Assert.Equal(1, payload.InternalDraftCount);
+        Assert.Equal(1, payload.CreatedLineCount);
+        Assert.Equal(1824, payload.CreatedQty);
+        var internalDraft = Assert.Single(harness.Store.GetOrders()
+            .Where(order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft));
+        var line = Assert.Single(harness.GetOrderLines(internalDraft.Id));
+        Assert.Equal(34, line.ItemId);
+        Assert.Equal(1824, line.QtyOrdered);
+        Assert.Equal(0, harness.DocCount);
+        Assert.Equal(0, harness.TotalDocLineCount);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public async Task CreateProductionNeedOrders_DoesNotMutate_WhenReturningOkFalse()
+    {
+        var (harness, apiStore) = CreateMinStockGapScenario();
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        using var response = await host.Client.PostAsJsonAsync("/api/production-needs/create-orders", new
+        {
+            rows = new[]
+            {
+                new
+                {
+                    item_id = 34,
+                    qty_ordered = 1825d
+                }
+            }
+        });
+        var payload = await response.Content.ReadFromJsonAsync<ApiResult>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.NotNull(payload);
+        Assert.False(payload.Ok);
+        Assert.Equal(0, harness.OrderCount);
+        Assert.Equal(0, harness.TotalOrderLineCount);
+        Assert.Equal(0, harness.DocCount);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public async Task CreateProductionNeedOrders_DoesNotCreateDuplicate_WhenOpenInternalAlreadyCoversNeed()
+    {
+        var (harness, apiStore) = CreateMinStockGapScenario();
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        var first = await CreateOrdersAsync(host.Client, new
+        {
+            rows = new[]
+            {
+                new
+                {
+                    item_id = 34,
+                    qty_ordered = 1824d
+                }
+            }
+        });
+        using var secondResponse = await host.Client.PostAsJsonAsync("/api/production-needs/create-orders", new
+        {
+            rows = new[]
+            {
+                new
+                {
+                    item_id = 34,
+                    qty_ordered = 1824d
+                }
+            }
+        });
+        var second = await secondResponse.Content.ReadFromJsonAsync<ApiResult>();
+
+        Assert.True(first.Ok);
+        Assert.Equal(HttpStatusCode.BadRequest, secondResponse.StatusCode);
+        Assert.NotNull(second);
+        Assert.False(second.Ok);
+        var internalDraft = Assert.Single(harness.Store.GetOrders()
+            .Where(order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft));
+        Assert.Single(harness.GetOrderLines(internalDraft.Id));
+    }
+
+    [Fact]
+    public async Task PreviewAndCreate_Agree_OnRemainingMinStockNeed()
+    {
+        var (harness, apiStore) = CreateMinStockGapScenario();
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+        using var previewResponse = await host.Client.PostAsJsonAsync("/api/reports/production-need/create-orders/preview", new { });
+        var preview = await previewResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var previewRow = Assert.Single(preview.GetProperty("rows").EnumerateArray());
+
+        var payload = await CreateOrdersAsync(host.Client, new
+        {
+            rows = new[]
+            {
+                new
+                {
+                    item_id = previewRow.GetProperty("item_id").GetInt64(),
+                    qty_ordered = previewRow.GetProperty("qty_to_create").GetDouble()
+                }
+            }
+        });
+        var needRow = Assert.Single(new ProductionNeedService(harness.Store).GetRows(includeZeroNeed: true));
+
+        Assert.True(payload.Ok);
+        Assert.Equal(1824, payload.CreatedQty);
+        Assert.Equal(34, needRow.ItemId);
+        Assert.Equal(1824, needRow.OpenInternalOrderQty);
+        Assert.Equal(0, needRow.QtyToCreate);
+    }
+
+    [Fact]
     public async Task CreateOrdersFromProductionNeed_RejectsEmptyAndZeroQuantities()
     {
         var (harness, apiStore) = CreateInternalOnlyScenario();
@@ -1019,6 +1153,29 @@ public sealed class CreateOrdersFromProductionNeedTests
             MinStockQty = 500
         });
         harness.SeedBalance(itemId: 1002, locationId: 1, qty: 0);
+        return (harness, new InMemoryApiDocStore());
+    }
+
+    private static (CloseDocumentHarness Harness, InMemoryApiDocStore ApiStore) CreateMinStockGapScenario()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedLocation(new Location
+        {
+            Id = 1,
+            Code = "FG-01",
+            Name = "Готовая продукция",
+            AutoHuDistributionEnabled = false
+        });
+        harness.SeedItem(new Item
+        {
+            Id = 34,
+            Name = "Соус",
+            Gtin = "04607186950034",
+            ItemTypeName = "Готовая продукция",
+            ItemTypeEnableMinStockControl = true,
+            MinStockQty = 5472
+        });
+        harness.SeedBalance(itemId: 34, locationId: 1, qty: 3648);
         return (harness, new InMemoryApiDocStore());
     }
 

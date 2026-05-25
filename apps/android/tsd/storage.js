@@ -780,38 +780,53 @@
 
   function normalizeOutboundPickingLine(line) {
     return {
-      itemId: Number(line && line.item_id) || 0,
-      itemName: String((line && line.item_name) || ""),
-      orderLineId: Number(line && line.order_line_id) || 0,
-      locationId: Number(line && line.location_id) || 0,
-      locationCode: String((line && line.location_code) || ""),
+      itemId: Number(pickOutboundField(line, "itemId", "item_id")) || 0,
+      itemName: String(pickOutboundField(line, "itemName", "item_name") || ""),
+      orderLineId: Number(pickOutboundField(line, "orderLineId", "order_line_id")) || 0,
+      locationId: Number(pickOutboundField(line, "locationId", "location_id")) || 0,
+      locationCode: String(pickOutboundField(line, "locationCode", "location_code") || ""),
       qty: Number(line && line.qty) || 0,
     };
   }
 
   function normalizeOutboundPickingHu(row) {
     return {
-      huCode: String((row && row.hu_code) || ""),
+      huCode: String(pickOutboundField(row, "huCode", "hu_code") || ""),
       status: String((row && row.status) || "PENDING"),
       qty: Number(row && row.qty) || 0,
-      itemSummary: String((row && row.item_summary) || ""),
+      itemSummary: String(pickOutboundField(row, "itemSummary", "item_summary") || ""),
       lines: Array.isArray(row && row.lines)
         ? row.lines.map(normalizeOutboundPickingLine)
         : [],
     };
   }
 
+  function pickOutboundField(row, camelKey, snakeKey) {
+    if (!row) {
+      return undefined;
+    }
+    var camelValue = row[camelKey];
+    if (camelValue != null && camelValue !== "") {
+      return camelValue;
+    }
+    return row[snakeKey];
+  }
+
   function normalizeOutboundPickingOrder(row) {
     return {
-      orderId: Number(row && row.order_id) || 0,
-      orderRef: String((row && row.order_ref) || ""),
-      partnerName: String((row && row.partner_name) || ""),
+      orderId: Number(pickOutboundField(row, "orderId", "order_id")) || 0,
+      orderRef: String(pickOutboundField(row, "orderRef", "order_ref") || ""),
+      partnerName: String(pickOutboundField(row, "partnerName", "partner_name") || ""),
       status: String((row && row.status) || ""),
-      expectedHuCount: Number(row && row.expected_hu_count) || 0,
-      pickedHuCount: Number(row && row.picked_hu_count) || 0,
-      isComplete: row && row.is_complete === true,
-      draftOutboundDocId: Number(row && row.draft_outbound_doc_id) || 0,
-      draftOutboundDocRef: String((row && row.draft_outbound_doc_ref) || ""),
+      expectedHuCount: Number(pickOutboundField(row, "expectedHuCount", "expected_hu_count")) || 0,
+      pickedHuCount: Number(pickOutboundField(row, "pickedHuCount", "picked_hu_count")) || 0,
+      isComplete:
+        (row && row.isComplete === true) || (row && row.is_complete === true),
+      draftOutboundDocId:
+        Number(pickOutboundField(row, "draftOutboundDocId", "draft_outbound_doc_id")) || 0,
+      draftOutboundDocRef: String(
+        pickOutboundField(row, "draftOutboundDocRef", "draft_outbound_doc_ref") || ""
+      ),
       hus: Array.isArray(row && row.hus)
         ? row.hus.map(normalizeOutboundPickingHu)
         : [],
@@ -1337,6 +1352,9 @@
         return {
           ok: result && result.ok !== false,
           alreadyFilled: result && result.already_filled === true,
+          prdAutoClosed: !!(result && result.prd_auto_closed),
+          closedPrdDocRef: result && result.closed_prd_doc_ref ? String(result.closed_prd_doc_ref) : "",
+          closedPrdDocId: result && result.closed_prd_doc_id ? Number(result.closed_prd_doc_id) : null,
           pallet: result && result.pallet ? normalizeProductionPallet(result.pallet) : null,
           document: result && result.document ? normalizeProductionPalletDocument(result.document) : null,
         };
@@ -2780,6 +2798,7 @@
     apiGetOutboundPickingOrder: apiGetOutboundPickingOrder,
     apiScanOutboundPickingHu: apiScanOutboundPickingHu,
     apiCompleteOutboundPicking: apiCompleteOutboundPicking,
+    normalizeOutboundPickingOrder: normalizeOutboundPickingOrder,
     apiLogin: apiLogin,
   };
 

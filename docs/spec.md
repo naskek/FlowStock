@@ -13,6 +13,11 @@
   - deploy wrapper: `bash deploy/scripts/backfill_order_reservations.sh [--apply]`.
   - WPF может запускать dry-run/apply только через server API `/api/admin/maintenance/backfill-reservations/*`; apply требует `confirm = "APPLY"`.
   - Команда меняет только `order_receipt_plan_lines`, не пишет в `ledger` и не редактирует закрытые документы.
+- Для перехода на `new-ledger-logic` используется отдельный stage-1 compatibility слой, не legacy backfill:
+  - read-only аудит: `tools/audit/new-ledger-prod-compat-audit.sql`;
+  - dry-run/apply: `POST /api/admin/maintenance/new-ledger-transition/dry-run` и `/apply`, где apply требует `{ "confirm": "APPLY" }`;
+  - endpoint удаляет только stale HU-резервы активных `CUSTOMER`-заказов, у которых текущий ledger balance по HU `<= 0`; `ledger`, `docs`, `production_pallets`, заказы и закрытые документы не изменяются;
+  - `FILLED production_pallets` без receipt ledger и `DRAFT PRD` с ledger rows остаются диагностикой stage-1 и не исправляются автоматически.
 - Исторические статусы ЧЗ для заказов, по которым маркировка была проведена до появления новой модели, заполняются только явной maintenance-командой после backup БД:
   - dry-run: `dotnet FlowStock.Server.dll maintenance backfill-marking-status --created-before YYYY-MM-DD --dry-run`;
   - apply: `dotnet FlowStock.Server.dll maintenance backfill-marking-status --created-before YYYY-MM-DD --apply --confirm APPLY`.
@@ -74,6 +79,7 @@
 
 ## Инварианты
 - Остатки рассчитываются только из `ledger`.
+- `production_pallets` описывает план/факт производственного HU, но не является физическим остатком само по себе. Для отгрузки, CUSTOMER HU reserve/read-model и stage-1 transition пригодность HU подтверждается текущим положительным `ledger` balance; stale HU с балансом `<= 0` не участвует в `qty_produced`, `production_hu_codes` и outbound candidates.
 - Контроль минимального остатка включается флагом типа номенклатуры `enable_min_stock_control`.
   - Если `item_types.min_stock_uses_order_binding = FALSE`, контроль работает по физическому остатку из `ledger` (суммарно по всем локациям и HU для товара).
   - Если `item_types.min_stock_uses_order_binding = TRUE`, контроль работает по свободному остатку:
@@ -121,7 +127,12 @@
   - `GET /api/tsd/production/filling-docs` сохраняется как compatibility endpoint для старого PRD-ориентированного списка, но новый TSD UX его не использует;
   - `GET /api/docs/{docId}/production-pallets` возвращает паллеты, summary по PRD и summary по строкам заказа;
   - `POST /api/tsd/production/scan-pallet` валидирует выбранную паллету и возвращает read-only preview для подтверждения оператором, включая состав `lines` для mixed pallet, не меняя `ledger`;
-  - `POST /api/tsd/production/fill-pallet` принимает `hu_code` и `device_id`, находит плановую паллету, валидирует остаток по всем строкам состава и пишет складской факт по всем `production_pallet_lines`;
+  - `POST /api/tsd/production/fill-pallet` принимает `hu_code` и `device_id`, находит плановую паллету, валидирует остаток по всем строкам состава, переводит паллету в `FILLED`;
+  - при `FlowStock:ProductionAutoCloseOnFill = true` (ветка `new-ledger-logic`, default) сервер после fill изолирует паллету в отдельный PRD, закрывает его и пишет `ledger` (+qty); WPF close PRD в normal path не требуется;
+  - `PLANNED`/`PRINTED` не являются физическим stock; физический факт — только `ledger` после close PRD;
+  - TSD outbound: при `FlowStock:OutboundAutoCloseOnComplete = true` последний scan/complete закрывает OUT и пишет `ledger` (−qty);
+  - резерв HU для CUSTOMER (`order_receipt_plan_lines`) допускает только `LEDGER_STOCK`; `INTERNAL_FILLED` не используется;
+  - idempotency offline/retry для TSD scan — отдельная таблица событий планируется позже (пока не в схеме БД);
   - в пользовательских текстах используется термин `паллета`, а `HU` остается техническим идентификатором.
 
 ## Неизвестные товары
@@ -164,7 +175,7 @@
 - Для `locations` поддерживается флаг `auto_hu_distribution_enabled` (`Авто HU распределение`).
   - Если флаг включен, локация участвует в авто-распределении HU/остатков.
   - Если флаг выключен, локация исключается из авто-распределения и используется только при ручном выборе оператором.
-- В Admin есть отдельная action `очистить операции` для тестового cleanup (`docs/doc_lines/ledger/orders/order_lines/import events/errors`). Справочники при этом не затрагиваются.
+- В Admin есть отдельная action `очистить операции` для тестового cleanup (`docs/doc_lines/ledger/orders/order_lines/order_receipt_plan_lines/production_pallets/production_pallet_lines/import events/errors`, а также данные ЧЗ и складских заданий, связанные с заказами/документами). Справочники при этом не затрагиваются.
 - В Admin есть отдельный раздел глобального доступа к web blocks:
   - PC blocks: `Состояние склада`, `Каталог`, `Заказы`.
   - TSD main blocks: `Операции`, `Состояние склада`, `Каталог`, `Заказы`.

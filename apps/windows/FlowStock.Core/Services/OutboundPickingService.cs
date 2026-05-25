@@ -10,11 +10,21 @@ public sealed class OutboundPickingService
     private const string TsdPickingReadyComment = "TSD OUTBOUND PICKING READY";
     private readonly IDataStore _store;
     private readonly DocumentService _documents;
+    private readonly FlowStockLedgerFlowOptions _options;
 
     public OutboundPickingService(IDataStore store, DocumentService documents)
+        : this(store, documents, new FlowStockLedgerFlowOptions())
+    {
+    }
+
+    public OutboundPickingService(
+        IDataStore store,
+        DocumentService documents,
+        FlowStockLedgerFlowOptions options)
     {
         _store = store;
         _documents = documents;
+        _options = options;
     }
 
     public IReadOnlyList<OutboundPickingOrderRow> GetOrders()
@@ -38,12 +48,13 @@ public sealed class OutboundPickingService
 
     public OutboundPickingOrderDetails GetDetails(long orderId)
     {
-        var order = EnsureAcceptedCustomerOrder(orderId);
+        var order = EnsureCustomerOrderForPickingView(orderId);
         var expected = BuildExpectedHus(order);
         var draft = FindDraftOutbound(orderId);
-        var pickedHuCodes = draft == null
+        var pickingDoc = draft ?? FindTsdPickingOutbound(orderId);
+        var pickedHuCodes = pickingDoc == null
             ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            : _store.GetDocLines(draft.Id)
+            : _store.GetDocLines(pickingDoc.Id)
                 .Select(line => NormalizeHu(line.FromHu))
                 .Where(code => !string.IsNullOrWhiteSpace(code))
                 .Cast<string>()
@@ -55,8 +66,8 @@ public sealed class OutboundPickingService
             OrderRef = order.OrderRef,
             PartnerName = order.PartnerName ?? string.Empty,
             Status = order.StatusDisplay,
-            DraftOutboundDocId = draft?.Id,
-            DraftOutboundDocRef = draft?.DocRef,
+            DraftOutboundDocId = draft?.Id ?? pickingDoc?.Id,
+            DraftOutboundDocRef = draft?.DocRef ?? pickingDoc?.DocRef,
             ExpectedHuCount = expected.Count,
             PickedHuCount = expected.Count(hu => pickedHuCodes.Contains(hu.HuCode)),
             Hus = expected
@@ -96,6 +107,13 @@ public sealed class OutboundPickingService
                 }
 
                 return OutboundPickingScanResult.Failure("HU_NOT_EXPECTED", "HU не ожидается для выбранного заказа.");
+            }
+
+            if (!HasPhysicalHuStock(expectedHu))
+            {
+                return OutboundPickingScanResult.Failure(
+                    "HU_NO_PHYSICAL_STOCK",
+                    "HU не имеет физического остатка на складе (ledger).");
             }
 
             var foreignDraft = FindOpenOutboundByHu(normalizedHu, order.Id);
@@ -161,11 +179,30 @@ public sealed class OutboundPickingService
                 }
             });
 
+            var details = GetDetails(order.Id);
+            if (_options.OutboundAutoCloseOnComplete && details.IsComplete)
+            {
+                var autoClose = TryAutoCloseOutbound(order.Id);
+                if (!autoClose.Success)
+                {
+                    return OutboundPickingScanResult.Failure(autoClose.ErrorCode ?? "OUTBOUND_CLOSE_FAILED", autoClose.Message);
+                }
+
+                return new OutboundPickingScanResult
+                {
+                    Success = true,
+                    Message = autoClose.Message,
+                    OutboundClosed = true,
+                    ClosedOutboundDocRef = autoClose.ClosedDocRef,
+                    Order = autoClose.Order ?? details
+                };
+            }
+
             return new OutboundPickingScanResult
             {
                 Success = true,
                 Message = "HU подобрана.",
-                Order = GetDetails(order.Id)
+                Order = details
             };
         }
         catch (InvalidOperationException ex)
@@ -178,7 +215,29 @@ public sealed class OutboundPickingService
     {
         try
         {
-            var order = EnsureAcceptedCustomerOrder(orderId);
+            var order = _store.GetOrder(orderId)
+                ?? throw new InvalidOperationException("Заказ не найден.");
+            if (order.Type != OrderType.Customer)
+            {
+                throw new InvalidOperationException("Для подбора доступны только клиентские заказы.");
+            }
+
+            var closedPickingDoc = FindTsdPickingOutbound(orderId);
+            if (order.Status == OrderStatus.Shipped
+                && closedPickingDoc?.Status == DocStatus.Closed)
+            {
+                return new OutboundPickingCompleteResult
+                {
+                    Success = true,
+                    OutboundClosed = true,
+                    ClosedOutboundDocId = closedPickingDoc.Id,
+                    ClosedOutboundDocRef = closedPickingDoc.DocRef,
+                    Message = $"Отгрузка уже проведена ({closedPickingDoc.DocRef}).",
+                    Order = GetDetails(orderId)
+                };
+            }
+
+            order = EnsureAcceptedCustomerOrder(orderId);
             var details = GetDetails(order.Id);
             if (details.ExpectedHuCount == 0)
             {
@@ -188,6 +247,27 @@ public sealed class OutboundPickingService
             if (!details.IsComplete)
             {
                 return OutboundPickingCompleteResult.Failure("PICKING_INCOMPLETE", "Не все паллеты подобраны.");
+            }
+
+            if (_options.OutboundAutoCloseOnComplete)
+            {
+                var autoClose = TryAutoCloseOutbound(order.Id);
+                if (!autoClose.Success)
+                {
+                    return OutboundPickingCompleteResult.Failure(
+                        autoClose.ErrorCode ?? "OUTBOUND_CLOSE_FAILED",
+                        autoClose.Message);
+                }
+
+                return new OutboundPickingCompleteResult
+                {
+                    Success = true,
+                    OutboundClosed = true,
+                    ClosedOutboundDocId = autoClose.ClosedDocId,
+                    ClosedOutboundDocRef = autoClose.ClosedDocRef,
+                    Message = autoClose.Message,
+                    Order = autoClose.Order ?? GetDetails(order.Id)
+                };
             }
 
             var draft = FindDraftOutbound(order.Id);
@@ -208,6 +288,40 @@ public sealed class OutboundPickingService
         {
             return OutboundPickingCompleteResult.Failure("VALIDATION_ERROR", ex.Message);
         }
+    }
+
+    private OutboundAutoCloseAttempt TryAutoCloseOutbound(long orderId)
+    {
+        var outbound = FindTsdPickingOutbound(orderId);
+        if (outbound == null)
+        {
+            return OutboundAutoCloseAttempt.Failure("DRAFT_OUTBOUND_NOT_FOUND", "Черновик отгрузки не найден.");
+        }
+
+        if (outbound.Status == DocStatus.Closed)
+        {
+            return OutboundAutoCloseAttempt.AlreadyClosed(outbound, GetDetails(orderId));
+        }
+
+        var close = _documents.TryCloseDoc(outbound.Id, allowNegative: false);
+        if (!close.Success)
+        {
+            var message = close.Errors.Count > 0
+                ? string.Join("; ", close.Errors)
+                : "Не удалось провести отгрузку.";
+            return OutboundAutoCloseAttempt.Failure("OUTBOUND_CLOSE_FAILED", message);
+        }
+
+        var closedDoc = _store.GetDoc(outbound.Id);
+        return OutboundAutoCloseAttempt.Closed(
+            closedDoc?.DocRef ?? outbound.DocRef,
+            outbound.Id,
+            GetDetails(orderId));
+    }
+
+    private static bool HasPhysicalHuStock(ExpectedHu expectedHu)
+    {
+        return expectedHu.Lines.Sum(line => line.Qty) > QtyTolerance;
     }
 
     private long CreateDraftOutbound(Order order, string? deviceId)
@@ -305,6 +419,20 @@ public sealed class OutboundPickingService
             .FirstOrDefault();
     }
 
+    private Doc? FindTsdPickingOutbound(long orderId)
+    {
+        return _store.GetDocsByOrder(orderId)
+            .Where(doc => doc.Type == DocType.Outbound && IsTsdPickingDoc(doc))
+            .OrderByDescending(doc => doc.Id)
+            .FirstOrDefault();
+    }
+
+    private static bool IsTsdPickingDoc(Doc doc)
+    {
+        return !string.IsNullOrWhiteSpace(doc.Comment)
+               && doc.Comment.StartsWith(TsdPickingComment, StringComparison.OrdinalIgnoreCase);
+    }
+
     private Doc? FindOpenOutboundByHu(string huCode, long currentOrderId)
     {
         var normalizedHu = NormalizeHu(huCode);
@@ -335,6 +463,27 @@ public sealed class OutboundPickingService
         }
 
         return order;
+    }
+
+    private Order EnsureCustomerOrderForPickingView(long orderId)
+    {
+        var order = _store.GetOrder(orderId);
+        if (order == null)
+        {
+            throw new InvalidOperationException("Заказ не найден.");
+        }
+
+        if (order.Type != OrderType.Customer)
+        {
+            throw new InvalidOperationException("Для подбора доступны только клиентские заказы.");
+        }
+
+        if (IsAcceptedCustomerOrder(order) || FindTsdPickingOutbound(orderId) != null)
+        {
+            return order;
+        }
+
+        throw new InvalidOperationException("Для подбора доступны только клиентские заказы в статусе Готов.");
     }
 
     private static bool IsAcceptedCustomerOrder(Order order)

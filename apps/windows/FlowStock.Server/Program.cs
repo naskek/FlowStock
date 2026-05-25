@@ -39,9 +39,23 @@ builder.Services.AddSingleton<PostgresDataStore>(_ =>
 });
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.IDataStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton<IApiDocStore>(new PostgresApiDocStore(postgresConnectionString));
+builder.Services.Configure<FlowStockLedgerFlowOptions>(
+    builder.Configuration.GetSection(FlowStockLedgerFlowOptions.SectionName));
+builder.Services.AddSingleton(sp =>
+{
+    var options = new FlowStockLedgerFlowOptions();
+    builder.Configuration.GetSection(FlowStockLedgerFlowOptions.SectionName).Bind(options);
+    return options;
+});
 builder.Services.AddSingleton<DocumentService>();
-builder.Services.AddSingleton<ProductionPalletService>();
-builder.Services.AddSingleton<OutboundPickingService>();
+builder.Services.AddSingleton<ProductionFillCloseService>();
+builder.Services.AddSingleton<ProductionPalletService>(sp => new ProductionPalletService(
+    sp.GetRequiredService<IDataStore>(),
+    sp.GetRequiredService<ProductionFillCloseService>()));
+builder.Services.AddSingleton<OutboundPickingService>(sp => new OutboundPickingService(
+    sp.GetRequiredService<IDataStore>(),
+    sp.GetRequiredService<DocumentService>(),
+    sp.GetRequiredService<FlowStockLedgerFlowOptions>()));
 builder.Services.AddSingleton<FlowStock.Core.Services.Warehouse.WarehouseActionBundleService>();
 builder.Services.AddSingleton<FlowStock.Core.Services.Warehouse.WarehouseTaskExecutionService>();
 builder.Services.AddSingleton<CatalogService>();
@@ -65,6 +79,7 @@ OrderLinesEndpoint.Map(app);
 OrderHuReservationCandidatesEndpoint.Map(app);
 OrderHuReservationApplyEndpoint.Map(app);
 ProductionNeedCreateOrdersEndpoint.Map(app);
+NewLedgerTransitionEndpoints.Map(app);
 MaintenanceBackfillEndpoints.Map(app);
 app.MapGet("/api/version", () => Results.Ok(new { version = appVersion }));
 

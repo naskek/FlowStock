@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Windows;
+using System.Windows.Input;
 
 namespace FlowStock.App;
 
@@ -160,6 +161,19 @@ public partial class BackupManagerWindow : Window
     {
         _selectedBackup = BackupsGrid.SelectedItem as BackupInfo;
         UpdateDeleteButton();
+    }
+
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (!DeleteKeyGesture.IsDeleteGesture(e)
+            || !BackupsGrid.IsKeyboardFocusWithin
+            || _selectedBackup == null)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        DeleteBackup_Click(BackupsGrid, new RoutedEventArgs());
     }
 
     private void UpdateDeleteButton()

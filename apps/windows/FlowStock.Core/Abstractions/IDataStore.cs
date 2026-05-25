@@ -100,6 +100,7 @@ public interface IDataStore
         long orderId,
         IReadOnlyCollection<long> orderLineIds);
     int CountLedgerEntriesByDocId(long docId);
+    double GetLedgerQtyByDocItemHu(long docId, long itemId, string? huCode);
     ProductionPalletPlanCleanupCounts CancelProductionPalletPlan(long docId);
     ProductionPalletPlanAdoptionResult AdoptProductionPalletPlan(
         long sourcePrdDocId,
@@ -107,6 +108,7 @@ public interface IDataStore
         long sourceOrderId,
         long targetOrderId,
         IReadOnlyDictionary<long, long> targetOrderLineIdByItemId);
+    void AssignProductionPalletToPrdDoc(long productionPalletId, long targetPrdDocId);
     double GetFilledProductionPalletQtyByOrderLine(long orderLineId, long? excludePalletId = null);
     void UpdateProductionPalletHu(long palletId, string huCode);
     void ReassignOpenProductionPalletsByHu(

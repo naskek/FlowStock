@@ -791,8 +791,10 @@
                         <Button x:Name="LocationDeleteButton" Content="Удалить" Click="DeleteLocation_Click" Margin="8,0,0,0" TabIndex="3" />
                     </StackPanel>
                     <DataGrid x:Name="LocationsGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
+                              SelectionMode="Extended" SelectionUnit="FullRow"
                               SelectionChanged="LocationsGrid_SelectionChanged"
                               MouseDoubleClick="LocationsGrid_MouseDoubleClick"
+                              KeyDown="LocationsGrid_KeyDown"
                               TabIndex="20">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="ID" Binding="{Binding Id}" Width="Auto" MaxWidth="120" />
@@ -816,8 +818,10 @@
                         <Button x:Name="PartnerDeleteButton" Content="Удалить" Click="DeletePartner_Click" Margin="8,0,0,0" TabIndex="3" />
                     </StackPanel>
                     <DataGrid x:Name="PartnersGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
+                              SelectionMode="Extended" SelectionUnit="FullRow"
                               SelectionChanged="PartnersGrid_SelectionChanged"
                               MouseDoubleClick="PartnersGrid_MouseDoubleClick"
+                              KeyDown="PartnersGrid_KeyDown"
                               TabIndex="20">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="ID" Binding="{Binding Id}" Width="Auto" MaxWidth="120" />

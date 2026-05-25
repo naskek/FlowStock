@@ -242,6 +242,16 @@ public sealed class OrderLinesBatchEndpointTests
                     }
                 ]
                 : Array.Empty<OrderReceiptPlanLine>());
+        store.Setup(data => data.GetHuStockRows())
+            .Returns([
+                new HuStockRow
+                {
+                    ItemId = 5,
+                    LocationId = 1,
+                    HuCode = "HU-PLAN",
+                    Qty = 2
+                }
+            ]);
         store.Setup(data => data.GetDocsByOrder(It.IsAny<long>())).Returns(Array.Empty<Doc>());
 
         return store;

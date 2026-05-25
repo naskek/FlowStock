@@ -118,19 +118,25 @@ public static class OrderLinesEndpoint
                 continue;
             }
 
+            var huCode = reservedLine.ToHu.Trim();
+            if (!HasPositiveHuBalance(store, reservedLine.ItemId, huCode))
+            {
+                continue;
+            }
+
             if (!rows.TryGetValue(reservedLine.OrderLineId, out var huCodes))
             {
                 huCodes = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
                 rows[reservedLine.OrderLineId] = huCodes;
             }
 
-            huCodes.Add(reservedLine.ToHu.Trim());
+            huCodes.Add(huCode);
         }
 
         foreach (var doc in store.GetDocsByOrder(orderId).Where(doc => doc.Type == DocType.ProductionReceipt))
         {
             foreach (var pallet in store.GetProductionPalletsByDoc(doc.Id)
-                         .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)))
+                         .Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
             {
                 var componentLines = pallet.Lines.Count > 0
                     ? pallet.Lines
@@ -144,6 +150,12 @@ public static class OrderLinesEndpoint
                 foreach (var line in componentLines)
                 {
                     if (!line.OrderLineId.HasValue || string.IsNullOrWhiteSpace(pallet.HuCode))
+                    {
+                        continue;
+                    }
+
+                    var itemId = line.ItemId > 0 ? line.ItemId : pallet.ItemId;
+                    if (!HasPositiveHuBalance(store, itemId, pallet.HuCode))
                     {
                         continue;
                     }
@@ -165,6 +177,14 @@ public static class OrderLinesEndpoint
         }
 
         return result;
+    }
+
+    private static bool HasPositiveHuBalance(IDataStore store, long itemId, string huCode)
+    {
+        return store.GetHuStockRows()
+            .Where(row => row.ItemId == itemId)
+            .Where(row => string.Equals(row.HuCode?.Trim(), huCode, StringComparison.OrdinalIgnoreCase))
+            .Sum(row => row.Qty) > StockQuantityRules.QtyTolerance;
     }
 
     private static OrderLineResponse MapOrderLine(
