@@ -4,6 +4,7 @@
         Title="Заказ"
         Height="700" Width="1100"
         WindowStartupLocation="CenterOwner"
+        PreviewKeyDown="OrderDetailsWindow_PreviewKeyDown"
         Closing="OrderDetailsWindow_Closing">
     <Window.Resources>
         <Style x:Key="OrderActionButtonStyle" TargetType="Button">
@@ -151,6 +152,7 @@
                 <DataGrid x:Name="OrderLinesGrid" AutoGenerateColumns="False" IsReadOnly="True"
                           SelectionChanged="OrderLinesGrid_SelectionChanged"
                           MouseDoubleClick="OrderLinesGrid_MouseDoubleClick"
+                          KeyDown="OrderLinesGrid_KeyDown"
                           TabIndex="10">
                     <DataGrid.RowStyle>
                         <Style TargetType="DataGridRow">

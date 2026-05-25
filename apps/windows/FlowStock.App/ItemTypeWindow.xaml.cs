@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Windows;
+using System.Windows.Input;
 using FlowStock.Core.Models;
 using Npgsql;
 
@@ -165,6 +166,19 @@ public partial class ItemTypeWindow : Window
         EnableMarkingCheck.IsChecked = _selectedItemType.EnableMarking;
         SaveButton.Content = "Сохранить";
         UpdateDeleteButton();
+    }
+
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (!DeleteKeyGesture.IsDeleteGesture(e)
+            || !ItemTypesGrid.IsKeyboardFocusWithin
+            || _selectedItemType == null)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        Delete_Click(ItemTypesGrid, new RoutedEventArgs());
     }
 
     private void ResetForm()

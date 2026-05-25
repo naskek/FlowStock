@@ -78,6 +78,19 @@ public partial class OrderDetailsWindow : Window
         CommentBox.TextChanged += OrderHeaderChanged;
     }
 
+    private void OrderDetailsWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (!DeleteKeyGesture.IsDeleteGesture(e)
+            || !OrderLinesGrid.IsKeyboardFocusWithin
+            || !CanDeleteSelectedOrderLine())
+        {
+            return;
+        }
+
+        e.Handled = true;
+        DeleteLine_Click(OrderLinesGrid, new RoutedEventArgs());
+    }
+
     private void LoadPartners()
     {
         _partnersAll.Clear();
@@ -1102,6 +1115,17 @@ public partial class OrderDetailsWindow : Window
         MarkDirty();
     }
 
+    private void OrderLinesGrid_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (!DeleteKeyGesture.IsDeleteGesture(e) || !CanDeleteSelectedOrderLine())
+        {
+            return;
+        }
+
+        e.Handled = true;
+        DeleteLine_Click(sender, new RoutedEventArgs());
+    }
+
     private void MixedPalletCheckBox_Click(object sender, RoutedEventArgs e)
     {
         if (!EnsureEditable())
@@ -1200,6 +1224,11 @@ public partial class OrderDetailsWindow : Window
             OrderLineView line => line,
             _ => null
         };
+    }
+
+    private bool CanDeleteSelectedOrderLine()
+    {
+        return _selectedLine != null && DeleteLineButton.IsEnabled;
     }
 
     private static bool TryGetLineFromGridContext(object? dataContext, out OrderLineView line)

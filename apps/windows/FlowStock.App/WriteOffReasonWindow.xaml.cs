@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Windows;
+using System.Windows.Input;
 using FlowStock.Core.Models;
 
 namespace FlowStock.App;
@@ -133,6 +134,19 @@ public partial class WriteOffReasonWindow : Window
     {
         _selectedReason = ReasonsGrid.SelectedItem as WriteOffReason;
         UpdateDeleteButton();
+    }
+
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (!DeleteKeyGesture.IsDeleteGesture(e)
+            || !ReasonsGrid.IsKeyboardFocusWithin
+            || _selectedReason == null)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        DeleteReason_Click(ReasonsGrid, new RoutedEventArgs());
     }
 
     private void UpdateDeleteButton()

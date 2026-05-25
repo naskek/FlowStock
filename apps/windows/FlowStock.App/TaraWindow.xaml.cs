@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Windows;
+using System.Windows.Input;
 using FlowStock.Core.Models;
 using Npgsql;
 
@@ -119,6 +120,19 @@ public partial class TaraWindow : Window
     {
         _selectedTara = TarasGrid.SelectedItem as Tara;
         UpdateDeleteButton();
+    }
+
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (!DeleteKeyGesture.IsDeleteGesture(e)
+            || !TarasGrid.IsKeyboardFocusWithin
+            || _selectedTara == null)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        DeleteTara_Click(TarasGrid, new RoutedEventArgs());
     }
 
     private void UpdateDeleteButton()

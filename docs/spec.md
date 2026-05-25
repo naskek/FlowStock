@@ -169,7 +169,7 @@
 - Для `locations` поддерживается флаг `auto_hu_distribution_enabled` (`Авто HU распределение`).
   - Если флаг включен, локация участвует в авто-распределении HU/остатков.
   - Если флаг выключен, локация исключается из авто-распределения и используется только при ручном выборе оператором.
-- В Admin есть отдельная action `очистить операции` для тестового cleanup (`docs/doc_lines/ledger/orders/order_lines/import events/errors`). Справочники при этом не затрагиваются.
+- В Admin есть отдельная action `очистить операции` для тестового cleanup (`docs/doc_lines/ledger/orders/order_lines/order_receipt_plan_lines/production_pallets/production_pallet_lines/import events/errors`, а также данные ЧЗ и складских заданий, связанные с заказами/документами). Справочники при этом не затрагиваются.
 - В Admin есть отдельный раздел глобального доступа к web blocks:
   - PC blocks: `Состояние склада`, `Каталог`, `Заказы`.
   - TSD main blocks: `Операции`, `Состояние склада`, `Каталог`, `Заказы`.
