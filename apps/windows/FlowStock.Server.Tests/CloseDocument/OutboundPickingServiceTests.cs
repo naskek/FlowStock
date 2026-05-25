@@ -123,6 +123,20 @@ public sealed class OutboundPickingServiceTests
     }
 
     [Fact]
+    public void ScanRejectsHuReservedForAnotherCustomerOrder()
+    {
+        var harness = CreateBasicPickingHarness();
+        SeedOrder(harness, 30, 301, "SO-030", OrderType.Customer, OrderStatus.Accepted, "HU-000030", 3);
+
+        var result = CreatePickingService(harness).Scan(30, "HU-000001", "TSD-01");
+
+        Assert.False(result.Success);
+        Assert.Equal("HU_NOT_EXPECTED", result.ErrorCode);
+        Assert.DoesNotContain(harness.Store.GetDocsByOrder(30), doc => doc.Type == DocType.Outbound);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
     public void CompleteMarksReadyButDoesNotClose()
     {
         var harness = CreateBasicPickingHarness();
