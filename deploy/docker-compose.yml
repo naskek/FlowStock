@@ -56,6 +56,9 @@ services:
 
       FLOWSTOCK_TSD_ROOT: /app/tsd
       FLOWSTOCK_PC_ROOT: /app/tsd/pc
+      FLOWSTOCK_COMMERCIAL_ROOT: /app/commercial
+    volumes:
+      - commercial_files:/app/commercial
     depends_on:
       postgres:
         condition: service_healthy
@@ -107,3 +110,4 @@ services:
 volumes:
   pgdata:
   pgbackups:
+  commercial_files:

@@ -1,0 +1,67 @@
+<Window x:Class="FlowStock.App.CommercialOfferCreateWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Создание коммерческого предложения"
+        Height="520" Width="560"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="160" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <TextBlock Grid.Row="0" Grid.Column="0" Text="Контрагент *" VerticalAlignment="Center" />
+        <ComboBox x:Name="PartnerCombo" Grid.Row="0" Grid.Column="1" Margin="8,0,0,8"
+                  DisplayMemberPath="DisplayName" SelectionChanged="PartnerCombo_SelectionChanged" />
+
+        <TextBlock Grid.Row="1" Grid.Column="0" Text="Группа цен *" VerticalAlignment="Center" />
+        <ComboBox x:Name="PriceGroupCombo" Grid.Row="1" Grid.Column="1" Margin="8,0,0,8"
+                  DisplayMemberPath="Name" SelectionChanged="PriceGroupCombo_SelectionChanged" />
+
+        <TextBlock Grid.Row="2" Grid.Column="0" Text="Срок действия" VerticalAlignment="Center" />
+        <DatePicker x:Name="ValidUntilPicker" Grid.Row="2" Grid.Column="1" Margin="8,0,0,8" />
+
+        <TextBlock Grid.Row="3" Grid.Column="0" Text="Контактное лицо" VerticalAlignment="Center" />
+        <TextBox x:Name="ContactPersonBox" Grid.Row="3" Grid.Column="1" Margin="8,0,0,8" />
+
+        <TextBlock Grid.Row="4" Grid.Column="0" Text="Телефон" VerticalAlignment="Center" />
+        <TextBox x:Name="ContactPhoneBox" Grid.Row="4" Grid.Column="1" Margin="8,0,0,8" />
+
+        <TextBlock Grid.Row="5" Grid.Column="0" Text="Email" VerticalAlignment="Center" />
+        <TextBox x:Name="ContactEmailBox" Grid.Row="5" Grid.Column="1" Margin="8,0,0,8" />
+
+        <TextBlock Grid.Row="6" Grid.Column="0" Text="Условия оплаты" VerticalAlignment="Center" />
+        <TextBox x:Name="PaymentTermsBox" Grid.Row="6" Grid.Column="1" Margin="8,0,0,8" />
+
+        <TextBlock Grid.Row="7" Grid.Column="0" Text="Условия доставки" VerticalAlignment="Center" />
+        <TextBox x:Name="DeliveryTermsBox" Grid.Row="7" Grid.Column="1" Margin="8,0,0,8" />
+
+        <TextBlock Grid.Row="8" Grid.Column="0" Text="Комментарий" VerticalAlignment="Top" Margin="0,4,0,0" />
+        <TextBox x:Name="CommentBox" Grid.Row="8" Grid.Column="1" Margin="8,0,0,8" Height="72"
+                 TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" />
+
+        <TextBlock x:Name="HintText" Grid.Row="9" Grid.Column="0" Grid.ColumnSpan="2"
+                   Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,8" />
+
+        <StackPanel Grid.Row="11" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="CreateButton" Content="Создать" Width="120" IsDefault="True"
+                    Click="Create_Click" IsEnabled="False" />
+            <Button Content="Отмена" Width="120" IsCancel="True" Margin="8,0,0,0" />
+        </StackPanel>
+    </Grid>
+</Window>

@@ -1,0 +1,65 @@
+<Window x:Class="FlowStock.App.CommercialOfferWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Коммерческое предложение"
+        Height="620" Width="980"
+        WindowStartupLocation="CenterOwner">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+            <TextBlock Text="Номер:" VerticalAlignment="Center" />
+            <TextBlock x:Name="OfferRefText" Margin="8,0,16,0" FontWeight="Bold" VerticalAlignment="Center" />
+            <TextBlock Text="Статус:" VerticalAlignment="Center" />
+            <TextBlock x:Name="StatusText" Margin="8,0,16,0" VerticalAlignment="Center" />
+            <TextBlock Text="Контрагент:" VerticalAlignment="Center" />
+            <TextBlock x:Name="PartnerText" Margin="8,0,0,0" VerticalAlignment="Center" />
+        </StackPanel>
+
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
+            <Button x:Name="ChangePartnerButton" Content="Изменить контрагента" Click="ChangePartner_Click" />
+            <Button x:Name="AddLineButton" Content="Добавить товар" Click="AddLine_Click" />
+            <Button x:Name="DeleteLineButton" Content="Удалить строку" Click="DeleteLine_Click" Margin="8,0,0,0" />
+            <Button x:Name="RecalculateButton" Content="Пересчитать цены" Click="Recalculate_Click" Margin="8,0,0,0" />
+            <Button Content="Сформировать DOCX" Click="GenerateDocx_Click" Margin="8,0,0,0" />
+        </StackPanel>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,8">
+            <Button x:Name="SetSentButton" Content="Сменить статус: Отправлено" Click="SetSent_Click" />
+            <Button x:Name="SetWonButton" Content="Сменить статус: Продано" Click="SetWon_Click" Margin="8,0,0,0" />
+            <Button x:Name="CreateOrderButton" Content="Создать заказ" Click="CreateOrder_Click" Margin="8,0,0,0" />
+        </StackPanel>
+
+        <DataGrid x:Name="LinesGrid" Grid.Row="3" AutoGenerateColumns="False" IsReadOnly="True">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="#" Binding="{Binding LineNo}" Width="40" />
+                <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
+                <DataGridTextColumn Header="Кол-во" Binding="{Binding Qty}" Width="80" />
+                <DataGridTextColumn Header="Базовая цена" Binding="{Binding BasePrice, StringFormat=0.00}" Width="100" />
+                <DataGridTextColumn Header="Скидка, %" Binding="{Binding FinalDiscountPercent, StringFormat=0.##}" Width="90" />
+                <DataGridTextColumn Header="Цена" Binding="{Binding FinalPrice, StringFormat=0.00}" Width="90" />
+                <DataGridTextColumn Header="Сумма" Binding="{Binding LineTotal, StringFormat=0.00}" Width="100" />
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <TextBlock x:Name="ZeroPriceWarningText" Grid.Row="4" Foreground="DarkRed" TextWrapping="Wrap"
+                   Margin="0,0,0,8" Visibility="Collapsed" />
+
+        <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,0,8">
+            <TextBlock Text="Итого:" VerticalAlignment="Center" />
+            <TextBlock x:Name="TotalText" Margin="8,0,0,0" FontWeight="Bold" VerticalAlignment="Center" />
+        </StackPanel>
+
+        <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="Закрыть" Width="120" IsCancel="True" />
+        </StackPanel>
+    </Grid>
+</Window>

@@ -27,6 +27,10 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<Uom> _uoms = new();
     private readonly ObservableCollection<Tara> _taras = new();
     private readonly ObservableCollection<PartnerRow> _partners = new();
+    private readonly ObservableCollection<CommercialPriceGroupRow> _priceGroups = new();
+    private readonly ObservableCollection<CommercialItemPriceRow> _itemPrices = new();
+    private CommercialPriceGroupRow? _selectedPriceGroup;
+    private readonly ObservableCollection<CommercialOfferRow> _commercialOffers = new();
     private readonly ObservableCollection<Doc> _docs = new();
     private readonly ObservableCollection<Order> _orders = new();
     private readonly ObservableCollection<WarehouseBundleListRow> _warehouseBundles = new();
@@ -86,8 +90,10 @@ public partial class MainWindow : Window
     private const int TabTasksIndex = 4;
     private const int TabItemsIndex = 5;
     private const int TabLocationsIndex = 6;
-    private const int TabPartnersIndex = 7;
-    private const int TabKmIndex = 8;
+    private const int TabPriceGroupsIndex = 7;
+    private const int TabCommercialOffersIndex = 8;
+    private const int TabPartnersIndex = 9;
+    private const int TabKmIndex = 10;
     private const int OrdersPageSize = 15;
     private int _ordersPagedDepth;
     private bool _ordersHasMore;
@@ -100,6 +106,9 @@ public partial class MainWindow : Window
         ItemsGrid.ItemsSource = _items;
         LocationsGrid.ItemsSource = _locations;
         PartnersGrid.ItemsSource = _partners;
+        PriceGroupsGrid.ItemsSource = _priceGroups;
+        ItemPricesGrid.ItemsSource = _itemPrices;
+        CommercialOffersGrid.ItemsSource = _commercialOffers;
         DocsGrid.ItemsSource = _docs;
         OrdersGrid.ItemsSource = _orders;
         WarehouseBundlesGrid.ItemsSource = _warehouseBundles;
@@ -281,6 +290,8 @@ public partial class MainWindow : Window
         LoadTaras();
         LoadLocations();
         LoadPartners();
+        LoadCommercialPriceGroups();
+        LoadCommercialOffers();
         LoadDocs();
         LoadOrders();
         LoadStock(null);
@@ -511,6 +522,12 @@ public partial class MainWindow : Window
                     break;
                 case TabLocationsIndex:
                     LoadLocations();
+                    break;
+                case TabPriceGroupsIndex:
+                    LoadCommercialPriceGroups();
+                    break;
+                case TabCommercialOffersIndex:
+                    LoadCommercialOffers();
                     break;
                 case TabPartnersIndex:
                     LoadPartners();
@@ -3864,5 +3881,337 @@ public partial class MainWindow : Window
     }
 
     private sealed record ImportItemsSummary(int Created, int Duplicates, int EmptyRows, int InvalidRows, int Errors);
+
+    private void LoadCommercialPriceGroups()
+    {
+        var selectedId = _selectedPriceGroup?.Id;
+        _priceGroups.Clear();
+        if (!_services.WpfCommercialApi.TryGetPriceGroups(out var groups))
+        {
+            return;
+        }
+
+        foreach (var group in groups.OrderByDescending(g => g.IsSystem).ThenBy(g => g.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            _priceGroups.Add(group);
+        }
+
+        if (selectedId.HasValue)
+        {
+            PriceGroupsGrid.SelectedItem = _priceGroups.FirstOrDefault(g => g.Id == selectedId.Value);
+        }
+        else if (_priceGroups.Count > 0 && PriceGroupsGrid.SelectedItem == null)
+        {
+            PriceGroupsGrid.SelectedIndex = 0;
+        }
+    }
+
+    private void PriceGroupsGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        _selectedPriceGroup = PriceGroupsGrid.SelectedItem as CommercialPriceGroupRow;
+        if (_selectedPriceGroup == null)
+        {
+            SelectedPriceGroupTitle.Text = "Выберите ценовую группу слева";
+            _itemPrices.Clear();
+            UpdateItemPriceButtons();
+            return;
+        }
+
+        SelectedPriceGroupTitle.Text = $"Цены товаров: {_selectedPriceGroup.Name}";
+        LoadItemPricesForSelectedGroup();
+    }
+
+    private void LoadItemPricesForSelectedGroup()
+    {
+        _itemPrices.Clear();
+        ItemPriceStatusText.Text = string.Empty;
+        if (_selectedPriceGroup == null)
+        {
+            return;
+        }
+
+        var search = ItemPriceSearchBox.Text?.Trim();
+        var hasPrice = OnlyWithoutPriceCheck.IsChecked == true ? false : (bool?)null;
+        var loadedFromApi = _services.WpfCommercialApi.TryGetItemPriceCatalog(
+            _selectedPriceGroup.Id,
+            out var rows,
+            search,
+            hasPrice);
+
+        if (!loadedFromApi)
+        {
+            if (!TryBuildItemPriceFallback(_selectedPriceGroup.Id, search, hasPrice, out rows))
+            {
+                ItemPriceStatusText.Text = "Не удалось загрузить список товаров. Проверьте, что сервер FlowStock запущен.";
+                MessageBox.Show(
+                    "Не удалось загрузить цены товаров с сервера.\nПроверьте подключение к серверу и нажмите «Обновить список».",
+                    "Коммерция / Цены",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                UpdateItemPriceButtons();
+                return;
+            }
+
+            ItemPriceStatusText.Text = "Список загружен из каталога (сервис цен временно недоступен).";
+        }
+        else if (rows.Count == 0 && string.IsNullOrWhiteSpace(search) && !hasPrice.HasValue)
+        {
+            if (TryBuildItemPriceFallback(_selectedPriceGroup.Id, search, hasPrice, out var fallbackRows))
+            {
+                rows = fallbackRows;
+                ItemPriceStatusText.Text = $"Показано {rows.Count} товаров из каталога. Цены для группы «{_selectedPriceGroup.Name}» можно задать ниже.";
+            }
+            else
+            {
+                ItemPriceStatusText.Text = "В каталоге нет товаров. Добавьте их на вкладке «Каталог».";
+            }
+        }
+        else if (rows.Count == 0)
+        {
+            ItemPriceStatusText.Text = OnlyWithoutPriceCheck.IsChecked == true
+                ? "Все товары в этой группе уже имеют цену (или нет товаров по фильтру)."
+                : "По вашему запросу ничего не найдено.";
+        }
+        else
+        {
+            var withoutPrice = rows.Count(r => !r.HasBasePrice);
+            ItemPriceStatusText.Text = withoutPrice > 0
+                ? $"Товаров: {rows.Count}. Без базовой цены: {withoutPrice} (подсвечены)."
+                : $"Товаров: {rows.Count}.";
+        }
+
+        foreach (var row in rows)
+        {
+            _itemPrices.Add(row);
+        }
+
+        UpdateItemPriceButtons();
+    }
+
+    private bool TryBuildItemPriceFallback(
+        long priceGroupId,
+        string? search,
+        bool? hasPrice,
+        out IReadOnlyList<CommercialItemPriceRow> rows)
+    {
+        rows = Array.Empty<CommercialItemPriceRow>();
+        if (!_services.WpfReadApi.TryGetItems(string.IsNullOrWhiteSpace(search) ? null : search, out var items)
+            || items.Count == 0)
+        {
+            return false;
+        }
+
+        rows = items
+            .Select(item => new CommercialItemPriceRow
+            {
+                ItemId = item.Id,
+                ItemName = item.Name,
+                Barcode = item.Barcode,
+                Gtin = item.Gtin,
+                ItemTypeName = item.ItemTypeName,
+                PriceGroupId = priceGroupId,
+                HasPrice = false
+            })
+            .Where(row => hasPrice != false)
+            .OrderBy(row => row.ItemName, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        return rows.Count > 0;
+    }
+
+    private void UpdateItemPriceButtons()
+    {
+        var hasGroup = _selectedPriceGroup != null;
+        var selectedRow = ItemPricesGrid.SelectedItem as CommercialItemPriceRow;
+        EditItemPriceButton.IsEnabled = hasGroup && selectedRow != null;
+        DeactivateItemPriceButton.IsEnabled = hasGroup && selectedRow is { HasPrice: true, ItemPriceId: > 0 };
+    }
+
+    private void ItemPricesGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e) =>
+        UpdateItemPriceButtons();
+
+    private void SearchItemPrices_Click(object sender, RoutedEventArgs e) => LoadItemPricesForSelectedGroup();
+
+    private void ItemPriceFilter_Changed(object sender, RoutedEventArgs e) => LoadItemPricesForSelectedGroup();
+
+    private void RefreshItemPrices_Click(object sender, RoutedEventArgs e) => LoadItemPricesForSelectedGroup();
+
+    private void EditItemPrice_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedPriceGroup == null || ItemPricesGrid.SelectedItem is not CommercialItemPriceRow row)
+        {
+            MessageBox.Show("Выберите ценовую группу и товар.", "Цены", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        OpenItemPriceEditor(row);
+    }
+
+    private void ItemPricesGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (_selectedPriceGroup != null && ItemPricesGrid.SelectedItem is CommercialItemPriceRow row)
+        {
+            OpenItemPriceEditor(row);
+        }
+    }
+
+    private void OpenItemPriceEditor(CommercialItemPriceRow row)
+    {
+        if (_selectedPriceGroup == null)
+        {
+            return;
+        }
+
+        var window = new ItemPriceEditWindow(_services, row, _selectedPriceGroup) { Owner = this };
+        if (window.ShowDialog() == true)
+        {
+            LoadItemPricesForSelectedGroup();
+        }
+    }
+
+    private async void DeactivateItemPrice_Click(object sender, RoutedEventArgs e)
+    {
+        if (ItemPricesGrid.SelectedItem is not CommercialItemPriceRow row || row.ItemPriceId is not > 0)
+        {
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            $"Отключить цену для товара \"{row.ItemName}\"?",
+            "Цены",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        var result = await _services.WpfCommercialApi.TryDeactivateItemPriceAsync(row.ItemPriceId.Value).ConfigureAwait(true);
+        if (!result.IsSuccess)
+        {
+            MessageBox.Show(result.Error ?? "Не удалось отключить цену.", "Цены", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        LoadItemPricesForSelectedGroup();
+    }
+
+    private void LoadCommercialOffers()
+    {
+        _commercialOffers.Clear();
+        if (!_services.WpfCommercialApi.TryGetCommercialOffers(out var offers))
+        {
+            return;
+        }
+
+        foreach (var offer in offers)
+        {
+            _commercialOffers.Add(offer);
+        }
+    }
+
+    private void AddPriceGroup_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new PriceGroupEditWindow(_services) { Owner = this };
+        if (window.ShowDialog() == true)
+        {
+            LoadCommercialPriceGroups();
+        }
+    }
+
+    private void EditPriceGroup_Click(object sender, RoutedEventArgs e)
+    {
+        if (PriceGroupsGrid.SelectedItem is not CommercialPriceGroupRow group)
+        {
+            MessageBox.Show("Выберите группу цен.", "Коммерция", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (group.IsSystem)
+        {
+            MessageBox.Show("Системную группу «Базовая цена» нельзя редактировать.", "Коммерция", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var window = new PriceGroupEditWindow(_services, group) { Owner = this };
+        if (window.ShowDialog() == true)
+        {
+            LoadCommercialPriceGroups();
+        }
+    }
+
+    private void RefreshPriceGroups_Click(object sender, RoutedEventArgs e) => LoadCommercialPriceGroups();
+
+    private void PriceGroupsGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e) => EditPriceGroup_Click(sender, e);
+
+    private void CreateCommercialOffer_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_services.WpfPartnerApi.TryGetPartners(out var partners) || partners.Count == 0)
+        {
+            MessageBox.Show("Нет контрагентов для создания КП.", "Коммерция", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var dialog = new CommercialOfferCreateWindow(_services) { Owner = this };
+        if (dialog.ShowDialog() != true || !dialog.CreatedOfferId.HasValue)
+        {
+            return;
+        }
+
+        LoadCommercialOffers();
+        OpenCommercialOfferWindow(dialog.CreatedOfferId.Value);
+    }
+
+    private void OpenCommercialOffer_Click(object sender, RoutedEventArgs e)
+    {
+        if (CommercialOffersGrid.SelectedItem is CommercialOfferRow row)
+        {
+            OpenCommercialOfferWindow(row.Id);
+        }
+    }
+
+    private async void DeleteCommercialOffer_Click(object sender, RoutedEventArgs e)
+    {
+        if (CommercialOffersGrid.SelectedItem is not CommercialOfferRow row)
+        {
+            MessageBox.Show("Выберите КП для удаления.", "Коммерция", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            $"Удалить КП {row.OfferRef}?\nУдаление доступно только для черновиков.",
+            "Коммерция",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        var result = await _services.WpfCommercialApi.TryDeleteCommercialOfferAsync(row.Id).ConfigureAwait(true);
+        if (!result.IsSuccess)
+        {
+            MessageBox.Show(result.Error ?? "Не удалось удалить КП.", "Коммерция", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        LoadCommercialOffers();
+    }
+
+    private void CommercialOffersGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (CommercialOffersGrid.SelectedItem is CommercialOfferRow row)
+        {
+            OpenCommercialOfferWindow(row.Id);
+        }
+    }
+
+    private void RefreshCommercialOffers_Click(object sender, RoutedEventArgs e) => LoadCommercialOffers();
+
+    private void OpenCommercialOfferWindow(long offerId)
+    {
+        var window = new CommercialOfferWindow(_services, offerId) { Owner = this };
+        window.ShowDialog();
+        LoadCommercialOffers();
+    }
 }
 

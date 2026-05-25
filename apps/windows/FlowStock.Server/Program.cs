@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using FlowStock.Core.Abstractions;
+using FlowStock.Core.Commercial;
 using FlowStock.Core.Models;
 using FlowStock.Core.Services;
 using FlowStock.Data;
@@ -63,6 +64,13 @@ builder.Services.AddSingleton<ImportService>();
 builder.Services.AddSingleton<ItemPackagingService>();
 builder.Services.AddSingleton<MarkingExcelService>();
 builder.Services.AddSingleton<LiveUpdateHub>();
+builder.Services.AddSingleton<ICommercialDataStore>(sp =>
+    new PostgresCommercialDataStore(postgresConnectionString));
+builder.Services.AddSingleton<CommercialPricingService>();
+builder.Services.AddSingleton<CommercialOfferService>();
+builder.Services.AddSingleton<DocxPlaceholderRenderer>();
+builder.Services.AddSingleton<CommercialDocumentService>();
+builder.Services.AddSingleton<IPdfConverter, LibreOfficePdfConverter>();
 
 var app = builder.Build();
 var appVersion = ResolveAppVersion();
@@ -79,6 +87,9 @@ OrderLinesEndpoint.Map(app);
 OrderHuReservationCandidatesEndpoint.Map(app);
 OrderHuReservationApplyEndpoint.Map(app);
 ProductionNeedCreateOrdersEndpoint.Map(app);
+CommercialPricingEndpoints.Map(app);
+CommercialOfferEndpoints.Map(app);
+CommercialTemplateEndpoints.Map(app);
 MaintenanceBackfillEndpoints.Map(app);
 app.MapGet("/api/version", () => Results.Ok(new { version = appVersion }));
 
@@ -2819,6 +2830,17 @@ OrderStatusDiagnosticsEndpoint.Map(app);
 OverShippedOrderDiagnosticsEndpoint.Map(app);
 ProductionPlanConsistencyDiagnosticsEndpoint.Map(app);
 CloseDocumentEndpoint.Map(app);
+
+try
+{
+    using var scope = app.Services.CreateScope();
+    var commercial = scope.ServiceProvider.GetRequiredService<ICommercialDataStore>();
+    commercial.EnsureSystemBasePriceGroup();
+}
+catch (Exception ex)
+{
+    app.Logger.LogWarning(ex, "Не удалось проверить системную базовую группу цен при старте сервера.");
+}
 
 app.Run();
 

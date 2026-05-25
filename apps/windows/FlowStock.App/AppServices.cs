@@ -26,6 +26,7 @@ public sealed class AppServices
     public WpfAdminApiService WpfAdminApi { get; }
     public WpfCatalogApiService WpfCatalogApi { get; }
     public WpfPartnerApiService WpfPartnerApi { get; }
+    public WpfCommercialApiService WpfCommercialApi { get; }
     public WpfHuApiService WpfHuApi { get; }
     public WpfImportApiService WpfImportApi { get; }
     public WpfPackagingApiService WpfPackagingApi { get; }
@@ -94,6 +95,7 @@ public sealed class AppServices
         WpfAdminApi = new WpfAdminApiService(Settings, appLogger);
         WpfCatalogApi = new WpfCatalogApiService(Settings, appLogger);
         WpfPartnerApi = new WpfPartnerApiService(Settings, appLogger);
+        WpfCommercialApi = new WpfCommercialApiService(Settings, appLogger);
         WpfHuApi = new WpfHuApiService(Settings, appLogger);
         WpfImportApi = new WpfImportApiService(Settings, appLogger);
         WpfPackagingApi = new WpfPackagingApiService(Settings, appLogger);

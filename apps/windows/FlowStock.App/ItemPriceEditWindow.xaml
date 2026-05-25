@@ -1,0 +1,48 @@
+<Window x:Class="FlowStock.App.ItemPriceEditWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Цена товара"
+        Height="360" Width="480"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="140" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <TextBlock Grid.Row="0" Grid.Column="0" Text="Товар" VerticalAlignment="Center" />
+        <TextBlock x:Name="ItemNameText" Grid.Row="0" Grid.Column="1" Margin="8,0,0,8" TextWrapping="Wrap" />
+
+        <TextBlock Grid.Row="1" Grid.Column="0" Text="Цена *" VerticalAlignment="Center" />
+        <TextBox x:Name="PriceBox" Grid.Row="1" Grid.Column="1" Margin="8,0,0,8" />
+
+        <TextBlock Grid.Row="2" Grid.Column="0" Text="Валюта *" VerticalAlignment="Center" />
+        <TextBox x:Name="CurrencyBox" Grid.Row="2" Grid.Column="1" Margin="8,0,0,8" />
+
+        <TextBlock Grid.Row="3" Grid.Column="0" Text="Действует с *" VerticalAlignment="Center" />
+        <DatePicker x:Name="ValidFromPicker" Grid.Row="3" Grid.Column="1" Margin="8,0,0,8" />
+
+        <TextBlock Grid.Row="4" Grid.Column="0" Text="Действует по" VerticalAlignment="Center" />
+        <DatePicker x:Name="ValidToPicker" Grid.Row="4" Grid.Column="1" Margin="8,0,0,8" />
+
+        <TextBlock Grid.Row="5" Grid.Column="0" Text="Комментарий" VerticalAlignment="Top" Margin="0,4,0,0" />
+        <TextBox x:Name="CommentBox" Grid.Row="5" Grid.Column="1" Margin="8,0,0,8" Height="56"
+                 TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" />
+
+        <StackPanel Grid.Row="7" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="SaveButton" Content="Сохранить" Width="120" IsDefault="True" Click="Save_Click" />
+            <Button Content="Отмена" Width="120" IsCancel="True" Margin="8,0,0,0" />
+        </StackPanel>
+    </Grid>
+</Window>

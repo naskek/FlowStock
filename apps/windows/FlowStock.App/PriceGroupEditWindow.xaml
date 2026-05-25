@@ -1,0 +1,56 @@
+<Window x:Class="FlowStock.App.PriceGroupEditWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Группа цен"
+        Height="420" Width="480"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="140" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <TextBlock Grid.Row="0" Grid.Column="0" Text="ID" VerticalAlignment="Center" />
+        <TextBox x:Name="IdBox" Grid.Row="0" Grid.Column="1" Margin="8,0,0,8" IsReadOnly="True" />
+
+        <TextBlock Grid.Row="1" Grid.Column="0" Text="Наименование" VerticalAlignment="Center" />
+        <TextBox x:Name="NameBox" Grid.Row="1" Grid.Column="1" Margin="8,0,0,8" />
+
+        <TextBlock Grid.Row="2" Grid.Column="0" Text="Описание" VerticalAlignment="Center" />
+        <TextBox x:Name="DescriptionBox" Grid.Row="2" Grid.Column="1" Margin="8,0,0,8" />
+
+        <TextBlock Grid.Row="3" Grid.Column="0" Text="Валюта" VerticalAlignment="Center" />
+        <TextBox x:Name="CurrencyBox" Grid.Row="3" Grid.Column="1" Margin="8,0,0,8" Text="RUB" />
+
+        <TextBlock Grid.Row="4" Grid.Column="0" Text="НДС" VerticalAlignment="Center" />
+        <ComboBox x:Name="VatModeCombo" Grid.Row="4" Grid.Column="1" Margin="8,0,0,8" DisplayMemberPath="Name" />
+
+        <TextBlock Grid.Row="5" Grid.Column="0" Text="Скидка %" VerticalAlignment="Center" />
+        <TextBox x:Name="DiscountBox" Grid.Row="5" Grid.Column="1" Margin="8,0,0,8" ToolTip="Скидка от базовой цены для всех товаров группы" />
+
+        <TextBlock Grid.Row="6" Grid.Column="0" Text="Наценка %" VerticalAlignment="Center" />
+        <TextBox x:Name="MarkupBox" Grid.Row="6" Grid.Column="1" Margin="8,0,0,8" ToolTip="Наценка к цене после скидки" />
+
+        <StackPanel Grid.Row="7" Grid.Column="1" Orientation="Horizontal" Margin="8,0,0,8">
+            <CheckBox x:Name="IsActiveCheck" Content="Активна" IsChecked="True" />
+        </StackPanel>
+
+        <StackPanel Grid.Row="8" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="Сохранить" Width="120" IsDefault="True" Click="Save_Click" />
+            <Button Content="Отмена" Width="120" IsCancel="True" Margin="8,0,0,0" />
+        </StackPanel>
+    </Grid>
+</Window>
+

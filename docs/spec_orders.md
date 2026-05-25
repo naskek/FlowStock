@@ -15,6 +15,7 @@
 - `marking_status` TEXT NOT NULL DEFAULT `NOT_REQUIRED` // `NOT_REQUIRED` | `REQUIRED` | `PRINTED`
 - `marking_excel_generated_at` TEXT NULL
 - `marking_printed_at` TEXT NULL
+- `commercial_offer_id` BIGINT NULL (FK -> `commercial_offers.id`, миграция `V0026`) — обратная связь с КП, из которого создан заказ; **не** переносит цены в `order_lines`
 
 Таблица `order_lines`:
 - `id` INTEGER PRIMARY KEY
@@ -66,6 +67,12 @@
 - OUTBOUND, созданные из заказа, получают `order_id` и `order_ref`.
 - В `doc_lines` используется `order_line_id` для связи строки отгрузки с позицией заказа.
 - При редактировании заказа существующие строки сохраняют свой `order_lines.id` (для тех же `item_id`), чтобы не ломать связи уже созданных документов.
+
+Создание заказа из коммерческого предложения (Commercial module):
+- `POST /api/commercial/offers/{id}/create-order` доступен только для КП в статусе `WON`.
+- Создаётся `CUSTOMER`-заказ с `order_lines.qty_ordered` по строкам КП; **цены из КП не копируются** в заказ.
+- В `orders.commercial_offer_id` сохраняется ссылка на исходное КП; в `commercial_offers.converted_order_id` — обратная ссылка.
+- Операция **не** пишет в `ledger` и не создаёт OUT/PRD. Подробнее: [`docs/architecture/commercial-offers-and-pricing-plan.md`](architecture/commercial-offers-and-pricing-plan.md).
 
 Связь с выпуском продукции:
 - PRD (`docs.type = PRODUCTION_RECEIPT`) также может быть связан с заказом через `order_id` / `order_ref`.

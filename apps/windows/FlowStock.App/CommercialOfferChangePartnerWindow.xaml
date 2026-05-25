@@ -1,0 +1,39 @@
+<Window x:Class="FlowStock.App.CommercialOfferChangePartnerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Изменение контрагента КП"
+        Height="240" Width="520"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="160" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <TextBlock Grid.Row="0" Grid.Column="0" Text="Контрагент *" VerticalAlignment="Center" />
+        <ComboBox x:Name="PartnerCombo" Grid.Row="0" Grid.Column="1" Margin="8,0,0,8"
+                  DisplayMemberPath="DisplayName"
+                  SelectionChanged="PartnerCombo_SelectionChanged" />
+
+        <TextBlock Grid.Row="1" Grid.Column="0" Text="Группа цен *" VerticalAlignment="Center" />
+        <ComboBox x:Name="PriceGroupCombo" Grid.Row="1" Grid.Column="1" Margin="8,0,0,8"
+                  DisplayMemberPath="Name"
+                  SelectionChanged="PriceGroupCombo_SelectionChanged" />
+
+        <TextBlock x:Name="HintText" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2"
+                   TextWrapping="Wrap" Foreground="Gray" Margin="0,0,0,8" />
+
+        <StackPanel Grid.Row="4" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="SaveButton" Content="Сохранить" Width="120" IsDefault="True" Click="Save_Click" IsEnabled="False" />
+            <Button Content="Отмена" Width="120" IsCancel="True" Margin="8,0,0,0" />
+        </StackPanel>
+    </Grid>
+</Window>

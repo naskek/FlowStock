@@ -9,7 +9,7 @@ RUN dotnet publish apps/windows/FlowStock.Server/FlowStock.Server.csproj -c Rele
 FROM ${FLOWSTOCK_DOTNET_ASPNET_IMAGE} AS runtime
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends curl libreoffice-writer \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/ ./
 COPY apps/android/tsd /app/tsd

@@ -62,6 +62,7 @@ public partial class ItemEditWindow : Window
         {
             Title = "Добавление товара";
             IdBox.Text = "(будет присвоен)";
+            PricesButton.IsEnabled = false;
             MaxQtyPerHuBox.Text = string.Empty;
             UomCombo.SelectedItem = _uoms.FirstOrDefault(u => string.Equals(u.Name, "шт", StringComparison.OrdinalIgnoreCase))
                                     ?? _uoms.FirstOrDefault();
@@ -391,6 +392,17 @@ public partial class ItemEditWindow : Window
     private void GtinBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
     {
         UpdateMarkingStatusText();
+    }
+
+    private void Prices_Click(object sender, RoutedEventArgs e)
+    {
+        if (_item == null)
+        {
+            return;
+        }
+
+        var window = new ItemPricesWindow(_services, _item) { Owner = this };
+        window.ShowDialog();
     }
 
     private void UpdateMinStockControls()

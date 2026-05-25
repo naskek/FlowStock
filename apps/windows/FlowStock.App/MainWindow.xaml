@@ -804,6 +804,113 @@
                     </DataGrid>
                 </Grid>
             </TabItem>
+            <TabItem Header="Коммерция / Цены">
+                <Grid Margin="0,4,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="320" />
+                        <ColumnDefinition Width="8" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Grid Grid.Column="0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+                            <Button Content="Добавить группу" Click="AddPriceGroup_Click" />
+                            <Button Content="Редактировать" Click="EditPriceGroup_Click" Margin="8,0,0,0" />
+                            <Button Content="Обновить" Click="RefreshPriceGroups_Click" Margin="8,0,0,0" />
+                        </StackPanel>
+                        <DataGrid x:Name="PriceGroupsGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
+                                  SelectionChanged="PriceGroupsGrid_SelectionChanged"
+                                  MouseDoubleClick="PriceGroupsGrid_MouseDoubleClick">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="ID" Binding="{Binding Id}" Width="60" />
+                                <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="*" />
+                                <DataGridTextColumn Header="Валюта" Binding="{Binding Currency}" Width="80" />
+                                <DataGridCheckBoxColumn Header="Системная" Binding="{Binding IsSystem}" Width="80" />
+                                <DataGridCheckBoxColumn Header="По умолчанию" Binding="{Binding IsDefault}" Width="90" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Grid>
+
+                    <Grid Grid.Column="2">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <TextBlock x:Name="SelectedPriceGroupTitle" Grid.Row="0" FontWeight="Bold" Margin="0,0,0,4"
+                                   Text="Выберите ценовую группу слева" />
+                        <TextBlock x:Name="ItemPriceStatusText" Grid.Row="1" Margin="0,0,0,8" Foreground="Gray"
+                                   TextWrapping="Wrap" />
+                        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBox x:Name="ItemPriceSearchBox" Width="220" ToolTip="Поиск по названию, штрихкоду, GTIN" />
+                            <Button Content="Найти" Click="SearchItemPrices_Click" Margin="8,0,0,0" />
+                            <CheckBox x:Name="OnlyWithoutPriceCheck" Content="Только без цены" Margin="16,0,0,0"
+                                      Checked="ItemPriceFilter_Changed" Unchecked="ItemPriceFilter_Changed" />
+                            <Button x:Name="EditItemPriceButton" Content="Задать / изменить цену" Click="EditItemPrice_Click"
+                                    Margin="16,0,0,0" IsEnabled="False" />
+                            <Button x:Name="DeactivateItemPriceButton" Content="Отключить цену" Click="DeactivateItemPrice_Click"
+                                    Margin="8,0,0,0" IsEnabled="False" />
+                            <Button Content="Обновить список" Click="RefreshItemPrices_Click" Margin="8,0,0,0" />
+                        </StackPanel>
+                        <DataGrid x:Name="ItemPricesGrid" Grid.Row="3" AutoGenerateColumns="False" IsReadOnly="True"
+                                  SelectionChanged="ItemPricesGrid_SelectionChanged"
+                                  MouseDoubleClick="ItemPricesGrid_MouseDoubleClick">
+                            <DataGrid.RowStyle>
+                                <Style TargetType="DataGridRow">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasBasePrice}" Value="False">
+                                            <Setter Property="Background" Value="#FFF8E8E8" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </DataGrid.RowStyle>
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="ID" Binding="{Binding ItemId}" Width="60" />
+                                <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" MinWidth="160" />
+                                <DataGridTextColumn Header="Штрихкод/GTIN" Binding="{Binding SkuDisplay}" Width="120" />
+                                <DataGridTextColumn Header="Тип" Binding="{Binding ItemTypeName}" Width="100" />
+                                <DataGridTextColumn Header="Базовая" Binding="{Binding BasePriceDisplay}" Width="80" />
+                                <DataGridTextColumn Header="Итоговая" Binding="{Binding PriceDisplay}" Width="80" />
+                                <DataGridTextColumn Header="Источник" Binding="{Binding PriceSourceDisplay}" Width="110" />
+                                <DataGridTextColumn Header="Валюта" Binding="{Binding Currency}" Width="70" />
+                                <DataGridTextColumn Header="С" Binding="{Binding ValidFrom}" Width="90" />
+                                <DataGridTextColumn Header="По" Binding="{Binding ValidTo}" Width="90" />
+                                <DataGridCheckBoxColumn Header="Активна" Binding="{Binding IsActive}" Width="70" />
+                                <DataGridTextColumn Header="Комментарий" Binding="{Binding Comment}" Width="120" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Grid>
+                </Grid>
+            </TabItem>
+            <TabItem Header="Коммерция / КП">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+                        <Button Content="Создать КП" Click="CreateCommercialOffer_Click" />
+                        <Button Content="Открыть" Click="OpenCommercialOffer_Click" Margin="8,0,0,0" />
+                        <Button Content="Удалить КП" Click="DeleteCommercialOffer_Click" Margin="8,0,0,0" />
+                        <Button Content="Обновить" Click="RefreshCommercialOffers_Click" Margin="8,0,0,0" />
+                    </StackPanel>
+                    <DataGrid x:Name="CommercialOffersGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
+                              MouseDoubleClick="CommercialOffersGrid_MouseDoubleClick">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Номер" Binding="{Binding OfferRef}" Width="140" />
+                            <DataGridTextColumn Header="Контрагент" Binding="{Binding PartnerName}" Width="*" />
+                            <DataGridTextColumn Header="Статус" Binding="{Binding StatusDisplay}" Width="120" />
+                            <DataGridTextColumn Header="Сумма" Binding="{Binding Total}" Width="100" />
+                            <DataGridTextColumn Header="Дата" Binding="{Binding CreatedAt, StringFormat={}{0:dd.MM.yyyy}}" Width="100" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </TabItem>
             <TabItem Header="Контрагенты">
                 <Grid>
                     <Grid.RowDefinitions>

@@ -1,5 +1,7 @@
+using System.Globalization;
 using System.Windows;
 using System.Windows.Input;
+using FlowStock.App.Services;
 using FlowStock.Core.Models;
 using Npgsql;
 
@@ -44,6 +46,28 @@ public partial class PartnerEditWindow : Window
             : PartnerStatus.Both;
         StatusCombo.SelectedItem = _statusOptions.FirstOrDefault(option => option.Status == currentStatus)
                                    ?? _statusOptions.LastOrDefault();
+        LoadCommercialSettings(_partner.Id);
+    }
+
+    private void LoadCommercialSettings(long partnerId)
+    {
+        var groups = _services.WpfCommercialApi.TryGetPriceGroups(out var loaded)
+            ? loaded
+            : Array.Empty<CommercialPriceGroupRow>();
+        PriceGroupCombo.ItemsSource = groups;
+        if (!_services.WpfCommercialApi.TryGetPartnerCommercialSettings(partnerId, out var settings) || settings == null)
+        {
+            return;
+        }
+
+        if (settings.PriceGroupId.HasValue)
+        {
+            PriceGroupCombo.SelectedItem = groups.FirstOrDefault(g => g.Id == settings.PriceGroupId.Value);
+        }
+
+        DefaultDiscountBox.Text = settings.DefaultDiscountPercent.ToString(CultureInfo.InvariantCulture);
+        PaymentTermsBox.Text = settings.PaymentTerms ?? string.Empty;
+        DeliveryTermsBox.Text = settings.DeliveryTerms ?? string.Empty;
     }
 
     private async void Save_Click(object sender, RoutedEventArgs e)
@@ -98,6 +122,23 @@ public partial class PartnerEditWindow : Window
                 }
 
                 SavedPartnerId = _partner.Id;
+            }
+
+            var partnerIdForCommercial = SavedPartnerId ?? _partner?.Id;
+            if (partnerIdForCommercial.HasValue)
+            {
+                decimal.TryParse(DefaultDiscountBox.Text?.Replace(',', '.'), NumberStyles.Number, CultureInfo.InvariantCulture, out var discount);
+                var priceGroupId = (PriceGroupCombo.SelectedItem as CommercialPriceGroupRow)?.Id;
+                var commercialResult = await _services.WpfCommercialApi.TryUpsertPartnerCommercialSettingsAsync(
+                    partnerIdForCommercial.Value,
+                    priceGroupId,
+                    discount,
+                    string.IsNullOrWhiteSpace(PaymentTermsBox.Text) ? null : PaymentTermsBox.Text.Trim(),
+                    string.IsNullOrWhiteSpace(DeliveryTermsBox.Text) ? null : DeliveryTermsBox.Text.Trim()).ConfigureAwait(true);
+                if (!commercialResult.IsSuccess && !string.IsNullOrWhiteSpace(commercialResult.Error))
+                {
+                    throw new InvalidOperationException(commercialResult.Error);
+                }
             }
 
             DialogResult = true;
