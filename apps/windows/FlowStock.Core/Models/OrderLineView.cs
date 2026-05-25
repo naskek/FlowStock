@@ -15,6 +15,8 @@ public sealed class OrderLineView : INotifyPropertyChanged
     private double _filledPalletQty;
     private int _plannedPalletCount;
     private int _filledPalletCount;
+    private string? _productionPalletGroup;
+    private int _mixedPalletGroupNumber = 1;
     private IReadOnlyList<OrderLineHuDisplayEntry> _productionHuDisplayEntries = Array.Empty<OrderLineHuDisplayEntry>();
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -31,8 +33,28 @@ public sealed class OrderLineView : INotifyPropertyChanged
         set => SetField(ref _qtyOrdered, value);
     }
     public ProductionLinePurpose ProductionPurpose { get; set; } = ProductionLinePurpose.InternalStock;
-    public string? ProductionPalletGroup { get; set; }
-    public int MixedPalletGroupNumber { get; set; } = 1;
+    public string? ProductionPalletGroup
+    {
+        get => _productionPalletGroup;
+        set
+        {
+            if (string.Equals(_productionPalletGroup, value, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _productionPalletGroup = value;
+            OnPropertyChanged(nameof(ProductionPalletGroup));
+            OnPropertyChanged(nameof(IsMixedPalletLine));
+            OnPropertyChanged(nameof(ProductionPalletGroupDisplay));
+        }
+    }
+
+    public int MixedPalletGroupNumber
+    {
+        get => _mixedPalletGroupNumber;
+        set => SetField(ref _mixedPalletGroupNumber, value);
+    }
     public string ProductionHuCodes
     {
         get => _productionHuCodes;
@@ -135,6 +157,10 @@ public sealed class OrderLineView : INotifyPropertyChanged
         OnPropertyChanged(nameof(QtyOrdered));
         OnPropertyChanged(nameof(ProductionHuCodes));
         OnPropertyChanged(nameof(ProductionHuDisplayEntries));
+        OnPropertyChanged(nameof(ProductionPalletGroup));
+        OnPropertyChanged(nameof(MixedPalletGroupNumber));
+        OnPropertyChanged(nameof(IsMixedPalletLine));
+        OnPropertyChanged(nameof(ProductionPalletGroupDisplay));
         OnPropertyChanged(nameof(QtyShipped));
         OnPropertyChanged(nameof(QtyProduced));
         OnPropertyChanged(nameof(QtyRemaining));

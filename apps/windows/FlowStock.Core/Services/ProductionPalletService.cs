@@ -41,12 +41,12 @@ public sealed class ProductionPalletService
     public void SyncOrderLinePlan(long orderId, long orderLineId, double orderedQty, double? oldOrderedQty = null, string source = "UpdateOrder")
     {
         var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
-        if (order.Type != OrderType.Internal)
+        if (order.Type is not (OrderType.Internal or OrderType.Customer))
         {
             return;
         }
 
-        if (order.Status is not (OrderStatus.InProgress or OrderStatus.Draft))
+        if (order.Status is not (OrderStatus.InProgress or OrderStatus.Draft or OrderStatus.Accepted))
         {
             return;
         }
@@ -65,23 +65,23 @@ public sealed class ProductionPalletService
     {
         var order = store.GetOrder(orderId);
         if (order == null
-            || order.Type != OrderType.Internal
-            || order.Status is not (OrderStatus.InProgress or OrderStatus.Draft))
+            || order.Type is not (OrderType.Internal or OrderType.Customer)
+            || order.Status is not (OrderStatus.InProgress or OrderStatus.Draft or OrderStatus.Accepted))
         {
             return;
         }
 
-        var filledQty = Math.Max(0, store.GetFilledProductionPalletQtyByOrderLine(orderLineId));
+        var committedQty = GetCommittedQtyForOrderLine(store, order, orderLineId);
         var activePlannedBefore = GetOpenProductionPalletsForOrderLine(store, orderId, orderLineId)
             .Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
-        var missingBeforeTrim = Math.Max(0, orderedQty - filledQty - activePlannedBefore);
+        var missingBeforeTrim = Math.Max(0, orderedQty - committedQty - activePlannedBefore);
 
-        TrimSurplusOpenPallets(store, orderId, orderLineId, orderedQty);
+        TrimSurplusOpenPallets(store, order, orderId, orderLineId, orderedQty);
 
         var activePlannedAfterTrim = GetOpenProductionPalletsForOrderLine(store, orderId, orderLineId)
             .Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
         var cancelledQty = Math.Max(0, activePlannedBefore - activePlannedAfterTrim);
-        var missingAfterTrim = Math.Max(0, orderedQty - filledQty - activePlannedAfterTrim);
+        var missingAfterTrim = Math.Max(0, orderedQty - committedQty - activePlannedAfterTrim);
         var createdQty = 0d;
         var action = missingAfterTrim > QtyTolerance
             ? "append_planned"
@@ -114,7 +114,7 @@ public sealed class ProductionPalletService
             OrderLineId = orderLineId,
             OldQty = oldOrderedQty,
             NewQty = orderedQty,
-            FilledQty = filledQty,
+            FilledQty = committedQty,
             ActivePlannedQtyBefore = activePlannedBefore,
             MissingQty = missingBeforeTrim > missingAfterTrim ? missingBeforeTrim : missingAfterTrim,
             CreatedQty = createdQty,
@@ -506,14 +506,21 @@ public sealed class ProductionPalletService
     public IReadOnlyList<ProductionPalletPrintRow> GetPrintRows(long orderId)
     {
         var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+        if (order.Type == OrderType.Customer)
+        {
+            var rows = new List<ProductionPalletPrintRow>();
+            rows.AddRange(GetCustomerBoundHuPrintRows(order));
+            if (HasPrintableProductionPalletPlan(_data, order))
+            {
+                rows.AddRange(GetProductionPalletPrintRows(order));
+            }
+
+            return rows;
+        }
+
         if (HasPrintableProductionPalletPlan(_data, order))
         {
             return GetProductionPalletPrintRows(order);
-        }
-
-        if (order.Type == OrderType.Customer)
-        {
-            return GetCustomerBoundHuPrintRows(order);
         }
 
         return GetProductionPalletPrintRows(order);
@@ -743,7 +750,10 @@ public sealed class ProductionPalletService
                 throw new InvalidOperationException("Сначала сформируйте план паллет");
             }
 
-            var allowedIds = rows.Select(row => row.PalletId).ToHashSet();
+            var allowedIds = rows
+                .Where(row => string.Equals(row.SourceType, ProductionPalletPrintSourceType.ProductionPallet, StringComparison.OrdinalIgnoreCase))
+                .Select(row => row.PalletId)
+                .ToHashSet();
             if (palletIds.Any(id => !allowedIds.Contains(id)))
             {
                 throw new InvalidOperationException("Выбранные паллеты не найдены в плане заказа.");
@@ -1543,12 +1553,13 @@ public sealed class ProductionPalletService
 
     private static void TrimSurplusOpenPallets(
         IDataStore store,
+        Order order,
         long orderId,
         long orderLineId,
         double orderedQty)
     {
-        var filledQty = Math.Max(0, store.GetFilledProductionPalletQtyByOrderLine(orderLineId));
-        var plannedAllowedQty = Math.Max(0, orderedQty - filledQty);
+        var committedQty = GetCommittedQtyForOrderLine(store, order, orderLineId);
+        var plannedAllowedQty = Math.Max(0, orderedQty - committedQty);
         var openPallets = GetOpenProductionPalletsForOrderLine(store, orderId, orderLineId);
         var openQty = openPallets.Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
         if (openQty <= plannedAllowedQty + QtyTolerance)
@@ -1582,6 +1593,24 @@ public sealed class ProductionPalletService
 
         store.CancelProductionPallets(palletIdsToCancel);
         store.RemoveDocLinesForProductionPallets(palletIdsToCancel);
+    }
+
+    private static double GetCommittedQtyForOrderLine(IDataStore store, Order order, long orderLineId)
+    {
+        var filledQty = Math.Max(0, store.GetFilledProductionPalletQtyByOrderLine(orderLineId));
+        if (order.Type != OrderType.Customer)
+        {
+            return filledQty;
+        }
+
+        var shippedTotals = store.GetShippedTotalsByOrderLine(order.Id);
+        var shippedQty = shippedTotals.TryGetValue(orderLineId, out var shipped)
+            ? Math.Max(0, shipped)
+            : 0d;
+        var reservedQty = store.GetOrderReceiptPlanLines(order.Id)
+            .Where(line => line.OrderLineId == orderLineId)
+            .Sum(line => Math.Max(0, line.QtyPlanned));
+        return shippedQty + reservedQty + filledQty;
     }
 
     private static IReadOnlyList<ProductionPallet> GetOpenProductionPalletsForOrderLine(

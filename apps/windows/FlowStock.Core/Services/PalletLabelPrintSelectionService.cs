@@ -11,6 +11,7 @@ public sealed class PalletLabelPrintSelectionGroup
 public sealed class PalletLabelPrintSelectionRow
 {
     public long PalletId { get; init; }
+    public string SourceType { get; init; } = ProductionPalletPrintSourceType.ProductionPallet;
     public string HuCode { get; init; } = string.Empty;
     public double Qty { get; init; }
     public string Status { get; init; } = string.Empty;
@@ -40,8 +41,8 @@ public static class PalletLabelPrintSelectionService
     public static IReadOnlyList<long> ResolveDefaultSelectedPalletIds(IReadOnlyList<ProductionPalletPrintRow> rows)
     {
         return rows
-            .Where(row => IsReservedHuRow(row)
-                          || string.Equals(row.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase))
+            .Where(row => !IsReservedHuRow(row)
+                          && string.Equals(row.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase))
             .Select(row => row.PalletId)
             .ToArray();
     }
@@ -73,11 +74,12 @@ public static class PalletLabelPrintSelectionService
             return new PalletLabelPrintSelectionRow
             {
                 PalletId = row.PalletId,
+                SourceType = row.SourceType,
                 HuCode = row.HuCode,
                 Qty = row.Qty,
                 Status = "BOUND",
-                IsSelectedByDefault = true,
-                DisplayText = $"{row.HuCode}, {FormatQty(row.Qty)} шт, привязан"
+                IsSelectedByDefault = false,
+                DisplayText = $"{row.HuCode}, {FormatQty(row.Qty)} шт, складской HU"
             };
         }
 
@@ -89,6 +91,7 @@ public static class PalletLabelPrintSelectionService
         return new PalletLabelPrintSelectionRow
         {
             PalletId = row.PalletId,
+            SourceType = row.SourceType,
             HuCode = row.HuCode,
             Qty = row.Qty,
             Status = statusLabel,

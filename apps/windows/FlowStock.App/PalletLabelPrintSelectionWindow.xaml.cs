@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Windows;
+using FlowStock.Core.Models;
 using FlowStock.Core.Services;
 
 namespace FlowStock.App;
@@ -9,6 +10,7 @@ namespace FlowStock.App;
 public partial class PalletLabelPrintSelectionWindow : Window
 {
     private readonly ObservableCollection<PalletLabelPrintSelectionGroupViewModel> _groups = new();
+    private bool _syncingCategoryCheckBoxes;
 
     public PalletLabelPrintSelectionWindow(IReadOnlyList<PalletLabelPrintSelectionGroup> groups)
     {
@@ -37,19 +39,34 @@ public partial class PalletLabelPrintSelectionWindow : Window
             .Select(row => row.PalletId)
             .ToArray();
 
+    public IReadOnlyList<long> SelectedProductionPalletIds =>
+        _groups
+            .SelectMany(group => group.Rows)
+            .Where(row => row.IsSelected && row.IsProductionPallet)
+            .Select(row => row.PalletId)
+            .ToArray();
+
     public IReadOnlyList<PalletLabelPrintRow> MapSelectedRows(IReadOnlyList<PalletLabelPrintRow> sourceRows)
     {
-        var selectedIds = SelectedPalletIds.ToHashSet();
+        var selectedKeys = _groups
+            .SelectMany(group => group.Rows)
+            .Where(row => row.IsSelected)
+            .Select(row => BuildSelectionKey(row.SourceType, row.PalletId))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         return sourceRows
-            .Where(row => selectedIds.Contains(row.PalletId))
+            .Where(row => selectedKeys.Contains(BuildSelectionKey(row.SourceType, row.PalletId)))
             .ToArray();
     }
+
+    private static string BuildSelectionKey(string? sourceType, long palletId) =>
+        $"{(sourceType ?? string.Empty).Trim().ToUpperInvariant()}:{palletId}";
 
     private void Row_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName == nameof(PalletLabelPrintSelectionRowViewModel.IsSelected))
         {
             UpdateSummary();
+            SyncCategoryCheckBoxesFromRows();
         }
     }
 
@@ -65,6 +82,8 @@ public partial class PalletLabelPrintSelectionWindow : Window
         {
             row.IsSelected = true;
         }
+
+        SyncCategoryCheckBoxesFromRows();
     }
 
     private void ClearAll_Click(object sender, RoutedEventArgs e)
@@ -72,6 +91,48 @@ public partial class PalletLabelPrintSelectionWindow : Window
         foreach (var row in _groups.SelectMany(group => group.Rows))
         {
             row.IsSelected = false;
+        }
+
+        SyncCategoryCheckBoxesFromRows();
+    }
+
+    private void CategoryCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_syncingCategoryCheckBoxes)
+        {
+            return;
+        }
+
+        if (sender == IncludeProductionHuCheckBox)
+        {
+            SetCategorySelection(isProductionPallet: true, IncludeProductionHuCheckBox.IsChecked == true);
+        }
+        else if (sender == IncludeWarehouseHuCheckBox)
+        {
+            SetCategorySelection(isProductionPallet: false, IncludeWarehouseHuCheckBox.IsChecked == true);
+        }
+    }
+
+    private void SetCategorySelection(bool isProductionPallet, bool isSelected)
+    {
+        foreach (var row in _groups.SelectMany(group => group.Rows).Where(row => row.IsProductionPallet == isProductionPallet))
+        {
+            row.IsSelected = isSelected;
+        }
+    }
+
+    private void SyncCategoryCheckBoxesFromRows()
+    {
+        var rows = _groups.SelectMany(group => group.Rows).ToArray();
+        _syncingCategoryCheckBoxes = true;
+        try
+        {
+            IncludeProductionHuCheckBox.IsChecked = rows.Any(row => row.IsProductionPallet && row.IsSelected);
+            IncludeWarehouseHuCheckBox.IsChecked = rows.Any(row => !row.IsProductionPallet && row.IsSelected);
+        }
+        finally
+        {
+            _syncingCategoryCheckBoxes = false;
         }
     }
 
@@ -116,6 +177,7 @@ public partial class PalletLabelPrintSelectionWindow : Window
         public PalletLabelPrintSelectionRowViewModel(PalletLabelPrintSelectionRow row)
         {
             PalletId = row.PalletId;
+            SourceType = row.SourceType;
             HuCode = row.HuCode;
             Qty = row.Qty;
             Status = row.Status;
@@ -124,10 +186,15 @@ public partial class PalletLabelPrintSelectionWindow : Window
         }
 
         public long PalletId { get; }
+        public string SourceType { get; }
         public string HuCode { get; }
         public double Qty { get; }
         public string Status { get; }
         public string DisplayText { get; }
+        public bool IsProductionPallet => !string.Equals(
+            SourceType,
+            ProductionPalletPrintSourceType.ReservedHu,
+            StringComparison.OrdinalIgnoreCase);
 
         public bool IsSelected
         {

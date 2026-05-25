@@ -44,14 +44,14 @@ public static class CustomerOrderHuPickerRules
             return "HU…";
         }
 
-        if (IsFullyCoveredByProductionPalletPlan(line, boundHuQty))
-        {
-            return "Покрыто планом";
-        }
-
         if (selectedHuCount > 0)
         {
             return $"HU ({selectedHuCount})";
+        }
+
+        if (IsFullyCoveredByProductionPalletPlan(line, boundHuQty))
+        {
+            return "Покрыто планом";
         }
 
         if (IsPartiallyCoveredByProductionPalletPlan(line, boundHuQty))
@@ -77,7 +77,7 @@ public static class CustomerOrderHuPickerRules
         var manualRemaining = ComputeManualBindableRemaining(line, boundHuQty);
         var palletHuCodes = line.ProductionHuCodes?.Trim() ?? string.Empty;
 
-        if (line.PlannedPalletQty > QtyTolerance && manualRemaining <= QtyTolerance)
+        if (line.PlannedPalletQty > QtyTolerance && manualRemaining <= QtyTolerance && boundHuQty <= QtyTolerance)
         {
             return string.IsNullOrWhiteSpace(palletHuCodes)
                 ? "Строка покрыта паллетным планом."
@@ -116,7 +116,7 @@ public static class CustomerOrderHuPickerRules
             return false;
         }
 
-        if (IsFullyCoveredByProductionPalletPlan(line, boundHuQty))
+        if (IsFullyCoveredByProductionPalletPlan(line, boundHuQty) && boundHuQty <= QtyTolerance)
         {
             return false;
         }

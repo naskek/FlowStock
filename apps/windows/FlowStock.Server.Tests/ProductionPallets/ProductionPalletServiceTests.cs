@@ -1289,7 +1289,7 @@ public sealed class ProductionPalletServiceTests
         Assert.Equal("078", rows[0].OrderRef);
         Assert.Contains(rows, row => string.Equals(row.HuCode, "HU-0000478", StringComparison.OrdinalIgnoreCase) && row.Qty == 600);
         Assert.Contains(rows, row => string.Equals(row.HuCode, "HU-0000479", StringComparison.OrdinalIgnoreCase) && row.Qty == 400);
-        Assert.Equal(new[] { 501L, 502L }, PalletLabelPrintSelectionService.ResolveDefaultSelectedPalletIds(rows));
+        Assert.Empty(PalletLabelPrintSelectionService.ResolveDefaultSelectedPalletIds(rows));
     }
 
     [Fact]
@@ -1326,7 +1326,7 @@ public sealed class ProductionPalletServiceTests
     }
 
     [Fact]
-    public void GetPrintRows_CustomerOrder_WithProductionPalletPlan_ReturnsPalletRows()
+    public void GetPrintRows_CustomerOrder_WithProductionPalletPlan_ReturnsBoundHuAndPalletRows()
     {
         var harness = CreateCustomerHarnessWithBoundHu(
             new OrderReceiptPlanLine
@@ -1367,9 +1367,13 @@ public sealed class ProductionPalletServiceTests
 
         var rows = service.GetPrintRows(78);
 
-        Assert.Single(rows);
-        Assert.Equal(ProductionPalletPrintSourceType.ProductionPallet, rows[0].SourceType);
-        Assert.Equal("HU-PLAN", rows[0].HuCode);
+        Assert.Equal(2, rows.Count);
+        Assert.Contains(rows, row =>
+            row.SourceType == ProductionPalletPrintSourceType.ReservedHu
+            && string.Equals(row.HuCode, "HU-BOUND", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(rows, row =>
+            row.SourceType == ProductionPalletPrintSourceType.ProductionPallet
+            && string.Equals(row.HuCode, "HU-PLAN", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]

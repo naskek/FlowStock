@@ -25,7 +25,7 @@ public sealed class PalletLabelPrintSelectionServiceTests
     }
 
     [Fact]
-    public void ResolveDefaultSelectedPalletIds_SelectsOnlyPlannedRows()
+    public void ResolveDefaultSelectedPalletIds_SelectsPlannedProductionRows()
     {
         var rows = new[]
         {
@@ -41,7 +41,7 @@ public sealed class PalletLabelPrintSelectionServiceTests
     }
 
     [Fact]
-    public void ResolveDefaultSelectedPalletIds_SelectsAllReservedHuRows()
+    public void ResolveDefaultSelectedPalletIds_DoesNotSelectReservedHuRows()
     {
         var rows = new[]
         {
@@ -51,7 +51,7 @@ public sealed class PalletLabelPrintSelectionServiceTests
 
         var selected = PalletLabelPrintSelectionService.ResolveDefaultSelectedPalletIds(rows);
 
-        Assert.Equal(new[] { 1L, 2L }, selected);
+        Assert.Empty(selected);
     }
 
     private static ProductionPalletPrintRow CreateRow(

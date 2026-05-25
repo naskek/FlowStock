@@ -91,6 +91,31 @@ public sealed class CustomerOrderHuPickerRulesTests
     }
 
     [Fact]
+    public void IsHuPickerEnabled_FullyPalletPlannedLineWithBoundHu_IsTrueForEditing()
+    {
+        var line = new OrderLineView
+        {
+            Id = 307,
+            ItemId = 6,
+            QtyOrdered = 1000,
+            PlannedPalletQty = 400
+        };
+
+        Assert.True(CustomerOrderHuPickerRules.IsHuPickerEnabled(
+            hasOrderId: true,
+            line,
+            boundHuQty: 600,
+            awaitingSave: false));
+        Assert.Equal("HU (1)", CustomerOrderHuPickerRules.BuildHuPickerLabel(
+            hasOrderId: true,
+            line,
+            boundHuQty: 600,
+            selectedHuCount: 1,
+            awaitingSave: false,
+            candidatesFailed: false));
+    }
+
+    [Fact]
     public void IsHuPickerEnabled_NoPalletPlanWithoutPreloadedCandidates_IsTrue()
     {
         var line = new OrderLineView

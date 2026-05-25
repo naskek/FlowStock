@@ -553,16 +553,19 @@ public partial class OrderDetailsWindow : Window
 
             if (_order?.Type != OrderType.Customer || HasOpenProductionPalletPlan(_orderId.Value))
             {
-                var selectedPalletIds = dialog.SelectedPalletIds;
-                var markResult = await _services.WpfProductionPalletApi.TryMarkPrintedAsync(_orderId.Value, selectedPalletIds).ConfigureAwait(true);
-                if (!markResult.IsSuccess)
+                var selectedPalletIds = dialog.SelectedProductionPalletIds;
+                if (selectedPalletIds.Count > 0)
                 {
-                    MessageBox.Show(
-                        $"Паллетные этикетки отправлены на печать, но сервер не подтвердил статус PRINTED: {markResult.Error}",
-                        "Паллеты",
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Warning);
-                    return;
+                    var markResult = await _services.WpfProductionPalletApi.TryMarkPrintedAsync(_orderId.Value, selectedPalletIds).ConfigureAwait(true);
+                    if (!markResult.IsSuccess)
+                    {
+                        MessageBox.Show(
+                            $"Паллетные этикетки отправлены на печать, но сервер не подтвердил статус PRINTED: {markResult.Error}",
+                            "Паллеты",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning);
+                        return;
+                    }
                 }
             }
 
@@ -1070,12 +1073,12 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        if (orderType == OrderType.Internal
+        if ((orderType == OrderType.Internal || orderType == OrderType.Customer)
             && _orderId.HasValue
             && _selectedLine.Id > 0
             && Math.Abs(oldQty - newQty) > QtyTolerance)
         {
-            await TryPersistInternalLineQtyChangeAsync(_selectedLine.Id, oldQty, newQty).ConfigureAwait(true);
+            await TryPersistOrderLineQtyChangeAsync(_selectedLine.Id, oldQty, newQty).ConfigureAwait(true);
             return;
         }
 
@@ -1085,17 +1088,17 @@ public partial class OrderDetailsWindow : Window
     private void ApplyLocalLineQtyChange(OrderLineView line, double newQty, OrderType orderType)
     {
         line.QtyOrdered = newQty;
+        MarkDirty();
         RefreshLineMetrics();
         if (orderType == OrderType.Customer)
         {
             _huBinding.NotifyLineChanged(line);
         }
 
-        MarkDirty();
         OrderLinesGrid.Items.Refresh();
     }
 
-    private async Task<bool> TryPersistInternalLineQtyChangeAsync(long orderLineId, double oldQty, double newQty)
+    private async Task<bool> TryPersistOrderLineQtyChangeAsync(long orderLineId, double oldQty, double newQty)
     {
         if (!_orderId.HasValue
             || !TryGetHeaderValues(allowBlankOrderRef: true, out var orderRef, out var type, out var partnerId, out var dueDate, out var comment))
@@ -1149,7 +1152,7 @@ public partial class OrderDetailsWindow : Window
                 _services.AppLogger.Info(OrderLineQtyPersistFlow.FormatQtyEditLogLine(logEntry));
                 if (OrderLineEditPrevalidation.ShouldReloadLineMetricsAfterFailedPersist(false))
                 {
-                    TryRefreshPersistedOrderLineMetricsFromApi(type);
+                    ReloadCanonicalOrderStateAfterPersist(orderLineId);
                 }
 
                 var icon = result.Kind is WpfUpdateOrderResultKind.Timeout or WpfUpdateOrderResultKind.ServerUnavailable
@@ -1238,41 +1241,57 @@ public partial class OrderDetailsWindow : Window
 
     private void MixedPalletCheckBox_Click(object sender, RoutedEventArgs e)
     {
-        if (!EnsureEditable())
+        try
         {
-            return;
-        }
-
-        if (_productionPalletHuLocked)
-        {
-            LoadOrder();
-            MessageBox.Show("Паллетные этикетки уже напечатаны или паллета наполнена. Переназначение общего HU запрещено.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        if (sender is not System.Windows.Controls.CheckBox checkBox || TryGetLineFromGridContext(checkBox.DataContext, out var line) == false)
-        {
-            MessageBox.Show("Выберите строку.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        if (checkBox.IsChecked == true)
-        {
-            if (line.MixedPalletGroupNumber < 1)
+            if (!EnsureEditable())
             {
-                line.MixedPalletGroupNumber = 1;
+                RestoreMixedPalletUiState();
+                return;
             }
 
-            line.ProductionPalletGroup = ProductionPalletGroupHelper.Format(line.MixedPalletGroupNumber);
-        }
-        else
-        {
-            line.ProductionPalletGroup = null;
-        }
+            if (_productionPalletHuLocked)
+            {
+                LoadOrder();
+                MessageBox.Show("Паллетные этикетки уже напечатаны или паллета наполнена. Переназначение общего HU запрещено.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
 
-        MarkDirty();
-        OrderLinesGrid.Items.Refresh();
-        UpdatePalletButtons();
+            if (sender is not System.Windows.Controls.CheckBox checkBox || TryGetLineFromGridContext(checkBox.DataContext, out var line) == false)
+            {
+                MessageBox.Show("Выберите строку.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
+                RestoreMixedPalletUiState();
+                return;
+            }
+
+            if (checkBox.IsChecked == true)
+            {
+                if (line.MixedPalletGroupNumber < 1)
+                {
+                    line.MixedPalletGroupNumber = 1;
+                }
+
+                line.ProductionPalletGroup = ProductionPalletGroupHelper.Format(line.MixedPalletGroupNumber);
+            }
+            else
+            {
+                line.ProductionPalletGroup = null;
+            }
+
+            line.NotifyPresentationChanged();
+            MarkDirty();
+            OrderLinesGrid.Items.Refresh();
+            UpdatePalletButtons();
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error("Mixed pallet checkbox change failed", ex);
+            RestoreMixedPalletUiState();
+            MessageBox.Show(
+                $"Не удалось изменить признак общего HU: {ex.Message}",
+                "Заказы",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
     }
 
     private void MixedPalletGroupTextBox_PreviewTextInput(object sender, TextCompositionEventArgs e)
@@ -1282,40 +1301,70 @@ public partial class OrderDetailsWindow : Window
 
     private void MixedPalletGroupTextBox_LostFocus(object sender, RoutedEventArgs e)
     {
-        if (!EnsureEditable(false))
+        try
         {
-            return;
-        }
+            if (!EnsureEditable(false))
+            {
+                RestoreMixedPalletUiState();
+                return;
+            }
 
-        if (_productionPalletHuLocked)
-        {
-            return;
-        }
+            if (_productionPalletHuLocked)
+            {
+                RestoreMixedPalletUiState();
+                return;
+            }
 
-        if (sender is not System.Windows.Controls.TextBox textBox || TryGetLineFromGridContext(textBox.DataContext, out var line) == false)
-        {
-            return;
-        }
+            if (sender is not System.Windows.Controls.TextBox textBox || TryGetLineFromGridContext(textBox.DataContext, out var line) == false)
+            {
+                RestoreMixedPalletUiState();
+                return;
+            }
 
-        if (!line.IsMixedPalletLine)
-        {
-            return;
-        }
+            if (!line.IsMixedPalletLine)
+            {
+                return;
+            }
 
-        if (!int.TryParse(textBox.Text, out var groupNumber) || groupNumber < 1)
-        {
-            groupNumber = 1;
-            line.MixedPalletGroupNumber = groupNumber;
-            textBox.Text = groupNumber.ToString();
-        }
-        else
-        {
-            line.MixedPalletGroupNumber = groupNumber;
-        }
+            if (!int.TryParse(textBox.Text, out var groupNumber) || groupNumber < 1)
+            {
+                groupNumber = 1;
+                line.MixedPalletGroupNumber = groupNumber;
+                textBox.Text = groupNumber.ToString();
+            }
+            else
+            {
+                line.MixedPalletGroupNumber = groupNumber;
+            }
 
-        line.ProductionPalletGroup = ProductionPalletGroupHelper.Format(line.MixedPalletGroupNumber);
-        MarkDirty();
-        OrderLinesGrid.Items.Refresh();
+            line.ProductionPalletGroup = ProductionPalletGroupHelper.Format(line.MixedPalletGroupNumber);
+            line.NotifyPresentationChanged();
+            MarkDirty();
+            OrderLinesGrid.Items.Refresh();
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error("Mixed pallet group change failed", ex);
+            RestoreMixedPalletUiState();
+            MessageBox.Show(
+                $"Не удалось изменить группу общего HU: {ex.Message}",
+                "Заказы",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
+    private void RestoreMixedPalletUiState()
+    {
+        try
+        {
+            OrderLinesGrid.CancelEdit(DataGridEditingUnit.Cell);
+            OrderLinesGrid.Items.Refresh();
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error("Restore mixed pallet UI state failed", ex);
+        }
     }
 
     private void OrderLinesGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)

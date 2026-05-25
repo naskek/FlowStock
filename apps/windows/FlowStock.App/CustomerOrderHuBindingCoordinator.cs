@@ -527,7 +527,14 @@ public sealed class CustomerOrderLineHuState : INotifyPropertyChanged
 
     public void AttachLine(OrderLineView? line, long? orderId)
     {
+        if (!ReferenceEquals(_line, line))
+        {
+            _line.PropertyChanged -= Line_PropertyChanged;
+        }
+
         _line = line ?? new OrderLineView();
+        _line.PropertyChanged -= Line_PropertyChanged;
+        _line.PropertyChanged += Line_PropertyChanged;
         _orderId = orderId;
         _lineRemainingQty = CustomerOrderHuPickerRules.ComputeManualBindingCapacity(_line);
         _awaitingSaveForCandidates = !orderId.HasValue;
@@ -758,6 +765,12 @@ public sealed class CustomerOrderLineHuState : INotifyPropertyChanged
         OnPropertyChanged(nameof(IsSelectionOverRemaining));
         OnPropertyChanged(nameof(HuCoverageTone));
         OnPropertyChanged(nameof(HuCoverageToolTip));
+    }
+
+    private void Line_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        _lineRemainingQty = CustomerOrderHuPickerRules.ComputeManualBindingCapacity(_line);
+        RaiseAll();
     }
 
     private void OnPropertyChanged([CallerMemberName] string? propertyName = null) =>

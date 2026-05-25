@@ -49,6 +49,26 @@ public sealed class WpfHuReservationApiGuardTests
     }
 
     [Fact]
+    public void OrderDetailsWindow_PersistsCustomerQtyEditImmediatelyWithoutHuApply()
+    {
+        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs");
+
+        Assert.Contains("orderType == OrderType.Internal || orderType == OrderType.Customer", source);
+        Assert.Contains("TryPersistOrderLineQtyChangeAsync(_selectedLine.Id, oldQty, newQty)", source);
+
+        var methodStart = source.IndexOf("private async Task<bool> TryPersistOrderLineQtyChangeAsync", StringComparison.Ordinal);
+        Assert.True(methodStart >= 0);
+        var methodEnd = source.IndexOf("private static bool TryValidateLineQtyChange", methodStart, StringComparison.Ordinal);
+        Assert.True(methodEnd > methodStart);
+        var method = source[methodStart..methodEnd];
+
+        Assert.Contains("WpfUpdateOrderContext", method);
+        Assert.Contains("ReloadCanonicalOrderStateAfterPersist(orderLineId)", method);
+        Assert.Contains("ForceOrderLinesGridRefresh()", method);
+        Assert.DoesNotContain("TryApplyHuReservationsAfterSave", method, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void OrderDetailsWindow_DoesNotExposeManualPalletPlanAdoption()
     {
         var xaml = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml");

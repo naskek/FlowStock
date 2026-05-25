@@ -86,7 +86,7 @@ public static class OrderLineQtyChangeRules
         if (orderType == OrderType.Customer)
         {
             var reserved = Math.Max(0, reservedPlanQty);
-            return shipped + Math.Max(filled, reserved);
+            return shipped + reserved + filled;
         }
 
         // INTERNAL: outbound shipped и pallet filled описывают один фактический выпуск — не суммировать.

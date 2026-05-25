@@ -168,12 +168,12 @@
                         </Style>
                     </DataGrid.RowStyle>
                     <DataGrid.Columns>
-                        <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" IsReadOnly="True" />
+                        <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="240" IsReadOnly="True" />
                         <DataGridTextColumn Header="SKU / ШК" Binding="{Binding Barcode}" Width="150" IsReadOnly="True" />
                         <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="150" IsReadOnly="True" />
                         <DataGridTextColumn Header="Заказано (база)" Binding="{Binding QtyOrdered}" Width="140" IsReadOnly="True" />
                         <DataGridTextColumn x:Name="HuAvailableColumn" Header="Доступно HU" Binding="{Binding AvailableHuDisplay}" Width="120" IsReadOnly="True" />
-                        <DataGridTemplateColumn x:Name="HuBoundColumn" Header="HU по строке" Width="220">
+                        <DataGridTemplateColumn x:Name="HuBoundColumn" Header="HU по строке" Width="320">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <ItemsControl ItemsSource="{Binding HuDisplayRows}">

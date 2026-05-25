@@ -499,7 +499,7 @@ public sealed class OrderService
             var incomingKeys = normalized
                 .Select(line => (line.ItemId, ProductionPurpose: ResolveLinePurpose(type, line.ProductionPurpose)))
                 .ToHashSet();
-            var internalLinesNeedingPalletSync = new List<(long OrderLineId, double OrderedQty, double OldOrderedQty)>();
+            var linesNeedingPalletSync = new List<(long OrderLineId, double OrderedQty, double OldOrderedQty)>();
 
             foreach (var entry in existingByItem)
             {
@@ -530,9 +530,9 @@ public sealed class OrderService
                     {
                         ValidateOrderLineQtyCanChange(store, orderId, primary, line.QtyOrdered, type);
                         store.UpdateOrderLineQty(primary.Id, line.QtyOrdered);
-                        if (type == OrderType.Internal)
+                        if (type is OrderType.Internal or OrderType.Customer)
                         {
-                            internalLinesNeedingPalletSync.Add((primary.Id, line.QtyOrdered, primary.QtyOrdered));
+                            linesNeedingPalletSync.Add((primary.Id, line.QtyOrdered, primary.QtyOrdered));
                         }
                     }
 
@@ -554,6 +554,7 @@ public sealed class OrderService
                     {
                         ValidateOrderLineCanBeDeleted(store, orderId, matched[i]);
                         ClearPlannedProductionPalletsForOrderLine(store, orderId, matched[i].Id);
+                        ClearCustomerReservationsForOrderLine(store, orderId, matched[i].Id, type);
                         store.DeleteOrderLine(matched[i].Id);
                     }
                     continue;
@@ -567,9 +568,9 @@ public sealed class OrderService
                     ProductionPurpose = linePurpose,
                     ProductionPalletGroup = NormalizePalletGroup(line.ProductionPalletGroup)
                 });
-                if (type == OrderType.Internal)
+                if (type is OrderType.Internal or OrderType.Customer)
                 {
-                    internalLinesNeedingPalletSync.Add((addedLineId, line.QtyOrdered, 0d));
+                    linesNeedingPalletSync.Add((addedLineId, line.QtyOrdered, 0d));
                 }
             }
 
@@ -584,18 +585,23 @@ public sealed class OrderService
                 {
                     ValidateOrderLineCanBeDeleted(store, orderId, staleLine);
                     ClearPlannedProductionPalletsForOrderLine(store, orderId, staleLine.Id);
+                    ClearCustomerReservationsForOrderLine(store, orderId, staleLine.Id, type);
                     store.DeleteOrderLine(staleLine.Id);
                 }
             }
 
             if (type == OrderType.Customer)
             {
-                TryRefreshCustomerReceiptPlans(store);
+                foreach (var (orderLineId, orderedQty, oldOrderedQty) in linesNeedingPalletSync)
+                {
+                    TrySyncProductionPalletPlanForOrderLine(store, orderId, orderLineId, orderedQty, oldOrderedQty);
+                }
+                TryRefreshCustomerReceiptPlansPreservingOrder(store, orderId);
             }
             else
             {
                 TryRebuildOrderReceiptPlan(store, orderId);
-                foreach (var (orderLineId, orderedQty, oldOrderedQty) in internalLinesNeedingPalletSync)
+                foreach (var (orderLineId, orderedQty, oldOrderedQty) in linesNeedingPalletSync)
                 {
                     TrySyncProductionPalletPlanForOrderLine(store, orderId, orderLineId, orderedQty, oldOrderedQty);
                 }
@@ -633,8 +639,53 @@ public sealed class OrderService
                 orderType,
                 out var errorMessage))
         {
-            throw new InvalidOperationException(errorMessage);
+            throw new InvalidOperationException(orderType == OrderType.Customer
+                ? BuildCustomerQtyReductionBlockedMessage(store, orderId, line, shippedQty, filledQty, reservedQty)
+                : errorMessage);
         }
+    }
+
+    private static string BuildCustomerQtyReductionBlockedMessage(
+        IDataStore store,
+        long orderId,
+        OrderLine line,
+        double shippedQty,
+        double filledQty,
+        double reservedQty)
+    {
+        var lockedQty = OrderLineQtyChangeRules.ResolveFactualLockedQty(
+            shippedQty,
+            filledQty,
+            reservedQty,
+            OrderType.Customer);
+        var blockers = new List<string>();
+        if (shippedQty > QtyTolerance)
+        {
+            blockers.Add($"отгружено {OrderLineQtyChangeRules.FormatLockedQty(shippedQty)}");
+        }
+
+        foreach (var planLine in store.GetOrderReceiptPlanLines(orderId)
+                     .Where(planLine => planLine.OrderLineId == line.Id && planLine.QtyPlanned > QtyTolerance)
+                     .OrderBy(planLine => planLine.SortOrder)
+                     .ThenBy(planLine => planLine.Id))
+        {
+            var hu = string.IsNullOrWhiteSpace(planLine.ToHu) ? "без HU" : planLine.ToHu!.Trim();
+            blockers.Add($"HU {hu}: {OrderLineQtyChangeRules.FormatLockedQty(planLine.QtyPlanned)}");
+        }
+
+        foreach (var pallet in GetActiveProductionPalletsForOrderLine(store, orderId, line.Id)
+                     .Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+                     .OrderBy(pallet => pallet.Id))
+        {
+            var hu = string.IsNullOrWhiteSpace(pallet.HuCode) ? $"pallet_id={pallet.Id}" : pallet.HuCode.Trim();
+            var qty = ResolvePalletQtyForOrderLine(pallet, line.Id);
+            blockers.Add($"паллета {hu} FILLED: {OrderLineQtyChangeRules.FormatLockedQty(qty)}");
+        }
+
+        var details = blockers.Count == 0
+            ? string.Empty
+            : $" Мешают: {string.Join("; ", blockers)}.";
+        return $"Нельзя уменьшить количество ниже уже заполненного/выпущенного объема: заполнено {OrderLineQtyChangeRules.FormatLockedQty(lockedQty)}.{details}";
     }
 
     private static void ValidateOrderLineCanBeDeleted(IDataStore store, long orderId, OrderLine line)
@@ -683,6 +734,27 @@ public sealed class OrderService
     private static void ClearPlannedProductionPalletsForOrderLine(IDataStore store, long orderId, long orderLineId)
     {
         store.ClearPlannedProductionPalletPlanForOrderLines(orderId, [orderLineId]);
+    }
+
+    private static void ClearCustomerReservationsForOrderLine(
+        IDataStore store,
+        long orderId,
+        long orderLineId,
+        OrderType orderType)
+    {
+        if (orderType != OrderType.Customer)
+        {
+            return;
+        }
+
+        try
+        {
+            store.ReplaceOrderReceiptPlanLinesForOrderLines(orderId, [orderLineId], Array.Empty<OrderReceiptPlanLine>());
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            // Compatibility for strict test mocks that do not expose reservation replacement methods.
+        }
     }
 
     private static IReadOnlyList<ProductionPallet> GetActiveProductionPalletsForOrderLine(
@@ -1491,6 +1563,18 @@ public sealed class OrderService
         }
     }
 
+    private static void TryRefreshCustomerReceiptPlansPreservingOrder(IDataStore store, long orderId)
+    {
+        try
+        {
+            RefreshCustomerReceiptPlansCore(store, preserveOrderId: orderId);
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            // Compatibility for strict test mocks that do not expose planning methods.
+        }
+    }
+
     internal void TryRebuildOrderReceiptPlan(IDataStore store, long orderId)
     {
         try
@@ -1514,8 +1598,8 @@ public sealed class OrderService
         {
             var order = store.GetOrder(orderId);
             if (order == null
-                || order.Type != OrderType.Internal
-                || order.Status is not (OrderStatus.InProgress or OrderStatus.Draft))
+                || order.Type is not (OrderType.Internal or OrderType.Customer)
+                || order.Status is not (OrderStatus.InProgress or OrderStatus.Draft or OrderStatus.Accepted))
             {
                 return;
             }
