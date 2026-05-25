@@ -248,9 +248,9 @@ public partial class OrderDetailsWindow : Window
         SyncHuBindingLines();
         _huBinding.EndLoad();
         ApplyProductionHuCodesFromStore(_order.Id);
+        ForceOrderLinesGridRefresh();
         EndLoad();
         RestoreSelectedOrderLine(reselectLineId ?? _selectedLine?.Id);
-        ForceOrderLinesGridRefresh();
     }
 
     private void Save_Click(object sender, RoutedEventArgs e)
@@ -289,6 +289,28 @@ public partial class OrderDetailsWindow : Window
         ExportMarkingButton.IsEnabled = false;
         try
         {
+            var preview = await _services.WpfMarkingApi.TryPreviewOrderAsync(_orderId.Value).ConfigureAwait(true);
+            if (!preview.IsSuccess)
+            {
+                MessageBox.Show(preview.Message, "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            if (preview.LineCount == 0 && preview.TotalQty <= 0)
+            {
+                MessageBox.Show(preview.Message, "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var previewDialog = new OrderMarkingExportPreviewWindow(preview)
+            {
+                Owner = this
+            };
+            if (previewDialog.ShowDialog() != true)
+            {
+                return;
+            }
+
             var result = await _services.WpfMarkingApi.TryExportOrderAsync(_orderId.Value).ConfigureAwait(true);
             if (!result.IsSuccess)
             {
@@ -750,23 +772,41 @@ public partial class OrderDetailsWindow : Window
 
     private bool ConfirmAndApplyCustomerWarehouseHuProposal()
     {
-        if (_order?.Type != OrderType.Customer || !_orderId.HasValue)
+        try
         {
-            return true;
-        }
+            if (_order?.Type != OrderType.Customer || !_orderId.HasValue)
+            {
+                return true;
+            }
 
-        SyncHuBindingLines();
-        _huBinding.RefreshCandidatesForApply();
-        var dialog = new CustomerHuReservationProposalWindow(_huBinding.Lines)
+            SyncHuBindingLines();
+            _huBinding.RefreshCandidatesForApply();
+            var dialog = new CustomerHuReservationProposalWindow(_huBinding.Lines)
+            {
+                Owner = this
+            };
+            if (dialog.ShowDialog() != true)
+            {
+                if (dialog.HasFatalError)
+                {
+                    LoadOrder(_selectedLine?.Id);
+                }
+
+                return false;
+            }
+
+            return TryApplyHuReservationLines(dialog.BuildApplyLines(), reloadAfterSuccess: true);
+        }
+        catch (Exception ex)
         {
-            Owner = this
-        };
-        if (dialog.ShowDialog() != true)
-        {
+            MessageBox.Show(
+                $"Не удалось подтвердить привязку складских остатков.{Environment.NewLine}{ex.Message}",
+                "Привязка HU",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            LoadOrder(_selectedLine?.Id);
             return false;
         }
-
-        return TryApplyHuReservationLines(dialog.BuildApplyLines(), reloadAfterSuccess: true);
     }
 
     private bool TryApplyHuReservationLines(
@@ -778,13 +818,27 @@ public partial class OrderDetailsWindow : Window
             return true;
         }
 
-        if (!_services.WpfReadApi.TryApplyHuReservations(_orderId.Value, applyLines, out _, out var error))
+        try
+        {
+            if (!_services.WpfReadApi.TryApplyHuReservations(_orderId.Value, applyLines, out _, out var error))
+            {
+                MessageBox.Show(
+                    BuildHuReservationApplyErrorMessage(error),
+                    "Привязка HU",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                LoadOrder(_selectedLine?.Id);
+                return false;
+            }
+        }
+        catch (Exception ex)
         {
             MessageBox.Show(
-                BuildHuReservationApplyErrorMessage(error),
+                $"Не удалось применить привязку HU.{Environment.NewLine}{ex.Message}",
                 "Привязка HU",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
+            LoadOrder(_selectedLine?.Id);
             return false;
         }
 
@@ -891,18 +945,31 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        _huBinding.ApplyPickerSelection(state.ClientLineKey, picker.SelectedHuCodes);
-        if (!TryApplyHuReservationLines(
-                [
-                    new WpfHuReservationApplyLineRequest
-                    {
-                        OrderLineId = state.Line.Id,
-                        SelectedHuCodes = picker.SelectedHuCodes
-                    }
-                ],
-                reloadAfterSuccess: true))
+        try
         {
-            _huBinding.RefreshCandidatesForApply();
+            _huBinding.ApplyPickerSelection(state.ClientLineKey, picker.SelectedHuCodes);
+            if (!TryApplyHuReservationLines(
+                    [
+                        new WpfHuReservationApplyLineRequest
+                        {
+                            OrderLineId = state.Line.Id,
+                            SelectedHuCodes = picker.SelectedHuCodes
+                        }
+                    ],
+                    reloadAfterSuccess: true))
+            {
+                _huBinding.RefreshCandidatesForApply();
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                $"Не удалось изменить привязку HU.{Environment.NewLine}{ex.Message}",
+                "Привязка HU",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            LoadOrder(state.Line.Id);
             return;
         }
     }
@@ -1012,6 +1079,7 @@ public partial class OrderDetailsWindow : Window
 
     private void ForceOrderLinesGridRefresh()
     {
+        OrderLinesGrid.ItemsSource = null;
         if (GetSelectedOrderType() == OrderType.Customer)
         {
             OrderLinesGrid.ItemsSource = _huBinding.Lines;
@@ -1027,62 +1095,88 @@ public partial class OrderDetailsWindow : Window
 
     private async void EditLine_Click(object sender, RoutedEventArgs e)
     {
-        if (_isQtyPersistInProgress || !EnsureEditable())
+        try
         {
-            return;
-        }
+            if (_isQtyPersistInProgress || !EnsureEditable())
+            {
+                return;
+            }
 
-        if (_selectedLine == null)
-        {
-            MessageBox.Show("Выберите строку.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
+            var selectedLine = _selectedLine;
+            if (selectedLine == null)
+            {
+                MessageBox.Show("Выберите строку.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
 
-        var item = (_services.WpfReadApi.TryGetItems(null, out var apiItems) ? apiItems : Array.Empty<Item>())
-            .FirstOrDefault(candidate => candidate.Id == _selectedLine.ItemId);
-        if (item == null)
-        {
-            MessageBox.Show("Товар не найден.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Error);
-            return;
-        }
+            var lineId = selectedLine.Id;
+            var item = (_services.WpfReadApi.TryGetItems(null, out var apiItems) ? apiItems : Array.Empty<Item>())
+                .FirstOrDefault(candidate => candidate.Id == selectedLine.ItemId);
+            if (item == null)
+            {
+                MessageBox.Show("Товар не найден.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
 
-        var packagings = _services.WpfPackagingApi.TryGetPackagings(item.Id, includeInactive: false, out var apiPackagings)
-            ? apiPackagings
-            : Array.Empty<ItemPackaging>();
-        var defaultUomCode = ResolveDefaultUomCode(item, packagings);
-        var oldQty = _selectedLine.QtyOrdered;
-        var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, oldQty, defaultUomCode)
-        {
-            Owner = this
-        };
-        if (qtyDialog.ShowDialog() != true)
-        {
-            return;
-        }
+            var packagings = _services.WpfPackagingApi.TryGetPackagings(item.Id, includeInactive: false, out var apiPackagings)
+                ? apiPackagings
+                : Array.Empty<ItemPackaging>();
+            var defaultUomCode = ResolveDefaultUomCode(item, packagings);
+            var oldQty = selectedLine.QtyOrdered;
+            var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, oldQty, defaultUomCode)
+            {
+                Owner = this
+            };
+            if (qtyDialog.ShowDialog() != true)
+            {
+                return;
+            }
 
-        var newQty = qtyDialog.QtyBase;
-        var orderType = GetSelectedOrderType();
-        if (OrderLineEditPrevalidation.ShouldBlockLocalQtyApply(
-                TryValidateLineQtyChange(_selectedLine, newQty, orderType, out var validationMessage)))
+            var newQty = qtyDialog.QtyBase;
+            var orderType = GetSelectedOrderType();
+            if (OrderLineEditPrevalidation.ShouldBlockLocalQtyApply(
+                    TryValidateLineQtyChange(selectedLine, newQty, orderType, out var validationMessage)))
+            {
+                MessageBox.Show(
+                    validationMessage ?? "Нельзя уменьшить количество ниже уже заполненного/выпущенного объема.",
+                    "Заказы",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            if ((orderType == OrderType.Internal || orderType == OrderType.Customer)
+                && _orderId.HasValue
+                && lineId > 0
+                && Math.Abs(oldQty - newQty) > QtyTolerance)
+            {
+                IReadOnlyList<string>? selectedHuCodes = null;
+                if (orderType == OrderType.Customer
+                    && newQty < oldQty - QtyTolerance
+                    && !TryConfirmCustomerReservedHuReduction(selectedLine, oldQty, newQty, out newQty, out selectedHuCodes))
+                {
+                    return;
+                }
+
+                await TryPersistOrderLineQtyChangeAsync(lineId, oldQty, newQty, selectedHuCodes).ConfigureAwait(true);
+                return;
+            }
+
+            ApplyLocalLineQtyChange(selectedLine, newQty, orderType);
+        }
+        catch (Exception ex)
         {
+            _services.AppLogger.Error("Order line qty edit failed", ex);
             MessageBox.Show(
-                validationMessage ?? "Нельзя уменьшить количество ниже уже заполненного/выпущенного объема.",
+                $"Не удалось изменить количество строки. Состояние заказа будет обновлено с сервера.{Environment.NewLine}{ex.Message}",
                 "Заказы",
                 MessageBoxButton.OK,
-                MessageBoxImage.Warning);
-            return;
+                MessageBoxImage.Error);
+            if (_orderId.HasValue)
+            {
+                ReloadCanonicalOrderStateAfterPersist(_selectedLine?.Id);
+            }
         }
-
-        if ((orderType == OrderType.Internal || orderType == OrderType.Customer)
-            && _orderId.HasValue
-            && _selectedLine.Id > 0
-            && Math.Abs(oldQty - newQty) > QtyTolerance)
-        {
-            await TryPersistOrderLineQtyChangeAsync(_selectedLine.Id, oldQty, newQty).ConfigureAwait(true);
-            return;
-        }
-
-        ApplyLocalLineQtyChange(_selectedLine, newQty, orderType);
     }
 
     private void ApplyLocalLineQtyChange(OrderLineView line, double newQty, OrderType orderType)
@@ -1098,7 +1192,107 @@ public partial class OrderDetailsWindow : Window
         OrderLinesGrid.Items.Refresh();
     }
 
-    private async Task<bool> TryPersistOrderLineQtyChangeAsync(long orderLineId, double oldQty, double newQty)
+    private bool TryConfirmCustomerReservedHuReduction(
+        OrderLineView line,
+        double oldQty,
+        double requestedQty,
+        out double normalizedQty,
+        out IReadOnlyList<string>? selectedHuCodes)
+    {
+        normalizedQty = requestedQty;
+        selectedHuCodes = null;
+        if (!_orderId.HasValue || line.Id <= 0)
+        {
+            return true;
+        }
+
+        try
+        {
+            SyncHuBindingLines();
+            var presentation = _huBinding.Lines.FirstOrDefault(row => row.Line.Id == line.Id);
+            var state = presentation?.State;
+            if (state == null || state.BoundQty <= QtyTolerance)
+            {
+                return true;
+            }
+
+            var selected = state.SelectedHuCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var options = state.GetPickerCandidates()
+                .Where(candidate => selected.Contains(candidate.HuCode))
+                .Select((candidate, index) => new CustomerReservedHuReductionOption(
+                    candidate.HuCode,
+                    candidate.Qty,
+                    BuildReservedHuSourceStatus(candidate),
+                    index))
+                .ToArray();
+            if (options.Length == 0)
+            {
+                return true;
+            }
+
+            if (Math.Abs(state.BoundQty - requestedQty) <= QtyTolerance)
+            {
+                selectedHuCodes = options.Select(option => option.HuCode).ToArray();
+                normalizedQty = options.Sum(option => Math.Max(0, option.Qty));
+                return true;
+            }
+
+            var dialog = new CustomerReservedHuReductionWindow(
+                string.IsNullOrWhiteSpace(line.ItemName) ? "Товар" : line.ItemName,
+                oldQty,
+                requestedQty,
+                options)
+            {
+                Owner = this
+            };
+            if (dialog.ShowDialog() != true)
+            {
+                ReloadCanonicalOrderStateAfterPersist(line.Id);
+                return false;
+            }
+
+            normalizedQty = dialog.SelectedQty;
+            selectedHuCodes = dialog.SelectedHuCodes;
+            if (normalizedQty <= QtyTolerance)
+            {
+                MessageBox.Show(
+                    "Количество строки не может быть 0. Удалите строку заказа.",
+                    "Резерв HU",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                ReloadCanonicalOrderStateAfterPersist(line.Id);
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                $"Не удалось подготовить изменение резерва HU.{Environment.NewLine}{ex.Message}",
+                "Резерв HU",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            ReloadCanonicalOrderStateAfterPersist(line.Id);
+            return false;
+        }
+    }
+
+    private static string BuildReservedHuSourceStatus(WpfHuReservationCandidateRow candidate)
+    {
+        var source = string.IsNullOrWhiteSpace(candidate.Source)
+            ? "reserved_hu"
+            : candidate.Source.Trim();
+        return string.IsNullOrWhiteSpace(candidate.Note)
+            ? source
+            : $"{source}: {candidate.Note}";
+    }
+
+    private async Task<bool> TryPersistOrderLineQtyChangeAsync(
+        long orderLineId,
+        double oldQty,
+        double newQty,
+        IReadOnlyList<string>? selectedHuCodes = null)
     {
         if (!_orderId.HasValue
             || !TryGetHeaderValues(allowBlankOrderRef: true, out var orderRef, out var type, out var partnerId, out var dueDate, out var comment))
@@ -1139,7 +1333,13 @@ public partial class OrderDetailsWindow : Window
                         OrderStatus.InProgress,
                         comment,
                         payloadLines,
-                        false))
+                        false,
+                        selectedHuCodes == null
+                            ? null
+                            : new Dictionary<long, IReadOnlyList<string>>
+                            {
+                                [orderLineId] = selectedHuCodes
+                            }))
                 .ConfigureAwait(true);
 
             logEntry = logEntry with

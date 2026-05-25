@@ -23,8 +23,15 @@ public partial class CustomerHuReservationProposalWindow : Window
             {
                 candidate.PropertyChanged += (_, _) =>
                 {
-                    row.Refresh();
-                    UpdateSummary();
+                    try
+                    {
+                        row.Refresh();
+                        UpdateSummary();
+                    }
+                    catch (Exception ex)
+                    {
+                        FailAndClose($"Не удалось изменить выбор HU.{Environment.NewLine}{ex.Message}");
+                    }
                 };
             }
 
@@ -33,6 +40,8 @@ public partial class CustomerHuReservationProposalWindow : Window
 
         UpdateSummary();
     }
+
+    public bool HasFatalError { get; private set; }
 
     public IReadOnlyList<WpfHuReservationApplyLineRequest> BuildApplyLines()
     {
@@ -60,12 +69,31 @@ public partial class CustomerHuReservationProposalWindow : Window
 
     private void Apply_Click(object sender, RoutedEventArgs e)
     {
-        DialogResult = true;
-        Close();
+        try
+        {
+            DialogResult = true;
+            Close();
+        }
+        catch (Exception ex)
+        {
+            FailAndClose($"Не удалось применить выбор HU.{Environment.NewLine}{ex.Message}");
+        }
     }
 
     private void Cancel_Click(object sender, RoutedEventArgs e)
     {
+        DialogResult = false;
+        Close();
+    }
+
+    private void FailAndClose(string message)
+    {
+        HasFatalError = true;
+        MessageBox.Show(
+            message,
+            "Привязка HU",
+            MessageBoxButton.OK,
+            MessageBoxImage.Warning);
         DialogResult = false;
         Close();
     }

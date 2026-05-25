@@ -137,4 +137,26 @@ public sealed class OrderLineQtyChangeRulesTests
         Assert.True(allowed);
         Assert.Null(message);
     }
+
+    [Fact]
+    public void Customer_ReservedPlanQty_DoesNotBlockDecrease()
+    {
+        var lockedQty = OrderLineQtyChangeRules.ResolveFactualLockedQty(
+            shippedQty: 0,
+            filledPalletQty: 0,
+            reservedPlanQty: 2400,
+            OrderType.Customer);
+
+        var allowed = OrderLineQtyChangeRules.TryValidateQtyChange(
+            newQty: 1200,
+            shippedQty: 0,
+            filledPalletQty: 0,
+            reservedPlanQty: 2400,
+            OrderType.Customer,
+            out var message);
+
+        Assert.Equal(0, lockedQty, 3);
+        Assert.True(allowed);
+        Assert.Null(message);
+    }
 }

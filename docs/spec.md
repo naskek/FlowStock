@@ -191,7 +191,7 @@
   - `Маркировка ЧЗ: да`, если тип поддерживает ЧЗ и GTIN заполнен;
   - `Маркировка ЧЗ: нет, GTIN не заполнен`, если тип поддерживает ЧЗ, но GTIN пустой;
   - `Маркировка ЧЗ: нет, тип не маркируется`, если тип не поддерживает ЧЗ.
-- В окне заказа команда `Сформировать Excel ЧЗ` вызывает `POST /api/orders/{orderId}/marking/export`. Сервер сам читает `orders`/`order_lines`, создает или переиспользует order-based `marking_order` и формирует временные synthetic `marking_code`.
+- В окне заказа команда `Сформировать Excel ЧЗ` сначала вызывает `GET /api/orders/{orderId}/marking/preview` (без side effects), затем после подтверждения оператора — `POST /api/orders/{orderId}/marking/export`. Сервер сам читает `orders`/`order_lines`, создает или переиспользует order-based `marking_order` и формирует временные synthetic `marking_code`.
   - Для `CUSTOMER` Excel создается на нехватку после учета уже покрытого складского объема: `max(0, qty_ordered - shipped_qty - reserved_qty - existing_order_code_qty)`.
   - Для `INTERNAL` Excel создается на объем выпуска внутреннего заказа: `max(0, qty_ordered - existing_codes_for_this_internal_order)`.
   - Order-based задачи используют `source_type = PRODUCTION_ORDER`, `source_order_id = order.id`; повторный export не создает дублирующие коды.
@@ -255,6 +255,8 @@
     - если у типа номенклатуры включен флаг `enable_hu_distribution`, для товара обязателен `items.max_qty_per_hu`;
     - для `INTERNAL` сервер заранее дробит строки заказа по HU и резервирует локацию/ HU в `order_receipt_plan_lines`;
     - для `CUSTOMER` сервер на этапе создания/обновления пытается привязать к строкам заказа доступные HU из текущего свободного HU stock, сохраняя привязку в `order_receipt_plan_lines`.
+    - при уменьшении qty строки `CUSTOMER` складской `reserved_hu` не считается фактическим блокером: WPF предлагает выбрать оставляемые HU, сервер в одной транзакции снимает лишние строки `order_receipt_plan_lines`, нормализует qty к сумме оставленных целых HU и синхронизирует production pallets; сами HU, ledger и исходные `production_pallets` не отменяются.
+    - при увеличении qty строки `CUSTOMER` сервер сначала пробует закрыть точный shortage свободными `LEDGER_STOCK` HU той же номенклатуры и только затем создает planned production pallets на остаток.
   - После закрытия отдельного `PRD` сервер пересчитывает `order_receipt_plan_lines` только для клиентских заказов, попавших в affected scope закрываемого документа (`docs.order_id` или `doc_lines.order_line_id`). Полный пересчет всех клиентских резервов остается для явных операций сохранения/maintenance, где он действительно нужен.
   - Один HU/объем может быть зарезервирован только за одним клиентским заказом одновременно.
   - Поле `Партия производства` в WPF временно скрыто из UI; значение колонки сохраняется для совместимости API/БД.

@@ -117,6 +117,9 @@ public sealed class UpdateOrderApiRequest
 
 public sealed class UpdateOrderApiLineRequest
 {
+    [JsonPropertyName("order_line_id")]
+    public long? OrderLineId { get; init; }
+
     [JsonPropertyName("item_id")]
     public long ItemId { get; init; }
 
@@ -128,6 +131,9 @@ public sealed class UpdateOrderApiLineRequest
 
     [JsonPropertyName("production_pallet_group")]
     public string? ProductionPalletGroup { get; init; }
+
+    [JsonPropertyName("selected_hu_codes")]
+    public IReadOnlyList<string>? SelectedHuCodes { get; init; }
 }
 
 public sealed class UpdateOrderApiResponse

@@ -63,6 +63,9 @@ internal static class UpdateOrderHttpApi
 
     internal sealed class UpdateOrderLineRequest
     {
+        [JsonPropertyName("order_line_id")]
+        public long? OrderLineId { get; init; }
+
         [JsonPropertyName("item_id")]
         public long ItemId { get; init; }
 
@@ -71,5 +74,8 @@ internal static class UpdateOrderHttpApi
 
         [JsonPropertyName("production_purpose")]
         public string? ProductionPurpose { get; init; }
+
+        [JsonPropertyName("selected_hu_codes")]
+        public IReadOnlyList<string>? SelectedHuCodes { get; init; }
     }
 }

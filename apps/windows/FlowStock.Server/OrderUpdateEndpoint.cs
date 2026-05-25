@@ -125,9 +125,23 @@ public static class OrderUpdateEndpoint
             return Results.BadRequest(new ApiResult(false, "MISSING_LINES"));
         }
 
+        var existingLineIds = store.GetOrderLines(orderId)
+            .Select(line => line.Id)
+            .ToHashSet();
+        var selectedHuByLineId = new Dictionary<long, IReadOnlyList<string>>();
         var lines = new List<OrderLineView>();
         foreach (var line in inputLines)
         {
+            if (line.SelectedHuCodes != null)
+            {
+                if (!line.OrderLineId.HasValue || line.OrderLineId.Value <= 0 || !existingLineIds.Contains(line.OrderLineId.Value))
+                {
+                    return Results.BadRequest(new ApiResult(false, "ORDER_LINE_NOT_FOUND"));
+                }
+
+                selectedHuByLineId[line.OrderLineId.Value] = line.SelectedHuCodes;
+            }
+
             if (!line.ItemId.HasValue || line.ItemId.Value <= 0)
             {
                 return Results.BadRequest(new ApiResult(false, "MISSING_ITEM_ID"));
@@ -135,6 +149,14 @@ public static class OrderUpdateEndpoint
 
             if (line.QtyOrdered <= 0)
             {
+                if (orderType.Value == OrderType.Customer)
+                {
+                    return Results.BadRequest(new ApiErrorResult(
+                        false,
+                        "INVALID_QTY_ORDERED",
+                        "Количество строки не может быть 0. Удалите строку заказа."));
+                }
+
                 return Results.BadRequest(new ApiResult(false, "INVALID_QTY_ORDERED"));
             }
 
@@ -146,6 +168,8 @@ public static class OrderUpdateEndpoint
 
             lines.Add(new OrderLineView
             {
+                Id = line.OrderLineId ?? 0,
+                OrderId = orderId,
                 ItemId = item.Id,
                 ItemName = item.Name,
                 QtyOrdered = line.QtyOrdered,
@@ -185,7 +209,8 @@ public static class OrderUpdateEndpoint
                 updateRequest.Comment,
                 lines,
                 orderType.Value,
-                updateRequest.BindReservedStock);
+                updateRequest.BindReservedStock,
+                selectedHuByLineId.Count == 0 ? null : selectedHuByLineId);
         }
         catch (ArgumentException ex)
         {

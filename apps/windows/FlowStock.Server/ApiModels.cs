@@ -364,6 +364,9 @@ public sealed class CreateOrderEnvelope
 
 public sealed class UpdateOrderLineRequest
 {
+    [JsonPropertyName("order_line_id")]
+    public long? OrderLineId { get; set; }
+
     [JsonPropertyName("item_id")]
     public long? ItemId { get; set; }
 
@@ -375,6 +378,9 @@ public sealed class UpdateOrderLineRequest
 
     [JsonPropertyName("production_pallet_group")]
     public string? ProductionPalletGroup { get; set; }
+
+    [JsonPropertyName("selected_hu_codes")]
+    public List<string>? SelectedHuCodes { get; set; }
 }
 
 public sealed class UpdateOrderRequest

@@ -87,7 +87,224 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
         Assert.Equal(756, Assert.Single(fixture.Harness.Store.GetOrderLines(fixture.OrderId)).QtyOrdered, 3);
     }
 
-    private static UpdateOrderHttpApi.UpdateOrderRequest BuildUpdateRequest(CustomerFixture fixture, double qtyOrdered)
+    [Fact]
+    public async Task DecreaseCustomerQty_WithFourReservedHuTo2300_NormalizesToThreeHu()
+    {
+        var fixture = CreateCustomerFixture(orderedQty: 2400);
+        SeedReservedWarehouseHuReservations(fixture, "HU-000009", "HU-000010", "HU-000011", "HU-000012");
+        await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
+
+        var payload = await UpdateOrderHttpApi.UpdateAsync(
+            host.Client,
+            fixture.OrderId,
+            BuildUpdateRequest(fixture, qtyOrdered: 2300));
+
+        Assert.True(payload.Ok);
+        Assert.Equal(1800, Assert.Single(fixture.Harness.Store.GetOrderLines(fixture.OrderId)).QtyOrdered, 3);
+        var planLines = fixture.Harness.Store.GetOrderReceiptPlanLines(fixture.OrderId);
+        Assert.Equal(3, planLines.Count);
+        Assert.Equal(1800, planLines.Sum(line => line.QtyPlanned), 3);
+        Assert.DoesNotContain(planLines, line => string.Equals(line.ToHu, "HU-000012", StringComparison.OrdinalIgnoreCase));
+        AssertNoActiveProductionPalletsForOrderLine(fixture);
+    }
+
+    [Fact]
+    public async Task DecreaseCustomerQty_ToCurrentReservedHuTotal_PersistsQtyWithoutProductionPallets()
+    {
+        var fixture = CreateCustomerFixture(orderedQty: 2400);
+        SeedReservedWarehouseHuReservations(fixture, "HU-000009", "HU-000010", "HU-000011");
+        await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
+
+        var payload = await UpdateOrderHttpApi.UpdateAsync(
+            host.Client,
+            fixture.OrderId,
+            BuildUpdateRequest(fixture, qtyOrdered: 1800, ["HU-000009", "HU-000010", "HU-000011"]));
+
+        Assert.True(payload.Ok);
+        Assert.Equal(1800, Assert.Single(fixture.Harness.Store.GetOrderLines(fixture.OrderId)).QtyOrdered, 3);
+        var planLines = fixture.Harness.Store.GetOrderReceiptPlanLines(fixture.OrderId);
+        Assert.Equal(3, planLines.Count);
+        Assert.Equal(1800, planLines.Sum(line => line.QtyPlanned), 3);
+        Assert.Equal(new[] { "HU-000009", "HU-000010", "HU-000011" }, planLines.Select(line => line.ToHu).ToArray());
+        AssertNoActiveProductionPalletsForOrderLine(fixture);
+
+        using var linesResponse = await host.Client.GetAsync($"/api/orders/{fixture.OrderId}/lines");
+        Assert.Equal(HttpStatusCode.OK, linesResponse.StatusCode);
+        using var document = JsonDocument.Parse(await linesResponse.Content.ReadAsStringAsync());
+        var line = document.RootElement.EnumerateArray().Single();
+        Assert.Equal(1800, line.GetProperty("qty_ordered").GetDouble(), 3);
+        Assert.Equal(0, line.GetProperty("pallet_planned_qty").GetDouble(), 3);
+    }
+
+    [Fact]
+    public async Task DecreaseCustomerQty_WithSelectedReservedHu_AppliesQtyAndHuAtomically()
+    {
+        var fixture = CreateCustomerFixture(orderedQty: 2400);
+        SeedReservedWarehouseHuReservations(fixture, "HU-000009", "HU-000010", "HU-000011", "HU-000012");
+        await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
+
+        var payload = await UpdateOrderHttpApi.UpdateAsync(
+            host.Client,
+            fixture.OrderId,
+            BuildUpdateRequest(fixture, qtyOrdered: 2300, ["HU-000010", "HU-000011", "HU-000012"]));
+
+        Assert.True(payload.Ok);
+        Assert.Equal(1800, Assert.Single(fixture.Harness.Store.GetOrderLines(fixture.OrderId)).QtyOrdered, 3);
+        var planLines = fixture.Harness.Store.GetOrderReceiptPlanLines(fixture.OrderId);
+        Assert.Equal(3, planLines.Count);
+        Assert.Equal(new[] { "HU-000010", "HU-000011", "HU-000012" }, planLines.Select(line => line.ToHu).ToArray());
+        Assert.Equal(1800, planLines.Sum(line => line.QtyPlanned), 3);
+        AssertNoActiveProductionPalletsForOrderLine(fixture);
+    }
+
+    [Fact]
+    public async Task DecreaseCustomerQty_WhenQtyUpdateFails_RollsBackSelectedHuReservations()
+    {
+        var fixture = CreateCustomerFixture(orderedQty: 2400);
+        SeedReservedWarehouseHuReservations(fixture, "HU-000009", "HU-000010", "HU-000011", "HU-000012");
+        fixture.Harness.FailNextUpdateOrderLineQty();
+        await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
+
+        using var response = await UpdateOrderHttpApi.PutRawAsync(
+            host.Client,
+            fixture.OrderId,
+            BuildRawJson(fixture, qtyOrdered: 2300, ["HU-000010", "HU-000011", "HU-000012"]));
+
+        var error = await UpdateOrderHttpApi.ReadApiErrorResultAsync(response, HttpStatusCode.BadRequest);
+        Assert.False(error.Ok);
+        Assert.Equal(2400, Assert.Single(fixture.Harness.Store.GetOrderLines(fixture.OrderId)).QtyOrdered, 3);
+        var planLines = fixture.Harness.Store.GetOrderReceiptPlanLines(fixture.OrderId);
+        Assert.Equal(4, planLines.Count);
+        Assert.Equal(new[] { "HU-000009", "HU-000010", "HU-000011", "HU-000012" }, planLines.Select(line => line.ToHu).ToArray());
+    }
+
+    [Fact]
+    public async Task DecreaseCustomerQty_WithFourReservedHuTo1200_KeepsTwoHu()
+    {
+        var fixture = CreateCustomerFixture(orderedQty: 2400);
+        SeedReservedWarehouseHuReservations(fixture, "HU-000009", "HU-000010", "HU-000011", "HU-000012");
+        await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
+
+        var payload = await UpdateOrderHttpApi.UpdateAsync(
+            host.Client,
+            fixture.OrderId,
+            BuildUpdateRequest(fixture, qtyOrdered: 1200));
+
+        Assert.True(payload.Ok);
+        Assert.Equal(1200, Assert.Single(fixture.Harness.Store.GetOrderLines(fixture.OrderId)).QtyOrdered, 3);
+        var planLines = fixture.Harness.Store.GetOrderReceiptPlanLines(fixture.OrderId);
+        Assert.Equal(2, planLines.Count);
+        Assert.Equal(1200, planLines.Sum(line => line.QtyPlanned), 3);
+        Assert.Equal(new[] { "HU-000009", "HU-000010" }, planLines.Select(line => line.ToHu).ToArray());
+        AssertNoActiveProductionPalletsForOrderLine(fixture);
+    }
+
+    [Fact]
+    public async Task IncreaseCustomerQty_WithExactFreeWarehouseHu_BindsHuInsteadOfCreatingProductionPallet()
+    {
+        var fixture = CreateCustomerFixture(orderedQty: 1800);
+        SeedReservedWarehouseHuReservations(fixture, "HU-000009", "HU-000010", "HU-000011");
+        fixture.Harness.SeedBalance(fixture.ItemId, 1, 600, "HU-000012");
+        await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
+
+        var payload = await UpdateOrderHttpApi.UpdateAsync(
+            host.Client,
+            fixture.OrderId,
+            BuildUpdateRequest(fixture, qtyOrdered: 2400));
+
+        Assert.True(payload.Ok);
+        Assert.Equal(2400, Assert.Single(fixture.Harness.Store.GetOrderLines(fixture.OrderId)).QtyOrdered, 3);
+        var planLines = fixture.Harness.Store.GetOrderReceiptPlanLines(fixture.OrderId);
+        Assert.Equal(4, planLines.Count);
+        Assert.Equal(2400, planLines.Sum(line => line.QtyPlanned), 3);
+        Assert.Contains(planLines, line => string.Equals(line.ToHu, "HU-000012", StringComparison.OrdinalIgnoreCase));
+        AssertNoActiveProductionPalletsForOrderLine(fixture);
+    }
+
+    [Fact]
+    public async Task CustomerQtyZero_IsRejectedWithDeleteLineMessage()
+    {
+        var fixture = CreateCustomerFixture(orderedQty: 2400);
+        await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
+
+        using var response = await UpdateOrderHttpApi.PutRawAsync(
+            host.Client,
+            fixture.OrderId,
+            BuildRawJson(fixture, qtyOrdered: 0));
+
+        var error = await UpdateOrderHttpApi.ReadApiErrorResultAsync(response, HttpStatusCode.BadRequest);
+        Assert.False(error.Ok);
+        Assert.Contains("Количество строки не может быть 0. Удалите строку заказа.", error.Message ?? string.Empty, StringComparison.Ordinal);
+        Assert.Equal(2400, Assert.Single(fixture.Harness.Store.GetOrderLines(fixture.OrderId)).QtyOrdered, 3);
+    }
+
+    [Fact]
+    public async Task ReservedHuUnbinding_DoesNotCancelWarehouseHuProductionPallets()
+    {
+        var fixture = CreateCustomerFixture(orderedQty: 2400);
+        SeedReservedWarehouseHuReservations(fixture, "HU-000009", "HU-000010", "HU-000011", "HU-000012");
+        await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
+
+        var payload = await UpdateOrderHttpApi.UpdateAsync(
+            host.Client,
+            fixture.OrderId,
+            BuildUpdateRequest(fixture, qtyOrdered: 1200));
+
+        Assert.True(payload.Ok);
+        var sourcePallets = fixture.Harness.Store.GetProductionPalletsByDoc(9000);
+        Assert.Equal(4, sourcePallets.Count);
+        Assert.All(sourcePallets, pallet => Assert.Equal(ProductionPalletStatus.Filled, pallet.Status));
+        Assert.Equal(600, fixture.Harness.Store.GetLedgerBalance(fixture.ItemId, 1, "HU-000011"), 3);
+        Assert.Equal(600, fixture.Harness.Store.GetLedgerBalance(fixture.ItemId, 1, "HU-000012"), 3);
+    }
+
+    [Fact]
+    public async Task CustomerQtyReductionBlockedMessage_DoesNotListReservedHu()
+    {
+        var fixture = CreateCustomerFixture(orderedQty: 2400);
+        SeedReservedWarehouseHuReservations(fixture, "HU-RESERVED-001");
+        fixture.Harness.SeedDoc(new Doc
+        {
+            Id = 9100,
+            DocRef = "PRD-CUSTOMER-FILLED",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Closed,
+            OrderId = fixture.OrderId,
+            CreatedAt = new DateTime(2026, 5, 25, 11, 0, 0, DateTimeKind.Utc),
+            ClosedAt = new DateTime(2026, 5, 25, 12, 0, 0, DateTimeKind.Utc)
+        });
+        fixture.Harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 9101,
+            PrdDocId = 9100,
+            DocLineId = 91001,
+            OrderId = fixture.OrderId,
+            OrderLineId = fixture.OrderLineId,
+            ItemId = fixture.ItemId,
+            HuCode = "HU-FILLED-CUSTOMER",
+            PlannedQty = 600,
+            ToLocationId = 1,
+            Status = ProductionPalletStatus.Filled,
+            FilledAt = new DateTime(2026, 5, 25, 12, 0, 0, DateTimeKind.Utc),
+            CreatedAt = new DateTime(2026, 5, 25, 11, 0, 0, DateTimeKind.Utc)
+        });
+        await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
+
+        using var response = await UpdateOrderHttpApi.PutRawAsync(
+            host.Client,
+            fixture.OrderId,
+            BuildRawJson(fixture, qtyOrdered: 500));
+
+        var error = await UpdateOrderHttpApi.ReadApiErrorResultAsync(response, HttpStatusCode.BadRequest);
+        Assert.False(error.Ok);
+        Assert.Contains("HU-FILLED-CUSTOMER", error.Message ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("HU-RESERVED-001", error.Message ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static UpdateOrderHttpApi.UpdateOrderRequest BuildUpdateRequest(
+        CustomerFixture fixture,
+        double qtyOrdered,
+        IReadOnlyList<string>? selectedHuCodes = null)
     {
         return new UpdateOrderHttpApi.UpdateOrderRequest
         {
@@ -99,15 +316,85 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
             [
                 new UpdateOrderHttpApi.UpdateOrderLineRequest
                 {
+                    OrderLineId = fixture.OrderLineId,
                     ItemId = fixture.ItemId,
-                    QtyOrdered = qtyOrdered
+                    QtyOrdered = qtyOrdered,
+                    SelectedHuCodes = selectedHuCodes
                 }
             ]
         };
     }
 
-    private static string BuildRawJson(CustomerFixture fixture, double qtyOrdered)
+    private static void SeedReservedWarehouseHuReservations(CustomerFixture fixture, params string[] huCodes)
     {
+        fixture.Harness.SeedDoc(new Doc
+        {
+            Id = 9000,
+            DocRef = "PRD-WAREHOUSE-HU",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Closed,
+            OrderId = 900,
+            CreatedAt = new DateTime(2026, 5, 24, 10, 0, 0, DateTimeKind.Utc),
+            ClosedAt = new DateTime(2026, 5, 24, 11, 0, 0, DateTimeKind.Utc)
+        });
+
+        var planLines = huCodes
+            .Select((huCode, index) =>
+            {
+                fixture.Harness.SeedBalance(fixture.ItemId, 1, 600, huCode);
+                fixture.Harness.SeedProductionPallet(new ProductionPallet
+                {
+                    Id = 9001 + index,
+                    PrdDocId = 9000,
+                    DocLineId = 90001 + index,
+                    OrderId = 900,
+                    ItemId = fixture.ItemId,
+                    HuCode = huCode,
+                    PlannedQty = 600,
+                    ToLocationId = 1,
+                    Status = ProductionPalletStatus.Filled,
+                    FilledAt = new DateTime(2026, 5, 24, 11, 0, 0, DateTimeKind.Utc),
+                    CreatedAt = new DateTime(2026, 5, 24, 10, 0, 0, DateTimeKind.Utc)
+                });
+
+                return new OrderReceiptPlanLine
+                {
+                    Id = 8001 + index,
+                    OrderId = fixture.OrderId,
+                    OrderLineId = fixture.OrderLineId,
+                    ItemId = fixture.ItemId,
+                    ItemName = "Аджика",
+                    QtyPlanned = 600,
+                    ToLocationId = 1,
+                    ToHu = huCode,
+                    SortOrder = index
+                };
+            })
+            .ToArray();
+
+        fixture.Harness.SeedOrderReceiptPlanLines(fixture.OrderId, planLines);
+    }
+
+    private static void AssertNoActiveProductionPalletsForOrderLine(CustomerFixture fixture)
+    {
+        var activePallets = fixture.Harness.Store.GetDocsByOrder(fixture.OrderId)
+            .Where(doc => doc.Type == DocType.ProductionReceipt)
+            .SelectMany(doc => fixture.Harness.Store.GetProductionPalletsByDoc(doc.Id))
+            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+            .Where(pallet => pallet.OrderLineId == fixture.OrderLineId
+                             || pallet.Lines.Any(line => line.OrderLineId == fixture.OrderLineId))
+            .ToArray();
+        Assert.Empty(activePallets);
+    }
+
+    private static string BuildRawJson(CustomerFixture fixture, double qtyOrdered, IReadOnlyList<string>? selectedHuCodes = null)
+    {
+        var selectedHuJson = selectedHuCodes == null
+            ? string.Empty
+            : $"""
+                       ,
+                       "selected_hu_codes": [{string.Join(", ", selectedHuCodes.Select(code => $"\"{code}\""))}]
+              """;
         return $$"""
                  {
                    "order_ref": "{{fixture.OrderRef}}",
@@ -116,8 +403,9 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
                    "status": "IN_PROGRESS",
                    "lines": [
                      {
+                       "order_line_id": {{fixture.OrderLineId}},
                        "item_id": {{fixture.ItemId}},
-                       "qty_ordered": {{qtyOrdered.ToString(System.Globalization.CultureInfo.InvariantCulture)}}
+                       "qty_ordered": {{qtyOrdered.ToString(System.Globalization.CultureInfo.InvariantCulture)}}{{selectedHuJson}}
                      }
                    ]
                  }

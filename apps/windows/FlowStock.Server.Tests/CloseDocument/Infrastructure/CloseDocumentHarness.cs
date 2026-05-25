@@ -38,6 +38,7 @@ internal sealed class CloseDocumentHarness
     private long _nextOrderLineId = 1;
     private long _nextProductionPalletId = 1;
     private long _nextProductionPalletHuNumber = 1;
+    private bool _failNextUpdateOrderLineQty;
 
     public CloseDocumentHarness()
     {
@@ -53,6 +54,11 @@ internal sealed class CloseDocumentHarness
     public int TotalOrderLineCount => _orderLinesByOrder.Values.Sum(lines => lines.Count);
     public IReadOnlyList<MarkingOrder> MarkingOrders => _markingOrders.Values.OrderBy(order => order.CreatedAt).ToArray();
     public IReadOnlyList<MarkingCode> MarkingCodes => _markingCodes.Values.OrderBy(code => code.CreatedAt).ToArray();
+
+    public void FailNextUpdateOrderLineQty()
+    {
+        _failNextUpdateOrderLineQty = true;
+    }
 
     public DocumentService CreateService()
     {
@@ -338,9 +344,116 @@ internal sealed class CloseDocumentHarness
         };
     }
 
+    private HarnessTransactionSnapshot CreateTransactionSnapshot()
+    {
+        return new HarnessTransactionSnapshot(
+            _docs.ToDictionary(pair => pair.Key, pair => CloneDoc(pair.Value)),
+            _linesByDoc.ToDictionary(pair => pair.Key, pair => pair.Value.Select(CloneDocLine).ToList()),
+            _orders.ToDictionary(pair => pair.Key, pair => CloneOrder(pair.Value)),
+            _orderLinesByOrder.ToDictionary(pair => pair.Key, pair => pair.Value.Select(CloneOrderLine).ToList()),
+            new Dictionary<long, long>(_orderIdByOrderLineId),
+            _orderReceiptPlanLines.ToDictionary(
+                pair => pair.Key,
+                pair => (IReadOnlyList<OrderReceiptPlanLine>)pair.Value.Select(CloneOrderReceiptPlanLine).ToArray()),
+            _productionPallets.ToDictionary(pair => pair.Key, pair => CloneProductionPallet(pair.Value)),
+            _postedLedger.Select(CloneLedgerEntry).ToList());
+    }
+
+    private void RestoreTransactionSnapshot(HarnessTransactionSnapshot snapshot)
+    {
+        _docs.Clear();
+        foreach (var pair in snapshot.Docs)
+        {
+            _docs[pair.Key] = CloneDoc(pair.Value);
+        }
+
+        _linesByDoc.Clear();
+        foreach (var pair in snapshot.LinesByDoc)
+        {
+            _linesByDoc[pair.Key] = pair.Value.Select(CloneDocLine).ToList();
+        }
+
+        _orders.Clear();
+        foreach (var pair in snapshot.Orders)
+        {
+            _orders[pair.Key] = CloneOrder(pair.Value);
+        }
+
+        _orderLinesByOrder.Clear();
+        foreach (var pair in snapshot.OrderLinesByOrder)
+        {
+            _orderLinesByOrder[pair.Key] = pair.Value.Select(CloneOrderLine).ToList();
+        }
+
+        _orderIdByOrderLineId.Clear();
+        foreach (var pair in snapshot.OrderIdByOrderLineId)
+        {
+            _orderIdByOrderLineId[pair.Key] = pair.Value;
+        }
+
+        _orderReceiptPlanLines.Clear();
+        foreach (var pair in snapshot.OrderReceiptPlanLines)
+        {
+            _orderReceiptPlanLines[pair.Key] = pair.Value.Select(CloneOrderReceiptPlanLine).ToArray();
+        }
+
+        _productionPallets.Clear();
+        foreach (var pair in snapshot.ProductionPallets)
+        {
+            _productionPallets[pair.Key] = CloneProductionPallet(pair.Value);
+        }
+
+        _postedLedger.Clear();
+        _postedLedger.AddRange(snapshot.PostedLedger.Select(CloneLedgerEntry));
+    }
+
+    private static Doc CloneDoc(Doc doc)
+    {
+        return new Doc
+        {
+            Id = doc.Id,
+            DocRef = doc.DocRef,
+            Type = doc.Type,
+            Status = doc.Status,
+            CreatedAt = doc.CreatedAt,
+            ClosedAt = doc.ClosedAt,
+            PartnerId = doc.PartnerId,
+            OrderId = doc.OrderId,
+            OrderRef = doc.OrderRef,
+            ShippingRef = doc.ShippingRef,
+            ReasonCode = doc.ReasonCode,
+            Comment = doc.Comment,
+            ProductionBatchNo = doc.ProductionBatchNo
+        };
+    }
+
+    private static LedgerEntry CloneLedgerEntry(LedgerEntry entry)
+    {
+        return new LedgerEntry
+        {
+            Id = entry.Id,
+            Timestamp = entry.Timestamp,
+            DocId = entry.DocId,
+            ItemId = entry.ItemId,
+            LocationId = entry.LocationId,
+            QtyDelta = entry.QtyDelta,
+            HuCode = entry.HuCode
+        };
+    }
+
+    private sealed record HarnessTransactionSnapshot(
+        Dictionary<long, Doc> Docs,
+        Dictionary<long, List<DocLine>> LinesByDoc,
+        Dictionary<long, Order> Orders,
+        Dictionary<long, List<OrderLine>> OrderLinesByOrder,
+        Dictionary<long, long> OrderIdByOrderLineId,
+        Dictionary<long, IReadOnlyList<OrderReceiptPlanLine>> OrderReceiptPlanLines,
+        Dictionary<long, ProductionPallet> ProductionPallets,
+        List<LedgerEntry> PostedLedger);
+
     public void SeedDoc(Doc doc)
     {
-        _docs[doc.Id] = doc;
+        _docs[doc.Id] = CloneDoc(doc);
         _nextDocId = Math.Max(_nextDocId, doc.Id + 1);
         if (!_linesByDoc.ContainsKey(doc.Id))
         {
@@ -534,7 +647,19 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.Initialize());
 
         _store.Setup(store => store.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
-            .Callback<Action<IDataStore>>(work => work(_store.Object));
+            .Callback<Action<IDataStore>>(work =>
+            {
+                var snapshot = CreateTransactionSnapshot();
+                try
+                {
+                    work(_store.Object);
+                }
+                catch
+                {
+                    RestoreTransactionSnapshot(snapshot);
+                    throw;
+                }
+            });
 
         _store.Setup(store => store.GetDoc(It.IsAny<long>()))
             .Returns<long>(docId => _docs.TryGetValue(docId, out var doc) ? doc : null);
@@ -866,6 +991,57 @@ internal sealed class CloseDocumentHarness
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray());
 
+        _store.As<IOptimizedHuReservationCandidatesStore>()
+            .Setup(store => store.GetHuReservationCandidateSources(
+                It.IsAny<long?>(),
+                It.IsAny<IReadOnlyCollection<long>>(),
+                It.IsAny<IReadOnlyCollection<string>>()))
+            .Returns<long?, IReadOnlyCollection<long>, IReadOnlyCollection<string>>((customerOrderId, itemIds, excludeHuCodes) =>
+            {
+                var itemSet = (itemIds ?? Array.Empty<long>()).ToHashSet();
+                var excluded = (excludeHuCodes ?? Array.Empty<string>())
+                    .Select(NormalizeHu)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Cast<string>()
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var reservationsByHu = _orderReceiptPlanLines
+                    .SelectMany(pair => pair.Value.Select(line => (OrderId: pair.Key, Line: line)))
+                    .Where(entry => entry.Line.QtyPlanned > StockQuantityRules.QtyTolerance)
+                    .Where(entry => !string.IsNullOrWhiteSpace(entry.Line.ToHu))
+                    .GroupBy(entry => NormalizeHu(entry.Line.ToHu)!, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => group.First(),
+                        StringComparer.OrdinalIgnoreCase);
+
+                return _seedBalances
+                    .Where(pair => pair.Value > StockQuantityRules.QtyTolerance)
+                    .Where(pair => itemSet.Count == 0 || itemSet.Contains(pair.Key.ItemId))
+                    .Where(pair => !string.IsNullOrWhiteSpace(pair.Key.HuCode))
+                    .Where(pair => !excluded.Contains(pair.Key.HuCode!))
+                    .Select(pair =>
+                    {
+                        reservationsByHu.TryGetValue(pair.Key.HuCode!, out var reservation);
+                        var reservedOrder = reservation.OrderId > 0 && _orders.TryGetValue(reservation.OrderId, out var order)
+                            ? order
+                            : null;
+                        return new HuReservationCandidateSourceRow
+                        {
+                            Source = OrderHuReservationApplyService.SourceLedgerStock,
+                            HuCode = pair.Key.HuCode!,
+                            ItemId = pair.Key.ItemId,
+                            Qty = pair.Value,
+                            ShipReady = true,
+                            ReservedByOrderId = reservation.OrderId > 0 ? reservation.OrderId : null,
+                            ReservedByOrderRef = reservedOrder?.OrderRef,
+                            Note = reservation.OrderId > 0 ? "Текущий резерв" : "Свободный складской HU"
+                        };
+                    })
+                    .Where(row => !row.ReservedByOrderId.HasValue || row.ReservedByOrderId == customerOrderId)
+                    .OrderBy(row => row.HuCode, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+            });
+
         _store.Setup(store => store.GetOrderShipmentRemaining(It.IsAny<long>()))
             .Returns<long>(orderId => BuildOrderShipmentRemaining(orderId));
 
@@ -896,6 +1072,12 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.UpdateOrderLineQty(It.IsAny<long>(), It.IsAny<double>()))
             .Callback<long, double>((orderLineId, qtyOrdered) =>
             {
+                if (_failNextUpdateOrderLineQty)
+                {
+                    _failNextUpdateOrderLineQty = false;
+                    throw new InvalidOperationException("SIMULATED_QTY_UPDATE_FAILURE");
+                }
+
                 foreach (var pair in _orderLinesByOrder)
                 {
                     for (var index = 0; index < pair.Value.Count; index++)

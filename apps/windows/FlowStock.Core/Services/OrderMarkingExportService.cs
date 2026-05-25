@@ -18,6 +18,52 @@ public sealed class OrderMarkingExportService
         _markingExcel = markingExcel;
     }
 
+    public OrderMarkingExportPreviewResult Preview(long orderId)
+    {
+        var order = _data.GetOrder(orderId);
+        if (order == null)
+        {
+            return OrderMarkingExportPreviewResult.Failure("Заказ не найден.");
+        }
+
+        if (order.Status == OrderStatus.Shipped)
+        {
+            return OrderMarkingExportPreviewResult.Failure("Нельзя формировать Excel ЧЗ для выполненного заказа.");
+        }
+
+        var huCodesByLine = order.Type == OrderType.Customer
+            ? BuildProductionHuCodesByOrderLine(order.Id)
+            : new Dictionary<long, IReadOnlyList<string>>();
+        var lines = BuildLineSummaries(order)
+            .Select(summary =>
+            {
+                huCodesByLine.TryGetValue(summary.OrderLineId, out var huCodes);
+                huCodes ??= Array.Empty<string>();
+                var previewQty = Math.Max(0, summary.ExportQty) + Math.Max(0, summary.ExistingCodeQty);
+                return new OrderMarkingExportPreviewLine(
+                    summary.OrderLineId,
+                    summary.ItemId,
+                    summary.ItemName,
+                    summary.Gtin,
+                    previewQty,
+                    huCodes.Count,
+                    huCodes);
+            })
+            .Where(line => line.Qty > QtyTolerance)
+            .ToList();
+
+        return new OrderMarkingExportPreviewResult(
+            true,
+            lines.Count == 0
+                ? "В заказе нет строк для формирования Excel ЧЗ."
+                : "Предпросмотр Excel ЧЗ.",
+            order.Id,
+            order.OrderRef,
+            lines.Count,
+            lines.Sum(line => line.Qty),
+            lines);
+    }
+
     public OrderMarkingExportResult Export(long orderId, DateTime generatedAt)
     {
         var order = _data.GetOrder(orderId);
@@ -220,29 +266,83 @@ public sealed class OrderMarkingExportService
     private Dictionary<long, double> BuildActiveProductionPalletQtyByOrderLine(long orderId)
     {
         var result = new Dictionary<long, double>();
+        foreach (var pallet in EnumerateActiveProductionPallets(orderId))
+        {
+            if (pallet.Lines.Count > 0)
+            {
+                foreach (var line in pallet.Lines.Where(line => line.OrderLineId.HasValue))
+                {
+                    AddQty(result, line.OrderLineId!.Value, Math.Max(0, line.PlannedQty));
+                }
+
+                continue;
+            }
+
+            if (pallet.OrderLineId.HasValue)
+            {
+                AddQty(result, pallet.OrderLineId.Value, Math.Max(0, pallet.PlannedQty));
+            }
+        }
+
+        return result;
+    }
+
+    private Dictionary<long, IReadOnlyList<string>> BuildProductionHuCodesByOrderLine(long orderId)
+    {
+        var result = new Dictionary<long, List<string>>();
+        foreach (var pallet in EnumerateActiveProductionPallets(orderId))
+        {
+            if (string.IsNullOrWhiteSpace(pallet.HuCode))
+            {
+                continue;
+            }
+
+            var huCode = pallet.HuCode.Trim();
+            if (pallet.Lines.Count > 0)
+            {
+                foreach (var line in pallet.Lines.Where(line => line.OrderLineId.HasValue))
+                {
+                    AddHuCode(result, line.OrderLineId!.Value, huCode);
+                }
+
+                continue;
+            }
+
+            if (pallet.OrderLineId.HasValue)
+            {
+                AddHuCode(result, pallet.OrderLineId.Value, huCode);
+            }
+        }
+
+        return result.ToDictionary(
+            pair => pair.Key,
+            pair => (IReadOnlyList<string>)pair.Value
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
+                .ToArray());
+    }
+
+    private IEnumerable<ProductionPallet> EnumerateActiveProductionPallets(long orderId)
+    {
         foreach (var doc in _data.GetDocsByOrder(orderId).Where(doc => doc.Type == DocType.ProductionReceipt))
         {
             foreach (var pallet in _data.GetProductionPalletsByDoc(doc.Id)
                          .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)))
             {
-                if (pallet.Lines.Count > 0)
-                {
-                    foreach (var line in pallet.Lines.Where(line => line.OrderLineId.HasValue))
-                    {
-                        AddQty(result, line.OrderLineId!.Value, Math.Max(0, line.PlannedQty));
-                    }
-
-                    continue;
-                }
-
-                if (pallet.OrderLineId.HasValue)
-                {
-                    AddQty(result, pallet.OrderLineId.Value, Math.Max(0, pallet.PlannedQty));
-                }
+                yield return pallet;
             }
         }
+    }
 
-        return result;
+    private static void AddHuCode(IDictionary<long, List<string>> codesByLine, long orderLineId, string huCode)
+    {
+        if (!codesByLine.TryGetValue(orderLineId, out var codes))
+        {
+            codes = new List<string>();
+            codesByLine[orderLineId] = codes;
+        }
+
+        codes.Add(huCode);
     }
 
     private static void AddQty(IDictionary<long, double> totals, long orderLineId, double qty)

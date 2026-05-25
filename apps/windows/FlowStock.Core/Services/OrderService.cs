@@ -404,7 +404,8 @@ public sealed class OrderService
         string? comment,
         IReadOnlyList<OrderLineView> lines,
         OrderType type = OrderType.Customer,
-        bool? bindReservedStockForCustomer = null)
+        bool? bindReservedStockForCustomer = null,
+        IReadOnlyDictionary<long, IReadOnlyList<string>>? customerReservedHuSelectionsByOrderLineId = null)
     {
         var existing = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
         if (existing.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
@@ -486,6 +487,7 @@ public sealed class OrderService
             UseReservedStock = useReservedStock
         };
 
+        ValidateIncomingLineQuantities(lines, type);
         var normalized = NormalizeLines(lines, type);
 
         _data.ExecuteInTransaction(store =>
@@ -528,11 +530,27 @@ public sealed class OrderService
                     var primary = matched[0];
                     if (Math.Abs(primary.QtyOrdered - line.QtyOrdered) > QtyTolerance)
                     {
-                        ValidateOrderLineQtyCanChange(store, orderId, primary, line.QtyOrdered, type);
-                        store.UpdateOrderLineQty(primary.Id, line.QtyOrdered);
+                        var orderedQty = type == OrderType.Customer
+                            ? NormalizeCustomerQtyForAdjustableReservations(
+                                store,
+                                orderId,
+                                primary,
+                                line.QtyOrdered,
+                                customerReservedHuSelectionsByOrderLineId != null
+                                    && customerReservedHuSelectionsByOrderLineId.TryGetValue(primary.Id, out var selectedHuCodes)
+                                    ? selectedHuCodes
+                                    : null)
+                            : line.QtyOrdered;
+                        ValidateOrderLineQtyCanChange(store, orderId, primary, orderedQty, type);
+                        store.UpdateOrderLineQty(primary.Id, orderedQty);
+                        line.QtyOrdered = orderedQty;
+                        if (type == OrderType.Customer && orderedQty > primary.QtyOrdered + QtyTolerance)
+                        {
+                            TryBindExactWarehouseHuForCustomerShortage(store, orderId, primary, orderedQty);
+                        }
                         if (type is OrderType.Internal or OrderType.Customer)
                         {
-                            linesNeedingPalletSync.Add((primary.Id, line.QtyOrdered, primary.QtyOrdered));
+                            linesNeedingPalletSync.Add((primary.Id, orderedQty, primary.QtyOrdered));
                         }
                     }
 
@@ -614,6 +632,295 @@ public sealed class OrderService
         });
     }
 
+    private static void ValidateIncomingLineQuantities(IReadOnlyList<OrderLineView> lines, OrderType orderType)
+    {
+        if (orderType != OrderType.Customer)
+        {
+            return;
+        }
+
+        if (lines.Any(line => line.QtyOrdered <= QtyTolerance))
+        {
+            throw new InvalidOperationException("Количество строки не может быть 0. Удалите строку заказа.");
+        }
+    }
+
+    private static double NormalizeCustomerQtyForAdjustableReservations(
+        IDataStore store,
+        long orderId,
+        OrderLine line,
+        double requestedQty,
+        IReadOnlyList<string>? selectedHuCodes = null)
+    {
+        if (requestedQty <= QtyTolerance)
+        {
+            throw new InvalidOperationException("Количество строки не может быть 0. Удалите строку заказа.");
+        }
+
+        var currentReservations = store.GetOrderReceiptPlanLines(orderId)
+            .Where(planLine => planLine.OrderLineId == line.Id && planLine.QtyPlanned > QtyTolerance)
+            .OrderBy(planLine => planLine.SortOrder)
+            .ThenBy(planLine => planLine.Id)
+            .ThenBy(planLine => planLine.ToHu, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (currentReservations.Count == 0)
+        {
+            if (selectedHuCodes != null && selectedHuCodes.Count > 0)
+            {
+                throw new InvalidOperationException("Выбранные HU недоступны для строки заказа.");
+            }
+
+            return requestedQty;
+        }
+
+        if (selectedHuCodes != null)
+        {
+            return NormalizeCustomerQtyForSelectedReservations(
+                store,
+                orderId,
+                line,
+                requestedQty,
+                currentReservations,
+                selectedHuCodes);
+        }
+
+        var currentReservedQty = currentReservations.Sum(planLine => Math.Max(0, planLine.QtyPlanned));
+        if (requestedQty + QtyTolerance >= currentReservedQty)
+        {
+            return requestedQty;
+        }
+
+        var keptReservations = SelectCustomerReservationsToKeep(currentReservations, requestedQty);
+        store.ReplaceOrderReceiptPlanLinesForOrderLines(orderId, [line.Id], keptReservations);
+
+        var keptQty = keptReservations.Sum(planLine => Math.Max(0, planLine.QtyPlanned));
+        return keptQty > QtyTolerance
+            ? keptQty
+            : requestedQty;
+    }
+
+    private static double NormalizeCustomerQtyForSelectedReservations(
+        IDataStore store,
+        long orderId,
+        OrderLine line,
+        double requestedQty,
+        IReadOnlyList<OrderReceiptPlanLine> currentReservations,
+        IReadOnlyList<string> selectedHuCodes)
+    {
+        var selected = NormalizeSelectedHuCodes(selectedHuCodes);
+        if (selected.Count == 0)
+        {
+            store.ReplaceOrderReceiptPlanLinesForOrderLines(orderId, [line.Id], Array.Empty<OrderReceiptPlanLine>());
+            return requestedQty;
+        }
+
+        var currentHu = currentReservations
+            .Select(planLine => NormalizeHu(planLine.ToHu))
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Cast<string>()
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var missing = selected
+            .Where(huCode => !currentHu.Contains(huCode))
+            .ToArray();
+        if (missing.Length > 0)
+        {
+            throw new InvalidOperationException($"Выбранные HU недоступны для строки заказа: {string.Join(", ", missing)}.");
+        }
+
+        var keptReservations = currentReservations
+            .Where(planLine =>
+            {
+                var huCode = NormalizeHu(planLine.ToHu);
+                return !string.IsNullOrWhiteSpace(huCode) && selected.Contains(huCode);
+            })
+            .ToList();
+        var keptQty = keptReservations.Sum(planLine => Math.Max(0, planLine.QtyPlanned));
+        if (keptQty > requestedQty + QtyTolerance)
+        {
+            throw new InvalidOperationException("Сумма выбранных HU больше запрошенного количества строки.");
+        }
+
+        store.ReplaceOrderReceiptPlanLinesForOrderLines(orderId, [line.Id], keptReservations);
+        return keptQty > QtyTolerance
+            ? keptQty
+            : requestedQty;
+    }
+
+    private static HashSet<string> NormalizeSelectedHuCodes(IReadOnlyList<string> huCodes)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var huCode in huCodes)
+        {
+            var normalized = NormalizeHu(huCode);
+            if (!string.IsNullOrWhiteSpace(normalized))
+            {
+                result.Add(normalized);
+            }
+        }
+
+        return result;
+    }
+
+    private static IReadOnlyList<OrderReceiptPlanLine> SelectCustomerReservationsToKeep(
+        IReadOnlyList<OrderReceiptPlanLine> reservations,
+        double requestedQty)
+    {
+        // Deterministic subset: stable plan order, greatest total not exceeding requested qty.
+        var targetUnits = ToReservationQtyUnits(requestedQty);
+        if (targetUnits <= 0)
+        {
+            return Array.Empty<OrderReceiptPlanLine>();
+        }
+
+        var bestByTotal = new Dictionary<long, List<OrderReceiptPlanLine>>
+        {
+            [0] = new()
+        };
+        foreach (var reservation in reservations)
+        {
+            var reservationUnits = ToReservationQtyUnits(reservation.QtyPlanned);
+            if (reservationUnits <= 0)
+            {
+                continue;
+            }
+
+            foreach (var snapshot in bestByTotal.ToArray())
+            {
+                var candidateTotal = snapshot.Key + reservationUnits;
+                if (candidateTotal > targetUnits || bestByTotal.ContainsKey(candidateTotal))
+                {
+                    continue;
+                }
+
+                var candidate = new List<OrderReceiptPlanLine>(snapshot.Value)
+                {
+                    reservation
+                };
+                bestByTotal[candidateTotal] = candidate;
+            }
+        }
+
+        var bestTotal = bestByTotal.Keys.Max();
+        return bestByTotal[bestTotal];
+    }
+
+    private static long ToReservationQtyUnits(double qty)
+    {
+        return (long)Math.Round(Math.Max(0, qty) * 1000d, MidpointRounding.AwayFromZero);
+    }
+
+    private static void TryBindExactWarehouseHuForCustomerShortage(
+        IDataStore store,
+        long orderId,
+        OrderLine line,
+        double orderedQty)
+    {
+        if (store is not IOptimizedHuReservationCandidatesStore optimizedStore)
+        {
+            return;
+        }
+
+        var shippedTotals = store.GetShippedTotalsByOrderLine(orderId);
+        var shippedQty = shippedTotals.TryGetValue(line.Id, out var shipped)
+            ? Math.Max(0, shipped)
+            : 0d;
+        var currentReservations = store.GetOrderReceiptPlanLines(orderId)
+            .Where(planLine => planLine.OrderLineId == line.Id && planLine.QtyPlanned > QtyTolerance)
+            .OrderBy(planLine => planLine.SortOrder)
+            .ThenBy(planLine => planLine.Id)
+            .ThenBy(planLine => planLine.ToHu, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var reservedQty = currentReservations.Sum(planLine => Math.Max(0, planLine.QtyPlanned));
+        var activeProductionPalletQty = GetActiveProductionPalletsForOrderLine(store, orderId, line.Id)
+            .Sum(pallet => ResolvePalletQtyForOrderLine(pallet, line.Id));
+        var shortage = Math.Max(0, orderedQty - shippedQty - reservedQty - activeProductionPalletQty);
+        if (shortage <= QtyTolerance)
+        {
+            return;
+        }
+
+        var selectedHu = currentReservations
+            .Select(planLine => NormalizeHu(planLine.ToHu))
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var freeCandidates = optimizedStore.GetHuReservationCandidateSources(orderId, [line.ItemId], Array.Empty<string>())
+            .Where(candidate => string.Equals(candidate.Source, OrderHuReservationApplyService.SourceLedgerStock, StringComparison.OrdinalIgnoreCase))
+            .Where(candidate => candidate.ItemId == line.ItemId)
+            .Where(candidate => candidate.Qty > QtyTolerance)
+            .Where(candidate => !string.IsNullOrWhiteSpace(candidate.HuCode))
+            .Where(candidate => !candidate.ReservedByOrderId.HasValue || candidate.ReservedByOrderId.Value == orderId)
+            .Where(candidate => !selectedHu.Contains(candidate.HuCode))
+            .OrderBy(candidate => candidate.HuCode, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var exact = SelectExactHuCandidateSubset(freeCandidates, shortage);
+        if (exact.Count == 0)
+        {
+            return;
+        }
+
+        var replacement = currentReservations.ToList();
+        var sortOrder = replacement.Count == 0
+            ? 0
+            : replacement.Max(planLine => planLine.SortOrder) + 1;
+        foreach (var candidate in exact)
+        {
+            replacement.Add(new OrderReceiptPlanLine
+            {
+                OrderId = orderId,
+                OrderLineId = line.Id,
+                ItemId = line.ItemId,
+                QtyPlanned = candidate.Qty,
+                ToHu = candidate.HuCode,
+                SortOrder = sortOrder++
+            });
+        }
+
+        store.ReplaceOrderReceiptPlanLinesForOrderLines(orderId, [line.Id], replacement);
+    }
+
+    private static IReadOnlyList<HuReservationCandidateSourceRow> SelectExactHuCandidateSubset(
+        IReadOnlyList<HuReservationCandidateSourceRow> candidates,
+        double targetQty)
+    {
+        var targetUnits = ToReservationQtyUnits(targetQty);
+        if (targetUnits <= 0)
+        {
+            return Array.Empty<HuReservationCandidateSourceRow>();
+        }
+
+        var bestByTotal = new Dictionary<long, List<HuReservationCandidateSourceRow>>
+        {
+            [0] = new()
+        };
+        foreach (var candidate in candidates)
+        {
+            var candidateUnits = ToReservationQtyUnits(candidate.Qty);
+            if (candidateUnits <= 0)
+            {
+                continue;
+            }
+
+            foreach (var snapshot in bestByTotal.ToArray())
+            {
+                var candidateTotal = snapshot.Key + candidateUnits;
+                if (candidateTotal > targetUnits || bestByTotal.ContainsKey(candidateTotal))
+                {
+                    continue;
+                }
+
+                var selected = new List<HuReservationCandidateSourceRow>(snapshot.Value)
+                {
+                    candidate
+                };
+                bestByTotal[candidateTotal] = selected;
+            }
+        }
+
+        return bestByTotal.TryGetValue(targetUnits, out var exact)
+            ? exact
+            : Array.Empty<HuReservationCandidateSourceRow>();
+    }
+
     private static void ValidateOrderLineQtyCanChange(
         IDataStore store,
         long orderId,
@@ -656,21 +963,12 @@ public sealed class OrderService
         var lockedQty = OrderLineQtyChangeRules.ResolveFactualLockedQty(
             shippedQty,
             filledQty,
-            reservedQty,
+            0,
             OrderType.Customer);
         var blockers = new List<string>();
         if (shippedQty > QtyTolerance)
         {
             blockers.Add($"отгружено {OrderLineQtyChangeRules.FormatLockedQty(shippedQty)}");
-        }
-
-        foreach (var planLine in store.GetOrderReceiptPlanLines(orderId)
-                     .Where(planLine => planLine.OrderLineId == line.Id && planLine.QtyPlanned > QtyTolerance)
-                     .OrderBy(planLine => planLine.SortOrder)
-                     .ThenBy(planLine => planLine.Id))
-        {
-            var hu = string.IsNullOrWhiteSpace(planLine.ToHu) ? "без HU" : planLine.ToHu!.Trim();
-            blockers.Add($"HU {hu}: {OrderLineQtyChangeRules.FormatLockedQty(planLine.QtyPlanned)}");
         }
 
         foreach (var pallet in GetActiveProductionPalletsForOrderLine(store, orderId, line.Id)

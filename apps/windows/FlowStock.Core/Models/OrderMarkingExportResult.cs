@@ -39,3 +39,34 @@ public sealed record OrderMarkingExportLineSummary(
     double CoveredQty,
     double ExistingCodeQty,
     double ExportQty);
+
+public sealed record OrderMarkingExportPreviewResult(
+    bool IsSuccess,
+    string Message,
+    long OrderId,
+    string OrderRef,
+    int LineCount,
+    double TotalQty,
+    IReadOnlyList<OrderMarkingExportPreviewLine> Lines)
+{
+    public static OrderMarkingExportPreviewResult Failure(string message)
+    {
+        return new OrderMarkingExportPreviewResult(
+            false,
+            message,
+            0,
+            string.Empty,
+            0,
+            0,
+            Array.Empty<OrderMarkingExportPreviewLine>());
+    }
+}
+
+public sealed record OrderMarkingExportPreviewLine(
+    long OrderLineId,
+    long ItemId,
+    string ItemName,
+    string Gtin,
+    double Qty,
+    int HuCount,
+    IReadOnlyList<string> HuCodes);

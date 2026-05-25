@@ -83,6 +83,57 @@ public sealed class WpfMarkingApiService
         }
     }
 
+    public async Task<OrderMarkingExportPreviewApiResult> TryPreviewOrderAsync(
+        long orderId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var configuration = LoadConfiguration();
+            if (!configuration.IsConfigured)
+            {
+                _logger.Info("Order marking preview skipped: server base URL is not configured.");
+                return OrderMarkingExportPreviewApiResult.Failure("FlowStock Server API не настроен.");
+            }
+
+            using var handler = CreateHandler(configuration);
+            using var client = new HttpClient(handler)
+            {
+                BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
+                Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
+            };
+            using var response = await client
+                .GetAsync($"/api/orders/{orderId}/marking/preview", cancellationToken)
+                .ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return OrderMarkingExportPreviewApiResult.Failure(await ReadApiErrorAsync(response).ConfigureAwait(false));
+            }
+
+            var payload = await response.Content
+                .ReadFromJsonAsync<OrderMarkingExportPreviewResponse>(JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+            if (payload == null)
+            {
+                return OrderMarkingExportPreviewApiResult.Failure("Пустой ответ сервера.");
+            }
+
+            return new OrderMarkingExportPreviewApiResult(
+                true,
+                payload.Message ?? "Предпросмотр Excel ЧЗ.",
+                payload.OrderId,
+                payload.OrderRef ?? string.Empty,
+                payload.LineCount,
+                payload.TotalQty,
+                payload.Lines?.Select(MapPreviewLine).ToArray() ?? Array.Empty<OrderMarkingExportPreviewLineApiResult>());
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Order marking preview failed", ex);
+            return OrderMarkingExportPreviewApiResult.Failure(ex.Message);
+        }
+    }
+
     public async Task<OrderMarkingExportApiResult> TryExportOrderAsync(
         long orderId,
         CancellationToken cancellationToken = default)
@@ -443,6 +494,18 @@ public sealed class WpfMarkingApiService
         return int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ? value : 0;
     }
 
+    private static OrderMarkingExportPreviewLineApiResult MapPreviewLine(OrderMarkingExportPreviewLineResponse line)
+    {
+        return new OrderMarkingExportPreviewLineApiResult(
+            line.OrderLineId,
+            line.ItemId,
+            line.ItemName ?? string.Empty,
+            line.Gtin ?? string.Empty,
+            line.Qty,
+            line.HuCount,
+            line.HuCodes ?? Array.Empty<string>());
+    }
+
     private static double ReadDoubleHeader(HttpResponseMessage response, string name)
     {
         var raw = ReadHeader(response, name);
@@ -459,6 +522,51 @@ public sealed class WpfMarkingApiService
 
         [JsonPropertyName("created_qty")]
         public double CreatedQty { get; init; }
+    }
+
+    private sealed class OrderMarkingExportPreviewResponse
+    {
+        [JsonPropertyName("message")]
+        public string? Message { get; init; }
+
+        [JsonPropertyName("order_id")]
+        public long OrderId { get; init; }
+
+        [JsonPropertyName("order_ref")]
+        public string? OrderRef { get; init; }
+
+        [JsonPropertyName("line_count")]
+        public int LineCount { get; init; }
+
+        [JsonPropertyName("total_qty")]
+        public double TotalQty { get; init; }
+
+        [JsonPropertyName("lines")]
+        public OrderMarkingExportPreviewLineResponse[]? Lines { get; init; }
+    }
+
+    private sealed class OrderMarkingExportPreviewLineResponse
+    {
+        [JsonPropertyName("order_line_id")]
+        public long OrderLineId { get; init; }
+
+        [JsonPropertyName("item_id")]
+        public long ItemId { get; init; }
+
+        [JsonPropertyName("item_name")]
+        public string? ItemName { get; init; }
+
+        [JsonPropertyName("gtin")]
+        public string? Gtin { get; init; }
+
+        [JsonPropertyName("qty")]
+        public double Qty { get; init; }
+
+        [JsonPropertyName("hu_count")]
+        public int HuCount { get; init; }
+
+        [JsonPropertyName("hu_codes")]
+        public string[]? HuCodes { get; init; }
     }
 
     private sealed class OrderMarkingExportResponse
@@ -484,6 +592,37 @@ public sealed record WpfMarkingApiConfiguration(string? BaseUrl, int TimeoutSeco
 {
     public bool IsConfigured => !string.IsNullOrWhiteSpace(BaseUrl);
 }
+
+public sealed record OrderMarkingExportPreviewApiResult(
+    bool IsSuccess,
+    string Message,
+    long OrderId,
+    string OrderRef,
+    int LineCount,
+    double TotalQty,
+    IReadOnlyList<OrderMarkingExportPreviewLineApiResult> Lines)
+{
+    public static OrderMarkingExportPreviewApiResult Failure(string message)
+    {
+        return new OrderMarkingExportPreviewApiResult(
+            false,
+            message,
+            0,
+            string.Empty,
+            0,
+            0,
+            Array.Empty<OrderMarkingExportPreviewLineApiResult>());
+    }
+}
+
+public sealed record OrderMarkingExportPreviewLineApiResult(
+    long OrderLineId,
+    long ItemId,
+    string ItemName,
+    string Gtin,
+    double Qty,
+    int HuCount,
+    IReadOnlyList<string> HuCodes);
 
 public sealed record OrderMarkingExportApiResult(
     bool IsSuccess,

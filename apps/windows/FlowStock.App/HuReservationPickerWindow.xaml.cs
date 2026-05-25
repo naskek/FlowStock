@@ -63,14 +63,26 @@ public partial class HuReservationPickerWindow : Window
             return;
         }
 
-        if (row.IsSelected && !CustomerOrderHuPickerRules.TrySelectRow(row, _allRows, _lineRemainingQty, true))
+        try
         {
-            row.SuppressChange(() => row.IsSelected = false);
-            return;
-        }
+            if (row.IsSelected && !CustomerOrderHuPickerRules.TrySelectRow(row, _allRows, _lineRemainingQty, true))
+            {
+                row.SuppressChange(() => row.IsSelected = false);
+                return;
+            }
 
-        CustomerOrderHuPickerRules.ApplyRowEnablement(_allRows, _lineRemainingQty, _selectedOnOtherLines);
-        UpdateSummary();
+            CustomerOrderHuPickerRules.ApplyRowEnablement(_allRows, _lineRemainingQty, _selectedOnOtherLines);
+            UpdateSummary();
+        }
+        catch (Exception ex)
+        {
+            row.SuppressChange(() => row.IsSelected = !row.IsSelected);
+            MessageBox.Show(
+                $"Не удалось изменить выбор HU.{Environment.NewLine}{ex.Message}",
+                "Привязка HU",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
     }
 
     private void UpdateSummary()

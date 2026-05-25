@@ -41,10 +41,16 @@ public sealed class WpfUpdateOrderService
             Lines = context.Lines
                 .Select(line => new UpdateOrderApiLineRequest
                 {
+                    OrderLineId = line.Id > 0 ? line.Id : null,
                     ItemId = line.ItemId,
                     QtyOrdered = line.QtyOrdered,
                     ProductionPurpose = ProductionLinePurposeMapper.ToDbValue(line.ProductionPurpose),
-                    ProductionPalletGroup = NormalizeValue(line.ProductionPalletGroup)?.ToUpperInvariant()
+                    ProductionPalletGroup = NormalizeValue(line.ProductionPalletGroup)?.ToUpperInvariant(),
+                    SelectedHuCodes = context.CustomerReservedHuSelectionsByOrderLineId != null
+                                      && line.Id > 0
+                                      && context.CustomerReservedHuSelectionsByOrderLineId.TryGetValue(line.Id, out var selectedHuCodes)
+                        ? selectedHuCodes
+                        : null
                 })
                 .ToList()
         };
@@ -339,7 +345,8 @@ public sealed record WpfUpdateOrderContext(
     OrderStatus Status,
     string? Comment,
     IReadOnlyList<OrderLineView> Lines,
-    bool? BindReservedStockForCustomer = null);
+    bool? BindReservedStockForCustomer = null,
+    IReadOnlyDictionary<long, IReadOnlyList<string>>? CustomerReservedHuSelectionsByOrderLineId = null);
 
 public sealed record WpfServerUpdateOrderConfiguration(
     string BaseUrl,
