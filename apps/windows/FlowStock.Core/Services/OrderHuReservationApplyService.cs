@@ -8,17 +8,31 @@ public sealed class OrderHuReservationApplyService
     public const string SourceLedgerStock = "LEDGER_STOCK";
 
     private readonly IDataStore _dataStore;
-    private readonly HuReservationCandidatesService _candidatesService;
 
     public OrderHuReservationApplyService(IDataStore dataStore)
     {
         _dataStore = dataStore;
-        _candidatesService = new HuReservationCandidatesService(dataStore);
     }
 
     public OrderHuReservationApplyResult Apply(long customerOrderId, OrderHuReservationApplyRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        OrderHuReservationApplyResult? result = null;
+        _dataStore.ExecuteInTransaction(store =>
+        {
+            result = ApplyCore(store, customerOrderId, request);
+        });
+
+        return result ?? ApplyCore(_dataStore, customerOrderId, request);
+    }
+
+    private OrderHuReservationApplyResult ApplyCore(
+        IDataStore store,
+        long customerOrderId,
+        OrderHuReservationApplyRequest request)
+    {
+        var candidatesService = new HuReservationCandidatesService(store);
 
         if (customerOrderId <= 0)
         {
@@ -34,12 +48,12 @@ public sealed class OrderHuReservationApplyService
                 "Не переданы строки для применения HU.");
         }
 
-        if (_dataStore is not IOptimizedHuReservationCandidatesStore)
+        if (store is not IOptimizedHuReservationCandidatesStore)
         {
             throw new InvalidOperationException("Хранилище не поддерживает read-model кандидатов HU.");
         }
 
-        var order = _dataStore.GetOrder(customerOrderId);
+        var order = store.GetOrder(customerOrderId);
         if (order == null)
         {
             throw new OrderHuReservationApplyException(
@@ -61,7 +75,7 @@ public sealed class OrderHuReservationApplyService
                 "Нельзя изменять резервы для закрытого или отменённого заказа.");
         }
 
-        var orderLines = _dataStore.GetOrderLines(customerOrderId)
+        var orderLines = store.GetOrderLines(customerOrderId)
             .Where(line => line.Id > 0)
             .ToDictionary(line => line.Id);
         if (orderLines.Count == 0)
@@ -71,9 +85,9 @@ public sealed class OrderHuReservationApplyService
                 "У заказа нет строк для применения HU.");
         }
 
-        var shipmentRemainingByLine = _dataStore.GetOrderShipmentRemaining(customerOrderId)
+        var shipmentRemainingByLine = store.GetOrderShipmentRemaining(customerOrderId)
             .ToDictionary(line => line.OrderLineId);
-        var existingPlanLines = _dataStore.GetOrderReceiptPlanLines(customerOrderId);
+        var existingPlanLines = store.GetOrderReceiptPlanLines(customerOrderId);
         var affectedOrderLineIds = new HashSet<long>();
         var replacementPlanLines = new List<OrderReceiptPlanLine>();
         var appliedLines = new List<OrderHuReservationApplyLineResult>();
@@ -126,6 +140,7 @@ public sealed class OrderHuReservationApplyService
 
             var remainingQty = Math.Max(0, shipmentLine.QtyRemaining);
             var candidatesByHu = BuildAvailableCandidatesByHu(
+                candidatesService,
                 customerOrderId,
                 orderLine,
                 shipmentLine.QtyOrdered);
@@ -167,15 +182,21 @@ public sealed class OrderHuReservationApplyService
                     throw new OrderHuReservationApplyException(
                         "HU_NOT_AVAILABLE",
                         $"HU '{huCode}' не имеет положительного количества для резерва.",
-                        [$"HU '{huCode}': qty={candidate.Qty}"]);
+                    [$"HU '{huCode}': qty={candidate.Qty}"]);
                 }
 
-                reservedQty += candidate.Qty;
+                var takeQty = Math.Min(candidate.Qty, Math.Max(0, remainingQty - reservedQty));
+                if (takeQty <= StockQuantityRules.QtyTolerance)
+                {
+                    break;
+                }
+
+                reservedQty += takeQty;
                 selectedHu.Add(new OrderHuReservationAppliedHuResult
                 {
                     HuCode = candidate.HuCode,
                     Source = candidate.Source,
-                    Qty = candidate.Qty,
+                    Qty = takeQty,
                     ShipReady = candidate.ShipReady
                 });
 
@@ -184,26 +205,16 @@ public sealed class OrderHuReservationApplyService
                     OrderId = customerOrderId,
                     OrderLineId = orderLine.Id,
                     ItemId = orderLine.ItemId,
-                    QtyPlanned = candidate.Qty,
+                    QtyPlanned = takeQty,
                     ToHu = candidate.HuCode,
                     SortOrder = sortOrder++
                 });
             }
 
-            if (reservedQty > remainingQty + StockQuantityRules.QtyTolerance)
-            {
-                throw new OrderHuReservationApplyException(
-                    "SELECTED_QTY_EXCEEDS_LINE_REMAINING",
-                    $"Сумма выбранных HU ({reservedQty}) превышает неотгруженный остаток строки ({remainingQty}).",
-                    [
-                        $"order_line_id={orderLine.Id}: selected={reservedQty}, remaining={remainingQty}, ordered={shipmentLine.QtyOrdered}, shipped={shipmentLine.QtyShipped}"
-                    ]);
-            }
-
             appliedLines.Add(BuildAppliedLineResult(orderLine, selectedHu, reservedQty));
         }
 
-        _dataStore.ReplaceOrderReceiptPlanLinesForOrderLines(
+        store.ReplaceOrderReceiptPlanLinesForOrderLines(
             customerOrderId,
             affectedOrderLineIds,
             replacementPlanLines);
@@ -217,11 +228,12 @@ public sealed class OrderHuReservationApplyService
     }
 
     private Dictionary<string, HuReservationCandidateResult> BuildAvailableCandidatesByHu(
+        HuReservationCandidatesService candidatesService,
         long customerOrderId,
         OrderLine orderLine,
         double qtyOrdered)
     {
-        var candidatesResult = _candidatesService.Build(new HuReservationCandidatesQuery
+        var candidatesResult = candidatesService.Build(new HuReservationCandidatesQuery
         {
             OrderId = customerOrderId,
             Lines =

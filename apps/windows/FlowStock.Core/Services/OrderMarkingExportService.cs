@@ -152,7 +152,10 @@ public sealed class OrderMarkingExportService
             ? _data.GetShippedTotalsByOrderLine(order.Id)
             : new Dictionary<long, double>();
         var reservedByLine = order.Type == OrderType.Customer
-            ? _data.GetReservedFilledHuQtyByOrderLine(order.Id)
+            ? CustomerOutboundBoundHuService.BuildUnshippedBoundHuQtyByOrderLine(_data, order.Id)
+            : new Dictionary<long, double>();
+        var activeProductionPalletQtyByLine = order.Type == OrderType.Customer
+            ? BuildActiveProductionPalletQtyByOrderLine(order.Id)
             : new Dictionary<long, double>();
 
         var markableLines = orderLines
@@ -181,21 +184,26 @@ public sealed class OrderMarkingExportService
             var line = pair.Line;
             var item = pair.Item!;
             var requiredQty = Math.Max(0, line.QtyOrdered);
+            var productionBaseQty = requiredQty;
             var stockCoveredQty = 0d;
             if (order.Type == OrderType.Customer)
             {
                 shippedByLine.TryGetValue(line.Id, out var shippedQty);
                 reservedByLine.TryGetValue(line.Id, out var reservedQty);
                 stockCoveredQty = Math.Min(requiredQty, Math.Max(0, shippedQty) + Math.Max(0, reservedQty));
+                activeProductionPalletQtyByLine.TryGetValue(line.Id, out var activePalletQty);
+                productionBaseQty = activePalletQty > QtyTolerance
+                    ? Math.Min(activePalletQty, Math.Max(0, requiredQty - stockCoveredQty))
+                    : Math.Max(0, requiredQty - stockCoveredQty);
             }
 
             remainingCodeCoverByItem.TryGetValue(line.ItemId, out var codeCover);
-            var codeCoveredQty = Math.Min(Math.Max(0, requiredQty - stockCoveredQty), codeCover);
+            var codeCoveredQty = Math.Min(Math.Max(0, productionBaseQty), codeCover);
             remainingCodeCoverByItem[line.ItemId] = Math.Max(0, codeCover - codeCoveredQty);
             var coveredQty = stockCoveredQty + codeCoveredQty;
             var exportQty = order.Type == OrderType.Internal
                 ? Math.Max(0, requiredQty - codeCoveredQty)
-                : Math.Max(0, requiredQty - coveredQty);
+                : Math.Max(0, productionBaseQty - codeCoveredQty);
 
             yield return new OrderMarkingExportLineSummary(
                 line.Id,
@@ -207,6 +215,46 @@ public sealed class OrderMarkingExportService
                 codeCoveredQty,
                 exportQty);
         }
+    }
+
+    private Dictionary<long, double> BuildActiveProductionPalletQtyByOrderLine(long orderId)
+    {
+        var result = new Dictionary<long, double>();
+        foreach (var doc in _data.GetDocsByOrder(orderId).Where(doc => doc.Type == DocType.ProductionReceipt))
+        {
+            foreach (var pallet in _data.GetProductionPalletsByDoc(doc.Id)
+                         .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)))
+            {
+                if (pallet.Lines.Count > 0)
+                {
+                    foreach (var line in pallet.Lines.Where(line => line.OrderLineId.HasValue))
+                    {
+                        AddQty(result, line.OrderLineId!.Value, Math.Max(0, line.PlannedQty));
+                    }
+
+                    continue;
+                }
+
+                if (pallet.OrderLineId.HasValue)
+                {
+                    AddQty(result, pallet.OrderLineId.Value, Math.Max(0, pallet.PlannedQty));
+                }
+            }
+        }
+
+        return result;
+    }
+
+    private static void AddQty(IDictionary<long, double> totals, long orderLineId, double qty)
+    {
+        if (qty <= QtyTolerance)
+        {
+            return;
+        }
+
+        totals[orderLineId] = totals.TryGetValue(orderLineId, out var current)
+            ? current + qty
+            : qty;
     }
 
     private static MarkingOrder CreateMarkingOrder(

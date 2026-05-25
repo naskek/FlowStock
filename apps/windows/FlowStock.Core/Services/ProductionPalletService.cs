@@ -128,6 +128,7 @@ public sealed class ProductionPalletService
     {
         var prdDocId = 0L;
         var wasExisting = false;
+        var productionRequired = true;
         _data.ExecuteInTransaction(store =>
         {
             var order = store.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
@@ -152,7 +153,7 @@ public sealed class ProductionPalletService
                 wasExisting = true;
             }
 
-            AppendPlannedPalletsForOrderLinesInStore(
+            productionRequired = AppendPlannedPalletsForOrderLinesInStore(
                 store,
                 order,
                 orderId,
@@ -162,10 +163,12 @@ public sealed class ProductionPalletService
                 existingPrdDocId: prdDocId);
         });
 
-        return BuildOrderPlanResult(orderId, prdDocId, wasExisting);
+        return productionRequired || prdDocId > 0
+            ? BuildOrderPlanResult(orderId, prdDocId, wasExisting)
+            : BuildNoProductionRequiredResult(orderId);
     }
 
-    private static void AppendPlannedPalletsForOrderLinesInStore(
+    private static bool AppendPlannedPalletsForOrderLinesInStore(
         IDataStore store,
         Order order,
         long orderId,
@@ -188,7 +191,12 @@ public sealed class ProductionPalletService
         {
             if (allowEmptyRemaining || prdDocId != 0)
             {
-                return;
+                return false;
+            }
+
+            if (order.Type == OrderType.Customer)
+            {
+                return false;
             }
 
             throw new InvalidOperationException("Нет остатка к наполнению по заказу.");
@@ -251,6 +259,7 @@ public sealed class ProductionPalletService
         }
 
         store.PlanProductionPallets(prdDocId, DateTime.Now);
+        return true;
     }
 
     public ProductionPalletCancelPlanResult CancelOrderPlan(long orderId)
@@ -479,19 +488,29 @@ public sealed class ProductionPalletService
                 : "Заказ недоступен для наполнения.");
         }
 
+        var pallets = GetProductionPalletsByOrder(_data, orderId);
         var openDoc = FindPreparedOpenProductionReceipt(_data, orderId, requireRemaining: false);
         if (openDoc == null)
         {
-            throw new InvalidOperationException("Для заказа не сформирован план паллет. Сформируйте и напечатайте паллетные этикетки перед наполнением.");
+            if (HasCompletedPalletizedProduction(pallets))
+            {
+                throw new InvalidOperationException("Выпуск по заказу уже завершён. Нет паллет к наполнению.");
+            }
+
+            throw new InvalidOperationException("Для заказа не сформирован план паллет. Сформируйте и напечатайте паллетные этикетки перед наполненением.");
         }
 
-        var pallets = GetProductionPalletsByOrder(_data, orderId);
         return BuildFillingContext(orderId, openDoc.Id, pallets);
     }
 
     public IReadOnlyList<ProductionPalletPrintRow> GetPrintRows(long orderId)
     {
         var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+        if (HasPrintableProductionPalletPlan(_data, order))
+        {
+            return GetProductionPalletPrintRows(order);
+        }
+
         if (order.Type == OrderType.Customer)
         {
             return GetCustomerBoundHuPrintRows(order);
@@ -711,7 +730,7 @@ public sealed class ProductionPalletService
     public int MarkPrinted(long orderId, IReadOnlyCollection<long>? palletIds, DateTime printedAt)
     {
         var order = _data.GetOrder(orderId);
-        if (order?.Type == OrderType.Customer)
+        if (order?.Type == OrderType.Customer && !HasPrintableProductionPalletPlan(_data, order))
         {
             return 0;
         }
@@ -1178,8 +1197,30 @@ public sealed class ProductionPalletService
             PrdDocId = doc.Id,
             PrdDocRef = doc.DocRef,
             WasExisting = wasExisting,
+            ProductionRequired = true,
+            Message = wasExisting ? "План паллет уже сформирован" : "План паллет сформирован",
             Summary = document.Summary,
             Document = document
+        };
+    }
+
+    private ProductionPalletOrderPlanResult BuildNoProductionRequiredResult(long orderId)
+    {
+        var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+        return new ProductionPalletOrderPlanResult
+        {
+            OrderId = order.Id,
+            OrderRef = order.OrderRef,
+            PrdDocId = 0,
+            PrdDocRef = string.Empty,
+            WasExisting = false,
+            ProductionRequired = false,
+            Message = "Заказ покрыт складскими остатками, производство не требуется.",
+            Summary = new ProductionPalletSummary(),
+            Document = new ProductionPalletDocument
+            {
+                Summary = new ProductionPalletSummary()
+            }
         };
     }
 
@@ -1204,6 +1245,16 @@ public sealed class ProductionPalletService
         }
 
         return closedWithPlan;
+    }
+
+    private static bool HasCompletedPalletizedProduction(IReadOnlyList<ProductionPallet> pallets)
+    {
+        var activePallets = pallets
+            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        return activePallets.Length > 0
+               && activePallets.All(pallet =>
+                   string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase));
     }
 
     private static Doc? FindPreparedOpenProductionReceipt(IDataStore store, long orderId, bool requireRemaining)
@@ -1238,6 +1289,18 @@ public sealed class ProductionPalletService
             .Where(pallet => pallet.OrderId == orderId)
             .OrderBy(pallet => pallet.Id)
             .ToList();
+    }
+
+    private static bool HasPrintableProductionPalletPlan(IDataStore store, Order order)
+    {
+        var doc = FindPrintableProductionReceipt(store, order);
+        if (doc == null)
+        {
+            return false;
+        }
+
+        return store.GetProductionPalletsByDoc(doc.Id)
+            .Any(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase));
     }
 
     private static Doc? FindPrintableProductionReceipt(IDataStore store, Order order)
@@ -1386,6 +1449,46 @@ public sealed class ProductionPalletService
             ? store.GetProductionPalletsByDoc(prdDocId.Value)
             : Array.Empty<ProductionPallet>();
 
+        if (order.Type == OrderType.Customer)
+        {
+            var receiptLinesById = OrderReceiptRemainingCalculator.GetRemaining(store, order)
+                .ToDictionary(line => line.OrderLineId, line => line);
+            var shippedByLine = store.GetOrderShipmentRemaining(order.Id)
+                .ToDictionary(line => line.OrderLineId, line => Math.Max(0, line.QtyShipped));
+            var boundHuByLine = CustomerOutboundBoundHuService.BuildUnshippedBoundHuQtyByOrderLine(store, order.Id);
+            var activePallets = GetProductionPalletsByOrder(store, order.Id)
+                .Where(IsActiveProductionPalletCoverage)
+                .ToArray();
+
+            return orderLinesById.Values
+                .Select(orderLine =>
+                {
+                    var shippedQty = shippedByLine.TryGetValue(orderLine.Id, out var shipped) ? shipped : 0d;
+                    var boundHuQty = boundHuByLine.TryGetValue(orderLine.Id, out var bound) ? bound : 0d;
+                    var activePalletQty = SumPalletQtyForOrderLine(activePallets, orderLine.Id);
+                    var missingQty = Math.Max(0, orderLine.QtyOrdered - shippedQty - boundHuQty - activePalletQty);
+                    receiptLinesById.TryGetValue(orderLine.Id, out var receiptLine);
+                    return new OrderReceiptLine
+                    {
+                        OrderLineId = orderLine.Id,
+                        OrderId = order.Id,
+                        ItemId = orderLine.ItemId,
+                        ItemName = receiptLine?.ItemName ?? string.Empty,
+                        QtyOrdered = orderLine.QtyOrdered,
+                        QtyReceived = Math.Max(0, orderLine.QtyOrdered - missingQty),
+                        QtyRemaining = missingQty,
+                        ProductionPurpose = orderLine.ProductionPurpose,
+                        ToLocationId = receiptLine?.ToLocationId,
+                        ToLocation = receiptLine?.ToLocation,
+                        ToHu = receiptLine?.ToHu,
+                        SortOrder = receiptLine?.SortOrder ?? 0
+                    };
+                })
+                .Where(line => line.QtyRemaining > QtyTolerance)
+                .OrderBy(line => line.OrderLineId)
+                .ToList();
+        }
+
         if (pallets.Count == 0)
         {
             return OrderReceiptRemainingCalculator.GetRemaining(store, order)
@@ -1420,6 +1523,22 @@ public sealed class ProductionPalletService
             .Where(line => line.QtyRemaining > QtyTolerance)
             .OrderBy(line => line.OrderLineId)
             .ToList();
+    }
+
+    private static bool IsActiveProductionPalletCoverage(ProductionPallet pallet)
+    {
+        return string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static double SumPalletQtyForOrderLine(
+        IEnumerable<ProductionPallet> pallets,
+        long orderLineId)
+    {
+        return pallets
+            .Where(pallet => PalletAppliesToOrderLine(pallet, orderLineId))
+            .Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
     }
 
     private static void TrimSurplusOpenPallets(

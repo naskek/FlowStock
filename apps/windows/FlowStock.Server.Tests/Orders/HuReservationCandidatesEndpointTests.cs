@@ -188,6 +188,33 @@ public sealed class HuReservationCandidatesEndpointTests
     }
 
     [Fact]
+    public async Task AutoSelectsExactSingleHuBeforeMultipleHu()
+    {
+        var store = CreateStore(
+        [
+            Source("LEDGER_STOCK", "HU-0400", itemId: 6, qty: 400, shipReady: true),
+            Source("LEDGER_STOCK", "HU-0600", itemId: 6, qty: 600, shipReady: true),
+            Source("LEDGER_STOCK", "HU-1000", itemId: 6, qty: 1000, shipReady: true)
+        ]);
+        await using var host = await HuReservationCandidatesHost.StartAsync(store.Object);
+
+        using var document = await PostAsync(host.Client, new
+        {
+            order_id = 78L,
+            lines = new[] { new { client_line_key = "line-1", order_line_id = (long?)203, item_id = 6L, qty_ordered = 1000d } },
+            exclude_hu_codes = Array.Empty<string>()
+        });
+
+        var selected = GetCandidates(document, "line-1")
+            .Where(candidate => candidate.GetProperty("auto_selected").GetBoolean())
+            .Select(candidate => candidate.GetProperty("hu_code").GetString())
+            .ToArray();
+
+        Assert.Single(selected);
+        Assert.Equal("HU-1000", selected[0]);
+    }
+
+    [Fact]
     public async Task MixedHuLedger_ReturnsItemSpecificCandidates()
     {
         var store = CreateStore(

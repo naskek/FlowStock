@@ -116,6 +116,98 @@ public sealed class CustomerOrderHuBindingCoordinatorTests
     }
 
     [Fact]
+    public void FullyPalletPlannedLine_DisablesHuPicker()
+    {
+        var state = new CustomerOrderLineHuState("line-222");
+        state.AttachLine(
+            new OrderLineView
+            {
+                Id = 222,
+                ItemId = 29,
+                ItemName = "Товар A",
+                QtyOrdered = 120,
+                PlannedPalletQty = 120,
+                ProductionHuCodes = "HU-0000574"
+            },
+            orderId: 83);
+
+        Assert.False(state.IsHuPickerEnabled);
+        Assert.Equal("Покрыто планом", state.HuPickerLabel);
+        Assert.Contains("HU-0000574", state.HuPickerToolTip ?? string.Empty, StringComparison.Ordinal);
+        Assert.Equal(0, state.ManualBindableRemaining, 3);
+    }
+
+    [Fact]
+    public void PartiallyPalletPlannedLine_KeepsHuPickerEnabledForRemainder()
+    {
+        var state = new CustomerOrderLineHuState("line-223");
+        state.AttachLine(
+            new OrderLineView
+            {
+                Id = 223,
+                ItemId = 13,
+                ItemName = "Товар B",
+                QtyOrdered = 200,
+                PlannedPalletQty = 120
+            },
+            orderId: 83);
+
+        Assert.True(state.IsHuPickerEnabled);
+        Assert.Equal("Выбрать HU (80)", state.HuPickerLabel);
+        Assert.Equal(80, state.ManualBindableRemaining, 3);
+        Assert.Contains("остаток", state.HuPickerToolTip ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BoundCustomerLine_KeepsHuPickerEnabledWithoutCandidates()
+    {
+        var state = new CustomerOrderLineHuState("line-302");
+        state.AttachLine(
+            new OrderLineView
+            {
+                Id = 302,
+                ItemId = 6,
+                ItemName = "Товар",
+                QtyOrdered = 600
+            },
+            orderId: 78);
+        state.MergeExistingReservation("HU-0000400", 600);
+
+        Assert.True(state.IsHuPickerEnabled);
+        Assert.Equal("HU (1)", state.HuPickerLabel);
+    }
+
+    [Fact]
+    public void HuDisplayRows_ShowWarehouseFirstBoldAndProductionSecondRegular()
+    {
+        var state = new CustomerOrderLineHuState("line-400");
+        state.AttachLine(
+            new OrderLineView
+            {
+                Id = 400,
+                ItemId = 6,
+                ItemName = "Товар",
+                QtyOrdered = 1200,
+                ProductionHuDisplayEntries =
+                [
+                    new OrderLineHuDisplayEntry("HU-0000576", "план", 600, IsWarehouseBound: false, SortOrder: 2)
+                ]
+            },
+            orderId: 78);
+        state.MergeExistingReservation("HU-0000446", 600);
+
+        var rows = state.HuDisplayRows;
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("HU-0000446", rows[0].HuCode);
+        Assert.Equal("склад", rows[0].Label);
+        Assert.True(rows[0].IsBold);
+        Assert.Equal("HU-0000576", rows[1].HuCode);
+        Assert.Equal("план", rows[1].Label);
+        Assert.False(rows[1].IsBold);
+    }
+
+    [Fact]
     public void InternalOrderLineCompletionHighlight_UsesProducedQtyOnly()
     {
         var complete = new OrderLineView

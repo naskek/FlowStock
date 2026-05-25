@@ -66,8 +66,7 @@ public sealed class CustomerOrderHuBindingCoordinator : IDisposable
 
         _debounceTimer.Stop();
         RefreshCandidatesAsync().ConfigureAwait(false).GetAwaiter().GetResult();
-        return _states.TryGetValue(clientLineKey, out var state)
-               && (state.Candidates.Count > 0 || state.SelectedHuCodes.Count > 0);
+        return _states.TryGetValue(clientLineKey, out var state) && !state.CandidatesLoadFailed;
     }
 
     public IReadOnlySet<string> GetSelectedHuCodesOnOtherLines(string clientLineKey)
@@ -431,22 +430,55 @@ public sealed class CustomerOrderLineHuState : INotifyPropertyChanged
         ? "0"
         : $"{FormatQty(BoundQty)} ({_selectedHuCodes.Count} HU)";
 
+    public IReadOnlyList<CustomerOrderLineHuDisplayRow> HuDisplayRows =>
+        _selectedHuCodes
+            .Select(huCode => new CustomerOrderLineHuDisplayRow(
+                huCode,
+                "склад",
+                _selectedQtyByHu.TryGetValue(huCode, out var qty) ? qty : 0,
+                IsBold: true,
+                SortOrder: 1))
+            .Concat(_line.ProductionHuDisplayEntries.Select(entry => new CustomerOrderLineHuDisplayRow(
+                entry.HuCode,
+                entry.Label,
+                entry.Qty,
+                IsBold: false,
+                SortOrder: entry.SortOrder <= 0 ? 2 : entry.SortOrder)))
+            .OrderBy(row => row.SortOrder)
+            .ThenBy(row => row.HuCode, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
     public string RemainingHuDisplay => _awaitingSaveForCandidates
         ? "—"
         : FormatQty(Math.Max(0, _lineRemainingQty - BoundQty));
 
-    public string HuPickerLabel => !_orderId.HasValue
-        ? "После сохранения"
-        : _candidatesLoadFailed
-            ? "HU…"
-            : _selectedHuCodes.Count == 0
-                ? "Выбрать HU"
-                : $"HU ({_selectedHuCodes.Count})";
+    public string HuPickerLabel => CustomerOrderHuPickerRules.BuildHuPickerLabel(
+        _orderId.HasValue,
+        _line,
+        BoundQty,
+        _selectedHuCodes.Count,
+        _awaitingSaveForCandidates,
+        _candidatesLoadFailed);
 
-    public bool IsHuPickerEnabled => _orderId.HasValue
-                                     && _line.ItemId > 0
-                                     && _line.QtyOrdered > QtyTolerance
-                                     && _lineRemainingQty > QtyTolerance;
+    public string? HuPickerToolTip => CustomerOrderHuPickerRules.BuildHuPickerToolTip(
+        _line,
+        BoundQty,
+        _awaitingSaveForCandidates,
+        _candidatesLoadFailed,
+        IsHuPickerEnabled);
+
+    public double ManualBindingCapacity => _lineRemainingQty;
+
+    public double ManualBindableRemaining =>
+        CustomerOrderHuPickerRules.ComputeManualBindableRemaining(_line, BoundQty);
+
+    public bool CandidatesLoadFailed => _candidatesLoadFailed;
+
+    public bool IsHuPickerEnabled => CustomerOrderHuPickerRules.IsHuPickerEnabled(
+        _orderId.HasValue,
+        _line,
+        BoundQty,
+        _awaitingSaveForCandidates);
 
     public bool IsSelectionOverRemaining => BoundQty > _lineRemainingQty + QtyTolerance;
 
@@ -497,7 +529,7 @@ public sealed class CustomerOrderLineHuState : INotifyPropertyChanged
     {
         _line = line ?? new OrderLineView();
         _orderId = orderId;
-        _lineRemainingQty = Math.Max(0, _line.QtyRemaining > QtyTolerance ? _line.QtyRemaining : _line.QtyOrdered);
+        _lineRemainingQty = CustomerOrderHuPickerRules.ComputeManualBindingCapacity(_line);
         _awaitingSaveForCandidates = !orderId.HasValue;
         RaiseAll();
     }
@@ -716,8 +748,12 @@ public sealed class CustomerOrderLineHuState : INotifyPropertyChanged
     {
         OnPropertyChanged(nameof(AvailableHuDisplay));
         OnPropertyChanged(nameof(BoundHuDisplay));
+        OnPropertyChanged(nameof(HuDisplayRows));
         OnPropertyChanged(nameof(RemainingHuDisplay));
         OnPropertyChanged(nameof(HuPickerLabel));
+        OnPropertyChanged(nameof(HuPickerToolTip));
+        OnPropertyChanged(nameof(ManualBindingCapacity));
+        OnPropertyChanged(nameof(ManualBindableRemaining));
         OnPropertyChanged(nameof(IsHuPickerEnabled));
         OnPropertyChanged(nameof(IsSelectionOverRemaining));
         OnPropertyChanged(nameof(HuCoverageTone));
@@ -776,9 +812,13 @@ public sealed class CustomerOrderLinePresentation : INotifyPropertyChanged
 
     public string BoundHuDisplay => State.BoundHuDisplay;
 
+    public IReadOnlyList<CustomerOrderLineHuDisplayRow> HuDisplayRows => State.HuDisplayRows;
+
     public string RemainingHuDisplay => State.RemainingHuDisplay;
 
     public string HuPickerLabel => State.HuPickerLabel;
+
+    public string? HuPickerToolTip => State.HuPickerToolTip;
 
     public bool IsHuPickerEnabled => State.IsHuPickerEnabled;
 
@@ -805,8 +845,10 @@ public sealed class CustomerOrderLinePresentation : INotifyPropertyChanged
         OnPropertyChanged(nameof(MixedPalletGroupNumber));
         OnPropertyChanged(nameof(AvailableHuDisplay));
         OnPropertyChanged(nameof(BoundHuDisplay));
+        OnPropertyChanged(nameof(HuDisplayRows));
         OnPropertyChanged(nameof(RemainingHuDisplay));
         OnPropertyChanged(nameof(HuPickerLabel));
+        OnPropertyChanged(nameof(HuPickerToolTip));
         OnPropertyChanged(nameof(IsHuPickerEnabled));
         OnPropertyChanged(nameof(HuCoverageTone));
         OnPropertyChanged(nameof(HuCoverageToolTip));
@@ -814,4 +856,14 @@ public sealed class CustomerOrderLinePresentation : INotifyPropertyChanged
 
     private void OnPropertyChanged([CallerMemberName] string? propertyName = null) =>
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+}
+
+public sealed record CustomerOrderLineHuDisplayRow(
+    string HuCode,
+    string Label,
+    double Qty,
+    bool IsBold,
+    int SortOrder)
+{
+    public string DisplayText => $"{HuCode} · {Label} · {Qty:0.###}";
 }

@@ -47,6 +47,17 @@ public sealed class OrderListClientPerfGuardTests
     }
 
     [Fact]
+    public void OperationDetailsWindow_OutboundAutofillUsesMergedHuSources_AndSuppressesDuplicateDrafts()
+    {
+        var source = File.ReadAllText(GetRepoPath("apps", "windows", "FlowStock.App", "OperationDetailsWindow.xaml.cs"));
+
+        Assert.Contains("GetUnshippedOutboundHuLines(", source, StringComparison.Ordinal);
+        Assert.Contains("ShowOutboundAutofillMessageOnce(", source, StringComparison.Ordinal);
+        Assert.Contains("TryDiscardEmptyOutboundDraftIfNeededAsync", source, StringComparison.Ordinal);
+        Assert.Contains("AutoHuButton.Visibility = doc.Type == DocType.ProductionReceipt && !_hasProductionPalletPlan", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TsdStorage_OrderListUsesPagedApi()
     {
         var source = File.ReadAllText(GetRepoPath("apps", "android", "tsd", "storage.js"));

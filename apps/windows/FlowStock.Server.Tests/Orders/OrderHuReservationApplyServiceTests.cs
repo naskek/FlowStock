@@ -153,14 +153,16 @@ public sealed class OrderHuReservationApplyServiceTests
     }
 
     [Fact]
-    public void RejectSelectedQtyExceedsRemainingLineQty()
+    public void ApplySelectedQtyExceedingRemainingLineQty_ClampsToRemaining()
     {
         var context = CreateContext();
         context.SeedCustomerOrder(78, 203, itemId: 6, qtyOrdered: 500, qtyShipped: 200);
         context.SeedCandidate(Source("LEDGER_STOCK", "HU-1", itemId: 6, qty: 400, shipReady: true));
 
-        var ex = Assert.Throws<OrderHuReservationApplyException>(() => context.Apply(78, Line(203, "HU-1")));
-        Assert.Equal("SELECTED_QTY_EXCEEDS_LINE_REMAINING", ex.ErrorCode);
+        var result = context.Apply(78, Line(203, "HU-1"));
+
+        Assert.Equal(300, Assert.Single(result.AppliedLines).ReservedQty, 3);
+        Assert.Equal(300, Assert.Single(context.GetPlanLines(78)).QtyPlanned, 3);
     }
 
     [Fact]

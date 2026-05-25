@@ -247,6 +247,7 @@ public partial class OrderDetailsWindow : Window
         UpdatePalletButtons();
         SyncHuBindingLines();
         _huBinding.EndLoad();
+        ApplyProductionHuCodesFromStore(_order.Id);
         EndLoad();
         RestoreSelectedOrderLine(reselectLineId ?? _selectedLine?.Id);
         ForceOrderLinesGridRefresh();
@@ -338,6 +339,11 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
+        if (!ConfirmAndApplyCustomerWarehouseHuProposal())
+        {
+            return;
+        }
+
         PlanPalletsButton.IsEnabled = false;
         PrintPalletLabelsButton.IsEnabled = false;
         try
@@ -347,6 +353,39 @@ public partial class OrderDetailsWindow : Window
             {
                 MessageBox.Show(result.Message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
+            }
+
+            if (!result.ProductionRequired)
+            {
+                MessageBox.Show(result.Message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
+                LoadOrder();
+                return;
+            }
+
+            var hasPalletPlan = result.PlannedPalletCount > 0 || HasOpenProductionPalletPlan(_orderId.Value);
+            if (!hasPalletPlan)
+            {
+                _services.AppLogger.Error(
+                    $"Production pallet plan returned success without pallets for order_id={_orderId.Value}: " +
+                    $"planned_pallet_count={result.PlannedPalletCount}, prd_doc_id={result.PrdDocId}, was_existing={result.WasExisting}");
+                MessageBox.Show(
+                    "Сервер подтвердил операцию, но план паллет не создан. Проверьте строки заказа и max_qty_per_hu.",
+                    "Паллеты",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            var printRowsResult = await _services.WpfProductionPalletApi.TryGetPrintRowsAsync(_orderId.Value).ConfigureAwait(true);
+            if (!printRowsResult.IsSuccess)
+            {
+                _services.AppLogger.Error(
+                    $"Production pallet print rows failed after plan for order_id={_orderId.Value}: {printRowsResult.Message}");
+            }
+            else if (printRowsResult.Rows.Count == 0)
+            {
+                _services.AppLogger.Error(
+                    $"Production pallet print rows empty after plan for order_id={_orderId.Value}, planned_pallet_count={result.PlannedPalletCount}");
             }
 
             var message =
@@ -450,10 +489,14 @@ public partial class OrderDetailsWindow : Window
 
             if (rowsResult.Rows.Count == 0)
             {
-                var emptyMessage = _order?.Type == OrderType.Customer
-                    ? "Нет привязанных HU для печати. Сначала привяжите HU к заказу."
-                    : "Сначала сформируйте план паллет";
-                MessageBox.Show(emptyMessage, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
+                var emptyMessage = HasOpenProductionPalletPlan(_orderId.Value)
+                    ? "План паллет есть, но сервер не вернул строки для печати. Проверьте журнал приложения."
+                    : _order?.Type == OrderType.Customer
+                        ? "Нет привязанных HU для печати. Сначала привяжите HU к заказу или сформируйте план паллет."
+                        : "Сначала сформируйте план паллет";
+                _services.AppLogger.Error(
+                    $"Production pallet print rows empty for order_id={_orderId.Value}, order_type={_order?.Type}, has_open_plan={HasOpenProductionPalletPlan(_orderId.Value)}");
+                MessageBox.Show(emptyMessage, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
@@ -508,7 +551,7 @@ public partial class OrderDetailsWindow : Window
                 return;
             }
 
-            if (_order?.Type != OrderType.Customer)
+            if (_order?.Type != OrderType.Customer || HasOpenProductionPalletPlan(_orderId.Value))
             {
                 var selectedPalletIds = dialog.SelectedPalletIds;
                 var markResult = await _services.WpfProductionPalletApi.TryMarkPrintedAsync(_orderId.Value, selectedPalletIds).ConfigureAwait(true);
@@ -699,7 +742,40 @@ public partial class OrderDetailsWindow : Window
             return true;
         }
 
-        if (!_services.WpfReadApi.TryApplyHuReservations(_orderId.Value, applyLines, out var result, out var error))
+        return TryApplyHuReservationLines(applyLines, reloadAfterSuccess: false);
+    }
+
+    private bool ConfirmAndApplyCustomerWarehouseHuProposal()
+    {
+        if (_order?.Type != OrderType.Customer || !_orderId.HasValue)
+        {
+            return true;
+        }
+
+        SyncHuBindingLines();
+        _huBinding.RefreshCandidatesForApply();
+        var dialog = new CustomerHuReservationProposalWindow(_huBinding.Lines)
+        {
+            Owner = this
+        };
+        if (dialog.ShowDialog() != true)
+        {
+            return false;
+        }
+
+        return TryApplyHuReservationLines(dialog.BuildApplyLines(), reloadAfterSuccess: true);
+    }
+
+    private bool TryApplyHuReservationLines(
+        IReadOnlyList<WpfHuReservationApplyLineRequest> applyLines,
+        bool reloadAfterSuccess)
+    {
+        if (!_orderId.HasValue || applyLines.Count == 0)
+        {
+            return true;
+        }
+
+        if (!_services.WpfReadApi.TryApplyHuReservations(_orderId.Value, applyLines, out _, out var error))
         {
             MessageBox.Show(
                 BuildHuReservationApplyErrorMessage(error),
@@ -710,7 +786,15 @@ public partial class OrderDetailsWindow : Window
         }
 
         _huBinding.MarkApplyCommitted();
-        SyncHuBindingLines();
+        if (reloadAfterSuccess)
+        {
+            LoadOrder(_selectedLine?.Id);
+        }
+        else
+        {
+            SyncHuBindingLines();
+        }
+
         return true;
     }
 
@@ -756,8 +840,11 @@ public partial class OrderDetailsWindow : Window
         var state = row.State;
         if (!state.IsHuPickerEnabled)
         {
+            var disabledMessage = string.IsNullOrWhiteSpace(state.HuPickerToolTip)
+                ? "Привязка HU недоступна для этой строки."
+                : state.HuPickerToolTip;
             MessageBox.Show(
-                "Привязка HU доступна после сохранения заказа и для строк с положительным количеством.",
+                disabledMessage,
                 "Привязка HU",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
@@ -774,12 +861,23 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        var remaining = Math.Max(0, state.Line.QtyRemaining > QtyTolerance ? state.Line.QtyRemaining : state.Line.QtyOrdered);
+        var pickerCandidates = state.GetPickerCandidates();
+        if (pickerCandidates.Count == 0)
+        {
+            MessageBox.Show(
+                "Нет доступных HU",
+                "Привязка HU",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        var remaining = state.ManualBindingCapacity;
         var picker = new HuReservationPickerWindow(
             state.Line.ItemName,
             state.Line.QtyOrdered,
             remaining,
-            state.GetPickerCandidates(),
+            pickerCandidates,
             state.SelectedHuCodes,
             _huBinding.GetSelectedHuCodesOnOtherLines(state.ClientLineKey))
         {
@@ -791,7 +889,19 @@ public partial class OrderDetailsWindow : Window
         }
 
         _huBinding.ApplyPickerSelection(state.ClientLineKey, picker.SelectedHuCodes);
-        MarkDirty();
+        if (!TryApplyHuReservationLines(
+                [
+                    new WpfHuReservationApplyLineRequest
+                    {
+                        OrderLineId = state.Line.Id,
+                        SelectedHuCodes = picker.SelectedHuCodes
+                    }
+                ],
+                reloadAfterSuccess: true))
+        {
+            _huBinding.RefreshCandidatesForApply();
+            return;
+        }
     }
 
     private void SyncHuBindingLines()
@@ -1585,6 +1695,35 @@ public partial class OrderDetailsWindow : Window
         catch
         {
             return false;
+        }
+    }
+
+    private void ApplyProductionHuCodesFromStore(long orderId)
+    {
+        try
+        {
+            var huByLine = ProductionOrderLineHuCodes.BuildByOrder(_services.DataStore, orderId);
+            var productionDisplayByLine = ProductionOrderLineHuCodes.BuildProductionDisplayByOrder(_services.DataStore, orderId);
+            foreach (var line in _lines)
+            {
+                productionDisplayByLine.TryGetValue(line.Id, out var displayEntries);
+                line.ProductionHuDisplayEntries = displayEntries ?? Array.Empty<OrderLineHuDisplayEntry>();
+
+                if (!huByLine.TryGetValue(line.Id, out var codes) || codes.Length == 0)
+                {
+                    continue;
+                }
+
+                var display = OrderLineCanonicalPresentation.ResolveProductionHuCodesDisplay(null, codes);
+                if (!string.Equals(line.ProductionHuCodes, display, StringComparison.Ordinal))
+                {
+                    line.ProductionHuCodes = display;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error($"Apply production HU codes for order_id={orderId} failed", ex);
         }
     }
 

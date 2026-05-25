@@ -286,6 +286,17 @@ public sealed class HuReservationPlanningTests
                     Qty = 3
                 }
             ]);
+        store.Setup(s => s.GetOrder(internalOrderId))
+            .Returns(new Order
+            {
+                Id = internalOrderId,
+                OrderRef = "INT-10",
+                Type = OrderType.Internal,
+                Status = OrderStatus.InProgress,
+                CreatedAt = new DateTime(2026, 1, 1)
+            });
+        store.Setup(s => s.GetProductionPalletsByDoc(It.IsAny<long>()))
+            .Returns(Array.Empty<ProductionPallet>());
 
         var service = new OrderService(store.Object);
         var result = service.GetOrderBoundHuByItem(internalOrderId);

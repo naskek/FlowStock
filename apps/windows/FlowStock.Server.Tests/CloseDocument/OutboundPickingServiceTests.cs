@@ -237,6 +237,75 @@ public sealed class OutboundPickingServiceTests
     }
 
     [Fact]
+    public void PalletizedCustomerOrder080_IncludesFilledProductionPalletInOutboundList()
+    {
+        var harness = CreateOrder080PalletizedHarness();
+        var service = CreatePickingService(harness);
+
+        var rows = service.GetOrders();
+        var row = Assert.Single(rows);
+        Assert.Equal(79, row.OrderId);
+        Assert.Equal("080", row.OrderRef);
+        Assert.Equal(1, row.ExpectedHuCount);
+
+        var details = service.GetDetails(79);
+        Assert.Equal(1, details.ExpectedHuCount);
+        Assert.Equal(0, details.PickedHuCount);
+        var hu = Assert.Single(details.Hus);
+        Assert.Equal("HU-0000506", hu.HuCode);
+        Assert.Equal(OutboundPickingHuStatus.Pending, hu.Status);
+        Assert.Equal(1890, hu.Qty);
+        Assert.Equal(208, hu.Lines[0].OrderLineId);
+        Assert.Equal(30, hu.Lines[0].ItemId);
+    }
+
+    [Fact]
+    public void PalletizedCustomerOrder080_ScanAutoClose_IsIdempotentOnRepeat()
+    {
+        var harness = CreateOrder080PalletizedHarness();
+        var picking = CreatePickingService(harness, autoClose: true);
+
+        var first = picking.Scan(79, "HU-0000506", "TSD-01");
+        Assert.True(first.Success, $"{first.ErrorCode}: {first.Message}");
+        Assert.True(first.OutboundClosed);
+        Assert.NotNull(first.ClosedOutboundDocRef);
+        var line = Assert.Single(harness.GetDocLines(first.Order!.DraftOutboundDocId!.Value));
+        Assert.Equal(208, line.OrderLineId);
+        Assert.Equal(30, line.ItemId);
+        Assert.Equal(1890, line.Qty);
+        Assert.Equal(1, line.FromLocationId);
+        Assert.Equal("HU-0000506", line.FromHu);
+        var outboundLedger = harness.LedgerEntries.Where(entry => entry.QtyDelta < 0).ToArray();
+        Assert.Equal(-1890, Assert.Single(outboundLedger).QtyDelta);
+        Assert.Equal(OrderStatus.Shipped, harness.GetOrder(79).Status);
+
+        var repeatScan = picking.Scan(79, "HU-0000506", "TSD-01");
+        Assert.False(repeatScan.Success);
+        Assert.Equal("VALIDATION_ERROR", repeatScan.ErrorCode);
+
+        var repeatComplete = picking.Complete(79);
+        Assert.True(repeatComplete.Success, $"{repeatComplete.ErrorCode}: {repeatComplete.Message}");
+        Assert.True(repeatComplete.OutboundClosed);
+        Assert.Single(outboundLedger);
+    }
+
+    [Fact]
+    public void PalletizedCustomerOrder080_RepeatedScanBeforeClose_IsAlreadyPicked()
+    {
+        var harness = CreateOrder080PalletizedHarness();
+        var picking = CreatePickingService(harness, autoClose: false);
+
+        var first = picking.Scan(79, "HU-0000506", "TSD-01");
+        var second = picking.Scan(79, "HU-0000506", "TSD-01");
+
+        Assert.True(first.Success, $"{first.ErrorCode}: {first.Message}");
+        Assert.True(second.Success, $"{second.ErrorCode}: {second.Message}");
+        Assert.True(second.AlreadyPicked);
+        Assert.Single(harness.GetDocLines(first.Order!.DraftOutboundDocId!.Value));
+        Assert.DoesNotContain(harness.LedgerEntries, entry => entry.QtyDelta < 0);
+    }
+
+    [Fact]
     public void MixedPalletCreatesComponentLines()
     {
         var harness = CreateBasicPickingHarness();
@@ -330,6 +399,86 @@ public sealed class OutboundPickingServiceTests
             harness.Store,
             harness.CreateService(),
             new FlowStockLedgerFlowOptions { OutboundAutoCloseOnComplete = autoClose });
+    }
+
+    private static CloseDocumentHarness CreateOrder080PalletizedHarness()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedLocation(new Location
+        {
+            Id = 1,
+            Code = "FG-01",
+            Name = "Готовая продукция"
+        });
+        harness.SeedPartner(new Partner
+        {
+            Id = 500,
+            Code = "CUST-080",
+            Name = "Клиент 080",
+            CreatedAt = new DateTime(2026, 5, 8, 8, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedItem(new Item
+        {
+            Id = 30,
+            Name = "Продукция 080",
+            ItemTypeName = "Готовая продукция",
+            ItemTypeEnableMarking = false
+        });
+        harness.SeedOrder(new Order
+        {
+            Id = 79,
+            OrderRef = "080",
+            Type = OrderType.Customer,
+            Status = OrderStatus.Accepted,
+            PartnerId = 500,
+            CreatedAt = new DateTime(2026, 5, 8, 9, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 208,
+            OrderId = 79,
+            ItemId = 30,
+            QtyOrdered = 1890,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder
+        });
+        harness.SeedHu(new HuRecord
+        {
+            Id = 79,
+            Code = "HU-0000506",
+            Status = "ACTIVE",
+            CreatedAt = new DateTime(2026, 5, 8, 10, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedBalance(30, 1, 1890, "HU-0000506");
+        harness.SeedDoc(new Doc
+        {
+            Id = 201,
+            DocRef = "PRD-201",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Closed,
+            OrderId = 79,
+            ClosedAt = new DateTime(2026, 5, 20, 12, 0, 0, DateTimeKind.Utc),
+            CreatedAt = new DateTime(2026, 5, 20, 10, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 79,
+            PrdDocId = 201,
+            DocLineId = 20101,
+            OrderId = 79,
+            OrderLineId = 208,
+            ItemId = 30,
+            ItemName = "Продукция 080",
+            HuCode = "HU-0000506",
+            PlannedQty = 1890,
+            ToLocationId = 1,
+            ToLocationCode = "FG-01",
+            Status = ProductionPalletStatus.Filled,
+            PalletNo = 1,
+            PalletCount = 1,
+            FilledAt = new DateTime(2026, 5, 20, 11, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedLedgerEntry(201, 30, 1, 1890, "HU-0000506");
+        return harness;
     }
 
     private static CloseDocumentHarness CreateBasicPickingHarness()

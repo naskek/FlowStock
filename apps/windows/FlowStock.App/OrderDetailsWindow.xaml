@@ -173,7 +173,30 @@
                         <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="150" IsReadOnly="True" />
                         <DataGridTextColumn Header="Заказано (база)" Binding="{Binding QtyOrdered}" Width="140" IsReadOnly="True" />
                         <DataGridTextColumn x:Name="HuAvailableColumn" Header="Доступно HU" Binding="{Binding AvailableHuDisplay}" Width="120" IsReadOnly="True" />
-                        <DataGridTextColumn x:Name="HuBoundColumn" Header="Привязано HU" Binding="{Binding BoundHuDisplay}" Width="130" IsReadOnly="True" />
+                        <DataGridTemplateColumn x:Name="HuBoundColumn" Header="HU по строке" Width="220">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <ItemsControl ItemsSource="{Binding HuDisplayRows}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding DisplayText}" TextWrapping="Wrap">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="FontWeight" Value="Normal" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsBold}" Value="True">
+                                                                    <Setter Property="FontWeight" Value="Bold" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
                         <DataGridTextColumn x:Name="HuRemainingColumn" Header="Осталось HU" Binding="{Binding RemainingHuDisplay}" Width="120" IsReadOnly="True" />
                         <DataGridTemplateColumn x:Name="HuPickerColumn" Header="HU" Width="120">
                             <DataGridTemplateColumn.CellTemplate>
@@ -181,7 +204,8 @@
                                     <Button Content="{Binding HuPickerLabel}"
                                             Padding="6,2"
                                             Click="HuPickerButton_Click"
-                                            IsEnabled="{Binding IsHuPickerEnabled}" />
+                                            IsEnabled="{Binding IsHuPickerEnabled}"
+                                            ToolTip="{Binding HuPickerToolTip}" />
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
@@ -209,7 +233,6 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTextColumn Header="HU паллет" Binding="{Binding ProductionHuCodes}" Width="170" IsReadOnly="True" />
                         <DataGridTextColumn x:Name="ProcessedQtyColumn" Header="Отгружено" Binding="{Binding QtyShipped}" Width="120" IsReadOnly="True" />
                         <DataGridTextColumn Header="Осталось" Binding="{Binding QtyRemaining}" Width="120" IsReadOnly="True" />
                         <DataGridTextColumn x:Name="AvailableQtyColumn" Header="В наличии" Binding="{Binding QtyAvailable}" Width="120" IsReadOnly="True" />

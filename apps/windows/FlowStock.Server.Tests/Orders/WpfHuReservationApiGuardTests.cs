@@ -37,7 +37,10 @@ public sealed class WpfHuReservationApiGuardTests
 
         Assert.Contains("CustomerOrderHuBindingCoordinator", source);
         Assert.Contains("TryApplyHuReservationsAfterSave", source);
+        Assert.Contains("ConfirmAndApplyCustomerWarehouseHuProposal", source);
+        Assert.Contains("TryApplyHuReservationLines", source);
         Assert.Contains("HuReservationPickerWindow", source);
+        Assert.Contains("CustomerHuReservationProposalWindow", source);
         Assert.DoesNotContain("TryResolveBindReservedStockForSave", source);
         Assert.DoesNotContain("auto-redistribute-from-internal", source, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("reserve-produced-hu", source, StringComparison.OrdinalIgnoreCase);
