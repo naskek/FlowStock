@@ -485,7 +485,7 @@ public sealed class ProductionPalletService
             throw new InvalidOperationException("Для заказа не сформирован план паллет. Сформируйте и напечатайте паллетные этикетки перед наполнением.");
         }
 
-        var pallets = _data.GetProductionPalletsByDoc(openDoc.Id);
+        var pallets = GetProductionPalletsByOrder(_data, orderId);
         return BuildFillingContext(orderId, openDoc.Id, pallets);
     }
 
@@ -873,11 +873,22 @@ public sealed class ProductionPalletService
                 return;
             }
 
-            if ((prdDocId.HasValue && pallet.PrdDocId != prdDocId.Value)
-                || (orderId.HasValue && pallet.OrderId != orderId.Value))
+            if (orderId.HasValue && pallet.OrderId != orderId.Value)
             {
                 result = ProductionPalletFillResult.Failure("Эта паллета относится к другому заказу");
                 return;
+            }
+
+            if (prdDocId.HasValue && pallet.PrdDocId != prdDocId.Value)
+            {
+                var isFilledForRequestedOrder = orderId.HasValue
+                    && pallet.OrderId == orderId.Value
+                    && string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase);
+                if (!isFilledForRequestedOrder)
+                {
+                    result = ProductionPalletFillResult.Failure("Эта паллета относится к другому заказу");
+                    return;
+                }
             }
 
             var doc = store.GetDoc(pallet.PrdDocId);
@@ -1153,6 +1164,17 @@ public sealed class ProductionPalletService
         }
 
         return null;
+    }
+
+    private static IReadOnlyList<ProductionPallet> GetProductionPalletsByOrder(IDataStore store, long orderId)
+    {
+        return store.GetDocsByOrder(orderId)
+            .Where(doc => doc.Type == DocType.ProductionReceipt)
+            .OrderBy(doc => doc.Id)
+            .SelectMany(doc => store.GetProductionPalletsByDoc(doc.Id))
+            .Where(pallet => pallet.OrderId == orderId)
+            .OrderBy(pallet => pallet.Id)
+            .ToList();
     }
 
     private static Doc? FindPrintableProductionReceipt(IDataStore store, Order order)

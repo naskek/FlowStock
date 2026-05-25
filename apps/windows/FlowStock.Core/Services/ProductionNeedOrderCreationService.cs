@@ -37,14 +37,7 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
         long? internalOrderId = null;
         if (draftLines.Count > 0)
         {
-            var orderService = new OrderService(dataStore);
-            internalOrderId = orderService.CreateDraftOrder(
-                GenerateNextOrderRef(dataStore),
-                null,
-                null,
-                "Автосформировано из потребности производства.",
-                draftLines,
-                OrderType.Internal);
+            internalOrderId = CreateInternalDraftOrder(dataStore, draftLines);
         }
 
         return new ProductionNeedOrderCreationResult
@@ -233,5 +226,30 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
                 ? "Внутренний черновик не создан: по актуальной потребности нет строк на пополнение склада."
                 : "Внутренний черновик не создан: не осталось подтверждённых строк с количеством больше нуля."
             : $"Создан внутренний черновик на склад: строк {createdLineCount}.";
+    }
+
+    private static long CreateInternalDraftOrder(IDataStore dataStore, IReadOnlyList<OrderLineView> draftLines)
+    {
+        var orderId = dataStore.AddOrder(new Order
+        {
+            OrderRef = GenerateNextOrderRef(dataStore),
+            Type = OrderType.Internal,
+            Status = OrderStatus.Draft,
+            Comment = "Автосформировано из потребности производства.",
+            CreatedAt = DateTime.Now
+        });
+
+        foreach (var line in draftLines)
+        {
+            dataStore.AddOrderLine(new OrderLine
+            {
+                OrderId = orderId,
+                ItemId = line.ItemId,
+                QtyOrdered = line.QtyOrdered,
+                ProductionPurpose = ProductionLinePurpose.InternalStock
+            });
+        }
+
+        return orderId;
     }
 }

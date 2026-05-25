@@ -42,6 +42,144 @@ public sealed class ProductionPalletAutoCloseTests
     }
 
     [Fact]
+    public void FillPallet_IsIdempotent_WhenRequestUsesOriginalPlanningPrdAfterPalletMovedToClosedPrd()
+    {
+        var harness = CreateHarnessWithOrderOnly(orderQty: 1200, maxQtyPerHu: 600);
+        var service = CreatePalletService(harness);
+        var plan = service.PlanOrder(10);
+        var first = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId)
+            .OrderBy(pallet => pallet.Id)
+            .First();
+
+        var fill = service.Fill(first.HuCode, "TSD-01", orderId: 10, prdDocId: plan.PrdDocId);
+        var closedPrdDocId = fill.ClosedPrdDocId!.Value;
+        var prdCountBeforeRepeat = harness.Store.GetDocsByOrder(10)
+            .Count(doc => doc.Type == DocType.ProductionReceipt);
+
+        var repeat = service.Fill(first.HuCode, "TSD-01", orderId: 10, prdDocId: plan.PrdDocId);
+        var huLedger = harness.LedgerEntries
+            .Where(entry => string.Equals(entry.HuCode, first.HuCode, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+
+        Assert.True(fill.Success);
+        Assert.True(fill.PrdAutoClosed);
+        Assert.NotEqual(plan.PrdDocId, closedPrdDocId);
+        Assert.True(repeat.Success);
+        Assert.True(repeat.AlreadyFilled);
+        Assert.True(repeat.PrdAutoClosed);
+        Assert.Equal(closedPrdDocId, repeat.ClosedPrdDocId);
+        Assert.Equal(closedPrdDocId, repeat.Pallet?.PrdDocId);
+        Assert.Single(huLedger);
+        Assert.Equal(first.PlannedQty, huLedger[0].QtyDelta);
+        Assert.Equal(prdCountBeforeRepeat, harness.Store.GetDocsByOrder(10).Count(doc => doc.Type == DocType.ProductionReceipt));
+    }
+
+    [Fact]
+    public void RepeatFill_WithCurrentClosedPrd_ReturnsAlreadyFilledAndDoesNotDuplicateLedger()
+    {
+        var harness = CreateHarnessWithOrderOnly(orderQty: 600, maxQtyPerHu: 600);
+        var service = CreatePalletService(harness);
+        var plan = service.PlanOrder(10);
+        var hu = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId)).HuCode;
+        var fill = service.Fill(hu, "TSD-01", orderId: 10, prdDocId: plan.PrdDocId);
+        var closedPrdDocId = fill.ClosedPrdDocId!.Value;
+
+        var repeat = service.Fill(hu, "TSD-01", orderId: 10, prdDocId: closedPrdDocId);
+
+        Assert.True(fill.Success);
+        Assert.True(repeat.Success);
+        Assert.True(repeat.AlreadyFilled);
+        Assert.True(repeat.PrdAutoClosed);
+        Assert.Equal(closedPrdDocId, repeat.ClosedPrdDocId);
+        Assert.Single(harness.LedgerEntries.Where(entry =>
+            string.Equals(entry.HuCode, hu, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    [Fact]
+    public void GetFillingContext_IncludesFilledPalletMovedToClosedPrdInOrderProgress()
+    {
+        var harness = CreateHarnessWithOrderOnly(orderQty: 1200, maxQtyPerHu: 600);
+        var service = CreatePalletService(harness);
+        var plan = service.PlanOrder(10);
+        var first = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId)
+            .OrderBy(pallet => pallet.Id)
+            .First();
+        var fill = service.Fill(first.HuCode, "TSD-01", orderId: 10, prdDocId: plan.PrdDocId);
+        var closedPrdDocId = fill.ClosedPrdDocId!.Value;
+
+        var context = service.GetFillingContext(10);
+        var line = Assert.Single(context.Document.Lines);
+        var filledPallet = Assert.Single(context.Document.Pallets.Where(pallet =>
+            string.Equals(pallet.HuCode, first.HuCode, StringComparison.OrdinalIgnoreCase)));
+
+        Assert.Equal(plan.PrdDocId, context.PrdDocId);
+        Assert.Equal(2, context.Document.Summary.PlannedPalletCount);
+        Assert.Equal(1200, context.Document.Summary.PlannedQty);
+        Assert.Equal(1, context.Document.Summary.FilledPalletCount);
+        Assert.Equal(first.PlannedQty, context.Document.Summary.FilledQty);
+        Assert.Equal(1, context.Document.Summary.RemainingPalletCount);
+        Assert.Equal(600, context.Document.Summary.RemainingQty);
+        Assert.Equal(101, line.OrderLineId);
+        Assert.Equal(1200, line.OrderedQty);
+        Assert.Equal(2, line.PlannedPalletCount);
+        Assert.Equal(1200, line.PlannedQty);
+        Assert.Equal(1, line.FilledPalletCount);
+        Assert.Equal(first.PlannedQty, line.FilledQty);
+        Assert.Equal(1, line.RemainingPalletCount);
+        Assert.Equal(600, line.RemainingQty);
+        Assert.Equal(2, context.Document.Pallets.Count);
+        Assert.Equal(ProductionPalletStatus.Filled, filledPallet.Status);
+        Assert.Equal(closedPrdDocId, filledPallet.PrdDocId);
+        Assert.Contains(context.Document.Pallets, pallet =>
+            pallet.PrdDocId == plan.PrdDocId
+            && string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void FillPallet_RejectsHuFromAnotherOrder()
+    {
+        var harness = CreateHarnessWithOrderOnly(orderQty: 600, maxQtyPerHu: 600);
+        var service = CreatePalletService(harness);
+        var plan = service.PlanOrder(10);
+        var hu = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId)).HuCode;
+
+        var result = service.Fill(hu, "TSD-01", orderId: 999, prdDocId: plan.PrdDocId);
+
+        Assert.False(result.Success);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void FillPallet_RejectsUnknownHu()
+    {
+        var harness = CreateHarnessWithOrderOnly(orderQty: 600, maxQtyPerHu: 600);
+        var service = CreatePalletService(harness);
+        var plan = service.PlanOrder(10);
+
+        var result = service.Fill("HU-UNKNOWN", "TSD-01", orderId: 10, prdDocId: plan.PrdDocId);
+
+        Assert.False(result.Success);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void FillPallet_DoesNotAcceptUnplannedHu()
+    {
+        var harness = CreateHarnessWithOrderOnly(orderQty: 1200, maxQtyPerHu: 600);
+        var service = CreatePalletService(harness);
+        var plan = service.PlanOrder(10);
+        var second = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId)
+            .OrderBy(pallet => pallet.Id)
+            .Skip(1)
+            .First();
+
+        var result = service.Fill(second.HuCode, "TSD-01", orderId: 10, prdDocId: plan.PrdDocId + 1000);
+
+        Assert.False(result.Success);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
     public void FillAllPallets_InternalOrderBecomesShipped()
     {
         var harness = CreateHarnessWithOrderOnly(orderQty: 1200, maxQtyPerHu: 600);
