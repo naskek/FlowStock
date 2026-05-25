@@ -126,6 +126,81 @@ internal static class OrderReceiptRemainingCalculator
         return totals;
     }
 
+    public static IReadOnlyDictionary<long, double> BuildGrossReceiptLedgerTotalsByOrderLine(
+        IDataStore dataStore,
+        long orderId,
+        IReadOnlyList<OrderLine>? orderLines = null)
+    {
+        var lines = (orderLines ?? dataStore.GetOrderLines(orderId))
+            .OrderBy(line => line.Id)
+            .ToList();
+        var totals = lines.ToDictionary(line => line.Id, _ => 0d);
+        var linesByItem = lines
+            .GroupBy(line => line.ItemId)
+            .ToDictionary(group => group.Key, group => group.OrderBy(line => line.Id).ToList());
+
+        try
+        {
+            foreach (var doc in dataStore.GetDocsByOrder(orderId).Where(doc => doc.Type == DocType.ProductionReceipt))
+            {
+                var pallets = dataStore.GetProductionPalletsByDoc(doc.Id)
+                    .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                if (pallets.Length > 0)
+                {
+                    foreach (var pallet in pallets.Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        if (pallet.Lines.Count > 0)
+                        {
+                            foreach (var palletLine in pallet.Lines.Where(line => line.OrderLineId.HasValue))
+                            {
+                                var ledgerQty = Math.Max(0, dataStore.GetLedgerQtyByDocItemHu(doc.Id, palletLine.ItemId, pallet.HuCode));
+                                var plannedQty = palletLine.FilledQty > QtyTolerance ? palletLine.FilledQty : palletLine.PlannedQty;
+                                AddProducedQty(totals, palletLine.OrderLineId!.Value, Math.Min(plannedQty, ledgerQty));
+                            }
+
+                            continue;
+                        }
+
+                        if (!pallet.OrderLineId.HasValue)
+                        {
+                            DistributeUnlinkedQtyByItem(
+                                totals,
+                                linesByItem,
+                                pallet.ItemId,
+                                Math.Max(0, dataStore.GetLedgerQtyByDocItemHu(doc.Id, pallet.ItemId, pallet.HuCode)));
+                            continue;
+                        }
+
+                        var grossQty = Math.Max(0, dataStore.GetLedgerQtyByDocItemHu(doc.Id, pallet.ItemId, pallet.HuCode));
+                        AddProducedQty(totals, pallet.OrderLineId.Value, Math.Min(pallet.PlannedQty, grossQty));
+                    }
+
+                    continue;
+                }
+
+                foreach (var line in dataStore.GetDocLines(doc.Id).Where(line => line.Qty > QtyTolerance))
+                {
+                    var ledgerQty = Math.Max(0, dataStore.GetLedgerQtyByDocItemHu(doc.Id, line.ItemId, line.ToHu));
+                    var producedQty = Math.Min(line.Qty, ledgerQty);
+                    if (line.OrderLineId.HasValue && totals.ContainsKey(line.OrderLineId.Value))
+                    {
+                        AddProducedQty(totals, line.OrderLineId.Value, producedQty);
+                        continue;
+                    }
+
+                    DistributeUnlinkedQtyByItem(totals, linesByItem, line.ItemId, producedQty);
+                }
+            }
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            return totals;
+        }
+
+        return totals;
+    }
+
     private static void DistributeUnlinkedQtyByItem(
         IDictionary<long, double> totals,
         IReadOnlyDictionary<long, List<OrderLine>> linesByItem,

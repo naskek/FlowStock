@@ -40,25 +40,119 @@ WITH receipt_ledger AS (
     WHERE l.qty_delta > 0
       AND NULLIF(BTRIM(COALESCE(l.hu_code, l.hu)), '') IS NOT NULL
     GROUP BY l.doc_id, l.item_id, UPPER(BTRIM(COALESCE(l.hu_code, l.hu)))
+),
+ledger_balance AS (
+    SELECT l.item_id,
+           UPPER(BTRIM(COALESCE(l.hu_code, l.hu))) AS hu_code,
+           SUM(l.qty_delta) AS current_balance
+    FROM ledger l
+    WHERE NULLIF(BTRIM(COALESCE(l.hu_code, l.hu)), '') IS NOT NULL
+    GROUP BY l.item_id, UPPER(BTRIM(COALESCE(l.hu_code, l.hu)))
 )
-SELECT 'FILLED_PRODUCTION_PALLET_WITHOUT_LEDGER' AS section,
-       pp.id AS production_pallet_id,
+SELECT 'FILLED_WITHOUT_RECEIPT_LEDGER' AS section,
+       pp.id AS pallet_id,
        pp.prd_doc_id,
        d.doc_ref AS prd_doc_ref,
-       pp.order_id,
+       d.status AS prd_status,
+       COALESCE(pp.order_id, d.order_id) AS order_id,
+       o.order_ref,
+       o.order_type,
+       o.status AS order_status,
        pp.order_line_id,
        pp.item_id,
        pp.hu_code,
        pp.planned_qty,
-       COALESCE(rl.receipt_qty, 0) AS receipt_ledger_qty
+       COALESCE(rl.receipt_qty, 0) AS current_receipt_qty,
+       COALESCE(lb.current_balance, 0) AS current_balance_qty,
+       CASE
+           WHEN UPPER(pp.status) = 'CANCELLED' THEN 'SKIP_CANCELLED'
+           WHEN UPPER(pp.status) <> 'FILLED' THEN 'SKIP_NOT_FILLED'
+           WHEN NULLIF(BTRIM(pp.hu_code), '') IS NULL THEN 'SKIP_NO_HU'
+           WHEN pp.to_location_id IS NULL THEN 'SKIP_NO_LOCATION'
+           WHEN COALESCE(rl.receipt_qty, 0) > 0 THEN 'SKIP_ALREADY_HAS_RECEIPT_LEDGER'
+           ELSE 'SAFE_TO_BACKFILL'
+       END AS decision
 FROM production_pallets pp
 INNER JOIN docs d ON d.id = pp.prd_doc_id
+LEFT JOIN orders o ON o.id = COALESCE(pp.order_id, d.order_id)
 LEFT JOIN receipt_ledger rl ON rl.doc_id = pp.prd_doc_id
                            AND rl.item_id = pp.item_id
                            AND rl.hu_code = UPPER(BTRIM(pp.hu_code))
-WHERE UPPER(pp.status) = 'FILLED'
-  AND COALESCE(rl.receipt_qty, 0) <= 0
+LEFT JOIN ledger_balance lb ON lb.item_id = pp.item_id
+                           AND lb.hu_code = UPPER(BTRIM(pp.hu_code))
+WHERE UPPER(pp.status) <> 'CANCELLED'
+  AND (
+      UPPER(pp.status) = 'FILLED'
+      OR NULLIF(BTRIM(pp.hu_code), '') IS NULL
+      OR pp.to_location_id IS NULL
+      OR COALESCE(rl.receipt_qty, 0) > 0
+  )
+  AND (
+      UPPER(pp.status) <> 'FILLED'
+      OR COALESCE(rl.receipt_qty, 0) <= 0
+      OR NULLIF(BTRIM(pp.hu_code), '') IS NULL
+      OR pp.to_location_id IS NULL
+  )
 ORDER BY pp.prd_doc_id, pp.id;
+
+WITH internal_draft_prd AS (
+    SELECT d.id AS doc_id,
+           d.doc_ref,
+           d.order_id,
+           o.order_ref
+    FROM docs d
+    INNER JOIN orders o ON o.id = d.order_id
+    WHERE UPPER(d.type) = 'PRD'
+      AND UPPER(d.status) = 'DRAFT'
+      AND UPPER(o.order_type) = 'INTERNAL'
+),
+ordered AS (
+    SELECT ol.order_id,
+           SUM(GREATEST(0, ol.qty_ordered)) AS ordered_qty
+    FROM order_lines ol
+    INNER JOIN internal_draft_prd prd ON prd.order_id = ol.order_id
+    GROUP BY ol.order_id
+),
+gross_receipt AS (
+    SELECT d.order_id,
+           SUM(GREATEST(0, l.qty_delta)) AS gross_receipt_qty
+    FROM docs d
+    INNER JOIN internal_draft_prd prd ON prd.order_id = d.order_id
+    INNER JOIN ledger l ON l.doc_id = d.id
+    WHERE UPPER(d.type) = 'PRD'
+      AND l.qty_delta > 0
+    GROUP BY d.order_id
+),
+blocking_pallets AS (
+    SELECT prd.doc_id,
+           COUNT(*) FILTER (WHERE UPPER(pp.status) IN ('PLANNED', 'PRINTED')) AS open_unfilled_pallet_count
+    FROM internal_draft_prd prd
+    LEFT JOIN production_pallets pp ON pp.prd_doc_id = prd.doc_id
+                                  AND UPPER(pp.status) <> 'CANCELLED'
+    GROUP BY prd.doc_id
+)
+SELECT 'STALE_INTERNAL_DRAFT_PRD_CLOSE_CANDIDATES' AS section,
+       prd.doc_id,
+       prd.doc_ref,
+       prd.order_id,
+       prd.order_ref,
+       COALESCE(gross.gross_receipt_qty, 0) AS gross_receipt_qty_by_order,
+       COALESCE(ordered.ordered_qty, 0) AS ordered_qty_by_order,
+       COALESCE(blocking.open_unfilled_pallet_count, 0) AS open_unfilled_pallet_count,
+       CASE
+           WHEN COALESCE(blocking.open_unfilled_pallet_count, 0) > 0 THEN 'BLOCKED_OPEN_PALLETS'
+           WHEN COALESCE(gross.gross_receipt_qty, 0) + 0.000001 >= COALESCE(ordered.ordered_qty, 0)
+                AND COALESCE(ordered.ordered_qty, 0) > 0 THEN 'SAFE_TO_CLOSE'
+           ELSE 'BLOCKED_GROSS_RECEIPT_SHORTAGE'
+       END AS decision
+FROM internal_draft_prd prd
+LEFT JOIN ordered ON ordered.order_id = prd.order_id
+LEFT JOIN gross_receipt gross ON gross.order_id = prd.order_id
+LEFT JOIN blocking_pallets blocking ON blocking.doc_id = prd.doc_id
+WHERE COALESCE(blocking.open_unfilled_pallet_count, 0) = 0
+  AND COALESCE(gross.gross_receipt_qty, 0) + 0.000001 >= COALESCE(ordered.ordered_qty, 0)
+  AND COALESCE(ordered.ordered_qty, 0) > 0
+ORDER BY prd.doc_id;
 
 SELECT 'DRAFT_PRD_WITH_LEDGER' AS section,
        d.id AS prd_doc_id,

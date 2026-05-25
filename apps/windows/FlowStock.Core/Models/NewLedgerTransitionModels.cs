@@ -64,3 +64,65 @@ public sealed class NewLedgerTransitionAction
     public string? HuCode { get; init; }
     public string Details { get; init; } = string.Empty;
 }
+
+public static class FilledLedgerRepairDecisions
+{
+    public const string SafeToBackfill = "SAFE_TO_BACKFILL";
+    public const string SkipNotFilled = "SKIP_NOT_FILLED";
+    public const string SkipAlreadyHasReceiptLedger = "SKIP_ALREADY_HAS_RECEIPT_LEDGER";
+    public const string SkipCancelled = "SKIP_CANCELLED";
+    public const string SkipNoHu = "SKIP_NO_HU";
+    public const string SkipNoLocation = "SKIP_NO_LOCATION";
+    public const string SkipFilteredOut = "SKIP_FILTERED_OUT";
+}
+
+public sealed class FilledLedgerRepairRequest
+{
+    public IReadOnlyList<long> OrderIds { get; init; } = Array.Empty<long>();
+    public IReadOnlyList<long> PrdDocIds { get; init; } = Array.Empty<long>();
+    public IReadOnlyList<long> PalletIds { get; init; } = Array.Empty<long>();
+    public bool CloseStaleInternalPrdDrafts { get; init; }
+}
+
+public sealed class FilledLedgerRepairReport
+{
+    public bool DryRun { get; init; }
+    public int LedgerRowsWritten { get; init; }
+    public IReadOnlyList<long> AppliedPalletIds { get; init; } = Array.Empty<long>();
+    public IReadOnlyList<long> ClosedPrdDocIds { get; init; } = Array.Empty<long>();
+    public IReadOnlyList<long> RefreshedOrderIds { get; init; } = Array.Empty<long>();
+    public IReadOnlyList<FilledLedgerRepairCandidate> Candidates { get; init; } = Array.Empty<FilledLedgerRepairCandidate>();
+    public IReadOnlyList<FilledLedgerRepairPrdCloseCandidate> StaleInternalPrdDraftCloseCandidates { get; init; } = Array.Empty<FilledLedgerRepairPrdCloseCandidate>();
+    public IReadOnlyList<FilledLedgerRepairCandidate> Skipped { get; init; } = Array.Empty<FilledLedgerRepairCandidate>();
+    public IReadOnlyList<string> Warnings { get; init; } = Array.Empty<string>();
+}
+
+public sealed class FilledLedgerRepairCandidate
+{
+    public long? OrderId { get; init; }
+    public string OrderRef { get; init; } = string.Empty;
+    public string OrderType { get; init; } = string.Empty;
+    public string OrderStatus { get; init; } = string.Empty;
+    public long PrdDocId { get; init; }
+    public string PrdDocRef { get; init; } = string.Empty;
+    public string PrdStatus { get; init; } = string.Empty;
+    public long PalletId { get; init; }
+    public string HuCode { get; init; } = string.Empty;
+    public long ItemId { get; init; }
+    public long? LocationId { get; init; }
+    public double PlannedQty { get; init; }
+    public double CurrentReceiptQty { get; init; }
+    public double CurrentBalanceQty { get; init; }
+    public string Decision { get; init; } = string.Empty;
+}
+
+public sealed class FilledLedgerRepairPrdCloseCandidate
+{
+    public long DocId { get; init; }
+    public string DocRef { get; init; } = string.Empty;
+    public long OrderId { get; init; }
+    public string OrderRef { get; init; } = string.Empty;
+    public double GrossReceiptQtyByOrder { get; init; }
+    public double OrderedQtyByOrder { get; init; }
+    public string Reason { get; init; } = string.Empty;
+}

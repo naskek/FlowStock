@@ -247,8 +247,8 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
 
         Assert.Equal(2400, line.GetProperty("qty_ordered").GetDouble(), 3);
         Assert.Equal(1200, line.GetProperty("qty_produced").GetDouble(), 3);
-        Assert.True(line.GetProperty("production_hu_codes_display").GetString()?.Length > 0);
-        Assert.Equal(4, huCodes.Length);
+        Assert.True(string.IsNullOrWhiteSpace(line.GetProperty("production_hu_codes_display").GetString()));
+        Assert.Empty(huCodes);
         Assert.Equal(2, fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId)
             .Count(pallet => pallet.Status == ProductionPalletStatus.Planned));
     }

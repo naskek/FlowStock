@@ -136,7 +136,7 @@ public static class OrderLinesEndpoint
         foreach (var doc in store.GetDocsByOrder(orderId).Where(doc => doc.Type == DocType.ProductionReceipt))
         {
             foreach (var pallet in store.GetProductionPalletsByDoc(doc.Id)
-                         .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)))
+                         .Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
             {
                 var componentLines = pallet.Lines.Count > 0
                     ? pallet.Lines
@@ -150,6 +150,12 @@ public static class OrderLinesEndpoint
                 foreach (var line in componentLines)
                 {
                     if (!line.OrderLineId.HasValue || string.IsNullOrWhiteSpace(pallet.HuCode))
+                    {
+                        continue;
+                    }
+
+                    var itemId = line.ItemId > 0 ? line.ItemId : pallet.ItemId;
+                    if (!HasPositiveHuBalance(store, itemId, pallet.HuCode))
                     {
                         continue;
                     }
