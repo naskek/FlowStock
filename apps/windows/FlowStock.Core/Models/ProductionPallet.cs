@@ -124,6 +124,8 @@ public sealed class ProductionPalletOrderPlanResult
     public long PrdDocId { get; init; }
     public string PrdDocRef { get; init; } = string.Empty;
     public bool WasExisting { get; init; }
+    public bool ProductionRequired { get; init; } = true;
+    public string Message { get; init; } = string.Empty;
     public ProductionPalletSummary Summary { get; init; } = new();
     public ProductionPalletDocument Document { get; init; } = new();
 }

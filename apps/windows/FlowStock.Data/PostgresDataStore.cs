@@ -5561,6 +5561,35 @@ hu_sources AS (
           FROM production_pallet_lines pll
           WHERE pll.production_pallet_id = pp.id
       )
+    UNION
+    SELECT pll.order_line_id,
+           BTRIM(pp.hu_code) AS hu_code
+    FROM production_pallet_lines pll
+    INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
+    INNER JOIN docs d ON d.id = pp.prd_doc_id
+    INNER JOIN line_scope ls ON ls.id = pll.order_line_id
+    WHERE pp.status IN (@pallet_planned_status, @pallet_printed_status)
+      AND pp.status <> @pallet_cancelled_status
+      AND d.type = @production_doc_type
+      AND pp.hu_code IS NOT NULL
+      AND BTRIM(pp.hu_code) <> ''
+    UNION
+    SELECT pp.order_line_id,
+           BTRIM(pp.hu_code) AS hu_code
+    FROM production_pallets pp
+    INNER JOIN docs d ON d.id = pp.prd_doc_id
+    INNER JOIN line_scope ls ON ls.id = pp.order_line_id
+    WHERE pp.status IN (@pallet_planned_status, @pallet_printed_status)
+      AND pp.status <> @pallet_cancelled_status
+      AND d.type = @production_doc_type
+      AND pp.order_line_id IS NOT NULL
+      AND pp.hu_code IS NOT NULL
+      AND BTRIM(pp.hu_code) <> ''
+      AND NOT EXISTS (
+          SELECT 1
+          FROM production_pallet_lines pll
+          WHERE pll.production_pallet_id = pp.id
+      )
 )
 SELECT order_line_id, hu_code
 FROM hu_sources
@@ -5569,6 +5598,8 @@ ORDER BY order_line_id, LOWER(hu_code), hu_code;
             command.Parameters.Add("@order_line_ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint).Value = ids;
             command.Parameters.AddWithValue("@production_doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
             command.Parameters.AddWithValue("@pallet_filled_status", ProductionPalletStatus.Filled);
+            command.Parameters.AddWithValue("@pallet_planned_status", ProductionPalletStatus.Planned);
+            command.Parameters.AddWithValue("@pallet_printed_status", ProductionPalletStatus.Printed);
             command.Parameters.AddWithValue("@pallet_cancelled_status", ProductionPalletStatus.Cancelled);
             command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
             using var reader = command.ExecuteReader();

@@ -15,6 +15,7 @@ public sealed class OrderLineView : INotifyPropertyChanged
     private double _filledPalletQty;
     private int _plannedPalletCount;
     private int _filledPalletCount;
+    private IReadOnlyList<OrderLineHuDisplayEntry> _productionHuDisplayEntries = Array.Empty<OrderLineHuDisplayEntry>();
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -36,6 +37,16 @@ public sealed class OrderLineView : INotifyPropertyChanged
     {
         get => _productionHuCodes;
         set => SetField(ref _productionHuCodes, value ?? string.Empty);
+    }
+
+    public IReadOnlyList<OrderLineHuDisplayEntry> ProductionHuDisplayEntries
+    {
+        get => _productionHuDisplayEntries;
+        set
+        {
+            _productionHuDisplayEntries = value ?? Array.Empty<OrderLineHuDisplayEntry>();
+            OnPropertyChanged(nameof(ProductionHuDisplayEntries));
+        }
     }
 
     public double QtyShipped
@@ -123,6 +134,7 @@ public sealed class OrderLineView : INotifyPropertyChanged
     {
         OnPropertyChanged(nameof(QtyOrdered));
         OnPropertyChanged(nameof(ProductionHuCodes));
+        OnPropertyChanged(nameof(ProductionHuDisplayEntries));
         OnPropertyChanged(nameof(QtyShipped));
         OnPropertyChanged(nameof(QtyProduced));
         OnPropertyChanged(nameof(QtyRemaining));
@@ -155,4 +167,11 @@ public sealed class OrderLineView : INotifyPropertyChanged
         return value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
     }
 }
+
+public sealed record OrderLineHuDisplayEntry(
+    string HuCode,
+    string Label,
+    double Qty,
+    bool IsWarehouseBound,
+    int SortOrder);
 

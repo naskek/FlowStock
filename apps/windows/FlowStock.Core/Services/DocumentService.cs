@@ -2253,63 +2253,7 @@ public sealed class DocumentService
 
     private static Dictionary<long, HashSet<string>> BuildOrderBoundHuByItem(IDataStore store, long orderId)
     {
-        var result = new Dictionary<long, HashSet<string>>();
-        var productionDocs = store.GetDocsByOrder(orderId)
-            .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status == DocStatus.Closed)
-            .ToList();
-        foreach (var doc in productionDocs)
-        {
-            foreach (var line in store.GetDocLines(doc.Id))
-            {
-                if (line.Qty <= QtyTolerance)
-                {
-                    continue;
-                }
-
-                var huCode = NormalizeHuValue(line.ToHu);
-                if (string.IsNullOrWhiteSpace(huCode))
-                {
-                    continue;
-                }
-
-                if (!result.TryGetValue(line.ItemId, out var set))
-                {
-                    set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    result[line.ItemId] = set;
-                }
-
-                set.Add(huCode);
-            }
-        }
-
-        foreach (var line in store.GetOrderReceiptPlanLines(orderId))
-        {
-            if (line.QtyPlanned <= QtyTolerance)
-            {
-                continue;
-            }
-
-            var huCode = NormalizeHuValue(line.ToHu);
-            if (string.IsNullOrWhiteSpace(huCode))
-            {
-                continue;
-            }
-
-            if (!HasPositiveHuBalance(store, line.ItemId, huCode))
-            {
-                continue;
-            }
-
-            if (!result.TryGetValue(line.ItemId, out var set))
-            {
-                set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                result[line.ItemId] = set;
-            }
-
-            set.Add(huCode);
-        }
-
-        return result;
+        return CustomerOutboundBoundHuService.BuildOrderBoundHuByItem(store, orderId);
     }
 
     private static void TryRefreshLinkedOrderStatus(

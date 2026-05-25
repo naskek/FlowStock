@@ -78,6 +78,121 @@ public static class CustomerOutboundBoundHuService
         return result;
     }
 
+    public static IReadOnlyDictionary<long, double> BuildUnshippedBoundHuQtyByOrderLine(
+        IDataStore store,
+        long orderId)
+    {
+        return GetUnshippedBoundHuLines(store, orderId)
+            .GroupBy(line => line.OrderLineId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Sum(line => Math.Max(0, line.Qty)));
+    }
+
+    public static IReadOnlyList<CustomerOutboundBoundHuLine> GetUnshippedFilledProductionPalletHuLines(
+        IDataStore store,
+        long orderId)
+    {
+        var order = store.GetOrder(orderId);
+        if (order == null || order.Type != OrderType.Customer)
+        {
+            return Array.Empty<CustomerOutboundBoundHuLine>();
+        }
+
+        var shipmentRemainingByOrderLine = store.GetOrderShipmentRemaining(orderId)
+            .Where(line => line.QtyRemaining > QtyTolerance)
+            .ToDictionary(line => line.OrderLineId, line => line.QtyRemaining);
+        if (shipmentRemainingByOrderLine.Count == 0)
+        {
+            return Array.Empty<CustomerOutboundBoundHuLine>();
+        }
+
+        var shippedByOrderLineHu = BuildShippedQtyByOrderLineAndHu(store, orderId);
+        var locationsById = store.GetLocations().ToDictionary(location => location.Id, location => location.Code);
+        var stockByHuItem = BuildStockByHuItem(store);
+        var result = new List<CustomerOutboundBoundHuLine>();
+
+        foreach (var pallet in GetFilledProductionPalletsForCustomerOrder(store, orderId))
+        {
+            var huCode = NormalizeHu(pallet.HuCode);
+            if (string.IsNullOrWhiteSpace(huCode))
+            {
+                continue;
+            }
+
+            foreach (var palletLine in ExpandProductionPalletOutboundLines(pallet))
+            {
+                if (!shipmentRemainingByOrderLine.TryGetValue(palletLine.OrderLineId, out var shipmentRemaining))
+                {
+                    continue;
+                }
+
+                var shippedKey = (palletLine.OrderLineId, huCode);
+                if (shippedByOrderLineHu.TryGetValue(shippedKey, out var shippedQty)
+                    && shippedQty >= shipmentRemaining - QtyTolerance)
+                {
+                    continue;
+                }
+
+                if (!stockByHuItem.TryGetValue(BuildHuItemKey(huCode, palletLine.ItemId), out var stockRow)
+                    || stockRow.Qty <= QtyTolerance)
+                {
+                    continue;
+                }
+
+                var qty = Math.Min(stockRow.Qty, shipmentRemaining);
+                if (qty <= QtyTolerance)
+                {
+                    continue;
+                }
+
+                var locationId = (long?)stockRow.LocationId;
+                if (!locationId.HasValue && pallet.ToLocationId.HasValue)
+                {
+                    locationId = pallet.ToLocationId;
+                }
+
+                var locationCode = locationId.HasValue
+                    && locationsById.TryGetValue(locationId.Value, out var palletLocationCode)
+                    ? palletLocationCode
+                    : pallet.ToLocationCode ?? locationId?.ToString();
+
+                result.Add(new CustomerOutboundBoundHuLine
+                {
+                    OrderLineId = palletLine.OrderLineId,
+                    ItemId = palletLine.ItemId,
+                    ItemName = palletLine.ItemName,
+                    Qty = qty,
+                    HuCode = huCode,
+                    FromLocationId = locationId,
+                    FromLocationCode = locationCode
+                });
+            }
+        }
+
+        return result;
+    }
+
+    public static IReadOnlyList<CustomerOutboundBoundHuLine> GetUnshippedOutboundHuLines(IDataStore store, long orderId)
+    {
+        var merged = new Dictionary<string, CustomerOutboundBoundHuLine>(StringComparer.OrdinalIgnoreCase);
+        foreach (var line in GetUnshippedBoundHuLines(store, orderId))
+        {
+            MergeOutboundHuLine(merged, line);
+        }
+
+        foreach (var line in GetUnshippedFilledProductionPalletHuLines(store, orderId))
+        {
+            MergeOutboundHuLine(merged, line);
+        }
+
+        return merged.Values
+            .OrderBy(line => line.HuCode, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(line => line.OrderLineId)
+            .ThenBy(line => line.ItemId)
+            .ToArray();
+    }
+
     public static int SyncDraftOutboundFromBoundHu(IDataStore store, long docId, bool replaceAll = false)
     {
         var doc = store.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
@@ -114,7 +229,7 @@ public static class CustomerOutboundBoundHuService
             .Select(key => key!.Value)
             .ToHashSet();
 
-        foreach (var boundLine in GetUnshippedBoundHuLines(store, order.Id))
+        foreach (var boundLine in GetUnshippedOutboundHuLines(store, order.Id))
         {
             var key = (boundLine.OrderLineId, boundLine.HuCode);
             if (existingKeys.Contains(key))
@@ -143,6 +258,67 @@ public static class CustomerOutboundBoundHuService
         return addedLines;
     }
 
+    public static Dictionary<long, HashSet<string>> BuildOrderBoundHuByItem(IDataStore store, long orderId)
+    {
+        var result = new Dictionary<long, HashSet<string>>();
+        foreach (var doc in store.GetDocsByOrder(orderId)
+                     .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status == DocStatus.Closed))
+        {
+            foreach (var line in store.GetDocLines(doc.Id))
+            {
+                if (line.Qty <= QtyTolerance)
+                {
+                    continue;
+                }
+
+                var huCode = NormalizeHu(line.ToHu);
+                if (string.IsNullOrWhiteSpace(huCode))
+                {
+                    continue;
+                }
+
+                AddBoundHu(result, line.ItemId, huCode);
+            }
+        }
+
+        foreach (var line in store.GetOrderReceiptPlanLines(orderId))
+        {
+            if (line.QtyPlanned <= QtyTolerance)
+            {
+                continue;
+            }
+
+            var huCode = NormalizeHu(line.ToHu);
+            if (string.IsNullOrWhiteSpace(huCode) || !HasPositiveHuBalance(store, line.ItemId, huCode))
+            {
+                continue;
+            }
+
+            AddBoundHu(result, line.ItemId, huCode);
+        }
+
+        foreach (var pallet in GetFilledProductionPalletsForCustomerOrder(store, orderId))
+        {
+            var huCode = NormalizeHu(pallet.HuCode);
+            if (string.IsNullOrWhiteSpace(huCode))
+            {
+                continue;
+            }
+
+            foreach (var palletLine in ExpandProductionPalletOutboundLines(pallet))
+            {
+                if (!HasPositiveHuBalance(store, palletLine.ItemId, huCode))
+                {
+                    continue;
+                }
+
+                AddBoundHu(result, palletLine.ItemId, huCode);
+            }
+        }
+
+        return result;
+    }
+
     public static bool HasReceiptProductionNeed(IDataStore store, long customerOrderId, bool includeReservedStock = true)
     {
         var order = store.GetOrder(customerOrderId);
@@ -153,6 +329,88 @@ public static class CustomerOutboundBoundHuService
 
         return OrderReceiptRemainingCalculator.GetRemaining(store, order, includeReservedStock)
             .Any(line => line.QtyRemaining > QtyTolerance);
+    }
+
+    private static Dictionary<string, HuStockRow> BuildStockByHuItem(IDataStore store)
+    {
+        return store.GetHuStockRows()
+            .Where(row => row.Qty > QtyTolerance)
+            .GroupBy(row => BuildHuItemKey(row.HuCode, row.ItemId), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderBy(row => row.LocationId)
+                    .First(),
+                StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static IEnumerable<ProductionPallet> GetFilledProductionPalletsForCustomerOrder(
+        IDataStore store,
+        long orderId)
+    {
+        var order = store.GetOrder(orderId);
+        if (order == null || order.Type != OrderType.Customer)
+        {
+            return Array.Empty<ProductionPallet>();
+        }
+
+        return store.GetDocsByOrder(orderId)
+            .Where(doc => doc.Type == DocType.ProductionReceipt)
+            .OrderBy(doc => doc.Id)
+            .SelectMany(doc => store.GetProductionPalletsByDoc(doc.Id))
+            .Where(pallet => pallet.OrderId == orderId
+                             && string.Equals(
+                                 pallet.Status,
+                                 ProductionPalletStatus.Filled,
+                                 StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static IEnumerable<(long OrderLineId, long ItemId, string ItemName)> ExpandProductionPalletOutboundLines(
+        ProductionPallet pallet)
+    {
+        if (pallet.Lines.Count > 0)
+        {
+            foreach (var line in pallet.Lines)
+            {
+                if (!line.OrderLineId.HasValue || line.ItemId <= 0)
+                {
+                    continue;
+                }
+
+                yield return (line.OrderLineId.Value, line.ItemId, line.ItemName);
+            }
+
+            yield break;
+        }
+
+        if (!pallet.OrderLineId.HasValue || pallet.ItemId <= 0)
+        {
+            yield break;
+        }
+
+        yield return (pallet.OrderLineId.Value, pallet.ItemId, pallet.ItemName);
+    }
+
+    private static void MergeOutboundHuLine(
+        IDictionary<string, CustomerOutboundBoundHuLine> merged,
+        CustomerOutboundBoundHuLine line)
+    {
+        var key = BuildOutboundLineKey(line);
+        if (!merged.TryGetValue(key, out var existing))
+        {
+            merged[key] = line;
+            return;
+        }
+
+        if (line.Qty > existing.Qty + QtyTolerance)
+        {
+            merged[key] = line;
+        }
+    }
+
+    private static string BuildOutboundLineKey(CustomerOutboundBoundHuLine line)
+    {
+        return $"{line.OrderLineId}|{NormalizeHu(line.HuCode)}|{line.ItemId}";
     }
 
     private static Dictionary<(long OrderLineId, string HuCode), double> BuildShippedQtyByOrderLineAndHu(
@@ -198,6 +456,25 @@ public static class CustomerOutboundBoundHuService
     private static string BuildHuItemKey(string? huCode, long itemId)
     {
         return $"{NormalizeHu(huCode)}|{itemId}";
+    }
+
+    private static void AddBoundHu(IDictionary<long, HashSet<string>> result, long itemId, string huCode)
+    {
+        if (!result.TryGetValue(itemId, out var set))
+        {
+            set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            result[itemId] = set;
+        }
+
+        set.Add(huCode);
+    }
+
+    private static bool HasPositiveHuBalance(IDataStore store, long itemId, string huCode)
+    {
+        return store.GetHuStockRows()
+            .Where(row => row.ItemId == itemId)
+            .Where(row => string.Equals(NormalizeHu(row.HuCode), huCode, StringComparison.OrdinalIgnoreCase))
+            .Sum(row => row.Qty) > QtyTolerance;
     }
 
     private static string? NormalizeHu(string? value)

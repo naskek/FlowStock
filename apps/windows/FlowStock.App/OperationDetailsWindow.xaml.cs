@@ -1943,7 +1943,7 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        if (_doc?.Type != DocType.ProductionReceipt)
+        if (_doc?.Type != DocType.ProductionReceipt || _hasProductionPalletPlan)
         {
             return;
         }
@@ -2749,7 +2749,9 @@ public partial class OperationDetailsWindow : Window
         KmCodesButton.Visibility = KmUiEnabled && (doc.Type is DocType.ProductionReceipt or DocType.Outbound)
             ? Visibility.Visible
             : Visibility.Collapsed;
-        AutoHuButton.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
+        AutoHuButton.Visibility = doc.Type == DocType.ProductionReceipt && !_hasProductionPalletPlan
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         AssignHuButton.Visibility = doc.Type is DocType.Inventory or DocType.Outbound
             ? Visibility.Visible
             : Visibility.Collapsed;
@@ -3086,6 +3088,12 @@ public partial class OperationDetailsWindow : Window
             return false;
         }
 
+        var autofillKey = $"{_doc.Id}:{_doc.Type}:{selected.Id}";
+        if (!_autoFillAttempts.Add(autofillKey))
+        {
+            return true;
+        }
+
         var headerSaved = await TryPersistHeaderViaServerAsync(
             selected.PartnerId,
             selected.Id,
@@ -3101,9 +3109,22 @@ public partial class OperationDetailsWindow : Window
 
         try
         {
+            var expectedLines = CustomerOutboundBoundHuService.GetUnshippedOutboundHuLines(
+                _services.DataStore,
+                selected.Id);
+            if (expectedLines.Count == 0)
+            {
+                ShowOutboundAutofillMessageOnce(selected.Id, "По заказу нет остатка к отгрузке.");
+                await TryDiscardEmptyOutboundDraftIfNeededAsync();
+                LoadDoc();
+                LoadOrderQuantities(selected.Id);
+                ResetPartialMode();
+                return true;
+            }
+
             var replaceAll = !_isPartialShipment;
             LogOutboundOrderBoundInfo(
-                $"fill from order sync prepared: order_id={selected.Id}; partial={_isPartialShipment}; replace_all={replaceAll}");
+                $"fill from order sync prepared: order_id={selected.Id}; partial={_isPartialShipment}; replace_all={replaceAll}; expected_hu={expectedLines.Count}");
             var addedCount = await Task.Run(() =>
                     _services.Documents.SyncCustomerOutboundFromBoundHu(_doc.Id, replaceAll))
                 .ConfigureAwait(true);
@@ -3113,15 +3134,14 @@ public partial class OperationDetailsWindow : Window
 
             if (addedCount == 0 && _docLines.Count == 0)
             {
-                MessageBox.Show("По заказу нет остатка к отгрузке.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+                ShowOutboundAutofillMessageOnce(selected.Id, "По заказу нет остатка к отгрузке.");
+                await TryDiscardEmptyOutboundDraftIfNeededAsync();
             }
             else if (addedCount > 0)
             {
-                MessageBox.Show(
-                    $"Добавлено строк отгрузки: {addedCount}",
-                    "Операция",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information);
+                ShowOutboundAutofillMessageOnce(
+                    selected.Id,
+                    $"Добавлено строк отгрузки: {addedCount}");
             }
 
             return true;
@@ -3129,8 +3149,52 @@ public partial class OperationDetailsWindow : Window
         catch (Exception ex)
         {
             LogOutboundOrderBoundWarn($"fill from order sync failed: order_id={selected.Id}; message={ex.Message}");
-            MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+            ShowOutboundAutofillMessageOnce(selected.Id, ex.Message);
+            await TryDiscardEmptyOutboundDraftIfNeededAsync();
             return false;
+        }
+    }
+
+    private long? _outboundAutofillMessageOrderId;
+    private string? _outboundAutofillMessageText;
+
+    private void ShowOutboundAutofillMessageOnce(long orderId, string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return;
+        }
+
+        if (_outboundAutofillMessageOrderId == orderId
+            && string.Equals(_outboundAutofillMessageText, message, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _outboundAutofillMessageOrderId = orderId;
+        _outboundAutofillMessageText = message;
+        MessageBox.Show(message, "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private async Task TryDiscardEmptyOutboundDraftIfNeededAsync()
+    {
+        if (_doc?.Type != DocType.Outbound
+            || _doc.Status != DocStatus.Draft
+            || _docLines.Count > 0
+            || string.IsNullOrWhiteSpace(_createdDraftDocUid))
+        {
+            return;
+        }
+
+        var result = await _services.WpfDocumentRuntimeApi.TryDiscardDraftByDocUidAsync(_createdDraftDocUid);
+        if (!result.IsSuccess)
+        {
+            LogOutboundOrderBoundWarn($"empty outbound draft discard failed: doc_uid={_createdDraftDocUid}; message={result.Error}");
+        }
+        else
+        {
+            _preserveEmptyDraftOnClose = true;
+            LoadDoc();
         }
     }
 
@@ -3388,7 +3452,7 @@ public partial class OperationDetailsWindow : Window
     private IReadOnlyList<WpfAddDocLineContext> BuildOutboundOrderBatchContexts(long orderId, long? fromLocationId)
     {
         var requestedHu = NormalizeHuValue(GetSelectedHuCode(DocHuCombo));
-        return CustomerOutboundBoundHuService.GetUnshippedBoundHuLines(_services.DataStore, orderId)
+        return CustomerOutboundBoundHuService.GetUnshippedOutboundHuLines(_services.DataStore, orderId)
             .Where(line => !fromLocationId.HasValue || line.FromLocationId == fromLocationId.Value)
             .Where(line => string.IsNullOrWhiteSpace(requestedHu)
                            || string.Equals(line.HuCode, requestedHu, StringComparison.OrdinalIgnoreCase))

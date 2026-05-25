@@ -1,8 +1,132 @@
+using FlowStock.Core.Models;
+
 namespace FlowStock.App;
 
 public static class CustomerOrderHuPickerRules
 {
     public const double QtyTolerance = 0.000001;
+
+    public static double ComputeManualBindingCapacity(OrderLineView line)
+    {
+        var ordered = Math.Max(0, line.QtyOrdered);
+        var shipped = Math.Max(0, line.QtyShipped);
+        var palletCovered = Math.Max(0, line.PlannedPalletQty);
+        return Math.Max(0, ordered - shipped - palletCovered);
+    }
+
+    public static double ComputeManualBindableRemaining(OrderLineView line, double boundHuQty) =>
+        Math.Max(0, ComputeManualBindingCapacity(line) - Math.Max(0, boundHuQty));
+
+    public static bool IsFullyCoveredByProductionPalletPlan(OrderLineView line, double boundHuQty) =>
+        line.QtyOrdered > QtyTolerance
+        && line.PlannedPalletQty > QtyTolerance
+        && ComputeManualBindableRemaining(line, boundHuQty) <= QtyTolerance;
+
+    public static bool IsPartiallyCoveredByProductionPalletPlan(OrderLineView line, double boundHuQty) =>
+        line.PlannedPalletQty > QtyTolerance
+        && ComputeManualBindableRemaining(line, boundHuQty) > QtyTolerance;
+
+    public static string BuildHuPickerLabel(
+        bool hasOrderId,
+        OrderLineView line,
+        double boundHuQty,
+        int selectedHuCount,
+        bool awaitingSave,
+        bool candidatesFailed)
+    {
+        if (!hasOrderId)
+        {
+            return "После сохранения";
+        }
+
+        if (candidatesFailed)
+        {
+            return "HU…";
+        }
+
+        if (IsFullyCoveredByProductionPalletPlan(line, boundHuQty))
+        {
+            return "Покрыто планом";
+        }
+
+        if (selectedHuCount > 0)
+        {
+            return $"HU ({selectedHuCount})";
+        }
+
+        if (IsPartiallyCoveredByProductionPalletPlan(line, boundHuQty))
+        {
+            return $"Выбрать HU ({FormatQty(ComputeManualBindableRemaining(line, boundHuQty))})";
+        }
+
+        return "Выбрать HU";
+    }
+
+    public static string? BuildHuPickerToolTip(
+        OrderLineView line,
+        double boundHuQty,
+        bool awaitingSave,
+        bool candidatesFailed,
+        bool isPickerEnabled)
+    {
+        if (awaitingSave)
+        {
+            return "Сохраните заказ, чтобы привязать HU.";
+        }
+
+        var manualRemaining = ComputeManualBindableRemaining(line, boundHuQty);
+        var palletHuCodes = line.ProductionHuCodes?.Trim() ?? string.Empty;
+
+        if (line.PlannedPalletQty > QtyTolerance && manualRemaining <= QtyTolerance)
+        {
+            return string.IsNullOrWhiteSpace(palletHuCodes)
+                ? "Строка покрыта паллетным планом."
+                : $"Строка покрыта паллетным планом: {palletHuCodes}";
+        }
+
+        if (IsPartiallyCoveredByProductionPalletPlan(line, boundHuQty))
+        {
+            return "Часть строки покрыта паллетным планом, выбрать HU можно только на остаток.";
+        }
+
+        if (!isPickerEnabled && manualRemaining <= QtyTolerance && boundHuQty > QtyTolerance)
+        {
+            return "Строка покрыта выбранными HU.";
+        }
+
+        if (!isPickerEnabled && manualRemaining <= QtyTolerance)
+        {
+            return "Остатка для ручной привязки HU нет.";
+        }
+
+        return null;
+    }
+
+    public static bool IsHuPickerEnabled(
+        bool hasOrderId,
+        OrderLineView line,
+        double boundHuQty,
+        bool awaitingSave)
+    {
+        if (!hasOrderId
+            || awaitingSave
+            || line.ItemId <= 0
+            || line.QtyOrdered <= QtyTolerance)
+        {
+            return false;
+        }
+
+        if (IsFullyCoveredByProductionPalletPlan(line, boundHuQty))
+        {
+            return false;
+        }
+
+        var manualRemaining = ComputeManualBindableRemaining(line, boundHuQty);
+        return manualRemaining > QtyTolerance || boundHuQty > QtyTolerance;
+    }
+
+    private static string FormatQty(double qty) =>
+        qty.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
 
     public static IReadOnlyList<string> BuildExcludeHuCodesForOtherLines(
         IEnumerable<CustomerOrderLineHuState> states,

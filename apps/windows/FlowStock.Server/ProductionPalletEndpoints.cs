@@ -433,6 +433,8 @@ public static class ProductionPalletEndpoints
             prd_ref = result.PrdDocRef,
             prd_doc_ref = result.PrdDocRef,
             was_existing = result.WasExisting,
+            production_required = result.ProductionRequired,
+            message = result.Message,
             planned_pallet_count = result.Summary.PlannedPalletCount,
             planned_qty = result.Summary.PlannedQty,
             filled_pallet_count = result.Summary.FilledPalletCount,

@@ -281,72 +281,7 @@ public sealed class OrderService
 
     public IReadOnlyDictionary<long, HashSet<string>> GetOrderBoundHuByItem(long orderId)
     {
-        var result = new Dictionary<long, HashSet<string>>();
-
-        var productionDocs = _data.GetDocsByOrder(orderId)
-            .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status == DocStatus.Closed)
-            .ToList();
-        foreach (var doc in productionDocs)
-        {
-            foreach (var line in _data.GetDocLines(doc.Id))
-            {
-                if (line.Qty <= QtyTolerance)
-                {
-                    continue;
-                }
-
-                var huCode = NormalizeHu(line.ToHu);
-                if (string.IsNullOrWhiteSpace(huCode))
-                {
-                    continue;
-                }
-
-                if (!result.TryGetValue(line.ItemId, out var set))
-                {
-                    set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    result[line.ItemId] = set;
-                }
-
-                set.Add(huCode);
-            }
-        }
-
-        foreach (var line in _data.GetOrderReceiptPlanLines(orderId))
-        {
-            if (line.QtyPlanned <= QtyTolerance)
-            {
-                continue;
-            }
-
-            var huCode = NormalizeHu(line.ToHu);
-            if (string.IsNullOrWhiteSpace(huCode))
-            {
-                continue;
-            }
-
-            if (!HasPositiveHuBalance(_data, line.ItemId, huCode))
-            {
-                continue;
-            }
-
-            if (!result.TryGetValue(line.ItemId, out var set))
-            {
-                set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                result[line.ItemId] = set;
-            }
-
-            set.Add(huCode);
-        }
-
-        return result;
-    }
-
-    private static bool HasPositiveHuBalance(IDataStore store, long itemId, string huCode)
-    {
-        return store.GetHuStockRows()
-            .Where(row => row.ItemId == itemId)
-            .Where(row => string.Equals(NormalizeHu(row.HuCode), huCode, StringComparison.OrdinalIgnoreCase))
-            .Sum(row => row.Qty) > QtyTolerance;
+        return CustomerOutboundBoundHuService.BuildOrderBoundHuByItem(_data, orderId);
     }
 
     public long CreateOrder(

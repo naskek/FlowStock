@@ -343,7 +343,7 @@ public sealed class OutboundPickingService
 
     private IReadOnlyList<ExpectedHu> BuildExpectedHus(Order order)
     {
-        var boundLines = CustomerOutboundBoundHuService.GetUnshippedBoundHuLines(_store, order.Id);
+        var boundLines = CustomerOutboundBoundHuService.GetUnshippedOutboundHuLines(_store, order.Id);
         return boundLines
             .GroupBy(line => line.HuCode, StringComparer.OrdinalIgnoreCase)
             .Select(group =>

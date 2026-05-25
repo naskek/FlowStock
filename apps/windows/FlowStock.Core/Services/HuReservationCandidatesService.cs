@@ -123,7 +123,7 @@ public sealed class HuReservationCandidatesService
 
         var remaining = line.QtyOrdered;
         var autoSelectedQty = 0d;
-        foreach (var candidate in candidates)
+        foreach (var candidate in ChooseAutoSelectionCandidates(line.QtyOrdered, candidates))
         {
             if (remaining <= StockQuantityRules.QtyTolerance)
             {
@@ -148,6 +148,35 @@ public sealed class HuReservationCandidatesService
         }
 
         return Math.Min(autoSelectedQty, line.QtyOrdered);
+    }
+
+    private static IReadOnlyList<HuReservationCandidateResult> ChooseAutoSelectionCandidates(
+        double qtyOrdered,
+        IReadOnlyList<HuReservationCandidateResult> candidates)
+    {
+        var available = candidates
+            .Where(candidate => candidate.Qty > StockQuantityRules.QtyTolerance)
+            .ToArray();
+        if (available.Length == 0 || qtyOrdered <= StockQuantityRules.QtyTolerance)
+        {
+            return [];
+        }
+
+        var single = available
+            .Where(candidate => candidate.Qty + StockQuantityRules.QtyTolerance >= qtyOrdered)
+            .OrderBy(candidate => Math.Abs(candidate.Qty - qtyOrdered))
+            .ThenBy(candidate => candidate.Qty)
+            .ThenBy(candidate => candidate.HuCode, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+        if (single != null)
+        {
+            return [single];
+        }
+
+        return available
+            .OrderByDescending(candidate => candidate.Qty)
+            .ThenBy(candidate => candidate.HuCode, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
     private static int SourceSortKey(string source)

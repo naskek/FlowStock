@@ -52,12 +52,15 @@ public sealed class WpfProductionPalletApiService
 
             return new WpfProductionPalletPlanApiResult(
                 true,
-                payload.WasExisting ? "План паллет уже сформирован" : "План паллет сформирован",
+                string.IsNullOrWhiteSpace(payload.Message)
+                    ? payload.WasExisting ? "План паллет уже сформирован" : "План паллет сформирован"
+                    : payload.Message!,
                 payload.OrderId,
                 payload.OrderRef ?? string.Empty,
                 payload.PrdDocId,
                 payload.PrdRef ?? payload.PrdDocRef ?? string.Empty,
                 payload.WasExisting,
+                payload.ProductionRequired,
                 payload.PlannedPalletCount,
                 payload.PlannedQty,
                 payload.FilledPalletCount,
@@ -502,6 +505,12 @@ public sealed class WpfProductionPalletApiService
         [JsonPropertyName("was_existing")]
         public bool WasExisting { get; init; }
 
+        [JsonPropertyName("production_required")]
+        public bool ProductionRequired { get; init; } = true;
+
+        [JsonPropertyName("message")]
+        public string? Message { get; init; }
+
         [JsonPropertyName("planned_pallet_count")]
         public int PlannedPalletCount { get; init; }
 
@@ -677,6 +686,7 @@ public sealed record WpfProductionPalletPlanApiResult(
     long PrdDocId,
     string PrdRef,
     bool WasExisting,
+    bool ProductionRequired,
     int PlannedPalletCount,
     double PlannedQty,
     int FilledPalletCount,
@@ -686,7 +696,7 @@ public sealed record WpfProductionPalletPlanApiResult(
 {
     public static WpfProductionPalletPlanApiResult Failure(string message)
     {
-        return new WpfProductionPalletPlanApiResult(false, message, 0, string.Empty, 0, string.Empty, false, 0, 0, 0, 0, 0, 0);
+        return new WpfProductionPalletPlanApiResult(false, message, 0, string.Empty, 0, string.Empty, false, true, 0, 0, 0, 0, 0, 0);
     }
 }
 
