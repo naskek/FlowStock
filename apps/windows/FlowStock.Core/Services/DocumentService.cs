@@ -2936,25 +2936,25 @@ public sealed class DocumentService
         IReadOnlyList<DocLine> docLines)
     {
         var docLinesById = docLines.ToDictionary(line => line.Id, line => line);
-        var metricsByPalletItem = store.GetFilledProductionPalletStockMetrics()
+        var metricsByPalletId = store.GetFilledProductionPalletStockMetrics()
             .Where(metrics => metrics.PrdDocId == docId)
-            .GroupBy(metrics => (metrics.PalletId, metrics.ItemId))
-            .ToDictionary(group => group.Key, AggregateFilledProductionPalletStockMetrics);
+            .ToDictionary(metrics => metrics.PalletId, metrics => metrics);
 
         foreach (var pallet in pallets
                      .Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
         {
+            metricsByPalletId.TryGetValue(pallet.Id, out var stockMetrics);
+            if (stockMetrics != null)
+            {
+                var analysis = ProductionPalletStockBackfillDecision.Analyze(stockMetrics);
+                if (string.Equals(analysis.Decision, ProductionPalletStockBackfillDecisionCodes.AlreadyShippedSkip, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+            }
+
             foreach (var entry in BuildProductionPalletLedgerDrafts(pallet, docLinesById))
             {
-                if (metricsByPalletItem.TryGetValue((pallet.Id, entry.ItemId), out var stockMetrics))
-                {
-                    var analysis = ProductionPalletStockBackfillDecision.Analyze(stockMetrics);
-                    if (string.Equals(analysis.Decision, ProductionPalletStockBackfillDecisionCodes.AlreadyShippedSkip, StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-                }
-
                 if (!entry.LocationId.HasValue || entry.Qty <= QtyTolerance)
                 {
                     continue;
@@ -2979,40 +2979,6 @@ public sealed class DocumentService
                 });
             }
         }
-    }
-
-    private static FilledProductionPalletStockMetrics AggregateFilledProductionPalletStockMetrics(
-        IGrouping<(long PalletId, long ItemId), FilledProductionPalletStockMetrics> group)
-    {
-        var first = group.First();
-        return new FilledProductionPalletStockMetrics
-        {
-            PalletId = first.PalletId,
-            PrdDocId = first.PrdDocId,
-            PrdDocRef = first.PrdDocRef,
-            OrderId = first.OrderId,
-            OrderRef = first.OrderRef,
-            OrderStatus = first.OrderStatus,
-            ItemId = first.ItemId,
-            ItemName = first.ItemName,
-            HuCode = first.HuCode,
-            ToLocationId = first.ToLocationId,
-            ToLocationCode = first.ToLocationCode,
-            PlannedQty = group.Sum(metrics => metrics.PlannedQty),
-            CurrentLedgerQty = group.Max(metrics => metrics.CurrentLedgerQty),
-            OutboundBySameHuQty = group.Max(metrics => metrics.OutboundBySameHuQty),
-            OutboundDocsBySameHu = string.Join(", ", group
-                .Select(metrics => metrics.OutboundDocsBySameHu)
-                .Where(value => !string.IsNullOrWhiteSpace(value))
-                .Distinct(StringComparer.OrdinalIgnoreCase)),
-            OutboundByOrderItemQty = group.Max(metrics => metrics.OutboundByOrderItemQty),
-            OutboundDocsByOrderItem = string.Join(", ", group
-                .Select(metrics => metrics.OutboundDocsByOrderItem)
-                .Where(value => !string.IsNullOrWhiteSpace(value))
-                .Distinct(StringComparer.OrdinalIgnoreCase)),
-            Status = first.Status,
-            FilledAt = first.FilledAt
-        };
     }
 
     private static bool HasPositiveHuBalance(IDataStore store, long itemId, string huCode)

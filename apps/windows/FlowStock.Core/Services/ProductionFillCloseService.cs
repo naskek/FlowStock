@@ -24,20 +24,6 @@ public sealed class ProductionFillCloseService
 
     public ProductionFillAutoCloseResult TryAutoCloseAfterFill(ProductionPallet pallet)
     {
-        return TryAutoCloseAfterFill(_data, _documents, pallet);
-    }
-
-    public ProductionFillAutoCloseResult TryAutoCloseAfterFillInTransaction(IDataStore store, ProductionPallet pallet)
-    {
-        ArgumentNullException.ThrowIfNull(store);
-        return TryAutoCloseAfterFill(store, new DocumentService(store), pallet);
-    }
-
-    private ProductionFillAutoCloseResult TryAutoCloseAfterFill(
-        IDataStore store,
-        DocumentService documents,
-        ProductionPallet pallet)
-    {
         if (!_options.ProductionAutoCloseOnFill)
         {
             return ProductionFillAutoCloseResult.Skipped();
@@ -50,7 +36,7 @@ public sealed class ProductionFillCloseService
             return ProductionFillAutoCloseResult.Failure("Паллета не наполнена.");
         }
 
-        var doc = store.GetDoc(pallet.PrdDocId);
+        var doc = _data.GetDoc(pallet.PrdDocId);
         if (doc == null || doc.Type != DocType.ProductionReceipt)
         {
             return ProductionFillAutoCloseResult.Failure("Документ выпуска не найден.");
@@ -61,8 +47,8 @@ public sealed class ProductionFillCloseService
             return ProductionFillAutoCloseResult.FromClosedDoc(doc.Id, doc.DocRef);
         }
 
-        var closeDocId = ResolveDedicatedPrdDocId(store, pallet, doc);
-        var closeResult = documents.TryCloseDoc(closeDocId, allowNegative: false);
+        var closeDocId = ResolveDedicatedPrdDocId(pallet, doc);
+        var closeResult = _documents.TryCloseDoc(closeDocId, allowNegative: false);
         if (!closeResult.Success)
         {
             var message = closeResult.Errors.Count > 0
@@ -71,15 +57,15 @@ public sealed class ProductionFillCloseService
             return ProductionFillAutoCloseResult.Failure(message);
         }
 
-        var closedDoc = store.GetDoc(closeDocId);
+        var closedDoc = _data.GetDoc(closeDocId);
         return ProductionFillAutoCloseResult.Closed(
             closeDocId,
             closedDoc?.DocRef ?? string.Empty);
     }
 
-    private long ResolveDedicatedPrdDocId(IDataStore store, ProductionPallet pallet, Doc sourceDoc)
+    private long ResolveDedicatedPrdDocId(ProductionPallet pallet, Doc sourceDoc)
     {
-        var activePallets = store.GetProductionPalletsByDoc(sourceDoc.Id)
+        var activePallets = _data.GetProductionPalletsByDoc(sourceDoc.Id)
             .Where(p => !string.Equals(p.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
             .ToList();
         if (activePallets.Count <= 1)
@@ -87,26 +73,26 @@ public sealed class ProductionFillCloseService
             return sourceDoc.Id;
         }
 
-        var dedicatedDoc = CreateDedicatedProductionReceipt(store, sourceDoc);
-        store.ExecuteInTransaction(scopedStore =>
+        var dedicatedDoc = CreateDedicatedProductionReceipt(sourceDoc);
+        _data.ExecuteInTransaction(store =>
         {
-            scopedStore.AssignProductionPalletToPrdDoc(pallet.Id, dedicatedDoc.Id);
+            store.AssignProductionPalletToPrdDoc(pallet.Id, dedicatedDoc.Id);
         });
 
         return dedicatedDoc.Id;
     }
 
-    private static Doc CreateDedicatedProductionReceipt(IDataStore store, Doc sourceDoc)
+    private Doc CreateDedicatedProductionReceipt(Doc sourceDoc)
     {
         var orderId = sourceDoc.OrderId;
         Order? order = null;
         if (orderId.HasValue)
         {
-            order = store.GetOrder(orderId.Value);
+            order = _data.GetOrder(orderId.Value);
         }
 
-        var docRef = DocRefGenerator.Generate(store, DocType.ProductionReceipt, DateTime.Now);
-        var docId = store.AddDoc(new Doc
+        var docRef = DocRefGenerator.Generate(_data, DocType.ProductionReceipt, DateTime.Now);
+        var docId = _data.AddDoc(new Doc
         {
             DocRef = docRef,
             Type = DocType.ProductionReceipt,
@@ -117,7 +103,7 @@ public sealed class ProductionFillCloseService
             Comment = "TSD auto-close per pallet"
         });
 
-        return store.GetDoc(docId) ?? throw new InvalidOperationException("Документ выпуска не найден.");
+        return _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ выпуска не найден.");
     }
 }
 
