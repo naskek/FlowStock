@@ -39,6 +39,8 @@ public sealed class HuReservationCandidateResult
     public string? SourceOrderRef { get; init; }
     public long? SourcePrdDocId { get; init; }
     public string? SourcePrdRef { get; init; }
+    public DateTime? FirstReceiptAt { get; init; }
+    public long? FirstReceiptDocId { get; init; }
     public double Qty { get; init; }
     public bool ShipReady { get; init; }
     public bool AutoSelected { get; set; }

@@ -7690,10 +7690,12 @@ GROUP BY COALESCE(hu_code, hu);
                     SourceOrderRef = reader.IsDBNull(5) ? null : reader.GetString(5),
                     SourcePrdDocId = reader.IsDBNull(6) ? null : reader.GetInt64(6),
                     SourcePrdRef = reader.IsDBNull(7) ? null : reader.GetString(7),
-                    ShipReady = reader.GetBoolean(8),
-                    ReservedByOrderId = reader.IsDBNull(9) ? null : reader.GetInt64(9),
-                    ReservedByOrderRef = reader.IsDBNull(10) ? null : reader.GetString(10),
-                    Note = reader.IsDBNull(11) ? string.Empty : reader.GetString(11)
+                    FirstReceiptAt = reader.IsDBNull(8) ? null : LedgerTimestampParser.TryParse(reader.GetString(8)),
+                    FirstReceiptDocId = reader.IsDBNull(9) ? null : reader.GetInt64(9),
+                    ShipReady = reader.GetBoolean(10),
+                    ReservedByOrderId = reader.IsDBNull(11) ? null : reader.GetInt64(11),
+                    ReservedByOrderRef = reader.IsDBNull(12) ? null : reader.GetString(12),
+                    Note = reader.IsDBNull(13) ? string.Empty : reader.GetString(13)
                 });
             }
 

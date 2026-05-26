@@ -215,6 +215,91 @@ public sealed class HuReservationCandidatesEndpointTests
     }
 
     [Fact]
+    public async Task LedgerStockCandidates_UseFirstReceiptFifoBeforeHuCode()
+    {
+        var store = CreateStore(
+        [
+            Source(
+                "LEDGER_STOCK",
+                "HU-000003",
+                itemId: 19,
+                qty: 600,
+                shipReady: true,
+                firstReceiptAt: new DateTime(2026, 5, 5, 0, 0, 0),
+                firstReceiptDocId: 122),
+            Source(
+                "LEDGER_STOCK",
+                "HU-000014",
+                itemId: 19,
+                qty: 600,
+                shipReady: true,
+                firstReceiptAt: new DateTime(2026, 4, 28, 0, 0, 0),
+                firstReceiptDocId: 79),
+            Source(
+                "LEDGER_STOCK",
+                "HU-000019",
+                itemId: 19,
+                qty: 600,
+                shipReady: true,
+                firstReceiptAt: new DateTime(2026, 5, 8, 0, 0, 0),
+                firstReceiptDocId: 144)
+        ]);
+        await using var host = await HuReservationCandidatesHost.StartAsync(store.Object);
+
+        using var document = await PostAsync(host.Client, new
+        {
+            order_id = 78L,
+            lines = new[] { new { client_line_key = "line-1", order_line_id = (long?)203, item_id = 19L, qty_ordered = 600d } },
+            exclude_hu_codes = Array.Empty<string>()
+        });
+
+        var candidates = GetCandidates(document, "line-1").ToArray();
+        var huCodes = candidates.Select(candidate => candidate.GetProperty("hu_code").GetString()).ToArray();
+        Assert.Equal(new[] { "HU-000014", "HU-000003", "HU-000019" }, huCodes);
+        Assert.True(candidates[0].GetProperty("auto_selected").GetBoolean());
+        Assert.False(candidates[1].GetProperty("auto_selected").GetBoolean());
+        Assert.False(candidates[2].GetProperty("auto_selected").GetBoolean());
+    }
+
+    [Fact]
+    public async Task LedgerStockCandidates_UseHuCodeOnlyAsFinalTieBreaker()
+    {
+        var sameReceiptAt = new DateTime(2026, 5, 5, 0, 0, 0);
+        var store = CreateStore(
+        [
+            Source(
+                "LEDGER_STOCK",
+                "HU-000014",
+                itemId: 19,
+                qty: 600,
+                shipReady: true,
+                firstReceiptAt: sameReceiptAt,
+                firstReceiptDocId: 122),
+            Source(
+                "LEDGER_STOCK",
+                "HU-000003",
+                itemId: 19,
+                qty: 600,
+                shipReady: true,
+                firstReceiptAt: sameReceiptAt,
+                firstReceiptDocId: 122)
+        ]);
+        await using var host = await HuReservationCandidatesHost.StartAsync(store.Object);
+
+        using var document = await PostAsync(host.Client, new
+        {
+            order_id = 78L,
+            lines = new[] { new { client_line_key = "line-1", order_line_id = (long?)203, item_id = 19L, qty_ordered = 600d } },
+            exclude_hu_codes = Array.Empty<string>()
+        });
+
+        var candidates = GetCandidates(document, "line-1").ToArray();
+        var huCodes = candidates.Select(candidate => candidate.GetProperty("hu_code").GetString()).ToArray();
+        Assert.Equal(new[] { "HU-000003", "HU-000014" }, huCodes);
+        Assert.True(candidates[0].GetProperty("auto_selected").GetBoolean());
+    }
+
+    [Fact]
     public async Task MixedHuLedger_ReturnsItemSpecificCandidates()
     {
         var store = CreateStore(
@@ -349,6 +434,9 @@ public sealed class HuReservationCandidatesEndpointTests
         Assert.Contains("HuReservationCandidateSql.SelectSources", methodSlice);
         Assert.Contains("UNNEST(@item_ids::bigint[])", sql);
         Assert.Contains("ledger_candidates", sql);
+        Assert.Contains("first_receipts", sql);
+        Assert.Contains("led.qty_delta > 0", sql);
+        Assert.Contains("first_receipt_doc_id", sql);
         Assert.DoesNotContain("internal_candidates", sql);
         Assert.Contains("reserved_map", sql);
         Assert.Contains("order_receipt_plan_lines", sql);
@@ -419,6 +507,8 @@ public sealed class HuReservationCandidatesEndpointTests
         string? sourceOrderRef = null,
         long? sourcePrdDocId = null,
         string? sourcePrdRef = null,
+        DateTime? firstReceiptAt = null,
+        long? firstReceiptDocId = null,
         string note = "")
     {
         return new HuReservationCandidateSourceRow
@@ -432,6 +522,8 @@ public sealed class HuReservationCandidatesEndpointTests
             SourceOrderRef = sourceOrderRef,
             SourcePrdDocId = sourcePrdDocId,
             SourcePrdRef = sourcePrdRef,
+            FirstReceiptAt = firstReceiptAt,
+            FirstReceiptDocId = firstReceiptDocId,
             Note = note
         };
     }

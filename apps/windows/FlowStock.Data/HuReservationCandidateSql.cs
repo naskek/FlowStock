@@ -20,6 +20,30 @@ ledger_by_hu_item AS (
     GROUP BY led.item_id, UPPER(BTRIM(COALESCE(led.hu_code, led.hu)))
     HAVING SUM(led.qty_delta) > @qty_tolerance
 ),
+first_receipts AS (
+    SELECT item_id,
+           hu_code,
+           first_receipt_at,
+           first_receipt_doc_id
+    FROM (
+        SELECT led.item_id,
+               UPPER(BTRIM(COALESCE(led.hu_code, led.hu))) AS hu_code,
+               COALESCE(NULLIF(BTRIM(led.ts), ''), NULLIF(BTRIM(d.created_at), ''), NULLIF(BTRIM(d.closed_at), '')) AS first_receipt_at,
+               led.doc_id AS first_receipt_doc_id,
+               ROW_NUMBER() OVER (
+                   PARTITION BY led.item_id, UPPER(BTRIM(COALESCE(led.hu_code, led.hu)))
+                   ORDER BY COALESCE(NULLIF(BTRIM(led.ts), ''), NULLIF(BTRIM(d.created_at), ''), NULLIF(BTRIM(d.closed_at), '')) NULLS LAST,
+                            led.doc_id NULLS LAST,
+                            led.id
+               ) AS rn
+        FROM ledger led
+        LEFT JOIN docs d ON d.id = led.doc_id
+        INNER JOIN requested_items ri ON ri.item_id = led.item_id
+        WHERE led.qty_delta > 0
+          AND NULLIF(BTRIM(COALESCE(led.hu_code, led.hu)), '') IS NOT NULL
+    ) ranked
+    WHERE rn = 1
+),
 reserved_candidates AS (
     SELECT p.item_id,
            UPPER(BTRIM(p.to_hu)) AS hu_code,
@@ -57,9 +81,13 @@ ledger_candidates AS (
            NULL::text AS source_order_ref,
            NULL::bigint AS source_prd_doc_id,
            NULL::text AS source_prd_ref,
+           fr.first_receipt_at,
+           fr.first_receipt_doc_id,
            TRUE AS ship_ready,
            ''::text AS note
     FROM ledger_by_hu_item lb
+    LEFT JOIN first_receipts fr ON fr.item_id = lb.item_id
+                               AND fr.hu_code = lb.hu_code
     WHERE NOT EXISTS (
         SELECT 1
         FROM excluded_hu eh
@@ -81,6 +109,8 @@ combined AS (
            source_order_ref,
            source_prd_doc_id,
            source_prd_ref,
+           first_receipt_at,
+           first_receipt_doc_id,
            ship_ready,
            note
     FROM ledger_candidates
@@ -93,6 +123,8 @@ SELECT c.source,
        c.source_order_ref,
        c.source_prd_doc_id,
        c.source_prd_ref,
+       c.first_receipt_at,
+       c.first_receipt_doc_id,
        c.ship_ready,
        rm.reserved_by_order_id,
        rm.reserved_by_order_ref,
@@ -101,6 +133,8 @@ FROM combined c
 LEFT JOIN reserved_map rm ON rm.item_id = c.item_id
                          AND rm.hu_code = c.hu_code
 ORDER BY CASE c.source WHEN 'LEDGER_STOCK' THEN 0 ELSE 1 END,
+         c.first_receipt_at NULLS LAST,
+         c.first_receipt_doc_id NULLS LAST,
          c.hu_code,
          c.source_order_ref,
          c.source_prd_ref,

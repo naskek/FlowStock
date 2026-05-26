@@ -70,6 +70,8 @@ public sealed class HuReservationCandidatesService
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var candidates = new List<HuReservationCandidateResult>();
         foreach (var row in rows.OrderBy(row => SourceSortKey(row.Source))
+                     .ThenBy(row => row.FirstReceiptAt ?? DateTime.MaxValue)
+                     .ThenBy(row => row.FirstReceiptDocId ?? long.MaxValue)
                      .ThenBy(row => row.HuCode, StringComparer.OrdinalIgnoreCase)
                      .ThenBy(row => row.SourceOrderRef, StringComparer.OrdinalIgnoreCase)
                      .ThenBy(row => row.SourcePrdRef, StringComparer.OrdinalIgnoreCase))
@@ -99,6 +101,8 @@ public sealed class HuReservationCandidatesService
                 SourceOrderRef = row.SourceOrderRef,
                 SourcePrdDocId = row.SourcePrdDocId,
                 SourcePrdRef = row.SourcePrdRef,
+                FirstReceiptAt = row.FirstReceiptAt,
+                FirstReceiptDocId = row.FirstReceiptDocId,
                 Qty = row.Qty,
                 ShipReady = row.ShipReady,
                 AutoSelected = false,
@@ -166,6 +170,8 @@ public sealed class HuReservationCandidatesService
             .Where(candidate => candidate.Qty + StockQuantityRules.QtyTolerance >= qtyOrdered)
             .OrderBy(candidate => Math.Abs(candidate.Qty - qtyOrdered))
             .ThenBy(candidate => candidate.Qty)
+            .ThenBy(candidate => candidate.FirstReceiptAt ?? DateTime.MaxValue)
+            .ThenBy(candidate => candidate.FirstReceiptDocId ?? long.MaxValue)
             .ThenBy(candidate => candidate.HuCode, StringComparer.OrdinalIgnoreCase)
             .FirstOrDefault();
         if (single != null)
@@ -174,7 +180,9 @@ public sealed class HuReservationCandidatesService
         }
 
         return available
-            .OrderByDescending(candidate => candidate.Qty)
+            .OrderBy(candidate => SourceSortKey(candidate.Source))
+            .ThenBy(candidate => candidate.FirstReceiptAt ?? DateTime.MaxValue)
+            .ThenBy(candidate => candidate.FirstReceiptDocId ?? long.MaxValue)
             .ThenBy(candidate => candidate.HuCode, StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }

@@ -10,6 +10,8 @@ public sealed class HuReservationCandidateSourceRow
     public string? SourceOrderRef { get; init; }
     public long? SourcePrdDocId { get; init; }
     public string? SourcePrdRef { get; init; }
+    public DateTime? FirstReceiptAt { get; init; }
+    public long? FirstReceiptDocId { get; init; }
     public bool ShipReady { get; init; }
     public long? ReservedByOrderId { get; init; }
     public string? ReservedByOrderRef { get; init; }
