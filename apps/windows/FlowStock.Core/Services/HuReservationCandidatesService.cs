@@ -139,19 +139,19 @@ public sealed class HuReservationCandidatesService
                 continue;
             }
 
-            var allocated = Math.Min(remaining, candidate.Qty);
-            if (allocated <= StockQuantityRules.QtyTolerance)
+            if (candidate.Qty <= StockQuantityRules.QtyTolerance
+                || candidate.Qty > remaining + StockQuantityRules.QtyTolerance)
             {
                 continue;
             }
 
             candidate.AutoSelected = true;
             autoSelectedHuKeys.Add(candidate.HuCode);
-            autoSelectedQty += allocated;
-            remaining -= allocated;
+            autoSelectedQty += candidate.Qty;
+            remaining -= candidate.Qty;
         }
 
-        return Math.Min(autoSelectedQty, line.QtyOrdered);
+        return autoSelectedQty;
     }
 
     private static IReadOnlyList<HuReservationCandidateResult> ChooseAutoSelectionCandidates(
@@ -160,6 +160,7 @@ public sealed class HuReservationCandidatesService
     {
         var available = candidates
             .Where(candidate => candidate.Qty > StockQuantityRules.QtyTolerance)
+            .Where(candidate => candidate.Qty <= qtyOrdered + StockQuantityRules.QtyTolerance)
             .ToArray();
         if (available.Length == 0 || qtyOrdered <= StockQuantityRules.QtyTolerance)
         {
@@ -167,7 +168,7 @@ public sealed class HuReservationCandidatesService
         }
 
         var single = available
-            .Where(candidate => candidate.Qty + StockQuantityRules.QtyTolerance >= qtyOrdered)
+            .Where(candidate => Math.Abs(candidate.Qty - qtyOrdered) <= StockQuantityRules.QtyTolerance)
             .OrderBy(candidate => Math.Abs(candidate.Qty - qtyOrdered))
             .ThenBy(candidate => candidate.Qty)
             .ThenBy(candidate => candidate.FirstReceiptAt ?? DateTime.MaxValue)

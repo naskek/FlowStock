@@ -483,6 +483,32 @@ public sealed class ProductionNeedServiceTests
     }
 
     [Fact]
+    public void ProductionNeed_MinStockUsesFreeStockWhenStockFullyReserved()
+    {
+        var service = BuildService(
+            itemId: 10,
+            physicalStockQty: 2400,
+            minStockQty: 3600,
+            orderScenarios:
+            [
+                new OrderScenario(
+                    OrderId: 87,
+                    LineId: 8700,
+                    QtyOrdered: 2400,
+                    QtyReserved: 2400,
+                    DueDate: DateTime.Today)
+            ],
+            store: out _);
+
+        var row = service.GetRows(includeZeroNeed: true).Single();
+
+        Assert.Equal(0, row.FreeStockQty);
+        Assert.Equal(0, row.ToCloseOrdersQty);
+        Assert.Equal(3600, row.ToMinStockQty);
+        Assert.Equal(3600, row.QtyToCreate);
+    }
+
+    [Fact]
     public void ProductionNeed_CanRunInsideExecuteInTransaction()
     {
         _ = BuildService(

@@ -88,6 +88,10 @@ public sealed class OrderHuReservationApplyService
         var shipmentRemainingByLine = store.GetOrderShipmentRemaining(customerOrderId)
             .ToDictionary(line => line.OrderLineId);
         var existingPlanLines = store.GetOrderReceiptPlanLines(customerOrderId);
+        var reservedByOtherActiveCustomerOrders = store.GetReservedOrderReceiptHuCodes(customerOrderId)
+            .Select(code => code.Trim().ToUpperInvariant())
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var affectedOrderLineIds = new HashSet<long>();
         var replacementPlanLines = new List<OrderReceiptPlanLine>();
         var appliedLines = new List<OrderHuReservationApplyLineResult>();
@@ -150,6 +154,14 @@ public sealed class OrderHuReservationApplyService
 
             foreach (var huCode in selectedHuCodes)
             {
+                if (reservedByOtherActiveCustomerOrders.Contains(huCode))
+                {
+                    throw new OrderHuReservationApplyException(
+                        "HU_RESERVED_BY_OTHER_ORDER",
+                        $"HU '{huCode}' уже зарезервирован другим активным клиентским заказом.",
+                        [$"HU '{huCode}' не может быть выбран для заказа {customerOrderId}."]);
+                }
+
                 if (!candidatesByHu.TryGetValue(huCode, out var candidate))
                 {
                     throw new OrderHuReservationApplyException(
@@ -185,18 +197,29 @@ public sealed class OrderHuReservationApplyService
                     [$"HU '{huCode}': qty={candidate.Qty}"]);
                 }
 
-                var takeQty = Math.Min(candidate.Qty, Math.Max(0, remainingQty - reservedQty));
-                if (takeQty <= StockQuantityRules.QtyTolerance)
+                var lineRemainingAfterSelected = Math.Max(0, remainingQty - reservedQty);
+                if (lineRemainingAfterSelected <= StockQuantityRules.QtyTolerance)
                 {
                     break;
                 }
 
-                reservedQty += takeQty;
+                if (candidate.Qty > lineRemainingAfterSelected + StockQuantityRules.QtyTolerance)
+                {
+                    throw new OrderHuReservationApplyException(
+                        "HU_QTY_EXCEEDS_REMAINING",
+                        $"HU '{huCode}' больше остатка строки заказа.",
+                        [
+                            $"HU '{huCode}': qty={candidate.Qty:0.###}, remaining={lineRemainingAfterSelected:0.###}.",
+                            "HU резервируется целиком; частичный резерв паллеты недоступен."
+                        ]);
+                }
+
+                reservedQty += candidate.Qty;
                 selectedHu.Add(new OrderHuReservationAppliedHuResult
                 {
                     HuCode = candidate.HuCode,
                     Source = candidate.Source,
-                    Qty = takeQty,
+                    Qty = candidate.Qty,
                     ShipReady = candidate.ShipReady
                 });
 
@@ -205,7 +228,7 @@ public sealed class OrderHuReservationApplyService
                     OrderId = customerOrderId,
                     OrderLineId = orderLine.Id,
                     ItemId = orderLine.ItemId,
-                    QtyPlanned = takeQty,
+                    QtyPlanned = candidate.Qty,
                     ToHu = candidate.HuCode,
                     SortOrder = sortOrder++
                 });

@@ -116,6 +116,47 @@ public sealed class CustomerOrderHuBindingCoordinatorTests
     }
 
     [Fact]
+    public void InitialAutoSelection_DoesNotPartiallyBindOversizedHu()
+    {
+        var state = new CustomerOrderLineHuState("line-205");
+        state.AttachLine(
+            new OrderLineView
+            {
+                Id = 205,
+                ItemId = 6,
+                ItemName = "Горчица, Печагин, 1 кг",
+                QtyOrdered = 500,
+                QtyRemaining = 500
+            },
+            orderId: 78);
+
+        state.ApplyCandidates(new WpfHuReservationCandidatesLineResult
+        {
+            ClientLineKey = "line-205",
+            OrderLineId = 205,
+            ItemId = 6,
+            QtyOrdered = 500,
+            AvailableQty = 600,
+            AutoSelectedQty = 0,
+            Candidates =
+            [
+                new WpfHuReservationCandidateRow
+                {
+                    HuCode = "HU-0000600",
+                    Source = "LEDGER_STOCK",
+                    Qty = 600,
+                    ShipReady = true,
+                    AutoSelected = true
+                }
+            ]
+        });
+
+        Assert.Empty(state.SelectedHuCodes);
+        Assert.Equal(0, state.BoundQty, 3);
+        Assert.False(state.IsSelectionOverRemaining);
+    }
+
+    [Fact]
     public void FullyPalletPlannedLine_DisablesHuPicker()
     {
         var state = new CustomerOrderLineHuState("line-222");
@@ -135,6 +176,39 @@ public sealed class CustomerOrderHuBindingCoordinatorTests
         Assert.Equal("Покрыто планом", state.HuPickerLabel);
         Assert.Contains("HU-0000574", state.HuPickerToolTip ?? string.Empty, StringComparison.Ordinal);
         Assert.Equal(0, state.ManualBindableRemaining, 3);
+    }
+
+    [Fact]
+    public void ProductionPalletGroupEditability_UnlocksLineAfterItsActivePalletIsDeleted()
+    {
+        var line = new OrderLineView
+        {
+            Id = 101,
+            OrderId = 10,
+            ItemId = 6,
+            ItemName = "Товар A"
+        };
+
+        ProductionPalletGroupEditability.Apply([line], new HashSet<long> { 101 }, orderEditable: true);
+        Assert.False(line.IsProductionPalletGroupEditable);
+
+        ProductionPalletGroupEditability.Apply([line], new HashSet<long>(), orderEditable: true);
+        Assert.True(line.IsProductionPalletGroupEditable);
+    }
+
+    [Fact]
+    public void ProductionPalletGroupEditability_BlocksOnlyLineWithRemainingActivePallet()
+    {
+        var deletedLine = new OrderLineView { Id = 101, OrderId = 10, ItemId = 6, ItemName = "Товар A" };
+        var remainingLine = new OrderLineView { Id = 102, OrderId = 10, ItemId = 7, ItemName = "Товар B" };
+
+        ProductionPalletGroupEditability.Apply(
+            [deletedLine, remainingLine],
+            new HashSet<long> { 102 },
+            orderEditable: true);
+
+        Assert.True(deletedLine.IsProductionPalletGroupEditable);
+        Assert.False(remainingLine.IsProductionPalletGroupEditable);
     }
 
     [Fact]

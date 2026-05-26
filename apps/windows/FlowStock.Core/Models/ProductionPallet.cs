@@ -134,6 +134,7 @@ public sealed class ProductionPalletPlanCleanupCounts
 {
     public int RemovedPalletCount { get; init; }
     public int RemovedLineCount { get; init; }
+    public IReadOnlyList<long> RemovedPalletIds { get; init; } = Array.Empty<long>();
 }
 
 public sealed class ProductionPalletCancelPlanResult
@@ -143,6 +144,33 @@ public sealed class ProductionPalletCancelPlanResult
     public string Message { get; init; } = string.Empty;
     public int RemovedPalletCount { get; init; }
     public int RemovedLineCount { get; init; }
+    public IReadOnlyList<long> RequestedPalletIds { get; init; } = Array.Empty<long>();
+    public IReadOnlyList<long> RemovedPalletIds { get; init; } = Array.Empty<long>();
+    public IReadOnlyList<long> SkippedPalletIds { get; init; } = Array.Empty<long>();
+}
+
+public sealed class ProductionPalletCancelPlanOptions
+{
+    public long OrderId { get; init; }
+    public string OrderRef { get; init; } = string.Empty;
+    public IReadOnlyList<ProductionPalletCancelPlanRow> Rows { get; init; } = Array.Empty<ProductionPalletCancelPlanRow>();
+}
+
+public sealed class ProductionPalletCancelPlanRow
+{
+    public long PalletId { get; init; }
+    public long PrdDocId { get; init; }
+    public string PrdDocRef { get; init; } = string.Empty;
+    public long? OrderLineId { get; init; }
+    public long ItemId { get; init; }
+    public string ItemName { get; init; } = string.Empty;
+    public string HuCode { get; init; } = string.Empty;
+    public double PlannedQty { get; init; }
+    public string Status { get; init; } = ProductionPalletStatus.Planned;
+    public bool IsSelectable { get; init; }
+    public bool IsSelectedByDefault { get; init; }
+    public string? DisabledReason { get; init; }
+    public bool HasMarkingWarning { get; init; }
 }
 
 public sealed class ProductionPalletPlanAdoptionResult

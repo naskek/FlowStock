@@ -264,6 +264,16 @@ public sealed class ProductionPalletService
 
     public ProductionPalletCancelPlanResult CancelOrderPlan(long orderId)
     {
+        var options = GetCancelPlanOptions(orderId);
+        var selectedPalletIds = options.Rows
+            .Where(row => row.IsSelectable)
+            .Select(row => row.PalletId)
+            .ToArray();
+        return CancelOrderPlan(orderId, selectedPalletIds);
+    }
+
+    public ProductionPalletCancelPlanResult CancelOrderPlan(long orderId, IReadOnlyCollection<long> selectedPalletIds)
+    {
         var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
         if (order.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
         {
@@ -272,37 +282,134 @@ public sealed class ProductionPalletService
                 : "Заказ недоступен для удаления плана паллет.");
         }
 
-        var docWithPlan = FindProductionReceiptWithPalletPlan(_data, orderId)
-                          ?? throw new InvalidOperationException("План паллет не найден.");
-        if (docWithPlan.Status == DocStatus.Closed)
+        var requestedIds = selectedPalletIds
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
+        if (requestedIds.Length == 0)
         {
-            throw new InvalidOperationException("Нельзя удалить план паллет: выпуск уже закрыт.");
+            return new ProductionPalletCancelPlanResult
+            {
+                OrderId = order.Id,
+                PrdDocId = 0,
+                Message = "Нет выбранных паллет для удаления.",
+                RequestedPalletIds = requestedIds,
+                SkippedPalletIds = requestedIds
+            };
         }
 
+        var prdDocIds = Array.Empty<long>();
+        var removedPalletIds = Array.Empty<long>();
+        var skippedPalletIds = requestedIds;
         ProductionPalletPlanCleanupCounts cleanup = null!;
         _data.ExecuteInTransaction(store =>
         {
-            var doc = store.GetDoc(docWithPlan.Id) ?? throw new InvalidOperationException("Документ выпуска не найден.");
-            if (doc.Status == DocStatus.Closed)
+            var docsById = store.GetDocsByOrder(order.Id)
+                .Where(doc => doc.Type == DocType.ProductionReceipt)
+                .ToDictionary(doc => doc.Id, doc => doc);
+            var selected = docsById.Values
+                .SelectMany(doc => store.GetProductionPalletsByDoc(doc.Id))
+                .Where(pallet => requestedIds.Contains(pallet.Id))
+                .Where(pallet => pallet.OrderId == order.Id)
+                .Where(pallet => docsById.TryGetValue(pallet.PrdDocId, out var doc) && doc.Status != DocStatus.Closed)
+                .Where(IsPendingFillPallet)
+                .ToArray();
+
+            if (selected.Length == 0)
             {
-                throw new InvalidOperationException("Нельзя удалить план паллет: выпуск уже закрыт.");
+                cleanup = new ProductionPalletPlanCleanupCounts();
+                prdDocIds = Array.Empty<long>();
+                return;
             }
 
-            if (!store.HasProductionPallets(doc.Id))
+            prdDocIds = selected.Select(pallet => pallet.PrdDocId).Distinct().ToArray();
+            cleanup = store.DeleteProductionPalletPlanPallets(selected.Select(pallet => pallet.Id).ToArray());
+            removedPalletIds = cleanup.RemovedPalletIds
+                .Where(id => id > 0)
+                .Distinct()
+                .Order()
+                .ToArray();
+            skippedPalletIds = requestedIds
+                .Except(removedPalletIds)
+                .Order()
+                .ToArray();
+            foreach (var prdDocId in prdDocIds)
             {
-                throw new InvalidOperationException("План паллет не найден.");
+                EmptyDraftProductionReceiptCleanup.TryDeleteEmptyDraftProductionReceiptIfSafe(store, order.Id, prdDocId);
             }
-
-            cleanup = store.CancelProductionPalletPlan(doc.Id);
         });
 
         return new ProductionPalletCancelPlanResult
         {
             OrderId = order.Id,
-            PrdDocId = docWithPlan.Id,
-            Message = "План паллет удалён.",
+            PrdDocId = prdDocIds.FirstOrDefault(),
+            Message = cleanup.RemovedPalletCount > 0
+                ? "Выбранные паллеты удалены из плана."
+                : "Нет доступных для удаления паллет.",
             RemovedPalletCount = cleanup.RemovedPalletCount,
-            RemovedLineCount = cleanup.RemovedLineCount
+            RemovedLineCount = cleanup.RemovedLineCount,
+            RequestedPalletIds = requestedIds,
+            RemovedPalletIds = removedPalletIds,
+            SkippedPalletIds = skippedPalletIds
+        };
+    }
+
+    public ProductionPalletCancelPlanOptions GetCancelPlanOptions(long orderId)
+    {
+        var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+        var docs = _data.GetDocsByOrder(orderId)
+            .Where(doc => doc.Type == DocType.ProductionReceipt)
+            .OrderBy(doc => doc.Id)
+            .ToArray();
+        var docsById = docs.ToDictionary(doc => doc.Id, doc => doc);
+        var markingGenerated = order.EffectiveMarkingStatus == MarkingStatus.Printed
+                               || order.MarkingExcelGeneratedAt.HasValue
+                               || order.MarkingPrintedAt.HasValue;
+        var rows = docs
+            .SelectMany(doc => _data.GetProductionPalletsByDoc(doc.Id))
+            .Where(pallet => pallet.OrderId == orderId)
+            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+            .Select(pallet =>
+            {
+                docsById.TryGetValue(pallet.PrdDocId, out var doc);
+                var isClosedDoc = doc?.Status == DocStatus.Closed;
+                var isFilled = string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase);
+                var isSelectable = !isClosedDoc && IsPendingFillPallet(pallet);
+                var disabledReason = isFilled
+                    ? "Нельзя удалить: паллета уже наполнена/выпущена"
+                    : isClosedDoc
+                        ? "Нельзя удалить: выпуск уже закрыт"
+                        : isSelectable
+                            ? null
+                            : "Нельзя удалить: статус паллеты не позволяет удаление";
+                return new ProductionPalletCancelPlanRow
+                {
+                    PalletId = pallet.Id,
+                    PrdDocId = pallet.PrdDocId,
+                    PrdDocRef = doc?.DocRef ?? string.Empty,
+                    OrderLineId = pallet.OrderLineId,
+                    ItemId = pallet.ItemId,
+                    ItemName = pallet.ItemName,
+                    HuCode = pallet.HuCode,
+                    PlannedQty = pallet.PlannedQty,
+                    Status = pallet.Status,
+                    IsSelectable = isSelectable,
+                    IsSelectedByDefault = isSelectable,
+                    DisabledReason = disabledReason,
+                    HasMarkingWarning = markingGenerated
+                                        && string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase)
+                };
+            })
+            .OrderBy(row => row.OrderLineId ?? long.MaxValue)
+            .ThenBy(row => row.ItemName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.HuCode, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return new ProductionPalletCancelPlanOptions
+        {
+            OrderId = order.Id,
+            OrderRef = order.OrderRef,
+            Rows = rows
         };
     }
 

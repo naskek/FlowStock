@@ -11,6 +11,7 @@ public static class ProductionPalletEndpoints
     public static void Map(WebApplication app)
     {
         app.MapPost("/api/orders/{orderId:long}/production-pallets/plan", HandlePlanOrder);
+        app.MapGet("/api/orders/{orderId:long}/production-pallets/cancel-plan-options", HandleCancelPlanOptions);
         app.MapPost("/api/orders/{orderId:long}/production-pallets/cancel-plan", HandleCancelPlan);
         app.MapPost("/api/orders/{targetCustomerOrderId:long}/production-pallets/adopt-from-internal/{sourceInternalOrderId:long}", HandleAdoptFromInternal);
         app.MapGet("/api/orders/{orderId:long}/production-pallets/print-rows", HandlePrintRows);
@@ -184,24 +185,89 @@ public static class ProductionPalletEndpoints
         }
     }
 
-    private static IResult HandleCancelPlan(long orderId, ProductionPalletService service)
+    private static IResult HandleCancelPlanOptions(long orderId, ProductionPalletService service)
     {
         try
         {
-            var result = service.CancelOrderPlan(orderId);
+            var options = service.GetCancelPlanOptions(orderId);
             return Results.Ok(new
             {
-                success = true,
-                message = result.Message,
-                prd_doc_id = result.PrdDocId,
-                removed_pallet_count = result.RemovedPalletCount,
-                removed_line_count = result.RemovedLineCount
+                order_id = options.OrderId,
+                order_ref = options.OrderRef,
+                rows = options.Rows.Select(MapCancelPlanRow)
             });
         }
         catch (InvalidOperationException ex)
         {
             return Results.BadRequest(new { ok = false, success = false, error = ex.Message, message = ex.Message });
         }
+    }
+
+    private static async Task<IResult> HandleCancelPlan(long orderId, HttpRequest request, ProductionPalletService service)
+    {
+        try
+        {
+            IReadOnlyList<long>? palletIds = null;
+            if (request.ContentLength is null or > 0)
+            {
+                var body = await request.ReadFromJsonAsync<CancelPlanRequest>();
+                palletIds = body?.PalletIds;
+            }
+
+            if (palletIds == null || palletIds.Count == 0)
+            {
+                return Results.BadRequest(new
+                {
+                    ok = false,
+                    success = false,
+                    error = "INVALID_PALLET_IDS",
+                    message = "Укажите pallet_ids для удаления выбранных паллет."
+                });
+            }
+
+            var result = service.CancelOrderPlan(orderId, palletIds);
+            return Results.Ok(new
+            {
+                success = true,
+                message = result.Message,
+                prd_doc_id = result.PrdDocId,
+                removed_pallet_count = result.RemovedPalletCount,
+                removed_line_count = result.RemovedLineCount,
+                requested_pallet_ids = result.RequestedPalletIds,
+                removed_pallet_ids = result.RemovedPalletIds,
+                skipped_pallet_ids = result.SkippedPalletIds
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.BadRequest(new { ok = false, success = false, error = ex.Message, message = ex.Message });
+        }
+    }
+
+    private static object MapCancelPlanRow(ProductionPalletCancelPlanRow row)
+    {
+        return new
+        {
+            pallet_id = row.PalletId,
+            prd_doc_id = row.PrdDocId,
+            prd_doc_ref = row.PrdDocRef,
+            order_line_id = row.OrderLineId,
+            item_id = row.ItemId,
+            item_name = row.ItemName,
+            hu_code = row.HuCode,
+            planned_qty = row.PlannedQty,
+            status = row.Status,
+            is_selectable = row.IsSelectable,
+            is_selected_by_default = row.IsSelectedByDefault,
+            disabled_reason = row.DisabledReason,
+            has_marking_warning = row.HasMarkingWarning
+        };
+    }
+
+    private sealed class CancelPlanRequest
+    {
+        [JsonPropertyName("pallet_ids")]
+        public IReadOnlyList<long>? PalletIds { get; init; }
     }
 
     private static IResult HandleAdoptFromInternal(long targetCustomerOrderId, long sourceInternalOrderId, ProductionPalletService service)

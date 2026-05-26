@@ -153,16 +153,29 @@ public sealed class OrderHuReservationApplyServiceTests
     }
 
     [Fact]
-    public void ApplySelectedQtyExceedingRemainingLineQty_ClampsToRemaining()
+    public void ApplySelectedQtyExceedingRemainingLineQty_RejectsOversizedHu()
     {
         var context = CreateContext();
         context.SeedCustomerOrder(78, 203, itemId: 6, qtyOrdered: 500, qtyShipped: 200);
         context.SeedCandidate(Source("LEDGER_STOCK", "HU-1", itemId: 6, qty: 400, shipReady: true));
 
-        var result = context.Apply(78, Line(203, "HU-1"));
+        var ex = Assert.Throws<OrderHuReservationApplyException>(() => context.Apply(78, Line(203, "HU-1")));
 
-        Assert.Equal(300, Assert.Single(result.AppliedLines).ReservedQty, 3);
-        Assert.Equal(300, Assert.Single(context.GetPlanLines(78)).QtyPlanned, 3);
+        Assert.Equal("HU_QTY_EXCEEDS_REMAINING", ex.ErrorCode);
+        Assert.Empty(context.GetPlanLines(78));
+    }
+
+    [Fact]
+    public void RejectHuReservedByOtherActiveCustomerEvenWhenExcludedFromCandidates()
+    {
+        var context = CreateContext();
+        context.SeedCustomerOrder(78, 203, itemId: 6, qtyOrdered: 600);
+        context.SeedReservedByOtherActiveCustomer("HU-BUSY");
+
+        var ex = Assert.Throws<OrderHuReservationApplyException>(() => context.Apply(78, Line(203, "HU-BUSY")));
+
+        Assert.Equal("HU_RESERVED_BY_OTHER_ORDER", ex.ErrorCode);
+        Assert.Empty(context.GetPlanLines(78));
     }
 
     [Fact]
@@ -276,6 +289,15 @@ public sealed class OrderHuReservationApplyServiceTests
                     : Array.Empty<OrderShipmentLine>());
             _store.Setup(store => store.GetOrderReceiptPlanLines(It.IsAny<long>()))
                 .Returns<long>(id => GetPlanLines(id));
+            _store.Setup(store => store.GetReservedOrderReceiptHuCodes(It.IsAny<long?>()))
+                .Returns<long?>(excludeOrderId => _planLines
+                    .Where(pair => !excludeOrderId.HasValue || pair.Key != excludeOrderId.Value)
+                    .SelectMany(pair => pair.Value)
+                    .Select(line => line.ToHu)
+                    .Where(huCode => !string.IsNullOrWhiteSpace(huCode))
+                    .Cast<string>()
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray());
             _store.Setup(store => store.ReplaceOrderReceiptPlanLinesForOrderLines(
                     It.IsAny<long>(),
                     It.IsAny<IReadOnlyCollection<long>>(),
@@ -461,6 +483,12 @@ public sealed class OrderHuReservationApplyServiceTests
                 QtyPlanned = qty,
                 ToHu = huCode
             });
+        }
+
+        public void SeedReservedByOtherActiveCustomer(string huCode)
+        {
+            SeedCustomerOrder(99, 9901, itemId: 6, qtyOrdered: 600);
+            SeedPlanLine(99, 9901, itemId: 6, huCode, qty: 600);
         }
 
         public void SeedCandidate(HuReservationCandidateSourceRow source) => _sources.Add(source);

@@ -114,8 +114,90 @@ public sealed class WpfProductionPalletApiService
         long orderId,
         CancellationToken cancellationToken = default)
     {
+        var options = await TryGetCancelPlanOptionsAsync(orderId, cancellationToken).ConfigureAwait(false);
+        if (!options.IsSuccess)
+        {
+            return WpfProductionPalletCancelPlanApiResult.Failure(options.Message);
+        }
+
+        var palletIds = options.Rows
+            .Where(row => row.IsSelectable)
+            .Select(row => row.PalletId)
+            .ToArray();
+        return await TryCancelPlanAsync(orderId, palletIds, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<WpfProductionPalletCancelPlanOptionsApiResult> TryGetCancelPlanOptionsAsync(
+        long orderId,
+        CancellationToken cancellationToken = default)
+    {
         try
         {
+            if (!TryLoadConfiguration(out var configuration))
+            {
+                _logger.Info("Production pallet API skipped for cancel plan options: server base URL is not configured.");
+                return WpfProductionPalletCancelPlanOptionsApiResult.Failure("FlowStock Server API не настроен.");
+            }
+
+            using var handler = CreateHandler(configuration);
+            using var client = CreateClient(handler, configuration);
+            using var response = await client.GetAsync($"/api/orders/{orderId}/production-pallets/cancel-plan-options", cancellationToken)
+                .ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return WpfProductionPalletCancelPlanOptionsApiResult.Failure(await ReadApiErrorAsync(response).ConfigureAwait(false));
+            }
+
+            var payload = await response.Content.ReadFromJsonAsync<CancelPlanOptionsResponse>(JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+            if (payload == null)
+            {
+                return WpfProductionPalletCancelPlanOptionsApiResult.Failure("Сервер вернул пустой ответ.");
+            }
+
+            var rows = (payload.Rows ?? Array.Empty<CancelPlanRowResponse>())
+                .Select(row => new ProductionPalletCancelPlanSelectionRow(
+                    row.PalletId,
+                    row.PrdDocId,
+                    row.PrdDocRef ?? string.Empty,
+                    row.OrderLineId,
+                    row.ItemId,
+                    row.ItemName ?? string.Empty,
+                    row.HuCode ?? string.Empty,
+                    row.PlannedQty,
+                    row.Status ?? string.Empty,
+                    row.IsSelectable,
+                    row.IsSelectedByDefault,
+                    row.DisabledReason,
+                    row.HasMarkingWarning))
+                .ToArray();
+
+            return new WpfProductionPalletCancelPlanOptionsApiResult(
+                true,
+                string.Empty,
+                payload.OrderId,
+                payload.OrderRef ?? string.Empty,
+                rows);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Production pallet cancel plan options load failed", ex);
+            return WpfProductionPalletCancelPlanOptionsApiResult.Failure(ex.Message);
+        }
+    }
+
+    public async Task<WpfProductionPalletCancelPlanApiResult> TryCancelPlanAsync(
+        long orderId,
+        IReadOnlyList<long>? palletIds,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (palletIds == null || palletIds.Count == 0)
+            {
+                return WpfProductionPalletCancelPlanApiResult.Failure("Нет выбранных паллет для удаления.");
+            }
+
             if (!TryLoadConfiguration(out var configuration))
             {
                 _logger.Info("Production pallet API skipped for cancel plan: server base URL is not configured.");
@@ -124,7 +206,9 @@ public sealed class WpfProductionPalletApiService
 
             using var handler = CreateHandler(configuration);
             using var client = CreateClient(handler, configuration);
-            using var response = await client.PostAsJsonAsync($"/api/orders/{orderId}/production-pallets/cancel-plan", new { }, cancellationToken)
+            _logger.Info($"Production pallet selected cancel for order_id={orderId}, pallet_ids={string.Join(",", palletIds)}");
+            object body = new { pallet_ids = palletIds };
+            using var response = await client.PostAsJsonAsync($"/api/orders/{orderId}/production-pallets/cancel-plan", body, cancellationToken)
                 .ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
@@ -143,7 +227,10 @@ public sealed class WpfProductionPalletApiService
                 string.IsNullOrWhiteSpace(payload.Message) ? "План паллет удалён." : payload.Message!,
                 payload.PrdDocId,
                 payload.RemovedPalletCount,
-                payload.RemovedLineCount);
+                payload.RemovedLineCount,
+                payload.RequestedPalletIds ?? Array.Empty<long>(),
+                payload.RemovedPalletIds ?? Array.Empty<long>(),
+                payload.SkippedPalletIds ?? Array.Empty<long>());
         }
         catch (Exception ex)
         {
@@ -456,6 +543,69 @@ public sealed class WpfProductionPalletApiService
 
         [JsonPropertyName("removed_line_count")]
         public int RemovedLineCount { get; init; }
+
+        [JsonPropertyName("requested_pallet_ids")]
+        public long[]? RequestedPalletIds { get; init; }
+
+        [JsonPropertyName("removed_pallet_ids")]
+        public long[]? RemovedPalletIds { get; init; }
+
+        [JsonPropertyName("skipped_pallet_ids")]
+        public long[]? SkippedPalletIds { get; init; }
+    }
+
+    private sealed class CancelPlanOptionsResponse
+    {
+        [JsonPropertyName("order_id")]
+        public long OrderId { get; init; }
+
+        [JsonPropertyName("order_ref")]
+        public string? OrderRef { get; init; }
+
+        [JsonPropertyName("rows")]
+        public CancelPlanRowResponse[]? Rows { get; init; }
+    }
+
+    private sealed class CancelPlanRowResponse
+    {
+        [JsonPropertyName("pallet_id")]
+        public long PalletId { get; init; }
+
+        [JsonPropertyName("prd_doc_id")]
+        public long PrdDocId { get; init; }
+
+        [JsonPropertyName("prd_doc_ref")]
+        public string? PrdDocRef { get; init; }
+
+        [JsonPropertyName("order_line_id")]
+        public long? OrderLineId { get; init; }
+
+        [JsonPropertyName("item_id")]
+        public long ItemId { get; init; }
+
+        [JsonPropertyName("item_name")]
+        public string? ItemName { get; init; }
+
+        [JsonPropertyName("hu_code")]
+        public string? HuCode { get; init; }
+
+        [JsonPropertyName("planned_qty")]
+        public double PlannedQty { get; init; }
+
+        [JsonPropertyName("status")]
+        public string? Status { get; init; }
+
+        [JsonPropertyName("is_selectable")]
+        public bool IsSelectable { get; init; }
+
+        [JsonPropertyName("is_selected_by_default")]
+        public bool IsSelectedByDefault { get; init; }
+
+        [JsonPropertyName("disabled_reason")]
+        public string? DisabledReason { get; init; }
+
+        [JsonPropertyName("has_marking_warning")]
+        public bool HasMarkingWarning { get; init; }
     }
 
     private sealed class AdoptPlanResponse
@@ -653,13 +803,52 @@ public sealed record WpfProductionPalletCancelPlanApiResult(
     string Message,
     long PrdDocId,
     int RemovedPalletCount,
-    int RemovedLineCount)
+    int RemovedLineCount,
+    IReadOnlyList<long> RequestedPalletIds,
+    IReadOnlyList<long> RemovedPalletIds,
+    IReadOnlyList<long> SkippedPalletIds)
 {
     public static WpfProductionPalletCancelPlanApiResult Failure(string message)
     {
-        return new WpfProductionPalletCancelPlanApiResult(false, message, 0, 0, 0);
+        return new WpfProductionPalletCancelPlanApiResult(
+            false,
+            message,
+            0,
+            0,
+            0,
+            Array.Empty<long>(),
+            Array.Empty<long>(),
+            Array.Empty<long>());
     }
 }
+
+public sealed record WpfProductionPalletCancelPlanOptionsApiResult(
+    bool IsSuccess,
+    string Message,
+    long OrderId,
+    string OrderRef,
+    IReadOnlyList<ProductionPalletCancelPlanSelectionRow> Rows)
+{
+    public static WpfProductionPalletCancelPlanOptionsApiResult Failure(string message)
+    {
+        return new WpfProductionPalletCancelPlanOptionsApiResult(false, message, 0, string.Empty, Array.Empty<ProductionPalletCancelPlanSelectionRow>());
+    }
+}
+
+public sealed record ProductionPalletCancelPlanSelectionRow(
+    long PalletId,
+    long PrdDocId,
+    string PrdDocRef,
+    long? OrderLineId,
+    long ItemId,
+    string ItemName,
+    string HuCode,
+    double PlannedQty,
+    string Status,
+    bool IsSelectable,
+    bool IsSelectedByDefault,
+    string? DisabledReason,
+    bool HasMarkingWarning);
 
 public sealed record WpfProductionPalletAdoptPlanApiResult(
     bool IsSuccess,

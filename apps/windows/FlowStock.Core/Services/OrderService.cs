@@ -383,11 +383,7 @@ public sealed class OrderService
                 });
             }
 
-            if (type == OrderType.Customer)
-            {
-                TryRefreshCustomerReceiptPlans(store);
-            }
-            else
+            if (type != OrderType.Customer)
             {
                 TryRebuildOrderReceiptPlan(store, orderId);
             }
@@ -544,10 +540,6 @@ public sealed class OrderService
                         ValidateOrderLineQtyCanChange(store, orderId, primary, orderedQty, type);
                         store.UpdateOrderLineQty(primary.Id, orderedQty);
                         line.QtyOrdered = orderedQty;
-                        if (type == OrderType.Customer && orderedQty > primary.QtyOrdered + QtyTolerance)
-                        {
-                            TryBindBestWarehouseHuForCustomerShortage(store, orderId, primary, orderedQty);
-                        }
                         if (type is OrderType.Internal or OrderType.Customer)
                         {
                             linesNeedingPalletSync.Add((primary.Id, orderedQty, primary.QtyOrdered));
@@ -614,7 +606,6 @@ public sealed class OrderService
                 {
                     TrySyncProductionPalletPlanForOrderLine(store, orderId, orderLineId, orderedQty, oldOrderedQty);
                 }
-                TryRefreshCustomerReceiptPlansPreservingOrder(store, orderId);
             }
             else
             {

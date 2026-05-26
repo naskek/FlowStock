@@ -217,7 +217,7 @@
                                     <CheckBox IsChecked="{Binding IsMixedPalletLine, Mode=OneWay}"
                                               Click="MixedPalletCheckBox_Click"
                                               HorizontalAlignment="Center"
-                                              IsEnabled="{Binding RelativeSource={RelativeSource AncestorType=DataGrid}, Path=Tag}"
+                                              IsEnabled="{Binding IsProductionPalletGroupEditable}"
                                               ToolTip="Строки с одинаковым номером группы HU планируются на одну микс-паллету до печати этикеток." />
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
@@ -231,7 +231,7 @@
                                              HorizontalContentAlignment="Center"
                                              LostFocus="MixedPalletGroupTextBox_LostFocus"
                                              PreviewTextInput="MixedPalletGroupTextBox_PreviewTextInput"
-                                             IsEnabled="{Binding IsMixedPalletLine}" />
+                                             IsEnabled="{Binding IsMixedPalletGroupNumberEditable}" />
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>

@@ -2366,6 +2366,180 @@ LIMIT 1;
         });
     }
 
+    public ProductionPalletPlanCleanupCounts DeleteProductionPalletPlanPallets(IReadOnlyCollection<long> productionPalletIds)
+    {
+        var ids = productionPalletIds
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
+        if (ids.Length == 0)
+        {
+            return new ProductionPalletPlanCleanupCounts();
+        }
+
+        return WithConnection(connection =>
+        {
+            int removedPalletCount;
+            int removedLineCount;
+            long[] removedPalletIds;
+            using (var count = CreateCommand(connection, @"
+WITH target_pallets AS (
+    SELECT pp.id
+    FROM production_pallets pp
+    INNER JOIN docs d ON d.id = pp.prd_doc_id
+    WHERE pp.id = ANY(@pallet_ids)
+      AND pp.status IN (@planned_status, @printed_status)
+      AND d.status <> @closed_status
+),
+target_doc_lines AS (
+    SELECT DISTINCT pll.doc_line_id AS id
+    FROM production_pallet_lines pll
+    WHERE pll.production_pallet_id IN (SELECT id FROM target_pallets)
+    UNION
+    SELECT DISTINCT pp.doc_line_id AS id
+    FROM production_pallets pp
+    WHERE pp.id IN (SELECT id FROM target_pallets)
+      AND pp.doc_line_id IS NOT NULL
+),
+removable_doc_lines AS (
+    SELECT target.id
+    FROM target_doc_lines target
+    WHERE NOT EXISTS (
+          SELECT 1
+          FROM production_pallets pp
+          WHERE pp.id NOT IN (SELECT id FROM target_pallets)
+            AND pp.doc_line_id = target.id
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM production_pallet_lines pll
+          WHERE pll.production_pallet_id NOT IN (SELECT id FROM target_pallets)
+            AND pll.doc_line_id = target.id
+      )
+)
+SELECT
+    (SELECT COUNT(*) FROM target_pallets),
+    (SELECT COUNT(*) FROM removable_doc_lines),
+    COALESCE((SELECT ARRAY_AGG(id ORDER BY id) FROM target_pallets), ARRAY[]::bigint[]);
+"))
+            {
+                count.Parameters.AddWithValue("@pallet_ids", ids);
+                count.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+                count.Parameters.AddWithValue("@printed_status", ProductionPalletStatus.Printed);
+                count.Parameters.AddWithValue("@closed_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+                using var reader = count.ExecuteReader();
+                if (reader.Read())
+                {
+                    removedPalletCount = Convert.ToInt32(reader.GetValue(0), CultureInfo.InvariantCulture);
+                    removedLineCount = Convert.ToInt32(reader.GetValue(1), CultureInfo.InvariantCulture);
+                    removedPalletIds = reader.IsDBNull(2) ? Array.Empty<long>() : reader.GetFieldValue<long[]>(2);
+                }
+                else
+                {
+                    removedPalletCount = 0;
+                    removedLineCount = 0;
+                    removedPalletIds = Array.Empty<long>();
+                }
+            }
+
+            using (var cleanup = CreateCommand(connection, @"
+WITH target_pallets AS (
+    SELECT pp.id, pp.hu_code
+    FROM production_pallets pp
+    INNER JOIN docs d ON d.id = pp.prd_doc_id
+    WHERE pp.id = ANY(@pallet_ids)
+      AND pp.status IN (@planned_status, @printed_status)
+      AND d.status <> @closed_status
+),
+target_doc_lines AS (
+    SELECT DISTINCT pll.doc_line_id AS id
+    FROM production_pallet_lines pll
+    WHERE pll.production_pallet_id IN (SELECT id FROM target_pallets)
+    UNION
+    SELECT DISTINCT pp.doc_line_id AS id
+    FROM production_pallets pp
+    WHERE pp.id IN (SELECT id FROM target_pallets)
+      AND pp.doc_line_id IS NOT NULL
+),
+removable_doc_lines AS (
+    SELECT target.id
+    FROM target_doc_lines target
+    WHERE NOT EXISTS (
+          SELECT 1
+          FROM production_pallets pp
+          WHERE pp.id NOT IN (SELECT id FROM target_pallets)
+            AND pp.doc_line_id = target.id
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM production_pallet_lines pll
+          WHERE pll.production_pallet_id NOT IN (SELECT id FROM target_pallets)
+            AND pll.doc_line_id = target.id
+      )
+),
+deleted_hus AS (
+    DELETE FROM hus h
+    USING target_pallets target
+    WHERE COALESCE(h.created_by, '') = @plan_created_by
+      AND UPPER(BTRIM(h.hu_code)) = UPPER(BTRIM(target.hu_code))
+      AND NOT EXISTS (
+          SELECT 1
+          FROM ledger l
+          WHERE UPPER(BTRIM(l.hu_code)) = UPPER(BTRIM(h.hu_code))
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines dl
+          WHERE dl.id NOT IN (SELECT id FROM removable_doc_lines)
+            AND (
+                UPPER(BTRIM(COALESCE(dl.to_hu, ''))) = UPPER(BTRIM(h.hu_code))
+                OR UPPER(BTRIM(COALESCE(dl.from_hu, ''))) = UPPER(BTRIM(h.hu_code))
+            )
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM production_pallets pp
+          WHERE pp.id NOT IN (SELECT id FROM target_pallets)
+            AND UPPER(BTRIM(pp.hu_code)) = UPPER(BTRIM(h.hu_code))
+            AND pp.status <> @cancelled_status
+      )
+    RETURNING h.hu_code
+),
+deleted_pallet_lines AS (
+    DELETE FROM production_pallet_lines pll
+    USING target_pallets target
+    WHERE pll.production_pallet_id = target.id
+    RETURNING pll.id
+),
+deleted_pallets AS (
+    DELETE FROM production_pallets pp
+    USING target_pallets target
+    WHERE pp.id = target.id
+    RETURNING pp.id
+)
+DELETE FROM doc_lines dl
+USING removable_doc_lines target
+WHERE dl.id = target.id;
+"))
+            {
+                cleanup.Parameters.AddWithValue("@pallet_ids", ids);
+                cleanup.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+                cleanup.Parameters.AddWithValue("@printed_status", ProductionPalletStatus.Printed);
+                cleanup.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
+                cleanup.Parameters.AddWithValue("@closed_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+                cleanup.Parameters.AddWithValue("@plan_created_by", "PRODUCTION-PALLET-PLAN");
+                cleanup.ExecuteNonQuery();
+            }
+
+            return new ProductionPalletPlanCleanupCounts
+            {
+                RemovedPalletCount = removedPalletCount,
+                RemovedLineCount = removedLineCount,
+                RemovedPalletIds = removedPalletIds
+            };
+        });
+    }
+
     public ProductionPalletPlanAdoptionResult AdoptProductionPalletPlan(
         long sourcePrdDocId,
         long targetPrdDocId,
@@ -6807,10 +6981,12 @@ FROM order_receipt_plan_lines p
 INNER JOIN orders o ON o.id = p.order_id
 WHERE p.to_hu IS NOT NULL
   AND p.to_hu <> ''
+  AND o.order_type = @customer_order_type
   AND o.status <> @shipped_status
   AND o.status <> @cancelled_status
   AND (@exclude_order_id::bigint IS NULL OR p.order_id <> @exclude_order_id::bigint);
 ");
+            command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
             command.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
             command.Parameters.AddWithValue("@cancelled_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
             command.Parameters.AddWithValue("@exclude_order_id", excludeOrderId.HasValue ? excludeOrderId.Value : DBNull.Value);

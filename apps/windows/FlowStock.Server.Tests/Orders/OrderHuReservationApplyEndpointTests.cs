@@ -314,6 +314,15 @@ internal sealed class HuReservationApplyTestContext
             .Returns<long>(id => _shipmentRemaining.TryGetValue(id, out var lines) ? lines.ToArray() : Array.Empty<OrderShipmentLine>());
         _store.Setup(store => store.GetOrderReceiptPlanLines(It.IsAny<long>()))
             .Returns<long>(id => _planLines.TryGetValue(id, out var lines) ? lines.ToArray() : Array.Empty<OrderReceiptPlanLine>());
+        _store.Setup(store => store.GetReservedOrderReceiptHuCodes(It.IsAny<long?>()))
+            .Returns<long?>(excludeOrderId => _planLines
+                .Where(pair => !excludeOrderId.HasValue || pair.Key != excludeOrderId.Value)
+                .SelectMany(pair => pair.Value)
+                .Select(line => line.ToHu)
+                .Where(huCode => !string.IsNullOrWhiteSpace(huCode))
+                .Cast<string>()
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray());
         _store.Setup(store => store.ReplaceOrderReceiptPlanLinesForOrderLines(
                 It.IsAny<long>(),
                 It.IsAny<IReadOnlyCollection<long>>(),

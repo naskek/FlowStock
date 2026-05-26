@@ -17,6 +17,7 @@ public sealed class OrderLineView : INotifyPropertyChanged
     private int _filledPalletCount;
     private string? _productionPalletGroup;
     private int _mixedPalletGroupNumber = 1;
+    private bool _isProductionPalletGroupEditable = true;
     private IReadOnlyList<OrderLineHuDisplayEntry> _productionHuDisplayEntries = Array.Empty<OrderLineHuDisplayEntry>();
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -47,6 +48,7 @@ public sealed class OrderLineView : INotifyPropertyChanged
             OnPropertyChanged(nameof(ProductionPalletGroup));
             OnPropertyChanged(nameof(IsMixedPalletLine));
             OnPropertyChanged(nameof(ProductionPalletGroupDisplay));
+            OnPropertyChanged(nameof(IsMixedPalletGroupNumberEditable));
         }
     }
 
@@ -138,6 +140,19 @@ public sealed class OrderLineView : INotifyPropertyChanged
     public string ProductionPurposeDisplay => ProductionLinePurposeMapper.ToDisplayName(ProductionPurpose);
     public bool IsMixedPalletLine => !string.IsNullOrWhiteSpace(ProductionPalletGroup);
     public string ProductionPalletGroupDisplay => string.IsNullOrWhiteSpace(ProductionPalletGroup) ? string.Empty : ProductionPalletGroup!;
+    public bool IsProductionPalletGroupEditable
+    {
+        get => _isProductionPalletGroupEditable;
+        set
+        {
+            if (SetField(ref _isProductionPalletGroupEditable, value))
+            {
+                OnPropertyChanged(nameof(IsMixedPalletGroupNumberEditable));
+            }
+        }
+    }
+
+    public bool IsMixedPalletGroupNumberEditable => IsMixedPalletLine && IsProductionPalletGroupEditable;
     public string HuCoverageTone
     {
         get
@@ -175,6 +190,8 @@ public sealed class OrderLineView : INotifyPropertyChanged
         OnPropertyChanged(nameof(MixedPalletGroupNumber));
         OnPropertyChanged(nameof(IsMixedPalletLine));
         OnPropertyChanged(nameof(ProductionPalletGroupDisplay));
+        OnPropertyChanged(nameof(IsProductionPalletGroupEditable));
+        OnPropertyChanged(nameof(IsMixedPalletGroupNumberEditable));
         OnPropertyChanged(nameof(QtyShipped));
         OnPropertyChanged(nameof(QtyProduced));
         OnPropertyChanged(nameof(QtyRemaining));
@@ -186,15 +203,16 @@ public sealed class OrderLineView : INotifyPropertyChanged
         OnPropertyChanged(nameof(HuCoverageToolTip));
     }
 
-    private void SetField<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
+    private bool SetField<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
     {
         if (EqualityComparer<T>.Default.Equals(field, value))
         {
-            return;
+            return false;
         }
 
         field = value;
         OnPropertyChanged(propertyName);
+        return true;
     }
 
     private void OnPropertyChanged(string? propertyName)

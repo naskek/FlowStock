@@ -441,19 +441,49 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        var hasPrintedLabels = HasPrintedProductionPallets(_orderId.Value);
-        var confirmMessage = hasPrintedLabels
-            ? "Паллетные этикетки уже были напечатаны. После удаления плана старые этикетки использовать нельзя. Продолжить?"
-            : "Удалить текущий план паллет? После этого нужно будет сформировать план заново.";
-        var confirmResult = MessageBox.Show(
-            confirmMessage,
-            "Паллеты",
-            MessageBoxButton.YesNo,
-            hasPrintedLabels ? MessageBoxImage.Warning : MessageBoxImage.Question,
-            MessageBoxResult.No);
-        if (confirmResult != MessageBoxResult.Yes)
+        var optionsResult = await _services.WpfProductionPalletApi.TryGetCancelPlanOptionsAsync(_orderId.Value).ConfigureAwait(true);
+        if (!optionsResult.IsSuccess)
+        {
+            MessageBox.Show(optionsResult.Message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (optionsResult.Rows.Count == 0)
+        {
+            MessageBox.Show("План паллет не найден.", "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var dialog = new ProductionPalletPlanDeleteSelectionWindow(optionsResult.Rows)
+        {
+            Owner = this
+        };
+        if (dialog.ShowDialog() != true)
         {
             return;
+        }
+
+        var selectedPalletIds = dialog.SelectedPalletIds;
+        if (selectedPalletIds.Count == 0)
+        {
+            MessageBox.Show("Нет выбранных паллет для удаления.", "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        _services.AppLogger.Info($"Selected production pallet delete for order_id={_orderId.Value}: pallet_ids={string.Join(",", selectedPalletIds)}");
+
+        if (dialog.SelectedRowsHaveMarkingWarning)
+        {
+            var confirmMarking = MessageBox.Show(
+                "Для выбранных PRINTED паллет уже могла быть сформирована ЧЗ/маркировка. После удаления плана старые этикетки и выгрузки нельзя использовать без проверки. Удалить выбранные паллеты?",
+                "Паллеты",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning,
+                MessageBoxResult.No);
+            if (confirmMarking != MessageBoxResult.Yes)
+            {
+                return;
+            }
         }
 
         DeletePalletPlanButton.IsEnabled = false;
@@ -461,17 +491,25 @@ public partial class OrderDetailsWindow : Window
         PrintPalletLabelsButton.IsEnabled = false;
         try
         {
-            var result = await _services.WpfProductionPalletApi.TryCancelPlanAsync(_orderId.Value).ConfigureAwait(true);
+            var result = await _services.WpfProductionPalletApi.TryCancelPlanAsync(_orderId.Value, selectedPalletIds).ConfigureAwait(true);
             if (!result.IsSuccess)
             {
                 MessageBox.Show(result.Message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
+            var idsText = result.RemovedPalletIds.Count == 0
+                ? string.Empty
+                : $"{Environment.NewLine}Удалены pallet_id: {string.Join(", ", result.RemovedPalletIds)}";
+            if (result.SkippedPalletIds.Count > 0)
+            {
+                idsText += $"{Environment.NewLine}Пропущены pallet_id: {string.Join(", ", result.SkippedPalletIds)}";
+            }
+
             MessageBox.Show(
                 $"{result.Message}{Environment.NewLine}{Environment.NewLine}" +
                 $"Удалено паллет: {result.RemovedPalletCount}{Environment.NewLine}" +
-                $"Удалено строк выпуска: {result.RemovedLineCount}",
+                $"Удалено строк выпуска: {result.RemovedLineCount}{idsText}",
                 "Паллеты",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
@@ -684,11 +722,6 @@ public partial class OrderDetailsWindow : Window
             MessageBox.Show(result.Message, "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
-        if (type == OrderType.Customer && !TryApplyHuReservationsAfterSave())
-        {
-            return false;
-        }
-
         if (showFeedback)
         {
             SaveStatusText.Text = "Сохранено";
@@ -740,11 +773,6 @@ public partial class OrderDetailsWindow : Window
         if (!string.IsNullOrWhiteSpace(result.Message))
         {
             MessageBox.Show(result.Message, "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-
-        if (type == OrderType.Customer && !TryApplyHuReservationsAfterSave())
-        {
-            return false;
         }
 
         if (showFeedback)
@@ -1458,17 +1486,17 @@ public partial class OrderDetailsWindow : Window
                 return;
             }
 
-            if (_productionPalletHuLocked)
-            {
-                LoadOrder();
-                MessageBox.Show("Паллетные этикетки уже напечатаны или паллета наполнена. Переназначение общего HU запрещено.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
-            }
-
             if (sender is not System.Windows.Controls.CheckBox checkBox || TryGetLineFromGridContext(checkBox.DataContext, out var line) == false)
             {
                 MessageBox.Show("Выберите строку.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
                 RestoreMixedPalletUiState();
+                return;
+            }
+
+            if (!line.IsProductionPalletGroupEditable)
+            {
+                LoadOrder();
+                MessageBox.Show("По этой строке уже есть активная паллета плана. Переназначение общего HU запрещено.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
 
@@ -1518,13 +1546,13 @@ public partial class OrderDetailsWindow : Window
                 return;
             }
 
-            if (_productionPalletHuLocked)
+            if (sender is not System.Windows.Controls.TextBox textBox || TryGetLineFromGridContext(textBox.DataContext, out var line) == false)
             {
                 RestoreMixedPalletUiState();
                 return;
             }
 
-            if (sender is not System.Windows.Controls.TextBox textBox || TryGetLineFromGridContext(textBox.DataContext, out var line) == false)
+            if (!line.IsProductionPalletGroupEditable)
             {
                 RestoreMixedPalletUiState();
                 return;
@@ -1708,6 +1736,7 @@ public partial class OrderDetailsWindow : Window
             _productionPalletHuLocked = HasPrintedOrFilledProductionPallets(_order.Id);
         }
 
+        RefreshProductionPalletGroupEditability();
         UpdateEmptyState();
         OrderLinesGrid.Items.Refresh();
         UpdatePalletButtons();
@@ -1816,7 +1845,16 @@ public partial class OrderDetailsWindow : Window
         PrintPalletLabelsButton.IsEnabled = canPrint;
         DeletePalletPlanButton.IsEnabled = canDeletePlan;
         OpenProductionReceiptButton.IsEnabled = _orderId.HasValue && CanOpenProductionReceipt(_orderId.Value);
-        OrderLinesGrid.Tag = EnsureEditable(false) && !_productionPalletHuLocked;
+        RefreshProductionPalletGroupEditability();
+        OrderLinesGrid.Tag = EnsureEditable(false);
+    }
+
+    private void RefreshProductionPalletGroupEditability()
+    {
+        var blockedLineIds = _orderId.HasValue
+            ? GetOrderLineIdsWithActiveProductionPallets(_orderId.Value)
+            : new HashSet<long>();
+        ProductionPalletGroupEditability.Apply(_lines, blockedLineIds, EnsureEditable(false));
     }
 
     private void OpenProductionReceipt_Click(object sender, RoutedEventArgs e)
@@ -1954,6 +1992,53 @@ public partial class OrderDetailsWindow : Window
         {
             return false;
         }
+    }
+
+    private HashSet<long> GetOrderLineIdsWithActiveProductionPallets(long orderId)
+    {
+        try
+        {
+            return _services.DataStore.GetDocsByOrder(orderId)
+                .Where(doc => doc.Type == DocType.ProductionReceipt)
+                .SelectMany(doc => _services.DataStore.GetProductionPalletsByDoc(doc.Id))
+                .Where(pallet => IsActiveProductionPalletStatus(pallet.Status))
+                .SelectMany(GetProductionPalletOrderLineIds)
+                .Where(id => id > 0)
+                .ToHashSet();
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error($"Load active production pallet line locks for order_id={orderId} failed", ex);
+            return new HashSet<long>();
+        }
+    }
+
+    private static IEnumerable<long> GetProductionPalletOrderLineIds(ProductionPallet pallet)
+    {
+        if (pallet.Lines.Count > 0)
+        {
+            foreach (var line in pallet.Lines)
+            {
+                if (line.OrderLineId.HasValue)
+                {
+                    yield return line.OrderLineId.Value;
+                }
+            }
+
+            yield break;
+        }
+
+        if (pallet.OrderLineId.HasValue)
+        {
+            yield return pallet.OrderLineId.Value;
+        }
+    }
+
+    private static bool IsActiveProductionPalletStatus(string status)
+    {
+        return string.Equals(status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase);
     }
 
     private void ApplyProductionHuCodesFromStore(long orderId)

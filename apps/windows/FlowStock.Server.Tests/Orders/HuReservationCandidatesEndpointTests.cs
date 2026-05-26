@@ -150,8 +150,8 @@ public sealed class HuReservationCandidatesEndpointTests
             order_id = 78L,
             lines = new[]
             {
-                new { client_line_key = "line-a", order_line_id = (long?)null, item_id = 6L, qty_ordered = 400d },
-                new { client_line_key = "line-b", order_line_id = (long?)null, item_id = 6L, qty_ordered = 400d }
+                new { client_line_key = "line-a", order_line_id = (long?)null, item_id = 6L, qty_ordered = 600d },
+                new { client_line_key = "line-b", order_line_id = (long?)null, item_id = 6L, qty_ordered = 600d }
             },
             exclude_hu_codes = Array.Empty<string>()
         });
@@ -212,6 +212,30 @@ public sealed class HuReservationCandidatesEndpointTests
 
         Assert.Single(selected);
         Assert.Equal("HU-1000", selected[0]);
+    }
+
+    [Fact]
+    public async Task AutoSelection_SkipsHuLargerThanRemainingQty()
+    {
+        var store = CreateStore(
+        [
+            Source("LEDGER_STOCK", "HU-0600", itemId: 6, qty: 600, shipReady: true),
+            Source("LEDGER_STOCK", "HU-0400", itemId: 6, qty: 400, shipReady: true)
+        ]);
+        await using var host = await HuReservationCandidatesHost.StartAsync(store.Object);
+
+        using var document = await PostAsync(host.Client, new
+        {
+            order_id = 78L,
+            lines = new[] { new { client_line_key = "line-1", order_line_id = (long?)203, item_id = 6L, qty_ordered = 500d } },
+            exclude_hu_codes = Array.Empty<string>()
+        });
+
+        var candidates = GetCandidates(document, "line-1").ToArray();
+        Assert.False(candidates.Single(candidate => candidate.GetProperty("hu_code").GetString() == "HU-0600")
+            .GetProperty("auto_selected").GetBoolean());
+        Assert.True(candidates.Single(candidate => candidate.GetProperty("hu_code").GetString() == "HU-0400")
+            .GetProperty("auto_selected").GetBoolean());
     }
 
     [Fact]

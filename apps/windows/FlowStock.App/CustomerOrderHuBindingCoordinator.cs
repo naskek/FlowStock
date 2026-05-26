@@ -692,15 +692,14 @@ public sealed class CustomerOrderLineHuState : INotifyPropertyChanged
                 continue;
             }
 
-            var allocated = Math.Min(remaining, candidate.Qty);
-            if (allocated <= CustomerOrderHuPickerRules.QtyTolerance)
+            if (candidate.Qty > remaining + CustomerOrderHuPickerRules.QtyTolerance)
             {
                 _selectedHuCodes.Remove(normalized);
                 continue;
             }
 
-            _selectedQtyByHu[normalized] = allocated;
-            remaining -= allocated;
+            _selectedQtyByHu[normalized] = candidate.Qty;
+            remaining -= candidate.Qty;
             if (remaining <= CustomerOrderHuPickerRules.QtyTolerance)
             {
                 break;

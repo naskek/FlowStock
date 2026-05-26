@@ -1922,6 +1922,9 @@ internal sealed class CloseDocumentHarness
                 };
             });
 
+        _store.Setup(store => store.DeleteProductionPalletPlanPallets(It.IsAny<IReadOnlyCollection<long>>()))
+            .Returns<IReadOnlyCollection<long>>(DeleteProductionPalletPlanPalletsInHarness);
+
         _store.Setup(store => store.AssignProductionPalletToPrdDoc(It.IsAny<long>(), It.IsAny<long>()))
             .Callback<long, long>(AssignProductionPalletToPrdDocInHarness);
 
@@ -3951,5 +3954,48 @@ internal sealed class CloseDocumentHarness
         }
 
         return removed;
+    }
+
+    private ProductionPalletPlanCleanupCounts DeleteProductionPalletPlanPalletsInHarness(IReadOnlyCollection<long> productionPalletIds)
+    {
+        var ids = productionPalletIds.ToHashSet();
+        var targetPallets = _productionPallets.Values
+            .Where(pallet => ids.Contains(pallet.Id))
+            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+            .Where(pallet => !_docs.TryGetValue(pallet.PrdDocId, out var doc) || doc.Status != DocStatus.Closed)
+            .ToArray();
+        var targetPalletIds = targetPallets.Select(pallet => pallet.Id).ToHashSet();
+        var targetDocLineIds = targetPallets
+            .SelectMany(pallet => pallet.Lines.Select(line => line.DocLineId).Append(pallet.DocLineId))
+            .Where(id => id > 0)
+            .Distinct()
+            .ToHashSet();
+        var referencedDocLineIds = _productionPallets.Values
+            .Where(pallet => !targetPalletIds.Contains(pallet.Id))
+            .SelectMany(pallet => pallet.Lines.Select(line => line.DocLineId).Append(pallet.DocLineId))
+            .Where(id => id > 0)
+            .ToHashSet();
+        var removableDocLineIds = targetDocLineIds
+            .Where(id => !referencedDocLineIds.Contains(id))
+            .ToHashSet();
+
+        foreach (var palletId in targetPalletIds)
+        {
+            _productionPallets.Remove(palletId);
+        }
+
+        var removedLines = 0;
+        foreach (var docLines in _linesByDoc.Values)
+        {
+            removedLines += docLines.RemoveAll(line => removableDocLineIds.Contains(line.Id));
+        }
+
+        return new ProductionPalletPlanCleanupCounts
+        {
+            RemovedPalletCount = targetPalletIds.Count,
+            RemovedLineCount = removedLines,
+            RemovedPalletIds = targetPalletIds.Order().ToArray()
+        };
     }
 }

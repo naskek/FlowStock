@@ -228,8 +228,7 @@ public sealed class HuReservationPlanningTests
 
         Assert.True(createdOrderId > 0);
         Assert.Equal(0, ledgerEntryCalls);
-        Assert.True(receiptPlans.TryGetValue(createdOrderId, out var createdPlan));
-        Assert.Empty(createdPlan!);
+        Assert.False(receiptPlans.TryGetValue(createdOrderId, out var createdPlan) && createdPlan.Count > 0);
     }
 
     [Fact]
