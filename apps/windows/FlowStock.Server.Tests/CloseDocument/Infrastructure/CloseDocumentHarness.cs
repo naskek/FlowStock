@@ -152,14 +152,9 @@ internal sealed class CloseDocumentHarness
     private IReadOnlyList<DocLine> GetActiveDocLines(long docId)
     {
         var allowSignedQty = _docs.TryGetValue(docId, out var doc) && doc.Type == DocType.InventoryCorrection;
-        var supersededLineIds = _linesByDoc.Values
-            .SelectMany(lines => lines)
-            .Where(line => line.ReplacesLineId.HasValue)
-            .Select(line => line.ReplacesLineId!.Value)
-            .ToHashSet();
         return _linesByDoc.TryGetValue(docId, out var lines)
             ? lines
-                .Where(line => !supersededLineIds.Contains(line.Id))
+                .Where(line => !lines.Any(newer => newer.ReplacesLineId == line.Id))
                 .Where(line => allowSignedQty
                     ? !StockQuantityRules.IsEffectivelyZero(line.Qty)
                     : line.Qty > 0)
@@ -651,60 +646,6 @@ internal sealed class CloseDocumentHarness
         _productionPallets[pallet.Id] = CloneProductionPallet(pallet);
         _nextProductionPalletId = Math.Max(_nextProductionPalletId, pallet.Id + 1);
         _nextProductionPalletHuNumber = Math.Max(_nextProductionPalletHuNumber, ExtractHuNumber(pallet.HuCode) + 1);
-    }
-
-    private IReadOnlyList<ProductionPallet> AddProductionPalletPlanInHarness(
-        long orderId,
-        IReadOnlyList<ProductionPalletPlanDraft> drafts,
-        DateTime createdAt)
-    {
-        foreach (var draft in drafts)
-        {
-            var palletId = _nextProductionPalletId++;
-            var firstItem = _items.TryGetValue(draft.ItemId, out var item) ? item : null;
-            var location = _locations.TryGetValue(draft.ToLocationId, out var foundLocation) ? foundLocation : null;
-            var lines = draft.Lines.Select((line, index) =>
-            {
-                var lineItem = _items.TryGetValue(line.ItemId, out var foundLineItem) ? foundLineItem : null;
-                return new ProductionPalletComponentLine
-                {
-                    Id = (palletId * 1000) + index + 1,
-                    ProductionPalletId = palletId,
-                    DocLineId = 0,
-                    OrderLineId = line.OrderLineId,
-                    ItemId = line.ItemId,
-                    ItemName = lineItem?.Name ?? string.Empty,
-                    Brand = lineItem?.Brand,
-                    Uom = string.IsNullOrWhiteSpace(lineItem?.BaseUom) ? "шт" : lineItem!.BaseUom,
-                    PlannedQty = line.PlannedQty,
-                    CreatedAt = createdAt
-                };
-            }).ToArray();
-
-            _productionPallets[palletId] = new ProductionPallet
-            {
-                Id = palletId,
-                PrdDocId = 0,
-                DocLineId = 0,
-                OrderId = orderId,
-                OrderLineId = draft.OrderLineId,
-                ItemId = draft.ItemId,
-                ItemName = firstItem?.Name ?? string.Empty,
-                HuCode = draft.HuCode,
-                PlannedQty = draft.PlannedQty,
-                ToLocationId = draft.ToLocationId,
-                ToLocationCode = location?.Code,
-                Status = ProductionPalletStatus.Planned,
-                CreatedAt = createdAt,
-                Lines = lines
-            };
-        }
-
-        return _productionPallets.Values
-            .Where(pallet => pallet.OrderId == orderId)
-            .OrderBy(pallet => pallet.Id)
-            .Select(CloneProductionPallet)
-            .ToArray();
     }
 
     private void ConfigureStore()
@@ -1864,19 +1805,6 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.GetProductionPalletsByDoc(It.IsAny<long>()))
             .Returns<long>(GetProductionPallets);
 
-        _store.Setup(store => store.GetProductionPalletsByOrder(It.IsAny<long>()))
-            .Returns<long>(orderId => _productionPallets.Values
-                .Where(pallet => pallet.OrderId == orderId)
-                .OrderBy(pallet => pallet.Id)
-                .Select(CloneProductionPallet)
-                .ToArray());
-
-        _store.Setup(store => store.AddProductionPalletPlan(
-                It.IsAny<long>(),
-                It.IsAny<IReadOnlyList<ProductionPalletPlanDraft>>(),
-                It.IsAny<DateTime>()))
-            .Returns<long, IReadOnlyList<ProductionPalletPlanDraft>, DateTime>(AddProductionPalletPlanInHarness);
-
         _store.Setup(store => store.GetProductionPalletByHu(It.IsAny<string>()))
             .Returns<string>(huCode =>
             {
@@ -1904,21 +1832,20 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.GetActiveProductionPalletWorkItems())
             .Returns(() => _productionPallets.Values
                 .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
-                .GroupBy(pallet => pallet.OrderId)
+                .GroupBy(pallet => pallet.PrdDocId)
                 .Select(group =>
                 {
-                    var docId = group.Select(pallet => pallet.PrdDocId).FirstOrDefault(id => id > 0);
-                    var doc = docId > 0 && _docs.TryGetValue(docId, out var foundDoc) ? foundDoc : null;
+                    var doc = _docs.TryGetValue(group.Key, out var foundDoc) ? foundDoc : null;
                     var rows = group.ToList();
                     var filledRows = rows
                         .Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
                         .ToList();
                     return new ProductionPalletWorkItem
                     {
-                        PrdDocId = doc?.Id ?? 0,
+                        PrdDocId = group.Key,
                         PrdDocRef = doc?.DocRef ?? string.Empty,
                         PrdStatus = doc == null ? string.Empty : DocTypeMapper.StatusToString(doc.Status),
-                        OrderId = doc?.OrderId ?? group.Key,
+                        OrderId = doc?.OrderId ?? rows.Select(pallet => pallet.OrderId).FirstOrDefault(id => id.HasValue),
                         OrderRef = doc?.OrderRef ?? rows.Select(pallet => pallet.OrderId.HasValue && _orders.TryGetValue(pallet.OrderId.Value, out var order) ? order.OrderRef : null).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)),
                         Summary = new ProductionPalletSummary
                         {
@@ -2012,13 +1939,6 @@ internal sealed class CloseDocumentHarness
 
         _store.Setup(store => store.AssignProductionPalletToPrdDoc(It.IsAny<long>(), It.IsAny<long>()))
             .Callback<long, long>(AssignProductionPalletToPrdDocInHarness);
-
-        _store.Setup(store => store.AttachProductionPalletToPrdDoc(
-                It.IsAny<long>(),
-                It.IsAny<long>(),
-                It.IsAny<long>(),
-                It.IsAny<IReadOnlyDictionary<long, long>>()))
-            .Callback<long, long, long, IReadOnlyDictionary<long, long>>(AttachProductionPalletToPrdDocInHarness);
 
         _store.Setup(store => store.AdoptProductionPalletPlan(
                 It.IsAny<long>(),
@@ -2461,7 +2381,7 @@ internal sealed class CloseDocumentHarness
     private IReadOnlyList<ProductionPallet> GetProductionPallets(long docId)
     {
         return _productionPallets.Values
-            .Where(pallet => docId > 0 ? pallet.PrdDocId == docId : pallet.PrdDocId <= 0)
+            .Where(pallet => pallet.PrdDocId == docId)
             .OrderBy(pallet => pallet.Id)
             .Select(CloneProductionPallet)
             .ToArray();
@@ -3865,54 +3785,6 @@ internal sealed class CloseDocumentHarness
             FilledByDeviceId = pallet.FilledByDeviceId,
             CreatedAt = pallet.CreatedAt,
             Lines = pallet.Lines
-        };
-    }
-
-    private void AttachProductionPalletToPrdDocInHarness(
-        long productionPalletId,
-        long targetPrdDocId,
-        long targetDocLineId,
-        IReadOnlyDictionary<long, long> targetDocLineIdsByPalletLineId)
-    {
-        if (!_productionPallets.TryGetValue(productionPalletId, out var pallet))
-        {
-            return;
-        }
-
-        _productionPallets[productionPalletId] = new ProductionPallet
-        {
-            Id = pallet.Id,
-            PrdDocId = targetPrdDocId,
-            DocLineId = targetDocLineId,
-            OrderId = pallet.OrderId,
-            OrderLineId = pallet.OrderLineId,
-            ItemId = pallet.ItemId,
-            ItemName = pallet.ItemName,
-            HuCode = pallet.HuCode,
-            PlannedQty = pallet.PlannedQty,
-            ToLocationId = pallet.ToLocationId,
-            ToLocationCode = pallet.ToLocationCode,
-            Status = pallet.Status,
-            PalletNo = pallet.PalletNo,
-            PalletCount = pallet.PalletCount,
-            PrintedAt = pallet.PrintedAt,
-            FilledAt = pallet.FilledAt,
-            FilledByDeviceId = pallet.FilledByDeviceId,
-            CreatedAt = pallet.CreatedAt,
-            Lines = pallet.Lines.Select(line => new ProductionPalletComponentLine
-            {
-                Id = line.Id,
-                ProductionPalletId = line.ProductionPalletId,
-                DocLineId = targetDocLineIdsByPalletLineId.TryGetValue(line.Id, out var docLineId) ? docLineId : line.DocLineId,
-                OrderLineId = line.OrderLineId,
-                ItemId = line.ItemId,
-                ItemName = line.ItemName,
-                Brand = line.Brand,
-                Uom = line.Uom,
-                PlannedQty = line.PlannedQty,
-                FilledQty = line.FilledQty,
-                CreatedAt = line.CreatedAt
-            }).ToArray()
         };
     }
 

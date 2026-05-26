@@ -32,7 +32,7 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
 
         var line = Assert.Single(fixture.Harness.Store.GetOrderLines(fixture.OrderId));
         Assert.Equal(1200, line.QtyOrdered, 3);
-        var pallets = fixture.Harness.Store.GetProductionPalletsByOrder(fixture.OrderId);
+        var pallets = fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId);
         Assert.Equal(2, pallets.Count(pallet => pallet.Status == ProductionPalletStatus.Filled));
         Assert.Equal(1200, fixture.Harness.Store.GetFilledProductionPalletQtyByOrderLine(fixture.OrderLineId), 3);
     }
@@ -55,7 +55,7 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
         var line = Assert.Single(fixture.Harness.Store.GetOrderLines(fixture.OrderId));
         Assert.Equal(2400, line.QtyOrdered, 3);
 
-        var pallets = fixture.Harness.Store.GetProductionPalletsByOrder(fixture.OrderId);
+        var pallets = fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId);
         Assert.Equal(2, pallets.Count(pallet => pallet.Status == ProductionPalletStatus.Filled));
         Assert.Equal(1200, pallets.Where(pallet => pallet.Status == ProductionPalletStatus.Filled).Sum(pallet => pallet.PlannedQty), 3);
         Assert.Equal(2, pallets.Count(pallet =>
@@ -81,7 +81,7 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
             InternalOrderPalletQtyUpdateScenario.BuildUpdateRequest(1200));
 
         Assert.True(payload.Ok);
-        var pallets = fixture.Harness.Store.GetProductionPalletsByOrder(fixture.OrderId);
+        var pallets = fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId);
         Assert.Equal(2, pallets.Count(pallet => pallet.Status == ProductionPalletStatus.Filled));
         Assert.Equal(0, ActiveOpenQty(pallets, fixture.OrderLineId), 3);
         Assert.Equal(6, pallets.Count(pallet => pallet.Status == ProductionPalletStatus.Cancelled));
@@ -109,7 +109,7 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
             InternalOrderPalletQtyUpdateScenario.BuildUpdateRequest(2400));
 
         Assert.True(first.Ok);
-        var afterFirst = fixture.Harness.Store.GetProductionPalletsByOrder(fixture.OrderId);
+        var afterFirst = fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId);
         Assert.Equal(2, afterFirst.Count(pallet => pallet.Status == ProductionPalletStatus.Filled));
         Assert.Equal(2, afterFirst.Count(pallet => pallet.Status == ProductionPalletStatus.Planned));
         Assert.Equal(2400, ActivePalletQty(afterFirst, fixture.OrderLineId), 3);
@@ -120,7 +120,7 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
             InternalOrderPalletQtyUpdateScenario.BuildUpdateRequest(2400));
 
         Assert.True(second.Ok);
-        var afterSecond = fixture.Harness.Store.GetProductionPalletsByOrder(fixture.OrderId);
+        var afterSecond = fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId);
         Assert.Equal(
             afterFirst.Select(pallet => pallet.Id).OrderBy(id => id),
             afterSecond.Select(pallet => pallet.Id).OrderBy(id => id));
@@ -143,7 +143,7 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
 
         Assert.True(payload.Ok);
         Assert.Equal(1200, fixture.Harness.Store.GetFilledProductionPalletQtyByOrderLine(fixture.OrderLineId), 3);
-        var pallets = fixture.Harness.Store.GetProductionPalletsByOrder(fixture.OrderId);
+        var pallets = fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId);
         Assert.Equal(2, pallets.Count(pallet => pallet.Status == ProductionPalletStatus.Printed));
         Assert.Equal(4, pallets.Count(pallet => pallet.Status == ProductionPalletStatus.Cancelled));
     }
@@ -163,7 +163,7 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
             InternalOrderPalletQtyUpdateScenario.BuildUpdateRequest(1200));
         Assert.True(stepA.Ok);
 
-        var afterDecrease = fixture.Harness.Store.GetProductionPalletsByOrder(fixture.OrderId);
+        var afterDecrease = fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId);
         Assert.Equal(2, afterDecrease.Count(pallet => pallet.Status == ProductionPalletStatus.Filled));
         Assert.Equal(0, ActiveOpenQty(afterDecrease, fixture.OrderLineId), 3);
         Assert.Equal(6, afterDecrease.Count(pallet => pallet.Status == ProductionPalletStatus.Cancelled));
@@ -174,7 +174,7 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
             InternalOrderPalletQtyUpdateScenario.BuildUpdateRequest(4800));
         Assert.True(stepB.Ok);
 
-        var afterIncrease = fixture.Harness.Store.GetProductionPalletsByOrder(fixture.OrderId);
+        var afterIncrease = fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId);
         Assert.Equal(2, afterIncrease.Count(pallet => pallet.Status == ProductionPalletStatus.Filled));
         Assert.Equal(6, afterIncrease.Count(pallet => pallet.Status == ProductionPalletStatus.Planned));
         Assert.Equal(6, afterIncrease.Count(pallet => pallet.Status == ProductionPalletStatus.Cancelled));
@@ -183,7 +183,6 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
         var activeDocLineIds = afterIncrease
             .Where(pallet => pallet.Status != ProductionPalletStatus.Cancelled)
             .Select(pallet => pallet.DocLineId)
-            .Where(id => id > 0)
             .ToArray();
         Assert.Equal(activeDocLineIds.Length, activeDocLineIds.Distinct().Count());
     }
@@ -202,7 +201,7 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
             fixture.OrderId,
             InternalOrderPalletQtyUpdateScenario.BuildUpdateRequest(1200));
 
-        var afterFirst = fixture.Harness.Store.GetProductionPalletsByOrder(fixture.OrderId)
+        var afterFirst = fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId)
             .Select(pallet => pallet.Id)
             .OrderBy(id => id)
             .ToArray();
@@ -212,13 +211,13 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
             fixture.OrderId,
             InternalOrderPalletQtyUpdateScenario.BuildUpdateRequest(1200));
 
-        var afterSecond = fixture.Harness.Store.GetProductionPalletsByOrder(fixture.OrderId)
+        var afterSecond = fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId)
             .Select(pallet => pallet.Id)
             .OrderBy(id => id)
             .ToArray();
 
         Assert.Equal(afterFirst, afterSecond);
-        Assert.Equal(0, ActiveOpenQty(fixture.Harness.Store.GetProductionPalletsByOrder(fixture.OrderId), fixture.OrderLineId), 3);
+        Assert.Equal(0, ActiveOpenQty(fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId), fixture.OrderLineId), 3);
     }
 
     [Fact]
@@ -248,7 +247,7 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
 
         Assert.Equal(2400, line.GetProperty("qty_ordered").GetDouble(), 3);
         Assert.Equal(1200, line.GetProperty("qty_produced").GetDouble(), 3);
-        var plannedHuCodes = fixture.Harness.Store.GetProductionPalletsByOrder(fixture.OrderId)
+        var plannedHuCodes = fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId)
             .Where(pallet => pallet.Status == ProductionPalletStatus.Planned)
             .Select(pallet => pallet.HuCode)
             .Where(code => !string.IsNullOrWhiteSpace(code))

@@ -21,7 +21,7 @@ public sealed class HuLifecycleRegressionTests
         var pallets = CreatePalletService(harness);
 
         var plan = pallets.PlanOrder(InternalOrderId);
-        var planned = harness.Store.GetProductionPalletsByOrder(InternalOrderId)
+        var planned = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId)
             .OrderBy(pallet => pallet.Id)
             .ToArray();
 
@@ -44,12 +44,12 @@ public sealed class HuLifecycleRegressionTests
         var pallets = CreatePalletService(harness);
 
         var first = pallets.PlanOrder(InternalOrderId);
-        var firstHuCodes = harness.Store.GetProductionPalletsByOrder(InternalOrderId)
+        var firstHuCodes = harness.Store.GetProductionPalletsByDoc(first.PrdDocId)
             .OrderBy(pallet => pallet.Id)
             .Select(pallet => pallet.HuCode)
             .ToArray();
         var second = pallets.PlanOrder(InternalOrderId);
-        var secondHuCodes = harness.Store.GetProductionPalletsByOrder(InternalOrderId)
+        var secondHuCodes = harness.Store.GetProductionPalletsByDoc(second.PrdDocId)
             .OrderBy(pallet => pallet.Id)
             .Select(pallet => pallet.HuCode)
             .ToArray();
@@ -70,7 +70,7 @@ public sealed class HuLifecycleRegressionTests
         var harness = CreateLifecycleHarness();
         var pallets = CreatePalletService(harness);
         var internalPlan = pallets.PlanOrder(InternalOrderId);
-        var plannedInternalHus = harness.Store.GetProductionPalletsByOrder(InternalOrderId)
+        var plannedInternalHus = harness.Store.GetProductionPalletsByDoc(internalPlan.PrdDocId)
             .OrderBy(pallet => pallet.Id)
             .Select(pallet => pallet.HuCode)
             .ToArray();
@@ -154,7 +154,7 @@ public sealed class HuLifecycleRegressionTests
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var customerPlan = pallets.PlanOrder(CustomerOrderId);
-        var customerPallets = harness.Store.GetProductionPalletsByOrder(CustomerOrderId)
+        var customerPallets = harness.Store.GetProductionPalletsByDoc(customerPlan.PrdDocId)
             .OrderBy(pallet => pallet.Id)
             .ToArray();
         var customerHus = customerPallets.Select(pallet => pallet.HuCode).ToArray();
@@ -196,7 +196,7 @@ public sealed class HuLifecycleRegressionTests
         var harness = scenario.Harness;
         var pallets = scenario.PalletService;
         var customerPlan = pallets.PlanOrder(CustomerOrderId);
-        var customerHus = harness.Store.GetProductionPalletsByOrder(CustomerOrderId)
+        var customerHus = harness.Store.GetProductionPalletsByDoc(customerPlan.PrdDocId)
             .Select(pallet => pallet.HuCode)
             .ToArray();
         FillHus(pallets, CustomerOrderId, customerPlan.PrdDocId, customerHus);
@@ -206,7 +206,10 @@ public sealed class HuLifecycleRegressionTests
             .OrderBy(pallet => pallet.Id)
             .Select(pallet => pallet.HuCode)
             .ToArray();
-        FillHus(pallets, InternalOrderId, 0, remainingInternalHus);
+        var openInternalPrdId = Assert.Single(harness.Store.GetDocsByOrder(InternalOrderId)
+            .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status != DocStatus.Closed)).Id;
+
+        FillHus(pallets, InternalOrderId, openInternalPrdId, remainingInternalHus);
 
         var customerReservedPlan = harness.GetOrderReceiptPlanLines(CustomerOrderId);
         Assert.Equal(4, customerReservedPlan.Count);
@@ -234,7 +237,7 @@ public sealed class HuLifecycleRegressionTests
         var harness = CreateLifecycleHarness();
         var pallets = CreatePalletService(harness);
         var internalPlan = pallets.PlanOrder(InternalOrderId);
-        var plannedInternalHus = harness.Store.GetProductionPalletsByOrder(InternalOrderId)
+        var plannedInternalHus = harness.Store.GetProductionPalletsByDoc(internalPlan.PrdDocId)
             .OrderBy(pallet => pallet.Id)
             .Select(pallet => pallet.HuCode)
             .ToArray();
@@ -363,7 +366,10 @@ public sealed class HuLifecycleRegressionTests
 
     private static IReadOnlyList<ProductionPallet> GetOrderPallets(CloseDocumentHarness harness, long orderId)
     {
-        return harness.Store.GetProductionPalletsByOrder(orderId)
+        return harness.Store.GetDocsByOrder(orderId)
+            .Where(doc => doc.Type == DocType.ProductionReceipt)
+            .OrderBy(doc => doc.Id)
+            .SelectMany(doc => harness.Store.GetProductionPalletsByDoc(doc.Id))
             .OrderBy(pallet => pallet.Id)
             .ToArray();
     }

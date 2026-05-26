@@ -47,31 +47,34 @@ public static class ProductionOrderLineHuCodes
             AddHu(rows, reservedLine.OrderLineId, huCode);
         }
 
-        foreach (var pallet in GetProductionPalletsForOrder(store, orderId).Where(pallet => IsActivePalletStatus(pallet.Status)))
+        foreach (var doc in store.GetDocsByOrder(orderId).Where(doc => doc.Type == DocType.ProductionReceipt))
         {
-            var componentLines = pallet.Lines.Count > 0
-                ? pallet.Lines
-                : new[]
-                {
-                    new ProductionPalletComponentLine
-                    {
-                        OrderLineId = pallet.OrderLineId,
-                        ItemId = pallet.ItemId
-                    }
-                };
-            foreach (var line in componentLines)
+            foreach (var pallet in store.GetProductionPalletsByDoc(doc.Id).Where(pallet => IsActivePalletStatus(pallet.Status)))
             {
-                if (!line.OrderLineId.HasValue)
+                var componentLines = pallet.Lines.Count > 0
+                    ? pallet.Lines
+                    : new[]
+                    {
+                        new ProductionPalletComponentLine
+                        {
+                            OrderLineId = pallet.OrderLineId,
+                            ItemId = pallet.ItemId
+                        }
+                    };
+                foreach (var line in componentLines)
                 {
-                    continue;
-                }
+                    if (!line.OrderLineId.HasValue)
+                    {
+                        continue;
+                    }
 
-                if (!ShouldShowPalletHuOnOrderLine(store, pallet, line))
-                {
-                    continue;
-                }
+                    if (!ShouldShowPalletHuOnOrderLine(store, pallet, line))
+                    {
+                        continue;
+                    }
 
-                AddHu(rows, line.OrderLineId.Value, pallet.HuCode!);
+                    AddHu(rows, line.OrderLineId.Value, pallet.HuCode!);
+                }
             }
         }
 
@@ -84,38 +87,41 @@ public static class ProductionOrderLineHuCodes
     {
         var rows = new Dictionary<long, List<OrderLineHuDisplayEntry>>();
 
-        foreach (var pallet in GetProductionPalletsForOrder(store, orderId).Where(pallet => IsActivePalletStatus(pallet.Status)))
+        foreach (var doc in store.GetDocsByOrder(orderId).Where(doc => doc.Type == DocType.ProductionReceipt))
         {
-            var componentLines = pallet.Lines.Count > 0
-                ? pallet.Lines
-                : new[]
-                {
-                    new ProductionPalletComponentLine
-                    {
-                        OrderLineId = pallet.OrderLineId,
-                        ItemId = pallet.ItemId,
-                        PlannedQty = pallet.PlannedQty,
-                        FilledQty = string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)
-                            ? pallet.PlannedQty
-                            : 0
-                    }
-                };
-            foreach (var line in componentLines)
+            foreach (var pallet in store.GetProductionPalletsByDoc(doc.Id).Where(pallet => IsActivePalletStatus(pallet.Status)))
             {
-                if (!line.OrderLineId.HasValue || !ShouldShowPalletHuOnOrderLine(store, pallet, line))
+                var componentLines = pallet.Lines.Count > 0
+                    ? pallet.Lines
+                    : new[]
+                    {
+                        new ProductionPalletComponentLine
+                        {
+                            OrderLineId = pallet.OrderLineId,
+                            ItemId = pallet.ItemId,
+                            PlannedQty = pallet.PlannedQty,
+                            FilledQty = string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)
+                                ? pallet.PlannedQty
+                                : 0
+                        }
+                    };
+                foreach (var line in componentLines)
                 {
-                    continue;
-                }
+                    if (!line.OrderLineId.HasValue || !ShouldShowPalletHuOnOrderLine(store, pallet, line))
+                    {
+                        continue;
+                    }
 
-                var qty = string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)
-                    ? line.FilledQty > StockQuantityRules.QtyTolerance ? line.FilledQty : line.PlannedQty
-                    : line.PlannedQty > StockQuantityRules.QtyTolerance ? line.PlannedQty : pallet.PlannedQty;
-                AddDisplay(rows, line.OrderLineId.Value, new OrderLineHuDisplayEntry(
-                    pallet.HuCode.Trim(),
-                    StatusLabel(pallet.Status),
-                    qty,
-                    IsWarehouseBound: false,
-                    SortOrder: 2));
+                    var qty = string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)
+                        ? line.FilledQty > StockQuantityRules.QtyTolerance ? line.FilledQty : line.PlannedQty
+                        : line.PlannedQty > StockQuantityRules.QtyTolerance ? line.PlannedQty : pallet.PlannedQty;
+                    AddDisplay(rows, line.OrderLineId.Value, new OrderLineHuDisplayEntry(
+                        pallet.HuCode.Trim(),
+                        StatusLabel(pallet.Status),
+                        qty,
+                        IsWarehouseBound: false,
+                        SortOrder: 2));
+                }
             }
         }
 
@@ -179,26 +185,5 @@ public static class ProductionOrderLineHuCodes
             .Where(row => row.ItemId == itemId)
             .Where(row => string.Equals(row.HuCode?.Trim(), huCode, StringComparison.OrdinalIgnoreCase))
             .Sum(row => row.Qty) > StockQuantityRules.QtyTolerance;
-    }
-
-    private static IReadOnlyList<ProductionPallet> GetProductionPalletsForOrder(IDataStore store, long orderId)
-    {
-        try
-        {
-            return store.GetProductionPalletsByOrder(orderId);
-        }
-        catch (Exception ex) when (IsMockStoreException(ex))
-        {
-            return store.GetDocsByOrder(orderId)
-                .Where(doc => doc.Type == DocType.ProductionReceipt)
-                .SelectMany(doc => store.GetProductionPalletsByDoc(doc.Id))
-                .ToArray();
-        }
-    }
-
-    private static bool IsMockStoreException(Exception ex)
-    {
-        return ex.GetType().Namespace?.StartsWith("Moq", StringComparison.Ordinal) == true
-               || ex is NotImplementedException;
     }
 }

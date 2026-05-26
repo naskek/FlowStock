@@ -170,12 +170,12 @@
                         </Style>
                     </DataGrid.RowStyle>
                     <DataGrid.Columns>
-                        <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" MinWidth="220" IsReadOnly="True" />
-                        <DataGridTextColumn Header="SKU / ШК" Binding="{Binding Barcode}" Width="SizeToCells" IsReadOnly="True" />
-                        <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="SizeToCells" IsReadOnly="True" />
-                        <DataGridTextColumn Header="Заказано (база)" Binding="{Binding QtyOrdered}" Width="SizeToCells" IsReadOnly="True" />
-                        <DataGridTextColumn x:Name="HuAvailableColumn" Header="Доступно HU" Binding="{Binding AvailableHuDisplay}" Width="SizeToCells" IsReadOnly="True" />
-                        <DataGridTemplateColumn x:Name="HuBoundColumn" Header="HU по строке" Width="SizeToCells">
+                        <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="220" IsReadOnly="True" />
+                        <DataGridTextColumn Header="SKU / ШК" Binding="{Binding Barcode}" Width="150" IsReadOnly="True" />
+                        <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="150" IsReadOnly="True" />
+                        <DataGridTextColumn Header="Заказано (база)" Binding="{Binding QtyOrdered}" Width="140" IsReadOnly="True" />
+                        <DataGridTextColumn x:Name="HuAvailableColumn" Header="Доступно HU" Binding="{Binding AvailableHuDisplay}" Width="120" IsReadOnly="True" />
+                        <DataGridTemplateColumn x:Name="HuBoundColumn" Header="HU по строке" Width="460" MinWidth="420">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <ItemsControl ItemsSource="{Binding HuDisplayRows}">
@@ -199,8 +199,8 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTextColumn x:Name="HuRemainingColumn" Header="Осталось HU" Binding="{Binding RemainingHuDisplay}" Width="SizeToCells" IsReadOnly="True" />
-                        <DataGridTemplateColumn x:Name="HuPickerColumn" Header="HU" Width="SizeToCells">
+                        <DataGridTextColumn x:Name="HuRemainingColumn" Header="Осталось HU" Binding="{Binding RemainingHuDisplay}" Width="120" IsReadOnly="True" />
+                        <DataGridTemplateColumn x:Name="HuPickerColumn" Header="HU" Width="120">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <Button Content="{Binding HuPickerLabel}"
@@ -211,7 +211,7 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="Общий HU" Width="SizeToCells">
+                        <DataGridTemplateColumn Header="Общий HU" Width="100">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <CheckBox IsChecked="{Binding IsMixedPalletLine, Mode=OneWay}"
@@ -222,7 +222,7 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="Группа HU" Width="SizeToCells">
+                        <DataGridTemplateColumn Header="Группа HU" Width="90">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBox Text="{Binding MixedPalletGroupNumber, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}"
@@ -235,11 +235,11 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTextColumn x:Name="ProcessedQtyColumn" Header="Отгружено" Binding="{Binding QtyShipped}" Width="SizeToCells" IsReadOnly="True" />
-                        <DataGridTextColumn Header="Осталось" Binding="{Binding QtyRemaining}" Width="SizeToCells" IsReadOnly="True" />
-                        <DataGridTextColumn x:Name="AvailableQtyColumn" Header="В наличии" Binding="{Binding QtyAvailable}" Width="SizeToCells" IsReadOnly="True" />
-                        <DataGridTextColumn x:Name="CanShipNowColumn" Header="Можно отгрузить" Binding="{Binding CanShipNow}" Width="SizeToCells" IsReadOnly="True" />
-                        <DataGridTextColumn x:Name="ShortageColumn" Header="Не хватает" Binding="{Binding Shortage}" Width="SizeToCells" IsReadOnly="True" />
+                        <DataGridTextColumn x:Name="ProcessedQtyColumn" Header="Отгружено" Binding="{Binding QtyShipped}" Width="120" IsReadOnly="True" />
+                        <DataGridTextColumn Header="Осталось" Binding="{Binding QtyRemaining}" Width="120" IsReadOnly="True" />
+                        <DataGridTextColumn x:Name="AvailableQtyColumn" Header="В наличии" Binding="{Binding QtyAvailable}" Width="120" IsReadOnly="True" />
+                        <DataGridTextColumn x:Name="CanShipNowColumn" Header="Можно отгрузить" Binding="{Binding CanShipNow}" Width="140" IsReadOnly="True" />
+                        <DataGridTextColumn x:Name="ShortageColumn" Header="Не хватает" Binding="{Binding Shortage}" Width="120" IsReadOnly="True" />
                     </DataGrid.Columns>
                 </DataGrid>
                 <TextBlock x:Name="OrderLinesEmptyText"

@@ -1052,7 +1052,9 @@ public sealed class OrderService
         long orderId,
         long orderLineId)
     {
-        return store.GetProductionPalletsByOrder(orderId)
+        return store.GetDocsByOrder(orderId)
+            .Where(doc => doc.Type == DocType.ProductionReceipt)
+            .SelectMany(doc => store.GetProductionPalletsByDoc(doc.Id))
             .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
             .Where(pallet => pallet.OrderLineId == orderLineId
                              || pallet.Lines.Any(line => line.OrderLineId == orderLineId))

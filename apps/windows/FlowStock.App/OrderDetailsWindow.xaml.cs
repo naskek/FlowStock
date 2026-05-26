@@ -384,7 +384,6 @@ public partial class OrderDetailsWindow : Window
             {
                 MessageBox.Show(result.Message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
                 LoadOrder();
-                OrderStateChanged?.Invoke(this, EventArgs.Empty);
                 return;
             }
 
@@ -421,7 +420,6 @@ public partial class OrderDetailsWindow : Window
                 $"Осталось наполнить: {FormatQty(result.RemainingQty)}";
             MessageBox.Show(message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
             LoadOrder();
-            OrderStateChanged?.Invoke(this, EventArgs.Empty);
         }
         finally
         {
@@ -437,7 +435,7 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        if (!HasCancelableProductionPalletPlan(_orderId.Value))
+        if (!HasOpenProductionPalletPlan(_orderId.Value))
         {
             MessageBox.Show("План паллет не найден.", "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
@@ -876,8 +874,14 @@ public partial class OrderDetailsWindow : Window
         }
 
         _huBinding.MarkApplyCommitted();
-        LoadOrder(_selectedLine?.Id);
-        OrderStateChanged?.Invoke(this, EventArgs.Empty);
+        if (reloadAfterSuccess)
+        {
+            LoadOrder(_selectedLine?.Id);
+        }
+        else
+        {
+            SyncHuBindingLines();
+        }
 
         return true;
     }
@@ -1836,7 +1840,7 @@ public partial class OrderDetailsWindow : Window
         var canPrint = _orderId.HasValue && _order?.Status is not (OrderStatus.Cancelled or OrderStatus.Merged);
         var canDeletePlan = _orderId.HasValue
                             && _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
-                            && HasCancelableProductionPalletPlan(_orderId.Value);
+                            && HasOpenProductionPalletPlan(_orderId.Value);
         PlanPalletsButton.IsEnabled = canPlan;
         PrintPalletLabelsButton.IsEnabled = canPrint;
         DeletePalletPlanButton.IsEnabled = canDeletePlan;
@@ -1979,21 +1983,10 @@ public partial class OrderDetailsWindow : Window
     {
         try
         {
-            return _services.DataStore.GetProductionPalletsByOrder(orderId)
-                .Any(pallet => IsActiveProductionPalletStatus(pallet.Status));
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private bool HasCancelableProductionPalletPlan(long orderId)
-    {
-        try
-        {
-            return _services.DataStore.GetProductionPalletsByOrder(orderId)
-                .Any(pallet => IsCancelableProductionPalletStatus(pallet.Status));
+            return _services.DataStore.GetDocsByOrder(orderId)
+                .Any(doc => doc.Type == DocType.ProductionReceipt
+                            && doc.Status != DocStatus.Closed
+                            && _services.DataStore.HasProductionPallets(doc.Id));
         }
         catch
         {
@@ -2005,7 +1998,9 @@ public partial class OrderDetailsWindow : Window
     {
         try
         {
-            return _services.DataStore.GetProductionPalletsByOrder(orderId)
+            return _services.DataStore.GetDocsByOrder(orderId)
+                .Where(doc => doc.Type == DocType.ProductionReceipt)
+                .SelectMany(doc => _services.DataStore.GetProductionPalletsByDoc(doc.Id))
                 .Where(pallet => IsActiveProductionPalletStatus(pallet.Status))
                 .SelectMany(GetProductionPalletOrderLineIds)
                 .Where(id => id > 0)
@@ -2046,12 +2041,6 @@ public partial class OrderDetailsWindow : Window
                || string.Equals(status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool IsCancelableProductionPalletStatus(string status)
-    {
-        return string.Equals(status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
-               || string.Equals(status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase);
-    }
-
     private void ApplyProductionHuCodesFromStore(long orderId)
     {
         try
@@ -2085,7 +2074,9 @@ public partial class OrderDetailsWindow : Window
     {
         try
         {
-            return _services.DataStore.GetProductionPalletsByOrder(orderId)
+            return _services.DataStore.GetDocsByOrder(orderId)
+                .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status != DocStatus.Closed)
+                .SelectMany(doc => _services.DataStore.GetProductionPalletsByDoc(doc.Id))
                 .Any(pallet =>
                     !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)
                     && string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase));
@@ -2100,7 +2091,9 @@ public partial class OrderDetailsWindow : Window
     {
         try
         {
-            return _services.DataStore.GetProductionPalletsByOrder(orderId)
+            return _services.DataStore.GetDocsByOrder(orderId)
+                .Where(doc => doc.Type == DocType.ProductionReceipt)
+                .SelectMany(doc => _services.DataStore.GetProductionPalletsByDoc(doc.Id))
                 .Any(pallet =>
                     !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)
                     && !string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase));

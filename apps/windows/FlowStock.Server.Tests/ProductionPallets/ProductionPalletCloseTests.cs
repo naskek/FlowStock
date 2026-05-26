@@ -25,14 +25,17 @@ public sealed class ProductionPalletCloseTests
     {
         var harness = CreateHarness();
         harness.SeedProductionPallet(BuildPallet(ProductionPalletStatus.Planned));
-        var palletService = CreateAutoClosePalletService(harness);
+        var palletService = new ProductionPalletService(harness.Store);
         var fill = palletService.Fill("HU-000001", "TSD-01");
+        Assert.True(fill.Success);
+        Assert.Empty(harness.LedgerEntries);
 
-        Assert.True(fill.Success, fill.Error);
+        var close = harness.CreateService().TryCloseDoc(20, allowNegative: false);
+
+        Assert.True(close.Success);
         Assert.Single(harness.LedgerEntries);
-        Assert.NotEqual(20, fill.ClosedPrdDocId);
-        Assert.Equal(DocStatus.Closed, harness.GetDoc(fill.ClosedPrdDocId!.Value).Status);
-        Assert.Equal(DocStatus.Draft, harness.GetDoc(20).Status);
+        Assert.Equal(DocStatus.Closed, harness.GetDoc(20).Status);
+        Assert.Equal(OrderStatus.Shipped, harness.GetOrder(10).Status);
     }
 
     [Fact]
@@ -45,25 +48,28 @@ public sealed class ProductionPalletCloseTests
             huCode: "HU-PLAN-001",
             status: ProductionPalletStatus.Planned,
             plannedQty: 1200));
-        var palletService = CreateAutoClosePalletService(harness);
-        var fillOne = palletService.Fill("HU-PLAN-001", "TSD-01"); Assert.True(fillOne.Success, fillOne.Error);
+        var palletService = new ProductionPalletService(harness.Store);
+        Assert.True(palletService.Fill("HU-PLAN-001", "TSD-01").Success);
 
+        var close = harness.CreateService().TryCloseDoc(20, allowNegative: false);
+
+        Assert.True(close.Success);
         Assert.Single(harness.LedgerEntries);
         Assert.Equal("HU-PLAN-001", harness.LedgerEntries.Single().HuCode);
-        Assert.Equal(DocStatus.Draft, harness.GetDoc(20).Status);
+        Assert.Equal(DocStatus.Closed, harness.GetDoc(20).Status);
     }
 
     [Fact]
     public void ProductionOrder_PlanFillCloseAndShip_UsesPlannedHu()
     {
         var harness = CreateOrderPlanningHarness();
-        var palletService = CreateAutoClosePalletService(harness);
+        var palletService = new ProductionPalletService(harness.Store);
         var documentService = harness.CreateService();
 
         var plan = palletService.PlanOrder(10);
         var pallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId));
-        var fill = palletService.Fill(pallet.HuCode, "TSD-01");
-        Assert.True(fill.Success, fill.Error);
+        Assert.True(palletService.Fill(pallet.HuCode, "TSD-01").Success);
+        Assert.True(documentService.TryCloseDoc(plan.PrdDocId, allowNegative: false).Success);
 
         harness.SeedPartner(new Partner { Id = 1, Name = "Клиент" });
         harness.SeedDoc(new Doc
@@ -93,7 +99,7 @@ public sealed class ProductionPalletCloseTests
         Assert.Equal(DocStatus.Closed, harness.GetDoc(30).Status);
         Assert.Equal(2, harness.LedgerEntries.Count);
         Assert.Equal(0, harness.LedgerEntries.Where(entry => entry.HuCode == pallet.HuCode).Sum(entry => entry.QtyDelta));
-        Assert.Contains(harness.LedgerEntries, entry => entry.DocId == fill.ClosedPrdDocId && entry.QtyDelta == 600 && entry.HuCode == pallet.HuCode);
+        Assert.Contains(harness.LedgerEntries, entry => entry.DocId == plan.PrdDocId && entry.QtyDelta == 600 && entry.HuCode == pallet.HuCode);
         Assert.Contains(harness.LedgerEntries, entry => entry.DocId == 30 && entry.QtyDelta == -600 && entry.HuCode == pallet.HuCode);
     }
 
@@ -101,13 +107,13 @@ public sealed class ProductionPalletCloseTests
     public void FillPallet_UsesPlannedHuOnly_WithoutWritingLedger()
     {
         var harness = CreateTwoPalletHarness();
-        var palletService = CreateAutoClosePalletService(harness);
+        var palletService = new ProductionPalletService(harness.Store);
 
         var fill = palletService.Fill("HU-PLAN-001", "TSD-01");
 
-        Assert.True(fill.Success, fill.Error);
-        Assert.Single(harness.LedgerEntries);
-        var filled = harness.Store.GetProductionPalletByHu("HU-PLAN-001")!;
+        Assert.True(fill.Success);
+        Assert.Empty(harness.LedgerEntries);
+        var filled = harness.Store.GetProductionPalletsByDoc(20).Single(row => row.HuCode == "HU-PLAN-001");
         Assert.Equal(ProductionPalletStatus.Filled, filled.Status);
     }
 
@@ -115,17 +121,22 @@ public sealed class ProductionPalletCloseTests
     public void CloseProductionReceipt_WithAllFilledProductionPallets_KeepsStockOnPlannedHusWithoutDuplicate()
     {
         var harness = CreateTwoPalletHarness();
-        var palletService = CreateAutoClosePalletService(harness);
-        var fillOne = palletService.Fill("HU-PLAN-001", "TSD-01"); Assert.True(fillOne.Success, fillOne.Error);
-        var fillTwo = palletService.Fill("HU-PLAN-002", "TSD-01"); Assert.True(fillTwo.Success, fillTwo.Error);
+        var palletService = new ProductionPalletService(harness.Store);
+        Assert.True(palletService.Fill("HU-PLAN-001", "TSD-01").Success);
+        Assert.True(palletService.Fill("HU-PLAN-002", "TSD-01").Success);
+        Assert.Empty(harness.LedgerEntries);
 
+        var close = harness.CreateService().TryCloseDoc(20, allowNegative: false);
+
+        Assert.True(close.Success);
         Assert.Equal(2, harness.LedgerEntries.Count);
         Assert.Equal(600, harness.LedgerEntries.Where(row => row.HuCode == "HU-PLAN-001").Sum(row => row.QtyDelta));
         Assert.Equal(600, harness.LedgerEntries.Where(row => row.HuCode == "HU-PLAN-002").Sum(row => row.QtyDelta));
         Assert.DoesNotContain(harness.LedgerEntries, row =>
             !string.Equals(row.HuCode, "HU-PLAN-001", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(row.HuCode, "HU-PLAN-002", StringComparison.OrdinalIgnoreCase));
-        Assert.Equal(DocStatus.Draft, harness.GetDoc(20).Status);
+        Assert.Equal(DocStatus.Closed, harness.GetDoc(20).Status);
+        Assert.Equal(OrderStatus.Shipped, harness.GetOrder(10).Status);
     }
 
     [Fact]
@@ -133,13 +144,22 @@ public sealed class ProductionPalletCloseTests
     {
         var harness = CreateHarness();
         harness.SeedProductionPallet(BuildPallet(ProductionPalletStatus.Planned));
-        var palletService = CreateAutoClosePalletService(harness);
-        var first = palletService.Fill("HU-000001", "TSD-01");
-        var second = palletService.Fill("HU-000001", "TSD-01");
+        var palletService = new ProductionPalletService(harness.Store);
+        Assert.True(palletService.Fill("HU-000001", "TSD-01").Success);
+        harness.Store.AddLedgerEntry(new LedgerEntry
+        {
+            Timestamp = new DateTime(2026, 5, 13, 10, 0, 0),
+            DocId = 20,
+            ItemId = 100,
+            LocationId = 1,
+            QtyDelta = 600,
+            HuCode = "HU-000001"
+        });
 
-        Assert.True(first.Success);
-        Assert.True(second.Success);
-        Assert.True(second.AlreadyFilled);
+        var result = harness.CreateService().TryCloseDoc(20, allowNegative: false);
+
+        Assert.True(result.Success);
+        Assert.Equal(DocStatus.Closed, harness.GetDoc(20).Status);
         Assert.Single(harness.LedgerEntries);
         Assert.Equal(600, harness.LedgerEntries.Single().QtyDelta);
     }
@@ -165,22 +185,25 @@ public sealed class ProductionPalletCloseTests
     {
         var harness = CreateTwoPalletHarness();
         var documentService = harness.CreateService();
-        var palletService = CreateAutoClosePalletService(harness);
+        var palletService = new ProductionPalletService(harness.Store);
 
         var initial = Assert.Single(documentService.GetOrderReceiptRemaining(10));
         Assert.Equal(0, initial.QtyReceived);
         Assert.Equal(1200, initial.QtyRemaining);
 
-        var fillOne = palletService.Fill("HU-PLAN-001", "TSD-01"); Assert.True(fillOne.Success, fillOne.Error);
+        Assert.True(palletService.Fill("HU-PLAN-001", "TSD-01").Success);
         var partial = Assert.Single(documentService.GetOrderReceiptRemaining(10));
         Assert.Equal(600, partial.QtyReceived);
         Assert.Equal(600, partial.QtyRemaining);
 
-        var fillTwo = palletService.Fill("HU-PLAN-002", "TSD-01"); Assert.True(fillTwo.Success, fillTwo.Error);
+        Assert.True(palletService.Fill("HU-PLAN-002", "TSD-01").Success);
         var fullBeforeClose = Assert.Single(documentService.GetOrderReceiptRemaining(10));
         Assert.Equal(1200, fullBeforeClose.QtyReceived);
         Assert.Equal(0, fullBeforeClose.QtyRemaining);
 
+        var close = documentService.TryCloseDoc(20, allowNegative: false);
+
+        Assert.True(close.Success);
         var fullAfterClose = Assert.Single(documentService.GetOrderReceiptRemaining(10));
         Assert.Equal(1200, fullAfterClose.QtyReceived);
         Assert.Equal(0, fullAfterClose.QtyRemaining);
@@ -251,16 +274,6 @@ public sealed class ProductionPalletCloseTests
             huCode: "HU-PLAN-002",
             status: ProductionPalletStatus.Planned));
         return harness;
-    }
-
-    private static ProductionPalletService CreateAutoClosePalletService(CloseDocumentHarness harness)
-    {
-        var documentService = harness.CreateService();
-        var fillClose = new ProductionFillCloseService(
-            harness.Store,
-            documentService,
-            new FlowStockLedgerFlowOptions());
-        return new ProductionPalletService(harness.Store, fillClose);
     }
 
     private static CloseDocumentHarness CreateOrderPlanningHarness()
@@ -360,22 +373,7 @@ public sealed class ProductionPalletCloseTests
             ToLocationCode = "MAIN",
             Status = status,
             FilledAt = status == ProductionPalletStatus.Filled ? new DateTime(2026, 5, 13, 10, 0, 0) : null,
-            CreatedAt = new DateTime(2026, 5, 13, 9, 0, 0),
-            Lines =
-            [
-                new ProductionPalletComponentLine
-                {
-                    Id = id * 10,
-                    ProductionPalletId = id,
-                    DocLineId = docLineId,
-                    OrderLineId = 101,
-                    ItemId = 100,
-                    ItemName = "Товар",
-                    PlannedQty = plannedQty,
-                    FilledQty = status == ProductionPalletStatus.Filled ? plannedQty : 0,
-                    CreatedAt = new DateTime(2026, 5, 13, 9, 0, 0)
-                }
-            ]
+            CreatedAt = new DateTime(2026, 5, 13, 9, 0, 0)
         };
     }
 }
