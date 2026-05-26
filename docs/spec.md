@@ -127,8 +127,9 @@
   - `GET /api/tsd/production/filling-docs` сохраняется как compatibility endpoint для старого PRD-ориентированного списка, но новый TSD UX его не использует;
   - `GET /api/docs/{docId}/production-pallets` возвращает паллеты, summary по PRD и summary по строкам заказа;
   - `POST /api/tsd/production/scan-pallet` валидирует выбранную паллету и возвращает read-only preview для подтверждения оператором, включая состав `lines` для mixed pallet, не меняя `ledger`;
-  - `POST /api/tsd/production/fill-pallet` принимает `hu_code` и `device_id`, находит плановую паллету, валидирует остаток по всем строкам состава, переводит паллету в `FILLED`;
-  - при `FlowStock:ProductionAutoCloseOnFill = true` (ветка `new-ledger-logic`, default) сервер после fill изолирует паллету в отдельный PRD, закрывает его и пишет `ledger` (+qty); WPF close PRD в normal path не требуется;
+  - `POST /api/tsd/production/fill-pallet` принимает `hu_code` и `device_id`, находит плановую паллету, валидирует остаток по всем строкам состава и выполняет fill атомарно: статус `FILLED`, auto-close PRD и запись `ledger` коммитятся вместе; при ошибке auto-close/ledger паллета остается `PLANNED`/`PRINTED`, PRD и `ledger` не меняются;
+  - при `FlowStock:ProductionAutoCloseOnFill = true` (ветка `new-ledger-logic`, default) сервер после fill изолирует паллету в отдельный PRD, закрывает его и пишет `ledger` (+qty); WPF close PRD в normal path не требуется. Для mixed pallet одна `production_pallets.id` может иметь несколько строк состава, поэтому scan/fill/close агрегируют component rows через grouping по паллете и item, а DTO возвращает один HU с `lines[]`;
+  - повторный scan/fill уже успешно наполненной паллеты с закрытым PRD и положительным ledger stock идемпотентен и не пишет duplicate ledger. Историческое состояние `FILLED` без receipt ledger не считается завершенным для TSD: заказ остается видимым или scan/fill возвращает диагностическую ошибку;
   - `PLANNED`/`PRINTED` не являются физическим stock; физический факт — только `ledger` после close PRD;
   - TSD outbound: при `FlowStock:OutboundAutoCloseOnComplete = true` последний scan/complete закрывает OUT и пишет `ledger` (−qty);
   - резерв HU для CUSTOMER (`order_receipt_plan_lines`) допускает только `LEDGER_STOCK`; `INTERNAL_FILLED` не используется;

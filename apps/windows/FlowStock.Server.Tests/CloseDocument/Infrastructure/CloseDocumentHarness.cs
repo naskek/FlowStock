@@ -39,6 +39,7 @@ internal sealed class CloseDocumentHarness
     private long _nextProductionPalletId = 1;
     private long _nextProductionPalletHuNumber = 1;
     private bool _failNextUpdateOrderLineQty;
+    private bool _failNextAddLedgerEntry;
 
     public CloseDocumentHarness()
     {
@@ -58,6 +59,11 @@ internal sealed class CloseDocumentHarness
     public void FailNextUpdateOrderLineQty()
     {
         _failNextUpdateOrderLineQty = true;
+    }
+
+    public void FailNextAddLedgerEntry()
+    {
+        _failNextAddLedgerEntry = true;
     }
 
     public DocumentService CreateService()
@@ -1656,6 +1662,12 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.AddLedgerEntry(It.IsAny<LedgerEntry>()))
             .Callback<LedgerEntry>(entry =>
             {
+                if (_failNextAddLedgerEntry)
+                {
+                    _failNextAddLedgerEntry = false;
+                    throw new InvalidOperationException("Simulated ledger write failure.");
+                }
+
                 _postedLedger.Add(new LedgerEntry
                 {
                     Id = _postedLedger.Count + 1,
