@@ -16,7 +16,7 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
         var fixture = CreateCustomerFixture(orderedQty: 1200);
         var palletService = new ProductionPalletService(fixture.Harness.Store);
         var plan = palletService.PlanOrder(fixture.OrderId);
-        Assert.Equal(2, fixture.Harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Count);
+        Assert.Equal(2, fixture.Harness.Store.GetProductionPalletsByOrder(fixture.OrderId).Count);
         await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
 
         var payload = await UpdateOrderHttpApi.UpdateAsync(
@@ -26,7 +26,7 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
 
         Assert.True(payload.Ok);
         Assert.Equal(600, Assert.Single(fixture.Harness.Store.GetOrderLines(fixture.OrderId)).QtyOrdered, 3);
-        var pallets = fixture.Harness.Store.GetProductionPalletsByDoc(plan.PrdDocId);
+        var pallets = fixture.Harness.Store.GetProductionPalletsByOrder(fixture.OrderId);
         var active = pallets
             .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
             .ToArray();
@@ -47,7 +47,7 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
         var fixture = CreateCustomerFixture(orderedQty: 1200);
         var palletService = new ProductionPalletService(fixture.Harness.Store);
         var plan = palletService.PlanOrder(fixture.OrderId);
-        var filledHu = fixture.Harness.Store.GetProductionPalletsByDoc(plan.PrdDocId)
+        var filledHu = fixture.Harness.Store.GetProductionPalletsByOrder(fixture.OrderId)
             .OrderBy(pallet => pallet.Id)
             .First()
             .HuCode;
@@ -420,9 +420,7 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
 
     private static void AssertNoActiveProductionPalletsForOrderLine(CustomerFixture fixture)
     {
-        var activePallets = fixture.Harness.Store.GetDocsByOrder(fixture.OrderId)
-            .Where(doc => doc.Type == DocType.ProductionReceipt)
-            .SelectMany(doc => fixture.Harness.Store.GetProductionPalletsByDoc(doc.Id))
+        var activePallets = fixture.Harness.Store.GetProductionPalletsByOrder(fixture.OrderId)
             .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
             .Where(pallet => pallet.OrderLineId == fixture.OrderLineId
                              || pallet.Lines.Any(line => line.OrderLineId == fixture.OrderLineId))
@@ -435,9 +433,7 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
         int expectedCount,
         double expectedQty)
     {
-        var activePallets = fixture.Harness.Store.GetDocsByOrder(fixture.OrderId)
-            .Where(doc => doc.Type == DocType.ProductionReceipt)
-            .SelectMany(doc => fixture.Harness.Store.GetProductionPalletsByDoc(doc.Id))
+        var activePallets = fixture.Harness.Store.GetProductionPalletsByOrder(fixture.OrderId)
             .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
             .Where(pallet => pallet.OrderLineId == fixture.OrderLineId
                              || pallet.Lines.Any(line => line.OrderLineId == fixture.OrderLineId))

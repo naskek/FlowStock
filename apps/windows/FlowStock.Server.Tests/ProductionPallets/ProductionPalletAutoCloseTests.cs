@@ -104,12 +104,12 @@ public sealed class ProductionPalletAutoCloseTests
         var pallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId));
 
         var fill = service.Fill(pallet.HuCode, "TSD-01", orderId: 10, prdDocId: plan.PrdDocId);
-        var reloaded = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId));
+        var reloaded = harness.Store.GetProductionPalletByHu(pallet.HuCode)!;
 
         Assert.True(fill.Success);
         Assert.True(fill.PrdAutoClosed);
         Assert.Equal(ProductionPalletStatus.Filled, reloaded.Status);
-        Assert.Equal(DocStatus.Closed, harness.GetDoc(plan.PrdDocId).Status);
+        Assert.Equal(DocStatus.Closed, harness.GetDoc(fill.ClosedPrdDocId!.Value).Status);
         Assert.Equal(2, harness.LedgerEntries.Count);
         Assert.Contains(harness.LedgerEntries, entry => entry.ItemId == 100 && entry.QtyDelta == 300);
         Assert.Contains(harness.LedgerEntries, entry => entry.ItemId == 200 && entry.QtyDelta == 200);
@@ -122,6 +122,8 @@ public sealed class ProductionPalletAutoCloseTests
         var service = CreatePalletService(harness);
         var plan = service.PlanOrder(10);
         var pallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId));
+        var prdDocCountBefore = harness.Store.GetDocsByOrder(10)
+            .Count(doc => doc.Type == DocType.ProductionReceipt);
         harness.FailNextAddLedgerEntry();
 
         var fill = service.Fill(pallet.HuCode, "TSD-01", orderId: 10, prdDocId: plan.PrdDocId);
@@ -130,7 +132,7 @@ public sealed class ProductionPalletAutoCloseTests
         Assert.False(fill.Success);
         Assert.Contains("ledger", fill.Error, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(ProductionPalletStatus.Planned, reloaded.Status);
-        Assert.Equal(DocStatus.Draft, harness.GetDoc(plan.PrdDocId).Status);
+        Assert.Equal(prdDocCountBefore, harness.Store.GetDocsByOrder(10).Count(doc => doc.Type == DocType.ProductionReceipt));
         Assert.Empty(harness.LedgerEntries);
     }
 
@@ -153,7 +155,7 @@ public sealed class ProductionPalletAutoCloseTests
         Assert.Contains("ledger", scan.Error, StringComparison.OrdinalIgnoreCase);
         Assert.False(fill.Success);
         Assert.Contains("ledger", fill.Error, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(DocStatus.Draft, harness.GetDoc(plan.PrdDocId).Status);
+        Assert.DoesNotContain(harness.Store.GetDocsByOrder(10), doc => doc.Type == DocType.ProductionReceipt);
         Assert.Empty(harness.LedgerEntries);
     }
 
@@ -169,9 +171,7 @@ public sealed class ProductionPalletAutoCloseTests
 
         var first = service.Fill(pallets[0].HuCode, "TSD-01", orderId: 10, prdDocId: plan.PrdDocId);
         var afterFirstOrder = Assert.Single(service.GetFillingOrders());
-        var afterFirstPallets = harness.Store.GetDocsByOrder(10)
-            .Where(doc => doc.Type == DocType.ProductionReceipt)
-            .SelectMany(doc => harness.Store.GetProductionPalletsByDoc(doc.Id))
+        var afterFirstPallets = harness.Store.GetProductionPalletsByOrder(10)
             .OrderBy(pallet => pallet.Id)
             .ToArray();
 

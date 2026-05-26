@@ -206,18 +206,18 @@ public sealed class CustomerOutboundBoundHuTests
     public void CustomerOutboundLifecycle_InternalFillBindShipThenClosePrd_NoDuplicateReceiptLedger()
     {
         var harness = CreateLifecycleHarness();
-        var palletService = new ProductionPalletService(harness.Store);
         var documentService = harness.CreateService();
+        var palletService = new ProductionPalletService(
+            harness.Store,
+            new ProductionFillCloseService(
+                harness.Store,
+                documentService,
+                new FlowStockLedgerFlowOptions()));
 
         var plan = palletService.PlanOrder(66);
-        var pallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId));
-        Assert.True(palletService.Fill(pallet.HuCode, "TSD-01").Success);
-        harness.SeedLedgerEntry(
-            plan.PrdDocId,
-            100,
-            1,
-            600,
-            pallet.HuCode);
+        var pallet = Assert.Single(harness.Store.GetProductionPalletsByOrder(66));
+        var fill = palletService.Fill(pallet.HuCode, "TSD-01");
+        Assert.True(fill.Success, fill.Error);
 
         harness.SeedOrderReceiptPlanLines(78, new OrderReceiptPlanLine
         {
@@ -245,9 +245,7 @@ public sealed class CustomerOutboundBoundHuTests
         Assert.Single(harness.GetDocLines(outDocId), line => string.Equals(line.FromHu, pallet.HuCode, StringComparison.OrdinalIgnoreCase));
         Assert.True(documentService.TryCloseDoc(outDocId, allowNegative: false).Success);
 
-        var closePrd = documentService.TryCloseDoc(plan.PrdDocId, allowNegative: false);
-        Assert.True(closePrd.Success);
-        Assert.Equal(DocStatus.Closed, harness.GetDoc(plan.PrdDocId).Status);
+        Assert.Equal(DocStatus.Closed, harness.GetDoc(fill.ClosedPrdDocId!.Value).Status);
         Assert.Equal(OrderStatus.Shipped, harness.GetOrder(66).Status);
 
         var inbound = harness.LedgerEntries.Where(entry => entry.QtyDelta > 0 && entry.HuCode == pallet.HuCode).ToArray();

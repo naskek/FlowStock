@@ -89,8 +89,10 @@ public interface IDataStore
     void UpdateDocOrder(long docId, long? orderId, string? orderRef);
     void UpdateDocStatus(long docId, DocStatus status, DateTime? closedAt);
     IReadOnlyList<ProductionPallet> PlanProductionPallets(long docId, DateTime createdAt);
+    IReadOnlyList<ProductionPallet> AddProductionPalletPlan(long orderId, IReadOnlyList<ProductionPalletPlanDraft> pallets, DateTime createdAt);
     string CreateProductionPalletHuCode(string? createdBy);
     IReadOnlyList<ProductionPallet> GetProductionPalletsByDoc(long docId);
+    IReadOnlyList<ProductionPallet> GetProductionPalletsByOrder(long orderId);
     ProductionPallet? GetProductionPalletByHu(string huCode);
     IReadOnlyList<ProductionPalletWorkItem> GetActiveProductionPalletWorkItems();
     bool HasProductionPallets(long docId);
@@ -110,6 +112,11 @@ public interface IDataStore
         long targetOrderId,
         IReadOnlyDictionary<long, long> targetOrderLineIdByItemId);
     void AssignProductionPalletToPrdDoc(long productionPalletId, long targetPrdDocId);
+    void AttachProductionPalletToPrdDoc(
+        long productionPalletId,
+        long targetPrdDocId,
+        long targetDocLineId,
+        IReadOnlyDictionary<long, long> targetDocLineIdsByPalletLineId);
     double GetFilledProductionPalletQtyByOrderLine(long orderLineId, long? excludePalletId = null);
     void UpdateProductionPalletHu(long palletId, string huCode);
     void ReassignOpenProductionPalletsByHu(

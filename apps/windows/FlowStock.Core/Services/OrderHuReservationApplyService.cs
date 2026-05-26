@@ -242,6 +242,23 @@ public sealed class OrderHuReservationApplyService
             affectedOrderLineIds,
             replacementPlanLines);
 
+        var palletService = new ProductionPalletService(store);
+        foreach (var orderLineId in affectedOrderLineIds)
+        {
+            if (!orderLines.TryGetValue(orderLineId, out var affectedOrderLine))
+            {
+                continue;
+            }
+
+            palletService.SyncOrderLinePlanInStore(
+                store,
+                customerOrderId,
+                orderLineId,
+                affectedOrderLine.QtyOrdered,
+                affectedOrderLine.QtyOrdered,
+                "ApplyWarehouseHuReservation");
+        }
+
         return new OrderHuReservationApplyResult
         {
             Ok = true,

@@ -89,12 +89,14 @@ public sealed class ProductionPalletFillingContextTests
     }
 
     [Fact]
-    public void GetFillingOrders_DoesNotListFullyFilledOrder_WithOnlyCancelledLeftover()
+    public void GetFillingOrders_KeepsBrokenFilledOrderVisible_WithOnlyCancelledLeftover()
     {
         var fixture = CreateFilledOrderWithCancelledPallets();
         var service = new ProductionPalletService(fixture.Harness.Store);
 
-        Assert.Empty(service.GetFillingOrders());
+        var order = Assert.Single(service.GetFillingOrders());
+        Assert.Equal(fixture.OrderId, order.OrderId);
+        Assert.Equal(8, order.Summary.RemainingPalletCount);
     }
 
     [Fact]

@@ -79,6 +79,24 @@ public sealed class ProductionPalletDocument
     public IReadOnlyList<ProductionPallet> Pallets { get; init; } = Array.Empty<ProductionPallet>();
 }
 
+public sealed class ProductionPalletPlanDraft
+{
+    public long OrderId { get; init; }
+    public long? OrderLineId { get; init; }
+    public long ItemId { get; init; }
+    public string HuCode { get; init; } = string.Empty;
+    public double PlannedQty { get; init; }
+    public long ToLocationId { get; init; }
+    public IReadOnlyList<ProductionPalletPlanDraftLine> Lines { get; init; } = Array.Empty<ProductionPalletPlanDraftLine>();
+}
+
+public sealed class ProductionPalletPlanDraftLine
+{
+    public long? OrderLineId { get; init; }
+    public long ItemId { get; init; }
+    public double PlannedQty { get; init; }
+}
+
 public sealed class ProductionPalletWorkItem
 {
     public long PrdDocId { get; init; }

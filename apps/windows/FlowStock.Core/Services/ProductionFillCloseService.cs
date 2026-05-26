@@ -33,6 +33,51 @@ public sealed class ProductionFillCloseService
         return TryAutoCloseAfterFill(store, new DocumentService(store), pallet);
     }
 
+    public ProductionFillAutoCloseResult TryClosePreparedPrdAfterFillInTransaction(IDataStore store, ProductionPallet pallet)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        return TryClosePreparedPrdAfterFill(store, new DocumentService(store), pallet);
+    }
+
+    private ProductionFillAutoCloseResult TryClosePreparedPrdAfterFill(
+        IDataStore store,
+        DocumentService documents,
+        ProductionPallet pallet)
+    {
+        if (!_options.ProductionAutoCloseOnFill)
+        {
+            return ProductionFillAutoCloseResult.Skipped();
+        }
+
+        if (!string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+        {
+            return ProductionFillAutoCloseResult.Failure("Паллета не наполнена.");
+        }
+
+        var doc = store.GetDoc(pallet.PrdDocId);
+        if (doc == null || doc.Type != DocType.ProductionReceipt)
+        {
+            return ProductionFillAutoCloseResult.Failure("Документ выпуска не найден.");
+        }
+
+        if (doc.Status == DocStatus.Closed)
+        {
+            return ProductionFillAutoCloseResult.FromClosedDoc(doc.Id, doc.DocRef);
+        }
+
+        var closeResult = documents.TryCloseDoc(doc.Id, allowNegative: false);
+        if (!closeResult.Success)
+        {
+            var message = closeResult.Errors.Count > 0
+                ? string.Join("; ", closeResult.Errors)
+                : "Не удалось провести выпуск после наполнения.";
+            return ProductionFillAutoCloseResult.Failure(message);
+        }
+
+        var closedDoc = store.GetDoc(doc.Id);
+        return ProductionFillAutoCloseResult.Closed(doc.Id, closedDoc?.DocRef ?? doc.DocRef);
+    }
+
     private ProductionFillAutoCloseResult TryAutoCloseAfterFill(
         IDataStore store,
         DocumentService documents,
