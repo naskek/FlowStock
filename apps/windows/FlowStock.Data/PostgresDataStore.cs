@@ -89,9 +89,19 @@ order_lines_scope AS (
     SELECT ol.id,
            ol.order_id,
            ol.item_id,
-           ol.qty_ordered
+           ol.qty_ordered,
+           COALESCE(it.enable_order_reservation, FALSE) AS enable_order_reservation
     FROM order_lines ol
     INNER JOIN order_scope os ON os.id = ol.order_id
+    INNER JOIN items i ON i.id = ol.item_id
+    LEFT JOIN item_types it ON it.id = i.item_type_id
+),
+available_by_item AS (
+    SELECT l.item_id,
+           COALESCE(SUM(l.qty_delta), 0)::double precision AS qty_available
+    FROM ledger l
+    INNER JOIN (SELECT DISTINCT item_id FROM order_lines_scope) items ON items.item_id = l.item_id
+    GROUP BY l.item_id
 ),
 shipped_by_line AS (
     SELECT dl.order_line_id,
@@ -179,6 +189,9 @@ line_metrics_seed AS (
            COALESCE(reserved.qty_reserved, 0) AS qty_reserved,
            COALESCE(direct_produced.qty_received, 0) AS qty_direct_received,
            COALESCE(unlinked.qty_received, 0) AS qty_unlinked_item_received,
+           COALESCE(available.qty_available, 0) AS qty_available,
+           ols.enable_order_reservation,
+           ob.bind_reserved_stock,
            GREATEST(0, ols.qty_ordered - COALESCE(direct_produced.qty_received, 0)) AS qty_direct_unfilled,
            ROW_NUMBER() OVER (
                PARTITION BY ob.id, ols.item_id
@@ -196,6 +209,7 @@ line_metrics_seed AS (
     LEFT JOIN direct_produced_by_line direct_produced ON direct_produced.order_line_id = ols.id
     LEFT JOIN unlinked_produced_by_item unlinked ON unlinked.order_id = ob.id
                                                  AND unlinked.item_id = ols.item_id
+    LEFT JOIN available_by_item available ON available.item_id = ols.item_id
 ),
 order_line_metrics AS (
     SELECT order_id,
@@ -216,7 +230,12 @@ order_line_metrics AS (
            CASE
                WHEN order_type = 'CUSTOMER' THEN qty_direct_received + qty_reserved
                ELSE qty_direct_received
-           END AS qty_customer_ready
+           END AS qty_customer_ready,
+           CASE
+               WHEN order_type = 'CUSTOMER' AND bind_reserved_stock AND enable_order_reservation
+                   THEN GREATEST(0, qty_direct_received + qty_reserved - qty_shipped)
+               ELSE GREATEST(0, qty_available)
+           END AS qty_customer_available_to_ship
     FROM line_metrics_seed
 ),
 status_summary AS (
@@ -225,6 +244,10 @@ status_summary AS (
            COUNT(olm.order_line_id) FILTER (WHERE olm.qty_ordered > 0.000001) AS demand_line_count,
            COALESCE(BOOL_AND(olm.qty_shipped + 0.000001 >= olm.qty_ordered), FALSE) AS fully_shipped,
            COALESCE(BOOL_AND(olm.qty_customer_ready + 0.000001 >= olm.qty_ordered), FALSE) AS fully_customer_ready,
+           COALESCE(BOOL_AND(
+               olm.qty_shipped + 0.000001 < olm.qty_ordered
+               AND GREATEST(0, (olm.qty_ordered - olm.qty_shipped) - olm.qty_customer_available_to_ship) <= 0.000001
+           ) FILTER (WHERE olm.qty_ordered > 0.000001), FALSE) AS fully_customer_ship_ready,
            COALESCE(BOOL_AND(olm.qty_produced_total + 0.000001 >= olm.qty_ordered), FALSE) AS fully_produced,
            COALESCE(BOOL_AND(olm.qty_produced_total + 0.000001 >= olm.qty_ordered) FILTER (WHERE olm.qty_ordered > 0.000001), FALSE) AS fully_demand_produced,
            COALESCE(BOOL_OR(olm.qty_produced_total > 0.000001), FALSE) AS any_produced,
@@ -432,9 +455,8 @@ SELECT ob.id,
                ELSE 'IN_PROGRESS'
            END
            ELSE CASE
-               WHEN ob.persisted_status = 'DRAFT' THEN 'DRAFT'
                WHEN COALESCE(ss.line_count, 0) > 0 AND COALESCE(ss.fully_shipped, FALSE) THEN 'SHIPPED'
-               WHEN COALESCE(ss.line_count, 0) > 0 AND COALESCE(ss.fully_customer_ready, FALSE) THEN 'ACCEPTED'
+               WHEN COALESCE(ss.demand_line_count, 0) > 0 AND COALESCE(ss.fully_customer_ship_ready, FALSE) THEN 'ACCEPTED'
                ELSE 'IN_PROGRESS'
            END
        END AS status,

@@ -2131,34 +2131,26 @@ public sealed class OrderService
                 : OrderStatus.InProgress;
         }
 
-        if (order.Status == OrderStatus.Draft)
+        var lines = _data.GetOrderLineViews(order.Id).ToList();
+        ApplyLineMetrics(order, lines);
+        foreach (var line in lines)
         {
-            return OrderStatus.Draft;
+            OrderLinePalletFillPresentationService.Apply(order, line);
         }
 
-        var lines = _data.GetOrderLines(order.Id);
-        var shippedTotals = _data.GetShippedTotalsByOrderLine(order.Id);
-        var customerReceiptLines = _data.GetOrderReceiptRemaining(order.Id);
-        var producedByLine = customerReceiptLines.ToDictionary(line => line.OrderLineId, line => line.QtyReceived);
-
-        var fullyShipped = lines.Count > 0 && lines.All(line =>
-        {
-            var shipped = shippedTotals.TryGetValue(line.Id, out var qty) ? qty : 0;
-            return shipped + QtyTolerance >= line.QtyOrdered;
-        });
-
-        if (fullyShipped)
+        var demandLines = lines.Where(line => line.QtyOrdered > QtyTolerance).ToList();
+        if (demandLines.Count > 0
+            && demandLines.All(line => line.QtyShipped + QtyTolerance >= line.QtyOrdered))
         {
             return OrderStatus.Shipped;
         }
 
-        var fullyProducedForOrder = lines.Count > 0 && lines.All(line =>
-        {
-            var produced = producedByLine.TryGetValue(line.Id, out var qty) ? qty : 0;
-            return produced + QtyTolerance >= line.QtyOrdered;
-        });
-
-        return fullyProducedForOrder
+        var readyToShip = demandLines.Count > 0
+                          && demandLines.All(line =>
+                              line.QtyShipped + QtyTolerance < line.QtyOrdered
+                              && line.Shortage <= QtyTolerance
+                              && !line.BlockingFillRequired);
+        return readyToShip
             ? OrderStatus.Accepted
             : OrderStatus.InProgress;
     }
