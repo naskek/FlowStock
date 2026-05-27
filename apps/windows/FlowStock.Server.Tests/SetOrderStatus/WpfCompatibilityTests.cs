@@ -2,6 +2,12 @@ using FlowStock.App;
 using FlowStock.Core.Models;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
 using FlowStock.Server.Tests.SetOrderStatus.Infrastructure;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace FlowStock.Server.Tests.SetOrderStatus;
 
@@ -68,6 +74,48 @@ public sealed class WpfCompatibilityTests
         Assert.Equal(OrderStatus.Cancelled, harness.GetOrder(orderId).Status);
     }
 
+    [Fact]
+    public async Task SetOrderStatusApiClient_NonOkEmptyBody_ReturnsHttpErrorWithoutJsonException()
+    {
+        await using var host = await EmptyErrorHost.StartAsync();
+        var client = new SetOrderStatusApiClient();
+
+        var result = await client.SetStatusAsync(
+            new ServerCloseClientOptions
+            {
+                BaseUrl = host.BaseAddress.ToString().TrimEnd('/'),
+                AllowInvalidTls = false
+            },
+            91,
+            new SetOrderStatusApiRequest { Status = "CANCELLED" });
+
+        Assert.False(result.IsTransportFailure);
+        Assert.Equal(System.Net.HttpStatusCode.InternalServerError, result.StatusCode);
+        Assert.Null(result.Error);
+    }
+
+    [Theory]
+    [InlineData(
+        "ORDER_CANCEL_PRD_HAS_LEDGER",
+        "Нельзя отменить заказ: по черновику выпуска уже есть движения склада. Сначала оформите корректировку/сторно.")]
+    [InlineData(
+        "ORDER_CANCEL_PRD_HAS_PALLET_FACTS",
+        "Нельзя отменить заказ: по черновику выпуска есть фактические паллеты. Сначала отмените/исправьте выпуск.")]
+    public async Task WpfSetOrderStatus_CancelPrdBlockers_ReturnFriendlyValidationError(
+        string errorCode,
+        string expectedMessage)
+    {
+        await using var host = await EmptyErrorHost.StartAsync(errorCode);
+        using var temp = new TempSettingsScope(host.BaseAddress, useServerSetOrderStatus: true);
+        var service = new WpfSetOrderStatusService(new SettingsService(temp.SettingsPath), new FileLogger(temp.LogPath));
+
+        var result = await service.SetStatusAsync(91, OrderStatus.Cancelled);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WpfSetOrderStatusResultKind.ValidationFailed, result.Kind);
+        Assert.Equal(expectedMessage, result.Message);
+    }
+
     private sealed class TempSettingsScope : IDisposable
     {
         private readonly string _dir;
@@ -110,6 +158,50 @@ public sealed class WpfCompatibilityTests
             catch
             {
             }
+        }
+    }
+
+    private sealed class EmptyErrorHost : IAsyncDisposable
+    {
+        private readonly WebApplication _app;
+
+        private EmptyErrorHost(WebApplication app, Uri baseAddress)
+        {
+            _app = app;
+            BaseAddress = baseAddress;
+        }
+
+        public Uri BaseAddress { get; }
+
+        public static async Task<EmptyErrorHost> StartAsync(string? errorCode = null)
+        {
+            var builder = WebApplication.CreateBuilder();
+            builder.WebHost.UseUrls("http://127.0.0.1:0");
+            var app = builder.Build();
+            app.MapPost("/api/orders/{orderId:long}/status", () => string.IsNullOrWhiteSpace(errorCode)
+                ? Results.StatusCode(500)
+                : Results.BadRequest(new { ok = false, error = errorCode }));
+            await app.StartAsync();
+
+            var addresses = app.Services
+                .GetRequiredService<IServer>()
+                .Features
+                .Get<IServerAddressesFeature>();
+            var address = addresses?.Addresses.Single();
+            if (string.IsNullOrWhiteSpace(address))
+            {
+                await app.StopAsync();
+                await app.DisposeAsync();
+                throw new InvalidOperationException("HTTP test host did not expose a listening address.");
+            }
+
+            return new EmptyErrorHost(app, new Uri(address, UriKind.Absolute));
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await _app.StopAsync();
+            await _app.DisposeAsync();
         }
     }
 }

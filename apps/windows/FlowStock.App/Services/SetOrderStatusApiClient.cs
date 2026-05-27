@@ -59,8 +59,23 @@ public sealed class SetOrderStatusApiClient
             return SetOrderStatusApiCallResult.Success(payload);
         }
 
-        var error = await responseMessage.Content.ReadFromJsonAsync<ApiErrorResponse>(JsonOptions, cancellationToken)
+        var rawError = await responseMessage.Content.ReadAsStringAsync(cancellationToken)
             .ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(rawError))
+        {
+            return SetOrderStatusApiCallResult.HttpError(responseMessage.StatusCode, null);
+        }
+
+        ApiErrorResponse? error;
+        try
+        {
+            error = JsonSerializer.Deserialize<ApiErrorResponse>(rawError, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            error = null;
+        }
+
         return SetOrderStatusApiCallResult.HttpError(responseMessage.StatusCode, error);
     }
 

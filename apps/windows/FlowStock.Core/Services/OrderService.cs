@@ -1166,11 +1166,8 @@ public sealed class OrderService
 
         foreach (var doc in draftProductionReceipts)
         {
-            if (store.HasProductionPallets(doc.Id))
-            {
-                store.ClearPlannedProductionPalletPlan(doc.Id);
-            }
-            else if (store.GetDocLines(doc.Id).Count > 0)
+            store.DetachRemovableProductionPalletPlanForDraftReceiptCancel(doc.Id);
+            if (store.GetDocLines(doc.Id).Count > 0)
             {
                 store.DeleteDocLines(doc.Id);
             }

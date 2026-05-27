@@ -2158,6 +2158,77 @@ LIMIT 1;
         });
     }
 
+    public void DetachRemovableProductionPalletPlanForDraftReceiptCancel(long docId)
+    {
+        WithConnection(connection =>
+        {
+            using (var ledgerGuard = CreateCommand(connection, "SELECT 1 FROM ledger WHERE doc_id = @doc_id LIMIT 1;"))
+            {
+                ledgerGuard.Parameters.AddWithValue("@doc_id", docId);
+                if (ledgerGuard.ExecuteScalar() != null)
+                {
+                    throw new InvalidOperationException("Нельзя отменить заказ: по черновику выпуска уже есть движения склада.");
+                }
+            }
+
+            using (var factsGuard = CreateCommand(connection, @"
+SELECT 1
+FROM production_pallets pp
+LEFT JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
+WHERE pp.prd_doc_id = @doc_id
+  AND (
+      pp.status NOT IN (@planned_status, @cancelled_status)
+      OR COALESCE(pll.filled_qty, 0) > @qty_tolerance
+  )
+LIMIT 1;
+"))
+            {
+                factsGuard.Parameters.AddWithValue("@doc_id", docId);
+                factsGuard.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+                factsGuard.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
+                factsGuard.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+                if (factsGuard.ExecuteScalar() != null)
+                {
+                    throw new InvalidOperationException("Нельзя отменить заказ: по черновику выпуска есть фактические паллеты.");
+                }
+            }
+
+            using (var detachLines = CreateCommand(connection, @"
+UPDATE production_pallet_lines pll
+SET order_line_id = NULL,
+    doc_line_id = NULL
+FROM production_pallets pp
+WHERE pp.id = pll.production_pallet_id
+  AND pp.prd_doc_id = @doc_id
+  AND pp.status IN (@planned_status, @cancelled_status);
+"))
+            {
+                detachLines.Parameters.AddWithValue("@doc_id", docId);
+                detachLines.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+                detachLines.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
+                detachLines.ExecuteNonQuery();
+            }
+
+            using (var detachPallets = CreateCommand(connection, @"
+UPDATE production_pallets
+SET prd_doc_id = NULL,
+    doc_line_id = NULL,
+    order_id = NULL,
+    order_line_id = NULL
+WHERE prd_doc_id = @doc_id
+  AND status IN (@planned_status, @cancelled_status);
+"))
+            {
+                detachPallets.Parameters.AddWithValue("@doc_id", docId);
+                detachPallets.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+                detachPallets.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
+                detachPallets.ExecuteNonQuery();
+            }
+
+            return 0;
+        });
+    }
+
     public ProductionPalletPlanCleanupCounts ClearPlannedProductionPalletPlanForOrderLines(
         long orderId,
         IReadOnlyCollection<long> orderLineIds)

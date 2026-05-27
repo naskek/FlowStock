@@ -1873,6 +1873,9 @@ internal sealed class CloseDocumentHarness
                 ClearProductionPalletPlanInHarness(docId);
             });
 
+        _store.Setup(store => store.DetachRemovableProductionPalletPlanForDraftReceiptCancel(It.IsAny<long>()))
+            .Callback<long>(DetachRemovableProductionPalletPlanForDraftReceiptCancelInHarness);
+
         _store.Setup(store => store.ClearPlannedProductionPalletPlanForOrderLines(
                 It.IsAny<long>(),
                 It.IsAny<IReadOnlyCollection<long>>()))
@@ -3786,6 +3789,61 @@ internal sealed class CloseDocumentHarness
         if (_linesByDoc.TryGetValue(docId, out var docLines))
         {
             docLines.Clear();
+        }
+    }
+
+    private void DetachRemovableProductionPalletPlanForDraftReceiptCancelInHarness(long docId)
+    {
+        if (_postedLedger.Any(entry => entry.DocId == docId))
+        {
+            throw new InvalidOperationException("Нельзя отменить заказ: по черновику выпуска уже есть движения склада.");
+        }
+
+        var targetPallets = _productionPallets.Values
+            .Where(pallet => pallet.PrdDocId == docId)
+            .ToArray();
+        if (targetPallets.Any(pallet =>
+                !string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+            || targetPallets.Any(pallet => pallet.Lines.Any(line => line.FilledQty > StockQuantityRules.QtyTolerance)))
+        {
+            throw new InvalidOperationException("Нельзя отменить заказ: по черновику выпуска есть фактические паллеты.");
+        }
+
+        foreach (var pallet in targetPallets)
+        {
+            _productionPallets[pallet.Id] = new ProductionPallet
+            {
+                Id = pallet.Id,
+                PrdDocId = 0,
+                DocLineId = 0,
+                OrderId = null,
+                OrderLineId = null,
+                ItemId = pallet.ItemId,
+                ItemName = pallet.ItemName,
+                HuCode = pallet.HuCode,
+                PlannedQty = pallet.PlannedQty,
+                ToLocationId = pallet.ToLocationId,
+                ToLocationCode = pallet.ToLocationCode,
+                Status = pallet.Status,
+                FilledAt = pallet.FilledAt,
+                FilledByDeviceId = pallet.FilledByDeviceId,
+                CreatedAt = pallet.CreatedAt,
+                Lines = pallet.Lines.Select(line => new ProductionPalletComponentLine
+                {
+                    Id = line.Id,
+                    ProductionPalletId = line.ProductionPalletId,
+                    DocLineId = 0,
+                    OrderLineId = null,
+                    ItemId = line.ItemId,
+                    ItemName = line.ItemName,
+                    Brand = line.Brand,
+                    Uom = line.Uom,
+                    PlannedQty = line.PlannedQty,
+                    FilledQty = line.FilledQty,
+                    CreatedAt = line.CreatedAt
+                }).ToArray()
+            };
         }
     }
 
