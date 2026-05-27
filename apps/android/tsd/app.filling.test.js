@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const assert = require("assert");
+const vm = require("vm");
 
 const appJs = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
 const storageJs = fs.readFileSync(path.join(__dirname, "storage.js"), "utf8");
@@ -153,9 +154,97 @@ assert(
 const fillOverlay = extractFunctionBody(appJs, "openFillingPreviewOverlay");
 assert(
   fillOverlay.includes("loadFillingContext(fillOrderId)") &&
+    fillOverlay.includes("shouldRenderProductionFillCompletion(result, nextContext, null)") &&
+    fillOverlay.includes("shouldRenderProductionFillCompletion(result, null, reloadError)") &&
   !fillOverlay.includes("document: nextDocument") &&
   !fillOverlay.includes("result.document"),
-  "production fill should reload full order context instead of applying response.document"
+  "production fill should reload context for normal scans and render final success when reload reports completion"
+);
+
+const hooks = {};
+const appEl = {
+  innerHTML: "",
+  querySelectorAll: function () {
+    return [];
+  },
+};
+const vmContext = {
+  console,
+  window: {
+    FlowStockTsdTestHooks: hooks,
+    location: { hash: "" },
+    setTimeout: function () {
+      return 0;
+    },
+    clearTimeout: function () {},
+    setInterval: function () {
+      return 0;
+    },
+    addEventListener: function () {},
+  },
+  document: {
+    getElementById: function (id) {
+      return id === "app" ? appEl : null;
+    },
+    querySelector: function () {
+      return null;
+    },
+    querySelectorAll: function () {
+      return [];
+    },
+    addEventListener: function () {},
+  },
+  localStorage: {
+    setItem: function () {},
+    getItem: function () {
+      return null;
+    },
+  },
+  navigator: {},
+};
+vmContext.window.document = vmContext.document;
+vmContext.window.localStorage = vmContext.localStorage;
+vmContext.window.navigator = vmContext.navigator;
+vm.createContext(vmContext);
+vm.runInContext(appJs, vmContext, { filename: "app.js" });
+
+const unavailableAfterFill = new Error("Заказ недоступен для наполнения.");
+assert.strictEqual(
+  hooks.isFillingContextUnavailableAfterSuccessfulFill(unavailableAfterFill),
+  true,
+  "completed order reload error should be recognized after successful fill"
+);
+assert.strictEqual(
+  hooks.shouldRenderProductionFillCompletion(
+    { ok: true, prd_auto_closed: true, closed_prd_doc_ref: "PRD-2026-000001" },
+    null,
+    unavailableAfterFill
+  ),
+  true,
+  "final pallet success should render completion when context reload says order is unavailable"
+);
+const finalHtml = hooks.renderFillingCompletion(
+  { workItem: { orderRef: "TSD-FILL-001", prdDocRef: "PRD-2026-000001" } },
+  { ok: true, prd_auto_closed: true, closed_prd_doc_ref: "PRD-2026-000001" },
+  unavailableAfterFill
+);
+assert.match(finalHtml, /Паллета наполнена\. Заказ выполнен\./);
+assert.match(finalHtml, /К списку наполнения/);
+assert.doesNotMatch(finalHtml, /недоступен для наполнения/i);
+
+assert.strictEqual(
+  hooks.shouldRenderProductionFillCompletion(
+    { ok: true, prd_auto_closed: true },
+    { document: { summary: { remainingPalletCount: 1 } } },
+    null
+  ),
+  false,
+  "non-final pallet fill should keep the filling screen active after context reload"
+);
+assert.strictEqual(
+  hooks.buildProductionFillCompletionMessage({ ok: true, prdAutoClosed: true }, null),
+  "Паллета наполнена. Выпуск закрыт.",
+  "single PRD close without unavailable order should show PRD closed success"
 );
 
 const wireOutboundPickingOrder = extractFunctionBody(appJs, "wireOutboundPickingOrder");

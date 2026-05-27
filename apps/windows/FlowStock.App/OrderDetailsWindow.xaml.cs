@@ -715,6 +715,11 @@ public partial class OrderDetailsWindow : Window
         }
 
         _orderId = result.Response.OrderId;
+        if (type == OrderType.Customer && !TryApplyHuReservationsAfterSave())
+        {
+            return false;
+        }
+
         ReloadCanonicalOrderStateAfterPersist(_selectedLine?.Id);
 
         if (!string.IsNullOrWhiteSpace(result.Message))

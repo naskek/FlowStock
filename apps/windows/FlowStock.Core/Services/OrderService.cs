@@ -387,6 +387,10 @@ public sealed class OrderService
             {
                 TryRebuildOrderReceiptPlan(store, orderId);
             }
+            else
+            {
+                TryBindBestWarehouseHuForCustomerOrder(store, orderId);
+            }
         });
 
         return orderId;
@@ -602,6 +606,7 @@ public sealed class OrderService
 
             if (type == OrderType.Customer)
             {
+                TryBindBestWarehouseHuForCustomerOrder(store, orderId);
                 foreach (var (orderLineId, orderedQty, oldOrderedQty) in linesNeedingPalletSync)
                 {
                     TrySyncProductionPalletPlanForOrderLine(store, orderId, orderLineId, orderedQty, oldOrderedQty);
@@ -800,7 +805,57 @@ public sealed class OrderService
         return (long)Math.Round(Math.Max(0, qty) * 1000d, MidpointRounding.AwayFromZero);
     }
 
-    private static void TryBindBestWarehouseHuForCustomerShortage(
+    private static bool TryBindBestWarehouseHuForCustomerOrder(IDataStore store, long orderId)
+    {
+        var order = store.GetOrder(orderId);
+        if (order?.Type != OrderType.Customer)
+        {
+            return false;
+        }
+
+        var boundAny = false;
+        foreach (var line in store.GetOrderLines(orderId)
+                     .Where(line => line.QtyOrdered > QtyTolerance)
+                     .OrderBy(line => line.Id))
+        {
+            boundAny |= TryBindBestWarehouseHuForCustomerShortage(store, orderId, line, line.QtyOrdered);
+        }
+
+        if (boundAny && !order.UseReservedStock)
+        {
+            store.UpdateOrder(CopyOrderWithReservedStock(order, useReservedStock: true));
+        }
+
+        return boundAny;
+    }
+
+    private static Order CopyOrderWithReservedStock(Order order, bool useReservedStock)
+    {
+        return new Order
+        {
+            Id = order.Id,
+            OrderRef = order.OrderRef,
+            Type = order.Type,
+            PartnerId = order.PartnerId,
+            DueDate = order.DueDate,
+            Status = order.Status,
+            Comment = order.Comment,
+            CreatedAt = order.CreatedAt,
+            ShippedAt = order.ShippedAt,
+            PartnerName = order.PartnerName,
+            PartnerCode = order.PartnerCode,
+            UseReservedStock = useReservedStock,
+            MarkingStatus = order.MarkingStatus,
+            IsLegacyExcelGeneratedMarkingStatus = order.IsLegacyExcelGeneratedMarkingStatus,
+            MarkingRequired = order.MarkingRequired,
+            MarkingApplies = order.MarkingApplies,
+            MarkingCodeCovered = order.MarkingCodeCovered,
+            MarkingExcelGeneratedAt = order.MarkingExcelGeneratedAt,
+            MarkingPrintedAt = order.MarkingPrintedAt
+        };
+    }
+
+    private static bool TryBindBestWarehouseHuForCustomerShortage(
         IDataStore store,
         long orderId,
         OrderLine line,
@@ -808,7 +863,7 @@ public sealed class OrderService
     {
         if (store is not IOptimizedHuReservationCandidatesStore optimizedStore)
         {
-            return;
+            return false;
         }
 
         var shippedTotals = store.GetShippedTotalsByOrderLine(orderId);
@@ -827,7 +882,7 @@ public sealed class OrderService
         var shortage = Math.Max(0, orderedQty - shippedQty - reservedQty - activeProductionPalletQty);
         if (shortage <= QtyTolerance)
         {
-            return;
+            return false;
         }
 
         var selectedHu = currentReservations
@@ -846,7 +901,7 @@ public sealed class OrderService
         var selectedFreeHu = SelectBestHuCandidateSubset(freeCandidates, shortage);
         if (selectedFreeHu.Count == 0)
         {
-            return;
+            return false;
         }
 
         var replacement = currentReservations.ToList();
@@ -867,6 +922,7 @@ public sealed class OrderService
         }
 
         store.ReplaceOrderReceiptPlanLinesForOrderLines(orderId, [line.Id], replacement);
+        return true;
     }
 
     private static IReadOnlyList<HuReservationCandidateSourceRow> SelectBestHuCandidateSubset(
@@ -1262,12 +1318,10 @@ public sealed class OrderService
         var shippedByLine = _data.GetShippedTotalsByOrderLine(order.Id);
         var producedByOrderLine = _data.GetOrderReceiptRemaining(order.Id)
             .ToDictionary(line => line.OrderLineId, line => line.QtyReceived);
-        var useOrderReservationByItem = order.UseReservedStock
-            ? lines
-                .Select(line => line.ItemId)
-                .Distinct()
-                .ToDictionary(itemId => itemId, itemId => ItemTypeUsesOrderReservation(_data, itemId))
-            : new Dictionary<long, bool>();
+        var useOrderReservationByItem = lines
+            .Select(line => line.ItemId)
+            .Distinct()
+            .ToDictionary(itemId => itemId, itemId => ItemTypeUsesOrderReservation(_data, itemId));
 
         foreach (var line in lines)
         {
@@ -1276,8 +1330,7 @@ public sealed class OrderService
             var produced = producedByOrderLine.TryGetValue(line.Id, out var producedQty) ? producedQty : 0;
             var remaining = Math.Max(0, line.QtyOrdered - shipped);
             var reservedForLine = Math.Max(0, produced - shipped);
-            var useOrderReservation = order.UseReservedStock
-                                      && useOrderReservationByItem.TryGetValue(line.ItemId, out var enabled)
+            var useOrderReservation = useOrderReservationByItem.TryGetValue(line.ItemId, out var enabled)
                                       && enabled;
             var availableForShip = useOrderReservation
                 ? reservedForLine

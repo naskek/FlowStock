@@ -78,11 +78,6 @@ public static class OrderStatusEndpoint
             return "ORDER_NOT_FOUND";
         }
 
-        if (ex.Message.Contains("нельзя отменить", StringComparison.OrdinalIgnoreCase))
-        {
-            return "ORDER_CANCEL_FORBIDDEN";
-        }
-
         if (ex.Message.Contains("черновику выпуска уже есть движения склада", StringComparison.OrdinalIgnoreCase))
         {
             return "ORDER_CANCEL_PRD_HAS_LEDGER";
@@ -91,6 +86,11 @@ public static class OrderStatusEndpoint
         if (ex.Message.Contains("черновику выпуска есть фактические паллеты", StringComparison.OrdinalIgnoreCase))
         {
             return "ORDER_CANCEL_PRD_HAS_PALLET_FACTS";
+        }
+
+        if (ex.Message.Contains("нельзя отменить", StringComparison.OrdinalIgnoreCase))
+        {
+            return "ORDER_CANCEL_FORBIDDEN";
         }
 
         if (ex.Message.Contains("Ручное изменение статуса", StringComparison.OrdinalIgnoreCase))

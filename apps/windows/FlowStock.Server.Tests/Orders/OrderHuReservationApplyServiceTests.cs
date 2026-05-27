@@ -287,6 +287,12 @@ public sealed class OrderHuReservationApplyServiceTests
                 .Returns<long>(id => _shipmentRemaining.TryGetValue(id, out var lines)
                     ? lines.Select(CloneShipmentLine).ToArray()
                     : Array.Empty<OrderShipmentLine>());
+            _store.Setup(store => store.GetShippedTotalsByOrderLine(It.IsAny<long>()))
+                .Returns<long>(id => _shipmentRemaining.TryGetValue(id, out var lines)
+                    ? lines.ToDictionary(line => line.OrderLineId, line => Math.Max(0, line.QtyShipped))
+                    : new Dictionary<long, double>());
+            _store.Setup(store => store.GetOrderReceiptRemaining(It.IsAny<long>()))
+                .Returns<long>(id => BuildReceiptRemaining(id));
             _store.Setup(store => store.GetOrderReceiptPlanLines(It.IsAny<long>()))
                 .Returns<long>(id => GetPlanLines(id));
             _store.Setup(store => store.GetReservedOrderReceiptHuCodes(It.IsAny<long?>()))
@@ -341,6 +347,27 @@ public sealed class OrderHuReservationApplyServiceTests
                         .Where(row => !exclude.Contains(row.HuCode))
                         .ToArray();
                 });
+            _store.Setup(store => store.UpdateOrderStatus(It.IsAny<long>(), It.IsAny<OrderStatus>()))
+                .Callback<long, OrderStatus>((orderId, status) =>
+                {
+                    if (!_orders.TryGetValue(orderId, out var order))
+                    {
+                        return;
+                    }
+
+                    _orders[orderId] = new Order
+                    {
+                        Id = order.Id,
+                        OrderRef = order.OrderRef,
+                        Type = order.Type,
+                        PartnerId = order.PartnerId,
+                        DueDate = order.DueDate,
+                        Status = status,
+                        Comment = order.Comment,
+                        CreatedAt = order.CreatedAt,
+                        UseReservedStock = order.UseReservedStock
+                    };
+                });
         }
 
         public IDataStore Store => _store.Object;
@@ -359,6 +386,38 @@ public sealed class OrderHuReservationApplyServiceTests
         }
 
         public double GetInternalQtyOrdered(long internalOrderId, long internalLineId) => _internalQtyOrdered;
+
+        private IReadOnlyList<OrderReceiptLine> BuildReceiptRemaining(long orderId)
+        {
+            if (!_orderLines.TryGetValue(orderId, out var orderLines))
+            {
+                return Array.Empty<OrderReceiptLine>();
+            }
+
+            var shippedByLine = _shipmentRemaining.TryGetValue(orderId, out var shipmentLines)
+                ? shipmentLines.ToDictionary(line => line.OrderLineId, line => Math.Max(0, line.QtyShipped))
+                : new Dictionary<long, double>();
+            var reservedByLine = GetPlanLines(orderId)
+                .GroupBy(line => line.OrderLineId)
+                .ToDictionary(group => group.Key, group => group.Sum(line => Math.Max(0, line.QtyPlanned)));
+
+            return orderLines.Select(line =>
+                {
+                    var shipped = shippedByLine.TryGetValue(line.Id, out var shippedQty) ? shippedQty : 0;
+                    var reserved = reservedByLine.TryGetValue(line.Id, out var reservedQty) ? reservedQty : 0;
+                    var received = shipped + reserved;
+                    return new OrderReceiptLine
+                    {
+                        OrderLineId = line.Id,
+                        OrderId = orderId,
+                        ItemId = line.ItemId,
+                        QtyOrdered = line.QtyOrdered,
+                        QtyReceived = received,
+                        QtyRemaining = Math.Max(0, line.QtyOrdered - received)
+                    };
+                })
+                .ToArray();
+        }
 
         public void SeedCustomerOrder(
             long orderId,

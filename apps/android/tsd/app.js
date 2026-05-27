@@ -2861,19 +2861,27 @@
               context.workItem && context.workItem.orderId
             );
             return loadFillingContext(fillOrderId).then(function (nextContext) {
-              var remainingPalletCount =
-                nextContext.document && nextContext.document.summary
-                  ? Number(nextContext.document.summary.remainingPalletCount) || 0
-                  : 0;
+              var remainingPalletCount = getRemainingPalletCountFromFillingContext(nextContext);
               var successMessage = buildProductionFillSuccessMessage(result, remainingPalletCount);
               var successType =
                 result && (result.alreadyFilled || result.already_filled) ? "warn" : "success";
               closeOverlay();
+              if (shouldRenderProductionFillCompletion(result, nextContext, null)) {
+                renderFillingCompletionScreen(nextContext, result, null);
+                return;
+              }
               renderFillingScanScreen(nextContext, {
                 message: successMessage,
                 messageType: successType,
                 preview: null,
               });
+            }).catch(function (reloadError) {
+              if (shouldRenderProductionFillCompletion(result, null, reloadError)) {
+                closeOverlay();
+                renderFillingCompletionScreen(context, result, reloadError);
+                return;
+              }
+              throw reloadError;
             });
           })
           .catch(function (error) {
@@ -2944,8 +2952,135 @@
     return Number(fallbackOrderId) || 0;
   }
 
+  function pickOutboundViewField(row, camelKey, snakeKey) {
+    if (!row) {
+      return undefined;
+    }
+    var camelValue = row[camelKey];
+    if (camelValue != null && camelValue !== "") {
+      return camelValue;
+    }
+    return row[snakeKey];
+  }
+
+  function pickOutboundViewValue(normalized, raw, camelKey, snakeKey) {
+    var value = pickOutboundViewField(normalized, camelKey, snakeKey);
+    if (value != null && value !== "") {
+      return value;
+    }
+    return pickOutboundViewField(raw, camelKey, snakeKey);
+  }
+
+  function normalizeOutboundPickingLineView(line) {
+    var raw = line || {};
+    return {
+      itemName: String(pickOutboundViewValue({}, raw, "itemName", "item_name") || ""),
+      orderLineId: Number(pickOutboundViewValue({}, raw, "orderLineId", "order_line_id")) || 0,
+      locationCode: String(pickOutboundViewValue({}, raw, "locationCode", "location_code") || ""),
+      qty: Number(raw.qty) || 0,
+    };
+  }
+
+  function normalizeOutboundPickingHuView(hu) {
+    var raw = hu || {};
+    return {
+      huCode: String(pickOutboundViewValue({}, raw, "huCode", "hu_code") || ""),
+      status: String(raw.status || "PENDING"),
+      qty: Number(raw.qty) || 0,
+      itemSummary: String(pickOutboundViewValue({}, raw, "itemSummary", "item_summary") || ""),
+      orderLineId: Number(pickOutboundViewValue({}, raw, "orderLineId", "order_line_id")) || 0,
+      locationCode: String(pickOutboundViewValue({}, raw, "locationCode", "location_code") || ""),
+      lines: Array.isArray(raw.lines)
+        ? raw.lines.map(normalizeOutboundPickingLineView)
+        : [],
+    };
+  }
+
   function normalizeOutboundPickingOrderView(order) {
-    return TsdStorage.normalizeOutboundPickingOrder(order || {});
+    var raw = order || {};
+    var normalized =
+      typeof TsdStorage !== "undefined" &&
+      TsdStorage &&
+      typeof TsdStorage.normalizeOutboundPickingOrder === "function"
+        ? TsdStorage.normalizeOutboundPickingOrder(raw) || {}
+        : {};
+    return {
+      orderId:
+        Number(pickOutboundViewValue(normalized, raw, "orderId", "order_id")) || 0,
+      orderRef: String(pickOutboundViewValue(normalized, raw, "orderRef", "order_ref") || ""),
+      partnerName: String(pickOutboundViewValue(normalized, raw, "partnerName", "partner_name") || ""),
+      status: String((normalized && normalized.status) || (raw && raw.status) || ""),
+      expectedHuCount:
+        Number(pickOutboundViewValue(normalized, raw, "expectedHuCount", "expected_hu_count")) || 0,
+      pickedHuCount:
+        Number(pickOutboundViewValue(normalized, raw, "pickedHuCount", "picked_hu_count")) || 0,
+      isComplete:
+        (normalized && normalized.isComplete === true) || (raw && raw.is_complete === true),
+      draftOutboundDocId:
+        Number(pickOutboundViewValue(normalized, raw, "draftOutboundDocId", "draft_outbound_doc_id")) || 0,
+      draftOutboundDocRef: String(
+        pickOutboundViewValue(normalized, raw, "draftOutboundDocRef", "draft_outbound_doc_ref") || ""
+      ),
+      hus: Array.isArray(normalized && normalized.hus)
+        ? normalized.hus.map(normalizeOutboundPickingHuView)
+        : Array.isArray(raw && raw.hus)
+          ? raw.hus.map(normalizeOutboundPickingHuView)
+          : [],
+    };
+  }
+
+  function normalizeOutboundPickingScanText(value) {
+    return normalizeValue(value)
+      .toUpperCase()
+      .replace(/\u041D/g, "H")
+      .replace(/\u0423/g, "U");
+  }
+
+  function compactOutboundPickingScanText(value) {
+    return normalizeOutboundPickingScanText(value).replace(/[^A-Z0-9]/g, "");
+  }
+
+  function resolveOutboundPickingScannedHu(rawValue, order) {
+    var rawText = String(rawValue || "").trim();
+    var extractedHu = extractHuCode(rawValue);
+    var fallback = extractedHu || rawText;
+    var normalizedOrder = normalizeOutboundPickingOrderView(order);
+    var rawComparable = normalizeOutboundPickingScanText(rawValue);
+    var rawCompact = compactOutboundPickingScanText(rawValue);
+    var rawDigitsOnly = rawCompact && /^[0-9]+$/.test(rawCompact);
+
+    for (var index = 0; index < normalizedOrder.hus.length; index++) {
+      var expectedHu = normalizeOutboundPickingHuView(normalizedOrder.hus[index]).huCode;
+      var canonicalHu = String(expectedHu || "").trim();
+      if (!canonicalHu) {
+        continue;
+      }
+
+      var expectedComparable = normalizeOutboundPickingScanText(canonicalHu);
+      var expectedCompact = compactOutboundPickingScanText(canonicalHu);
+      var expectedDigits = expectedCompact.replace(/[^0-9]/g, "");
+      if (!expectedComparable || !expectedCompact) {
+        continue;
+      }
+
+      if (rawComparable === expectedComparable || rawCompact === expectedCompact) {
+        return canonicalHu;
+      }
+
+      if (extractedHu && compactOutboundPickingScanText(extractedHu) === expectedCompact) {
+        return canonicalHu;
+      }
+
+      if (rawDigitsOnly && expectedDigits && rawCompact === expectedDigits) {
+        return canonicalHu;
+      }
+
+      if (rawComparable.indexOf(expectedComparable) >= 0 || rawCompact.indexOf(expectedCompact) >= 0) {
+        return canonicalHu;
+      }
+    }
+
+    return fallback;
   }
 
   function renderOutboundPickingList(orders) {
@@ -3000,10 +3135,11 @@
   function renderOutboundPickingHuLines(lines) {
     var html = (Array.isArray(lines) ? lines : [])
       .map(function (line) {
+        line = normalizeOutboundPickingLineView(line);
         return (
           '<div class="outbound-picking-hu-line">' +
           "  <span>" +
-          escapeHtml(line.itemName || line.item_name || "-") +
+          escapeHtml(line.itemName || "-") +
           "</span>" +
           "  <strong>" +
           escapeHtml(formatQtyWithUnit(line.qty || 0, "шт")) +
@@ -3018,6 +3154,7 @@
   function renderOutboundPickingHuList(hus) {
     var rows = (Array.isArray(hus) ? hus : [])
       .map(function (hu) {
+        hu = normalizeOutboundPickingHuView(hu);
         var status = hu.status || "PENDING";
         var picked = String(status).toUpperCase() === "PICKED";
         return (
@@ -3027,13 +3164,13 @@
           '  <span class="filling-pallet-dot" aria-hidden="true"></span>' +
           '  <div class="outbound-picking-hu-main">' +
           '    <div class="filling-pallet-code">' +
-          escapeHtml(hu.huCode || hu.hu_code || "-") +
+          escapeHtml(hu.huCode || "-") +
           "</div>" +
           '    <div class="filling-pallet-status-text">' +
           escapeHtml(getOutboundPickingStatusLabel(status)) +
           "</div>" +
-          (hu.itemSummary || hu.item_summary
-            ? '    <div class="filling-doc-meta">' + escapeHtml(hu.itemSummary || hu.item_summary) + "</div>"
+          (hu.itemSummary
+            ? '    <div class="filling-doc-meta">' + escapeHtml(hu.itemSummary) + "</div>"
             : "") +
           renderOutboundPickingHuLines(hu.lines) +
           "  </div>" +
@@ -5964,6 +6101,104 @@
     return alreadyFilled ? "Паллета уже наполнена." : "Паллета наполнена.";
   }
 
+  function isProductionFillPrdClosed(result) {
+    return !!(
+      result &&
+      (result.prdAutoClosed === true ||
+        result.prd_auto_closed === true ||
+        result.closedPrdDocId ||
+        result.closed_prd_doc_id ||
+        result.closedPrdDocRef ||
+        result.closed_prd_doc_ref)
+    );
+  }
+
+  function isProductionFillOrderCompleted(result) {
+    return !!(
+      result &&
+      (result.orderCompleted === true ||
+        result.order_completed === true ||
+        result.isOrderCompleted === true ||
+        result.is_order_completed === true)
+    );
+  }
+
+  function isFillingContextUnavailableAfterSuccessfulFill(error) {
+    var message = String(error && error.message ? error.message : error || "").trim();
+    return (
+      message === "Заказ недоступен для наполнения." ||
+      message === "Выпуск по заказу уже завершён. Нет паллет к наполнению." ||
+      message.indexOf("Нет паллет к наполнению") >= 0
+    );
+  }
+
+  function getRemainingPalletCountFromFillingContext(context) {
+    return context && context.document && context.document.summary
+      ? Number(context.document.summary.remainingPalletCount) || 0
+      : 0;
+  }
+
+  function shouldRenderProductionFillCompletion(result, nextContext, reloadError) {
+    if (reloadError) {
+      return isFillingContextUnavailableAfterSuccessfulFill(reloadError) ||
+        isProductionFillOrderCompleted(result) ||
+        isProductionFillPrdClosed(result);
+    }
+    if (isProductionFillOrderCompleted(result)) {
+      return true;
+    }
+    return !!nextContext && getRemainingPalletCountFromFillingContext(nextContext) <= 0;
+  }
+
+  function buildProductionFillCompletionMessage(result, reloadError) {
+    var alreadyFilled = !!(result && (result.alreadyFilled || result.already_filled));
+    var prefix = alreadyFilled ? "Паллета уже наполнена." : "Паллета наполнена.";
+    if (isProductionFillOrderCompleted(result) || isFillingContextUnavailableAfterSuccessfulFill(reloadError)) {
+      return prefix + " Заказ выполнен.";
+    }
+    if (isProductionFillPrdClosed(result)) {
+      return prefix + " Выпуск закрыт.";
+    }
+    return prefix + " Заказ выполнен.";
+  }
+
+  function renderFillingCompletion(context, result, reloadError) {
+    var work = (context && context.workItem) || {};
+    var prdRef = result && (result.closedPrdDocRef || result.closed_prd_doc_ref || getFillingWorkPrdRef(work));
+    return (
+      '<section class="screen filling-screen">' +
+      '  <div class="screen-card filling-card filling-completion-card">' +
+      '    <div class="section-title">Наполнение</div>' +
+      '    <div class="filling-message filling-message-success">' +
+      escapeHtml(buildProductionFillCompletionMessage(result, reloadError)) +
+      "</div>" +
+      '    <div class="filling-context-card">' +
+      '      <div>Заказ: <strong>' +
+      escapeHtml(getFillingWorkOrderRef(work)) +
+      "</strong></div>" +
+      (prdRef ? '      <div>PRD: <strong>' + escapeHtml(prdRef) + "</strong></div>" : "") +
+      "    </div>" +
+      '    <div class="actions-bar">' +
+      '      <button class="btn primary-btn" id="fillingCompletionListBtn" type="button">К списку наполнения</button>' +
+      "    </div>" +
+      "  </div>" +
+      "</section>"
+    );
+  }
+
+  function renderFillingCompletionScreen(context, result, reloadError) {
+    setScanHandler(null);
+    setPreferredScanTarget(null);
+    app.innerHTML = renderFillingCompletion(context, result, reloadError);
+    var listBtn = document.getElementById("fillingCompletionListBtn");
+    if (listBtn) {
+      listBtn.addEventListener("click", function () {
+        navigate("/filling");
+      });
+    }
+    applySoftKeyboardSetting(app);
+  }
+
   function mapFillingError(error) {
     var message = String(error && error.message ? error.message : error || "").trim();
     if (!message || message === "Failed to fetch" || message === "AbortError") {
@@ -6185,7 +6420,8 @@
     }
 
     function handleScannedValue(value) {
-      var huCode = extractHuCode(value) || String(value || "").trim();
+      var rawScanValue = value;
+      var huCode = resolveOutboundPickingScannedHu(rawScanValue, order);
       if (!huCode || scanBusy) {
         focusScan();
         return;
@@ -6211,6 +6447,13 @@
           });
         })
         .catch(function (error) {
+          if (typeof console !== "undefined" && console && typeof console.warn === "function") {
+            console.warn("Outbound picking scan failed", {
+              rawScanValue: rawScanValue,
+              resolvedHuCode: huCode,
+              orderId: orderId,
+            });
+          }
           refreshOrder({
             message: mapOutboundPickingError(error),
             messageType: "error",
@@ -11861,6 +12104,18 @@
       errorId +
       '"></div>'
     );
+  }
+
+  if (window.FlowStockTsdTestHooks) {
+    window.FlowStockTsdTestHooks.buildProductionFillCompletionMessage = buildProductionFillCompletionMessage;
+    window.FlowStockTsdTestHooks.isFillingContextUnavailableAfterSuccessfulFill = isFillingContextUnavailableAfterSuccessfulFill;
+    window.FlowStockTsdTestHooks.renderFillingCompletion = renderFillingCompletion;
+    window.FlowStockTsdTestHooks.shouldRenderProductionFillCompletion = shouldRenderProductionFillCompletion;
+    window.FlowStockTsdTestHooks.normalizeOutboundPickingOrderView = normalizeOutboundPickingOrderView;
+    window.FlowStockTsdTestHooks.resolveOutboundPickingScannedHu = resolveOutboundPickingScannedHu;
+    window.FlowStockTsdTestHooks.renderOutboundPickingList = renderOutboundPickingList;
+    window.FlowStockTsdTestHooks.renderOutboundPickingOrder = renderOutboundPickingOrder;
+    window.FlowStockTsdTestHooks.wireOutboundPickingList = wireOutboundPickingList;
   }
 
   document.addEventListener("DOMContentLoaded", function () {

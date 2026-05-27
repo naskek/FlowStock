@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Runtime.ExceptionServices;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 using FlowStock.Data;
@@ -208,7 +209,17 @@ public sealed class SetOrderStatusPostgresRegressionTests
             return Task.CompletedTask;
         });
 
-        Assert.IsType<RollbackRequestedException>(exception);
+        if (exception is RollbackRequestedException)
+        {
+            return;
+        }
+
+        if (exception != null)
+        {
+            ExceptionDispatchInfo.Capture(exception).Throw();
+        }
+
+        Assert.Fail("Rollback transaction did not request rollback.");
     }
 
     private static string? ResolvePostgresTestConnectionString()
@@ -304,3 +315,4 @@ public sealed class SetOrderStatusPostgresRegressionTests
         }
     }
 }
+

@@ -61,6 +61,24 @@ public sealed class OrderLineMetricsTests
         Assert.Equal(18, result.Shortage);
     }
 
+    [Fact]
+    public void CustomerOrderWithoutAppliedReservation_ForReservationType_DoesNotTreatFreeStockAsShipReady()
+    {
+        var line = BuildLine(itemId: 10, qtyOrdered: 30);
+        var store = BuildMetricsStore(
+            useReservedStock: false,
+            line,
+            physicalQty: 100,
+            producedOrReservedQty: 0,
+            itemTypeUsesOrderReservation: true);
+
+        var result = new OrderService(store.Object).GetOrderLineViews(1).Single();
+
+        Assert.Equal(100, result.QtyAvailable);
+        Assert.Equal(0, result.CanShipNow);
+        Assert.Equal(30, result.Shortage);
+    }
+
     private static OrderLineView BuildLine(long itemId, double qtyOrdered)
     {
         return new OrderLineView
@@ -108,21 +126,18 @@ public sealed class OrderLineMetricsTests
             }
         ]);
 
-        if (useReservedStock)
+        store.Setup(s => s.FindItemById(line.ItemId)).Returns(new Item
         {
-            store.Setup(s => s.FindItemById(line.ItemId)).Returns(new Item
-            {
-                Id = line.ItemId,
-                Name = line.ItemName,
-                ItemTypeId = 5
-            });
-            store.Setup(s => s.GetItemType(5)).Returns(new ItemType
-            {
-                Id = 5,
-                Name = "Товар",
-                EnableOrderReservation = itemTypeUsesOrderReservation
-            });
-        }
+            Id = line.ItemId,
+            Name = line.ItemName,
+            ItemTypeId = 5
+        });
+        store.Setup(s => s.GetItemType(5)).Returns(new ItemType
+        {
+            Id = 5,
+            Name = "Товар",
+            EnableOrderReservation = itemTypeUsesOrderReservation
+        });
 
         return store;
     }
