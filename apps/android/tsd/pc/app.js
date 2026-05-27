@@ -1644,9 +1644,6 @@
     if ((Number(row.belowMinQty) || 0) > qtyTolerance) {
       return true;
     }
-    if ((Number(row.customerDemandQty) || 0) > qtyTolerance) {
-      return true;
-    }
     if ((Number(row.internalRemainingQty) || 0) > qtyTolerance) {
       return true;
     }
@@ -1656,10 +1653,6 @@
     if ((Number(row.prdFilledQty) || 0) > qtyTolerance) {
       return true;
     }
-    if ((Number(row.remainingNeedQty) || 0) > qtyTolerance) {
-      return true;
-    }
-
     return false;
   }
 

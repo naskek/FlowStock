@@ -154,6 +154,65 @@ public sealed class CreateOrdersFromProductionNeedTests
     }
 
     [Fact]
+    public async Task ProductionNeedPreview_WithOnlyCustomerDemandAndNoMinStock_ReturnsNoRows()
+    {
+        var (harness, apiStore) = CreateCustomerOnlyScenario();
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        using var response = await host.Client.PostAsJsonAsync("/api/reports/production-need/create-orders/preview", new { });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.True(payload.GetProperty("ok").GetBoolean());
+        Assert.Empty(payload.GetProperty("rows").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task ProductionNeedPreview_WithMinStockGap_ReturnsQtyToMinimum()
+    {
+        var (harness, apiStore) = CreateMinStockGapScenario();
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        using var response = await host.Client.PostAsJsonAsync("/api/reports/production-need/create-orders/preview", new { });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var row = Assert.Single(payload.GetProperty("rows").EnumerateArray());
+
+        Assert.Equal(34, row.GetProperty("item_id").GetInt64());
+        Assert.Equal(1824, row.GetProperty("qty_to_create").GetDouble());
+    }
+
+    [Fact]
+    public async Task ProductionNeedPreview_WithOpenInternalPlan_ReducesQtyToCreate()
+    {
+        var (harness, apiStore) = CreateMinStockGapScenario();
+        harness.SeedOrder(new Order
+        {
+            Id = 30,
+            OrderRef = "030",
+            Type = OrderType.Internal,
+            Status = OrderStatus.Draft,
+            CreatedAt = new DateTime(2026, 5, 7, 12, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 301,
+            OrderId = 30,
+            ItemId = 34,
+            QtyOrdered = 1000,
+            ProductionPurpose = ProductionLinePurpose.InternalStock
+        });
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        using var response = await host.Client.PostAsJsonAsync("/api/reports/production-need/create-orders/preview", new { });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var row = Assert.Single(payload.GetProperty("rows").EnumerateArray());
+
+        Assert.Equal(824, row.GetProperty("qty_to_create").GetDouble());
+    }
+
+    [Fact]
     public async Task CreateProductionNeedOrders_ReturnsOkTrue_WhenInternalOrderCreated()
     {
         var (harness, apiStore) = CreateMinStockGapScenario();

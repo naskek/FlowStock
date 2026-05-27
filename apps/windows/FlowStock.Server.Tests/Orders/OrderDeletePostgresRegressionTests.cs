@@ -26,7 +26,7 @@ public sealed class OrderDeletePostgresRegressionTests
             "private void EnsureOrderLinesCanBeDeleted");
 
         Assert.Contains("EnsureOrderLinesCanBeDeleted(connection, orderId, ids);", methodBody, StringComparison.Ordinal);
-        Assert.Contains("ClearPlannedProductionPalletPlanForOrderLines(orderId, ids);", methodBody, StringComparison.Ordinal);
+        Assert.Contains("ClearRemovableProductionPalletPlanForOrderLines(connection, orderId, ids);", methodBody, StringComparison.Ordinal);
         AssertDeleteBefore(
             methodBody,
             "DELETE FROM order_receipt_plan_lines WHERE order_line_id = ANY(@order_line_ids)",
@@ -67,6 +67,80 @@ public sealed class OrderDeletePostgresRegressionTests
             Assert.DoesNotContain(remainingLines, line => line.Id == fixture.DeletedOrderLineId);
             Assert.Contains(remainingLines, line => line.Id == fixture.RemainingOrderLineId);
 
+            var palletsAfter = scopedStore.GetProductionPalletsByDoc(plan.PrdDocId);
+            Assert.DoesNotContain(
+                palletsAfter,
+                pallet => pallet.OrderLineId == fixture.DeletedOrderLineId
+                          || pallet.Lines.Any(line => line.OrderLineId == fixture.DeletedOrderLineId));
+        });
+    }
+
+    [Fact]
+    public async Task PutUpdate_RemovingCustomerLineWithCancelledPalletsOrderLineReference_DeletesLineWithoutFkFailure()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        await RunInRollbackTransactionAsync(connectionString, async scopedStore =>
+        {
+            EnsureAtLeastOneLocation(scopedStore);
+            var fixture = SeedCustomerOrderWithTwoLines(scopedStore);
+            var palletService = new ProductionPalletService(scopedStore);
+            var plan = palletService.PlanOrder(fixture.OrderId);
+            var palletIds = scopedStore.GetProductionPalletsByDoc(plan.PrdDocId).Select(pallet => pallet.Id).ToArray();
+            Assert.True(palletIds.Length > 0);
+            scopedStore.CancelProductionPallets(palletIds);
+
+            Assert.Contains(
+                scopedStore.GetProductionPalletsByDoc(plan.PrdDocId),
+                pallet => string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)
+                          && pallet.OrderLineId == fixture.DeletedOrderLineId);
+
+            await using var host = await PostgresOrderUpdateHost.StartAsync(scopedStore);
+            var payload = await UpdateOrderHttpApi.UpdateAsync(
+                host.Client,
+                fixture.OrderId,
+                BuildDeleteFirstLineRequest(fixture));
+
+            Assert.True(payload.Ok);
+            Assert.DoesNotContain(scopedStore.GetOrderLines(fixture.OrderId), line => line.Id == fixture.DeletedOrderLineId);
+        });
+    }
+
+    [Fact]
+    public async Task PutUpdate_RemovingCustomerLineWithCancelledPalletComponentReference_DeletesLineWithoutFkFailure()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        await RunInRollbackTransactionAsync(connectionString, async scopedStore =>
+        {
+            EnsureAtLeastOneLocation(scopedStore);
+            var fixture = SeedCustomerOrderWithTwoLines(scopedStore);
+            var palletService = new ProductionPalletService(scopedStore);
+            var plan = palletService.PlanOrder(fixture.OrderId);
+            var palletIds = scopedStore.GetProductionPalletsByDoc(plan.PrdDocId).Select(pallet => pallet.Id).ToArray();
+            Assert.True(palletIds.Length > 0);
+            scopedStore.CancelProductionPallets(palletIds);
+
+            Assert.Contains(
+                scopedStore.GetProductionPalletsByDoc(plan.PrdDocId),
+                pallet => string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)
+                          && pallet.Lines.Any(line => line.OrderLineId == fixture.DeletedOrderLineId));
+
+            await using var host = await PostgresOrderUpdateHost.StartAsync(scopedStore);
+            var payload = await UpdateOrderHttpApi.UpdateAsync(
+                host.Client,
+                fixture.OrderId,
+                BuildDeleteFirstLineRequest(fixture));
+
+            Assert.True(payload.Ok);
             var palletsAfter = scopedStore.GetProductionPalletsByDoc(plan.PrdDocId);
             Assert.DoesNotContain(
                 palletsAfter,
