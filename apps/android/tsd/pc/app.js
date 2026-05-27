@@ -1629,6 +1629,40 @@
     };
   }
 
+  function shouldShowStockRow(row) {
+    var qtyTolerance = 0.000001;
+    if (!row || typeof row !== "object") {
+      return false;
+    }
+
+    if (Math.abs(Number(row.stockQty) || 0) > qtyTolerance) {
+      return true;
+    }
+    if ((Number(row.minStockQty) || 0) > qtyTolerance) {
+      return true;
+    }
+    if ((Number(row.belowMinQty) || 0) > qtyTolerance) {
+      return true;
+    }
+    if ((Number(row.customerDemandQty) || 0) > qtyTolerance) {
+      return true;
+    }
+    if ((Number(row.internalRemainingQty) || 0) > qtyTolerance) {
+      return true;
+    }
+    if ((Number(row.prdPlannedQty) || 0) > qtyTolerance) {
+      return true;
+    }
+    if ((Number(row.prdFilledQty) || 0) > qtyTolerance) {
+      return true;
+    }
+    if ((Number(row.remainingNeedQty) || 0) > qtyTolerance) {
+      return true;
+    }
+
+    return false;
+  }
+
   function loadStockData() {
     return Promise.all([
       fetchJson("/api/items"),
@@ -1698,9 +1732,11 @@
         return;
       }
       var query = normalizeSearchQuery(searchInput ? searchInput.value : "");
-      var filteredRows = cachedStockRows.filter(function (row) {
-        return matchesItemSearch(row, query, true);
-      });
+      var filteredRows = cachedStockRows
+        .filter(shouldShowStockRow)
+        .filter(function (row) {
+          return matchesItemSearch(row, query, true);
+        });
 
       var rows = filteredRows;
       rows = sortRows(rows, "stock", {

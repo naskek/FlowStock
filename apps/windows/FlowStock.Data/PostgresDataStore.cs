@@ -7340,16 +7340,10 @@ RETURNING id;
     {
         WithConnection(connection =>
         {
-            using (var deletePlanCommand = CreateCommand(connection, "DELETE FROM order_receipt_plan_lines WHERE order_line_id = @id"))
+            var orderId = GetOrderIdByOrderLineId(connection, orderLineId);
+            if (orderId.HasValue)
             {
-                deletePlanCommand.Parameters.AddWithValue("@id", orderLineId);
-                deletePlanCommand.ExecuteNonQuery();
-            }
-
-            using (var deleteLineCommand = CreateCommand(connection, "DELETE FROM order_lines WHERE id = @id"))
-            {
-                deleteLineCommand.Parameters.AddWithValue("@id", orderLineId);
-                deleteLineCommand.ExecuteNonQuery();
+                DeleteOrderLinesCore(connection, orderId.Value, [orderLineId]);
             }
             return 0;
         });
@@ -7359,17 +7353,7 @@ RETURNING id;
     {
         WithConnection(connection =>
         {
-            using (var deletePlanCommand = CreateCommand(connection, "DELETE FROM order_receipt_plan_lines WHERE order_id = @order_id"))
-            {
-                deletePlanCommand.Parameters.AddWithValue("@order_id", orderId);
-                deletePlanCommand.ExecuteNonQuery();
-            }
-
-            using (var deleteLinesCommand = CreateCommand(connection, "DELETE FROM order_lines WHERE order_id = @order_id"))
-            {
-                deleteLinesCommand.Parameters.AddWithValue("@order_id", orderId);
-                deleteLinesCommand.ExecuteNonQuery();
-            }
+            DeleteOrderLinesCore(connection, orderId, GetOrderLineIds(connection, orderId));
             return 0;
         });
     }
@@ -7378,17 +7362,7 @@ RETURNING id;
     {
         WithConnection(connection =>
         {
-            using (var deletePlanCommand = CreateCommand(connection, "DELETE FROM order_receipt_plan_lines WHERE order_id = @id"))
-            {
-                deletePlanCommand.Parameters.AddWithValue("@id", orderId);
-                deletePlanCommand.ExecuteNonQuery();
-            }
-
-            using (var deleteLinesCommand = CreateCommand(connection, "DELETE FROM order_lines WHERE order_id = @id"))
-            {
-                deleteLinesCommand.Parameters.AddWithValue("@id", orderId);
-                deleteLinesCommand.ExecuteNonQuery();
-            }
+            DeleteOrderLinesCore(connection, orderId, GetOrderLineIds(connection, orderId));
 
             using (var deleteOrderCommand = CreateCommand(connection, "DELETE FROM orders WHERE id = @id"))
             {
@@ -7397,6 +7371,130 @@ RETURNING id;
             }
             return 0;
         });
+    }
+
+    private void DeleteOrderLinesCore(NpgsqlConnection connection, long orderId, IReadOnlyCollection<long> orderLineIds)
+    {
+        var ids = orderLineIds
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
+        if (ids.Length == 0)
+        {
+            return;
+        }
+
+        EnsureOrderLinesCanBeDeleted(connection, orderId, ids);
+        ClearPlannedProductionPalletPlanForOrderLines(orderId, ids);
+
+        using (var deletePlanCommand = CreateCommand(connection, "DELETE FROM order_receipt_plan_lines WHERE order_line_id = ANY(@order_line_ids)"))
+        {
+            deletePlanCommand.Parameters.AddWithValue("@order_line_ids", ids);
+            deletePlanCommand.ExecuteNonQuery();
+        }
+
+        using (var deleteLinesCommand = CreateCommand(connection, "DELETE FROM order_lines WHERE id = ANY(@order_line_ids)"))
+        {
+            deleteLinesCommand.Parameters.AddWithValue("@order_line_ids", ids);
+            deleteLinesCommand.ExecuteNonQuery();
+        }
+    }
+
+    private void EnsureOrderLinesCanBeDeleted(NpgsqlConnection connection, long orderId, IReadOnlyCollection<long> orderLineIds)
+    {
+        var ids = orderLineIds
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
+        if (ids.Length == 0)
+        {
+            return;
+        }
+
+        using var command = CreateCommand(connection, @"
+WITH target_lines AS (
+    SELECT ol.id,
+           ol.item_id,
+           COALESCE(NULLIF(BTRIM(i.name), ''), 'Строка заказа') AS item_name
+    FROM order_lines ol
+    LEFT JOIN items i ON i.id = ol.item_id
+    WHERE ol.order_id = @order_id
+      AND ol.id = ANY(@order_line_ids)
+),
+active_pallets AS (
+    SELECT DISTINCT
+           tl.id AS order_line_id,
+           tl.item_name,
+           pp.id AS pallet_id,
+           pp.hu_code,
+           COALESCE(NULLIF(BTRIM(pp.status), ''), @planned_status) AS status
+    FROM target_lines tl
+    INNER JOIN production_pallets pp ON pp.order_id = @order_id
+    LEFT JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
+                                         AND pll.order_line_id = tl.id
+    WHERE pp.order_line_id = tl.id
+       OR pll.id IS NOT NULL
+)
+SELECT order_line_id,
+       item_name,
+       pallet_id,
+       hu_code,
+       status
+FROM active_pallets
+ORDER BY order_line_id, pallet_id;
+");
+        command.Parameters.AddWithValue("@order_id", orderId);
+        command.Parameters.AddWithValue("@order_line_ids", ids);
+        command.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var itemName = reader.GetString(1);
+            var status = reader.GetString(4);
+            if (string.Equals(status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (string.Equals(status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException($"{itemName}: нельзя удалить строку, есть заполненные паллеты/HU.");
+            }
+
+            throw new InvalidOperationException($"{itemName}: нельзя удалить строку, паллетный план уже напечатан или находится в фактическом состоянии.");
+        }
+    }
+
+    private long[] GetOrderLineIds(NpgsqlConnection connection, long orderId)
+    {
+        using var command = CreateCommand(connection, @"
+SELECT id
+FROM order_lines
+WHERE order_id = @order_id
+ORDER BY id;
+");
+        command.Parameters.AddWithValue("@order_id", orderId);
+        using var reader = command.ExecuteReader();
+        var ids = new List<long>();
+        while (reader.Read())
+        {
+            ids.Add(reader.GetInt64(0));
+        }
+
+        return ids.ToArray();
+    }
+
+    private long? GetOrderIdByOrderLineId(NpgsqlConnection connection, long orderLineId)
+    {
+        using var command = CreateCommand(connection, @"
+SELECT order_id
+FROM order_lines
+WHERE id = @id;
+");
+        command.Parameters.AddWithValue("@id", orderLineId);
+        var value = command.ExecuteScalar();
+        return value == null || value is DBNull ? null : Convert.ToInt64(value, CultureInfo.InvariantCulture);
     }
 
     public IReadOnlyDictionary<long, double> GetLedgerTotalsByItem()
