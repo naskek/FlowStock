@@ -150,6 +150,66 @@ public sealed class OrderDeletePostgresRegressionTests
     }
 
     [Fact]
+    public async Task PutUpdate_RemovingCustomerLineWithCancelledPalletDocLineReference_DetachesFkTailsWithoutDeletingDocLine()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        await RunInRollbackTransactionAsync(connectionString, async scopedStore =>
+        {
+            EnsureAtLeastOneLocation(scopedStore);
+            var fixture = SeedCustomerOrderWithTwoLines(scopedStore);
+            var plan = SeedDraftProductionReceiptPalletPlanForDeletedLine(
+                scopedStore,
+                fixture,
+                ProductionPalletStatus.Cancelled);
+
+            await using var host = await PostgresOrderUpdateHost.StartAsync(scopedStore);
+            var payload = await UpdateOrderHttpApi.UpdateAsync(
+                host.Client,
+                fixture.OrderId,
+                BuildDeleteFirstLineRequest(fixture));
+
+            Assert.True(payload.Ok);
+            Assert.DoesNotContain(scopedStore.GetOrderLines(fixture.OrderId), line => line.Id == fixture.DeletedOrderLineId);
+            AssertDetachedPalletPlan(scopedStore, plan);
+        });
+    }
+
+    [Fact]
+    public async Task PutUpdate_RemovingCustomerLineWithPlannedPalletDocLineReference_DetachesFkTailsWithoutDeletingDocLine()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        await RunInRollbackTransactionAsync(connectionString, async scopedStore =>
+        {
+            EnsureAtLeastOneLocation(scopedStore);
+            var fixture = SeedCustomerOrderWithTwoLines(scopedStore);
+            var plan = SeedDraftProductionReceiptPalletPlanForDeletedLine(
+                scopedStore,
+                fixture,
+                ProductionPalletStatus.Planned);
+
+            await using var host = await PostgresOrderUpdateHost.StartAsync(scopedStore);
+            var payload = await UpdateOrderHttpApi.UpdateAsync(
+                host.Client,
+                fixture.OrderId,
+                BuildDeleteFirstLineRequest(fixture));
+
+            Assert.True(payload.Ok);
+            Assert.DoesNotContain(scopedStore.GetOrderLines(fixture.OrderId), line => line.Id == fixture.DeletedOrderLineId);
+            AssertDetachedPalletPlan(scopedStore, plan);
+        });
+    }
+
+    [Fact]
     public async Task PutUpdate_RemovingCustomerLineWithFilledPallets_ReturnsBusinessBadRequest()
     {
         var connectionString = ResolvePostgresTestConnectionString();
@@ -187,6 +247,38 @@ public sealed class OrderDeletePostgresRegressionTests
             var remainingLines = scopedStore.GetOrderLines(fixture.OrderId);
             Assert.Equal(2, remainingLines.Count);
             Assert.Contains(remainingLines, line => line.Id == fixture.DeletedOrderLineId);
+        });
+    }
+
+    [Fact]
+    public async Task PutUpdate_RemovingCustomerLineWithPrintedPallets_ReturnsBusinessBadRequest()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        await RunInRollbackTransactionAsync(connectionString, async scopedStore =>
+        {
+            EnsureAtLeastOneLocation(scopedStore);
+            var fixture = SeedCustomerOrderWithTwoLines(scopedStore);
+            SeedDraftProductionReceiptPalletPlanForDeletedLine(
+                scopedStore,
+                fixture,
+                ProductionPalletStatus.Printed);
+
+            await using var host = await PostgresOrderUpdateHost.StartAsync(scopedStore);
+            using var response = await UpdateOrderHttpApi.PutRawAsync(
+                host.Client,
+                fixture.OrderId,
+                BuildDeleteFirstLineRawJson(fixture));
+
+            var payload = await UpdateOrderHttpApi.ReadApiErrorResultAsync(response, HttpStatusCode.BadRequest);
+            Assert.False(payload.Ok);
+            Assert.Equal("ORDER_LINE_PALLET_PLAN_NOT_PLANNED", payload.Error);
+            Assert.DoesNotContain("fkey", payload.Message ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(scopedStore.GetOrderLines(fixture.OrderId), line => line.Id == fixture.DeletedOrderLineId);
         });
     }
 
@@ -286,6 +378,77 @@ public sealed class OrderDeletePostgresRegressionTests
             remainingItemId,
             deletedOrderLineId,
             remainingOrderLineId);
+    }
+
+    private static PalletPlanFixture SeedDraftProductionReceiptPalletPlanForDeletedLine(
+        IDataStore store,
+        CustomerOrderFixture fixture,
+        string palletStatus)
+    {
+        var suffix = DateTime.UtcNow.Ticks.ToString();
+        var locationId = store.GetLocations().First().Id;
+        var huCode = store.CreateProductionPalletHuCode("ORDER-DELETE-REGRESSION");
+        var docId = store.AddDoc(new Doc
+        {
+            DocRef = $"PRD-T-{suffix[^6..]}",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            CreatedAt = DateTime.UtcNow,
+            OrderId = fixture.OrderId,
+            OrderRef = fixture.OrderRef
+        });
+
+        var docLineId = store.AddDocLine(new DocLine
+        {
+            DocId = docId,
+            OrderLineId = fixture.DeletedOrderLineId,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder,
+            ItemId = fixture.DeletedItemId,
+            Qty = 600,
+            ToLocationId = locationId,
+            ToHu = huCode
+        });
+
+        var planned = store.PlanProductionPallets(docId, DateTime.UtcNow);
+        var pallet = Assert.Single(planned);
+        Assert.Equal(docLineId, pallet.DocLineId);
+        Assert.Equal(fixture.DeletedOrderLineId, pallet.OrderLineId);
+        Assert.Equal(fixture.DeletedOrderLineId, Assert.Single(pallet.Lines).OrderLineId);
+
+        if (string.Equals(palletStatus, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+        {
+            Assert.Equal(1, store.CancelProductionPallets([pallet.Id]));
+        }
+        else if (string.Equals(palletStatus, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase))
+        {
+            Assert.Equal(1, store.MarkProductionPalletsPrinted(fixture.OrderId, [pallet.Id], DateTime.UtcNow));
+        }
+        else
+        {
+            Assert.Equal(ProductionPalletStatus.Planned, palletStatus);
+        }
+
+        pallet = Assert.Single(store.GetProductionPalletsByDoc(docId));
+        Assert.Equal(palletStatus, pallet.Status);
+        Assert.Equal(docLineId, pallet.DocLineId);
+        Assert.Equal(fixture.DeletedOrderLineId, pallet.OrderLineId);
+        Assert.Equal(fixture.DeletedOrderLineId, Assert.Single(pallet.Lines).OrderLineId);
+        Assert.Equal(fixture.DeletedOrderLineId, Assert.Single(store.GetDocLines(docId)).OrderLineId);
+
+        return new PalletPlanFixture(docId, docLineId, pallet.Id);
+    }
+
+    private static void AssertDetachedPalletPlan(IDataStore store, PalletPlanFixture plan)
+    {
+        var pallet = Assert.Single(store.GetProductionPalletsByDoc(plan.PrdDocId));
+        Assert.Equal(plan.PalletId, pallet.Id);
+        Assert.Equal(plan.DocLineId, pallet.DocLineId);
+        Assert.Null(pallet.OrderLineId);
+        Assert.Null(Assert.Single(pallet.Lines).OrderLineId);
+
+        var docLine = Assert.Single(store.GetDocLines(plan.PrdDocId));
+        Assert.Equal(plan.DocLineId, docLine.Id);
+        Assert.Null(docLine.OrderLineId);
     }
 
     private static void EnsureAtLeastOneLocation(IDataStore store)
@@ -398,6 +561,11 @@ public sealed class OrderDeletePostgresRegressionTests
         long RemainingItemId,
         long DeletedOrderLineId,
         long RemainingOrderLineId);
+
+    private sealed record PalletPlanFixture(
+        long PrdDocId,
+        long DocLineId,
+        long PalletId);
 
     private sealed class RollbackRequestedException : Exception;
 
