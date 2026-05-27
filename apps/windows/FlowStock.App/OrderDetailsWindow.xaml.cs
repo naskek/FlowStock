@@ -1454,15 +1454,39 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        if (GetSelectedOrderType() == OrderType.Customer)
+        var targetLine = ResolveEditableOrderLine(_selectedLine);
+        if (targetLine == null)
         {
-            _huBinding.RemoveLine(_selectedLine);
+            MessageBox.Show("Строка уже отсутствует в заказе.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
+            ForceOrderLinesGridRefresh();
+            return;
         }
 
-        _lines.Remove(_selectedLine);
+        if (GetSelectedOrderType() == OrderType.Customer)
+        {
+            _huBinding.RemoveLine(targetLine);
+        }
+
+        _lines.Remove(targetLine);
         _selectedLine = null;
-        RefreshLineMetrics();
         MarkDirty();
+        ForceOrderLinesGridRefresh();
+        RefreshLineMetrics();
+    }
+
+    private OrderLineView? ResolveEditableOrderLine(OrderLineView? selectedLine)
+    {
+        if (selectedLine == null)
+        {
+            return null;
+        }
+
+        if (selectedLine.Id > 0)
+        {
+            return _lines.FirstOrDefault(line => line.Id == selectedLine.Id);
+        }
+
+        return _lines.FirstOrDefault(line => ReferenceEquals(line, selectedLine));
     }
 
     private void OrderLinesGrid_KeyDown(object sender, KeyEventArgs e)

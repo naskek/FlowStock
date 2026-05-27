@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Security.Authentication;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using FlowStock.Core.Models;
 
 namespace FlowStock.App;
 
@@ -47,8 +48,25 @@ public sealed class UpdateOrderApiClient
 
         if (responseMessage.StatusCode == HttpStatusCode.OK)
         {
-            var payload = await responseMessage.Content.ReadFromJsonAsync<UpdateOrderApiResponse>(JsonOptions, cancellationToken)
-                .ConfigureAwait(false);
+            var responseBody = await responseMessage.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(responseBody))
+            {
+                return UpdateOrderApiCallResult.Success(BuildEmptySuccessFallback(orderId, request), responseBody);
+            }
+
+            UpdateOrderApiResponse? payload;
+            try
+            {
+                payload = JsonSerializer.Deserialize<UpdateOrderApiResponse>(responseBody, JsonOptions);
+            }
+            catch (JsonException ex)
+            {
+                return UpdateOrderApiCallResult.TransportFailure(
+                    UpdateOrderTransportFailureKind.InvalidResponse,
+                    "Сервер вернул некорректный ответ при обновлении заказа.",
+                    ex);
+            }
+
             if (payload == null)
             {
                 return UpdateOrderApiCallResult.TransportFailure(
@@ -56,12 +74,39 @@ public sealed class UpdateOrderApiClient
                     "Сервер вернул пустой ответ при обновлении заказа.");
             }
 
-            return UpdateOrderApiCallResult.Success(payload);
+            return UpdateOrderApiCallResult.Success(payload, responseBody);
         }
 
-        var error = await responseMessage.Content.ReadFromJsonAsync<ApiErrorResponse>(JsonOptions, cancellationToken)
-            .ConfigureAwait(false);
-        return UpdateOrderApiCallResult.HttpError(responseMessage.StatusCode, error);
+        var errorBody = await responseMessage.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        ApiErrorResponse? error = null;
+        if (!string.IsNullOrWhiteSpace(errorBody))
+        {
+            try
+            {
+                error = JsonSerializer.Deserialize<ApiErrorResponse>(errorBody, JsonOptions);
+            }
+            catch (JsonException)
+            {
+                error = null;
+            }
+        }
+
+        return UpdateOrderApiCallResult.HttpError(responseMessage.StatusCode, error, errorBody);
+    }
+
+    private static UpdateOrderApiResponse BuildEmptySuccessFallback(long orderId, UpdateOrderApiRequest request)
+    {
+        return new UpdateOrderApiResponse
+        {
+            Ok = true,
+            Result = "UPDATED",
+            OrderId = orderId,
+            OrderRef = string.IsNullOrWhiteSpace(request.OrderRef) ? orderId.ToString() : request.OrderRef,
+            OrderRefChanged = false,
+            Type = string.IsNullOrWhiteSpace(request.Type) ? OrderStatusMapper.TypeToString(OrderType.Customer) : request.Type,
+            Status = string.IsNullOrWhiteSpace(request.Status) ? OrderStatusMapper.StatusToString(OrderStatus.InProgress) : request.Status,
+            LineCount = request.Lines?.Count ?? 0
+        };
     }
 
     private static HttpMessageHandler CreateHandler(ServerCloseClientOptions options)
@@ -168,26 +213,29 @@ public sealed class UpdateOrderApiCallResult
     public UpdateOrderApiResponse? Response { get; init; }
     public ApiErrorResponse? Error { get; init; }
     public HttpStatusCode? StatusCode { get; init; }
+    public string? RawResponseBody { get; init; }
     public UpdateOrderTransportFailureKind TransportFailureKind { get; init; }
     public string? TransportErrorMessage { get; init; }
     public Exception? TransportException { get; init; }
 
     public bool IsTransportFailure => TransportFailureKind != UpdateOrderTransportFailureKind.None;
 
-    public static UpdateOrderApiCallResult Success(UpdateOrderApiResponse response)
+    public static UpdateOrderApiCallResult Success(UpdateOrderApiResponse response, string? rawResponseBody = null)
     {
         return new UpdateOrderApiCallResult
         {
-            Response = response
+            Response = response,
+            RawResponseBody = rawResponseBody
         };
     }
 
-    public static UpdateOrderApiCallResult HttpError(HttpStatusCode statusCode, ApiErrorResponse? error)
+    public static UpdateOrderApiCallResult HttpError(HttpStatusCode statusCode, ApiErrorResponse? error, string? rawResponseBody = null)
     {
         return new UpdateOrderApiCallResult
         {
             StatusCode = statusCode,
-            Error = error
+            Error = error,
+            RawResponseBody = rawResponseBody
         };
     }
 

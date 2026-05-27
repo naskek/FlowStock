@@ -7340,9 +7340,17 @@ RETURNING id;
     {
         WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "DELETE FROM order_lines WHERE id = @id");
-            command.Parameters.AddWithValue("@id", orderLineId);
-            command.ExecuteNonQuery();
+            using (var deletePlanCommand = CreateCommand(connection, "DELETE FROM order_receipt_plan_lines WHERE order_line_id = @id"))
+            {
+                deletePlanCommand.Parameters.AddWithValue("@id", orderLineId);
+                deletePlanCommand.ExecuteNonQuery();
+            }
+
+            using (var deleteLineCommand = CreateCommand(connection, "DELETE FROM order_lines WHERE id = @id"))
+            {
+                deleteLineCommand.Parameters.AddWithValue("@id", orderLineId);
+                deleteLineCommand.ExecuteNonQuery();
+            }
             return 0;
         });
     }
@@ -7351,9 +7359,17 @@ RETURNING id;
     {
         WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "DELETE FROM order_lines WHERE order_id = @order_id");
-            command.Parameters.AddWithValue("@order_id", orderId);
-            command.ExecuteNonQuery();
+            using (var deletePlanCommand = CreateCommand(connection, "DELETE FROM order_receipt_plan_lines WHERE order_id = @order_id"))
+            {
+                deletePlanCommand.Parameters.AddWithValue("@order_id", orderId);
+                deletePlanCommand.ExecuteNonQuery();
+            }
+
+            using (var deleteLinesCommand = CreateCommand(connection, "DELETE FROM order_lines WHERE order_id = @order_id"))
+            {
+                deleteLinesCommand.Parameters.AddWithValue("@order_id", orderId);
+                deleteLinesCommand.ExecuteNonQuery();
+            }
             return 0;
         });
     }
@@ -7362,9 +7378,23 @@ RETURNING id;
     {
         WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "DELETE FROM orders WHERE id = @id");
-            command.Parameters.AddWithValue("@id", orderId);
-            command.ExecuteNonQuery();
+            using (var deletePlanCommand = CreateCommand(connection, "DELETE FROM order_receipt_plan_lines WHERE order_id = @id"))
+            {
+                deletePlanCommand.Parameters.AddWithValue("@id", orderId);
+                deletePlanCommand.ExecuteNonQuery();
+            }
+
+            using (var deleteLinesCommand = CreateCommand(connection, "DELETE FROM order_lines WHERE order_id = @id"))
+            {
+                deleteLinesCommand.Parameters.AddWithValue("@id", orderId);
+                deleteLinesCommand.ExecuteNonQuery();
+            }
+
+            using (var deleteOrderCommand = CreateCommand(connection, "DELETE FROM orders WHERE id = @id"))
+            {
+                deleteOrderCommand.Parameters.AddWithValue("@id", orderId);
+                deleteOrderCommand.ExecuteNonQuery();
+            }
             return 0;
         });
     }

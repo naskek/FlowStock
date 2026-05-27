@@ -3,6 +3,13 @@ using FlowStock.Core.Models;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
 using FlowStock.Server.Tests.CreateOrder.Infrastructure;
 using FlowStock.Server.Tests.UpdateOrder.Infrastructure;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 namespace FlowStock.Server.Tests.UpdateOrder;
 
@@ -99,6 +106,34 @@ public sealed class WpfCompatibilityTests
         Assert.Equal("002", harness.GetOrder(orderId).OrderRef);
     }
 
+    [Fact]
+    public async Task WpfUpdateOrder_AcceptsEmptyOkResponseFromServer()
+    {
+        await using var host = await EmptyUpdateOrderResponseHost.StartAsync();
+        using var temp = new TempSettingsScope(host.Client.BaseAddress!, useServerUpdateOrder: true);
+        var service = new WpfUpdateOrderService(new SettingsService(temp.SettingsPath), new FileLogger(temp.LogPath));
+
+        var result = await service.UpdateOrderAsync(
+            new WpfUpdateOrderContext(
+                93,
+                "093",
+                OrderType.Customer,
+                200,
+                null,
+                OrderStatus.InProgress,
+                "empty-body compatibility",
+                new[]
+                {
+                    new OrderLineView { Id = 1001, ItemId = 1001, ItemName = "Горчица", QtyOrdered = 10 }
+                }));
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Response);
+        Assert.Equal(93, result.Response!.OrderId);
+        Assert.Equal("093", result.Response.OrderRef);
+        Assert.Equal("IN_PROGRESS", result.Response.Status);
+    }
+
     private sealed class TempSettingsScope : IDisposable
     {
         private readonly string _dir;
@@ -141,6 +176,57 @@ public sealed class WpfCompatibilityTests
             catch
             {
             }
+        }
+    }
+
+    private sealed class EmptyUpdateOrderResponseHost : IAsyncDisposable
+    {
+        private readonly WebApplication _app;
+
+        private EmptyUpdateOrderResponseHost(WebApplication app, HttpClient client)
+        {
+            _app = app;
+            Client = client;
+        }
+
+        public HttpClient Client { get; }
+
+        public static async Task<EmptyUpdateOrderResponseHost> StartAsync()
+        {
+            var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+            {
+                EnvironmentName = Environments.Production
+            });
+
+            builder.WebHost.UseUrls("http://127.0.0.1:0");
+            var app = builder.Build();
+            app.MapPut("/api/orders/{orderId:long}", async context =>
+            {
+                context.Response.StatusCode = StatusCodes.Status200OK;
+                await context.Response.CompleteAsync();
+            });
+
+            await app.StartAsync();
+
+            var addresses = app.Services
+                .GetRequiredService<IServer>()
+                .Features
+                .Get<IServerAddressesFeature>();
+            var address = addresses?.Addresses.Single();
+
+            return new EmptyUpdateOrderResponseHost(
+                app,
+                new HttpClient
+                {
+                    BaseAddress = new Uri(address!)
+                });
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            Client.Dispose();
+            await _app.StopAsync();
+            await _app.DisposeAsync();
         }
     }
 }

@@ -54,6 +54,9 @@ public sealed class WpfUpdateOrderService
                 })
                 .ToList()
         };
+        _logger.Info(
+            $"WPF update order request order_id={context.OrderId} type={request.Type} partner_id={request.PartnerId?.ToString(CultureInfo.InvariantCulture) ?? "-"} " +
+            $"line_count={request.Lines.Count} lines={FormatUpdateLinesForLog(request.Lines)}");
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(configuration.RequestTimeoutSeconds));
@@ -131,6 +134,13 @@ public sealed class WpfUpdateOrderService
                 apiCall.TransportException);
         }
 
+        if (apiCall.StatusCode.HasValue)
+        {
+            _logger.Warn(
+                $"WPF update order response order_id={context.OrderId} status={(int)apiCall.StatusCode.Value} " +
+                $"error={apiCall.Error?.Error ?? "-"} body={TrimForLog(apiCall.RawResponseBody)}");
+        }
+
         if (apiCall.Response != null)
         {
             return MapSuccessResponse(context, apiCall.Response);
@@ -179,7 +189,8 @@ public sealed class WpfUpdateOrderService
         if (!string.IsNullOrWhiteSpace(apiCall.Error?.Message)
             && (string.Equals(errorCode, "ORDER_LINE_QTY_BELOW_COVERAGE", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(errorCode, "ORDER_LINE_HAS_FILLED_PALLETS", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(errorCode, "ORDER_LINE_PALLET_PLAN_NOT_PLANNED", StringComparison.OrdinalIgnoreCase)))
+                || string.Equals(errorCode, "ORDER_LINE_PALLET_PLAN_NOT_PLANNED", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(errorCode, "ORDER_UPDATE_FAILED", StringComparison.OrdinalIgnoreCase)))
         {
             return WpfUpdateOrderResult.Failure(
                 WpfUpdateOrderResultKind.ValidationFailed,
@@ -257,6 +268,32 @@ public sealed class WpfUpdateOrderService
         return !string.IsNullOrWhiteSpace(errorCode)
                && (string.Equals(errorCode, "HU_RESERVATION_CONFLICT", StringComparison.OrdinalIgnoreCase)
                    || errorCode.Contains("уже зарезервирован", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string FormatUpdateLinesForLog(IReadOnlyList<UpdateOrderApiLineRequest> lines)
+    {
+        if (lines.Count == 0)
+        {
+            return "[]";
+        }
+
+        return "[" + string.Join(
+            ";",
+            lines.Select(line =>
+                $"line_id={line.OrderLineId?.ToString(CultureInfo.InvariantCulture) ?? "-"},item_id={line.ItemId.ToString(CultureInfo.InvariantCulture)},qty={line.QtyOrdered.ToString("0.###", CultureInfo.InvariantCulture)},selected_hu={line.SelectedHuCodes?.Count ?? 0}")) + "]";
+    }
+
+    private static string TrimForLog(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "<empty>";
+        }
+
+        var normalized = value.Replace("\r", " ", StringComparison.Ordinal).Replace("\n", " ", StringComparison.Ordinal).Trim();
+        return normalized.Length <= 1000
+            ? normalized
+            : normalized[..1000] + "...";
     }
 
     private WpfServerUpdateOrderConfiguration LoadConfiguration()

@@ -16,7 +16,11 @@ public static class OrderUpdateEndpoint
         app.MapPut("/api/orders/{orderId:long}", HandleUpdateAsync);
     }
 
-    private static async Task<IResult> HandleUpdateAsync(HttpRequest request, long orderId, IDataStore store)
+    private static async Task<IResult> HandleUpdateAsync(
+        HttpRequest request,
+        long orderId,
+        IDataStore store,
+        ILogger<OrderUpdateEndpointMarker> logger)
     {
         var existing = store.GetOrder(orderId);
         if (existing == null)
@@ -220,6 +224,13 @@ public static class OrderUpdateEndpoint
         {
             return Results.BadRequest(new ApiErrorResult(false, MapKnownInvalidOperationError(ex), ex.Message));
         }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Order update failed for order_id={OrderId}", orderId);
+            return Results.Json(
+                new ApiErrorResult(false, "ORDER_UPDATE_FAILED", ex.Message),
+                statusCode: StatusCodes.Status500InternalServerError);
+        }
 
         var updated = store.GetOrder(orderId);
         if (updated == null)
@@ -386,4 +397,8 @@ public static class OrderUpdateEndpoint
         Supplier,
         Both
     }
+}
+
+public sealed class OrderUpdateEndpointMarker
+{
 }

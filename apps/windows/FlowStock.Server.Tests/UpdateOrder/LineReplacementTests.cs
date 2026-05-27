@@ -1,3 +1,4 @@
+using FlowStock.Core.Models;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
 using FlowStock.Server.Tests.UpdateOrder.Infrastructure;
 
@@ -66,5 +67,46 @@ public sealed class LineReplacementTests
         Assert.Equal(2, lines.Count);
         Assert.Contains(lines, line => line.ItemId == 1001 && Math.Abs(line.QtyOrdered - 5) < 0.000001);
         Assert.Contains(lines, line => line.ItemId == 1002 && Math.Abs(line.QtyOrdered - 1) < 0.000001);
+    }
+
+    [Fact]
+    public async Task DeleteReservedCustomerLine_RemovesLineAndItsHuReservation()
+    {
+        var (harness, apiStore, orderId) = UpdateOrderHttpScenario.CreateCustomerScenario();
+        harness.SeedOrderReceiptPlanLines(
+            orderId,
+            new OrderReceiptPlanLine
+            {
+                Id = 5001,
+                OrderId = orderId,
+                OrderLineId = 101,
+                ItemId = 1001,
+                QtyPlanned = 10,
+                ToHu = "HU-001",
+                SortOrder = 0
+            });
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        var payload = await UpdateOrderHttpApi.UpdateAsync(
+            host.Client,
+            orderId,
+            new UpdateOrderHttpApi.UpdateOrderRequest
+            {
+                OrderRef = "002",
+                Type = "CUSTOMER",
+                PartnerId = 200,
+                Status = "ACCEPTED",
+                Lines =
+                [
+                    new UpdateOrderHttpApi.UpdateOrderLineRequest { ItemId = 1002, QtyOrdered = 5 }
+                ]
+            });
+
+        Assert.Equal(1, payload.LineCount);
+
+        var lines = harness.GetOrderLines(orderId);
+        Assert.Single(lines);
+        Assert.DoesNotContain(lines, line => line.Id == 101 || line.ItemId == 1001);
+        Assert.DoesNotContain(harness.GetOrderReceiptPlanLines(orderId), line => line.OrderLineId == 101);
     }
 }
