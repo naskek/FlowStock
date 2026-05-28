@@ -6103,17 +6103,74 @@ stock_by_item AS (
     FROM ledger l
     GROUP BY l.item_id
 ),
-reserved_hu AS (
-    SELECT DISTINCT p.item_id,
-           UPPER(BTRIM(p.to_hu)) AS hu_code
+reserved_hu_candidates AS (
+    SELECT pp.item_id,
+           UPPER(BTRIM(pp.hu_code)) AS hu_code,
+           0 AS source_priority,
+           o.created_at AS source_order_created_at,
+           pp.id AS source_id
+    FROM production_pallets pp
+    INNER JOIN orders o ON o.id = pp.order_id
+    WHERE pp.order_id IS NOT NULL
+      AND pp.status = @filled_pallet_status
+      AND o.order_type = @customer_order_type
+      AND o.status NOT IN (@shipped_order_status, @cancelled_order_status, @merged_order_status)
+      AND pp.hu_code IS NOT NULL
+      AND BTRIM(pp.hu_code) <> ''
+
+    UNION ALL
+
+    SELECT p.item_id,
+           UPPER(BTRIM(p.to_hu)) AS hu_code,
+           1 AS source_priority,
+           o.created_at AS source_order_created_at,
+           p.id AS source_id
     FROM order_receipt_plan_lines p
     INNER JOIN orders o ON o.id = p.order_id
-    INNER JOIN item_types it ON it.id = (SELECT item_type_id FROM items WHERE id = p.item_id)
     WHERE o.order_type = @customer_order_type
       AND o.status NOT IN (@shipped_order_status, @cancelled_order_status, @merged_order_status)
       AND p.qty_planned > 0
       AND p.to_hu IS NOT NULL
       AND BTRIM(p.to_hu) <> ''
+
+    UNION ALL
+
+    SELECT dl.item_id,
+           UPPER(BTRIM(dl.to_hu)) AS hu_code,
+           2 AS source_priority,
+           o.created_at AS source_order_created_at,
+           dl.id AS source_id
+    FROM doc_lines dl
+    INNER JOIN docs d ON d.id = dl.doc_id
+    INNER JOIN orders o ON o.id = d.order_id
+    WHERE d.type = @production_doc_type
+      AND d.status = @closed_doc_status
+      AND d.order_id IS NOT NULL
+      AND o.order_type = @customer_order_type
+      AND o.status NOT IN (@shipped_order_status, @cancelled_order_status, @merged_order_status)
+      AND dl.qty > 0
+      AND dl.to_hu IS NOT NULL
+      AND BTRIM(dl.to_hu) <> ''
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+),
+reserved_hu_ranked AS (
+    SELECT item_id,
+           hu_code,
+           ROW_NUMBER() OVER (
+               PARTITION BY item_id, hu_code
+               ORDER BY source_priority, source_order_created_at, source_id
+           ) AS rn
+    FROM reserved_hu_candidates
+),
+reserved_hu AS (
+    SELECT item_id,
+           hu_code
+    FROM reserved_hu_ranked
+    WHERE rn = 1
 ),
 reserved_customer_stock AS (
     SELECT l.item_id,
