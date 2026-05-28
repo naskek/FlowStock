@@ -92,6 +92,11 @@ public sealed class OrderHuReservationApplyService
             .Select(code => code.Trim().ToUpperInvariant())
             .Where(code => !string.IsNullOrWhiteSpace(code))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var reservedOwnerByHu = (store.GetHuOrderContextRows() ?? Array.Empty<HuOrderContextRow>())
+            .Where(row => row.ReservedCustomerOrderId.HasValue && row.ReservedCustomerOrderId.Value != customerOrderId)
+            .Where(row => !string.IsNullOrWhiteSpace(row.HuCode))
+            .GroupBy(row => row.HuCode.Trim().ToUpperInvariant(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
         var affectedOrderLineIds = new HashSet<long>();
         var replacementPlanLines = new List<OrderReceiptPlanLine>();
         var appliedLines = new List<OrderHuReservationApplyLineResult>();
@@ -156,6 +161,14 @@ public sealed class OrderHuReservationApplyService
             {
                 if (reservedByOtherActiveCustomerOrders.Contains(huCode))
                 {
+                    if (reservedOwnerByHu.TryGetValue(huCode, out var owner))
+                    {
+                        throw new OrderHuReservationApplyException(
+                            "HU_RESERVED_BY_OTHER_ORDER",
+                            $"HU '{huCode}' уже закреплён за другим активным клиентским заказом.",
+                            [$"HU '{huCode}' принадлежит заказу {owner.ReservedCustomerOrderRef ?? owner.ReservedCustomerOrderId!.Value.ToString()}."]);
+                    }
+
                     throw new OrderHuReservationApplyException(
                         "HU_RESERVED_BY_OTHER_ORDER",
                         $"HU '{huCode}' уже зарезервирован другим активным клиентским заказом.",

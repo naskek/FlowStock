@@ -49,10 +49,7 @@ reserved_candidates AS (
            UPPER(BTRIM(p.to_hu)) AS hu_code,
            p.order_id AS reserved_by_order_id,
            o.order_ref AS reserved_by_order_ref,
-           ROW_NUMBER() OVER (
-               PARTITION BY p.item_id, UPPER(BTRIM(p.to_hu))
-               ORDER BY o.created_at, p.order_id, p.id
-           ) AS rn
+           1 AS source_priority
     FROM order_receipt_plan_lines p
     INNER JOIN orders o ON o.id = p.order_id
     INNER JOIN requested_items ri ON ri.item_id = p.item_id
@@ -62,14 +59,46 @@ reserved_candidates AS (
       AND o.order_type = @customer_order_type
       AND o.status <> @shipped_status
       AND o.status <> @cancelled_status
+      AND o.status <> @merged_status
       AND (@customer_order_id::bigint IS NULL OR p.order_id <> @customer_order_id::bigint)
+
+    UNION ALL
+
+    SELECT p.item_id,
+           UPPER(BTRIM(p.hu_code)) AS hu_code,
+           p.order_id AS reserved_by_order_id,
+           o.order_ref AS reserved_by_order_ref,
+           0 AS source_priority
+    FROM production_pallets p
+    INNER JOIN orders o ON o.id = p.order_id
+    INNER JOIN requested_items ri ON ri.item_id = p.item_id
+    WHERE p.order_id IS NOT NULL
+      AND p.status = @filled_status
+      AND p.hu_code IS NOT NULL
+      AND BTRIM(p.hu_code) <> ''
+      AND o.order_type = @customer_order_type
+      AND o.status <> @shipped_status
+      AND o.status <> @cancelled_status
+      AND o.status <> @merged_status
+      AND (@customer_order_id::bigint IS NULL OR p.order_id <> @customer_order_id::bigint)
+),
+reserved_ranked AS (
+    SELECT item_id,
+           hu_code,
+           reserved_by_order_id,
+           reserved_by_order_ref,
+           ROW_NUMBER() OVER (
+               PARTITION BY item_id, hu_code
+               ORDER BY source_priority, reserved_by_order_id, reserved_by_order_ref
+           ) AS rn
+    FROM reserved_candidates
 ),
 reserved_map AS (
     SELECT item_id,
            hu_code,
            reserved_by_order_id,
            reserved_by_order_ref
-    FROM reserved_candidates
+    FROM reserved_ranked
     WHERE rn = 1
 ),
 ledger_candidates AS (

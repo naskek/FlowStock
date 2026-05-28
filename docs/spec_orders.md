@@ -100,7 +100,11 @@
 - Если у PRD есть активные `production_pallets`, закрытие разрешено только когда все они `FILLED`; иначе сервер возвращает ошибку `Нельзя закрыть выпуск: есть ненаполненные паллеты`.
 - Для HU фиксируются два независимых смысла связи с заказами:
   - `origin/internal order`: происхождение HU по закрытому `PRODUCTION_RECEIPT` внутреннего заказа (`docs.order_id` + `docs.type=PRODUCTION_RECEIPT` + `doc_lines.to_hu`).
-  - `reserved/customer order`: текущий резерв HU под клиентский заказ в `order_receipt_plan_lines`.
+  - `reserved/customer order`: текущий owner HU под клиентский заказ. Источники owner в порядке приоритета:
+    - `FILLED production_pallets` активного `CUSTOMER`-заказа;
+    - reserve/read-model в `order_receipt_plan_lines`;
+    - fallback для legacy/compatibility: закрытый `PRODUCTION_RECEIPT` клиентского заказа.
+- Если один и тот же HU одновременно встречается и в `FILLED production_pallets`, и в `order_receipt_plan_lines` другого активного клиентского заказа, owner определяется по `production_pallets`; такой конфликт считается диагностикой и HU не может использоваться как свободный складской остаток.
 - `origin/internal order` является справочной историей происхождения HU и не является обязательным условием для клиентского резерва. Если закрытый `PRODUCTION_RECEIPT` имеет `docs.order_id = NULL`, HU все равно может быть зарезервирован как свободный складской HU; в read-model `origin_internal_order_ref` остается пустым.
 - Резерв в `order_receipt_plan_lines` не изменяет `ledger` и не меняет физический остаток, а только read-model привязки.
 - Для типов номенклатуры с флагом `item_types.min_stock_uses_order_binding = true` этот резерв дополнительно участвует в контроле минимального остатка как `reserved_customer_order_qty` (только по активным клиентским заказам, `status NOT IN (SHIPPED, CANCELLED)`).

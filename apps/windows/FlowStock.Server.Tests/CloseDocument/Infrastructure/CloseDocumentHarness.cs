@@ -982,14 +982,31 @@ internal sealed class CloseDocumentHarness
             });
 
         _store.Setup(store => store.GetReservedOrderReceiptHuCodes(It.IsAny<long?>()))
-            .Returns<long?>(excludeOrderId => _orderReceiptPlanLines
-                .Where(pair => !excludeOrderId.HasValue || pair.Key != excludeOrderId.Value)
-                .SelectMany(pair => pair.Value)
-                .Select(line => NormalizeHu(line.ToHu))
-                .Where(code => !string.IsNullOrWhiteSpace(code))
-                .Cast<string>()
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray());
+            .Returns<long?>(excludeOrderId =>
+            {
+                var reservedFromPlan = _orderReceiptPlanLines
+                    .Where(pair => !excludeOrderId.HasValue || pair.Key != excludeOrderId.Value)
+                    .SelectMany(pair => pair.Value)
+                    .Select(line => NormalizeHu(line.ToHu))
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Cast<string>();
+                var reservedFromFilledCustomerPallets = _productionPallets.Values
+                    .Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+                    .Where(pallet => pallet.OrderId.HasValue && (!excludeOrderId.HasValue || pallet.OrderId.Value != excludeOrderId.Value))
+                    .Where(pallet => !string.IsNullOrWhiteSpace(pallet.HuCode))
+                    .Where(pallet => pallet.OrderId.HasValue
+                                     && _orders.TryGetValue(pallet.OrderId.Value, out var order)
+                                     && order.Type == OrderType.Customer
+                                     && order.Status is not OrderStatus.Shipped and not OrderStatus.Cancelled and not OrderStatus.Merged)
+                    .Select(pallet => NormalizeHu(pallet.HuCode))
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Cast<string>();
+
+                return reservedFromPlan
+                    .Concat(reservedFromFilledCustomerPallets)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+            });
 
         _store.As<IOptimizedHuReservationCandidatesStore>()
             .Setup(store => store.GetHuReservationCandidateSources(
@@ -1013,6 +1030,15 @@ internal sealed class CloseDocumentHarness
                         group => group.Key,
                         group => group.First(),
                         StringComparer.OrdinalIgnoreCase);
+                var ownedByFilledCustomerPalletHu = _productionPallets.Values
+                    .Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+                    .Where(pallet => pallet.OrderId.HasValue
+                                     && _orders.TryGetValue(pallet.OrderId.Value, out var order)
+                                     && order.Type == OrderType.Customer
+                                     && order.Status is not OrderStatus.Shipped and not OrderStatus.Cancelled and not OrderStatus.Merged)
+                    .Where(pallet => !string.IsNullOrWhiteSpace(pallet.HuCode))
+                    .GroupBy(pallet => NormalizeHu(pallet.HuCode)!, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
 
                 return _seedBalances
                     .Where(pair => pair.Value > StockQuantityRules.QtyTolerance)
@@ -1021,6 +1047,24 @@ internal sealed class CloseDocumentHarness
                     .Where(pair => !excluded.Contains(pair.Key.HuCode!))
                     .Select(pair =>
                     {
+                        if (ownedByFilledCustomerPalletHu.TryGetValue(pair.Key.HuCode!, out var ownedPallet))
+                        {
+                            var owner = ownedPallet.OrderId.HasValue && _orders.TryGetValue(ownedPallet.OrderId.Value, out var ownerOrder)
+                                ? ownerOrder
+                                : null;
+                            return new HuReservationCandidateSourceRow
+                            {
+                                Source = OrderHuReservationApplyService.SourceLedgerStock,
+                                HuCode = pair.Key.HuCode!,
+                                ItemId = pair.Key.ItemId,
+                                Qty = pair.Value,
+                                ShipReady = true,
+                                ReservedByOrderId = ownedPallet.OrderId,
+                                ReservedByOrderRef = owner?.OrderRef,
+                                Note = "FILLED production pallet клиента"
+                            };
+                        }
+
                         reservationsByHu.TryGetValue(pair.Key.HuCode!, out var reservation);
                         var reservedOrder = reservation.OrderId > 0 && _orders.TryGetValue(reservation.OrderId, out var order)
                             ? order
@@ -3119,7 +3163,7 @@ internal sealed class CloseDocumentHarness
         {
             if (!_orders.TryGetValue(pair.Key, out var order)
                 || order.Type != OrderType.Customer
-                || order.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
+                || order.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
             {
                 continue;
             }
@@ -3195,30 +3239,73 @@ internal sealed class CloseDocumentHarness
             }
         }
 
+        foreach (var pallet in _productionPallets.Values
+                     .Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+                     .Where(pallet => pallet.OrderId.HasValue && !string.IsNullOrWhiteSpace(pallet.HuCode)))
+        {
+            if (!_orders.TryGetValue(pallet.OrderId!.Value, out var order)
+                || order.Type != OrderType.Customer
+                || order.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
+            {
+                continue;
+            }
+
+            var huCode = NormalizeHu(pallet.HuCode);
+            if (huCode == null || !activeHuKeys.Contains((pallet.ItemId, huCode)))
+            {
+                continue;
+            }
+
+            result.Add(new HuOrderContextRow
+            {
+                HuCode = huCode,
+                ItemId = pallet.ItemId,
+                ReservedCustomerOrderId = order.Id,
+                ReservedCustomerOrderRef = order.OrderRef,
+                ReservedCustomerId = order.PartnerId,
+                ReservedCustomerName = order.PartnerName
+            });
+        }
+
         return result
             .GroupBy(row => (row.ItemId, HuCode: NormalizeHu(row.HuCode)))
             .Select(group =>
             {
                 var rows = group.ToList();
-                var merged = rows[0];
-                foreach (var row in rows.Skip(1))
-                {
-                    merged = new HuOrderContextRow
-                    {
-                        HuCode = merged.HuCode,
-                        ItemId = merged.ItemId,
-                        OriginInternalOrderId = merged.OriginInternalOrderId ?? row.OriginInternalOrderId,
-                        OriginInternalOrderRef = merged.OriginInternalOrderRef ?? row.OriginInternalOrderRef,
-                        ReservedCustomerOrderId = merged.ReservedCustomerOrderId ?? row.ReservedCustomerOrderId,
-                        ReservedCustomerOrderRef = merged.ReservedCustomerOrderRef ?? row.ReservedCustomerOrderRef,
-                        ReservedCustomerId = merged.ReservedCustomerId ?? row.ReservedCustomerId,
-                        ReservedCustomerName = merged.ReservedCustomerName ?? row.ReservedCustomerName
-                    };
-                }
+                var preferredReservation = rows
+                    .Where(row => row.ReservedCustomerOrderId.HasValue)
+                    .OrderByDescending(IsReservedByFilledCustomerProductionPallet)
+                    .ThenBy(row => row.ReservedCustomerOrderId)
+                    .FirstOrDefault();
+                var origin = rows.FirstOrDefault(row => row.OriginInternalOrderId.HasValue);
 
-                return merged;
+                return new HuOrderContextRow
+                {
+                    HuCode = rows[0].HuCode,
+                    ItemId = rows[0].ItemId,
+                    OriginInternalOrderId = origin?.OriginInternalOrderId,
+                    OriginInternalOrderRef = origin?.OriginInternalOrderRef,
+                    ReservedCustomerOrderId = preferredReservation?.ReservedCustomerOrderId,
+                    ReservedCustomerOrderRef = preferredReservation?.ReservedCustomerOrderRef,
+                    ReservedCustomerId = preferredReservation?.ReservedCustomerId,
+                    ReservedCustomerName = preferredReservation?.ReservedCustomerName
+                };
             })
             .ToArray();
+    }
+
+    private bool IsReservedByFilledCustomerProductionPallet(HuOrderContextRow row)
+    {
+        if (!row.ReservedCustomerOrderId.HasValue || string.IsNullOrWhiteSpace(row.HuCode))
+        {
+            return false;
+        }
+
+        return _productionPallets.Values.Any(pallet =>
+            pallet.OrderId == row.ReservedCustomerOrderId
+            && pallet.ItemId == row.ItemId
+            && string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(NormalizeHu(pallet.HuCode), NormalizeHu(row.HuCode), StringComparison.OrdinalIgnoreCase));
     }
 
     private double GetProducedQtyForOrderLine(long orderLineId)

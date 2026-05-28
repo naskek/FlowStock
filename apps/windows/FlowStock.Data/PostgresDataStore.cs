@@ -7055,11 +7055,28 @@ WHERE p.to_hu IS NOT NULL
   AND o.order_type = @customer_order_type
   AND o.status <> @shipped_status
   AND o.status <> @cancelled_status
+  AND o.status <> @merged_status
+  AND (@exclude_order_id::bigint IS NULL OR p.order_id <> @exclude_order_id::bigint)
+
+UNION
+
+SELECT DISTINCT p.hu_code
+FROM production_pallets p
+INNER JOIN orders o ON o.id = p.order_id
+WHERE p.hu_code IS NOT NULL
+  AND p.hu_code <> ''
+  AND p.status = @filled_status
+  AND o.order_type = @customer_order_type
+  AND o.status <> @shipped_status
+  AND o.status <> @cancelled_status
+  AND o.status <> @merged_status
   AND (@exclude_order_id::bigint IS NULL OR p.order_id <> @exclude_order_id::bigint);
 ");
             command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
             command.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
             command.Parameters.AddWithValue("@cancelled_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+            command.Parameters.AddWithValue("@merged_status", OrderStatusMapper.StatusToString(OrderStatus.Merged));
+            command.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
             command.Parameters.AddWithValue("@exclude_order_id", excludeOrderId.HasValue ? excludeOrderId.Value : DBNull.Value);
             using var reader = command.ExecuteReader();
             var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -8339,7 +8356,7 @@ reserved_candidates AS (
            o.order_ref AS reserved_customer_order_ref,
            o.partner_id AS reserved_customer_id,
            partner.name AS reserved_customer_name,
-           0 AS source_priority,
+           1 AS source_priority,
            o.created_at AS source_order_created_at,
            p.id AS source_id
     FROM order_receipt_plan_lines p
@@ -8351,6 +8368,30 @@ reserved_candidates AS (
       AND o.order_type = @customer_order_type
       AND o.status <> @shipped_status
       AND o.status <> @cancelled_status
+      AND o.status <> @merged_status
+
+    UNION ALL
+
+    SELECT p.item_id,
+           UPPER(TRIM(p.hu_code)) AS hu_code,
+           p.order_id AS reserved_customer_order_id,
+           o.order_ref AS reserved_customer_order_ref,
+           o.partner_id AS reserved_customer_id,
+           partner.name AS reserved_customer_name,
+           0 AS source_priority,
+           o.created_at AS source_order_created_at,
+           p.id AS source_id
+    FROM production_pallets p
+    INNER JOIN orders o ON o.id = p.order_id
+    LEFT JOIN partners partner ON partner.id = o.partner_id
+    WHERE p.order_id IS NOT NULL
+      AND p.status = @filled_status
+      AND o.order_type = @customer_order_type
+      AND o.status <> @shipped_status
+      AND o.status <> @cancelled_status
+      AND o.status <> @merged_status
+      AND p.hu_code IS NOT NULL
+      AND p.hu_code <> ''
 
     UNION ALL
 
@@ -8360,7 +8401,7 @@ reserved_candidates AS (
            COALESCE(d.order_ref, o.order_ref) AS reserved_customer_order_ref,
            o.partner_id AS reserved_customer_id,
            partner.name AS reserved_customer_name,
-           1 AS source_priority,
+           2 AS source_priority,
            o.created_at AS source_order_created_at,
            dl.id AS source_id
     FROM doc_lines dl
@@ -8373,6 +8414,7 @@ reserved_candidates AS (
       AND o.order_type = @customer_order_type
       AND o.status <> @shipped_status
       AND o.status <> @cancelled_status
+      AND o.status <> @merged_status
       AND dl.qty > 0
       AND dl.to_hu IS NOT NULL
       AND dl.to_hu <> ''
@@ -8423,6 +8465,8 @@ LEFT JOIN reserved_map rm ON rm.item_id = hs.item_id AND rm.hu_code = hs.hu_code
         command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
         command.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
         command.Parameters.AddWithValue("@cancelled_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+        command.Parameters.AddWithValue("@merged_status", OrderStatusMapper.StatusToString(OrderStatus.Merged));
+        command.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
         command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
 
         using var reader = command.ExecuteReader();
