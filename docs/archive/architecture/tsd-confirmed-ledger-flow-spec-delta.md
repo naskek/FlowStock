@@ -1,5 +1,7 @@
 # Delta к spec.md / spec_orders.md (TSD-confirmed ledger flow)
 
+**Статус:** superseded / implemented — содержимое перенесено в [`spec.md`](../../spec.md) и [`spec_orders.md`](../../spec_orders.md). Не использовать как источник истины.
+
 Черновик изменений для включения в основные спецификации после стабилизации ветки `new-ledger-logic`.
 
 ## docs/spec.md

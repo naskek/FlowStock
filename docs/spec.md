@@ -34,7 +34,7 @@
   - Раздел FlowStock Server в окне подключения к БД используется только для настройки API endpoint-ов и диагностики. Для non-KM runtime-сценариев WPF legacy per-operation toggles удалены, всегда используется server path.
   - Non-KM runtime read/write-потоки WPF используют `FlowStock.Server` для списков, деталей, request inbox, справочников, контрагентов, HU, packaging и import tooling. Прямой доступ к PostgreSQL в WPF остается только для startup connection/bootstrap и замороженных KM-specific code path.
 - `TSD PWA`: online data capture через API (без прямого доступа к БД).
-- **Warehouse Task Board** ([`spec_tasks.md`](spec_tasks.md)) — **experimental / UI disabled by default**: backend и тесты сохранены; входы Web/WPF/TSD скрыты до доработки. `ledger` только после `confirm-execution` в WPF.
+- **Warehouse Task Board** — **deprecated / removal candidate** (архив: [`archive/tasks/spec_tasks.md`](archive/tasks/spec_tasks.md)): старый experimental flow; **не** задаёт архитектуру normal TSD. Backend/тесты могут оставаться в коде; операторский UI по умолчанию скрыт. Не путать с TSD `Наполнение` / `Отгрузка`.
 - `PC web client`: остатки доступны только на чтение; создание заказа отправляется как request и применяется только после подтверждения в WPF.
   - Отправка requests разрешена только активным аккаунтам с PC-access (`tsd_devices.platform=PC` или `BOTH`).
   - В списке заказов финальные зеленые индикаторы (`SHIPPED`/`Выполнен`, полностью наполненные паллеты) могут отображаться как icon-only с подсказкой; промежуточные статусы и частичное наполнение сохраняют видимый текст. Подсказки паллетных индикаторов показывают количество паллет, а для клиентского резерва HU - готовность к отгрузке в паллетах по заказу.
@@ -75,7 +75,7 @@
 - `marking_order(id, order_id NULL, item_id NULL, gtin, requested_quantity, request_number, status, notes, source_type, source_order_id NULL, requested_at, codes_bound_at, created_at, updated_at)`
 - `marking_code(..., marking_order_id, status, receipt_doc_id NULL, receipt_line_id NULL, ...)`: новые ЧЗ/КМ-коды хранят привязку к строке выпуска через `receipt_line_id`; один код может быть привязан только к одной строке.
 - `client_blocks(block_key, is_enabled, updated_at)`
-- Складские задания (experimental, см. [`spec_tasks.md`](spec_tasks.md)): `warehouse_action_bundles`, `warehouse_action_lines`, `warehouse_tasks`, `warehouse_task_lines`, `warehouse_task_events`
+- Складские задания Warehouse Task Board (deprecated, архив): `warehouse_action_bundles`, `warehouse_action_lines`, `warehouse_tasks`, `warehouse_task_lines`, `warehouse_task_events` — не использовать как модель normal TSD
 
 ## Инварианты
 - Остатки рассчитываются только из `ledger`.
@@ -91,6 +91,40 @@
 - Один HU-code может иметь остаток только в одной локации одновременно.
 - Документы списания требуют `reason_code` до проведения.
 - Черновые правки строк документа на сервере append-only: замена draft line создает новую строку `doc_lines`, связанную через `replaces_line_id`; активные draft/read projections игнорируют superseded rows.
+- WPF/Web/TSD не являются источником истины для production need, CUSTOMER HU reservation, production pallet plan, marking preview/export и TSD filling/outbound; клиенты не отправляют клиентски рассчитанные количества как финальное решение сервера.
+
+## Normal TSD: производство и отгрузка
+
+Нормальный операторский поток на TSD — **не** Warehouse Task Board (см. архив [`archive/tasks/spec_tasks.md`](archive/tasks/spec_tasks.md)).
+
+### Normal TSD production flow (`Наполнение`)
+
+- Работает **от заказа**: оператор выбирает заказ, затем сканирует **заранее подготовленную** паллету/HU.
+- HU должен существовать в `production_pallets`, созданных сервером при планировании (`POST /api/orders/{orderId}/production-pallets/plan`). **Unknown/ad-hoc HU** в normal filling flow **не принимаются**.
+- `PLANNED` и `PRINTED` production pallets **не являются** физическим складским остатком; физический факт — только записи в `ledger` после проведения выпуска.
+- При `FlowStock:ProductionAutoCloseOnFill = true` (ветка `new-ledger-logic`, default) после TSD fill сервер:
+  - изолирует паллету в отдельный `PRODUCTION_RECEIPT`;
+  - закрывает PRD;
+  - пишет `ledger` `+qty`;
+  - переводит паллету в фактически наполненное/проведённое состояние.
+- WPF close PRD **не обязателен** в happy path palletized production; WPF — мониторинг, исключения и ручные correction UI, а не обычный gate на каждую паллету.
+
+### Normal TSD outbound flow (`Отгрузка`)
+
+- Работает по **физически зарезервированным** HU (`order_receipt_plan_lines` + `FILLED` production pallets с положительным `ledger`).
+- При `FlowStock:OutboundAutoCloseOnComplete = true` (default) последний scan или `complete` закрывает `OUTBOUND`, пишет `ledger` `−qty`, обновляет статус заказа; отдельный WPF close в happy path **не требуется**.
+- При `OutboundAutoCloseOnComplete = false` TSD только собирает draft `OUTBOUND`; проводка и `ledger` — через WPF `Close`.
+- Draft/picked `OUTBOUND` **без** close не влияют на stock и `shipped_qty`.
+
+### CUSTOMER HU reservation (read-model)
+
+- Резерв/read-model использует только физические HU с **положительным** `ledger` balance (`LEDGER_STOCK`).
+- `INTERNAL_FILLED` / `FILLED` **без** соответствующего `ledger` **не допускаются** как источник CUSTOMER reserve для отгрузки.
+- `order_receipt_plan_lines` для `CUSTOMER` — физическое закрепление **готового** HU под заказ, а не план будущего выпуска.
+- Один HU не может быть одновременно зарезервирован под несколькими активными `CUSTOMER`-заказами.
+- Резерв **не пишет** `ledger` и **не меняет** физический остаток.
+
+Подробности mixed coverage, WPF UI и печати — в [`spec_orders.md`](spec_orders.md).
 
 ## Онлайн-поток TSD
 - Черновики создаются через API; сервер назначает `doc_ref`.
@@ -184,6 +218,12 @@
 - Основной UX ЧЗ находится в окне заказа: команда `Сформировать Excel ЧЗ` вызывает order-based endpoint и формирует Excel/temporary synthetic codes от строк заказа. Окно `Маркировка` остается журналом/legacy-view задач.
 
 ## Маркировка ЧЗ
+
+- Товар, уже находящийся на складе как **физический stock** (`ledger` > 0), считается **уже промаркированным**: маркируемый товар без маркировки не должен попадать на склад.
+- Складские HU, физически готовые и привязанные к `CUSTOMER` через `order_receipt_plan_lines`, **не требуют** новой ЧЗ-выгрузки.
+- Новая Excel ЧЗ для `CUSTOMER` создаётся **только** на производственную нехватку / planned production part; источник истины — серверный `GET/POST /api/orders/{orderId}/marking/preview|export`.
+- WPF-кнопка в карточке заказа **не** должна использовать legacy/global `POST /api/marking/export` из окна `Маркировка`.
+
 - Новая ЧЗ-маркировка вычисляется без ручного флага товара: позиция считается маркируемой, если `item_types.enable_marking = true` и `items.gtin` заполнен непустым значением.
 - Если тип поддерживает маркировку, но у товара пустой GTIN, это не ошибка: товар считается немаркируемым и не попадает в Excel ЧЗ.
 - `items.is_marked` остается legacy-полем старой KM-модели. Новая очередь, Excel ЧЗ и WPF-статус товара его не используют.
@@ -350,7 +390,9 @@
   - TSD `Отгрузка` работает как подбор паллет по заказу через `/api/tsd/outbound/orders`: в список попадают только `CUSTOMER`-заказы в статусе `ACCEPTED` (`Готов`) с ожидаемыми HU.
   - Ожидаемые HU для TSD берутся только из положительного HU stock по `ledger`, который зарезервирован за этим заказом через `order_receipt_plan_lines`; произвольные свободные HU в MVP не принимаются.
   - При сканировании TSD вызывает `/api/tsd/outbound/orders/{orderId}/scan`: сервер создает/использует draft `OUTBOUND`, добавляет `doc_lines` по HU и `order_line_id`, для mixed pallet добавляет component-lines. Повторный scan той же HU идемпотентен.
-  - TSD не пишет `ledger` и не закрывает `OUTBOUND`. `/api/tsd/outbound/orders/{orderId}/complete` только помечает подбор готовым; WPF затем проводит draft `OUTBOUND` обычным `Close`, и только это списывает `ledger` и переводит заказ в `SHIPPED`.
+  - При `FlowStock:OutboundAutoCloseOnComplete = true` (default) TSD `scan`/`complete` закрывает `OUTBOUND`, пишет `ledger` (−qty) и переводит заказ в `SHIPPED` без обязательного WPF close.
+  - При `OutboundAutoCloseOnComplete = false` TSD не пишет `ledger`; проводка — WPF `Close` draft `OUTBOUND`.
+  - Черновой/собранный `OUTBOUND` без close не меняет stock и `shipped_qty`.
   - При выборе заказа автоматически подставляются остатки по строкам заказа (`order_line_id`) с учетом уже закрытых отгрузок.
   - В `OUTBOUND` доступны только клиентские заказы (`order_type = CUSTOMER`); внутренние заказы не участвуют в клиентской отгрузке.
   - Полностью отгруженный заказ (`shipment_remaining = 0`, UI `Выполнен`) не должен предлагаться для новой отгрузки.

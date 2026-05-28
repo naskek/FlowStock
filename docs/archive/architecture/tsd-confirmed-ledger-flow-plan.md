@@ -1,8 +1,8 @@
 # RFC: TSD-confirmed ledger flow
 
-**Статус:** принят к реализации  
-**Базовая точка:** `6afaac6`  
-**Ветка:** `new-ledger-logic`  
+**Статус:** superseded / implemented (архив; см. [`spec.md`](../../spec.md), [`spec_orders.md`](../../spec_orders.md))
+**Базовая точка:** `6afaac6`
+**Ветка:** `new-ledger-logic`
 **Дата:** 2026-05-22
 
 ## 1. Current architecture map
@@ -170,19 +170,19 @@
 
 ## 10. Test plan
 
-1. TSD fill → closed PRD + ledger receipt  
-2. Repeated fill idempotent  
-3. INTERNAL progress = sum closed PRD  
-4. Reserve only physical HU  
-5. INTERNAL_FILLED impossible  
-6. One HU — one open CUSTOMER reserve  
-7. Outbound expected = reserved + ledger  
-8. Scan creates/updates OUT draft  
-9. Last scan closes OUT + ledger issue  
-10. Repeated outbound scan idempotent  
-11. WPF PRD close not required (flag on)  
-12. WPF OUT close not required (flag on)  
-13. Storno via correction draft  
+1. TSD fill → closed PRD + ledger receipt
+2. Repeated fill idempotent
+3. INTERNAL progress = sum closed PRD
+4. Reserve only physical HU
+5. INTERNAL_FILLED impossible
+6. One HU — one open CUSTOMER reserve
+7. Outbound expected = reserved + ledger
+8. Scan creates/updates OUT draft
+9. Last scan closes OUT + ledger issue
+10. Repeated outbound scan idempotent
+11. WPF PRD close not required (flag on)
+12. WPF OUT close not required (flag on)
+13. Storno via correction draft
 14. offline retry idempotency (phase 5, schema TBD)
 
 Файлы: `ProductionPalletAutoCloseTests.cs`, `OutboundPickingAutoCloseTests.cs`, расширение reservation tests.
@@ -191,18 +191,18 @@
 
 ## 11. Risks / open questions
 
-1. Mega-PRD с частичным FILLED — legacy close в WPF или cancel plan.  
-2. Marking export: только ledger-backed reserve после фазы 5.  
-3. N PRD per INTERNAL — UI pagination.  
+1. Mega-PRD с частичным FILLED — legacy close в WPF или cancel plan.
+2. Marking export: только ledger-backed reserve после фазы 5.
+3. N PRD per INTERNAL — UI pagination.
 4. Concurrent fill — transaction + unique constraints.
 
 ---
 
 ## 12. Minimal first implementation slice
 
-1. Фаза 1: drop `INTERNAL_FILLED` + guards + tests 4–6.  
-2. Фаза 2: `ProductionAutoCloseOnFill` per-pallet close on fill.  
-3. Фаза 3: `OutboundAutoCloseOnComplete`.  
+1. Фаза 1: drop `INTERNAL_FILLED` + guards + tests 4–6.
+2. Фаза 2: `ProductionAutoCloseOnFill` per-pallet close on fill.
+3. Фаза 3: `OutboundAutoCloseOnComplete`.
 4. Фазы 4–5: UX + spec finalize.
 
 См. также: [tsd-confirmed-ledger-flow-spec-delta.md](tsd-confirmed-ledger-flow-spec-delta.md).

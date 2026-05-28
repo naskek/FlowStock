@@ -1,5 +1,7 @@
 # FlowStock.Marking: спецификация
 
+**Статус:** legacy / superseded — архив. Актуальная ЧЗ-модель: [`spec.md`](../../spec.md), [`spec_orders.md`](../../spec_orders.md).
+
 ## Назначение
 Это русскоязычная рабочая спецификация домена `FlowStock.Marking` в его текущем исследовательском состоянии.
 
