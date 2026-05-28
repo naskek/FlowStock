@@ -1066,12 +1066,13 @@
       "      <thead><tr><th>Номенклатура</th><th>GTIN</th><th>Причина</th><th class=\"pc-num\">Количество</th></tr></thead>" +
       '      <tbody>' +
       rows.map(function (row, index) {
+        var previewIndex = String(index);
         return (
           "<tr>" +
           "<td>" + escapeHtml(row.itemName || "-") + "</td>" +
           "<td>" + escapeHtml(row.gtin || "-") + "</td>" +
           "<td>" + escapeHtml(row.reason || "Пополнение склада до минимума") + "</td>" +
-          '<td class="pc-num"><input class="form-input pc-production-need-qty-input" type="number" min="0" step="0.001" data-preview-index="' + escapeHtml(index) + '" value="' + escapeHtml(String(Number(row.qtyToCreate) || 0)) + '" /></td>' +
+          '<td class="pc-num"><input class="form-input pc-production-need-qty-input" type="number" min="0" step="0.001" data-preview-index="' + previewIndex + '" value="' + escapeHtml(String(Number(row.qtyToCreate) || 0)) + '" /></td>' +
           "</tr>"
         );
       }).join("") +
@@ -1217,12 +1218,13 @@
         "      <thead><tr><th>Номенклатура</th><th>GTIN</th><th>Причина</th><th class=\"pc-num\">Количество</th></tr></thead>" +
         '      <tbody>' +
         rows.map(function (row, index) {
+          var previewIndex = String(index);
           return (
             "<tr>" +
             "<td>" + escapeHtml(row.itemName || "-") + "</td>" +
             "<td>" + escapeHtml(row.gtin || "-") + "</td>" +
             "<td>" + escapeHtml(row.reason || "Пополнение склада до минимума") + "</td>" +
-            '<td class="pc-num"><input class="form-input pc-production-need-qty-input" type="number" min="0" step="0.001" data-preview-index="' + escapeHtml(index) + '" value="' + escapeHtml(String(Number(row.qtyToCreate) || 0)) + '" /></td>' +
+            '<td class="pc-num"><input class="form-input pc-production-need-qty-input" type="number" min="0" step="0.001" data-preview-index="' + previewIndex + '" value="' + escapeHtml(String(Number(row.qtyToCreate) || 0)) + '" /></td>' +
             "</tr>"
           );
         }).join("") +
@@ -4992,6 +4994,7 @@
     window.FlowStockPcTestHooks.getProductionNeedCreateOrdersRefreshUrl = getProductionNeedCreateOrdersRefreshUrl;
     window.FlowStockPcTestHooks.mapProductionNeedRow = mapProductionNeedRow;
     window.FlowStockPcTestHooks.renderProductionNeedTable = renderProductionNeedTable;
+    window.FlowStockPcTestHooks.openProductionNeedPreviewModal = openProductionNeedPreviewModal;
     window.FlowStockPcTestHooks.trimOrdersPage = trimOrdersPage;
     return;
   }
