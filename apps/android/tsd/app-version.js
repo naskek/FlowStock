@@ -8,4 +8,3 @@
   root.TSD_PWA_VERSION = version;
   root.TSD_CACHE_NAME = cacheName;
 })(typeof self !== "undefined" ? self : window);
-
