@@ -68,6 +68,11 @@ assert(
   "selecting an order should load existing filling context and open scan screen"
 );
 assert(
+  appJs.includes("sortFillingListItems(items)") &&
+    appJs.includes("getFillingWorkOrderSortValue"),
+  "filling order list should sort orders by numeric order number in the frontend renderer"
+);
+assert(
   appJs.includes("formatPalletCountValue(summary.filledPalletCount)") &&
     appJs.includes("renderFillingPalletStatusList(document.pallets)") &&
     appJs.includes('"is-filled"') &&
@@ -77,8 +82,15 @@ assert(
 assert(
   appJs.includes('id="fillingScanInput" type="text"') &&
     appJs.includes('data-scan-allow="1"') &&
-    appJs.includes('placeholder="HU-000001"'),
-  "filling scan input should accept keyboard-wedge scanner text"
+    appJs.includes('placeholder="HU-000001"') &&
+    appJs.includes("filling-scan-input-hidden"),
+  "filling scan input should stay in DOM for keyboard-wedge scanner text but be visually hidden"
+);
+assert(
+  appJs.includes("buildFillingScanSummaryLine(work, summary)") &&
+    appJs.includes('class="filling-scan-summary"') &&
+    appJs.includes('class="filling-scan-hint"'),
+  "filling scan screen should show a compact order/progress line and scan hint"
 );
 assert(
   appJs.includes("getOrderStatusInfoForOrder(order)") &&
@@ -245,6 +257,77 @@ assert.strictEqual(
   hooks.buildProductionFillCompletionMessage({ ok: true, prdAutoClosed: true }, null),
   "Паллета наполнена. Выпуск закрыт.",
   "single PRD close without unavailable order should show PRD closed success"
+);
+
+const fillingScanHtml = hooks.renderFillingScan(
+  {
+    workItem: { orderRef: "104", prdDocRef: "PRD-2026-000001" },
+    document: { summary: { filledPalletCount: 0, plannedPalletCount: 10 }, pallets: [] },
+  },
+  {}
+);
+assert.match(
+  fillingScanHtml,
+  /Заказ 104 · Наполнено паллет: 0 \/ 10/,
+  "filling scan screen should show compact order and pallet progress line"
+);
+assert.doesNotMatch(fillingScanHtml, /PRD:/i, "filling scan screen should not display PRD number");
+assert.match(fillingScanHtml, /id="fillingScanInput"/, "filling scan input should remain in DOM");
+assert.doesNotMatch(
+  fillingScanHtml,
+  /id="fillingScanInput"[^>]*disabled/i,
+  "filling scan input should stay enabled for scanner focus"
+);
+assert.match(
+  fillingScanHtml,
+  /filling-scan-input-hidden/,
+  "filling scan input should use visual-hide CSS class"
+);
+assert.strictEqual(
+  hooks.buildFillingScanSummaryLine(
+    { orderRef: "104" },
+    { filledPalletCount: 0, plannedPalletCount: 10 }
+  ),
+  "Заказ 104 · Наполнено паллет: 0 / 10"
+);
+
+const fillingListItems = [
+  {
+    orderRef: "104",
+    orderId: 104,
+    prdDocRef: "PRD-2026-000290",
+    orderTypeDisplay: "Производственный",
+    summary: { plannedPalletCount: 10, filledPalletCount: 0, remainingQty: 0 },
+  },
+  {
+    orderRef: "100",
+    orderId: 100,
+    prdDocRef: "PRD-2026-000100",
+    orderTypeDisplay: "Производственный",
+    summary: { plannedPalletCount: 8, filledPalletCount: 0, remainingQty: 0 },
+  },
+];
+const fillingListHtml = hooks.renderFillingList(fillingListItems);
+const fillingListOrder100Index = fillingListHtml.indexOf("Заказ № 100");
+const fillingListOrder104Index = fillingListHtml.indexOf("Заказ № 104");
+assert.notStrictEqual(fillingListOrder100Index, -1, "filling list should render order 100");
+assert.notStrictEqual(fillingListOrder104Index, -1, "filling list should render order 104");
+assert(
+  fillingListOrder100Index < fillingListOrder104Index,
+  "filling list should render lower order numbers before higher ones"
+);
+assert.doesNotMatch(fillingListHtml, /PRD:/i, "filling list cards should not display PRD line");
+assert.doesNotMatch(
+  fillingListHtml,
+  /PRD-2026-000290|PRD-2026-000100/,
+  "filling list should hide PRD refs while keeping them in source items"
+);
+assert.deepStrictEqual(
+  hooks.sortFillingListItems(fillingListItems).map(function (item) {
+    return item.orderRef;
+  }),
+  ["100", "104"],
+  "filling list sort helper should order numeric refs ascending"
 );
 
 const wireOutboundPickingOrder = extractFunctionBody(appJs, "wireOutboundPickingOrder");

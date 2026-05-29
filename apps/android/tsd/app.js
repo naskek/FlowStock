@@ -2566,6 +2566,73 @@
     return String((item && (item.orderRef || item.order_ref)) || "").trim() || "-";
   }
 
+  function parseFillingOrderSortNumber(value) {
+    if (value == null || value === "") {
+      return null;
+    }
+    var text = String(value).trim();
+    if (!text) {
+      return null;
+    }
+    var direct = Number(text);
+    if (Number.isFinite(direct)) {
+      return direct;
+    }
+    var matches = text.match(/\d+/g);
+    if (!matches || !matches.length) {
+      return null;
+    }
+    var parsed = Number(matches[matches.length - 1]);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function getFillingWorkOrderSortValue(item) {
+    if (!item) {
+      return null;
+    }
+    var candidates = [
+      item.orderRef,
+      item.order_ref,
+      item.orderNumber,
+      item.order_number,
+      item.number,
+      item.orderId,
+      item.order_id,
+      item.id,
+    ];
+    for (var i = 0; i < candidates.length; i += 1) {
+      var parsed = parseFillingOrderSortNumber(candidates[i]);
+      if (parsed != null) {
+        return parsed;
+      }
+    }
+    return null;
+  }
+
+  function compareFillingListItems(left, right) {
+    var leftValue = getFillingWorkOrderSortValue(left);
+    var rightValue = getFillingWorkOrderSortValue(right);
+    var leftHasValue = leftValue != null;
+    var rightHasValue = rightValue != null;
+    if (leftHasValue && rightHasValue) {
+      if (leftValue !== rightValue) {
+        return leftValue - rightValue;
+      }
+      return 0;
+    }
+    if (leftHasValue) {
+      return -1;
+    }
+    if (rightHasValue) {
+      return 1;
+    }
+    return 0;
+  }
+
+  function sortFillingListItems(items) {
+    return (Array.isArray(items) ? items.slice() : []).sort(compareFillingListItems);
+  }
+
   function getFillingWorkPrdRef(item) {
     return String((item && (item.prdDocRef || item.prd_doc_ref)) || "").trim();
   }
@@ -2609,17 +2676,13 @@
   }
 
   function renderFillingList(items) {
-    var rows = (items || [])
+    var rows = sortFillingListItems(items)
       .map(function (item) {
         var summary = getFillingSummary(item);
         var statusInfo = getOrderStatusInfoForOrder({
           status: item.orderStatus,
           statusDisplay: item.orderStatusDisplay || item.order_status_display,
         });
-        var prdRef = getFillingWorkPrdRef(item);
-        var prdHtml = prdRef
-          ? '<div class="filling-doc-subtitle">PRD: ' + escapeHtml(prdRef) + "</div>"
-          : "";
         var partnerHtml = item.partnerName
           ? '<div class="filling-doc-meta">Клиент: ' + escapeHtml(item.partnerName) + "</div>"
           : "";
@@ -2634,7 +2697,6 @@
           '    <div class="filling-doc-subtitle">' +
           escapeHtml(item.orderTypeDisplay || item.order_type_display || "") +
           "</div>" +
-          prdHtml +
           partnerHtml +
           '    <div class="' +
           escapeHtml(statusInfo.className) +
@@ -2701,6 +2763,18 @@
     return TsdStorage.apiGetProductionFillingContext(orderId).then(buildFillingContext);
   }
 
+  function buildFillingScanSummaryLine(work, summary) {
+    summary = summary || {};
+    return (
+      "Заказ " +
+      getFillingWorkOrderRef(work) +
+      " · Наполнено паллет: " +
+      formatPalletCountValue(summary.filledPalletCount) +
+      " / " +
+      formatPalletCountValue(summary.plannedPalletCount)
+    );
+  }
+
   function renderFillingScan(context, state) {
     var work = context.workItem || {};
     var document = context.document || {};
@@ -2716,23 +2790,13 @@
       '<section class="screen filling-screen">' +
       '  <div class="screen-card filling-card">' +
       '    <div class="section-title">Наполнение</div>' +
-      '    <div class="filling-context-card">' +
-      '      <div>Заказ: <strong>' +
-      escapeHtml(getFillingWorkOrderRef(work)) +
-      "</strong></div>" +
-      (getFillingWorkPrdRef(work)
-        ? '      <div>PRD: <strong>' + escapeHtml(getFillingWorkPrdRef(work)) + "</strong></div>"
-        : "") +
-      '      <div>Наполнено паллет: <strong>' +
-      escapeHtml(formatPalletCountValue(summary.filledPalletCount)) +
-      " / " +
-      escapeHtml(formatPalletCountValue(summary.plannedPalletCount)) +
-      "</strong></div>" +
-      "    </div>" +
+      '    <div class="filling-scan-summary">' +
+      escapeHtml(buildFillingScanSummaryLine(work, summary)) +
+      "</div>" +
       messageHtml +
-      '    <div class="filling-scan-card">' +
-      '      <label class="form-label" for="fillingScanInput">Сканируйте HU / паллетный штрихкод</label>' +
-      '      <input class="form-input filling-scan-input" id="fillingScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" placeholder="HU-000001" />' +
+      '    <div class="filling-scan-card filling-scan-card--compact">' +
+      '      <p class="filling-scan-hint">Сканируйте HU / паллетный штрихкод</p>' +
+      '      <input class="form-input filling-scan-input filling-scan-input-hidden" id="fillingScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" placeholder="HU-000001" />' +
       "    </div>" +
       palletListHtml +
       "  </div>" +
@@ -12116,6 +12180,10 @@
     window.FlowStockTsdTestHooks.renderOutboundPickingList = renderOutboundPickingList;
     window.FlowStockTsdTestHooks.renderOutboundPickingOrder = renderOutboundPickingOrder;
     window.FlowStockTsdTestHooks.wireOutboundPickingList = wireOutboundPickingList;
+    window.FlowStockTsdTestHooks.buildFillingScanSummaryLine = buildFillingScanSummaryLine;
+    window.FlowStockTsdTestHooks.renderFillingScan = renderFillingScan;
+    window.FlowStockTsdTestHooks.sortFillingListItems = sortFillingListItems;
+    window.FlowStockTsdTestHooks.renderFillingList = renderFillingList;
   }
 
   document.addEventListener("DOMContentLoaded", function () {
