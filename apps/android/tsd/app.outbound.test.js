@@ -161,6 +161,17 @@ assert(
   "outbound scan screen should not render visible scanner hint text"
 );
 assert(
+  !renderOutboundPickingOrderBody.includes("Завершить подбор"),
+  "outbound scan screen should not render manual complete button"
+);
+assert(
+  appJs.includes("var showTsdBelowMinimumEntry = false"),
+  "home below-minimum entry should be gated by a frontend-only flag"
+);
+const homeHtml = hooks.renderHome();
+assert.doesNotMatch(homeHtml, /Позиции ниже минимума|homeLowStockWrap/);
+assert.match(homeHtml, /menu-grid/, "home screen should still render main menu");
+assert(
   !appJs.includes("escapeHtml(getOutboundPickingStatusLabel(status))"),
   "outbound HU list should not render textual status labels"
 );
@@ -269,7 +280,7 @@ assert.match(
 );
 assert.doesNotMatch(
   appEl.innerHTML,
-  /Отобрано паллет:|Отгружено паллет:|Сканируйте HU \/ паллетный штрихкод/
+  /Отобрано паллет:|Отгружено паллет:|Сканируйте HU \/ паллетный штрихкод|Завершить подбор/
 );
 assert.doesNotMatch(appEl.innerHTML, /Черновик OUTBOUND|OUT-2026-000123/);
 assert.match(appEl.innerHTML, /id="outboundPickingScanInput"/);

@@ -2175,6 +2175,7 @@
     return buttons.join("");
   }
 
+  var showTsdBelowMinimumEntry = false;
   var homeLowStockRequestSeq = 0;
 
   function formatQtyWithUnit(qty, unit) {
@@ -2344,12 +2345,15 @@
   }
 
   function renderHome() {
+    var lowStockHtml = showTsdBelowMinimumEntry
+      ? '  <div id="homeLowStockWrap" class="home-low-stock-wrap"></div>'
+      : "";
     return (
       '<section class="screen home-screen">' +
       '  <div class="menu-grid">' +
       buildHomeMenuButtonsHtml() +
       "  </div>" +
-      '  <div id="homeLowStockWrap" class="home-low-stock-wrap"></div>' +
+      lowStockHtml +
       "</section>"
     );
   }
@@ -3476,9 +3480,6 @@
       '      <input class="form-input filling-scan-input tsd-scan-input-hidden" id="outboundPickingScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" placeholder="HU-000001" />' +
       "    </div>" +
       renderOutboundPickingHuList(order.hus) +
-      '    <div class="actions-bar">' +
-      '      <button class="btn primary-btn" id="outboundPickingCompleteBtn" type="button">Завершить подбор</button>' +
-      "    </div>" +
       "  </div>" +
       "</section>";
 
@@ -5912,7 +5913,7 @@
         });
     }
 
-    if (homeLowStockWrap && isClientBlockEnabled("tsd_stock")) {
+    if (showTsdBelowMinimumEntry && homeLowStockWrap && isClientBlockEnabled("tsd_stock")) {
       if (homeLowStockRequestId !== homeLowStockRequestSeq) {
         return;
       }
@@ -5922,7 +5923,7 @@
     }
 
     setLiveRefreshHandler(function () {
-      if (!currentRoute || currentRoute.name !== "home") {
+      if (!showTsdBelowMinimumEntry || !currentRoute || currentRoute.name !== "home") {
         return;
       }
       refreshHomeLowStock();
@@ -12377,6 +12378,7 @@
     window.FlowStockTsdTestHooks.getFillingPalletGroupLabel = getFillingPalletGroupLabel;
     window.FlowStockTsdTestHooks.buildFillingPalletGroups = buildFillingPalletGroups;
     window.FlowStockTsdTestHooks.renderFillingPalletStatusList = renderFillingPalletStatusList;
+    window.FlowStockTsdTestHooks.renderHome = renderHome;
   }
 
   document.addEventListener("DOMContentLoaded", function () {
