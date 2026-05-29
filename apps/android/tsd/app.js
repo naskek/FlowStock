@@ -2641,21 +2641,127 @@
     return (itemOrDocument && itemOrDocument.summary) || {};
   }
 
+  var FILLING_PALLET_EMPTY_GROUP_LABEL = "Без товара";
+
+  function getFillingPalletItemLabel(pallet) {
+    if (!pallet) {
+      return "";
+    }
+    if (pallet.isMixedPallet === true) {
+      return "Микс-паллета";
+    }
+    var itemName = String(pallet.itemName || pallet.item_name || "").trim();
+    if (!itemName && Array.isArray(pallet.lines) && pallet.lines.length) {
+      itemName = String(
+        (pallet.lines[0] && (pallet.lines[0].itemName || pallet.lines[0].item_name)) || ""
+      ).trim();
+    }
+    return itemName;
+  }
+
+  function getFillingPalletGroupLabel(pallet) {
+    var label = getFillingPalletItemLabel(pallet);
+    return label || FILLING_PALLET_EMPTY_GROUP_LABEL;
+  }
+
+  function parseFillingHuSortNumber(huCode) {
+    return parseFillingOrderSortNumber(huCode);
+  }
+
+  function compareFillingPalletHuRows(left, right) {
+    var leftValue = parseFillingHuSortNumber(left && (left.huCode || left.hu_code));
+    var rightValue = parseFillingHuSortNumber(right && (right.huCode || right.hu_code));
+    var leftHasValue = leftValue != null;
+    var rightHasValue = rightValue != null;
+    if (leftHasValue && rightHasValue) {
+      if (leftValue !== rightValue) {
+        return leftValue - rightValue;
+      }
+      return String((left && left.huCode) || "").localeCompare(
+        String((right && right.huCode) || ""),
+        "ru-RU",
+        { numeric: true, sensitivity: "base" }
+      );
+    }
+    if (leftHasValue) {
+      return -1;
+    }
+    if (rightHasValue) {
+      return 1;
+    }
+    return 0;
+  }
+
+  function compareFillingPalletGroupLabels(leftLabel, rightLabel) {
+    var leftEmpty = leftLabel === FILLING_PALLET_EMPTY_GROUP_LABEL;
+    var rightEmpty = rightLabel === FILLING_PALLET_EMPTY_GROUP_LABEL;
+    if (leftEmpty && rightEmpty) {
+      return 0;
+    }
+    if (leftEmpty) {
+      return 1;
+    }
+    if (rightEmpty) {
+      return -1;
+    }
+    return String(leftLabel || "").localeCompare(String(rightLabel || ""), "ru-RU", {
+      numeric: true,
+      sensitivity: "base",
+    });
+  }
+
+  function buildFillingPalletGroups(pallets) {
+    var grouped = {};
+    var labels = [];
+    (Array.isArray(pallets) ? pallets : []).forEach(function (pallet) {
+      var label = getFillingPalletGroupLabel(pallet);
+      if (!grouped[label]) {
+        grouped[label] = [];
+        labels.push(label);
+      }
+      grouped[label].push(pallet);
+    });
+    return labels
+      .sort(compareFillingPalletGroupLabels)
+      .map(function (label) {
+        return {
+          label: label,
+          pallets: grouped[label].slice().sort(compareFillingPalletHuRows),
+        };
+      });
+  }
+
+  function renderFillingPalletHuRow(pallet) {
+    var isFilled = String((pallet && pallet.status) || "").toUpperCase() === "FILLED";
+    var huCode = pallet && pallet.huCode ? pallet.huCode : "-";
+    return (
+      '<li class="filling-pallet-item filling-pallet-item--compact ' +
+      (isFilled ? "is-filled" : "is-pending") +
+      '">' +
+      '  <span class="filling-pallet-dot" aria-hidden="true"></span>' +
+      '  <div class="filling-pallet-code">' +
+      escapeHtml(huCode) +
+      "</div>" +
+      "</li>"
+    );
+  }
+
   function renderFillingPalletStatusList(pallets) {
-    var items = (Array.isArray(pallets) ? pallets : [])
-      .map(function (pallet) {
-        var isFilled = String((pallet && pallet.status) || "").toUpperCase() === "FILLED";
-        var huCode = pallet && pallet.huCode ? pallet.huCode : "-";
-        var palletIndex = pallet && pallet.id ? pallet.id : null;
+    var groups = buildFillingPalletGroups(pallets);
+    var items = groups
+      .map(function (group) {
+        var rows = (group.pallets || []).map(renderFillingPalletHuRow).join("");
+        if (!rows) {
+          return "";
+        }
         return (
-          '<li class="filling-pallet-item ' +
-          (isFilled ? "is-filled" : "is-pending") +
-          '">' +
-          '  <span class="filling-pallet-dot" aria-hidden="true"></span>' +
-          '  <span class="filling-pallet-code">' +
-          escapeHtml(huCode) +
-          "</span>" +
-          (palletIndex ? '  <span class="filling-pallet-status-text">' + escapeHtml(isFilled ? "Наполнена" : "Не наполнена") + "</span>" : "") +
+          '<li class="filling-pallet-group">' +
+          '  <div class="filling-pallet-group-title">' +
+          escapeHtml(group.label) +
+          "</div>" +
+          '  <ul class="filling-pallet-group-items">' +
+          rows +
+          "  </ul>" +
           "</li>"
         );
       })
@@ -2668,7 +2774,7 @@
     return (
       '<div class="filling-pallet-list-card">' +
       '  <div class="filling-pallet-list-title">Паллеты к наполнению</div>' +
-      '  <ul class="filling-pallet-list">' +
+      '  <ul class="filling-pallet-list filling-pallet-list--scroll-breathing">' +
       items +
       "  </ul>" +
       "</div>"
@@ -2768,11 +2874,16 @@
     return (
       "Заказ " +
       getFillingWorkOrderRef(work) +
-      " · Наполнено паллет: " +
+      " · " +
       formatPalletCountValue(summary.filledPalletCount) +
       " / " +
-      formatPalletCountValue(summary.plannedPalletCount)
+      formatPalletCountValue(summary.plannedPalletCount) +
+      " паллет"
     );
+  }
+
+  function buildFillingScanHeaderLine(work, summary) {
+    return "Наполнение · " + buildFillingScanSummaryLine(work, summary);
   }
 
   function renderFillingScan(context, state) {
@@ -2787,16 +2898,14 @@
       : "";
 
     return (
-      '<section class="screen filling-screen">' +
-      '  <div class="screen-card filling-card">' +
-      '    <div class="section-title">Наполнение</div>' +
-      '    <div class="filling-scan-summary">' +
-      escapeHtml(buildFillingScanSummaryLine(work, summary)) +
+      '<section class="screen filling-screen filling-screen--scan">' +
+      '  <div class="screen-card filling-card filling-card--scan">' +
+      '    <div class="filling-scan-header">' +
+      escapeHtml(buildFillingScanHeaderLine(work, summary)) +
       "</div>" +
       messageHtml +
-      '    <div class="filling-scan-card filling-scan-card--compact">' +
-      '      <p class="filling-scan-hint">Сканируйте HU / паллетный штрихкод</p>' +
-      '      <input class="form-input filling-scan-input filling-scan-input-hidden" id="fillingScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" placeholder="HU-000001" />' +
+      '    <div class="filling-scan-card filling-scan-card--compact filling-scan-slot">' +
+      '      <input class="form-input filling-scan-input tsd-scan-input-hidden filling-scan-input-hidden" id="fillingScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" placeholder="HU-000001" />' +
       "    </div>" +
       palletListHtml +
       "  </div>" +
@@ -3002,6 +3111,100 @@
       return "Ожидает";
     }
     return status || "-";
+  }
+
+  function getOutboundPickingHuItemLabel(hu) {
+    var normalized = normalizeOutboundPickingHuView(hu);
+    if (normalized.isMixedPallet === true) {
+      return "Микс-паллета";
+    }
+    var lines = normalized.lines || [];
+    if (lines.length > 1) {
+      return "Микс-паллета";
+    }
+    if (lines.length === 1) {
+      var lineName = String(lines[0].itemName || "").trim();
+      if (lineName) {
+        return lineName;
+      }
+    }
+    var itemName = String(
+      normalized.itemName ||
+        normalized.item_name ||
+        normalized.productName ||
+        normalized.product_name ||
+        normalized.lineName ||
+        normalized.line_name ||
+        ""
+    ).trim();
+    if (itemName) {
+      return itemName;
+    }
+    var summary = String(normalized.itemSummary || "").trim();
+    if (summary) {
+      var commaIndex = summary.indexOf(",");
+      return commaIndex >= 0 ? summary.slice(0, commaIndex).trim() : summary;
+    }
+    return "";
+  }
+
+  function getOutboundPickingHuGroupLabel(hu) {
+    var label = getOutboundPickingHuItemLabel(hu);
+    return label || FILLING_PALLET_EMPTY_GROUP_LABEL;
+  }
+
+  function buildOutboundPickingHuGroups(hus) {
+    var grouped = {};
+    var labels = [];
+    (Array.isArray(hus) ? hus : []).forEach(function (hu) {
+      var normalized = normalizeOutboundPickingHuView(hu);
+      var label = getOutboundPickingHuGroupLabel(normalized);
+      if (!grouped[label]) {
+        grouped[label] = [];
+        labels.push(label);
+      }
+      grouped[label].push(normalized);
+    });
+    return labels
+      .sort(compareFillingPalletGroupLabels)
+      .map(function (label) {
+        return {
+          label: label,
+          hus: grouped[label].slice().sort(compareFillingPalletHuRows),
+        };
+      });
+  }
+
+  function renderOutboundPickingHuRow(hu) {
+    var normalized = normalizeOutboundPickingHuView(hu);
+    var picked = String(normalized.status || "").toUpperCase() === "PICKED";
+    return (
+      '<li class="filling-pallet-item filling-pallet-item--compact outbound-picking-hu-item ' +
+      (picked ? "is-filled" : "is-pending") +
+      '">' +
+      '  <span class="filling-pallet-dot" aria-hidden="true"></span>' +
+      '  <div class="filling-pallet-code">' +
+      escapeHtml(normalized.huCode || "-") +
+      "</div>" +
+      "</li>"
+    );
+  }
+
+  function buildOutboundPickingSummaryLine(order) {
+    order = normalizeOutboundPickingOrderView(order);
+    return (
+      "Заказ " +
+      (order.orderRef || "-") +
+      " · " +
+      (Number(order.pickedHuCount) || 0) +
+      " / " +
+      (Number(order.expectedHuCount) || 0) +
+      " паллет"
+    );
+  }
+
+  function buildOutboundPickingHeaderLine(order) {
+    return "Отгрузка · " + buildOutboundPickingSummaryLine(order);
   }
 
   function resolveFillingOrderId(source, fallbackOrderId) {
@@ -3216,51 +3419,42 @@
   }
 
   function renderOutboundPickingHuList(hus) {
-    var rows = (Array.isArray(hus) ? hus : [])
-      .map(function (hu) {
-        hu = normalizeOutboundPickingHuView(hu);
-        var status = hu.status || "PENDING";
-        var picked = String(status).toUpperCase() === "PICKED";
+    var groups = buildOutboundPickingHuGroups(hus);
+    var items = groups
+      .map(function (group) {
+        var rows = (group.hus || []).map(renderOutboundPickingHuRow).join("");
+        if (!rows) {
+          return "";
+        }
         return (
-          '<div class="filling-pallet-item outbound-picking-hu-item ' +
-          (picked ? "is-filled" : "is-pending") +
-          '">' +
-          '  <span class="filling-pallet-dot" aria-hidden="true"></span>' +
-          '  <div class="outbound-picking-hu-main">' +
-          '    <div class="filling-pallet-code">' +
-          escapeHtml(hu.huCode || "-") +
+          '<li class="filling-pallet-group">' +
+          '  <div class="filling-pallet-group-title">' +
+          escapeHtml(group.label) +
           "</div>" +
-          '    <div class="filling-pallet-status-text">' +
-          escapeHtml(getOutboundPickingStatusLabel(status)) +
-          "</div>" +
-          (hu.itemSummary
-            ? '    <div class="filling-doc-meta">' + escapeHtml(hu.itemSummary) + "</div>"
-            : "") +
-          renderOutboundPickingHuLines(hu.lines) +
-          "  </div>" +
-          "</div>"
+          '  <ul class="filling-pallet-group-items">' +
+          rows +
+          "  </ul>" +
+          "</li>"
         );
       })
       .join("");
 
-    if (!rows) {
+    if (!items) {
       return '<div class="empty-state">Нет ожидаемых HU к отгрузке.</div>';
     }
 
     return (
       '<div class="filling-pallet-list-card">' +
       '  <div class="filling-pallet-list-title">Паллеты к отгрузке</div>' +
-      '  <div class="filling-pallet-list outbound-picking-hu-list">' +
-      rows +
-      "  </div>" +
+      '  <ul class="filling-pallet-list filling-pallet-list--scroll-breathing outbound-picking-hu-list">' +
+      items +
+      "  </ul>" +
       "</div>"
     );
   }
 
   function renderOutboundPickingOrder(order, state) {
     order = normalizeOutboundPickingOrderView(order);
-    var picked = order.pickedHuCount;
-    var expected = order.expectedHuCount;
     var complete = order.isComplete === true;
     var message = state && state.message ? String(state.message) : "";
     var messageType = state && state.messageType ? String(state.messageType) : "";
@@ -3269,28 +3463,17 @@
       : "";
 
     app.innerHTML =
-      '<section class="screen filling-screen outbound-picking-screen">' +
-      '  <div class="screen-card filling-card">' +
-      '    <div class="section-title">Отгрузка</div>' +
-      '    <div class="filling-context-card">' +
-      '      <div>Заказ: <strong>' +
-      escapeHtml(order.orderRef || "-") +
-      "</strong></div>" +
-      (order.partnerName ? '      <div>Клиент: <strong>' + escapeHtml(order.partnerName) + "</strong></div>" : "") +
-      '      <div>Подобрано паллет: <strong>' +
-      escapeHtml(picked + " / " + expected) +
-      "</strong></div>" +
-      (order.draftOutboundDocRef
-        ? '      <div>Черновик OUTBOUND: <strong>' + escapeHtml(order.draftOutboundDocRef) + "</strong></div>"
-        : "") +
-      "    </div>" +
+      '<section class="screen filling-screen outbound-picking-screen outbound-picking-screen--scan">' +
+      '  <div class="screen-card filling-card filling-card--scan">' +
+      '    <div class="filling-scan-header">' +
+      escapeHtml(buildOutboundPickingHeaderLine(order)) +
+      "</div>" +
       messageHtml +
       (complete
         ? '    <div class="filling-message filling-message-success">Все паллеты подобраны. Отгрузка проведена.</div>'
         : "") +
-      '    <div class="filling-scan-card">' +
-      '      <label class="form-label" for="outboundPickingScanInput">Сканируйте HU</label>' +
-      '      <input class="form-input filling-scan-input" id="outboundPickingScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" placeholder="HU-000001" />' +
+      '    <div class="filling-scan-card filling-scan-card--compact filling-scan-slot">' +
+      '      <input class="form-input filling-scan-input tsd-scan-input-hidden" id="outboundPickingScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" placeholder="HU-000001" />' +
       "    </div>" +
       renderOutboundPickingHuList(order.hus) +
       '    <div class="actions-bar">' +
@@ -12179,11 +12362,21 @@
     window.FlowStockTsdTestHooks.resolveOutboundPickingScannedHu = resolveOutboundPickingScannedHu;
     window.FlowStockTsdTestHooks.renderOutboundPickingList = renderOutboundPickingList;
     window.FlowStockTsdTestHooks.renderOutboundPickingOrder = renderOutboundPickingOrder;
+    window.FlowStockTsdTestHooks.renderOutboundPickingHuList = renderOutboundPickingHuList;
     window.FlowStockTsdTestHooks.wireOutboundPickingList = wireOutboundPickingList;
+    window.FlowStockTsdTestHooks.buildOutboundPickingSummaryLine = buildOutboundPickingSummaryLine;
+    window.FlowStockTsdTestHooks.buildOutboundPickingHeaderLine = buildOutboundPickingHeaderLine;
+    window.FlowStockTsdTestHooks.getOutboundPickingHuItemLabel = getOutboundPickingHuItemLabel;
+    window.FlowStockTsdTestHooks.buildOutboundPickingHuGroups = buildOutboundPickingHuGroups;
     window.FlowStockTsdTestHooks.buildFillingScanSummaryLine = buildFillingScanSummaryLine;
+    window.FlowStockTsdTestHooks.buildFillingScanHeaderLine = buildFillingScanHeaderLine;
     window.FlowStockTsdTestHooks.renderFillingScan = renderFillingScan;
     window.FlowStockTsdTestHooks.sortFillingListItems = sortFillingListItems;
     window.FlowStockTsdTestHooks.renderFillingList = renderFillingList;
+    window.FlowStockTsdTestHooks.getFillingPalletItemLabel = getFillingPalletItemLabel;
+    window.FlowStockTsdTestHooks.getFillingPalletGroupLabel = getFillingPalletGroupLabel;
+    window.FlowStockTsdTestHooks.buildFillingPalletGroups = buildFillingPalletGroups;
+    window.FlowStockTsdTestHooks.renderFillingPalletStatusList = renderFillingPalletStatusList;
   }
 
   document.addEventListener("DOMContentLoaded", function () {

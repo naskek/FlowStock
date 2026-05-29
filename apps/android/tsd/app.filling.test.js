@@ -76,21 +76,35 @@ assert(
   appJs.includes("formatPalletCountValue(summary.filledPalletCount)") &&
     appJs.includes("renderFillingPalletStatusList(document.pallets)") &&
     appJs.includes('"is-filled"') &&
-    appJs.includes('"is-pending"'),
-  "filling screen should show explicit 0/N counters and a status list of pallet HU codes"
+    appJs.includes('"is-pending"') &&
+    appJs.includes("filling-pallet-item--compact") &&
+    appJs.includes("getFillingPalletItemLabel") &&
+    appJs.includes("buildFillingPalletGroups") &&
+    appJs.includes("filling-pallet-list--scroll-breathing"),
+  "filling screen should show grouped compact color-coded pallet rows with scroll breathing room"
+);
+assert(
+  !appJs.includes('isFilled ? "Наполнена" : "Не наполнена"'),
+  "filling pallet list should not render textual fill status labels"
 );
 assert(
   appJs.includes('id="fillingScanInput" type="text"') &&
     appJs.includes('data-scan-allow="1"') &&
     appJs.includes('placeholder="HU-000001"') &&
+    appJs.includes("tsd-scan-input-hidden") &&
     appJs.includes("filling-scan-input-hidden"),
   "filling scan input should stay in DOM for keyboard-wedge scanner text but be visually hidden"
 );
+const renderFillingScanBody = extractFunctionBody(appJs, "renderFillingScan");
 assert(
-  appJs.includes("buildFillingScanSummaryLine(work, summary)") &&
-    appJs.includes('class="filling-scan-summary"') &&
-    appJs.includes('class="filling-scan-hint"'),
-  "filling scan screen should show a compact order/progress line and scan hint"
+  appJs.includes("buildFillingScanHeaderLine(work, summary)") &&
+    appJs.includes('class="filling-scan-header"') &&
+    appJs.includes("filling-card--scan"),
+  "filling scan screen should use a compact single-line header"
+);
+assert(
+  !renderFillingScanBody.includes("filling-scan-hint"),
+  "filling scan screen should not render visible scanner hint text"
 );
 assert(
   appJs.includes("getOrderStatusInfoForOrder(order)") &&
@@ -268,8 +282,13 @@ const fillingScanHtml = hooks.renderFillingScan(
 );
 assert.match(
   fillingScanHtml,
-  /Заказ 104 · Наполнено паллет: 0 \/ 10/,
-  "filling scan screen should show compact order and pallet progress line"
+  /Наполнение · Заказ 104 · 0 \/ 10 паллет/,
+  "filling scan screen should show compact header with order and pallet progress"
+);
+assert.doesNotMatch(
+  fillingScanHtml,
+  /Наполнено паллет:|Сканируйте HU \/ паллетный штрихкод/,
+  "filling scan screen should not show legacy progress label or visible scanner hint"
 );
 assert.doesNotMatch(fillingScanHtml, /PRD:/i, "filling scan screen should not display PRD number");
 assert.match(fillingScanHtml, /id="fillingScanInput"/, "filling scan input should remain in DOM");
@@ -288,7 +307,14 @@ assert.strictEqual(
     { orderRef: "104" },
     { filledPalletCount: 0, plannedPalletCount: 10 }
   ),
-  "Заказ 104 · Наполнено паллет: 0 / 10"
+  "Заказ 104 · 0 / 10 паллет"
+);
+assert.strictEqual(
+  hooks.buildFillingScanHeaderLine(
+    { orderRef: "007" },
+    { filledPalletCount: 0, plannedPalletCount: 12 }
+  ),
+  "Наполнение · Заказ 007 · 0 / 12 паллет"
 );
 
 const fillingListItems = [
@@ -328,6 +354,112 @@ assert.deepStrictEqual(
   }),
   ["100", "104"],
   "filling list sort helper should order numeric refs ascending"
+);
+
+const fillingPalletFixtures = [
+  {
+    id: 1,
+    huCode: "HU-0000753",
+    itemName: "Горчица Печагин, 200 гр",
+    status: "PENDING",
+  },
+  {
+    id: 2,
+    huCode: "HU-0000745",
+    itemName: "Аджика Печагин, 200 гр",
+    status: "PENDING",
+  },
+  {
+    id: 3,
+    huCode: "HU-0000742",
+    itemName: "Аджика Печагин, 200 гр",
+    status: "FILLED",
+  },
+  {
+    id: 4,
+    huCode: "HU-0000752",
+    itemName: "Горчица Печагин, 200 гр",
+    status: "PENDING",
+  },
+  {
+    id: 5,
+    huCode: "HU-0000999",
+    status: "PENDING",
+  },
+];
+const fillingPalletGroups = hooks.buildFillingPalletGroups(fillingPalletFixtures);
+assert.strictEqual(fillingPalletGroups.length, 3, "filling pallet list should render three product groups");
+assert.ok(
+  fillingPalletGroups[0].label.indexOf("Аджика") === 0 &&
+    fillingPalletGroups[1].label.indexOf("Горчица") === 0,
+  "filling pallet groups should sort product titles ascending"
+);
+assert.strictEqual(
+  fillingPalletGroups[2].label,
+  hooks.getFillingPalletGroupLabel({ huCode: "HU-0000999" }),
+  "filling pallet groups should keep unlabeled pallets in the last group"
+);
+assert.strictEqual(fillingPalletGroups[0].pallets.length, 2);
+assert.strictEqual(fillingPalletGroups[0].pallets[0].huCode, "HU-0000742");
+assert.strictEqual(fillingPalletGroups[0].pallets[1].huCode, "HU-0000745");
+assert.strictEqual(fillingPalletGroups[1].pallets.length, 2);
+assert.strictEqual(fillingPalletGroups[1].pallets[0].huCode, "HU-0000752");
+assert.strictEqual(fillingPalletGroups[1].pallets[1].huCode, "HU-0000753");
+
+const fillingPalletListHtml = hooks.renderFillingPalletStatusList(fillingPalletFixtures);
+assert.match(fillingPalletListHtml, /filling-pallet-group-title/, "filling pallet list should render product group headers");
+assert.match(fillingPalletListHtml, /Аджика Печагин, 200 гр/, "filling pallet list should render product title in group header");
+assert.match(fillingPalletListHtml, /HU-0000742/, "filling pallet list should render HU code");
+assert.doesNotMatch(
+  fillingPalletListHtml,
+  /filling-pallet-item-name/,
+  "filling pallet list should not duplicate product title inside HU rows"
+);
+assert.doesNotMatch(
+  fillingPalletListHtml,
+  /Не наполнена|Наполнена/,
+  "filling pallet list should rely on color classes instead of status text"
+);
+assert.match(
+  fillingPalletListHtml,
+  /is-filled[\s\S]*HU-0000742|HU-0000742[\s\S]*is-filled/,
+  "filled pallet row should keep is-filled status class"
+);
+assert.match(
+  fillingPalletListHtml,
+  /is-pending[\s\S]*HU-0000745|HU-0000745[\s\S]*is-pending/,
+  "pending pallet row should keep is-pending status class"
+);
+assert.match(
+  fillingPalletListHtml,
+  /filling-pallet-list--scroll-breathing/,
+  "filling pallet list scroll container should include bottom breathing room class"
+);
+const adjikaTitleIndex = fillingPalletListHtml.indexOf("Аджика Печагин, 200 гр");
+const mustardTitleIndex = fillingPalletListHtml.indexOf("Горчица Печагин, 200 гр");
+const hu742Index = fillingPalletListHtml.indexOf("HU-0000742");
+const hu745Index = fillingPalletListHtml.indexOf("HU-0000745");
+const hu752Index = fillingPalletListHtml.indexOf("HU-0000752");
+const hu753Index = fillingPalletListHtml.indexOf("HU-0000753");
+assert(
+  adjikaTitleIndex !== -1 &&
+    mustardTitleIndex !== -1 &&
+    adjikaTitleIndex < mustardTitleIndex &&
+    hu742Index > adjikaTitleIndex &&
+    hu745Index > hu742Index &&
+    hu752Index > mustardTitleIndex &&
+    hu753Index > hu752Index,
+  "filling pallet list should render grouped and sorted product sections with ascending HU rows"
+);
+assert.strictEqual(
+  hooks.getFillingPalletItemLabel({ itemName: "Товар" }),
+  "Товар",
+  "filling pallet label helper should read itemName"
+);
+assert.strictEqual(
+  hooks.getFillingPalletGroupLabel({ huCode: "HU-1", status: "PENDING" }),
+  "Без товара",
+  "filling pallet group label helper should use fallback title when item name is missing"
 );
 
 const wireOutboundPickingOrder = extractFunctionBody(appJs, "wireOutboundPickingOrder");

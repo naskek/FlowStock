@@ -886,6 +886,36 @@ body {
   gap: 12px;
 }
 
+.filling-card--scan {
+  gap: 4px;
+}
+
+.filling-scan-header {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.2;
+  color: #243b53;
+}
+
+.filling-card--scan .filling-message {
+  margin: 0;
+}
+
+.filling-scan-slot {
+  position: relative;
+  margin: 0;
+  padding: 0;
+  min-height: 0;
+  border: none;
+  background: transparent;
+  overflow: hidden;
+}
+
+.filling-card--scan .filling-pallet-list-card {
+  margin-top: 0;
+}
+
 .filling-doc-list {
   display: grid;
   gap: 10px;
@@ -961,6 +991,7 @@ body {
   text-align: center;
 }
 
+.tsd-scan-input-hidden,
 .filling-scan-input-hidden {
   position: absolute;
   opacity: 0;
@@ -989,9 +1020,41 @@ body {
   padding: 0;
   list-style: none;
   display: grid;
-  gap: 8px;
+  gap: 4px;
   max-height: min(52vh, 360px);
   overflow-y: auto;
+}
+
+.filling-pallet-list--scroll-breathing {
+  gap: 8px;
+  padding-bottom: 40vh;
+  scroll-padding-bottom: 40vh;
+}
+
+.filling-pallet-group {
+  display: grid;
+  gap: 3px;
+  list-style: none;
+}
+
+.filling-pallet-group-title {
+  padding: 4px 2px 2px;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.25;
+  color: #243b53;
+}
+
+.filling-pallet-group:first-child .filling-pallet-group-title {
+  padding-top: 0;
+}
+
+.filling-pallet-group-items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 3px;
 }
 
 .filling-pallet-item {
@@ -1004,6 +1067,40 @@ body {
   border: 2px solid #d9e7ee;
   font-size: 15px;
   font-weight: 700;
+}
+
+.filling-pallet-item--compact {
+  grid-template-columns: 10px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 10px;
+  font-size: 14px;
+}
+
+.filling-pallet-item--compact .filling-pallet-dot {
+  margin-top: 4px;
+}
+
+.filling-pallet-main {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.filling-pallet-item--compact .filling-pallet-code {
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.filling-pallet-item-name {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: inherit;
+  opacity: 0.92;
+  word-break: break-word;
 }
 
 .filling-pallet-item.is-filled {
@@ -1035,9 +1132,9 @@ body {
   white-space: nowrap;
 }
 
-.outbound-picking-hu-item {
-  grid-template-columns: 12px 1fr;
-  align-items: flex-start;
+.outbound-picking-hu-item.filling-pallet-item--compact {
+  grid-template-columns: 10px minmax(0, 1fr);
+  align-items: center;
 }
 
 .outbound-picking-hu-main {
