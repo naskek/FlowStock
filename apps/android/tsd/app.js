@@ -23,6 +23,10 @@
   var SCAN_DEBUG_OPEN_KEY = "scanDebugOpen";
   var softKeyboardEnabled = false;
   var SOFT_KEYBOARD_KEY = "softKeyboardEnabled";
+  var TSD_THEME_KEY = "flowstock.tsd.theme";
+  var TSD_THEME_LIGHT = "light";
+  var TSD_THEME_DARK = "dark";
+  var tsdTheme = TSD_THEME_LIGHT;
   var SERVER_PING_INTERVAL = 15000;
   var VERSION_CHECK_INTERVAL = 600000;
   var versionCheckTimerId = 0;
@@ -553,6 +557,39 @@
   function setSoftKeyboardEnabled(enabled) {
     softKeyboardEnabled = !!enabled;
     applySoftKeyboardSetting(document);
+  }
+
+  function normalizeTsdTheme(value) {
+    return String(value || "").trim().toLowerCase() === TSD_THEME_DARK
+      ? TSD_THEME_DARK
+      : TSD_THEME_LIGHT;
+  }
+
+  function getStoredTsdTheme() {
+    try {
+      return normalizeTsdTheme(window.localStorage.getItem(TSD_THEME_KEY));
+    } catch (error) {
+      return TSD_THEME_LIGHT;
+    }
+  }
+
+  function applyTsdTheme(theme) {
+    tsdTheme = normalizeTsdTheme(theme);
+    var root = document.documentElement;
+    if (root) {
+      root.classList.toggle("tsd-theme-dark", tsdTheme === TSD_THEME_DARK);
+      root.classList.toggle("tsd-theme-light", tsdTheme !== TSD_THEME_DARK);
+    }
+    try {
+      window.localStorage.setItem(TSD_THEME_KEY, tsdTheme);
+    } catch (error) {
+      return false;
+    }
+    return true;
+  }
+
+  function initTsdTheme() {
+    applyTsdTheme(getStoredTsdTheme());
   }
 
   function normalizeBaseUrl(value) {
@@ -2349,9 +2386,11 @@
       ? '  <div id="homeLowStockWrap" class="home-low-stock-wrap"></div>'
       : "";
     return (
-      '<section class="screen home-screen">' +
-      '  <div class="menu-grid">' +
+      '<section class="screen home-screen home-screen--centered">' +
+      '  <div class="home-menu-wrap">' +
+      '    <div class="menu-grid">' +
       buildHomeMenuButtonsHtml() +
+      "    </div>" +
       "  </div>" +
       lowStockHtml +
       "</section>"
@@ -2938,7 +2977,7 @@
     }
 
     return (
-      '<div class="filling-preview-card filling-preview-overlay-card">' +
+      '<div class="filling-preview-card filling-preview-overlay-card filling-preview-overlay-card--compact">' +
       '  <div class="filling-preview-title">' + (isMixed ? "Микс-паллета" : "Наполнение паллеты") + "</div>" +
       '  <div class="filling-preview-line">Заказ: <strong>' +
       escapeHtml((preview && preview.orderRef) || getFillingWorkOrderRef(work)) +
@@ -2973,20 +3012,15 @@
     }
 
     var overlay = document.createElement("div");
-    overlay.className = "overlay filling-preview-overlay";
+    overlay.className = "overlay overlay--centered filling-preview-overlay";
     overlay.setAttribute("tabindex", "-1");
     overlay.innerHTML =
-      '<div class="overlay-card filling-preview-overlay-shell">' +
-      '  <div class="overlay-header">' +
-      '    <div class="overlay-title">Подтверждение наполнения</div>' +
-      '    <button class="btn btn-ghost overlay-close" type="button">Закрыть</button>' +
-      "  </div>" +
-      '  <div class="overlay-body">' +
+      '<div class="overlay-card filling-preview-overlay-shell filling-preview-overlay-shell--compact">' +
+      '  <div class="overlay-body filling-preview-overlay-body">' +
       buildFillingPreviewHtml(preview, context.workItem || {}) +
       "  </div>" +
       "</div>";
 
-    var closeBtn = overlay.querySelector(".overlay-close");
     var cancelBtn = overlay.querySelector("#fillingOverlayCancelBtn");
     var confirmBtn = overlay.querySelector("#fillingOverlayConfirmBtn");
     var errorEl = overlay.querySelector("#fillingPreviewError");
@@ -3072,9 +3106,6 @@
       });
     }
 
-    if (closeBtn) {
-      closeBtn.addEventListener("click", cancelOverlay);
-    }
     if (cancelBtn) {
       cancelBtn.addEventListener("click", cancelOverlay);
     }
@@ -4854,7 +4885,7 @@
         return;
       }
       lookupOverlay = document.createElement("div");
-      lookupOverlay.className = "overlay hu-lookup-overlay";
+      lookupOverlay.className = "overlay overlay--centered hu-lookup-overlay";
       lookupOverlay.setAttribute("tabindex", "-1");
       lookupOverlay.setAttribute("data-scan-allow", "1");
       lookupOverlay.innerHTML =
@@ -5340,15 +5371,15 @@
       '    <label class="form-label">ID устройства</label>' +
       '    <div class="field-value" id="deviceIdValue"></div>' +
       '    <label class="toggle-row">' +
-      '      <span class="toggle-label">Разрешить экранную клавиатуру</span>' +
+      '      <span class="toggle-label">Темная тема</span>' +
       '      <span class="toggle-switch">' +
-      '        <input type="checkbox" id="softKeyboardToggle" />' +
+      '        <input type="checkbox" id="tsdThemeToggle" />' +
       '        <span class="toggle-slider"></span>' +
       "      </span>" +
       "    </label>" +
       (debugPanel ? debugPanel : "") +
-      '    <div class="version" id="pwaAppVersion"></div>' +
       '    <button class="btn btn-outline" type="button" id="pwaCheckUpdateBtn">Проверить обновления</button>' +
+      '    <div class="settings-version settings-version--centered" id="pwaAppVersion"></div>' +
       '    <div class="field-hint" id="pwaUpdateStatus"></div>' +
       "  </div>" +
       "</section>"
@@ -7096,7 +7127,7 @@
 
   function buildOverlay(title) {
     var overlay = document.createElement("div");
-    overlay.className = "overlay";
+    overlay.className = "overlay overlay--centered";
     overlay.setAttribute("tabindex", "-1");
     overlay.innerHTML =
       '<div class="overlay-card">' +
@@ -7622,7 +7653,7 @@
   function openConfirmOverlay(title, message, confirmLabel, onConfirm) {
     setScanHighlight(false);
     var overlay = document.createElement("div");
-    overlay.className = "overlay";
+    overlay.className = "overlay overlay--centered";
     overlay.innerHTML =
       '<div class="overlay-card confirm-card">' +
       '  <div class="overlay-header">' +
@@ -7677,7 +7708,7 @@
     var inputMode = config.inputMode || "text";
     setScanHighlight(false);
     var overlay = document.createElement("div");
-    overlay.className = "overlay manual-input-overlay";
+    overlay.className = "overlay overlay--centered manual-input-overlay";
     overlay.innerHTML =
       '<div class="overlay-card manual-input-card">' +
       '  <div class="overlay-header">' +
@@ -7758,7 +7789,7 @@
   function openItemRequestOverlay(scannedBarcode, onSent) {
     setScanHighlight(false);
     var overlay = document.createElement("div");
-    overlay.className = "overlay";
+    overlay.className = "overlay overlay--centered";
     overlay.innerHTML =
       '<div class="overlay-card">' +
       '  <div class="overlay-header">' +
@@ -8091,7 +8122,7 @@
       setScanHighlight(false);
       closeQuantityOverlay();
       qtyOverlay = document.createElement("div");
-      qtyOverlay.className = "overlay qty-overlay";
+      qtyOverlay.className = "overlay overlay--centered qty-overlay";
       var quickQty = [1, 2, 3, 5, 10];
       var quickButtons = quickQty
         .map(function (value) {
@@ -8838,7 +8869,7 @@
       }
       setScanHighlight(false);
       var overlay = document.createElement("div");
-      overlay.className = "overlay qty-overlay";
+      overlay.className = "overlay overlay--centered qty-overlay";
       var quickValues = [1, 5, 10, 12, 15];
       var quickButtons = quickValues
         .map(function (value) {
@@ -9848,7 +9879,7 @@
         huTitle = "Сканировать HU-назначение";
       }
       huOverlay = document.createElement("div");
-      huOverlay.className = "overlay hu-overlay";
+      huOverlay.className = "overlay overlay--centered hu-overlay";
       huOverlay.setAttribute("tabindex", "-1");
       huOverlay.innerHTML =
         '<div class="overlay-card">' +
@@ -10699,7 +10730,7 @@
 
   function wireSettings() {
     var deviceIdValue = document.getElementById("deviceIdValue");
-    var softKeyboardToggle = document.getElementById("softKeyboardToggle");
+    var tsdThemeToggle = document.getElementById("tsdThemeToggle");
     var scannerSelect = document.getElementById("scannerModeSelect");
     var scannerHint = document.getElementById("scannerModeHint");
     var scanDebugPanelToggle = document.getElementById("scanDebugPanelToggle");
@@ -10760,14 +10791,10 @@
       });
     }
 
-    if (softKeyboardToggle) {
-      softKeyboardToggle.checked = softKeyboardEnabled;
-      softKeyboardToggle.addEventListener("change", function () {
-        var enabled = !!softKeyboardToggle.checked;
-        setSoftKeyboardEnabled(enabled);
-        TsdStorage.setSetting(SOFT_KEYBOARD_KEY, enabled).catch(function () {
-          return false;
-        });
+    if (tsdThemeToggle) {
+      tsdThemeToggle.checked = tsdTheme === TSD_THEME_DARK;
+      tsdThemeToggle.addEventListener("change", function () {
+        applyTsdTheme(tsdThemeToggle.checked ? TSD_THEME_DARK : TSD_THEME_LIGHT);
       });
     }
 
@@ -11266,7 +11293,7 @@
       var scannedMap = {};
       var closed = false;
       var overlay = document.createElement("div");
-      overlay.className = "overlay hu-confirm-overlay";
+      overlay.className = "overlay overlay--centered hu-confirm-overlay";
       overlay.setAttribute("data-scan-allow", "1");
       overlay.innerHTML =
         '<div class="overlay-card hu-confirm-card">' +
@@ -12379,6 +12406,15 @@
     window.FlowStockTsdTestHooks.buildFillingPalletGroups = buildFillingPalletGroups;
     window.FlowStockTsdTestHooks.renderFillingPalletStatusList = renderFillingPalletStatusList;
     window.FlowStockTsdTestHooks.renderHome = renderHome;
+    window.FlowStockTsdTestHooks.renderSettings = renderSettings;
+    window.FlowStockTsdTestHooks.applyTsdTheme = applyTsdTheme;
+    window.FlowStockTsdTestHooks.getStoredTsdTheme = getStoredTsdTheme;
+    window.FlowStockTsdTestHooks.normalizeTsdTheme = normalizeTsdTheme;
+    window.FlowStockTsdTestHooks.initTsdTheme = initTsdTheme;
+  }
+
+  if (document.documentElement) {
+    initTsdTheme();
   }
 
   document.addEventListener("DOMContentLoaded", function () {

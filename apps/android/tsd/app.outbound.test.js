@@ -171,6 +171,8 @@ assert(
 const homeHtml = hooks.renderHome();
 assert.doesNotMatch(homeHtml, /Позиции ниже минимума|homeLowStockWrap/);
 assert.match(homeHtml, /menu-grid/, "home screen should still render main menu");
+assert.match(homeHtml, /home-screen--centered/, "home screen should center main menu");
+assert.match(homeHtml, /home-menu-wrap/, "home screen should wrap menu for centering");
 assert(
   !appJs.includes("escapeHtml(getOutboundPickingStatusLabel(status))"),
   "outbound HU list should not render textual status labels"

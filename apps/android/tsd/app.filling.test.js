@@ -150,9 +150,35 @@ assert(
 );
 assert(
   appJs.includes("openFillingPreviewOverlay(context, activePreview)") &&
-    appJs.includes('className = "overlay filling-preview-overlay"') &&
-    appJs.includes("Подтверждение наполнения"),
-  "fill confirmation should open in a separate modal overlay"
+    appJs.includes('className = "overlay overlay--centered filling-preview-overlay"') &&
+    !appJs.includes("Подтверждение наполнения"),
+  "fill confirmation should open in a separate modal overlay without legacy title"
+);
+assert(
+  appJs.includes('id="fillingOverlayConfirmBtn"') &&
+    appJs.includes("Подтвердить"),
+  "fill confirmation overlay should keep confirm button"
+);
+assert(
+  appJs.includes('id="fillingOverlayCancelBtn"') &&
+    appJs.includes(">Отмена</button>"),
+  "fill confirmation overlay should keep cancel button"
+);
+assert(
+  appJs.includes("filling-preview-overlay-shell--compact") &&
+    appJs.includes("filling-preview-overlay-card--compact"),
+  "fill confirmation overlay should use compact modal modifiers"
+);
+
+const fillPreviewOverlay = extractFunctionBody(appJs, "openFillingPreviewOverlay");
+assert(
+  !fillPreviewOverlay.includes("Подтверждение наполнения"),
+  "fill confirmation overlay should not render legacy title"
+);
+assert(
+  !fillPreviewOverlay.includes("overlay-close") &&
+    !fillPreviewOverlay.includes(">Закрыть</button>"),
+  "fill confirmation overlay should not render close button"
 );
 assert(
   appJs.includes("function buildProductionFillSuccessMessage(") &&
