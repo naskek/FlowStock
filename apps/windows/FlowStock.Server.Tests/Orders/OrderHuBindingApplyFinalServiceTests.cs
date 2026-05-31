@@ -217,6 +217,8 @@ public sealed class OrderHuBindingApplyFinalServiceTests
             Apply(scenario.Harness, FinalLine(Scenario.LineId, [], ["HU-READY"])));
 
         Assert.Equal("HU_BINDING_PLAN_CONFLICT", ex.ErrorCode);
+        Assert.Contains(ex.Problems ?? [], problem =>
+            problem.Contains("status=PRINTED", StringComparison.OrdinalIgnoreCase));
         Assert.Empty(scenario.Harness.GetOrderReceiptPlanLines(Scenario.OrderId));
     }
 
@@ -235,17 +237,54 @@ public sealed class OrderHuBindingApplyFinalServiceTests
     }
 
     [Fact]
-    public void ApplyFinal_MarkedOrCodedPalletConflictFails()
+    public void ApplyFinal_ReadyHuCancelsPlannedCustomerPallet_IgnoresOrderMarkingStatus()
     {
-        var scenario = CreateScenario(orderQty: 600, orderMarkingStatus: MarkingStatus.Printed);
+        var markingPrintedAt = DateTime.UtcNow;
+        var scenario = CreateScenario(
+            orderQty: 600,
+            orderMarkingStatus: MarkingStatus.Printed,
+            markingExcelGeneratedAt: markingPrintedAt,
+            markingPrintedAt: markingPrintedAt);
         scenario.Harness.SeedBalance(Scenario.ItemId, Scenario.LocationId, 600, "HU-READY");
+        scenario.Harness.SeedOrder(new Order
+        {
+            Id = Scenario.InternalOrderId,
+            OrderRef = "INT-001",
+            Type = OrderType.Internal,
+            Status = OrderStatus.InProgress,
+            CreatedAt = DateTime.UtcNow
+        });
+        scenario.Harness.SeedDoc(new Doc
+        {
+            Id = Scenario.InternalPrdId,
+            DocRef = "PRD-INT",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Closed,
+            OrderId = Scenario.InternalOrderId,
+            CreatedAt = DateTime.UtcNow
+        });
+        scenario.Harness.SeedLine(new DocLine
+        {
+            Id = Scenario.InternalDocLineId,
+            DocId = Scenario.InternalPrdId,
+            ItemId = Scenario.ItemId,
+            Qty = 600,
+            ToLocationId = Scenario.LocationId,
+            ToHu = "HU-READY"
+        });
         SeedPlannedPallet(scenario.Harness, qty: 600);
+        var ledgerBefore = scenario.Harness.Store.CountLedgerEntries();
 
-        var ex = Assert.Throws<OrderHuBindingApplyFinalException>(() =>
-            Apply(scenario.Harness, FinalLine(Scenario.LineId, [], ["HU-READY"])));
+        var result = Apply(scenario.Harness, FinalLine(Scenario.LineId, [], ["HU-READY"]));
 
-        Assert.Equal("HU_BINDING_PLAN_CONFLICT", ex.ErrorCode);
-        Assert.Empty(scenario.Harness.GetOrderReceiptPlanLines(Scenario.OrderId));
+        Assert.Equal(1, Assert.Single(result.AppliedLines).CancelledPlannedPalletCount);
+        var pallet = Assert.Single(scenario.Harness.Store.GetProductionPalletsByDoc(Scenario.PrdDocId));
+        Assert.Equal(ProductionPalletStatus.Cancelled, pallet.Status);
+        Assert.Equal("replaced_by_ready_hu", pallet.CancelReason);
+        Assert.NotNull(pallet.CancelledAt);
+        Assert.Equal(Scenario.InternalOrderId, scenario.Harness.GetDoc(Scenario.InternalPrdId).OrderId);
+        Assert.Equal("HU-READY", Assert.Single(scenario.Harness.GetDocLines(Scenario.InternalPrdId)).ToHu);
+        Assert.Equal(ledgerBefore, scenario.Harness.Store.CountLedgerEntries());
     }
 
     [Fact]
@@ -298,7 +337,9 @@ public sealed class OrderHuBindingApplyFinalServiceTests
     private static Scenario CreateScenario(
         double orderQty,
         double shippedQty = 0,
-        MarkingStatus orderMarkingStatus = MarkingStatus.NotRequired)
+        MarkingStatus orderMarkingStatus = MarkingStatus.NotRequired,
+        DateTime? markingExcelGeneratedAt = null,
+        DateTime? markingPrintedAt = null)
     {
         var harness = new CloseDocumentHarness();
         harness.SeedLocation(new Location { Id = Scenario.LocationId, Code = "MAIN", Name = "Основной склад" });
@@ -326,6 +367,8 @@ public sealed class OrderHuBindingApplyFinalServiceTests
             Type = OrderType.Customer,
             Status = OrderStatus.InProgress,
             MarkingStatus = orderMarkingStatus,
+            MarkingExcelGeneratedAt = markingExcelGeneratedAt,
+            MarkingPrintedAt = markingPrintedAt,
             CreatedAt = DateTime.UtcNow
         });
         harness.SeedOrderLine(new OrderLine

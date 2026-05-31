@@ -374,12 +374,12 @@ public sealed class OrderHuBindingApplyFinalService
         var safe = new List<(ProductionPallet Pallet, double Qty)>();
         foreach (var pallet in activePallets)
         {
-            if (!IsSafeWholePlannedCustomerPallet(store, customerOrderId, orderLine, pallet, out var qty))
+            if (!IsSafeWholePlannedCustomerPallet(customerOrderId, orderLine, pallet, out var qty, out var rejectionReason))
             {
                 throw Error(
                     "HU_BINDING_PLAN_CONFLICT",
                     "Строка имеет производственные паллеты, которые нельзя безопасно заменить готовым HU.",
-                    [$"production_pallet_id={pallet.Id}", $"status={pallet.Status}"]);
+                    [$"production_pallet_id={pallet.Id}", rejectionReason ?? "unsafe_pallet_state"]);
             }
 
             safe.Add((pallet, qty));
@@ -398,60 +398,75 @@ public sealed class OrderHuBindingApplyFinalService
     }
 
     private static bool IsSafeWholePlannedCustomerPallet(
-        IDataStore store,
         long customerOrderId,
         OrderLine orderLine,
         ProductionPallet pallet,
-        out double qty)
+        out double qty,
+        out string rejectionReason)
     {
         qty = ResolvePalletQtyForOrderLine(pallet, orderLine.Id);
         if (qty <= QtyTolerance)
         {
+            rejectionReason = "no_planned_qty_for_order_line";
             return false;
         }
 
-        if (pallet.OrderId != customerOrderId
-            || !string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.Ordinal)
-            || pallet.PrintedAt.HasValue
-            || pallet.FilledAt.HasValue)
+        if (pallet.OrderId != customerOrderId)
         {
+            rejectionReason = $"order_id_mismatch expected={customerOrderId} actual={pallet.OrderId}";
+            return false;
+        }
+
+        if (!string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase))
+        {
+            rejectionReason = $"status={pallet.Status ?? "(null)"} expected=PLANNED";
+            return false;
+        }
+
+        if (pallet.PrintedAt.HasValue)
+        {
+            rejectionReason = $"printed_at={pallet.PrintedAt:O}";
+            return false;
+        }
+
+        if (pallet.FilledAt.HasValue)
+        {
+            rejectionReason = $"filled_at={pallet.FilledAt:O}";
             return false;
         }
 
         var lines = pallet.Lines ?? Array.Empty<ProductionPalletComponentLine>();
         if (lines.Count > 1)
         {
+            rejectionReason = "mixed_component_lines";
             return false;
         }
 
-        if (lines.Any(line => line.FilledQty > QtyTolerance
-                              || line.OrderLineId != orderLine.Id
-                              || line.ItemId != orderLine.ItemId))
+        var unsafeComponentLine = lines.FirstOrDefault(line => line.FilledQty > QtyTolerance
+                                                               || line.OrderLineId != orderLine.Id
+                                                               || line.ItemId != orderLine.ItemId);
+        if (unsafeComponentLine != null)
         {
+            if (unsafeComponentLine.FilledQty > QtyTolerance)
+            {
+                rejectionReason = $"component_filled_qty={unsafeComponentLine.FilledQty:0.###}";
+            }
+            else
+            {
+                rejectionReason = "order_line_or_item_mismatch";
+            }
+
             return false;
         }
 
         if (lines.Count == 0 && (pallet.OrderLineId != orderLine.Id || pallet.ItemId != orderLine.ItemId))
         {
+            rejectionReason = "order_line_or_item_mismatch";
             return false;
         }
 
-        var docLineIds = new HashSet<long>();
-        if (pallet.DocLineId > 0)
-        {
-            docLineIds.Add(pallet.DocLineId);
-        }
-
-        foreach (var line in lines.Where(line => line.DocLineId > 0))
-        {
-            docLineIds.Add(line.DocLineId);
-        }
-
-        return !store.HasUnsafeMarkingForProductionPalletReplacement(
-            customerOrderId,
-            orderLine.Id,
-            orderLine.ItemId,
-            docLineIds);
+        rejectionReason = string.Empty;
+        return true;
     }
 
     private static IReadOnlyList<ProductionPallet> GetActiveProductionPalletsForOrderLine(
