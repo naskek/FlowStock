@@ -11,7 +11,7 @@
 - `status` TEXT NOT NULL DEFAULT `IN_PROGRESS`  // `DRAFT` | `IN_PROGRESS` | `ACCEPTED` | `SHIPPED`
 - `comment` TEXT NULL
 - `created_at` TEXT NOT NULL
-- `bind_reserved_stock` BOOLEAN NOT NULL DEFAULT `FALSE` // резервировать свободные HU под клиентский заказ
+- `bind_reserved_stock` BOOLEAN NOT NULL DEFAULT `FALSE` // legacy/compatibility flag; не запускает фоновую привязку HU
 - `marking_status` TEXT NOT NULL DEFAULT `NOT_REQUIRED` // `NOT_REQUIRED` | `REQUIRED` | `PRINTED`
 - `marking_excel_generated_at` TEXT NULL
 - `marking_printed_at` TEXT NULL
@@ -49,6 +49,8 @@
 - `printed_at` TEXT NULL
 - `filled_at` TEXT NULL
 - `filled_by_device_id` TEXT NULL
+- `cancel_reason` TEXT NULL
+- `cancelled_at` TEXT NULL
 - `created_at` TEXT NOT NULL
 
 Таблица `production_pallet_lines`:
@@ -156,21 +158,27 @@
   - Для заказа в финальном статусе `SHIPPED` (`Выполнен`) Excel ЧЗ не формируется: WPF не дает нажать кнопку, а backend `POST /api/orders/{orderId}/marking/export` возвращает отказ без создания `marking_order` и `marking_code`.
   - Раздел `Маркировка` остается журналом/legacy-view задач. Ручной `POST /api/marking/create-from-production-needs` сохраняется для совместимости, но не является основным способом формирования ЧЗ.
   - Web-список заказов показывает бинарный статус ЧЗ из server-side DTO как icon-only индикатор с подсказкой `Маркировка не проведена` / `Маркировка проведена`.
-- На этапе создания/обновления заказа сервер формирует план выпуска `order_receipt_plan_lines` (HU и локации хранения).
-- Для `CUSTOMER`-заказа на этапе создания/обновления сервер пытается зарезервировать в `order_receipt_plan_lines` только физические HU с положительным остатком по `ledger` (`LEDGER_STOCK`); `INTERNAL_FILLED` (FILLED без ledger) не допускается.
-- Свободные складские HU-кандидаты для `CUSTOMER` резервов сортируются FIFO: приоритет источника, первая положительная `ledger`-приемка по `item_id + HU`, `doc_id` этой приемки, затем `HU` только как финальный tie-breaker. Автоподбор использует тот же порядок; код HU не является первичным критерием выбора.
-- После закрытия отдельного `PRD` сервер автоматически пересчитывает эти резервы только для клиентских заказов, попавших в affected scope закрываемого документа (`docs.order_id` или `doc_lines.order_line_id`). Полный пересчет всех клиентских резервов (FIFO по дате создания заказа) остается для явных операций сохранения/maintenance, где он действительно нужен.
+- На этапе создания/обновления `CUSTOMER`-заказа сервер больше не создает новые HU-резервы из свободного stock. Refresh/rebuild может читать кандидатов, валидировать отображение и сохранять уже существующие ручные reservations, но не должен заново привязывать ранее отвязанный HU и не должен удалять ручные reservations без явной причины.
+- Для `CUSTOMER`-заказа read-model кандидатов использует только физические HU с положительным остатком по `ledger` (`LEDGER_STOCK`); `INTERNAL_FILLED` (FILLED без ledger) не допускается.
+- Свободные складские HU-кандидаты для `CUSTOMER` резервов сортируются FIFO: приоритет источника, первая положительная `ledger`-приемка по `item_id + HU`, `doc_id` этой приемки, затем `HU` только как финальный tie-breaker. FIFO-порядок может использоваться явной operator command, но не запускается фоново при create/update/refresh.
+- После закрытия отдельного `PRD` сервер может пересчитать read-only состояние affected заказов, но не создает новые `order_receipt_plan_lines` из свободных HU. Полный пересчет/backfill резервов остается только для явной maintenance/action-команды.
 - Один и тот же HU/объем не может быть одновременно зарезервирован за несколькими клиентскими заказами.
 - Для клиентского заказа используется флаг `bind_reserved_stock`:
   - `true`: сервер на этапе сохранения заказа резервирует свободные HU/локации из текущего HU stock в `order_receipt_plan_lines` только для товаров, тип которых имеет `item_types.enable_order_reservation = true`;
   - `false`: привязка складского остатка к заказу не выполняется.
-- В WPF подтверждение привязки складского остатка запрашивается при сохранении клиентского заказа и только если по его позициям есть остаток на складе.
-  - Prompt привязки HU идемпотентен: если подходящие HU уже зарезервированы под этот заказ и покрывают его строки, повторный Save/Close и повторное открытие заказа не должны спрашивать снова.
-  - После успешной привязки WPF перечитывает заказ и строит следующий prompt только по непокрытой части сверх уже привязанных HU.
-  - Перед `План паллет (производство)` WPF загружает свободные складские HU по всем строкам, показывает диалог `Подтвердить привязку складских остатков`, предвыбирает лучший набор HU и по кнопке `Привязать` сразу сохраняет выбранные HU на сервере через `order_receipt_plan_lines`. После apply WPF перечитывает заказ и только затем вызывает планирование паллет.
-  - Диалог группируется по строкам заказа, показывает заказанное количество, уже привязанный объем, выбранные HU и остаток в производство. Если свободных HU нет, строка показывает `нет свободных HU / будет в производство`.
-  - Ручная кнопка `Выбрать HU` остается для корректировки строки и также применяет изменения на сервере сразу, без ожидания общего сохранения заказа.
-  - Серверный apply транзакционный, идемпотентный, принимает только свободные `LEDGER_STOCK` HU и режет привязку по остатку строки, чтобы не резервировать больше неотгруженного количества.
+- Старый explicit endpoint `POST /api/orders/{orderId}/hu-reservations/apply` сохраняется для legacy/manual сценариев и не меняет контракт. Новый финальный command для backend apply/detach:
+  - `POST /api/orders/{orderId}/hu-bindings/apply-final`;
+  - request: `{ "mode": "replace_final_selection", "lines": [{ "order_line_id": 123, "expected_bound_hu_codes": ["HU-1"], "final_hu_codes": ["HU-1", "HU-2"] }] }`;
+  - `mode` обязателен и имеет единственное значение `replace_final_selection`;
+  - `expected_bound_hu_codes` обязателен и сравнивается с текущим состоянием как normalized set; mismatch возвращает `HU_BINDING_STALE`;
+  - `final_hu_codes` обязателен, пустой список означает явную отвязку affected строки; порядок списка сохраняется как `sort_order`;
+  - строки заказа, не переданные в request, не меняются.
+- `apply-final` выполняется транзакционно: внутри одной store transaction заново загружаются заказ, строки, текущий receipt plan, shipment remaining, candidates/read-model и production pallets. Команда повторно проверяет eligibility, stale-state, дубли HU и итоговое условие `final_bound_qty <= qty_ordered - shipped_qty`.
+- Ready HU binding не пишет `ledger`, не меняет физический остаток и не меняет происхождение HU (`docs.order_id`, `production_pallets.order_id/order_line_id`, source PRD/internal order остаются прежними).
+- Если ready HU заменяет production need клиентской строки, `apply-final` может отменить только целые безопасные customer planned pallets той же строки: `status=PLANNED`, без `printed_at`, без `filled_at`, без заполненных component lines и без активной marking/codes связи. Unsafe `PRINTED`/`FILLED`/marked/coded/mixed/partial состояние возвращает `HU_BINDING_PLAN_CONFLICT`.
+- Если количество added ready HU нельзя покрыть целыми planned pallets без частичной отмены, команда возвращает `HU_BINDING_PLAN_CONFLICT`.
+- При отмене безопасной planned pallet ставятся `production_pallets.status=CANCELLED`, `cancel_reason='replaced_by_ready_hu'`, `cancelled_at=<server time>`. Связанные draft doc lines очищаются только существующим безопасным механизмом, без удаления истории cancelled pallet.
+- При detach команда не re-open старые `CANCELLED` pallets. Потребность CUSTOMER строки восстанавливается через существующий sync/recompute planned need для affected customer order lines; internal production orders и stock replenishment при этом не создаются.
 - Первичный перенос заказа в WPF `PRODUCTION_RECEIPT` берет только простой незакрытый остаток `receipt_remaining`: одна строка заказа переносится одной строкой выпуска, `HU` остается пустым до явного назначения.
 - `receipt-remaining?detailed=1` и HU-ориентированный план используются только как вспомогательный view для подсказок и реального HU-distribution; они не должны создавать в PRD псевдо-строки с пустым `HU`.
 - Для `CUSTOMER`-заказа резерв в `order_receipt_plan_lines` считается уже покрытым складским объемом: он уменьшает остаток к PRD, но не превращается в строки выпуска. Если заказ полностью закрыт резервом, PRD по нему не предлагается и не проводится.

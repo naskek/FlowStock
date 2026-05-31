@@ -121,7 +121,13 @@ public interface IDataStore
         IReadOnlyList<string> huCodes);
     void MarkProductionPalletFilled(long palletId, DateTime filledAt, string? deviceId);
     int CancelProductionPallets(IReadOnlyList<long> palletIds);
+    int CancelProductionPalletsForReadyHuBinding(IReadOnlyList<long> palletIds, string reason, DateTime cancelledAt);
     int RemoveDocLinesForProductionPallets(IReadOnlyCollection<long> productionPalletIds);
+    bool HasUnsafeMarkingForProductionPalletReplacement(
+        long orderId,
+        long orderLineId,
+        long itemId,
+        IReadOnlyCollection<long> docLineIds);
     int MarkProductionPalletsPrintedByOrder(long orderId, DateTime printedAt);
     int MarkProductionPalletsPrinted(long orderId, IReadOnlyCollection<long> palletIds, DateTime printedAt);
     IReadOnlyList<ProductionPallet> GetFilledProductionPalletsByItemAndLocation(long itemId, long locationId);

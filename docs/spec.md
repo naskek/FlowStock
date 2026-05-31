@@ -67,7 +67,7 @@
 - `order_receipt_plan_lines(id, order_id, order_line_id, item_id, qty_planned, to_location_id, to_hu, sort_order)` // серверный план выпуска по заказу
 - `docs(id, doc_ref, type, status, created_at, closed_at, partner_id, order_id, order_ref, shipping_ref, reason_code, comment, production_batch_no)`
 - `doc_lines(id, doc_id, replaces_line_id NULL, order_line_id, item_id, qty, qty_input, uom_code, from_location_id, to_location_id, from_hu, to_hu)`
-- `production_pallets(id, prd_doc_id, doc_line_id, order_id, order_line_id, item_id, hu_code, planned_qty, to_location_id, status, pallet_no, pallet_count, printed_at, filled_at, filled_by_device_id, created_at)` // header плановой паллеты/HU; для микс-паллеты является одним HU с несколькими строками состава
+- `production_pallets(id, prd_doc_id, doc_line_id, order_id, order_line_id, item_id, hu_code, planned_qty, to_location_id, status, pallet_no, pallet_count, printed_at, filled_at, filled_by_device_id, cancel_reason NULL, cancelled_at NULL, created_at)` // header плановой паллеты/HU; для микс-паллеты является одним HU с несколькими строками состава
 - `production_pallet_lines(id, production_pallet_id, doc_line_id, order_line_id, item_id, planned_qty, filled_qty, created_at)` // состав паллеты; одиночная паллета имеет одну строку, mixed pallet имеет несколько строк
 - `ledger(id, ts, doc_id, item_id, location_id, qty_delta, hu_code)`
 - `km_code_batch(id, order_id, file_name, file_hash, imported_at, imported_by, total_codes, error_count)`
@@ -123,6 +123,10 @@
 - `order_receipt_plan_lines` для `CUSTOMER` — физическое закрепление **готового** HU под заказ, а не план будущего выпуска.
 - Один HU не может быть одновременно зарезервирован под несколькими активными `CUSTOMER`-заказами.
 - Резерв **не пишет** `ledger` и **не меняет** физический остаток.
+- Create/update/refresh `CUSTOMER`-заказа не создает новые HU-резервы из свободного stock. Кандидаты можно считать автоматически как read-only модель, а фактическая bind/detach выполняется только explicit command.
+- Новый backend command `POST /api/orders/{orderId}/hu-bindings/apply-final` принимает `mode='replace_final_selection'`, mandatory `expected_bound_hu_codes` и mandatory `final_hu_codes`; expected сравнивается как normalized set, final сохраняется в переданном порядке как `sort_order`, пустой final означает явную отвязку affected строки.
+- `apply-final` транзакционно revalidates eligibility/candidates, stale-state и итоговый qty limit `final_bound_qty <= qty_ordered - shipped_qty`; legacy `POST /api/orders/{orderId}/hu-reservations/apply` сохраняется для старых ручных действий.
+- Ready HU binding не меняет HU origin/source order/source PRD. При замене customer planned production разрешена только отмена safe whole `PLANNED` pallets с `cancel_reason='replaced_by_ready_hu'`; unsafe/partial случаи возвращают `HU_BINDING_PLAN_CONFLICT`. Detach пересчитывает customer planned need, но не re-open старые cancelled pallets.
 
 Подробности mixed coverage, WPF UI и печати — в [`spec_orders.md`](spec_orders.md).
 
@@ -296,15 +300,13 @@
   - План распределения выпуска формируется на этапе заказа:
     - если у типа номенклатуры включен флаг `enable_hu_distribution`, для товара обязателен `items.max_qty_per_hu`;
     - для `INTERNAL` сервер заранее дробит строки заказа по HU и резервирует локацию/ HU в `order_receipt_plan_lines`;
-    - для `CUSTOMER` сервер на этапе создания/обновления пытается привязать к строкам заказа доступные HU из текущего свободного HU stock, сохраняя привязку в `order_receipt_plan_lines`.
+    - для `CUSTOMER` сервер на этапе создания/обновления не привязывает свободные HU автоматически; `order_receipt_plan_lines` меняются только explicit HU binding command или maintenance/action-командой.
     - при уменьшении qty строки `CUSTOMER` складской `reserved_hu` не считается фактическим блокером: WPF предлагает выбрать оставляемые HU, сервер в одной транзакции снимает лишние строки `order_receipt_plan_lines`, нормализует qty к сумме оставленных целых HU и синхронизирует production pallets; сами HU, ledger и исходные `production_pallets` не отменяются.
-    - при увеличении qty строки `CUSTOMER` сервер сначала пробует закрыть точный shortage свободными `LEDGER_STOCK` HU той же номенклатуры и только затем создает planned production pallets на остаток.
-  - После закрытия отдельного `PRD` сервер пересчитывает `order_receipt_plan_lines` только для клиентских заказов, попавших в affected scope закрываемого документа (`docs.order_id` или `doc_lines.order_line_id`). Полный пересчет всех клиентских резервов остается для явных операций сохранения/maintenance, где он действительно нужен.
+    - при увеличении qty строки `CUSTOMER` сервер не запускает фоновый FIFO bind свободных `LEDGER_STOCK` HU; production need/pallet plan считается на непокрытый остаток после уже сохраненных manual bindings.
+  - После закрытия отдельного `PRD` сервер может пересчитать read-only состояние affected клиентских заказов, но не создает новые `order_receipt_plan_lines` из свободных HU. Полный backfill резервов остается только для явной maintenance/action-команды.
   - Один HU/объем может быть зарезервирован только за одним клиентским заказом одновременно.
   - Поле `Партия производства` в WPF временно скрыто из UI; значение колонки сохраняется для совместимости API/БД.
-  - Привязка складского остатка выполняется на этапе создания/редактирования клиентского заказа (`bind_reserved_stock`):
-    - если флаг включен, сервер резервирует доступные HU/локации из текущего свободного HU stock в `order_receipt_plan_lines` только для товаров, тип которых имеет `enable_order_reservation = true`;
-    - если флаг выключен, строки заказа не резервируются из складского остатка.
+  - Флаг `bind_reserved_stock` не запускает автоматическое background binding при create/update/refresh. Он сохраняется как legacy/compatibility-признак, но фактическая привязка складского остатка к `CUSTOMER` выполняется только explicit HU binding command.
 - В WPF доступен отдельный read-only отчет `Потребность производства`.
     - Отчет не меняет `ledger`, документы и заказы; это отдельная read-model поверх текущих данных.
     - Отчет показывает текущую суммарную потребность на момент просмотра, без календарного фильтра в UI.

@@ -58,6 +58,8 @@ SELECT p.id,
        p.printed_at,
        p.filled_at,
        p.filled_by_device_id,
+       p.cancel_reason,
+       p.cancelled_at,
        p.created_at
 FROM production_pallets p
 INNER JOIN items i ON i.id = p.item_id
@@ -3120,6 +3122,104 @@ WHERE id = ANY(@pallet_ids)
             command.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
             command.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
             return command.ExecuteNonQuery();
+        });
+    }
+
+    public int CancelProductionPalletsForReadyHuBinding(IReadOnlyList<long> palletIds, string reason, DateTime cancelledAt)
+    {
+        var ids = (palletIds ?? Array.Empty<long>())
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
+        if (ids.Length == 0)
+        {
+            return 0;
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE production_pallets
+SET status = @cancelled_status,
+    cancel_reason = @cancel_reason,
+    cancelled_at = @cancelled_at
+WHERE id = ANY(@pallet_ids)
+  AND status = @planned_status
+  AND printed_at IS NULL
+  AND filled_at IS NULL;
+");
+            command.Parameters.AddWithValue("@pallet_ids", ids);
+            command.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
+            command.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+            command.Parameters.AddWithValue("@cancel_reason", string.IsNullOrWhiteSpace(reason) ? DBNull.Value : reason.Trim());
+            command.Parameters.AddWithValue("@cancelled_at", ToDbDate(cancelledAt));
+            return command.ExecuteNonQuery();
+        });
+    }
+
+    public bool HasUnsafeMarkingForProductionPalletReplacement(
+        long orderId,
+        long orderLineId,
+        long itemId,
+        IReadOnlyCollection<long> docLineIds)
+    {
+        var activeDocLineIds = (docLineIds ?? Array.Empty<long>())
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT 1
+FROM orders o
+WHERE o.id = @order_id
+  AND (
+      UPPER(BTRIM(COALESCE(o.marking_status, ''))) = @printed_order_status
+      OR o.marking_excel_generated_at IS NOT NULL
+      OR o.marking_printed_at IS NOT NULL
+  )
+LIMIT 1;
+");
+            command.Parameters.AddWithValue("@order_id", orderId);
+            command.Parameters.AddWithValue("@printed_order_status", MarkingStatusMapper.ToString(MarkingStatus.Printed));
+            if (command.ExecuteScalar() != null)
+            {
+                return true;
+            }
+
+            using var markingOrderCommand = CreateCommand(connection, @"
+SELECT 1
+FROM marking_order mo
+WHERE (mo.order_id = @order_id OR mo.source_order_id = @order_id)
+  AND (mo.item_id IS NULL OR mo.item_id = @item_id)
+  AND COALESCE(mo.status, '') NOT IN (@cancelled_status, @failed_status)
+LIMIT 1;
+");
+            markingOrderCommand.Parameters.AddWithValue("@order_id", orderId);
+            markingOrderCommand.Parameters.AddWithValue("@item_id", itemId);
+            markingOrderCommand.Parameters.AddWithValue("@cancelled_status", MarkingOrderStatus.Cancelled);
+            markingOrderCommand.Parameters.AddWithValue("@failed_status", MarkingOrderStatus.Failed);
+            if (markingOrderCommand.ExecuteScalar() != null)
+            {
+                return true;
+            }
+
+            if (activeDocLineIds.Length == 0)
+            {
+                return false;
+            }
+
+            using var codeCommand = CreateCommand(connection, @"
+SELECT 1
+FROM marking_code c
+WHERE c.receipt_line_id = ANY(@doc_line_ids)
+  AND c.status <> @voided_status
+LIMIT 1;
+");
+            codeCommand.Parameters.AddWithValue("@doc_line_ids", activeDocLineIds);
+            codeCommand.Parameters.AddWithValue("@voided_status", MarkingCodeStatus.Voided);
+            return codeCommand.ExecuteScalar() != null;
         });
     }
 
@@ -9272,7 +9372,9 @@ ORDER BY pll.production_pallet_id, pll.id;
             PrintedAt = FromDbDate(reader.IsDBNull(14) ? null : reader.GetString(14)),
             FilledAt = FromDbDate(reader.IsDBNull(15) ? null : reader.GetString(15)),
             FilledByDeviceId = reader.IsDBNull(16) ? null : reader.GetString(16),
-            CreatedAt = FromDbDate(reader.GetString(17)) ?? DateTime.MinValue
+            CancelReason = reader.IsDBNull(17) ? null : reader.GetString(17),
+            CancelledAt = FromDbDate(reader.IsDBNull(18) ? null : reader.GetString(18)),
+            CreatedAt = FromDbDate(reader.GetString(19)) ?? DateTime.MinValue
         };
     }
 
@@ -9497,6 +9599,8 @@ LIMIT 1;";
         EnsureColumn(connection, "production_pallets", "pallet_no", "INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(connection, "production_pallets", "pallet_count", "INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(connection, "production_pallets", "printed_at", "TEXT NULL");
+        EnsureColumn(connection, "production_pallets", "cancel_reason", "TEXT NULL");
+        EnsureColumn(connection, "production_pallets", "cancelled_at", "TEXT NULL");
         EnsureNullable(connection, "marking_order", "order_id");
         EnsureColumn(connection, "marking_order", "source_type", "TEXT NULL");
         EnsureColumn(connection, "marking_order", "source_order_id", "BIGINT NULL");
@@ -9523,7 +9627,9 @@ LIMIT 1;";
             || !ColumnExists(connection, "orders", "marking_printed_at")
             || !ColumnExists(connection, "order_lines", "production_purpose")
             || !ColumnExists(connection, "order_lines", "production_pallet_group")
-            || !ColumnExists(connection, "doc_lines", "production_purpose"))
+            || !ColumnExists(connection, "doc_lines", "production_purpose")
+            || !ColumnExists(connection, "production_pallets", "cancel_reason")
+            || !ColumnExists(connection, "production_pallets", "cancelled_at"))
         {
             throw new InvalidOperationException("Database schema is outdated. Run deploy/scripts/migrate.sh before starting FlowStock.");
         }

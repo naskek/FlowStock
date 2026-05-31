@@ -270,8 +270,13 @@ internal sealed class CloseDocumentHarness
             ToLocationId = pallet.ToLocationId,
             ToLocationCode = pallet.ToLocationCode,
             Status = pallet.Status,
+            PalletNo = pallet.PalletNo,
+            PalletCount = pallet.PalletCount,
+            PrintedAt = pallet.PrintedAt,
             FilledAt = pallet.FilledAt,
             FilledByDeviceId = pallet.FilledByDeviceId,
+            CancelReason = pallet.CancelReason,
+            CancelledAt = pallet.CancelledAt,
             CreatedAt = pallet.CreatedAt,
             Lines = pallet.Lines.Select(line => new ProductionPalletComponentLine
             {
@@ -2167,8 +2172,21 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.CancelProductionPallets(It.IsAny<IReadOnlyList<long>>()))
             .Returns<IReadOnlyList<long>>(CancelProductionPalletsInHarness);
 
+        _store.Setup(store => store.CancelProductionPalletsForReadyHuBinding(
+                It.IsAny<IReadOnlyList<long>>(),
+                It.IsAny<string>(),
+                It.IsAny<DateTime>()))
+            .Returns<IReadOnlyList<long>, string, DateTime>(CancelProductionPalletsForReadyHuBindingInHarness);
+
         _store.Setup(store => store.RemoveDocLinesForProductionPallets(It.IsAny<IReadOnlyCollection<long>>()))
             .Returns<IReadOnlyCollection<long>>(RemoveDocLinesForProductionPalletsInHarness);
+
+        _store.Setup(store => store.HasUnsafeMarkingForProductionPalletReplacement(
+                It.IsAny<long>(),
+                It.IsAny<long>(),
+                It.IsAny<long>(),
+                It.IsAny<IReadOnlyCollection<long>>()))
+            .Returns<long, long, long, IReadOnlyCollection<long>>(HasUnsafeMarkingForProductionPalletReplacementInHarness);
 
         _store.Setup(store => store.UpdateProductionPalletHu(It.IsAny<long>(), It.IsAny<string>()))
             .Callback<long, string>((palletId, huCode) =>
@@ -4053,6 +4071,83 @@ internal sealed class CloseDocumentHarness
         }
 
         return cancelled;
+    }
+
+    private int CancelProductionPalletsForReadyHuBindingInHarness(
+        IReadOnlyList<long> palletIds,
+        string reason,
+        DateTime cancelledAt)
+    {
+        var cancelled = 0;
+        foreach (var palletId in palletIds)
+        {
+            if (!_productionPallets.TryGetValue(palletId, out var current)
+                || !string.Equals(current.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+                || current.PrintedAt.HasValue
+                || current.FilledAt.HasValue)
+            {
+                continue;
+            }
+
+            _productionPallets[palletId] = new ProductionPallet
+            {
+                Id = current.Id,
+                PrdDocId = current.PrdDocId,
+                DocLineId = current.DocLineId,
+                OrderId = current.OrderId,
+                OrderLineId = current.OrderLineId,
+                ItemId = current.ItemId,
+                ItemName = current.ItemName,
+                HuCode = current.HuCode,
+                PlannedQty = current.PlannedQty,
+                ToLocationId = current.ToLocationId,
+                ToLocationCode = current.ToLocationCode,
+                Status = ProductionPalletStatus.Cancelled,
+                PalletNo = current.PalletNo,
+                PalletCount = current.PalletCount,
+                PrintedAt = current.PrintedAt,
+                FilledAt = current.FilledAt,
+                FilledByDeviceId = current.FilledByDeviceId,
+                CancelReason = string.IsNullOrWhiteSpace(reason) ? null : reason,
+                CancelledAt = cancelledAt,
+                CreatedAt = current.CreatedAt,
+                Lines = current.Lines
+            };
+            cancelled++;
+        }
+
+        return cancelled;
+    }
+
+    private bool HasUnsafeMarkingForProductionPalletReplacementInHarness(
+        long orderId,
+        long orderLineId,
+        long itemId,
+        IReadOnlyCollection<long> docLineIds)
+    {
+        if (_orders.TryGetValue(orderId, out var order)
+            && (order.MarkingStatus == MarkingStatus.Printed
+                || order.MarkingExcelGeneratedAt.HasValue
+                || order.MarkingPrintedAt.HasValue))
+        {
+            return true;
+        }
+
+        if (_markingOrders.Values.Any(order =>
+                (order.OrderId == orderId || order.SourceOrderId == orderId)
+                && (!order.ItemId.HasValue || order.ItemId.Value == itemId)
+                && !string.Equals(order.Status, MarkingOrderStatus.Cancelled, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(order.Status, MarkingOrderStatus.Failed, StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        var docLineSet = (docLineIds ?? Array.Empty<long>()).ToHashSet();
+        return docLineSet.Count > 0
+               && _markingCodes.Values.Any(code =>
+                   code.ReceiptLineId.HasValue
+                   && docLineSet.Contains(code.ReceiptLineId.Value)
+                   && !string.Equals(code.Status, MarkingCodeStatus.Voided, StringComparison.OrdinalIgnoreCase));
     }
 
     private int RemoveDocLinesForProductionPalletsInHarness(IReadOnlyCollection<long> productionPalletIds)

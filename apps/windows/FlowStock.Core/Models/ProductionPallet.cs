@@ -27,6 +27,8 @@ public sealed class ProductionPallet
     public DateTime? PrintedAt { get; init; }
     public DateTime? FilledAt { get; init; }
     public string? FilledByDeviceId { get; init; }
+    public string? CancelReason { get; init; }
+    public DateTime? CancelledAt { get; init; }
     public DateTime CreatedAt { get; init; }
     public IReadOnlyList<ProductionPalletComponentLine> Lines { get; init; } = Array.Empty<ProductionPalletComponentLine>();
     public bool IsMixedPallet => Lines.Count > 1;

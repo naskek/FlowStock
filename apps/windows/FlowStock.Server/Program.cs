@@ -78,6 +78,7 @@ OrderMarkingExportEndpoint.Map(app);
 OrderLinesEndpoint.Map(app);
 OrderHuReservationCandidatesEndpoint.Map(app);
 OrderHuReservationApplyEndpoint.Map(app);
+OrderHuBindingApplyFinalEndpoint.Map(app);
 ProductionNeedCreateOrdersEndpoint.Map(app);
 NewLedgerTransitionEndpoints.Map(app);
 MaintenanceBackfillEndpoints.Map(app);
