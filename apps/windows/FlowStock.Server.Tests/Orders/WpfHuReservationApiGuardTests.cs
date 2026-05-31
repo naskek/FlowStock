@@ -31,12 +31,11 @@ public sealed class WpfHuReservationApiGuardTests
     }
 
     [Fact]
-    public void OrderDetailsWindow_UsesHuBindingFlow()
+    public void OrderDetailsWindow_KeepsLegacyExplicitHuBindingFlow()
     {
         var source = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs");
 
         Assert.Contains("CustomerOrderHuBindingCoordinator", source);
-        Assert.Contains("TryApplyHuReservationsAfterSave", source);
         Assert.Contains("ConfirmAndApplyCustomerWarehouseHuProposal", source);
         Assert.Contains("TryApplyHuReservationLines", source);
         Assert.Contains("HuReservationPickerWindow", source);
@@ -46,6 +45,72 @@ public sealed class WpfHuReservationApiGuardTests
         Assert.DoesNotContain("reserve-produced-hu", source, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("/api/orders/redistribute", source, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("ApplyCustomerOrderSaveFollowUp", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OrderDetailsWindow_SaveFlow_DoesNotAutoApplyHuReservations()
+    {
+        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs");
+
+        var saveBlockStart = source.IndexOf("private bool TryUpdateOrderViaServer", StringComparison.Ordinal);
+        Assert.True(saveBlockStart >= 0);
+        var saveBlockEnd = source.IndexOf("private bool TryApplyHuReservationsAfterSave", saveBlockStart, StringComparison.Ordinal);
+        Assert.True(saveBlockEnd > saveBlockStart);
+        var saveBlock = source[saveBlockStart..saveBlockEnd];
+
+        Assert.DoesNotContain("TryApplyHuReservationsAfterSave", saveBlock, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryApplyHuReservationLines", saveBlock, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OrderDetailsWindow_PlanPalletsDoesNotAutoApplyWarehouseHuProposal()
+    {
+        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs");
+
+        var methodStart = source.IndexOf("private async void PlanPallets_Click", StringComparison.Ordinal);
+        Assert.True(methodStart >= 0);
+        var methodEnd = source.IndexOf("private async void PrintPalletLabels_Click", methodStart, StringComparison.Ordinal);
+        Assert.True(methodEnd > methodStart);
+        var method = source[methodStart..methodEnd];
+
+        Assert.DoesNotContain("ConfirmAndApplyCustomerWarehouseHuProposal", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryApplyHuReservationLines", method, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OrderService_CreateAndUpdateCustomerFlows_DoNotAutoBindWarehouseHu()
+    {
+        var source = ReadRepoFile("apps", "windows", "FlowStock.Core", "Services", "OrderService.cs");
+
+        var createStart = source.IndexOf("private long CreateOrderCore", StringComparison.Ordinal);
+        Assert.True(createStart >= 0);
+        var createEnd = source.IndexOf("public void UpdateOrder", createStart, StringComparison.Ordinal);
+        Assert.True(createEnd > createStart);
+        var createMethod = source[createStart..createEnd];
+
+        var updateStart = createEnd;
+        var updateEnd = source.IndexOf("private static void ValidateIncomingLineQuantities", updateStart, StringComparison.Ordinal);
+        Assert.True(updateEnd > updateStart);
+        var updateMethod = source[updateStart..updateEnd];
+
+        Assert.DoesNotContain("TryBindBestWarehouseHuForCustomerOrder", createMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryBindBestWarehouseHuForCustomerOrder", updateMethod, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OrderService_CustomerRefreshRebuild_DoesNotAllocateFreeHuReservations()
+    {
+        var source = ReadRepoFile("apps", "windows", "FlowStock.Core", "Services", "OrderService.cs");
+
+        var rebuildStart = source.IndexOf("private void RebuildCustomerOrderReceiptPlan", StringComparison.Ordinal);
+        Assert.True(rebuildStart >= 0);
+        var rebuildEnd = source.IndexOf("private static void ExhaustHuSource", rebuildStart, StringComparison.Ordinal);
+        Assert.True(rebuildEnd > rebuildStart);
+        var rebuildMethod = source[rebuildStart..rebuildEnd];
+
+        Assert.DoesNotContain("BuildAvailableReservationSources", rebuildMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("ExhaustHuSource", rebuildMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("new OrderReceiptPlanLine", rebuildMethod, StringComparison.Ordinal);
     }
 
     [Fact]

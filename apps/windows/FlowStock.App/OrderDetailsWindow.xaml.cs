@@ -364,11 +364,6 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        if (!ConfirmAndApplyCustomerWarehouseHuProposal())
-        {
-            return;
-        }
-
         PlanPalletsButton.IsEnabled = false;
         PrintPalletLabelsButton.IsEnabled = false;
         try
@@ -715,10 +710,6 @@ public partial class OrderDetailsWindow : Window
         }
 
         _orderId = result.Response.OrderId;
-        if (type == OrderType.Customer && !TryApplyHuReservationsAfterSave())
-        {
-            return false;
-        }
 
         ReloadCanonicalOrderStateAfterPersist(_selectedLine?.Id);
 

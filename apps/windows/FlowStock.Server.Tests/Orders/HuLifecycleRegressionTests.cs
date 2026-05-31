@@ -212,8 +212,8 @@ public sealed class HuLifecycleRegressionTests
         FillHus(pallets, InternalOrderId, openInternalPrdId, remainingInternalHus);
 
         var customerReservedPlan = harness.GetOrderReceiptPlanLines(CustomerOrderId);
-        Assert.Equal(4, customerReservedPlan.Count);
-        Assert.Equal(2400, customerReservedPlan.Sum(line => line.QtyPlanned));
+        Assert.Equal(2, customerReservedPlan.Count);
+        Assert.Equal(1200, customerReservedPlan.Sum(line => line.QtyPlanned));
         Assert.DoesNotContain(customerReservedPlan, line => remainingInternalHus.Contains(line.ToHu, StringComparer.OrdinalIgnoreCase));
         foreach (var huCode in remainingInternalHus)
         {
@@ -226,9 +226,9 @@ public sealed class HuLifecycleRegressionTests
 
         var stock = harness.Store.GetStock(null).Single(row => row.ItemId == ItemId);
         Assert.Equal(4800, stock.Qty);
-        Assert.Equal(2400, stock.ReservedCustomerOrderQty);
-        Assert.Equal(2400, stock.Qty - stock.ReservedCustomerOrderQty);
-        AssertProductionNeed(harness, toCloseOrdersQty: 0, openInternalOrderQty: 0, qtyToCreate: 1200);
+        Assert.Equal(1200, stock.ReservedCustomerOrderQty);
+        Assert.Equal(3600, stock.Qty - stock.ReservedCustomerOrderQty);
+        AssertProductionNeed(harness, toCloseOrdersQty: 0, openInternalOrderQty: 0, qtyToCreate: 0);
         AssertNoDuplicateProductionPalletHus(harness, InternalOrderId, CustomerOrderId);
     }
 

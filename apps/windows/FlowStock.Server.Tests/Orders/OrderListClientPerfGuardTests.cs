@@ -41,7 +41,6 @@ public sealed class OrderListClientPerfGuardTests
         Assert.DoesNotContain("reserve-produced-hu", combined, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("/redistribute", combined, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("ApplyCustomerOrderSaveFollowUp", combined, StringComparison.Ordinal);
-        Assert.Contains("TryApplyHuReservationsAfterSave", orderDetails, StringComparison.Ordinal);
         Assert.Contains("TryGetHuReservationCandidates", readApi, StringComparison.Ordinal);
         Assert.Contains("TryApplyHuReservations", readApi, StringComparison.Ordinal);
     }

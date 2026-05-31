@@ -7,7 +7,7 @@ namespace FlowStock.Server.Tests.Orders;
 public sealed class CustomerMixedHuReservationApplyTests
 {
     [Fact]
-    public void CreateCustomerOrder_AutoBindsFreeHu_AndBecomesAcceptedAfterMixedProductionFill()
+    public void ExplicitWarehouseHuApply_AndMixedProductionFill_MakesCustomerOrderAccepted()
     {
         const long itemTypeId = 1;
         const long itemId = 6;
@@ -48,6 +48,20 @@ public sealed class CustomerMixedHuReservationApplyTests
             OrderType.Customer,
             bindReservedStockForCustomer: false);
         var customerLine = Assert.Single(harness.Store.GetOrderLines(customerOrderId));
+
+        Assert.Empty(harness.Store.GetOrderReceiptPlanLines(customerOrderId));
+
+        new OrderHuReservationApplyService(harness.Store).Apply(customerOrderId, new OrderHuReservationApplyRequest
+        {
+            Lines =
+            [
+                new OrderHuReservationApplyLineRequest
+                {
+                    OrderLineId = customerLine.Id,
+                    SelectedHuCodes = [warehouseHu]
+                }
+            ]
+        });
 
         var reservation = Assert.Single(harness.Store.GetOrderReceiptPlanLines(customerOrderId));
         Assert.Equal(customerLine.Id, reservation.OrderLineId);

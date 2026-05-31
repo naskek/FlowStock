@@ -27,7 +27,7 @@ public sealed class CustomerFilledProductionPalletReservationRegressionTests
     private const string FreeHu = "HU-FREE-0001";
 
     [Fact]
-    public void FilledCustomerProductionPallet_IsExcludedFromOtherCustomerCandidates_AndAutoBindKeepsFreeHuBehavior()
+    public void FilledCustomerProductionPallet_IsExcludedFromOtherCustomerCandidates_AndExplicitApplyKeepsFreeHuBehavior()
     {
         var scenario = CreateScenario(withFreeHu: true);
         var optimized = (IOptimizedHuReservationCandidatesStore)scenario.Harness.Store;
@@ -37,11 +37,29 @@ public sealed class CustomerFilledProductionPalletReservationRegressionTests
         Assert.DoesNotContain(candidateRows, row => string.Equals(row.HuCode, OwnedHu, StringComparison.OrdinalIgnoreCase));
         var freeCandidate = Assert.Single(candidateRows.Where(row =>
             string.Equals(row.HuCode, FreeHu, StringComparison.OrdinalIgnoreCase)));
-        Assert.Equal(scenario.CustomerBId, freeCandidate.ReservedByOrderId);
+        Assert.Null(freeCandidate.ReservedByOrderId);
 
         var createdPlan = scenario.Harness.GetOrderReceiptPlanLines(scenario.CustomerBId);
         Assert.DoesNotContain(createdPlan, line => string.Equals(line.ToHu, OwnedHu, StringComparison.OrdinalIgnoreCase));
-        Assert.Contains(createdPlan, line => string.Equals(line.ToHu, FreeHu, StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(createdPlan, line => string.Equals(line.ToHu, FreeHu, StringComparison.OrdinalIgnoreCase));
+
+        scenario.ApplyService.Apply(
+            scenario.CustomerBId,
+            new OrderHuReservationApplyRequest
+            {
+                Lines =
+                [
+                    new OrderHuReservationApplyLineRequest
+                    {
+                        OrderLineId = scenario.CustomerBLineId,
+                        SelectedHuCodes = [FreeHu]
+                    }
+                ]
+            });
+
+        var appliedPlan = scenario.Harness.GetOrderReceiptPlanLines(scenario.CustomerBId);
+        Assert.DoesNotContain(appliedPlan, line => string.Equals(line.ToHu, OwnedHu, StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(appliedPlan, line => string.Equals(line.ToHu, FreeHu, StringComparison.OrdinalIgnoreCase));
 
         scenario.OrderService.UpdateOrder(
             scenario.CustomerBId,

@@ -96,6 +96,7 @@ public sealed class ProductionNeedPostgresRegressionTests
             OrderId = orderId,
             OrderRef = orderRef
         });
+        var huCode = store.CreateProductionPalletHuCode("PN-OWNER-AWARE-REGRESSION");
         store.AddDocLine(new DocLine
         {
             DocId = docId,
@@ -103,7 +104,8 @@ public sealed class ProductionNeedPostgresRegressionTests
             ProductionPurpose = ProductionLinePurpose.CustomerOrder,
             ItemId = itemId,
             Qty = stockQty,
-            ToLocationId = locationId
+            ToLocationId = locationId,
+            ToHu = huCode
         });
 
         var pallet = Assert.Single(store.PlanProductionPallets(docId, DateTime.UtcNow));
