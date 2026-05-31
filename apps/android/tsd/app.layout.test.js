@@ -6,6 +6,7 @@ const vm = require("vm");
 const appJs = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
 const stylesCss = fs.readFileSync(path.join(__dirname, "styles.css"), "utf8");
 const indexHtml = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
+const serviceWorkerJs = fs.readFileSync(path.join(__dirname, "service-worker.js"), "utf8");
 
 function extractFunctionBody(source, name) {
   const marker = `function ${name}(`;
@@ -49,16 +50,90 @@ assert(
   "settings version should use centered muted class"
 );
 
+const renderOperationsMenuBody = extractFunctionBody(appJs, "renderOperationsMenu");
+const buildOperationsMenuBody = extractFunctionBody(appJs, "buildOperationsMenuButtonsHtml");
+assert(
+  renderOperationsMenuBody.includes("operations-menu-grid--2x6") &&
+    renderOperationsMenuBody.includes("operations-screen--centered"),
+  "operations screen should render centered 2x6 tile grid"
+);
+const buildMenuTileBody = extractFunctionBody(appJs, "buildMenuTile");
+assert(
+  buildOperationsMenuBody.includes("buildMenuTile(") &&
+    buildMenuTileBody.includes("home-menu-tile") &&
+    !buildOperationsMenuBody.includes("menu-btn") &&
+    !buildMenuTileBody.includes("<svg"),
+  "operations menu should use centered text tiles without inline svg"
+);
+assert(
+  buildOperationsMenuBody.includes('data-route="filling"') &&
+    buildOperationsMenuBody.includes('data-route="outbound"') &&
+    buildOperationsMenuBody.includes('data-op="'),
+  "operations tiles should keep existing routes and operation handlers"
+);
+
 const renderHomeBody = extractFunctionBody(appJs, "renderHome");
+const buildHomeMenuBody = extractFunctionBody(appJs, "buildHomeMenuButtonsHtml");
 assert(
   renderHomeBody.includes("home-screen--centered") &&
     renderHomeBody.includes("home-menu-wrap") &&
-    renderHomeBody.includes("menu-grid"),
-  "home screen should render centered menu layout"
+    renderHomeBody.includes("home-menu-grid"),
+  "home screen should render centered tile menu layout"
 );
 assert(
   !renderHomeBody.includes("Позиции ниже минимума"),
   "home screen should not render below-minimum card"
+);
+const buildHomeMenuTileBody = extractFunctionBody(appJs, "buildHomeMenuTile");
+assert(
+  buildHomeMenuBody.includes('"operations"') &&
+    buildHomeMenuBody.includes('"items"') &&
+    buildHomeMenuBody.includes('"orders"') &&
+    buildHomeMenuBody.includes('"settings"') &&
+    buildHomeMenuTileBody.includes('data-route="') &&
+    buildMenuTileBody.includes("home-menu-tile"),
+  "home tiles should use existing routes for operations, catalog, orders, and settings"
+);
+assert(
+  buildHomeMenuBody.includes("Операции") &&
+    buildHomeMenuBody.includes("Каталог") &&
+    buildHomeMenuBody.includes("Заказы") &&
+    buildHomeMenuBody.includes("Информация") &&
+    buildHomeMenuBody.includes("Синхронизация, статус и полезные сведения"),
+  "home should render four tile labels with information subtitle"
+);
+assert(
+  buildHomeMenuTileBody.includes('class="home-menu-icon"') &&
+    buildHomeMenuTileBody.includes("home-menu-icon-bubble") &&
+    buildHomeMenuBody.includes("img/home/operations.png") &&
+    buildHomeMenuBody.includes("img/home/catalogue.png") &&
+    buildHomeMenuBody.includes("img/home/orders.png") &&
+    buildHomeMenuBody.includes("img/home/info.png") &&
+    !buildHomeMenuTileBody.includes("<svg") &&
+    !buildHomeMenuBody.includes("<svg") &&
+    !buildHomeMenuBody.includes("menu-btn"),
+  "home should render png icons in colored bubbles without inline svg"
+);
+assert(
+  buildMenuTileBody.includes("home-menu-tile__content") &&
+    !buildMenuTileBody.includes("<svg"),
+  "shared menu tile helper should stay text-only for operations screen"
+);
+assert(
+  stylesCss.includes(".home-menu-icon-bubble") &&
+    stylesCss.includes(".home-menu-icon") &&
+    stylesCss.includes("--home-bubble-operations-bg") &&
+    stylesCss.includes(".home-menu-tile__content") &&
+    stylesCss.includes("align-items: center") &&
+    stylesCss.includes("text-align: center"),
+  "styles should center tile content and style icon bubbles"
+);
+assert(
+  serviceWorkerJs.includes('"./img/home/operations.png"') &&
+    serviceWorkerJs.includes('"./img/home/catalogue.png"') &&
+    serviceWorkerJs.includes('"./img/home/orders.png"') &&
+    serviceWorkerJs.includes('"./img/home/info.png"'),
+  "service worker should cache home menu png icons for offline use"
 );
 
 const fillOverlayBody = extractFunctionBody(appJs, "openFillingPreviewOverlay");
@@ -85,8 +160,12 @@ assert(
 );
 assert(
   stylesCss.includes(".home-screen--centered") &&
-    stylesCss.includes(".home-menu-wrap"),
-  "styles should define centered home menu layout"
+    stylesCss.includes(".home-menu-wrap") &&
+    stylesCss.includes(".home-menu-grid") &&
+    stylesCss.includes(".home-menu-tile__content") &&
+    stylesCss.includes(".operations-menu-grid--2x6") &&
+    stylesCss.includes(".operations-screen--centered"),
+  "styles should define centered home and operations tile menu layout"
 );
 assert(
   stylesCss.includes("html.tsd-theme-dark") && stylesCss.includes("--tsd-bg-start"),

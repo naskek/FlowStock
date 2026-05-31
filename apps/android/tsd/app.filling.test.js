@@ -41,8 +41,11 @@ assert(
 );
 
 assert(
-  appJs.includes('<button class="btn menu-btn" data-route="filling">Наполнение</button>'),
-  "filling button should use the common menu button design"
+  appJs.includes('data-route="filling"') &&
+    appJs.includes("Наполнение") &&
+    appJs.includes("home-menu-tile") &&
+    !appJs.includes('<button class="btn menu-btn" data-route="filling">Наполнение</button>'),
+  "filling entry should use centered operations tile instead of legacy menu button"
 );
 assert(
   appJs.includes('if (op === "PRODUCTION_RECEIPT")') &&
@@ -495,7 +498,8 @@ assert(
   "outbound scan wire should normalize order id from order_id when orderId is absent"
 );
 assert(
-  appJs.includes('<button class="btn menu-btn" data-route="outbound">Отгрузка</button>') &&
+  appJs.includes('data-route="outbound"') &&
+    appJs.includes("Отгрузка") &&
     appJs.includes("TsdStorage.apiGetOutboundPickingOrders()") &&
     appJs.includes("renderOutboundPickingList(orders || [])") &&
     appJs.includes('navigate("/outbound")'),
@@ -550,10 +554,15 @@ assert(
     !serviceWorkerJs.includes(".then(() => self.skipWaiting())"),
   "service worker should use versioned cache and activate only after SKIP_WAITING"
 );
-assert(
-  serviceWorkerJs.includes('"./app.js"') && serviceWorkerJs.includes('"./sw-update.js"'),
-  "service worker should cache shell assets including sw-update.js"
-);
+  assert(
+    serviceWorkerJs.includes('"./app.js"') && serviceWorkerJs.includes('"./sw-update.js"'),
+    "service worker should cache shell assets including sw-update.js"
+  );
+  assert(
+    serviceWorkerJs.includes('"./img/home/operations.png"') &&
+      serviceWorkerJs.includes('"./img/home/info.png"'),
+    "service worker should cache home menu png icons"
+  );
 assert(
   swUpdateJs.includes("Доступна новая версия приложения") &&
     swUpdateJs.includes("SKIP_WAITING") &&

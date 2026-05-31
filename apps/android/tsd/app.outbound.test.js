@@ -170,7 +170,13 @@ assert(
 );
 const homeHtml = hooks.renderHome();
 assert.doesNotMatch(homeHtml, /Позиции ниже минимума|homeLowStockWrap/);
-assert.match(homeHtml, /menu-grid/, "home screen should still render main menu");
+assert.match(homeHtml, /home-menu-grid/, "home screen should render tile menu grid");
+assert.match(homeHtml, /home-menu-tile/, "home screen should render menu tiles");
+assert.match(homeHtml, /Операции/);
+assert.match(homeHtml, /Каталог/);
+assert.match(homeHtml, /Заказы/);
+assert.match(homeHtml, /Информация/);
+assert.doesNotMatch(homeHtml, /menu-btn/);
 assert.match(homeHtml, /home-screen--centered/, "home screen should center main menu");
 assert.match(homeHtml, /home-menu-wrap/, "home screen should wrap menu for centering");
 assert(

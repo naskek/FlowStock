@@ -12,7 +12,11 @@ const ASSETS = [
   "./app-version.js",
   "./manifest.json",
   "./icons/icon-192.png",
-  "./icons/icon-512.png"
+  "./icons/icon-512.png",
+  "./img/home/operations.png",
+  "./img/home/catalogue.png",
+  "./img/home/orders.png",
+  "./img/home/info.png"
 ];
 
 self.addEventListener("install", (event) => {

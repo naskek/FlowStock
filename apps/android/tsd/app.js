@@ -2189,27 +2189,79 @@
     );
   }
 
+  function buildMenuTile(actionAttr, title, subtitle) {
+    return (
+      '<button class="home-menu-tile" type="button" ' +
+      actionAttr +
+      ">" +
+      '  <span class="home-menu-tile__content">' +
+      '    <span class="home-menu-tile__title">' +
+      escapeHtml(title) +
+      "</span>" +
+      '    <span class="home-menu-tile__subtitle">' +
+      escapeHtml(subtitle) +
+      "</span>" +
+      "  </span>" +
+      "</button>"
+    );
+  }
+
+  function buildHomeMenuTile(route, title, subtitle, iconBubble, iconSrc) {
+    return (
+      '<button class="home-menu-tile" type="button" data-route="' +
+      escapeHtml(route) +
+      '">' +
+      '  <span class="home-menu-tile__content">' +
+      '    <span class="home-menu-icon-bubble home-menu-icon-bubble--' +
+      escapeHtml(iconBubble) +
+      '">' +
+      '      <img class="home-menu-icon" src="' +
+      escapeHtml(iconSrc) +
+      '" alt="" aria-hidden="true">' +
+      "    </span>" +
+      '    <span class="home-menu-tile__title">' +
+      escapeHtml(title) +
+      "</span>" +
+      '    <span class="home-menu-tile__subtitle">' +
+      escapeHtml(subtitle) +
+      "</span>" +
+      "  </span>" +
+      "</button>"
+    );
+  }
+
   function buildHomeMenuButtonsHtml() {
-    var buttons = [];
-    if (hasOperationsMenu()) {
-      buttons.push('<button class="btn menu-btn" data-route="operations">Операции</button>');
-    }
-    if (isClientBlockEnabled("tsd_stock")) {
-      buttons.push('<button class="btn menu-btn" data-route="stock">Состояние склада</button>');
-    }
-    if (isClientBlockEnabled("tsd_catalog")) {
-      buttons.push('<button class="btn menu-btn" data-route="items">Каталог</button>');
-    }
-    if (isClientBlockEnabled("tsd_orders")) {
-      buttons.push('<button class="btn menu-btn" data-route="orders">Заказы</button>');
-    }
-    if (isClientBlockEnabled("tsd_warehouse_tasks")) {
-      buttons.push('<button class="btn menu-btn" data-route="tasks">Задания</button>');
-    }
-    if (!buttons.length) {
-      return '<div class="empty-state">Все блоки ТСД сейчас временно отключены.</div>';
-    }
-    return buttons.join("");
+    var tiles = [
+      buildHomeMenuTile(
+        "operations",
+        "Операции",
+        "Приём, отгрузка, перемещения",
+        "operations",
+        "img/home/operations.png"
+      ),
+      buildHomeMenuTile(
+        "items",
+        "Каталог",
+        "Товары и номенклатура",
+        "catalogue",
+        "img/home/catalogue.png"
+      ),
+      buildHomeMenuTile(
+        "orders",
+        "Заказы",
+        "Заказы и документы",
+        "orders",
+        "img/home/orders.png"
+      ),
+      buildHomeMenuTile(
+        "settings",
+        "Информация",
+        "Синхронизация, статус и полезные сведения",
+        "info",
+        "img/home/info.png"
+      ),
+    ];
+    return tiles.join("");
   }
 
   var showTsdBelowMinimumEntry = false;
@@ -2352,9 +2404,11 @@
   }
 
   function buildOperationsMenuButtonsHtml() {
-    var buttons = [];
+    var tiles = [];
     if (isOperationEnabled("PRODUCTION_RECEIPT")) {
-      buttons.push('<button class="btn menu-btn" data-route="filling">Наполнение</button>');
+      tiles.push(
+        buildMenuTile('data-route="filling"', "Наполнение", "Паллеты производства")
+      );
     }
     Object.keys(OPS).forEach(function (op) {
       if (op === "PRODUCTION_RECEIPT") {
@@ -2364,21 +2418,31 @@
         return;
       }
       if (op === "OUTBOUND") {
-        buttons.push('<button class="btn menu-btn" data-route="outbound">Отгрузка</button>');
+        tiles.push(buildMenuTile('data-route="outbound"', "Отгрузка", "Отгрузка заказов"));
         return;
       }
-      buttons.push(
-        '<button class="btn menu-btn" data-op="' +
-          escapeHtml(op) +
-          '">' +
-          escapeHtml(OPS[op].label) +
-          "</button>"
+      tiles.push(
+        buildMenuTile(
+          'data-op="' + escapeHtml(op) + '"',
+          OPS[op].label,
+          getOperationsMenuSubtitle(op)
+        )
       );
     });
-    if (!buttons.length) {
+    if (!tiles.length) {
       return '<div class="empty-state">Все операции сейчас временно отключены.</div>';
     }
-    return buttons.join("");
+    return tiles.join("");
+  }
+
+  function getOperationsMenuSubtitle(op) {
+    var subtitles = {
+      INBOUND: "Приход на склад",
+      MOVE: "Между локациями",
+      WRITE_OFF: "Списание товара",
+      INVENTORY: "Пересчёт остатков",
+    };
+    return subtitles[op] || "";
   }
 
   function renderHome() {
@@ -2388,7 +2452,7 @@
     return (
       '<section class="screen home-screen home-screen--centered">' +
       '  <div class="home-menu-wrap">' +
-      '    <div class="menu-grid">' +
+      '    <div class="home-menu-grid">' +
       buildHomeMenuButtonsHtml() +
       "    </div>" +
       "  </div>" +
@@ -2594,10 +2658,9 @@
 
   function renderOperationsMenu() {
     return (
-      '<section class="screen">' +
-      '  <div class="screen-card">' +
-      '    <div class="section-title">Операции</div>' +
-      '    <div class="menu-grid">' +
+      '<section class="screen operations-screen operations-screen--centered">' +
+      '  <div class="operations-menu-wrap">' +
+      '    <div class="operations-menu-grid operations-menu-grid--2x6">' +
       buildOperationsMenuButtonsHtml() +
       "    </div>" +
       "  </div>" +
