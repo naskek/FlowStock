@@ -239,7 +239,7 @@ public partial class IncomingRequestsWindow : Window
 
         if (row.Kind == IncomingRequestRowKind.ReadyHu)
         {
-            ShowReadyHuBindingInfo(row);
+            OpenGlobalReadyHuBinding(row.ReadyHuBinding);
             return;
         }
 
@@ -256,7 +256,7 @@ public partial class IncomingRequestsWindow : Window
     {
         if (RequestsGrid.SelectedItem is IncomingRequestRow { Kind: IncomingRequestRowKind.ReadyHu } readyHuRow)
         {
-            ShowReadyHuBindingInfo(readyHuRow);
+            OpenGlobalReadyHuBinding(readyHuRow.ReadyHuBinding);
             return;
         }
 
@@ -275,16 +275,17 @@ public partial class IncomingRequestsWindow : Window
         window.ShowDialog();
     }
 
-    private static void ShowReadyHuBindingInfo(IncomingRequestRow row)
+    private void OpenGlobalReadyHuBinding(WpfReadyHuBindingReadModel? readyHuBinding)
     {
-        var preview = string.IsNullOrWhiteSpace(row.DetailsPreview)
-            ? string.Empty
-            : Environment.NewLine + Environment.NewLine + row.DetailsPreview;
-        MessageBox.Show(
-            "Глобальная привязка HU будет добавлена в Phase 4C. Сейчас используйте кнопку \"Привязка HU\" в карточке заказа." + preview,
-            "Готовые HU",
-            MessageBoxButton.OK,
-            MessageBoxImage.Information);
+        var window = new GlobalReadyHuBindingWindow(_services, readyHuBinding)
+        {
+            Owner = this
+        };
+        if (window.ShowDialog() == true)
+        {
+            LoadRequests();
+            _onChanged?.Invoke();
+        }
     }
 
     private void ShowResolvedCheck_Changed(object sender, RoutedEventArgs e)

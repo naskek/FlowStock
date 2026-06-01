@@ -81,7 +81,7 @@ public sealed class WpfHuReservationApiGuardTests
     }
 
     [Fact]
-    public void IncomingRequestsWindow_ExposesReadyHuFilterAndReadOnlyComputedRow()
+    public void IncomingRequestsWindow_ExposesReadyHuFilterAndOpensGlobalWindow()
     {
         var xaml = ReadRepoFile("apps", "windows", "FlowStock.App", "IncomingRequestsWindow.xaml");
         var source = ReadRepoFile("apps", "windows", "FlowStock.App", "IncomingRequestsWindow.xaml.cs");
@@ -94,8 +94,8 @@ public sealed class WpfHuReservationApiGuardTests
         Assert.Contains("CanApprove = false", builder);
         Assert.Contains("CanReject = false", builder);
         Assert.Contains("CanOpenDetails = true", builder);
-        Assert.Contains("Глобальная привязка HU будет добавлена в Phase 4C", source);
-        Assert.DoesNotContain("GlobalReadyHuBindingWindow", source, StringComparison.Ordinal);
+        Assert.Contains("OpenGlobalReadyHuBinding", source);
+        Assert.Contains("new GlobalReadyHuBindingWindow(_services, readyHuBinding)", source);
         Assert.DoesNotContain("new ReadyHuBindingWindow", source, StringComparison.Ordinal);
         Assert.DoesNotContain("TryApplyFinalHuBindings", source, StringComparison.Ordinal);
         Assert.DoesNotContain("TryApplyHuReservations", source, StringComparison.Ordinal);
@@ -103,14 +103,27 @@ public sealed class WpfHuReservationApiGuardTests
     }
 
     [Fact]
-    public void Phase4B_DoesNotIntroduceGlobalReadyHuBindingWindow()
+    public void GlobalReadyHuBindingWindow_ExistsAndUsesApplyFinalOnly()
     {
-        var appDir = FindRepoFile("apps", "windows", "FlowStock.App", "FlowStock.App.csproj").Directory!;
-        var appFiles = appDir.EnumerateFiles("*", SearchOption.AllDirectories)
-            .Where(file => file.Extension is ".cs" or ".xaml")
-            .Select(file => File.ReadAllText(file.FullName));
+        var xaml = ReadRepoFile("apps", "windows", "FlowStock.App", "GlobalReadyHuBindingWindow.xaml");
+        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "GlobalReadyHuBindingWindow.xaml.cs");
+        var session = ReadRepoFile("apps", "windows", "FlowStock.App", "GlobalReadyHuBindingSession.cs");
 
-        Assert.DoesNotContain(appFiles, text => text.Contains("GlobalReadyHuBindingWindow", StringComparison.Ordinal));
+        Assert.Contains("Глобальная привязка готовых HU", xaml);
+        Assert.Contains("Авто", xaml);
+        Assert.Contains("Обновить", xaml);
+        Assert.Contains("Сохранить", xaml);
+        Assert.Contains("Закрыть", xaml);
+        Assert.Contains("TryApplyFinalHuBindings", source);
+        Assert.Contains("BuildApplyFinalByOrder", session);
+        Assert.Contains("ExpectedBoundHuCodes", session);
+        Assert.Contains("FinalHuCodes", session);
+        Assert.Contains("MarkOrderApplySuccess", source);
+        Assert.Contains("Обновите список перед продолжением", source);
+        Assert.DoesNotContain("TryApplyHuReservations", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryApplyHuReservations", session, StringComparison.Ordinal);
+        Assert.DoesNotContain("/hu-reservations/apply", source, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("/hu-reservations/apply", session, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
