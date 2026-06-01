@@ -1136,7 +1136,11 @@ public partial class MainWindow : Window
             foreach (var hu in row.HuRows.OrderBy(current => current.HuCode, StringComparer.OrdinalIgnoreCase))
             {
                 builder.Append('|').Append(hu.HuCode)
-                    .Append(':').Append(hu.Qty.ToString("F3", CultureInfo.InvariantCulture));
+                    .Append(':').Append(hu.Qty.ToString("F3", CultureInfo.InvariantCulture))
+                    .Append(':').Append(hu.StockStatus ?? string.Empty)
+                    .Append(':').Append(hu.ReservedCustomerOrderId?.ToString(CultureInfo.InvariantCulture) ?? string.Empty)
+                    .Append(':').Append(hu.ReservedCustomerOrderRef ?? string.Empty)
+                    .Append(':').Append(hu.ReservedCustomerName ?? string.Empty);
             }
 
             foreach (var prd in row.ProductionReceipts.OrderBy(current => current.HuCode, StringComparer.OrdinalIgnoreCase))

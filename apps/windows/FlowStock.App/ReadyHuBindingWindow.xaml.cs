@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Windows.Controls;
 using FlowStock.Core.Models;
 
 namespace FlowStock.App;
@@ -99,13 +100,23 @@ public partial class ReadyHuBindingWindow : Window
             return;
         }
 
+        CaptureTreeState();
+        var movedHuCode = _selectedCandidate?.HuCode;
+        var targetLineId = _selectedLine?.OrderLineId;
+
         if (!_session.StageBind(_selectedCandidate, _selectedLine, out var message))
         {
             MessageBox.Show(message, "Привязка HU", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        _selectedCandidate = null;
+        _session.ExpandOrderRoot();
+        if (targetLineId.HasValue)
+        {
+            _session.ExpandOrderLine(targetLineId.Value);
+        }
+
+        RestoreTreeState(selectCandidateHuCode: null, selectLineId: targetLineId, selectHuCode: movedHuCode);
         StatusText.Text = "Изменения подготовлены. База будет изменена после сохранения.";
     }
 
@@ -116,13 +127,22 @@ public partial class ReadyHuBindingWindow : Window
             return;
         }
 
+        CaptureTreeState();
+        var movedHuCode = _selectedHu?.HuCode;
+        var itemId = _selectedHu?.Line.ItemId;
+
         if (!_session.StageDetach(_selectedHu, out var message))
         {
             MessageBox.Show(message, "Привязка HU", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        _selectedHu = null;
+        if (itemId.HasValue)
+        {
+            _session.ExpandCandidateGroup(itemId.Value);
+        }
+
+        RestoreTreeState(selectCandidateHuCode: movedHuCode, selectLineId: _selectedLine?.OrderLineId, selectHuCode: null);
         StatusText.Text = "Изменения подготовлены. База будет изменена после сохранения.";
     }
 
@@ -133,9 +153,154 @@ public partial class ReadyHuBindingWindow : Window
             return;
         }
 
+        CaptureTreeState();
         _session.StageAuto();
+        RestoreTreeState();
         StatusText.Text = "Авто-подбор подготовлен. База будет изменена после сохранения.";
     }
+
+    private void CaptureTreeState()
+    {
+        if (_session == null)
+        {
+            return;
+        }
+
+        _session.CaptureUiState(
+            CollectExpandedKeys(CandidatesTree),
+            CollectExpandedKeys(OrderTree),
+            _selectedCandidate?.HuCode,
+            _selectedLine?.OrderLineId,
+            _selectedHu?.HuCode);
+    }
+
+    private void RestoreTreeState(
+        string? selectCandidateHuCode = null,
+        long? selectLineId = null,
+        string? selectHuCode = null)
+    {
+        if (_session == null)
+        {
+            return;
+        }
+
+        CandidatesTree.UpdateLayout();
+        OrderTree.UpdateLayout();
+        RestoreExpandedKeys(CandidatesTree, _session.ExpandedCandidateGroupKeys);
+        RestoreExpandedKeys(OrderTree, _session.ExpandedOrderGroupKeys);
+
+        _selectedCandidate = _session.FindCandidate(selectCandidateHuCode ?? _session.SelectedCandidateHuCode);
+        _selectedLine = _session.FindLine(selectLineId ?? _session.SelectedLineId) ?? _selectedLine;
+        _selectedHu = _session.FindFutureHu(selectHuCode ?? _session.SelectedHuCode);
+
+        SelectTreeItem(CandidatesTree, _selectedCandidate);
+        SelectTreeItem(OrderTree, _selectedHu ?? (object?)_selectedLine);
+    }
+
+    private static IReadOnlyList<string> CollectExpandedKeys(ItemsControl root)
+    {
+        var keys = new List<string>();
+        CollectExpandedKeys(root, keys);
+        return keys;
+    }
+
+    private static void CollectExpandedKeys(ItemsControl parent, ICollection<string> keys)
+    {
+        foreach (var item in parent.Items)
+        {
+            if (parent.ItemContainerGenerator.ContainerFromItem(item) is not TreeViewItem container)
+            {
+                continue;
+            }
+
+            var key = ResolveExpandKey(item);
+            if (container.IsExpanded && !string.IsNullOrWhiteSpace(key))
+            {
+                keys.Add(key);
+            }
+
+            CollectExpandedKeys(container, keys);
+        }
+    }
+
+    private static void RestoreExpandedKeys(ItemsControl root, IReadOnlySet<string> keys)
+    {
+        foreach (var item in root.Items)
+        {
+            if (root.ItemContainerGenerator.ContainerFromItem(item) is not TreeViewItem container)
+            {
+                continue;
+            }
+
+            var key = ResolveExpandKey(item);
+            if (!string.IsNullOrWhiteSpace(key) && keys.Contains(key))
+            {
+                container.IsExpanded = true;
+                container.UpdateLayout();
+            }
+
+            RestoreExpandedKeys(container, keys);
+        }
+    }
+
+    private static bool SelectTreeItem(ItemsControl root, object? target)
+    {
+        if (target == null)
+        {
+            return false;
+        }
+
+        foreach (var item in root.Items)
+        {
+            if (root.ItemContainerGenerator.ContainerFromItem(item) is not TreeViewItem container)
+            {
+                continue;
+            }
+
+            if (ReferenceEquals(item, target))
+            {
+                container.IsSelected = true;
+                container.BringIntoView();
+                return true;
+            }
+
+            container.IsExpanded = container.IsExpanded || ContainsTarget(container, target);
+            container.UpdateLayout();
+            if (SelectTreeItem(container, target))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool ContainsTarget(ItemsControl root, object target)
+    {
+        foreach (var item in root.Items)
+        {
+            if (ReferenceEquals(item, target))
+            {
+                return true;
+            }
+
+            if (root.ItemContainerGenerator.ContainerFromItem(item) is ItemsControl child && ContainsTarget(child, target))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string? ResolveExpandKey(object? item) =>
+        item switch
+        {
+            ReadyHuBindingCandidateGroup group => group.ExpandKey,
+            ReadyHuBindingOrderGroup group => group.ExpandKey,
+            ReadyHuBindingLineItem line => line.ExpandKey,
+            _ => null
+        };
 
     private void Save_Click(object sender, RoutedEventArgs e)
     {

@@ -118,6 +118,47 @@ public sealed class OrderScopedHuBindingSessionTests
         Assert.Equal(["HU-OLD", "HU-NEW"], request.FinalHuCodes);
     }
 
+    [Fact]
+    public void CapturedExpandedState_SurvivesStageBindDetachAndAuto()
+    {
+        var session = CreateSession(
+            lines:
+            [
+                Line(101, itemId: 6, qty: 1200),
+                Line(102, itemId: 7, qty: 300)
+            ],
+            saved: [Plan(101, itemId: 6, "HU-OLD", 600)]);
+        session.ApplyCandidates(new WpfHuReservationCandidatesResult
+        {
+            Lines =
+            [
+                CandidateLine(101, 6, Candidate("HU-NEW", 6, 600)),
+                CandidateLine(102, 7, Candidate("HU-X", 7, 300))
+            ]
+        });
+        session.CaptureUiState(
+            [ReadyHuBindingCandidateGroup.BuildKey(6)],
+            [ReadyHuBindingOrderGroup.RootKey, ReadyHuBindingLineItem.BuildKey(101)],
+            selectedCandidateHuCode: "HU-NEW",
+            selectedLineId: 101,
+            selectedHuCode: "HU-OLD");
+
+        Assert.True(session.StageBind(session.FindCandidate("HU-NEW"), session.FindLine(101), out _));
+        Assert.Contains(ReadyHuBindingCandidateGroup.BuildKey(6), session.ExpandedCandidateGroupKeys);
+        Assert.Contains(ReadyHuBindingOrderGroup.RootKey, session.ExpandedOrderGroupKeys);
+        Assert.Contains(ReadyHuBindingLineItem.BuildKey(101), session.ExpandedOrderGroupKeys);
+        Assert.Equal("HU-NEW", session.SelectedCandidateHuCode);
+        Assert.Equal(101, session.SelectedLineId);
+
+        session.StageAuto();
+        Assert.Contains(ReadyHuBindingCandidateGroup.BuildKey(6), session.ExpandedCandidateGroupKeys);
+        Assert.Contains(ReadyHuBindingLineItem.BuildKey(101), session.ExpandedOrderGroupKeys);
+
+        Assert.True(session.StageDetach(session.FindFutureHu("HU-OLD"), out _));
+        Assert.Contains(ReadyHuBindingCandidateGroup.BuildKey(6), session.ExpandedCandidateGroupKeys);
+        Assert.Contains(ReadyHuBindingLineItem.BuildKey(101), session.ExpandedOrderGroupKeys);
+    }
+
     private static OrderScopedHuBindingSession CreateSession(
         IReadOnlyList<OrderLineView> lines,
         IReadOnlyList<OrderReceiptPlanLine>? saved = null) =>

@@ -1,3 +1,7 @@
+using System.Reflection;
+using FlowStock.App;
+using FlowStock.Core.Models;
+
 namespace FlowStock.Server.Tests.Orders;
 
 public sealed class WpfHuReservationApiGuardTests
@@ -57,6 +61,20 @@ public sealed class WpfHuReservationApiGuardTests
         Assert.Contains("ReadyHuBindingButton.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;", source);
         Assert.Contains("&& !_hasUnsavedChanges", source);
         Assert.Contains("new ReadyHuBindingWindow(_services, _orderId.Value)", source);
+
+        var palletBlockStart = xaml.IndexOf("Header=\"Паллетный план\"", StringComparison.Ordinal);
+        Assert.True(palletBlockStart >= 0);
+        var palletBlockEnd = xaml.IndexOf("</GroupBox>", palletBlockStart, StringComparison.Ordinal);
+        Assert.True(palletBlockEnd > palletBlockStart);
+        var palletBlock = xaml[palletBlockStart..palletBlockEnd];
+        Assert.Contains("ReadyHuBindingButton", palletBlock);
+
+        var linesBlockStart = xaml.IndexOf("Header=\"Строки заказа\"", StringComparison.Ordinal);
+        Assert.True(linesBlockStart >= 0);
+        var linesBlockEnd = xaml.IndexOf("</GroupBox>", linesBlockStart, StringComparison.Ordinal);
+        Assert.True(linesBlockEnd > linesBlockStart);
+        var linesBlock = xaml[linesBlockStart..linesBlockEnd];
+        Assert.DoesNotContain("ReadyHuBindingButton", linesBlock, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -72,6 +90,42 @@ public sealed class WpfHuReservationApiGuardTests
         Assert.Contains("Список HU изменился. Обновите заказ и повторите действие.", source);
         Assert.DoesNotContain("TryApplyHuReservations", source, StringComparison.Ordinal);
         Assert.DoesNotContain("/hu-reservations/apply", source, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ReadyHuBindingWindow_PreservesTreeExpandedAndSelectionState()
+    {
+        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "ReadyHuBindingWindow.xaml.cs");
+        var session = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderScopedHuBindingSession.cs");
+
+        Assert.Contains("CaptureTreeState", source);
+        Assert.Contains("RestoreTreeState", source);
+        Assert.Contains("CollectExpandedKeys", source);
+        Assert.Contains("RestoreExpandedKeys", source);
+        Assert.Contains("SelectTreeItem", source);
+        Assert.Contains("CaptureUiState", session);
+        Assert.Contains("ExpandedCandidateGroupKeys", session);
+        Assert.Contains("ExpandedOrderGroupKeys", session);
+    }
+
+    [Fact]
+    public void WarehouseProductionStateFingerprint_IncludesHuReservationStatus()
+    {
+        var method = typeof(MainWindow).GetMethod(
+            "BuildWarehouseProductionStateFingerprint",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var unreserved = BuildWarehouseProductionStateRow(reservedOrderRef: null);
+        var reserved = BuildWarehouseProductionStateRow(reservedOrderRef: "004");
+
+        var first = Assert.IsType<string>(method!.Invoke(null, [new[] { unreserved }]));
+        var second = Assert.IsType<string>(method.Invoke(null, [new[] { reserved }]));
+
+        Assert.NotEqual(first, second);
+        Assert.Contains("На складе", first);
+        Assert.Contains("Зарезервирован: заказ 004", second);
+        Assert.Contains("004", second);
     }
 
     [Fact]
@@ -345,4 +399,27 @@ public sealed class WpfHuReservationApiGuardTests
 
         throw new FileNotFoundException(string.Join(Path.DirectorySeparatorChar, parts));
     }
+
+    private static WarehouseProductionStateRow BuildWarehouseProductionStateRow(string? reservedOrderRef) =>
+        new()
+        {
+            ItemId = 6,
+            StockQty = 600,
+            FreeQty = 600,
+            ReservedQty = 0,
+            HuRows =
+            [
+                new WarehouseProductionStateHuRow
+                {
+                    Location = "MAIN",
+                    LocationId = 1,
+                    HuCode = "HU-0000661",
+                    Qty = 600,
+                    ReservedCustomerOrderId = reservedOrderRef == null ? null : 4,
+                    ReservedCustomerOrderRef = reservedOrderRef,
+                    ReservedCustomerName = reservedOrderRef == null ? null : "Клиент",
+                    StockStatus = reservedOrderRef == null ? "На складе" : $"Зарезервирован: заказ {reservedOrderRef}"
+                }
+            ]
+        };
 }

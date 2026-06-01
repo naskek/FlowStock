@@ -12,6 +12,8 @@ public sealed class OrderScopedHuBindingSession : INotifyPropertyChanged
     private readonly Dictionary<string, ReadyHuBindingCandidateItem> _candidateByHu = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<ReadyHuBindingCandidateItem> _candidateOrder = new();
     private readonly List<ReadyHuBindingCandidateItem> _savedReservationCandidates = new();
+    private readonly HashSet<string> _expandedCandidateGroupKeys = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _expandedOrderGroupKeys = new(StringComparer.OrdinalIgnoreCase);
 
     public OrderScopedHuBindingSession(
         Order order,
@@ -59,6 +61,11 @@ public sealed class OrderScopedHuBindingSession : INotifyPropertyChanged
     public ObservableCollection<ReadyHuBindingCandidateGroup> CandidateGroups { get; } = new();
     public ObservableCollection<ReadyHuBindingOrderGroup> OrderGroups { get; } = new();
     public ObservableCollection<ReadyHuBindingLineItem> Lines { get; } = new();
+    public IReadOnlySet<string> ExpandedCandidateGroupKeys => _expandedCandidateGroupKeys;
+    public IReadOnlySet<string> ExpandedOrderGroupKeys => _expandedOrderGroupKeys;
+    public string? SelectedCandidateHuCode { get; private set; }
+    public long? SelectedLineId { get; private set; }
+    public string? SelectedHuCode { get; private set; }
     public event PropertyChangedEventHandler? PropertyChanged;
 
     public void ApplyCandidates(WpfHuReservationCandidatesResult result)
@@ -214,6 +221,57 @@ public sealed class OrderScopedHuBindingSession : INotifyPropertyChanged
             .ToArray();
     }
 
+    public void CaptureUiState(
+        IEnumerable<string> expandedCandidateGroupKeys,
+        IEnumerable<string> expandedOrderGroupKeys,
+        string? selectedCandidateHuCode,
+        long? selectedLineId,
+        string? selectedHuCode)
+    {
+        _expandedCandidateGroupKeys.Clear();
+        foreach (var key in expandedCandidateGroupKeys.Where(key => !string.IsNullOrWhiteSpace(key)))
+        {
+            _expandedCandidateGroupKeys.Add(key);
+        }
+
+        _expandedOrderGroupKeys.Clear();
+        foreach (var key in expandedOrderGroupKeys.Where(key => !string.IsNullOrWhiteSpace(key)))
+        {
+            _expandedOrderGroupKeys.Add(key);
+        }
+
+        SelectedCandidateHuCode = NormalizeHu(selectedCandidateHuCode);
+        SelectedLineId = selectedLineId;
+        SelectedHuCode = NormalizeHu(selectedHuCode);
+    }
+
+    public void ExpandCandidateGroup(long itemId) => _expandedCandidateGroupKeys.Add(ReadyHuBindingCandidateGroup.BuildKey(itemId));
+
+    public void ExpandOrderRoot() => _expandedOrderGroupKeys.Add(ReadyHuBindingOrderGroup.RootKey);
+
+    public void ExpandOrderLine(long orderLineId) => _expandedOrderGroupKeys.Add(ReadyHuBindingLineItem.BuildKey(orderLineId));
+
+    public ReadyHuBindingCandidateItem? FindCandidate(string? huCode)
+    {
+        var normalized = NormalizeHu(huCode);
+        return string.IsNullOrWhiteSpace(normalized)
+            ? null
+            : CandidateGroups.SelectMany(group => group.Candidates)
+                .FirstOrDefault(candidate => string.Equals(candidate.HuCode, normalized, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public ReadyHuBindingLineItem? FindLine(long? orderLineId) =>
+        orderLineId.HasValue && _lineById.TryGetValue(orderLineId.Value, out var line) ? line : null;
+
+    public ReadyHuBindingHuItem? FindFutureHu(string? huCode)
+    {
+        var normalized = NormalizeHu(huCode);
+        return string.IsNullOrWhiteSpace(normalized)
+            ? null
+            : Lines.SelectMany(line => line.FutureHu)
+                .FirstOrDefault(hu => string.Equals(hu.HuCode, normalized, StringComparison.OrdinalIgnoreCase));
+    }
+
     private bool IsHuInFinalState(string huCode) =>
         Lines.Any(line => line.FutureHuCodes.Contains(huCode, StringComparer.OrdinalIgnoreCase));
 
@@ -281,6 +339,9 @@ public sealed class ReadyHuBindingCandidateGroup
     public long ItemId { get; }
     public string ItemName { get; }
     public IReadOnlyList<ReadyHuBindingCandidateItem> Candidates { get; }
+    public string ExpandKey => BuildKey(ItemId);
+
+    public static string BuildKey(long itemId) => $"candidate-item-{itemId}";
 }
 
 public sealed class ReadyHuBindingCandidateItem
@@ -352,6 +413,8 @@ public sealed class ReadyHuBindingOrderGroup
 
     public string Title { get; }
     public IReadOnlyList<ReadyHuBindingLineItem> Lines { get; }
+    public string ExpandKey => RootKey;
+    public const string RootKey = "order-root";
 }
 
 public sealed class ReadyHuBindingLineItem : INotifyPropertyChanged
@@ -384,6 +447,7 @@ public sealed class ReadyHuBindingLineItem : INotifyPropertyChanged
     public bool IsAffected => !SavedHuCodes.SetEquals(FutureHuCodes);
     public string Header => $"{ItemName} · заказано {QtyOrdered:0.###} · отгружено {QtyShipped:0.###}";
     public string Summary => $"Будет привязано {FinalBoundQty:0.###} из {MaxReadyHuQty:0.###}";
+    public string ExpandKey => BuildKey(OrderLineId);
     public event PropertyChangedEventHandler? PropertyChanged;
 
     public void AddSavedHu(ReadyHuBindingHuItem hu)
@@ -419,6 +483,8 @@ public sealed class ReadyHuBindingLineItem : INotifyPropertyChanged
     }
 
     public int NextCandidateSortIndex() => _candidateSortIndex++;
+
+    public static string BuildKey(long orderLineId) => $"order-line-{orderLineId}";
 
     public void RefreshComputed()
     {

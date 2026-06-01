@@ -124,16 +124,16 @@
                     <StackPanel Orientation="Vertical">
                         <Button x:Name="AddItemButton" Style="{StaticResource OrderActionButtonStyle}" Content="+ Товар" Click="AddLine_Click" TabIndex="7" />
                         <Button x:Name="EditLineButton" Style="{StaticResource OrderActionButtonStyle}" Content="Редактировать" Click="EditLine_Click" TabIndex="8" />
-                        <Button x:Name="DeleteLineButton" Style="{StaticResource OrderActionButtonStyle}" Content="Удалить строку" Click="DeleteLine_Click" TabIndex="9" />
-                        <Button x:Name="ReadyHuBindingButton" Style="{StaticResource OrderActionButtonStyle}" Content="Привязка HU" Click="ReadyHuBinding_Click" TabIndex="10" Margin="0" />
+                        <Button x:Name="DeleteLineButton" Style="{StaticResource OrderActionButtonStyle}" Content="Удалить строку" Click="DeleteLine_Click" TabIndex="9" Margin="0" />
                     </StackPanel>
                 </GroupBox>
 
                 <GroupBox Grid.Row="0" Grid.Column="1" Header="Паллетный план" Margin="8,0,0,8" Padding="8">
                     <StackPanel Orientation="Vertical">
-                        <Button x:Name="PlanPalletsButton" Style="{StaticResource OrderActionButtonStyle}" Content="План паллет (производство)" Click="PlanPallets_Click" TabIndex="10" />
-                        <Button x:Name="PrintPalletLabelsButton" Style="{StaticResource OrderActionButtonStyle}" Content="Печать паллетных этикеток" Click="PrintPalletLabels_Click" TabIndex="11" />
-                        <Button x:Name="DeletePalletPlanButton" Style="{StaticResource OrderActionButtonStyle}" Content="Удалить план паллет" Click="DeletePalletPlan_Click" TabIndex="12" Margin="0" />
+                        <Button x:Name="ReadyHuBindingButton" Style="{StaticResource OrderActionButtonStyle}" Content="Привязка HU" Click="ReadyHuBinding_Click" TabIndex="10" />
+                        <Button x:Name="PlanPalletsButton" Style="{StaticResource OrderActionButtonStyle}" Content="План паллет (производство)" Click="PlanPallets_Click" TabIndex="11" />
+                        <Button x:Name="PrintPalletLabelsButton" Style="{StaticResource OrderActionButtonStyle}" Content="Печать паллетных этикеток" Click="PrintPalletLabels_Click" TabIndex="12" />
+                        <Button x:Name="DeletePalletPlanButton" Style="{StaticResource OrderActionButtonStyle}" Content="Удалить план паллет" Click="DeletePalletPlan_Click" TabIndex="13" Margin="0" />
                     </StackPanel>
                 </GroupBox>
 
