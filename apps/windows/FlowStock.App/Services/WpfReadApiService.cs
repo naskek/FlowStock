@@ -617,6 +617,16 @@ public sealed class WpfReadApiService
             out result);
     }
 
+    public bool TryGetReadyHuBindingReadModel(out WpfReadyHuBindingReadModel model)
+    {
+        model = new WpfReadyHuBindingReadModel();
+        return TryRead(
+            "/api/orders/hu-bindings/ready",
+            MapReadyHuBindingReadModel,
+            "ready-hu-binding-read-model",
+            out model);
+    }
+
     public bool TryApplyHuReservations(
         long customerOrderId,
         IReadOnlyList<WpfHuReservationApplyLineRequest> lines,
@@ -834,6 +844,78 @@ public sealed class WpfReadApiService
             : Array.Empty<WpfHuReservationCandidatesLineResult>();
         return new WpfHuReservationCandidatesResult { Lines = lines };
     }
+
+    private static WpfReadyHuBindingReadModel MapReadyHuBindingReadModel(JsonElement root)
+    {
+        var huRows = root.TryGetProperty("hu_rows", out var huRowsElement) && huRowsElement.ValueKind == JsonValueKind.Array
+            ? huRowsElement.EnumerateArray().Select(MapReadyHuBindingHuRow).ToArray()
+            : Array.Empty<WpfReadyHuBindingHuRow>();
+
+        return new WpfReadyHuBindingReadModel
+        {
+            RequestType = ReadString(root, "request_type") ?? string.Empty,
+            HuCount = ReadInt32(root, "hu_count"),
+            OrderCount = ReadInt32(root, "order_count"),
+            LineCount = ReadInt32(root, "line_count"),
+            HuRows = huRows
+        };
+    }
+
+    private static WpfReadyHuBindingHuRow MapReadyHuBindingHuRow(JsonElement element)
+    {
+        var compatibleOrders = element.TryGetProperty("compatible_orders", out var ordersElement) && ordersElement.ValueKind == JsonValueKind.Array
+            ? ordersElement.EnumerateArray().Select(MapReadyHuBindingCompatibleOrderRow).ToArray()
+            : Array.Empty<WpfReadyHuBindingCompatibleOrderRow>();
+
+        return new WpfReadyHuBindingHuRow
+        {
+            HuCode = ReadString(element, "hu_code") ?? string.Empty,
+            ItemId = ReadInt64(element, "item_id"),
+            ItemName = ReadString(element, "item_name") ?? string.Empty,
+            Qty = ReadDouble(element, "qty"),
+            Source = ReadString(element, "source") ?? string.Empty,
+            LocationDisplay = ReadString(element, "location_display") ?? string.Empty,
+            OriginInternalOrderId = ReadNullableInt64(element, "origin_internal_order_id"),
+            OriginInternalOrderRef = ReadString(element, "origin_internal_order_ref"),
+            FirstReceiptAt = ReadDateTime(element, "first_receipt_at"),
+            FirstReceiptDocId = ReadNullableInt64(element, "first_receipt_doc_id"),
+            CompatibleOrders = compatibleOrders
+        };
+    }
+
+    private static WpfReadyHuBindingCompatibleOrderRow MapReadyHuBindingCompatibleOrderRow(JsonElement element)
+    {
+        var lines = element.TryGetProperty("lines", out var linesElement) && linesElement.ValueKind == JsonValueKind.Array
+            ? linesElement.EnumerateArray().Select(MapReadyHuBindingCompatibleLineRow).ToArray()
+            : Array.Empty<WpfReadyHuBindingCompatibleLineRow>();
+
+        return new WpfReadyHuBindingCompatibleOrderRow
+        {
+            OrderId = ReadInt64(element, "order_id"),
+            OrderRef = ReadString(element, "order_ref") ?? string.Empty,
+            PartnerId = ReadNullableInt64(element, "partner_id"),
+            PartnerName = ReadString(element, "partner_name"),
+            PartnerCode = ReadString(element, "partner_code"),
+            DueDate = ReadDateTime(element, "due_date"),
+            CreatedAt = ReadDateTime(element, "created_at") ?? DateTime.MinValue,
+            Status = ReadString(element, "status") ?? string.Empty,
+            Lines = lines
+        };
+    }
+
+    private static WpfReadyHuBindingCompatibleLineRow MapReadyHuBindingCompatibleLineRow(JsonElement element) =>
+        new()
+        {
+            OrderLineId = ReadInt64(element, "order_line_id"),
+            ItemId = ReadInt64(element, "item_id"),
+            ItemName = ReadString(element, "item_name") ?? string.Empty,
+            QtyOrdered = ReadDouble(element, "qty_ordered"),
+            QtyShipped = ReadDouble(element, "qty_shipped"),
+            ShipmentRemainingQty = ReadDouble(element, "shipment_remaining_qty"),
+            CurrentBoundHuCodes = ReadStringArray(element, "current_bound_hu_codes"),
+            CurrentBoundQty = ReadDouble(element, "current_bound_qty"),
+            MaxAdditionalBindQty = ReadDouble(element, "max_additional_bind_qty")
+        };
 
     private static WpfHuReservationCandidatesLineResult MapHuReservationCandidatesLine(JsonElement element)
     {

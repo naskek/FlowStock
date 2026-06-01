@@ -50,6 +50,70 @@ public sealed class WpfHuReservationApiGuardTests
     }
 
     [Fact]
+    public void WpfIncomingRequests_MapsReadyHuBindingSummary()
+    {
+        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "Services", "WpfIncomingRequestsApiService.cs");
+
+        Assert.Contains("ready_hu_binding_pending", source);
+        Assert.Contains("ReadyHuBindingPending", source);
+        Assert.Contains("ItemRequestsPending + OrderRequestsPending + ReadyHuBindingPending", source);
+    }
+
+    [Fact]
+    public void WpfReadApiService_BuildsReadyHuBindingReadModelRequest()
+    {
+        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "Services", "WpfReadApiService.cs");
+        var models = ReadRepoFile("apps", "windows", "FlowStock.App", "Services", "WpfReadyHuBindingApiModels.cs");
+
+        Assert.Contains("TryGetReadyHuBindingReadModel", source);
+        Assert.Contains("/api/orders/hu-bindings/ready", source);
+        Assert.Contains("request_type", source);
+        Assert.Contains("hu_count", source);
+        Assert.Contains("order_count", source);
+        Assert.Contains("line_count", source);
+        Assert.Contains("compatible_orders", source);
+        Assert.Contains("current_bound_hu_codes", source);
+        Assert.Contains("max_additional_bind_qty", source);
+        Assert.Contains("WpfReadyHuBindingReadModel", models);
+        Assert.Contains("WpfReadyHuBindingHuRow", models);
+        Assert.Contains("WpfReadyHuBindingCompatibleOrderRow", models);
+        Assert.Contains("WpfReadyHuBindingCompatibleLineRow", models);
+    }
+
+    [Fact]
+    public void IncomingRequestsWindow_ExposesReadyHuFilterAndReadOnlyComputedRow()
+    {
+        var xaml = ReadRepoFile("apps", "windows", "FlowStock.App", "IncomingRequestsWindow.xaml");
+        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "IncomingRequestsWindow.xaml.cs");
+        var builder = ReadRepoFile("apps", "windows", "FlowStock.App", "IncomingRequestsRowsBuilder.cs");
+
+        Assert.Contains("RequestTypeFilterCombo", xaml);
+        Assert.Contains("Готовые HU", source);
+        Assert.Contains("TryGetReadyHuBindingReadModel", source);
+        Assert.Contains("READY_HU_BINDING_AVAILABLE", builder);
+        Assert.Contains("CanApprove = false", builder);
+        Assert.Contains("CanReject = false", builder);
+        Assert.Contains("CanOpenDetails = true", builder);
+        Assert.Contains("Глобальная привязка HU будет добавлена в Phase 4C", source);
+        Assert.DoesNotContain("GlobalReadyHuBindingWindow", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("new ReadyHuBindingWindow", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryApplyFinalHuBindings", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryApplyHuReservations", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("/hu-reservations/apply", source, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Phase4B_DoesNotIntroduceGlobalReadyHuBindingWindow()
+    {
+        var appDir = FindRepoFile("apps", "windows", "FlowStock.App", "FlowStock.App.csproj").Directory!;
+        var appFiles = appDir.EnumerateFiles("*", SearchOption.AllDirectories)
+            .Where(file => file.Extension is ".cs" or ".xaml")
+            .Select(file => File.ReadAllText(file.FullName));
+
+        Assert.DoesNotContain(appFiles, text => text.Contains("GlobalReadyHuBindingWindow", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void OrderDetailsWindow_ExposesOrderScopedHuBindingButtonForCustomerOnly()
     {
         var xaml = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml");
@@ -385,13 +449,18 @@ public sealed class WpfHuReservationApiGuardTests
 
     private static string ReadRepoFile(params string[] parts)
     {
+        return File.ReadAllText(FindRepoFile(parts).FullName);
+    }
+
+    private static FileInfo FindRepoFile(params string[] parts)
+    {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir != null)
         {
             var candidate = Path.Combine(new[] { dir.FullName }.Concat(parts).ToArray());
             if (File.Exists(candidate))
             {
-                return File.ReadAllText(candidate);
+                return new FileInfo(candidate);
             }
 
             dir = dir.Parent;

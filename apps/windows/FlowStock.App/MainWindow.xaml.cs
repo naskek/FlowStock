@@ -3322,21 +3322,37 @@ public partial class MainWindow : Window
         {
             var summary = _services.WpfIncomingRequestsApi.TryGetSummary(out var apiSummary)
                 ? apiSummary
-                : new IncomingRequestsSummary(0, 0);
+                : new IncomingRequestsSummary(0, 0, 0);
 
             var itemCount = summary.ItemRequestsPending;
             var orderCount = summary.OrderRequestsPending;
-            var count = itemCount + orderCount;
+            var readyHuCount = summary.ReadyHuBindingPending;
+            var count = summary.TotalPending;
             ItemRequestsCountText.Text = count.ToString();
             ItemRequestsBadge.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
             ItemRequestsButton.ToolTip = count > 0
-                ? $"Входящие запросы: {count} (товары: {itemCount}, заказы: {orderCount})"
+                ? BuildIncomingRequestsTooltip(count, itemCount, orderCount, readyHuCount)
                 : "Входящие запросы";
         }
         catch (Exception ex)
         {
             _services.AppLogger.Error("Incoming requests badge update failed", ex);
         }
+    }
+
+    private static string BuildIncomingRequestsTooltip(int totalCount, int itemCount, int orderCount, int readyHuCount)
+    {
+        var parts = new List<string>
+        {
+            $"товары: {itemCount}",
+            $"заказы: {orderCount}"
+        };
+        if (readyHuCount > 0)
+        {
+            parts.Add($"готовые HU: {readyHuCount}");
+        }
+
+        return $"Входящие запросы: {totalCount} ({string.Join(", ", parts)})";
     }
 
     private void ClearItemForm()

@@ -199,6 +199,7 @@
 - Incoming requests: единое WPF-окно входящих запросов (из колокольчика/меню) для item requests и web order requests, со всеми действиями обработки в одном месте.
   - Список inbox, pending badge и resolve/reject-actions работают через server API.
   - Для order requests в WPF есть отдельное modal-окно деталей с полным payload заказа до подтверждения.
+  - Computed `READY_HU_BINDING_AVAILABLE` отображается в WPF badge/inbox как read-only сигнал готовых HU, если `/api/orders/hu-bindings/ready` возвращает `hu_count > 0`; он не поддерживает confirm/reject/dismiss. В Phase 4B детали являются только информационным сообщением, global HU binding window добавляется отдельно в Phase 4C.
 - Обработка import errors в WPF использует server API для чтения и повторного применения `import_errors`; lookup/create товаров при cleanup импорта используют те же server-backed catalog/read path, что и остальная часть WPF.
 - WPF data grid-ы используют общие правила adaptive sizing: короткие колонки подстраиваются по header/content, длинные текстовые колонки ограничиваются и режутся, а видимые колонки перераспределяют ширину при ресайзе окна.
 - WPF dialog-окна автоматически растут по содержимому в пределах экрана; если содержимое все равно не помещается, окно становится прокручиваемым, чтобы нижние action-кнопки оставались достижимыми.

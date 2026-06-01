@@ -13,6 +13,14 @@
             <Button x:Name="RejectButton" Content="Отклонить" Click="Reject_Click" Margin="8,0,0,0" />
             <Button x:Name="DetailsButton" Content="Подробности..." Click="Details_Click" Margin="8,0,0,0" />
             <Button Content="Обновить" Click="Refresh_Click" Margin="8,0,0,0" />
+            <TextBlock Text="Тип:"
+                       Margin="14,0,0,0"
+                       VerticalAlignment="Center" />
+            <ComboBox x:Name="RequestTypeFilterCombo"
+                      Width="150"
+                      Margin="6,0,0,0"
+                      VerticalAlignment="Center"
+                      SelectionChanged="RequestTypeFilterCombo_SelectionChanged" />
             <CheckBox x:Name="ShowResolvedCheck"
                       Content="Показывать обработанные"
                       Margin="14,0,0,0"

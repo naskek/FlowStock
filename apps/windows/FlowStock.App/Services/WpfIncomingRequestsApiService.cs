@@ -50,12 +50,13 @@ public sealed class WpfIncomingRequestsApiService
 
     public bool TryGetSummary(out IncomingRequestsSummary summary)
     {
-        summary = new IncomingRequestsSummary(0, 0);
+        summary = new IncomingRequestsSummary(0, 0, 0);
         return TryRead(
             "/api/requests/summary",
             root => new IncomingRequestsSummary(
                 ReadInt32(root, "item_requests_pending"),
-                ReadInt32(root, "order_requests_pending")),
+                ReadInt32(root, "order_requests_pending"),
+                ReadInt32(root, "ready_hu_binding_pending")),
             "incoming-requests-summary",
             out summary);
     }
@@ -401,9 +402,12 @@ public sealed class WpfIncomingRequestsApiService
     }
 }
 
-public sealed record IncomingRequestsSummary(int ItemRequestsPending, int OrderRequestsPending)
+public sealed record IncomingRequestsSummary(
+    int ItemRequestsPending,
+    int OrderRequestsPending,
+    int ReadyHuBindingPending)
 {
-    public int TotalPending => ItemRequestsPending + OrderRequestsPending;
+    public int TotalPending => ItemRequestsPending + OrderRequestsPending + ReadyHuBindingPending;
 }
 
 internal sealed record WpfIncomingRequestsApiConfiguration(string? BaseUrl, int TimeoutSeconds, bool AllowInvalidTls);
