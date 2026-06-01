@@ -119,6 +119,7 @@ public static class TsdOutboundPickingEndpoints
             status = hu.Status,
             qty = hu.Qty,
             item_summary = hu.ItemSummary,
+            is_mixed_pallet = hu.Lines.Count > 1,
             lines = hu.Lines.Select(line => new
             {
                 item_id = line.ItemId,

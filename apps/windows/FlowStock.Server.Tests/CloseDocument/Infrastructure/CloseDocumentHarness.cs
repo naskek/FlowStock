@@ -2844,6 +2844,7 @@ internal sealed class CloseDocumentHarness
                 openPalletPlannedQty,
                 palletFilledQty,
                 ledgerClosedPrdQty,
+                ledgerOpenPrdQty,
                 hasOpenPrd,
                 hasClosedPrd);
             if (string.IsNullOrWhiteSpace(problemCode))
@@ -3061,6 +3062,7 @@ internal sealed class CloseDocumentHarness
         double openPalletPlannedQty,
         double palletFilledQty,
         double ledgerClosedPrdQty,
+        double ledgerOpenPrdQty,
         bool hasOpenPrd,
         bool hasClosedPrd)
     {
@@ -3096,6 +3098,13 @@ internal sealed class CloseDocumentHarness
         if (hasClosedPrd && Math.Abs(closedPrdDocQty - ledgerClosedPrdQty) > StockQuantityRules.QtyTolerance)
         {
             return ProductionPlanConsistencyProblemCode.ClosedPrdLedgerMismatch;
+        }
+
+        if (palletFilledQty > StockQuantityRules.QtyTolerance
+            && hasOpenPrd
+            && ledgerOpenPrdQty <= StockQuantityRules.QtyTolerance)
+        {
+            return ProductionPlanConsistencyProblemCode.FilledPalletMissingLedger;
         }
 
         if (palletFilledQty > StockQuantityRules.QtyTolerance && hasOpenPrd)
@@ -3139,7 +3148,8 @@ internal sealed class CloseDocumentHarness
             return ProductionPlanConsistencySeverity.Warning;
         }
 
-        if (string.Equals(problemCode, ProductionPlanConsistencyProblemCode.FilledPalletsWithDraftPrd, StringComparison.Ordinal))
+        if (string.Equals(problemCode, ProductionPlanConsistencyProblemCode.FilledPalletsWithDraftPrd, StringComparison.Ordinal)
+            || string.Equals(problemCode, ProductionPlanConsistencyProblemCode.FilledPalletMissingLedger, StringComparison.Ordinal))
         {
             return ProductionPlanConsistencySeverity.Warning;
         }
@@ -3159,6 +3169,8 @@ internal sealed class CloseDocumentHarness
                 "Active PRD document lines exceed current order quantity. Review draft PRD lines and order redistribution before closing.",
             ProductionPlanConsistencyProblemCode.FilledPalletsWithDraftPrd =>
                 "Filled pallet ledger exists while PRD is still open. If quantities are aligned, close the PRD; otherwise review diagnostics before closing.",
+            ProductionPlanConsistencyProblemCode.FilledPalletMissingLedger =>
+                "Filled production pallet has an open PRD and no positive receipt ledger. Use controlled maintenance repair; do not edit ledger manually.",
             ProductionPlanConsistencyProblemCode.ShippedCustomerWithOpenPrd =>
                 "Customer order is already shipped but has an open PRD/pallet plan. Review and cancel or repair the open production plan.",
             ProductionPlanConsistencyProblemCode.MergedOrderWithPalletPlan =>

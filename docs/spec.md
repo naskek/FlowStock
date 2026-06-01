@@ -107,12 +107,16 @@
   - закрывает PRD;
   - пишет `ledger` `+qty`;
   - переводит паллету в фактически наполненное/проведённое состояние.
+  - Вся операция выполняется одной серверной транзакцией: если закрытие PRD или запись `ledger` не прошли, `production_pallets.status`, `production_pallet_lines.filled_qty`, перенос строк в dedicated PRD и `ledger` откатываются.
+  - Для mixed pallet `ledger` пишется по компонентам `production_pallet_lines`/`doc_lines`, по одной строке на товар, а не по агрегированным полям `production_pallets`.
 - WPF close PRD **не обязателен** в happy path palletized production; WPF — мониторинг, исключения и ручные correction UI, а не обычный gate на каждую паллету.
 
 ### Normal TSD outbound flow (`Отгрузка`)
 
 - Работает по **физически зарезервированным** HU (`order_receipt_plan_lines` + `FILLED` production pallets с положительным `ledger`).
 - При `FlowStock:OutboundAutoCloseOnComplete = true` (default) последний scan или `complete` закрывает `OUTBOUND`, пишет `ledger` `−qty`, обновляет статус заказа; отдельный WPF close в happy path **не требуется**.
+- `/api/tsd/outbound/orders/{orderId}` возвращает для mixed pallet состав HU в `hus[].lines[]` (`item_id`, `order_line_id`, `item_name`, `qty`), а TSD отображает эти компоненты под HU-кодом.
+- Повторный scan уже подобранной HU идемпотентен: строки `OUTBOUND` и `ledger` не дублируются, включая случай уже auto-closed отгрузки.
 - При `OutboundAutoCloseOnComplete = false` TSD только собирает draft `OUTBOUND`; проводка и `ledger` — через WPF `Close`.
 - Draft/picked `OUTBOUND` **без** close не влияют на stock и `shipped_qty`.
 
@@ -141,7 +145,7 @@
 - Восстановление stock по ошибочно обнулённым `FILLED` паллетам: `GET /api/production-pallets/filled-without-stock` и `POST /api/production-pallets/backfill-filled-stock` (`dry_run` по умолчанию `true`). Backfill shipment-aware: учитывает `OUTBOUND` по тому же HU и по `order_id + item_id`; decision `SAFE_TO_BACKFILL` / `ALREADY_SHIPPED_SKIP` / `AMBIGUOUS_REQUIRES_MANUAL_REVIEW`. Запись в `ledger` только для `SAFE_TO_BACKFILL` с `missing_qty > tolerance`.
 - Сторно ошибочного backfill для уже отгруженных HU: `GET /api/production-pallets/filled-stock-reverse-candidates` и `POST /api/production-pallets/reverse-filled-stock-backfill-draft` создают draft `INVENTORY_CORRECTION` с отрицательными строками по `reverse_qty = min(current_hu_stock, planned_qty)` только для candidates с доказанной отгрузкой.
 - Проверка согласованности производственного плана перед production deploy: `GET /api/diagnostics/production-plan-consistency` read-only сравнивает `order_lines.qty_ordered`, open/closed qty по активным строкам `PRODUCTION_RECEIPT`, open/total `production_pallet_lines.planned_qty/filled_qty` и `ledger` по closed/open PRD. Endpoint ничего не исправляет и используется как обязательный dry-run шаг после deploy.
-  - Возможные `problem_code`: `ORDER_ZERO_BUT_PALLETS_EXIST`, `PALLETS_EXCEED_ORDER_QTY`, `PRD_LINES_EXCEED_ORDER_QTY`, `FILLED_PALLETS_WITH_DRAFT_PRD`, `SHIPPED_CUSTOMER_WITH_OPEN_PRD`, `MERGED_ORDER_WITH_PALLET_PLAN`, `CLOSED_PRD_LEDGER_MISMATCH`.
+  - Возможные `problem_code`: `ORDER_ZERO_BUT_PALLETS_EXIST`, `PALLETS_EXCEED_ORDER_QTY`, `PRD_LINES_EXCEED_ORDER_QTY`, `FILLED_PALLETS_WITH_DRAFT_PRD`, `FILLED_PALLET_MISSING_LEDGER`, `SHIPPED_CUSTOMER_WITH_OPEN_PRD`, `MERGED_ORDER_WITH_PALLET_PLAN`, `CLOSED_PRD_LEDGER_MISMATCH`.
   - `ERROR` блокирует Close palletized PRD; `SHIPPED_CUSTOMER_WITH_OPEN_PRD` для stale open PRD без паллет/ledger — `WARNING`; при open pallets/ledger и рассинхроне — `ERROR`, но Close PRD не блокируется.
   - Закрытие palletized `PRODUCTION_RECEIPT` блокируется только при критичном рассинхроне текущего PRD, с сообщением: `План паллет не соответствует строкам заказа. Запустите диагностику production-plan-consistency.`
 - Canonical online submit-flow TSD: `reserve doc_ref -> local edit -> create draft on submit -> add lines -> close`.

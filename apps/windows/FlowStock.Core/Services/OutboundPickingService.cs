@@ -94,6 +94,12 @@ public sealed class OutboundPickingService
 
         try
         {
+            var alreadyPickedClosed = TryBuildAlreadyPickedClosedScan(orderId, normalizedHu);
+            if (alreadyPickedClosed != null)
+            {
+                return alreadyPickedClosed;
+            }
+
             var order = EnsureCustomerOrderReadyForPicking(orderId);
             var expected = BuildExpectedHus(order);
             var expectedHu = expected.FirstOrDefault(hu => string.Equals(hu.HuCode, normalizedHu, StringComparison.OrdinalIgnoreCase));
@@ -209,6 +215,25 @@ public sealed class OutboundPickingService
         {
             return OutboundPickingScanResult.Failure("VALIDATION_ERROR", ex.Message);
         }
+    }
+
+    private OutboundPickingScanResult? TryBuildAlreadyPickedClosedScan(long orderId, string huCode)
+    {
+        var pickingDoc = FindTsdPickingOutbound(orderId);
+        if (pickingDoc?.Status != DocStatus.Closed || !IsHuPicked(pickingDoc.Id, huCode))
+        {
+            return null;
+        }
+
+        return new OutboundPickingScanResult
+        {
+            Success = true,
+            AlreadyPicked = true,
+            OutboundClosed = true,
+            ClosedOutboundDocRef = pickingDoc.DocRef,
+            Message = $"HU уже подобрана, отгрузка проведена ({pickingDoc.DocRef}).",
+            Order = GetDetails(orderId)
+        };
     }
 
     public OutboundPickingCompleteResult Complete(long orderId)

@@ -259,6 +259,35 @@ assert.match(outboundHuListHtml, /is-filled/);
 assert.match(outboundHuListHtml, /is-pending/);
 assert.match(outboundHuListHtml, /filling-pallet-list--scroll-breathing/);
 
+const mixedOutboundHuListHtml = hooks.renderOutboundPickingHuList([
+  {
+    hu_code: "HU-0000696",
+    item_summary: "Хрен столовый, Мирный, 200 гр, Хрен ядреный, Мирный, 200 гр",
+    status: "PENDING",
+    is_mixed_pallet: true,
+    lines: [
+      {
+        item_id: 44,
+        item_name: "Хрен столовый, Мирный, 200 гр",
+        order_line_id: 281,
+        qty: 900,
+      },
+      {
+        item_id: 47,
+        item_name: "Хрен ядреный, Мирный, 200 гр",
+        order_line_id: 282,
+        qty: 900,
+      },
+    ],
+  },
+]);
+assert.match(mixedOutboundHuListHtml, /Микс-паллета/);
+assert.match(mixedOutboundHuListHtml, /HU-0000696/);
+assert.match(mixedOutboundHuListHtml, /outbound-picking-hu-lines/);
+assert.match(mixedOutboundHuListHtml, /Хрен столовый, Мирный, 200 гр/);
+assert.match(mixedOutboundHuListHtml, /Хрен ядреный, Мирный, 200 гр/);
+assert.match(mixedOutboundHuListHtml, /900 шт/);
+
 hooks.renderOutboundPickingOrder(
   {
     ...snakeCaseOrder,

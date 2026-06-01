@@ -62,6 +62,128 @@ public sealed class ProductionPlanConsistencyDiagnosticsEndpointTests
         Assert.Equal(ProductionPlanConsistencyProblemCode.MergedOrderWithPalletPlan, item.GetProperty("problem_code").GetString());
     }
 
+    [Fact]
+    public async Task ProductionPlanConsistency_FilledMixedPalletDraftPrdWithoutLedger_IsDiagnosedPerComponent()
+    {
+        var harness = CreateHarness(
+            orderId: 102,
+            orderRef: "102",
+            orderQty: 900,
+            status: OrderStatus.InProgress,
+            orderType: OrderType.Customer);
+        harness.SeedItem(new Item
+        {
+            Id = 7,
+            Name = "Хрен ядреный, Мирный, 200 гр",
+            BaseUom = "шт",
+            MaxQtyPerHu = 900
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 10202,
+            OrderId = 102,
+            ItemId = 7,
+            QtyOrdered = 900,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder,
+            ProductionPalletGroup = "MIX-1"
+        });
+        harness.SeedDoc(new Doc
+        {
+            Id = 337,
+            DocRef = "PRD-2026-000305",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 102,
+            OrderRef = "102",
+            CreatedAt = new DateTime(2026, 5, 30, 11, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 33701,
+            DocId = 337,
+            OrderLineId = 10201,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder,
+            ItemId = 6,
+            Qty = 900,
+            ToLocationId = 10,
+            ToHu = "HU-0000696",
+            PackSingleHu = true
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 33702,
+            DocId = 337,
+            OrderLineId = 10202,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder,
+            ItemId = 7,
+            Qty = 900,
+            ToLocationId = 10,
+            ToHu = "HU-0000696",
+            PackSingleHu = true
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 269,
+            PrdDocId = 337,
+            DocLineId = 33701,
+            OrderId = 102,
+            OrderLineId = null,
+            ItemId = 6,
+            ItemName = "Хрен столовый, Мирный, 200 гр",
+            HuCode = "HU-0000696",
+            PlannedQty = 1800,
+            ToLocationId = 10,
+            Status = ProductionPalletStatus.Filled,
+            CreatedAt = new DateTime(2026, 5, 30, 11, 5, 0, DateTimeKind.Utc),
+            Lines =
+            [
+                new ProductionPalletComponentLine
+                {
+                    Id = 26901,
+                    ProductionPalletId = 269,
+                    DocLineId = 33701,
+                    OrderLineId = 10201,
+                    ItemId = 6,
+                    ItemName = "Хрен столовый, Мирный, 200 гр",
+                    PlannedQty = 900,
+                    FilledQty = 900,
+                    CreatedAt = new DateTime(2026, 5, 30, 11, 5, 0, DateTimeKind.Utc)
+                },
+                new ProductionPalletComponentLine
+                {
+                    Id = 26902,
+                    ProductionPalletId = 269,
+                    DocLineId = 33702,
+                    OrderLineId = 10202,
+                    ItemId = 7,
+                    ItemName = "Хрен ядреный, Мирный, 200 гр",
+                    PlannedQty = 900,
+                    FilledQty = 900,
+                    CreatedAt = new DateTime(2026, 5, 30, 11, 5, 0, DateTimeKind.Utc)
+                }
+            ]
+        });
+
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        using var response = await host.Client.GetAsync("/api/diagnostics/production-plan-consistency");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var items = (await ReadItems(response)).EnumerateArray()
+            .Where(item => item.GetProperty("order_id").GetInt64() == 102)
+            .OrderBy(item => item.GetProperty("item_id").GetInt64())
+            .ToArray();
+        Assert.Equal(2, items.Length);
+        Assert.Equal([6, 7], items.Select(item => item.GetProperty("item_id").GetInt64()).ToArray());
+        Assert.All(items, item =>
+        {
+            Assert.Equal(ProductionPlanConsistencyProblemCode.FilledPalletMissingLedger, item.GetProperty("problem_code").GetString());
+            Assert.Equal(ProductionPlanConsistencySeverity.Warning, item.GetProperty("severity").GetString());
+            Assert.Equal(900, item.GetProperty("pallet_filled_qty").GetDouble());
+            Assert.Equal(0, item.GetProperty("ledger_open_prd_qty").GetDouble());
+        });
+    }
+
     private static async Task<JsonElement> ReadItems(HttpResponseMessage response)
     {
         var payload = await response.Content.ReadFromJsonAsync<JsonElement>();

@@ -293,13 +293,14 @@ public sealed class OutboundPickingServiceTests
         Assert.Equal(OrderStatus.Shipped, harness.GetOrder(79).Status);
 
         var repeatScan = picking.Scan(79, "HU-0000506", "TSD-01");
-        Assert.False(repeatScan.Success);
-        Assert.Equal("VALIDATION_ERROR", repeatScan.ErrorCode);
+        Assert.True(repeatScan.Success, $"{repeatScan.ErrorCode}: {repeatScan.Message}");
+        Assert.True(repeatScan.AlreadyPicked);
+        Assert.True(repeatScan.OutboundClosed);
 
         var repeatComplete = picking.Complete(79);
         Assert.True(repeatComplete.Success, $"{repeatComplete.ErrorCode}: {repeatComplete.Message}");
         Assert.True(repeatComplete.OutboundClosed);
-        Assert.Single(outboundLedger);
+        Assert.Single(harness.LedgerEntries.Where(entry => entry.QtyDelta < 0));
     }
 
     [Fact]
@@ -390,7 +391,11 @@ public sealed class OutboundPickingServiceTests
             ]
         });
 
-        var result = CreatePickingService(harness).Scan(20, "HU-000001", "TSD-01");
+        var service = CreatePickingService(harness);
+        var expectedHu = Assert.Single(service.GetDetails(20).Hus);
+        Assert.Equal([1001, 1002], expectedHu.Lines.OrderBy(line => line.ItemId).Select(line => line.ItemId).ToArray());
+
+        var result = service.Scan(20, "HU-000001", "TSD-01");
 
         Assert.True(result.Success);
         var details = result.Order;

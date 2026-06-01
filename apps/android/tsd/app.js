@@ -3276,13 +3276,20 @@
   function renderOutboundPickingHuRow(hu) {
     var normalized = normalizeOutboundPickingHuView(hu);
     var picked = String(normalized.status || "").toUpperCase() === "PICKED";
+    var componentLines =
+      normalized.isMixedPallet === true || (normalized.lines || []).length > 1
+        ? renderOutboundPickingHuLines(normalized.lines)
+        : "";
     return (
       '<li class="filling-pallet-item filling-pallet-item--compact outbound-picking-hu-item ' +
       (picked ? "is-filled" : "is-pending") +
       '">' +
       '  <span class="filling-pallet-dot" aria-hidden="true"></span>' +
+      '  <div class="outbound-picking-hu-main">' +
       '  <div class="filling-pallet-code">' +
       escapeHtml(normalized.huCode || "-") +
+      "</div>" +
+      componentLines +
       "</div>" +
       "</li>"
     );
@@ -3339,6 +3346,7 @@
   function normalizeOutboundPickingLineView(line) {
     var raw = line || {};
     return {
+      itemId: Number(pickOutboundViewValue({}, raw, "itemId", "item_id")) || 0,
       itemName: String(pickOutboundViewValue({}, raw, "itemName", "item_name") || ""),
       orderLineId: Number(pickOutboundViewValue({}, raw, "orderLineId", "order_line_id")) || 0,
       locationCode: String(pickOutboundViewValue({}, raw, "locationCode", "location_code") || ""),
@@ -3355,6 +3363,10 @@
       itemSummary: String(pickOutboundViewValue({}, raw, "itemSummary", "item_summary") || ""),
       orderLineId: Number(pickOutboundViewValue({}, raw, "orderLineId", "order_line_id")) || 0,
       locationCode: String(pickOutboundViewValue({}, raw, "locationCode", "location_code") || ""),
+      isMixedPallet:
+        raw.isMixedPallet === true ||
+        raw.is_mixed_pallet === true ||
+        (Array.isArray(raw.lines) && raw.lines.length > 1),
       lines: Array.isArray(raw.lines)
         ? raw.lines.map(normalizeOutboundPickingLineView)
         : [],

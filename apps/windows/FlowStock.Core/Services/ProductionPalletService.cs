@@ -1000,136 +1000,138 @@ public sealed class ProductionPalletService
         }
 
         ProductionPalletFillResult? result = null;
-        _data.ExecuteInTransaction(store =>
+        try
         {
-            var pallet = store.GetProductionPalletByHu(normalizedHu);
-            if (pallet == null)
+            _data.ExecuteInTransaction(store =>
             {
-                result = ProductionPalletFillResult.Failure("Паллета не найдена в плане выпуска.");
-                return;
-            }
+                var pallet = store.GetProductionPalletByHu(normalizedHu);
+                if (pallet == null)
+                {
+                    result = ProductionPalletFillResult.Failure("Паллета не найдена в плане выпуска.");
+                    return;
+                }
 
-            if (orderId.HasValue && pallet.OrderId != orderId.Value)
-            {
-                result = ProductionPalletFillResult.Failure("Эта паллета относится к другому заказу");
-                return;
-            }
-
-            if (prdDocId.HasValue && pallet.PrdDocId != prdDocId.Value)
-            {
-                var isFilledForRequestedOrder = orderId.HasValue
-                    && pallet.OrderId == orderId.Value
-                    && string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase);
-                if (!isFilledForRequestedOrder)
+                if (orderId.HasValue && pallet.OrderId != orderId.Value)
                 {
                     result = ProductionPalletFillResult.Failure("Эта паллета относится к другому заказу");
                     return;
                 }
-            }
 
-            var doc = store.GetDoc(pallet.PrdDocId);
-            if (doc == null || doc.Type != DocType.ProductionReceipt)
-            {
-                result = ProductionPalletFillResult.Failure("Документ выпуска не найден.");
-                return;
-            }
+                if (prdDocId.HasValue && pallet.PrdDocId != prdDocId.Value)
+                {
+                    var isFilledForRequestedOrder = orderId.HasValue
+                        && pallet.OrderId == orderId.Value
+                        && string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase);
+                    if (!isFilledForRequestedOrder)
+                    {
+                        result = ProductionPalletFillResult.Failure("Эта паллета относится к другому заказу");
+                        return;
+                    }
+                }
 
-            if (doc.Status == DocStatus.Closed)
-            {
+                var doc = store.GetDoc(pallet.PrdDocId);
+                if (doc == null || doc.Type != DocType.ProductionReceipt)
+                {
+                    result = ProductionPalletFillResult.Failure("Документ выпуска не найден.");
+                    return;
+                }
+
+                if (doc.Status == DocStatus.Closed)
+                {
+                    if (string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+                    {
+                        result = new ProductionPalletFillResult
+                        {
+                            Success = true,
+                            AlreadyFilled = true,
+                            PrdAutoClosed = true,
+                            ClosedPrdDocId = doc.Id,
+                            ClosedPrdDocRef = doc.DocRef,
+                            Pallet = pallet,
+                            Document = BuildFillingDocument(doc.Id, store.GetProductionPalletsByDoc(doc.Id))
+                        };
+                        return;
+                    }
+
+                    result = ProductionPalletFillResult.Failure("Документ выпуска уже закрыт.");
+                    return;
+                }
+
+                if (IsCancelledPallet(pallet))
+                {
+                    result = ProductionPalletFillResult.Failure("Паллета отменена и не может быть наполнена.");
+                    return;
+                }
+
                 if (string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
                 {
-                    result = new ProductionPalletFillResult
+                    result = ApplyAutoCloseAfterFillInTransaction(store, new ProductionPalletFillResult
                     {
                         Success = true,
                         AlreadyFilled = true,
-                        PrdAutoClosed = true,
-                        ClosedPrdDocId = doc.Id,
-                        ClosedPrdDocRef = doc.DocRef,
                         Pallet = pallet,
                         Document = BuildFillingDocument(doc.Id, store.GetProductionPalletsByDoc(doc.Id))
-                    };
+                    });
                     return;
                 }
 
-                result = ProductionPalletFillResult.Failure("Документ выпуска уже закрыт.");
-                return;
-            }
+                var palletLines = GetPalletLines(pallet);
+                var docLinesById = store.GetDocLines(doc.Id).ToDictionary(line => line.Id, line => line);
+                foreach (var palletLine in palletLines)
+                {
+                    if (!docLinesById.TryGetValue(palletLine.DocLineId, out var docLine))
+                    {
+                        result = ProductionPalletFillResult.Failure("Строка паллеты не найдена в документе выпуска.");
+                        return;
+                    }
 
-            if (IsCancelledPallet(pallet))
-            {
-                result = ProductionPalletFillResult.Failure("Паллета отменена и не может быть наполнена.");
-                return;
-            }
+                    if (docLine.ItemId != palletLine.ItemId || docLine.OrderLineId != palletLine.OrderLineId)
+                    {
+                        result = ProductionPalletFillResult.Failure("План паллеты не совпадает со строкой выпуска.");
+                        return;
+                    }
 
-            if (string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
-            {
-                result = new ProductionPalletFillResult
+                    if (!docLine.ToLocationId.HasValue)
+                    {
+                        result = ProductionPalletFillResult.Failure("Для паллеты не указано место хранения.");
+                        return;
+                    }
+
+                    if (pallet.OrderId.HasValue && palletLine.OrderLineId.HasValue)
+                    {
+                        var orderLine = store.GetOrderLines(pallet.OrderId.Value)
+                            .FirstOrDefault(line => line.Id == palletLine.OrderLineId.Value);
+                        if (orderLine == null || orderLine.ItemId != palletLine.ItemId)
+                        {
+                            result = ProductionPalletFillResult.Failure("Строка заказа для паллеты не найдена.");
+                            return;
+                        }
+
+                        var alreadyFilled = GetFillGuardFilledQty(store, pallet.OrderId.Value, orderLine.Id, pallet.Id);
+                        if (alreadyFilled + palletLine.PlannedQty > orderLine.QtyOrdered + QtyTolerance)
+                        {
+                            result = ProductionPalletFillResult.Failure("Выпуск превышает остаток по строке заказа");
+                            return;
+                        }
+                    }
+                }
+
+                var filledAt = DateTime.Now;
+                store.MarkProductionPalletFilled(pallet.Id, filledAt, NormalizeDeviceId(deviceId));
+
+                var filledPallet = store.GetProductionPalletByHu(normalizedHu) ?? pallet;
+                result = ApplyAutoCloseAfterFillInTransaction(store, new ProductionPalletFillResult
                 {
                     Success = true,
-                    AlreadyFilled = true,
-                    Pallet = pallet,
+                    AlreadyFilled = false,
+                    Pallet = filledPallet,
                     Document = BuildFillingDocument(doc.Id, store.GetProductionPalletsByDoc(doc.Id))
-                };
-                return;
-            }
-
-            var palletLines = GetPalletLines(pallet);
-            var docLinesById = store.GetDocLines(doc.Id).ToDictionary(line => line.Id, line => line);
-            foreach (var palletLine in palletLines)
-            {
-                if (!docLinesById.TryGetValue(palletLine.DocLineId, out var docLine))
-                {
-                    result = ProductionPalletFillResult.Failure("Строка паллеты не найдена в документе выпуска.");
-                    return;
-                }
-
-                if (docLine.ItemId != palletLine.ItemId || docLine.OrderLineId != palletLine.OrderLineId)
-                {
-                    result = ProductionPalletFillResult.Failure("План паллеты не совпадает со строкой выпуска.");
-                    return;
-                }
-
-                if (!docLine.ToLocationId.HasValue)
-                {
-                    result = ProductionPalletFillResult.Failure("Для паллеты не указано место хранения.");
-                    return;
-                }
-
-                if (pallet.OrderId.HasValue && palletLine.OrderLineId.HasValue)
-                {
-                    var orderLine = store.GetOrderLines(pallet.OrderId.Value)
-                        .FirstOrDefault(line => line.Id == palletLine.OrderLineId.Value);
-                    if (orderLine == null || orderLine.ItemId != palletLine.ItemId)
-                    {
-                        result = ProductionPalletFillResult.Failure("Строка заказа для паллеты не найдена.");
-                        return;
-                    }
-
-                    var alreadyFilled = GetFillGuardFilledQty(store, pallet.OrderId.Value, orderLine.Id, pallet.Id);
-                    if (alreadyFilled + palletLine.PlannedQty > orderLine.QtyOrdered + QtyTolerance)
-                    {
-                        result = ProductionPalletFillResult.Failure("Выпуск превышает остаток по строке заказа");
-                        return;
-                    }
-                }
-            }
-
-            var filledAt = DateTime.Now;
-            store.MarkProductionPalletFilled(pallet.Id, filledAt, NormalizeDeviceId(deviceId));
-
-            var filledPallet = store.GetProductionPalletByHu(normalizedHu) ?? pallet;
-            result = new ProductionPalletFillResult
-            {
-                Success = true,
-                AlreadyFilled = false,
-                Pallet = filledPallet,
-                Document = BuildFillingDocument(doc.Id, store.GetProductionPalletsByDoc(doc.Id))
-            };
-        });
-
-        if (result is { Success: true, Pallet: not null })
+                });
+            });
+        }
+        catch (ProductionPalletFillRollbackException ex)
         {
-            result = ApplyAutoCloseAfterFill(result);
+            return ProductionPalletFillResult.Failure(ex.Message);
         }
 
         return result ?? ProductionPalletFillResult.Failure("Не удалось наполнить паллету.");
@@ -1197,14 +1199,16 @@ public sealed class ProductionPalletService
         return qty;
     }
 
-    private ProductionPalletFillResult ApplyAutoCloseAfterFill(ProductionPalletFillResult fillResult)
+    private ProductionPalletFillResult ApplyAutoCloseAfterFillInTransaction(
+        IDataStore store,
+        ProductionPalletFillResult fillResult)
     {
         if (_fillClose == null || fillResult.Pallet == null)
         {
             return fillResult;
         }
 
-        var autoClose = _fillClose.TryAutoCloseAfterFill(fillResult.Pallet);
+        var autoClose = _fillClose.TryAutoCloseAfterFillInTransaction(store, fillResult.Pallet);
         if (!autoClose.Attempted)
         {
             return fillResult;
@@ -1212,23 +1216,31 @@ public sealed class ProductionPalletService
 
         if (!autoClose.Success)
         {
-            return ProductionPalletFillResult.Failure(
+            throw new ProductionPalletFillRollbackException(
                 autoClose.Error ?? "Не удалось провести выпуск после наполнения.");
         }
 
-        var pallet = _data.GetProductionPalletByHu(fillResult.Pallet.HuCode) ?? fillResult.Pallet;
+        var pallet = store.GetProductionPalletByHu(fillResult.Pallet.HuCode) ?? fillResult.Pallet;
         var prdDocId = autoClose.ClosedPrdDocId ?? pallet.PrdDocId;
         return new ProductionPalletFillResult
         {
             Success = true,
             AlreadyFilled = fillResult.AlreadyFilled || autoClose.AlreadyClosed,
             Pallet = pallet,
-            Document = BuildFillingDocument(prdDocId, _data.GetProductionPalletsByDoc(prdDocId)),
+            Document = BuildFillingDocument(prdDocId, store.GetProductionPalletsByDoc(prdDocId)),
             PrdAutoClosed = true,
             ClosedPrdDocId = autoClose.ClosedPrdDocId,
             ClosedPrdDocRef = autoClose.ClosedPrdDocRef
         };
 
+    }
+
+    private sealed class ProductionPalletFillRollbackException : Exception
+    {
+        public ProductionPalletFillRollbackException(string message)
+            : base(message)
+        {
+        }
     }
 
     private Doc RequireProductionReceipt(long docId)

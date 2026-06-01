@@ -795,6 +795,8 @@
       status: String((row && row.status) || "PENDING"),
       qty: Number(row && row.qty) || 0,
       itemSummary: String(pickOutboundField(row, "itemSummary", "item_summary") || ""),
+      isMixedPallet:
+        (row && row.isMixedPallet === true) || (row && row.is_mixed_pallet === true),
       lines: Array.isArray(row && row.lines)
         ? row.lines.map(normalizeOutboundPickingLine)
         : [],

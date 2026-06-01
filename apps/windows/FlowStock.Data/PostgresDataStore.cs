@@ -4675,6 +4675,9 @@ all_candidates AS (
                     AND open_prd_doc_qty - order_qty > @qty_tolerance THEN @problem_prd_lines_exceed_order_qty
                WHEN has_closed_prd
                     AND ABS(closed_prd_doc_qty - ledger_closed_prd_qty) > @qty_tolerance THEN @problem_closed_prd_ledger_mismatch
+               WHEN pallet_filled_qty > @qty_tolerance
+                    AND has_open_prd
+                    AND ledger_open_prd_qty <= @qty_tolerance THEN @problem_filled_pallet_missing_ledger
                WHEN pallet_filled_qty > @qty_tolerance AND has_open_prd THEN @problem_filled_pallets_with_draft_prd
                ELSE NULL
            END AS problem_code,
@@ -4724,6 +4727,7 @@ candidates AS (
         command.Parameters.AddWithValue("@problem_pallets_exceed_order_qty", ProductionPlanConsistencyProblemCode.PalletsExceedOrderQty);
         command.Parameters.AddWithValue("@problem_prd_lines_exceed_order_qty", ProductionPlanConsistencyProblemCode.PrdLinesExceedOrderQty);
         command.Parameters.AddWithValue("@problem_filled_pallets_with_draft_prd", ProductionPlanConsistencyProblemCode.FilledPalletsWithDraftPrd);
+        command.Parameters.AddWithValue("@problem_filled_pallet_missing_ledger", ProductionPlanConsistencyProblemCode.FilledPalletMissingLedger);
         command.Parameters.AddWithValue("@problem_shipped_customer_with_open_prd", ProductionPlanConsistencyProblemCode.ShippedCustomerWithOpenPrd);
         command.Parameters.AddWithValue("@problem_merged_order_with_pallet_plan", ProductionPlanConsistencyProblemCode.MergedOrderWithPalletPlan);
         command.Parameters.AddWithValue("@problem_closed_prd_ledger_mismatch", ProductionPlanConsistencyProblemCode.ClosedPrdLedgerMismatch);
@@ -4741,6 +4745,8 @@ candidates AS (
                 "Active PRD document lines exceed current order quantity. Review draft PRD lines and order redistribution before closing.",
             ProductionPlanConsistencyProblemCode.FilledPalletsWithDraftPrd =>
                 "Filled pallet ledger exists while PRD is still open. If quantities are aligned, close the PRD; otherwise review diagnostics before closing.",
+            ProductionPlanConsistencyProblemCode.FilledPalletMissingLedger =>
+                "Filled production pallet has an open PRD and no positive receipt ledger. Use controlled maintenance repair; do not edit ledger manually.",
             ProductionPlanConsistencyProblemCode.ShippedCustomerWithOpenPrd =>
                 "Customer order is already shipped but has an open PRD/pallet plan. Review and cancel or repair the open production plan.",
             ProductionPlanConsistencyProblemCode.MergedOrderWithPalletPlan =>

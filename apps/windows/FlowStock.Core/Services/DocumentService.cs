@@ -2938,16 +2938,22 @@ public sealed class DocumentService
         var docLinesById = docLines.ToDictionary(line => line.Id, line => line);
         var metricsByPalletId = store.GetFilledProductionPalletStockMetrics()
             .Where(metrics => metrics.PrdDocId == docId)
-            .ToDictionary(metrics => metrics.PalletId, metrics => metrics);
+            .GroupBy(metrics => metrics.PalletId)
+            .ToDictionary(group => group.Key, group => group.ToArray());
 
         foreach (var pallet in pallets
                      .Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
         {
-            metricsByPalletId.TryGetValue(pallet.Id, out var stockMetrics);
-            if (stockMetrics != null)
+            if (metricsByPalletId.TryGetValue(pallet.Id, out var stockMetrics))
             {
-                var analysis = ProductionPalletStockBackfillDecision.Analyze(stockMetrics);
-                if (string.Equals(analysis.Decision, ProductionPalletStockBackfillDecisionCodes.AlreadyShippedSkip, StringComparison.OrdinalIgnoreCase))
+                var analyses = stockMetrics
+                    .Select(ProductionPalletStockBackfillDecision.Analyze)
+                    .ToArray();
+                if (analyses.Length > 0
+                    && analyses.All(analysis => string.Equals(
+                        analysis.Decision,
+                        ProductionPalletStockBackfillDecisionCodes.AlreadyShippedSkip,
+                        StringComparison.OrdinalIgnoreCase)))
                 {
                     continue;
                 }
