@@ -662,6 +662,51 @@ public sealed class WpfReadApiService
         }
     }
 
+    public bool TryApplyFinalHuBindings(
+        long customerOrderId,
+        IReadOnlyList<WpfHuBindingApplyFinalLineRequest> lines,
+        out WpfHuBindingApplyFinalResult? result,
+        out WpfHuBindingApplyFinalError? error)
+    {
+        result = null;
+        error = null;
+        var request = new WpfHuBindingApplyFinalRequest { Lines = lines };
+
+        try
+        {
+            var configuration = LoadConfiguration();
+            if (!configuration.IsConfigured)
+            {
+                _logger.Info("WPF read API skipped for hu-bindings-apply-final: server base URL is not configured.");
+                return false;
+            }
+
+            var path = $"/api/orders/{customerOrderId}/hu-bindings/apply-final";
+            if (!TrySendRequest(path, configuration, HttpMethod.Post, request, out _, out var json))
+            {
+                if (!string.IsNullOrWhiteSpace(json))
+                {
+                    TryMapHuBindingApplyFinalError(json, out error);
+                }
+
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return false;
+            }
+
+            using var payload = JsonDocument.Parse(json);
+            return TryMapHuBindingApplyFinalSuccess(payload.RootElement, out result);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("WPF read API failed for hu-bindings-apply-final", ex);
+            return false;
+        }
+    }
+
     private bool TryRead<T>(
         string relativePath,
         Func<JsonElement, T> map,
@@ -863,6 +908,62 @@ public sealed class WpfReadApiService
             using var document = JsonDocument.Parse(json);
             var root = document.RootElement;
             error = new WpfHuReservationApplyError
+            {
+                ErrorCode = ReadString(root, "error") ?? string.Empty,
+                Message = ReadString(root, "message") ?? string.Empty,
+                Problems = ReadStringArray(root, "problems")
+            };
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryMapHuBindingApplyFinalSuccess(JsonElement root, out WpfHuBindingApplyFinalResult? result)
+    {
+        if (!ReadBool(root, "ok"))
+        {
+            result = null;
+            return false;
+        }
+
+        var appliedLines = root.TryGetProperty("applied_lines", out var linesElement) && linesElement.ValueKind == JsonValueKind.Array
+            ? linesElement.EnumerateArray().Select(MapHuBindingApplyFinalLine).ToArray()
+            : Array.Empty<WpfHuBindingApplyFinalLineResult>();
+        result = new WpfHuBindingApplyFinalResult
+        {
+            Ok = true,
+            OrderId = ReadInt64(root, "order_id"),
+            AppliedLines = appliedLines,
+            Warnings = ReadStringArray(root, "warnings")
+        };
+        return true;
+    }
+
+    private static WpfHuBindingApplyFinalLineResult MapHuBindingApplyFinalLine(JsonElement element) =>
+        new()
+        {
+            OrderLineId = ReadInt64(element, "order_line_id"),
+            ItemId = ReadInt64(element, "item_id"),
+            PreviousHuCodes = ReadStringArray(element, "previous_hu_codes"),
+            FinalHuCodes = ReadStringArray(element, "final_hu_codes"),
+            BoundHuCodes = ReadStringArray(element, "bound_hu_codes"),
+            DetachedHuCodes = ReadStringArray(element, "detached_hu_codes"),
+            ReservedQty = ReadDouble(element, "reserved_qty"),
+            CancelledPlannedPalletCount = ReadInt32(element, "cancelled_planned_pallet_count"),
+            RestoredPlannedQty = ReadDouble(element, "restored_planned_qty")
+        };
+
+    private static bool TryMapHuBindingApplyFinalError(string json, out WpfHuBindingApplyFinalError? error)
+    {
+        error = null;
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            error = new WpfHuBindingApplyFinalError
             {
                 ErrorCode = ReadString(root, "error") ?? string.Empty,
                 Message = ReadString(root, "message") ?? string.Empty,

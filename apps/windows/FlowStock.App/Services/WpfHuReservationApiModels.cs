@@ -104,3 +104,54 @@ public sealed class WpfHuReservationApplyError
     public string Message { get; init; } = string.Empty;
     public IReadOnlyList<string> Problems { get; init; } = Array.Empty<string>();
 }
+
+public sealed class WpfHuBindingApplyFinalRequest
+{
+    [JsonPropertyName("mode")]
+    public string Mode { get; init; } = "replace_final_selection";
+
+    [JsonPropertyName("lines")]
+    public IReadOnlyList<WpfHuBindingApplyFinalLineRequest> Lines { get; init; } =
+        Array.Empty<WpfHuBindingApplyFinalLineRequest>();
+}
+
+public sealed class WpfHuBindingApplyFinalLineRequest
+{
+    [JsonPropertyName("order_line_id")]
+    public long OrderLineId { get; init; }
+
+    [JsonPropertyName("expected_bound_hu_codes")]
+    public IReadOnlyList<string> ExpectedBoundHuCodes { get; init; } = Array.Empty<string>();
+
+    [JsonPropertyName("final_hu_codes")]
+    public IReadOnlyList<string> FinalHuCodes { get; init; } = Array.Empty<string>();
+}
+
+public sealed class WpfHuBindingApplyFinalResult
+{
+    public bool Ok { get; init; }
+    public long OrderId { get; init; }
+    public IReadOnlyList<WpfHuBindingApplyFinalLineResult> AppliedLines { get; init; } =
+        Array.Empty<WpfHuBindingApplyFinalLineResult>();
+    public IReadOnlyList<string> Warnings { get; init; } = Array.Empty<string>();
+}
+
+public sealed class WpfHuBindingApplyFinalLineResult
+{
+    public long OrderLineId { get; init; }
+    public long ItemId { get; init; }
+    public IReadOnlyList<string> PreviousHuCodes { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> FinalHuCodes { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> BoundHuCodes { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> DetachedHuCodes { get; init; } = Array.Empty<string>();
+    public double ReservedQty { get; init; }
+    public int CancelledPlannedPalletCount { get; init; }
+    public double RestoredPlannedQty { get; init; }
+}
+
+public sealed class WpfHuBindingApplyFinalError
+{
+    public string ErrorCode { get; init; } = string.Empty;
+    public string Message { get; init; } = string.Empty;
+    public IReadOnlyList<string> Problems { get; init; } = Array.Empty<string>();
+}

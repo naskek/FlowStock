@@ -31,6 +31,50 @@ public sealed class WpfHuReservationApiGuardTests
     }
 
     [Fact]
+    public void WpfReadApiService_BuildsHuBindingsApplyFinalRequest()
+    {
+        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "Services", "WpfReadApiService.cs");
+        var models = ReadRepoFile("apps", "windows", "FlowStock.App", "Services", "WpfHuReservationApiModels.cs");
+
+        Assert.Contains("TryApplyFinalHuBindings(", source);
+        Assert.Contains("/hu-bindings/apply-final", source);
+        Assert.Contains("replace_final_selection", models);
+        Assert.Contains("[JsonPropertyName(\"expected_bound_hu_codes\")]", models);
+        Assert.Contains("[JsonPropertyName(\"final_hu_codes\")]", models);
+        Assert.Contains("TryMapHuBindingApplyFinalError", source);
+        Assert.Contains("ReadStringArray(root, \"problems\")", source);
+    }
+
+    [Fact]
+    public void OrderDetailsWindow_ExposesOrderScopedHuBindingButtonForCustomerOnly()
+    {
+        var xaml = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml");
+        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs");
+
+        Assert.Contains("x:Name=\"ReadyHuBindingButton\"", xaml);
+        Assert.Contains("Content=\"Привязка HU\"", xaml);
+        Assert.Contains("ReadyHuBinding_Click", source);
+        Assert.Contains("ReadyHuBindingButton.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;", source);
+        Assert.Contains("&& !_hasUnsavedChanges", source);
+        Assert.Contains("new ReadyHuBindingWindow(_services, _orderId.Value)", source);
+    }
+
+    [Fact]
+    public void ReadyHuBindingWindow_UsesApplyFinalAndNotLegacyApply()
+    {
+        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "ReadyHuBindingWindow.xaml.cs");
+        var session = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderScopedHuBindingSession.cs");
+
+        Assert.Contains("TryApplyFinalHuBindings", source);
+        Assert.Contains("BuildApplyFinalLines", session);
+        Assert.Contains("ExpectedBoundHuCodes", session);
+        Assert.Contains("FinalHuCodes", session);
+        Assert.Contains("Список HU изменился. Обновите заказ и повторите действие.", source);
+        Assert.DoesNotContain("TryApplyHuReservations", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("/hu-reservations/apply", source, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void OrderDetailsWindow_KeepsLegacyExplicitHuBindingFlow()
     {
         var source = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs");
