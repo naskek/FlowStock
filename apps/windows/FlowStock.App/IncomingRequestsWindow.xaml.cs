@@ -229,6 +229,21 @@ public partial class IncomingRequestsWindow : Window
         LoadRequests();
     }
 
+    private void ManualReadyHuBinding_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_services.WpfReadApi.TryGetReadyHuBindingReadModel(out var readyHuBinding))
+        {
+            MessageBox.Show(
+                "Не удалось загрузить список готовых HU. Проверьте подключение к серверу и повторите действие.",
+                "Привязка готовых HU",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        OpenGlobalReadyHuBinding(readyHuBinding);
+    }
+
     private void Details_Click(object sender, RoutedEventArgs e)
     {
         if (RequestsGrid.SelectedItem is not IncomingRequestRow row)

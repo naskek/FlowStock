@@ -88,6 +88,9 @@ public sealed class WpfHuReservationApiGuardTests
         var builder = ReadRepoFile("apps", "windows", "FlowStock.App", "IncomingRequestsRowsBuilder.cs");
 
         Assert.Contains("RequestTypeFilterCombo", xaml);
+        Assert.Contains("Привязка готовых HU", xaml);
+        Assert.Contains("ManualReadyHuBinding_Click", source);
+        Assert.Contains("TryGetReadyHuBindingReadModel(out var readyHuBinding)", source);
         Assert.Contains("Готовые HU", source);
         Assert.Contains("TryGetReadyHuBindingReadModel", source);
         Assert.Contains("READY_HU_BINDING_AVAILABLE", builder);
@@ -95,6 +98,8 @@ public sealed class WpfHuReservationApiGuardTests
         Assert.Contains("CanReject = false", builder);
         Assert.Contains("CanOpenDetails = true", builder);
         Assert.Contains("OpenGlobalReadyHuBinding", source);
+        Assert.Contains("OpenGlobalReadyHuBinding(readyHuBinding)", source);
+        Assert.Contains("OpenGlobalReadyHuBinding(row.ReadyHuBinding)", source);
         Assert.Contains("new GlobalReadyHuBindingWindow(_services, readyHuBinding)", source);
         Assert.DoesNotContain("new ReadyHuBindingWindow", source, StringComparison.Ordinal);
         Assert.DoesNotContain("TryApplyFinalHuBindings", source, StringComparison.Ordinal);

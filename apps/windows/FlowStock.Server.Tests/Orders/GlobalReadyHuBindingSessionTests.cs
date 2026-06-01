@@ -5,6 +5,23 @@ namespace FlowStock.Server.Tests.Orders;
 public sealed class GlobalReadyHuBindingSessionTests
 {
     [Fact]
+    public void EmptyReadyHuModelBuildsEmptySession()
+    {
+        var session = new GlobalReadyHuBindingSession(new WpfReadyHuBindingReadModel
+        {
+            RequestType = "READY_HU_BINDING_AVAILABLE",
+            HuCount = 0,
+            OrderCount = 0,
+            LineCount = 0
+        });
+
+        Assert.Empty(session.CandidateGroups);
+        Assert.Empty(session.CompatibleOrderGroups);
+        Assert.Empty(session.StagedBindings);
+        Assert.False(session.HasStagedChanges);
+    }
+
+    [Fact]
     public void SelectHu_ExposesOnlyCompatibleOrdersAndLines()
     {
         var session = new GlobalReadyHuBindingSession(BuildReadModel());
