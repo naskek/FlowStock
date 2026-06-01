@@ -79,6 +79,7 @@ OrderLinesEndpoint.Map(app);
 OrderHuReservationCandidatesEndpoint.Map(app);
 OrderHuReservationApplyEndpoint.Map(app);
 OrderHuBindingApplyFinalEndpoint.Map(app);
+ReadyHuBindingEndpoint.Map(app);
 ProductionNeedCreateOrdersEndpoint.Map(app);
 NewLedgerTransitionEndpoints.Map(app);
 MaintenanceBackfillEndpoints.Map(app);
@@ -2285,11 +2286,13 @@ app.MapGet("/api/requests/summary", (IDataStore store) =>
 {
     var itemCount = store.GetItemRequests(false).Count;
     var orderCount = store.GetOrderRequests(false).Count;
+    var readyHuBindingPending = ReadyHuBindingEndpoint.CountPendingNotifications(store);
     return Results.Ok(new
     {
         item_requests_pending = itemCount,
         order_requests_pending = orderCount,
-        total_pending = itemCount + orderCount
+        ready_hu_binding_pending = readyHuBindingPending,
+        total_pending = itemCount + orderCount + readyHuBindingPending
     });
 });
 
