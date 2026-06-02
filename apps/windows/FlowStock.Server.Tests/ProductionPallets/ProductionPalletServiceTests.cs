@@ -136,7 +136,7 @@ public sealed class ProductionPalletServiceTests
         Assert.False(result.ProductionRequired);
         Assert.Equal("Заказ покрыт складскими остатками, производство не требуется.", result.Message);
         Assert.Equal(0, result.PrdDocId);
-        Assert.Empty(harness.Store.GetDocsByOrder(10).Where(doc => doc.Type == DocType.ProductionReceipt));
+        Assert.DoesNotContain(harness.Store.GetDocsByOrder(10), doc => doc.Type == DocType.ProductionReceipt);
     }
 
     [Fact]
@@ -1600,7 +1600,7 @@ public sealed class ProductionPalletServiceTests
         _ = service.GetPrintRows(78);
 
         Assert.Equal(docsBefore, harness.Store.GetDocsByOrder(78).Count);
-        Assert.False(harness.Store.GetDocsByOrder(78).Any(doc => harness.Store.HasProductionPallets(doc.Id)));
+        Assert.DoesNotContain(harness.Store.GetDocsByOrder(78), doc => harness.Store.HasProductionPallets(doc.Id));
         Assert.Empty(harness.LedgerEntries);
     }
 
