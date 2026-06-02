@@ -178,7 +178,7 @@ public sealed class ProductionPalletService
         long existingPrdDocId = 0)
     {
         prdDocId = existingPrdDocId;
-        var remainingLines = GetLinesNeedingPalletAppend(store, order, prdDocId == 0 ? null : prdDocId);
+        var remainingLines = GetLinesNeedingPalletAppend(store, order);
         if (scopedOrderLineIds is { Count: > 0 })
         {
             var scoped = scopedOrderLineIds.Where(id => id > 0).ToHashSet();
@@ -1563,8 +1563,7 @@ public sealed class ProductionPalletService
 
     internal static IReadOnlyList<OrderReceiptLine> GetLinesNeedingPalletAppend(
         IDataStore store,
-        Order order,
-        long? prdDocId)
+        Order order)
     {
         var orderLinesById = store.GetOrderLines(order.Id)
             .Where(line => line.QtyOrdered > QtyTolerance)
@@ -1573,10 +1572,6 @@ public sealed class ProductionPalletService
         {
             return Array.Empty<OrderReceiptLine>();
         }
-
-        var pallets = prdDocId.HasValue && prdDocId.Value > 0
-            ? store.GetProductionPalletsByDoc(prdDocId.Value)
-            : Array.Empty<ProductionPallet>();
 
         if (order.Type == OrderType.Customer)
         {
@@ -1618,7 +1613,10 @@ public sealed class ProductionPalletService
                 .ToList();
         }
 
-        if (pallets.Count == 0)
+        var activePalletsByOrder = GetProductionPalletsByOrder(store, order.Id)
+            .Where(IsActiveProductionPalletCoverage)
+            .ToArray();
+        if (activePalletsByOrder.Length == 0)
         {
             return OrderReceiptRemainingCalculator.GetRemaining(store, order)
                 .Where(line => line.QtyRemaining > QtyTolerance)
@@ -1626,13 +1624,14 @@ public sealed class ProductionPalletService
                 .ToList();
         }
 
+        var receiptLinesByOrderLineId = OrderReceiptRemainingCalculator.GetRemaining(store, order)
+            .ToDictionary(line => line.OrderLineId, line => line);
         return orderLinesById.Values
             .Select(orderLine =>
             {
-                var coveredQty = SumActivePalletQtyForOrderLine(pallets, orderLine.Id);
+                var coveredQty = SumPalletQtyForOrderLine(activePalletsByOrder, orderLine.Id);
                 var missingQty = Math.Max(0, orderLine.QtyOrdered - coveredQty);
-                var receiptLine = OrderReceiptRemainingCalculator.GetRemaining(store, order)
-                    .FirstOrDefault(line => line.OrderLineId == orderLine.Id);
+                receiptLinesByOrderLineId.TryGetValue(orderLine.Id, out var receiptLine);
                 return new OrderReceiptLine
                 {
                     OrderLineId = orderLine.Id,
@@ -1745,36 +1744,33 @@ public sealed class ProductionPalletService
             .Where(pallet =>
                 string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase))
-            .Where(pallet => pallet.OrderLineId == orderLineId
-                             || pallet.Lines.Any(line => line.OrderLineId == orderLineId))
+            .Where(pallet => PalletAppliesToOrderLine(pallet, orderLineId))
             .OrderBy(pallet => pallet.Id)
             .ToArray();
     }
 
     private static double ResolvePalletQtyForOrderLine(ProductionPallet pallet, long orderLineId)
     {
-        var componentQty = pallet.Lines
-            .Where(line => line.OrderLineId == orderLineId)
-            .Sum(line => Math.Max(0, line.PlannedQty));
-        return componentQty > QtyTolerance ? componentQty : Math.Max(0, pallet.PlannedQty);
-    }
+        if (pallet.Lines.Count > 0)
+        {
+            return pallet.Lines
+                .Where(line => line.OrderLineId == orderLineId)
+                .Sum(line => Math.Max(0, line.PlannedQty));
+        }
 
-    private static double SumActivePalletQtyForOrderLine(IReadOnlyList<ProductionPallet> pallets, long orderLineId)
-    {
-        return pallets
-            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
-            .Where(pallet => PalletAppliesToOrderLine(pallet, orderLineId))
-            .Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
+        return pallet.OrderLineId == orderLineId
+            ? Math.Max(0, pallet.PlannedQty)
+            : 0;
     }
 
     private static bool PalletAppliesToOrderLine(ProductionPallet pallet, long orderLineId)
     {
-        if (pallet.OrderLineId == orderLineId)
+        if (pallet.Lines.Count > 0)
         {
-            return true;
+            return pallet.Lines.Any(line => line.OrderLineId == orderLineId);
         }
 
-        return GetPalletLines(pallet).Any(line => line.OrderLineId == orderLineId);
+        return pallet.OrderLineId == orderLineId;
     }
 
     private static void AddMixedPlannedPalletLines(

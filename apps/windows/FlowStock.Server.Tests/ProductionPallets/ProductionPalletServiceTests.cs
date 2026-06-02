@@ -645,6 +645,168 @@ public sealed class ProductionPalletServiceTests
     }
 
     [Fact]
+    public void PlanOrder_InternalFilledPalletMovedToDedicatedPrd_CountsAsCoverage()
+    {
+        var harness = CreateHarnessWithOrderOnly(orderQty: 1200, maxQtyPerHu: 600);
+        var palletService = CreateAutoClosePalletService(harness);
+        var plan = palletService.PlanOrder(10);
+        var first = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId)
+            .OrderBy(pallet => pallet.Id)
+            .First();
+
+        var fill = palletService.Fill(first.HuCode, "TSD-01", orderId: 10, prdDocId: plan.PrdDocId);
+        var beforeIds = GetActivePalletsByOrder(harness, 10)
+            .Select(pallet => pallet.Id)
+            .Order()
+            .ToArray();
+
+        var replan = palletService.PlanOrder(10);
+        var after = GetActivePalletsByOrder(harness, 10);
+
+        Assert.True(fill.Success, fill.Error);
+        Assert.NotEqual(plan.PrdDocId, fill.ClosedPrdDocId);
+        Assert.Equal(plan.PrdDocId, replan.PrdDocId);
+        Assert.Equal(beforeIds, after.Select(pallet => pallet.Id).Order().ToArray());
+        Assert.Equal(2, after.Count);
+        Assert.Contains(after, pallet =>
+            pallet.Id == first.Id
+            && pallet.PrdDocId == fill.ClosedPrdDocId
+            && pallet.Status == ProductionPalletStatus.Filled);
+        Assert.Equal(1200, after.Sum(pallet => pallet.PlannedQty), 3);
+    }
+
+    [Fact]
+    public void PlanOrder_InternalFiveLinesWithDedicatedFilledPallets_PlansOnlyIncreasedLineDelta()
+    {
+        var harness = CreateHarnessWithFiveInternalOrderLines();
+        var palletService = CreateAutoClosePalletService(harness);
+        var plan = palletService.PlanOrder(10);
+        var initialPallets = GetActivePalletsByOrder(harness, 10);
+        var husToFill = initialPallets
+            .Where(pallet => pallet.OrderLineId is 101 or 102 or 103)
+            .OrderBy(pallet => pallet.Id)
+            .Select(pallet => pallet.HuCode)
+            .ToArray();
+
+        foreach (var huCode in husToFill)
+        {
+            var fill = palletService.Fill(huCode, "TSD-01", orderId: 10, prdDocId: plan.PrdDocId);
+            Assert.True(fill.Success, fill.Error);
+        }
+
+        harness.Store.UpdateOrderLineQty(103, 1800);
+        var before = GetActivePalletsByOrder(harness, 10);
+        var beforeIds = before.Select(pallet => pallet.Id).ToHashSet();
+
+        var replan = palletService.PlanOrder(10);
+        var after = GetActivePalletsByOrder(harness, 10);
+        var created = after
+            .Where(pallet => !beforeIds.Contains(pallet.Id))
+            .ToArray();
+        var afterSecondIds = after.Select(pallet => pallet.Id).Order().ToArray();
+        palletService.PlanOrder(10);
+        var afterThirdIds = GetActivePalletsByOrder(harness, 10)
+            .Select(pallet => pallet.Id)
+            .Order()
+            .ToArray();
+
+        Assert.Equal(plan.PrdDocId, replan.PrdDocId);
+        var createdPallet = Assert.Single(created);
+        Assert.Equal(103, createdPallet.OrderLineId);
+        Assert.Equal(600, createdPallet.PlannedQty, 3);
+        Assert.Equal(ProductionPalletStatus.Planned, createdPallet.Status);
+        Assert.Equal(before.Count + 1, after.Count);
+        Assert.Equal(1, after.Count(pallet => pallet.OrderLineId == 101));
+        Assert.Equal(3, after.Count(pallet => pallet.OrderLineId == 102));
+        Assert.Equal(3, after.Count(pallet => pallet.OrderLineId == 103));
+        Assert.Equal(1824, after.Where(pallet => pallet.OrderLineId == 101).Sum(pallet => pallet.PlannedQty), 3);
+        Assert.Equal(1134, after.Where(pallet => pallet.OrderLineId == 102).Sum(pallet => pallet.PlannedQty), 3);
+        Assert.Equal(1800, after.Where(pallet => pallet.OrderLineId == 103).Sum(pallet => pallet.PlannedQty), 3);
+        Assert.Equal(afterSecondIds, afterThirdIds);
+    }
+
+    [Fact]
+    public void PlanOrder_InternalPrintedPalletCountsAsCoverage()
+    {
+        var harness = CreateHarnessWithOrderOnly(orderQty: 600, maxQtyPerHu: 600);
+        var palletService = new ProductionPalletService(harness.Store);
+        var plan = palletService.PlanOrder(10);
+        palletService.MarkPrinted(10, new DateTime(2026, 5, 13, 11, 0, 0));
+        var beforeIds = GetActivePalletsByOrder(harness, 10)
+            .Select(pallet => pallet.Id)
+            .Order()
+            .ToArray();
+
+        palletService.PlanOrder(10);
+        var after = GetActivePalletsByOrder(harness, 10);
+
+        Assert.Equal(beforeIds, after.Select(pallet => pallet.Id).Order().ToArray());
+        var pallet = Assert.Single(after);
+        Assert.Equal(plan.PrdDocId, pallet.PrdDocId);
+        Assert.Equal(ProductionPalletStatus.Printed, pallet.Status);
+    }
+
+    [Fact]
+    public void PlanOrder_InternalCancelledPalletDoesNotCountAsCoverage()
+    {
+        var harness = CreateHarnessWithOrderOnly(orderQty: 600, maxQtyPerHu: 600);
+        var palletService = new ProductionPalletService(harness.Store);
+        var plan = palletService.PlanOrder(10);
+        var cancelled = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId));
+        harness.Store.CancelProductionPallets([cancelled.Id]);
+
+        var replan = palletService.PlanOrder(10);
+        var allPallets = harness.Store.GetDocsByOrder(10)
+            .Where(doc => doc.Type == DocType.ProductionReceipt)
+            .SelectMany(doc => harness.Store.GetProductionPalletsByDoc(doc.Id))
+            .ToArray();
+        var active = allPallets
+            .Where(pallet => pallet.Status != ProductionPalletStatus.Cancelled)
+            .ToArray();
+
+        Assert.Contains(allPallets, pallet => pallet.Id == cancelled.Id && pallet.Status == ProductionPalletStatus.Cancelled);
+        var activePallet = Assert.Single(active);
+        Assert.Equal(600, activePallet.PlannedQty, 3);
+        Assert.Equal(replan.PrdDocId, activePallet.PrdDocId);
+    }
+
+    [Fact]
+    public void PlanOrder_MixedComponentCoverageCountsByComponentOrderLine()
+    {
+        var harness = CreateHarnessWithMixedOrderOnly();
+        var palletService = new ProductionPalletService(harness.Store);
+        var plan = palletService.PlanOrder(10);
+        var mixedPallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId));
+        harness.Store.UpdateOrderLineQty(101, 900);
+
+        palletService.PlanOrder(10);
+        var pallets = GetActivePalletsByOrder(harness, 10);
+        var created = Assert.Single(pallets.Where(pallet => pallet.Id != mixedPallet.Id));
+
+        Assert.Equal(101, created.OrderLineId);
+        Assert.Equal(600, created.PlannedQty, 3);
+        Assert.Equal(900, SumTestCoverageByOrderLine(pallets, 101), 3);
+        Assert.Equal(200, SumTestCoverageByOrderLine(pallets, 102), 3);
+    }
+
+    [Fact]
+    public void PlanOrder_ComponentPalletIgnoresHeaderOrderLineWhenLinesExist()
+    {
+        var harness = CreateHarnessWithComponentHeaderMismatch();
+        var palletService = new ProductionPalletService(harness.Store);
+
+        var replan = palletService.PlanOrder(10);
+        var active = GetActivePalletsByOrder(harness, 10);
+        var created = Assert.Single(active.Where(pallet => pallet.Id != 1));
+
+        Assert.Equal(20, replan.PrdDocId);
+        Assert.Equal(101, created.OrderLineId);
+        Assert.Equal(600, created.PlannedQty, 3);
+        Assert.Equal(600, SumTestCoverageByOrderLine(active, 101), 3);
+        Assert.Equal(200, SumTestCoverageByOrderLine(active, 102), 3);
+    }
+
+    [Fact]
     public void PlanOrder_GeneratesHuAfterExistingHuNumber()
     {
         var harness = CreateHarnessWithOrderOnly(orderQty: 600, maxQtyPerHu: 600);
@@ -1587,6 +1749,43 @@ public sealed class ProductionPalletServiceTests
             }).ToArray());
     }
 
+    private static ProductionPalletService CreateAutoClosePalletService(CloseDocumentHarness harness)
+    {
+        var documents = harness.CreateService();
+        var fillClose = new ProductionFillCloseService(
+            harness.Store,
+            documents,
+            new FlowStockLedgerFlowOptions { ProductionAutoCloseOnFill = true });
+        return new ProductionPalletService(harness.Store, fillClose);
+    }
+
+    private static IReadOnlyList<ProductionPallet> GetActivePalletsByOrder(CloseDocumentHarness harness, long orderId)
+    {
+        return harness.Store.GetDocsByOrder(orderId)
+            .Where(doc => doc.Type == DocType.ProductionReceipt)
+            .SelectMany(doc => harness.Store.GetProductionPalletsByDoc(doc.Id))
+            .Where(pallet => pallet.Status != ProductionPalletStatus.Cancelled)
+            .OrderBy(pallet => pallet.Id)
+            .ToArray();
+    }
+
+    private static double SumTestCoverageByOrderLine(IEnumerable<ProductionPallet> pallets, long orderLineId)
+    {
+        return pallets.Sum(pallet =>
+        {
+            if (pallet.Lines.Count > 0)
+            {
+                return pallet.Lines
+                    .Where(line => line.OrderLineId == orderLineId)
+                    .Sum(line => Math.Max(0, line.PlannedQty));
+            }
+
+            return pallet.OrderLineId == orderLineId
+                ? Math.Max(0, pallet.PlannedQty)
+                : 0;
+        });
+    }
+
     private static void SeedExistingCustomerPalletPlan(
         CloseDocumentHarness harness,
         double plannedQty,
@@ -1631,6 +1830,120 @@ public sealed class ProductionPalletServiceTests
                 ? new DateTime(2026, 5, 25, 10, 0, 0)
                 : null,
             CreatedAt = new DateTime(2026, 5, 25, 9, 0, 0)
+        });
+    }
+
+    private static CloseDocumentHarness CreateHarnessWithFiveInternalOrderLines()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedLocation(new Location { Id = 1, Code = "MAIN", Name = "Основной склад" });
+        harness.SeedOrder(new Order
+        {
+            Id = 10,
+            OrderRef = "104",
+            Type = OrderType.Internal,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 5, 26, 8, 0, 0)
+        });
+
+        SeedInternalItemAndLine(harness, 101, 100, "Аджика, Печагин, 200 гр", 1824, 1824);
+        SeedInternalItemAndLine(harness, 102, 200, "Аджика Печагин, 1 кг", 1134, 378);
+        SeedInternalItemAndLine(harness, 103, 300, "Линия с увеличением", 1200, 600);
+        SeedInternalItemAndLine(harness, 104, 400, "Плановая линия 4", 600, 600);
+        SeedInternalItemAndLine(harness, 105, 500, "Плановая линия 5", 600, 600);
+        return harness;
+    }
+
+    private static CloseDocumentHarness CreateHarnessWithComponentHeaderMismatch()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedLocation(new Location { Id = 1, Code = "MAIN", Name = "Основной склад" });
+        harness.SeedOrder(new Order
+        {
+            Id = 10,
+            OrderRef = "056",
+            Type = OrderType.Internal,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 5, 13, 8, 0, 0)
+        });
+        SeedInternalItemAndLine(harness, 101, 100, "Товар", 600, 600);
+        SeedInternalItemAndLine(harness, 102, 200, "Добавка", 200, 400);
+        harness.SeedDoc(new Doc
+        {
+            Id = 20,
+            DocRef = "PRD-2026-000001",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 10,
+            OrderRef = "056",
+            CreatedAt = new DateTime(2026, 5, 13, 9, 0, 0)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 201,
+            DocId = 20,
+            OrderLineId = 102,
+            ItemId = 200,
+            Qty = 200,
+            ToLocationId = 1,
+            ToHu = "HU-0000201",
+            PackSingleHu = true
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 1,
+            PrdDocId = 20,
+            DocLineId = 201,
+            OrderId = 10,
+            OrderLineId = 101,
+            ItemId = 200,
+            ItemName = "Добавка",
+            HuCode = "HU-0000201",
+            PlannedQty = 800,
+            ToLocationId = 1,
+            ToLocationCode = "MAIN",
+            Status = ProductionPalletStatus.Planned,
+            CreatedAt = new DateTime(2026, 5, 13, 9, 0, 0),
+            Lines =
+            [
+                new ProductionPalletComponentLine
+                {
+                    Id = 1001,
+                    ProductionPalletId = 1,
+                    DocLineId = 201,
+                    OrderLineId = 102,
+                    ItemId = 200,
+                    ItemName = "Добавка",
+                    PlannedQty = 200,
+                    CreatedAt = new DateTime(2026, 5, 13, 9, 0, 0)
+                }
+            ]
+        });
+        return harness;
+    }
+
+    private static void SeedInternalItemAndLine(
+        CloseDocumentHarness harness,
+        long orderLineId,
+        long itemId,
+        string itemName,
+        double qtyOrdered,
+        double maxQtyPerHu)
+    {
+        harness.SeedItem(new Item
+        {
+            Id = itemId,
+            Name = itemName,
+            Brand = "Печагин",
+            BaseUom = "шт",
+            MaxQtyPerHu = maxQtyPerHu
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = orderLineId,
+            OrderId = 10,
+            ItemId = itemId,
+            QtyOrdered = qtyOrdered
         });
     }
 
