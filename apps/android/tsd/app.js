@@ -1784,6 +1784,52 @@
     }
   }
 
+  function getBackRouteForRoute(route, origin) {
+    if (!route) {
+      return "/home";
+    }
+    if (route.name === "home") {
+      return "/home";
+    }
+    if (route.name === "operations") {
+      return "/home";
+    }
+    if (route.name === "filling") {
+      return "/operations";
+    }
+    if (route.name === "fillingDoc") {
+      return "/filling";
+    }
+    if (route.name === "outbound") {
+      return "/operations";
+    }
+    if (route.name === "outboundOrder") {
+      return "/outbound";
+    }
+    if (route.name === "docs") {
+      return "/operations";
+    }
+    if (route.name === "doc" || route.name === "new") {
+      if (origin === "history") {
+        return "/docs";
+      }
+      if (origin === "operations") {
+        return "/operations";
+      }
+      return "/home";
+    }
+    if (route.name === "orders") {
+      return "/home";
+    }
+    if (route.name === "order") {
+      return "/orders";
+    }
+    if (route.name === "stock" || route.name === "settings" || route.name === "items") {
+      return "/home";
+    }
+    return "/home";
+  }
+
   function renderRoute() {
     setScanHandler(null);
     setScanInputHandlers(null, null);
@@ -2114,9 +2160,16 @@
             applySoftKeyboardSetting(app);
             return;
           }
-          return TsdStorage.listOrderLines(route.id)
-            .then(function (lines) {
-              app.innerHTML = renderOrderDetails(order, lines || []);
+          return Promise.all([
+            TsdStorage.listOrderLines(route.id),
+            TsdStorage.apiGetOrderBoundHu
+              ? TsdStorage.apiGetOrderBoundHu(route.id).catch(function () {
+                  return [];
+                })
+              : Promise.resolve([]),
+          ])
+            .then(function (results) {
+              app.innerHTML = renderOrderDetails(order, results[0] || [], results[1] || []);
               wireOrderDetails();
               applySoftKeyboardSetting(app);
             })
@@ -2554,7 +2607,221 @@
     );
   }
 
-  function renderOrderDetails(order, lines) {
+  function readOrderLineNumber(source, names) {
+    if (!source) {
+      return null;
+    }
+    for (var i = 0; i < names.length; i += 1) {
+      var name = names[i];
+      if (!Object.prototype.hasOwnProperty.call(source, name)) {
+        continue;
+      }
+      var value = source[name];
+      if (value == null || value === "") {
+        continue;
+      }
+      var num = Number(value);
+      if (isFinite(num)) {
+        return num;
+      }
+    }
+    return null;
+  }
+
+  function formatOrderQtyValue(value) {
+    if (value == null) {
+      return "—";
+    }
+    var num = Number(value);
+    if (!isFinite(num)) {
+      return "—";
+    }
+    if (Math.abs(num - Math.round(num)) < 0.000001) {
+      return String(Math.round(num));
+    }
+    return num.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+  }
+
+  function isInternalOrder(order) {
+    var type = String((order && (order.orderType || order.order_type || order.type)) || "").trim().toUpperCase();
+    return type === "INTERNAL";
+  }
+
+  function capOrderLineReadyQty(line, value) {
+    if (value == null) {
+      return null;
+    }
+    var ready = Number(value);
+    if (!isFinite(ready)) {
+      return null;
+    }
+    ready = Math.max(ready, 0);
+    var ordered = readOrderLineNumber(line, ["orderedQty", "qty_ordered"]);
+    if (ordered != null && ordered >= 0) {
+      ready = Math.min(ready, ordered);
+    }
+    return ready;
+  }
+
+  function getOrderLineReadyToShipQty(order, line) {
+    var value = null;
+    if (isInternalOrder(order)) {
+      value = readOrderLineNumber(line, ["qtyProduced", "qty_produced"]);
+      if (value == null) {
+        value = readOrderLineNumber(line, ["palletFilledQty", "pallet_filled_qty"]);
+      }
+      return capOrderLineReadyQty(line, value);
+    }
+
+    value = readOrderLineNumber(line, ["readyToShipQty", "ready_to_ship_qty"]);
+    if (value == null) {
+      value = readOrderLineNumber(line, ["canShipNow", "can_ship_now"]);
+    }
+    if (value == null) {
+      value = readOrderLineNumber(line, ["qtyAvailable", "qty_available"]);
+    }
+    if (value == null) {
+      value = readOrderLineNumber(line, ["qtyProduced", "qty_produced"]);
+    }
+    return capOrderLineReadyQty(line, value);
+  }
+
+  function getOrderLineProductionHuCodes(line) {
+    var values = [];
+    if (Array.isArray(line && line.productionHuCodes)) {
+      values = line.productionHuCodes;
+    } else if (Array.isArray(line && line.production_hu_codes)) {
+      values = line.production_hu_codes;
+    } else {
+      var display = String((line && (line.productionHuCodesDisplay || line.production_hu_codes_display)) || "").trim();
+      if (display) {
+        values = display.split(",");
+      }
+    }
+    var seen = {};
+    return values
+      .map(function (hu) {
+        return String(hu || "").trim();
+      })
+      .filter(function (hu) {
+        var key = hu.toUpperCase();
+        if (!hu || seen[key]) {
+          return false;
+        }
+        seen[key] = true;
+        return true;
+      })
+      .sort(function (left, right) {
+        return String(left).localeCompare(String(right), "ru-RU", {
+          numeric: true,
+          sensitivity: "base",
+        });
+      });
+  }
+
+  function buildOrderBoundHuByItem(boundHuRows) {
+    var result = {};
+    (Array.isArray(boundHuRows) ? boundHuRows : []).forEach(function (row) {
+      var itemId = Number(row && (row.itemId != null ? row.itemId : row.item_id));
+      var hu = String((row && (row.hu || row.hu_code || row.huCode)) || "").trim();
+      if (!itemId || !hu) {
+        return;
+      }
+      if (!result[itemId]) {
+        result[itemId] = [];
+      }
+      if (
+        result[itemId].some(function (existing) {
+          return String(existing).toUpperCase() === hu.toUpperCase();
+        })
+      ) {
+        return;
+      }
+      result[itemId].push(hu);
+    });
+    Object.keys(result).forEach(function (key) {
+      result[key].sort(function (left, right) {
+        return String(left).localeCompare(String(right), "ru-RU", {
+          numeric: true,
+          sensitivity: "base",
+        });
+      });
+    });
+    return result;
+  }
+
+  function renderOrderLineHuList(title, hus, tone) {
+    if (!hus || !hus.length) {
+      return "";
+    }
+    return (
+      '<div class="order-line-hu-section">' +
+      '  <div class="order-line-hu-section-title">' +
+      escapeHtml(title) +
+      "</div>" +
+      '  <ul class="order-line-hu-list">' +
+      hus
+        .map(function (hu) {
+          return (
+            '<li class="order-line-hu-item order-line-hu-item--' +
+            escapeHtml(tone || "neutral") +
+            '">' +
+            '  <span class="order-line-hu-code">' +
+            escapeHtml(hu) +
+            "</span>" +
+            "</li>"
+          );
+        })
+        .join("") +
+      "  </ul>" +
+      "</div>"
+    );
+  }
+
+  function renderOrderLineHuDetails(line, boundHuRows) {
+    var productionHuCodes = getOrderLineProductionHuCodes(line);
+    var plannedQty = readOrderLineNumber(line, ["palletPlannedQty", "pallet_planned_qty"]);
+    var filledQty = readOrderLineNumber(line, ["palletFilledQty", "pallet_filled_qty"]);
+    var plannedCount = readOrderLineNumber(line, ["plannedPalletCount", "planned_pallet_count"]);
+    var filledCount = readOrderLineNumber(line, ["filledPalletCount", "filled_pallet_count"]);
+    var summaryParts = [];
+    var sections = "";
+
+    if (plannedQty != null || filledQty != null) {
+      summaryParts.push(
+        "Наполнение: " +
+          formatOrderQtyValue(filledQty || 0) +
+          " / " +
+          formatOrderQtyValue(plannedQty || 0) +
+          " шт"
+      );
+    }
+    if ((plannedCount != null && plannedCount > 0) || (filledCount != null && filledCount > 0)) {
+      summaryParts.push(
+        "Паллеты: " +
+          formatOrderQtyValue(filledCount || 0) +
+          " / " +
+          formatOrderQtyValue(plannedCount || 0)
+      );
+    }
+
+    sections += renderOrderLineHuList("Производственные HU", productionHuCodes, "production");
+    sections += renderOrderLineHuList("Складские HU по товару", boundHuRows || [], "warehouse");
+
+    if (!summaryParts.length && !sections) {
+      return '<div class="order-line-hu-empty">HU по строке не найдены в read-model.</div>';
+    }
+
+    return (
+      (summaryParts.length
+        ? '<div class="order-line-hu-summary">' + escapeHtml(summaryParts.join(" · ")) + "</div>"
+        : "") + sections
+    );
+  }
+
+  function renderOrderDetails(order, lines, boundHuRows) {
+    order = order || {};
+    var boundHuByItem = buildOrderBoundHuByItem(boundHuRows);
     var statusInfo = getOrderStatusInfoForOrder(order);
     var orderNumber =
       order.number || order.orderNumber || order.order_ref || order.orderRef || "—";
@@ -2564,32 +2831,48 @@
     var createdAt = formatDateTime(order.createdAt || order.created_at);
 
     var rows = (lines || [])
-      .map(function (line) {
-        var ordered = Number(line.orderedQty) || 0;
-        var shipped = Number(line.shippedQty) || 0;
-        var left = Number(line.leftQty);
-        if (isNaN(left)) {
-          left = Math.max(ordered - shipped, 0);
-        }
+      .map(function (line, index) {
+        var ordered = readOrderLineNumber(line, ["orderedQty", "qty_ordered"]) || 0;
+        var ready = getOrderLineReadyToShipQty(order, line);
+        var left = ready == null ? null : Math.max(ordered - ready, 0);
+        var itemId = Number(line && (line.itemId != null ? line.itemId : line.item_id)) || 0;
+        var panelId = "orderLineHuPanel" + index;
+        var lineCode = line.barcode || line.gtin || line.gtin14 || "";
         return (
-          '<div class="order-line-row">' +
-          '  <div class="order-line-item">' +
-          '    <div class="order-line-name">' +
-          escapeHtml(line.itemName || "-") +
+          '<div class="order-line-entry">' +
+          '  <div class="order-line-row order-line-row--expandable" role="button" tabindex="0" data-order-line-toggle="' +
+          escapeHtml(String(index)) +
+          '" aria-expanded="false" aria-controls="' +
+          escapeHtml(panelId) +
+          '">' +
+          '    <div class="order-line-item">' +
+          '      <span class="order-line-expand-icon" aria-hidden="true">▾</span>' +
+          '      <div class="order-line-item-text">' +
+          '        <div class="order-line-name">' +
+          escapeHtml(line.itemName || line.item_name || "-") +
           "</div>" +
-          (line.barcode
-            ? '    <div class="order-line-barcode">' + escapeHtml(line.barcode) + "</div>"
+          (lineCode
+            ? '        <div class="order-line-barcode">' + escapeHtml(lineCode) + "</div>"
             : "") +
+          "      </div>" +
+          "    </div>" +
+          '    <div class="order-line-qty">' +
+          escapeHtml(formatOrderQtyValue(ordered)) +
+          "</div>" +
+          '    <div class="order-line-qty">' +
+          escapeHtml(formatOrderQtyValue(ready)) +
+          "</div>" +
+          '    <div class="order-line-qty">' +
+          escapeHtml(formatOrderQtyValue(left)) +
+          "</div>" +
           "  </div>" +
-          '  <div class="order-line-qty">' +
-          escapeHtml(String(ordered)) +
-          "</div>" +
-          '  <div class="order-line-qty">' +
-          escapeHtml(String(shipped)) +
-          "</div>" +
-          '  <div class="order-line-qty">' +
-          escapeHtml(String(left)) +
-          "</div>" +
+          '  <div class="order-line-hu-panel" id="' +
+          escapeHtml(panelId) +
+          '" data-order-line-panel="' +
+          escapeHtml(String(index)) +
+          '" hidden>' +
+          renderOrderLineHuDetails(line, itemId && boundHuByItem[itemId] ? boundHuByItem[itemId] : []) +
+          "  </div>" +
           "</div>"
         );
       })
@@ -2602,15 +2885,15 @@
         '<div class="order-line-header">' +
         '  <div class="order-line-head">Товар</div>' +
         '  <div class="order-line-head">Заказано</div>' +
-        '  <div class="order-line-head">Отгружено</div>' +
+        '  <div class="order-line-head">Готово к отгрузке</div>' +
         '  <div class="order-line-head">Осталось</div>' +
         "</div>" +
         rows;
     }
 
     return (
-      '<section class="screen">' +
-      '  <div class="screen-card doc-screen-card">' +
+      '<section class="screen order-details-screen">' +
+      '  <div class="screen-card doc-screen-card order-details-card">' +
       '    <div class="order-head">' +
       '      <div class="order-title">Заказ № ' +
       escapeHtml(String(orderNumber || "—")) +
@@ -3639,12 +3922,146 @@
     );
   }
 
+  function getCatalogItemBrand(item) {
+    return String((item && item.brand) || "").trim();
+  }
+
+  function getCatalogItemVolume(item) {
+    return String((item && item.volume) || "").trim();
+  }
+
+  function normalizeCatalogText(value) {
+    return String(value || "").trim().toLowerCase();
+  }
+
+  function parseCatalogVolumeSort(value) {
+    var label = String(value || "").trim();
+    if (!label) {
+      return { known: false, type: 9, value: 9007199254740991, label: "Без объема" };
+    }
+    var normalized = label.toLowerCase().replace(",", ".");
+    var match = normalized.match(/(\d+(?:\.\d+)?)\s*(мл|ml|л|l|кг|kg|гр|г|g)/);
+    if (!match) {
+      return { known: true, type: 8, value: 9007199254740990, label: label };
+    }
+    var amount = Number(match[1]);
+    var unit = match[2];
+    var type = 0;
+    var value = amount;
+    if (unit === "кг" || unit === "kg") {
+      value = amount * 1000;
+    } else if (unit === "л" || unit === "l") {
+      type = 1;
+      value = amount * 1000;
+    } else if (unit === "мл" || unit === "ml") {
+      type = 1;
+    }
+    return { known: true, type: type, value: value, label: label };
+  }
+
+  function compareCatalogVolumeLabels(left, right) {
+    var leftSort = parseCatalogVolumeSort(left);
+    var rightSort = parseCatalogVolumeSort(right);
+    if (leftSort.known !== rightSort.known) {
+      return leftSort.known ? -1 : 1;
+    }
+    if (leftSort.type !== rightSort.type) {
+      return leftSort.type - rightSort.type;
+    }
+    if (leftSort.value !== rightSort.value) {
+      return leftSort.value - rightSort.value;
+    }
+    return String(leftSort.label).localeCompare(String(rightSort.label), "ru-RU", {
+      numeric: true,
+      sensitivity: "base",
+    });
+  }
+
+  function buildCatalogBrandOptions(items) {
+    var seen = {};
+    var brands = [];
+    (Array.isArray(items) ? items : []).forEach(function (item) {
+      var brand = getCatalogItemBrand(item);
+      var key = brand.toUpperCase();
+      if (!brand || seen[key]) {
+        return;
+      }
+      seen[key] = true;
+      brands.push(brand);
+    });
+    return brands.sort(function (left, right) {
+      return String(left).localeCompare(String(right), "ru-RU", {
+        numeric: true,
+        sensitivity: "base",
+      });
+    });
+  }
+
+  function filterCatalogItems(items, query, brand) {
+    var q = normalizeCatalogText(query);
+    var selectedBrand = normalizeCatalogText(brand);
+    return (Array.isArray(items) ? items : []).filter(function (item) {
+      if (selectedBrand && normalizeCatalogText(getCatalogItemBrand(item)) !== selectedBrand) {
+        return false;
+      }
+      if (!q) {
+        return true;
+      }
+      var haystack = [
+        item.name,
+        item.sku,
+        item.gtin,
+        item.barcode,
+        item.brand,
+        item.volume,
+      ]
+        .map(normalizeCatalogText)
+        .join(" ");
+      return haystack.indexOf(q) >= 0;
+    });
+  }
+
+  function groupCatalogItemsByVolume(items) {
+    var groups = {};
+    var labels = [];
+    (Array.isArray(items) ? items : []).forEach(function (item) {
+      var label = getCatalogItemVolume(item) || "Без объема";
+      if (!groups[label]) {
+        groups[label] = [];
+        labels.push(label);
+      }
+      groups[label].push(item);
+    });
+    return labels
+      .sort(compareCatalogVolumeLabels)
+      .map(function (label) {
+        return {
+          label: label,
+          items: groups[label].slice().sort(function (left, right) {
+            return String(left.name || "").localeCompare(String(right.name || ""), "ru-RU", {
+              numeric: true,
+              sensitivity: "base",
+            });
+          }),
+        };
+      });
+  }
+
   function renderItems() {
     return (
       '<section class="screen">' +
       '  <div class="screen-card doc-screen-card">' +
       '    <div class="section-title">Каталог</div>' +
-      '    <input class="form-input" id="itemsSearchInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Поиск по названию, SKU, GTIN или штрихкоду" />' +
+      '    <div class="items-toolbar">' +
+      '      <div class="items-filter-field items-filter-field--search">' +
+      '        <label class="form-label" for="itemsSearchInput">Поиск</label>' +
+      '        <input class="form-input" id="itemsSearchInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Название, бренд, объем, SKU, GTIN или штрихкод" />' +
+      "      </div>" +
+      '      <div class="items-filter-field">' +
+      '        <label class="form-label" for="itemsBrandFilter">Бренд</label>' +
+      '        <select class="form-input" id="itemsBrandFilter"></select>' +
+      "      </div>" +
+      "    </div>" +
       '    <div id="itemsStatus" class="status"></div>' +
       '    <div id="itemsList" class="doc-list"></div>' +
       "  </div>" +
@@ -7071,9 +7488,11 @@
 
   function wireItems() {
     var searchInput = document.getElementById("itemsSearchInput");
+    var brandSelect = document.getElementById("itemsBrandFilter");
     var listEl = document.getElementById("itemsList");
     var statusEl = document.getElementById("itemsStatus");
     var searchToken = 0;
+    var cachedItems = [];
 
     function setStatus(text) {
       if (statusEl) {
@@ -7092,6 +7511,9 @@
       if (item.barcode) {
         parts.push("ШК: " + item.barcode);
       }
+      if (item.brand) {
+        parts.push("Бренд: " + item.brand);
+      }
       return parts.join(" · ");
     }
 
@@ -7099,28 +7521,42 @@
       if (!listEl) {
         return;
       }
-      var rows = (items || [])
-        .map(function (item) {
-          var meta = buildMeta(item);
-          var uom = item.base_uom || item.base_uom_code;
-          var metaHtml = "";
-          if (meta) {
-            metaHtml += '<div class="doc-ref">' + escapeHtml(meta) + "</div>";
-          }
-          if (uom) {
-            metaHtml +=
-              '<div class="doc-created">Базовая ед.: ' + escapeHtml(uom) + "</div>";
-          }
-          if (!metaHtml) {
-            metaHtml = '<div class="doc-ref">—</div>';
-          }
+      var rows = groupCatalogItemsByVolume(items)
+        .map(function (group) {
+          var itemRows = group.items
+            .map(function (item) {
+              var meta = buildMeta(item);
+              var uom = item.base_uom || item.base_uom_code;
+              var metaHtml = "";
+              if (meta) {
+                metaHtml += '<div class="doc-ref">' + escapeHtml(meta) + "</div>";
+              }
+              if (uom) {
+                metaHtml +=
+                  '<div class="doc-created">Базовая ед.: ' + escapeHtml(uom) + "</div>";
+              }
+              if (!metaHtml) {
+                metaHtml = '<div class="doc-ref">—</div>';
+              }
+              return (
+                '<div class="doc-item item-item">' +
+                '  <div class="doc-main">' +
+                '    <div class="doc-title">' +
+                escapeHtml(item.name || "-") +
+                "</div>" +
+                metaHtml +
+                "  </div>" +
+                "</div>"
+              );
+            })
+            .join("");
           return (
-            '<div class="doc-item item-item">' +
-            '  <div class="doc-main">' +
-            '    <div class="doc-title">' +
-            escapeHtml(item.name || "-") +
+            '<div class="catalog-volume-group">' +
+            '  <div class="catalog-volume-title">' +
+            escapeHtml(group.label) +
             "</div>" +
-            metaHtml +
+            '  <div class="catalog-volume-items">' +
+            itemRows +
             "  </div>" +
             "</div>"
           );
@@ -7133,48 +7569,110 @@
       listEl.innerHTML = rows;
     }
 
-    function loadItems(query) {
-      var q = String(query || "").trim();
+    function populateBrandFilter(items) {
+      if (!brandSelect) {
+        return;
+      }
+      var current = brandSelect.value;
+      var brands = buildCatalogBrandOptions(items);
+      brandSelect.innerHTML =
+        '<option value="">Все бренды</option>' +
+        brands
+          .map(function (brand) {
+            return '<option value="' + escapeHtml(brand) + '">' + escapeHtml(brand) + "</option>";
+          })
+          .join("");
+      if (
+        current &&
+        brands.some(function (brand) {
+          return normalizeCatalogText(brand) === normalizeCatalogText(current);
+        })
+      ) {
+        brandSelect.value = current;
+      }
+    }
+
+    function applyFilters() {
+      var filtered = filterCatalogItems(
+        cachedItems,
+        searchInput ? searchInput.value : "",
+        brandSelect ? brandSelect.value : ""
+      );
+      renderList(filtered);
+      if (!cachedItems.length) {
+        setStatus("Товаров нет");
+      } else if (!filtered.length) {
+        setStatus("Ничего не найдено");
+      } else {
+        setStatus("Данные с сервера");
+      }
+    }
+
+    function loadItems() {
       var token = (searchToken += 1);
-      setStatus(q ? "Поиск..." : "Загрузка...");
-      TsdStorage.apiSearchItems(q)
+      setStatus("Загрузка...");
+      TsdStorage.apiSearchItems("")
         .then(function (items) {
           if (token !== searchToken) {
             return;
           }
-          renderList(items);
-          if (!items || !items.length) {
-            setStatus(q ? "Ничего не найдено" : "Товаров нет");
-          } else {
-            setStatus("Данные с сервера");
-          }
+          cachedItems = Array.isArray(items) ? items : [];
+          populateBrandFilter(cachedItems);
+          applyFilters();
         })
         .catch(function () {
           if (token !== searchToken) {
             return;
           }
           setStatus("Ошибка загрузки товаров");
+          cachedItems = [];
+          populateBrandFilter(cachedItems);
           renderList([]);
         });
     }
 
     if (searchInput) {
       searchInput.addEventListener("input", function () {
-        loadItems(searchInput.value);
+        applyFilters();
       });
+    }
+    if (brandSelect) {
+      brandSelect.addEventListener("change", applyFilters);
     }
 
     setLiveRefreshHandler(function () {
       if (!currentRoute || currentRoute.name !== "items") {
         return;
       }
-      loadItems(searchInput ? searchInput.value : "");
+      loadItems();
     });
-    loadItems("");
+    loadItems();
   }
 
   function wireOrderDetails() {
-    // Read-only screen; no actions to wire.
+    var toggles = document.querySelectorAll("[data-order-line-toggle]");
+    toggles.forEach(function (toggle) {
+      function setExpanded(expanded) {
+        var key = toggle.getAttribute("data-order-line-toggle");
+        var panel = document.querySelector('[data-order-line-panel="' + key + '"]');
+        toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+        toggle.classList.toggle("is-expanded", expanded);
+        if (panel) {
+          panel.hidden = !expanded;
+        }
+      }
+
+      toggle.addEventListener("click", function () {
+        setExpanded(toggle.getAttribute("aria-expanded") !== "true");
+      });
+      toggle.addEventListener("keydown", function (event) {
+        if (event.key !== "Enter" && event.key !== " ") {
+          return;
+        }
+        event.preventDefault();
+        setExpanded(toggle.getAttribute("aria-expanded") !== "true");
+      });
+    });
   }
 
   function wireOperationsMenu() {
@@ -12471,6 +12969,16 @@
     window.FlowStockTsdTestHooks.buildOutboundPickingHeaderLine = buildOutboundPickingHeaderLine;
     window.FlowStockTsdTestHooks.getOutboundPickingHuItemLabel = getOutboundPickingHuItemLabel;
     window.FlowStockTsdTestHooks.buildOutboundPickingHuGroups = buildOutboundPickingHuGroups;
+    window.FlowStockTsdTestHooks.getBackRouteForRoute = getBackRouteForRoute;
+    window.FlowStockTsdTestHooks.getOrderLineReadyToShipQty = getOrderLineReadyToShipQty;
+    window.FlowStockTsdTestHooks.renderOrderDetails = renderOrderDetails;
+    window.FlowStockTsdTestHooks.renderOrderLineHuDetails = renderOrderLineHuDetails;
+    window.FlowStockTsdTestHooks.buildOrderBoundHuByItem = buildOrderBoundHuByItem;
+    window.FlowStockTsdTestHooks.renderItems = renderItems;
+    window.FlowStockTsdTestHooks.buildCatalogBrandOptions = buildCatalogBrandOptions;
+    window.FlowStockTsdTestHooks.filterCatalogItems = filterCatalogItems;
+    window.FlowStockTsdTestHooks.groupCatalogItemsByVolume = groupCatalogItemsByVolume;
+    window.FlowStockTsdTestHooks.compareCatalogVolumeLabels = compareCatalogVolumeLabels;
     window.FlowStockTsdTestHooks.buildFillingScanSummaryLine = buildFillingScanSummaryLine;
     window.FlowStockTsdTestHooks.buildFillingScanHeaderLine = buildFillingScanHeaderLine;
     window.FlowStockTsdTestHooks.renderFillingScan = renderFillingScan;
@@ -12595,34 +13103,7 @@
               navigate("/home");
               return;
             }
-            var origin = getNavOrigin();
-            if (currentRoute.name === "home") {
-              navigate("/home");
-            } else if (currentRoute.name === "operations") {
-              navigate("/home");
-            } else if (currentRoute.name === "filling") {
-              navigate("/operations");
-            } else if (currentRoute.name === "fillingDoc") {
-              navigate("/filling");
-            } else if (currentRoute.name === "docs") {
-              navigate("/operations");
-            } else if (currentRoute.name === "doc" || currentRoute.name === "new") {
-              if (origin === "history") {
-                navigate("/docs");
-              } else if (origin === "operations") {
-                navigate("/operations");
-              } else {
-                navigate("/home");
-              }
-            } else if (currentRoute.name === "orders") {
-              navigate("/home");
-            } else if (currentRoute.name === "order") {
-              navigate("/orders");
-            } else if (currentRoute.name === "stock" || currentRoute.name === "settings" || currentRoute.name === "items") {
-              navigate("/home");
-            } else {
-              navigate("/home");
-            }
+            navigate(getBackRouteForRoute(currentRoute, getNavOrigin()));
           });
         }
 

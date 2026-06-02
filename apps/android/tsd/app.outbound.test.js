@@ -183,6 +183,16 @@ assert(
   !appJs.includes("escapeHtml(getOutboundPickingStatusLabel(status))"),
   "outbound HU list should not render textual status labels"
 );
+assert.strictEqual(
+  hooks.getBackRouteForRoute({ name: "outbound" }, ""),
+  "/operations",
+  "outbound menu back should return to operations menu"
+);
+assert.strictEqual(
+  hooks.getBackRouteForRoute({ name: "outboundOrder" }, ""),
+  "/outbound",
+  "outbound order back should return to outbound order list"
+);
 
 const snakeCaseOrder = {
   order_id: 93,

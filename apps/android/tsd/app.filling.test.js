@@ -305,7 +305,10 @@ assert.strictEqual(
 const fillingScanHtml = hooks.renderFillingScan(
   {
     workItem: { orderRef: "104", prdDocRef: "PRD-2026-000001" },
-    document: { summary: { filledPalletCount: 0, plannedPalletCount: 10 }, pallets: [] },
+    document: {
+      summary: { filledPalletCount: 0, plannedPalletCount: 10 },
+      pallets: [{ huCode: "HU-000001", itemName: "Товар", status: "PENDING" }],
+    },
   },
   {}
 );
@@ -330,6 +333,16 @@ assert.match(
   fillingScanHtml,
   /filling-scan-input-hidden/,
   "filling scan input should use visual-hide CSS class"
+);
+assert.match(
+  fillingScanHtml,
+  /filling-screen--scan/,
+  "filling scan screen should use adaptive scan screen class"
+);
+assert.match(
+  fillingScanHtml,
+  /filling-pallet-list-card[\s\S]*filling-pallet-list--scroll-breathing/,
+  "filling scan screen should keep the pallet list in a scrollable list card"
 );
 assert.strictEqual(
   hooks.buildFillingScanSummaryLine(

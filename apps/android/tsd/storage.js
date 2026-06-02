@@ -296,12 +296,39 @@
     if (!orderId || !itemId) {
       return null;
     }
+    function optionalNumber() {
+      for (var i = 0; i < arguments.length; i += 1) {
+        var value = arguments[i];
+        if (value == null || value === "") {
+          continue;
+        }
+        var num = Number(value);
+        if (isFinite(num)) {
+          return num;
+        }
+      }
+      return null;
+    }
+    var productionHuCodes = [];
+    if (Array.isArray(line.production_hu_codes)) {
+      productionHuCodes = line.production_hu_codes;
+    } else if (Array.isArray(line.productionHuCodes)) {
+      productionHuCodes = line.productionHuCodes;
+    }
+    productionHuCodes = productionHuCodes
+      .map(function (hu) {
+        return String(hu || "").trim();
+      })
+      .filter(function (hu) {
+        return !!hu;
+      });
     return {
       orderLineId: line.id != null ? Number(line.id) : null,
       orderId: orderId,
       itemId: itemId,
       itemName: String(line.item_name || line.itemName || ""),
       barcode: String(line.barcode || ""),
+      gtin: String(line.gtin || ""),
       orderedQty: Number(line.qty_ordered) || 0,
       shippedQty: Number(line.qty_shipped) || 0,
       leftQty:
@@ -312,6 +339,46 @@
             : line.qtyRemaining != null
               ? Number(line.qtyRemaining) || 0
               : 0,
+      productionPurpose: String(line.production_purpose || line.productionPurpose || ""),
+      productionPurposeDisplay: String(line.production_purpose_display || line.productionPurposeDisplay || ""),
+      productionPalletGroup: String(line.production_pallet_group || line.productionPalletGroup || ""),
+      productionHuCodes: productionHuCodes,
+      productionHuCodesDisplay: String(line.production_hu_codes_display || line.productionHuCodesDisplay || ""),
+      readyToShipQty: optionalNumber(line.ready_to_ship_qty, line.readyToShipQty),
+      qtyProduced: optionalNumber(line.qty_produced, line.qtyProduced),
+      qtyAvailable: optionalNumber(line.qty_available, line.qtyAvailable),
+      canShipNow: optionalNumber(line.can_ship_now, line.canShipNow),
+      shortage: optionalNumber(line.shortage),
+      plannedPalletCount: Number(line.planned_pallet_count || line.plannedPalletCount) || 0,
+      filledPalletCount: Number(line.filled_pallet_count || line.filledPalletCount) || 0,
+      palletPlannedQty: optionalNumber(line.pallet_planned_qty, line.palletPlannedQty),
+      palletFilledQty: optionalNumber(line.pallet_filled_qty, line.palletFilledQty),
+      lineFullyShipped: line.line_fully_shipped === true || line.lineFullyShipped === true,
+      hidePalletFillIndicator:
+        line.hide_pallet_fill_indicator === true || line.hidePalletFillIndicator === true,
+      showPalletCompletedIcon:
+        line.show_pallet_completed_icon === true || line.showPalletCompletedIcon === true,
+      blockingFillRequired:
+        line.blocking_fill_required === true || line.blockingFillRequired === true,
+      fulfillmentStatus: String(line.fulfillment_status || line.fulfillmentStatus || ""),
+      palletFillLabel: String(line.pallet_fill_label || line.palletFillLabel || ""),
+      palletFillTone: String(line.pallet_fill_tone || line.palletFillTone || ""),
+      palletFillTitle: String(line.pallet_fill_title || line.palletFillTitle || ""),
+    };
+  }
+
+  function normalizeOrderBoundHu(row) {
+    if (!row) {
+      return null;
+    }
+    var itemId = Number(row.item_id != null ? row.item_id : row.itemId);
+    var hu = String(row.hu || row.hu_code || row.huCode || "").trim();
+    if (!itemId || !hu) {
+      return null;
+    }
+    return {
+      itemId: itemId,
+      hu: hu,
     };
   }
 
@@ -738,6 +805,33 @@
           .filter(function (line) {
             return !!line;
           });
+      });
+  }
+
+  function apiGetOrderBoundHu(orderId) {
+    var target = Number(orderId);
+    if (!target) {
+      return Promise.resolve([]);
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(
+          baseUrl + "/api/orders/" + encodeURIComponent(target) + "/bound-hu",
+          { method: "GET" }
+        );
+      })
+      .then(function (payload) {
+        if (!Array.isArray(payload)) {
+          return [];
+        }
+        return payload
+          .map(normalizeOrderBoundHu)
+          .filter(function (row) {
+            return !!row;
+          });
+      })
+      .catch(function () {
+        return [];
       });
   }
 
@@ -2769,6 +2863,7 @@
     apiSearchItems: apiSearchItems,
     apiGetItemTypes: apiGetItemTypes,
     apiFindItemByCode: apiFindItemByCode,
+    apiGetOrderBoundHu: apiGetOrderBoundHu,
     apiCreateItemRequest: apiCreateItemRequest,
     apiGetLocations: apiGetLocations,
     apiSearchLocations: apiSearchLocations,

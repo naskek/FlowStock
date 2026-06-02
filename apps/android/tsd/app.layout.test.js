@@ -159,6 +159,22 @@ assert(
   "styles should define centered responsive overlay layout"
 );
 assert(
+  stylesCss.includes(".filling-screen--scan .filling-card--scan") &&
+    stylesCss.includes(".filling-screen--scan .filling-pallet-list") &&
+    stylesCss.includes("max-height: none") &&
+    stylesCss.includes(".filling-screen--scan .filling-pallet-list--scroll-breathing") &&
+    stylesCss.includes("padding-bottom: clamp(8px, 2dvh, 16px)"),
+  "filling scan screen should use adaptive height with the pallet list as the inner scroll container"
+);
+assert(
+  stylesCss.includes(".order-details-screen") &&
+    stylesCss.includes(".order-details-card") &&
+    stylesCss.includes(".order-details-card .order-lines") &&
+    stylesCss.includes("overflow-y: auto") &&
+    stylesCss.includes(".order-line-hu-panel"),
+  "order details should define adaptive height and read-only HU expansion styles"
+);
+assert(
   stylesCss.includes(".home-screen--centered") &&
     stylesCss.includes(".home-menu-wrap") &&
     stylesCss.includes(".home-menu-grid") &&
