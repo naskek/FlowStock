@@ -159,6 +159,21 @@ assert(
   "styles should define centered responsive overlay layout"
 );
 assert(
+  stylesCss.includes(".app-content.route-transition-active > .screen") &&
+    stylesCss.includes("@keyframes tsd-route-enter") &&
+    stylesCss.includes("animation: tsd-route-enter 190ms ease-out both") &&
+    stylesCss.includes("transform: translateY(6px)") &&
+    stylesCss.includes(".app-content.route-transition-exit > .screen"),
+  "styles should define subtle route-level enter/exit screen transitions"
+);
+assert(
+  stylesCss.includes("@media (prefers-reduced-motion: reduce)") &&
+    stylesCss.includes(".app-content.route-transition-active > .screen") &&
+    stylesCss.includes("animation: none") &&
+    stylesCss.includes("transition: none"),
+  "route transitions should respect reduced motion"
+);
+assert(
   stylesCss.includes(".filling-screen--scan .filling-card--scan") &&
     stylesCss.includes(".filling-screen--scan .filling-pallet-list") &&
     stylesCss.includes("max-height: none") &&
@@ -199,6 +214,13 @@ assert(
     appJs.includes('TSD_THEME_LIGHT = "light"') &&
     appJs.includes('TSD_THEME_DARK = "dark"'),
   "app.js should define theme storage helpers with light default"
+);
+assert(
+  appJs.includes("function getRouteTransitionKey(") &&
+    appJs.includes("function prepareRouteTransition(") &&
+    appJs.includes("prepareRouteTransition(route)") &&
+    appJs.includes("markRouteTransitionExit()"),
+  "app.js should manage route transitions through route-level helpers"
 );
 
 const storage = {};
@@ -270,6 +292,10 @@ context.localStorage = context.window.localStorage;
 
 vm.createContext(context);
 vm.runInContext(appJs, context, { filename: "app.js" });
+
+assert.strictEqual(hooks.getRouteTransitionKey({ name: "outboundOrder", id: 93 }), "outboundOrder:93");
+assert.strictEqual(hooks.getRouteTransitionKey({ name: "items" }), "items");
+assert.match(hooks.renderHome(), /home-screen/, "home route renderer should still render target screen markup");
 
 assert.strictEqual(hooks.normalizeTsdTheme("dark"), "dark");
 assert.strictEqual(hooks.normalizeTsdTheme("light"), "light");

@@ -36,8 +36,11 @@
   var liveRefreshTimerId = 0;
   var LIVE_RECONNECT_DELAY_MS = 2500;
   var LIVE_REFRESH_DEBOUNCE_MS = 300;
+  var ROUTE_TRANSITION_MS = 190;
   var activeLiveRefreshHandler = null;
   var serverStatus = { ok: null, checkedAt: 0 };
+  var lastRouteTransitionKey = "";
+  var routeTransitionTimerId = 0;
   var scanDebug = {
     enabled: false,
     log: [],
@@ -1753,9 +1756,61 @@
     }
   }
 
+  function getRouteTransitionKey(route) {
+    if (!route || !route.name) {
+      return "home";
+    }
+    var parts = [route.name];
+    if (route.id != null && route.id !== "") {
+      parts.push(String(route.id));
+    }
+    if (route.op != null && route.op !== "") {
+      parts.push(String(route.op));
+    }
+    return parts.join(":");
+  }
+
+  function markRouteTransitionExit() {
+    if (!app || !app.classList) {
+      return;
+    }
+    app.classList.add("route-transition-exit");
+  }
+
+  function prepareRouteTransition(route) {
+    if (!app || !app.classList) {
+      return false;
+    }
+    var key = getRouteTransitionKey(route);
+    var shouldAnimate = !!lastRouteTransitionKey && key !== lastRouteTransitionKey;
+    lastRouteTransitionKey = key;
+
+    if (routeTransitionTimerId) {
+      window.clearTimeout(routeTransitionTimerId);
+      routeTransitionTimerId = 0;
+    }
+
+    app.classList.remove("route-transition-active");
+    if (!shouldAnimate) {
+      app.classList.remove("route-transition-exit");
+      return false;
+    }
+
+    app.classList.add("route-transition-active");
+    routeTransitionTimerId = window.setTimeout(function () {
+      if (app && app.classList) {
+        app.classList.remove("route-transition-active");
+        app.classList.remove("route-transition-exit");
+      }
+      routeTransitionTimerId = 0;
+    }, ROUTE_TRANSITION_MS + 40);
+    return true;
+  }
+
   function navigate(route) {
     if (route) {
       saveLastRoute(route);
+      markRouteTransitionExit();
       window.location.hash = route;
     }
   }
@@ -1842,6 +1897,7 @@
     var route = getRoute();
     saveLastRoute("/" + (window.location.hash || "").replace(/^#\/?/, ""));
     currentRoute = route;
+    prepareRouteTransition(route);
     setCurrentClientBlockContext(resolveRouteBlockContext(route));
 
     if (!app) {
@@ -12969,6 +13025,8 @@
     window.FlowStockTsdTestHooks.buildOutboundPickingHeaderLine = buildOutboundPickingHeaderLine;
     window.FlowStockTsdTestHooks.getOutboundPickingHuItemLabel = getOutboundPickingHuItemLabel;
     window.FlowStockTsdTestHooks.buildOutboundPickingHuGroups = buildOutboundPickingHuGroups;
+    window.FlowStockTsdTestHooks.getRouteTransitionKey = getRouteTransitionKey;
+    window.FlowStockTsdTestHooks.prepareRouteTransition = prepareRouteTransition;
     window.FlowStockTsdTestHooks.getBackRouteForRoute = getBackRouteForRoute;
     window.FlowStockTsdTestHooks.getOrderLineReadyToShipQty = getOrderLineReadyToShipQty;
     window.FlowStockTsdTestHooks.renderOrderDetails = renderOrderDetails;

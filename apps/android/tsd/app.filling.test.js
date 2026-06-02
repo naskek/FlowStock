@@ -344,6 +344,11 @@ assert.match(
   /filling-pallet-list-card[\s\S]*filling-pallet-list--scroll-breathing/,
   "filling scan screen should keep the pallet list in a scrollable list card"
 );
+assert.doesNotMatch(
+  fillingScanHtml,
+  /route-transition-active|route-transition-exit/,
+  "filling scan render should not require transition state before scanner input/list markup is available"
+);
 assert.strictEqual(
   hooks.buildFillingScanSummaryLine(
     { orderRef: "104" },
