@@ -27,6 +27,39 @@ function extractFunctionBody(source, name) {
   throw new Error(`${name} body was not closed`);
 }
 
+function extractCssRuleBody(source, selector) {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`(^|\\n)\\s*${escapedSelector}\\s*\\{`, "m").exec(source);
+  assert(match, `${selector} rule should exist`);
+  const braceStart = source.indexOf("{", match.index);
+  let depth = 0;
+  for (let i = braceStart; i < source.length; i += 1) {
+    if (source[i] === "{") {
+      depth += 1;
+    } else if (source[i] === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(braceStart + 1, i);
+      }
+    }
+  }
+  throw new Error(`${selector} rule was not closed`);
+}
+
+function assertCssContains(selector, snippets, message) {
+  const body = extractCssRuleBody(stylesCss, selector);
+  snippets.forEach(function (snippet) {
+    assert(body.includes(snippet), `${message}: missing ${snippet} in ${selector}`);
+  });
+  return body;
+}
+
+function assertCssDoesNotMatch(selector, pattern, message) {
+  const body = extractCssRuleBody(stylesCss, selector);
+  assert.doesNotMatch(body, pattern, message);
+  return body;
+}
+
 const renderSettingsBody = extractFunctionBody(appJs, "renderSettings");
 assert(
   !renderSettingsBody.includes("Разрешить экранную клавиатуру") &&
@@ -180,6 +213,86 @@ assert(
     stylesCss.includes(".filling-screen--scan .filling-pallet-list--scroll-breathing") &&
     stylesCss.includes("padding-bottom: clamp(8px, 2dvh, 16px)"),
   "filling scan screen should use adaptive height with the pallet list as the inner scroll container"
+);
+assertCssContains(
+  ".screen",
+  ["display: flex", "flex-direction: column", "min-height: 0"],
+  "screen should be a flex parent for scrollable route content"
+);
+assertCssContains(
+  ".screen-card",
+  ["display: flex", "flex-direction: column", "min-height: 0"],
+  "screen cards should be flex parents for inner scroll containers"
+);
+assertCssContains(
+  ".doc-screen-card",
+  ["flex: 1 1 auto", "min-height: 0"],
+  "document cards should allow child scroll areas to shrink"
+);
+assertCssContains(
+  ".filling-card--scan .filling-pallet-list-card",
+  ["flex: 1 1 auto", "min-height: 0", "display: flex", "flex-direction: column"],
+  "filling scan list card should own the remaining vertical space"
+);
+assertCssContains(
+  ".filling-pallet-list-card",
+  ["display: flex", "flex-direction: column", "min-height: 0"],
+  "pallet list card should be a flex parent for its scroll container"
+);
+assertCssContains(
+  ".filling-pallet-list",
+  ["display: flex", "flex-direction: column", "min-height: 0", "overflow-y: auto", "-webkit-overflow-scrolling: touch"],
+  "pallet list should be the touch scroll container"
+);
+assertCssContains(
+  ".filling-screen--scan .filling-pallet-list",
+  ["flex: 1 1 auto", "min-height: 0", "max-height: none", "overscroll-behavior: contain"],
+  "scan screen pallet list should scroll within the available card height"
+);
+assertCssContains(
+  ".filling-pallet-group",
+  ["display: flex", "flex: 0 0 auto", "flex-direction: column"],
+  "pallet groups should stay content-sized"
+);
+assertCssContains(
+  ".filling-pallet-group-items",
+  ["display: flex", "flex-direction: column", "min-height: 0"],
+  "pallet group item lists should not stretch rows"
+);
+assertCssContains(
+  ".filling-pallet-item",
+  ["flex: 0 0 auto", "align-self: stretch"],
+  "HU rows should be compact content-sized rows"
+);
+assertCssDoesNotMatch(
+  ".filling-pallet-item",
+  /(?:^|;)\s*(?:flex\s*:\s*1\b|height\s*:\s*100%|align-self\s*:\s*(?:normal|auto|center|flex-start|flex-end)\b)/,
+  "HU rows should not grow vertically or use fixed full height"
+);
+assertCssDoesNotMatch(
+  ".filling-pallet-item--compact",
+  /(?:^|;)\s*(?:flex\s*:\s*1\b|height\s*:\s*100%)/,
+  "compact HU rows should not grow vertically or use fixed full height"
+);
+assertCssDoesNotMatch(
+  ".app-content.route-transition-active",
+  /overflow(?:-y)?\s*:\s*hidden/,
+  "active route transition wrapper should not block scrolling"
+);
+assertCssDoesNotMatch(
+  ".app-content.route-transition-exit",
+  /overflow(?:-y)?\s*:\s*hidden/,
+  "exit route transition wrapper should not block scrolling"
+);
+assertCssDoesNotMatch(
+  ".app-content.route-transition-active > .screen",
+  /overflow(?:-y)?\s*:\s*hidden/,
+  "active route transition screen should not block scrolling"
+);
+assertCssDoesNotMatch(
+  ".app-content.route-transition-exit > .screen",
+  /overflow(?:-y)?\s*:\s*hidden/,
+  "exit route transition screen should not block scrolling"
 );
 assert(
   stylesCss.includes(".order-details-screen") &&
