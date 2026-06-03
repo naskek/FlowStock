@@ -9,7 +9,7 @@ public sealed class CustomerOrderHuBindingCoordinatorSourceTests
 
         Assert.Contains("public void EndLoad()", source);
         Assert.Contains("ScheduleCandidatesRefresh();", source);
-        Assert.Contains("ApplyInitialAutoSelection", source);
+        Assert.DoesNotContain("ApplyInitialAutoSelection", source, StringComparison.Ordinal);
         Assert.Contains("ManualSelectionTouched", source);
         Assert.Contains("BeginServerReservationReload", source);
 
@@ -43,6 +43,18 @@ public sealed class CustomerOrderHuBindingCoordinatorSourceTests
 
         Assert.Contains("Array.Empty<string>()", source);
         Assert.Contains("GetPickerCandidates()", source);
+    }
+
+    [Fact]
+    public void Coordinator_RefreshCandidatesDoesNotApplyHuReservations()
+    {
+        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "CustomerOrderHuBindingCoordinator.cs");
+
+        var refreshSlice = SliceMethod(source, "private Task RefreshCandidatesAsync");
+        Assert.Contains("state.ApplyCandidates(lineResult);", refreshSlice);
+        Assert.DoesNotContain("BuildApplyLines", refreshSlice, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryApplyHuReservation", refreshSlice, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryApplyFinalHuBindings", refreshSlice, StringComparison.Ordinal);
     }
 
     [Fact]

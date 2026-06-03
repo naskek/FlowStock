@@ -377,6 +377,25 @@ public sealed class WpfHuReservationApiGuardTests
     }
 
     [Fact]
+    public void OrderDetailsWindow_LoadOrderOnlyRefreshesHuCandidates()
+    {
+        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs");
+
+        var methodStart = source.IndexOf("private void LoadOrder(long? reselectLineId = null)", StringComparison.Ordinal);
+        Assert.True(methodStart >= 0);
+        var methodEnd = source.IndexOf("private void Save_Click", methodStart, StringComparison.Ordinal);
+        Assert.True(methodEnd > methodStart);
+        var method = source[methodStart..methodEnd];
+
+        Assert.Contains("_huBinding.BeginLoad();", method);
+        Assert.Contains("_huBinding.EndLoad();", method);
+        Assert.DoesNotContain("BuildApplyLines", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryApplyHuReservationLines", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryApplyHuReservations", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryApplyFinalHuBindings", method, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void OrderDetailsWindow_UsesMarkingPreviewBeforeExport()
     {
         var codeBehind = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs");

@@ -141,7 +141,7 @@ public sealed class CustomerHuReservationProposalLine : INotifyPropertyChanged
         {
             Candidates.Add(new CustomerHuReservationProposalCandidate(
                 candidate,
-                selected.Contains(candidate.HuCode) || candidate.AutoSelected));
+                selected.Contains(candidate.HuCode)));
         }
 
         ApplyEnablement();

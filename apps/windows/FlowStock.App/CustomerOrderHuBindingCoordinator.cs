@@ -418,7 +418,6 @@ public sealed class CustomerOrderLineHuState : INotifyPropertyChanged
 
     public bool ShouldSendOnApply =>
         _manualSelectionTouched
-        || _selectedHuCodes.Count > 0
         || _existingOnlyReservations.Count > 0;
 
     public string AvailableHuDisplay => _awaitingSaveForCandidates
@@ -431,23 +430,7 @@ public sealed class CustomerOrderLineHuState : INotifyPropertyChanged
         ? "0"
         : $"{FormatQty(BoundQty)} ({_selectedHuCodes.Count} HU)";
 
-    public IReadOnlyList<OrderLineHuDisplayRow> HuDisplayRows =>
-        _selectedHuCodes
-            .Select(huCode => new OrderLineHuDisplayRow(
-                huCode,
-                "склад",
-                _selectedQtyByHu.TryGetValue(huCode, out var qty) ? qty : 0,
-                IsBold: true,
-                SortOrder: 1))
-            .Concat(_line.ProductionHuDisplayEntries.Select(entry => new OrderLineHuDisplayRow(
-                entry.HuCode,
-                entry.Label,
-                entry.Qty,
-                IsBold: false,
-                SortOrder: entry.SortOrder <= 0 ? 2 : entry.SortOrder)))
-            .OrderBy(row => row.SortOrder)
-            .ThenBy(row => row.HuCode, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+    public IReadOnlyList<OrderLineHuDisplayRow> HuDisplayRows => BuildHuDisplayRows();
 
     public string RemainingHuDisplay => _awaitingSaveForCandidates
         ? "—"
@@ -621,14 +604,7 @@ public sealed class CustomerOrderLineHuState : INotifyPropertyChanged
 
         if (!_manualSelectionTouched)
         {
-            if (_selectedHuCodes.Count == 0)
-            {
-                ApplyInitialAutoSelection(lineResult);
-            }
-            else
-            {
-                SyncSelectedQtyFromCandidates();
-            }
+            SyncSelectedQtyFromCandidates();
         }
         else
         {
@@ -676,49 +652,40 @@ public sealed class CustomerOrderLineHuState : INotifyPropertyChanged
         }
     }
 
-    private void ApplyInitialAutoSelection(WpfHuReservationCandidatesLineResult lineResult)
+    private IReadOnlyList<OrderLineHuDisplayRow> BuildHuDisplayRows()
     {
-        _selectedHuCodes.Clear();
-        _selectedQtyByHu.Clear();
+        var productionRows = _line.ProductionHuDisplayEntries
+            .Select(entry => new OrderLineHuDisplayRow(
+                entry.HuCode,
+                entry.Label,
+                entry.Qty,
+                IsBold: false,
+                SortOrder: entry.SortOrder <= 0 ? 2 : entry.SortOrder))
+            .ToArray();
 
-        var remaining = _lineRemainingQty;
-        foreach (var candidate in lineResult.Candidates.Where(candidate => candidate.AutoSelected))
-        {
-            var normalized = candidate.HuCode.Trim().ToUpperInvariant();
-            if (string.IsNullOrWhiteSpace(normalized)
-                || !_selectedHuCodes.Add(normalized)
-                || candidate.Qty <= CustomerOrderHuPickerRules.QtyTolerance)
-            {
-                continue;
-            }
+        var productionHuCodes = productionRows
+            .Select(row => NormalizeHuCode(row.HuCode))
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-            if (candidate.Qty > remaining + CustomerOrderHuPickerRules.QtyTolerance)
-            {
-                _selectedHuCodes.Remove(normalized);
-                continue;
-            }
+        var warehouseRows = _selectedHuCodes
+            .Where(huCode => !productionHuCodes.Contains(NormalizeHuCode(huCode)))
+            .Select(huCode => new OrderLineHuDisplayRow(
+                huCode,
+                "склад",
+                _selectedQtyByHu.TryGetValue(huCode, out var qty) ? qty : 0,
+                IsBold: true,
+                SortOrder: 1));
 
-            _selectedQtyByHu[normalized] = candidate.Qty;
-            remaining -= candidate.Qty;
-            if (remaining <= CustomerOrderHuPickerRules.QtyTolerance)
-            {
-                break;
-            }
-        }
-
-        if (_selectedHuCodes.Count == 0)
-        {
-            foreach (var existing in _existingOnlyReservations.Values)
-            {
-                if (!_selectedHuCodes.Add(existing.HuCode))
-                {
-                    continue;
-                }
-
-                _selectedQtyByHu[existing.HuCode] = existing.Qty;
-            }
-        }
+        return warehouseRows
+            .Concat(productionRows)
+            .OrderBy(row => row.SortOrder)
+            .ThenBy(row => row.HuCode, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
+
+    private static string NormalizeHuCode(string? huCode) =>
+        string.IsNullOrWhiteSpace(huCode) ? string.Empty : huCode.Trim().ToUpperInvariant();
 
     private void PruneSelectionToKnownCandidates()
     {

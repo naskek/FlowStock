@@ -264,7 +264,7 @@ public sealed class CustomerOrderHuPickerRulesTests
     }
 
     [Fact]
-    public void ProposalLine_UncheckedHuIsNotIncludedInApplySelection()
+    public void ProposalLine_AutoSelectedCandidatesStartUnchecked()
     {
         var state = new CustomerOrderLineHuState("line-203");
         state.AttachLine(
@@ -293,7 +293,11 @@ public sealed class CustomerOrderHuPickerRulesTests
         var presentation = new CustomerOrderLinePresentation(state);
         var proposal = new CustomerHuReservationProposalLine(presentation);
 
-        proposal.Candidates.Single(candidate => candidate.HuCode == "HU-2").IsSelected = false;
+        Assert.All(proposal.Candidates, candidate => Assert.False(candidate.IsSelected));
+        Assert.Equal(0, proposal.SelectedQty, 3);
+        Assert.Equal(1200, proposal.UncoveredQty, 3);
+
+        proposal.Candidates.Single(candidate => candidate.HuCode == "HU-1").IsSelected = true;
         proposal.Refresh();
 
         Assert.Equal(600, proposal.SelectedQty, 3);
@@ -301,6 +305,41 @@ public sealed class CustomerOrderHuPickerRulesTests
         var selected = proposal.Candidates.Where(candidate => candidate.IsSelected).Select(candidate => candidate.HuCode).ToArray();
         Assert.Single(selected);
         Assert.Equal("HU-1", selected[0]);
+    }
+
+    [Fact]
+    public void ProposalLine_SavedSelectedHuStartsChecked()
+    {
+        var state = new CustomerOrderLineHuState("line-204");
+        state.AttachLine(
+            new OrderLineView
+            {
+                Id = 204,
+                ItemId = 6,
+                ItemName = "Товар",
+                QtyOrdered = 600
+            },
+            orderId: 78);
+        state.MergeExistingReservation("HU-1", 600);
+        state.ApplyCandidates(new WpfHuReservationCandidatesLineResult
+        {
+            ClientLineKey = "line-204",
+            OrderLineId = 204,
+            ItemId = 6,
+            QtyOrdered = 600,
+            AvailableQty = 600,
+            Candidates =
+            [
+                new WpfHuReservationCandidateRow { HuCode = "HU-1", Source = "LEDGER_STOCK", Qty = 600 }
+            ]
+        });
+
+        var proposal = new CustomerHuReservationProposalLine(new CustomerOrderLinePresentation(state));
+
+        var candidate = Assert.Single(proposal.Candidates);
+        Assert.True(candidate.IsSelected);
+        Assert.Equal(600, proposal.SelectedQty, 3);
+        Assert.Equal(0, proposal.UncoveredQty, 3);
     }
 
     private static HuReservationPickerRow CreateRow(string huCode, double qty, bool selected)

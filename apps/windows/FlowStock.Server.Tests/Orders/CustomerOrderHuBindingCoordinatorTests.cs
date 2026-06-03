@@ -31,7 +31,7 @@ public sealed class CustomerOrderHuBindingCoordinatorTests
     }
 
     [Fact]
-    public void PartialHuCoverageTooltip_UsesProductNameAndQuantities()
+    public void AutoSelectedCandidates_DoNotPopulateSelectedHuCodes()
     {
         var state = new CustomerOrderLineHuState("line-203");
         state.AttachLine(
@@ -66,15 +66,21 @@ public sealed class CustomerOrderHuBindingCoordinatorTests
             ]
         });
 
+        Assert.Single(state.Candidates);
+        Assert.Equal("HU-0000493", Assert.Single(state.GetPickerCandidates()).HuCode);
+        Assert.Empty(state.SelectedHuCodes);
+        Assert.Empty(state.HuDisplayRows);
+        Assert.Equal(0, state.BoundQty, 3);
+        Assert.False(state.ShouldSendOnApply);
         Assert.Equal("missing", state.HuCoverageTone);
         Assert.Equal(
-            "Горчица, Печагин, 1 кг: привязано 1200 из 1800, не хватает 600",
+            "Горчица, Печагин, 1 кг: привязано 0 из 1800, не хватает 1800",
             state.HuCoverageToolTip);
         Assert.DoesNotContain("203", state.HuCoverageToolTip, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void FullHuCoverage_IsMarkedCovered()
+    public void AutoSelectedFullCoverageCandidate_DoesNotMarkLineCovered()
     {
         var state = new CustomerOrderLineHuState("line-204");
         state.AttachLine(
@@ -109,14 +115,17 @@ public sealed class CustomerOrderHuBindingCoordinatorTests
             ]
         });
 
-        Assert.Equal("covered", state.HuCoverageTone);
+        Assert.Empty(state.SelectedHuCodes);
+        Assert.Equal(0, state.BoundQty, 3);
+        Assert.False(state.ShouldSendOnApply);
+        Assert.Equal("missing", state.HuCoverageTone);
         Assert.Equal(
-            "Горчица, Печагин, 1 кг: привязано 1800 из 1800",
+            "Горчица, Печагин, 1 кг: привязано 0 из 1800, не хватает 1800",
             state.HuCoverageToolTip);
     }
 
     [Fact]
-    public void InitialAutoSelection_DoesNotPartiallyBindOversizedHu()
+    public void AutoSelectedOversizedHu_RemainsOnlyCandidate()
     {
         var state = new CustomerOrderLineHuState("line-205");
         state.AttachLine(
@@ -249,6 +258,54 @@ public sealed class CustomerOrderHuBindingCoordinatorTests
 
         Assert.True(state.IsHuPickerEnabled);
         Assert.Equal("HU (1)", state.HuPickerLabel);
+        Assert.True(state.ShouldSendOnApply);
+        Assert.Equal(["HU-0000400"], state.SelectedHuCodes);
+        Assert.Equal("склад", Assert.Single(state.HuDisplayRows).Label);
+    }
+
+    [Fact]
+    public void ManualPickerSelection_PopulatesSelectedAndDisplayRows()
+    {
+        var state = new CustomerOrderLineHuState("line-303");
+        state.AttachLine(
+            new OrderLineView
+            {
+                Id = 303,
+                ItemId = 6,
+                ItemName = "Товар",
+                QtyOrdered = 1200
+            },
+            orderId: 78);
+        state.ApplyCandidates(new WpfHuReservationCandidatesLineResult
+        {
+            ClientLineKey = "line-303",
+            OrderLineId = 303,
+            ItemId = 6,
+            QtyOrdered = 1200,
+            AvailableQty = 1200,
+            AutoSelectedQty = 1200,
+            Candidates =
+            [
+                new WpfHuReservationCandidateRow
+                {
+                    HuCode = "HU-0000401",
+                    Source = "LEDGER_STOCK",
+                    Qty = 600,
+                    ShipReady = true,
+                    AutoSelected = true
+                }
+            ]
+        });
+
+        state.ApplyManualSelection(["HU-0000401"]);
+
+        Assert.True(state.ShouldSendOnApply);
+        Assert.Equal(["HU-0000401"], state.SelectedHuCodes);
+        Assert.Equal(600, state.BoundQty, 3);
+        var row = Assert.Single(state.HuDisplayRows);
+        Assert.Equal("HU-0000401", row.HuCode);
+        Assert.Equal("склад", row.Label);
+        Assert.True(row.IsBold);
     }
 
     [Fact]
@@ -322,6 +379,51 @@ public sealed class CustomerOrderHuBindingCoordinatorTests
         Assert.Equal("HU-0000576", rows[1].HuCode);
         Assert.Equal("план", rows[1].Label);
         Assert.False(rows[1].IsBold);
+    }
+
+    [Fact]
+    public void HuDisplayRows_SkipWarehouseDuplicateWhenProductionRowHasSameHu()
+    {
+        var state = new CustomerOrderLineHuState("line-401");
+        state.AttachLine(
+            new OrderLineView
+            {
+                Id = 401,
+                ItemId = 6,
+                ItemName = "Товар",
+                QtyOrdered = 1200,
+                ProductionHuDisplayEntries =
+                [
+                    new OrderLineHuDisplayEntry("HU-0000577", "наполнено", 600, IsWarehouseBound: false, SortOrder: 2)
+                ]
+            },
+            orderId: 78);
+        state.ApplyCandidates(new WpfHuReservationCandidatesLineResult
+        {
+            ClientLineKey = "line-401",
+            OrderLineId = 401,
+            ItemId = 6,
+            QtyOrdered = 1200,
+            AvailableQty = 600,
+            AutoSelectedQty = 600,
+            Candidates =
+            [
+                new WpfHuReservationCandidateRow
+                {
+                    HuCode = "HU-0000577",
+                    Source = "LEDGER_STOCK",
+                    Qty = 600,
+                    ShipReady = true,
+                    AutoSelected = true
+                }
+            ]
+        });
+        state.ApplyManualSelection(["HU-0000577"]);
+
+        var row = Assert.Single(state.HuDisplayRows);
+        Assert.Equal("HU-0000577", row.HuCode);
+        Assert.Equal("наполнено", row.Label);
+        Assert.False(row.IsBold);
     }
 
     [Fact]
