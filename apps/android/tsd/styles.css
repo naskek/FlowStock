@@ -92,6 +92,9 @@ body {
   min-height: 100vh;
   min-height: 100dvh;
   min-height: 100svh;
+  height: 100vh;
+  height: 100svh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -201,38 +204,27 @@ body {
     clamp(8px, 3vw, 14px)
     calc(clamp(10px, 2.5vh, 16px) + env(safe-area-inset-bottom, 0px));
   overflow-x: hidden;
-}
-
-.app-content.route-transition-active {
-  overflow-y: visible;
-}
-
-.app-content.route-transition-exit {
-  overflow-y: visible;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .app-content.route-transition-active > .screen {
   animation: tsd-route-enter 190ms ease-out both;
-  will-change: opacity, transform;
+  will-change: opacity;
 }
 
 .app-content.route-transition-exit > .screen {
   opacity: 0.92;
-  transform: translateY(3px);
-  transition:
-    opacity 120ms ease-in,
-    transform 120ms ease-in;
+  transition: opacity 120ms ease-in;
 }
 
 @keyframes tsd-route-enter {
   from {
     opacity: 0;
-    transform: translateY(6px);
   }
 
   to {
     opacity: 1;
-    transform: translateY(0);
   }
 }
 
@@ -244,7 +236,6 @@ body {
 
   .app-content.route-transition-exit > .screen {
     opacity: 1;
-    transform: none;
     transition: none;
   }
 }
@@ -1219,11 +1210,12 @@ body {
 .filling-screen--scan {
   display: flex;
   flex-direction: column;
+  flex: 0 0 auto;
   min-height: 0;
 }
 
 .filling-screen--scan .filling-card--scan {
-  flex: 1;
+  flex: 0 0 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -1253,7 +1245,7 @@ body {
 
 .filling-card--scan .filling-pallet-list-card {
   margin-top: 0;
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -1368,30 +1360,28 @@ body {
   display: flex;
   flex-direction: column;
   gap: clamp(3px, 1vw, 4px);
-  max-height: min(52dvh, calc(100dvh - 280px), 360px);
+  height: auto;
+  max-height: none;
   min-height: 0;
-  flex: 0 1 auto;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-  touch-action: pan-y;
+  flex: 0 0 auto;
+  overflow: visible;
 }
 
 .filling-screen--scan .filling-pallet-list {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   min-height: 0;
+  height: auto;
   max-height: none;
-  overscroll-behavior: contain;
+  overflow: visible;
 }
 
 .filling-pallet-list--scroll-breathing {
   gap: clamp(6px, 1.5vw, 8px);
-  padding-bottom: clamp(96px, 32dvh, 320px);
-  scroll-padding-bottom: clamp(96px, 32dvh, 320px);
+  padding-bottom: clamp(8px, 2dvh, 16px);
 }
 
 .filling-screen--scan .filling-pallet-list--scroll-breathing {
   padding-bottom: clamp(8px, 2dvh, 16px);
-  scroll-padding-bottom: clamp(8px, 2dvh, 16px);
 }
 
 .filling-pallet-group {
@@ -1401,7 +1391,6 @@ body {
   gap: 3px;
   list-style: none;
   min-height: 0;
-  touch-action: pan-y;
 }
 
 .filling-pallet-group-title {
@@ -1410,7 +1399,6 @@ body {
   font-weight: 800;
   line-height: 1.25;
   color: #243b53;
-  touch-action: pan-y;
 }
 
 .filling-pallet-group:first-child .filling-pallet-group-title {
@@ -1425,7 +1413,6 @@ body {
   flex-direction: column;
   gap: 3px;
   min-height: 0;
-  touch-action: pan-y;
 }
 
 .filling-pallet-item {
@@ -1442,7 +1429,6 @@ body {
   font-weight: 700;
   background: var(--tsd-surface-solid);
   color: var(--tsd-text);
-  touch-action: pan-y;
 }
 
 .filling-pallet-item--compact {
@@ -1452,7 +1438,6 @@ body {
   padding: 4px 8px;
   border-radius: 10px;
   font-size: 14px;
-  touch-action: pan-y;
 }
 
 .filling-pallet-item--compact .filling-pallet-dot {
@@ -1497,12 +1482,10 @@ body {
   height: 10px;
   border-radius: 999px;
   background: currentColor;
-  touch-action: pan-y;
 }
 
 .filling-pallet-code {
   word-break: break-word;
-  touch-action: pan-y;
 }
 
 .filling-pallet-status-text {

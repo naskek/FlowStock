@@ -84,7 +84,7 @@ assert(
     appJs.includes("getFillingPalletItemLabel") &&
     appJs.includes("buildFillingPalletGroups") &&
     appJs.includes("filling-pallet-list--scroll-breathing"),
-  "filling screen should show grouped compact color-coded pallet rows with scroll breathing room"
+  "filling screen should show grouped compact color-coded pallet rows with page breathing room"
 );
 assert(
   !appJs.includes('isFilled ? "Наполнена" : "Не наполнена"'),
@@ -342,7 +342,7 @@ assert.match(
 assert.match(
   fillingScanHtml,
   /filling-pallet-list-card[\s\S]*filling-pallet-list--scroll-breathing/,
-  "filling scan screen should keep the pallet list in a scrollable list card"
+  "filling scan screen should keep the pallet list as normal page content in the list card"
 );
 assert.doesNotMatch(
   fillingScanHtml,
@@ -480,7 +480,17 @@ assert.match(
 assert.match(
   fillingPalletListHtml,
   /filling-pallet-list--scroll-breathing/,
-  "filling pallet list scroll container should include bottom breathing room class"
+  "filling pallet list should include page-flow bottom breathing room class"
+);
+assert.doesNotMatch(
+  fillingPalletListHtml,
+  /filling-pallet-list--status/,
+  "filling pallet status list should not use the failed pointer pass-through hotfix class"
+);
+assert.match(
+  fillingPalletListHtml,
+  /<li class="filling-pallet-item filling-pallet-item--compact (?:is-filled|is-pending)">/,
+  "filling pallet rows should remain compact display-only list items"
 );
 const adjikaTitleIndex = fillingPalletListHtml.indexOf("Аджика Печагин, 200 гр");
 const mustardTitleIndex = fillingPalletListHtml.indexOf("Горчица Печагин, 200 гр");

@@ -203,9 +203,21 @@ assert(
   stylesCss.includes(".app-content.route-transition-active > .screen") &&
     stylesCss.includes("@keyframes tsd-route-enter") &&
     stylesCss.includes("animation: tsd-route-enter 190ms ease-out both") &&
-    stylesCss.includes("transform: translateY(6px)") &&
     stylesCss.includes(".app-content.route-transition-exit > .screen"),
-  "styles should define subtle route-level enter/exit screen transitions"
+  "styles should define opacity-only route-level enter/exit screen transitions"
+);
+const routeTransitionCss = [
+  extractCssRuleBody(stylesCss, ".app-content.route-transition-active > .screen"),
+  extractCssRuleBody(stylesCss, ".app-content.route-transition-exit > .screen"),
+  stylesCss.slice(
+    stylesCss.indexOf("@keyframes tsd-route-enter"),
+    stylesCss.indexOf("@media (prefers-reduced-motion: reduce)")
+  ),
+].join("\n");
+assert.doesNotMatch(
+  routeTransitionCss,
+  /\btransform\b/,
+  "route transitions should not transform route wrappers or screens"
 );
 assert(
   stylesCss.includes("@media (prefers-reduced-motion: reduce)") &&
@@ -217,10 +229,16 @@ assert(
 assert(
   stylesCss.includes(".filling-screen--scan .filling-card--scan") &&
     stylesCss.includes(".filling-screen--scan .filling-pallet-list") &&
+    stylesCss.includes("height: auto") &&
     stylesCss.includes("max-height: none") &&
     stylesCss.includes(".filling-screen--scan .filling-pallet-list--scroll-breathing") &&
     stylesCss.includes("padding-bottom: clamp(8px, 2dvh, 16px)"),
-  "filling scan screen should use adaptive height with the pallet list as the inner scroll container"
+  "filling scan screen should use page-level scroll with the pallet list as normal content"
+);
+assertCssContains(
+  ".app-content",
+  ["flex: 1", "min-height: 0", "overflow-x: hidden", "overflow-y: auto", "-webkit-overflow-scrolling: touch"],
+  "app content should be the route-level mobile scroll container"
 );
 assertCssContains(
   ".screen",
@@ -239,65 +257,71 @@ assertCssContains(
 );
 assertCssContains(
   ".filling-card--scan .filling-pallet-list-card",
-  ["flex: 1 1 auto", "min-height: 0", "display: flex", "flex-direction: column"],
-  "filling scan list card should own the remaining vertical space"
+  ["flex: 0 0 auto", "min-height: 0", "display: flex", "flex-direction: column"],
+  "filling scan list card should stay in normal page flow"
 );
 assertCssContains(
   ".filling-pallet-list-card",
   ["display: flex", "flex-direction: column", "min-height: 0"],
-  "pallet list card should be a flex parent for its scroll container"
+  "pallet list card should keep compact list layout without owning scroll"
 );
 assertCssContains(
   ".filling-pallet-list",
   [
     "display: flex",
     "flex-direction: column",
+    "height: auto",
+    "max-height: none",
     "min-height: 0",
-    "overflow-y: auto",
-    "-webkit-overflow-scrolling: touch",
-    "touch-action: pan-y",
+    "flex: 0 0 auto",
+    "overflow: visible",
   ],
-  "pallet list should be the touch scroll container"
+  "pallet list should be normal document content, not an inner scroll container"
+);
+assertCssDoesNotMatch(
+  ".filling-pallet-list",
+  /(?:^|[;\n])\s*(?:overflow-y\s*:\s*auto|max-height\s*:\s*(?!\s*none\b)|height\s*:\s*100%|flex\s*:\s*1\b|scroll-padding)/i,
+  "filling pallet list should not trap scrolling"
 );
 assertCssContains(
   ".filling-screen--scan .filling-pallet-list",
-  ["flex: 1 1 auto", "min-height: 0", "max-height: none", "overscroll-behavior: contain"],
-  "scan screen pallet list should scroll within the available card height"
+  ["flex: 0 0 auto", "min-height: 0", "height: auto", "max-height: none", "overflow: visible"],
+  "scan screen pallet list should remain page-flow content"
+);
+assertCssDoesNotMatch(
+  ".filling-screen--scan .filling-card--scan",
+  /(?:^|[;\n])\s*(?:flex\s*:\s*1\b|height\s*:\s*100%|overflow(?:-y)?\s*:\s*(?:auto|hidden))/i,
+  "filling scan card should not create a nested scroll trap"
+);
+assertCssDoesNotMatch(
+  ".filling-card--scan .filling-pallet-list-card",
+  /(?:^|[;\n])\s*(?:flex\s*:\s*1\b|height\s*:\s*100%|max-height\s*:\s*(?!\s*none\b)|overflow(?:-y)?\s*:\s*(?:auto|hidden))/i,
+  "filling list card should not create a nested scroll trap"
+);
+assertCssDoesNotMatch(
+  ".filling-pallet-list--scroll-breathing",
+  /(?:^|[;\n])\s*(?:scroll-padding|overflow(?:-y)?\s*:\s*auto|max-height\s*:\s*(?!\s*none\b)|height\s*:\s*100%|flex\s*:\s*1\b)/i,
+  "filling breathing class should not add inner-scroll behavior"
 );
 assertCssContains(
   ".filling-pallet-group",
-  ["display: flex", "flex: 0 0 auto", "flex-direction: column", "touch-action: pan-y"],
+  ["display: flex", "flex: 0 0 auto", "flex-direction: column"],
   "pallet groups should stay content-sized"
 );
 assertCssContains(
-  ".filling-pallet-group-title",
-  ["touch-action: pan-y"],
-  "pallet group titles should allow vertical touch panning"
-);
-assertCssContains(
   ".filling-pallet-group-items",
-  ["display: flex", "flex-direction: column", "min-height: 0", "touch-action: pan-y"],
+  ["display: flex", "flex-direction: column", "min-height: 0"],
   "pallet group item lists should not stretch rows"
 );
 assertCssContains(
   ".filling-pallet-item",
-  ["flex: 0 0 auto", "align-self: stretch", "touch-action: pan-y"],
+  ["flex: 0 0 auto", "align-self: stretch"],
   "HU rows should be compact content-sized rows"
 );
-assertCssContains(
-  ".filling-pallet-item--compact",
-  ["touch-action: pan-y"],
-  "compact HU rows should allow vertical touch panning"
-);
-assertCssContains(
-  ".filling-pallet-dot",
-  ["touch-action: pan-y"],
-  "HU row status dot should allow vertical touch panning"
-);
-assertCssContains(
-  ".filling-pallet-code",
-  ["touch-action: pan-y"],
-  "HU row code should allow vertical touch panning"
+assertCssDoesNotMatch(
+  ".filling-pallet-item",
+  /pointer-events\s*:\s*none/,
+  "global HU row selector should not disable pointer events"
 );
 assertCssDoesNotMatch(
   ".filling-pallet-item",
@@ -320,16 +344,6 @@ assertCssDoesNotMatch(
   ".filling-pallet-code",
 ].forEach(assertNoFillingHuTouchBlockers);
 assertCssDoesNotMatch(
-  ".app-content.route-transition-active",
-  /overflow(?:-y)?\s*:\s*hidden|pointer-events\s*:\s*none|touch-action\s*:\s*none/,
-  "active route transition wrapper should not block scrolling"
-);
-assertCssDoesNotMatch(
-  ".app-content.route-transition-exit",
-  /overflow(?:-y)?\s*:\s*hidden|pointer-events\s*:\s*none|touch-action\s*:\s*none/,
-  "exit route transition wrapper should not block scrolling"
-);
-assertCssDoesNotMatch(
   ".app-content.route-transition-active > .screen",
   /overflow(?:-y)?\s*:\s*hidden|pointer-events\s*:\s*none|touch-action\s*:\s*none/,
   "active route transition screen should not block scrolling"
@@ -346,6 +360,25 @@ assert(
     stylesCss.includes("overflow-y: auto") &&
     stylesCss.includes(".order-line-hu-panel"),
   "order details should define adaptive height and read-only HU expansion styles"
+);
+assert(
+  appJs.includes('<section class="screen order-details-screen">') &&
+    appJs.includes('class="screen-card doc-screen-card order-details-card"') &&
+    appJs.includes('id="itemsList"') &&
+    appJs.includes('class="items-toolbar"') &&
+    appJs.includes("outbound-picking-hu-list") &&
+    appJs.includes('data-outbound-order="'),
+  "orders, order details, items, and outbound routes should keep their route layout hooks"
+);
+assertCssContains(
+  ".order-details-card .order-lines",
+  ["overflow-y: auto", "overscroll-behavior: contain"],
+  "order detail line list should keep its intended local scroll behavior"
+);
+assertCssContains(
+  ".catalog-volume-items",
+  ["display: grid", "gap: 6px"],
+  "items catalogue list should keep normal page-flow grouped layout"
 );
 assert(
   stylesCss.includes(".home-screen--centered") &&
