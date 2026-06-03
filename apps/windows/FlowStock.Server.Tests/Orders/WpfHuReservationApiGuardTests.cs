@@ -258,6 +258,50 @@ public sealed class WpfHuReservationApiGuardTests
     }
 
     [Fact]
+    public void OrderDetailsWindow_DeletePalletPlanSavesBeforeReadingCancelOptions()
+    {
+        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs");
+
+        var methodStart = source.IndexOf("private async void DeletePalletPlan_Click", StringComparison.Ordinal);
+        Assert.True(methodStart >= 0);
+        var methodEnd = source.IndexOf("private async void PrintPalletLabels_Click", methodStart, StringComparison.Ordinal);
+        Assert.True(methodEnd > methodStart);
+        var method = source[methodStart..methodEnd];
+
+        var saveIndex = method.IndexOf("EnsureSavedForPalletActionAsync()", StringComparison.Ordinal);
+        var hasPlanIndex = method.IndexOf("HasOpenProductionPalletPlan(_orderId.Value)", StringComparison.Ordinal);
+        var optionsIndex = method.IndexOf("TryGetCancelPlanOptionsAsync(_orderId.Value)", StringComparison.Ordinal);
+        Assert.True(saveIndex >= 0);
+        Assert.True(hasPlanIndex > saveIndex);
+        Assert.True(optionsIndex > saveIndex);
+        Assert.Contains("if (!await EnsureSavedForPalletActionAsync().ConfigureAwait(true))", method);
+    }
+
+    [Fact]
+    public void OrderDetailsWindow_PlanPalletsReportsAddedAndTotalCounts()
+    {
+        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs");
+
+        var methodStart = source.IndexOf("private async void PlanPallets_Click", StringComparison.Ordinal);
+        Assert.True(methodStart >= 0);
+        var methodEnd = source.IndexOf("private void ReadyHuBinding_Click", methodStart, StringComparison.Ordinal);
+        Assert.True(methodEnd > methodStart);
+        var method = source[methodStart..methodEnd];
+
+        var optionsIndex = method.IndexOf("TryGetCancelPlanOptionsAsync(_orderId.Value)", StringComparison.Ordinal);
+        var planIndex = method.IndexOf("TryPlanOrderAsync(_orderId.Value)", StringComparison.Ordinal);
+        Assert.True(optionsIndex >= 0);
+        Assert.True(planIndex > optionsIndex);
+        Assert.DoesNotContain("return;", method[optionsIndex..planIndex], StringComparison.Ordinal);
+        Assert.Contains("activePalletCountBefore = beforeOptionsResult.Rows.Count;", method);
+        Assert.Contains("Добавлено паллет:", method);
+        Assert.Contains("Всего активных паллет в плане:", method);
+        Assert.Contains("Всего паллет в плане:", method);
+        Assert.Contains("Math.Max(0, result.PlannedPalletCount - activePalletCountBefore.Value)", method);
+        Assert.DoesNotContain("Запланировано паллет: {result.PlannedPalletCount}", method, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void OrderService_CreateAndUpdateCustomerFlows_DoNotAutoBindWarehouseHu()
     {
         var source = ReadRepoFile("apps", "windows", "FlowStock.Core", "Services", "OrderService.cs");

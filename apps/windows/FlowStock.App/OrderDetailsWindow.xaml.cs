@@ -368,6 +368,13 @@ public partial class OrderDetailsWindow : Window
         PrintPalletLabelsButton.IsEnabled = false;
         try
         {
+            int? activePalletCountBefore = null;
+            var beforeOptionsResult = await _services.WpfProductionPalletApi.TryGetCancelPlanOptionsAsync(_orderId.Value).ConfigureAwait(true);
+            if (beforeOptionsResult.IsSuccess)
+            {
+                activePalletCountBefore = beforeOptionsResult.Rows.Count;
+            }
+
             var result = await _services.WpfProductionPalletApi.TryPlanOrderAsync(_orderId.Value).ConfigureAwait(true);
             if (!result.IsSuccess)
             {
@@ -408,9 +415,13 @@ public partial class OrderDetailsWindow : Window
                     $"Production pallet print rows empty after plan for order_id={_orderId.Value}, planned_pallet_count={result.PlannedPalletCount}");
             }
 
+            var palletCountMessage = activePalletCountBefore.HasValue
+                ? $"Добавлено паллет: {Math.Max(0, result.PlannedPalletCount - activePalletCountBefore.Value)}{Environment.NewLine}" +
+                  $"Всего активных паллет в плане: {result.PlannedPalletCount}"
+                : $"Всего паллет в плане: {result.PlannedPalletCount}";
             var message =
                 $"{result.Message}{Environment.NewLine}{Environment.NewLine}" +
-                $"Запланировано паллет: {result.PlannedPalletCount}{Environment.NewLine}" +
+                $"{palletCountMessage}{Environment.NewLine}" +
                 $"Запланировано количество: {FormatQty(result.PlannedQty)}{Environment.NewLine}" +
                 $"Осталось наполнить: {FormatQty(result.RemainingQty)}";
             MessageBox.Show(message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -452,6 +463,11 @@ public partial class OrderDetailsWindow : Window
         if (!_orderId.HasValue)
         {
             MessageBox.Show("Сначала сохраните заказ.", "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!await EnsureSavedForPalletActionAsync().ConfigureAwait(true))
+        {
             return;
         }
 

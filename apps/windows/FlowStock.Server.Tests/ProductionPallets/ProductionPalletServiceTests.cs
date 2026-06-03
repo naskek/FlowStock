@@ -333,6 +333,81 @@ public sealed class ProductionPalletServiceTests
     }
 
     [Fact]
+    public void DeleteCustomerOrderLine_WithOnlyPlannedPallets_RemovesOnlyThatLinePlan()
+    {
+        var harness = CreateCustomerPlanningHarness((101, 100, 600), (102, 200, 600));
+        harness.SeedPartner(new Partner { Id = 500, Code = "CUST", Name = "Клиент" });
+        var palletService = new ProductionPalletService(harness.Store);
+        var orderService = new OrderService(harness.Store);
+        var plan = palletService.PlanOrder(10);
+        var otherLineHu = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Single(pallet => pallet.OrderLineId == 102).HuCode;
+
+        orderService.UpdateOrder(
+            10,
+            "086",
+            500,
+            null,
+            null,
+            [new OrderLineView { ItemId = 200, QtyOrdered = 600, ProductionPurpose = ProductionLinePurpose.CustomerOrder }],
+            OrderType.Customer);
+
+        var pallets = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId);
+        Assert.DoesNotContain(pallets, pallet => pallet.OrderLineId == 101);
+        Assert.Equal(otherLineHu, Assert.Single(pallets, pallet => pallet.OrderLineId == 102).HuCode);
+        Assert.DoesNotContain(harness.Store.GetOrderLines(10), line => line.Id == 101);
+    }
+
+    [Fact]
+    public void DeleteCustomerOrderLine_WithFilledPallets_IsBlocked()
+    {
+        var harness = CreateCustomerPlanningHarness((101, 100, 600), (102, 200, 600));
+        harness.SeedPartner(new Partner { Id = 500, Code = "CUST", Name = "Клиент" });
+        var palletService = new ProductionPalletService(harness.Store);
+        var orderService = new OrderService(harness.Store);
+        var plan = palletService.PlanOrder(10);
+        var filledHu = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Single(pallet => pallet.OrderLineId == 101).HuCode;
+        palletService.Fill(filledHu, "TSD-01");
+
+        var ex = Assert.Throws<InvalidOperationException>(() => orderService.UpdateOrder(
+            10,
+            "086",
+            500,
+            null,
+            null,
+            [new OrderLineView { ItemId = 200, QtyOrdered = 600, ProductionPurpose = ProductionLinePurpose.CustomerOrder }],
+            OrderType.Customer));
+
+        Assert.Equal("Товар 100: нельзя удалить строку, есть заполненные паллеты/HU.", ex.Message);
+        Assert.Contains(harness.Store.GetOrderLines(10), line => line.Id == 101);
+        Assert.Contains(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId), pallet => pallet.HuCode == filledHu);
+    }
+
+    [Fact]
+    public void DeleteCustomerOrderLine_WithPrintedPallets_IsBlocked()
+    {
+        var harness = CreateCustomerPlanningHarness((101, 100, 600), (102, 200, 600));
+        harness.SeedPartner(new Partner { Id = 500, Code = "CUST", Name = "Клиент" });
+        var palletService = new ProductionPalletService(harness.Store);
+        var orderService = new OrderService(harness.Store);
+        var plan = palletService.PlanOrder(10);
+        var printed = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Single(pallet => pallet.OrderLineId == 101);
+        palletService.MarkPrinted(10, [printed.Id], new DateTime(2026, 5, 27, 11, 0, 0));
+
+        var ex = Assert.Throws<InvalidOperationException>(() => orderService.UpdateOrder(
+            10,
+            "086",
+            500,
+            null,
+            null,
+            [new OrderLineView { ItemId = 200, QtyOrdered = 600, ProductionPurpose = ProductionLinePurpose.CustomerOrder }],
+            OrderType.Customer));
+
+        Assert.Equal("Товар 100: нельзя удалить строку, паллетный план уже напечатан или находится в фактическом состоянии.", ex.Message);
+        Assert.Contains(harness.Store.GetOrderLines(10), line => line.Id == 101);
+        Assert.Contains(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId), pallet => pallet.Id == printed.Id);
+    }
+
+    [Fact]
     public void ChangeOrderLineItem_WithFilledPallets_IsBlockedBeforeAddingReplacement()
     {
         var harness = CreateHarnessWithOrderOnly(orderQty: 600, maxQtyPerHu: 600);
