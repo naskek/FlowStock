@@ -403,6 +403,13 @@ public partial class OrderDetailsWindow : Window
                 return;
             }
 
+            int? activePalletCountAfter = null;
+            var afterOptionsResult = await _services.WpfProductionPalletApi.TryGetCancelPlanOptionsAsync(_orderId.Value).ConfigureAwait(true);
+            if (afterOptionsResult.IsSuccess)
+            {
+                activePalletCountAfter = afterOptionsResult.Rows.Count;
+            }
+
             var printRowsResult = await _services.WpfProductionPalletApi.TryGetPrintRowsAsync(_orderId.Value).ConfigureAwait(true);
             if (!printRowsResult.IsSuccess)
             {
@@ -415,10 +422,22 @@ public partial class OrderDetailsWindow : Window
                     $"Production pallet print rows empty after plan for order_id={_orderId.Value}, planned_pallet_count={result.PlannedPalletCount}");
             }
 
-            var palletCountMessage = activePalletCountBefore.HasValue
-                ? $"Добавлено паллет: {Math.Max(0, result.PlannedPalletCount - activePalletCountBefore.Value)}{Environment.NewLine}" +
-                  $"Всего активных паллет в плане: {result.PlannedPalletCount}"
-                : $"Всего паллет в плане: {result.PlannedPalletCount}";
+            string palletCountMessage;
+            if (activePalletCountBefore.HasValue && activePalletCountAfter.HasValue)
+            {
+                palletCountMessage =
+                    $"Добавлено паллет: {Math.Max(0, activePalletCountAfter.Value - activePalletCountBefore.Value)}{Environment.NewLine}" +
+                    $"Всего активных паллет в плане: {activePalletCountAfter.Value}";
+            }
+            else if (activePalletCountAfter.HasValue)
+            {
+                palletCountMessage = $"Всего паллет в плане: {activePalletCountAfter.Value}";
+            }
+            else
+            {
+                palletCountMessage = $"Всего паллет в плане: {result.PlannedPalletCount}";
+            }
+
             var message =
                 $"{result.Message}{Environment.NewLine}{Environment.NewLine}" +
                 $"{palletCountMessage}{Environment.NewLine}" +
@@ -2553,4 +2572,3 @@ public partial class OrderDetailsWindow : Window
     }
 
 }
-

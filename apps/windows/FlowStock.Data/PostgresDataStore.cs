@@ -7732,47 +7732,138 @@ ORDER BY order_line_id, pallet_id;
             return;
         }
 
-        using (var cleanupPalletLines = CreateCommand(connection, @"
+        using (var cleanupPlannedPallets = CreateCommand(connection, @"
+WITH planned_pallets AS (
+    SELECT pp.id, pp.doc_line_id, pp.order_line_id
+    FROM production_pallets pp
+    INNER JOIN docs d ON d.id = pp.prd_doc_id
+    WHERE pp.order_id = @order_id
+      AND pp.status = @planned_status
+      AND d.type = @production_receipt_type
+      AND d.status = @draft_status
+),
+target_pallet_lines AS (
+    SELECT pll.id, pll.doc_line_id, pll.production_pallet_id
+    FROM production_pallet_lines pll
+    INNER JOIN planned_pallets pp ON pp.id = pll.production_pallet_id
+    WHERE pll.order_line_id = ANY(@order_line_ids)
+),
+target_header_pallets AS (
+    SELECT pp.id, pp.doc_line_id
+    FROM planned_pallets pp
+    WHERE pp.order_line_id = ANY(@order_line_ids)
+),
+affected_pallets AS (
+    SELECT production_pallet_id AS id FROM target_pallet_lines
+    UNION
+    SELECT id FROM target_header_pallets
+),
+target_doc_lines AS (
+    SELECT DISTINCT doc_line_id AS id FROM target_pallet_lines
+    UNION
+    SELECT DISTINCT doc_line_id AS id FROM target_header_pallets WHERE doc_line_id IS NOT NULL
+),
+deleted_pallet_lines AS (
+    DELETE FROM production_pallet_lines pll
+    USING target_pallet_lines target
+    WHERE pll.id = target.id
+    RETURNING pll.production_pallet_id
+),
+empty_pallets AS (
+    SELECT pp.id
+    FROM production_pallets pp
+    WHERE pp.id IN (SELECT id FROM affected_pallets)
+      AND NOT EXISTS (
+          SELECT 1
+          FROM production_pallet_lines remaining
+          WHERE remaining.production_pallet_id = pp.id
+      )
+),
+deleted_pallets AS (
+    DELETE FROM production_pallets pp
+    USING empty_pallets target
+    WHERE pp.id = target.id
+    RETURNING pp.id
+),
+remaining_pallets AS (
+    SELECT pp.id,
+           MIN(pll.doc_line_id) AS doc_line_id,
+           CASE WHEN COUNT(DISTINCT pll.order_line_id) = 1 THEN MIN(pll.order_line_id) ELSE NULL END AS order_line_id,
+           MIN(pll.item_id) AS item_id,
+           SUM(pll.planned_qty) AS planned_qty
+    FROM production_pallets pp
+    INNER JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
+    WHERE pp.id IN (SELECT id FROM affected_pallets)
+      AND pp.id NOT IN (SELECT id FROM deleted_pallets)
+    GROUP BY pp.id
+),
+updated_pallets AS (
+    UPDATE production_pallets pp
+    SET doc_line_id = remaining.doc_line_id,
+        order_line_id = remaining.order_line_id,
+        item_id = remaining.item_id,
+        planned_qty = remaining.planned_qty
+    FROM remaining_pallets remaining
+    WHERE pp.id = remaining.id
+    RETURNING pp.id
+)
+DELETE FROM doc_lines dl
+USING target_doc_lines target
+WHERE dl.id = target.id
+  AND NOT EXISTS (
+      SELECT 1
+      FROM production_pallet_lines pll
+      WHERE pll.doc_line_id = dl.id
+  );
+"))
+        {
+            cleanupPlannedPallets.Parameters.AddWithValue("@order_id", orderId);
+            cleanupPlannedPallets.Parameters.AddWithValue("@order_line_ids", ids);
+            cleanupPlannedPallets.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+            cleanupPlannedPallets.Parameters.AddWithValue("@production_receipt_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+            cleanupPlannedPallets.Parameters.AddWithValue("@draft_status", DocTypeMapper.StatusToString(DocStatus.Draft));
+            cleanupPlannedPallets.ExecuteNonQuery();
+        }
+
+        using (var cleanupCancelledPalletLines = CreateCommand(connection, @"
 UPDATE production_pallet_lines pll
 SET order_line_id = NULL
 FROM production_pallets pp
 INNER JOIN docs d ON d.id = pp.prd_doc_id
 WHERE pp.id = pll.production_pallet_id
   AND pp.order_id = @order_id
-  AND pp.status IN (@planned_status, @cancelled_status)
+  AND pp.status = @cancelled_status
   AND d.type = @production_receipt_type
   AND d.status = @draft_status
   AND pll.order_line_id = ANY(@order_line_ids);
 "))
         {
-            cleanupPalletLines.Parameters.AddWithValue("@order_id", orderId);
-            cleanupPalletLines.Parameters.AddWithValue("@order_line_ids", ids);
-            cleanupPalletLines.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
-            cleanupPalletLines.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
-            cleanupPalletLines.Parameters.AddWithValue("@production_receipt_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
-            cleanupPalletLines.Parameters.AddWithValue("@draft_status", DocTypeMapper.StatusToString(DocStatus.Draft));
-            cleanupPalletLines.ExecuteNonQuery();
+            cleanupCancelledPalletLines.Parameters.AddWithValue("@order_id", orderId);
+            cleanupCancelledPalletLines.Parameters.AddWithValue("@order_line_ids", ids);
+            cleanupCancelledPalletLines.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
+            cleanupCancelledPalletLines.Parameters.AddWithValue("@production_receipt_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+            cleanupCancelledPalletLines.Parameters.AddWithValue("@draft_status", DocTypeMapper.StatusToString(DocStatus.Draft));
+            cleanupCancelledPalletLines.ExecuteNonQuery();
         }
 
-        using (var cleanupPallets = CreateCommand(connection, @"
+        using (var cleanupCancelledPallets = CreateCommand(connection, @"
 UPDATE production_pallets pp
 SET order_line_id = NULL
 FROM docs d
 WHERE d.id = pp.prd_doc_id
   AND pp.order_id = @order_id
-  AND pp.status IN (@planned_status, @cancelled_status)
+  AND pp.status = @cancelled_status
   AND d.type = @production_receipt_type
   AND d.status = @draft_status
   AND pp.order_line_id = ANY(@order_line_ids);
 "))
         {
-            cleanupPallets.Parameters.AddWithValue("@order_id", orderId);
-            cleanupPallets.Parameters.AddWithValue("@order_line_ids", ids);
-            cleanupPallets.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
-            cleanupPallets.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
-            cleanupPallets.Parameters.AddWithValue("@production_receipt_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
-            cleanupPallets.Parameters.AddWithValue("@draft_status", DocTypeMapper.StatusToString(DocStatus.Draft));
-            cleanupPallets.ExecuteNonQuery();
+            cleanupCancelledPallets.Parameters.AddWithValue("@order_id", orderId);
+            cleanupCancelledPallets.Parameters.AddWithValue("@order_line_ids", ids);
+            cleanupCancelledPallets.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
+            cleanupCancelledPallets.Parameters.AddWithValue("@production_receipt_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+            cleanupCancelledPallets.Parameters.AddWithValue("@draft_status", DocTypeMapper.StatusToString(DocStatus.Draft));
+            cleanupCancelledPallets.ExecuteNonQuery();
         }
 
         using (var cleanupDocLines = CreateCommand(connection, @"
@@ -11986,4 +12077,3 @@ FROM warehouse_task_lines tl " + whereClause;
         return null;
     }
 }
-

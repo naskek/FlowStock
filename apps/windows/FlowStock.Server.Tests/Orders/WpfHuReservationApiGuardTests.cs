@@ -290,14 +290,18 @@ public sealed class WpfHuReservationApiGuardTests
 
         var optionsIndex = method.IndexOf("TryGetCancelPlanOptionsAsync(_orderId.Value)", StringComparison.Ordinal);
         var planIndex = method.IndexOf("TryPlanOrderAsync(_orderId.Value)", StringComparison.Ordinal);
+        var afterOptionsIndex = method.IndexOf("TryGetCancelPlanOptionsAsync(_orderId.Value)", planIndex, StringComparison.Ordinal);
         Assert.True(optionsIndex >= 0);
         Assert.True(planIndex > optionsIndex);
+        Assert.True(afterOptionsIndex > planIndex);
         Assert.DoesNotContain("return;", method[optionsIndex..planIndex], StringComparison.Ordinal);
         Assert.Contains("activePalletCountBefore = beforeOptionsResult.Rows.Count;", method);
+        Assert.Contains("activePalletCountAfter = afterOptionsResult.Rows.Count;", method);
         Assert.Contains("Добавлено паллет:", method);
         Assert.Contains("Всего активных паллет в плане:", method);
         Assert.Contains("Всего паллет в плане:", method);
-        Assert.Contains("Math.Max(0, result.PlannedPalletCount - activePalletCountBefore.Value)", method);
+        Assert.Contains("Math.Max(0, activePalletCountAfter.Value - activePalletCountBefore.Value)", method);
+        Assert.DoesNotContain("Math.Max(0, result.PlannedPalletCount - activePalletCountBefore.Value)", method, StringComparison.Ordinal);
         Assert.DoesNotContain("Запланировано паллет: {result.PlannedPalletCount}", method, StringComparison.Ordinal);
     }
 

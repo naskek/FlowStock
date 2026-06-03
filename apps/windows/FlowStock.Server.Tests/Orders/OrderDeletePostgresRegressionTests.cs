@@ -34,6 +34,22 @@ public sealed class OrderDeletePostgresRegressionTests
     }
 
     [Fact]
+    public void DeleteOrderLine_RemovesPlannedPalletsInsteadOfDetachingActiveOrderLineReferences()
+    {
+        var source = File.ReadAllText(GetPostgresDataStorePath());
+        var methodBody = SliceMethod(
+            source,
+            "private void ClearRemovableProductionPalletPlanForOrderLines",
+            "private long[] GetOrderLineIds");
+
+        Assert.Contains("DELETE FROM production_pallet_lines", methodBody, StringComparison.Ordinal);
+        Assert.Contains("DELETE FROM production_pallets", methodBody, StringComparison.Ordinal);
+        Assert.Contains("pp.status = @planned_status", methodBody, StringComparison.Ordinal);
+        Assert.Contains("pp.status = @cancelled_status", methodBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("pp.status IN (@planned_status, @cancelled_status)", methodBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task PutUpdate_RemovingCustomerLineWithPlannedPallets_DeletesLineWithoutFkFailure()
     {
         var connectionString = ResolvePostgresTestConnectionString();
@@ -72,6 +88,11 @@ public sealed class OrderDeletePostgresRegressionTests
                 palletsAfter,
                 pallet => pallet.OrderLineId == fixture.DeletedOrderLineId
                           || pallet.Lines.Any(line => line.OrderLineId == fixture.DeletedOrderLineId));
+            Assert.Contains(
+                palletsAfter,
+                pallet => pallet.OrderLineId == fixture.RemainingOrderLineId
+                          || pallet.Lines.Any(line => line.OrderLineId == fixture.RemainingOrderLineId));
+            AssertNoActiveOrphanPallets(palletsAfter);
         });
     }
 
@@ -180,7 +201,7 @@ public sealed class OrderDeletePostgresRegressionTests
     }
 
     [Fact]
-    public async Task PutUpdate_RemovingCustomerLineWithPlannedPalletDocLineReference_DetachesFkTailsWithoutDeletingDocLine()
+    public async Task PutUpdate_RemovingCustomerLineWithPlannedPalletDocLineReference_RemovesPlannedPalletPlan()
     {
         var connectionString = ResolvePostgresTestConnectionString();
         if (connectionString == null)
@@ -205,7 +226,8 @@ public sealed class OrderDeletePostgresRegressionTests
 
             Assert.True(payload.Ok);
             Assert.DoesNotContain(scopedStore.GetOrderLines(fixture.OrderId), line => line.Id == fixture.DeletedOrderLineId);
-            AssertDetachedPalletPlan(scopedStore, plan);
+            AssertPlannedPalletPlanRemoved(scopedStore, plan);
+            AssertNoActiveOrphanPallets(scopedStore.GetProductionPalletsByDoc(plan.PrdDocId));
         });
     }
 
@@ -247,6 +269,10 @@ public sealed class OrderDeletePostgresRegressionTests
             var remainingLines = scopedStore.GetOrderLines(fixture.OrderId);
             Assert.Equal(2, remainingLines.Count);
             Assert.Contains(remainingLines, line => line.Id == fixture.DeletedOrderLineId);
+            var palletAfter = Assert.Single(scopedStore.GetProductionPalletsByDoc(plan.PrdDocId));
+            Assert.Equal(palletToFill.Id, palletAfter.Id);
+            Assert.Equal(fixture.DeletedOrderLineId, palletAfter.OrderLineId);
+            Assert.Equal(ProductionPalletStatus.Filled, palletAfter.Status);
         });
     }
 
@@ -263,7 +289,7 @@ public sealed class OrderDeletePostgresRegressionTests
         {
             EnsureAtLeastOneLocation(scopedStore);
             var fixture = SeedCustomerOrderWithTwoLines(scopedStore);
-            SeedDraftProductionReceiptPalletPlanForDeletedLine(
+            var plan = SeedDraftProductionReceiptPalletPlanForDeletedLine(
                 scopedStore,
                 fixture,
                 ProductionPalletStatus.Printed);
@@ -279,6 +305,10 @@ public sealed class OrderDeletePostgresRegressionTests
             Assert.Equal("ORDER_LINE_PALLET_PLAN_NOT_PLANNED", payload.Error);
             Assert.DoesNotContain("fkey", payload.Message ?? string.Empty, StringComparison.OrdinalIgnoreCase);
             Assert.Contains(scopedStore.GetOrderLines(fixture.OrderId), line => line.Id == fixture.DeletedOrderLineId);
+            var palletAfter = Assert.Single(scopedStore.GetProductionPalletsByDoc(plan.PrdDocId));
+            Assert.Equal(plan.PalletId, palletAfter.Id);
+            Assert.Equal(fixture.DeletedOrderLineId, palletAfter.OrderLineId);
+            Assert.Equal(ProductionPalletStatus.Printed, palletAfter.Status);
         });
     }
 
@@ -449,6 +479,22 @@ public sealed class OrderDeletePostgresRegressionTests
         var docLine = Assert.Single(store.GetDocLines(plan.PrdDocId));
         Assert.Equal(plan.DocLineId, docLine.Id);
         Assert.Null(docLine.OrderLineId);
+    }
+
+    private static void AssertPlannedPalletPlanRemoved(IDataStore store, PalletPlanFixture plan)
+    {
+        Assert.DoesNotContain(store.GetProductionPalletsByDoc(plan.PrdDocId), pallet => pallet.Id == plan.PalletId);
+        Assert.DoesNotContain(store.GetDocLines(plan.PrdDocId), line => line.Id == plan.DocLineId);
+    }
+
+    private static void AssertNoActiveOrphanPallets(IReadOnlyCollection<ProductionPallet> pallets)
+    {
+        Assert.DoesNotContain(
+            pallets,
+            pallet => pallet.OrderLineId == null
+                      && (string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+                          || string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase)
+                          || string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)));
     }
 
     private static void EnsureAtLeastOneLocation(IDataStore store)

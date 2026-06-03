@@ -369,6 +369,7 @@ public sealed class ProductionPalletService
             .SelectMany(doc => _data.GetProductionPalletsByDoc(doc.Id))
             .Where(pallet => pallet.OrderId == orderId)
             .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+            .Where(HasOrderLineOwnership)
             .Select(pallet =>
             {
                 docsById.TryGetValue(pallet.PrdDocId, out var doc);
@@ -1902,6 +1903,16 @@ public sealed class ProductionPalletService
     {
         return string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
                || string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasOrderLineOwnership(ProductionPallet pallet)
+    {
+        if (pallet.Lines.Count > 0)
+        {
+            return pallet.Lines.Any(line => line.OrderLineId.HasValue && line.OrderLineId.Value > 0);
+        }
+
+        return pallet.OrderLineId.HasValue && pallet.OrderLineId.Value > 0;
     }
 
     private static IReadOnlyList<ProductionPallet> ExcludeCancelledPallets(IReadOnlyList<ProductionPallet> pallets)

@@ -2321,6 +2321,35 @@ public sealed class ProductionPalletServiceTests
     }
 
     [Fact]
+    public void CancelPlanOptions_ActiveOrphanPlannedPallet_IsNotReturnedAsSelectableOption()
+    {
+        var harness = new CloseDocumentHarness();
+        SeedBase(harness, orderQty: 600, plannedQty: 600, huCode: "HU-ORPHAN");
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 1,
+            PrdDocId = 20,
+            DocLineId = 201,
+            OrderId = 10,
+            OrderLineId = null,
+            ItemId = 100,
+            ItemName = "Товар",
+            HuCode = "HU-ORPHAN",
+            PlannedQty = 600,
+            ToLocationId = 1,
+            ToLocationCode = "MAIN",
+            Status = ProductionPalletStatus.Planned,
+            CreatedAt = new DateTime(2026, 5, 13, 9, 0, 0)
+        });
+        var service = new ProductionPalletService(harness.Store);
+
+        var options = service.GetCancelPlanOptions(10);
+
+        Assert.Empty(options.Rows);
+        Assert.Single(harness.Store.GetProductionPalletsByDoc(20));
+    }
+
+    [Fact]
     public void CancelOrderPlan_SelectedPlannedPallet_RemovesRelatedDraftPrdLine()
     {
         var harness = CreateHarnessWithOrderOnly(orderQty: 1200, maxQtyPerHu: 600);
