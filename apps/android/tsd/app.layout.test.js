@@ -60,6 +60,14 @@ function assertCssDoesNotMatch(selector, pattern, message) {
   return body;
 }
 
+function assertNoFillingHuTouchBlockers(selector) {
+  assertCssDoesNotMatch(
+    selector,
+    /touch-action\s*:\s*none|pointer-events\s*:\s*none|overflow\s*:\s*hidden/,
+    `${selector} should not block touch scrolling`
+  );
+}
+
 const renderSettingsBody = extractFunctionBody(appJs, "renderSettings");
 assert(
   !renderSettingsBody.includes("Разрешить экранную клавиатуру") &&
@@ -241,7 +249,14 @@ assertCssContains(
 );
 assertCssContains(
   ".filling-pallet-list",
-  ["display: flex", "flex-direction: column", "min-height: 0", "overflow-y: auto", "-webkit-overflow-scrolling: touch"],
+  [
+    "display: flex",
+    "flex-direction: column",
+    "min-height: 0",
+    "overflow-y: auto",
+    "-webkit-overflow-scrolling: touch",
+    "touch-action: pan-y",
+  ],
   "pallet list should be the touch scroll container"
 );
 assertCssContains(
@@ -251,18 +266,38 @@ assertCssContains(
 );
 assertCssContains(
   ".filling-pallet-group",
-  ["display: flex", "flex: 0 0 auto", "flex-direction: column"],
+  ["display: flex", "flex: 0 0 auto", "flex-direction: column", "touch-action: pan-y"],
   "pallet groups should stay content-sized"
 );
 assertCssContains(
+  ".filling-pallet-group-title",
+  ["touch-action: pan-y"],
+  "pallet group titles should allow vertical touch panning"
+);
+assertCssContains(
   ".filling-pallet-group-items",
-  ["display: flex", "flex-direction: column", "min-height: 0"],
+  ["display: flex", "flex-direction: column", "min-height: 0", "touch-action: pan-y"],
   "pallet group item lists should not stretch rows"
 );
 assertCssContains(
   ".filling-pallet-item",
-  ["flex: 0 0 auto", "align-self: stretch"],
+  ["flex: 0 0 auto", "align-self: stretch", "touch-action: pan-y"],
   "HU rows should be compact content-sized rows"
+);
+assertCssContains(
+  ".filling-pallet-item--compact",
+  ["touch-action: pan-y"],
+  "compact HU rows should allow vertical touch panning"
+);
+assertCssContains(
+  ".filling-pallet-dot",
+  ["touch-action: pan-y"],
+  "HU row status dot should allow vertical touch panning"
+);
+assertCssContains(
+  ".filling-pallet-code",
+  ["touch-action: pan-y"],
+  "HU row code should allow vertical touch panning"
 );
 assertCssDoesNotMatch(
   ".filling-pallet-item",
@@ -274,24 +309,34 @@ assertCssDoesNotMatch(
   /(?:^|;)\s*(?:flex\s*:\s*1\b|height\s*:\s*100%)/,
   "compact HU rows should not grow vertically or use fixed full height"
 );
+[
+  ".filling-pallet-list",
+  ".filling-pallet-group",
+  ".filling-pallet-group-title",
+  ".filling-pallet-group-items",
+  ".filling-pallet-item",
+  ".filling-pallet-item--compact",
+  ".filling-pallet-dot",
+  ".filling-pallet-code",
+].forEach(assertNoFillingHuTouchBlockers);
 assertCssDoesNotMatch(
   ".app-content.route-transition-active",
-  /overflow(?:-y)?\s*:\s*hidden/,
+  /overflow(?:-y)?\s*:\s*hidden|pointer-events\s*:\s*none|touch-action\s*:\s*none/,
   "active route transition wrapper should not block scrolling"
 );
 assertCssDoesNotMatch(
   ".app-content.route-transition-exit",
-  /overflow(?:-y)?\s*:\s*hidden/,
+  /overflow(?:-y)?\s*:\s*hidden|pointer-events\s*:\s*none|touch-action\s*:\s*none/,
   "exit route transition wrapper should not block scrolling"
 );
 assertCssDoesNotMatch(
   ".app-content.route-transition-active > .screen",
-  /overflow(?:-y)?\s*:\s*hidden/,
+  /overflow(?:-y)?\s*:\s*hidden|pointer-events\s*:\s*none|touch-action\s*:\s*none/,
   "active route transition screen should not block scrolling"
 );
 assertCssDoesNotMatch(
   ".app-content.route-transition-exit > .screen",
-  /overflow(?:-y)?\s*:\s*hidden/,
+  /overflow(?:-y)?\s*:\s*hidden|pointer-events\s*:\s*none|touch-action\s*:\s*none/,
   "exit route transition screen should not block scrolling"
 );
 assert(

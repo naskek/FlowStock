@@ -1373,6 +1373,7 @@ body {
   flex: 0 1 auto;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
 }
 
 .filling-screen--scan .filling-pallet-list {
@@ -1400,6 +1401,7 @@ body {
   gap: 3px;
   list-style: none;
   min-height: 0;
+  touch-action: pan-y;
 }
 
 .filling-pallet-group-title {
@@ -1408,6 +1410,7 @@ body {
   font-weight: 800;
   line-height: 1.25;
   color: #243b53;
+  touch-action: pan-y;
 }
 
 .filling-pallet-group:first-child .filling-pallet-group-title {
@@ -1422,6 +1425,7 @@ body {
   flex-direction: column;
   gap: 3px;
   min-height: 0;
+  touch-action: pan-y;
 }
 
 .filling-pallet-item {
@@ -1438,6 +1442,7 @@ body {
   font-weight: 700;
   background: var(--tsd-surface-solid);
   color: var(--tsd-text);
+  touch-action: pan-y;
 }
 
 .filling-pallet-item--compact {
@@ -1447,6 +1452,7 @@ body {
   padding: 4px 8px;
   border-radius: 10px;
   font-size: 14px;
+  touch-action: pan-y;
 }
 
 .filling-pallet-item--compact .filling-pallet-dot {
@@ -1491,10 +1497,12 @@ body {
   height: 10px;
   border-radius: 999px;
   background: currentColor;
+  touch-action: pan-y;
 }
 
 .filling-pallet-code {
   word-break: break-word;
+  touch-action: pan-y;
 }
 
 .filling-pallet-status-text {
