@@ -154,6 +154,24 @@ public sealed class ProductionPalletFillingContextTests
     }
 
     [Fact]
+    public void BuildOrderOwnedPalletSummary_ExcludesActiveOrphanHeaderPallets_AndMatchesFillingContext()
+    {
+        var fixture = CreateOrderWithValidAndOrphanPallet();
+        var service = new ProductionPalletService(fixture.Harness.Store);
+
+        var summary = ProductionPalletService.BuildOrderOwnedPalletSummary(fixture.Harness.Store, fixture.OrderId);
+        var contextSummary = service.GetFillingContext(fixture.OrderId).Document.Summary;
+
+        Assert.Equal(1, summary.PlannedPalletCount);
+        Assert.Equal(0, summary.FilledPalletCount);
+        Assert.Equal(600, summary.PlannedQty, 3);
+        Assert.Equal(600, summary.RemainingQty, 3);
+        Assert.Equal(contextSummary.PlannedPalletCount, summary.PlannedPalletCount);
+        Assert.Equal(contextSummary.FilledPalletCount, summary.FilledPalletCount);
+        Assert.Equal(contextSummary.PlannedQty, summary.PlannedQty, 3);
+    }
+
+    [Fact]
     public async Task FillingContextHttp_ExcludesActiveOrphanHeaderPallets()
     {
         var fixture = CreateOrderWithValidAndOrphanPallet();
@@ -212,6 +230,19 @@ public sealed class ProductionPalletFillingContextTests
         Assert.DoesNotContain(context.Document.Pallets, row => string.Equals(row.HuCode, fixture.FullyOrphanMixedHuCode, StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(context.Document.Lines, row => row.OrderLineId == null);
         Assert.DoesNotContain(context.Document.Lines, row => row.ItemId == fixture.OrphanItemId);
+    }
+
+    [Fact]
+    public void BuildOrderOwnedPalletSummary_MixedPallets_CountsOnlyValidComponents()
+    {
+        var fixture = CreateOrderWithMixedOrphanComponents();
+
+        var summary = ProductionPalletService.BuildOrderOwnedPalletSummary(fixture.Harness.Store, fixture.OrderId);
+
+        Assert.Equal(1, summary.PlannedPalletCount);
+        Assert.Equal(0, summary.FilledPalletCount);
+        Assert.Equal(600, summary.PlannedQty, 3);
+        Assert.Equal(600, summary.RemainingQty, 3);
     }
 
     [Fact]

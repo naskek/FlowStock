@@ -1481,6 +1481,11 @@ public sealed class ProductionPalletService
             .ToList();
     }
 
+    public static ProductionPalletSummary BuildOrderOwnedPalletSummary(IDataStore store, long orderId)
+    {
+        return BuildSummary(BuildOrderOwnedPalletViews(store, orderId, GetProductionPalletsByOrder(store, orderId)));
+    }
+
     private static bool HasPrintableProductionPalletPlan(IDataStore store, Order order)
     {
         var doc = FindPrintableProductionReceipt(store, order);
@@ -1940,7 +1945,7 @@ public sealed class ProductionPalletService
         };
     }
 
-    private static IReadOnlyList<ProductionPallet> BuildFillingPalletViews(
+    public static IReadOnlyList<ProductionPallet> BuildOrderOwnedPalletViews(
         IDataStore store,
         long orderId,
         IReadOnlyList<ProductionPallet> pallets)
@@ -1964,6 +1969,14 @@ public sealed class ProductionPalletService
         return result
             .OrderBy(pallet => pallet.Id)
             .ToList();
+    }
+
+    private static IReadOnlyList<ProductionPallet> BuildFillingPalletViews(
+        IDataStore store,
+        long orderId,
+        IReadOnlyList<ProductionPallet> pallets)
+    {
+        return BuildOrderOwnedPalletViews(store, orderId, pallets);
     }
 
     private static bool TryBuildFillingPalletView(

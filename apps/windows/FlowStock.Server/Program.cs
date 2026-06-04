@@ -3536,7 +3536,7 @@ static List<object> MapOrdersWithShipmentRemaining(IEnumerable<Order> orders, ID
     if (orderList.All(order => order.ListMetricsLoaded))
     {
         return orderList
-            .Select(MapOrderWithLoadedMetrics)
+            .Select(order => MapOrderWithLoadedMetrics(order, store))
             .ToList();
     }
 
@@ -3547,7 +3547,7 @@ static List<object> MapOrdersWithShipmentRemaining(IEnumerable<Order> orders, ID
             .Select(order =>
             {
                 metricsByOrderId.TryGetValue(order.Id, out var metrics);
-                return MapOrderWithMetrics(order, metrics);
+                return MapOrderWithMetrics(order, metrics, store);
             })
             .ToList();
     }
@@ -3557,33 +3557,26 @@ static List<object> MapOrdersWithShipmentRemaining(IEnumerable<Order> orders, ID
         .ToList();
 }
 
-static object MapOrderWithLoadedMetrics(Order order)
+static object MapOrderWithLoadedMetrics(Order order, IDataStore store)
 {
-    var palletSummary = new ProductionPalletSummary
-    {
-        PlannedPalletCount = order.PlannedPalletCount,
-        FilledPalletCount = order.FilledPalletCount,
-        PlannedQty = order.PlannedQty,
-        FilledQty = order.FilledQty,
-        RemainingPalletCount = Math.Max(0, order.PlannedPalletCount - order.FilledPalletCount),
-        RemainingQty = Math.Max(0, order.PlannedQty - order.FilledQty)
-    };
+    var palletSummary = BuildOrderOwnedProductionPalletSummary(store, order.Id);
+    var hasProductionPalletPlan = palletSummary.PlannedPalletCount > 0;
     return OrderApiMapper.MapOrder(
         order,
         order.HasShipmentRemaining,
-        order.HasProductionPalletPlan,
+        hasProductionPalletPlan,
         order.NeedsProductionPalletPlan,
         palletSummary,
-        BuildOrderPalletPlanStatus(order, order.NeedsProductionPalletPlan, order.HasProductionPalletPlan, palletSummary));
+        BuildOrderPalletPlanStatus(order, order.NeedsProductionPalletPlan, hasProductionPalletPlan, palletSummary));
 }
 
-static object MapOrderWithMetrics(Order order, OrderListMetrics? metrics)
+static object MapOrderWithMetrics(Order order, OrderListMetrics? metrics, IDataStore store)
 {
     var hasShipmentRemaining = metrics?.HasShipmentRemaining ?? false;
-    var hasProductionPalletPlan = metrics?.HasProductionPalletPlan ?? false;
     var needsProductionPalletPlan = order.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled)
                                     && (metrics?.HasReceiptRemaining ?? false);
-    var palletSummary = metrics?.PalletSummary ?? new ProductionPalletSummary();
+    var palletSummary = BuildOrderOwnedProductionPalletSummary(store, order.Id);
+    var hasProductionPalletPlan = palletSummary.PlannedPalletCount > 0;
     return OrderApiMapper.MapOrder(
         order,
         hasShipmentRemaining,
@@ -3603,14 +3596,8 @@ static object MapOrderWithShipmentRemaining(Order order, IDataStore store)
     var needsProductionPalletPlan = order.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled)
                                     && documentService.GetOrderReceiptRemaining(order.Id)
                                         .Any(line => line.QtyRemaining > 0.000001);
-    var palletDocs = store.GetDocsByOrder(order.Id)
-        .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status != DocStatus.Closed)
-        .ToList();
-    var palletSummaries = palletDocs
-        .Select(doc => BuildProductionPalletSummary(store, doc))
-        .ToList();
-    var hasProductionPalletPlan = palletSummaries.Any(summary => summary.PlannedPalletCount > 0);
-    var palletSummary = CombineProductionPalletSummaries(palletSummaries);
+    var palletSummary = BuildOrderOwnedProductionPalletSummary(store, order.Id);
+    var hasProductionPalletPlan = palletSummary.PlannedPalletCount > 0;
     return OrderApiMapper.MapOrder(
         order,
         hasShipmentRemaining,
@@ -3618,6 +3605,11 @@ static object MapOrderWithShipmentRemaining(Order order, IDataStore store)
         needsProductionPalletPlan,
         palletSummary,
         BuildOrderPalletPlanStatus(order, needsProductionPalletPlan, hasProductionPalletPlan, palletSummary));
+}
+
+static ProductionPalletSummary BuildOrderOwnedProductionPalletSummary(IDataStore store, long orderId)
+{
+    return ProductionPalletService.BuildOrderOwnedPalletSummary(store, orderId);
 }
 
 static bool IsProductionPalletFillingStarted(IDataStore store, Doc doc)
@@ -3650,25 +3642,6 @@ static ProductionPalletSummary BuildProductionPalletSummary(IDataStore store, Do
     }
 
     return ProductionPalletService.BuildSummary(store.GetProductionPalletsByDoc(doc.Id));
-}
-
-static ProductionPalletSummary CombineProductionPalletSummaries(IEnumerable<ProductionPalletSummary> summaries)
-{
-    var result = new ProductionPalletSummary();
-    foreach (var summary in summaries)
-    {
-        result = new ProductionPalletSummary
-        {
-            PlannedPalletCount = result.PlannedPalletCount + summary.PlannedPalletCount,
-            PlannedQty = result.PlannedQty + summary.PlannedQty,
-            FilledPalletCount = result.FilledPalletCount + summary.FilledPalletCount,
-            FilledQty = result.FilledQty + summary.FilledQty,
-            RemainingPalletCount = result.RemainingPalletCount + summary.RemainingPalletCount,
-            RemainingQty = result.RemainingQty + summary.RemainingQty
-        };
-    }
-
-    return result;
 }
 
 static string BuildPalletFillingStatus(ProductionPalletSummary summary)
@@ -4197,4 +4170,3 @@ enum PartnerRoleFilter
     Both,
     Unknown
 }
-

@@ -66,6 +66,19 @@ public sealed class OrderListClientPerfGuardTests
         Assert.DoesNotContain("var queryParts = [\"include_internal=1\"];", source);
     }
 
+    [Fact]
+    public void WebOrderListMapper_RecomputesPalletSummaryThroughOrderOwnedFilter()
+    {
+        var source = File.ReadAllText(GetRepoPath("apps", "windows", "FlowStock.Server", "Program.cs"));
+
+        Assert.Contains("MapOrderWithLoadedMetrics(Order order, IDataStore store)", source, StringComparison.Ordinal);
+        Assert.Contains("MapOrderWithMetrics(Order order, OrderListMetrics? metrics, IDataStore store)", source, StringComparison.Ordinal);
+        Assert.Contains("BuildOrderOwnedProductionPalletSummary(store, order.Id)", source, StringComparison.Ordinal);
+        Assert.Contains("ProductionPalletService.BuildOrderOwnedPalletSummary(store, orderId)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("metrics?.PalletSummary ?? new ProductionPalletSummary()", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("PlannedPalletCount = order.PlannedPalletCount", source, StringComparison.Ordinal);
+    }
+
     private static string GetRepoPath(params string[] parts)
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
