@@ -734,20 +734,7 @@ public partial class OrderDetailsWindow : Window
         bool showFeedback,
         IReadOnlyList<OrderLineView>? linesOverride = null)
     {
-        var result = _services.WpfUpdateOrders.UpdateOrderAsync(
-                new WpfUpdateOrderContext(
-                    orderId,
-                    string.IsNullOrWhiteSpace(orderRef) ? null : orderRef,
-                    type,
-                    partnerId,
-                    dueDate,
-                    OrderStatus.InProgress,
-                    comment,
-                    linesOverride ?? _lines.ToList(),
-                    false))
-            .ConfigureAwait(false)
-            .GetAwaiter()
-            .GetResult();
+        var result = UpdateOrderViaServerRaw(orderId, orderRef, type, partnerId, dueDate, comment, linesOverride);
 
         if (!result.IsSuccess)
         {
@@ -756,10 +743,7 @@ public partial class OrderDetailsWindow : Window
                 TryRefreshPersistedOrderLineMetricsFromApi(type);
             }
 
-            var icon = result.Kind is WpfUpdateOrderResultKind.Timeout or WpfUpdateOrderResultKind.ServerUnavailable
-                ? MessageBoxImage.Error
-                : MessageBoxImage.Warning;
-            MessageBox.Show(result.Message, "Заказы", MessageBoxButton.OK, icon);
+            ShowUpdateOrderError(result);
             return false;
         }
 
@@ -784,6 +768,39 @@ public partial class OrderDetailsWindow : Window
         }
 
         return true;
+    }
+
+    private WpfUpdateOrderResult UpdateOrderViaServerRaw(
+        long orderId,
+        string orderRef,
+        OrderType type,
+        long? partnerId,
+        DateTime? dueDate,
+        string? comment,
+        IReadOnlyList<OrderLineView>? linesOverride = null)
+    {
+        return _services.WpfUpdateOrders.UpdateOrderAsync(
+                new WpfUpdateOrderContext(
+                    orderId,
+                    string.IsNullOrWhiteSpace(orderRef) ? null : orderRef,
+                    type,
+                    partnerId,
+                    dueDate,
+                    OrderStatus.InProgress,
+                    comment,
+                    linesOverride ?? _lines.ToList(),
+                    false))
+            .ConfigureAwait(false)
+            .GetAwaiter()
+            .GetResult();
+    }
+
+    private static void ShowUpdateOrderError(WpfUpdateOrderResult result)
+    {
+        var icon = result.Kind is WpfUpdateOrderResultKind.Timeout or WpfUpdateOrderResultKind.ServerUnavailable
+            ? MessageBoxImage.Error
+            : MessageBoxImage.Warning;
+        MessageBox.Show(result.Message, "Заказы", MessageBoxButton.OK, icon);
     }
 
     private bool TryCreateOrderViaServer(
@@ -1497,7 +1514,7 @@ public partial class OrderDetailsWindow : Window
             out validationMessage);
     }
 
-    private void DeleteLine_Click(object sender, RoutedEventArgs e)
+    private async void DeleteLine_Click(object sender, RoutedEventArgs e)
     {
         if (!EnsureEditable())
         {
@@ -1518,6 +1535,14 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
+        if (_orderId.HasValue
+            && targetLine.Id > 0
+            && GetSelectedOrderType() == OrderType.Customer)
+        {
+            await DeleteSavedCustomerLineViaServerAsync(targetLine).ConfigureAwait(true);
+            return;
+        }
+
         if (GetSelectedOrderType() == OrderType.Customer)
         {
             _huBinding.RemoveLine(targetLine);
@@ -1528,6 +1553,79 @@ public partial class OrderDetailsWindow : Window
         MarkDirty();
         ForceOrderLinesGridRefresh();
         RefreshLineMetrics();
+    }
+
+    private async Task DeleteSavedCustomerLineViaServerAsync(OrderLineView targetLine)
+    {
+        if (!_orderId.HasValue
+            || !TryGetHeaderValues(allowBlankOrderRef: false, out var orderRef, out var type, out var partnerId, out var dueDate, out var comment))
+        {
+            return;
+        }
+
+        var payloadLines = _lines
+            .Where(line => line.Id != targetLine.Id)
+            .ToList();
+        var result = UpdateOrderViaServerRaw(_orderId.Value, orderRef, type, partnerId, dueDate, comment, payloadLines);
+        if (result.IsSuccess)
+        {
+            if (result.Response == null || result.Response.OrderId <= 0)
+            {
+                MessageBox.Show("Сервер вернул неполный ответ при обновлении заказа.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            _orderId = result.Response.OrderId;
+            ReloadCanonicalOrderStateAfterPersist();
+            OrderStateChanged?.Invoke(this, EventArgs.Empty);
+            SaveStatusText.Text = "Сохранено";
+            if (!string.IsNullOrWhiteSpace(result.Message))
+            {
+                MessageBox.Show(result.Message, "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+
+            return;
+        }
+
+        if (!string.Equals(result.ErrorCode, "ORDER_LINE_HAS_FILLED_PALLETS", StringComparison.OrdinalIgnoreCase))
+        {
+            if (OrderLineEditPrevalidation.ShouldReloadLineMetricsAfterFailedPersist(false))
+            {
+                TryRefreshPersistedOrderLineMetricsFromApi(type);
+            }
+
+            ShowUpdateOrderError(result);
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            "По строке уже есть выпущенные HU. Удалить строку из заказа и перевести эти паллеты в свободный складской остаток?",
+            "Заказы",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        var release = await _services.WpfProductionPalletApi.TryReleaseProducedStockAsync(_orderId.Value, targetLine.Id)
+            .ConfigureAwait(true);
+        if (!release.IsSuccess)
+        {
+            MessageBox.Show(release.Message, "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        LoadOrder();
+        OrderStateChanged?.Invoke(this, EventArgs.Empty);
+        var huText = release.ReleasedHuCodes.Count == 0
+            ? string.Empty
+            : Environment.NewLine + "HU: " + string.Join(", ", release.ReleasedHuCodes);
+        MessageBox.Show(
+            $"Строка удалена. Освобождено паллет: {release.ReleasedPalletCount}, количество: {release.ReleasedQty.ToString("0.###", CultureInfo.CurrentCulture)}.{huText}",
+            "Заказы",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
     }
 
     private OrderLineView? ResolveEditableOrderLine(OrderLineView? selectedLine)

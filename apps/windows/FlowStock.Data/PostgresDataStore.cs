@@ -7885,6 +7885,307 @@ WHERE d.id = dl.doc_id
         }
     }
 
+    public OrderProducedStockReleaseResult ReleaseProducedCustomerStockForOrderLine(long orderId, long orderLineId)
+    {
+        if (_connection != null && _transaction != null)
+        {
+            return ReleaseProducedCustomerStockForOrderLineCore(_connection, orderId, orderLineId);
+        }
+
+        using var connection = new NpgsqlConnection(_connectionString);
+        connection.Open();
+        using var transaction = connection.BeginTransaction();
+        var scoped = new PostgresDataStore(connection, transaction);
+        var result = scoped.ReleaseProducedCustomerStockForOrderLineCore(connection, orderId, orderLineId);
+        transaction.Commit();
+        return result;
+    }
+
+    private OrderProducedStockReleaseResult ReleaseProducedCustomerStockForOrderLineCore(
+        NpgsqlConnection connection,
+        long orderId,
+        long orderLineId)
+    {
+        using (var orderCommand = CreateCommand(connection, @"
+SELECT order_type, status
+FROM orders
+WHERE id = @order_id
+FOR UPDATE;
+"))
+        {
+            orderCommand.Parameters.AddWithValue("@order_id", orderId);
+            using var reader = orderCommand.ExecuteReader();
+            if (!reader.Read())
+            {
+                throw new OrderProducedStockReleaseException("ORDER_NOT_FOUND", "Заказ не найден.");
+            }
+
+            var orderType = reader.GetString(0);
+            var orderStatus = reader.GetString(1);
+            if (!string.Equals(orderType, OrderStatusMapper.TypeToString(OrderType.Customer), StringComparison.OrdinalIgnoreCase))
+            {
+                throw new OrderProducedStockReleaseException("ORDER_RELEASE_CUSTOMER_ONLY", "Операция доступна только для клиентского заказа.");
+            }
+
+            if (string.Equals(orderStatus, OrderStatusMapper.StatusToString(OrderStatus.Shipped), StringComparison.OrdinalIgnoreCase)
+                || string.Equals(orderStatus, OrderStatusMapper.StatusToString(OrderStatus.Cancelled), StringComparison.OrdinalIgnoreCase)
+                || string.Equals(orderStatus, OrderStatusMapper.StatusToString(OrderStatus.Merged), StringComparison.OrdinalIgnoreCase))
+            {
+                throw new OrderProducedStockReleaseException("ORDER_NOT_EDITABLE", "Заказ нельзя редактировать.");
+            }
+        }
+
+        using (var lineCommand = CreateCommand(connection, @"
+SELECT COUNT(*) FILTER (WHERE id = @order_line_id) AS target_count,
+       COUNT(*) AS line_count
+FROM order_lines
+WHERE order_id = @order_id;
+"))
+        {
+            lineCommand.Parameters.AddWithValue("@order_id", orderId);
+            lineCommand.Parameters.AddWithValue("@order_line_id", orderLineId);
+            using var reader = lineCommand.ExecuteReader();
+            reader.Read();
+            var targetCount = Convert.ToInt32(reader.GetValue(0), CultureInfo.InvariantCulture);
+            var lineCount = Convert.ToInt32(reader.GetValue(1), CultureInfo.InvariantCulture);
+            if (targetCount == 0)
+            {
+                throw new OrderProducedStockReleaseException("ORDER_LINE_NOT_FOUND", "Строка заказа не найдена.");
+            }
+
+            if (lineCount <= 1)
+            {
+                throw new OrderProducedStockReleaseException(
+                    "ORDER_RELEASE_LAST_LINE_FORBIDDEN",
+                    "Нельзя удалить последнюю строку активного клиентского заказа.");
+            }
+        }
+
+        using (var shippedCommand = CreateCommand(connection, @"
+SELECT COALESCE(SUM(dl.qty), 0)
+FROM docs d
+INNER JOIN doc_lines dl ON dl.doc_id = d.id
+WHERE d.type = @outbound_type
+  AND d.status = @closed_status
+  AND d.order_id = @order_id
+  AND dl.order_line_id = @order_line_id
+  AND dl.qty > 0
+  AND NOT EXISTS (
+      SELECT 1
+      FROM doc_lines newer
+      WHERE newer.replaces_line_id = dl.id
+  );
+"))
+        {
+            shippedCommand.Parameters.AddWithValue("@outbound_type", DocTypeMapper.ToOpString(DocType.Outbound));
+            shippedCommand.Parameters.AddWithValue("@closed_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+            shippedCommand.Parameters.AddWithValue("@order_id", orderId);
+            shippedCommand.Parameters.AddWithValue("@order_line_id", orderLineId);
+            var shippedQty = Convert.ToDouble(shippedCommand.ExecuteScalar() ?? 0d, CultureInfo.InvariantCulture);
+            if (shippedQty > StockQuantityRules.QtyTolerance)
+            {
+                throw new OrderProducedStockReleaseException(
+                    "ORDER_LINE_HAS_SHIPPED_QTY",
+                    "По строке уже есть отгруженное количество.");
+            }
+        }
+
+        var targetPallets = new List<ReleaseTargetPallet>();
+        using (var palletCommand = CreateCommand(connection, @"
+WITH target_pallets AS (
+    SELECT DISTINCT pp.id
+    FROM production_pallets pp
+    LEFT JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
+    WHERE pp.order_id = @order_id
+      AND COALESCE(NULLIF(BTRIM(pp.status), ''), @planned_status) <> @cancelled_status
+      AND (pp.order_line_id = @order_line_id OR pll.order_line_id = @order_line_id)
+),
+qty_by_pallet AS (
+    SELECT pp.id,
+           COALESCE(
+               SUM(
+                   CASE WHEN pll.order_line_id = @order_line_id
+                        THEN CASE WHEN pll.filled_qty > @qty_tolerance THEN pll.filled_qty ELSE pll.planned_qty END
+                        ELSE 0
+                   END),
+               0) AS component_qty
+    FROM production_pallets pp
+    LEFT JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
+    WHERE pp.id IN (SELECT id FROM target_pallets)
+    GROUP BY pp.id
+)
+SELECT pp.id,
+       pp.prd_doc_id,
+       pp.doc_line_id,
+       pp.hu_code,
+       pp.status,
+       CASE WHEN q.component_qty > @qty_tolerance THEN q.component_qty ELSE pp.planned_qty END AS release_qty
+FROM production_pallets pp
+INNER JOIN target_pallets target ON target.id = pp.id
+INNER JOIN qty_by_pallet q ON q.id = pp.id
+ORDER BY pp.id;
+"))
+        {
+            palletCommand.Parameters.AddWithValue("@order_id", orderId);
+            palletCommand.Parameters.AddWithValue("@order_line_id", orderLineId);
+            palletCommand.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+            palletCommand.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
+            palletCommand.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+            using var reader = palletCommand.ExecuteReader();
+            while (reader.Read())
+            {
+                targetPallets.Add(new ReleaseTargetPallet(
+                    reader.GetInt64(0),
+                    reader.GetInt64(1),
+                    reader.IsDBNull(2) ? 0 : reader.GetInt64(2),
+                    reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
+                    reader.IsDBNull(4) ? ProductionPalletStatus.Planned : reader.GetString(4),
+                    Convert.ToDouble(reader.GetValue(5), CultureInfo.InvariantCulture)));
+            }
+        }
+
+        if (targetPallets.Count == 0)
+        {
+            throw new OrderProducedStockReleaseException(
+                "NO_FILLED_PALLETS_TO_RELEASE",
+                "По строке нет выпущенных паллет для освобождения.");
+        }
+
+        if (targetPallets.Any(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new OrderProducedStockReleaseException(
+                "ORDER_LINE_RELEASE_REQUIRES_FILLED_PALLETS",
+                "Освобождение доступно только когда все паллеты строки находятся в статусе FILLED.");
+        }
+
+        var palletIds = targetPallets.Select(pallet => pallet.Id).ToArray();
+        using (var mixedCommand = CreateCommand(connection, @"
+SELECT 1
+FROM production_pallet_lines
+WHERE production_pallet_id = ANY(@pallet_ids)
+  AND order_line_id IS DISTINCT FROM @order_line_id
+LIMIT 1;
+"))
+        {
+            mixedCommand.Parameters.AddWithValue("@pallet_ids", palletIds);
+            mixedCommand.Parameters.AddWithValue("@order_line_id", orderLineId);
+            if (mixedCommand.ExecuteScalar() != null)
+            {
+                throw new OrderProducedStockReleaseException(
+                    "MIXED_PALLET_RELEASE_NOT_SUPPORTED",
+                    "Освобождение mixed/shared паллет пока не поддерживается.");
+            }
+        }
+
+        var affectedDocIds = targetPallets.Select(pallet => pallet.PrdDocId).Distinct().ToArray();
+        using (var deletePlan = CreateCommand(connection, @"
+DELETE FROM order_receipt_plan_lines
+WHERE order_id = @order_id
+  AND order_line_id = @order_line_id;
+"))
+        {
+            deletePlan.Parameters.AddWithValue("@order_id", orderId);
+            deletePlan.Parameters.AddWithValue("@order_line_id", orderLineId);
+            deletePlan.ExecuteNonQuery();
+        }
+
+        using (var updatePallets = CreateCommand(connection, @"
+UPDATE production_pallets
+SET order_id = NULL,
+    order_line_id = NULL
+WHERE id = ANY(@pallet_ids);
+"))
+        {
+            updatePallets.Parameters.AddWithValue("@pallet_ids", palletIds);
+            updatePallets.ExecuteNonQuery();
+        }
+
+        using (var updatePalletLines = CreateCommand(connection, @"
+UPDATE production_pallet_lines
+SET order_line_id = NULL
+WHERE production_pallet_id = ANY(@pallet_ids)
+  AND order_line_id = @order_line_id;
+"))
+        {
+            updatePalletLines.Parameters.AddWithValue("@pallet_ids", palletIds);
+            updatePalletLines.Parameters.AddWithValue("@order_line_id", orderLineId);
+            updatePalletLines.ExecuteNonQuery();
+        }
+
+        using (var updateDocLines = CreateCommand(connection, @"
+UPDATE doc_lines dl
+SET order_line_id = NULL
+WHERE dl.order_line_id = @order_line_id
+  AND (
+      dl.id IN (
+          SELECT pp.doc_line_id
+          FROM production_pallets pp
+          WHERE pp.id = ANY(@pallet_ids)
+      )
+      OR dl.id IN (
+          SELECT pll.doc_line_id
+          FROM production_pallet_lines pll
+          WHERE pll.production_pallet_id = ANY(@pallet_ids)
+      )
+  );
+"))
+        {
+            updateDocLines.Parameters.AddWithValue("@order_line_id", orderLineId);
+            updateDocLines.Parameters.AddWithValue("@pallet_ids", palletIds);
+            updateDocLines.ExecuteNonQuery();
+        }
+
+        using (var updateDocs = CreateCommand(connection, @"
+UPDATE docs d
+SET order_id = NULL,
+    order_ref = NULL
+WHERE d.id = ANY(@doc_ids)
+  AND d.type = @production_receipt_type
+  AND NOT EXISTS (
+      SELECT 1
+      FROM doc_lines dl
+      WHERE dl.doc_id = d.id
+        AND dl.order_line_id IS NOT NULL
+        AND dl.qty > 0
+        AND NOT EXISTS (
+            SELECT 1
+            FROM doc_lines newer
+            WHERE newer.replaces_line_id = dl.id
+        )
+  );
+"))
+        {
+            updateDocs.Parameters.AddWithValue("@doc_ids", affectedDocIds);
+            updateDocs.Parameters.AddWithValue("@production_receipt_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+            updateDocs.ExecuteNonQuery();
+        }
+
+        using (var deleteLine = CreateCommand(connection, @"
+DELETE FROM order_lines
+WHERE id = @order_line_id
+  AND order_id = @order_id;
+"))
+        {
+            deleteLine.Parameters.AddWithValue("@order_id", orderId);
+            deleteLine.Parameters.AddWithValue("@order_line_id", orderLineId);
+            deleteLine.ExecuteNonQuery();
+        }
+
+        return new OrderProducedStockReleaseResult
+        {
+            OrderId = orderId,
+            OrderLineId = orderLineId,
+            ReleasedPalletCount = targetPallets.Count,
+            ReleasedHuCodes = targetPallets
+                .Select(pallet => pallet.HuCode)
+                .Where(hu => !string.IsNullOrWhiteSpace(hu))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(hu => hu, StringComparer.OrdinalIgnoreCase)
+                .ToArray(),
+            ReleasedQty = targetPallets.Sum(pallet => Math.Max(0, pallet.ReleaseQty))
+        };
+    }
+
     private long[] GetOrderLineIds(NpgsqlConnection connection, long orderId)
     {
         using var command = CreateCommand(connection, @"
@@ -7903,6 +8204,14 @@ ORDER BY id;
 
         return ids.ToArray();
     }
+
+    private sealed record ReleaseTargetPallet(
+        long Id,
+        long PrdDocId,
+        long DocLineId,
+        string HuCode,
+        string Status,
+        double ReleaseQty);
 
     private long? GetOrderIdByOrderLineId(NpgsqlConnection connection, long orderLineId)
     {

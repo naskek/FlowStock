@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 using FlowStock.Core.Services;
@@ -312,6 +313,256 @@ public sealed class OrderDeletePostgresRegressionTests
         });
     }
 
+    [Fact]
+    public async Task ReleaseProducedStock_WithTwoFilledSingleLinePallets_ReleasesHuAndDeletesLine()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        await RunInRollbackTransactionAsync(connectionString, async scopedStore =>
+        {
+            EnsureAtLeastOneLocation(scopedStore);
+            var locationId = scopedStore.GetLocations().First().Id;
+            var fixture = SeedCustomerOrderWithTwoLines(scopedStore, deletedQty: 1200);
+            var plan = new ProductionPalletService(scopedStore).PlanOrder(fixture.OrderId);
+            var targetPallets = scopedStore.GetProductionPalletsByDoc(plan.PrdDocId)
+                .Where(pallet => pallet.OrderLineId == fixture.DeletedOrderLineId
+                                 || pallet.Lines.Any(line => line.OrderLineId == fixture.DeletedOrderLineId))
+                .OrderBy(pallet => pallet.Id)
+                .ToArray();
+            Assert.Equal(2, targetPallets.Length);
+
+            foreach (var pallet in targetPallets)
+            {
+                scopedStore.MarkProductionPalletFilled(pallet.Id, new DateTime(2026, 6, 4, 9, 0, 0, DateTimeKind.Utc), "TEST");
+                scopedStore.AddLedgerEntry(new LedgerEntry
+                {
+                    Timestamp = new DateTime(2026, 6, 4, 9, 1, 0, DateTimeKind.Utc),
+                    DocId = pallet.PrdDocId,
+                    ItemId = fixture.DeletedItemId,
+                    LocationId = locationId,
+                    QtyDelta = pallet.PlannedQty,
+                    HuCode = pallet.HuCode
+                });
+            }
+
+            scopedStore.ReplaceOrderReceiptPlanLines(fixture.OrderId, targetPallets.Select((pallet, index) => new OrderReceiptPlanLine
+            {
+                OrderId = fixture.OrderId,
+                OrderLineId = fixture.DeletedOrderLineId,
+                ItemId = fixture.DeletedItemId,
+                QtyPlanned = pallet.PlannedQty,
+                ToLocationId = locationId,
+                ToHu = pallet.HuCode,
+                SortOrder = index
+            }).ToArray());
+
+            var ledgerCountBefore = scopedStore.CountLedgerEntries();
+            var balancesBefore = targetPallets.ToDictionary(
+                pallet => pallet.HuCode,
+                pallet => scopedStore.GetLedgerBalance(fixture.DeletedItemId, locationId, pallet.HuCode),
+                StringComparer.OrdinalIgnoreCase);
+
+            await using var host = await PostgresOrderUpdateHost.StartAsync(scopedStore);
+            using var response = await host.Client.PostAsync(
+                $"/api/orders/{fixture.OrderId}/lines/{fixture.DeletedOrderLineId}/release-produced-stock",
+                content: null);
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var payload = await response.Content.ReadFromJsonAsync<OrderProducedStockReleaseEnvelope>();
+            Assert.NotNull(payload);
+            Assert.True(payload!.Ok);
+            Assert.Equal(2, payload.ReleasedPalletCount);
+            Assert.Equal(1200, payload.ReleasedQty, 3);
+
+            Assert.DoesNotContain(scopedStore.GetOrderLines(fixture.OrderId), line => line.Id == fixture.DeletedOrderLineId);
+            Assert.DoesNotContain(scopedStore.GetOrderReceiptPlanLines(fixture.OrderId), line => line.OrderLineId == fixture.DeletedOrderLineId);
+            var targetIds = targetPallets.Select(pallet => pallet.Id).ToHashSet();
+            var palletsAfter = scopedStore.GetProductionPalletsByDoc(plan.PrdDocId)
+                .Where(pallet => targetIds.Contains(pallet.Id))
+                .ToArray();
+            Assert.Equal(2, palletsAfter.Length);
+            foreach (var pallet in palletsAfter)
+            {
+                Assert.Equal(ProductionPalletStatus.Filled, pallet.Status);
+                Assert.Null(pallet.OrderId);
+                Assert.Null(pallet.OrderLineId);
+                Assert.All(pallet.Lines, line => Assert.Null(line.OrderLineId));
+                Assert.Equal(balancesBefore[pallet.HuCode], scopedStore.GetLedgerBalance(fixture.DeletedItemId, locationId, pallet.HuCode), 3);
+            }
+
+            Assert.All(scopedStore.GetDocLines(plan.PrdDocId).Where(line => line.ItemId == fixture.DeletedItemId), line => Assert.Null(line.OrderLineId));
+            Assert.Equal(ledgerCountBefore, scopedStore.CountLedgerEntries());
+
+            var candidateOrderId = scopedStore.AddOrder(new Order
+            {
+                OrderRef = $"T-CAND-{DateTime.UtcNow.Ticks.ToString()[^6..]}",
+                Type = OrderType.Customer,
+                PartnerId = fixture.PartnerId,
+                Status = OrderStatus.InProgress,
+                CreatedAt = DateTime.UtcNow
+            });
+            var candidateLineId = scopedStore.AddOrderLine(new OrderLine
+            {
+                OrderId = candidateOrderId,
+                ItemId = fixture.DeletedItemId,
+                QtyOrdered = 600,
+                ProductionPurpose = ProductionLinePurpose.CustomerOrder
+            });
+            var candidates = new HuReservationCandidatesService(scopedStore).Build(new HuReservationCandidatesQuery
+            {
+                OrderId = candidateOrderId,
+                Lines =
+                [
+                    new HuReservationCandidatesLineQuery
+                    {
+                        ClientLineKey = "candidate",
+                        OrderLineId = candidateLineId,
+                        ItemId = fixture.DeletedItemId,
+                        QtyOrdered = 600
+                    }
+                ]
+            });
+            var candidateHuCodes = candidates.Lines.Single().Candidates
+                .Select(candidate => candidate.HuCode)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            Assert.All(targetPallets, pallet => Assert.Contains(pallet.HuCode, candidateHuCodes));
+        });
+    }
+
+    [Fact]
+    public async Task ReleaseProducedStock_RejectsLastCustomerLine()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        await RunInRollbackTransactionAsync(connectionString, async scopedStore =>
+        {
+            EnsureAtLeastOneLocation(scopedStore);
+            var fixture = SeedCustomerOrderWithSingleLine(scopedStore);
+            var plan = new ProductionPalletService(scopedStore).PlanOrder(fixture.OrderId);
+            var pallet = Assert.Single(scopedStore.GetProductionPalletsByDoc(plan.PrdDocId));
+            scopedStore.MarkProductionPalletFilled(pallet.Id, DateTime.UtcNow, "TEST");
+
+            await using var host = await PostgresOrderUpdateHost.StartAsync(scopedStore);
+            using var response = await host.Client.PostAsync(
+                $"/api/orders/{fixture.OrderId}/lines/{fixture.OrderLineId}/release-produced-stock",
+                content: null);
+            var payload = await UpdateOrderHttpApi.ReadApiErrorResultAsync(response, HttpStatusCode.BadRequest);
+            Assert.Equal("ORDER_RELEASE_LAST_LINE_FORBIDDEN", payload.Error);
+            Assert.Contains(scopedStore.GetOrderLines(fixture.OrderId), line => line.Id == fixture.OrderLineId);
+        });
+    }
+
+    [Fact]
+    public async Task ReleaseProducedStock_RejectsLineWithClosedOutboundQty()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        await RunInRollbackTransactionAsync(connectionString, async scopedStore =>
+        {
+            EnsureAtLeastOneLocation(scopedStore);
+            var locationId = scopedStore.GetLocations().First().Id;
+            var fixture = SeedCustomerOrderWithTwoLines(scopedStore);
+            var plan = new ProductionPalletService(scopedStore).PlanOrder(fixture.OrderId);
+            var pallet = scopedStore.GetProductionPalletsByDoc(plan.PrdDocId)
+                .First(p => p.OrderLineId == fixture.DeletedOrderLineId || p.Lines.Any(line => line.OrderLineId == fixture.DeletedOrderLineId));
+            scopedStore.MarkProductionPalletFilled(pallet.Id, DateTime.UtcNow, "TEST");
+            var outboundId = scopedStore.AddDoc(new Doc
+            {
+                DocRef = $"OUT-T-{DateTime.UtcNow.Ticks.ToString()[^6..]}",
+                Type = DocType.Outbound,
+                Status = DocStatus.Closed,
+                CreatedAt = DateTime.UtcNow,
+                ClosedAt = DateTime.UtcNow,
+                OrderId = fixture.OrderId,
+                OrderRef = fixture.OrderRef
+            });
+            scopedStore.AddDocLine(new DocLine
+            {
+                DocId = outboundId,
+                OrderLineId = fixture.DeletedOrderLineId,
+                ItemId = fixture.DeletedItemId,
+                Qty = 1,
+                FromLocationId = locationId,
+                FromHu = pallet.HuCode
+            });
+
+            await using var host = await PostgresOrderUpdateHost.StartAsync(scopedStore);
+            using var response = await host.Client.PostAsync(
+                $"/api/orders/{fixture.OrderId}/lines/{fixture.DeletedOrderLineId}/release-produced-stock",
+                content: null);
+            var payload = await UpdateOrderHttpApi.ReadApiErrorResultAsync(response, HttpStatusCode.BadRequest);
+            Assert.Equal("ORDER_LINE_HAS_SHIPPED_QTY", payload.Error);
+        });
+    }
+
+    [Theory]
+    [InlineData(ProductionPalletStatus.Planned)]
+    [InlineData(ProductionPalletStatus.Printed)]
+    public async Task ReleaseProducedStock_RejectsNonFilledPallets(string status)
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        await RunInRollbackTransactionAsync(connectionString, async scopedStore =>
+        {
+            EnsureAtLeastOneLocation(scopedStore);
+            var fixture = SeedCustomerOrderWithTwoLines(scopedStore);
+            var plan = SeedDraftProductionReceiptPalletPlanForDeletedLine(scopedStore, fixture, status);
+
+            await using var host = await PostgresOrderUpdateHost.StartAsync(scopedStore);
+            using var response = await host.Client.PostAsync(
+                $"/api/orders/{fixture.OrderId}/lines/{fixture.DeletedOrderLineId}/release-produced-stock",
+                content: null);
+            var payload = await UpdateOrderHttpApi.ReadApiErrorResultAsync(response, HttpStatusCode.BadRequest);
+            Assert.Equal("ORDER_LINE_RELEASE_REQUIRES_FILLED_PALLETS", payload.Error);
+            Assert.Contains(scopedStore.GetOrderLines(fixture.OrderId), line => line.Id == fixture.DeletedOrderLineId);
+            Assert.Equal(status, Assert.Single(scopedStore.GetProductionPalletsByDoc(plan.PrdDocId)).Status);
+        });
+    }
+
+    [Fact]
+    public async Task ReleaseProducedStock_RejectsMixedPalletWithOtherOrderLine()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        await RunInRollbackTransactionAsync(connectionString, async scopedStore =>
+        {
+            EnsureAtLeastOneLocation(scopedStore);
+            var fixture = SeedCustomerOrderWithTwoLines(scopedStore, deletedQty: 300, remainingQty: 300, group: "MIX-1");
+            var plan = new ProductionPalletService(scopedStore).PlanOrder(fixture.OrderId);
+            var pallet = Assert.Single(scopedStore.GetProductionPalletsByDoc(plan.PrdDocId));
+            Assert.Equal(2, pallet.Lines.Count);
+            scopedStore.MarkProductionPalletFilled(pallet.Id, DateTime.UtcNow, "TEST");
+
+            await using var host = await PostgresOrderUpdateHost.StartAsync(scopedStore);
+            using var response = await host.Client.PostAsync(
+                $"/api/orders/{fixture.OrderId}/lines/{fixture.DeletedOrderLineId}/release-produced-stock",
+                content: null);
+            var payload = await UpdateOrderHttpApi.ReadApiErrorResultAsync(response, HttpStatusCode.BadRequest);
+            Assert.Equal("MIXED_PALLET_RELEASE_NOT_SUPPORTED", payload.Error);
+            Assert.Contains(scopedStore.GetOrderLines(fixture.OrderId), line => line.Id == fixture.DeletedOrderLineId);
+        });
+    }
+
     private static UpdateOrderHttpApi.UpdateOrderRequest BuildDeleteFirstLineRequest(CustomerOrderFixture fixture)
     {
         return new UpdateOrderHttpApi.UpdateOrderRequest
@@ -351,7 +602,11 @@ public sealed class OrderDeletePostgresRegressionTests
         """;
     }
 
-    private static CustomerOrderFixture SeedCustomerOrderWithTwoLines(IDataStore store)
+    private static CustomerOrderFixture SeedCustomerOrderWithTwoLines(
+        IDataStore store,
+        double deletedQty = 600,
+        double remainingQty = 600,
+        string? group = null)
     {
         var suffix = DateTime.UtcNow.Ticks.ToString();
         var partnerId = store.AddPartner(new Partner
@@ -388,16 +643,18 @@ public sealed class OrderDeletePostgresRegressionTests
         {
             OrderId = orderId,
             ItemId = deletedItemId,
-            QtyOrdered = 600,
-            ProductionPurpose = ProductionLinePurpose.CustomerOrder
+            QtyOrdered = deletedQty,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder,
+            ProductionPalletGroup = group
         });
 
         var remainingOrderLineId = store.AddOrderLine(new OrderLine
         {
             OrderId = orderId,
             ItemId = remainingItemId,
-            QtyOrdered = 600,
-            ProductionPurpose = ProductionLinePurpose.CustomerOrder
+            QtyOrdered = remainingQty,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder,
+            ProductionPalletGroup = group
         });
 
         return new CustomerOrderFixture(
@@ -408,6 +665,42 @@ public sealed class OrderDeletePostgresRegressionTests
             remainingItemId,
             deletedOrderLineId,
             remainingOrderLineId);
+    }
+
+    private static SingleLineCustomerOrderFixture SeedCustomerOrderWithSingleLine(IDataStore store)
+    {
+        var suffix = DateTime.UtcNow.Ticks.ToString();
+        var partnerId = store.AddPartner(new Partner
+        {
+            Name = $"Тестовый клиент single {suffix}",
+            Code = $"T-SCL-{suffix}"
+        });
+
+        var itemId = store.AddItem(new Item
+        {
+            Name = $"Тестовый товар single {suffix}",
+            BaseUom = "шт",
+            MaxQtyPerHu = 600
+        });
+
+        var orderId = store.AddOrder(new Order
+        {
+            OrderRef = $"T-SINGLE-{suffix[^6..]}",
+            Type = OrderType.Customer,
+            PartnerId = partnerId,
+            Status = OrderStatus.InProgress,
+            CreatedAt = DateTime.UtcNow
+        });
+
+        var orderLineId = store.AddOrderLine(new OrderLine
+        {
+            OrderId = orderId,
+            ItemId = itemId,
+            QtyOrdered = 600,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder
+        });
+
+        return new SingleLineCustomerOrderFixture(orderId, orderLineId);
     }
 
     private static PalletPlanFixture SeedDraftProductionReceiptPalletPlanForDeletedLine(
@@ -613,6 +906,8 @@ public sealed class OrderDeletePostgresRegressionTests
         long DocLineId,
         long PalletId);
 
+    private sealed record SingleLineCustomerOrderFixture(long OrderId, long OrderLineId);
+
     private sealed class RollbackRequestedException : Exception;
 
     private sealed class PostgresOrderUpdateHost : IAsyncDisposable
@@ -640,6 +935,7 @@ public sealed class OrderDeletePostgresRegressionTests
 
             var app = builder.Build();
             OrderUpdateEndpoint.Map(app);
+            OrderProducedStockReleaseEndpoint.Map(app);
             await app.StartAsync();
 
             var addresses = app.Services

@@ -69,6 +69,7 @@ var appVersion = ResolveAppVersion();
 
 OrderCreateEndpoint.Map(app);
 OrderUpdateEndpoint.Map(app);
+OrderProducedStockReleaseEndpoint.Map(app);
 OrderDeleteEndpoint.Map(app);
 OrderStatusEndpoint.Map(app);
 OrderRedistributionEndpoint.Map(app);

@@ -290,3 +290,23 @@ public sealed class ProductionPalletFillResult
         return new ProductionPalletFillResult { Success = false, Error = error };
     }
 }
+
+public sealed class OrderProducedStockReleaseResult
+{
+    public long OrderId { get; init; }
+    public long OrderLineId { get; init; }
+    public int ReleasedPalletCount { get; init; }
+    public IReadOnlyList<string> ReleasedHuCodes { get; init; } = Array.Empty<string>();
+    public double ReleasedQty { get; init; }
+}
+
+public sealed class OrderProducedStockReleaseException : Exception
+{
+    public OrderProducedStockReleaseException(string errorCode, string message)
+        : base(message)
+    {
+        ErrorCode = errorCode;
+    }
+
+    public string ErrorCode { get; }
+}

@@ -330,6 +330,72 @@ public sealed class WpfProductionPalletApiService
         }
     }
 
+    public async Task<WpfProducedStockReleaseApiResult> TryReleaseProducedStockAsync(
+        long orderId,
+        long orderLineId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (!TryLoadConfiguration(out var configuration))
+            {
+                _logger.Info("Production stock release API skipped: server base URL is not configured.");
+                return WpfProducedStockReleaseApiResult.Failure("FlowStock Server API не настроен.");
+            }
+
+            using var handler = CreateHandler(configuration);
+            using var client = CreateClient(handler, configuration);
+            using var response = await client.PostAsJsonAsync(
+                    $"/api/orders/{orderId}/lines/{orderLineId}/release-produced-stock",
+                    new { },
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return WpfProducedStockReleaseApiResult.Failure(await ReadApiErrorAsync(response).ConfigureAwait(false));
+            }
+
+            var payload = await response.Content.ReadFromJsonAsync<ReleaseProducedStockResponse>(JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+            if (payload == null)
+            {
+                return WpfProducedStockReleaseApiResult.Failure("Сервер вернул пустой ответ.");
+            }
+
+            return new WpfProducedStockReleaseApiResult(
+                true,
+                string.Empty,
+                payload.OrderId,
+                payload.OrderLineId,
+                payload.ReleasedPalletCount,
+                payload.ReleasedHuCodes ?? Array.Empty<string>(),
+                payload.ReleasedQty);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"Production stock release failed for order_id={orderId}, order_line_id={orderLineId}", ex);
+            return WpfProducedStockReleaseApiResult.Failure(ex.Message);
+        }
+    }
+
+    private sealed class ReleaseProducedStockResponse
+    {
+        [JsonPropertyName("order_id")]
+        public long OrderId { get; init; }
+
+        [JsonPropertyName("order_line_id")]
+        public long OrderLineId { get; init; }
+
+        [JsonPropertyName("released_pallet_count")]
+        public int ReleasedPalletCount { get; init; }
+
+        [JsonPropertyName("released_hu_codes")]
+        public string[]? ReleasedHuCodes { get; init; }
+
+        [JsonPropertyName("released_qty")]
+        public double ReleasedQty { get; init; }
+    }
+
     public async Task<WpfProductionPalletFillApiResult> TryFillPalletAsync(
         long prdDocId,
         long? orderId,
@@ -913,5 +979,20 @@ public sealed record WpfProductionPalletFillApiResult(
     public static WpfProductionPalletFillApiResult Failure(string message)
     {
         return new WpfProductionPalletFillApiResult(false, message, false, string.Empty, string.Empty, 0, 0, 0);
+    }
+}
+
+public sealed record WpfProducedStockReleaseApiResult(
+    bool IsSuccess,
+    string Message,
+    long OrderId,
+    long OrderLineId,
+    int ReleasedPalletCount,
+    IReadOnlyList<string> ReleasedHuCodes,
+    double ReleasedQty)
+{
+    public static WpfProducedStockReleaseApiResult Failure(string message)
+    {
+        return new WpfProducedStockReleaseApiResult(false, message, 0, 0, 0, Array.Empty<string>(), 0);
     }
 }

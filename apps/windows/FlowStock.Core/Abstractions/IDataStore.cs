@@ -132,6 +132,7 @@ public interface IDataStore
     int MarkProductionPalletsPrinted(long orderId, IReadOnlyCollection<long> palletIds, DateTime printedAt);
     IReadOnlyList<ProductionPallet> GetFilledProductionPalletsByItemAndLocation(long itemId, long locationId);
     IReadOnlyList<FilledProductionPalletStockMetrics> GetFilledProductionPalletStockMetrics();
+    OrderProducedStockReleaseResult ReleaseProducedCustomerStockForOrderLine(long orderId, long orderLineId);
 
     Order? GetOrder(long id);
     IReadOnlyList<Order> GetOrders();

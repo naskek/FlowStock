@@ -6,7 +6,7 @@ public sealed class OrderDetailsDeleteLineSourceTests
     public void DeleteLine_Click_MarksDirtyBeforeRefreshingMetrics_AndForcesGridRefresh()
     {
         var source = File.ReadAllText(GetRepoFilePath("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs"));
-        var methodBody = SliceMethod(source, "private void DeleteLine_Click(object sender, RoutedEventArgs e)", "private void OrderLinesGrid_KeyDown");
+        var methodBody = SliceMethod(source, "private async void DeleteLine_Click(object sender, RoutedEventArgs e)", "private async Task DeleteSavedCustomerLineViaServerAsync");
 
         AssertContainsInOrder(
             methodBody,
@@ -25,6 +25,42 @@ public sealed class OrderDetailsDeleteLineSourceTests
         Assert.Contains("var targetLine = ResolveEditableOrderLine(_selectedLine);", source, StringComparison.Ordinal);
         Assert.Contains("return _lines.FirstOrDefault(line => line.Id == selectedLine.Id);", source, StringComparison.Ordinal);
         Assert.Contains("_lines.Remove(targetLine);", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DeleteLine_Click_DoesNotUseLocalFilledHuStateBeforeReleaseConfirmation()
+    {
+        var source = File.ReadAllText(GetRepoFilePath("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs"));
+        var methodBody = SliceMethod(source, "private async Task DeleteSavedCustomerLineViaServerAsync", "private OrderLineView? ResolveEditableOrderLine");
+
+        Assert.Contains("UpdateOrderViaServerRaw", methodBody, StringComparison.Ordinal);
+        Assert.Contains("ORDER_LINE_HAS_FILLED_PALLETS", methodBody, StringComparison.Ordinal);
+        Assert.Contains("TryReleaseProducedStockAsync", methodBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("HasPrintedOrFilledProductionPallets", methodBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetProductionPalletsByDoc", methodBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DeleteLine_Click_SuppressesNormalErrorOnlyForFilledPalletCode()
+    {
+        var source = File.ReadAllText(GetRepoFilePath("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs"));
+        var methodBody = SliceMethod(source, "private async Task DeleteSavedCustomerLineViaServerAsync", "private OrderLineView? ResolveEditableOrderLine");
+
+        AssertContainsInOrder(
+            methodBody,
+            "if (!string.Equals(result.ErrorCode, \"ORDER_LINE_HAS_FILLED_PALLETS\", StringComparison.OrdinalIgnoreCase))",
+            "ShowUpdateOrderError(result);",
+            "По строке уже есть выпущенные HU",
+            "TryReleaseProducedStockAsync");
+    }
+
+    [Fact]
+    public void WpfProductionPalletApiService_UsesReleaseProducedStockEndpoint()
+    {
+        var source = File.ReadAllText(GetRepoFilePath("apps", "windows", "FlowStock.App", "Services", "WpfProductionPalletApiService.cs"));
+
+        Assert.Contains("TryReleaseProducedStockAsync", source, StringComparison.Ordinal);
+        Assert.Contains("/api/orders/{orderId}/lines/{orderLineId}/release-produced-stock", source, StringComparison.Ordinal);
     }
 
     private static void AssertContainsInOrder(string source, params string[] fragments)

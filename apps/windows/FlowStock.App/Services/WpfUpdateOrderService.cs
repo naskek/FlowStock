@@ -194,7 +194,8 @@ public sealed class WpfUpdateOrderService
         {
             return WpfUpdateOrderResult.Failure(
                 WpfUpdateOrderResultKind.ValidationFailed,
-                apiCall.Error.Message);
+                apiCall.Error.Message,
+                errorCode: errorCode);
         }
 
         if (IsHuReservationConflict(errorCode))
@@ -203,7 +204,8 @@ public sealed class WpfUpdateOrderService
                 WpfUpdateOrderResultKind.ValidationFailed,
                 "Конфликт резерва HU: выбранный HU уже закреплен за другим активным клиентским заказом. Обновите заказ и повторите." +
                 Environment.NewLine +
-                errorCode);
+                errorCode,
+                errorCode: errorCode);
         }
 
         var message = errorCode switch
@@ -260,7 +262,7 @@ public sealed class WpfUpdateOrderService
             _ => WpfUpdateOrderResultKind.ServerRejected
         };
 
-        return WpfUpdateOrderResult.Failure(kind, message);
+        return WpfUpdateOrderResult.Failure(kind, message, errorCode: errorCode);
     }
 
     private static bool IsHuReservationConflict(string? errorCode)
@@ -396,6 +398,7 @@ public sealed class WpfUpdateOrderResult
     public string Message { get; init; } = string.Empty;
     public UpdateOrderApiResponse? Response { get; init; }
     public Exception? Exception { get; init; }
+    public string? ErrorCode { get; init; }
 
     public bool IsSuccess => Kind == WpfUpdateOrderResultKind.Updated;
 
@@ -412,13 +415,15 @@ public sealed class WpfUpdateOrderResult
     public static WpfUpdateOrderResult Failure(
         WpfUpdateOrderResultKind kind,
         string message,
-        Exception? exception = null)
+        Exception? exception = null,
+        string? errorCode = null)
     {
         return new WpfUpdateOrderResult
         {
             Kind = kind,
             Message = message,
-            Exception = exception
+            Exception = exception,
+            ErrorCode = errorCode
         };
     }
 }
