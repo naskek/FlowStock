@@ -597,10 +597,11 @@ public sealed class ProductionPalletService
         }
 
         var pallets = GetProductionPalletsByOrder(_data, orderId);
-        var openDoc = FindPreparedOpenProductionReceipt(_data, orderId, requireRemaining: false);
+        var fillingPallets = BuildFillingPalletViews(_data, orderId, pallets);
+        var openDoc = FindPreparedOpenProductionReceiptForFilling(_data, orderId, fillingPallets, requireRemaining: false);
         if (openDoc == null)
         {
-            if (HasCompletedPalletizedProduction(pallets))
+            if (HasCompletedPalletizedProduction(fillingPallets))
             {
                 throw new InvalidOperationException("Выпуск по заказу уже завершён. Нет паллет к наполнению.");
             }
@@ -608,7 +609,7 @@ public sealed class ProductionPalletService
             throw new InvalidOperationException("Для заказа не сформирован план паллет. Сформируйте и напечатайте паллетные этикетки перед наполненением.");
         }
 
-        return BuildFillingContext(orderId, openDoc.Id, pallets);
+        return BuildFillingContext(orderId, openDoc.Id, fillingPallets);
     }
 
     public IReadOnlyList<ProductionPalletPrintRow> GetPrintRows(long orderId)
@@ -915,6 +916,11 @@ public sealed class ProductionPalletService
             return ProductionPalletScanResult.Failure("Паллета отменена и не может быть наполнена.");
         }
 
+        if (!HasOnlyValidFillingPalletLines(_data, pallet))
+        {
+            return ProductionPalletScanResult.Failure("Строка заказа для паллеты не найдена.");
+        }
+
         var palletLines = GetPalletLines(pallet);
         var docLinesById = _data.GetDocLines(doc.Id).ToDictionary(line => line.Id, line => line);
         foreach (var palletLine in palletLines)
@@ -947,8 +953,7 @@ public sealed class ProductionPalletService
         }
 
         var pallets = _data.GetProductionPalletsByDoc(doc.Id);
-        var activePallets = pallets
-            .Where(row => !string.Equals(row.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+        var activePallets = BuildFillingPalletViews(_data, pallet.OrderId!.Value, pallets)
             .OrderBy(row => row.Id)
             .ToList();
         var index = activePallets.FindIndex(row => row.Id == pallet.Id);
@@ -988,7 +993,7 @@ public sealed class ProductionPalletService
             PalletIndex = index >= 0 ? index + 1 : 0,
             PalletCount = activePallets.Count,
             PalletStatus = pallet.Status,
-            Document = BuildFillingDocument(doc.Id, pallets)
+            Document = BuildFillingDocument(doc.Id, pallets, pallet.OrderId)
         };
     }
 
@@ -1041,6 +1046,12 @@ public sealed class ProductionPalletService
                 {
                     if (string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
                     {
+                        if (!HasOnlyValidFillingPalletLines(store, pallet))
+                        {
+                            result = ProductionPalletFillResult.Failure("Строка заказа для паллеты не найдена.");
+                            return;
+                        }
+
                         result = new ProductionPalletFillResult
                         {
                             Success = true,
@@ -1049,7 +1060,7 @@ public sealed class ProductionPalletService
                             ClosedPrdDocId = doc.Id,
                             ClosedPrdDocRef = doc.DocRef,
                             Pallet = pallet,
-                            Document = BuildFillingDocument(doc.Id, store.GetProductionPalletsByDoc(doc.Id))
+                            Document = BuildFillingDocument(doc.Id, store.GetProductionPalletsByDoc(doc.Id), pallet.OrderId)
                         };
                         return;
                     }
@@ -1064,6 +1075,12 @@ public sealed class ProductionPalletService
                     return;
                 }
 
+                if (!HasOnlyValidFillingPalletLines(store, pallet))
+                {
+                    result = ProductionPalletFillResult.Failure("Строка заказа для паллеты не найдена.");
+                    return;
+                }
+
                 if (string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
                 {
                     result = ApplyAutoCloseAfterFillInTransaction(store, new ProductionPalletFillResult
@@ -1071,7 +1088,7 @@ public sealed class ProductionPalletService
                         Success = true,
                         AlreadyFilled = true,
                         Pallet = pallet,
-                        Document = BuildFillingDocument(doc.Id, store.GetProductionPalletsByDoc(doc.Id))
+                        Document = BuildFillingDocument(doc.Id, store.GetProductionPalletsByDoc(doc.Id), pallet.OrderId)
                     });
                     return;
                 }
@@ -1126,7 +1143,7 @@ public sealed class ProductionPalletService
                     Success = true,
                     AlreadyFilled = false,
                     Pallet = filledPallet,
-                    Document = BuildFillingDocument(doc.Id, store.GetProductionPalletsByDoc(doc.Id))
+                    Document = BuildFillingDocument(doc.Id, store.GetProductionPalletsByDoc(doc.Id), filledPallet.OrderId)
                 });
             });
         }
@@ -1228,7 +1245,7 @@ public sealed class ProductionPalletService
             Success = true,
             AlreadyFilled = fillResult.AlreadyFilled || autoClose.AlreadyClosed,
             Pallet = pallet,
-            Document = BuildFillingDocument(prdDocId, store.GetProductionPalletsByDoc(prdDocId)),
+            Document = BuildFillingDocument(prdDocId, store.GetProductionPalletsByDoc(prdDocId), pallet.OrderId),
             PrdAutoClosed = true,
             ClosedPrdDocId = autoClose.ClosedPrdDocId,
             ClosedPrdDocRef = autoClose.ClosedPrdDocRef
@@ -1263,7 +1280,23 @@ public sealed class ProductionPalletService
             return null;
         }
 
-        var activeItems = workItems
+        var fillingPallets = BuildFillingPalletViews(_data, orderId, GetProductionPalletsByOrder(_data, orderId));
+        var activeItems = fillingPallets
+            .GroupBy(pallet => pallet.PrdDocId)
+            .Select(group =>
+            {
+                var doc = _data.GetDoc(group.Key);
+                var workItem = workItems.FirstOrDefault(item => item.PrdDocId == group.Key);
+                return new ProductionPalletWorkItem
+                {
+                    PrdDocId = group.Key,
+                    PrdDocRef = doc?.DocRef ?? workItem?.PrdDocRef ?? string.Empty,
+                    PrdStatus = doc == null ? workItem?.PrdStatus ?? string.Empty : DocTypeMapper.StatusToString(doc.Status),
+                    OrderId = order.Id,
+                    OrderRef = order.OrderRef,
+                    Summary = BuildSummary(group.ToList())
+                };
+            })
             .Where(item => item.Summary.RemainingPalletCount > 0 || item.Summary.RemainingQty > QtyTolerance)
             .ToList();
         if (activeItems.Count == 0)
@@ -1394,6 +1427,33 @@ public sealed class ProductionPalletService
                      .OrderByDescending(doc => doc.Id))
         {
             var summary = BuildSummary(store.GetProductionPalletsByDoc(doc.Id));
+            if (summary.PlannedPalletCount <= 0)
+            {
+                continue;
+            }
+
+            if (requireRemaining && summary.RemainingPalletCount <= 0 && summary.RemainingQty <= QtyTolerance)
+            {
+                continue;
+            }
+
+            return doc;
+        }
+
+        return null;
+    }
+
+    private static Doc? FindPreparedOpenProductionReceiptForFilling(
+        IDataStore store,
+        long orderId,
+        IReadOnlyList<ProductionPallet> fillingPallets,
+        bool requireRemaining)
+    {
+        foreach (var doc in store.GetDocsByOrder(orderId)
+                     .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status != DocStatus.Closed)
+                     .OrderByDescending(doc => doc.Id))
+        {
+            var summary = BuildSummary(fillingPallets.Where(pallet => pallet.PrdDocId == doc.Id).ToList());
             if (summary.PlannedPalletCount <= 0)
             {
                 continue;
@@ -1801,9 +1861,15 @@ public sealed class ProductionPalletService
         }
     }
 
-    private ProductionPalletDocument BuildFillingDocument(long docId, IReadOnlyList<ProductionPallet> pallets)
+    private ProductionPalletDocument BuildFillingDocument(
+        long docId,
+        IReadOnlyList<ProductionPallet> pallets,
+        long? orderId = null)
     {
-        return BuildDocument(docId, ExcludeCancelledPallets(pallets));
+        var effectiveOrderId = orderId ?? _data.GetDoc(docId)?.OrderId;
+        return effectiveOrderId.HasValue
+            ? BuildDocument(docId, BuildFillingPalletViews(_data, effectiveOrderId.Value, pallets))
+            : BuildDocument(docId, ExcludeCancelledPallets(pallets));
     }
 
     private ProductionPalletDocument BuildDocument(long docId, IReadOnlyList<ProductionPallet> pallets)
@@ -1872,6 +1938,120 @@ public sealed class ProductionPalletService
             Lines = lines,
             Pallets = activePallets
         };
+    }
+
+    private static IReadOnlyList<ProductionPallet> BuildFillingPalletViews(
+        IDataStore store,
+        long orderId,
+        IReadOnlyList<ProductionPallet> pallets)
+    {
+        var orderLinesById = store.GetOrderLines(orderId)
+            .ToDictionary(line => line.Id, line => line);
+        if (orderLinesById.Count == 0)
+        {
+            return Array.Empty<ProductionPallet>();
+        }
+
+        var result = new List<ProductionPallet>();
+        foreach (var pallet in ExcludeCancelledPallets(pallets).Where(pallet => pallet.OrderId == orderId))
+        {
+            if (TryBuildFillingPalletView(orderId, pallet, orderLinesById, out var view))
+            {
+                result.Add(view);
+            }
+        }
+
+        return result
+            .OrderBy(pallet => pallet.Id)
+            .ToList();
+    }
+
+    private static bool TryBuildFillingPalletView(
+        long orderId,
+        ProductionPallet pallet,
+        IReadOnlyDictionary<long, OrderLine> orderLinesById,
+        out ProductionPallet view)
+    {
+        view = null!;
+        if (pallet.OrderId != orderId)
+        {
+            return false;
+        }
+
+        var sourceLines = GetPalletLines(pallet);
+        var validLines = sourceLines
+            .Where(line => IsValidFillingPalletLine(line, orderLinesById))
+            .ToArray();
+        if (validLines.Length == 0)
+        {
+            return false;
+        }
+
+        var firstLine = validLines[0];
+        var commonOrderLineId = validLines
+            .Select(line => line.OrderLineId)
+            .Distinct()
+            .Count() == 1
+                ? firstLine.OrderLineId
+                : null;
+        var plannedQty = validLines.Sum(line => line.PlannedQty);
+        var exposedLines = pallet.Lines.Count > 0
+            ? validLines
+            : Array.Empty<ProductionPalletComponentLine>();
+
+        view = new ProductionPallet
+        {
+            Id = pallet.Id,
+            PrdDocId = pallet.PrdDocId,
+            DocLineId = validLines.Length == 1 ? firstLine.DocLineId : pallet.DocLineId,
+            OrderId = pallet.OrderId,
+            OrderLineId = commonOrderLineId,
+            ItemId = validLines.Length == 1 ? firstLine.ItemId : pallet.ItemId,
+            ItemName = validLines.Length == 1 ? firstLine.ItemName : pallet.ItemName,
+            HuCode = pallet.HuCode,
+            PlannedQty = plannedQty,
+            ToLocationId = pallet.ToLocationId,
+            ToLocationCode = pallet.ToLocationCode,
+            Status = pallet.Status,
+            PalletNo = pallet.PalletNo,
+            PalletCount = pallet.PalletCount,
+            PrintedAt = pallet.PrintedAt,
+            FilledAt = pallet.FilledAt,
+            FilledByDeviceId = pallet.FilledByDeviceId,
+            CancelReason = pallet.CancelReason,
+            CancelledAt = pallet.CancelledAt,
+            CreatedAt = pallet.CreatedAt,
+            Lines = exposedLines
+        };
+        return true;
+    }
+
+    private static bool IsValidFillingPalletLine(
+        ProductionPalletComponentLine line,
+        IReadOnlyDictionary<long, OrderLine> orderLinesById)
+    {
+        return line.OrderLineId.HasValue
+               && orderLinesById.TryGetValue(line.OrderLineId.Value, out var orderLine)
+               && orderLine.ItemId == line.ItemId;
+    }
+
+    private static bool HasOnlyValidFillingPalletLines(IDataStore store, ProductionPallet pallet)
+    {
+        if (!pallet.OrderId.HasValue)
+        {
+            return false;
+        }
+
+        var orderLinesById = store.GetOrderLines(pallet.OrderId.Value)
+            .ToDictionary(line => line.Id, line => line);
+        if (orderLinesById.Count == 0)
+        {
+            return false;
+        }
+
+        var sourceLines = GetPalletLines(pallet);
+        return sourceLines.Count > 0
+               && sourceLines.All(line => IsValidFillingPalletLine(line, orderLinesById));
     }
 
     public static ProductionPalletSummary BuildSummary(IReadOnlyList<ProductionPallet> pallets)

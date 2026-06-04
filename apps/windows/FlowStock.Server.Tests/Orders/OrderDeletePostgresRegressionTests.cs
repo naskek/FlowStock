@@ -270,8 +270,9 @@ public sealed class OrderDeletePostgresRegressionTests
             var remainingLines = scopedStore.GetOrderLines(fixture.OrderId);
             Assert.Equal(2, remainingLines.Count);
             Assert.Contains(remainingLines, line => line.Id == fixture.DeletedOrderLineId);
-            var palletAfter = Assert.Single(scopedStore.GetProductionPalletsByDoc(plan.PrdDocId));
-            Assert.Equal(palletToFill.Id, palletAfter.Id);
+            var palletAfter = Assert.Single(
+                scopedStore.GetProductionPalletsByDoc(plan.PrdDocId),
+                pallet => pallet.Id == palletToFill.Id);
             Assert.Equal(fixture.DeletedOrderLineId, palletAfter.OrderLineId);
             Assert.Equal(ProductionPalletStatus.Filled, palletAfter.Status);
         });
@@ -966,3 +967,4 @@ public sealed class OrderDeletePostgresRegressionTests
         }
     }
 }
+
