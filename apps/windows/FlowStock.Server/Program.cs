@@ -2000,6 +2000,13 @@ app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>
         orders = orders.Where(order => order.Type == OrderType.Customer).ToList();
     }
 
+    if (!includeCancelledMerged)
+    {
+        orders = orders
+            .Where(order => order.Status is not (OrderStatus.Cancelled or OrderStatus.Merged))
+            .ToList();
+    }
+
     if (!string.IsNullOrWhiteSpace(normalized))
     {
         orders = orders
@@ -2012,12 +2019,15 @@ app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>
             .ToList();
     }
 
-    var list = MapOrdersWithShipmentRemaining(orders, store);
+    var list = new List<object>();
     if (includePendingRequests)
     {
-        var pendingCreateOrders = GetPendingCreateOrderRows(store, normalized);
-        list.AddRange(pendingCreateOrders);
+        list.AddRange(GetPendingCreateOrderRows(store, normalized));
     }
+
+    list.AddRange(MapOrdersWithShipmentRemaining(
+        OrderPageSortSql.SortOrders(orders, includeCancelledMerged),
+        store));
     return Results.Ok(list);
 });
 
