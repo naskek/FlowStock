@@ -808,7 +808,13 @@ assert.doesNotMatch(catalogHtml, /<th[^>]*>\s*ID\s*<\/th>/);
 assert.doesNotMatch(catalogHtml, /<th[^>]*>\s*GTIN\s*<\/th>/);
 assert.doesNotMatch(catalogHtml, /<th[^>]*>[^<]*ШК[^<]*<\/th>/);
 
+
+const pcAppSourceForOrderRefSort = fs.readFileSync(appPath, "utf8");
 assert(
-  appJs.includes('orderRef: { type: "number", getValue: function (row) { return Number(String(row.order_ref || "").trim()) || 0; } }'),
+  pcAppSourceForOrderRefSort.includes('orderRef: { type: "number", getValue: function (row) { return Number(String(row.order_ref || "").trim()) || 0; } }'),
   "orderRef sort column should be numeric so PC orders sort 117, 116, 115, 112 instead of string/DOM order"
+);
+assert(
+  !pcAppSourceForOrderRefSort.includes('orderRef: { type: "string", getValue: function (row) { return row.order_ref; } }'),
+  "orderRef sort column must not use string sorting"
 );
