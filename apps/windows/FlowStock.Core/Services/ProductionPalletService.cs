@@ -804,7 +804,8 @@ public sealed class ProductionPalletService
                     Uom = string.IsNullOrWhiteSpace(lineItem?.BaseUom) ? line.Uom : lineItem!.BaseUom!
                 };
             }).ToList();
-            var composition = string.Join("; ", printLines.Select(line => $"{line.ItemName} - {FormatQty(line.Qty)} {line.Uom}"));
+            var composition = string.Join("\r\n", printLines.Select((line, lineIndex) =>
+                $"{lineIndex + 1}. {line.ItemName} - {FormatQty(line.Qty)} {line.Uom}"));
 
             rows.Add(new ProductionPalletPrintRow
             {
@@ -2209,3 +2210,4 @@ public sealed class ProductionPalletPlanAdoptionException : InvalidOperationExce
 
     public string Code { get; }
 }
+
