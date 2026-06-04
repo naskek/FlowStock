@@ -4711,7 +4711,7 @@
 
     function sortOrderRows(rows) {
       var sortedRows = sortRows(rows, "orders", {
-        orderRef: { type: "string", getValue: function (row) { return row.order_ref; } },
+        orderRef: { type: "number", getValue: function (row) { return Number(String(row.order_ref || "").trim()) || 0; } },
         orderType: { type: "string", getValue: function (row) { return getOrderTypeLabel(row.order_type); } },
         partnerName: { type: "string", getValue: function (row) { return row.partner_name; } },
         dueDate: { type: "date", getValue: function (row) { return row.due_date; } },
