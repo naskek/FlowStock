@@ -170,6 +170,26 @@ production_totals_by_order AS (
       )
     GROUP BY d.order_id
 ),
+open_production_activity_by_order AS (
+    SELECT activity.order_id,
+           TRUE AS has_open_production_receipt
+    FROM (
+        SELECT d.order_id
+        FROM docs d
+        INNER JOIN order_scope os ON os.id = d.order_id
+        WHERE d.type = 'PRODUCTION_RECEIPT'
+          AND d.status <> 'CLOSED'
+          AND d.order_id IS NOT NULL
+        UNION
+        SELECT ols.order_id
+        FROM docs d
+        INNER JOIN doc_lines dl ON dl.doc_id = d.id
+        INNER JOIN order_lines_scope ols ON ols.id = dl.order_line_id
+        WHERE d.type = 'PRODUCTION_RECEIPT'
+          AND d.status <> 'CLOSED'
+    ) activity
+    GROUP BY activity.order_id
+),
 line_metrics_seed AS (
     SELECT ob.id AS order_id,
            ob.order_type,
@@ -282,6 +302,7 @@ pallet_source AS (
 pallet_summary AS (
     SELECT ps.order_id,
            COUNT(*) FILTER (WHERE ps.status <> 'CANCELLED')::int AS planned_pallet_count,
+           COUNT(*) FILTER (WHERE ps.status IN ('PLANNED', 'PRINTED', 'FILLED'))::int AS active_pallet_count,
            COALESCE(SUM(ps.planned_qty) FILTER (WHERE ps.status <> 'CANCELLED'), 0)::double precision AS planned_qty,
            COUNT(*) FILTER (WHERE ps.status = 'FILLED')::int AS filled_pallet_count,
            COALESCE(SUM(ps.planned_qty) FILTER (WHERE ps.status = 'FILLED'), 0)::double precision AS filled_qty
@@ -433,7 +454,10 @@ SELECT ob.id,
                     AND COALESCE(ss.demand_line_count, 0) > 0
                     AND COALESCE(ss.fully_demand_produced, FALSE) THEN 'SHIPPED'
                WHEN ob.persisted_status = 'DRAFT'
-                    AND NOT COALESCE(ss.any_produced, FALSE) THEN 'DRAFT'
+                    AND NOT COALESCE(ss.any_produced, FALSE)
+                    AND NOT COALESCE(opa.has_open_production_receipt, FALSE)
+                    AND COALESCE(ps.active_pallet_count, 0) = 0
+                    AND UPPER(BTRIM(COALESCE(ob.marking_status, ''))) NOT IN ('PRINTED', 'EXCEL_GENERATED') THEN 'DRAFT'
                ELSE 'IN_PROGRESS'
            END
            ELSE CASE
@@ -475,6 +499,7 @@ SELECT ob.id,
 FROM order_base ob
 LEFT JOIN status_summary ss ON ss.order_id = ob.id
 LEFT JOIN doc_summary ds ON ds.order_id = ob.id
+LEFT JOIN open_production_activity_by_order opa ON opa.order_id = ob.id
 LEFT JOIN marking_rollup mr ON mr.order_id = ob.id
 LEFT JOIN order_list_flags olf ON olf.order_id = ob.id
 LEFT JOIN pallet_summary ps ON ps.order_id = ob.id";
@@ -3444,9 +3469,16 @@ WHERE d.id = pp.prd_doc_id
     {
         return WithConnection(connection =>
         {
+            var orderBy = OrderPageSortSql.BuildEffectiveStatusOrderBy("orders_read_model.status", includeCancelledMerged: false);
+            var orderRefOrderBy = OrderPageSortSql.BuildOrderRefDescendingOrderBy("orders_read_model.order_ref");
             using var command = CreateCommand(connection, $@"
+SELECT *
+FROM (
 {BuildOrderSelectSql("SELECT o.id FROM orders o")}
-ORDER BY created_at DESC");
+) orders_read_model
+ORDER BY {orderBy},
+orders_read_model.created_at DESC,
+{orderRefOrderBy}");
             AddOrderSelectParameters(command);
             using var reader = command.ExecuteReader();
             var orders = new List<Order>();
@@ -3471,13 +3503,16 @@ ORDER BY created_at DESC");
             var normalized = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
             var effectiveOrderBy = OrderPageSortSql.BuildEffectiveStatusOrderBy("eo.effective_status", includeCancelledMerged);
             var pagedOrderBy = OrderPageSortSql.BuildEffectiveStatusOrderBy("paged_orders.status", includeCancelledMerged);
+            var effectiveOrderRefOrderBy = OrderPageSortSql.BuildOrderRefDescendingOrderBy("eo.order_ref");
+            var pagedOrderRefOrderBy = OrderPageSortSql.BuildOrderRefDescendingOrderBy("paged_orders.order_ref");
             var pageOrderScopeSql = $@"
 WITH candidate_orders AS (
     SELECT o.id,
            o.order_ref,
            o.order_type,
            o.status AS persisted_status,
-           o.created_at
+           o.created_at,
+           COALESCE(o.marking_status, 'NOT_REQUIRED') AS marking_status
     FROM orders o
     LEFT JOIN partners p ON p.id = o.partner_id
     WHERE (@include_internal OR o.order_type = @customer_order_type)
@@ -3572,6 +3607,26 @@ production_totals_by_order AS (
       )
     GROUP BY d.order_id
 ),
+open_production_activity_by_order AS (
+    SELECT activity.order_id,
+           TRUE AS has_open_production_receipt
+    FROM (
+        SELECT d.order_id
+        FROM docs d
+        INNER JOIN candidate_orders co ON co.id = d.order_id
+        WHERE d.type = 'PRODUCTION_RECEIPT'
+          AND d.status <> 'CLOSED'
+          AND d.order_id IS NOT NULL
+        UNION
+        SELECT col.order_id
+        FROM docs d
+        INNER JOIN doc_lines dl ON dl.doc_id = d.id
+        INNER JOIN candidate_order_lines col ON col.id = dl.order_line_id
+        WHERE d.type = 'PRODUCTION_RECEIPT'
+          AND d.status <> 'CLOSED'
+    ) activity
+    GROUP BY activity.order_id
+),
 line_metrics_seed AS (
     SELECT co.id AS order_id,
            co.order_type,
@@ -3637,6 +3692,27 @@ status_summary AS (
     LEFT JOIN production_totals_by_order production_totals ON production_totals.order_id = co.id
     GROUP BY co.id
 ),
+pallet_source AS (
+    SELECT COALESCE(pp.order_id, MAX(ol.order_id), d.order_id) AS order_id,
+           pp.id,
+           pp.status
+    FROM production_pallets pp
+    INNER JOIN docs d ON d.id = pp.prd_doc_id
+    LEFT JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
+    LEFT JOIN order_lines ol ON ol.id = pll.order_line_id
+    WHERE d.type = 'PRODUCTION_RECEIPT'
+    GROUP BY pp.id,
+             pp.order_id,
+             d.order_id,
+             pp.status
+),
+pallet_summary AS (
+    SELECT ps.order_id,
+           COUNT(*) FILTER (WHERE ps.status IN ('PLANNED', 'PRINTED', 'FILLED'))::int AS active_pallet_count
+    FROM pallet_source ps
+    INNER JOIN candidate_orders co ON co.id = ps.order_id
+    GROUP BY ps.order_id
+),
 effective_orders AS (
     SELECT co.id,
            co.order_ref,
@@ -3649,7 +3725,10 @@ effective_orders AS (
                         AND COALESCE(ss.demand_line_count, 0) > 0
                         AND COALESCE(ss.fully_demand_produced, FALSE) THEN 'SHIPPED'
                    WHEN co.persisted_status = 'DRAFT'
-                        AND NOT COALESCE(ss.any_produced, FALSE) THEN 'DRAFT'
+                        AND NOT COALESCE(ss.any_produced, FALSE)
+                        AND NOT COALESCE(opa.has_open_production_receipt, FALSE)
+                        AND COALESCE(ps.active_pallet_count, 0) = 0
+                        AND UPPER(BTRIM(COALESCE(co.marking_status, ''))) NOT IN ('PRINTED', 'EXCEL_GENERATED') THEN 'DRAFT'
                    ELSE 'IN_PROGRESS'
                END
                ELSE CASE
@@ -3661,12 +3740,14 @@ effective_orders AS (
            END AS effective_status
     FROM candidate_orders co
     LEFT JOIN status_summary ss ON ss.order_id = co.id
+    LEFT JOIN open_production_activity_by_order opa ON opa.order_id = co.id
+    LEFT JOIN pallet_summary ps ON ps.order_id = co.id
 )
 SELECT eo.id
 FROM effective_orders eo
 ORDER BY {effectiveOrderBy},
 eo.created_at DESC,
-eo.order_ref DESC
+{effectiveOrderRefOrderBy}
 LIMIT @limit OFFSET @offset";
             using var command = CreateCommand(connection, $@"
 SELECT *
@@ -3675,7 +3756,7 @@ FROM (
 ) paged_orders
 ORDER BY {pagedOrderBy},
 paged_orders.created_at DESC,
-paged_orders.order_ref DESC");
+{pagedOrderRefOrderBy}");
             AddOrderSelectParameters(command);
             command.Parameters.AddWithValue("@include_internal", includeInternal);
             command.Parameters.AddWithValue("@include_cancelled_merged", includeCancelledMerged);

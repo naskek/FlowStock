@@ -719,6 +719,36 @@ assert.deepStrictEqual(
   "fallback client-side sort должен совпадать с серверным правилом: status, затем order_ref DESC"
 );
 
+const pendingAndRealOrders = pc.sortOrdersNewestFirst([
+  {
+    id: 112,
+    order_ref: "112",
+    order_type: "INTERNAL",
+    order_status: "IN_PROGRESS",
+    created_at: "2026-05-11T10:00:00Z"
+  },
+  {
+    id: 117,
+    order_ref: "117",
+    order_type: "CUSTOMER",
+    order_status: "IN_PROGRESS",
+    created_at: "2026-05-12T10:00:00Z"
+  },
+  {
+    id: "request:118",
+    order_ref: "118",
+    order_type: "CUSTOMER",
+    status_code: "PENDING_CONFIRMATION",
+    is_pending_confirmation: true,
+    created_at: "2026-05-10T10:00:00Z"
+  }
+]);
+assert.deepStrictEqual(
+  pendingAndRealOrders.map(function (row) { return row.order_ref; }),
+  ["118", "117", "112"],
+  "pending promotion applies only to synthetic confirmation rows; real INTERNAL orders stay in canonical order"
+);
+
 assert.strictEqual(
   pc.buildOrdersUrl("abc 001", 21, 20),
   "/api/orders?include_internal=1&include_pending_requests=1&limit=21&offset=20&q=abc%20001"
@@ -817,4 +847,8 @@ assert(
 assert(
   !pcAppSourceForOrderRefSort.includes('orderRef: { type: "string", getValue: function (row) { return row.order_ref; } }'),
   "orderRef sort column must not use string sorting"
+);
+assert(
+  !pcAppSourceForOrderRefSort.includes("return sortPendingOrdersFirst(sortedRows);"),
+  "explicit column sorting must not be overridden by pending-first promotion"
 );

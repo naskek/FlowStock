@@ -2433,6 +2433,9 @@
   function getOrderStatusDisplay(order, statusCode) {
     var label = String((order && (order.status || order.order_status_display)) || "").trim();
     if (!label || label.toUpperCase() === statusCode) {
+      if (statusCode === "DRAFT" && isInternalOrder(order)) {
+        return "Черновик";
+      }
       if (statusCode === "SHIPPED") {
         return "Выполнен";
       }
@@ -4719,7 +4722,7 @@
         status: { type: "string", getValue: function (row) { return getOrderStatusPresentation(row).label; } },
         palletFilling: { type: "number", getValue: function (row) { return getOrderPalletFillingPresentation(row).sortValue; } },
       });
-      return sortPendingOrdersFirst(sortedRows);
+      return sortedRows;
     }
 
     function renderTable(rows, options) {

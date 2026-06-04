@@ -86,7 +86,7 @@ public static class OrderStatusMapper
     {
         return status switch
         {
-            OrderStatus.Draft => "В работе",
+            OrderStatus.Draft => type == OrderType.Internal ? "Черновик" : "В работе",
             OrderStatus.Accepted => "Готов",
             OrderStatus.InProgress => "В работе",
             OrderStatus.Shipped => "Выполнен",

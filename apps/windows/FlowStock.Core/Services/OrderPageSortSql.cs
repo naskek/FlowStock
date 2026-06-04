@@ -1,3 +1,5 @@
+using FlowStock.Core.Models;
+
 namespace FlowStock.Core.Services;
 
 public static class OrderPageSortSql
@@ -32,4 +34,60 @@ CASE {statusColumn}
     WHEN 'SHIPPED' THEN 6
     ELSE 99
 END";
+
+    public static string BuildOrderRefDescendingOrderBy(string orderRefColumn) => $@"
+CASE
+    WHEN BTRIM(COALESCE({orderRefColumn}, '')) ~ '^\d+$' THEN BTRIM({orderRefColumn})::numeric
+    ELSE NULL
+END DESC NULLS LAST,
+{orderRefColumn} DESC";
+
+    public static IReadOnlyList<Order> SortOrders(IEnumerable<Order> orders, bool includeCancelledMerged)
+    {
+        return orders
+            .Select((order, index) => new { order, index })
+            .OrderBy(entry => GetStatusRank(entry.order.Status, includeCancelledMerged))
+            .ThenByDescending(entry => entry.order.CreatedAt)
+            .ThenByDescending(entry => TryParseNumericOrderRef(entry.order.OrderRef))
+            .ThenByDescending(entry => entry.order.OrderRef ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(entry => entry.index)
+            .Select(entry => entry.order)
+            .ToArray();
+    }
+
+    private static int GetStatusRank(OrderStatus status, bool includeCancelledMerged)
+    {
+        if (includeCancelledMerged)
+        {
+            return status switch
+            {
+                OrderStatus.Cancelled => 1,
+                OrderStatus.Merged => 2,
+                OrderStatus.Draft => 3,
+                OrderStatus.InProgress => 4,
+                OrderStatus.Accepted => 5,
+                OrderStatus.Shipped => 6,
+                _ => 99
+            };
+        }
+
+        return status switch
+        {
+            OrderStatus.Draft => 1,
+            OrderStatus.InProgress => 2,
+            OrderStatus.Accepted => 3,
+            OrderStatus.Shipped => 4,
+            _ => 5
+        };
+    }
+
+    private static long? TryParseNumericOrderRef(string? orderRef)
+    {
+        var trimmed = orderRef?.Trim();
+        return !string.IsNullOrWhiteSpace(trimmed)
+               && trimmed.All(char.IsDigit)
+               && long.TryParse(trimmed, out var value)
+            ? value
+            : null;
+    }
 }

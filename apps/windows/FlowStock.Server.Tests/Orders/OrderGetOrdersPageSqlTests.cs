@@ -20,9 +20,30 @@ public sealed class OrderGetOrdersPageSqlTests
 
         Assert.Contains("OrderPageSortSql.BuildEffectiveStatusOrderBy(\"eo.effective_status\"", sql, StringComparison.Ordinal);
         Assert.Contains("eo.created_at DESC", sql, StringComparison.Ordinal);
-        Assert.Contains("eo.order_ref DESC", sql, StringComparison.Ordinal);
+        Assert.Contains("OrderPageSortSql.BuildOrderRefDescendingOrderBy(\"eo.order_ref\"", sql, StringComparison.Ordinal);
         Assert.Contains("paged_orders.created_at DESC", sql, StringComparison.Ordinal);
         Assert.Contains("LIMIT @limit OFFSET @offset", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OrderListReadModel_InternalDraftStatus_UsesProductionActivity()
+    {
+        var sql = File.ReadAllText(GetPostgresDataStorePath()).Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        Assert.Contains("open_production_activity_by_order AS", sql, StringComparison.Ordinal);
+        Assert.Contains("COUNT(*) FILTER (WHERE ps.status IN ('PLANNED', 'PRINTED', 'FILLED'))::int AS active_pallet_count", sql, StringComparison.Ordinal);
+        Assert.Contains("UPPER(BTRIM(COALESCE(ob.marking_status, ''))) NOT IN ('PRINTED', 'EXCEL_GENERATED') THEN 'DRAFT'", sql, StringComparison.Ordinal);
+        Assert.Contains("UPPER(BTRIM(COALESCE(co.marking_status, ''))) NOT IN ('PRINTED', 'EXCEL_GENERATED') THEN 'DRAFT'", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OrdersApiNoLimit_UsesSameRealOrderSortingAndPendingFirstOnlyBySyntheticRows()
+    {
+        var program = File.ReadAllText(GetRepoFilePath("apps", "windows", "FlowStock.Server", "Program.cs"));
+
+        Assert.Contains("OrderPageSortSql.SortOrders(orders, includeCancelledMerged)", program, StringComparison.Ordinal);
+        Assert.Contains("list.AddRange(GetPendingCreateOrderRows(store, normalized));", program, StringComparison.Ordinal);
+        Assert.Contains("is_pending_confirmation = true", program, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -47,11 +68,14 @@ public sealed class OrderGetOrdersPageSqlTests
     }
 
     private static string GetPostgresDataStorePath()
+        => GetRepoFilePath("apps", "windows", "FlowStock.Data", "PostgresDataStore.cs");
+
+    private static string GetRepoFilePath(params string[] parts)
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir != null)
         {
-            var candidate = Path.Combine(dir.FullName, "apps", "windows", "FlowStock.Data", "PostgresDataStore.cs");
+            var candidate = Path.Combine(new[] { dir.FullName }.Concat(parts).ToArray());
             if (File.Exists(candidate))
             {
                 return candidate;

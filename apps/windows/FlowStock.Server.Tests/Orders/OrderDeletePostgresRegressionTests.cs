@@ -821,7 +821,9 @@ public sealed class OrderDeletePostgresRegressionTests
             return Task.CompletedTask;
         });
 
-        Assert.IsType<RollbackRequestedException>(exception);
+        Assert.True(
+            exception is RollbackRequestedException,
+            exception?.ToString() ?? "Expected rollback transaction marker exception.");
     }
 
     private static string? ResolvePostgresTestConnectionString()
