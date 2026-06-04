@@ -3746,8 +3746,9 @@ effective_orders AS (
 SELECT eo.id
 FROM effective_orders eo
 ORDER BY {effectiveOrderBy},
+{effectiveOrderRefOrderBy},
 eo.created_at DESC,
-{effectiveOrderRefOrderBy}
+eo.id DESC
 LIMIT @limit OFFSET @offset";
             using var command = CreateCommand(connection, $@"
 SELECT *
@@ -3755,8 +3756,9 @@ FROM (
 {BuildOrderSelectSql(pageOrderScopeSql)}
 ) paged_orders
 ORDER BY {pagedOrderBy},
+{pagedOrderRefOrderBy},
 paged_orders.created_at DESC,
-{pagedOrderRefOrderBy}");
+paged_orders.id DESC");
             AddOrderSelectParameters(command);
             command.Parameters.AddWithValue("@include_internal", includeInternal);
             command.Parameters.AddWithValue("@include_cancelled_merged", includeCancelledMerged);

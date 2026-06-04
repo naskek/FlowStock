@@ -31,28 +31,61 @@ public sealed class OrderPageSortSqlTests
     }
 
     [Fact]
-    public void SortOrders_UsesCreatedAtBeforeNumericOrderRefWithinStatus()
+    public void SortOrders_UsesNumericOrderRefBeforeCreatedAtWithinStatus()
     {
-        var olderProductionOrder = new Order
+        var newerLowerRefOrder = new Order
         {
-            Id = 112,
-            OrderRef = "112",
-            Type = OrderType.Internal,
+            Id = 119,
+            OrderRef = "118",
+            Type = OrderType.Customer,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 5, 2, 8, 0, 0, DateTimeKind.Utc)
+        };
+        var olderHigherRefOrder = new Order
+        {
+            Id = 118,
+            OrderRef = "119",
+            Type = OrderType.Customer,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 5, 1, 8, 0, 0, DateTimeKind.Utc)
+        };
+
+        var sorted = OrderPageSortSql.SortOrders([newerLowerRefOrder, olderHigherRefOrder], includeCancelledMerged: false);
+
+        Assert.Equal(new[] { "119", "118" }, sorted.Select(order => order.OrderRef).ToArray());
+    }
+
+    [Fact]
+    public void SortOrders_UsesCreatedAtThenIdAfterNumericOrderRef()
+    {
+        var olderOrder = new Order
+        {
+            Id = 120,
+            OrderRef = "119",
+            Type = OrderType.Customer,
             Status = OrderStatus.InProgress,
             CreatedAt = new DateTime(2026, 5, 1, 8, 0, 0, DateTimeKind.Utc)
         };
         var newerOrder = new Order
         {
-            Id = 117,
-            OrderRef = "117",
+            Id = 118,
+            OrderRef = "119",
+            Type = OrderType.Customer,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 5, 2, 8, 0, 0, DateTimeKind.Utc)
+        };
+        var sameCreatedHigherId = new Order
+        {
+            Id = 121,
+            OrderRef = "119",
             Type = OrderType.Customer,
             Status = OrderStatus.InProgress,
             CreatedAt = new DateTime(2026, 5, 2, 8, 0, 0, DateTimeKind.Utc)
         };
 
-        var sorted = OrderPageSortSql.SortOrders([olderProductionOrder, newerOrder], includeCancelledMerged: false);
+        var sorted = OrderPageSortSql.SortOrders([olderOrder, newerOrder, sameCreatedHigherId], includeCancelledMerged: false);
 
-        Assert.Equal(new[] { "117", "112" }, sorted.Select(order => order.OrderRef).ToArray());
+        Assert.Equal(new long[] { 121, 118, 120 }, sorted.Select(order => order.Id).ToArray());
     }
 
     [Fact]

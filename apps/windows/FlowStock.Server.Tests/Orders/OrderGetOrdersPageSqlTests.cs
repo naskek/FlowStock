@@ -16,12 +16,18 @@ public sealed class OrderGetOrdersPageSqlTests
     [Fact]
     public void GetOrdersPageSql_UsesSharedStatusSortAndCreatedAtTieBreakers()
     {
-        var sql = File.ReadAllText(GetPostgresDataStorePath());
+        var sql = File.ReadAllText(GetPostgresDataStorePath()).Replace("\r\n", "\n", StringComparison.Ordinal);
 
         Assert.Contains("OrderPageSortSql.BuildEffectiveStatusOrderBy(\"eo.effective_status\"", sql, StringComparison.Ordinal);
-        Assert.Contains("eo.created_at DESC", sql, StringComparison.Ordinal);
         Assert.Contains("OrderPageSortSql.BuildOrderRefDescendingOrderBy(\"eo.order_ref\"", sql, StringComparison.Ordinal);
-        Assert.Contains("paged_orders.created_at DESC", sql, StringComparison.Ordinal);
+        Assert.Contains(
+            "ORDER BY {effectiveOrderBy},\n{effectiveOrderRefOrderBy},\neo.created_at DESC,\neo.id DESC",
+            sql,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ORDER BY {pagedOrderBy},\n{pagedOrderRefOrderBy},\npaged_orders.created_at DESC,\npaged_orders.id DESC",
+            sql,
+            StringComparison.Ordinal);
         Assert.Contains("LIMIT @limit OFFSET @offset", sql, StringComparison.Ordinal);
     }
 

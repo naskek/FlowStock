@@ -47,9 +47,10 @@ END DESC NULLS LAST,
         return orders
             .Select((order, index) => new { order, index })
             .OrderBy(entry => GetStatusRank(entry.order.Status, includeCancelledMerged))
-            .ThenByDescending(entry => entry.order.CreatedAt)
             .ThenByDescending(entry => TryParseNumericOrderRef(entry.order.OrderRef))
             .ThenByDescending(entry => entry.order.OrderRef ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .ThenByDescending(entry => entry.order.CreatedAt)
+            .ThenByDescending(entry => entry.order.Id)
             .ThenBy(entry => entry.index)
             .Select(entry => entry.order)
             .ToArray();
