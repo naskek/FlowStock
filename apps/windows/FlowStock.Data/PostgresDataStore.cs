@@ -2274,36 +2274,22 @@ LIMIT 1;
                 }
             }
 
-            using (var detachLines = CreateCommand(connection, @"
-UPDATE production_pallet_lines pll
-SET order_line_id = NULL,
-    doc_line_id = NULL
-FROM production_pallets pp
+            using (var detachPlan = CreateCommand(connection, @"
+DELETE FROM production_pallet_lines pll
+USING production_pallets pp
 WHERE pp.id = pll.production_pallet_id
   AND pp.prd_doc_id = @doc_id
   AND pp.status IN (@planned_status, @cancelled_status);
-"))
-            {
-                detachLines.Parameters.AddWithValue("@doc_id", docId);
-                detachLines.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
-                detachLines.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
-                detachLines.ExecuteNonQuery();
-            }
 
-            using (var detachPallets = CreateCommand(connection, @"
-UPDATE production_pallets
-SET prd_doc_id = NULL,
-    doc_line_id = NULL,
-    order_id = NULL,
-    order_line_id = NULL
+DELETE FROM production_pallets
 WHERE prd_doc_id = @doc_id
   AND status IN (@planned_status, @cancelled_status);
 "))
             {
-                detachPallets.Parameters.AddWithValue("@doc_id", docId);
-                detachPallets.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
-                detachPallets.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
-                detachPallets.ExecuteNonQuery();
+                detachPlan.Parameters.AddWithValue("@doc_id", docId);
+                detachPlan.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+                detachPlan.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
+                detachPlan.ExecuteNonQuery();
             }
 
             return 0;

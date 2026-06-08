@@ -4029,38 +4029,7 @@ internal sealed class CloseDocumentHarness
 
         foreach (var pallet in targetPallets)
         {
-            _productionPallets[pallet.Id] = new ProductionPallet
-            {
-                Id = pallet.Id,
-                PrdDocId = 0,
-                DocLineId = 0,
-                OrderId = null,
-                OrderLineId = null,
-                ItemId = pallet.ItemId,
-                ItemName = pallet.ItemName,
-                HuCode = pallet.HuCode,
-                PlannedQty = pallet.PlannedQty,
-                ToLocationId = pallet.ToLocationId,
-                ToLocationCode = pallet.ToLocationCode,
-                Status = pallet.Status,
-                FilledAt = pallet.FilledAt,
-                FilledByDeviceId = pallet.FilledByDeviceId,
-                CreatedAt = pallet.CreatedAt,
-                Lines = pallet.Lines.Select(line => new ProductionPalletComponentLine
-                {
-                    Id = line.Id,
-                    ProductionPalletId = line.ProductionPalletId,
-                    DocLineId = 0,
-                    OrderLineId = null,
-                    ItemId = line.ItemId,
-                    ItemName = line.ItemName,
-                    Brand = line.Brand,
-                    Uom = line.Uom,
-                    PlannedQty = line.PlannedQty,
-                    FilledQty = line.FilledQty,
-                    CreatedAt = line.CreatedAt
-                }).ToArray()
-            };
+            _productionPallets.Remove(pallet.Id);
         }
     }
 

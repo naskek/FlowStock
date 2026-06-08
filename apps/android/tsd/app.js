@@ -3177,7 +3177,7 @@
   }
 
   function renderFillingPalletHuRow(pallet) {
-    var isFilled = String((pallet && pallet.status) || "").toUpperCase() === "FILLED";
+    var isFilled = isFillingPalletCompleted(pallet);
     var huCode = pallet && pallet.huCode ? pallet.huCode : "-";
     return (
       '<li class="filling-pallet-item filling-pallet-item--compact ' +
@@ -3189,6 +3189,13 @@
       "</div>" +
       "</li>"
     );
+  }
+
+  function isFillingPalletCompleted(pallet) {
+    var status = String(
+      (pallet && (pallet.effectiveStatus || pallet.effective_status || pallet.status)) || ""
+    ).toUpperCase();
+    return status === "FILLED";
   }
 
   function renderFillingPalletStatusList(pallets) {
@@ -13127,12 +13134,14 @@
     window.FlowStockTsdTestHooks.buildFillingScanSummaryLine = buildFillingScanSummaryLine;
     window.FlowStockTsdTestHooks.buildFillingScanHeaderLine = buildFillingScanHeaderLine;
     window.FlowStockTsdTestHooks.renderFillingScan = renderFillingScan;
+    window.FlowStockTsdTestHooks.buildFillingPreviewHtml = buildFillingPreviewHtml;
     window.FlowStockTsdTestHooks.sortFillingListItems = sortFillingListItems;
     window.FlowStockTsdTestHooks.renderFillingList = renderFillingList;
     window.FlowStockTsdTestHooks.getFillingPalletItemLabel = getFillingPalletItemLabel;
     window.FlowStockTsdTestHooks.getFillingPalletGroupLabel = getFillingPalletGroupLabel;
     window.FlowStockTsdTestHooks.buildFillingPalletGroups = buildFillingPalletGroups;
     window.FlowStockTsdTestHooks.renderFillingPalletStatusList = renderFillingPalletStatusList;
+    window.FlowStockTsdTestHooks.isFillingPalletCompleted = isFillingPalletCompleted;
     window.FlowStockTsdTestHooks.renderHome = renderHome;
     window.FlowStockTsdTestHooks.renderSettings = renderSettings;
     window.FlowStockTsdTestHooks.applyTsdTheme = applyTsdTheme;

@@ -43,6 +43,10 @@ public sealed class ProductionPallet
             : IsMixedPallet && HasComponentProgress && !AreAllComponentsFilled
                 ? ProductionPalletStatus.PartiallyFilled
                 : Status;
+    public bool CanFill =>
+        !AreAllComponentsFilled
+        && (string.Equals(Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase));
 }
 
 public sealed class ProductionPalletComponentLine
@@ -270,6 +274,8 @@ public sealed class ProductionPalletScanResult
     public int PalletIndex { get; init; }
     public int PalletCount { get; init; }
     public string PalletStatus { get; init; } = ProductionPalletStatus.Planned;
+    public string EffectiveStatus { get; init; } = ProductionPalletStatus.Planned;
+    public bool CanFill { get; init; }
     public ProductionPalletDocument? Document { get; init; }
 
     public static ProductionPalletScanResult Failure(string error)

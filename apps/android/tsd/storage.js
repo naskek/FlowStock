@@ -1214,6 +1214,7 @@
       plannedQty: Number(row.planned_qty) || 0,
       isMixedPallet: row.is_mixed_pallet === true,
       effectiveStatus: String(row.effective_status || row.status || ""),
+      canFill: row.can_fill !== false,
       filledComponentCount: Number(row.filled_component_count) || 0,
       totalComponentCount: Number(row.total_component_count) || 0,
       lines: Array.isArray(row.lines) ? row.lines.map(function (line) {
@@ -1285,6 +1286,7 @@
       palletCount: Number(payload.pallet_count) || 0,
       palletStatus: String(payload.pallet_status || ""),
       effectiveStatus: String(payload.effective_status || payload.pallet_status || ""),
+      canFill: payload.can_fill !== false && payload.already_filled !== true,
       filledComponentCount: Number(payload.filled_component_count) || 0,
       totalComponentCount: Number(payload.total_component_count) || 0,
       document: payload.document ? normalizeProductionPalletDocument(payload.document) : null,

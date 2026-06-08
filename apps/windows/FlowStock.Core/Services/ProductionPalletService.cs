@@ -337,7 +337,7 @@ public sealed class ProductionPalletService
                 .Where(pallet => requestedIds.Contains(pallet.Id))
                 .Where(pallet => pallet.OrderId == order.Id)
                 .Where(pallet => docsById.TryGetValue(pallet.PrdDocId, out var doc) && doc.Status != DocStatus.Closed)
-                .Where(IsPendingFillPallet)
+                .Where(IsRemovableFuturePlanPallet)
                 .ToArray();
 
             if (selected.Length == 0)
@@ -400,7 +400,7 @@ public sealed class ProductionPalletService
                 docsById.TryGetValue(pallet.PrdDocId, out var doc);
                 var isClosedDoc = doc?.Status == DocStatus.Closed;
                 var isFilled = string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase);
-                var isSelectable = !isClosedDoc && IsPendingFillPallet(pallet);
+                var isSelectable = !isClosedDoc && IsRemovableFuturePlanPallet(pallet);
                 var disabledReason = isFilled
                     ? "Нельзя удалить: паллета уже наполнена/выпущена"
                     : isClosedDoc
@@ -990,6 +990,8 @@ public sealed class ProductionPalletService
             PalletIndex = index >= 0 ? index + 1 : 0,
             PalletCount = activePallets.Count,
             PalletStatus = pallet.Status,
+            EffectiveStatus = pallet.EffectiveStatus,
+            CanFill = pallet.CanFill,
             Document = BuildFillingDocument(doc.Id, pallets, pallet.OrderId)
         };
     }
@@ -2313,9 +2315,12 @@ public sealed class ProductionPalletService
 
     private static bool IsPendingFillPallet(ProductionPallet pallet)
     {
-        return !pallet.HasComponentProgress
-               && (string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
-                   || string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase));
+        return pallet.CanFill;
+    }
+
+    private static bool IsRemovableFuturePlanPallet(ProductionPallet pallet)
+    {
+        return pallet.CanFill && !pallet.HasComponentProgress;
     }
 
     private static bool HasOrderLineOwnership(ProductionPallet pallet)

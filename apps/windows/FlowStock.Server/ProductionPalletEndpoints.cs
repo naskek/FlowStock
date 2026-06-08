@@ -620,12 +620,8 @@ public static class ProductionPalletEndpoints
             pallet_index = result.PalletIndex,
             pallet_count = result.PalletCount,
             pallet_status = result.PalletStatus,
-            effective_status = result.PalletStatus == ProductionPalletStatus.Filled
-                ? ProductionPalletStatus.Filled
-                : result.Lines.Any(line => line.FilledQty > StockQuantityRules.QtyTolerance)
-                  && result.Lines.Any(line => !line.IsCompleted)
-                    ? ProductionPalletStatus.PartiallyFilled
-                    : result.PalletStatus,
+            effective_status = result.EffectiveStatus,
+            can_fill = result.CanFill,
             filled_component_count = result.Lines.Count(line => line.IsCompleted),
             total_component_count = result.Lines.Count,
             document = result.Document == null ? null : MapDocument(result.Document)
@@ -685,6 +681,7 @@ public static class ProductionPalletEndpoints
             to_location_code = pallet.ToLocationCode,
             status = pallet.Status,
             effective_status = pallet.EffectiveStatus,
+            can_fill = pallet.CanFill,
             is_mixed_pallet = pallet.IsMixedPallet,
             filled_component_count = pallet.FilledComponentCount,
             total_component_count = pallet.TotalComponentCount,

@@ -492,6 +492,32 @@ assert.match(
   /<li class="filling-pallet-item filling-pallet-item--compact (?:is-filled|is-pending)">/,
   "filling pallet rows should remain compact display-only list items"
 );
+const partiallyFilledPalletHtml = hooks.renderFillingPalletStatusList([
+  {
+    id: 6,
+    huCode: "HU-0000870",
+    itemName: "Микс-паллета",
+    status: "PLANNED",
+    effectiveStatus: "PARTIALLY_FILLED",
+    filledComponentCount: 1,
+    totalComponentCount: 3,
+    canFill: true,
+  },
+]);
+assert.strictEqual(
+  hooks.isFillingPalletCompleted({
+    status: "PLANNED",
+    effectiveStatus: "PARTIALLY_FILLED",
+    canFill: true,
+  }),
+  false,
+  "partially filled mixed HU should remain available instead of being treated as filled"
+);
+assert.match(
+  partiallyFilledPalletHtml,
+  /is-pending[\s\S]*HU-0000870|HU-0000870[\s\S]*is-pending/,
+  "partially filled mixed HU should render as pending and available"
+);
 const adjikaTitleIndex = fillingPalletListHtml.indexOf("Аджика Печагин, 200 гр");
 const mustardTitleIndex = fillingPalletListHtml.indexOf("Горчица Печагин, 200 гр");
 const hu742Index = fillingPalletListHtml.indexOf("HU-0000742");
@@ -571,7 +597,55 @@ assert(
   appJs.includes("updateMixedConfirmState") && appJs.includes("result.message"),
   "mixed component fill should require a selection and show partial-save message"
 );
-assert(appVersionJs.includes('var version = "33"'), "TSD shell version should be bumped for mixed component filling");
+const partialMixedPreviewHtml = hooks.buildFillingPreviewHtml(
+  {
+    isMixedPallet: true,
+    orderRef: "103",
+    huCode: "HU-0000870",
+    palletIndex: 1,
+    palletCount: 1,
+    effectiveStatus: "PARTIALLY_FILLED",
+    canFill: true,
+    filledComponentCount: 1,
+    totalComponentCount: 3,
+    lines: [
+      { componentLineId: 1, itemName: "Хрен 200 гр", plannedQty: 200, uom: "шт", isCompleted: true },
+      { componentLineId: 2, itemName: "Аджика 200 гр", plannedQty: 200, uom: "шт", isCompleted: false },
+      { componentLineId: 3, itemName: "Горчица 200 гр", plannedQty: 200, uom: "шт", isCompleted: false },
+    ],
+  },
+  { orderRef: "103" }
+);
+assert.match(
+  partialMixedPreviewHtml,
+  /value="1" checked disabled/,
+  "completed mixed component should be checked and disabled"
+);
+assert.match(
+  partialMixedPreviewHtml,
+  /value="2" \/>/,
+  "remaining mixed component should stay unchecked and enabled"
+);
+assert.match(partialMixedPreviewHtml, /Хрен 200 гр — 200 шт · наполнено/);
+assert.strictEqual(
+  hooks.shouldRenderProductionFillCompletion(
+    { ok: true, effective_status: "PARTIALLY_FILLED" },
+    { document: { summary: { remainingPalletCount: 1 } } },
+    null
+  ),
+  false,
+  "order should not be marked done while mixed HU has incomplete components"
+);
+assert.strictEqual(
+  hooks.shouldRenderProductionFillCompletion(
+    { ok: true, effective_status: "FILLED" },
+    { document: { summary: { remainingPalletCount: 0 } } },
+    null
+  ),
+  true,
+  "order may be marked done after final component when no pallets remain"
+);
+assert(appVersionJs.includes('var version = "34"'), "TSD shell version should be bumped for partial mixed filling fix");
 assert(
   appJs.includes("Не удалось загрузить заказы для наполнения") && appJs.includes("console.error(error)"),
   "filling API failures should be visible and logged"

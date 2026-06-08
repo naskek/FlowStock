@@ -1,3 +1,5 @@
+using System.Net.Http.Json;
+using System.Text.Json;
 using FlowStock.Core.Models;
 using FlowStock.Core.Services;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
@@ -38,6 +40,22 @@ public sealed class ProductionPalletAutoCloseTests
 
         Assert.True(second.Success);
         Assert.True(second.AlreadyFilled);
+        Assert.Single(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void FillPallet_SingleItem_RemainsTerminalAndDoesNotReappearInTsdQueue()
+    {
+        var harness = CreateHarnessWithOrderOnly(orderQty: 600, maxQtyPerHu: 600);
+        var service = CreatePalletService(harness);
+        var plan = service.PlanOrder(10);
+        var pallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId));
+
+        var result = service.Fill(pallet.HuCode, "TSD-01", orderId: 10, prdDocId: plan.PrdDocId);
+
+        Assert.True(result.Success, result.Error);
+        Assert.Equal(ProductionPalletStatus.Filled, harness.Store.GetProductionPalletByHu(pallet.HuCode)?.Status);
+        Assert.DoesNotContain(service.GetFillingOrders(), order => order.OrderId == 10);
         Assert.Single(harness.LedgerEntries);
     }
 
@@ -154,6 +172,75 @@ public sealed class ProductionPalletAutoCloseTests
     }
 
     [Fact]
+    public async Task FillMixedComponents_PartialProgress_RemainsInTsdQueueContextAndScan()
+    {
+        var harness = CreateCustomerThreeComponentMixedPalletHarness();
+        var service = CreatePalletService(harness);
+        var plan = service.PlanOrder(103);
+        var mixed = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId));
+        Assert.Equal(3, mixed.Lines.Count);
+        var completedComponent = mixed.Lines.OrderBy(line => line.Id).First();
+        await using var host = await ProductionPalletTsdHttpHost.StartAsync(harness, service);
+
+        var fillResponse = await host.Client.PostAsJsonAsync("/api/tsd/production/fill-mixed-pallet-components", new
+        {
+            order_id = 103,
+            prd_doc_id = plan.PrdDocId,
+            hu_code = mixed.HuCode,
+            device_id = "TSD-01",
+            component_line_ids = new[] { completedComponent.Id }
+        });
+        fillResponse.EnsureSuccessStatusCode();
+        using var fillDocument = JsonDocument.Parse(await fillResponse.Content.ReadAsStringAsync());
+        var fillRoot = fillDocument.RootElement;
+
+        Assert.Equal(ProductionPalletStatus.PartiallyFilled, fillRoot.GetProperty("effective_status").GetString());
+        Assert.Equal(1, fillRoot.GetProperty("filled_component_count").GetInt32());
+        Assert.Equal(3, fillRoot.GetProperty("total_component_count").GetInt32());
+        Assert.False(fillRoot.GetProperty("ledger_written").GetBoolean());
+        Assert.Empty(harness.LedgerEntries);
+        Assert.NotEqual(ProductionPalletStatus.Filled, harness.Store.GetProductionPalletByHu(mixed.HuCode)?.Status);
+
+        var fillingOrder = Assert.Single(service.GetFillingOrders(), order => order.OrderId == 103);
+        Assert.Equal(1, fillingOrder.Summary.RemainingPalletCount);
+        var contextPallet = Assert.Single(service.GetFillingContext(103).Document.Pallets);
+        Assert.Equal(ProductionPalletStatus.PartiallyFilled, contextPallet.EffectiveStatus);
+        Assert.True(contextPallet.CanFill);
+        var cancelOption = Assert.Single(service.GetCancelPlanOptions(103).Rows);
+        Assert.False(cancelOption.IsSelectable);
+
+        var scan = service.Scan(103, plan.PrdDocId, mixed.HuCode);
+        Assert.True(scan.Success, scan.Error);
+        Assert.Equal(ProductionPalletStatus.PartiallyFilled, scan.EffectiveStatus);
+        Assert.True(scan.CanFill);
+        Assert.Single(scan.Lines, line => line.IsCompleted);
+        Assert.Equal(2, scan.Lines.Count(line => !line.IsCompleted));
+
+        var listJson = await host.Client.GetStringAsync("/api/tsd/production/filling-orders");
+        Assert.Contains("\"order_id\":103", listJson, StringComparison.Ordinal);
+
+        var contextJson = await host.Client.GetStringAsync("/api/tsd/production/orders/103/filling-context");
+        using var contextDocument = JsonDocument.Parse(contextJson);
+        var contextHttpPallet = Assert.Single(
+            contextDocument.RootElement.GetProperty("document").GetProperty("pallets").EnumerateArray().ToArray());
+        Assert.Equal(ProductionPalletStatus.PartiallyFilled, contextHttpPallet.GetProperty("effective_status").GetString());
+        Assert.True(contextHttpPallet.GetProperty("can_fill").GetBoolean());
+
+        var scanResponse = await host.Client.PostAsJsonAsync("/api/tsd/production/scan-pallet", new
+        {
+            order_id = 103,
+            prd_doc_id = plan.PrdDocId,
+            hu_code = mixed.HuCode
+        });
+        scanResponse.EnsureSuccessStatusCode();
+        using var scanDocument = JsonDocument.Parse(await scanResponse.Content.ReadAsStringAsync());
+        Assert.Equal(ProductionPalletStatus.PartiallyFilled, scanDocument.RootElement.GetProperty("effective_status").GetString());
+        Assert.True(scanDocument.RootElement.GetProperty("can_fill").GetBoolean());
+        Assert.Single(scanDocument.RootElement.GetProperty("lines").EnumerateArray(), line => line.GetProperty("is_completed").GetBoolean());
+        Assert.Equal(2, scanDocument.RootElement.GetProperty("lines").EnumerateArray().Count(line => !line.GetProperty("is_completed").GetBoolean()));
+    }
+
+    [Fact]
     public void FillMixedComponents_WhenAutoCloseDisabled_DoesNotSaveProgress()
     {
         var harness = CreateCustomerMixedPalletHarness();
@@ -198,6 +285,35 @@ public sealed class ProductionPalletAutoCloseTests
         Assert.Equal(2, harness.LedgerEntries.Count(entry =>
             string.Equals(entry.HuCode, mixed.HuCode, StringComparison.OrdinalIgnoreCase)));
         Assert.Equal(ProductionPalletStatus.Filled, harness.Store.GetProductionPalletByHu(mixed.HuCode)?.Status);
+    }
+
+    [Fact]
+    public void FillMixedComponents_FinalComponent_RemovesCompletedMixedOnlyOrderFromTsdQueue()
+    {
+        var harness = CreateCustomerThreeComponentMixedPalletHarness();
+        var service = CreatePalletService(harness);
+        var plan = service.PlanOrder(103);
+        var mixed = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId));
+        var components = mixed.Lines.OrderBy(line => line.Id).ToArray();
+        Assert.True(service.FillMixedComponents(mixed.HuCode, [components[0].Id], "TSD-01", 103, plan.PrdDocId).Success);
+
+        var result = service.FillMixedComponents(
+            mixed.HuCode,
+            components.Skip(1).Select(line => line.Id).ToArray(),
+            "TSD-01",
+            103,
+            plan.PrdDocId);
+
+        Assert.True(result.Success, result.Error);
+        Assert.True(result.PrdAutoClosed);
+        Assert.True(result.LedgerWritten);
+        Assert.Equal(ProductionPalletStatus.Filled, result.EffectiveStatus);
+        Assert.Equal(3, result.FilledComponentCount);
+        Assert.Equal(3, result.TotalComponentCount);
+        Assert.Equal(3, harness.LedgerEntries.Count(entry =>
+            string.Equals(entry.HuCode, mixed.HuCode, StringComparison.OrdinalIgnoreCase)));
+        Assert.DoesNotContain(service.GetFillingOrders(), order => order.OrderId == 103);
+        Assert.Throws<InvalidOperationException>(() => service.GetFillingContext(103));
     }
 
     [Fact]
@@ -526,6 +642,60 @@ public sealed class ProductionPalletAutoCloseTests
             QtyOrdered = 900,
             ProductionPurpose = ProductionLinePurpose.CustomerOrder,
             ProductionPalletGroup = "MIX-1"
+        });
+        return harness;
+    }
+
+    private static CloseDocumentHarness CreateCustomerThreeComponentMixedPalletHarness()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedLocation(new Location { Id = 1, Code = "MAIN", Name = "Основной склад" });
+        harness.SeedPartner(new Partner
+        {
+            Id = 502,
+            Code = "CUST-103",
+            Name = "Клиент 103",
+            CreatedAt = new DateTime(2026, 6, 8, 8, 0, 0)
+        });
+        harness.SeedItem(new Item { Id = 51, Name = "Аджика 200 гр", BaseUom = "шт" });
+        harness.SeedItem(new Item { Id = 52, Name = "Горчица 200 гр", BaseUom = "шт" });
+        harness.SeedItem(new Item { Id = 53, Name = "Хрен 200 гр", BaseUom = "шт" });
+        harness.SeedOrder(new Order
+        {
+            Id = 103,
+            OrderRef = "103",
+            Type = OrderType.Customer,
+            PartnerId = 502,
+            PartnerName = "Клиент 103",
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 6, 8, 8, 0, 0)
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 301,
+            OrderId = 103,
+            ItemId = 51,
+            QtyOrdered = 200,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder,
+            ProductionPalletGroup = "MIX-3"
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 302,
+            OrderId = 103,
+            ItemId = 52,
+            QtyOrdered = 200,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder,
+            ProductionPalletGroup = "MIX-3"
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 303,
+            OrderId = 103,
+            ItemId = 53,
+            QtyOrdered = 200,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder,
+            ProductionPalletGroup = "MIX-3"
         });
         return harness;
     }
