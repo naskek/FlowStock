@@ -451,7 +451,7 @@ public partial class MainWindow : Window
 
     private void AutoRefreshTimer_Tick(object? sender, EventArgs e)
     {
-        RefreshActiveTab();
+        // Disabled: synchronous tab refresh makes WPF tab switching visibly slow.
     }
 
     private void MainTabs_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
@@ -466,7 +466,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        RefreshActiveTab();
+        // Disabled: synchronous tab refresh makes WPF tab switching visibly slow.
     }
 
     private void RefreshActiveTab()
@@ -4000,4 +4000,3 @@ public partial class MainWindow : Window
 
     private sealed record ImportItemsSummary(int Created, int Duplicates, int EmptyRows, int InvalidRows, int Errors);
 }
-
