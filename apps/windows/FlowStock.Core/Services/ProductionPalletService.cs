@@ -635,27 +635,23 @@ public sealed class ProductionPalletService
         {
             var rows = new List<ProductionPalletPrintRow>();
             rows.AddRange(GetCustomerBoundHuPrintRows(order));
-            if (HasPrintableProductionPalletPlan(_data, order))
-            {
-                rows.AddRange(GetProductionPalletPrintRows(order));
-            }
+            rows.AddRange(GetProductionPalletPrintRows(order));
 
             return rows;
         }
 
-        if (HasPrintableProductionPalletPlan(_data, order))
+        var productionRows = GetProductionPalletPrintRows(order);
+        if (productionRows.Count == 0)
         {
-            return GetProductionPalletPrintRows(order);
+            throw new InvalidOperationException("Сначала сформируйте план паллет");
         }
 
-        return GetProductionPalletPrintRows(order);
+        return productionRows;
     }
 
     private IReadOnlyList<ProductionPalletPrintRow> GetCustomerBoundHuPrintRows(Order order)
     {
         var entries = new List<CustomerHuPrintEntry>();
-        var boundHu = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var locationsById = _data.GetLocations().ToDictionary(location => location.Id, location => location.Code);
 
         foreach (var planLine in _data.GetOrderReceiptPlanLines(order.Id)
                      .Where(line => line.QtyPlanned > QtyTolerance && !string.IsNullOrWhiteSpace(NormalizeHu(line.ToHu)))
@@ -663,7 +659,6 @@ public sealed class ProductionPalletService
                      .ThenBy(line => line.Id))
         {
             var huCode = NormalizeHu(planLine.ToHu)!;
-            boundHu.Add(huCode);
             entries.Add(new CustomerHuPrintEntry(
                 planLine.Id,
                 planLine.ItemId,
@@ -671,37 +666,6 @@ public sealed class ProductionPalletService
                 huCode,
                 planLine.QtyPlanned,
                 planLine.ToLocationCode));
-        }
-
-        foreach (var doc in _data.GetDocsByOrder(order.Id)
-                     .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status == DocStatus.Closed)
-                     .OrderByDescending(doc => doc.Id))
-        {
-            foreach (var line in _data.GetDocLines(doc.Id).OrderBy(line => line.Id))
-            {
-                if (line.Qty <= QtyTolerance)
-                {
-                    continue;
-                }
-
-                var huCode = NormalizeHu(line.ToHu);
-                if (string.IsNullOrWhiteSpace(huCode) || !boundHu.Add(huCode))
-                {
-                    continue;
-                }
-
-                var locationCode = line.ToLocationId.HasValue
-                                     && locationsById.TryGetValue(line.ToLocationId.Value, out var code)
-                    ? code
-                    : string.Empty;
-                entries.Add(new CustomerHuPrintEntry(
-                    -line.Id,
-                    line.ItemId,
-                    string.Empty,
-                    huCode,
-                    line.Qty,
-                    locationCode));
-            }
         }
 
         if (entries.Count == 0)
@@ -758,19 +722,15 @@ public sealed class ProductionPalletService
 
     private IReadOnlyList<ProductionPalletPrintRow> GetProductionPalletPrintRows(Order order)
     {
-        var doc = FindPrintableProductionReceipt(_data, order);
-        if (doc == null)
-        {
-            throw new InvalidOperationException("Сначала сформируйте план паллет");
-        }
-
-        var pallets = _data.GetProductionPalletsByDoc(doc.Id)
-            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
-            .OrderBy(pallet => pallet.Id)
+        var docsById = _data.GetDocsByOrder(order.Id)
+            .Where(doc => doc.Type == DocType.ProductionReceipt)
+            .ToDictionary(doc => doc.Id);
+        var pallets = BuildOrderOwnedPalletViews(_data, order.Id, GetProductionPalletsByOrder(_data, order.Id))
+            .Where(pallet => IsPrintableProductionPalletStatus(pallet.Status) && docsById.ContainsKey(pallet.PrdDocId))
             .ToList();
         if (pallets.Count == 0)
         {
-            throw new InvalidOperationException("Сначала сформируйте план паллет");
+            return Array.Empty<ProductionPalletPrintRow>();
         }
 
         var itemsById = pallets
@@ -784,6 +744,7 @@ public sealed class ProductionPalletService
         for (var index = 0; index < pallets.Count; index++)
         {
             var pallet = pallets[index];
+            var doc = docsById[pallet.PrdDocId];
             if (string.IsNullOrWhiteSpace(pallet.HuCode))
             {
                 throw new InvalidOperationException("Для паллеты не задан HU.");
@@ -1505,43 +1466,15 @@ public sealed class ProductionPalletService
 
     private static bool HasPrintableProductionPalletPlan(IDataStore store, Order order)
     {
-        var doc = FindPrintableProductionReceipt(store, order);
-        if (doc == null)
-        {
-            return false;
-        }
-
-        return store.GetProductionPalletsByDoc(doc.Id)
-            .Any(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase));
+        return BuildOrderOwnedPalletViews(store, order.Id, GetProductionPalletsByOrder(store, order.Id))
+            .Any(pallet => IsPrintableProductionPalletStatus(pallet.Status));
     }
 
-    private static Doc? FindPrintableProductionReceipt(IDataStore store, Order order)
+    private static bool IsPrintableProductionPalletStatus(string status)
     {
-        var openDoc = FindPreparedOpenProductionReceipt(store, order.Id, requireRemaining: false);
-        if (openDoc != null)
-        {
-            return openDoc;
-        }
-
-        if (order.Status is not (OrderStatus.Shipped or OrderStatus.Accepted))
-        {
-            return null;
-        }
-
-        foreach (var doc in store.GetDocsByOrder(order.Id)
-                     .Where(doc => doc.Type == DocType.ProductionReceipt)
-                     .OrderByDescending(doc => doc.Id))
-        {
-            var pallets = store.GetProductionPalletsByDoc(doc.Id)
-                .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-            if (pallets.Count > 0)
-            {
-                return doc;
-            }
-        }
-
-        return null;
+        return string.Equals(status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase);
     }
 
     private static Doc? FindReusableEmptyProductionReceipt(IDataStore store, long orderId)

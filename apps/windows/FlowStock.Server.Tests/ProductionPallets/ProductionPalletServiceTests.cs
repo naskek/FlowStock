@@ -1568,6 +1568,78 @@ public sealed class ProductionPalletServiceTests
     }
 
     [Fact]
+    public void GetPrintRows_OpenDraftAndClosedPrd_ReturnsPrintedAndFilledPallets()
+    {
+        var harness = CreateHarnessWithSixPallets(filledCount: 0);
+        harness.SeedDoc(new Doc
+        {
+            Id = 20,
+            DocRef = "PRD-CLOSED",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Closed,
+            OrderId = 10,
+            CreatedAt = new DateTime(2026, 5, 13, 9, 0, 0),
+            ClosedAt = new DateTime(2026, 5, 13, 12, 0, 0)
+        });
+        harness.SeedProductionPallet(BuildPallet(1, "HU-0000703", 600, ProductionPalletStatus.Filled));
+        harness.SeedProductionPallet(BuildPallet(2, "HU-0000704", 600, ProductionPalletStatus.Filled));
+        foreach (var pallet in harness.Store.GetProductionPalletsByDoc(20).Where(pallet => pallet.Id > 2))
+        {
+            harness.SeedProductionPallet(BuildPallet(pallet.Id, pallet.HuCode, pallet.PlannedQty, ProductionPalletStatus.Cancelled));
+        }
+
+        harness.SeedDoc(new Doc
+        {
+            Id = 21,
+            DocRef = "PRD-DRAFT",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 10,
+            CreatedAt = new DateTime(2026, 5, 14, 9, 0, 0)
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 101,
+            PrdDocId = 21,
+            DocLineId = 202,
+            OrderId = 10,
+            OrderLineId = 101,
+            ItemId = 100,
+            ItemName = "Товар",
+            HuCode = "HU-0000816",
+            PlannedQty = 600,
+            ToLocationId = 1,
+            Status = ProductionPalletStatus.Printed,
+            CreatedAt = new DateTime(2026, 5, 14, 9, 0, 0)
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 102,
+            PrdDocId = 21,
+            DocLineId = 203,
+            OrderId = 10,
+            OrderLineId = 101,
+            ItemId = 100,
+            ItemName = "Товар",
+            HuCode = "HU-0000817",
+            PlannedQty = 600,
+            ToLocationId = 1,
+            Status = ProductionPalletStatus.Printed,
+            CreatedAt = new DateTime(2026, 5, 14, 9, 0, 0)
+        });
+        var service = new ProductionPalletService(harness.Store);
+
+        var rows = service.GetPrintRows(10);
+
+        Assert.Contains(rows, row => row.HuCode == "HU-0000703" && row.Status == ProductionPalletStatus.Filled && row.PrdRef == "PRD-CLOSED");
+        Assert.Contains(rows, row => row.HuCode == "HU-0000704" && row.Status == ProductionPalletStatus.Filled && row.PrdRef == "PRD-CLOSED");
+        Assert.Contains(rows, row => row.HuCode == "HU-0000816" && row.Status == ProductionPalletStatus.Printed && row.PrdRef == "PRD-DRAFT");
+        Assert.Contains(rows, row => row.HuCode == "HU-0000817" && row.Status == ProductionPalletStatus.Printed && row.PrdRef == "PRD-DRAFT");
+        Assert.Equal(4, rows.Count);
+        Assert.Empty(PalletLabelPrintSelectionService.ResolveDefaultSelectedPalletIds(rows));
+    }
+
+    [Fact]
     public void GetPrintRows_WithoutPreparedPlan_ReturnsClearError()
     {
         var harness = CreateHarnessWithOrderOnly(orderQty: 1200, maxQtyPerHu: 600);
@@ -1641,6 +1713,37 @@ public sealed class ProductionPalletServiceTests
         var service = new ProductionPalletService(harness.Store);
 
         Assert.Empty(service.GetPrintRows(78));
+    }
+
+    [Fact]
+    public void GetPrintRows_CustomerOrder_IgnoresHistoricalClosedPrdLineWithoutProductionPallet()
+    {
+        var harness = CreateCustomerHarnessWithBoundHu();
+        harness.SeedDoc(new Doc
+        {
+            Id = 200,
+            DocRef = "PRD-HISTORICAL",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Closed,
+            OrderId = 78,
+            CreatedAt = new DateTime(2026, 5, 20, 9, 0, 0),
+            ClosedAt = new DateTime(2026, 5, 20, 10, 0, 0)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 201,
+            DocId = 200,
+            OrderLineId = 101,
+            ItemId = 100,
+            Qty = 600,
+            ToLocationId = 1,
+            ToHu = "HU-HISTORICAL"
+        });
+        var service = new ProductionPalletService(harness.Store);
+
+        var rows = service.GetPrintRows(78);
+
+        Assert.Empty(rows);
     }
 
     [Fact]
