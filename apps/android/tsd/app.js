@@ -3366,16 +3366,24 @@
     var compositionHtml = "";
     if (isMixed && preview && Array.isArray(preview.lines) && preview.lines.length) {
       compositionHtml =
-        '<div class="filling-preview-composition-title">Состав:</div>' +
-        '<ol class="filling-preview-composition">' +
+        '<div class="filling-preview-composition-title">Компоненты · ' +
+        escapeHtml(String(preview.filledComponentCount || 0)) + " / " +
+        escapeHtml(String(preview.totalComponentCount || preview.lines.length)) + "</div>" +
+        '<div class="filling-preview-composition">' +
         preview.lines.map(function (line) {
-          return '<li>' +
+          var completed = line.isCompleted === true;
+          return '<label class="filling-component-line' + (completed ? " is-completed" : "") + '">' +
+            '<input type="checkbox" class="filling-component-checkbox" value="' +
+            escapeHtml(String(line.componentLineId || 0)) + '"' +
+            (completed ? " checked disabled" : "") + " />" +
+            "<span>" +
             escapeHtml(line.itemName || "-") +
             " — " +
-            escapeHtml(formatQtyWithUnit(line.qty || 0, line.uom || "шт")) +
-            "</li>";
+            escapeHtml(formatQtyWithUnit(line.plannedQty || line.qty || 0, line.uom || "шт")) +
+            (completed ? " · наполнено" : "") +
+            "</span></label>";
         }).join("") +
-        "</ol>";
+        "</div>";
     }
 
     return (
@@ -3428,6 +3436,13 @@
     var errorEl = overlay.querySelector("#fillingPreviewError");
     var busy = false;
 
+    function updateMixedConfirmState() {
+      if (!confirmBtn || preview.isMixedPallet !== true || busy) {
+        return;
+      }
+      confirmBtn.disabled = !overlay.querySelector(".filling-component-checkbox:not(:disabled):checked");
+    }
+
     function closeOverlay() {
       unlockOverlayScroll();
       if (overlay.parentNode) {
@@ -3446,6 +3461,13 @@
       }
     }
 
+    if (preview.isMixedPallet === true) {
+      overlay.querySelectorAll(".filling-component-checkbox:not(:disabled)").forEach(function (checkbox) {
+        checkbox.addEventListener("change", updateMixedConfirmState);
+      });
+      updateMixedConfirmState();
+    }
+
     if (confirmBtn) {
       confirmBtn.addEventListener("click", function () {
         if (busy) {
@@ -3461,6 +3483,25 @@
 
         getFillingDeviceId()
           .then(function (deviceId) {
+            if (preview.isMixedPallet === true) {
+              var selectedComponentIds = Array.from(
+                overlay.querySelectorAll(".filling-component-checkbox:not(:disabled):checked")
+              ).map(function (checkbox) {
+                return Number(checkbox.value) || 0;
+              }).filter(function (id) {
+                return id > 0;
+              });
+              if (!selectedComponentIds.length) {
+                throw new Error("COMPONENT_LINE_IDS_REQUIRED");
+              }
+              return TsdStorage.apiFillMixedProductionPalletComponents({
+                huCode: preview.huCode,
+                orderId: preview.orderId,
+                prdDocId: preview.prdDocId,
+                deviceId: deviceId,
+                componentLineIds: selectedComponentIds,
+              });
+            }
             return TsdStorage.apiFillProductionPallet({
               huCode: preview.huCode,
               orderId: preview.orderId,
@@ -3730,6 +3771,14 @@
         Number(pickOutboundViewValue(normalized, raw, "expectedHuCount", "expected_hu_count")) || 0,
       pickedHuCount:
         Number(pickOutboundViewValue(normalized, raw, "pickedHuCount", "picked_hu_count")) || 0,
+      orderedQty:
+        Number(pickOutboundViewValue(normalized, raw, "orderedQty", "ordered_qty")) || 0,
+      shippedQty:
+        Number(pickOutboundViewValue(normalized, raw, "shippedQty", "shipped_qty")) || 0,
+      remainingQty:
+        Number(pickOutboundViewValue(normalized, raw, "remainingQty", "remaining_qty")) || 0,
+      scannedQty:
+        Number(pickOutboundViewValue(normalized, raw, "scannedQty", "scanned_qty")) || 0,
       isComplete:
         (normalized && normalized.isComplete === true) || (raw && raw.is_complete === true),
       draftOutboundDocId:
@@ -3918,6 +3967,12 @@
       escapeHtml(buildOutboundPickingHeaderLine(order)) +
       "</div>" +
       messageHtml +
+      '    <div class="outbound-picking-progress">' +
+      '      <div>Заказано <strong>' + escapeHtml(formatOrderQtyValue(order.orderedQty)) + "</strong></div>" +
+      '      <div>Уже отгружено <strong>' + escapeHtml(formatOrderQtyValue(order.shippedQty)) + "</strong></div>" +
+      '      <div>Осталось <strong>' + escapeHtml(formatOrderQtyValue(order.remainingQty)) + "</strong></div>" +
+      '      <div>Отсканировано сейчас <strong>' + escapeHtml(formatOrderQtyValue(order.scannedQty)) + "</strong></div>" +
+      "    </div>" +
       (complete
         ? '    <div class="filling-message filling-message-success">Все паллеты подобраны. Отгрузка проведена.</div>'
         : "") +
@@ -3925,6 +3980,9 @@
       '      <input class="form-input filling-scan-input tsd-scan-input-hidden" id="outboundPickingScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" placeholder="HU-000001" />' +
       "    </div>" +
       renderOutboundPickingHuList(order.hus) +
+      (order.scannedQty > 0
+        ? '    <div class="actions-bar"><button class="btn btn-primary" id="outboundPickingCompleteBtn" type="button">Завершить отгрузку</button></div>'
+        : "") +
       "  </div>" +
       "</section>";
 
@@ -6908,6 +6966,7 @@
     prdRef = prdRef ? String(prdRef).trim() : "";
     var prdClosed = !!(result && (result.prdAutoClosed || result.prd_auto_closed));
     var orderCompleted = Number(remainingPalletCount) <= 0;
+    var serverMessage = result && result.message ? String(result.message).trim() : "";
     var parts = [];
 
     if (prdClosed && prdRef) {
@@ -6917,6 +6976,10 @@
         parts.push("Заказ выполнен: все паллеты наполнены.");
       }
       return parts.join(" ");
+    }
+
+    if (serverMessage) {
+      return serverMessage;
     }
 
     if (orderCompleted) {
@@ -7049,6 +7112,15 @@
     if (message === "Документ выпуска уже закрыт.") {
       return "Документ выпуска уже закрыт.";
     }
+    if (message === "MIXED_COMPONENT_SELECTION_REQUIRED" || message === "COMPONENT_LINE_IDS_REQUIRED") {
+      return "Выберите хотя бы один незаполненный компонент микс-паллеты.";
+    }
+    if (message === "PRODUCTION_AUTO_CLOSE_REQUIRED") {
+      return "Частичное наполнение mixed HU требует включённого автоматического проведения выпуска.";
+    }
+    if (message === "COMPONENT_NOT_IN_PALLET") {
+      return "Состав паллеты изменился. Отсканируйте HU повторно.";
+    }
     return message;
   }
 
@@ -7177,8 +7249,11 @@
     if (message === "HU_PICKED_IN_OTHER_OUTBOUND") {
       return "HU уже подобрана в другом открытом документе отгрузки.";
     }
-    if (message === "PICKING_INCOMPLETE") {
-      return "Не все паллеты подобраны.";
+    if (message === "PICKING_INCOMPLETE" || message === "PARTIAL_CONFIRMATION_REQUIRED") {
+      return "Подтвердите частичную отгрузку.";
+    }
+    if (message === "HU_ALREADY_SHIPPED") {
+      return "HU уже отгружен по этому заказу.";
     }
     if (message === "NO_SHIPMENT_REMAINING" || message === "SHIPMENT_REMAINING_EXCEEDED") {
       return "По заказу не осталось количества к отгрузке для этой HU.";
@@ -7305,14 +7380,26 @@
         }
         completeBusy = true;
         completeBtn.disabled = true;
-        TsdStorage.apiCompleteOutboundPicking(orderId)
+        var allowPartial = order.isComplete !== true;
+        if (
+          allowPartial &&
+          typeof window.confirm === "function" &&
+          !window.confirm(
+            "Отгружено " +
+              formatOrderQtyValue(order.scannedQty) +
+              " из " +
+              formatOrderQtyValue(order.remainingQty) +
+              ". Закрыть частичную отгрузку?"
+          )
+        ) {
+          completeBusy = false;
+          completeBtn.disabled = false;
+          return;
+        }
+
+        TsdStorage.apiCompleteOutboundPicking(orderId, allowPartial)
           .then(function (result) {
-            renderOutboundPickingOrder(
-              normalizeOutboundPickingOrderView((result && result.order) || order),
-              {
-              message: (result && result.message) || "Все паллеты подобраны. Отгрузка проведена.",
-              messageType: "success",
-            });
+            navigate("/outbound");
           })
           .catch(function (error) {
             completeBusy = false;

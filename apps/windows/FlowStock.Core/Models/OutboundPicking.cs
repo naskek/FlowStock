@@ -8,6 +8,10 @@ public sealed class OutboundPickingOrderRow
     public string Status { get; init; } = string.Empty;
     public int ExpectedHuCount { get; init; }
     public int PickedHuCount { get; init; }
+    public double OrderedQty { get; init; }
+    public double ShippedQty { get; init; }
+    public double RemainingQty { get; init; }
+    public double ScannedQty { get; init; }
     public bool IsComplete => ExpectedHuCount > 0 && PickedHuCount >= ExpectedHuCount;
 }
 
@@ -21,6 +25,10 @@ public sealed class OutboundPickingOrderDetails
     public string? DraftOutboundDocRef { get; init; }
     public int ExpectedHuCount { get; init; }
     public int PickedHuCount { get; init; }
+    public double OrderedQty { get; init; }
+    public double ShippedQty { get; init; }
+    public double RemainingQty { get; init; }
+    public double ScannedQty { get; init; }
     public bool IsComplete => ExpectedHuCount > 0 && PickedHuCount >= ExpectedHuCount;
     public IReadOnlyList<OutboundPickingHuRow> Hus { get; init; } = Array.Empty<OutboundPickingHuRow>();
 }

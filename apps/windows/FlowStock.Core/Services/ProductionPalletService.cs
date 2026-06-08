@@ -94,11 +94,15 @@ public sealed class ProductionPalletService
             var openBeforeAppend = activePlannedAfterTrim;
             var preparedDoc = FindPreparedOpenProductionReceipt(store, orderId, requireRemaining: false);
             var prdDocIdForAppend = preparedDoc?.Id ?? 0;
+            var appendOrderLineIds = ExpandManualMixedGroupScope(
+                store,
+                orderId,
+                affectedOrderLineIds.Count > 0 ? affectedOrderLineIds : [orderLineId]);
             AppendPlannedPalletsForOrderLinesInStore(
                 store,
                 order,
                 orderId,
-                affectedOrderLineIds.Count > 0 ? affectedOrderLineIds : [orderLineId],
+                appendOrderLineIds,
                 allowEmptyRemaining: true,
                 out _,
                 existingPrdDocId: prdDocIdForAppend);
@@ -130,6 +134,11 @@ public sealed class ProductionPalletService
         long orderLineId)
     {
         var pallets = GetOpenProductionPalletsForOrderLine(store, orderId, orderLineId);
+        if (pallets.Any(pallet => pallet.HasComponentProgress))
+        {
+            throw new InvalidOperationException("Паллетный план находится в фактическом состоянии: есть частично наполненная микс-паллета.");
+        }
+
         var affected = pallets.SelectMany(GetPalletOrderLineIds).Append(orderLineId).Distinct().ToArray();
         if (pallets.Count > 0)
         {
@@ -485,6 +494,11 @@ public sealed class ProductionPalletService
             if (sourcePallets.Any(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
             {
                 throw new ProductionPalletPlanAdoptionException("SOURCE_HAS_FILLED_PALLETS", "Нельзя перенести план паллет: есть уже наполненные паллеты.");
+            }
+
+            if (sourcePallets.Any(pallet => pallet.HasComponentProgress))
+            {
+                throw new ProductionPalletPlanAdoptionException("SOURCE_HAS_PARTIAL_PALLETS", "Нельзя перенести план паллет: есть частично наполненные микс-паллеты.");
             }
 
             if (sourcePallets.Any(pallet =>
@@ -943,10 +957,15 @@ public sealed class ProductionPalletService
             var lineItem = _data.FindItemById(line.ItemId);
             return new ProductionPalletScanLine
             {
+                ComponentLineId = line.Id,
                 ItemId = line.ItemId,
                 ItemName = lineItem?.Name ?? line.ItemName,
                 Brand = lineItem?.Brand ?? line.Brand,
                 Qty = line.PlannedQty,
+                PlannedQty = line.PlannedQty,
+                FilledQty = line.FilledQty,
+                FilledAt = line.FilledAt,
+                IsCompleted = line.IsCompleted,
                 Uom = string.IsNullOrWhiteSpace(lineItem?.BaseUom) ? line.Uom : lineItem!.BaseUom!
             };
         }).ToList();
@@ -988,7 +1007,7 @@ public sealed class ProductionPalletService
         {
             _data.ExecuteInTransaction(store =>
             {
-                var pallet = store.GetProductionPalletByHu(normalizedHu);
+                var pallet = store.GetProductionPalletByHuForUpdate(normalizedHu);
                 if (pallet == null)
                 {
                     result = ProductionPalletFillResult.Failure("Паллета не найдена в плане выпуска.");
@@ -1071,6 +1090,12 @@ public sealed class ProductionPalletService
                     return;
                 }
 
+                if (pallet.IsMixedPallet)
+                {
+                    result = ProductionPalletFillResult.Failure("MIXED_COMPONENT_SELECTION_REQUIRED");
+                    return;
+                }
+
                 var palletLines = GetPalletLines(pallet);
                 var docLinesById = store.GetDocLines(doc.Id).ToDictionary(line => line.Id, line => line);
                 foreach (var palletLine in palletLines)
@@ -1131,6 +1156,148 @@ public sealed class ProductionPalletService
         }
 
         return result ?? ProductionPalletFillResult.Failure("Не удалось наполнить паллету.");
+    }
+
+    public ProductionPalletFillResult FillMixedComponents(
+        string? huCode,
+        IReadOnlyCollection<long>? componentLineIds,
+        string? deviceId,
+        long? orderId = null,
+        long? prdDocId = null)
+    {
+        var normalizedHu = NormalizeHu(huCode);
+        var requestedIds = (componentLineIds ?? Array.Empty<long>())
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
+        if (string.IsNullOrWhiteSpace(normalizedHu))
+        {
+            return ProductionPalletFillResult.Failure("HU_REQUIRED");
+        }
+
+        if (requestedIds.Length == 0)
+        {
+            return ProductionPalletFillResult.Failure("COMPONENT_LINE_IDS_REQUIRED");
+        }
+
+        if (_fillClose == null || !_fillClose.AutoCloseEnabled)
+        {
+            return ProductionPalletFillResult.Failure("PRODUCTION_AUTO_CLOSE_REQUIRED");
+        }
+
+        ProductionPalletFillResult? result = null;
+        try
+        {
+            _data.ExecuteInTransaction(store =>
+            {
+                var pallet = store.GetProductionPalletByHuForUpdate(normalizedHu);
+                if (pallet == null)
+                {
+                    result = ProductionPalletFillResult.Failure("PALLET_NOT_FOUND");
+                    return;
+                }
+
+                if ((orderId.HasValue && pallet.OrderId != orderId.Value)
+                    || (prdDocId.HasValue && pallet.PrdDocId != prdDocId.Value
+                        && !string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
+                {
+                    result = ProductionPalletFillResult.Failure("PALLET_BELONGS_TO_ANOTHER_ORDER");
+                    return;
+                }
+
+                var doc = store.GetDoc(pallet.PrdDocId);
+                if (doc == null || doc.Type != DocType.ProductionReceipt)
+                {
+                    result = ProductionPalletFillResult.Failure("PRD_NOT_FOUND");
+                    return;
+                }
+
+                if (string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+                {
+                    result = ApplyAutoCloseAfterFillInTransaction(store, BuildMixedFillResult(
+                        pallet,
+                        alreadyFilled: true,
+                        ledgerWritten: doc.Status == DocStatus.Closed,
+                        message: "Микс-паллета уже наполнена."));
+                    return;
+                }
+
+                if (doc.Status == DocStatus.Closed)
+                {
+                    result = ProductionPalletFillResult.Failure("PRD_ALREADY_CLOSED");
+                    return;
+                }
+
+                if (IsCancelledPallet(pallet))
+                {
+                    result = ProductionPalletFillResult.Failure("PALLET_CANCELLED");
+                    return;
+                }
+
+                if (!pallet.IsMixedPallet)
+                {
+                    result = ProductionPalletFillResult.Failure("PALLET_NOT_MIXED");
+                    return;
+                }
+
+                if (!HasOnlyValidFillingPalletLines(store, pallet))
+                {
+                    result = ProductionPalletFillResult.Failure("PALLET_ORDER_LINES_INVALID");
+                    return;
+                }
+
+                if (requestedIds.Any(id => pallet.Lines.All(line => line.Id != id)))
+                {
+                    result = ProductionPalletFillResult.Failure("COMPONENT_NOT_IN_PALLET");
+                    return;
+                }
+
+                store.MarkProductionPalletComponentsFilled(pallet.Id, requestedIds, DateTime.Now);
+                var updated = store.GetProductionPalletByHu(normalizedHu) ?? pallet;
+                if (!updated.AreAllComponentsFilled)
+                {
+                    result = BuildMixedFillResult(
+                        updated,
+                        alreadyFilled: requestedIds.All(id => pallet.Lines.First(line => line.Id == id).IsCompleted),
+                        ledgerWritten: false,
+                        message: "Компоненты отмечены как наполненные. HU ещё не готов полностью.");
+                    return;
+                }
+
+                store.MarkProductionPalletFilled(updated.Id, DateTime.Now, NormalizeDeviceId(deviceId));
+                var filled = store.GetProductionPalletByHu(normalizedHu) ?? updated;
+                result = ApplyAutoCloseAfterFillInTransaction(store, BuildMixedFillResult(
+                    filled,
+                    alreadyFilled: false,
+                    ledgerWritten: false,
+                    message: "Микс-паллета полностью наполнена и проведена."));
+            });
+        }
+        catch (ProductionPalletFillRollbackException ex)
+        {
+            return ProductionPalletFillResult.Failure(ex.Message);
+        }
+
+        return result ?? ProductionPalletFillResult.Failure("MIXED_COMPONENT_FILL_FAILED");
+    }
+
+    private ProductionPalletFillResult BuildMixedFillResult(
+        ProductionPallet pallet,
+        bool alreadyFilled,
+        bool ledgerWritten,
+        string message)
+    {
+        return new ProductionPalletFillResult
+        {
+            Success = true,
+            AlreadyFilled = alreadyFilled,
+            Pallet = pallet,
+            EffectiveStatus = pallet.EffectiveStatus,
+            FilledComponentCount = pallet.FilledComponentCount,
+            TotalComponentCount = pallet.TotalComponentCount,
+            LedgerWritten = ledgerWritten,
+            Message = message
+        };
     }
 
     private static double GetFillGuardFilledQty(
@@ -1226,7 +1393,12 @@ public sealed class ProductionPalletService
             Document = BuildFillingDocument(prdDocId, store.GetProductionPalletsByDoc(prdDocId), pallet.OrderId),
             PrdAutoClosed = true,
             ClosedPrdDocId = autoClose.ClosedPrdDocId,
-            ClosedPrdDocRef = autoClose.ClosedPrdDocRef
+            ClosedPrdDocRef = autoClose.ClosedPrdDocRef,
+            EffectiveStatus = pallet.EffectiveStatus,
+            FilledComponentCount = pallet.FilledComponentCount,
+            TotalComponentCount = pallet.TotalComponentCount,
+            LedgerWritten = true,
+            Message = fillResult.Message
         };
 
     }
@@ -1577,6 +1749,32 @@ public sealed class ProductionPalletService
         return manualMixedLineIds;
     }
 
+    private static IReadOnlyCollection<long> ExpandManualMixedGroupScope(
+        IDataStore store,
+        long orderId,
+        IEnumerable<long> scopedOrderLineIds)
+    {
+        var orderLines = store.GetOrderLines(orderId);
+        var scopedIds = scopedOrderLineIds.Where(id => id > 0).ToHashSet();
+        var scopedGroups = orderLines
+            .Where(line => scopedIds.Contains(line.Id) && !string.IsNullOrWhiteSpace(line.ProductionPalletGroup))
+            .Select(line => line.ProductionPalletGroup!.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (scopedGroups.Count == 0)
+        {
+            return scopedIds;
+        }
+
+        foreach (var line in orderLines.Where(line =>
+                     !string.IsNullOrWhiteSpace(line.ProductionPalletGroup)
+                     && scopedGroups.Contains(line.ProductionPalletGroup!.Trim())))
+        {
+            scopedIds.Add(line.Id);
+        }
+
+        return scopedIds;
+    }
+
     internal static IReadOnlyList<OrderReceiptLine> GetLinesNeedingPalletAppend(
         IDataStore store,
         Order order)
@@ -1728,7 +1926,13 @@ public sealed class ProductionPalletService
             .Append(orderLineId)
             .Distinct()
             .ToArray();
-        TombstoneProductionPalletDocLines(store, openPallets.Where(pallet => palletIdsToCancel.Contains(pallet.Id)));
+        var palletsToCancel = openPallets.Where(pallet => palletIdsToCancel.Contains(pallet.Id)).ToArray();
+        if (palletsToCancel.Any(pallet => pallet.HasComponentProgress))
+        {
+            throw new InvalidOperationException("Паллетный план находится в фактическом состоянии: есть частично наполненная микс-паллета.");
+        }
+
+        TombstoneProductionPalletDocLines(store, palletsToCancel);
         store.CancelProductionPallets(palletIdsToCancel);
         return affectedOrderLineIds;
     }
@@ -2109,8 +2313,9 @@ public sealed class ProductionPalletService
 
     private static bool IsPendingFillPallet(ProductionPallet pallet)
     {
-        return string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
-               || string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase);
+        return !pallet.HasComponentProgress
+               && (string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase));
     }
 
     private static bool HasOrderLineOwnership(ProductionPallet pallet)
@@ -2195,6 +2400,7 @@ public sealed class ProductionPalletService
                 FilledQty = string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)
                     ? pallet.PlannedQty
                     : 0,
+                FilledAt = pallet.FilledAt,
                 CreatedAt = pallet.CreatedAt
             }
         };

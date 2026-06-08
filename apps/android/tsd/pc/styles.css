@@ -439,38 +439,47 @@ body.pc-body::before {
 }
 
 .pc-order-line-pallet-filled td {
-  background: #eefaf1;
-  border-bottom-color: #c7e8d0;
+  background: #dcfce7;
+  border-bottom-color: #86efac;
 }
 
 .pc-order-line-pallet-filled:hover td {
-  background: #e0f5e7;
+  background: #bbf7d0;
 }
 
 .pc-order-line-pallet-filled.is-complete td {
-  background: #e6f7ec;
+  background: #dcfce7;
 }
 
 .pc-order-line-pallet-filled.is-complete:hover td {
-  background: #d9f1e2;
+  background: #bbf7d0;
 }
 
 .pc-order-line-coverage-covered td {
-  background: #eaf7ee;
-  border-bottom-color: #c7e8d0;
+  background: #dcfce7;
+  border-bottom-color: #86efac;
 }
 
 .pc-order-line-coverage-covered:hover td {
-  background: #ddf1e4;
+  background: #bbf7d0;
+}
+
+.pc-order-line-coverage-partial td {
+  background: #fef3c7;
+  border-bottom-color: #fbbf24;
+}
+
+.pc-order-line-coverage-partial:hover td {
+  background: #fde68a;
 }
 
 .pc-order-line-coverage-missing td {
-  background: #fdeeef;
-  border-bottom-color: #f4cbd1;
+  background: #fee2e2;
+  border-bottom-color: #fca5a5;
 }
 
 .pc-order-line-coverage-missing:hover td {
-  background: #fbdfe3;
+  background: #fecaca;
 }
 
 .pc-stock-parent-row {
@@ -730,18 +739,18 @@ body.pc-body::before {
 .pc-icon-status-ready,
 .pc-icon-status-completed {
   color: #ffffff;
-  background: #1f7a3e;
+  background: #166534;
 }
 
 .pc-icon-status-danger {
   color: #ffffff;
-  background: #c2412f;
+  background: #991b1b;
 }
 
 .pc-icon-status-warning,
 .pc-icon-status-inprogress {
   color: #ffffff;
-  background: #d18414;
+  background: #b45309;
 }
 
 .pc-icon-status-neutral,
@@ -751,33 +760,36 @@ body.pc-body::before {
 }
 
 .pc-status-badge-success {
-  color: #2d6a3d;
-  background: #e8f7ec;
+  color: #166534;
+  background: #dcfce7;
+  border: 1px solid #86efac;
 }
 
 .pc-status-badge-success .pc-status-badge-icon {
   color: #ffffff;
-  background: #6fc28a;
+  background: #166534;
 }
 
 .pc-status-badge-ready {
-  color: #2d6a3d;
-  background: #e8f7ec;
+  color: #166534;
+  background: #dcfce7;
+  border: 1px solid #86efac;
 }
 
 .pc-status-badge-ready .pc-status-badge-icon {
   color: #ffffff;
-  background: #6fc28a;
+  background: #166534;
 }
 
 .pc-status-badge-warning {
-  color: #9a5d12;
-  background: #fff4d6;
+  color: #92400e;
+  background: #fef3c7;
+  border: 1px solid #fbbf24;
 }
 
 .pc-status-badge-warning .pc-status-badge-icon {
   color: #ffffff;
-  background: #d18414;
+  background: #b45309;
 }
 
 .pc-status-badge-neutral {
@@ -793,22 +805,24 @@ body.pc-body::before {
 
 .pc-status-badge-completed {
   color: #ffffff;
-  background: #1f7a3e;
+  background: #166534;
+  border: 1px solid #86efac;
 }
 
 .pc-status-badge-completed .pc-status-badge-icon {
   color: #ffffff;
-  background: #166330;
+  background: #14532d;
 }
 
 .pc-status-badge-inprogress {
-  color: #8a4b00;
-  background: #fdeacc;
+  color: #92400e;
+  background: #fef3c7;
+  border: 1px solid #fbbf24;
 }
 
 .pc-status-badge-inprogress .pc-status-badge-icon {
   color: #ffffff;
-  background: #e3982e;
+  background: #b45309;
 }
 
 .pc-status-badge-cancelled {
@@ -872,6 +886,56 @@ body.pc-body::before {
 
 .pc-order-modal-card {
   max-width: 988px;
+}
+
+.pc-order-modal-summary-wrap {
+  margin-top: 8px;
+}
+
+.pc-order-modal-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.pc-order-modal-summary-item {
+  display: inline-flex;
+  align-items: center;
+}
+
+.pc-order-lines-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.pc-order-lines-table {
+  width: 100%;
+  min-width: 720px;
+  table-layout: fixed;
+}
+
+.pc-order-lines-table th,
+.pc-order-lines-table td {
+  overflow-wrap: anywhere;
+  vertical-align: middle;
+}
+
+.pc-order-lines-col-item {
+  width: 28%;
+}
+
+.pc-order-lines-col-sku,
+.pc-order-lines-col-gtin {
+  width: 20%;
+}
+
+.pc-order-lines-col-ordered {
+  width: 12%;
+}
+
+.pc-order-lines-col-filling {
+  width: 20%;
 }
 
 .pc-modal-header {

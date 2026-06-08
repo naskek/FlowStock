@@ -20,6 +20,7 @@
   var ORDERS_PAGE_SIZE = 20;
   var ORDERS_FETCH_LIMIT = ORDERS_PAGE_SIZE + 1;
   var activeLiveRefreshHandler = null;
+  var openOrderModalController = null;
   var tableSortState = {
     stock: { key: "", direction: "asc" },
     catalog: { key: "", direction: "asc" },
@@ -2274,8 +2275,27 @@
     activeLiveRefreshHandler = typeof handler === "function" ? handler : null;
   }
 
+  function clearOpenOrderModalController() {
+    openOrderModalController = null;
+  }
+
+  function refreshOpenOrderModalIfNeeded() {
+    var controller = openOrderModalController;
+    if (!controller || typeof controller.refresh !== "function") {
+      return;
+    }
+    if (controller.modal && !controller.modal.isConnected) {
+      clearOpenOrderModalController();
+      return;
+    }
+    controller.refresh();
+  }
+
   function scheduleLiveRefresh() {
-    if (!activeLiveRefreshHandler || !hasPcAccess(loadAccount())) {
+    if (!hasPcAccess(loadAccount())) {
+      return;
+    }
+    if (!activeLiveRefreshHandler && !openOrderModalController) {
       return;
     }
     if (liveRefreshTimerId) {
@@ -2283,10 +2303,13 @@
     }
     liveRefreshTimerId = window.setTimeout(function () {
       liveRefreshTimerId = 0;
-      if (!activeLiveRefreshHandler || !hasPcAccess(loadAccount())) {
+      if (!hasPcAccess(loadAccount())) {
         return;
       }
-      activeLiveRefreshHandler();
+      if (activeLiveRefreshHandler) {
+        activeLiveRefreshHandler();
+      }
+      refreshOpenOrderModalIfNeeded();
     }, LIVE_REFRESH_DEBOUNCE_MS);
   }
 
@@ -2551,17 +2574,25 @@
     }
 
     var itemName = String(line.item_name || "Товар без названия").trim() || "Товар без названия";
+    var fillingState = getLinePalletFillingState(line);
     if (isInternalOrder(order)) {
       var ordered = Number(line.qty_ordered) || 0;
       var produced = Math.max(
         Number(line.qty_produced) || 0,
-        Number(line.pallet_filled_qty != null ? line.pallet_filled_qty : line.filled_pallet_qty) || 0
+        fillingState.filledQty
       );
       if (ordered > 0.000001 && produced + 0.000001 >= ordered) {
         return {
           tone: "covered",
           className: "pc-order-line-coverage-covered",
           title: itemName + ": выпущено " + formatQuantity(produced) + " из " + formatQuantity(ordered),
+        };
+      }
+      if (fillingState.filledQty > 0.000001) {
+        return {
+          tone: "partial",
+          className: "pc-order-line-coverage-partial",
+          title: itemName + ": наполнено " + formatQuantity(fillingState.filledQty) + " из " + formatQuantity(fillingState.plannedQty || ordered),
         };
       }
 
@@ -2571,6 +2602,22 @@
     var remaining = getLineRequiredQty(line);
     if (remaining <= 0.000001) {
       return { tone: "neutral", className: "", title: "" };
+    }
+
+    if (fillingState.filledQty > 0.000001 && fillingState.plannedQty > 0.000001) {
+      if (fillingState.filledQty + 0.000001 >= fillingState.plannedQty) {
+        return {
+          tone: "covered",
+          className: "pc-order-line-coverage-covered",
+          title: itemName + ": наполнено " + formatQuantity(fillingState.filledQty) + " из " + formatQuantity(fillingState.plannedQty),
+        };
+      }
+
+      return {
+        tone: "partial",
+        className: "pc-order-line-coverage-partial",
+        title: itemName + ": частично наполнено " + formatQuantity(fillingState.filledQty) + " из " + formatQuantity(fillingState.plannedQty),
+      };
     }
 
     var covered = Math.min(getCustomerLineHuCoverageQty(line), remaining);
@@ -2919,7 +2966,12 @@
         serverTone = "inprogress";
       }
       if (serverTone === "completed") {
-        return renderStatusIconOnly("completed", "pc-line-pallet-badge", line.pallet_fill_title || serverLabel);
+        return renderStatusBadge(
+          serverLabel || buildPalletFillProgressLabel(lineState.filledCount, lineState.plannedCount),
+          "completed",
+          "pc-line-pallet-badge",
+          line.pallet_fill_title || serverLabel
+        );
       }
       if (serverTone === "ready") {
         serverTone = "inprogress";
@@ -2937,6 +2989,16 @@
       return "";
     }
 
+    if (state.plannedCount > 0 && state.filledCount <= 0 && state.filledQty > 0.000001 && state.plannedQty > 0.000001 && !state.complete) {
+      var partialQtyLabel = "Наполнено " + formatQuantity(state.filledQty) + " / " + formatQuantity(state.plannedQty);
+      var partialQtyTitle =
+        "Наполнение по строке: " +
+        formatQuantity(state.filledQty) +
+        " / " +
+        formatQuantity(state.plannedQty);
+      return renderStatusBadge(partialQtyLabel, "warning", "pc-line-pallet-badge", partialQtyTitle);
+    }
+
     if (state.plannedCount > 0) {
       var palletLabel = buildPalletFillProgressLabel(state.filledCount, state.plannedCount);
       var palletTitle =
@@ -2946,7 +3008,7 @@
         formatQuantity(state.plannedCount) +
         " паллет";
       if (state.complete) {
-        return renderStatusIconOnly("completed", "pc-line-pallet-badge", palletTitle);
+        return renderStatusBadge(palletLabel, "completed", "pc-line-pallet-badge", palletTitle);
       }
 
       return renderStatusBadge(palletLabel, "inprogress", "pc-line-pallet-badge", palletTitle);
@@ -2960,7 +3022,7 @@
         " / " +
         formatQuantity(state.plannedQty);
       if (state.complete) {
-        return renderStatusIconOnly("completed", "pc-line-pallet-badge", qtyTitle);
+        return renderStatusBadge(qtyLabel, "completed", "pc-line-pallet-badge", qtyTitle);
       }
 
       return renderStatusBadge(qtyLabel, "inprogress", "pc-line-pallet-badge", qtyTitle);
@@ -4538,18 +4600,142 @@
     renderLines();
   }
 
-  function renderOrderLinesTable(lines, order) {
+  function renderOrderModalSummaryIndicators(order) {
+    if (!order || order.is_pending_confirmation) {
+      return "";
+    }
+
+    return (
+      '<div class="pc-order-modal-summary">' +
+      '<span class="pc-order-modal-summary-item">' +
+      getOrderStatusHtml(order) +
+      "</span>" +
+      '<span class="pc-order-modal-summary-item">' +
+      renderOrderPalletFillingIndicator(order) +
+      "</span>" +
+      '<span class="pc-order-modal-summary-item">' +
+      renderOrderMarkingIndicator(order) +
+      "</span>" +
+      "</div>"
+    );
+  }
+
+  function getOrderModalContentUpdates(order, lines) {
+    var isPending = order && order.is_pending_confirmation;
     var isInternal = isInternalOrder(order);
     var showAvailableColumn = !isShippedOrder(order);
-    var processedHeader = isInternal ? "Выпущено" : "Отгружено";
+    var sourceLines = Array.isArray(lines) ? lines : [];
+    var readiness = !isPending && !isInternal && showAvailableColumn ? getShipmentReadiness(sourceLines) : null;
+
+    return {
+      datesText:
+        "План: " +
+        formatDate(order.due_date) +
+        " · Факт: " +
+        formatDate(order.shipped_at),
+      summaryHtml: renderOrderModalSummaryIndicators(order),
+      readinessBadgeHtml: renderReadinessBadge(readiness),
+      linesHtml: sourceLines.length ? renderOrderLinesTable(sourceLines, order) : "<div>Строк нет.</div>",
+    };
+  }
+
+  function applyOrderModalContentUpdates(modal, updates) {
+    if (!modal || !updates) {
+      return;
+    }
+
+    var datesEl = modal.querySelector("#orderDatesStatus");
+    if (datesEl) {
+      datesEl.textContent = updates.datesText;
+    }
+
+    var summaryEl = modal.querySelector("#orderSummaryIndicators");
+    if (summaryEl) {
+      summaryEl.innerHTML = updates.summaryHtml;
+    }
+
+    var readinessBadge = modal.querySelector("#orderReadinessBadge");
+    if (readinessBadge) {
+      readinessBadge.outerHTML = updates.readinessBadgeHtml || '<span id="orderReadinessBadge"></span>';
+    }
+
+    var wrap = modal.querySelector("#orderLinesWrap");
+    if (wrap) {
+      wrap.innerHTML = updates.linesHtml;
+    }
+  }
+
+  function loadOrderModalData(order) {
+    var isPending = order && order.is_pending_confirmation;
+    if (isPending) {
+      return Promise.resolve({
+        order: order,
+        lines: Array.isArray(order.lines) ? order.lines : [],
+      });
+    }
+
+    return Promise.all([
+      fetchJson("/api/orders/" + encodeURIComponent(order.id)),
+      fetchJson("/api/orders/" + encodeURIComponent(order.id) + "/lines"),
+    ]).then(function (results) {
+      var freshOrder = results[0] || order;
+      var lines = Array.isArray(results[1]) ? results[1] : [];
+      applyOrderReadinessFromLines(freshOrder, lines);
+      return {
+        order: freshOrder,
+        lines: lines,
+      };
+    });
+  }
+
+  function populateOrderModalContent(modal, order, lines) {
+    applyOrderModalContentUpdates(modal, getOrderModalContentUpdates(order, lines));
+  }
+
+  function createOrderModalRefreshHandler(modal, order) {
+    var refreshInFlight = false;
+
+    return function refreshOrderModalContent() {
+      if (!modal || !modal.isConnected) {
+        clearOpenOrderModalController();
+        return Promise.resolve();
+      }
+      if (refreshInFlight) {
+        return Promise.resolve();
+      }
+
+      refreshInFlight = true;
+      return loadOrderModalData(order)
+        .then(function (payload) {
+          if (!modal.isConnected) {
+            clearOpenOrderModalController();
+            return;
+          }
+
+          var freshOrder = payload && payload.order ? payload.order : order;
+          if (freshOrder && freshOrder !== order) {
+            Object.keys(freshOrder).forEach(function (key) {
+              order[key] = freshOrder[key];
+            });
+          }
+
+          populateOrderModalContent(modal, order, payload.lines);
+        })
+        .catch(function () {
+          var wrap = modal.querySelector("#orderLinesWrap");
+          if (wrap) {
+            wrap.textContent = "Ошибка загрузки строк.";
+          }
+        })
+        .finally(function () {
+          refreshInFlight = false;
+        });
+    };
+  }
+
+  function renderOrderLinesTable(lines, order) {
     var body = (Array.isArray(lines) ? lines : [])
       .map(function (line) {
-        var processedQty = isInternal ? line.qty_produced || 0 : line.qty_shipped || 0;
-        var availabilityState = getAvailabilityState(line);
-        var shortageTitle = availabilityState.ready
-          ? ""
-          : ' title="Не хватает: ' + escapeHtml(formatQuantity(availabilityState.shortage)) + '"';
-        var availabilityClass = availabilityState.ready ? "pc-availability-ready" : "pc-availability-short";
         var highlightState = getOrderLineHighlightState(line, order);
         var rowAttributes = highlightState.className
           ? ' class="' + escapeHtml(highlightState.className) + '" title="' + escapeHtml(highlightState.title) + '"'
@@ -4568,58 +4754,43 @@
           escapeHtml(line.gtin || "-") +
           "</td>" +
           "<td>" +
-          escapeHtml(String(line.production_purpose_display || (line.production_purpose === "CUSTOMER_ORDER" ? "Под заказ" : "На склад"))) +
-          "</td>" +
-          "<td>" +
           escapeHtml(formatQuantity(line.qty_ordered || 0)) +
-          "</td>" +
-          "<td>" +
-          escapeHtml(formatQuantity(processedQty)) +
           "</td>" +
           "<td>" +
           renderLinePalletFillingBadge(line, order) +
           "</td>" +
-          (showAvailableColumn
-            ? "<td>" +
-              '<span class="pc-availability ' +
-              availabilityClass +
-              '"' +
-              shortageTitle +
-              ">" +
-              escapeHtml(formatQuantity(availabilityState.available)) +
-              "</span>" +
-              "</td>"
-            : "") +
           "</tr>"
         );
       })
       .join("");
 
     return (
+      '<div class="pc-order-lines-table-wrap">' +
       '<table class="pc-table pc-order-lines-table">' +
+      "<colgroup>" +
+      '<col class="pc-order-lines-col-item" />' +
+      '<col class="pc-order-lines-col-sku" />' +
+      '<col class="pc-order-lines-col-gtin" />' +
+      '<col class="pc-order-lines-col-ordered" />' +
+      '<col class="pc-order-lines-col-filling" />' +
+      "</colgroup>" +
       "<thead><tr>" +
       "<th>Товар</th>" +
       "<th>SKU / ШК</th>" +
       "<th>GTIN</th>" +
-      "<th>Назначение</th>" +
       "<th>Заказано</th>" +
-      "<th>" +
-      escapeHtml(processedHeader) +
-      "</th>" +
       "<th>Наполнение</th>" +
-      (showAvailableColumn ? "<th>В наличии</th>" : "") +
       "</tr></thead>" +
       "<tbody>" +
       body +
       "</tbody>" +
-      "</table>"
+      "</table>" +
+      "</div>"
     );
   }
 
   function openOrderModal(order, onSubmitted) {
     var isPending = order && order.is_pending_confirmation;
-    var isInternal = isInternalOrder(order);
-    var showAvailableColumn = !isShippedOrder(order);
     var modal = document.createElement("div");
     modal.className = "pc-modal";
     modal.innerHTML =
@@ -4635,11 +4806,12 @@
       " · Контрагент: " +
       escapeHtml(order.partner_name || "-") +
       "</div>" +
-      '  <div class="pc-status">План: ' +
+      '  <div class="pc-status" id="orderDatesStatus">План: ' +
       escapeHtml(formatDate(order.due_date)) +
       " · Факт: " +
       escapeHtml(formatDate(order.shipped_at)) +
       "</div>" +
+      '  <div id="orderSummaryIndicators" class="pc-order-modal-summary-wrap"></div>' +
       '  <div class="pc-status">Комментарий: ' +
       escapeHtml(order && order.comment ? order.comment : "-") +
       "</div>" +
@@ -4655,7 +4827,12 @@
     document.body.appendChild(modal);
 
     function close() {
-      document.body.removeChild(modal);
+      if (openOrderModalController && openOrderModalController.modal === modal) {
+        clearOpenOrderModalController();
+      }
+      if (modal.parentNode) {
+        modal.parentNode.removeChild(modal);
+      }
     }
 
     var closeBtn = modal.querySelector("#modalCloseBtn");
@@ -4663,33 +4840,16 @@
       closeBtn.addEventListener("click", close);
     }
 
-    var linesPromise = isPending
-      ? Promise.resolve(Array.isArray(order.lines) ? order.lines : [])
-      : fetchJson("/api/orders/" + encodeURIComponent(order.id) + "/lines");
+    var refreshOrderModalContent = createOrderModalRefreshHandler(modal, order);
+    openOrderModalController = {
+      orderId: order.id,
+      modal: modal,
+      order: order,
+      refresh: refreshOrderModalContent,
+      close: close,
+    };
 
-    linesPromise
-      .then(function (lines) {
-        var wrap = modal.querySelector("#orderLinesWrap");
-        if (!wrap) {
-          return;
-        }
-        if (!lines || !lines.length) {
-          wrap.innerHTML = "<div>Строк нет.</div>";
-          return;
-        }
-        var readiness = !isInternal && showAvailableColumn ? getShipmentReadiness(lines) : null;
-        var readinessBadge = modal.querySelector("#orderReadinessBadge");
-        if (readinessBadge) {
-          readinessBadge.outerHTML = renderReadinessBadge(readiness);
-        }
-        wrap.innerHTML = renderOrderLinesTable(lines, order);
-      })
-      .catch(function () {
-        var wrap = modal.querySelector("#orderLinesWrap");
-        if (wrap) {
-          wrap.textContent = "Ошибка загрузки строк.";
-        }
-      });
+    refreshOrderModalContent();
   }
 
   function wireOrders() {
@@ -4999,6 +5159,16 @@
     window.FlowStockPcTestHooks.renderProductionNeedTable = renderProductionNeedTable;
     window.FlowStockPcTestHooks.openProductionNeedPreviewModal = openProductionNeedPreviewModal;
     window.FlowStockPcTestHooks.trimOrdersPage = trimOrdersPage;
+    window.FlowStockPcTestHooks.getOrderModalContentUpdates = getOrderModalContentUpdates;
+    window.FlowStockPcTestHooks.applyOrderModalContentUpdates = applyOrderModalContentUpdates;
+    window.FlowStockPcTestHooks.refreshOpenOrderModalIfNeeded = refreshOpenOrderModalIfNeeded;
+    window.FlowStockPcTestHooks.clearOpenOrderModalController = clearOpenOrderModalController;
+    window.FlowStockPcTestHooks.getOpenOrderModalController = function () {
+      return openOrderModalController;
+    };
+    window.FlowStockPcTestHooks.__setOpenOrderModalControllerForTest = function (controller) {
+      openOrderModalController = controller || null;
+    };
     return;
   }
 

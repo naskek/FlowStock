@@ -58,7 +58,7 @@ public static class TsdOutboundPickingEndpoints
 
     private static Results<Ok<object>, BadRequest<object>> HandleComplete(long orderId, OutboundPickingCompleteRequest request, OutboundPickingService service)
     {
-        var result = service.Complete(orderId);
+        var result = service.Complete(orderId, request.AllowPartial);
         if (!result.Success)
         {
             return TypedResults.BadRequest((object)new
@@ -90,6 +90,10 @@ public static class TsdOutboundPickingEndpoints
             status = row.Status,
             expected_hu_count = row.ExpectedHuCount,
             picked_hu_count = row.PickedHuCount,
+            ordered_qty = row.OrderedQty,
+            shipped_qty = row.ShippedQty,
+            remaining_qty = row.RemainingQty,
+            scanned_qty = row.ScannedQty,
             is_complete = row.IsComplete
         };
     }
@@ -106,6 +110,10 @@ public static class TsdOutboundPickingEndpoints
             draft_outbound_doc_ref = details.DraftOutboundDocRef,
             expected_hu_count = details.ExpectedHuCount,
             picked_hu_count = details.PickedHuCount,
+            ordered_qty = details.OrderedQty,
+            shipped_qty = details.ShippedQty,
+            remaining_qty = details.RemainingQty,
+            scanned_qty = details.ScannedQty,
             is_complete = details.IsComplete,
             hus = details.Hus.Select(MapHu).ToArray()
         };
@@ -145,5 +153,8 @@ public static class TsdOutboundPickingEndpoints
     {
         [JsonPropertyName("device_id")]
         public string? DeviceId { get; init; }
+
+        [JsonPropertyName("allow_partial")]
+        public bool AllowPartial { get; init; }
     }
 }

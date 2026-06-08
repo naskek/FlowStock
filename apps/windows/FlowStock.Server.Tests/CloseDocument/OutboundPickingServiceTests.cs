@@ -164,6 +164,39 @@ public sealed class OutboundPickingServiceTests
     }
 
     [Fact]
+    public void CloseRejectsDuplicateHuLinesInsideTransaction()
+    {
+        var harness = CreateBasicPickingHarness();
+        harness.SeedDoc(new Doc
+        {
+            Id = 510,
+            DocRef = "OUT-DUPLICATE",
+            Type = DocType.Outbound,
+            Status = DocStatus.Draft,
+            OrderId = 20,
+            PartnerId = 200,
+            CreatedAt = DateTime.UtcNow
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 511, DocId = 510, OrderLineId = 201, ItemId = 1001, Qty = 2,
+            FromLocationId = 1, FromHu = "HU-000001"
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 512, DocId = 510, OrderLineId = 201, ItemId = 1001, Qty = 2,
+            FromLocationId = 1, FromHu = "HU-000001"
+        });
+
+        var close = harness.CreateService().TryCloseDoc(510, allowNegative: false);
+
+        Assert.False(close.Success);
+        Assert.Contains(close.Errors, error => error.Contains("повторная строка", StringComparison.OrdinalIgnoreCase));
+        Assert.Empty(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Draft, harness.GetDoc(510).Status);
+    }
+
+    [Fact]
     public void ScanRejectsHuReservedForAnotherCustomerOrder()
     {
         var harness = CreateBasicPickingHarness();
@@ -273,7 +306,7 @@ public sealed class OutboundPickingServiceTests
     }
 
     [Fact]
-    public void PalletizedCustomerOrder080_ScanAutoClose_IsIdempotentOnRepeat()
+    public void PalletizedCustomerOrder080_RepeatScanIsRejected_AndRepeatCompleteIsIdempotent()
     {
         var harness = CreateOrder080PalletizedHarness();
         var picking = CreatePickingService(harness, autoClose: true);
@@ -293,14 +326,65 @@ public sealed class OutboundPickingServiceTests
         Assert.Equal(OrderStatus.Shipped, harness.GetOrder(79).Status);
 
         var repeatScan = picking.Scan(79, "HU-0000506", "TSD-01");
-        Assert.True(repeatScan.Success, $"{repeatScan.ErrorCode}: {repeatScan.Message}");
-        Assert.True(repeatScan.AlreadyPicked);
-        Assert.True(repeatScan.OutboundClosed);
+        Assert.False(repeatScan.Success);
+        Assert.Equal("HU_ALREADY_SHIPPED", repeatScan.ErrorCode);
 
         var repeatComplete = picking.Complete(79);
         Assert.True(repeatComplete.Success, $"{repeatComplete.ErrorCode}: {repeatComplete.Message}");
         Assert.True(repeatComplete.OutboundClosed);
         Assert.Single(harness.LedgerEntries.Where(entry => entry.QtyDelta < 0));
+    }
+
+    [Fact]
+    public void PartialComplete_ClosesOnlyScannedHu_AndNextPickingShowsRemaining()
+    {
+        var harness = CreateThreeHuPickingHarness();
+        var picking = CreatePickingService(harness, autoClose: true);
+
+        var scan = picking.Scan(20, "HU-000001", "TSD-01");
+        Assert.True(scan.Success, $"{scan.ErrorCode}: {scan.Message}");
+        Assert.False(scan.OutboundClosed);
+        Assert.Equal(5, scan.Order!.ScannedQty);
+        Assert.Equal(15, scan.Order.RemainingQty);
+
+        var withoutConfirmation = picking.Complete(20);
+        Assert.False(withoutConfirmation.Success);
+        Assert.Equal("PARTIAL_CONFIRMATION_REQUIRED", withoutConfirmation.ErrorCode);
+
+        var completed = picking.Complete(20, allowPartial: true);
+        Assert.True(completed.Success, $"{completed.ErrorCode}: {completed.Message}");
+        Assert.True(completed.OutboundClosed);
+        Assert.NotEqual(OrderStatus.Shipped, harness.GetOrder(20).Status);
+        Assert.Equal(-5, Assert.Single(harness.LedgerEntries).QtyDelta);
+
+        var next = picking.GetDetails(20);
+        Assert.Equal("Частично отгружено", next.Status);
+        Assert.Equal(2, next.ExpectedHuCount);
+        Assert.Equal(5, next.ShippedQty);
+        Assert.Equal(10, next.RemainingQty);
+        Assert.DoesNotContain(next.Hus, hu => hu.HuCode == "HU-000001");
+
+        var repeated = picking.Scan(20, "HU-000001", "TSD-01");
+        Assert.False(repeated.Success);
+        Assert.Equal("HU_ALREADY_SHIPPED", repeated.ErrorCode);
+    }
+
+    [Fact]
+    public void FullCompletionAfterPartial_ShipsOrder()
+    {
+        var harness = CreateThreeHuPickingHarness();
+        var picking = CreatePickingService(harness, autoClose: true);
+        Assert.True(picking.Scan(20, "HU-000001", "TSD-01").Success);
+        Assert.True(picking.Complete(20, allowPartial: true).Success);
+
+        var secondScan = picking.Scan(20, "HU-000002", "TSD-01");
+        Assert.True(secondScan.Success, $"{secondScan.ErrorCode}: {secondScan.Message}");
+        var finalScan = picking.Scan(20, "HU-000003", "TSD-01");
+
+        Assert.True(finalScan.Success, $"{finalScan.ErrorCode}: {finalScan.Message}");
+        Assert.True(finalScan.OutboundClosed);
+        Assert.Equal(OrderStatus.Shipped, harness.GetOrder(20).Status);
+        Assert.Equal(-15, harness.LedgerEntries.Sum(entry => entry.QtyDelta));
     }
 
     [Fact]
@@ -524,6 +608,48 @@ public sealed class OutboundPickingServiceTests
             ItemTypeEnableMarking = false
         });
         SeedOrder(harness, 20, 201, "SO-020", OrderType.Customer, OrderStatus.Accepted, "HU-000001", 5);
+        return harness;
+    }
+
+    private static CloseDocumentHarness CreateThreeHuPickingHarness()
+    {
+        var harness = CreateBasicPickingHarness();
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 202,
+            OrderId = 20,
+            ItemId = 1001,
+            QtyOrdered = 5,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 203,
+            OrderId = 20,
+            ItemId = 1001,
+            QtyOrdered = 5,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder
+        });
+        harness.SeedHu(new HuRecord { Id = 21, Code = "HU-000002", Status = "ACTIVE", CreatedAt = DateTime.UtcNow });
+        harness.SeedHu(new HuRecord { Id = 22, Code = "HU-000003", Status = "ACTIVE", CreatedAt = DateTime.UtcNow });
+        harness.SeedBalance(1001, 1, 5, "HU-000002");
+        harness.SeedBalance(1001, 1, 5, "HU-000003");
+        harness.SeedOrderReceiptPlanLines(20,
+            new OrderReceiptPlanLine
+            {
+                Id = 1, OrderId = 20, OrderLineId = 201, ItemId = 1001, ItemName = "Горчица",
+                QtyPlanned = 5, ToLocationId = 1, ToLocationCode = "FG-01", ToHu = "HU-000001"
+            },
+            new OrderReceiptPlanLine
+            {
+                Id = 2, OrderId = 20, OrderLineId = 202, ItemId = 1001, ItemName = "Горчица",
+                QtyPlanned = 5, ToLocationId = 1, ToLocationCode = "FG-01", ToHu = "HU-000002"
+            },
+            new OrderReceiptPlanLine
+            {
+                Id = 3, OrderId = 20, OrderLineId = 203, ItemId = 1001, ItemName = "Горчица",
+                QtyPlanned = 5, ToLocationId = 1, ToLocationCode = "FG-01", ToHu = "HU-000003"
+            });
         return harness;
     }
 

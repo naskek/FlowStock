@@ -3571,13 +3571,20 @@ static object MapOrderWithLoadedMetrics(Order order, IDataStore store)
 {
     var palletSummary = BuildOrderOwnedProductionPalletSummary(store, order.Id);
     var hasProductionPalletPlan = palletSummary.PlannedPalletCount > 0;
+    var shipmentProgress = new OrderShipmentProgress
+    {
+        OrderedQty = order.ShipmentOrderedQty,
+        ShippedQty = order.ShipmentShippedQty,
+        RemainingQty = order.ShipmentRemainingQty
+    };
     return OrderApiMapper.MapOrder(
         order,
         order.HasShipmentRemaining,
         hasProductionPalletPlan,
         order.NeedsProductionPalletPlan,
         palletSummary,
-        BuildOrderPalletPlanStatus(order, order.NeedsProductionPalletPlan, hasProductionPalletPlan, palletSummary));
+        BuildOrderPalletPlanStatus(order, order.NeedsProductionPalletPlan, hasProductionPalletPlan, palletSummary),
+        shipmentProgress: shipmentProgress);
 }
 
 static object MapOrderWithMetrics(Order order, OrderListMetrics? metrics, IDataStore store)
@@ -3587,13 +3594,20 @@ static object MapOrderWithMetrics(Order order, OrderListMetrics? metrics, IDataS
                                     && (metrics?.HasReceiptRemaining ?? false);
     var palletSummary = BuildOrderOwnedProductionPalletSummary(store, order.Id);
     var hasProductionPalletPlan = palletSummary.PlannedPalletCount > 0;
+    var shipmentProgress = new OrderShipmentProgress
+    {
+        OrderedQty = metrics?.ShipmentOrderedQty ?? 0d,
+        ShippedQty = metrics?.ShipmentShippedQty ?? 0d,
+        RemainingQty = metrics?.ShipmentRemainingQty ?? 0d
+    };
     return OrderApiMapper.MapOrder(
         order,
         hasShipmentRemaining,
         hasProductionPalletPlan,
         needsProductionPalletPlan,
         palletSummary,
-        BuildOrderPalletPlanStatus(order, needsProductionPalletPlan, hasProductionPalletPlan, palletSummary));
+        BuildOrderPalletPlanStatus(order, needsProductionPalletPlan, hasProductionPalletPlan, palletSummary),
+        shipmentProgress: shipmentProgress);
 }
 
 static object MapOrderWithShipmentRemaining(Order order, IDataStore store)
@@ -3608,13 +3622,15 @@ static object MapOrderWithShipmentRemaining(Order order, IDataStore store)
                                         .Any(line => line.QtyRemaining > 0.000001);
     var palletSummary = BuildOrderOwnedProductionPalletSummary(store, order.Id);
     var hasProductionPalletPlan = palletSummary.PlannedPalletCount > 0;
+    var shipmentProgress = OrderShipmentProgressService.Get(store, order.Id);
     return OrderApiMapper.MapOrder(
         order,
         hasShipmentRemaining,
         hasProductionPalletPlan,
         needsProductionPalletPlan,
         palletSummary,
-        BuildOrderPalletPlanStatus(order, needsProductionPalletPlan, hasProductionPalletPlan, palletSummary));
+        BuildOrderPalletPlanStatus(order, needsProductionPalletPlan, hasProductionPalletPlan, palletSummary),
+        shipmentProgress: shipmentProgress);
 }
 
 static ProductionPalletSummary BuildOrderOwnedProductionPalletSummary(IDataStore store, long orderId)

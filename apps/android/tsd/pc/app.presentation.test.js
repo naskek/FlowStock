@@ -4,6 +4,7 @@ const path = require("path");
 const vm = require("vm");
 
 const appPath = path.join(__dirname, "app.js");
+const styles = fs.readFileSync(path.join(__dirname, "styles.css"), "utf8");
 const hooks = {};
 const context = {
   console,
@@ -188,6 +189,19 @@ const orderLinesWithPalletHtml = pc.renderOrderLinesTable(
 assert.doesNotMatch(orderLinesWithPalletHtml, /pc-order-line-coverage-covered/);
 assert.match(orderLinesWithPalletHtml, /Наполнение/);
 assert.match(orderLinesWithPalletHtml, /Наполнено 1 \/ 2/);
+assert.match(
+  orderLinesWithPalletHtml,
+  /<th>Товар<\/th><th>SKU \/ ШК<\/th><th>GTIN<\/th><th>Заказано<\/th><th>Наполнение<\/th>/
+);
+assert.match(orderLinesWithPalletHtml, /pc-order-lines-table-wrap/);
+assert.match(orderLinesWithPalletHtml, /pc-order-lines-col-item/);
+assert.match(orderLinesWithPalletHtml, /pc-order-lines-col-filling/);
+assert.match(styles, /\.pc-order-lines-table\s*\{[^}]*width:\s*100%;[^}]*table-layout:\s*fixed;/s);
+assert.match(styles, /\.pc-order-lines-table-wrap\s*\{[^}]*width:\s*100%;[^}]*overflow-x:\s*auto;/s);
+assert.doesNotMatch(orderLinesWithPalletHtml, /<th>В наличии<\/th>/);
+assert.doesNotMatch(orderLinesWithPalletHtml, /<th>Назначение<\/th>/);
+assert.doesNotMatch(orderLinesWithPalletHtml, /<th>Отгружено<\/th>/);
+assert.doesNotMatch(orderLinesWithPalletHtml, /<th>Выпущено<\/th>/);
 
 const orderLinesCompletePalletHtml = pc.renderOrderLinesTable(
   [
@@ -207,8 +221,131 @@ const orderLinesCompletePalletHtml = pc.renderOrderLinesTable(
   { order_type: "INTERNAL", order_status: "IN_PROGRESS" }
 );
 assert.match(orderLinesCompletePalletHtml, /pc-order-line-coverage-covered/);
-assert.match(orderLinesCompletePalletHtml, /pc-icon-status/);
-assert.doesNotMatch(orderLinesCompletePalletHtml, />Наполнено 2 \/ 2</);
+assert.match(orderLinesCompletePalletHtml, />Наполнено 2 \/ 2</);
+
+const mixedComponentFilledLineHtml = pc.renderOrderLinesTable(
+  [
+    {
+      item_name: "Горчица",
+      barcode: "SKU-001",
+      gtin: "04607186951520",
+      production_purpose: "CUSTOMER_ORDER",
+      qty_ordered: 1,
+      qty_shipped: 0,
+      qty_available: 0,
+      can_ship_now: 0,
+      planned_pallet_count: 1,
+      filled_pallet_count: 1,
+      pallet_planned_qty: 1,
+      pallet_filled_qty: 1,
+    },
+  ],
+  { order_type: "CUSTOMER", order_status: "IN_PROGRESS" }
+);
+assert.match(mixedComponentFilledLineHtml, /pc-order-line-coverage-covered/);
+assert.doesNotMatch(mixedComponentFilledLineHtml, /pc-order-line-coverage-missing/);
+assert.match(mixedComponentFilledLineHtml, />Наполнено 1 \/ 1</);
+
+const mixedComponentPartialLineHtml = pc.renderOrderLinesTable(
+  [
+    {
+      item_name: "Горчица",
+      barcode: "SKU-001",
+      gtin: "04607186951520",
+      production_purpose: "CUSTOMER_ORDER",
+      qty_ordered: 1,
+      qty_shipped: 0,
+      qty_available: 0,
+      can_ship_now: 0,
+      planned_pallet_count: 1,
+      filled_pallet_count: 0,
+      pallet_planned_qty: 1,
+      pallet_filled_qty: 0.5,
+    },
+  ],
+  { order_type: "CUSTOMER", order_status: "IN_PROGRESS" }
+);
+assert.match(mixedComponentPartialLineHtml, /pc-order-line-coverage-partial/);
+assert.doesNotMatch(mixedComponentPartialLineHtml, /pc-order-line-coverage-missing/);
+assert.match(mixedComponentPartialLineHtml, />Наполнено 0\.5 \/ 1</);
+assert.match(styles, /\.pc-order-line-coverage-partial td\s*\{[^}]*background:\s*#fef3c7;/s);
+
+const mixedComponentOrder = {
+  id: 4,
+  order_ref: "004",
+  order_type: "CUSTOMER",
+  order_status: "IN_PROGRESS",
+  due_date: "2026-06-01",
+  shipped_at: null,
+  planned_pallet_count: 1,
+  filled_pallet_count: 1,
+};
+const mixedComponentLines = [
+  {
+    item_name: "Горчица",
+    barcode: "SKU-001",
+    gtin: "04607186951520",
+    production_purpose: "CUSTOMER_ORDER",
+    qty_ordered: 1,
+    qty_shipped: 0,
+    qty_available: 0,
+    can_ship_now: 0,
+    planned_pallet_count: 1,
+    filled_pallet_count: 1,
+    pallet_planned_qty: 1,
+    pallet_filled_qty: 1,
+  },
+];
+const modalUpdatesAfterMixedFill = pc.getOrderModalContentUpdates(mixedComponentOrder, mixedComponentLines);
+assert.match(modalUpdatesAfterMixedFill.linesHtml, />Наполнено 1 \/ 1</);
+assert.match(modalUpdatesAfterMixedFill.linesHtml, /pc-order-line-coverage-covered/);
+assert.match(modalUpdatesAfterMixedFill.summaryHtml, /pc-order-modal-summary/);
+
+const modalDom = {
+  datesEl: { textContent: "" },
+  summaryEl: { innerHTML: "" },
+  readinessEl: { outerHTML: '<span id="orderReadinessBadge"></span>' },
+  linesEl: { innerHTML: "" },
+  querySelector: function (selector) {
+    if (selector === "#orderDatesStatus") {
+      return this.datesEl;
+    }
+    if (selector === "#orderSummaryIndicators") {
+      return this.summaryEl;
+    }
+    if (selector === "#orderReadinessBadge") {
+      return this.readinessEl;
+    }
+    if (selector === "#orderLinesWrap") {
+      return this.linesEl;
+    }
+    return null;
+  },
+};
+pc.applyOrderModalContentUpdates(modalDom, modalUpdatesAfterMixedFill);
+assert.match(modalDom.linesEl.innerHTML, />Наполнено 1 \/ 1</);
+assert.match(modalDom.summaryEl.innerHTML, /pc-order-modal-summary/);
+
+let modalRefreshCalls = 0;
+pc.__setOpenOrderModalControllerForTest({
+  modal: { isConnected: true },
+  refresh: function () {
+    modalRefreshCalls += 1;
+  },
+});
+pc.refreshOpenOrderModalIfNeeded();
+assert.strictEqual(modalRefreshCalls, 1, "live refresh hook should call open order modal refresh");
+pc.clearOpenOrderModalController();
+assert.strictEqual(pc.getOpenOrderModalController(), null);
+
+pc.__setOpenOrderModalControllerForTest({
+  modal: { isConnected: false },
+  refresh: function () {
+    modalRefreshCalls += 1;
+  },
+});
+pc.refreshOpenOrderModalIfNeeded();
+assert.strictEqual(pc.getOpenOrderModalController(), null, "stale disconnected modal controller should be cleared");
 
 const internalPlannedOnlyHtml = pc.renderOrderLinesTable(
   [
@@ -851,4 +988,14 @@ assert(
 assert(
   !pcAppSourceForOrderRefSort.includes("return sortPendingOrdersFirst(sortedRows);"),
   "explicit column sorting must not be overridden by pending-first promotion"
+);
+assert.match(
+  pcAppSourceForOrderRefSort,
+  /refreshOpenOrderModalIfNeeded\(\)/,
+  "live refresh should also refresh an open order modal"
+);
+assert.match(
+  pcAppSourceForOrderRefSort,
+  /openOrderModalController = \{/,
+  "open order modal should register a live refresh controller"
 );

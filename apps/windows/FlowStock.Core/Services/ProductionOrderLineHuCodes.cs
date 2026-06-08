@@ -112,15 +112,23 @@ public static class ProductionOrderLineHuCodes
                         continue;
                     }
 
-                    var qty = string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)
+                    var palletFilled = string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase);
+                    var partialMixed = pallet.IsMixedPallet && pallet.HasComponentProgress && !pallet.AreAllComponentsFilled;
+                    var qty = palletFilled
                         ? line.FilledQty > StockQuantityRules.QtyTolerance ? line.FilledQty : line.PlannedQty
-                        : line.PlannedQty > StockQuantityRules.QtyTolerance ? line.PlannedQty : pallet.PlannedQty;
+                        : partialMixed ? Math.Max(0, line.FilledQty) : line.PlannedQty > StockQuantityRules.QtyTolerance ? line.PlannedQty : pallet.PlannedQty;
+                    var label = palletFilled
+                        ? "наполнено"
+                        : partialMixed
+                            ? ComponentStatusLabel(line)
+                            : StatusLabel(pallet.Status);
                     AddDisplay(rows, line.OrderLineId.Value, new OrderLineHuDisplayEntry(
                         pallet.HuCode.Trim(),
-                        StatusLabel(pallet.Status),
+                        label,
                         qty,
                         IsWarehouseBound: false,
-                        SortOrder: 2));
+                        SortOrder: 2,
+                        partialMixed ? $"/ {line.PlannedQty:0.###}" : null));
                 }
             }
         }
@@ -177,6 +185,19 @@ public static class ProductionOrderLineHuCodes
         }
 
         return "план";
+    }
+
+    private static string ComponentStatusLabel(ProductionPalletComponentLine line)
+    {
+        if (line.PlannedQty > StockQuantityRules.QtyTolerance
+            && line.FilledQty + StockQuantityRules.QtyTolerance >= line.PlannedQty)
+        {
+            return "наполнено";
+        }
+
+        return line.FilledQty > StockQuantityRules.QtyTolerance
+            ? "частично наполнено"
+            : "ожидает";
     }
 
     private static bool HasPositiveHuBalance(IDataStore store, long itemId, string huCode)

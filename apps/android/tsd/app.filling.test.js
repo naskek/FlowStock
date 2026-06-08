@@ -553,16 +553,25 @@ assert(
   "outbound order screen should scan expected HU through the server"
 );
 assert(
-  appJs.includes("TsdStorage.apiCompleteOutboundPicking(orderId)") &&
-    appJs.includes("Все паллеты подобраны. Отгрузка проведена."),
-  "outbound picking complete should reflect server auto-close message"
+  appJs.includes("TsdStorage.apiCompleteOutboundPicking(orderId, allowPartial)") &&
+    storageJs.includes("allow_partial") &&
+    appJs.includes("Закрыть частичную отгрузку?"),
+  "outbound picking complete should support explicit partial close confirmation"
 );
 assert(
   appJs.includes("Микс-паллета") &&
     appJs.includes("preview.lines") &&
-    appJs.includes("filling-preview-composition"),
-  "mixed pallet preview should render composition lines"
+    appJs.includes("filling-preview-composition") &&
+    appJs.includes("filling-component-checkbox") &&
+    appJs.includes("TsdStorage.apiFillMixedProductionPalletComponents") &&
+    storageJs.includes("/api/tsd/production/fill-mixed-pallet-components"),
+  "mixed pallet preview should select and submit component lines"
 );
+assert(
+  appJs.includes("updateMixedConfirmState") && appJs.includes("result.message"),
+  "mixed component fill should require a selection and show partial-save message"
+);
+assert(appVersionJs.includes('var version = "33"'), "TSD shell version should be bumped for mixed component filling");
 assert(
   appJs.includes("Не удалось загрузить заказы для наполнения") && appJs.includes("console.error(error)"),
   "filling API failures should be visible and logged"

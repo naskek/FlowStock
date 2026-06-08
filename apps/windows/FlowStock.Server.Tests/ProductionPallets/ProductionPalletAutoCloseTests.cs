@@ -51,7 +51,12 @@ public sealed class ProductionPalletAutoCloseTests
         var mixed = Assert.Single(plannedPallets.Where(pallet => pallet.IsMixedPallet));
         var single = Assert.Single(plannedPallets.Where(pallet => !pallet.IsMixedPallet));
 
-        var mixedFill = service.Fill(mixed.HuCode, "TSD-01", orderId: 102, prdDocId: plan.PrdDocId);
+        var mixedFill = service.FillMixedComponents(
+            mixed.HuCode,
+            mixed.Lines.Select(line => line.Id).ToArray(),
+            "TSD-01",
+            orderId: 102,
+            prdDocId: plan.PrdDocId);
 
         Assert.True(mixedFill.Success, mixedFill.Error);
         Assert.True(mixedFill.PrdAutoClosed);
@@ -117,6 +122,143 @@ public sealed class ProductionPalletAutoCloseTests
         Assert.Equal(2, outboundLines.Length);
         Assert.Equal([44, 47], outboundLines.Select(line => line.ItemId).ToArray());
         Assert.All(outboundLines, line => Assert.Equal(mixed.HuCode, line.FromHu));
+    }
+
+    [Fact]
+    public void FillMixedComponents_PartialProgress_DoesNotWriteLedgerOrFillPallet()
+    {
+        var harness = CreateCustomerMixedPalletHarness();
+        var service = CreatePalletService(harness);
+        var plan = service.PlanOrder(102);
+        var mixed = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Where(pallet => pallet.IsMixedPallet));
+        var component = mixed.Lines.OrderBy(line => line.Id).First();
+
+        var result = service.FillMixedComponents(
+            mixed.HuCode,
+            [component.Id],
+            "TSD-01",
+            orderId: 102,
+            prdDocId: plan.PrdDocId);
+
+        Assert.True(result.Success, result.Error);
+        Assert.Equal(ProductionPalletStatus.PartiallyFilled, result.EffectiveStatus);
+        Assert.False(result.LedgerWritten);
+        Assert.False(result.PrdAutoClosed);
+        Assert.Empty(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Draft, harness.GetDoc(plan.PrdDocId).Status);
+        var pallet = harness.Store.GetProductionPalletByHu(mixed.HuCode)!;
+        Assert.NotEqual(ProductionPalletStatus.Filled, pallet.Status);
+        Assert.True(pallet.Lines.Single(line => line.Id == component.Id).IsCompleted);
+        Assert.NotNull(pallet.Lines.Single(line => line.Id == component.Id).FilledAt);
+        Assert.Contains(pallet.Lines, line => !line.IsCompleted);
+    }
+
+    [Fact]
+    public void FillMixedComponents_WhenAutoCloseDisabled_DoesNotSaveProgress()
+    {
+        var harness = CreateCustomerMixedPalletHarness();
+        var documents = harness.CreateService();
+        var fillClose = new ProductionFillCloseService(
+            harness.Store,
+            documents,
+            new FlowStockLedgerFlowOptions { ProductionAutoCloseOnFill = false });
+        var service = new ProductionPalletService(harness.Store, fillClose);
+        var plan = service.PlanOrder(102);
+        var mixed = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Where(pallet => pallet.IsMixedPallet));
+
+        var result = service.FillMixedComponents(
+            mixed.HuCode,
+            [mixed.Lines[0].Id],
+            "TSD-01",
+            orderId: 102,
+            prdDocId: plan.PrdDocId);
+
+        Assert.False(result.Success);
+        Assert.Equal("PRODUCTION_AUTO_CLOSE_REQUIRED", result.Error);
+        Assert.All(harness.Store.GetProductionPalletByHu(mixed.HuCode)!.Lines, line => Assert.False(line.IsCompleted));
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void FillMixedComponents_FinalRequest_ClosesPrdAndWritesAllComponentLedger()
+    {
+        var harness = CreateCustomerMixedPalletHarness();
+        var service = CreatePalletService(harness);
+        var plan = service.PlanOrder(102);
+        var mixed = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Where(pallet => pallet.IsMixedPallet));
+        var components = mixed.Lines.OrderBy(line => line.Id).ToArray();
+        Assert.True(service.FillMixedComponents(mixed.HuCode, [components[0].Id], "TSD-01", 102, plan.PrdDocId).Success);
+
+        var result = service.FillMixedComponents(mixed.HuCode, [components[1].Id], "TSD-01", 102, plan.PrdDocId);
+
+        Assert.True(result.Success, result.Error);
+        Assert.True(result.PrdAutoClosed);
+        Assert.True(result.LedgerWritten);
+        Assert.Equal(ProductionPalletStatus.Filled, result.EffectiveStatus);
+        Assert.Equal(2, harness.LedgerEntries.Count(entry =>
+            string.Equals(entry.HuCode, mixed.HuCode, StringComparison.OrdinalIgnoreCase)));
+        Assert.Equal(ProductionPalletStatus.Filled, harness.Store.GetProductionPalletByHu(mixed.HuCode)?.Status);
+    }
+
+    [Fact]
+    public void FillMixedComponents_WhenFinalCloseFails_KeepsPreviouslySavedPartialProgress()
+    {
+        var harness = CreateCustomerMixedPalletHarness();
+        var service = CreatePalletService(harness);
+        var plan = service.PlanOrder(102);
+        var mixed = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Where(pallet => pallet.IsMixedPallet));
+        var components = mixed.Lines.OrderBy(line => line.Id).ToArray();
+        Assert.True(service.FillMixedComponents(mixed.HuCode, [components[0].Id], "TSD-01", 102, plan.PrdDocId).Success);
+        harness.SeedItem(new Item { Id = components[1].ItemId, Name = "Заблокирован", BaseUom = "шт", IsActive = false });
+
+        var result = service.FillMixedComponents(mixed.HuCode, [components[1].Id], "TSD-01", 102, plan.PrdDocId);
+
+        Assert.False(result.Success);
+        var pallet = harness.Store.GetProductionPalletByHu(mixed.HuCode)!;
+        Assert.True(pallet.Lines.Single(line => line.Id == components[0].Id).IsCompleted);
+        Assert.False(pallet.Lines.Single(line => line.Id == components[1].Id).IsCompleted);
+        Assert.NotEqual(ProductionPalletStatus.Filled, pallet.Status);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void SyncOrderLinePlan_WithPartialMixedProgress_IsRejectedAndKeepsPallet()
+    {
+        var harness = CreateCustomerMixedPalletHarness();
+        var service = CreatePalletService(harness);
+        var plan = service.PlanOrder(102);
+        var mixed = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Where(pallet => pallet.IsMixedPallet));
+        Assert.True(service.FillMixedComponents(mixed.HuCode, [mixed.Lines[0].Id], "TSD-01", 102, plan.PrdDocId).Success);
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            service.SyncOrderLinePlan(102, mixed.Lines[0].OrderLineId!.Value, orderedQty: 0));
+
+        Assert.Contains("частично наполненная", error.Message, StringComparison.OrdinalIgnoreCase);
+        var pallet = harness.Store.GetProductionPalletByHu(mixed.HuCode)!;
+        Assert.Equal(ProductionPalletStatus.PartiallyFilled, pallet.EffectiveStatus);
+        Assert.NotEqual(ProductionPalletStatus.Cancelled, pallet.Status);
+    }
+
+    [Fact]
+    public void LegacyFillMixedPallet_RequiresComponentSelection_ButFilledRepeatIsIdempotent()
+    {
+        var harness = CreateCustomerMixedPalletHarness();
+        var service = CreatePalletService(harness);
+        var plan = service.PlanOrder(102);
+        var mixed = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Where(pallet => pallet.IsMixedPallet));
+
+        var legacy = service.Fill(mixed.HuCode, "TSD-01", 102, plan.PrdDocId);
+        Assert.False(legacy.Success);
+        Assert.Equal("MIXED_COMPONENT_SELECTION_REQUIRED", legacy.Error);
+
+        var final = service.FillMixedComponents(mixed.HuCode, mixed.Lines.Select(line => line.Id).ToArray(), "TSD-01", 102, plan.PrdDocId);
+        var repeat = service.Fill(mixed.HuCode, "TSD-01", 102, plan.PrdDocId);
+
+        Assert.True(final.Success, final.Error);
+        Assert.True(repeat.Success, repeat.Error);
+        Assert.True(repeat.AlreadyFilled);
+        Assert.Equal(2, harness.LedgerEntries.Count(entry =>
+            string.Equals(entry.HuCode, mixed.HuCode, StringComparison.OrdinalIgnoreCase)));
     }
 
     [Fact]

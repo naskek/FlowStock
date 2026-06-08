@@ -24,6 +24,7 @@ public static class ProductionPalletEndpoints
         app.MapGet("/api/tsd/production/filling-docs", HandleWorkItems);
         app.MapPost("/api/tsd/production/scan-pallet", HandleScan);
         app.MapPost("/api/tsd/production/fill-pallet", HandleFill);
+        app.MapPost("/api/tsd/production/fill-mixed-pallet-components", HandleFillMixedComponents);
         app.MapGet("/api/production-pallets/filled-without-stock", HandleFilledWithoutStock);
         app.MapPost("/api/production-pallets/backfill-filled-stock", HandleBackfillFilledStock);
         app.MapGet("/api/production-pallets/filled-stock-reverse-candidates", HandleFilledStockReverseCandidates);
@@ -442,6 +443,45 @@ public static class ProductionPalletEndpoints
         }
     }
 
+    private static IResult HandleFillMixedComponents(
+        ProductionPalletMixedComponentFillRequest request,
+        ProductionPalletService service)
+    {
+        try
+        {
+            var result = service.FillMixedComponents(
+                request.HuCode,
+                request.ComponentLineIds,
+                request.DeviceId,
+                request.OrderId,
+                request.PrdDocId);
+            if (!result.Success)
+            {
+                return Results.BadRequest(new { ok = false, error = result.Error, message = result.Error });
+            }
+
+            return Results.Ok(new
+            {
+                ok = true,
+                already_filled = result.AlreadyFilled,
+                effective_status = result.EffectiveStatus,
+                filled_component_count = result.FilledComponentCount,
+                total_component_count = result.TotalComponentCount,
+                ledger_written = result.LedgerWritten,
+                prd_auto_closed = result.PrdAutoClosed,
+                closed_prd_doc_id = result.ClosedPrdDocId,
+                closed_prd_doc_ref = result.ClosedPrdDocRef,
+                message = result.Message,
+                pallet = result.Pallet == null ? null : MapPallet(result.Pallet),
+                document = result.Document == null ? null : MapDocument(result.Document)
+            });
+        }
+        catch (Exception ex)
+        {
+            return Results.Json(new { ok = false, error = ex.Message, message = ex.Message }, statusCode: 500);
+        }
+    }
+
     private static object MapWorkItem(ProductionPalletWorkItem item)
     {
         return new
@@ -566,15 +606,28 @@ public static class ProductionPalletEndpoints
             is_mixed_pallet = result.IsMixedPallet,
             lines = result.Lines.Select(line => new
             {
+                component_line_id = line.ComponentLineId,
                 item_id = line.ItemId,
                 item_name = line.ItemName,
                 brand = line.Brand,
                 qty = line.Qty,
+                planned_qty = line.PlannedQty,
+                filled_qty = line.FilledQty,
+                filled_at = line.FilledAt,
+                is_completed = line.IsCompleted,
                 uom = line.Uom
             }),
             pallet_index = result.PalletIndex,
             pallet_count = result.PalletCount,
             pallet_status = result.PalletStatus,
+            effective_status = result.PalletStatus == ProductionPalletStatus.Filled
+                ? ProductionPalletStatus.Filled
+                : result.Lines.Any(line => line.FilledQty > StockQuantityRules.QtyTolerance)
+                  && result.Lines.Any(line => !line.IsCompleted)
+                    ? ProductionPalletStatus.PartiallyFilled
+                    : result.PalletStatus,
+            filled_component_count = result.Lines.Count(line => line.IsCompleted),
+            total_component_count = result.Lines.Count,
             document = result.Document == null ? null : MapDocument(result.Document)
         };
     }
@@ -631,13 +684,21 @@ public static class ProductionPalletEndpoints
             to_location_id = pallet.ToLocationId,
             to_location_code = pallet.ToLocationCode,
             status = pallet.Status,
+            effective_status = pallet.EffectiveStatus,
             is_mixed_pallet = pallet.IsMixedPallet,
+            filled_component_count = pallet.FilledComponentCount,
+            total_component_count = pallet.TotalComponentCount,
             lines = pallet.Lines.Select(line => new
             {
+                component_line_id = line.Id,
                 item_id = line.ItemId,
                 item_name = line.ItemName,
                 brand = line.Brand,
                 qty = line.PlannedQty,
+                planned_qty = line.PlannedQty,
+                filled_qty = line.FilledQty,
+                filled_at = line.FilledAt,
+                is_completed = line.IsCompleted,
                 uom = line.Uom
             }),
             filled_at = pallet.FilledAt,
@@ -674,5 +735,23 @@ public static class ProductionPalletEndpoints
 
         [JsonPropertyName("device_id")]
         public string? DeviceId { get; init; }
+    }
+
+    private sealed class ProductionPalletMixedComponentFillRequest
+    {
+        [JsonPropertyName("order_id")]
+        public long? OrderId { get; init; }
+
+        [JsonPropertyName("prd_doc_id")]
+        public long? PrdDocId { get; init; }
+
+        [JsonPropertyName("hu_code")]
+        public string? HuCode { get; init; }
+
+        [JsonPropertyName("device_id")]
+        public string? DeviceId { get; init; }
+
+        [JsonPropertyName("component_line_ids")]
+        public IReadOnlyList<long>? ComponentLineIds { get; init; }
     }
 }

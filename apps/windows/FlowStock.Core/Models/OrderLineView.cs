@@ -89,7 +89,11 @@ public sealed class OrderLineView : INotifyPropertyChanged
     public IReadOnlyList<OrderLineHuDisplayRow> HuDisplayRows =>
         ProductionHuDisplayEntries
             .Where(entry => string.Equals(entry.Label, "план", StringComparison.OrdinalIgnoreCase)
-                            || string.Equals(entry.Label, "напечатано", StringComparison.OrdinalIgnoreCase))
+                            || string.Equals(entry.Label, "напечатано", StringComparison.OrdinalIgnoreCase)
+                            || (string.Equals(entry.Label, "наполнено", StringComparison.OrdinalIgnoreCase)
+                                && !string.IsNullOrWhiteSpace(entry.FateSuffix))
+                            || string.Equals(entry.Label, "частично наполнено", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(entry.Label, "ожидает", StringComparison.OrdinalIgnoreCase))
             .Select(entry => entry with { SortOrder = 1 })
             .Concat(HuFateDisplayEntries)
             .OrderBy(entry => entry.SortOrder)
@@ -264,4 +268,3 @@ public sealed record OrderLineHuDisplayRow(
         ? $"{HuCode} · {Label} · {Qty:0.###}"
         : $"{HuCode} · {Label} · {Qty:0.###} {FateSuffix}";
 }
-

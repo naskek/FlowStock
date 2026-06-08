@@ -916,6 +916,10 @@
       status: String((row && row.status) || ""),
       expectedHuCount: Number(pickOutboundField(row, "expectedHuCount", "expected_hu_count")) || 0,
       pickedHuCount: Number(pickOutboundField(row, "pickedHuCount", "picked_hu_count")) || 0,
+      orderedQty: Number(pickOutboundField(row, "orderedQty", "ordered_qty")) || 0,
+      shippedQty: Number(pickOutboundField(row, "shippedQty", "shipped_qty")) || 0,
+      remainingQty: Number(pickOutboundField(row, "remainingQty", "remaining_qty")) || 0,
+      scannedQty: Number(pickOutboundField(row, "scannedQty", "scanned_qty")) || 0,
       isComplete:
         (row && row.isComplete === true) || (row && row.is_complete === true),
       draftOutboundDocId:
@@ -980,7 +984,7 @@
       });
   }
 
-  function apiCompleteOutboundPicking(orderId) {
+  function apiCompleteOutboundPicking(orderId, allowPartial) {
     var target = Number(orderId);
     if (!target) {
       return Promise.reject(new Error("INVALID_ORDER_ID"));
@@ -990,7 +994,10 @@
         return fetchJsonWithTimeout(baseUrl + "/api/tsd/outbound/orders/" + encodeURIComponent(target) + "/complete", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ device_id: getStoredDeviceId() }),
+          body: JSON.stringify({
+            device_id: getStoredDeviceId(),
+            allow_partial: allowPartial === true,
+          }),
         });
       })
       .then(function (payload) {
@@ -1206,12 +1213,20 @@
       huCode: String(row.hu_code || ""),
       plannedQty: Number(row.planned_qty) || 0,
       isMixedPallet: row.is_mixed_pallet === true,
+      effectiveStatus: String(row.effective_status || row.status || ""),
+      filledComponentCount: Number(row.filled_component_count) || 0,
+      totalComponentCount: Number(row.total_component_count) || 0,
       lines: Array.isArray(row.lines) ? row.lines.map(function (line) {
         return {
+          componentLineId: Number(line.component_line_id) || 0,
           itemId: Number(line.item_id) || 0,
           itemName: String(line.item_name || ""),
           brand: String(line.brand || ""),
           qty: Number(line.qty) || 0,
+          plannedQty: Number(line.planned_qty != null ? line.planned_qty : line.qty) || 0,
+          filledQty: Number(line.filled_qty) || 0,
+          filledAt: String(line.filled_at || ""),
+          isCompleted: line.is_completed === true,
           uom: String(line.uom || "шт"),
         };
       }) : [],
@@ -1254,16 +1269,24 @@
       isMixedPallet: payload.is_mixed_pallet === true,
       lines: Array.isArray(payload.lines) ? payload.lines.map(function (line) {
         return {
+          componentLineId: Number(line.component_line_id) || 0,
           itemId: Number(line.item_id) || 0,
           itemName: String(line.item_name || ""),
           brand: String(line.brand || ""),
           qty: Number(line.qty) || 0,
+          plannedQty: Number(line.planned_qty != null ? line.planned_qty : line.qty) || 0,
+          filledQty: Number(line.filled_qty) || 0,
+          filledAt: String(line.filled_at || ""),
+          isCompleted: line.is_completed === true,
           uom: String(line.uom || "шт"),
         };
       }) : [],
       palletIndex: Number(payload.pallet_index) || 0,
       palletCount: Number(payload.pallet_count) || 0,
       palletStatus: String(payload.pallet_status || ""),
+      effectiveStatus: String(payload.effective_status || payload.pallet_status || ""),
+      filledComponentCount: Number(payload.filled_component_count) || 0,
+      totalComponentCount: Number(payload.total_component_count) || 0,
       document: payload.document ? normalizeProductionPalletDocument(payload.document) : null,
     };
   }
@@ -1455,6 +1478,23 @@
           document: result && result.document ? normalizeProductionPalletDocument(result.document) : null,
         };
       });
+  }
+
+  function apiFillMixedProductionPalletComponents(payload) {
+    var body = payload || {};
+    return getBaseUrl().then(function (baseUrl) {
+      return fetchJsonWithTimeout(baseUrl + "/api/tsd/production/fill-mixed-pallet-components", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          order_id: body.orderId || body.order_id || null,
+          prd_doc_id: body.prdDocId || body.prd_doc_id || null,
+          hu_code: body.huCode || body.hu_code || "",
+          device_id: body.deviceId || body.device_id || "",
+          component_line_ids: body.componentLineIds || body.component_line_ids || [],
+        }),
+      });
+    });
   }
 
   function apiLogin(login, password) {
@@ -2883,6 +2923,7 @@
     apiGetProductionPallets: apiGetProductionPallets,
     apiScanProductionPallet: apiScanProductionPallet,
     apiFillProductionPallet: apiFillProductionPallet,
+    apiFillMixedProductionPalletComponents: apiFillMixedProductionPalletComponents,
     apiListWarehouseTasks: apiListWarehouseTasks,
     apiGetWarehouseTask: apiGetWarehouseTask,
     apiStartWarehouseTask: apiStartWarehouseTask,

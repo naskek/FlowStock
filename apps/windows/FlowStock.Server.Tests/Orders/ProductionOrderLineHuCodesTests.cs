@@ -48,6 +48,34 @@ public sealed class ProductionOrderLineHuCodesTests
         Assert.Equal(new[] { "HU-BOUND-1" }, huByLine[222]);
     }
 
+    [Fact]
+    public void BuildProductionDisplayByOrder_PartialMixedHu_UsesComponentLineStatus()
+    {
+        var harness = CreateCustomerTwoLineMixedHarness();
+        var service = new ProductionPalletService(harness.Store);
+        var plan = service.PlanOrder(83);
+        var pallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId));
+        var filledComponent = pallet.Lines.Single(line => line.OrderLineId == 222);
+
+        harness.Store.MarkProductionPalletComponentsFilled(pallet.Id, [filledComponent.Id], new DateTime(2026, 6, 8, 12, 0, 0));
+
+        var display = ProductionOrderLineHuCodes.BuildProductionDisplayByOrder(harness.Store, 83);
+
+        var filledEntry = Assert.Single(display[222]);
+        Assert.Equal(pallet.HuCode, filledEntry.HuCode);
+        Assert.Equal("наполнено", filledEntry.Label);
+        Assert.Equal(120, filledEntry.Qty, 3);
+        Assert.Equal("/ 120", filledEntry.FateSuffix);
+        var filledLineView = new OrderLineView { ProductionHuDisplayEntries = display[222] };
+        Assert.Contains(filledLineView.HuDisplayRows, row => row.Label == "наполнено");
+
+        var waitingEntry = Assert.Single(display[223]);
+        Assert.Equal(pallet.HuCode, waitingEntry.HuCode);
+        Assert.Equal("ожидает", waitingEntry.Label);
+        Assert.Equal(0, waitingEntry.Qty, 3);
+        Assert.Equal("/ 80", waitingEntry.FateSuffix);
+    }
+
     private static CloseDocumentHarness CreateCustomerTwoLineHarness()
     {
         var harness = new CloseDocumentHarness();
@@ -64,6 +92,14 @@ public sealed class ProductionOrderLineHuCodesTests
         });
         harness.SeedOrderLine(new OrderLine { Id = 222, OrderId = 83, ItemId = 29, QtyOrdered = 120 });
         harness.SeedOrderLine(new OrderLine { Id = 223, OrderId = 83, ItemId = 13, QtyOrdered = 80 });
+        return harness;
+    }
+
+    private static CloseDocumentHarness CreateCustomerTwoLineMixedHarness()
+    {
+        var harness = CreateCustomerTwoLineHarness();
+        harness.Store.UpdateOrderLineProductionPalletGroup(222, "MIX-1");
+        harness.Store.UpdateOrderLineProductionPalletGroup(223, "MIX-1");
         return harness;
     }
 }

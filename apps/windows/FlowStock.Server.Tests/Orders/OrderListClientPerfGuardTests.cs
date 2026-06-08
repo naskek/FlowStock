@@ -54,6 +54,10 @@ public sealed class OrderListClientPerfGuardTests
         Assert.Contains("ShowOutboundAutofillMessageOnce(", source, StringComparison.Ordinal);
         Assert.Contains("TryDiscardEmptyOutboundDraftIfNeededAsync", source, StringComparison.Ordinal);
         Assert.Contains("AutoHuButton.Visibility = doc.Type == DocType.ProductionReceipt && !_hasProductionPalletPlan", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("_isPartialShipment", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("DocPartialCheck", source, StringComparison.Ordinal);
+        Assert.Contains("AddItemButton.Visibility = _doc?.Type == DocType.Outbound ? Visibility.Collapsed", source, StringComparison.Ordinal);
+        Assert.Contains("SyncCustomerOutboundFromBoundHu(_doc.Id, replaceAll: true)", source, StringComparison.Ordinal);
     }
 
     [Fact]

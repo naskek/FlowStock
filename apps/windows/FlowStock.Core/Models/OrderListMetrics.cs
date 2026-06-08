@@ -6,5 +6,8 @@ public sealed class OrderListMetrics
     public bool HasShipmentRemaining { get; init; }
     public bool HasReceiptRemaining { get; init; }
     public bool HasProductionPalletPlan { get; init; }
+    public double ShipmentOrderedQty { get; init; }
+    public double ShipmentShippedQty { get; init; }
+    public double ShipmentRemainingQty { get; init; }
     public ProductionPalletSummary PalletSummary { get; init; } = new();
 }

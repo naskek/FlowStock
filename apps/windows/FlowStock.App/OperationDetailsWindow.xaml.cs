@@ -18,6 +18,7 @@ public partial class OperationDetailsWindow : Window
 {
     private static bool KmUiEnabled => false;
     private readonly AppServices _services;
+    private readonly IMixedPalletComponentFillDialogFactory _mixedPalletComponentFillDialogFactory = new MixedPalletComponentFillDialogFactory();
     private readonly ObservableCollection<Location> _locations = new();
     private readonly ObservableCollection<Partner> _partners = new();
     private readonly List<Partner> _partnersAll = new();
@@ -37,9 +38,7 @@ public partial class OperationDetailsWindow : Window
     private OutboundHuCandidate? _selectedOutboundHu;
     private bool _suppressOrderSync;
     private bool _suppressPartnerFilter;
-    private bool _suppressPartialSync;
     private bool _suppressDirtyTracking;
-    private bool _isPartialShipment;
     private bool _autoFillFromBoundOrderInProgress;
     private readonly HashSet<string> _autoFillAttempts = new(StringComparer.Ordinal);
     private bool _hasUnsavedChanges;
@@ -361,6 +360,9 @@ public partial class OperationDetailsWindow : Window
         var isProductionReceipt = _doc?.Type == DocType.ProductionReceipt;
         var isEditable = IsDocEditable();
         var checkOutboundAvailability = isOutbound && isEditable;
+        var mixedOutboundHuCodes = isOutbound
+            ? ResolveMixedOutboundHuCodes(lines)
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var receiptRemaining = new Dictionary<long, double>();
         if (isProductionReceipt && _doc?.OrderId.HasValue == true)
         {
@@ -376,8 +378,11 @@ public partial class OperationDetailsWindow : Window
         var productionPalletsByLineId = isProductionReceipt && _hasProductionPalletPlan
             ? _services.DataStore.GetProductionPalletsByDoc(_docId)
                 .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
-                .GroupBy(pallet => pallet.DocLineId)
-                .ToDictionary(group => group.Key, group => group.OrderBy(pallet => pallet.Id).ToList())
+                .SelectMany(pallet => pallet.Lines.Count > 0
+                    ? pallet.Lines.Select(component => new { LineId = component.DocLineId, Pallet = pallet })
+                    : new[] { new { LineId = pallet.DocLineId, Pallet = pallet } })
+                .GroupBy(row => row.LineId)
+                .ToDictionary(group => group.Key, group => group.Select(row => row.Pallet).OrderBy(pallet => pallet.Id).ToList())
             : new Dictionary<long, List<ProductionPallet>>();
         var requiredByItem = checkOutboundAvailability
             ? lines.Where(line => line.Qty > 0)
@@ -451,12 +456,22 @@ public partial class OperationDetailsWindow : Window
                 var pallet = palletsForLine[0];
                 hasProductionPalletPlanLine = true;
                 isProductionPalletFilled = string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase);
-                palletStatusDisplay = isProductionPalletFilled ? "Наполнен" : "Ожидает";
+                var component = pallet.Lines.FirstOrDefault(row => row.DocLineId == line.Id);
+                palletStatusDisplay = pallet.IsMixedPallet
+                    ? component == null
+                        ? "Ожидает"
+                        : $"{ResolveMixedPalletComponentProgressLabel(component)} · {FormatQty(component.FilledQty)} / {FormatQty(component.PlannedQty)}"
+                    : isProductionPalletFilled
+                        ? "Наполнен"
+                        : "Ожидает";
                 if (!string.IsNullOrWhiteSpace(pallet.HuCode))
                 {
+                    var palletHint = pallet.IsMixedPallet
+                        ? $"{pallet.HuCode} · микс · {ResolveMixedPalletProgressLabel(pallet)} · {pallet.FilledComponentCount} / {pallet.TotalComponentCount}"
+                        : $"Паллета: {pallet.HuCode}";
                     orderLineHint = string.IsNullOrWhiteSpace(orderLineHint)
-                        ? $"Паллета: {pallet.HuCode}"
-                        : $"{orderLineHint}{Environment.NewLine}Паллета: {pallet.HuCode}";
+                        ? palletHint
+                        : $"{orderLineHint}{Environment.NewLine}{palletHint}";
                 }
             }
 
@@ -498,6 +513,7 @@ public partial class OperationDetailsWindow : Window
                 ToLocationId = ResolveLocationId(line.ToLocation, locationLookup),
                 FromHu = NormalizeHuValue(line.FromHu),
                 ToHu = NormalizeHuValue(line.ToHu),
+                IsMixedOutboundHu = mixedOutboundHuCodes.Contains(NormalizeHuValue(line.FromHu) ?? string.Empty),
                 FromLocation = FormatLocationDisplay(line.FromLocation, locationLookup),
                 ToLocation = FormatLocationDisplay(line.ToLocation, locationLookup)
             });
@@ -1169,7 +1185,44 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        var selectedLineIds = GetSelectedDocLines()
+        if (_doc?.Type == DocType.ProductionReceipt)
+        {
+            MessageBox.Show(
+                DocumentService.ProductionReceiptLineDeleteForbiddenMessage,
+                "Операция",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        var selectedLines = GetSelectedDocLines();
+        var mixedHuCodes = selectedLines
+            .Where(line => line.IsMixedOutboundHu && !string.IsNullOrWhiteSpace(line.FromHu))
+            .Select(line => line.FromHu!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(huCode => huCode, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (mixedHuCodes.Length > 0)
+        {
+            var message = mixedHuCodes.Length == 1
+                ? $"Товар находится на микс-паллете {mixedHuCodes[0]}.{Environment.NewLine}" +
+                  $"Микс-паллета отгружается только целиком.{Environment.NewLine}{Environment.NewLine}" +
+                  $"Будут удалены все строки этой паллеты из текущей отгрузки.{Environment.NewLine}" +
+                  "Продолжить?"
+                : $"Выбраны строки микс-паллет: {string.Join(", ", mixedHuCodes)}.{Environment.NewLine}" +
+                  $"Микс-паллеты отгружаются только целиком.{Environment.NewLine}{Environment.NewLine}" +
+                  $"Будут удалены все строки этих паллет из текущей отгрузки.{Environment.NewLine}" +
+                  "Продолжить?";
+            if (MessageBox.Show(message, "Операция", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+            {
+                return;
+            }
+        }
+
+        var selectedLineIds = _docLines
+            .Where(line => selectedLines.Any(selected => selected.Id == line.Id)
+                           || (!string.IsNullOrWhiteSpace(line.FromHu)
+                               && mixedHuCodes.Contains(line.FromHu, StringComparer.OrdinalIgnoreCase)))
             .Select(line => line.Id)
             .Distinct()
             .ToList();
@@ -1367,20 +1420,19 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        if (HasOrderBinding() && !_isPartialShipment)
-        {
-            LogOutboundOrderBoundInfo("line update blocked: order-bound outbound allows qty edit only in partial shipment mode");
-            MessageBox.Show(
-                "Изменение количества доступно только в режиме 'Частичная отгрузка'.",
-                "Операция",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-            return;
-        }
-
         if (_selectedDocLine == null)
         {
             MessageBox.Show("Выберите строку.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (_doc?.Type == DocType.Outbound && _selectedDocLine.IsMixedOutboundHu)
+        {
+            MessageBox.Show(
+                "Количество внутри микс-паллеты нельзя изменить отдельно.\nУдалите всю микс-паллету из отгрузки или отгружайте её целиком.",
+                "Операция",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
             return;
         }
 
@@ -1422,13 +1474,18 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        if (HasOrderBinding() && _isPartialShipment)
+        if (HasOrderBinding())
         {
             var newQty = qtyDialog.QtyBase;
-            if (newQty < 1 || newQty > orderedQty)
+            var otherDraftQty = _docLines
+                .Where(line => line.Id != _selectedDocLine.Id
+                               && line.OrderLineId == _selectedDocLine.OrderLineId)
+                .Sum(line => line.QtyBase);
+            var maxQty = Math.Max(0, orderedQty - otherDraftQty);
+            if (newQty < 1 || newQty > maxQty + QtyTolerance)
             {
                 MessageBox.Show(
-                    $"Количество должно быть от 1 до {FormatQty(orderedQty)}.",
+                    $"Количество должно быть от 1 до {FormatQty(maxQty)}.",
                     "Операция",
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning);
@@ -1673,6 +1730,13 @@ public partial class OperationDetailsWindow : Window
         FillPalletButton.IsEnabled = false;
         try
         {
+            var selectedPallet = _services.DataStore.GetProductionPalletByHu(huCode);
+            if (selectedPallet?.IsMixedPallet == true)
+            {
+                await FillMixedPalletComponentsAsync(huCode, selectedLineId);
+                return;
+            }
+
             var result = await _services.WpfProductionPalletApi.TryFillPalletAsync(
                 _doc.Id,
                 _doc.OrderId,
@@ -1705,6 +1769,98 @@ public partial class OperationDetailsWindow : Window
         finally
         {
             UpdateLineButtons();
+        }
+    }
+
+    private async Task FillMixedPalletComponentsAsync(string huCode, long selectedLineId)
+    {
+        if (_doc == null)
+        {
+            return;
+        }
+
+        var documentResult = await _services.WpfProductionPalletApi.TryGetProductionPalletDocumentAsync(_doc.Id);
+        if (!documentResult.IsSuccess || documentResult.Document == null)
+        {
+            MessageBox.Show(
+                string.IsNullOrWhiteSpace(documentResult.Message) ? "Не удалось загрузить состав микс-паллеты." : documentResult.Message,
+                "Наполнение микс-паллеты",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        var pallet = documentResult.Document.Pallets.FirstOrDefault(entry =>
+            string.Equals(NormalizeHuValue(entry.HuCode), huCode, StringComparison.OrdinalIgnoreCase));
+        if (pallet == null)
+        {
+            MessageBox.Show("HU паллеты не найден.", "Наполнение микс-паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (!pallet.IsMixedPallet)
+        {
+            MessageBox.Show("Выбранная паллета не является микс-паллетой.", "Наполнение микс-паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (string.Equals(pallet.EffectiveStatus, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+        {
+            LoadDoc();
+            ReselectDocLine(selectedLineId);
+            MessageBox.Show($"Микс-паллета {pallet.HuCode} уже была наполнена.", "Наполнение микс-паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (pallet.Lines.Count == 0)
+        {
+            MessageBox.Show("Состав микс-паллеты пуст. Обновите PRD и повторите операцию.", "Наполнение микс-паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (pallet.Lines.All(line => line.IsCompleted))
+        {
+            LoadDoc();
+            ReselectDocLine(selectedLineId);
+            MessageBox.Show("Все компоненты уже отмечены как наполненные. Обновите PRD и повторите операцию, если паллета не финализировалась.", "Наполнение микс-паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!_mixedPalletComponentFillDialogFactory.TrySelectComponents(this, pallet, out var componentLineIds))
+        {
+            return;
+        }
+
+        var result = await _services.WpfProductionPalletApi.TryFillMixedPalletComponentsAsync(
+            _doc.Id,
+            _doc.OrderId,
+            pallet.HuCode,
+            componentLineIds,
+            $"WPF:{Environment.MachineName}");
+        if (!result.IsSuccess)
+        {
+            MessageBox.Show(
+                string.IsNullOrWhiteSpace(result.Message) ? "Не удалось отметить компоненты микс-паллеты." : result.Message,
+                "Наполнение микс-паллеты",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        LoadDoc();
+        ReselectDocLine(selectedLineId);
+        var message = result.AlreadyFilled
+            ? $"Микс-паллета {pallet.HuCode} уже была наполнена."
+            : result.Message;
+        MessageBox.Show(message, "Наполнение микс-паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private void ReselectDocLine(long selectedLineId)
+    {
+        var refreshedLine = _docLines.FirstOrDefault(line => line.Id == selectedLineId);
+        if (refreshedLine != null)
+        {
+            SelectDocLine(refreshedLine);
         }
     }
 
@@ -2108,7 +2264,7 @@ public partial class OperationDetailsWindow : Window
         ConfigureHeaderFields(_doc, isEditable);
         DocBatchBox.Text = _doc.ProductionBatchNo ?? string.Empty;
         DocCommentBox.Text = _doc.Comment ?? string.Empty;
-        UpdatePartialUi();
+        UpdateOrderShipmentRemaining();
         ApplyPartnerFilter(forceIncludePartnerId: _doc.PartnerId);
         DocPartnerCombo.SelectedItem = _partners.FirstOrDefault(p => p.Id == _doc.PartnerId);
         SelectOrderFromDoc(_doc);
@@ -2407,7 +2563,6 @@ public partial class OperationDetailsWindow : Window
         DocPartnerCombo.SelectedItem = partner;
         _suppressOrderSync = false;
         UpdatePartnerLock();
-        ResetPartialMode();
         if (_doc?.Type == DocType.Outbound)
         {
             MarkHeaderDirty();
@@ -2433,7 +2588,6 @@ public partial class OperationDetailsWindow : Window
         {
             DocOrderCombo.SelectedItem = null;
             await ClearDocOrderBindingAsync();
-            ResetPartialMode();
             UpdatePartnerLock();
             UpdateLineButtons();
             UpdateActionButtons();
@@ -2458,35 +2612,7 @@ public partial class OperationDetailsWindow : Window
         DocOrderCombo.Text = string.Empty;
         _suppressOrderSync = false;
         await ClearDocOrderBindingAsync();
-        ResetPartialMode();
         UpdatePartnerLock();
-        UpdateLineButtons();
-        UpdateActionButtons();
-    }
-
-    private async void DocPartialCheck_Changed(object sender, RoutedEventArgs e)
-    {
-        if (_suppressPartialSync)
-        {
-            return;
-        }
-
-        if (!HasOrderBinding())
-        {
-            ResetPartialMode();
-            return;
-        }
-
-        _isPartialShipment = DocPartialCheck.IsChecked == true;
-        if (!_isPartialShipment && _doc?.OrderId.HasValue == true)
-        {
-            LogOutboundOrderBoundInfo($"auto fill triggered: partial shipment changed; order_id={_doc.OrderId.Value}; partial={_isPartialShipment}");
-            if (TryResolveOrder(out var orderOption) && orderOption != null)
-            {
-                await TryApplyOrderSelectionAsync(orderOption);
-            }
-        }
-
         UpdateLineButtons();
         UpdateActionButtons();
     }
@@ -2688,7 +2814,6 @@ public partial class OperationDetailsWindow : Window
             : doc.Type == DocType.ProductionReceipt
                 ? "HU (палета)"
                 : doc.Type == DocType.Outbound ? "HU (источник)" : "HU";
-        DocPartialCheck.Visibility = doc.Type == DocType.Outbound ? Visibility.Visible : Visibility.Collapsed;
         DocOrderCombo.Visibility = useReadOnlyOrderBinding ? Visibility.Collapsed : Visibility.Visible;
         DocOrderCombo.IsEnabled = isEditable && !useReadOnlyOrderBinding;
         DocOrderReadOnlyBox.Visibility = showOrder && useReadOnlyOrderBinding ? Visibility.Visible : Visibility.Collapsed;
@@ -2802,11 +2927,11 @@ public partial class OperationDetailsWindow : Window
     private void UpdateLineButtons()
     {
         var isEditable = IsDocEditable();
-        var hasOrder = HasOrderBinding();
         var selectedLineCount = GetSelectedDocLines().Count;
         var hasSelection = selectedLineCount > 0;
         var hasSingleSelection = selectedLineCount == 1 && _selectedDocLine != null;
-        AddItemButton.IsEnabled = isEditable;
+        AddItemButton.IsEnabled = isEditable && _doc?.Type != DocType.Outbound;
+        AddItemButton.Visibility = _doc?.Type == DocType.Outbound ? Visibility.Collapsed : Visibility.Visible;
         AutoHuButton.IsEnabled = isEditable && _doc?.Type == DocType.ProductionReceipt && !_hasProductionPalletPlan && _docLines.Count > 0;
         EditLineButton.IsEnabled = isEditable && hasSingleSelection;
         AssignHuButton.IsEnabled = isEditable
@@ -2820,8 +2945,10 @@ public partial class OperationDetailsWindow : Window
                                      && _hasProductionPalletPlan
                                      && hasSingleSelection
                                      && _selectedDocLine?.HasProductionPalletPlanLine == true;
-        DeleteLineButton.IsEnabled = isEditable && hasSelection;
-        DocPartialCheck.IsEnabled = isEditable && _doc?.Type == DocType.Outbound && hasOrder;
+        DeleteLineButton.Visibility = _doc?.Type == DocType.ProductionReceipt
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        DeleteLineButton.IsEnabled = isEditable && hasSelection && _doc?.Type != DocType.ProductionReceipt;
         KmCodesButton.IsEnabled = KmUiEnabled
                                   && isEditable
                                   && hasSingleSelection
@@ -2945,7 +3072,7 @@ public partial class OperationDetailsWindow : Window
             return false;
         }
 
-        LogOutboundOrderBoundInfo($"explicit fill invoked: order_id={selected.Id}; mode=server; partial={_isPartialShipment}");
+        LogOutboundOrderBoundInfo($"explicit fill invoked: order_id={selected.Id}; mode=server");
         return await TryApplyOrderSelectionViaServerAsync(selected);
     }
 
@@ -3118,19 +3245,16 @@ public partial class OperationDetailsWindow : Window
                 await TryDiscardEmptyOutboundDraftIfNeededAsync();
                 LoadDoc();
                 LoadOrderQuantities(selected.Id);
-                ResetPartialMode();
                 return true;
             }
 
-            var replaceAll = !_isPartialShipment;
             LogOutboundOrderBoundInfo(
-                $"fill from order sync prepared: order_id={selected.Id}; partial={_isPartialShipment}; replace_all={replaceAll}; expected_hu={expectedLines.Count}");
+                $"fill from order sync prepared: order_id={selected.Id}; replace_all=true; expected_hu={expectedLines.Count}");
             var addedCount = await Task.Run(() =>
-                    _services.Documents.SyncCustomerOutboundFromBoundHu(_doc.Id, replaceAll))
+                    _services.Documents.SyncCustomerOutboundFromBoundHu(_doc.Id, replaceAll: true))
                 .ConfigureAwait(true);
             LoadDoc();
             LoadOrderQuantities(selected.Id);
-            ResetPartialMode();
 
             if (addedCount == 0 && _docLines.Count == 0)
             {
@@ -3691,10 +3815,6 @@ public partial class OperationDetailsWindow : Window
                     return false;
                 }
 
-                if (_doc.Type == DocType.Outbound)
-                {
-                    ResetPartialMode();
-                }
             }
 
             LoadDoc();
@@ -4282,7 +4402,7 @@ public partial class OperationDetailsWindow : Window
         };
     }
 
-    private void UpdatePartialUi()
+    private void UpdateOrderShipmentRemaining()
     {
         if (_doc?.OrderId.HasValue == true)
         {
@@ -4291,12 +4411,7 @@ public partial class OperationDetailsWindow : Window
         else
         {
             _orderedQtyByOrderLine.Clear();
-            _isPartialShipment = false;
         }
-
-        _suppressPartialSync = true;
-        DocPartialCheck.IsChecked = _isPartialShipment;
-        _suppressPartialSync = false;
     }
 
     private void MarkHeaderDirty()
@@ -4309,14 +4424,6 @@ public partial class OperationDetailsWindow : Window
     {
         _hasUnsavedChanges = false;
         UpdateActionButtons();
-    }
-
-    private void ResetPartialMode()
-    {
-        _isPartialShipment = false;
-        _suppressPartialSync = true;
-        DocPartialCheck.IsChecked = false;
-        _suppressPartialSync = false;
     }
 
     private bool TryGetOrderedQty(long orderLineId, out double orderedQty)
@@ -4495,6 +4602,29 @@ public partial class OperationDetailsWindow : Window
     private static string FormatQty(double value)
     {
         return value.ToString("0.###", CultureInfo.CurrentCulture);
+    }
+
+    private static string ResolveMixedPalletProgressLabel(ProductionPallet pallet)
+    {
+        if (string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+        {
+            return "наполнен";
+        }
+
+        return pallet.HasComponentProgress ? "частично наполнен" : "ожидает";
+    }
+
+    private static string ResolveMixedPalletComponentProgressLabel(ProductionPalletComponentLine component)
+    {
+        if (component.PlannedQty > StockQuantityRules.QtyTolerance
+            && component.FilledQty + StockQuantityRules.QtyTolerance >= component.PlannedQty)
+        {
+            return "Наполнено";
+        }
+
+        return component.FilledQty > StockQuantityRules.QtyTolerance
+            ? "Частично наполнено"
+            : "Ожидает";
     }
 
     private void LoadHuOptions()
@@ -4949,7 +5079,7 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        _services.AppLogger.Info($"wpf_outbound_order_bound doc_id={_doc.Id} order_id={_doc.OrderId?.ToString(CultureInfo.InvariantCulture) ?? "-"} partial={_isPartialShipment} {message}");
+        _services.AppLogger.Info($"wpf_outbound_order_bound doc_id={_doc.Id} order_id={_doc.OrderId?.ToString(CultureInfo.InvariantCulture) ?? "-"} {message}");
     }
 
     private void LogOutboundOrderBoundWarn(string message)
@@ -4959,7 +5089,7 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        _services.AppLogger.Warn($"wpf_outbound_order_bound doc_id={_doc.Id} order_id={_doc.OrderId?.ToString(CultureInfo.InvariantCulture) ?? "-"} partial={_isPartialShipment} {message}");
+        _services.AppLogger.Warn($"wpf_outbound_order_bound doc_id={_doc.Id} order_id={_doc.OrderId?.ToString(CultureInfo.InvariantCulture) ?? "-"} {message}");
     }
 
     private void LogHuServerFlowInfo(string message)
@@ -4997,7 +5127,7 @@ public partial class OperationDetailsWindow : Window
         }
 
         _services.AppLogger.Warn(
-            $"wpf_outbound_order_bound line_location_validation_failed caller={caller} doc_id={_doc.Id} order_id={_doc.OrderId?.ToString(CultureInfo.InvariantCulture) ?? "-"} partial={_isPartialShipment} from_location_id={fromLocation?.Id.ToString(CultureInfo.InvariantCulture) ?? "-"} to_location_id={toLocation?.Id.ToString(CultureInfo.InvariantCulture) ?? "-"} from_hu={NormalizeHuValue(fromHu) ?? "-"} to_hu={NormalizeHuValue(toHu) ?? "-"}");
+            $"wpf_outbound_order_bound line_location_validation_failed caller={caller} doc_id={_doc.Id} order_id={_doc.OrderId?.ToString(CultureInfo.InvariantCulture) ?? "-"} from_location_id={fromLocation?.Id.ToString(CultureInfo.InvariantCulture) ?? "-"} to_location_id={toLocation?.Id.ToString(CultureInfo.InvariantCulture) ?? "-"} from_hu={NormalizeHuValue(fromHu) ?? "-"} to_hu={NormalizeHuValue(toHu) ?? "-"}");
     }
 
     private bool EnsureDraftDocSelected()
@@ -5161,6 +5291,34 @@ public partial class OperationDetailsWindow : Window
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
+    private HashSet<string> ResolveMixedOutboundHuCodes(IReadOnlyList<DocLineView> lines)
+    {
+        var result = lines
+            .Select(line => new { Line = line, HuCode = NormalizeHuValue(line.FromHu) })
+            .Where(row => !string.IsNullOrWhiteSpace(row.HuCode))
+            .GroupBy(row => row.HuCode!, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group
+                .Select(row => (row.Line.OrderLineId, row.Line.ItemId))
+                .Distinct()
+                .Count() > 1)
+            .Select(group => group.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var huCode in lines
+                     .Select(line => NormalizeHuValue(line.FromHu))
+                     .Where(huCode => !string.IsNullOrWhiteSpace(huCode))
+                     .Cast<string>()
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (_services.DataStore.GetProductionPalletByHu(huCode)?.IsMixedPallet == true)
+            {
+                result.Add(huCode);
+            }
+        }
+
+        return result;
+    }
+
     private bool SupportsLineHuAssignment()
     {
         return _doc?.Type is DocType.Inbound or DocType.Inventory or DocType.ProductionReceipt or DocType.Outbound;
@@ -5209,6 +5367,7 @@ public partial class OperationDetailsWindow : Window
         public long? ToLocationId { get; init; }
         public string? FromHu { get; init; }
         public string? ToHu { get; init; }
+        public bool IsMixedOutboundHu { get; init; }
         public string? HuDisplay { get; init; }
         public string? FromLocation { get; init; }
         public string? ToLocation { get; init; }
@@ -5274,4 +5433,3 @@ public partial class OperationDetailsWindow : Window
             : string.Empty;
     }
 }
-
