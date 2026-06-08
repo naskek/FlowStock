@@ -131,6 +131,23 @@ internal static class OrderReceiptRemainingCalculator
         long orderId,
         IReadOnlyList<OrderLine>? orderLines = null)
     {
+        return BuildReceiptLedgerTotalsByOrderLine(dataStore, orderId, orderLines, requireClosedLegacyReceipt: false);
+    }
+
+    public static IReadOnlyDictionary<long, double> BuildConfirmedReceiptLedgerTotalsByOrderLine(
+        IDataStore dataStore,
+        long orderId,
+        IReadOnlyList<OrderLine>? orderLines = null)
+    {
+        return BuildReceiptLedgerTotalsByOrderLine(dataStore, orderId, orderLines, requireClosedLegacyReceipt: true);
+    }
+
+    private static IReadOnlyDictionary<long, double> BuildReceiptLedgerTotalsByOrderLine(
+        IDataStore dataStore,
+        long orderId,
+        IReadOnlyList<OrderLine>? orderLines,
+        bool requireClosedLegacyReceipt)
+    {
         var lines = (orderLines ?? dataStore.GetOrderLines(orderId))
             .OrderBy(line => line.Id)
             .ToList();
@@ -176,6 +193,11 @@ internal static class OrderReceiptRemainingCalculator
                         AddProducedQty(totals, pallet.OrderLineId.Value, Math.Min(pallet.PlannedQty, grossQty));
                     }
 
+                    continue;
+                }
+
+                if (requireClosedLegacyReceipt && doc.Status != DocStatus.Closed)
+                {
                     continue;
                 }
 

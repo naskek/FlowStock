@@ -71,12 +71,12 @@ public sealed class ProductionPalletService
             return;
         }
 
-        var committedQty = GetCommittedQtyForOrderLine(store, order, orderLineId);
+        var committedQty = GetProtectedCoverageQtyForOrderLine(store, order, orderLineId, orderedQty);
         var activePlannedBefore = GetOpenProductionPalletsForOrderLine(store, orderId, orderLineId)
             .Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
         var missingBeforeTrim = Math.Max(0, orderedQty - committedQty - activePlannedBefore);
 
-        TrimSurplusOpenPallets(store, order, orderId, orderLineId, orderedQty);
+        var affectedOrderLineIds = TrimSurplusOpenPallets(store, order, orderId, orderLineId, orderedQty);
 
         var activePlannedAfterTrim = GetOpenProductionPalletsForOrderLine(store, orderId, orderLineId)
             .Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
@@ -98,7 +98,7 @@ public sealed class ProductionPalletService
                 store,
                 order,
                 orderId,
-                [orderLineId],
+                affectedOrderLineIds.Count > 0 ? affectedOrderLineIds : [orderLineId],
                 allowEmptyRemaining: true,
                 out _,
                 existingPrdDocId: prdDocIdForAppend);
@@ -122,6 +122,22 @@ public sealed class ProductionPalletService
             ActivePlannedQtyAfter = activePlannedAfterTrim,
             Action = action
         });
+    }
+
+    internal IReadOnlyList<long> CancelFuturePlanForOrderLineAndResolveAffectedLinesInStore(
+        IDataStore store,
+        long orderId,
+        long orderLineId)
+    {
+        var pallets = GetOpenProductionPalletsForOrderLine(store, orderId, orderLineId);
+        var affected = pallets.SelectMany(GetPalletOrderLineIds).Append(orderLineId).Distinct().ToArray();
+        if (pallets.Count > 0)
+        {
+            TombstoneProductionPalletDocLines(store, pallets);
+            store.CancelProductionPallets(pallets.Select(pallet => pallet.Id).ToArray());
+        }
+
+        return affected;
     }
 
     public ProductionPalletOrderPlanResult PlanOrder(long orderId, IReadOnlyCollection<long>? scopedOrderLineIds)
@@ -1644,20 +1660,22 @@ public sealed class ProductionPalletService
         {
             var receiptLinesById = OrderReceiptRemainingCalculator.GetRemaining(store, order)
                 .ToDictionary(line => line.OrderLineId, line => line);
-            var shippedByLine = store.GetOrderShipmentRemaining(order.Id)
-                .ToDictionary(line => line.OrderLineId, line => Math.Max(0, line.QtyShipped));
-            var boundHuByLine = CustomerOutboundBoundHuService.BuildUnshippedBoundHuQtyByOrderLine(store, order.Id);
+            var protectedByLine = CustomerProtectedCoverageCalculator.BuildByOrderLine(
+                store,
+                order.Id,
+                includeUnconfirmedFilledPallets: true);
             var activePallets = GetProductionPalletsByOrder(store, order.Id)
-                .Where(IsActiveProductionPalletCoverage)
+                .Where(pallet => IsOpenProductionPalletCoverage(store, pallet))
                 .ToArray();
 
             return orderLinesById.Values
                 .Select(orderLine =>
                 {
-                    var shippedQty = shippedByLine.TryGetValue(orderLine.Id, out var shipped) ? shipped : 0d;
-                    var boundHuQty = boundHuByLine.TryGetValue(orderLine.Id, out var bound) ? bound : 0d;
+                    var protectedQty = protectedByLine.TryGetValue(orderLine.Id, out var coverage)
+                        ? coverage.ResolveProtectedQty(orderLine.QtyOrdered)
+                        : 0d;
                     var activePalletQty = SumPalletQtyForOrderLine(activePallets, orderLine.Id);
-                    var missingQty = Math.Max(0, orderLine.QtyOrdered - shippedQty - boundHuQty - activePalletQty);
+                    var missingQty = Math.Max(0, orderLine.QtyOrdered - protectedQty - activePalletQty);
                     receiptLinesById.TryGetValue(orderLine.Id, out var receiptLine);
                     return new OrderReceiptLine
                     {
@@ -1681,22 +1699,16 @@ public sealed class ProductionPalletService
         }
 
         var activePalletsByOrder = GetProductionPalletsByOrder(store, order.Id)
-            .Where(IsActiveProductionPalletCoverage)
+            .Where(pallet => IsOpenProductionPalletCoverage(store, pallet))
             .ToArray();
-        if (activePalletsByOrder.Length == 0)
-        {
-            return OrderReceiptRemainingCalculator.GetRemaining(store, order)
-                .Where(line => line.QtyRemaining > QtyTolerance)
-                .OrderBy(line => line.OrderLineId)
-                .ToList();
-        }
-
         var receiptLinesByOrderLineId = OrderReceiptRemainingCalculator.GetRemaining(store, order)
             .ToDictionary(line => line.OrderLineId, line => line);
+        var confirmedByLine = BuildInternalPlanningCoverage(store, order.Id, orderLinesById.Values.ToArray());
         return orderLinesById.Values
             .Select(orderLine =>
             {
-                var coveredQty = SumPalletQtyForOrderLine(activePalletsByOrder, orderLine.Id);
+                var confirmedQty = confirmedByLine.TryGetValue(orderLine.Id, out var confirmed) ? confirmed : 0d;
+                var coveredQty = confirmedQty + SumPalletQtyForOrderLine(activePalletsByOrder, orderLine.Id);
                 var missingQty = Math.Max(0, orderLine.QtyOrdered - coveredQty);
                 receiptLinesByOrderLineId.TryGetValue(orderLine.Id, out var receiptLine);
                 return new OrderReceiptLine
@@ -1720,11 +1732,12 @@ public sealed class ProductionPalletService
             .ToList();
     }
 
-    private static bool IsActiveProductionPalletCoverage(ProductionPallet pallet)
+    private static bool IsOpenProductionPalletCoverage(IDataStore store, ProductionPallet pallet)
     {
-        return string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
-               || string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase)
-               || string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase);
+        var doc = store.GetDoc(pallet.PrdDocId);
+        return doc?.Status == DocStatus.Draft
+               && (string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase));
     }
 
     private static double SumPalletQtyForOrderLine(
@@ -1736,20 +1749,20 @@ public sealed class ProductionPalletService
             .Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
     }
 
-    private static void TrimSurplusOpenPallets(
+    private static IReadOnlyList<long> TrimSurplusOpenPallets(
         IDataStore store,
         Order order,
         long orderId,
         long orderLineId,
         double orderedQty)
     {
-        var committedQty = GetCommittedQtyForOrderLine(store, order, orderLineId);
+        var committedQty = GetProtectedCoverageQtyForOrderLine(store, order, orderLineId, orderedQty);
         var plannedAllowedQty = Math.Max(0, orderedQty - committedQty);
         var openPallets = GetOpenProductionPalletsForOrderLine(store, orderId, orderLineId);
         var openQty = openPallets.Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
         if (openQty <= plannedAllowedQty + QtyTolerance)
         {
-            return;
+            return Array.Empty<long>();
         }
 
         var surplusQty = openQty - plannedAllowedQty;
@@ -1773,29 +1786,51 @@ public sealed class ProductionPalletService
 
         if (palletIdsToCancel.Count == 0)
         {
-            return;
+            return Array.Empty<long>();
         }
 
+        var affectedOrderLineIds = openPallets
+            .Where(pallet => palletIdsToCancel.Contains(pallet.Id))
+            .SelectMany(GetPalletOrderLineIds)
+            .Append(orderLineId)
+            .Distinct()
+            .ToArray();
+        TombstoneProductionPalletDocLines(store, openPallets.Where(pallet => palletIdsToCancel.Contains(pallet.Id)));
         store.CancelProductionPallets(palletIdsToCancel);
-        store.RemoveDocLinesForProductionPallets(palletIdsToCancel);
+        return affectedOrderLineIds;
     }
 
-    private static double GetCommittedQtyForOrderLine(IDataStore store, Order order, long orderLineId)
+    private static double GetProtectedCoverageQtyForOrderLine(
+        IDataStore store,
+        Order order,
+        long orderLineId,
+        double qtyOrdered)
     {
-        var filledQty = Math.Max(0, store.GetFilledProductionPalletQtyByOrderLine(orderLineId));
-        if (order.Type != OrderType.Customer)
+        if (order.Type == OrderType.Customer)
         {
-            return filledQty;
+            var coverage = CustomerProtectedCoverageCalculator.BuildByOrderLine(
+                    store,
+                    order.Id,
+                    includeUnconfirmedFilledPallets: true)
+                .GetValueOrDefault(orderLineId);
+            return coverage?.ResolveProtectedQty(qtyOrdered) ?? 0d;
         }
 
-        var shippedTotals = store.GetShippedTotalsByOrderLine(order.Id);
-        var shippedQty = shippedTotals.TryGetValue(orderLineId, out var shipped)
-            ? Math.Max(0, shipped)
-            : 0d;
-        var reservedQty = store.GetOrderReceiptPlanLines(order.Id)
-            .Where(line => line.OrderLineId == orderLineId)
-            .Sum(line => Math.Max(0, line.QtyPlanned));
-        return shippedQty + reservedQty + filledQty;
+        var confirmed = BuildInternalPlanningCoverage(store, order.Id, store.GetOrderLines(order.Id));
+        return confirmed.TryGetValue(orderLineId, out var qty) ? Math.Max(0, qty) : 0d;
+    }
+
+    private static IReadOnlyDictionary<long, double> BuildInternalPlanningCoverage(
+        IDataStore store,
+        long orderId,
+        IReadOnlyList<OrderLine> orderLines)
+    {
+        var confirmed = OrderReceiptRemainingCalculator.BuildConfirmedReceiptLedgerTotalsByOrderLine(store, orderId, orderLines);
+        return orderLines.ToDictionary(
+            line => line.Id,
+            line => Math.Max(
+                confirmed.TryGetValue(line.Id, out var confirmedQty) ? confirmedQty : 0d,
+                Math.Max(0, store.GetFilledProductionPalletQtyByOrderLine(line.Id))));
     }
 
     private static IReadOnlyList<ProductionPallet> GetOpenProductionPalletsForOrderLine(
@@ -1804,7 +1839,7 @@ public sealed class ProductionPalletService
         long orderLineId)
     {
         return store.GetDocsByOrder(orderId)
-            .Where(doc => doc.Type == DocType.ProductionReceipt)
+            .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status == DocStatus.Draft)
             .SelectMany(doc => store.GetProductionPalletsByDoc(doc.Id))
             .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
             .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
@@ -1814,6 +1849,52 @@ public sealed class ProductionPalletService
             .Where(pallet => PalletAppliesToOrderLine(pallet, orderLineId))
             .OrderBy(pallet => pallet.Id)
             .ToArray();
+    }
+
+    private static IEnumerable<long> GetPalletOrderLineIds(ProductionPallet pallet)
+    {
+        if (pallet.Lines.Count > 0)
+        {
+            return pallet.Lines.Where(line => line.OrderLineId.HasValue).Select(line => line.OrderLineId!.Value);
+        }
+
+        return pallet.OrderLineId.HasValue ? [pallet.OrderLineId.Value] : Array.Empty<long>();
+    }
+
+    private static void TombstoneProductionPalletDocLines(
+        IDataStore store,
+        IEnumerable<ProductionPallet> pallets)
+    {
+        foreach (var pallet in pallets)
+        {
+            var docLineIds = pallet.Lines.Count > 0
+                ? pallet.Lines.Select(line => line.DocLineId)
+                : pallet.DocLineId > 0 ? [pallet.DocLineId] : Array.Empty<long>();
+            foreach (var docLineId in docLineIds.Distinct())
+            {
+                var activeLine = store.GetDocLines(pallet.PrdDocId).FirstOrDefault(line => line.Id == docLineId);
+                if (activeLine == null)
+                {
+                    continue;
+                }
+
+                store.AddDocLine(new DocLine
+                {
+                    DocId = pallet.PrdDocId,
+                    ReplacesLineId = activeLine.Id,
+                    OrderLineId = activeLine.OrderLineId,
+                    ProductionPurpose = activeLine.ProductionPurpose,
+                    ItemId = activeLine.ItemId,
+                    Qty = 0,
+                    UomCode = activeLine.UomCode,
+                    FromLocationId = activeLine.FromLocationId,
+                    ToLocationId = activeLine.ToLocationId,
+                    FromHu = activeLine.FromHu,
+                    ToHu = activeLine.ToHu,
+                    PackSingleHu = activeLine.PackSingleHu
+                });
+            }
+        }
     }
 
     private static double ResolvePalletQtyForOrderLine(ProductionPallet pallet, long orderLineId)

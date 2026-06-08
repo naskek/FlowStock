@@ -178,6 +178,77 @@ public sealed class ProductionPalletServiceTests
     }
 
     [Fact]
+    public void PlanOrder_CustomerShippedAndProducedSameHu_CountsCoverageOnce()
+    {
+        var harness = CreateCustomerPlanningHarness((101, 100, 1200));
+        SeedExistingCustomerPalletPlan(harness, plannedQty: 600, status: ProductionPalletStatus.Filled);
+        harness.SeedLedgerEntry(20, 100, 1, 600, "HU-900201");
+        harness.SeedDoc(new Doc
+        {
+            Id = 30,
+            DocRef = "OUT-2026-000001",
+            Type = DocType.Outbound,
+            Status = DocStatus.Closed,
+            OrderId = 10
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 301,
+            DocId = 30,
+            OrderLineId = 101,
+            ItemId = 100,
+            Qty = 600,
+            FromLocationId = 1,
+            FromHu = "HU-900201"
+        });
+
+        new ProductionPalletService(harness.Store).PlanOrder(10);
+
+        var activePlanned = GetActivePalletsByOrder(harness, 10)
+            .Where(pallet => pallet.Status is ProductionPalletStatus.Planned or ProductionPalletStatus.Printed)
+            .ToArray();
+        Assert.Single(activePlanned);
+        Assert.Equal(600, activePlanned.Sum(pallet => pallet.PlannedQty), 3);
+    }
+
+    [Fact]
+    public void PlanOrder_CustomerProducedAndBoundSameHu_CountsCoverageOnce()
+    {
+        var harness = CreateCustomerPlanningHarness((101, 100, 1200));
+        SeedExistingCustomerPalletPlan(harness, plannedQty: 600, status: ProductionPalletStatus.Filled);
+        harness.SeedLedgerEntry(20, 100, 1, 600, "HU-900201");
+        SeedCustomerBoundHu(harness, (1, 101, 100, 600, "HU-900201"));
+
+        new ProductionPalletService(harness.Store).PlanOrder(10);
+
+        var activePlanned = GetActivePalletsByOrder(harness, 10)
+            .Where(pallet => pallet.Status is ProductionPalletStatus.Planned or ProductionPalletStatus.Printed)
+            .ToArray();
+        Assert.Single(activePlanned);
+        Assert.Equal(600, activePlanned.Sum(pallet => pallet.PlannedQty), 3);
+    }
+
+    [Fact]
+    public void PlanOrder_ClosedPrdPlannedPallet_DoesNotCoverFutureNeed()
+    {
+        var harness = CreateCustomerPlanningHarness((101, 100, 600));
+        SeedExistingCustomerPalletPlan(harness, plannedQty: 600, status: ProductionPalletStatus.Planned);
+        harness.SeedDoc(new Doc
+        {
+            Id = 20,
+            DocRef = "PRD-2026-000001",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Closed,
+            OrderId = 10
+        });
+
+        var result = new ProductionPalletService(harness.Store).PlanOrder(10);
+
+        Assert.NotEqual(20, result.PrdDocId);
+        Assert.Single(harness.Store.GetProductionPalletsByDoc(result.PrdDocId));
+    }
+
+    [Fact]
     public void PlanOrder_CustomerCancelledPalletsDoNotCoverShortage()
     {
         var harness = CreateCustomerPlanningHarness((101, 100, 2000));
@@ -303,9 +374,11 @@ public sealed class ProductionPalletServiceTests
             OrderType.Internal);
 
         var pallets = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId);
-        Assert.DoesNotContain(pallets, pallet => pallet.OrderLineId == 101);
+        Assert.All(pallets.Where(pallet => pallet.OrderLineId == 101), pallet =>
+            Assert.Equal(ProductionPalletStatus.Cancelled, pallet.Status));
         Assert.Equal(otherLineHu, Assert.Single(pallets, pallet => pallet.OrderLineId == 102).HuCode);
         Assert.Single(harness.Store.GetOrderLines(10));
+        Assert.DoesNotContain(harness.Store.GetDocLines(plan.PrdDocId), line => line.OrderLineId == 101);
     }
 
     [Fact]
@@ -352,9 +425,11 @@ public sealed class ProductionPalletServiceTests
             OrderType.Customer);
 
         var pallets = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId);
-        Assert.DoesNotContain(pallets, pallet => pallet.OrderLineId == 101);
+        Assert.All(pallets.Where(pallet => pallet.OrderLineId == 101), pallet =>
+            Assert.Equal(ProductionPalletStatus.Cancelled, pallet.Status));
         Assert.Equal(otherLineHu, Assert.Single(pallets, pallet => pallet.OrderLineId == 102).HuCode);
         Assert.DoesNotContain(harness.Store.GetOrderLines(10), line => line.Id == 101);
+        Assert.DoesNotContain(harness.Store.GetDocLines(plan.PrdDocId), line => line.OrderLineId == 101);
     }
 
     [Fact]
@@ -383,7 +458,7 @@ public sealed class ProductionPalletServiceTests
     }
 
     [Fact]
-    public void DeleteCustomerOrderLine_WithPrintedPallets_IsBlocked()
+    public void DeleteCustomerOrderLine_WithPrintedPallets_CancelsFuturePlan()
     {
         var harness = CreateCustomerPlanningHarness((101, 100, 600), (102, 200, 600));
         harness.SeedPartner(new Partner { Id = 500, Code = "CUST", Name = "Клиент" });
@@ -393,18 +468,19 @@ public sealed class ProductionPalletServiceTests
         var printed = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Single(pallet => pallet.OrderLineId == 101);
         palletService.MarkPrinted(10, [printed.Id], new DateTime(2026, 5, 27, 11, 0, 0));
 
-        var ex = Assert.Throws<InvalidOperationException>(() => orderService.UpdateOrder(
+        orderService.UpdateOrder(
             10,
             "086",
             500,
             null,
             null,
             [new OrderLineView { ItemId = 200, QtyOrdered = 600, ProductionPurpose = ProductionLinePurpose.CustomerOrder }],
-            OrderType.Customer));
+            OrderType.Customer);
 
-        Assert.Equal("Товар 100: нельзя удалить строку, паллетный план уже напечатан или находится в фактическом состоянии.", ex.Message);
-        Assert.Contains(harness.Store.GetOrderLines(10), line => line.Id == 101);
-        Assert.Contains(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId), pallet => pallet.Id == printed.Id);
+        Assert.DoesNotContain(harness.Store.GetOrderLines(10), line => line.Id == 101);
+        Assert.Contains(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId), pallet =>
+            pallet.Id == printed.Id && pallet.Status == ProductionPalletStatus.Cancelled);
+        Assert.DoesNotContain(harness.Store.GetDocLines(plan.PrdDocId), line => line.OrderLineId == 101);
     }
 
     [Fact]
@@ -1045,12 +1121,40 @@ public sealed class ProductionPalletServiceTests
 
         Assert.Equal(first.PrdDocId, second.PrdDocId);
         var pallets = harness.Store.GetProductionPalletsByDoc(second.PrdDocId).OrderBy(pallet => pallet.Id).ToArray();
-        Assert.Equal(2, pallets.Length);
-        Assert.Equal(2, pallets.Select(pallet => pallet.HuCode).Distinct(StringComparer.OrdinalIgnoreCase).Count());
-        Assert.All(pallets, pallet => Assert.False(pallet.IsMixedPallet));
-        Assert.Equal(new[] { 101L, 102L }, pallets.SelectMany(pallet => pallet.Lines).Select(line => line.OrderLineId!.Value).Order().ToArray());
+        var active = pallets.Where(pallet => pallet.Status != ProductionPalletStatus.Cancelled).ToArray();
+        Assert.Equal(2, active.Length);
+        Assert.Single(pallets, pallet => pallet.Status == ProductionPalletStatus.Cancelled && pallet.IsMixedPallet);
+        Assert.Equal(2, active.Select(pallet => pallet.HuCode).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        Assert.All(active, pallet => Assert.False(pallet.IsMixedPallet));
+        Assert.Equal(new[] { 101L, 102L }, active.SelectMany(pallet => pallet.Lines).Select(line => line.OrderLineId!.Value).Order().ToArray());
         Assert.Equal(2, harness.Store.GetDocLines(second.PrdDocId).Count);
         Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void DeleteMixedComponent_CancelsSharedHuAndRebuildsRemainingLine()
+    {
+        var harness = CreateHarnessWithMixedOrderOnly();
+        var service = new ProductionPalletService(harness.Store);
+        var orderService = new OrderService(harness.Store);
+        var first = service.PlanOrder(10);
+
+        orderService.UpdateOrder(
+            10,
+            "056",
+            null,
+            null,
+            null,
+            [new OrderLineView { ItemId = 200, QtyOrdered = 200, ProductionPurpose = ProductionLinePurpose.InternalStock }],
+            OrderType.Internal);
+
+        var pallets = harness.Store.GetProductionPalletsByDoc(first.PrdDocId);
+        Assert.Single(pallets, pallet => pallet.Status == ProductionPalletStatus.Cancelled && pallet.IsMixedPallet);
+        var active = Assert.Single(pallets, pallet => pallet.Status != ProductionPalletStatus.Cancelled);
+        Assert.False(active.IsMixedPallet);
+        Assert.Equal(102, active.OrderLineId);
+        Assert.DoesNotContain(harness.Store.GetDocLines(first.PrdDocId), line => line.OrderLineId == 101);
+        Assert.Single(harness.Store.GetDocLines(first.PrdDocId), line => line.OrderLineId == 102);
     }
 
     [Fact]
