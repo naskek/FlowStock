@@ -2225,10 +2225,13 @@ public partial class OrderDetailsWindow : Window
         {
             var huByLine = ProductionOrderLineHuCodes.BuildByOrder(_services.DataStore, orderId);
             var productionDisplayByLine = ProductionOrderLineHuCodes.BuildProductionDisplayByOrder(_services.DataStore, orderId);
+            var fateDisplayByLine = OrderLineHuFateDisplayBuilder.BuildByOrder(_services.DataStore, orderId);
             foreach (var line in _lines)
             {
                 productionDisplayByLine.TryGetValue(line.Id, out var displayEntries);
                 line.ProductionHuDisplayEntries = displayEntries ?? Array.Empty<OrderLineHuDisplayEntry>();
+                fateDisplayByLine.TryGetValue(line.Id, out var fateEntries);
+                line.HuFateDisplayEntries = fateEntries ?? Array.Empty<OrderLineHuDisplayEntry>();
 
                 if (!huByLine.TryGetValue(line.Id, out var codes) || codes.Length == 0)
                 {
