@@ -18,6 +18,9 @@ public partial class HuRegistryWindow : Window
     private readonly ObservableCollection<HuLedgerRowDisplay> _composition = new();
     private readonly ObservableCollection<string> _generated = new();
     private List<HuRecord> _items = new();
+    private bool _commandInProgress;
+    private bool _liveRefreshPending;
+    private readonly IDisposable _liveRefreshSubscription;
 
     public HuRegistryWindow(AppServices services)
     {
@@ -29,7 +32,33 @@ public partial class HuRegistryWindow : Window
         StateFilter.ItemsSource = StateOptions;
         StateFilter.SelectedIndex = 0;
         GenerateCountBox.Text = "1";
+        _liveRefreshSubscription = _services.LiveRefresh.Register(
+            () => IsVisible && IsActive && !_commandInProgress && !WpfLiveRefreshGuard.IsDataGridEditing(RegistryGrid),
+            ApplyLiveRefresh,
+            () => _liveRefreshPending = true);
+        Activated += (_, _) => ApplyPendingLiveRefresh();
+        Closed += (_, _) => _liveRefreshSubscription.Dispose();
         LoadItems();
+    }
+
+    private void ApplyLiveRefresh()
+    {
+        var selectedCode = (RegistryGrid.SelectedItem as HuRow)?.Code;
+        _liveRefreshPending = false;
+        LoadItems();
+        if (!string.IsNullOrWhiteSpace(selectedCode))
+        {
+            RegistryGrid.SelectedItem = _rows.FirstOrDefault(row =>
+                string.Equals(row.Code, selectedCode, StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
+    private void ApplyPendingLiveRefresh()
+    {
+        if (_liveRefreshPending && IsVisible && IsActive && !_commandInProgress)
+        {
+            ApplyLiveRefresh();
+        }
     }
 
     private void LoadItems()
@@ -124,6 +153,7 @@ public partial class HuRegistryWindow : Window
         }
 
         var note = CloseNoteBox.Text?.Trim();
+        _commandInProgress = true;
         try
         {
             var result = await _services.WpfHuApi
@@ -140,8 +170,13 @@ public partial class HuRegistryWindow : Window
             MessageBox.Show("Не удалось закрыть HU.", "HU Реестр", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
+        finally
+        {
+            _commandInProgress = false;
+        }
 
         LoadItems();
+        ApplyPendingLiveRefresh();
     }
 
     private async void Generate_Click(object sender, RoutedEventArgs e)
@@ -153,6 +188,7 @@ public partial class HuRegistryWindow : Window
         }
 
         IReadOnlyList<string> codes;
+        _commandInProgress = true;
         try
         {
             var result = await _services.WpfHuApi
@@ -173,6 +209,10 @@ public partial class HuRegistryWindow : Window
             MessageBox.Show("Не удалось сгенерировать HU-коды.", "HU Реестр", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
+        finally
+        {
+            _commandInProgress = false;
+        }
 
         _generated.Clear();
         foreach (var code in codes)
@@ -181,6 +221,7 @@ public partial class HuRegistryWindow : Window
         }
 
         LoadItems();
+        ApplyPendingLiveRefresh();
     }
 
     private void Copy_Click(object sender, RoutedEventArgs e)

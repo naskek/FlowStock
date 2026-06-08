@@ -1531,6 +1531,43 @@ body {
   gap: 10px;
 }
 
+.filling-mixed-pallet-item.filling-pallet-item--compact {
+  grid-template-columns: 10px minmax(0, 1fr);
+  align-items: start;
+}
+
+.filling-mixed-component-line {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.filling-mixed-component-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.filling-mixed-component-name {
+  min-width: 0;
+}
+
+.filling-mixed-component-qty {
+  white-space: nowrap;
+}
+
+.filling-mixed-component-line.is-completed .filling-mixed-component-indicator {
+  color: #15803d;
+}
+
+.filling-mixed-component-line.is-pending .filling-mixed-component-indicator {
+  color: #64748b;
+}
+
 .filling-scan-input {
   min-height: 54px;
   font-size: 22px;
@@ -2827,6 +2864,14 @@ html.tsd-theme-dark .filling-pallet-item.is-pending {
   background: rgba(245, 158, 11, 0.14);
   border-color: #f59e0b;
   color: #fcd34d;
+}
+
+html.tsd-theme-dark .filling-mixed-component-line.is-completed .filling-mixed-component-indicator {
+  color: #86efac;
+}
+
+html.tsd-theme-dark .filling-mixed-component-line.is-pending .filling-mixed-component-indicator {
+  color: var(--tsd-text-muted);
 }
 
 html.tsd-theme-dark .filling-message-success {

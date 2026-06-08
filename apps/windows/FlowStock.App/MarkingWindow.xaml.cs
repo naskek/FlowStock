@@ -11,13 +11,35 @@ public partial class MarkingWindow : Window
 {
     private readonly AppServices _services;
     private readonly ObservableCollection<MarkingOrderDisplayRow> _orders = new();
+    private bool _liveRefreshPending;
+    private readonly IDisposable _liveRefreshSubscription;
 
     public MarkingWindow(AppServices services)
     {
         _services = services;
         InitializeComponent();
         OrdersGrid.ItemsSource = _orders;
+        _liveRefreshSubscription = _services.LiveRefresh.Register(
+            () => IsVisible && IsActive && ExportButton.IsEnabled && !WpfLiveRefreshGuard.IsDataGridEditing(OrdersGrid),
+            ApplyLiveRefresh,
+            () => _liveRefreshPending = true);
+        Activated += (_, _) => ApplyPendingLiveRefresh();
+        Closed += (_, _) => _liveRefreshSubscription.Dispose();
         LoadOrders(showErrorMessage: false);
+    }
+
+    private void ApplyLiveRefresh()
+    {
+        _liveRefreshPending = false;
+        LoadOrders(showErrorMessage: false);
+    }
+
+    private void ApplyPendingLiveRefresh()
+    {
+        if (_liveRefreshPending && IsVisible && IsActive && ExportButton.IsEnabled)
+        {
+            ApplyLiveRefresh();
+        }
     }
 
     private void Refresh_Click(object sender, RoutedEventArgs e)
@@ -82,6 +104,7 @@ public partial class MarkingWindow : Window
         finally
         {
             ExportButton.IsEnabled = true;
+            ApplyPendingLiveRefresh();
         }
     }
 

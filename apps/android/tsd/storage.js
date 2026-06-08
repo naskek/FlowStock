@@ -1454,6 +1454,37 @@
       });
   }
 
+  function normalizeProductionFillResult(result) {
+    result = result || {};
+    return {
+      ok: result.ok !== false,
+      alreadyFilled: result.already_filled === true || result.alreadyFilled === true,
+      prdAutoClosed: !!(result.prd_auto_closed || result.prdAutoClosed),
+      closedPrdDocRef: result.closed_prd_doc_ref || result.closedPrdDocRef
+        ? String(result.closed_prd_doc_ref || result.closedPrdDocRef)
+        : "",
+      closedPrdDocId: result.closed_prd_doc_id || result.closedPrdDocId
+        ? Number(result.closed_prd_doc_id || result.closedPrdDocId)
+        : null,
+      orderCompleted: !!(
+        result.order_completed === true ||
+        result.orderCompleted === true ||
+        result.is_order_completed === true ||
+        result.isOrderCompleted === true
+      ),
+      remainingFillablePalletCount:
+        result.remaining_fillable_pallet_count != null || result.remainingFillablePalletCount != null
+          ? Number(result.remaining_fillable_pallet_count || result.remainingFillablePalletCount)
+          : null,
+      effectiveStatus: String(result.effective_status || result.effectiveStatus || ""),
+      filledComponentCount: Number(result.filled_component_count || result.filledComponentCount) || 0,
+      totalComponentCount: Number(result.total_component_count || result.totalComponentCount) || 0,
+      message: result.message ? String(result.message) : "",
+      pallet: result.pallet ? normalizeProductionPallet(result.pallet) : null,
+      document: result.document ? normalizeProductionPalletDocument(result.document) : null,
+    };
+  }
+
   function apiFillProductionPallet(payload) {
     var body = payload || {};
     return getBaseUrl()
@@ -1469,34 +1500,26 @@
           }),
         });
       })
-      .then(function (result) {
-        return {
-          ok: result && result.ok !== false,
-          alreadyFilled: result && result.already_filled === true,
-          prdAutoClosed: !!(result && result.prd_auto_closed),
-          closedPrdDocRef: result && result.closed_prd_doc_ref ? String(result.closed_prd_doc_ref) : "",
-          closedPrdDocId: result && result.closed_prd_doc_id ? Number(result.closed_prd_doc_id) : null,
-          pallet: result && result.pallet ? normalizeProductionPallet(result.pallet) : null,
-          document: result && result.document ? normalizeProductionPalletDocument(result.document) : null,
-        };
-      });
+      .then(normalizeProductionFillResult);
   }
 
   function apiFillMixedProductionPalletComponents(payload) {
     var body = payload || {};
-    return getBaseUrl().then(function (baseUrl) {
-      return fetchJsonWithTimeout(baseUrl + "/api/tsd/production/fill-mixed-pallet-components", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          order_id: body.orderId || body.order_id || null,
-          prd_doc_id: body.prdDocId || body.prd_doc_id || null,
-          hu_code: body.huCode || body.hu_code || "",
-          device_id: body.deviceId || body.device_id || "",
-          component_line_ids: body.componentLineIds || body.component_line_ids || [],
-        }),
-      });
-    });
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/tsd/production/fill-mixed-pallet-components", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            order_id: body.orderId || body.order_id || null,
+            prd_doc_id: body.prdDocId || body.prd_doc_id || null,
+            hu_code: body.huCode || body.hu_code || "",
+            device_id: body.deviceId || body.device_id || "",
+            component_line_ids: body.componentLineIds || body.component_line_ids || [],
+          }),
+        });
+      })
+      .then(normalizeProductionFillResult);
   }
 
   function apiLogin(login, password) {

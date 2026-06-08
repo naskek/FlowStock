@@ -37,6 +37,9 @@ public partial class OrderDetailsWindow : Window
     private bool _suppressPartnerFilter;
     private bool _productionPalletHuLocked;
     private bool _isQtyPersistInProgress;
+    private bool _liveRefreshPending;
+    private bool _liveRefreshInProgress;
+    private readonly IDisposable _liveRefreshSubscription;
     private long _huFateDisplayLoadGeneration;
     private readonly CustomerOrderHuBindingCoordinator _huBinding;
 
@@ -50,6 +53,7 @@ public partial class OrderDetailsWindow : Window
             orderId => services.DataStore.GetOrderReceiptPlanLines(orderId));
         InitializeComponent();
         InitializeData();
+        _liveRefreshSubscription = RegisterLiveRefresh();
         LoadPartners();
         PrepareNewOrder();
     }
@@ -63,13 +67,65 @@ public partial class OrderDetailsWindow : Window
         _orderId = orderId;
         InitializeComponent();
         InitializeData();
+        _liveRefreshSubscription = RegisterLiveRefresh();
         LoadPartners();
         LoadOrder();
+    }
+
+    private IDisposable RegisterLiveRefresh()
+    {
+        Activated += (_, _) => ApplyPendingLiveRefresh();
+        Closed += (_, _) => _liveRefreshSubscription.Dispose();
+        return _services.LiveRefresh.Register(
+            CanApplyLiveRefresh,
+            ApplyLiveRefresh,
+            () => _liveRefreshPending = true);
+    }
+
+    private bool CanApplyLiveRefresh()
+    {
+        return _orderId.HasValue
+               && IsVisible
+               && IsActive
+               && !_isLoading
+               && !_hasUnsavedChanges
+               && !_isQtyPersistInProgress
+               && !_liveRefreshInProgress
+               && !WpfLiveRefreshGuard.IsDataGridEditing(OrderLinesGrid);
+    }
+
+    private void ApplyLiveRefresh()
+    {
+        if (!CanApplyLiveRefresh())
+        {
+            _liveRefreshPending = true;
+            return;
+        }
+
+        _liveRefreshPending = false;
+        _liveRefreshInProgress = true;
+        try
+        {
+            LoadOrder(_selectedLine?.Id);
+        }
+        finally
+        {
+            _liveRefreshInProgress = false;
+        }
+    }
+
+    private void ApplyPendingLiveRefresh()
+    {
+        if (_liveRefreshPending)
+        {
+            ApplyLiveRefresh();
+        }
     }
 
     private void InitializeData()
     {
         OrderLinesGrid.ItemsSource = _huBinding.Lines;
+        OrderLinesGrid.CellEditEnding += (_, _) => Dispatcher.BeginInvoke(ApplyPendingLiveRefresh);
         PartnerCombo.ItemsSource = _partners;
         TypeCombo.ItemsSource = _typeOptions;
 
@@ -1086,14 +1142,14 @@ public partial class OrderDetailsWindow : Window
         }
     }
 
-    private void SyncHuBindingLines()
+    private void SyncHuBindingLines(bool reloadReservations = true)
     {
         if (GetSelectedOrderType() != OrderType.Customer)
         {
             return;
         }
 
-        _huBinding.SetOrderContext(_orderId, OrderType.Customer, _lines);
+        _huBinding.SetOrderContext(_orderId, OrderType.Customer, _lines, reloadReservations);
     }
 
     private void AddLine_Click(object sender, RoutedEventArgs e)
@@ -2018,6 +2074,13 @@ public partial class OrderDetailsWindow : Window
 
         var canPlan = _orderId.HasValue && _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged);
         var canPrint = _orderId.HasValue && _order?.Status is not (OrderStatus.Cancelled or OrderStatus.Merged);
+        if (_liveRefreshInProgress)
+        {
+            PlanPalletsButton.IsEnabled = canPlan;
+            PrintPalletLabelsButton.IsEnabled = canPrint;
+            return;
+        }
+
         var canDeletePlan = _orderId.HasValue
                             && _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
                             && HasOpenProductionPalletPlan(_orderId.Value);
@@ -2431,6 +2494,10 @@ public partial class OrderDetailsWindow : Window
         _isLoading = false;
         _hasUnsavedChanges = false;
         UpdateReadyHuBindingButton();
+        if (_liveRefreshPending && !_liveRefreshInProgress)
+        {
+            Dispatcher.BeginInvoke(ApplyPendingLiveRefresh);
+        }
     }
 
     private void MarkDirty()

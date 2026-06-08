@@ -9,13 +9,35 @@ public partial class ProductionNeedWindow : Window
 {
     private readonly AppServices _services;
     private readonly ObservableCollection<ProductionNeedDisplayRow> _rows = new();
+    private bool _liveRefreshPending;
+    private readonly IDisposable _liveRefreshSubscription;
 
     public ProductionNeedWindow(AppServices services)
     {
         _services = services;
         InitializeComponent();
         RowsGrid.ItemsSource = _rows;
+        _liveRefreshSubscription = _services.LiveRefresh.Register(
+            () => IsVisible && IsActive && !WpfLiveRefreshGuard.IsDataGridEditing(RowsGrid),
+            ApplyLiveRefresh,
+            () => _liveRefreshPending = true);
+        Activated += (_, _) => ApplyPendingLiveRefresh();
+        Closed += (_, _) => _liveRefreshSubscription.Dispose();
         Loaded += ProductionNeedWindow_Loaded;
+    }
+
+    private void ApplyLiveRefresh()
+    {
+        _liveRefreshPending = false;
+        LoadRows();
+    }
+
+    private void ApplyPendingLiveRefresh()
+    {
+        if (_liveRefreshPending && IsVisible && IsActive)
+        {
+            ApplyLiveRefresh();
+        }
     }
 
     private void ProductionNeedWindow_Loaded(object sender, RoutedEventArgs e)

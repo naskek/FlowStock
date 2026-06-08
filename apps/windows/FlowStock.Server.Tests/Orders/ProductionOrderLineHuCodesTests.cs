@@ -49,6 +49,42 @@ public sealed class ProductionOrderLineHuCodesTests
     }
 
     [Fact]
+    public void OrderLineHuDisplayRows_ApiOnlyReload_DropsProductionEntries_UntilStoreEnrichment()
+    {
+        var harness = CreateCustomerTwoLineMixedHarness();
+        var service = new ProductionPalletService(harness.Store);
+        service.PlanOrder(83);
+        var display = ProductionOrderLineHuCodes.BuildProductionDisplayByOrder(harness.Store, 83);
+        var palletHu = display[222].Single().HuCode;
+
+        var canonicalLine = new OrderLineView
+        {
+            Id = 222,
+            ProductionHuDisplayEntries = display[222]
+        };
+        Assert.NotEmpty(canonicalLine.HuDisplayRows);
+        Assert.Contains(canonicalLine.HuDisplayRows, row => row.HuCode == palletHu);
+
+        var apiOnlyLine = new OrderLineView
+        {
+            Id = 222,
+            ProductionHuCodes = palletHu
+        };
+        Assert.Empty(apiOnlyLine.HuDisplayRows);
+
+        apiOnlyLine.ProductionHuDisplayEntries = display[222];
+        Assert.NotEmpty(apiOnlyLine.HuDisplayRows);
+        Assert.Contains(apiOnlyLine.HuDisplayRows, row => row.HuCode == palletHu);
+
+        var mixedLine = new OrderLineView
+        {
+            Id = 223,
+            ProductionHuDisplayEntries = display[223]
+        };
+        Assert.Contains(mixedLine.HuDisplayRows, row => row.HuCode == palletHu);
+    }
+
+    [Fact]
     public void BuildProductionDisplayByOrder_PartialMixedHu_UsesComponentLineStatus()
     {
         var harness = CreateCustomerTwoLineMixedHarness();

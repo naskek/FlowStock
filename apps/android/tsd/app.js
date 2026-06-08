@@ -3176,9 +3176,116 @@
       });
   }
 
+  function isMixedFillingPallet(pallet) {
+    return !!(
+      pallet &&
+      (pallet.isMixedPallet === true || (Array.isArray(pallet.lines) && pallet.lines.length > 1))
+    );
+  }
+
+  function countFillingMixedCompletedLines(pallet) {
+    var lines = Array.isArray(pallet && pallet.lines) ? pallet.lines : [];
+    if (!lines.length) {
+      return Number(pallet && pallet.filledComponentCount) || 0;
+    }
+    return lines.filter(function (line) {
+      return line.isCompleted === true;
+    }).length;
+  }
+
+  function getFillingMixedComponentTotal(pallet) {
+    var total = Number(pallet && pallet.totalComponentCount) || 0;
+    if (total > 0) {
+      return total;
+    }
+    return Array.isArray(pallet && pallet.lines) ? pallet.lines.length : 0;
+  }
+
+  function formatFillingMixedComponentQty(line, pallet) {
+    var planned = Number(line.plannedQty != null ? line.plannedQty : line.qty) || 0;
+    var filled = Number(line.filledQty) || 0;
+    var uom = String(line.uom || "шт");
+    if (line.isCompleted === true || filled > 0) {
+      return (
+        formatQtyWithUnit(filled, uom) +
+        " / " +
+        formatQtyWithUnit(planned, uom)
+      );
+    }
+    if (countFillingMixedCompletedLines(pallet) > 0) {
+      return (
+        formatQtyWithUnit(0, uom) +
+        " / " +
+        formatQtyWithUnit(planned, uom)
+      );
+    }
+    return formatQtyWithUnit(planned, uom);
+  }
+
+  function renderFillingMixedPalletLines(pallet) {
+    var lines = Array.isArray(pallet && pallet.lines) ? pallet.lines : [];
+    var html = lines
+      .map(function (line) {
+        var completed = line.isCompleted === true;
+        return (
+          '<div class="filling-mixed-component-line ' +
+          (completed ? "is-completed" : "is-pending") +
+          '">' +
+          '  <span class="filling-mixed-component-indicator" aria-hidden="true">' +
+          (completed ? "✅" : "☐") +
+          "</span>" +
+          '  <span class="filling-mixed-component-name">' +
+          escapeHtml(line.itemName || "-") +
+          "</span>" +
+          '  <strong class="filling-mixed-component-qty">' +
+          escapeHtml(formatFillingMixedComponentQty(line, pallet)) +
+          "</strong>" +
+          "</div>"
+        );
+      })
+      .join("");
+    return html
+      ? '<div class="outbound-picking-hu-lines filling-mixed-pallet-lines">' + html + "</div>"
+      : "";
+  }
+
+  function getFillingPalletGroupDisplayTitle(group) {
+    var label = group && group.label ? group.label : "";
+    if (label !== "Микс-паллета") {
+      return label;
+    }
+    var mixedPallets = (group.pallets || []).filter(isMixedFillingPallet);
+    if (mixedPallets.length !== 1) {
+      return label;
+    }
+    var pallet = mixedPallets[0];
+    var total = getFillingMixedComponentTotal(pallet);
+    if (total <= 0) {
+      return label;
+    }
+    var filled = countFillingMixedCompletedLines(pallet);
+    return "Микс-паллета · " + filled + " / " + total;
+  }
+
   function renderFillingPalletHuRow(pallet) {
     var isFilled = isFillingPalletCompleted(pallet);
     var huCode = pallet && pallet.huCode ? pallet.huCode : "-";
+    if (isMixedFillingPallet(pallet)) {
+      var componentLines = renderFillingMixedPalletLines(pallet);
+      return (
+        '<li class="filling-pallet-item filling-pallet-item--compact filling-mixed-pallet-item outbound-picking-hu-item ' +
+        (isFilled ? "is-filled" : "is-pending") +
+        '">' +
+        '  <span class="filling-pallet-dot" aria-hidden="true"></span>' +
+        '  <div class="outbound-picking-hu-main">' +
+        '    <div class="filling-pallet-code">' +
+        escapeHtml(huCode) +
+        "</div>" +
+        componentLines +
+        "  </div>" +
+        "</li>"
+      );
+    }
     return (
       '<li class="filling-pallet-item filling-pallet-item--compact ' +
       (isFilled ? "is-filled" : "is-pending") +
@@ -3209,7 +3316,7 @@
         return (
           '<li class="filling-pallet-group">' +
           '  <div class="filling-pallet-group-title">' +
-          escapeHtml(group.label) +
+          escapeHtml(getFillingPalletGroupDisplayTitle(group)) +
           "</div>" +
           '  <ul class="filling-pallet-group-items">' +
           rows +
@@ -3517,33 +3624,8 @@
             });
           })
           .then(function (result) {
-            var fillOrderId = resolveFillingOrderId(
-              preview,
-              context.workItem && context.workItem.orderId
-            );
-            return loadFillingContext(fillOrderId).then(function (nextContext) {
-              var remainingPalletCount = getRemainingPalletCountFromFillingContext(nextContext);
-              var successMessage = buildProductionFillSuccessMessage(result, remainingPalletCount);
-              var successType =
-                result && (result.alreadyFilled || result.already_filled) ? "warn" : "success";
-              closeOverlay();
-              if (shouldRenderProductionFillCompletion(result, nextContext, null)) {
-                renderFillingCompletionScreen(nextContext, result, null);
-                return;
-              }
-              renderFillingScanScreen(nextContext, {
-                message: successMessage,
-                messageType: successType,
-                preview: null,
-              });
-            }).catch(function (reloadError) {
-              if (shouldRenderProductionFillCompletion(result, null, reloadError)) {
-                closeOverlay();
-                renderFillingCompletionScreen(context, result, reloadError);
-                return;
-              }
-              throw reloadError;
-            });
+            closeOverlay();
+            return handleProductionFillSuccess(context, preview, result);
           })
           .catch(function (error) {
             busy = false;
@@ -3853,6 +3935,153 @@
     }
 
     return fallback;
+  }
+
+  function resolveFillingScannedHu(rawValue, context) {
+    var rawText = String(rawValue || "").trim();
+    var extractedHu = extractHuCode(rawValue);
+    var fallback = extractedHu || rawText;
+    var pallets =
+      context && context.document && Array.isArray(context.document.pallets)
+        ? context.document.pallets
+        : [];
+    var rawComparable = normalizeOutboundPickingScanText(rawValue);
+    var rawCompact = compactOutboundPickingScanText(rawValue);
+    var rawDigitsOnly = rawCompact && /^[0-9]+$/.test(rawCompact);
+
+    for (var index = 0; index < pallets.length; index++) {
+      var pallet = pallets[index] || {};
+      var canonicalHu = String(pallet.huCode || pallet.hu_code || "").trim();
+      if (!canonicalHu) {
+        continue;
+      }
+
+      var expectedComparable = normalizeOutboundPickingScanText(canonicalHu);
+      var expectedCompact = compactOutboundPickingScanText(canonicalHu);
+      var expectedDigits = expectedCompact.replace(/[^0-9]/g, "");
+      if (!expectedComparable || !expectedCompact) {
+        continue;
+      }
+
+      if (rawComparable === expectedComparable || rawCompact === expectedCompact) {
+        return canonicalHu;
+      }
+
+      if (extractedHu && compactOutboundPickingScanText(extractedHu) === expectedCompact) {
+        return canonicalHu;
+      }
+
+      if (rawDigitsOnly && expectedDigits && rawCompact === expectedDigits) {
+        return canonicalHu;
+      }
+
+      if (rawComparable.indexOf(expectedComparable) >= 0 || rawCompact.indexOf(expectedCompact) >= 0) {
+        return canonicalHu;
+      }
+    }
+
+    return fallback;
+  }
+
+  var FILLING_SCAN_DEDUP_MS = 1200;
+  var fillingScanInFlightKey = "";
+  var fillingLastScanKey = "";
+  var fillingLastScanAt = 0;
+
+  function resetFillingScanGuards() {
+    fillingScanInFlightKey = "";
+    fillingLastScanKey = "";
+    fillingLastScanAt = 0;
+  }
+
+  function getFillingVisiblePallets(context) {
+    return context && context.document && Array.isArray(context.document.pallets)
+      ? context.document.pallets
+      : [];
+  }
+
+  function isProbablyCompleteHuScan(value, context) {
+    var rawText = String(value || "").trim();
+    if (!rawText) {
+      return false;
+    }
+
+    var upper = rawText
+      .toUpperCase()
+      .replace(/\u041D/g, "H")
+      .replace(/\u0423/g, "U");
+    if (upper === "H" || upper === "HU" || upper === "HU-") {
+      return false;
+    }
+
+    var normalizedHu = resolveFillingScannedHu(value, context);
+    if (!normalizedHu || !/^HU-/i.test(normalizedHu)) {
+      return false;
+    }
+
+    var pallets = getFillingVisiblePallets(context);
+    if (!pallets.length) {
+      return !!extractHuCode(value);
+    }
+
+    var normalizedUpper = normalizedHu.toUpperCase();
+    for (var index = 0; index < pallets.length; index++) {
+      var canonical = String(pallets[index].huCode || pallets[index].hu_code || "")
+        .trim()
+        .toUpperCase();
+      if (canonical === normalizedUpper) {
+        return /^HU-\d{6,}$/i.test(canonical);
+      }
+    }
+
+    return false;
+  }
+
+  function submitFillingScan(rawValue, context, options) {
+    options = options || {};
+    if (!isProbablyCompleteHuScan(rawValue, context)) {
+      return Promise.resolve({ accepted: false, reason: "incomplete" });
+    }
+
+    var normalizedHu = resolveFillingScannedHu(rawValue, context);
+    var orderId = context.workItem && context.workItem.orderId;
+    var prdDocId = context.workItem && context.workItem.prdDocId;
+    var key =
+      String(orderId == null ? "" : orderId) +
+      "|" +
+      String(prdDocId == null ? "" : prdDocId) +
+      "|" +
+      String(normalizedHu).toUpperCase();
+    var now = Date.now();
+
+    if (fillingScanInFlightKey === key) {
+      return Promise.resolve({ accepted: false, reason: "in_flight" });
+    }
+    if (fillingLastScanKey === key && now - fillingLastScanAt < FILLING_SCAN_DEDUP_MS) {
+      return Promise.resolve({ accepted: false, reason: "duplicate" });
+    }
+
+    fillingScanInFlightKey = key;
+    fillingLastScanKey = key;
+    fillingLastScanAt = now;
+
+    if (typeof options.executeScan !== "function") {
+      fillingScanInFlightKey = "";
+      return Promise.resolve({ accepted: false, reason: "no_handler" });
+    }
+
+    return Promise.resolve()
+      .then(function () {
+        return options.executeScan(normalizedHu);
+      })
+      .then(function (result) {
+        return { accepted: true, huCode: normalizedHu, result: result };
+      })
+      .finally(function () {
+        if (fillingScanInFlightKey === key) {
+          fillingScanInFlightKey = "";
+        }
+      });
   }
 
   function renderOutboundPickingList(orders) {
@@ -7035,11 +7264,82 @@
       : 0;
   }
 
+  function getRemainingPalletCountFromFillResult(result) {
+    if (!result || !result.document || !result.document.summary) {
+      return null;
+    }
+    var remaining = Number(result.document.summary.remainingPalletCount);
+    return isFinite(remaining) ? remaining : null;
+  }
+
+  function getRemainingFillablePalletCountFromFillResult(result) {
+    if (!result) {
+      return null;
+    }
+    var raw =
+      result.remainingFillablePalletCount != null
+        ? result.remainingFillablePalletCount
+        : result.remaining_fillable_pallet_count;
+    if (raw == null || raw === "") {
+      return null;
+    }
+    var remaining = Number(raw);
+    return isFinite(remaining) ? remaining : null;
+  }
+
+  function isProductionFillFinal(result) {
+    if (!result || result.ok === false) {
+      return false;
+    }
+    if (isProductionFillOrderCompleted(result)) {
+      return true;
+    }
+    var remainingFillable = getRemainingFillablePalletCountFromFillResult(result);
+    if (remainingFillable !== null && remainingFillable <= 0) {
+      return true;
+    }
+    return false;
+  }
+
+  function handleProductionFillSuccess(context, preview, result) {
+    if (isProductionFillFinal(result)) {
+      renderFillingCompletionScreen(context, result, null);
+      return Promise.resolve();
+    }
+
+    var fillOrderId = resolveFillingOrderId(
+      preview,
+      context.workItem && context.workItem.orderId
+    );
+    return loadFillingContext(fillOrderId)
+      .then(function (nextContext) {
+        if (shouldRenderProductionFillCompletion(result, nextContext, null)) {
+          renderFillingCompletionScreen(context, result, null);
+          return;
+        }
+        var remainingPalletCount = getRemainingPalletCountFromFillingContext(nextContext);
+        var successMessage = buildProductionFillSuccessMessage(result, remainingPalletCount);
+        var successType =
+          result && (result.alreadyFilled || result.already_filled) ? "warn" : "success";
+        renderFillingScanScreen(nextContext, {
+          message: successMessage,
+          messageType: successType,
+          preview: null,
+        });
+      })
+      .catch(function (reloadError) {
+        if (shouldRenderProductionFillCompletion(result, null, reloadError)) {
+          renderFillingCompletionScreen(context, result, reloadError);
+          return;
+        }
+        throw reloadError;
+      });
+  }
+
   function shouldRenderProductionFillCompletion(result, nextContext, reloadError) {
     if (reloadError) {
       return isFillingContextUnavailableAfterSuccessfulFill(reloadError) ||
-        isProductionFillOrderCompleted(result) ||
-        isProductionFillPrdClosed(result);
+        isProductionFillOrderCompleted(result);
     }
     if (isProductionFillOrderCompleted(result)) {
       return true;
@@ -7134,7 +7434,6 @@
   function wireFillingScan(context, state) {
     var scanInput = document.getElementById("fillingScanInput");
     var activePreview = state && state.preview;
-    var scanBusy = false;
 
     function focusScan() {
       if (!scanInput) {
@@ -7160,63 +7459,64 @@
     }
 
     function handleScannedValue(value) {
-      var huCode = String(value || "").trim();
-      if (!huCode || scanBusy) {
-        focusScan();
-        return;
-      }
-
-      scanBusy = true;
-      renderFillingScanScreen(context, {
-        message: "Проверяем паллету...",
-        messageType: "info",
-        preview: null,
-      });
-
-      getFillingDeviceId()
-        .then(function (deviceId) {
-          return TsdStorage.apiScanProductionPallet({
-            orderId: context.workItem && context.workItem.orderId,
-            prdDocId: context.workItem && context.workItem.prdDocId,
-            huCode: huCode,
-            deviceId: deviceId,
-          });
-        })
-        .then(function (preview) {
-          if (preview.alreadyFilled) {
-            return refreshContext({
-              message: "Паллета уже наполнена",
-              messageType: "warn",
-              preview: null,
-            });
-          }
-          var scanOrderId = resolveFillingOrderId(
-            preview,
-            context.workItem && context.workItem.orderId
-          );
-          return loadFillingContext(scanOrderId)
-            .then(function (nextContext) {
-              renderFillingScanScreen(nextContext, {
-                message: "",
-                messageType: "",
-                preview: preview,
-              });
-            })
-            .catch(function () {
-              renderFillingScanScreen(context, {
-                message: "",
-                messageType: "",
-                preview: preview,
-              });
-            });
-        })
-        .catch(function (error) {
-          refreshContext({
-            message: mapFillingError(error),
-            messageType: "error",
+      submitFillingScan(value, context, {
+        executeScan: function (huCode) {
+          renderFillingScanScreen(context, {
+            message: "Проверяем паллету...",
+            messageType: "info",
             preview: null,
           });
-        });
+
+          return getFillingDeviceId()
+            .then(function (deviceId) {
+              return TsdStorage.apiScanProductionPallet({
+                orderId: context.workItem && context.workItem.orderId,
+                prdDocId: context.workItem && context.workItem.prdDocId,
+                huCode: huCode,
+                deviceId: deviceId,
+              });
+            })
+            .then(function (preview) {
+              if (preview.alreadyFilled) {
+                return refreshContext({
+                  message: "Паллета уже наполнена",
+                  messageType: "warn",
+                  preview: null,
+                });
+              }
+              var scanOrderId = resolveFillingOrderId(
+                preview,
+                context.workItem && context.workItem.orderId
+              );
+              return loadFillingContext(scanOrderId)
+                .then(function (nextContext) {
+                  renderFillingScanScreen(nextContext, {
+                    message: "",
+                    messageType: "",
+                    preview: preview,
+                  });
+                })
+                .catch(function () {
+                  renderFillingScanScreen(context, {
+                    message: "",
+                    messageType: "",
+                    preview: preview,
+                  });
+                });
+            })
+            .catch(function (error) {
+              return refreshContext({
+                message: mapFillingError(error),
+                messageType: "error",
+                preview: null,
+              });
+            });
+        },
+      }).then(function (outcome) {
+        if (!outcome || !outcome.accepted) {
+          focusScan();
+        }
+      });
     }
 
     if (scanInput) {
@@ -13109,8 +13409,17 @@
     window.FlowStockTsdTestHooks.isFillingContextUnavailableAfterSuccessfulFill = isFillingContextUnavailableAfterSuccessfulFill;
     window.FlowStockTsdTestHooks.renderFillingCompletion = renderFillingCompletion;
     window.FlowStockTsdTestHooks.shouldRenderProductionFillCompletion = shouldRenderProductionFillCompletion;
+    window.FlowStockTsdTestHooks.getRemainingPalletCountFromFillResult = getRemainingPalletCountFromFillResult;
+    window.FlowStockTsdTestHooks.getRemainingFillablePalletCountFromFillResult =
+      getRemainingFillablePalletCountFromFillResult;
+    window.FlowStockTsdTestHooks.isProductionFillFinal = isProductionFillFinal;
+    window.FlowStockTsdTestHooks.handleProductionFillSuccess = handleProductionFillSuccess;
     window.FlowStockTsdTestHooks.normalizeOutboundPickingOrderView = normalizeOutboundPickingOrderView;
     window.FlowStockTsdTestHooks.resolveOutboundPickingScannedHu = resolveOutboundPickingScannedHu;
+    window.FlowStockTsdTestHooks.resolveFillingScannedHu = resolveFillingScannedHu;
+    window.FlowStockTsdTestHooks.isProbablyCompleteHuScan = isProbablyCompleteHuScan;
+    window.FlowStockTsdTestHooks.submitFillingScan = submitFillingScan;
+    window.FlowStockTsdTestHooks.resetFillingScanGuards = resetFillingScanGuards;
     window.FlowStockTsdTestHooks.renderOutboundPickingList = renderOutboundPickingList;
     window.FlowStockTsdTestHooks.renderOutboundPickingOrder = renderOutboundPickingOrder;
     window.FlowStockTsdTestHooks.renderOutboundPickingHuList = renderOutboundPickingHuList;
@@ -13141,6 +13450,10 @@
     window.FlowStockTsdTestHooks.getFillingPalletGroupLabel = getFillingPalletGroupLabel;
     window.FlowStockTsdTestHooks.buildFillingPalletGroups = buildFillingPalletGroups;
     window.FlowStockTsdTestHooks.renderFillingPalletStatusList = renderFillingPalletStatusList;
+    window.FlowStockTsdTestHooks.renderFillingPalletHuRow = renderFillingPalletHuRow;
+    window.FlowStockTsdTestHooks.isMixedFillingPallet = isMixedFillingPallet;
+    window.FlowStockTsdTestHooks.renderFillingMixedPalletLines = renderFillingMixedPalletLines;
+    window.FlowStockTsdTestHooks.getFillingPalletGroupDisplayTitle = getFillingPalletGroupDisplayTitle;
     window.FlowStockTsdTestHooks.isFillingPalletCompleted = isFillingPalletCompleted;
     window.FlowStockTsdTestHooks.renderHome = renderHome;
     window.FlowStockTsdTestHooks.renderSettings = renderSettings;

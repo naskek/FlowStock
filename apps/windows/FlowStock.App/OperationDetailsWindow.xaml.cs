@@ -49,6 +49,10 @@ public partial class OperationDetailsWindow : Window
     private bool _discardEmptyDraftInProgress;
     private bool _discardEmptyDraftAttempted;
     private bool _hasProductionPalletPlan;
+    private bool _liveRefreshPending;
+    private bool _liveRefreshInProgress;
+    private bool _liveReadOnlyReload;
+    private readonly IDisposable? _liveRefreshSubscription;
     private const double QtyTolerance = 0.000001;
 
     public OperationDetailsWindow(AppServices services, long docId, string? createdDraftDocUid = null)
@@ -59,6 +63,8 @@ public partial class OperationDetailsWindow : Window
         InitializeComponent();
 
         DocLinesGrid.ItemsSource = _docLines;
+        DocLinesGrid.CellEditEnding += (_, _) => Dispatcher.BeginInvoke(ApplyPendingLiveRefresh);
+        OutboundHuGrid.CellEditEnding += (_, _) => Dispatcher.BeginInvoke(ApplyPendingLiveRefresh);
         DocFromCombo.ItemsSource = _locations;
         DocToCombo.ItemsSource = _locations;
         DocPartnerCombo.ItemsSource = _partners;
@@ -72,6 +78,12 @@ public partial class OperationDetailsWindow : Window
         DocToCombo.SelectionChanged += DocToCombo_SelectionChanged;
         OutboundHuGrid.ItemsSource = _outboundHuCandidates;
         Closing += OperationDetailsWindow_Closing;
+        Closed += (_, _) => _liveRefreshSubscription?.Dispose();
+        Activated += (_, _) => ApplyPendingLiveRefresh();
+        _liveRefreshSubscription = _services.LiveRefresh.Register(
+            CanApplyLiveRefresh,
+            ApplyLiveRefresh,
+            () => _liveRefreshPending = true);
 
         LoadWriteOffReasons();
         LoadCatalog();
@@ -316,7 +328,51 @@ public partial class OperationDetailsWindow : Window
         return true;
     }
 
-    private void LoadDoc()
+    private bool CanApplyLiveRefresh()
+    {
+        return IsVisible
+               && IsActive
+               && IsEnabled
+               && !_hasUnsavedChanges
+               && !_isLoadingDocLines
+               && !_autoFillFromBoundOrderInProgress
+               && !_discardEmptyDraftInProgress
+               && !_liveRefreshInProgress
+               && !WpfLiveRefreshGuard.IsDataGridEditing(DocLinesGrid)
+               && !WpfLiveRefreshGuard.IsDataGridEditing(OutboundHuGrid);
+    }
+
+    private void ApplyLiveRefresh()
+    {
+        if (!CanApplyLiveRefresh())
+        {
+            _liveRefreshPending = true;
+            return;
+        }
+
+        _liveRefreshPending = false;
+        _liveRefreshInProgress = true;
+        _liveReadOnlyReload = true;
+        try
+        {
+            LoadDoc(allowAutoFill: false, includeDirectStorePresentation: false);
+        }
+        finally
+        {
+            _liveReadOnlyReload = false;
+            _liveRefreshInProgress = false;
+        }
+    }
+
+    private void ApplyPendingLiveRefresh()
+    {
+        if (_liveRefreshPending)
+        {
+            ApplyLiveRefresh();
+        }
+    }
+
+    private void LoadDoc(bool allowAutoFill = true, bool includeDirectStorePresentation = true)
     {
         _doc = _services.WpfReadApi.TryGetDoc(_docId, out var apiDoc)
             ? apiDoc
@@ -333,14 +389,36 @@ public partial class OperationDetailsWindow : Window
         LoadOrders();
 
         Title = $"Операция: {_doc.DocRef} ({DocTypeMapper.ToDisplayName(_doc.Type)})";
-        _hasProductionPalletPlan = _doc.Type == DocType.ProductionReceipt && _services.DataStore.HasProductionPallets(_doc.Id);
+        WpfProductionPalletDocument? apiPalletDocument = null;
+        if (_doc.Type == DocType.ProductionReceipt && !includeDirectStorePresentation)
+        {
+            var result = _services.WpfProductionPalletApi.TryGetProductionPalletDocumentAsync(_doc.Id)
+                .ConfigureAwait(false)
+                .GetAwaiter()
+                .GetResult();
+            apiPalletDocument = result.IsSuccess ? result.Document : null;
+            _hasProductionPalletPlan = apiPalletDocument?.Pallets.Count > 0;
+        }
+        else
+        {
+            _hasProductionPalletPlan = _doc.Type == DocType.ProductionReceipt && _services.DataStore.HasProductionPallets(_doc.Id);
+        }
+
         LoadDocLines();
+        if (apiPalletDocument != null)
+        {
+            ApplyApiProductionPalletPresentation(apiPalletDocument);
+        }
         UpdateDocView();
-        TriggerAutoFillBoundOrderIfNeeded();
+        if (allowAutoFill)
+        {
+            TriggerAutoFillBoundOrderIfNeeded();
+        }
     }
 
     private void LoadDocLines()
     {
+        var includeDirectStorePresentation = !_liveReadOnlyReload;
         _isLoadingDocLines = true;
         _docLines.Clear();
         var locationLookup = _locations
@@ -360,7 +438,7 @@ public partial class OperationDetailsWindow : Window
         var isProductionReceipt = _doc?.Type == DocType.ProductionReceipt;
         var isEditable = IsDocEditable();
         var checkOutboundAvailability = isOutbound && isEditable;
-        var mixedOutboundHuCodes = isOutbound
+        var mixedOutboundHuCodes = isOutbound && includeDirectStorePresentation
             ? ResolveMixedOutboundHuCodes(lines)
             : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var receiptRemaining = new Dictionary<long, double>();
@@ -375,7 +453,7 @@ public partial class OperationDetailsWindow : Window
         var stockRows = isInventory && _services.WpfReadApi.TryGetStockRows(null, out var apiStockRows)
             ? apiStockRows
             : Array.Empty<StockRow>();
-        var productionPalletsByLineId = isProductionReceipt && _hasProductionPalletPlan
+        var productionPalletsByLineId = isProductionReceipt && _hasProductionPalletPlan && includeDirectStorePresentation
             ? _services.DataStore.GetProductionPalletsByDoc(_docId)
                 .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
                 .SelectMany(pallet => pallet.Lines.Count > 0
@@ -2974,6 +3052,57 @@ public partial class OperationDetailsWindow : Window
         OutboundHuPanel.Visibility = Visibility.Collapsed;
     }
 
+    private void ApplyApiProductionPalletPresentation(WpfProductionPalletDocument document)
+    {
+        foreach (var line in _docLines)
+        {
+            var pallet = document.Pallets.FirstOrDefault(candidate =>
+                candidate.DocLineId == line.Id
+                || candidate.IsMixedPallet
+                   && string.Equals(candidate.HuCode, line.ToHu, StringComparison.OrdinalIgnoreCase)
+                   && candidate.Lines.Any(component => component.ItemId == line.ItemId));
+            if (pallet == null)
+            {
+                continue;
+            }
+
+            var component = pallet.IsMixedPallet
+                ? pallet.Lines.FirstOrDefault(entry => entry.ItemId == line.ItemId)
+                : null;
+            line.HasProductionPalletPlanLine = true;
+            line.IsProductionPalletFilled = string.Equals(
+                pallet.EffectiveStatus,
+                ProductionPalletStatus.Filled,
+                StringComparison.OrdinalIgnoreCase);
+            line.ProductionPalletStatusDisplay = pallet.IsMixedPallet
+                ? component == null
+                    ? "Ожидает"
+                    : $"{ResolveApiComponentProgressLabel(component)} · {FormatQty(component.FilledQty)} / {FormatQty(component.PlannedQty)}"
+                : line.IsProductionPalletFilled
+                    ? "Наполнен"
+                    : "Ожидает";
+
+            var palletHint = pallet.IsMixedPallet
+                ? $"{pallet.HuCode} · микс · {pallet.EffectiveStatus} · {pallet.FilledComponentCount} / {pallet.TotalComponentCount}"
+                : $"Паллета: {pallet.HuCode}";
+            line.OrderLineHint = string.IsNullOrWhiteSpace(line.OrderLineHint)
+                ? palletHint
+                : $"{line.OrderLineHint}{Environment.NewLine}{palletHint}";
+        }
+
+        DocLinesGrid.Items.Refresh();
+    }
+
+    private static string ResolveApiComponentProgressLabel(WpfProductionPalletComponentDetail component)
+    {
+        if (component.IsCompleted)
+        {
+            return "Наполнено";
+        }
+
+        return component.FilledQty > QtyTolerance ? "Частично" : "Ожидает";
+    }
+
     private async void OutboundHuApply_Click(object sender, RoutedEventArgs e)
     {
         if (_doc == null || _doc.Type != DocType.Outbound)
@@ -4424,6 +4553,10 @@ public partial class OperationDetailsWindow : Window
     {
         _hasUnsavedChanges = false;
         UpdateActionButtons();
+        if (_liveRefreshPending && !_liveRefreshInProgress)
+        {
+            Dispatcher.BeginInvoke(ApplyPendingLiveRefresh);
+        }
     }
 
     private bool TryGetOrderedQty(long orderLineId, out double orderedQty)
@@ -5356,13 +5489,13 @@ public partial class OperationDetailsWindow : Window
         public ProductionLinePurpose ProductionPurpose { get; init; }
         public string ProductionPurposeDisplay => ProductionLinePurposeMapper.ToDisplayName(ProductionPurpose);
         public string OrderLineDisplay { get; init; } = string.Empty;
-        public string OrderLineHint { get; init; } = string.Empty;
+        public string OrderLineHint { get; set; } = string.Empty;
         public bool PackSingleHu { get; init; }
         public string KmDisplay { get; init; } = string.Empty;
         public bool KmDistributeEnabled { get; init; }
-        public bool HasProductionPalletPlanLine { get; init; }
-        public bool IsProductionPalletFilled { get; init; }
-        public string ProductionPalletStatusDisplay { get; init; } = string.Empty;
+        public bool HasProductionPalletPlanLine { get; set; }
+        public bool IsProductionPalletFilled { get; set; }
+        public string ProductionPalletStatusDisplay { get; set; } = string.Empty;
         public long? FromLocationId { get; init; }
         public long? ToLocationId { get; init; }
         public string? FromHu { get; init; }

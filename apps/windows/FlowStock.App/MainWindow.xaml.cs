@@ -38,13 +38,13 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<StockHuFilterOption> _stockHuFilters = new();
     private readonly ObservableCollection<StockItemTypeFilterOption> _stockItemTypeFilters = new();
     private readonly ObservableCollection<KmCodeBatch> _kmBatches = new();
-    private readonly DispatcherTimer _autoRefreshTimer;
+    private readonly IDisposable _liveRefreshSubscription;
+    private readonly HashSet<int> _pendingLiveRefreshTabs = new();
     private readonly HashSet<long> _expandedStockItemIds = new();
     private bool _autoRefreshInProgress;
     private bool _serverApiUnavailableAtStartup;
     private bool _suppressStockFilterSelectionChanged;
     private static bool _excelEncodingRegistered;
-    private static readonly TimeSpan AutoRefreshInterval = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan StockRefreshDebounceInterval = TimeSpan.FromMilliseconds(200);
     private static readonly TimeSpan StockGridScrollIdleDelay = TimeSpan.FromSeconds(1.5);
     private static readonly TimeSpan StockRefreshDeferWhileScrolling = TimeSpan.FromSeconds(2);
@@ -129,15 +129,26 @@ public partial class MainWindow : Window
         ApplyDeleteMode();
         ApplyExperimentalTabVisibility();
         UpdateStockModeUi();
+        foreach (var grid in new[]
+                 {
+                     StockGrid, WarehouseProductionStateGrid, ProductionNeedGrid, DocsGrid, OrdersGrid,
+                     WarehouseBundlesGrid, ItemsGrid, LocationsGrid, PartnersGrid, KmBatchesGrid
+                 })
+        {
+            grid.CellEditEnding += (_, _) => Dispatcher.BeginInvoke(RefreshPendingActiveTab);
+        }
 
         TryLoadAllOnStartup();
         ClearItemForm();
         ClearLocationForm();
         ClearPartnerForm();
 
-        _autoRefreshTimer = new DispatcherTimer { Interval = AutoRefreshInterval };
-        _autoRefreshTimer.Tick += AutoRefreshTimer_Tick;
+        _liveRefreshSubscription = _services.LiveRefresh.Register(
+            CanApplyLiveRefresh,
+            ApplyLiveRefresh,
+            MarkAllTabsPendingLiveRefresh);
         Loaded += MainWindow_Loaded;
+        Activated += (_, _) => RefreshPendingActiveTab();
         Closed += MainWindow_Closed;
     }
 
@@ -297,7 +308,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        _autoRefreshTimer.Start();
+        RefreshPendingActiveTab();
     }
 
     private void AttachWarehouseProductionStateGridScrollTracking()
@@ -446,27 +457,76 @@ public partial class MainWindow : Window
 
     private void MainWindow_Closed(object? sender, EventArgs e)
     {
-        _autoRefreshTimer.Stop();
+        _liveRefreshSubscription.Dispose();
     }
 
-    private void AutoRefreshTimer_Tick(object? sender, EventArgs e)
+    private bool CanApplyLiveRefresh()
     {
-        // Disabled: synchronous tab refresh makes WPF tab switching visibly slow.
+        return IsLoaded
+               && IsVisible
+               && IsActive
+               && !_autoRefreshInProgress
+               && !IsActiveTabEditing();
+    }
+
+    private bool IsActiveTabEditing()
+    {
+        if (MainTabs.SelectedIndex is TabItemsIndex or TabLocationsIndex or TabPartnersIndex
+            && Keyboard.FocusedElement is System.Windows.Controls.Primitives.TextBoxBase or System.Windows.Controls.ComboBox)
+        {
+            return true;
+        }
+
+        return MainTabs.SelectedIndex switch
+        {
+            TabStatusIndex => WpfLiveRefreshGuard.IsDataGridEditing(StockGrid)
+                              || WpfLiveRefreshGuard.IsDataGridEditing(WarehouseProductionStateGrid),
+            TabProductionNeedIndex => WpfLiveRefreshGuard.IsDataGridEditing(ProductionNeedGrid),
+            TabDocsIndex => WpfLiveRefreshGuard.IsDataGridEditing(DocsGrid),
+            TabOrdersIndex => WpfLiveRefreshGuard.IsDataGridEditing(OrdersGrid),
+            TabTasksIndex => WpfLiveRefreshGuard.IsDataGridEditing(WarehouseBundlesGrid),
+            TabItemsIndex => WpfLiveRefreshGuard.IsDataGridEditing(ItemsGrid),
+            TabLocationsIndex => WpfLiveRefreshGuard.IsDataGridEditing(LocationsGrid),
+            TabPartnersIndex => WpfLiveRefreshGuard.IsDataGridEditing(PartnersGrid),
+            TabKmIndex => WpfLiveRefreshGuard.IsDataGridEditing(KmBatchesGrid),
+            _ => false
+        };
+    }
+
+    private void ApplyLiveRefresh()
+    {
+        MarkAllTabsPendingLiveRefresh();
+        RefreshPendingActiveTab();
+    }
+
+    private void MarkAllTabsPendingLiveRefresh()
+    {
+        for (var tabIndex = TabStatusIndex; tabIndex <= TabKmIndex; tabIndex++)
+        {
+            _pendingLiveRefreshTabs.Add(tabIndex);
+        }
+    }
+
+    private void RefreshPendingActiveTab()
+    {
+        var selectedIndex = MainTabs.SelectedIndex;
+        if (!_pendingLiveRefreshTabs.Contains(selectedIndex) || !CanApplyLiveRefresh())
+        {
+            return;
+        }
+
+        _pendingLiveRefreshTabs.Remove(selectedIndex);
+        RefreshActiveTab();
     }
 
     private void MainTabs_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
-        if (!IsLoaded)
+        if (!IsLoaded || !ReferenceEquals(e.Source, MainTabs))
         {
             return;
         }
 
-        if (!ReferenceEquals(e.Source, MainTabs))
-        {
-            return;
-        }
-
-        // Disabled: synchronous tab refresh makes WPF tab switching visibly slow.
+        RefreshPendingActiveTab();
     }
 
     private void RefreshActiveTab()
