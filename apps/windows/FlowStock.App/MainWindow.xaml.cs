@@ -48,6 +48,7 @@ public partial class MainWindow : Window
     private static readonly TimeSpan StockRefreshDebounceInterval = TimeSpan.FromMilliseconds(200);
     private static readonly TimeSpan StockGridScrollIdleDelay = TimeSpan.FromSeconds(1.5);
     private static readonly TimeSpan StockRefreshDeferWhileScrolling = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan ItemRequestsBadgeRefreshInterval = TimeSpan.FromSeconds(30);
     private DispatcherTimer? _stockRefreshDebounceTimer;
     private bool _stockRefreshDebounceTickAttached;
     private DispatcherTimer? _stockGridScrollIdleTimer;
@@ -59,6 +60,9 @@ public partial class MainWindow : Window
     private bool _stockGridScrollTrackingAttached;
     private System.Windows.Controls.ScrollViewer? _warehouseProductionStateScrollViewer;
     private bool _stockGridUserScrolling;
+    private DispatcherTimer? _itemRequestsBadgeRefreshTimer;
+    private bool _itemRequestsBadgeUpdateInProgress;
+    private bool _itemRequestsBadgeUpdatePending;
     private readonly List<DocTypeFilterOption> _docTypeFilters = new()
     {
         new DocTypeFilterOption(null, "Все"),
@@ -296,12 +300,13 @@ public partial class MainWindow : Window
         LoadOrders();
         LoadStock(null);
         LoadLowStockView();
-        UpdateItemRequestsBadge();
     }
 
     private void MainWindow_Loaded(object? sender, RoutedEventArgs e)
     {
         AttachWarehouseProductionStateGridScrollTracking();
+        ScheduleItemRequestsBadgeUpdate();
+        StartItemRequestsBadgeRefreshTimer();
 
         if (_serverApiUnavailableAtStartup)
         {
@@ -457,6 +462,7 @@ public partial class MainWindow : Window
 
     private void MainWindow_Closed(object? sender, EventArgs e)
     {
+        _itemRequestsBadgeRefreshTimer?.Stop();
         _liveRefreshSubscription.Dispose();
     }
 
@@ -579,8 +585,6 @@ public partial class MainWindow : Window
                     LoadKmBatches();
                     break;
             }
-
-            UpdateItemRequestsBadge();
         }
         catch (Exception ex)
         {
@@ -3157,11 +3161,12 @@ public partial class MainWindow : Window
 
     private void OpenIncomingRequests_Click(object sender, RoutedEventArgs e)
     {
+        ScheduleItemRequestsBadgeUpdate();
         var window = new IncomingRequestsWindow(_services, () =>
         {
             LoadStock(StatusSearchBox.Text);
             LoadOrders();
-            UpdateItemRequestsBadge();
+            ScheduleItemRequestsBadgeUpdate();
         })
         {
             Owner = this
@@ -3169,7 +3174,7 @@ public partial class MainWindow : Window
         window.ShowDialog();
         LoadStock(StatusSearchBox.Text);
         LoadOrders();
-        UpdateItemRequestsBadge();
+        ScheduleItemRequestsBadgeUpdate();
     }
 
     private void OpenTsdDevices_Click(object sender, RoutedEventArgs e)
@@ -3267,7 +3272,7 @@ public partial class MainWindow : Window
                 LoadOrders();
                 LoadStock(StatusSearchBox.Text);
                 LoadKmBatches();
-                UpdateItemRequestsBadge();
+                ScheduleItemRequestsBadgeUpdate();
             });
         window.Owner = this;
         window.ShowDialog();
@@ -3371,33 +3376,74 @@ public partial class MainWindow : Window
         window.Owner = this;
         window.ShowDialog();
     }
-    private void UpdateItemRequestsBadge()
+    private void StartItemRequestsBadgeRefreshTimer()
+    {
+        if (_itemRequestsBadgeRefreshTimer != null)
+        {
+            return;
+        }
+
+        _itemRequestsBadgeRefreshTimer = new DispatcherTimer
+        {
+            Interval = ItemRequestsBadgeRefreshInterval
+        };
+        _itemRequestsBadgeRefreshTimer.Tick += (_, _) => ScheduleItemRequestsBadgeUpdate();
+        _itemRequestsBadgeRefreshTimer.Start();
+    }
+
+    private void ScheduleItemRequestsBadgeUpdate()
+    {
+        if (_itemRequestsBadgeUpdateInProgress)
+        {
+            _itemRequestsBadgeUpdatePending = true;
+            return;
+        }
+
+        _ = RefreshItemRequestsBadgeAsync();
+    }
+
+    private async Task RefreshItemRequestsBadgeAsync()
+    {
+        _itemRequestsBadgeUpdateInProgress = true;
+        try
+        {
+            do
+            {
+                _itemRequestsBadgeUpdatePending = false;
+                var summary = await Task.Run(() =>
+                    _services.WpfIncomingRequestsApi.TryGetSummary(out var apiSummary)
+                        ? apiSummary
+                        : new IncomingRequestsSummary(0, 0, 0));
+
+                ApplyItemRequestsBadgeSummary(summary);
+            } while (_itemRequestsBadgeUpdatePending);
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error("Incoming requests badge update failed", ex);
+        }
+        finally
+        {
+            _itemRequestsBadgeUpdateInProgress = false;
+        }
+    }
+
+    private void ApplyItemRequestsBadgeSummary(IncomingRequestsSummary summary)
     {
         if (ItemRequestsBadge == null || ItemRequestsCountText == null)
         {
             return;
         }
 
-        try
-        {
-            var summary = _services.WpfIncomingRequestsApi.TryGetSummary(out var apiSummary)
-                ? apiSummary
-                : new IncomingRequestsSummary(0, 0, 0);
-
-            var itemCount = summary.ItemRequestsPending;
-            var orderCount = summary.OrderRequestsPending;
-            var readyHuCount = summary.ReadyHuBindingPending;
-            var count = summary.TotalPending;
-            ItemRequestsCountText.Text = count.ToString();
-            ItemRequestsBadge.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
-            ItemRequestsButton.ToolTip = count > 0
-                ? BuildIncomingRequestsTooltip(count, itemCount, orderCount, readyHuCount)
-                : "Входящие запросы";
-        }
-        catch (Exception ex)
-        {
-            _services.AppLogger.Error("Incoming requests badge update failed", ex);
-        }
+        var itemCount = summary.ItemRequestsPending;
+        var orderCount = summary.OrderRequestsPending;
+        var readyHuCount = summary.ReadyHuBindingPending;
+        var count = summary.TotalPending;
+        ItemRequestsCountText.Text = count.ToString();
+        ItemRequestsBadge.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        ItemRequestsButton.ToolTip = count > 0
+            ? BuildIncomingRequestsTooltip(count, itemCount, orderCount, readyHuCount)
+            : "Входящие запросы";
     }
 
     private static string BuildIncomingRequestsTooltip(int totalCount, int itemCount, int orderCount, int readyHuCount)
