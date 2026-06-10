@@ -97,8 +97,17 @@ public partial class OrderDetailsWindow : Window
                && !_hasUnsavedChanges
                && !_isQtyPersistInProgress
                && !_liveRefreshInProgress
-               && !_isOrderLinesGridSorting
-               && !WpfLiveRefreshGuard.IsDataGridEditing(OrderLinesGrid);
+               && !IsOrderLinesGridInteracting();
+    }
+
+    private bool IsOrderLinesGridInteracting()
+    {
+        return OrderLinesGrid.IsKeyboardFocusWithin
+               || OrderLinesGrid.IsMouseOver
+               || _isOrderLinesGridSorting
+               || _suppressOrderLineSelectionChanged
+               || WpfLiveRefreshGuard.IsDataGridEditing(OrderLinesGrid)
+               || CaptureSelectedOrderLineId().HasValue;
     }
 
     private void ApplyLiveRefresh()
@@ -133,6 +142,8 @@ public partial class OrderDetailsWindow : Window
     {
         OrderLinesGrid.ItemsSource = _huBinding.Lines;
         OrderLinesGrid.CellEditEnding += (_, _) => Dispatcher.BeginInvoke(ApplyPendingLiveRefresh);
+        OrderLinesGrid.MouseLeave += (_, _) => Dispatcher.BeginInvoke(ApplyPendingLiveRefresh);
+        OrderLinesGrid.LostKeyboardFocus += (_, _) => Dispatcher.BeginInvoke(ApplyPendingLiveRefresh);
         OrderLinesGrid.Sorting += OrderLinesGrid_Sorting;
         PartnerCombo.ItemsSource = _partners;
         TypeCombo.ItemsSource = _typeOptions;
@@ -1982,6 +1993,10 @@ public partial class OrderDetailsWindow : Window
         _orderLineSelectionRestoreGeneration++;
         _selectedLine = GetSelectedOrderLine();
         UpdateSelectedOrderLineUi();
+        if (!CaptureSelectedOrderLineId().HasValue)
+        {
+            Dispatcher.BeginInvoke(ApplyPendingLiveRefresh);
+        }
     }
 
     private void UpdateSelectedOrderLineUi()
@@ -2007,7 +2022,7 @@ public partial class OrderDetailsWindow : Window
                 _orderLinesGridColumnWidthRestoreGeneration++;
                 RestoreOrderLinesGridColumnWidths(columnWidths);
                 _isOrderLinesGridSorting = false;
-                ApplyPendingLiveRefresh();
+                Dispatcher.BeginInvoke(ApplyPendingLiveRefresh);
             }),
             System.Windows.Threading.DispatcherPriority.Loaded);
     }

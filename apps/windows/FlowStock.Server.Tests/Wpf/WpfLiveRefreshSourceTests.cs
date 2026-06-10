@@ -57,6 +57,33 @@ public sealed class WpfLiveRefreshSourceTests
     }
 
     [Fact]
+    public void OrderDetailsWindow_LiveRefresh_DefersWhileOrderLinesGridIsInteracting()
+    {
+        var code = File.ReadAllText(GetRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs"));
+        var canApply = SliceMethod(code, "private bool CanApplyLiveRefresh()", "private bool IsOrderLinesGridInteracting()");
+        var interacting = SliceMethod(code, "private bool IsOrderLinesGridInteracting()", "private void ApplyLiveRefresh()");
+        var initialize = SliceMethod(code, "private void InitializeData()", "private void OrderDetailsWindow_PreviewKeyDown");
+        var selectionChanged = SliceMethod(code, "private void OrderLinesGrid_SelectionChanged", "private void UpdateSelectedOrderLineUi");
+        var sorting = SliceMethod(code, "private void OrderLinesGrid_Sorting", "private OrderLineView? GetSelectedOrderLine");
+
+        Assert.Contains("&& !IsOrderLinesGridInteracting()", canApply, StringComparison.Ordinal);
+        Assert.Contains("OrderLinesGrid.IsKeyboardFocusWithin", interacting, StringComparison.Ordinal);
+        Assert.Contains("OrderLinesGrid.IsMouseOver", interacting, StringComparison.Ordinal);
+        Assert.Contains("_isOrderLinesGridSorting", interacting, StringComparison.Ordinal);
+        Assert.Contains("_suppressOrderLineSelectionChanged", interacting, StringComparison.Ordinal);
+        Assert.Contains("WpfLiveRefreshGuard.IsDataGridEditing(OrderLinesGrid)", interacting, StringComparison.Ordinal);
+        Assert.Contains("CaptureSelectedOrderLineId().HasValue", interacting, StringComparison.Ordinal);
+
+        Assert.Contains("OrderLinesGrid.MouseLeave += (_, _) => Dispatcher.BeginInvoke(ApplyPendingLiveRefresh);", initialize, StringComparison.Ordinal);
+        Assert.Contains("OrderLinesGrid.LostKeyboardFocus += (_, _) => Dispatcher.BeginInvoke(ApplyPendingLiveRefresh);", initialize, StringComparison.Ordinal);
+        Assert.Contains("OrderLinesGrid.CellEditEnding += (_, _) => Dispatcher.BeginInvoke(ApplyPendingLiveRefresh);", initialize, StringComparison.Ordinal);
+        Assert.Contains("if (!CaptureSelectedOrderLineId().HasValue)", selectionChanged, StringComparison.Ordinal);
+        Assert.Contains("Dispatcher.BeginInvoke(ApplyPendingLiveRefresh);", selectionChanged, StringComparison.Ordinal);
+        Assert.Contains("Dispatcher.BeginInvoke(ApplyPendingLiveRefresh);", sorting, StringComparison.Ordinal);
+        Assert.DoesNotContain("                ApplyPendingLiveRefresh();", sorting, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void LiveClient_HasSingleSseEndpointAndNoDataPollingPaths()
     {
         var code = File.ReadAllText(GetRepoFile("apps", "windows", "FlowStock.App", "Services", "WpfLiveUpdateClient.cs"));
@@ -121,7 +148,7 @@ public sealed class WpfLiveRefreshSourceTests
         Assert.Contains("var columnWidths = CaptureOrderLinesGridColumnWidths();", sorting, StringComparison.Ordinal);
         Assert.Contains("RestoreOrderLinesGridColumnWidths(columnWidths);", sorting, StringComparison.Ordinal);
         Assert.DoesNotContain("e.Handled", sorting, StringComparison.Ordinal);
-        Assert.Contains("&& !_isOrderLinesGridSorting", code, StringComparison.Ordinal);
+        Assert.Contains("_isOrderLinesGridSorting", code, StringComparison.Ordinal);
 
         Assert.Contains("var columnWidths = CaptureOrderLinesGridColumnWidths();", preserve, StringComparison.Ordinal);
         Assert.Contains("RestoreOrderLinesGridColumnWidthsDeferred(columnWidths);", preserve, StringComparison.Ordinal);
