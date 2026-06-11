@@ -7,6 +7,7 @@ const corePath = path.join(__dirname, "pc-core.js");
 const authPath = path.join(__dirname, "pc-auth.js");
 const orderModalPath = path.join(__dirname, "pc-order-modal.js");
 const catalogPath = path.join(__dirname, "pc-catalog.js");
+const stockPath = path.join(__dirname, "pc-stock.js");
 const appPath = path.join(__dirname, "app.js");
 const hooks = {};
 let lastModal = null;
@@ -96,6 +97,7 @@ vm.runInContext(fs.readFileSync(corePath, "utf8"), context, { filename: corePath
 vm.runInContext(fs.readFileSync(authPath, "utf8"), context, { filename: authPath });
 vm.runInContext(fs.readFileSync(orderModalPath, "utf8"), context, { filename: orderModalPath });
 vm.runInContext(fs.readFileSync(catalogPath, "utf8"), context, { filename: catalogPath });
+vm.runInContext(fs.readFileSync(stockPath, "utf8"), context, { filename: stockPath });
 vm.runInContext(fs.readFileSync(appPath, "utf8"), context, { filename: appPath });
 
 const source = fs.readFileSync(appPath, "utf8");

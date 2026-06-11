@@ -116,12 +116,6 @@
     return num < 10 ? "0" + num : String(num);
   }
 
-  function formatQtyDisplay(qty, itemId) {
-    var item = deps.getItemById ? deps.getItemById(Number(itemId)) || {} : {};
-    var unit = item.base_uom || "";
-    return qty + (unit ? " " + unit : "");
-  }
-
   function formatReportQty(value) {
     var number = Number(value);
     if (!isFinite(number)) {
@@ -302,7 +296,6 @@
     formatDate: formatDate,
     formatDateTime: formatDateTime,
     pad2: pad2,
-    formatQtyDisplay: formatQtyDisplay,
     formatReportQty: formatReportQty,
     formatQuantity: formatQuantity,
     normalizeSearchQuery: normalizeSearchQuery,
