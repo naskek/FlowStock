@@ -11,7 +11,6 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
-using ExcelDataReader;
 using FlowStock.App.Services;
 using FlowStock.Core.Models;
 using Microsoft.Win32;
@@ -44,7 +43,6 @@ public partial class MainWindow : Window
     private bool _autoRefreshInProgress;
     private bool _serverApiUnavailableAtStartup;
     private bool _suppressStockFilterSelectionChanged;
-    private static bool _excelEncodingRegistered;
     private static readonly TimeSpan StockRefreshDebounceInterval = TimeSpan.FromMilliseconds(200);
     private static readonly TimeSpan StockGridScrollIdleDelay = TimeSpan.FromSeconds(1.5);
     private static readonly TimeSpan StockRefreshDeferWhileScrolling = TimeSpan.FromSeconds(2);
@@ -2343,248 +2341,6 @@ public partial class MainWindow : Window
         EditItem_Click(sender, new RoutedEventArgs());
     }
 
-    private ImportItemsSummary ImportItemsFromExcel(string filePath)
-    {
-        EnsureExcelEncoding();
-
-        var existingItems = _services.WpfReadApi.TryGetItems(null, out var apiItems)
-            ? apiItems
-            : Array.Empty<Item>();
-        var existingCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var item in existingItems)
-        {
-            AddBarcodeVariants(existingCodes, item.Barcode);
-            AddBarcodeVariants(existingCodes, item.Gtin);
-        }
-        var seenCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        var created = 0;
-        var duplicates = 0;
-        var emptyRows = 0;
-        var invalidRows = 0;
-        var errors = 0;
-        var rowIndex = 0;
-
-        using var stream = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-        using var reader = ExcelReaderFactory.CreateReader(stream);
-
-        do
-        {
-            while (reader.Read())
-            {
-                var code = NormalizeImportedBarcode(ReadExcelCell(reader, 0));
-                var name = NormalizeIdentifier(ReadExcelCell(reader, 1));
-
-                if (rowIndex == 0 && IsHeaderRow(code, name))
-                {
-                    rowIndex++;
-                    continue;
-                }
-
-                rowIndex++;
-
-                if (string.IsNullOrWhiteSpace(code) && string.IsNullOrWhiteSpace(name))
-                {
-                    emptyRows++;
-                    continue;
-                }
-
-                if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(name))
-                {
-                    invalidRows++;
-                    continue;
-                }
-
-                if (IsBarcodeSeen(seenCodes, code))
-                {
-                    duplicates++;
-                    continue;
-                }
-
-                if (existingCodes.Contains(code))
-                {
-                    duplicates++;
-                    continue;
-                }
-
-                try
-                {
-                    AddBarcodeVariants(seenCodes, code);
-                    var gtin = IsDigitsOnly(code) ? code : null;
-                    var createdResult = _services.WpfCatalogApi.TryCreateItemAsync(new Item
-                        {
-                            Name = name,
-                            Barcode = code,
-                            Gtin = gtin,
-                            BaseUom = "шт",
-                            IsMarked = false
-                        })
-                        .ConfigureAwait(false)
-                        .GetAwaiter()
-                        .GetResult();
-                    if (!createdResult.IsSuccess)
-                    {
-                        if (string.Equals(createdResult.Error, "ITEM_ALREADY_EXISTS", StringComparison.OrdinalIgnoreCase))
-                        {
-                            duplicates++;
-                            continue;
-                        }
-
-                        throw new InvalidOperationException(createdResult.Error ?? "Не удалось создать товар через сервер.");
-                    }
-                    created++;
-                    AddBarcodeVariants(existingCodes, code);
-                    AddBarcodeVariants(existingCodes, gtin);
-                }
-                catch (ArgumentException)
-                {
-                    invalidRows++;
-                }
-                catch (PostgresException ex) when (IsPostgresConstraint(ex))
-                {
-                    duplicates++;
-                }
-                catch
-                {
-                    errors++;
-                }
-            }
-
-            break;
-        } while (reader.NextResult());
-
-        return new ImportItemsSummary(created, duplicates, emptyRows, invalidRows, errors);
-    }
-
-    private static void EnsureExcelEncoding()
-    {
-        if (_excelEncodingRegistered)
-        {
-            return;
-        }
-
-        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
-        _excelEncodingRegistered = true;
-    }
-
-    private static string? ReadExcelCell(IExcelDataReader reader, int index)
-    {
-        if (index < 0 || index >= reader.FieldCount)
-        {
-            return null;
-        }
-
-        var value = reader.GetValue(index);
-        if (value == null)
-        {
-            return null;
-        }
-
-        if (value is double number)
-        {
-            return number.ToString("0", CultureInfo.InvariantCulture);
-        }
-
-        if (value is float numberFloat)
-        {
-            return numberFloat.ToString("0", CultureInfo.InvariantCulture);
-        }
-
-        if (value is decimal numberDecimal)
-        {
-            return numberDecimal.ToString("0", CultureInfo.InvariantCulture);
-        }
-
-        return Convert.ToString(value, CultureInfo.InvariantCulture);
-    }
-
-    private static bool IsHeaderRow(string? code, string? name)
-    {
-        var combined = $"{code} {name}".Trim();
-        if (string.IsNullOrWhiteSpace(combined))
-        {
-            return false;
-        }
-
-        var lower = combined.ToLowerInvariant();
-        return lower.Contains("sku")
-               || lower.Contains("gtin")
-               || lower.Contains("штрих")
-               || lower.Contains("наимен")
-               || lower.Contains("name");
-    }
-
-    private static string? NormalizeImportedBarcode(string? value)
-    {
-        var trimmed = NormalizeIdentifier(value);
-        if (string.IsNullOrWhiteSpace(trimmed))
-        {
-            return null;
-        }
-
-        if (!IsDigitsOnly(trimmed))
-        {
-            return trimmed;
-        }
-
-        return trimmed.Length < 14 ? trimmed.PadLeft(14, '0') : trimmed;
-    }
-
-    private static void AddBarcodeVariants(HashSet<string> target, string? code)
-    {
-        var trimmed = NormalizeIdentifier(code);
-        if (string.IsNullOrWhiteSpace(trimmed))
-        {
-            return;
-        }
-
-        target.Add(trimmed);
-        if (!IsDigitsOnly(trimmed))
-        {
-            return;
-        }
-
-        if (trimmed.Length == 13)
-        {
-            target.Add("0" + trimmed);
-        }
-        else if (trimmed.Length == 14 && trimmed.StartsWith("0", StringComparison.Ordinal))
-        {
-            target.Add(trimmed.Substring(1));
-        }
-    }
-
-    private static bool IsBarcodeSeen(HashSet<string> seen, string? code)
-    {
-        var trimmed = NormalizeIdentifier(code);
-        if (string.IsNullOrWhiteSpace(trimmed))
-        {
-            return false;
-        }
-
-        if (seen.Contains(trimmed))
-        {
-            return true;
-        }
-
-        if (!IsDigitsOnly(trimmed))
-        {
-            return false;
-        }
-
-        if (trimmed.Length == 13)
-        {
-            return seen.Contains("0" + trimmed);
-        }
-
-        if (trimmed.Length == 14 && trimmed.StartsWith("0", StringComparison.Ordinal))
-        {
-            return seen.Contains(trimmed.Substring(1));
-        }
-
-        return false;
-    }
-
     private async void DeleteItem_Click(object sender, RoutedEventArgs e)
     {
         var itemsToDelete = GetSelectedItemsForDelete();
@@ -3499,24 +3255,6 @@ public partial class MainWindow : Window
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
-    private static bool IsDigitsOnly(string? value)
-    {
-        if (string.IsNullOrEmpty(value))
-        {
-            return false;
-        }
-
-        foreach (var ch in value)
-        {
-            if (!char.IsDigit(ch))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
     private static bool IsPostgresConstraint(PostgresException ex)
     {
         return string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal);
@@ -4104,5 +3842,4 @@ public partial class MainWindow : Window
         public string ShortageDisplay { get; init; } = string.Empty;
     }
 
-    private sealed record ImportItemsSummary(int Created, int Duplicates, int EmptyRows, int InvalidRows, int Errors);
 }

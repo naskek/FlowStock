@@ -2,11 +2,8 @@ using System.Collections.ObjectModel;
 using System.Data;
 using System.Globalization;
 using System.IO;
-using System.Linq;
-using System.Text;
 using System.Windows;
 using System.Windows.Controls;
-using ExcelDataReader;
 using FlowStock.Core.Models;
 using Npgsql;
 using WpfComboBox = System.Windows.Controls.ComboBox;
@@ -17,9 +14,10 @@ public partial class ItemImportPreviewWindow : Window
 {
     private readonly AppServices _services;
     private readonly string _filePath;
-    private readonly List<string[]> _rows = new();
     private readonly Dictionary<int, bool> _includeOverrides = new();
-    private readonly List<PreviewRow> _previewRows = new();
+    private IReadOnlyList<CatalogExcelRawRow> _rawRows = Array.Empty<CatalogExcelRawRow>();
+    private IReadOnlyList<CatalogExcelImportRow> _previewRows = Array.Empty<CatalogExcelImportRow>();
+    private int _headerRowIndex = -1;
     private bool _suppressUpdates;
 
     public ItemImportSummary? ImportSummary { get; private set; }
@@ -51,26 +49,10 @@ public partial class ItemImportPreviewWindow : Window
 
     private void LoadExcelData()
     {
-        EnsureExcelEncoding();
         using var stream = File.Open(_filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-        using var reader = ExcelReaderFactory.CreateReader(stream);
+        _rawRows = CatalogExcelImportService.LoadRows(stream);
 
-        do
-        {
-            while (reader.Read())
-            {
-                var row = new string[reader.FieldCount];
-                for (var i = 0; i < reader.FieldCount; i++)
-                {
-                    row[i] = ReadExcelCell(reader, i) ?? string.Empty;
-                }
-                _rows.Add(row);
-            }
-
-            break;
-        } while (reader.NextResult());
-
-        if (_rows.Count == 0)
+        if (_rawRows.Count == 0)
         {
             HeaderRowCheck.IsChecked = false;
             ImportStatusText.Text = "Файл пустой.";
@@ -78,7 +60,16 @@ public partial class ItemImportPreviewWindow : Window
             return;
         }
 
-        HeaderRowCheck.IsChecked = GuessHeaderRow(_rows[0]);
+        if (CatalogExcelImportService.TryDetectHeader(_rawRows, out var headerRowIndex, out _))
+        {
+            _headerRowIndex = headerRowIndex;
+            HeaderRowCheck.IsChecked = true;
+        }
+        else
+        {
+            _headerRowIndex = 0;
+            HeaderRowCheck.IsChecked = GuessHeaderRow(_rawRows[0].Cells);
+        }
     }
 
     private void SetupColumnCombos()
@@ -99,24 +90,34 @@ public partial class ItemImportPreviewWindow : Window
 
     private void ApplyDefaultMappings(IReadOnlyList<ColumnOption> options)
     {
-        var headerValues = HeaderRowCheck.IsChecked == true ? _rows[0] : null;
+        var map = _headerRowIndex >= 0 && _headerRowIndex < _rawRows.Count
+            ? CatalogExcelImportService.BuildMapFromHeaderRow(_rawRows[_headerRowIndex].Cells)
+            : new CatalogExcelColumnMap();
 
-        SetComboSelection(SkuColumnCombo, options, GuessColumnIndex(headerValues, "sku", "штрих", "barcode", "код") ?? 0);
-        SetComboSelection(GtinColumnCombo, options, GuessColumnIndex(headerValues, "gtin"));
-        SetComboSelection(NameColumnCombo, options, GuessColumnIndex(headerValues, "наимен", "name") ?? 1);
-        SetComboSelection(BrandColumnCombo, options, GuessColumnIndex(headerValues, "бренд", "brand"));
-        SetComboSelection(VolumeColumnCombo, options, GuessColumnIndex(headerValues, "объем", "объём", "volume"));
-        SetComboSelection(ShelfLifeColumnCombo, options, GuessColumnIndex(headerValues, "срок", "годност", "shelf", "expiry"));
-        SetComboSelection(TaraColumnCombo, options, GuessColumnIndex(headerValues, "тара", "упаков", "pack"));
+        SetComboSelection(SkuColumnCombo, options, map.SkuColumn ?? CatalogExcelImportService.TryGuessSkuColumnIndex(GetHeaderCells()));
+        SetComboSelection(GtinColumnCombo, options, map.GtinColumn ?? GuessColumnIndex(GetHeaderCells(), "gtin"));
+        SetComboSelection(NameColumnCombo, options, map.NameColumn ?? GuessColumnIndex(GetHeaderCells(), "наимен", "name") ?? 1);
+        SetComboSelection(BrandColumnCombo, options, map.BrandColumn ?? GuessColumnIndex(GetHeaderCells(), "бренд", "brand"));
+        SetComboSelection(VolumeColumnCombo, options, map.VolumeColumn ?? GuessColumnIndex(GetHeaderCells(), "объем", "объём", "volume"));
+        SetComboSelection(ShelfLifeColumnCombo, options, map.ShelfLifeColumn ?? GuessColumnIndex(GetHeaderCells(), "срок", "годност", "shelf", "expiry"));
+        SetComboSelection(TaraColumnCombo, options, map.TaraColumn ?? GuessColumnIndex(GetHeaderCells(), "тара", "упаков", "pack"));
+    }
+
+    private string[] GetHeaderCells()
+    {
+        if (_headerRowIndex < 0 || _headerRowIndex >= _rawRows.Count)
+        {
+            return Array.Empty<string>();
+        }
+
+        return _rawRows[_headerRowIndex].Cells
+            .Select(CatalogExcelImportService.GetCellDisplayText)
+            .Select(value => value ?? string.Empty)
+            .ToArray();
     }
 
     private void SetComboSelection(WpfComboBox combo, IReadOnlyList<ColumnOption> options, int? index)
     {
-        if (combo == null)
-        {
-            return;
-        }
-
         if (index.HasValue)
         {
             combo.SelectedItem = options.FirstOrDefault(option => option.Index == index.Value) ?? options.First();
@@ -129,9 +130,9 @@ public partial class ItemImportPreviewWindow : Window
 
     private IReadOnlyList<ColumnOption> BuildColumnOptions()
     {
-        var maxCols = _rows.Count == 0 ? 0 : _rows.Max(row => row.Length);
-        var hasHeader = HeaderRowCheck.IsChecked == true;
-        var headers = hasHeader && _rows.Count > 0 ? _rows[0] : Array.Empty<string>();
+        var maxCols = _rawRows.Count == 0 ? 0 : _rawRows.Max(row => row.Cells.Length);
+        var headers = GetHeaderCells();
+        var hasHeader = HeaderRowCheck.IsChecked == true && _headerRowIndex >= 0;
         var list = new List<ColumnOption>
         {
             new(-1, "Не импортировать")
@@ -140,12 +141,15 @@ public partial class ItemImportPreviewWindow : Window
         var usedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         for (var i = 0; i < maxCols; i++)
         {
-            var name = hasHeader && i < headers.Length ? NormalizeIdentifier(headers[i]) : null;
-            var label = string.IsNullOrWhiteSpace(name) ? $"Колонка {GetColumnLabel(i)}" : name;
+            var name = hasHeader && i < headers.Length
+                ? CatalogExcelImportService.NormalizeHeader(headers[i])
+                : null;
+            var label = string.IsNullOrWhiteSpace(name) ? $"Колонка {GetColumnLabel(i)}" : headers[i].Trim();
             if (!usedNames.Add(label))
             {
                 label = $"{label} ({GetColumnLabel(i)})";
             }
+
             list.Add(new ColumnOption(i, $"{label} ({GetColumnLabel(i)})"));
         }
 
@@ -162,6 +166,7 @@ public partial class ItemImportPreviewWindow : Window
             label = (char)('A' + mod) + label;
             value = (value - mod) / 26;
         }
+
         return label;
     }
 
@@ -174,13 +179,13 @@ public partial class ItemImportPreviewWindow : Window
 
         for (var i = 0; i < headers.Length; i++)
         {
-            var value = headers[i];
-            if (string.IsNullOrWhiteSpace(value))
+            var normalized = CatalogExcelImportService.NormalizeHeader(headers[i]);
+            if (string.IsNullOrWhiteSpace(normalized))
             {
                 continue;
             }
-            var lower = value.Trim().ToLowerInvariant();
-            if (markers.Any(marker => lower.Contains(marker)))
+
+            if (markers.Any(marker => normalized.Contains(marker, StringComparison.Ordinal)))
             {
                 return i;
             }
@@ -189,26 +194,26 @@ public partial class ItemImportPreviewWindow : Window
         return null;
     }
 
-    private static bool GuessHeaderRow(string[] row)
+    private static bool GuessHeaderRow(object?[] cells)
     {
-        if (row.Length == 0)
-        {
-            return false;
-        }
-
-        var joined = string.Join(" ", row).ToLowerInvariant();
-        return joined.Contains("sku")
-               || joined.Contains("gtin")
+        var joined = string.Join(" ", cells.Select(CatalogExcelImportService.GetCellDisplayText)).ToLowerInvariant();
+        return joined.Contains("gtin")
+               || joined.Contains("sku")
                || joined.Contains("штрих")
                || joined.Contains("наимен")
                || joined.Contains("brand")
                || joined.Contains("объем")
                || joined.Contains("срок")
-               || joined.Contains("тара");
+               || joined.Contains("тара")
+               || joined.Contains("упаков");
     }
 
     private void HeaderRowCheck_Changed(object sender, RoutedEventArgs e)
     {
+        _headerRowIndex = HeaderRowCheck.IsChecked == true
+            ? Math.Max(_headerRowIndex, 0)
+            : -1;
+
         _suppressUpdates = true;
         var options = BuildColumnOptions();
         var previous = new[]
@@ -257,212 +262,150 @@ public partial class ItemImportPreviewWindow : Window
         return combo.SelectedItem is ColumnOption option ? option.Index : -1;
     }
 
-    private string? GetValue(string[] row, int index)
+    private CatalogExcelColumnMap BuildCurrentMap()
     {
-        if (index < 0 || index >= row.Length)
-        {
-            return null;
-        }
+        var map = _headerRowIndex >= 0 && _headerRowIndex < _rawRows.Count
+            ? CatalogExcelImportService.BuildMapFromHeaderRow(_rawRows[_headerRowIndex].Cells)
+            : new CatalogExcelColumnMap();
 
-        return NormalizeIdentifier(row[index]);
+        var manual = CatalogExcelColumnMap.FromManualSelection(
+            GetSelectedColumnIndex(SkuColumnCombo),
+            GetSelectedColumnIndex(GtinColumnCombo),
+            GetSelectedColumnIndex(NameColumnCombo),
+            GetSelectedColumnIndex(BrandColumnCombo),
+            GetSelectedColumnIndex(VolumeColumnCombo),
+            GetSelectedColumnIndex(ShelfLifeColumnCombo),
+            GetSelectedColumnIndex(TaraColumnCombo));
+
+        map.SkuColumn = manual.SkuColumn;
+        map.GtinColumn = manual.GtinColumn;
+        map.NameColumn = manual.NameColumn;
+        map.BrandColumn = manual.BrandColumn;
+        map.VolumeColumn = manual.VolumeColumn;
+        map.ShelfLifeColumn = manual.ShelfLifeColumn;
+        map.TaraColumn = manual.TaraColumn;
+        return map;
     }
 
     private void RebuildPreview()
     {
-        if (_rows.Count == 0)
+        if (_rawRows.Count == 0)
         {
             ImportButton.IsEnabled = false;
             return;
         }
 
-        _previewRows.Clear();
-        var startIndex = HeaderRowCheck.IsChecked == true ? 1 : 0;
-        var skuIndex = GetSelectedColumnIndex(SkuColumnCombo);
-        var gtinIndex = GetSelectedColumnIndex(GtinColumnCombo);
-        var nameIndex = GetSelectedColumnIndex(NameColumnCombo);
-        var brandIndex = GetSelectedColumnIndex(BrandColumnCombo);
-        var volumeIndex = GetSelectedColumnIndex(VolumeColumnCombo);
-        var shelfIndex = GetSelectedColumnIndex(ShelfLifeColumnCombo);
-        var taraIndex = GetSelectedColumnIndex(TaraColumnCombo);
-
-        var existing = GetExistingItems();
-        var existingCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var item in existing)
+        var map = BuildCurrentMap();
+        if (!map.NameColumn.HasValue)
         {
-            AddBarcodeVariants(existingCodes, item.Barcode);
-            AddBarcodeVariants(existingCodes, item.Gtin);
-        }
-        var seenCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var taras = GetTaras();
-        var tarasByName = taras.ToDictionary(t => t.Name, StringComparer.OrdinalIgnoreCase);
-
-        var emptyRows = 0;
-        var invalidRows = 0;
-        var duplicates = 0;
-        var validRows = 0;
-
-        for (var i = startIndex; i < _rows.Count; i++)
-        {
-            var row = _rows[i];
-            var rowNumber = i + 1;
-            var hasAny = row.Any(value => !string.IsNullOrWhiteSpace(value));
-            if (!hasAny)
-            {
-                emptyRows++;
-                _previewRows.Add(new PreviewRow(rowNumber, row, false, "Пустая строка"));
-                continue;
-            }
-
-            var name = GetValue(row, nameIndex);
-            var barcode = NormalizeImportedBarcode(GetValue(row, skuIndex));
-            var gtin = NormalizeImportedBarcode(GetValue(row, gtinIndex));
-            var brand = GetValue(row, brandIndex);
-            var volume = GetValue(row, volumeIndex);
-            var tara = GetValue(row, taraIndex);
-            var shelfLife = GetValue(row, shelfIndex);
-
-            if (string.IsNullOrWhiteSpace(barcode) && !string.IsNullOrWhiteSpace(gtin))
-            {
-                barcode = gtin;
-            }
-
-            string? error = null;
-            if (string.IsNullOrWhiteSpace(name))
-            {
-                error = "Нет наименования";
-            }
-            else if (string.IsNullOrWhiteSpace(barcode))
-            {
-                error = "Нет SKU / GTIN";
-            }
-            else if (!string.IsNullOrWhiteSpace(shelfLife) && (!int.TryParse(shelfLife, NumberStyles.Integer, CultureInfo.InvariantCulture, out var shelfValue) || shelfValue <= 0))
-            {
-                error = "Срок годности: целое число месяцев";
-            }
-            else if (!string.IsNullOrWhiteSpace(tara) && !tarasByName.ContainsKey(tara))
-            {
-                error = "Тара не найдена";
-            }
-
-            if (error == null)
-            {
-                if (IsBarcodeSeen(seenCodes, barcode))
-                {
-                    error = "Дубликат SKU / GTIN (в файле)";
-                    duplicates++;
-                }
-                else if (existingCodes.Contains(barcode!))
-                {
-                    error = "Дубликат SKU / GTIN (в базе)";
-                    duplicates++;
-                }
-                else
-                {
-                    AddBarcodeVariants(seenCodes, barcode);
-                }
-            }
-
-            if (error == null && !string.IsNullOrWhiteSpace(gtin) && !string.Equals(gtin, barcode, StringComparison.OrdinalIgnoreCase))
-            {
-                if (IsBarcodeSeen(seenCodes, gtin))
-                {
-                    error = "Дубликат GTIN (в файле)";
-                    duplicates++;
-                }
-                else if (existingCodes.Contains(gtin))
-                {
-                    error = "Дубликат GTIN (в базе)";
-                    duplicates++;
-                }
-                else
-                {
-                    AddBarcodeVariants(seenCodes, gtin);
-                }
-            }
-
-            var include = error == null;
-            if (_includeOverrides.TryGetValue(rowNumber, out var overrideValue) && error == null)
-            {
-                include = overrideValue;
-            }
-
-            if (error != null)
-            {
-                invalidRows++;
-            }
-            else if (include)
-            {
-                validRows++;
-            }
-
-            _previewRows.Add(new PreviewRow(rowNumber, row, include, error, barcode, gtin, name, brand, volume, shelfLife, tara));
+            ImportButton.IsEnabled = false;
+            ImportStatusText.Text = "Выберите колонку «Наименование».";
+            PreviewGrid.ItemsSource = null;
+            return;
         }
 
-        PreviewGrid.ItemsSource = BuildPreviewTable(_previewRows).DefaultView;
-        ImportButton.IsEnabled = validRows > 0;
-        ImportStatusText.Text = $"Строк: {(_previewRows.Count)} · К импорту: {validRows} · Ошибок: {invalidRows} · Пустые: {emptyRows} · Дубликаты: {duplicates}";
+        var context = CatalogExcelImportContext.FromCatalog(GetExistingItems(), GetTaras());
+        var parseResult = CatalogExcelImportService.Parse(
+            _rawRows,
+            HeaderRowCheck.IsChecked == true ? _headerRowIndex : -1,
+            map,
+            context);
+
+        _previewRows = parseResult.Rows;
+
+        PreviewGrid.ItemsSource = BuildPreviewTable(_previewRows, GetInclude).DefaultView;
+        ImportButton.IsEnabled = _previewRows.Any(row =>
+            row.Status == CatalogExcelImportStatus.New && GetInclude(row));
+        ImportStatusText.Text =
+            $"Строк: {_previewRows.Count} · К импорту: {parseResult.NewRows} · Ошибок: {parseResult.ErrorRows} · Пропущено: {parseResult.SkippedRows} · Пустые: {parseResult.EmptyRows} · Дубликаты: {parseResult.DuplicateRows}";
     }
 
-    private DataTable BuildPreviewTable(IReadOnlyList<PreviewRow> rows)
+    private static DataTable BuildPreviewTable(
+        IReadOnlyList<CatalogExcelImportRow> rows,
+        Func<CatalogExcelImportRow, bool> includeSelector)
     {
         var table = new DataTable();
-        var maxCols = _rows.Count == 0 ? 0 : _rows.Max(row => row.Length);
-        var hasHeader = HeaderRowCheck.IsChecked == true;
-        var headers = hasHeader && _rows.Count > 0 ? _rows[0] : Array.Empty<string>();
-
         table.Columns.Add("Строка", typeof(int)).ReadOnly = true;
         table.Columns.Add("Импорт", typeof(bool));
-        table.Columns.Add("Ошибка", typeof(string)).ReadOnly = true;
-
-        var usedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var columnNames = new List<string>();
-        for (var i = 0; i < maxCols; i++)
-        {
-            var name = hasHeader && i < headers.Length ? NormalizeIdentifier(headers[i]) : null;
-            var label = string.IsNullOrWhiteSpace(name) ? $"Колонка {GetColumnLabel(i)}" : name;
-            if (!usedNames.Add(label))
-            {
-                label = $"{label} ({GetColumnLabel(i)})";
-            }
-            columnNames.Add(label);
-            table.Columns.Add(label, typeof(string)).ReadOnly = true;
-        }
+        table.Columns.Add("Статус", typeof(string)).ReadOnly = true;
+        table.Columns.Add("Причина", typeof(string)).ReadOnly = true;
+        table.Columns.Add("GTIN", typeof(string)).ReadOnly = true;
+        table.Columns.Add("Наименование", typeof(string)).ReadOnly = true;
+        table.Columns.Add("Бренд", typeof(string)).ReadOnly = true;
+        table.Columns.Add("Объем", typeof(string)).ReadOnly = true;
+        table.Columns.Add("Срок годности", typeof(string)).ReadOnly = true;
+        table.Columns.Add("Упаковка", typeof(string)).ReadOnly = true;
+        table.Columns.Add("Разрешительная документация", typeof(string)).ReadOnly = true;
+        table.Columns.Add("от", typeof(string)).ReadOnly = true;
+        table.Columns.Add("до", typeof(string)).ReadOnly = true;
+        table.Columns.Add("Материал", typeof(string)).ReadOnly = true;
+        table.Columns.Add("Нанесение кодов", typeof(string)).ReadOnly = true;
+        table.Columns.Add("ТН ВЭД", typeof(string)).ReadOnly = true;
+        table.Columns.Add("ShortName", typeof(string)).ReadOnly = true;
+        table.Columns.Add("Условия хранения", typeof(string)).ReadOnly = true;
+        table.Columns.Add("ТУ", typeof(string)).ReadOnly = true;
+        table.Columns.Add("Состав", typeof(string)).ReadOnly = true;
 
         foreach (var row in rows)
         {
             var dataRow = table.NewRow();
-            dataRow["Строка"] = row.RowNumber;
-            dataRow["Импорт"] = row.Include;
-            dataRow["Ошибка"] = row.Error ?? string.Empty;
-            for (var i = 0; i < columnNames.Count; i++)
-            {
-                dataRow[columnNames[i]] = i < row.Values.Length ? row.Values[i] : string.Empty;
-            }
+            dataRow["Строка"] = row.ExcelRowNumber;
+            dataRow["Импорт"] = includeSelector(row);
+            dataRow["Статус"] = FormatStatus(row.Status);
+            dataRow["Причина"] = row.Reason ?? string.Empty;
+            dataRow["GTIN"] = row.Gtin ?? string.Empty;
+            dataRow["Наименование"] = row.Name ?? string.Empty;
+            dataRow["Бренд"] = row.Brand ?? string.Empty;
+            dataRow["Объем"] = row.Volume ?? string.Empty;
+            dataRow["Срок годности"] = row.ShelfLifeMonths?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
+            dataRow["Упаковка"] = row.TaraName ?? string.Empty;
+            dataRow["Разрешительная документация"] = row.PermitDocumentation ?? string.Empty;
+            dataRow["от"] = FormatDate(row.PermitFrom);
+            dataRow["до"] = FormatDate(row.PermitTo);
+            dataRow["Материал"] = row.Material ?? string.Empty;
+            dataRow["Нанесение кодов"] = row.CodeApplication ?? string.Empty;
+            dataRow["ТН ВЭД"] = row.Tnved ?? string.Empty;
+            dataRow["ShortName"] = row.ShortName ?? string.Empty;
+            dataRow["Условия хранения"] = row.StorageConditions ?? string.Empty;
+            dataRow["ТУ"] = row.TechnicalConditions ?? string.Empty;
+            dataRow["Состав"] = row.Composition ?? string.Empty;
             table.Rows.Add(dataRow);
         }
 
         return table;
     }
 
+    private static string FormatStatus(CatalogExcelImportStatus status) =>
+        status switch
+        {
+            CatalogExcelImportStatus.New => "NEW",
+            CatalogExcelImportStatus.Error => "ERROR",
+            CatalogExcelImportStatus.Skipped => "SKIPPED",
+            _ => status.ToString()
+        };
+
+    private static string FormatDate(DateTime? value) =>
+        value?.ToString("dd.MM.yyyy", CultureInfo.InvariantCulture) ?? string.Empty;
+
     private void PreviewGrid_AutoGeneratingColumn(object? sender, DataGridAutoGeneratingColumnEventArgs e)
     {
-        if (e.PropertyName == "Строка")
+        if (e.PropertyName is "Строка" or "Импорт")
         {
             e.Column.Width = new DataGridLength(70);
+            e.Column.IsReadOnly = e.PropertyName == "Строка";
+            return;
+        }
+
+        if (e.PropertyName is "Статус")
+        {
+            e.Column.Width = new DataGridLength(80);
             e.Column.IsReadOnly = true;
             return;
         }
 
-        if (e.PropertyName == "Импорт")
+        if (e.PropertyName is "Причина")
         {
-            e.Column.Width = new DataGridLength(70);
-            e.Column.IsReadOnly = false;
-            return;
-        }
-
-        if (e.PropertyName == "Ошибка")
-        {
-            e.Column.Width = new DataGridLength(200);
+            e.Column.Width = new DataGridLength(220);
             e.Column.IsReadOnly = true;
             return;
         }
@@ -483,6 +426,12 @@ public partial class ItemImportPreviewWindow : Window
         }
 
         var rowNumber = rowView.Row.Field<int>("Строка");
+        if (!string.Equals(rowView.Row.Field<string>("Статус"), "NEW", StringComparison.Ordinal))
+        {
+            e.Cancel = true;
+            return;
+        }
+
         var value = rowView.Row.Field<bool>("Импорт");
         _includeOverrides[rowNumber] = value;
     }
@@ -494,17 +443,6 @@ public partial class ItemImportPreviewWindow : Window
             return;
         }
 
-        var skuIndex = GetSelectedColumnIndex(SkuColumnCombo);
-        var gtinIndex = GetSelectedColumnIndex(GtinColumnCombo);
-        var nameIndex = GetSelectedColumnIndex(NameColumnCombo);
-        var brandIndex = GetSelectedColumnIndex(BrandColumnCombo);
-        var volumeIndex = GetSelectedColumnIndex(VolumeColumnCombo);
-        var shelfIndex = GetSelectedColumnIndex(ShelfLifeColumnCombo);
-        var taraIndex = GetSelectedColumnIndex(TaraColumnCombo);
-
-        var taras = GetTaras();
-        var tarasByName = taras.ToDictionary(t => t.Name, StringComparer.OrdinalIgnoreCase);
-
         var created = 0;
         var duplicates = 0;
         var emptyRows = 0;
@@ -513,77 +451,44 @@ public partial class ItemImportPreviewWindow : Window
 
         foreach (var row in _previewRows)
         {
-            if (!row.Include)
+            if (row.Status == CatalogExcelImportStatus.Skipped && row.Reason == "Пустая строка")
             {
-                if (row.Error == "Пустая строка")
-                {
-                    emptyRows++;
-                }
-                else if (row.Error != null && row.Error.Contains("Дубликат", StringComparison.OrdinalIgnoreCase))
+                emptyRows++;
+                continue;
+            }
+
+            if (row.Status != CatalogExcelImportStatus.New || !GetInclude(row))
+            {
+                if (row.Reason != null && row.Reason.Contains("Дубликат", StringComparison.OrdinalIgnoreCase))
                 {
                     duplicates++;
                 }
-                else if (!string.IsNullOrWhiteSpace(row.Error))
+                else if (row.Status == CatalogExcelImportStatus.Error)
                 {
                     invalidRows++;
                 }
+
                 continue;
             }
 
-            var raw = row.Values;
-            var name = NormalizeIdentifier(GetValue(raw, nameIndex));
-            var barcode = NormalizeImportedBarcode(GetValue(raw, skuIndex));
-            var gtin = NormalizeImportedBarcode(GetValue(raw, gtinIndex));
-            var brand = NormalizeIdentifier(GetValue(raw, brandIndex));
-            var volume = NormalizeIdentifier(GetValue(raw, volumeIndex));
-            var shelfLife = NormalizeIdentifier(GetValue(raw, shelfIndex));
-            var taraName = NormalizeIdentifier(GetValue(raw, taraIndex));
-
-            if (string.IsNullOrWhiteSpace(barcode) && !string.IsNullOrWhiteSpace(gtin))
-            {
-                barcode = gtin;
-            }
-
-            if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(barcode))
+            if (string.IsNullOrWhiteSpace(row.Name) || string.IsNullOrWhiteSpace(row.Barcode))
             {
                 invalidRows++;
                 continue;
-            }
-
-            int? shelfLifeMonths = null;
-            if (!string.IsNullOrWhiteSpace(shelfLife))
-            {
-                if (!int.TryParse(shelfLife, NumberStyles.Integer, CultureInfo.InvariantCulture, out var shelfValue) || shelfValue <= 0)
-                {
-                    invalidRows++;
-                    continue;
-                }
-                shelfLifeMonths = shelfValue;
-            }
-
-            long? taraId = null;
-            if (!string.IsNullOrWhiteSpace(taraName))
-            {
-                if (!tarasByName.TryGetValue(taraName, out var tara))
-                {
-                    invalidRows++;
-                    continue;
-                }
-                taraId = tara.Id;
             }
 
             try
             {
                 var candidate = new Item
                 {
-                    Name = name,
-                    Barcode = barcode,
-                    Gtin = gtin,
+                    Name = row.Name,
+                    Barcode = row.Barcode,
+                    Gtin = row.Gtin,
                     BaseUom = "шт",
-                    Brand = brand,
-                    Volume = volume,
-                    ShelfLifeMonths = shelfLifeMonths,
-                    TaraId = taraId,
+                    Brand = row.Brand,
+                    Volume = row.Volume,
+                    ShelfLifeMonths = row.ShelfLifeMonths,
+                    TaraId = row.TaraId,
                     IsMarked = false
                 };
                 var result = _services.WpfCatalogApi.TryCreateItemAsync(candidate)
@@ -605,6 +510,7 @@ public partial class ItemImportPreviewWindow : Window
 
                     throw new InvalidOperationException("Не удалось создать товар через сервер.");
                 }
+
                 created++;
             }
             catch (ArgumentException)
@@ -626,160 +532,35 @@ public partial class ItemImportPreviewWindow : Window
         Close();
     }
 
+    private bool GetInclude(CatalogExcelImportRow row)
+    {
+        if (row.Status != CatalogExcelImportStatus.New)
+        {
+            return false;
+        }
+
+        return _includeOverrides.TryGetValue(row.ExcelRowNumber, out var include)
+            ? include
+            : row.Include;
+    }
+
     private void Cancel_Click(object sender, RoutedEventArgs e)
     {
         DialogResult = false;
         Close();
     }
 
-    private static bool IsPostgresConstraint(PostgresException ex)
-    {
-        return ex.SqlState == "23505";
-    }
+    private static bool IsPostgresConstraint(PostgresException ex) => ex.SqlState == "23505";
 
-    private IReadOnlyList<Item> GetExistingItems()
-    {
-        return _services.WpfReadApi.TryGetItems(null, out var apiItems)
+    private IReadOnlyList<Item> GetExistingItems() =>
+        _services.WpfReadApi.TryGetItems(null, out var apiItems)
             ? apiItems
             : Array.Empty<Item>();
-    }
 
-    private IReadOnlyList<Tara> GetTaras()
-    {
-        return _services.WpfCatalogApi.TryGetTaras(out var apiTaras)
+    private IReadOnlyList<Tara> GetTaras() =>
+        _services.WpfCatalogApi.TryGetTaras(out var apiTaras)
             ? apiTaras
             : Array.Empty<Tara>();
-    }
-
-    private static void EnsureExcelEncoding()
-    {
-        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
-    }
-
-    private static string? ReadExcelCell(IExcelDataReader reader, int index)
-    {
-        if (index < 0 || index >= reader.FieldCount)
-        {
-            return null;
-        }
-
-        var value = reader.GetValue(index);
-        if (value == null)
-        {
-            return null;
-        }
-
-        if (value is double number)
-        {
-            return number.ToString("0", CultureInfo.InvariantCulture);
-        }
-
-        if (value is float numberFloat)
-        {
-            return numberFloat.ToString("0", CultureInfo.InvariantCulture);
-        }
-
-        if (value is decimal numberDecimal)
-        {
-            return numberDecimal.ToString("0", CultureInfo.InvariantCulture);
-        }
-
-        return Convert.ToString(value, CultureInfo.InvariantCulture);
-    }
-
-    private static string? NormalizeIdentifier(string? value)
-    {
-        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-    }
-
-    private static bool IsDigitsOnly(string? value)
-    {
-        if (string.IsNullOrEmpty(value))
-        {
-            return false;
-        }
-
-        foreach (var ch in value)
-        {
-            if (!char.IsDigit(ch))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private static string? NormalizeImportedBarcode(string? value)
-    {
-        var trimmed = NormalizeIdentifier(value);
-        if (string.IsNullOrWhiteSpace(trimmed))
-        {
-            return null;
-        }
-
-        if (!IsDigitsOnly(trimmed))
-        {
-            return trimmed;
-        }
-
-        return trimmed.Length < 14 ? trimmed.PadLeft(14, '0') : trimmed;
-    }
-
-    private static void AddBarcodeVariants(HashSet<string> target, string? code)
-    {
-        var trimmed = NormalizeIdentifier(code);
-        if (string.IsNullOrWhiteSpace(trimmed))
-        {
-            return;
-        }
-
-        target.Add(trimmed);
-        if (!IsDigitsOnly(trimmed))
-        {
-            return;
-        }
-
-        if (trimmed.Length == 13)
-        {
-            target.Add("0" + trimmed);
-        }
-        else if (trimmed.Length == 14 && trimmed.StartsWith("0", StringComparison.Ordinal))
-        {
-            target.Add(trimmed.Substring(1));
-        }
-    }
-
-    private static bool IsBarcodeSeen(HashSet<string> seen, string? code)
-    {
-        var trimmed = NormalizeIdentifier(code);
-        if (string.IsNullOrWhiteSpace(trimmed))
-        {
-            return false;
-        }
-
-        if (seen.Contains(trimmed))
-        {
-            return true;
-        }
-
-        if (!IsDigitsOnly(trimmed))
-        {
-            return false;
-        }
-
-        if (trimmed.Length == 13)
-        {
-            return seen.Contains("0" + trimmed);
-        }
-
-        if (trimmed.Length == 14 && trimmed.StartsWith("0", StringComparison.Ordinal))
-        {
-            return seen.Contains(trimmed.Substring(1));
-        }
-
-        return false;
-    }
 
     private sealed class ColumnOption
     {
@@ -792,47 +573,7 @@ public partial class ItemImportPreviewWindow : Window
             Name = name;
         }
 
-        public override string ToString()
-        {
-            return Name;
-        }
-    }
-
-    private sealed class PreviewRow
-    {
-        public int RowNumber { get; }
-        public string[] Values { get; }
-        public bool Include { get; }
-        public string? Error { get; }
-        public string? Barcode { get; }
-        public string? Gtin { get; }
-        public string? Name { get; }
-        public string? Brand { get; }
-        public string? Volume { get; }
-        public string? ShelfLife { get; }
-        public string? Tara { get; }
-
-        public PreviewRow(int rowNumber, string[] values, bool include, string? error,
-            string? barcode = null,
-            string? gtin = null,
-            string? name = null,
-            string? brand = null,
-            string? volume = null,
-            string? shelfLife = null,
-            string? tara = null)
-        {
-            RowNumber = rowNumber;
-            Values = values;
-            Include = include;
-            Error = error;
-            Barcode = barcode;
-            Gtin = gtin;
-            Name = name;
-            Brand = brand;
-            Volume = volume;
-            ShelfLife = shelfLife;
-            Tara = tara;
-        }
+        public override string ToString() => Name;
     }
 }
 
