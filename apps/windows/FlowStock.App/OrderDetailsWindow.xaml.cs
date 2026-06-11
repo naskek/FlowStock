@@ -726,7 +726,8 @@ public partial class OrderDetailsWindow : Window
                 })
                 .ToArray();
             var groups = FlowStock.Core.Services.PalletLabelPrintSelectionService.BuildGroups(coreRows);
-            var dialog = new PalletLabelPrintSelectionWindow(groups)
+            var savedCopies = _services.Settings.Load().PalletLabels.Copies;
+            var dialog = new PalletLabelPrintSelectionWindow(groups, savedCopies)
             {
                 Owner = this
             };
@@ -742,7 +743,12 @@ public partial class OrderDetailsWindow : Window
                 return;
             }
 
-            var printResult = await Task.Run(() => _services.PalletLabelPrinter.Print(selectedRows)).ConfigureAwait(true);
+            var copies = dialog.Copies;
+            var settingsToSave = _services.Settings.Load();
+            settingsToSave.PalletLabels.Copies = copies;
+            _services.Settings.Save(settingsToSave);
+
+            var printResult = await Task.Run(() => _services.PalletLabelPrinter.Print(selectedRows, copies)).ConfigureAwait(true);
             if (!printResult.IsSuccess)
             {
                 MessageBox.Show(printResult.Message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);

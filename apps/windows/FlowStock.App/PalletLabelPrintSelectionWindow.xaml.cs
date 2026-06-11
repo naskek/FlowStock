@@ -12,10 +12,11 @@ public partial class PalletLabelPrintSelectionWindow : Window
     private readonly ObservableCollection<PalletLabelPrintSelectionGroupViewModel> _groups = new();
     private bool _syncingCategoryCheckBoxes;
 
-    public PalletLabelPrintSelectionWindow(IReadOnlyList<PalletLabelPrintSelectionGroup> groups)
+    public PalletLabelPrintSelectionWindow(IReadOnlyList<PalletLabelPrintSelectionGroup> groups, int initialCopies = 1)
     {
         InitializeComponent();
         GroupsList.ItemsSource = _groups;
+        CopiesBox.Text = Math.Clamp(initialCopies, 1, 100).ToString(System.Globalization.CultureInfo.InvariantCulture);
         foreach (var group in groups)
         {
             var rows = group.Rows
@@ -30,6 +31,25 @@ public partial class PalletLabelPrintSelectionWindow : Window
         }
 
         UpdateSummary();
+    }
+
+    public int Copies { get; private set; }
+
+    public static bool TryParseCopies(string? text, out int copies)
+    {
+        copies = 0;
+        if (!int.TryParse((text ?? string.Empty).Trim(), out var value))
+        {
+            return false;
+        }
+
+        if (value < 1 || value > 100)
+        {
+            return false;
+        }
+
+        copies = value;
+        return true;
     }
 
     public IReadOnlyList<long> SelectedPalletIds =>
@@ -148,6 +168,17 @@ public partial class PalletLabelPrintSelectionWindow : Window
             return;
         }
 
+        if (!TryParseCopies(CopiesBox.Text, out var copies))
+        {
+            MessageBox.Show(
+                "Количество копий должно быть от 1 до 100.",
+                "Паллеты",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        Copies = copies;
         DialogResult = true;
         Close();
     }
