@@ -5,6 +5,9 @@ namespace FlowStock.Core.Services;
 
 public static class OrderLineHuFateDisplayBuilder
 {
+    public const string OnStockFateCode = "ON_STOCK";
+    public const string ReservedFateCode = "RESERVED";
+    public const string ShippedFateCode = "SHIPPED";
     public const int FilledSortOrder = 2;
     public const int ReservedSortOrder = 3;
     public const int ShippedSortOrder = 4;
@@ -46,34 +49,50 @@ public static class OrderLineHuFateDisplayBuilder
             if (latestShipmentByHu.TryGetValue(source.Key, out var shipment))
             {
                 var sameOrder = shipment.TargetOrderId == source.SourceOrderId;
+                var targetOrderRef = OrderRef(orders, shipment.TargetOrderId);
+                var fateLabel = sameOrder ? "отгружено" : $"→ отгружено заказ {targetOrderRef}";
                 Add(rows, source.SourceOrderLineId, new OrderLineHuDisplayEntry(
                     source.Key.HuCode,
                     sameOrder ? "отгружено" : "наполнено",
                     sameOrder ? shipment.Qty : source.Qty,
                     IsWarehouseBound: false,
                     SortOrder: ShippedSortOrder,
-                    sameOrder ? null : $"→ отгружено заказ {OrderRef(orders, shipment.TargetOrderId)}"));
+                    sameOrder ? null : fateLabel,
+                    FateCode: ShippedFateCode,
+                    FateLabel: fateLabel,
+                    FateOrderRef: targetOrderRef,
+                    FateDocRef: shipment.DocRef,
+                    FateQty: shipment.Qty));
             }
             else if (reservationByHu.TryGetValue(source.Key, out var reservation))
             {
+                var targetOrderRef = OrderRef(orders, reservation.TargetOrderId);
+                var sameOrder = reservation.TargetOrderId == source.SourceOrderId;
+                var fateLabel = sameOrder ? "резерв этого заказа" : $"→ резерв заказ {targetOrderRef}";
                 Add(rows, source.SourceOrderLineId, new OrderLineHuDisplayEntry(
                     source.Key.HuCode,
                     "наполнено",
                     source.Qty,
                     IsWarehouseBound: false,
-                    SortOrder: reservation.TargetOrderId == source.SourceOrderId ? FilledSortOrder : ReservedSortOrder,
-                    reservation.TargetOrderId == source.SourceOrderId
-                        ? null
-                        : $"→ резерв заказ {OrderRef(orders, reservation.TargetOrderId)}"));
+                    SortOrder: sameOrder ? FilledSortOrder : ReservedSortOrder,
+                    sameOrder ? null : fateLabel,
+                    FateCode: ReservedFateCode,
+                    FateLabel: fateLabel,
+                    FateOrderRef: targetOrderRef,
+                    FateQty: reservation.Qty));
             }
             else if (hasPositiveStock)
             {
+                var stockQty = stockByHu.GetValueOrDefault(source.Key);
                 Add(rows, source.SourceOrderLineId, new OrderLineHuDisplayEntry(
                     source.Key.HuCode,
                     "наполнено",
                     source.Qty,
                     IsWarehouseBound: false,
-                    SortOrder: FilledSortOrder));
+                    SortOrder: FilledSortOrder,
+                    FateCode: OnStockFateCode,
+                    FateLabel: "на складе",
+                    FateQty: stockQty));
             }
         }
 
@@ -87,15 +106,22 @@ public static class OrderLineHuFateDisplayBuilder
                          .First() with { Qty = group.Sum(row => row.Qty) }))
         {
             sources.TryGetValue(shipment.Key, out var source);
+            var sourceOrderRef = source == null ? null : OrderRef(orders, source.SourceOrderId);
+            var fateLabel = source == null || source.SourceOrderId == shipment.TargetOrderId
+                ? "отгружено"
+                : $"← выпуск заказ {sourceOrderRef}";
             Add(rows, shipment.TargetOrderLineId, new OrderLineHuDisplayEntry(
                 shipment.Key.HuCode,
                 "отгружено",
                 shipment.Qty,
                 IsWarehouseBound: false,
                 SortOrder: ShippedSortOrder,
-                source == null || source.SourceOrderId == shipment.TargetOrderId
-                    ? null
-                    : $"← выпуск заказ {OrderRef(orders, source.SourceOrderId)}"));
+                source == null || source.SourceOrderId == shipment.TargetOrderId ? null : fateLabel,
+                FateCode: ShippedFateCode,
+                FateLabel: fateLabel,
+                FateOrderRef: OrderRef(orders, shipment.TargetOrderId),
+                FateDocRef: shipment.DocRef,
+                FateQty: shipment.Qty));
         }
 
         foreach (var reservation in reservations.Where(row => row.TargetOrderId == orderId))
@@ -109,13 +135,19 @@ public static class OrderLineHuFateDisplayBuilder
 
             sources.TryGetValue(reservation.Key, out var source);
             var sameOrder = source?.SourceOrderId == reservation.TargetOrderId;
+            var sourceOrderRef = source == null ? null : OrderRef(orders, source.SourceOrderId);
+            var fateLabel = source == null || sameOrder ? "резерв этого заказа" : $"← выпуск заказ {sourceOrderRef}";
             Add(rows, reservation.TargetOrderLineId, new OrderLineHuDisplayEntry(
                 reservation.Key.HuCode,
                 sameOrder ? "наполнено" : "резерв",
                 sameOrder ? source!.Qty : reservation.Qty,
                 IsWarehouseBound: false,
                 SortOrder: sameOrder ? FilledSortOrder : ReservedSortOrder,
-                source == null || sameOrder ? null : $"← выпуск заказ {OrderRef(orders, source.SourceOrderId)}"));
+                source == null || sameOrder ? null : fateLabel,
+                FateCode: ReservedFateCode,
+                FateLabel: fateLabel,
+                FateOrderRef: OrderRef(orders, reservation.TargetOrderId),
+                FateQty: reservation.Qty));
         }
 
         return rows.ToDictionary(
@@ -252,6 +284,7 @@ public static class OrderLineHuFateDisplayBuilder
                     row.Line.OrderLineId!.Value,
                     row.Line.Qty,
                     doc.Id,
+                    doc.DocRef,
                     doc.ClosedAt,
                     doc.CreatedAt)));
         }
@@ -318,6 +351,7 @@ public static class OrderLineHuFateDisplayBuilder
         long TargetOrderLineId,
         double Qty,
         long DocId,
+        string DocRef,
         DateTime? ClosedAt,
         DateTime CreatedAt);
 

@@ -24,8 +24,19 @@ public static class OrderLinesEndpoint
             return Results.NotFound(new ApiResult(false, "ORDER_NOT_FOUND"));
         }
 
-        var linesByOrder = BuildOrderLinesByOrderIds(store, [orderId]);
-        return Results.Ok(linesByOrder.TryGetValue(orderId, out var lines) ? lines : Array.Empty<OrderLineResponse>());
+        var lineViewsByOrder = orderService.GetOrderLineViewsByOrderIds([orderId]);
+        var lineViews = lineViewsByOrder.TryGetValue(orderId, out var loadedLines)
+            ? loadedLines
+            : Array.Empty<OrderLineView>();
+        var productionHusByOrderLine = BuildProductionHuCodesByOrderLineIds(
+            store,
+            lineViews.Select(line => line.Id).Where(id => id > 0).Distinct().ToArray(),
+            [orderId]);
+        var detailsByOrderLine = OrderLineHuDetailsBuilder.BuildByOrder(store, order, lineViews);
+        var lines = lineViews
+            .Select(line => MapOrderLine(line, productionHusByOrderLine, detailsByOrderLine.GetValueOrDefault(line.Id)))
+            .ToList();
+        return Results.Ok(lines);
     }
 
     private static IResult HandleBatch(HttpRequest request, IDataStore store)
@@ -73,7 +84,7 @@ public static class OrderLinesEndpoint
                 }
 
                 return lines
-                    .Select(line => MapOrderLine(line, productionHusByOrderLine))
+                    .Select(line => MapOrderLine(line, productionHusByOrderLine, details: null))
                     .ToList();
             });
     }
@@ -112,7 +123,8 @@ public static class OrderLinesEndpoint
 
     private static OrderLineResponse MapOrderLine(
         OrderLineView line,
-        IReadOnlyDictionary<long, string[]> productionHusByOrderLine)
+        IReadOnlyDictionary<long, string[]> productionHusByOrderLine,
+        OrderLineHuDetails? details)
     {
         var huCodes = productionHusByOrderLine.TryGetValue(line.Id, out var values)
             ? values
@@ -147,8 +159,40 @@ public static class OrderLinesEndpoint
             line.FulfillmentStatus,
             line.PalletFillLabel,
             line.PalletFillTone,
-            line.PalletFillTitle);
+            line.PalletFillTitle,
+            details?.WarehouseHuRows.Select(MapWarehouseHuRow).ToArray(),
+            details?.ProductionHuRows.Select(MapProductionHuRow).ToArray(),
+            details?.ShippedHuRows.Select(MapShippedHuRow).ToArray(),
+            details?.Coverage is { } coverage ? MapCoverage(coverage) : null);
     }
+
+    private static WarehouseHuRowResponse MapWarehouseHuRow(OrderLineWarehouseHuRow row) =>
+        new(row.HuCode, row.Qty, row.LocationCode, row.LocationName, row.StockStatus, row.IsBoundToOrder);
+
+    private static ProductionHuRowResponse MapProductionHuRow(OrderLineProductionHuRow row) =>
+        new(
+            row.HuCode,
+            row.PalletStatus,
+            row.PlannedQty,
+            row.FilledQty,
+            row.PrdRef,
+            row.FateCode,
+            row.FateLabel,
+            row.FateOrderRef,
+            row.FateDocRef,
+            row.FateQty);
+
+    private static ShippedHuRowResponse MapShippedHuRow(OrderLineShippedHuRow row) =>
+        new(row.HuCode, row.Qty);
+
+    private static CoverageResponse MapCoverage(OrderLineCoverage coverage) =>
+        new(
+            coverage.OrderedQty,
+            coverage.WarehouseBoundQty,
+            coverage.ProductionFilledQty,
+            coverage.ShippedQty,
+            coverage.CoveredQty,
+            coverage.MissingQty);
 
     private static bool TryParseOrderIds(HttpRequest request, out IReadOnlyList<long> orderIds, out string? error)
     {
@@ -216,5 +260,50 @@ public static class OrderLinesEndpoint
         [property: JsonPropertyName("fulfillment_status")] string FulfillmentStatus,
         [property: JsonPropertyName("pallet_fill_label")] string? PalletFillLabel,
         [property: JsonPropertyName("pallet_fill_tone")] string PalletFillTone,
-        [property: JsonPropertyName("pallet_fill_title")] string? PalletFillTitle);
+        [property: JsonPropertyName("pallet_fill_title")] string? PalletFillTitle,
+        [property: JsonPropertyName("warehouse_hu_rows"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        IReadOnlyList<WarehouseHuRowResponse>? WarehouseHuRows,
+        [property: JsonPropertyName("production_hu_rows"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        IReadOnlyList<ProductionHuRowResponse>? ProductionHuRows,
+        [property: JsonPropertyName("shipped_hu_rows"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        IReadOnlyList<ShippedHuRowResponse>? ShippedHuRows,
+        [property: JsonPropertyName("coverage"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        CoverageResponse? Coverage);
+
+    private sealed record WarehouseHuRowResponse(
+        [property: JsonPropertyName("hu_code")] string HuCode,
+        [property: JsonPropertyName("qty")] double Qty,
+        [property: JsonPropertyName("location_code")] string? LocationCode,
+        [property: JsonPropertyName("location_name")] string? LocationName,
+        [property: JsonPropertyName("stock_status")] string StockStatus,
+        [property: JsonPropertyName("is_bound_to_order")] bool IsBoundToOrder);
+
+    private sealed record ProductionHuRowResponse(
+        [property: JsonPropertyName("hu_code")] string HuCode,
+        [property: JsonPropertyName("pallet_status")] string PalletStatus,
+        [property: JsonPropertyName("planned_qty")] double PlannedQty,
+        [property: JsonPropertyName("filled_qty")] double FilledQty,
+        [property: JsonPropertyName("prd_ref")] string? PrdRef,
+        [property: JsonPropertyName("fate_code"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        string? FateCode,
+        [property: JsonPropertyName("fate_label"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        string? FateLabel,
+        [property: JsonPropertyName("fate_order_ref"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        string? FateOrderRef,
+        [property: JsonPropertyName("fate_doc_ref"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        string? FateDocRef,
+        [property: JsonPropertyName("fate_qty"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        double? FateQty);
+
+    private sealed record ShippedHuRowResponse(
+        [property: JsonPropertyName("hu_code")] string HuCode,
+        [property: JsonPropertyName("qty")] double Qty);
+
+    private sealed record CoverageResponse(
+        [property: JsonPropertyName("ordered_qty")] double OrderedQty,
+        [property: JsonPropertyName("warehouse_bound_qty")] double WarehouseBoundQty,
+        [property: JsonPropertyName("production_filled_qty")] double ProductionFilledQty,
+        [property: JsonPropertyName("shipped_qty")] double ShippedQty,
+        [property: JsonPropertyName("covered_qty")] double CoveredQty,
+        [property: JsonPropertyName("missing_qty")] double MissingQty);
 }

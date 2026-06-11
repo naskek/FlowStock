@@ -17,17 +17,34 @@ namespace FlowStock.Server.Tests.Orders;
 public sealed class OrderLinesBatchEndpointTests
 {
     [Fact]
-    public async Task BatchEndpoint_ReturnsSameLinesAsSingleEndpoint()
+    public async Task BatchEndpoint_PreservesExistingFieldsWithoutSingleEndpointDetails()
     {
         var store = CreateFallbackStore();
         await using var host = await OrderLinesHost.StartAsync(store.Object);
 
         var single10 = await ReadJsonArray(host.Client, "/api/orders/10/lines");
-        var single20 = await ReadJsonArray(host.Client, "/api/orders/20/lines");
         var batch = await ReadJsonArray(host.Client, "/api/orders/lines?ids=10,20");
 
-        Assert.Equal(single10.GetRawText(), batch[0].GetProperty("lines").GetRawText());
-        Assert.Equal(single20.GetRawText(), batch[1].GetProperty("lines").GetRawText());
+        var singleLine = Assert.Single(single10.EnumerateArray());
+        var batchLine = Assert.Single(batch[0].GetProperty("lines").EnumerateArray());
+        foreach (var propertyName in new[]
+                 {
+                     "id", "order_id", "item_id", "item_name", "qty_ordered", "production_hu_codes",
+                     "qty_shipped", "qty_produced", "qty_left", "qty_available", "can_ship_now", "shortage",
+                     "planned_pallet_count", "filled_pallet_count", "pallet_planned_qty", "pallet_filled_qty"
+                 })
+        {
+            Assert.Equal(singleLine.GetProperty(propertyName).GetRawText(), batchLine.GetProperty(propertyName).GetRawText());
+        }
+
+        Assert.True(singleLine.TryGetProperty("warehouse_hu_rows", out _));
+        Assert.True(singleLine.TryGetProperty("production_hu_rows", out _));
+        Assert.True(singleLine.TryGetProperty("shipped_hu_rows", out _));
+        Assert.True(singleLine.TryGetProperty("coverage", out _));
+        Assert.False(batchLine.TryGetProperty("warehouse_hu_rows", out _));
+        Assert.False(batchLine.TryGetProperty("production_hu_rows", out _));
+        Assert.False(batchLine.TryGetProperty("shipped_hu_rows", out _));
+        Assert.False(batchLine.TryGetProperty("coverage", out _));
     }
 
     [Fact]
@@ -180,6 +197,7 @@ public sealed class OrderLinesBatchEndpointTests
 
         store.Setup(data => data.GetOrder(It.IsAny<long>()))
             .Returns<long>(orderId => orders.TryGetValue(orderId, out var order) ? order : null);
+        store.Setup(data => data.GetOrders()).Returns(orders.Values.ToArray());
         store.Setup(data => data.GetOrderLineViews(It.IsAny<long>()))
             .Returns<long>(orderId => lines.TryGetValue(orderId, out var orderLines) ? CloneLines(orderLines) : Array.Empty<OrderLineView>());
         store.Setup(data => data.GetOrderLines(It.IsAny<long>()))
@@ -252,7 +270,17 @@ public sealed class OrderLinesBatchEndpointTests
                     Qty = 2
                 }
             ]);
+        store.Setup(data => data.GetLocations())
+            .Returns([
+                new Location
+                {
+                    Id = 1,
+                    Code = "MAIN",
+                    Name = "Основной склад"
+                }
+            ]);
         store.Setup(data => data.GetDocsByOrder(It.IsAny<long>())).Returns(Array.Empty<Doc>());
+        store.Setup(data => data.GetDocs()).Returns(Array.Empty<Doc>());
 
         return store;
     }

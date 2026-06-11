@@ -26,6 +26,10 @@ public sealed class OrderLineHuFateDisplayBuilderTests
 
         Assert.Equal("HU-0000766 · наполнено · 378 → резерв заказ 115", ToRow(sourceRow).DisplayText);
         Assert.Equal("HU-0000766 · резерв · 378 ← выпуск заказ 112", ToRow(targetRow).DisplayText);
+        Assert.Equal(OrderLineHuFateDisplayBuilder.ReservedFateCode, sourceRow.FateCode);
+        Assert.Equal("→ резерв заказ 115", sourceRow.FateLabel);
+        Assert.Equal("115", sourceRow.FateOrderRef);
+        Assert.Equal(378, sourceRow.FateQty);
     }
 
     [Fact]
@@ -59,6 +63,11 @@ public sealed class OrderLineHuFateDisplayBuilderTests
 
         Assert.Equal("HU-0000709 · наполнено · 600 → отгружено заказ 107", ToRow(sourceRow).DisplayText);
         Assert.Equal("HU-0000709 · отгружено · 600 ← выпуск заказ 112", ToRow(targetRow).DisplayText);
+        Assert.Equal(OrderLineHuFateDisplayBuilder.ShippedFateCode, sourceRow.FateCode);
+        Assert.Equal("→ отгружено заказ 107", sourceRow.FateLabel);
+        Assert.Equal("107", sourceRow.FateOrderRef);
+        Assert.Equal("OUT-200", sourceRow.FateDocRef);
+        Assert.Equal(600, sourceRow.FateQty);
     }
 
     [Fact]
@@ -81,6 +90,22 @@ public sealed class OrderLineHuFateDisplayBuilderTests
         var sourceRow = Assert.Single(OrderLineHuFateDisplayBuilder.BuildByOrder(harness.Store, 112)[1121]);
 
         Assert.Equal("HU-FATE · наполнено · 600 → отгружено заказ 115", ToRow(sourceRow).DisplayText);
+        Assert.Equal("OUT-201", sourceRow.FateDocRef);
+        Assert.Equal(50, sourceRow.FateQty);
+    }
+
+    [Fact]
+    public void BuildByOrder_SourceDisplay_ExposesCurrentStockAsStructuredFateWithoutChangingWpfText()
+    {
+        var harness = CreateHarness();
+        SeedFilledPallet(harness, "HU-STOCK", qty: 600);
+
+        var sourceRow = Assert.Single(OrderLineHuFateDisplayBuilder.BuildByOrder(harness.Store, 112)[1121]);
+
+        Assert.Equal("HU-STOCK · наполнено · 600", ToRow(sourceRow).DisplayText);
+        Assert.Equal(OrderLineHuFateDisplayBuilder.OnStockFateCode, sourceRow.FateCode);
+        Assert.Equal("на складе", sourceRow.FateLabel);
+        Assert.Equal(600, sourceRow.FateQty);
     }
 
     [Fact]

@@ -921,13 +921,17 @@ body.pc-body::before {
   vertical-align: middle;
 }
 
+.pc-order-lines-col-caret {
+  width: 30px;
+}
+
 .pc-order-lines-col-item {
-  width: 28%;
+  width: 27%;
 }
 
 .pc-order-lines-col-sku,
 .pc-order-lines-col-gtin {
-  width: 20%;
+  width: 19%;
 }
 
 .pc-order-lines-col-ordered {
@@ -935,7 +939,125 @@ body.pc-body::before {
 }
 
 .pc-order-lines-col-filling {
-  width: 20%;
+  width: 23%;
+}
+
+.pc-order-line-parent-row {
+  cursor: pointer;
+}
+
+.pc-order-line-parent-row:focus-visible {
+  outline: 2px solid #1f6f8b;
+  outline-offset: -2px;
+}
+
+.pc-order-line-caret-cell {
+  padding-left: 8px !important;
+  padding-right: 4px !important;
+  text-align: center;
+}
+
+.pc-order-line-caret {
+  display: inline-block;
+  color: #52606d;
+  transition: transform 0.15s ease;
+}
+
+.pc-order-line-caret.is-expanded {
+  transform: rotate(90deg);
+}
+
+.pc-order-line-detail-row > td {
+  padding: 0 !important;
+  background: #f7fbfd !important;
+}
+
+.pc-order-line-detail-block {
+  margin: 0 8px 8px 30px;
+  padding: 10px 12px;
+  border-top: 1px solid #d8e5ec;
+  border-left: 3px solid #bfd7e5;
+  border-radius: 8px;
+  background: #f4f9fc;
+}
+
+.pc-order-line-detail-section + .pc-order-line-detail-section {
+  margin-top: 12px;
+}
+
+.pc-order-line-detail-title {
+  margin-bottom: 6px;
+  color: #233747;
+  font-weight: 800;
+}
+
+.pc-order-line-detail-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.pc-order-line-detail-table {
+  min-width: 640px;
+}
+
+.pc-order-line-detail-table th,
+.pc-order-line-detail-table td {
+  padding: 6px 8px;
+}
+
+.pc-order-line-detail-empty {
+  color: #52606d;
+  font-style: italic;
+}
+
+.pc-order-line-shipped-summary {
+  margin-bottom: 6px;
+  color: #334e5e;
+  font-weight: 700;
+}
+
+.pc-order-line-no-hu {
+  margin-bottom: 10px;
+  color: #9b2c2c;
+  font-weight: 700;
+}
+
+.pc-order-line-coverage-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.pc-order-line-coverage-grid > div {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid #d8e5ec;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.pc-order-line-coverage-grid span {
+  color: #52606d;
+  font-size: 11px;
+}
+
+.pc-order-line-missing.is-covered {
+  border-color: #86c79a;
+  color: #18743a;
+  background: #edf9f0;
+}
+
+.pc-order-line-missing.is-missing {
+  border-color: #f3a6a6;
+  color: #9b2c2c;
+  background: #fff0f0;
+}
+
+.pc-order-line-existing-shortage {
+  margin-top: 6px;
+  color: #9b2c2c;
+  font-weight: 700;
 }
 
 .pc-modal-header {

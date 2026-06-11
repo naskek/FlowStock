@@ -441,6 +441,109 @@ const shippedCustomerStalePalletFallbackHtml = pc.renderOrderLinesTable(
 assert.doesNotMatch(shippedCustomerStalePalletFallbackHtml, /Наполнено 2 \/ 5/);
 assert.match(shippedCustomerStalePalletFallbackHtml, /pc-icon-status/);
 
+const expandedCustomerOrderLineHtml = pc.renderOrderLinesTable(
+  [
+    {
+      id: 501,
+      item_name: "Горчица",
+      barcode: "SKU-001",
+      gtin: "04607186951520",
+      qty_ordered: 100,
+      warehouse_hu_rows: [
+        {
+          hu_code: "HU-WAREHOUSE",
+          qty: 40,
+          location_name: "Основной склад",
+          stock_status: "LEDGER_STOCK",
+          is_bound_to_order: true,
+        },
+      ],
+      production_hu_rows: [
+        {
+          hu_code: "HU-PRODUCTION",
+          pallet_status: "FILLED",
+          planned_qty: 60,
+          filled_qty: 60,
+          prd_ref: "PRD-050",
+          fate_code: "SHIPPED",
+          fate_label: "→ отгружено заказ 004",
+          fate_order_ref: "004",
+          fate_doc_ref: "OUT-2026-000004",
+          fate_qty: 60,
+        },
+      ],
+      shipped_hu_rows: [{ hu_code: "HU-SHIPPED", qty: 20 }],
+      coverage: {
+        ordered_qty: 100,
+        warehouse_bound_qty: 40,
+        production_filled_qty: 60,
+        shipped_qty: 20,
+        covered_qty: 80,
+        missing_qty: 20,
+      },
+    },
+  ],
+  { order_type: "CUSTOMER", order_status: "IN_PROGRESS" },
+  { 501: true }
+);
+assert.match(expandedCustomerOrderLineHtml, /data-order-line-toggle="501"/);
+assert.match(expandedCustomerOrderLineHtml, /aria-expanded="true"/);
+assert.match(expandedCustomerOrderLineHtml, /HU-WAREHOUSE/);
+assert.match(expandedCustomerOrderLineHtml, /HU-PRODUCTION/);
+assert.match(expandedCustomerOrderLineHtml, /HU-SHIPPED/);
+assert.match(expandedCustomerOrderLineHtml, /Судьба HU/);
+assert.match(expandedCustomerOrderLineHtml, /→ отгружено заказ 004/);
+assert.match(expandedCustomerOrderLineHtml, /OUT: OUT-2026-000004/);
+assert.match(expandedCustomerOrderLineHtml, />Отгрузка по строке</);
+assert.match(expandedCustomerOrderLineHtml, /Резерв этого заказа/);
+assert.match(expandedCustomerOrderLineHtml, /Не хватает/);
+assert.match(expandedCustomerOrderLineHtml, /is-missing/);
+
+const expandedLineWithoutExactCoverageHtml = pc.renderOrderLinesTable(
+  [
+    {
+      id: 502,
+      item_name: "Горчица",
+      qty_ordered: 100,
+      shortage: 25,
+      warehouse_hu_rows: [],
+      production_hu_rows: [],
+      shipped_hu_rows: [],
+    },
+  ],
+  { order_type: "CUSTOMER", order_status: "IN_PROGRESS" },
+  { 502: true }
+);
+assert.match(expandedLineWithoutExactCoverageHtml, /HU не привязаны/);
+assert.match(expandedLineWithoutExactCoverageHtml, /Точный итог покрытия недоступен/);
+assert.match(expandedLineWithoutExactCoverageHtml, /Существующий серверный дефицит: 25/);
+assert.doesNotMatch(expandedLineWithoutExactCoverageHtml, /pc-order-line-coverage-grid/);
+
+const expandedInternalOrderLineHtml = pc.renderOrderLinesTable(
+  [
+    {
+      id: 503,
+      item_name: "Горчица",
+      qty_ordered: 100,
+      production_hu_rows: [
+        {
+          hu_code: "HU-INTERNAL",
+          pallet_status: "PLANNED",
+          planned_qty: 100,
+          filled_qty: 0,
+          prd_ref: "PRD-051",
+        },
+      ],
+      coverage: { ordered_qty: 100, covered_qty: 0, missing_qty: 100 },
+    },
+  ],
+  { order_type: "INTERNAL", order_status: "IN_PROGRESS" },
+  { 503: true }
+);
+assert.match(expandedInternalOrderLineHtml, /HU-INTERNAL/);
+assert.doesNotMatch(expandedInternalOrderLineHtml, /Резерв этого заказа/);
+assert.doesNotMatch(expandedInternalOrderLineHtml, />Складские HU</);
+
 const shippedCustomerStalePalletListHtml = pc.renderOrdersTable([
   {
     id: 66,
@@ -998,4 +1101,9 @@ assert.match(
   pcAppSourceForOrderRefSort,
   /openOrderModalController = \{/,
   "open order modal should register a live refresh controller"
+);
+assert.match(
+  pcAppSourceForOrderRefSort,
+  /expandedOrderLineIds:\s*\{\}/,
+  "open order modal should keep expanded order line state across live refresh"
 );

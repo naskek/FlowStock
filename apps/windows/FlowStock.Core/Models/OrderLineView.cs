@@ -254,7 +254,12 @@ public sealed record OrderLineHuDisplayEntry(
     double Qty,
     bool IsWarehouseBound,
     int SortOrder,
-    string? FateSuffix = null);
+    string? FateSuffix = null,
+    string? FateCode = null,
+    string? FateLabel = null,
+    string? FateOrderRef = null,
+    string? FateDocRef = null,
+    double? FateQty = null);
 
 public sealed record OrderLineHuDisplayRow(
     string HuCode,

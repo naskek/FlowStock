@@ -4620,7 +4620,7 @@
     );
   }
 
-  function getOrderModalContentUpdates(order, lines) {
+  function getOrderModalContentUpdates(order, lines, expandedOrderLineIds) {
     var isPending = order && order.is_pending_confirmation;
     var isInternal = isInternalOrder(order);
     var showAvailableColumn = !isShippedOrder(order);
@@ -4635,7 +4635,9 @@
         formatDate(order.shipped_at),
       summaryHtml: renderOrderModalSummaryIndicators(order),
       readinessBadgeHtml: renderReadinessBadge(readiness),
-      linesHtml: sourceLines.length ? renderOrderLinesTable(sourceLines, order) : "<div>Строк нет.</div>",
+      linesHtml: sourceLines.length
+        ? renderOrderLinesTable(sourceLines, order, expandedOrderLineIds)
+        : "<div>Строк нет.</div>",
     };
   }
 
@@ -4689,7 +4691,16 @@
   }
 
   function populateOrderModalContent(modal, order, lines) {
-    applyOrderModalContentUpdates(modal, getOrderModalContentUpdates(order, lines));
+    var controller =
+      openOrderModalController && openOrderModalController.modal === modal
+        ? openOrderModalController
+        : null;
+    var expandedOrderLineIds = controller ? controller.expandedOrderLineIds : {};
+    if (controller) {
+      controller.lines = Array.isArray(lines) ? lines : [];
+    }
+    applyOrderModalContentUpdates(modal, getOrderModalContentUpdates(order, lines, expandedOrderLineIds));
+    bindOrderLineExpansion(modal, order, lines, expandedOrderLineIds);
   }
 
   function createOrderModalRefreshHandler(modal, order) {
@@ -4733,17 +4744,228 @@
     };
   }
 
-  function renderOrderLinesTable(lines, order) {
+  function renderOrderHuRowsTable(rows, columns, emptyText) {
+    var sourceRows = Array.isArray(rows) ? rows : [];
+    if (!sourceRows.length) {
+      return '<div class="pc-order-line-detail-empty">' + escapeHtml(emptyText || "Нет данных") + "</div>";
+    }
+
+    var head = columns
+      .map(function (column) {
+        return "<th>" + escapeHtml(column.label) + "</th>";
+      })
+      .join("");
+    var body = sourceRows
+      .map(function (row) {
+        return (
+          "<tr>" +
+          columns
+            .map(function (column) {
+              return "<td>" + escapeHtml(column.value(row)) + "</td>";
+            })
+            .join("") +
+          "</tr>"
+        );
+      })
+      .join("");
+    return (
+      '<div class="pc-order-line-detail-table-wrap">' +
+      '<table class="pc-table pc-order-line-detail-table"><thead><tr>' +
+      head +
+      "</tr></thead><tbody>" +
+      body +
+      "</tbody></table></div>"
+    );
+  }
+
+  function renderOrderLineCoverage(line) {
+    var coverage = line && line.coverage;
+    var ordered = Number(coverage && coverage.ordered_qty);
+    var covered = Number(coverage && coverage.covered_qty);
+    var missing = Number(coverage && coverage.missing_qty);
+    if (
+      !coverage ||
+      typeof coverage !== "object" ||
+      isNaN(ordered) ||
+      isNaN(covered) ||
+      isNaN(missing)
+    ) {
+      var hasExistingShortage = !!(line && line.shortage != null);
+      var existingShortage = hasExistingShortage ? Number(line.shortage) : NaN;
+      return (
+        '<div class="pc-order-line-detail-empty">Точный итог покрытия недоступен.</div>' +
+        (!isNaN(existingShortage)
+          ? '<div class="pc-order-line-existing-shortage">Существующий серверный дефицит: ' +
+            escapeHtml(formatQuantity(existingShortage)) +
+            "</div>"
+          : "")
+      );
+    }
+
+    var toneClass = missing <= 0.000001 ? " is-covered" : " is-missing";
+    return (
+      '<div class="pc-order-line-coverage-grid">' +
+      '<div><span>Заказано</span><strong>' +
+      escapeHtml(formatQuantity(ordered)) +
+      "</strong></div>" +
+      '<div><span>Покрыто</span><strong>' +
+      escapeHtml(formatQuantity(covered)) +
+      "</strong></div>" +
+      '<div class="pc-order-line-missing' +
+      toneClass +
+      '"><span>Не хватает</span><strong>' +
+      escapeHtml(formatQuantity(missing)) +
+      "</strong></div>" +
+      "</div>"
+    );
+  }
+
+  function formatProductionHuFate(row) {
+    if (!row || !row.fate_label) {
+      return "—";
+    }
+
+    var parts = [String(row.fate_label)];
+    if (row.fate_doc_ref) {
+      parts.push("OUT: " + String(row.fate_doc_ref));
+    }
+    if (row.fate_qty != null && !isNaN(Number(row.fate_qty))) {
+      parts.push(formatQuantity(row.fate_qty));
+    }
+    return parts.join(" · ");
+  }
+
+  function renderOrderLineDetails(line, order) {
+    var warehouseRows = Array.isArray(line && line.warehouse_hu_rows) ? line.warehouse_hu_rows : [];
+    var productionRows = Array.isArray(line && line.production_hu_rows) ? line.production_hu_rows : [];
+    var shippedRows = Array.isArray(line && line.shipped_hu_rows) ? line.shipped_hu_rows : [];
+    var hasHuRows = warehouseRows.length || productionRows.length || shippedRows.length;
+    var warehouseColumns = [
+      { label: "HU", value: function (row) { return row.hu_code || "-"; } },
+      { label: "Кол-во", value: function (row) { return formatQuantity(row.qty || 0); } },
+      {
+        label: "Локация",
+        value: function (row) {
+          return row.location_name || row.location_code || "-";
+        },
+      },
+      {
+        label: "Статус",
+        value: function (row) {
+          return row.stock_status === "LEDGER_STOCK" ? "На складе" : row.stock_status || "-";
+        },
+      },
+    ];
+    if (!isInternalOrder(order)) {
+      warehouseColumns.push({
+        label: "Привязка",
+        value: function (row) {
+          return row.is_bound_to_order ? "Резерв этого заказа" : "-";
+        },
+      });
+    }
+
+    return (
+      '<div class="pc-order-line-detail-block">' +
+      (!hasHuRows ? '<div class="pc-order-line-no-hu">HU не привязаны</div>' : "") +
+      (!isInternalOrder(order)
+        ? '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">Складские HU</div>' +
+          renderOrderHuRowsTable(warehouseRows, warehouseColumns, "HU не привязаны") +
+          "</section>"
+        : "") +
+      '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">Производство / план паллет</div>' +
+      renderOrderHuRowsTable(
+        productionRows,
+        [
+          { label: "HU", value: function (row) { return row.hu_code || "-"; } },
+          { label: "Статус", value: function (row) { return translatePalletStatus(row.pallet_status); } },
+          { label: "План", value: function (row) { return formatQuantity(row.planned_qty || 0); } },
+          { label: "Наполнено", value: function (row) { return formatQuantity(row.filled_qty || 0); } },
+          { label: "PRD", value: function (row) { return row.prd_ref || "-"; } },
+          { label: "Судьба HU", value: formatProductionHuFate },
+        ],
+        "Производственные HU отсутствуют"
+      ) +
+      "</section>" +
+      '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">Отгрузка по строке</div>' +
+      '<div class="pc-order-line-shipped-summary">Отгружено по строке: ' +
+      escapeHtml(
+        formatQuantity(
+          line && line.coverage && line.coverage.shipped_qty != null
+            ? line.coverage.shipped_qty
+            : line && line.qty_shipped != null
+              ? line.qty_shipped
+              : 0
+        )
+      ) +
+      "</div>" +
+      renderOrderHuRowsTable(
+        shippedRows,
+        [
+          { label: "HU", value: function (row) { return row.hu_code || "-"; } },
+          { label: "Отгружено", value: function (row) { return formatQuantity(row.qty || 0); } },
+        ],
+        "Проведённая отгрузка отсутствует"
+      ) +
+      "</section>" +
+      '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">Итог</div>' +
+      renderOrderLineCoverage(line) +
+      "</section>" +
+      "</div>"
+    );
+  }
+
+  function bindOrderLineExpansion(modal, order, lines, expandedOrderLineIds) {
+    if (!modal || typeof modal.querySelectorAll !== "function") {
+      return;
+    }
+    var sourceLines = Array.isArray(lines) ? lines : [];
+    var rows = modal.querySelectorAll("[data-order-line-toggle]");
+    rows.forEach(function (row) {
+      function toggleRow() {
+        var lineId = Number(row.getAttribute("data-order-line-toggle")) || 0;
+        if (!lineId) {
+          return;
+        }
+        expandedOrderLineIds[lineId] = !expandedOrderLineIds[lineId];
+        populateOrderModalContent(modal, order, sourceLines);
+      }
+
+      row.addEventListener("click", toggleRow);
+      row.addEventListener("keydown", function (event) {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          toggleRow();
+        }
+      });
+    });
+  }
+
+  function renderOrderLinesTable(lines, order, expandedOrderLineIds) {
     var body = (Array.isArray(lines) ? lines : [])
       .map(function (line) {
+        var lineId = Number(line && line.id) || 0;
+        var isExpanded = !!(expandedOrderLineIds && expandedOrderLineIds[lineId]);
         var highlightState = getOrderLineHighlightState(line, order);
-        var rowAttributes = highlightState.className
-          ? ' class="' + escapeHtml(highlightState.className) + '" title="' + escapeHtml(highlightState.title) + '"'
+        var rowClass = "pc-order-line-parent-row" + (highlightState.className ? " " + highlightState.className : "");
+        var detailRow = isExpanded
+          ? '<tr class="pc-order-line-detail-row"><td colspan="6">' +
+            renderOrderLineDetails(line, order) +
+            "</td></tr>"
           : "";
         return (
-          "<tr" +
-          rowAttributes +
-          ">" +
+          '<tr class="' +
+          escapeHtml(rowClass) +
+          '" title="' +
+          escapeHtml(highlightState.title || "") +
+          '" data-order-line-toggle="' +
+          escapeHtml(String(lineId)) +
+          '" tabindex="0" role="button" aria-expanded="' +
+          (isExpanded ? "true" : "false") +
+          '">' +
+          '<td class="pc-order-line-caret-cell"><span class="pc-order-line-caret' +
+          (isExpanded ? " is-expanded" : "") +
+          '">▸</span></td>' +
           "<td>" +
           escapeHtml(line.item_name || "-") +
           "</td>" +
@@ -4759,7 +4981,8 @@
           "<td>" +
           renderLinePalletFillingBadge(line, order) +
           "</td>" +
-          "</tr>"
+          "</tr>" +
+          detailRow
         );
       })
       .join("");
@@ -4768,6 +4991,7 @@
       '<div class="pc-order-lines-table-wrap">' +
       '<table class="pc-table pc-order-lines-table">' +
       "<colgroup>" +
+      '<col class="pc-order-lines-col-caret" />' +
       '<col class="pc-order-lines-col-item" />' +
       '<col class="pc-order-lines-col-sku" />' +
       '<col class="pc-order-lines-col-gtin" />' +
@@ -4775,6 +4999,7 @@
       '<col class="pc-order-lines-col-filling" />' +
       "</colgroup>" +
       "<thead><tr>" +
+      '<th aria-label="Раскрыть строку"></th>' +
       "<th>Товар</th>" +
       "<th>SKU / ШК</th>" +
       "<th>GTIN</th>" +
@@ -4845,6 +5070,8 @@
       orderId: order.id,
       modal: modal,
       order: order,
+      lines: [],
+      expandedOrderLineIds: {},
       refresh: refreshOrderModalContent,
       close: close,
     };

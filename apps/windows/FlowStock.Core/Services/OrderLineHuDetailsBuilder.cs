@@ -1,0 +1,218 @@
+using FlowStock.Core.Abstractions;
+using FlowStock.Core.Models;
+
+namespace FlowStock.Core.Services;
+
+public static class OrderLineHuDetailsBuilder
+{
+    private const double QtyTolerance = 0.000001d;
+
+    public static IReadOnlyDictionary<long, OrderLineHuDetails> BuildByOrder(
+        IDataStore store,
+        Order order,
+        IReadOnlyList<OrderLineView> lineViews)
+    {
+        var orderLines = store.GetOrderLines(order.Id);
+        var warehouseRows = BuildWarehouseRows(store, order);
+        var fateRows = OrderLineHuFateDisplayBuilder.BuildByOrder(store, order.Id);
+        var productionRows = BuildProductionRows(store, order.Id, fateRows);
+        var shippedRows = BuildShippedRows(store, order.Id);
+        var confirmedProductionByLine = OrderReceiptRemainingCalculator
+            .BuildConfirmedReceiptLedgerTotalsByOrderLine(store, order.Id, orderLines);
+        var customerCoverageByLine = order.Type == OrderType.Customer
+            ? CustomerProtectedCoverageCalculator.BuildByOrderLine(store, order.Id, orderLines)
+            : null;
+
+        return lineViews.ToDictionary(
+            line => line.Id,
+            line =>
+            {
+                var lineWarehouseRows = warehouseRows.GetValueOrDefault(line.Id)
+                    ?? Array.Empty<OrderLineWarehouseHuRow>();
+                var lineProductionRows = productionRows.GetValueOrDefault(line.Id)
+                    ?? Array.Empty<OrderLineProductionHuRow>();
+                var lineShippedRows = shippedRows.GetValueOrDefault(line.Id)
+                    ?? Array.Empty<OrderLineShippedHuRow>();
+                var warehouseBoundQty = lineWarehouseRows.Sum(row => Math.Max(0, row.Qty));
+                var productionFilledQty = confirmedProductionByLine.GetValueOrDefault(line.Id);
+                var shippedQty = order.Type == OrderType.Customer
+                    ? Math.Max(0, line.QtyShipped)
+                    : 0d;
+                double coveredQty;
+
+                if (order.Type == OrderType.Customer)
+                {
+                    coveredQty = customerCoverageByLine?.GetValueOrDefault(line.Id)?.DeduplicatedQty ?? 0d;
+                }
+                else
+                {
+                    coveredQty = Math.Max(0, line.QtyProduced);
+                    productionFilledQty = coveredQty;
+                }
+
+                return new OrderLineHuDetails
+                {
+                    WarehouseHuRows = lineWarehouseRows,
+                    ProductionHuRows = lineProductionRows,
+                    ShippedHuRows = lineShippedRows,
+                    Coverage = new OrderLineCoverage
+                    {
+                        OrderedQty = Math.Max(0, line.QtyOrdered),
+                        WarehouseBoundQty = Math.Max(0, warehouseBoundQty),
+                        ProductionFilledQty = Math.Max(0, productionFilledQty),
+                        ShippedQty = shippedQty,
+                        CoveredQty = Math.Max(0, coveredQty),
+                        MissingQty = Math.Max(0, line.QtyOrdered - coveredQty)
+                    }
+                };
+            });
+    }
+
+    private static IReadOnlyDictionary<long, IReadOnlyList<OrderLineWarehouseHuRow>> BuildWarehouseRows(
+        IDataStore store,
+        Order order)
+    {
+        if (order.Type != OrderType.Customer)
+        {
+            return new Dictionary<long, IReadOnlyList<OrderLineWarehouseHuRow>>();
+        }
+
+        var locations = store.GetLocations().ToDictionary(location => location.Id);
+        return CustomerOutboundBoundHuService.GetUnshippedBoundHuLines(store, order.Id)
+            .GroupBy(row => row.OrderLineId)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<OrderLineWarehouseHuRow>)group
+                    .OrderBy(row => row.HuCode, StringComparer.OrdinalIgnoreCase)
+                    .Select(row =>
+                    {
+                        var location = row.FromLocationId.HasValue
+                            ? locations.GetValueOrDefault(row.FromLocationId.Value)
+                            : null;
+                        return new OrderLineWarehouseHuRow
+                        {
+                            HuCode = row.HuCode,
+                            Qty = row.Qty,
+                            LocationCode = row.FromLocationCode ?? location?.Code,
+                            LocationName = location?.Name,
+                            IsBoundToOrder = true
+                        };
+                    })
+                    .ToArray());
+    }
+
+    private static IReadOnlyDictionary<long, IReadOnlyList<OrderLineProductionHuRow>> BuildProductionRows(
+        IDataStore store,
+        long orderId,
+        IReadOnlyDictionary<long, OrderLineHuDisplayEntry[]> fateRows)
+    {
+        var rows = new Dictionary<long, List<OrderLineProductionHuRow>>();
+        var fateByLineHu = fateRows
+            .SelectMany(pair => pair.Value.Select(entry => new
+            {
+                OrderLineId = pair.Key,
+                HuCode = NormalizeHu(entry.HuCode),
+                Entry = entry
+            }))
+            .Where(row => row.HuCode != null)
+            .ToDictionary(
+                row => (row.OrderLineId, row.HuCode!),
+                row => row.Entry);
+        foreach (var doc in store.GetDocsByOrder(orderId).Where(doc => doc.Type == DocType.ProductionReceipt))
+        {
+            foreach (var pallet in store.GetProductionPalletsByDoc(doc.Id)
+                         .Where(pallet => ProductionOrderLineHuCodes.IsActivePalletStatus(pallet.Status))
+                         .Where(pallet => !string.IsNullOrWhiteSpace(pallet.HuCode)))
+            {
+                var components = pallet.Lines.Count > 0
+                    ? pallet.Lines
+                    : [new ProductionPalletComponentLine
+                    {
+                        OrderLineId = pallet.OrderLineId,
+                        ItemId = pallet.ItemId,
+                        PlannedQty = pallet.PlannedQty,
+                        FilledQty = string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)
+                            ? pallet.PlannedQty
+                            : 0
+                    }];
+                foreach (var component in components.Where(component => component.OrderLineId.HasValue))
+                {
+                    var normalizedHu = NormalizeHu(pallet.HuCode);
+                    var fate = normalizedHu == null
+                        ? null
+                        : fateByLineHu.GetValueOrDefault((component.OrderLineId!.Value, normalizedHu));
+                    var filledQty = string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)
+                        ? component.FilledQty > QtyTolerance ? component.FilledQty : component.PlannedQty
+                        : Math.Max(0, component.FilledQty);
+                    Add(rows, component.OrderLineId!.Value, new OrderLineProductionHuRow
+                    {
+                        HuCode = pallet.HuCode.Trim(),
+                        PalletStatus = pallet.EffectiveStatus,
+                        PlannedQty = Math.Max(0, component.PlannedQty),
+                        FilledQty = Math.Max(0, filledQty),
+                        PrdRef = doc.DocRef,
+                        FateCode = fate?.FateCode,
+                        FateLabel = fate?.FateLabel,
+                        FateOrderRef = fate?.FateOrderRef,
+                        FateDocRef = fate?.FateDocRef,
+                        FateQty = fate?.FateQty
+                    });
+                }
+            }
+        }
+
+        return rows.ToDictionary(
+            pair => pair.Key,
+            pair => (IReadOnlyList<OrderLineProductionHuRow>)pair.Value
+                .OrderBy(row => row.HuCode, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(row => row.PrdRef, StringComparer.OrdinalIgnoreCase)
+                .ToArray());
+    }
+
+    private static IReadOnlyDictionary<long, IReadOnlyList<OrderLineShippedHuRow>> BuildShippedRows(
+        IDataStore store,
+        long orderId)
+    {
+        var rows = store.GetDocsByOrder(orderId)
+            .Where(doc => doc.Type == DocType.Outbound && doc.Status == DocStatus.Closed)
+            .SelectMany(doc => store.GetDocLines(doc.Id))
+            .Where(line => line.OrderLineId.HasValue
+                           && line.Qty > QtyTolerance
+                           && !string.IsNullOrWhiteSpace(line.FromHu))
+            .GroupBy(line => (OrderLineId: line.OrderLineId!.Value, HuCode: NormalizeHu(line.FromHu)!))
+            .Select(group => new
+            {
+                group.Key.OrderLineId,
+                Row = new OrderLineShippedHuRow
+                {
+                    HuCode = group.Key.HuCode,
+                    Qty = group.Sum(line => line.Qty)
+                }
+            });
+
+        return rows.GroupBy(row => row.OrderLineId)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<OrderLineShippedHuRow>)group
+                    .Select(row => row.Row)
+                    .OrderBy(row => row.HuCode, StringComparer.OrdinalIgnoreCase)
+                    .ToArray());
+    }
+
+    private static void Add(
+        IDictionary<long, List<OrderLineProductionHuRow>> rows,
+        long orderLineId,
+        OrderLineProductionHuRow row)
+    {
+        if (!rows.TryGetValue(orderLineId, out var lineRows))
+        {
+            lineRows = new List<OrderLineProductionHuRow>();
+            rows[orderLineId] = lineRows;
+        }
+
+        lineRows.Add(row);
+    }
+
+    private static string? NormalizeHu(string? huCode) =>
+        string.IsNullOrWhiteSpace(huCode) ? null : huCode.Trim().ToUpperInvariant();
+}
