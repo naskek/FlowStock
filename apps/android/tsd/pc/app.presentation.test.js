@@ -3,6 +3,9 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 
+const corePath = path.join(__dirname, "pc-core.js");
+const authPath = path.join(__dirname, "pc-auth.js");
+const orderModalPath = path.join(__dirname, "pc-order-modal.js");
 const appPath = path.join(__dirname, "app.js");
 const styles = fs.readFileSync(path.join(__dirname, "styles.css"), "utf8");
 const hooks = {};
@@ -23,6 +26,9 @@ const context = {
 
 context.window.document = context.document;
 vm.createContext(context);
+vm.runInContext(fs.readFileSync(corePath, "utf8"), context, { filename: corePath });
+vm.runInContext(fs.readFileSync(authPath, "utf8"), context, { filename: authPath });
+vm.runInContext(fs.readFileSync(orderModalPath, "utf8"), context, { filename: orderModalPath });
 vm.runInContext(fs.readFileSync(appPath, "utf8"), context, { filename: appPath });
 
 const pc = context.window.FlowStockPcTestHooks;
@@ -1146,7 +1152,8 @@ assert.doesNotMatch(catalogHtml, /<th[^>]*>\s*GTIN\s*<\/th>/);
 assert.doesNotMatch(catalogHtml, /<th[^>]*>[^<]*ШК[^<]*<\/th>/);
 
 
-const pcAppSourceForOrderRefSort = fs.readFileSync(appPath, "utf8");
+const pcAppSourceForOrderRefSort =
+  fs.readFileSync(appPath, "utf8") + fs.readFileSync(orderModalPath, "utf8");
 assert(
   pcAppSourceForOrderRefSort.includes('orderRef: { type: "number", getValue: function (row) { return Number(String(row.order_ref || "").trim()) || 0; } }'),
   "orderRef sort column should be numeric so PC orders sort 117, 116, 115, 112 instead of string/DOM order"

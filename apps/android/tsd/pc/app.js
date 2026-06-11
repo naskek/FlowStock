@@ -5,7 +5,6 @@
   var header = document.querySelector ? document.querySelector(".pc-header") : null;
   var tabs = document.querySelectorAll(".pc-tab");
   var logoutBtn = document.getElementById("logoutBtn");
-  var accountLabel = document.getElementById("accountLabel");
 
   var currentView = "orders";
   var LAST_VIEW_KEY = "flowstock_pc_last_view";
@@ -20,13 +19,7 @@
   var ORDERS_PAGE_SIZE = 20;
   var ORDERS_FETCH_LIMIT = ORDERS_PAGE_SIZE + 1;
   var activeLiveRefreshHandler = null;
-  var openOrderModalController = null;
-  var tableSortState = {
-    stock: { key: "", direction: "asc" },
-    catalog: { key: "", direction: "asc" },
-    orders: { key: "", direction: "asc" },
-    productionNeed: { key: "", direction: "asc" },
-  };
+  var core = window.FlowStockPcCore;
   var cachedItems = [];
   var cachedItemsById = {};
   var cachedItemTypes = [];
@@ -36,34 +29,75 @@
   var cachedStockRowsForMin = [];
   var cachedHuRows = [];
   var cachedCombinedRows = [];
-  var clientBlocks = getDefaultClientBlocks();
   var clientBlocksRefreshInFlight = false;
-  var CLIENT_BLOCK_HEADER = "X-FlowStock-Block-Key";
-
-  function getDefaultClientBlocks() {
-    return {
-      pc_stock: true,
-      pc_catalog: true,
-      pc_orders: true,
-    };
-  }
-
-  function applyClientBlocks(raw) {
-    var next = getDefaultClientBlocks();
-    if (raw && typeof raw === "object") {
-      Object.keys(next).forEach(function (key) {
-        if (raw[key] === false) {
-          next[key] = false;
-        }
-      });
-    }
-    clientBlocks = next;
-    return clientBlocks;
-  }
-
-  function isClientBlockEnabled(key) {
-    return clientBlocks[key] !== false;
-  }
+  var auth = window.FlowStockPcAuth;
+  core.init({
+    getCurrentView: function () { return currentView; },
+    getBlockKeyForView: getBlockKeyForView,
+    handleBlockedClientRequest: handleBlockedClientRequest,
+    getItemById: function (itemId) { return cachedItemsById[Number(itemId)] || {}; },
+  });
+  var fetchJson = core.fetchJson;
+  var createRequestHeaders = core.createRequestHeaders;
+  var formatDate = core.formatDate;
+  var formatDateTime = core.formatDateTime;
+  var formatQtyDisplay = core.formatQtyDisplay;
+  var formatReportQty = core.formatReportQty;
+  var formatQuantity = core.formatQuantity;
+  var escapeHtml = core.escapeHtml;
+  var normalizeSearchQuery = core.normalizeSearchQuery;
+  var matchesItemSearch = core.matchesItemSearch;
+  var renderSortableHeader = core.renderSortableHeader;
+  var sortRows = core.sortRows;
+  var bindTableSorting = core.bindTableSorting;
+  auth.init({
+    fetchJson: fetchJson,
+    onLoginSuccess: function () {
+      startVersionWatcher();
+      startLiveUpdates();
+      currentView = resolveAllowedView(currentView) || getDefaultView();
+      syncTabsVisibility();
+      renderView(currentView);
+    },
+  });
+  var getDefaultClientBlocks = auth.getDefaultClientBlocks;
+  var applyClientBlocks = auth.applyClientBlocks;
+  var isClientBlockEnabled = auth.isClientBlockEnabled;
+  var getClientBlocksSignature = auth.getClientBlocksSignature;
+  var normalizePlatform = auth.normalizePlatform;
+  var hasPcAccess = auth.hasPcAccess;
+  var loadAccount = auth.loadAccount;
+  var saveAccount = auth.saveAccount;
+  var clearAccount = auth.clearAccount;
+  var setAccountLabel = auth.setAccountLabel;
+  var setLoginState = auth.setLoginState;
+  var apiLogin = auth.apiLogin;
+  var loadClientBlocks = auth.loadClientBlocks;
+  var renderLogin = auth.renderLogin;
+  var wireLogin = auth.wireLogin;
+  var orderModal = window.FlowStockPcOrderModal;
+  orderModal.init({
+    fetchJson: fetchJson,
+    escapeHtml: escapeHtml,
+    formatDate: formatDate,
+    formatQuantity: formatQuantity,
+    isInternalOrder: isInternalOrder,
+    isShippedOrder: isShippedOrder,
+    getShipmentReadiness: getShipmentReadiness,
+    renderReadinessBadge: renderReadinessBadge,
+    applyOrderReadinessFromLines: applyOrderReadinessFromLines,
+    translatePalletStatus: translatePalletStatus,
+    getOrderLineHighlightState: getOrderLineHighlightState,
+    renderLinePalletFillingBadge: renderLinePalletFillingBadge,
+    getOrderTypeLabel: getOrderTypeLabel,
+  });
+  var openOrderModal = orderModal.openOrderModal;
+  var renderOrderLinesTable = orderModal.renderOrderLinesTable;
+  var getOrderModalContentUpdates = orderModal.getOrderModalContentUpdates;
+  var applyOrderModalContentUpdates = orderModal.applyOrderModalContentUpdates;
+  var refreshOpenOrderModalIfNeeded = orderModal.refreshOpenOrderModalIfNeeded;
+  var clearOpenOrderModalController = orderModal.clearOpenOrderModalController;
+  var hasOpenOrderModal = orderModal.hasOpenOrderModal;
 
   function isExperimentalWarehouseTasksEnabled() {
     try {
@@ -117,15 +151,6 @@
     });
   }
 
-  function getClientBlocksSignature() {
-    return Object.keys(clientBlocks)
-      .sort()
-      .map(function (key) {
-        return key + ":" + (clientBlocks[key] === false ? "0" : "1");
-      })
-      .join("|");
-  }
-
   function refreshClientBlocksIfChanged() {
     var before = getClientBlocksSignature();
     return loadClientBlocks().then(function () {
@@ -137,73 +162,6 @@
       }
       return after !== before;
     });
-  }
-
-  function normalizePlatform(value) {
-    var normalized = String(value || "").trim().toUpperCase();
-    if (normalized === "PC") {
-      return "PC";
-    }
-    if (normalized === "BOTH" || normalized === "PC+TSD" || normalized === "PC_TSD") {
-      return "BOTH";
-    }
-    return "TSD";
-  }
-
-  function hasPcAccess(account) {
-    return !!account && (account.platform === "PC" || account.platform === "BOTH");
-  }
-
-  function loadAccount() {
-    try {
-      var raw = localStorage.getItem("flowstock_account");
-      if (!raw) {
-        return null;
-      }
-      var parsed = JSON.parse(raw);
-      if (!parsed || !parsed.device_id) {
-        return null;
-      }
-      return {
-        device_id: String(parsed.device_id || "").trim(),
-        login: String(parsed.login || "").trim(),
-        platform: normalizePlatform(parsed.platform),
-      };
-    } catch (error) {
-      return null;
-    }
-  }
-
-  function saveAccount(account) {
-    try {
-      localStorage.setItem("flowstock_account", JSON.stringify(account || {}));
-    } catch (error) {
-      // ignore storage failures
-    }
-  }
-
-  function clearAccount() {
-    try {
-      localStorage.removeItem("flowstock_account");
-    } catch (error) {
-      // ignore storage failures
-    }
-  }
-
-  function setAccountLabel(account) {
-    if (!accountLabel) {
-      return;
-    }
-    if (!account) {
-      accountLabel.textContent = "Гость";
-      return;
-    }
-    var label = account.login || account.device_id || "Пользователь";
-    accountLabel.textContent = label;
-  }
-
-  function setLoginState(isLoggedIn) {
-    document.body.classList.toggle("needs-login", !isLoggedIn);
   }
 
   function getBlockKeyForView(view) {
@@ -225,19 +183,6 @@
     return "";
   }
 
-  function shouldAttachBlockHeader(url) {
-    return url !== "/api/client-blocks" && url !== "/api/tsd/login";
-  }
-
-  function createRequestHeaders(source, url) {
-    var headers = new Headers(source || {});
-    var blockKey = shouldAttachBlockHeader(url) ? getBlockKeyForView(currentView) : "";
-    if (blockKey && !headers.has(CLIENT_BLOCK_HEADER)) {
-      headers.set(CLIENT_BLOCK_HEADER, blockKey);
-    }
-    return headers;
-  }
-
   function handleBlockedClientRequest() {
     if (clientBlocksRefreshInFlight || !hasPcAccess(loadAccount())) {
       return;
@@ -253,168 +198,6 @@
       .finally(function () {
         clientBlocksRefreshInFlight = false;
       });
-  }
-
-  function fetchJson(url, options) {
-    var controller = null;
-    var timer = null;
-    if (typeof AbortController !== "undefined") {
-      controller = new AbortController();
-    }
-    var opts = options || {};
-    if (controller) {
-      opts.signal = controller.signal;
-    }
-    opts.headers = createRequestHeaders(opts.headers, url);
-    timer = window.setTimeout(function () {
-      if (controller) {
-        controller.abort();
-      }
-    }, 8000);
-    return fetch(url, opts)
-      .then(function (response) {
-        return response
-          .json()
-          .catch(function () {
-            return null;
-          })
-          .then(function (payload) {
-            if (!response.ok) {
-              var message = payload && payload.error ? payload.error : "SERVER_ERROR";
-              if (message === "BLOCK_DISABLED" && url !== "/api/client-blocks") {
-                handleBlockedClientRequest();
-              }
-              throw new Error(message);
-            }
-            return payload;
-          });
-      })
-      .finally(function () {
-        if (timer) {
-          clearTimeout(timer);
-        }
-      });
-  }
-
-  function apiLogin(login, password) {
-    return fetchJson("/api/tsd/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ login: login, password: password }),
-    });
-  }
-
-  function loadClientBlocks() {
-    return fetchJson("/api/client-blocks")
-      .then(function (result) {
-        return applyClientBlocks(result && result.blocks);
-      })
-      .catch(function () {
-        return applyClientBlocks(null);
-      });
-  }
-
-  function formatDate(value) {
-    if (!value) {
-      return "-";
-    }
-    var date = new Date(value);
-    if (isNaN(date.getTime())) {
-      return "-";
-    }
-    return (
-      pad2(date.getDate()) +
-      "." +
-      pad2(date.getMonth() + 1) +
-      "." +
-      date.getFullYear()
-    );
-  }
-
-  function formatDateTime(value) {
-    if (!value) {
-      return "-";
-    }
-    var date = new Date(value);
-    if (isNaN(date.getTime())) {
-      return "-";
-    }
-    return (
-      pad2(date.getDate()) +
-      "." +
-      pad2(date.getMonth() + 1) +
-      "." +
-      date.getFullYear() +
-      " " +
-      pad2(date.getHours()) +
-      ":" +
-      pad2(date.getMinutes())
-    );
-  }
-
-  function pad2(value) {
-    var num = Number(value);
-    if (isNaN(num)) {
-      return "00";
-    }
-    return num < 10 ? "0" + num : String(num);
-  }
-
-  function formatQtyDisplay(qty, itemId) {
-    var item = cachedItemsById[Number(itemId)] || {};
-    var unit = item.base_uom || "";
-    return qty + (unit ? " " + unit : "");
-  }
-
-  function formatReportQty(value) {
-    var number = Number(value);
-    if (!isFinite(number)) {
-      number = 0;
-    }
-    return number.toLocaleString("ru-RU", {
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 3,
-    });
-  }
-
-  function escapeHtml(value) {
-    return String(value || "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
-  }
-
-  function normalizeSearchQuery(value) {
-    return String(value || "").trim().toLowerCase();
-  }
-
-  function matchesItemSearch(entry, normalizedQuery, includeLocationCode) {
-    if (!normalizedQuery) {
-      return true;
-    }
-
-    if (entry.itemName && entry.itemName.toLowerCase().indexOf(normalizedQuery) !== -1) {
-      return true;
-    }
-    if (entry.brand && entry.brand.toLowerCase().indexOf(normalizedQuery) !== -1) {
-      return true;
-    }
-    if (entry.volume && entry.volume.toLowerCase().indexOf(normalizedQuery) !== -1) {
-      return true;
-    }
-    if (entry.barcode && entry.barcode.toLowerCase().indexOf(normalizedQuery) !== -1) {
-      return true;
-    }
-    if (entry.gtin && entry.gtin.toLowerCase().indexOf(normalizedQuery) !== -1) {
-      return true;
-    }
-    if (includeLocationCode && entry.locationCode && entry.locationCode.toLowerCase().indexOf(normalizedQuery) !== -1) {
-      return true;
-    }
-
-    return false;
   }
 
   function setCachedItems(items) {
@@ -458,20 +241,6 @@
     });
   }
 
-  function renderLogin() {
-    return (
-      '<section class="pc-login-card">' +
-      '  <div class="screen-title">Вход</div>' +
-      '  <label class="form-label" for="pcLoginInput">Логин</label>' +
-      '  <input class="form-input" id="pcLoginInput" type="text" autocomplete="username" />' +
-      '  <label class="form-label" for="pcPasswordInput">Пароль</label>' +
-      '  <input class="form-input" id="pcPasswordInput" type="password" autocomplete="current-password" />' +
-      '  <button id="pcLoginBtn" class="btn primary-btn" type="button">Войти</button>' +
-      '  <div id="pcLoginStatus" class="status"></div>' +
-      "</section>"
-    );
-  }
-
   function renderPageShell(content) {
     return '<div class="pc-page-shell">' + String(content || "") + "</div>";
   }
@@ -486,83 +255,6 @@
       inner.appendChild(header.firstChild);
     }
     header.appendChild(inner);
-  }
-
-  function wireLogin() {
-    var loginInput = document.getElementById("pcLoginInput");
-    var passwordInput = document.getElementById("pcPasswordInput");
-    var loginBtn = document.getElementById("pcLoginBtn");
-    var statusEl = document.getElementById("pcLoginStatus");
-
-    function setStatus(text) {
-      if (statusEl) {
-        statusEl.textContent = text || "";
-      }
-    }
-
-    function submit() {
-      var login = loginInput && loginInput.value ? loginInput.value.trim() : "";
-      var password = passwordInput ? passwordInput.value : "";
-      if (!login || !password) {
-        setStatus("Введите логин и пароль.");
-        return;
-      }
-      if (loginBtn) {
-        loginBtn.disabled = true;
-      }
-      setStatus("Подключение...");
-      apiLogin(login, password)
-        .then(function (result) {
-          var deviceId = result && result.device_id ? String(result.device_id).trim() : "";
-          var platform = normalizePlatform(result && result.platform);
-          if (!deviceId) {
-            throw new Error("NO_DEVICE_ID");
-          }
-          if (platform !== "PC" && platform !== "BOTH") {
-            throw new Error("WRONG_PLATFORM");
-          }
-          applyClientBlocks(result && result.blocks);
-          var account = { device_id: deviceId, login: login, platform: platform };
-          saveAccount(account);
-          setAccountLabel(account);
-          setLoginState(true);
-          startVersionWatcher();
-          startLiveUpdates();
-          currentView = resolveAllowedView(currentView) || getDefaultView();
-          syncTabsVisibility();
-          renderView(currentView);
-        })
-        .catch(function (error) {
-          if (loginBtn) {
-            loginBtn.disabled = false;
-          }
-          var code = error && error.message ? error.message : "";
-          var message = "Ошибка входа.";
-          if (code === "INVALID_CREDENTIALS") {
-            message = "Пользователь не найден. Обратитесь к оператору.";
-          } else if (code === "DEVICE_BLOCKED") {
-            message = "Аккаунт заблокирован. Обратитесь к оператору.";
-          } else if (code === "WRONG_PLATFORM") {
-            message = "Этот аккаунт не имеет доступа к ПК.";
-          }
-          setStatus(message);
-        });
-    }
-
-    if (loginBtn) {
-      loginBtn.addEventListener("click", submit);
-    }
-    if (passwordInput) {
-      passwordInput.addEventListener("keydown", function (event) {
-        if (event.key === "Enter") {
-          event.preventDefault();
-          submit();
-        }
-      });
-    }
-    if (loginInput) {
-      loginInput.focus();
-    }
   }
 
   function renderStock() {
@@ -2133,137 +1825,6 @@
     }
   }
 
-  function getSortDirectionMark(view, key) {
-    var state = tableSortState[view];
-    if (!state || state.key !== key) {
-      return " ⇅";
-    }
-    return state.direction === "desc" ? " ▼" : " ▲";
-  }
-
-  function renderSortableHeader(view, key, label) {
-    var state = tableSortState[view];
-    var isActive = !!(state && state.key === key);
-    return (
-      '<th><button class="pc-table-sort' +
-      (isActive ? " is-active" : "") +
-      '" type="button" data-sort-view="' +
-      escapeHtml(view) +
-      '" data-sort-key="' +
-      escapeHtml(key) +
-      '" aria-label="Сортировать по столбцу ' +
-      escapeHtml(label) +
-      '">' +
-      escapeHtml(label) +
-      '<span class="pc-table-sort-mark">' +
-      escapeHtml(getSortDirectionMark(view, key)) +
-      "</span></button></th>"
-    );
-  }
-
-  function toggleTableSort(view, key) {
-    var state = tableSortState[view];
-    if (!state) {
-      return;
-    }
-    if (state.key === key) {
-      state.direction = state.direction === "asc" ? "desc" : "asc";
-      return;
-    }
-    state.key = key;
-    state.direction = "asc";
-  }
-
-  function compareSortValues(left, right, valueType) {
-    if (valueType === "number") {
-      var leftNum = Number(left);
-      var rightNum = Number(right);
-      var leftValid = isFinite(leftNum);
-      var rightValid = isFinite(rightNum);
-      if (!leftValid && !rightValid) {
-        return 0;
-      }
-      if (!leftValid) {
-        return 1;
-      }
-      if (!rightValid) {
-        return -1;
-      }
-      if (leftNum === rightNum) {
-        return 0;
-      }
-      return leftNum < rightNum ? -1 : 1;
-    }
-
-    if (valueType === "date") {
-      var leftDate = left ? Date.parse(String(left)) : NaN;
-      var rightDate = right ? Date.parse(String(right)) : NaN;
-      var leftDateValid = isFinite(leftDate);
-      var rightDateValid = isFinite(rightDate);
-      if (!leftDateValid && !rightDateValid) {
-        return 0;
-      }
-      if (!leftDateValid) {
-        return 1;
-      }
-      if (!rightDateValid) {
-        return -1;
-      }
-      if (leftDate === rightDate) {
-        return 0;
-      }
-      return leftDate < rightDate ? -1 : 1;
-    }
-
-    var leftText = String(left || "");
-    var rightText = String(right || "");
-    return leftText.localeCompare(rightText, "ru", { sensitivity: "base", numeric: true });
-  }
-
-  function sortRows(rows, view, columns) {
-    var source = Array.isArray(rows) ? rows.slice() : [];
-    var state = tableSortState[view];
-    if (!state || !state.key || !columns || !columns[state.key]) {
-      return source;
-    }
-
-    var column = columns[state.key];
-    var direction = state.direction === "desc" ? -1 : 1;
-    return source
-      .map(function (row, index) {
-        return { row: row, index: index };
-      })
-      .sort(function (left, right) {
-        var leftValue = column.getValue(left.row);
-        var rightValue = column.getValue(right.row);
-        var compared = compareSortValues(leftValue, rightValue, column.type);
-        if (compared !== 0) {
-          return compared * direction;
-        }
-        return left.index - right.index;
-      })
-      .map(function (entry) {
-        return entry.row;
-      });
-  }
-
-  function bindTableSorting(tableWrap, view, rerender) {
-    if (!tableWrap || typeof rerender !== "function") {
-      return;
-    }
-    var buttons = tableWrap.querySelectorAll('.pc-table-sort[data-sort-view="' + view + '"]');
-    buttons.forEach(function (button) {
-      button.addEventListener("click", function () {
-        var key = String(button.getAttribute("data-sort-key") || "");
-        if (!key) {
-          return;
-        }
-        toggleTableSort(view, key);
-        rerender();
-      });
-    });
-  }
-
   function clearLiveReconnectTimer() {
     if (liveReconnectTimerId) {
       clearTimeout(liveReconnectTimerId);
@@ -2275,27 +1836,11 @@
     activeLiveRefreshHandler = typeof handler === "function" ? handler : null;
   }
 
-  function clearOpenOrderModalController() {
-    openOrderModalController = null;
-  }
-
-  function refreshOpenOrderModalIfNeeded() {
-    var controller = openOrderModalController;
-    if (!controller || typeof controller.refresh !== "function") {
-      return;
-    }
-    if (controller.modal && !controller.modal.isConnected) {
-      clearOpenOrderModalController();
-      return;
-    }
-    controller.refresh();
-  }
-
   function scheduleLiveRefresh() {
     if (!hasPcAccess(loadAccount())) {
       return;
     }
-    if (!activeLiveRefreshHandler && !openOrderModalController) {
+    if (!activeLiveRefreshHandler && !hasOpenOrderModal()) {
       return;
     }
     if (liveRefreshTimerId) {
@@ -2471,14 +2016,6 @@
       return "В работе";
     }
     return label;
-  }
-
-  function formatQuantity(value) {
-    var number = Number(value) || 0;
-    if (Math.abs(number - Math.round(number)) < 0.000001) {
-      return String(Math.round(number));
-    }
-    return number.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
   }
 
   function isInternalOrder(order) {
@@ -4600,490 +4137,6 @@
     renderLines();
   }
 
-  function getOrderModalContentUpdates(order, lines, expandedOrderLineIds) {
-    var isPending = order && order.is_pending_confirmation;
-    var isInternal = isInternalOrder(order);
-    var showAvailableColumn = !isShippedOrder(order);
-    var sourceLines = Array.isArray(lines) ? lines : [];
-    var readiness = !isPending && !isInternal && showAvailableColumn ? getShipmentReadiness(sourceLines) : null;
-
-    return {
-      datesText:
-        "План: " +
-        formatDate(order.due_date) +
-        " · Факт: " +
-        formatDate(order.shipped_at),
-      readinessBadgeHtml: renderReadinessBadge(readiness),
-      linesHtml: sourceLines.length
-        ? renderOrderLinesTable(sourceLines, order, expandedOrderLineIds)
-        : "<div>Строк нет.</div>",
-    };
-  }
-
-  function applyOrderModalContentUpdates(modal, updates) {
-    if (!modal || !updates) {
-      return;
-    }
-
-    var datesEl = modal.querySelector("#orderDatesStatus");
-    if (datesEl) {
-      datesEl.textContent = updates.datesText;
-    }
-
-    var readinessBadge = modal.querySelector("#orderReadinessBadge");
-    if (readinessBadge) {
-      readinessBadge.outerHTML = updates.readinessBadgeHtml || '<span id="orderReadinessBadge"></span>';
-    }
-
-    var wrap = modal.querySelector("#orderLinesWrap");
-    if (wrap) {
-      wrap.innerHTML = updates.linesHtml;
-    }
-  }
-
-  function loadOrderModalData(order) {
-    var isPending = order && order.is_pending_confirmation;
-    if (isPending) {
-      return Promise.resolve({
-        order: order,
-        lines: Array.isArray(order.lines) ? order.lines : [],
-      });
-    }
-
-    return Promise.all([
-      fetchJson("/api/orders/" + encodeURIComponent(order.id)),
-      fetchJson("/api/orders/" + encodeURIComponent(order.id) + "/lines"),
-    ]).then(function (results) {
-      var freshOrder = results[0] || order;
-      var lines = Array.isArray(results[1]) ? results[1] : [];
-      applyOrderReadinessFromLines(freshOrder, lines);
-      return {
-        order: freshOrder,
-        lines: lines,
-      };
-    });
-  }
-
-  function populateOrderModalContent(modal, order, lines) {
-    var controller =
-      openOrderModalController && openOrderModalController.modal === modal
-        ? openOrderModalController
-        : null;
-    var expandedOrderLineIds = controller ? controller.expandedOrderLineIds : {};
-    if (controller) {
-      controller.lines = Array.isArray(lines) ? lines : [];
-    }
-    applyOrderModalContentUpdates(modal, getOrderModalContentUpdates(order, lines, expandedOrderLineIds));
-    bindOrderLineExpansion(modal, order, lines, expandedOrderLineIds);
-  }
-
-  function createOrderModalRefreshHandler(modal, order) {
-    var refreshInFlight = false;
-
-    return function refreshOrderModalContent() {
-      if (!modal || !modal.isConnected) {
-        clearOpenOrderModalController();
-        return Promise.resolve();
-      }
-      if (refreshInFlight) {
-        return Promise.resolve();
-      }
-
-      refreshInFlight = true;
-      return loadOrderModalData(order)
-        .then(function (payload) {
-          if (!modal.isConnected) {
-            clearOpenOrderModalController();
-            return;
-          }
-
-          var freshOrder = payload && payload.order ? payload.order : order;
-          if (freshOrder && freshOrder !== order) {
-            Object.keys(freshOrder).forEach(function (key) {
-              order[key] = freshOrder[key];
-            });
-          }
-
-          populateOrderModalContent(modal, order, payload.lines);
-        })
-        .catch(function () {
-          var wrap = modal.querySelector("#orderLinesWrap");
-          if (wrap) {
-            wrap.textContent = "Ошибка загрузки строк.";
-          }
-        })
-        .finally(function () {
-          refreshInFlight = false;
-        });
-    };
-  }
-
-  function renderOrderHuRowsTable(rows, columns, emptyText) {
-    var sourceRows = Array.isArray(rows) ? rows : [];
-    if (!sourceRows.length) {
-      return '<div class="pc-order-line-detail-empty">' + escapeHtml(emptyText || "Нет данных") + "</div>";
-    }
-
-    var head = columns
-      .map(function (column) {
-        return "<th>" + escapeHtml(column.label) + "</th>";
-      })
-      .join("");
-    var body = sourceRows
-      .map(function (row) {
-        return (
-          "<tr>" +
-          columns
-            .map(function (column) {
-              return "<td>" + escapeHtml(column.value(row)) + "</td>";
-            })
-            .join("") +
-          "</tr>"
-        );
-      })
-      .join("");
-    return (
-      '<div class="pc-order-line-detail-table-wrap">' +
-      '<table class="pc-table pc-order-line-detail-table"><thead><tr>' +
-      head +
-      "</tr></thead><tbody>" +
-      body +
-      "</tbody></table></div>"
-    );
-  }
-
-  function renderOrderLineCoverage(line, order) {
-    var coverage = line && line.coverage;
-    var ordered = Number(coverage && coverage.ordered_qty);
-    var covered = Number(coverage && coverage.covered_qty);
-    var missing = Number(coverage && coverage.missing_qty);
-    if (
-      !coverage ||
-      typeof coverage !== "object" ||
-      isNaN(ordered) ||
-      isNaN(covered) ||
-      isNaN(missing)
-    ) {
-      var hasExistingShortage = !!(line && line.shortage != null);
-      var existingShortage = hasExistingShortage ? Number(line.shortage) : NaN;
-      return (
-        '<div class="pc-order-line-detail-empty">Точный итог покрытия недоступен.</div>' +
-        (!isNaN(existingShortage)
-          ? '<div class="pc-order-line-existing-shortage">Существующий серверный дефицит: ' +
-            escapeHtml(formatQuantity(existingShortage)) +
-            "</div>"
-          : "")
-      );
-    }
-
-    var toneClass = missing <= 0.000001 ? " is-covered" : " is-missing";
-    var coveredLabel = isInternalOrder(order) ? "Выпущено" : "Покрыто";
-    var missingLabel = isInternalOrder(order) ? "Осталось выпустить" : "Не хватает";
-    return (
-      '<div class="pc-order-line-coverage-grid">' +
-      '<div><span>Заказано</span><strong>' +
-      escapeHtml(formatQuantity(ordered)) +
-      '</strong></div><div><span>' +
-      coveredLabel +
-      "</span><strong>" +
-      escapeHtml(formatQuantity(covered)) +
-      "</strong></div>" +
-      '<div class="pc-order-line-missing' +
-      toneClass +
-      '"><span>' +
-      missingLabel +
-      "</span><strong>" +
-      escapeHtml(formatQuantity(missing)) +
-      "</strong></div>" +
-      "</div>"
-    );
-  }
-
-  function formatProductionHuFate(row, order) {
-    if (!row || !row.fate_label) {
-      return "—";
-    }
-
-    var fateOrderRef = String(row.fate_order_ref || "").trim();
-    var currentOrderRef = String(order && order.order_ref ? order.order_ref : "").trim();
-    var isTransferredToAnotherOrder =
-      String(row.fate_code || "").trim().toUpperCase() === "SHIPPED" &&
-      fateOrderRef &&
-      currentOrderRef &&
-      fateOrderRef !== currentOrderRef;
-    var parts = [
-      isTransferredToAnotherOrder ? "Передано в заказ " + fateOrderRef : String(row.fate_label),
-    ];
-    if (row.fate_doc_ref) {
-      parts.push("OUT: " + String(row.fate_doc_ref));
-    }
-    if (row.fate_qty != null && !isNaN(Number(row.fate_qty))) {
-      parts.push(formatQuantity(row.fate_qty));
-    }
-    return parts.join(" · ");
-  }
-
-  function renderOrderLineDetails(line, order) {
-    var warehouseRows = Array.isArray(line && line.warehouse_hu_rows) ? line.warehouse_hu_rows : [];
-    var productionRows = Array.isArray(line && line.production_hu_rows) ? line.production_hu_rows : [];
-    var shippedRows = Array.isArray(line && line.shipped_hu_rows) ? line.shipped_hu_rows : [];
-    var hasHuRows = warehouseRows.length || productionRows.length || shippedRows.length;
-    var isInternal = isInternalOrder(order);
-    var customerHuRows = warehouseRows.concat(
-      shippedRows.map(function (row) {
-        return {
-          hu_code: row.hu_code,
-          qty: row.qty,
-          display_status: "Отгружен",
-        };
-      })
-    );
-    var customerHuColumns = [
-      { label: "HU", value: function (row) { return row.hu_code || "-"; } },
-      { label: "Кол-во", value: function (row) { return formatQuantity(row.qty || 0); } },
-      {
-        label: "Локация",
-        value: function (row) {
-          return row.location_name || row.location_code || "-";
-        },
-      },
-      {
-        label: "Статус",
-        value: function (row) {
-          return row.display_status ||
-            (row.stock_status === "LEDGER_STOCK" ? "На складе" : row.stock_status || "-");
-        },
-      },
-      {
-        label: "Привязка",
-        value: function (row) {
-          return row.is_bound_to_order ? "Резерв этого заказа" : "-";
-        },
-      },
-    ];
-
-    return (
-      '<div class="pc-order-line-detail-block">' +
-      (isInternal && !hasHuRows ? '<div class="pc-order-line-no-hu">HU не привязаны</div>' : "") +
-      (!isInternal
-        ? '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">HU по строке заказа</div>' +
-          renderOrderHuRowsTable(customerHuRows, customerHuColumns, "HU не привязаны") +
-          "</section>"
-        : "") +
-      '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">Производство / план паллет</div>' +
-      renderOrderHuRowsTable(
-        productionRows,
-        [
-          { label: "HU", value: function (row) { return row.hu_code || "-"; } },
-          { label: "Статус", value: function (row) { return translatePalletStatus(row.pallet_status); } },
-          { label: "План", value: function (row) { return formatQuantity(row.planned_qty || 0); } },
-          { label: "Наполнено", value: function (row) { return formatQuantity(row.filled_qty || 0); } },
-          { label: "PRD", value: function (row) { return row.prd_ref || "-"; } },
-          {
-            label: "Движение HU",
-            value: function (row) {
-              return formatProductionHuFate(row, order);
-            },
-          },
-        ],
-        "Производственные HU отсутствуют"
-      ) +
-      "</section>" +
-      (!isInternal
-        ? '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">Отгрузка этой строки заказа</div>' +
-          '<div class="pc-order-line-shipped-summary">Отгружено по строке: ' +
-          escapeHtml(
-            formatQuantity(
-              line && line.coverage && line.coverage.shipped_qty != null
-                ? line.coverage.shipped_qty
-                : line && line.qty_shipped != null
-                  ? line.qty_shipped
-                  : 0
-            )
-          ) +
-          "</div>" +
-          renderOrderHuRowsTable(
-            shippedRows,
-            [
-              { label: "HU", value: function (row) { return row.hu_code || "-"; } },
-              { label: "Отгружено", value: function (row) { return formatQuantity(row.qty || 0); } },
-            ],
-            "По этой строке заказа отгрузки нет"
-          ) +
-          "</section>"
-        : "") +
-      '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">' +
-      (isInternal ? "Итог выпуска" : "Итог") +
-      "</div>" +
-      renderOrderLineCoverage(line, order) +
-      "</section>" +
-      "</div>"
-    );
-  }
-
-  function bindOrderLineExpansion(modal, order, lines, expandedOrderLineIds) {
-    if (!modal || typeof modal.querySelectorAll !== "function") {
-      return;
-    }
-    var sourceLines = Array.isArray(lines) ? lines : [];
-    var rows = modal.querySelectorAll("[data-order-line-toggle]");
-    rows.forEach(function (row) {
-      function toggleRow() {
-        var lineId = Number(row.getAttribute("data-order-line-toggle")) || 0;
-        if (!lineId) {
-          return;
-        }
-        expandedOrderLineIds[lineId] = !expandedOrderLineIds[lineId];
-        populateOrderModalContent(modal, order, sourceLines);
-      }
-
-      row.addEventListener("click", toggleRow);
-      row.addEventListener("keydown", function (event) {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          toggleRow();
-        }
-      });
-    });
-  }
-
-  function renderOrderLinesTable(lines, order, expandedOrderLineIds) {
-    var body = (Array.isArray(lines) ? lines : [])
-      .map(function (line) {
-        var lineId = Number(line && line.id) || 0;
-        var isExpanded = !!(expandedOrderLineIds && expandedOrderLineIds[lineId]);
-        var highlightState = getOrderLineHighlightState(line, order);
-        var rowClass = "pc-order-line-parent-row" + (highlightState.className ? " " + highlightState.className : "");
-        var detailRow = isExpanded
-          ? '<tr class="pc-order-line-detail-row"><td colspan="6">' +
-            renderOrderLineDetails(line, order) +
-            "</td></tr>"
-          : "";
-        return (
-          '<tr class="' +
-          escapeHtml(rowClass) +
-          '" title="' +
-          escapeHtml(highlightState.title || "") +
-          '" data-order-line-toggle="' +
-          escapeHtml(String(lineId)) +
-          '" tabindex="0" role="button" aria-expanded="' +
-          (isExpanded ? "true" : "false") +
-          '">' +
-          '<td class="pc-order-line-caret-cell"><span class="pc-order-line-caret' +
-          (isExpanded ? " is-expanded" : "") +
-          '">▸</span></td>' +
-          "<td>" +
-          escapeHtml(line.item_name || "-") +
-          "</td>" +
-          "<td>" +
-          escapeHtml(line.barcode || "-") +
-          "</td>" +
-          "<td>" +
-          escapeHtml(line.gtin || "-") +
-          "</td>" +
-          "<td>" +
-          escapeHtml(formatQuantity(line.qty_ordered || 0)) +
-          "</td>" +
-          "<td>" +
-          renderLinePalletFillingBadge(line, order) +
-          "</td>" +
-          "</tr>" +
-          detailRow
-        );
-      })
-      .join("");
-
-    return (
-      '<div class="pc-order-lines-table-wrap">' +
-      '<table class="pc-table pc-order-lines-table">' +
-      "<colgroup>" +
-      '<col class="pc-order-lines-col-caret" />' +
-      '<col class="pc-order-lines-col-item" />' +
-      '<col class="pc-order-lines-col-sku" />' +
-      '<col class="pc-order-lines-col-gtin" />' +
-      '<col class="pc-order-lines-col-ordered" />' +
-      '<col class="pc-order-lines-col-filling" />' +
-      "</colgroup>" +
-      "<thead><tr>" +
-      '<th aria-label="Раскрыть строку"></th>' +
-      "<th>Товар</th>" +
-      "<th>SKU / ШК</th>" +
-      "<th>GTIN</th>" +
-      "<th>Заказано</th>" +
-      "<th>Наполнение</th>" +
-      "</tr></thead>" +
-      "<tbody>" +
-      body +
-      "</tbody>" +
-      "</table>" +
-      "</div>"
-    );
-  }
-
-  function openOrderModal(order, onSubmitted) {
-    var isPending = order && order.is_pending_confirmation;
-    var modal = document.createElement("div");
-    modal.className = "pc-modal";
-    modal.innerHTML =
-      '<div class="pc-modal-card pc-order-modal-card">' +
-      '  <div class="pc-modal-header">' +
-      '    <div class="pc-modal-title">Заказ ' +
-      escapeHtml(order.order_ref || "-") +
-      ' <span id="orderReadinessBadge"></span></div>' +
-      '    <button class="btn btn-outline" type="button" id="modalCloseBtn">Закрыть</button>' +
-      "  </div>" +
-      '  <div class="pc-status">Тип: ' +
-      escapeHtml(getOrderTypeLabel(order.order_type)) +
-      " · Контрагент: " +
-      escapeHtml(order.partner_name || "-") +
-      "</div>" +
-      '  <div class="pc-status" id="orderDatesStatus">План: ' +
-      escapeHtml(formatDate(order.due_date)) +
-      " · Факт: " +
-      escapeHtml(formatDate(order.shipped_at)) +
-      "</div>" +
-      '  <div class="pc-status">Комментарий: ' +
-      escapeHtml(order && order.comment ? order.comment : "-") +
-      "</div>" +
-      '  <div class="pc-order-status-box">' +
-      '    <div class="pc-status">' +
-      (isPending
-        ? "Заказ ожидает подтверждения в WPF."
-        : "Статус формируется автоматически по выпуску и отгрузке.") +
-      "</div>" +
-      "  </div>" +
-      '  <div id="orderLinesWrap" class="pc-status" style="margin-top:12px;">Загрузка строк...</div>' +
-      "</div>";
-    document.body.appendChild(modal);
-
-    function close() {
-      if (openOrderModalController && openOrderModalController.modal === modal) {
-        clearOpenOrderModalController();
-      }
-      if (modal.parentNode) {
-        modal.parentNode.removeChild(modal);
-      }
-    }
-
-    var closeBtn = modal.querySelector("#modalCloseBtn");
-    if (closeBtn) {
-      closeBtn.addEventListener("click", close);
-    }
-
-    var refreshOrderModalContent = createOrderModalRefreshHandler(modal, order);
-    openOrderModalController = {
-      orderId: order.id,
-      modal: modal,
-      order: order,
-      lines: [],
-      expandedOrderLineIds: {},
-      refresh: refreshOrderModalContent,
-      close: close,
-    };
-
-    refreshOrderModalContent();
-  }
-
   function wireOrders() {
     var searchInput = document.getElementById("ordersSearchInput");
     var statusEl = document.getElementById("ordersStatus");
@@ -5395,12 +4448,9 @@
     window.FlowStockPcTestHooks.applyOrderModalContentUpdates = applyOrderModalContentUpdates;
     window.FlowStockPcTestHooks.refreshOpenOrderModalIfNeeded = refreshOpenOrderModalIfNeeded;
     window.FlowStockPcTestHooks.clearOpenOrderModalController = clearOpenOrderModalController;
-    window.FlowStockPcTestHooks.getOpenOrderModalController = function () {
-      return openOrderModalController;
-    };
-    window.FlowStockPcTestHooks.__setOpenOrderModalControllerForTest = function (controller) {
-      openOrderModalController = controller || null;
-    };
+    window.FlowStockPcTestHooks.getOpenOrderModalController = orderModal.getOpenOrderModalController;
+    window.FlowStockPcTestHooks.__setOpenOrderModalControllerForTest =
+      orderModal.__setOpenOrderModalControllerForTest;
     return;
   }
 
