@@ -69,6 +69,7 @@ public sealed class OrderLineHuDetailsTiming
 
 public sealed class OrderLineHuFateTiming
 {
+    public bool Skipped { get; set; }
     public long? GetOrdersMs { get; set; }
     public int? OrdersCount { get; set; }
     public long? GetDocsMs { get; set; }

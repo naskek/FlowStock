@@ -69,12 +69,17 @@ public sealed class OrderLinesBatchEndpointTests
         Assert.Contains(logs, message => message.StartsWith("PERF order-line-hu-details ", StringComparison.Ordinal)
                                          && message.Contains("order_id=10", StringComparison.Ordinal)
                                          && message.Contains("build_warehouse_rows_ms=", StringComparison.Ordinal)
-                                         && message.Contains("customer_coverage_ms=", StringComparison.Ordinal));
+                                         && message.Contains("customer_coverage_ms=", StringComparison.Ordinal)
+                                         && message.Contains("hu_fate_ms=0", StringComparison.Ordinal));
         Assert.Contains(logs, message => message.StartsWith("PERF hu-fate ", StringComparison.Ordinal)
                                          && message.Contains("order_id=10", StringComparison.Ordinal)
+                                         && message.Contains("skipped=True", StringComparison.Ordinal)
                                          && message.Contains("orders_count=", StringComparison.Ordinal)
                                          && message.Contains("shipments_count=", StringComparison.Ordinal)
-                                         && message.Contains("final_rows_count=", StringComparison.Ordinal));
+                                         && message.Contains("final_rows_count=0", StringComparison.Ordinal)
+                                         && message.Contains("total_ms=0", StringComparison.Ordinal));
+        store.Verify(data => data.GetOrders(), Times.Never);
+        store.Verify(data => data.GetDocs(), Times.Never);
 
         loggerProvider.Clear();
         var batch = await ReadJsonArray(host.Client, "/api/orders/lines?ids=10,20");

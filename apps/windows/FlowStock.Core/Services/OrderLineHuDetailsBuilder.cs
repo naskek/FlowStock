@@ -25,12 +25,26 @@ public static class OrderLineHuDetailsBuilder
         RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.BuildWarehouseRowsMs = elapsed);
 
         phaseStopwatch?.Restart();
-        var fateRows = OrderLineHuFateDisplayBuilder.BuildByOrder(store, order.Id, fateTiming);
-        RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.HuFateMs = elapsed);
-
-        phaseStopwatch?.Restart();
-        var productionRows = BuildProductionRows(store, order.Id, fateRows);
+        var productionRows = BuildProductionRows(store, order.Id);
         RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.BuildProductionRowsMs = elapsed);
+
+        IReadOnlyDictionary<long, IReadOnlyList<OrderLineProductionHuRow>> productionRowsWithFate = productionRows;
+        if (productionRows.Count == 0)
+        {
+            if (timing != null)
+            {
+                timing.HuFateMs = 0;
+            }
+
+            MarkFateSkipped(fateTiming);
+        }
+        else
+        {
+            phaseStopwatch?.Restart();
+            var fateRows = OrderLineHuFateDisplayBuilder.BuildByOrder(store, order.Id, fateTiming);
+            RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.HuFateMs = elapsed);
+            productionRowsWithFate = AttachProductionFate(productionRows, fateRows);
+        }
 
         phaseStopwatch?.Restart();
         var shippedRows = BuildShippedRows(store, order.Id);
@@ -57,7 +71,7 @@ public static class OrderLineHuDetailsBuilder
             {
                 var lineWarehouseRows = warehouseRows.GetValueOrDefault(line.Id)
                     ?? Array.Empty<OrderLineWarehouseHuRow>();
-                var lineProductionRows = productionRows.GetValueOrDefault(line.Id)
+                var lineProductionRows = productionRowsWithFate.GetValueOrDefault(line.Id)
                     ?? Array.Empty<OrderLineProductionHuRow>();
                 var lineShippedRows = shippedRows.GetValueOrDefault(line.Id)
                     ?? Array.Empty<OrderLineShippedHuRow>();
@@ -139,21 +153,9 @@ public static class OrderLineHuDetailsBuilder
 
     private static IReadOnlyDictionary<long, IReadOnlyList<OrderLineProductionHuRow>> BuildProductionRows(
         IDataStore store,
-        long orderId,
-        IReadOnlyDictionary<long, OrderLineHuDisplayEntry[]> fateRows)
+        long orderId)
     {
         var rows = new Dictionary<long, List<OrderLineProductionHuRow>>();
-        var fateByLineHu = fateRows
-            .SelectMany(pair => pair.Value.Select(entry => new
-            {
-                OrderLineId = pair.Key,
-                HuCode = NormalizeHu(entry.HuCode),
-                Entry = entry
-            }))
-            .Where(row => row.HuCode != null)
-            .ToDictionary(
-                row => (row.OrderLineId, row.HuCode!),
-                row => row.Entry);
         foreach (var doc in store.GetDocsByOrder(orderId).Where(doc => doc.Type == DocType.ProductionReceipt))
         {
             foreach (var pallet in store.GetProductionPalletsByDoc(doc.Id)
@@ -173,10 +175,6 @@ public static class OrderLineHuDetailsBuilder
                     }];
                 foreach (var component in components.Where(component => component.OrderLineId.HasValue))
                 {
-                    var normalizedHu = NormalizeHu(pallet.HuCode);
-                    var fate = normalizedHu == null
-                        ? null
-                        : fateByLineHu.GetValueOrDefault((component.OrderLineId!.Value, normalizedHu));
                     var filledQty = string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)
                         ? component.FilledQty > QtyTolerance ? component.FilledQty : component.PlannedQty
                         : Math.Max(0, component.FilledQty);
@@ -186,12 +184,7 @@ public static class OrderLineHuDetailsBuilder
                         PalletStatus = pallet.EffectiveStatus,
                         PlannedQty = Math.Max(0, component.PlannedQty),
                         FilledQty = Math.Max(0, filledQty),
-                        PrdRef = doc.DocRef,
-                        FateCode = fate?.FateCode,
-                        FateLabel = fate?.FateLabel,
-                        FateOrderRef = fate?.FateOrderRef,
-                        FateDocRef = fate?.FateDocRef,
-                        FateQty = fate?.FateQty
+                        PrdRef = doc.DocRef
                     });
                 }
             }
@@ -202,6 +195,48 @@ public static class OrderLineHuDetailsBuilder
             pair => (IReadOnlyList<OrderLineProductionHuRow>)pair.Value
                 .OrderBy(row => row.HuCode, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(row => row.PrdRef, StringComparer.OrdinalIgnoreCase)
+                .ToArray());
+    }
+
+    private static IReadOnlyDictionary<long, IReadOnlyList<OrderLineProductionHuRow>> AttachProductionFate(
+        IReadOnlyDictionary<long, IReadOnlyList<OrderLineProductionHuRow>> productionRows,
+        IReadOnlyDictionary<long, OrderLineHuDisplayEntry[]> fateRows)
+    {
+        var fateByLineHu = fateRows
+            .SelectMany(pair => pair.Value.Select(entry => new
+            {
+                OrderLineId = pair.Key,
+                HuCode = NormalizeHu(entry.HuCode),
+                Entry = entry
+            }))
+            .Where(row => row.HuCode != null)
+            .ToDictionary(
+                row => (row.OrderLineId, row.HuCode!),
+                row => row.Entry);
+
+        return productionRows.ToDictionary(
+            pair => pair.Key,
+            pair => (IReadOnlyList<OrderLineProductionHuRow>)pair.Value
+                .Select(row =>
+                {
+                    var normalizedHu = NormalizeHu(row.HuCode);
+                    var fate = normalizedHu == null
+                        ? null
+                        : fateByLineHu.GetValueOrDefault((pair.Key, normalizedHu));
+                    return new OrderLineProductionHuRow
+                    {
+                        HuCode = row.HuCode,
+                        PalletStatus = row.PalletStatus,
+                        PlannedQty = row.PlannedQty,
+                        FilledQty = row.FilledQty,
+                        PrdRef = row.PrdRef,
+                        FateCode = fate?.FateCode,
+                        FateLabel = fate?.FateLabel,
+                        FateOrderRef = fate?.FateOrderRef,
+                        FateDocRef = fate?.FateDocRef,
+                        FateQty = fate?.FateQty
+                    };
+                })
                 .ToArray());
     }
 
@@ -251,6 +286,31 @@ public static class OrderLineHuDetailsBuilder
 
     private static string? NormalizeHu(string? huCode) =>
         string.IsNullOrWhiteSpace(huCode) ? null : huCode.Trim().ToUpperInvariant();
+
+    private static void MarkFateSkipped(OrderLineHuFateTiming? timing)
+    {
+        if (timing == null)
+        {
+            return;
+        }
+
+        timing.Skipped = true;
+        timing.GetOrdersMs = 0;
+        timing.OrdersCount = 0;
+        timing.GetDocsMs = 0;
+        timing.DocsCount = 0;
+        timing.GetHuStockRowsMs = 0;
+        timing.HuStockRowsCount = 0;
+        timing.BuildSourcesMs = 0;
+        timing.SourcesCount = 0;
+        timing.BuildReservationsMs = 0;
+        timing.ReservationsCount = 0;
+        timing.BuildShipmentsMs = 0;
+        timing.ShipmentsCount = 0;
+        timing.FinalRowsMs = 0;
+        timing.FinalRowsCount = 0;
+        timing.TotalMs = 0;
+    }
 
     private static void RecordPhase(
         OrderLineHuDetailsTiming? timing,

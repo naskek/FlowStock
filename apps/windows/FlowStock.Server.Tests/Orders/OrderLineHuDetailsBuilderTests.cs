@@ -120,6 +120,46 @@ public sealed class OrderLineHuDetailsBuilderTests
     }
 
     [Fact]
+    public void BuildByOrder_NoProductionHuRows_SkipsFateAndPreservesCoverage()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedItem(new Item { Id = 5, Name = "Товар", BaseUom = "шт" });
+        var order = new Order
+        {
+            Id = 6,
+            OrderRef = "006",
+            Type = OrderType.Customer,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 6, 10, 8, 0, 0)
+        };
+        harness.SeedOrder(order);
+        harness.SeedOrderLine(new OrderLine { Id = 60, OrderId = 6, ItemId = 5, QtyOrdered = 100 });
+
+        var line = Assert.Single(new OrderService(harness.Store).GetOrderLineViews(6));
+        var detailsTiming = new OrderLineHuDetailsTiming();
+        var fateTiming = new OrderLineHuFateTiming();
+        var details = OrderLineHuDetailsBuilder.BuildByOrder(
+            harness.Store,
+            order,
+            [line],
+            detailsTiming,
+            fateTiming)[60];
+
+        Assert.Empty(details.ProductionHuRows);
+        Assert.NotNull(details.Coverage);
+        Assert.Equal(0, details.Coverage.CoveredQty, 3);
+        Assert.Equal(100, details.Coverage.MissingQty, 3);
+        Assert.Equal(0, detailsTiming.HuFateMs);
+        Assert.True(fateTiming.Skipped);
+        Assert.Equal(0, fateTiming.GetOrdersMs);
+        Assert.Equal(0, fateTiming.GetDocsMs);
+        Assert.Equal(0, fateTiming.BuildSourcesMs);
+        Assert.Equal(0, fateTiming.BuildShipmentsMs);
+        Assert.Equal(0, fateTiming.FinalRowsCount);
+        Assert.Equal(0, fateTiming.TotalMs);
+    }
+
+    [Fact]
     public void BuildByOrder_CustomerUsesActualBoundProductionAndShippedHuWithoutDoubleCountingCoverage()
     {
         var harness = new CloseDocumentHarness();
