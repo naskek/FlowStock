@@ -55,6 +55,20 @@ internal sealed class CloseDocumentHarness
     public IReadOnlyList<MarkingOrder> MarkingOrders => _markingOrders.Values.OrderBy(order => order.CreatedAt).ToArray();
     public IReadOnlyList<MarkingCode> MarkingCodes => _markingCodes.Values.OrderBy(code => code.CreatedAt).ToArray();
 
+    public void VerifyNoGlobalHuFateReads()
+    {
+        _store.Verify(store => store.GetOrders(), Times.Never);
+        _store.Verify(store => store.GetDocs(), Times.Never);
+    }
+
+    public void VerifyScopedHuFateLookup(Times times)
+    {
+        _store.As<IOptimizedOrderLineHuFateStore>()
+            .Verify(
+                store => store.GetScopedOrderLineHuFateCandidates(It.IsAny<IReadOnlyCollection<ScopedOrderLineHuFateKey>>()),
+                times);
+    }
+
     public void FailNextUpdateOrderLineQty()
     {
         _failNextUpdateOrderLineQty = true;
@@ -650,6 +664,10 @@ internal sealed class CloseDocumentHarness
 
     private void ConfigureStore()
     {
+        _store.As<IOptimizedOrderLineHuFateStore>()
+            .Setup(store => store.GetScopedOrderLineHuFateCandidates(It.IsAny<IReadOnlyCollection<ScopedOrderLineHuFateKey>>()))
+            .Returns<IReadOnlyCollection<ScopedOrderLineHuFateKey>>(BuildScopedOrderLineHuFateCandidates);
+
         _store.Setup(store => store.Initialize());
 
         _store.Setup(store => store.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
@@ -3709,6 +3727,99 @@ internal sealed class CloseDocumentHarness
                 Qty = pair.Value
             })
             .ToArray();
+    }
+
+    private IReadOnlyList<ScopedOrderLineHuFateCandidate> BuildScopedOrderLineHuFateCandidates(
+        IReadOnlyCollection<ScopedOrderLineHuFateKey> keys)
+    {
+        var requested = keys
+            .Where(key => key.ItemId > 0 && !string.IsNullOrWhiteSpace(key.HuCode))
+            .Select(key => new ScopedOrderLineHuFateKey(key.ItemId, key.HuCode.Trim().ToUpperInvariant()))
+            .ToHashSet();
+        var rows = new List<ScopedOrderLineHuFateCandidate>();
+
+        rows.AddRange(BuildHuStockRows()
+            .Where(row => row.Qty > StockQuantityRules.QtyTolerance)
+            .Select(row => new
+            {
+                Row = row,
+                Key = new ScopedOrderLineHuFateKey(row.ItemId, row.HuCode.Trim().ToUpperInvariant())
+            })
+            .Where(row => requested.Contains(row.Key))
+            .GroupBy(row => row.Key)
+            .Select(group => new ScopedOrderLineHuFateCandidate
+            {
+                Kind = ScopedOrderLineHuFateDisplayBuilder.StockCandidateKind,
+                ItemId = group.Key.ItemId,
+                HuCode = group.Key.HuCode,
+                Qty = group.Sum(row => row.Row.Qty)
+            }));
+
+        foreach (var pair in _orderReceiptPlanLines)
+        {
+            if (!_orders.TryGetValue(pair.Key, out var order)
+                || order.Type != OrderType.Customer
+                || order.Status is OrderStatus.Cancelled or OrderStatus.Shipped or OrderStatus.Merged)
+            {
+                continue;
+            }
+
+            rows.AddRange(pair.Value
+                .Where(line => line.OrderLineId > 0
+                               && line.QtyPlanned > StockQuantityRules.QtyTolerance
+                               && !string.IsNullOrWhiteSpace(line.ToHu))
+                .Select(line => new
+                {
+                    Line = line,
+                    Key = new ScopedOrderLineHuFateKey(line.ItemId, line.ToHu!.Trim().ToUpperInvariant())
+                })
+                .Where(row => requested.Contains(row.Key))
+                .Select(row => new ScopedOrderLineHuFateCandidate
+                {
+                    Kind = ScopedOrderLineHuFateDisplayBuilder.ReservationCandidateKind,
+                    ItemId = row.Key.ItemId,
+                    HuCode = row.Key.HuCode,
+                    Qty = row.Line.QtyPlanned,
+                    TargetOrderId = order.Id,
+                    TargetOrderLineId = row.Line.OrderLineId,
+                    TargetOrderRef = order.OrderRef
+                }));
+        }
+
+        foreach (var doc in _docs.Values.Where(doc => doc.Type == DocType.Outbound
+                                                       && doc.Status == DocStatus.Closed
+                                                       && doc.OrderId.HasValue
+                                                       && _orders.TryGetValue(doc.OrderId.Value, out var order)
+                                                       && order.Type == OrderType.Customer))
+        {
+            var targetOrder = _orders[doc.OrderId!.Value];
+            rows.AddRange(GetActiveDocLines(doc.Id)
+                .Where(line => line.OrderLineId.HasValue
+                               && line.Qty > StockQuantityRules.QtyTolerance
+                               && !string.IsNullOrWhiteSpace(line.FromHu))
+                .Select(line => new
+                {
+                    Line = line,
+                    Key = new ScopedOrderLineHuFateKey(line.ItemId, line.FromHu!.Trim().ToUpperInvariant())
+                })
+                .Where(row => requested.Contains(row.Key))
+                .Select(row => new ScopedOrderLineHuFateCandidate
+                {
+                    Kind = ScopedOrderLineHuFateDisplayBuilder.ShipmentCandidateKind,
+                    ItemId = row.Key.ItemId,
+                    HuCode = row.Key.HuCode,
+                    Qty = row.Line.Qty,
+                    TargetOrderId = targetOrder.Id,
+                    TargetOrderLineId = row.Line.OrderLineId,
+                    TargetOrderRef = targetOrder.OrderRef,
+                    DocId = doc.Id,
+                    DocRef = doc.DocRef,
+                    ClosedAt = doc.ClosedAt,
+                    CreatedAt = doc.CreatedAt
+                }));
+        }
+
+        return rows;
     }
 
     private IReadOnlyList<NegativeStockBalanceRow> BuildNegativeStockBalances()

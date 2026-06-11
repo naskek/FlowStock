@@ -25,11 +25,11 @@ public static class OrderLineHuDetailsBuilder
         RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.BuildWarehouseRowsMs = elapsed);
 
         phaseStopwatch?.Restart();
-        var productionRows = BuildProductionRows(store, order.Id);
+        var productionResult = BuildProductionRows(store, order.Id);
         RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.BuildProductionRowsMs = elapsed);
 
-        IReadOnlyDictionary<long, IReadOnlyList<OrderLineProductionHuRow>> productionRowsWithFate = productionRows;
-        if (productionRows.Count == 0)
+        IReadOnlyDictionary<long, IReadOnlyList<OrderLineProductionHuRow>> productionRowsWithFate = productionResult.Rows;
+        if (productionResult.FateSources.Count == 0)
         {
             if (timing != null)
             {
@@ -41,9 +41,13 @@ public static class OrderLineHuDetailsBuilder
         else
         {
             phaseStopwatch?.Restart();
-            var fateRows = OrderLineHuFateDisplayBuilder.BuildByOrder(store, order.Id, fateTiming);
+            var fateRows = ScopedOrderLineHuFateDisplayBuilder.Build(
+                store,
+                order,
+                productionResult.FateSources,
+                fateTiming);
             RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.HuFateMs = elapsed);
-            productionRowsWithFate = AttachProductionFate(productionRows, fateRows);
+            productionRowsWithFate = AttachProductionFate(productionResult.Rows, fateRows);
         }
 
         phaseStopwatch?.Restart();
@@ -151,11 +155,12 @@ public static class OrderLineHuDetailsBuilder
                     .ToArray());
     }
 
-    private static IReadOnlyDictionary<long, IReadOnlyList<OrderLineProductionHuRow>> BuildProductionRows(
+    private static ProductionRowsResult BuildProductionRows(
         IDataStore store,
         long orderId)
     {
         var rows = new Dictionary<long, List<OrderLineProductionHuRow>>();
+        var fateSources = new List<ScopedOrderLineHuFateSource>();
         foreach (var doc in store.GetDocsByOrder(orderId).Where(doc => doc.Type == DocType.ProductionReceipt))
         {
             foreach (var pallet in store.GetProductionPalletsByDoc(doc.Id)
@@ -186,16 +191,28 @@ public static class OrderLineHuDetailsBuilder
                         FilledQty = Math.Max(0, filledQty),
                         PrdRef = doc.DocRef
                     });
+                    if (string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+                    {
+                        fateSources.Add(new ScopedOrderLineHuFateSource
+                        {
+                            OrderLineId = component.OrderLineId.Value,
+                            ItemId = component.ItemId,
+                            HuCode = pallet.HuCode.Trim(),
+                            Qty = Math.Max(0, filledQty)
+                        });
+                    }
                 }
             }
         }
 
-        return rows.ToDictionary(
-            pair => pair.Key,
-            pair => (IReadOnlyList<OrderLineProductionHuRow>)pair.Value
-                .OrderBy(row => row.HuCode, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(row => row.PrdRef, StringComparer.OrdinalIgnoreCase)
-                .ToArray());
+        return new ProductionRowsResult(
+            rows.ToDictionary(
+                pair => pair.Key,
+                pair => (IReadOnlyList<OrderLineProductionHuRow>)pair.Value
+                    .OrderBy(row => row.HuCode, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(row => row.PrdRef, StringComparer.OrdinalIgnoreCase)
+                    .ToArray()),
+            fateSources);
     }
 
     private static IReadOnlyDictionary<long, IReadOnlyList<OrderLineProductionHuRow>> AttachProductionFate(
@@ -295,6 +312,9 @@ public static class OrderLineHuDetailsBuilder
         }
 
         timing.Skipped = true;
+        timing.Scoped = true;
+        timing.ScopedLookupMs = 0;
+        timing.ScopedKeysCount = 0;
         timing.GetOrdersMs = 0;
         timing.OrdersCount = 0;
         timing.GetDocsMs = 0;
@@ -311,6 +331,10 @@ public static class OrderLineHuDetailsBuilder
         timing.FinalRowsCount = 0;
         timing.TotalMs = 0;
     }
+
+    private sealed record ProductionRowsResult(
+        IReadOnlyDictionary<long, IReadOnlyList<OrderLineProductionHuRow>> Rows,
+        IReadOnlyList<ScopedOrderLineHuFateSource> FateSources);
 
     private static void RecordPhase(
         OrderLineHuDetailsTiming? timing,

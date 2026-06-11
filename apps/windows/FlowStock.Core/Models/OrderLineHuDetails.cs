@@ -70,6 +70,9 @@ public sealed class OrderLineHuDetailsTiming
 public sealed class OrderLineHuFateTiming
 {
     public bool Skipped { get; set; }
+    public bool Scoped { get; set; }
+    public long? ScopedLookupMs { get; set; }
+    public int? ScopedKeysCount { get; set; }
     public long? GetOrdersMs { get; set; }
     public int? OrdersCount { get; set; }
     public long? GetDocsMs { get; set; }
@@ -85,4 +88,29 @@ public sealed class OrderLineHuFateTiming
     public long? FinalRowsMs { get; set; }
     public int? FinalRowsCount { get; set; }
     public long? TotalMs { get; set; }
+}
+
+public sealed record ScopedOrderLineHuFateKey(long ItemId, string HuCode);
+
+public sealed class ScopedOrderLineHuFateSource
+{
+    public long OrderLineId { get; init; }
+    public long ItemId { get; init; }
+    public string HuCode { get; init; } = string.Empty;
+    public double Qty { get; init; }
+}
+
+public sealed class ScopedOrderLineHuFateCandidate
+{
+    public string Kind { get; init; } = string.Empty;
+    public long ItemId { get; init; }
+    public string HuCode { get; init; } = string.Empty;
+    public double Qty { get; init; }
+    public long? TargetOrderId { get; init; }
+    public long? TargetOrderLineId { get; init; }
+    public string? TargetOrderRef { get; init; }
+    public long? DocId { get; init; }
+    public string? DocRef { get; init; }
+    public DateTime? ClosedAt { get; init; }
+    public DateTime? CreatedAt { get; init; }
 }

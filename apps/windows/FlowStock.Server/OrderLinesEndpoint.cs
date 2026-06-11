@@ -214,9 +214,12 @@ public static class OrderLinesEndpoint
     private static void LogHuFatePerformance(ILogger logger, long orderId, OrderLineHuFateTiming timing)
     {
         logger.LogInformation(
-            "PERF hu-fate order_id={OrderId} skipped={Skipped} get_orders_ms={GetOrdersMs} orders_count={OrdersCount} get_docs_ms={GetDocsMs} docs_count={DocsCount} get_hu_stock_rows_ms={GetHuStockRowsMs} hu_stock_rows_count={HuStockRowsCount} build_sources_ms={BuildSourcesMs} sources_count={SourcesCount} build_reservations_ms={BuildReservationsMs} reservations_count={ReservationsCount} build_shipments_ms={BuildShipmentsMs} shipments_count={ShipmentsCount} final_rows_ms={FinalRowsMs} final_rows_count={FinalRowsCount} total_ms={TotalMs}",
+            "PERF hu-fate order_id={OrderId} skipped={Skipped} scoped={Scoped} scoped_lookup_ms={ScopedLookupMs} scoped_keys_count={ScopedKeysCount} get_orders_ms={GetOrdersMs} orders_count={OrdersCount} get_docs_ms={GetDocsMs} docs_count={DocsCount} get_hu_stock_rows_ms={GetHuStockRowsMs} hu_stock_rows_count={HuStockRowsCount} build_sources_ms={BuildSourcesMs} sources_count={SourcesCount} build_reservations_ms={BuildReservationsMs} reservations_count={ReservationsCount} build_shipments_ms={BuildShipmentsMs} shipments_count={ShipmentsCount} final_rows_ms={FinalRowsMs} final_rows_count={FinalRowsCount} total_ms={TotalMs}",
             orderId,
             timing.Skipped,
+            timing.Scoped,
+            timing.ScopedLookupMs,
+            timing.ScopedKeysCount,
             timing.GetOrdersMs,
             timing.OrdersCount,
             timing.GetDocsMs,

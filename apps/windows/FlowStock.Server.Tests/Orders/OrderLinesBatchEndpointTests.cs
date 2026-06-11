@@ -74,6 +74,8 @@ public sealed class OrderLinesBatchEndpointTests
         Assert.Contains(logs, message => message.StartsWith("PERF hu-fate ", StringComparison.Ordinal)
                                          && message.Contains("order_id=10", StringComparison.Ordinal)
                                          && message.Contains("skipped=True", StringComparison.Ordinal)
+                                         && message.Contains("scoped=True", StringComparison.Ordinal)
+                                         && message.Contains("scoped_keys_count=0", StringComparison.Ordinal)
                                          && message.Contains("orders_count=", StringComparison.Ordinal)
                                          && message.Contains("shipments_count=", StringComparison.Ordinal)
                                          && message.Contains("final_rows_count=0", StringComparison.Ordinal)
@@ -178,6 +180,25 @@ public sealed class OrderLinesBatchEndpointTests
         Assert.Contains("shipped_totals AS", sql);
         Assert.Contains("GetProductionHuCodesByOrderLineIds", sql);
         Assert.Contains("WHERE id = ANY(@order_line_ids)", sql);
+    }
+
+    [Fact]
+    public void PostgresScopedHuFateReadModel_UsesExactItemHuPairsWithoutGlobalSourceScan()
+    {
+        var sql = File.ReadAllText(GetPostgresDataStorePath());
+        var detailsBuilder = File.ReadAllText(Path.GetFullPath(Path.Combine(
+            Path.GetDirectoryName(GetPostgresDataStorePath())!,
+            "..",
+            "FlowStock.Core",
+            "Services",
+            "OrderLineHuDetailsBuilder.cs")));
+
+        Assert.Contains("GetScopedOrderLineHuFateCandidates", sql);
+        Assert.Contains("UNNEST(@item_ids::bigint[], @hu_codes::text[])", sql);
+        Assert.Contains("requested.item_id", sql);
+        Assert.Contains("requested.hu_code", sql);
+        Assert.DoesNotContain("OrderLineHuFateDisplayBuilder.BuildByOrder", detailsBuilder);
+        Assert.Contains("ScopedOrderLineHuFateDisplayBuilder.Build", detailsBuilder);
     }
 
     [Fact]

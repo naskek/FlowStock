@@ -93,6 +93,8 @@ public sealed class OrderLineHuDetailsBuilderTests
         Assert.Equal(0, line.GetProperty("coverage").GetProperty("shipped_qty").GetDouble(), 3);
         Assert.Equal(1824, line.GetProperty("coverage").GetProperty("covered_qty").GetDouble(), 3);
         Assert.Equal(0, line.GetProperty("coverage").GetProperty("missing_qty").GetDouble(), 3);
+        harness.VerifyNoGlobalHuFateReads();
+        harness.VerifyScopedHuFateLookup(Moq.Times.Once());
     }
 
     [Fact]
@@ -157,6 +159,69 @@ public sealed class OrderLineHuDetailsBuilderTests
         Assert.Equal(0, fateTiming.BuildShipmentsMs);
         Assert.Equal(0, fateTiming.FinalRowsCount);
         Assert.Equal(0, fateTiming.TotalMs);
+        harness.VerifyNoGlobalHuFateReads();
+        harness.VerifyScopedHuFateLookup(Moq.Times.Never());
+    }
+
+    [Theory]
+    [InlineData(ProductionPalletStatus.Planned)]
+    [InlineData(ProductionPalletStatus.Printed)]
+    public void BuildByOrder_UnfilledProductionHuRemainsVisibleWithoutScopedFate(string palletStatus)
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedItem(new Item { Id = 5, Name = "Товар", BaseUom = "шт" });
+        var order = new Order
+        {
+            Id = 7,
+            OrderRef = "007",
+            Type = OrderType.Internal,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 6, 10, 8, 0, 0)
+        };
+        harness.SeedOrder(order);
+        harness.SeedOrderLine(new OrderLine { Id = 70, OrderId = 7, ItemId = 5, QtyOrdered = 100 });
+        harness.SeedDoc(new Doc
+        {
+            Id = 71,
+            DocRef = "PRD-71",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 7,
+            CreatedAt = new DateTime(2026, 6, 10, 9, 0, 0)
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 72,
+            PrdDocId = 71,
+            OrderId = 7,
+            OrderLineId = 70,
+            ItemId = 5,
+            HuCode = "HU-PLANNED",
+            PlannedQty = 100,
+            Status = palletStatus,
+            CreatedAt = new DateTime(2026, 6, 10, 9, 0, 0)
+        });
+
+        var line = Assert.Single(new OrderService(harness.Store).GetOrderLineViews(7));
+        var detailsTiming = new OrderLineHuDetailsTiming();
+        var fateTiming = new OrderLineHuFateTiming();
+        var details = OrderLineHuDetailsBuilder.BuildByOrder(
+            harness.Store,
+            order,
+            [line],
+            detailsTiming,
+            fateTiming)[70];
+
+        var production = Assert.Single(details.ProductionHuRows);
+        Assert.Equal("HU-PLANNED", production.HuCode);
+        Assert.Null(production.FateCode);
+        Assert.Null(production.FateLabel);
+        Assert.Equal(0, detailsTiming.HuFateMs);
+        Assert.True(fateTiming.Skipped);
+        Assert.True(fateTiming.Scoped);
+        Assert.Equal(0, fateTiming.ScopedKeysCount);
+        harness.VerifyNoGlobalHuFateReads();
+        harness.VerifyScopedHuFateLookup(Moq.Times.Never());
     }
 
     [Fact]

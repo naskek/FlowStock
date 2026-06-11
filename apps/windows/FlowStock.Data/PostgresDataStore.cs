@@ -9,7 +9,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore
+public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore
 {
     private readonly string _connectionString;
     private readonly NpgsqlConnection? _connection;
@@ -9044,6 +9044,154 @@ HAVING ABS(COALESCE(SUM(qty_delta), 0)) > @qty_tolerance;
                     ItemId = reader.GetInt64(1),
                     LocationId = reader.GetInt64(2),
                     Qty = reader.GetDouble(3)
+                });
+            }
+
+            return rows;
+        });
+    }
+
+    public IReadOnlyList<ScopedOrderLineHuFateCandidate> GetScopedOrderLineHuFateCandidates(
+        IReadOnlyCollection<ScopedOrderLineHuFateKey> keys)
+    {
+        var normalizedKeys = (keys ?? Array.Empty<ScopedOrderLineHuFateKey>())
+            .Select(key => new ScopedOrderLineHuFateKey(
+                key.ItemId,
+                string.IsNullOrWhiteSpace(key.HuCode) ? string.Empty : key.HuCode.Trim().ToUpperInvariant()))
+            .Where(key => key.ItemId > 0 && key.HuCode.Length > 0)
+            .Distinct()
+            .ToArray();
+        if (normalizedKeys.Length == 0)
+        {
+            return Array.Empty<ScopedOrderLineHuFateCandidate>();
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH requested_keys AS (
+    SELECT requested.item_id,
+           requested.hu_code
+    FROM UNNEST(@item_ids::bigint[], @hu_codes::text[]) AS requested(item_id, hu_code)
+),
+stock_rows AS (
+    SELECT 'STOCK'::text AS kind,
+           requested.item_id,
+           requested.hu_code,
+           COALESCE(SUM(l.qty_delta), 0)::double precision AS qty,
+           NULL::bigint AS target_order_id,
+           NULL::bigint AS target_order_line_id,
+           NULL::text AS target_order_ref,
+           NULL::bigint AS doc_id,
+           NULL::text AS doc_ref,
+           NULL::text AS closed_at,
+           NULL::text AS created_at
+    FROM requested_keys requested
+    INNER JOIN ledger l ON l.item_id = requested.item_id
+                       AND UPPER(BTRIM(COALESCE(l.hu_code, l.hu))) = requested.hu_code
+    GROUP BY requested.item_id, requested.hu_code
+    HAVING COALESCE(SUM(l.qty_delta), 0) > @qty_tolerance
+),
+reservation_rows AS (
+    SELECT 'RESERVATION'::text AS kind,
+           requested.item_id,
+           requested.hu_code,
+           COALESCE(SUM(p.qty_planned), 0)::double precision AS qty,
+           o.id AS target_order_id,
+           p.order_line_id AS target_order_line_id,
+           o.order_ref AS target_order_ref,
+           NULL::bigint AS doc_id,
+           NULL::text AS doc_ref,
+           NULL::text AS closed_at,
+           NULL::text AS created_at
+    FROM requested_keys requested
+    INNER JOIN order_receipt_plan_lines p ON p.item_id = requested.item_id
+                                          AND UPPER(BTRIM(p.to_hu)) = requested.hu_code
+    INNER JOIN orders o ON o.id = p.order_id
+    WHERE o.order_type = @customer_order_type
+      AND o.status NOT IN (@cancelled_order_status, @shipped_order_status, @merged_order_status)
+      AND p.order_line_id > 0
+      AND p.qty_planned > @qty_tolerance
+    GROUP BY requested.item_id, requested.hu_code, o.id, p.order_line_id, o.order_ref
+),
+shipment_rows AS (
+    SELECT 'SHIPMENT'::text AS kind,
+           requested.item_id,
+           requested.hu_code,
+           COALESCE(SUM(dl.qty), 0)::double precision AS qty,
+           o.id AS target_order_id,
+           dl.order_line_id AS target_order_line_id,
+           o.order_ref AS target_order_ref,
+           d.id AS doc_id,
+           d.doc_ref,
+           d.closed_at,
+           d.created_at
+    FROM requested_keys requested
+    INNER JOIN doc_lines dl ON dl.item_id = requested.item_id
+                           AND UPPER(BTRIM(dl.from_hu)) = requested.hu_code
+    INNER JOIN docs d ON d.id = dl.doc_id
+    INNER JOIN orders o ON o.id = d.order_id
+    WHERE d.type = @outbound_doc_type
+      AND d.status = @closed_doc_status
+      AND o.order_type = @customer_order_type
+      AND dl.order_line_id IS NOT NULL
+      AND dl.qty > @qty_tolerance
+    GROUP BY requested.item_id,
+             requested.hu_code,
+             o.id,
+             dl.order_line_id,
+             o.order_ref,
+             d.id,
+             d.doc_ref,
+             d.closed_at,
+             d.created_at
+)
+SELECT kind,
+       item_id,
+       hu_code,
+       qty,
+       target_order_id,
+       target_order_line_id,
+       target_order_ref,
+       doc_id,
+       doc_ref,
+       closed_at,
+       created_at
+FROM stock_rows
+UNION ALL
+SELECT * FROM reservation_rows
+UNION ALL
+SELECT * FROM shipment_rows;
+");
+            command.Parameters.Add("@item_ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint).Value =
+                normalizedKeys.Select(key => key.ItemId).ToArray();
+            command.Parameters.Add("@hu_codes", NpgsqlDbType.Array | NpgsqlDbType.Text).Value =
+                normalizedKeys.Select(key => key.HuCode).ToArray();
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+            command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+            command.Parameters.AddWithValue("@cancelled_order_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+            command.Parameters.AddWithValue("@shipped_order_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+            command.Parameters.AddWithValue("@merged_order_status", OrderStatusMapper.StatusToString(OrderStatus.Merged));
+            command.Parameters.AddWithValue("@outbound_doc_type", DocTypeMapper.ToOpString(DocType.Outbound));
+            command.Parameters.AddWithValue("@closed_doc_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+
+            using var reader = command.ExecuteReader();
+            var rows = new List<ScopedOrderLineHuFateCandidate>();
+            while (reader.Read())
+            {
+                rows.Add(new ScopedOrderLineHuFateCandidate
+                {
+                    Kind = reader.GetString(0),
+                    ItemId = reader.GetInt64(1),
+                    HuCode = reader.GetString(2),
+                    Qty = reader.GetDouble(3),
+                    TargetOrderId = reader.IsDBNull(4) ? null : reader.GetInt64(4),
+                    TargetOrderLineId = reader.IsDBNull(5) ? null : reader.GetInt64(5),
+                    TargetOrderRef = reader.IsDBNull(6) ? null : reader.GetString(6),
+                    DocId = reader.IsDBNull(7) ? null : reader.GetInt64(7),
+                    DocRef = reader.IsDBNull(8) ? null : reader.GetString(8),
+                    ClosedAt = reader.IsDBNull(9) ? null : LedgerTimestampParser.TryParse(reader.GetString(9)),
+                    CreatedAt = reader.IsDBNull(10) ? null : LedgerTimestampParser.TryParse(reader.GetString(10))
                 });
             }
 
