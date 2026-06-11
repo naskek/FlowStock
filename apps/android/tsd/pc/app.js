@@ -4600,26 +4600,6 @@
     renderLines();
   }
 
-  function renderOrderModalSummaryIndicators(order) {
-    if (!order || order.is_pending_confirmation) {
-      return "";
-    }
-
-    return (
-      '<div class="pc-order-modal-summary">' +
-      '<span class="pc-order-modal-summary-item">' +
-      getOrderStatusHtml(order) +
-      "</span>" +
-      '<span class="pc-order-modal-summary-item">' +
-      renderOrderPalletFillingIndicator(order) +
-      "</span>" +
-      '<span class="pc-order-modal-summary-item">' +
-      renderOrderMarkingIndicator(order) +
-      "</span>" +
-      "</div>"
-    );
-  }
-
   function getOrderModalContentUpdates(order, lines, expandedOrderLineIds) {
     var isPending = order && order.is_pending_confirmation;
     var isInternal = isInternalOrder(order);
@@ -4633,7 +4613,6 @@
         formatDate(order.due_date) +
         " · Факт: " +
         formatDate(order.shipped_at),
-      summaryHtml: renderOrderModalSummaryIndicators(order),
       readinessBadgeHtml: renderReadinessBadge(readiness),
       linesHtml: sourceLines.length
         ? renderOrderLinesTable(sourceLines, order, expandedOrderLineIds)
@@ -4649,11 +4628,6 @@
     var datesEl = modal.querySelector("#orderDatesStatus");
     if (datesEl) {
       datesEl.textContent = updates.datesText;
-    }
-
-    var summaryEl = modal.querySelector("#orderSummaryIndicators");
-    if (summaryEl) {
-      summaryEl.innerHTML = updates.summaryHtml;
     }
 
     var readinessBadge = modal.querySelector("#orderReadinessBadge");
@@ -4778,7 +4752,7 @@
     );
   }
 
-  function renderOrderLineCoverage(line) {
+  function renderOrderLineCoverage(line, order) {
     var coverage = line && line.coverage;
     var ordered = Number(coverage && coverage.ordered_qty);
     var covered = Number(coverage && coverage.covered_qty);
@@ -4803,29 +4777,43 @@
     }
 
     var toneClass = missing <= 0.000001 ? " is-covered" : " is-missing";
+    var coveredLabel = isInternalOrder(order) ? "Выпущено" : "Покрыто";
+    var missingLabel = isInternalOrder(order) ? "Осталось выпустить" : "Не хватает";
     return (
       '<div class="pc-order-line-coverage-grid">' +
       '<div><span>Заказано</span><strong>' +
       escapeHtml(formatQuantity(ordered)) +
-      "</strong></div>" +
-      '<div><span>Покрыто</span><strong>' +
+      '</strong></div><div><span>' +
+      coveredLabel +
+      "</span><strong>" +
       escapeHtml(formatQuantity(covered)) +
       "</strong></div>" +
       '<div class="pc-order-line-missing' +
       toneClass +
-      '"><span>Не хватает</span><strong>' +
+      '"><span>' +
+      missingLabel +
+      "</span><strong>" +
       escapeHtml(formatQuantity(missing)) +
       "</strong></div>" +
       "</div>"
     );
   }
 
-  function formatProductionHuFate(row) {
+  function formatProductionHuFate(row, order) {
     if (!row || !row.fate_label) {
       return "—";
     }
 
-    var parts = [String(row.fate_label)];
+    var fateOrderRef = String(row.fate_order_ref || "").trim();
+    var currentOrderRef = String(order && order.order_ref ? order.order_ref : "").trim();
+    var isTransferredToAnotherOrder =
+      String(row.fate_code || "").trim().toUpperCase() === "SHIPPED" &&
+      fateOrderRef &&
+      currentOrderRef &&
+      fateOrderRef !== currentOrderRef;
+    var parts = [
+      isTransferredToAnotherOrder ? "Передано в заказ " + fateOrderRef : String(row.fate_label),
+    ];
     if (row.fate_doc_ref) {
       parts.push("OUT: " + String(row.fate_doc_ref));
     }
@@ -4840,7 +4828,17 @@
     var productionRows = Array.isArray(line && line.production_hu_rows) ? line.production_hu_rows : [];
     var shippedRows = Array.isArray(line && line.shipped_hu_rows) ? line.shipped_hu_rows : [];
     var hasHuRows = warehouseRows.length || productionRows.length || shippedRows.length;
-    var warehouseColumns = [
+    var isInternal = isInternalOrder(order);
+    var customerHuRows = warehouseRows.concat(
+      shippedRows.map(function (row) {
+        return {
+          hu_code: row.hu_code,
+          qty: row.qty,
+          display_status: "Отгружен",
+        };
+      })
+    );
+    var customerHuColumns = [
       { label: "HU", value: function (row) { return row.hu_code || "-"; } },
       { label: "Кол-во", value: function (row) { return formatQuantity(row.qty || 0); } },
       {
@@ -4852,25 +4850,24 @@
       {
         label: "Статус",
         value: function (row) {
-          return row.stock_status === "LEDGER_STOCK" ? "На складе" : row.stock_status || "-";
+          return row.display_status ||
+            (row.stock_status === "LEDGER_STOCK" ? "На складе" : row.stock_status || "-");
         },
       },
-    ];
-    if (!isInternalOrder(order)) {
-      warehouseColumns.push({
+      {
         label: "Привязка",
         value: function (row) {
           return row.is_bound_to_order ? "Резерв этого заказа" : "-";
         },
-      });
-    }
+      },
+    ];
 
     return (
       '<div class="pc-order-line-detail-block">' +
-      (!hasHuRows ? '<div class="pc-order-line-no-hu">HU не привязаны</div>' : "") +
-      (!isInternalOrder(order)
-        ? '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">Складские HU</div>' +
-          renderOrderHuRowsTable(warehouseRows, warehouseColumns, "HU не привязаны") +
+      (isInternal && !hasHuRows ? '<div class="pc-order-line-no-hu">HU не привязаны</div>' : "") +
+      (!isInternal
+        ? '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">HU по строке заказа</div>' +
+          renderOrderHuRowsTable(customerHuRows, customerHuColumns, "HU не привязаны") +
           "</section>"
         : "") +
       '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">Производство / план паллет</div>' +
@@ -4882,34 +4879,43 @@
           { label: "План", value: function (row) { return formatQuantity(row.planned_qty || 0); } },
           { label: "Наполнено", value: function (row) { return formatQuantity(row.filled_qty || 0); } },
           { label: "PRD", value: function (row) { return row.prd_ref || "-"; } },
-          { label: "Судьба HU", value: formatProductionHuFate },
+          {
+            label: "Движение HU",
+            value: function (row) {
+              return formatProductionHuFate(row, order);
+            },
+          },
         ],
         "Производственные HU отсутствуют"
       ) +
       "</section>" +
-      '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">Отгрузка по строке</div>' +
-      '<div class="pc-order-line-shipped-summary">Отгружено по строке: ' +
-      escapeHtml(
-        formatQuantity(
-          line && line.coverage && line.coverage.shipped_qty != null
-            ? line.coverage.shipped_qty
-            : line && line.qty_shipped != null
-              ? line.qty_shipped
-              : 0
-        )
-      ) +
+      (!isInternal
+        ? '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">Отгрузка этой строки заказа</div>' +
+          '<div class="pc-order-line-shipped-summary">Отгружено по строке: ' +
+          escapeHtml(
+            formatQuantity(
+              line && line.coverage && line.coverage.shipped_qty != null
+                ? line.coverage.shipped_qty
+                : line && line.qty_shipped != null
+                  ? line.qty_shipped
+                  : 0
+            )
+          ) +
+          "</div>" +
+          renderOrderHuRowsTable(
+            shippedRows,
+            [
+              { label: "HU", value: function (row) { return row.hu_code || "-"; } },
+              { label: "Отгружено", value: function (row) { return formatQuantity(row.qty || 0); } },
+            ],
+            "По этой строке заказа отгрузки нет"
+          ) +
+          "</section>"
+        : "") +
+      '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">' +
+      (isInternal ? "Итог выпуска" : "Итог") +
       "</div>" +
-      renderOrderHuRowsTable(
-        shippedRows,
-        [
-          { label: "HU", value: function (row) { return row.hu_code || "-"; } },
-          { label: "Отгружено", value: function (row) { return formatQuantity(row.qty || 0); } },
-        ],
-        "Проведённая отгрузка отсутствует"
-      ) +
-      "</section>" +
-      '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">Итог</div>' +
-      renderOrderLineCoverage(line) +
+      renderOrderLineCoverage(line, order) +
       "</section>" +
       "</div>"
     );
@@ -5036,7 +5042,6 @@
       " · Факт: " +
       escapeHtml(formatDate(order.shipped_at)) +
       "</div>" +
-      '  <div id="orderSummaryIndicators" class="pc-order-modal-summary-wrap"></div>' +
       '  <div class="pc-status">Комментарий: ' +
       escapeHtml(order && order.comment ? order.comment : "-") +
       "</div>" +

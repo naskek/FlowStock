@@ -888,22 +888,6 @@ body.pc-body::before {
   max-width: 988px;
 }
 
-.pc-order-modal-summary-wrap {
-  margin-top: 8px;
-}
-
-.pc-order-modal-summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
-
-.pc-order-modal-summary-item {
-  display: inline-flex;
-  align-items: center;
-}
-
 .pc-order-lines-table-wrap {
   width: 100%;
   overflow-x: auto;

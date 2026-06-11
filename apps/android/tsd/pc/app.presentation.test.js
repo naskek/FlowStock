@@ -299,19 +299,15 @@ const mixedComponentLines = [
 const modalUpdatesAfterMixedFill = pc.getOrderModalContentUpdates(mixedComponentOrder, mixedComponentLines);
 assert.match(modalUpdatesAfterMixedFill.linesHtml, />Наполнено 1 \/ 1</);
 assert.match(modalUpdatesAfterMixedFill.linesHtml, /pc-order-line-coverage-covered/);
-assert.match(modalUpdatesAfterMixedFill.summaryHtml, /pc-order-modal-summary/);
+assert.strictEqual(Object.prototype.hasOwnProperty.call(modalUpdatesAfterMixedFill, "summaryHtml"), false);
 
 const modalDom = {
   datesEl: { textContent: "" },
-  summaryEl: { innerHTML: "" },
   readinessEl: { outerHTML: '<span id="orderReadinessBadge"></span>' },
   linesEl: { innerHTML: "" },
   querySelector: function (selector) {
     if (selector === "#orderDatesStatus") {
       return this.datesEl;
-    }
-    if (selector === "#orderSummaryIndicators") {
-      return this.summaryEl;
     }
     if (selector === "#orderReadinessBadge") {
       return this.readinessEl;
@@ -324,7 +320,32 @@ const modalDom = {
 };
 pc.applyOrderModalContentUpdates(modalDom, modalUpdatesAfterMixedFill);
 assert.match(modalDom.linesEl.innerHTML, />Наполнено 1 \/ 1</);
-assert.match(modalDom.summaryEl.innerHTML, /pc-order-modal-summary/);
+
+const completedOrderModalUpdates = pc.getOrderModalContentUpdates(
+  {
+    order_ref: "004",
+    order_type: "CUSTOMER",
+    order_status: "SHIPPED",
+    marking_effective_status: "PRINTED",
+    has_production_pallet_plan: true,
+    planned_pallet_count: 1,
+    filled_pallet_count: 1,
+  },
+  [
+    {
+      item_name: "Горчица",
+      qty_ordered: 1824,
+      qty_shipped: 1824,
+      planned_pallet_count: 1,
+      filled_pallet_count: 1,
+      show_pallet_completed_icon: true,
+      pallet_fill_title: "Паллеты: 1 / 1",
+    },
+  ]
+);
+assert.strictEqual(Object.prototype.hasOwnProperty.call(completedOrderModalUpdates, "summaryHtml"), false);
+assert.doesNotMatch(completedOrderModalUpdates.linesHtml, /pc-order-modal-summary/);
+assert.match(completedOrderModalUpdates.linesHtml, /pc-icon-status/);
 
 let modalRefreshCalls = 0;
 pc.__setOpenOrderModalControllerForTest({
@@ -451,7 +472,7 @@ const expandedCustomerOrderLineHtml = pc.renderOrderLinesTable(
       qty_ordered: 100,
       warehouse_hu_rows: [
         {
-          hu_code: "HU-WAREHOUSE",
+          hu_code: "HU-LINE",
           qty: 40,
           location_name: "Основной склад",
           stock_status: "LEDGER_STOCK",
@@ -472,7 +493,7 @@ const expandedCustomerOrderLineHtml = pc.renderOrderLinesTable(
           fate_qty: 60,
         },
       ],
-      shipped_hu_rows: [{ hu_code: "HU-SHIPPED", qty: 20 }],
+      shipped_hu_rows: [{ hu_code: "HU-LINE", qty: 20 }],
       coverage: {
         ordered_qty: 100,
         warehouse_bound_qty: 40,
@@ -483,18 +504,20 @@ const expandedCustomerOrderLineHtml = pc.renderOrderLinesTable(
       },
     },
   ],
-  { order_type: "CUSTOMER", order_status: "IN_PROGRESS" },
+  { order_ref: "003", order_type: "CUSTOMER", order_status: "IN_PROGRESS" },
   { 501: true }
 );
 assert.match(expandedCustomerOrderLineHtml, /data-order-line-toggle="501"/);
 assert.match(expandedCustomerOrderLineHtml, /aria-expanded="true"/);
-assert.match(expandedCustomerOrderLineHtml, /HU-WAREHOUSE/);
+assert.match(expandedCustomerOrderLineHtml, />HU по строке заказа</);
+assert.strictEqual((expandedCustomerOrderLineHtml.match(/HU-LINE/g) || []).length, 3);
+assert.match(expandedCustomerOrderLineHtml, /На складе/);
+assert.match(expandedCustomerOrderLineHtml, /Отгружен/);
 assert.match(expandedCustomerOrderLineHtml, /HU-PRODUCTION/);
-assert.match(expandedCustomerOrderLineHtml, /HU-SHIPPED/);
-assert.match(expandedCustomerOrderLineHtml, /Судьба HU/);
-assert.match(expandedCustomerOrderLineHtml, /→ отгружено заказ 004/);
+assert.match(expandedCustomerOrderLineHtml, /Движение HU/);
+assert.match(expandedCustomerOrderLineHtml, /Передано в заказ 004/);
 assert.match(expandedCustomerOrderLineHtml, /OUT: OUT-2026-000004/);
-assert.match(expandedCustomerOrderLineHtml, />Отгрузка по строке</);
+assert.match(expandedCustomerOrderLineHtml, />Отгрузка этой строки заказа</);
 assert.match(expandedCustomerOrderLineHtml, /Резерв этого заказа/);
 assert.match(expandedCustomerOrderLineHtml, /Не хватает/);
 assert.match(expandedCustomerOrderLineHtml, /is-missing/);
@@ -515,9 +538,37 @@ const expandedLineWithoutExactCoverageHtml = pc.renderOrderLinesTable(
   { 502: true }
 );
 assert.match(expandedLineWithoutExactCoverageHtml, /HU не привязаны/);
+assert.strictEqual((expandedLineWithoutExactCoverageHtml.match(/HU не привязаны/g) || []).length, 1);
+assert.match(expandedLineWithoutExactCoverageHtml, />Отгрузка этой строки заказа</);
+assert.match(expandedLineWithoutExactCoverageHtml, /По этой строке заказа отгрузки нет/);
 assert.match(expandedLineWithoutExactCoverageHtml, /Точный итог покрытия недоступен/);
 assert.match(expandedLineWithoutExactCoverageHtml, /Существующий серверный дефицит: 25/);
 assert.doesNotMatch(expandedLineWithoutExactCoverageHtml, /pc-order-line-coverage-grid/);
+
+const expandedCustomerLineWithOnlyShippedHuHtml = pc.renderOrderLinesTable(
+  [
+    {
+      id: 504,
+      item_name: "Горчица",
+      qty_ordered: 1824,
+      warehouse_hu_rows: [],
+      production_hu_rows: [],
+      shipped_hu_rows: [{ hu_code: "HU-0002083", qty: 1824 }],
+      coverage: { ordered_qty: 1824, covered_qty: 1824, missing_qty: 0, shipped_qty: 1824 },
+    },
+  ],
+  { order_ref: "004", order_type: "CUSTOMER", order_status: "SHIPPED" },
+  { 504: true }
+);
+assert.match(expandedCustomerLineWithOnlyShippedHuHtml, />HU по строке заказа</);
+assert.match(expandedCustomerLineWithOnlyShippedHuHtml, /HU-0002083/);
+assert.match(expandedCustomerLineWithOnlyShippedHuHtml, /Отгружен/);
+assert.match(
+  expandedCustomerLineWithOnlyShippedHuHtml,
+  /HU-0002083<\/td><td>1824<\/td><td>-<\/td><td>Отгружен/
+);
+assert.doesNotMatch(expandedCustomerLineWithOnlyShippedHuHtml, /HU не привязаны/);
+assert.match(expandedCustomerLineWithOnlyShippedHuHtml, />Отгрузка этой строки заказа</);
 
 const expandedInternalOrderLineHtml = pc.renderOrderLinesTable(
   [
@@ -528,21 +579,37 @@ const expandedInternalOrderLineHtml = pc.renderOrderLinesTable(
       production_hu_rows: [
         {
           hu_code: "HU-INTERNAL",
-          pallet_status: "PLANNED",
-          planned_qty: 100,
-          filled_qty: 0,
+          pallet_status: "FILLED",
+          planned_qty: 1824,
+          filled_qty: 1824,
           prd_ref: "PRD-051",
+          fate_code: "SHIPPED",
+          fate_label: "→ отгружено заказ 004",
+          fate_order_ref: "004",
+          fate_doc_ref: "OUT-2026-000013",
+          fate_qty: 1824,
         },
       ],
-      coverage: { ordered_qty: 100, covered_qty: 0, missing_qty: 100 },
+      coverage: { ordered_qty: 2000, covered_qty: 1824, missing_qty: 176 },
     },
   ],
-  { order_type: "INTERNAL", order_status: "IN_PROGRESS" },
+  { order_ref: "003", order_type: "INTERNAL", order_status: "IN_PROGRESS" },
   { 503: true }
 );
 assert.match(expandedInternalOrderLineHtml, /HU-INTERNAL/);
+assert.match(expandedInternalOrderLineHtml, /Движение HU/);
+assert.match(
+  expandedInternalOrderLineHtml,
+  /Передано в заказ 004 · OUT: OUT-2026-000013 · 1824/
+);
+assert.match(expandedInternalOrderLineHtml, />Итог выпуска</);
+assert.match(expandedInternalOrderLineHtml, />Выпущено</);
+assert.match(expandedInternalOrderLineHtml, />Осталось выпустить</);
 assert.doesNotMatch(expandedInternalOrderLineHtml, /Резерв этого заказа/);
-assert.doesNotMatch(expandedInternalOrderLineHtml, />Складские HU</);
+assert.doesNotMatch(expandedInternalOrderLineHtml, />HU по строке заказа</);
+assert.doesNotMatch(expandedInternalOrderLineHtml, />Отгрузка этой строки заказа</);
+assert.doesNotMatch(expandedInternalOrderLineHtml, /Отгружено по строке/);
+assert.doesNotMatch(expandedInternalOrderLineHtml, /По этой строке заказа отгрузки нет/);
 
 const shippedCustomerStalePalletListHtml = pc.renderOrdersTable([
   {
