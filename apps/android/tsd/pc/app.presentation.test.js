@@ -6,6 +6,7 @@ const vm = require("vm");
 const corePath = path.join(__dirname, "pc-core.js");
 const authPath = path.join(__dirname, "pc-auth.js");
 const orderModalPath = path.join(__dirname, "pc-order-modal.js");
+const catalogPath = path.join(__dirname, "pc-catalog.js");
 const appPath = path.join(__dirname, "app.js");
 const styles = fs.readFileSync(path.join(__dirname, "styles.css"), "utf8");
 const hooks = {};
@@ -29,6 +30,7 @@ vm.createContext(context);
 vm.runInContext(fs.readFileSync(corePath, "utf8"), context, { filename: corePath });
 vm.runInContext(fs.readFileSync(authPath, "utf8"), context, { filename: authPath });
 vm.runInContext(fs.readFileSync(orderModalPath, "utf8"), context, { filename: orderModalPath });
+vm.runInContext(fs.readFileSync(catalogPath, "utf8"), context, { filename: catalogPath });
 vm.runInContext(fs.readFileSync(appPath, "utf8"), context, { filename: appPath });
 
 const pc = context.window.FlowStockPcTestHooks;

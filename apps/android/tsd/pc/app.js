@@ -22,7 +22,6 @@
   var core = window.FlowStockPcCore;
   var cachedItems = [];
   var cachedItemsById = {};
-  var cachedItemTypes = [];
   var cachedLocations = [];
   var cachedLocationsById = {};
   var cachedStockRows = [];
@@ -98,6 +97,18 @@
   var refreshOpenOrderModalIfNeeded = orderModal.refreshOpenOrderModalIfNeeded;
   var clearOpenOrderModalController = orderModal.clearOpenOrderModalController;
   var hasOpenOrderModal = orderModal.hasOpenOrderModal;
+  var catalog = window.FlowStockPcCatalog;
+  catalog.init({
+    fetchJson: fetchJson,
+    renderPageShell: renderPageShell,
+    setActiveLiveRefreshHandler: setActiveLiveRefreshHandler,
+    escapeHtml: escapeHtml,
+    normalizeSearchQuery: normalizeSearchQuery,
+    matchesItemSearch: matchesItemSearch,
+    renderSortableHeader: renderSortableHeader,
+    sortRows: sortRows,
+    bindTableSorting: bindTableSorting,
+  });
 
   function isExperimentalWarehouseTasksEnabled() {
     try {
@@ -273,29 +284,6 @@
       "  </div>" +
       '  <div id="stockLowWrap"></div>' +
       '  <div id="stockTableWrap"></div>' +
-      "</section>"
-    );
-  }
-
-  function renderCatalog() {
-    return renderPageShell(
-      '<section class="pc-card">' +
-      '  <div class="section-title">Каталог товаров</div>' +
-      '  <div class="pc-toolbar">' +
-      '    <div class="form-field">' +
-      '      <label class="form-label" for="catalogSearchInput">Поиск</label>' +
-      '      <input class="form-input" id="catalogSearchInput" type="text" autocomplete="off" placeholder="Название, бренд, объем, SKU, GTIN, штрихкод" />' +
-      "    </div>" +
-      '    <div class="form-field">' +
-      '      <label class="form-label" for="catalogTypeFilter">Тип</label>' +
-      '      <select class="form-input" id="catalogTypeFilter"></select>' +
-      "    </div>" +
-      '    <div class="pc-toolbar-actions">' +
-      '      <button id="catalogRefreshBtn" class="btn btn-outline" type="button">Обновить</button>' +
-      "    </div>" +
-      '    <div id="catalogStatus" class="pc-status"></div>' +
-      "  </div>" +
-      '  <div id="catalogTableWrap"></div>' +
       "</section>"
     );
   }
@@ -509,71 +497,6 @@
       "</tr></tbody>" +
       "</table>" +
       "</div>"
-    );
-  }
-
-  function renderCatalogItemCell(row) {
-    var name = escapeHtml(row.itemName || "-");
-    var metaParts = [];
-    var gtin = String(row.gtin || "").trim();
-    var barcode = String(row.barcode || "").trim();
-    if (gtin) {
-      metaParts.push("GTIN: " + escapeHtml(gtin));
-    }
-    if (barcode) {
-      metaParts.push("ШК: " + escapeHtml(barcode));
-    }
-    var metaHtml = metaParts.length
-      ? '<div class="pc-catalog-item-meta">' + metaParts.join(" · ") + "</div>"
-      : "";
-    return (
-      '<div class="pc-catalog-item-cell">' +
-      '<div class="pc-catalog-item-name">' +
-      name +
-      "</div>" +
-      metaHtml +
-      "</div>"
-    );
-  }
-
-  function renderCatalogTable(rows) {
-    if (!rows || !rows.length) {
-      return '<div class="empty-state">Товары не найдены.</div>';
-    }
-
-    var body = rows
-      .map(function (row) {
-        return (
-          "<tr>" +
-          "<td>" +
-          renderCatalogItemCell(row) +
-          "</td>" +
-          "<td>" +
-          escapeHtml(row.brand || "-") +
-          "</td>" +
-          "<td>" +
-          escapeHtml(row.volume || "-") +
-          "</td>" +
-          "<td>" +
-          escapeHtml(row.baseUom || "-") +
-          "</td>" +
-          "</tr>"
-        );
-      })
-      .join("");
-
-    return (
-      '<table class="pc-table pc-catalog-table">' +
-      "<thead><tr>" +
-      renderSortableHeader("catalog", "itemName", "Товар") +
-      renderSortableHeader("catalog", "brand", "Бренд") +
-      renderSortableHeader("catalog", "volume", "Объем") +
-      renderSortableHeader("catalog", "baseUom", "Ед.") +
-      "</tr></thead>" +
-      "<tbody>" +
-      body +
-      "</tbody>" +
-      "</table>"
     );
   }
 
@@ -1059,28 +982,6 @@
     loadAndRender();
   }
 
-  function loadCatalogData() {
-    return Promise.all([
-      fetchJson("/api/items"),
-      fetchJson("/api/item-types?include_inactive=0"),
-    ]).then(function (payloads) {
-      var items = payloads[0];
-      var itemTypes = payloads[1];
-      cachedItemTypes = Array.isArray(itemTypes) ? itemTypes.slice() : [];
-      var sourceItems = Array.isArray(items) ? items : [];
-      var visibleItems = sourceItems.filter(function (item) {
-        return item && item.item_type_is_visible_in_product_catalog === true;
-      });
-      if (visibleItems.length === 0 && sourceItems.length > 0) {
-        // Fallback for legacy/inconsistent type visibility setup:
-        // keep catalog usable instead of showing an empty screen.
-        visibleItems = sourceItems.slice();
-      }
-      setCachedItems(visibleItems);
-      return cachedItems;
-    });
-  }
-
   function renderLowStockTable(rows) {
     if (!rows || !rows.length) {
       return "";
@@ -1504,147 +1405,6 @@
           createOrdersBtn.disabled = false;
         });
       });
-    }
-
-    setActiveLiveRefreshHandler(loadAndRender);
-    loadAndRender();
-  }
-
-  function wireCatalog() {
-    var searchInput = document.getElementById("catalogSearchInput");
-    var typeFilter = document.getElementById("catalogTypeFilter");
-    var refreshBtn = document.getElementById("catalogRefreshBtn");
-    var statusEl = document.getElementById("catalogStatus");
-    var tableWrap = document.getElementById("catalogTableWrap");
-    var debounce = null;
-
-    function setStatus(text) {
-      if (statusEl) {
-        statusEl.textContent = text || "";
-      }
-    }
-
-    function buildRows() {
-      return cachedItems
-        .map(function (item) {
-          return {
-            itemId: Number(item.id) || 0,
-            itemTypeId: Number(item.item_type_id) || 0,
-            itemTypeName: item.item_type_name || "",
-            itemName: item.name || "",
-            brand: item.brand || "",
-            volume: item.volume || "",
-            barcode: item.barcode || "",
-            gtin: item.gtin || "",
-            baseUom: item.base_uom_code || item.base_uom || "",
-          };
-        })
-        .sort(function (left, right) {
-          var leftName = String(left.itemName || "").toLowerCase();
-          var rightName = String(right.itemName || "").toLowerCase();
-          if (leftName !== rightName) {
-            return leftName < rightName ? -1 : 1;
-          }
-          return left.itemId - right.itemId;
-        });
-    }
-
-    function renderRows() {
-      if (!tableWrap) {
-        return;
-      }
-
-      var query = normalizeSearchQuery(searchInput ? searchInput.value : "");
-      var typeId = typeFilter ? Number(typeFilter.value || 0) : 0;
-      var rows = buildRows().filter(function (row) {
-        if (typeId && row.itemTypeId !== typeId) {
-          return false;
-        }
-        return matchesItemSearch(row, query, false);
-      });
-      rows = sortRows(rows, "catalog", {
-        itemId: { type: "number", getValue: function (row) { return row.itemId; } },
-        itemName: { type: "string", getValue: function (row) { return row.itemName; } },
-        brand: { type: "string", getValue: function (row) { return row.brand; } },
-        volume: { type: "string", getValue: function (row) { return row.volume; } },
-        barcode: { type: "string", getValue: function (row) { return row.barcode; } },
-        gtin: { type: "string", getValue: function (row) { return row.gtin; } },
-        baseUom: { type: "string", getValue: function (row) { return row.baseUom; } },
-      });
-
-      setStatus("Товаров: " + rows.length);
-      tableWrap.innerHTML = renderCatalogTable(rows);
-      bindTableSorting(tableWrap, "catalog", renderRows);
-    }
-
-    function fillTypeFilter() {
-      if (!typeFilter) {
-        return;
-      }
-
-      var previous = String(typeFilter.value || "");
-      var options =
-        '<option value="">Все типы</option>' +
-        cachedItemTypes
-          .slice()
-          .sort(function (left, right) {
-            var leftOrder = Number(left && left.sort_order) || 0;
-            var rightOrder = Number(right && right.sort_order) || 0;
-            if (leftOrder !== rightOrder) {
-              return leftOrder - rightOrder;
-            }
-            var leftName = String((left && left.name) || "").toLowerCase();
-            var rightName = String((right && right.name) || "").toLowerCase();
-            return leftName < rightName ? -1 : leftName > rightName ? 1 : 0;
-          })
-          .map(function (type) {
-            var id = Number(type && type.id) || 0;
-            var name = String((type && type.name) || "").trim() || "Без названия";
-            return '<option value="' + escapeHtml(String(id)) + '">' + escapeHtml(name) + "</option>";
-          })
-          .join("");
-
-      typeFilter.innerHTML = options;
-      if (previous) {
-        var hasPrevious = Array.prototype.some.call(typeFilter.options || [], function (option) {
-          return String(option.value || "") === previous;
-        });
-        if (hasPrevious) {
-          typeFilter.value = previous;
-        }
-      }
-    }
-
-    function loadAndRender() {
-      setStatus("Загрузка...");
-      loadCatalogData()
-        .then(function () {
-          fillTypeFilter();
-          renderRows();
-        })
-        .catch(function () {
-          setStatus("Ошибка загрузки каталога");
-          if (tableWrap) {
-            tableWrap.innerHTML = '<div class="empty-state">Данные недоступны.</div>';
-          }
-        });
-    }
-
-    function scheduleRender() {
-      if (debounce) {
-        clearTimeout(debounce);
-      }
-      debounce = window.setTimeout(renderRows, 150);
-    }
-
-    if (searchInput) {
-      searchInput.addEventListener("input", scheduleRender);
-    }
-    if (typeFilter) {
-      typeFilter.addEventListener("change", renderRows);
-    }
-    if (refreshBtn) {
-      refreshBtn.addEventListener("click", loadAndRender);
     }
 
     setActiveLiveRefreshHandler(loadAndRender);
@@ -4330,8 +4090,8 @@
     setActiveTab(allowedView);
 
     if (allowedView === "catalog") {
-      app.innerHTML = renderCatalog();
-      wireCatalog();
+      app.innerHTML = catalog.renderCatalog();
+      catalog.wireCatalog();
       return;
     }
 
@@ -4436,7 +4196,7 @@
     window.FlowStockPcTestHooks.renderStockTable = renderStockTable;
     window.FlowStockPcTestHooks.mapWarehouseProductionStateRow = mapWarehouseProductionStateRow;
     window.FlowStockPcTestHooks.translatePalletStatus = translatePalletStatus;
-    window.FlowStockPcTestHooks.renderCatalogTable = renderCatalogTable;
+    window.FlowStockPcTestHooks.renderCatalogTable = catalog.testHooks.renderCatalogTable;
     window.FlowStockPcTestHooks.sortOrdersNewestFirst = sortOrdersNewestFirst;
     window.FlowStockPcTestHooks.buildOrdersUrl = buildOrdersUrl;
     window.FlowStockPcTestHooks.getProductionNeedCreateOrdersRefreshUrl = getProductionNeedCreateOrdersRefreshUrl;
