@@ -53,3 +53,35 @@ public sealed class OrderLineCoverage
     public double CoveredQty { get; init; }
     public double MissingQty { get; init; }
 }
+
+public sealed class OrderLineHuDetailsTiming
+{
+    public long? GetOrderLinesMs { get; set; }
+    public long? BuildWarehouseRowsMs { get; set; }
+    public long? HuFateMs { get; set; }
+    public long? BuildProductionRowsMs { get; set; }
+    public long? BuildShippedRowsMs { get; set; }
+    public long? ConfirmedReceiptLedgerTotalsMs { get; set; }
+    public long? CustomerCoverageMs { get; set; }
+    public long? FinalMappingMs { get; set; }
+    public long? TotalMs { get; set; }
+}
+
+public sealed class OrderLineHuFateTiming
+{
+    public long? GetOrdersMs { get; set; }
+    public int? OrdersCount { get; set; }
+    public long? GetDocsMs { get; set; }
+    public int? DocsCount { get; set; }
+    public long? GetHuStockRowsMs { get; set; }
+    public int? HuStockRowsCount { get; set; }
+    public long? BuildSourcesMs { get; set; }
+    public int? SourcesCount { get; set; }
+    public long? BuildReservationsMs { get; set; }
+    public int? ReservationsCount { get; set; }
+    public long? BuildShipmentsMs { get; set; }
+    public int? ShipmentsCount { get; set; }
+    public long? FinalRowsMs { get; set; }
+    public int? FinalRowsCount { get; set; }
+    public long? TotalMs { get; set; }
+}

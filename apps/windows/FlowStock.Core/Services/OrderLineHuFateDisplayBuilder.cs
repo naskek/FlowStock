@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 
@@ -12,22 +13,80 @@ public static class OrderLineHuFateDisplayBuilder
     public const int ReservedSortOrder = 3;
     public const int ShippedSortOrder = 4;
 
-    public static Dictionary<long, OrderLineHuDisplayEntry[]> BuildByOrder(IDataStore store, long orderId)
+    public static Dictionary<long, OrderLineHuDisplayEntry[]> BuildByOrder(
+        IDataStore store,
+        long orderId,
+        OrderLineHuFateTiming? timing = null)
     {
-        var orders = store.GetOrders().ToDictionary(order => order.Id);
+        var totalStopwatch = timing != null ? Stopwatch.StartNew() : null;
+        var phaseStopwatch = timing != null ? Stopwatch.StartNew() : null;
+        var orderRows = store.GetOrders();
+        RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.GetOrdersMs = elapsed);
+        if (timing != null)
+        {
+            timing.OrdersCount = orderRows.Count;
+        }
+
+        var orders = orderRows.ToDictionary(order => order.Id);
         if (!orders.ContainsKey(orderId))
         {
+            totalStopwatch?.Stop();
+            if (timing != null && totalStopwatch != null)
+            {
+                timing.FinalRowsMs = 0;
+                timing.FinalRowsCount = 0;
+                timing.TotalMs = totalStopwatch.ElapsedMilliseconds;
+            }
+
             return new Dictionary<long, OrderLineHuDisplayEntry[]>();
         }
 
+        phaseStopwatch?.Restart();
         var docs = store.GetDocs();
-        var stockByHu = store.GetHuStockRows()
+        RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.GetDocsMs = elapsed);
+        if (timing != null)
+        {
+            timing.DocsCount = docs.Count;
+        }
+
+        phaseStopwatch?.Restart();
+        var huStockRows = store.GetHuStockRows();
+        RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.GetHuStockRowsMs = elapsed);
+        if (timing != null)
+        {
+            timing.HuStockRowsCount = huStockRows.Count;
+        }
+
+        var stockByHu = huStockRows
             .Where(row => !string.IsNullOrWhiteSpace(NormalizeHu(row.HuCode)))
             .GroupBy(row => new HuKey(row.ItemId, NormalizeHu(row.HuCode)!))
             .ToDictionary(group => group.Key, group => group.Sum(row => row.Qty));
+
+        phaseStopwatch?.Restart();
         var sources = BuildSources(store, docs, orders);
+        RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.BuildSourcesMs = elapsed);
+        if (timing != null)
+        {
+            timing.SourcesCount = sources.Count;
+        }
+
+        phaseStopwatch?.Restart();
         var reservations = BuildReservations(store, orders, stockByHu);
+        RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.BuildReservationsMs = elapsed);
+        if (timing != null)
+        {
+            timing.ReservationsCount = reservations.Count;
+        }
+
+        phaseStopwatch?.Restart();
         var shipments = BuildShipments(store, docs, orders);
+        RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.BuildShipmentsMs = elapsed);
+        if (timing != null)
+        {
+            timing.ShipmentsCount = shipments.Count;
+        }
+
+        phaseStopwatch?.Restart();
         var latestShipmentByHu = shipments
             .GroupBy(row => row.Key)
             .ToDictionary(group => group.Key, group => group
@@ -150,12 +209,21 @@ public static class OrderLineHuFateDisplayBuilder
                 FateQty: reservation.Qty));
         }
 
-        return rows.ToDictionary(
+        var result = rows.ToDictionary(
             pair => pair.Key,
             pair => pair.Value.Values
                 .OrderBy(entry => entry.SortOrder)
                 .ThenBy(entry => entry.HuCode, StringComparer.OrdinalIgnoreCase)
                 .ToArray());
+        RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.FinalRowsMs = elapsed);
+        totalStopwatch?.Stop();
+        if (timing != null && totalStopwatch != null)
+        {
+            timing.FinalRowsCount = result.Values.Sum(entries => entries.Length);
+            timing.TotalMs = totalStopwatch.ElapsedMilliseconds;
+        }
+
+        return result;
     }
 
     private static Dictionary<HuKey, SourceHu> BuildSources(
@@ -333,6 +401,18 @@ public static class OrderLineHuFateDisplayBuilder
 
     private static string? NormalizeHu(string? huCode) =>
         string.IsNullOrWhiteSpace(huCode) ? null : huCode.Trim().ToUpperInvariant();
+
+    private static void RecordPhase(
+        OrderLineHuFateTiming? timing,
+        Stopwatch? stopwatch,
+        Action<OrderLineHuFateTiming, long> assign)
+    {
+        stopwatch?.Stop();
+        if (timing != null && stopwatch != null)
+        {
+            assign(timing, stopwatch.ElapsedMilliseconds);
+        }
+    }
 
     private sealed record SourceHu(
         HuKey Key,

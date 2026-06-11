@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Text.Json;
 using FlowStock.Core.Abstractions;
@@ -10,6 +11,7 @@ using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Moq;
 
 namespace FlowStock.Server.Tests.Orders;
@@ -45,6 +47,55 @@ public sealed class OrderLinesBatchEndpointTests
         Assert.False(batchLine.TryGetProperty("production_hu_rows", out _));
         Assert.False(batchLine.TryGetProperty("shipped_hu_rows", out _));
         Assert.False(batchLine.TryGetProperty("coverage", out _));
+    }
+
+    [Fact]
+    public async Task SingleEndpoint_LogsDetailedPerformancePhases_WhileBatchDoesNot()
+    {
+        var store = CreateFallbackStore();
+        var loggerProvider = new CapturingLoggerProvider("FlowStock.Server.OrderLinesPerformance");
+        await using var host = await OrderLinesHost.StartAsync(store.Object, loggerProvider);
+
+        var single = await ReadJsonArray(host.Client, "/api/orders/10/lines");
+        Assert.Single(single.EnumerateArray());
+
+        var logs = loggerProvider.Messages.Where(message => message.StartsWith("PERF ", StringComparison.Ordinal)).ToArray();
+        Assert.Equal(3, logs.Length);
+        Assert.Contains(logs, message => message.StartsWith("PERF order-lines-single ", StringComparison.Ordinal)
+                                         && message.Contains("order_id=10", StringComparison.Ordinal)
+                                         && message.Contains("result=OK", StringComparison.Ordinal)
+                                         && message.Contains("order_lookup_ms=", StringComparison.Ordinal)
+                                         && message.Contains("hu_details_ms=", StringComparison.Ordinal));
+        Assert.Contains(logs, message => message.StartsWith("PERF order-line-hu-details ", StringComparison.Ordinal)
+                                         && message.Contains("order_id=10", StringComparison.Ordinal)
+                                         && message.Contains("build_warehouse_rows_ms=", StringComparison.Ordinal)
+                                         && message.Contains("customer_coverage_ms=", StringComparison.Ordinal));
+        Assert.Contains(logs, message => message.StartsWith("PERF hu-fate ", StringComparison.Ordinal)
+                                         && message.Contains("order_id=10", StringComparison.Ordinal)
+                                         && message.Contains("orders_count=", StringComparison.Ordinal)
+                                         && message.Contains("shipments_count=", StringComparison.Ordinal)
+                                         && message.Contains("final_rows_count=", StringComparison.Ordinal));
+
+        loggerProvider.Clear();
+        var batch = await ReadJsonArray(host.Client, "/api/orders/lines?ids=10,20");
+        Assert.Equal(2, batch.GetArrayLength());
+        Assert.DoesNotContain(loggerProvider.Messages, message => message.StartsWith("PERF ", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task SingleEndpoint_NotFound_LogsOnlyEndpointPerformance()
+    {
+        var store = CreateFallbackStore();
+        var loggerProvider = new CapturingLoggerProvider("FlowStock.Server.OrderLinesPerformance");
+        await using var host = await OrderLinesHost.StartAsync(store.Object, loggerProvider);
+
+        using var response = await host.Client.GetAsync("/api/orders/999/lines");
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+        var log = Assert.Single(loggerProvider.Messages.Where(message => message.StartsWith("PERF ", StringComparison.Ordinal)));
+        Assert.StartsWith("PERF order-lines-single ", log, StringComparison.Ordinal);
+        Assert.Contains("order_id=999", log, StringComparison.Ordinal);
+        Assert.Contains("result=NOT_FOUND", log, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -345,7 +396,9 @@ public sealed class OrderLinesBatchEndpointTests
 
         public HttpClient Client { get; }
 
-        public static async Task<OrderLinesHost> StartAsync(IDataStore store)
+        public static async Task<OrderLinesHost> StartAsync(
+            IDataStore store,
+            ILoggerProvider? loggerProvider = null)
         {
             var builder = WebApplication.CreateBuilder(new WebApplicationOptions
             {
@@ -355,6 +408,10 @@ public sealed class OrderLinesBatchEndpointTests
 
             builder.WebHost.UseUrls("http://127.0.0.1:0");
             builder.Services.AddSingleton(store);
+            if (loggerProvider != null)
+            {
+                builder.Logging.AddProvider(loggerProvider);
+            }
 
             var app = builder.Build();
             OrderLinesEndpoint.Map(app);
@@ -383,6 +440,47 @@ public sealed class OrderLinesBatchEndpointTests
             Client.Dispose();
             await _app.StopAsync();
             await _app.DisposeAsync();
+        }
+    }
+
+    private sealed class CapturingLoggerProvider(string category) : ILoggerProvider
+    {
+        private readonly ConcurrentQueue<string> _messages = new();
+
+        public IReadOnlyCollection<string> Messages => _messages.ToArray();
+
+        public ILogger CreateLogger(string categoryName) =>
+            new CapturingLogger(categoryName == category ? _messages : null);
+
+        public void Clear()
+        {
+            while (_messages.TryDequeue(out _))
+            {
+            }
+        }
+
+        public void Dispose()
+        {
+        }
+
+        private sealed class CapturingLogger(ConcurrentQueue<string>? messages) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => messages != null && logLevel == LogLevel.Information;
+
+            public void Log<TState>(
+                LogLevel logLevel,
+                EventId eventId,
+                TState state,
+                Exception? exception,
+                Func<TState, Exception?, string> formatter)
+            {
+                if (IsEnabled(logLevel))
+                {
+                    messages!.Enqueue(formatter(state, exception));
+                }
+            }
         }
     }
 }

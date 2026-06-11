@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 
@@ -10,20 +11,47 @@ public static class OrderLineHuDetailsBuilder
     public static IReadOnlyDictionary<long, OrderLineHuDetails> BuildByOrder(
         IDataStore store,
         Order order,
-        IReadOnlyList<OrderLineView> lineViews)
+        IReadOnlyList<OrderLineView> lineViews,
+        OrderLineHuDetailsTiming? timing = null,
+        OrderLineHuFateTiming? fateTiming = null)
     {
+        var totalStopwatch = timing != null ? Stopwatch.StartNew() : null;
+        var phaseStopwatch = timing != null ? Stopwatch.StartNew() : null;
         var orderLines = store.GetOrderLines(order.Id);
+        RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.GetOrderLinesMs = elapsed);
+
+        phaseStopwatch?.Restart();
         var warehouseRows = BuildWarehouseRows(store, order);
-        var fateRows = OrderLineHuFateDisplayBuilder.BuildByOrder(store, order.Id);
+        RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.BuildWarehouseRowsMs = elapsed);
+
+        phaseStopwatch?.Restart();
+        var fateRows = OrderLineHuFateDisplayBuilder.BuildByOrder(store, order.Id, fateTiming);
+        RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.HuFateMs = elapsed);
+
+        phaseStopwatch?.Restart();
         var productionRows = BuildProductionRows(store, order.Id, fateRows);
+        RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.BuildProductionRowsMs = elapsed);
+
+        phaseStopwatch?.Restart();
         var shippedRows = BuildShippedRows(store, order.Id);
+        RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.BuildShippedRowsMs = elapsed);
+
+        phaseStopwatch?.Restart();
         var confirmedProductionByLine = OrderReceiptRemainingCalculator
             .BuildConfirmedReceiptLedgerTotalsByOrderLine(store, order.Id, orderLines);
+        RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.ConfirmedReceiptLedgerTotalsMs = elapsed);
+
+        phaseStopwatch?.Restart();
         var customerCoverageByLine = order.Type == OrderType.Customer
             ? CustomerProtectedCoverageCalculator.BuildByOrderLine(store, order.Id, orderLines)
             : null;
+        if (order.Type == OrderType.Customer)
+        {
+            RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.CustomerCoverageMs = elapsed);
+        }
 
-        return lineViews.ToDictionary(
+        phaseStopwatch?.Restart();
+        var result = lineViews.ToDictionary(
             line => line.Id,
             line =>
             {
@@ -66,6 +94,14 @@ public static class OrderLineHuDetailsBuilder
                     }
                 };
             });
+        RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.FinalMappingMs = elapsed);
+        totalStopwatch?.Stop();
+        if (timing != null && totalStopwatch != null)
+        {
+            timing.TotalMs = totalStopwatch.ElapsedMilliseconds;
+        }
+
+        return result;
     }
 
     private static IReadOnlyDictionary<long, IReadOnlyList<OrderLineWarehouseHuRow>> BuildWarehouseRows(
@@ -215,4 +251,16 @@ public static class OrderLineHuDetailsBuilder
 
     private static string? NormalizeHu(string? huCode) =>
         string.IsNullOrWhiteSpace(huCode) ? null : huCode.Trim().ToUpperInvariant();
+
+    private static void RecordPhase(
+        OrderLineHuDetailsTiming? timing,
+        Stopwatch? stopwatch,
+        Action<OrderLineHuDetailsTiming, long> assign)
+    {
+        stopwatch?.Stop();
+        if (timing != null && stopwatch != null)
+        {
+            assign(timing, stopwatch.ElapsedMilliseconds);
+        }
+    }
 }

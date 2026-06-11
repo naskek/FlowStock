@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json.Serialization;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
@@ -15,27 +16,77 @@ public static class OrderLinesEndpoint
         app.MapGet("/api/orders/{orderId:long}/lines", HandleSingle);
     }
 
-    private static IResult HandleSingle(long orderId, IDataStore store)
+    private static IResult HandleSingle(long orderId, IDataStore store, ILoggerFactory loggerFactory)
     {
+        var logger = loggerFactory.CreateLogger("FlowStock.Server.OrderLinesPerformance");
+        var totalStopwatch = Stopwatch.StartNew();
+        var phaseStopwatch = Stopwatch.StartNew();
         var orderService = new OrderService(store);
         var order = orderService.GetOrder(orderId);
+        phaseStopwatch.Stop();
+        var orderLookupMs = phaseStopwatch.ElapsedMilliseconds;
         if (order == null)
         {
+            totalStopwatch.Stop();
+            LogSinglePerformance(
+                logger,
+                orderId,
+                "NOT_FOUND",
+                orderLookupMs,
+                lineViewsMs: null,
+                productionHuCodesMs: null,
+                huDetailsMs: null,
+                totalStopwatch.ElapsedMilliseconds,
+                lineCount: 0);
             return Results.NotFound(new ApiResult(false, "ORDER_NOT_FOUND"));
         }
 
+        phaseStopwatch.Restart();
         var lineViewsByOrder = orderService.GetOrderLineViewsByOrderIds([orderId]);
         var lineViews = lineViewsByOrder.TryGetValue(orderId, out var loadedLines)
             ? loadedLines
             : Array.Empty<OrderLineView>();
+        phaseStopwatch.Stop();
+        var lineViewsMs = phaseStopwatch.ElapsedMilliseconds;
+
+        phaseStopwatch.Restart();
         var productionHusByOrderLine = BuildProductionHuCodesByOrderLineIds(
             store,
             lineViews.Select(line => line.Id).Where(id => id > 0).Distinct().ToArray(),
             [orderId]);
-        var detailsByOrderLine = OrderLineHuDetailsBuilder.BuildByOrder(store, order, lineViews);
+        phaseStopwatch.Stop();
+        var productionHuCodesMs = phaseStopwatch.ElapsedMilliseconds;
+
+        var detailsTiming = new OrderLineHuDetailsTiming();
+        var fateTiming = new OrderLineHuFateTiming();
+        phaseStopwatch.Restart();
+        var detailsByOrderLine = OrderLineHuDetailsBuilder.BuildByOrder(
+            store,
+            order,
+            lineViews,
+            detailsTiming,
+            fateTiming);
+        phaseStopwatch.Stop();
+        var huDetailsMs = phaseStopwatch.ElapsedMilliseconds;
+
         var lines = lineViews
             .Select(line => MapOrderLine(line, productionHusByOrderLine, detailsByOrderLine.GetValueOrDefault(line.Id)))
             .ToList();
+        totalStopwatch.Stop();
+
+        LogSinglePerformance(
+            logger,
+            orderId,
+            "OK",
+            orderLookupMs,
+            lineViewsMs,
+            productionHuCodesMs,
+            huDetailsMs,
+            totalStopwatch.ElapsedMilliseconds,
+            lines.Count);
+        LogHuDetailsPerformance(logger, orderId, detailsTiming);
+        LogHuFatePerformance(logger, orderId, fateTiming);
+
         return Results.Ok(lines);
     }
 
@@ -119,6 +170,67 @@ public static class OrderLinesEndpoint
     private static Dictionary<long, string[]> BuildProductionHuCodesByOrderLine(IDataStore store, long orderId)
     {
         return ProductionOrderLineHuCodes.BuildByOrder(store, orderId);
+    }
+
+    private static void LogSinglePerformance(
+        ILogger logger,
+        long orderId,
+        string result,
+        long? orderLookupMs,
+        long? lineViewsMs,
+        long? productionHuCodesMs,
+        long? huDetailsMs,
+        long totalMs,
+        int lineCount)
+    {
+        logger.LogInformation(
+            "PERF order-lines-single order_id={OrderId} result={Result} order_lookup_ms={OrderLookupMs} line_views_ms={LineViewsMs} production_hu_codes_ms={ProductionHuCodesMs} hu_details_ms={HuDetailsMs} total_ms={TotalMs} line_count={LineCount}",
+            orderId,
+            result,
+            orderLookupMs,
+            lineViewsMs,
+            productionHuCodesMs,
+            huDetailsMs,
+            totalMs,
+            lineCount);
+    }
+
+    private static void LogHuDetailsPerformance(ILogger logger, long orderId, OrderLineHuDetailsTiming timing)
+    {
+        logger.LogInformation(
+            "PERF order-line-hu-details order_id={OrderId} get_order_lines_ms={GetOrderLinesMs} build_warehouse_rows_ms={BuildWarehouseRowsMs} hu_fate_ms={HuFateMs} build_production_rows_ms={BuildProductionRowsMs} build_shipped_rows_ms={BuildShippedRowsMs} confirmed_receipt_ledger_totals_ms={ConfirmedReceiptLedgerTotalsMs} customer_coverage_ms={CustomerCoverageMs} final_mapping_ms={FinalMappingMs} total_ms={TotalMs}",
+            orderId,
+            timing.GetOrderLinesMs,
+            timing.BuildWarehouseRowsMs,
+            timing.HuFateMs,
+            timing.BuildProductionRowsMs,
+            timing.BuildShippedRowsMs,
+            timing.ConfirmedReceiptLedgerTotalsMs,
+            timing.CustomerCoverageMs,
+            timing.FinalMappingMs,
+            timing.TotalMs);
+    }
+
+    private static void LogHuFatePerformance(ILogger logger, long orderId, OrderLineHuFateTiming timing)
+    {
+        logger.LogInformation(
+            "PERF hu-fate order_id={OrderId} get_orders_ms={GetOrdersMs} orders_count={OrdersCount} get_docs_ms={GetDocsMs} docs_count={DocsCount} get_hu_stock_rows_ms={GetHuStockRowsMs} hu_stock_rows_count={HuStockRowsCount} build_sources_ms={BuildSourcesMs} sources_count={SourcesCount} build_reservations_ms={BuildReservationsMs} reservations_count={ReservationsCount} build_shipments_ms={BuildShipmentsMs} shipments_count={ShipmentsCount} final_rows_ms={FinalRowsMs} final_rows_count={FinalRowsCount} total_ms={TotalMs}",
+            orderId,
+            timing.GetOrdersMs,
+            timing.OrdersCount,
+            timing.GetDocsMs,
+            timing.DocsCount,
+            timing.GetHuStockRowsMs,
+            timing.HuStockRowsCount,
+            timing.BuildSourcesMs,
+            timing.SourcesCount,
+            timing.BuildReservationsMs,
+            timing.ReservationsCount,
+            timing.BuildShipmentsMs,
+            timing.ShipmentsCount,
+            timing.FinalRowsMs,
+            timing.FinalRowsCount,
+            timing.TotalMs);
     }
 
     private static OrderLineResponse MapOrderLine(
