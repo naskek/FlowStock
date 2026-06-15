@@ -13,6 +13,12 @@ public sealed class OutboundPickingOrderRow
     public double RemainingQty { get; init; }
     public double ScannedQty { get; init; }
     public bool IsComplete => ExpectedHuCount > 0 && PickedHuCount >= ExpectedHuCount;
+    public int RequiredPallets => ExpectedHuCount;
+    public int ScannedPallets => PickedHuCount;
+    public int RemainingPallets => Math.Max(0, ExpectedHuCount - PickedHuCount);
+    public bool CanClose => IsComplete;
+    public bool IsClosed { get; init; }
+    public string OperationFingerprint { get; init; } = string.Empty;
 }
 
 public sealed class OutboundPickingOrderDetails
@@ -30,6 +36,12 @@ public sealed class OutboundPickingOrderDetails
     public double RemainingQty { get; init; }
     public double ScannedQty { get; init; }
     public bool IsComplete => ExpectedHuCount > 0 && PickedHuCount >= ExpectedHuCount;
+    public int RequiredPallets => ExpectedHuCount;
+    public int ScannedPallets => PickedHuCount;
+    public int RemainingPallets => Math.Max(0, ExpectedHuCount - PickedHuCount);
+    public bool CanClose => IsComplete;
+    public bool IsClosed { get; init; }
+    public string OperationFingerprint { get; init; } = string.Empty;
     public IReadOnlyList<OutboundPickingHuRow> Hus { get; init; } = Array.Empty<OutboundPickingHuRow>();
 }
 

@@ -94,7 +94,7 @@ public sealed class ProductionPalletFillingContextTests
         var fixture = CreateFilledOrderWithCancelledPallets();
         var service = new ProductionPalletService(fixture.Harness.Store);
 
-        Assert.Empty(service.GetFillingOrders());
+        Assert.Contains(service.GetFillingOrders(), order => order.OrderId == 72 && order.Progress.CanClose);
     }
 
     [Fact]

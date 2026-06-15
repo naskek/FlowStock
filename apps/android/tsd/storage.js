@@ -922,6 +922,12 @@
       scannedQty: Number(pickOutboundField(row, "scannedQty", "scanned_qty")) || 0,
       isComplete:
         (row && row.isComplete === true) || (row && row.is_complete === true),
+      requiredPallets: Number(pickOutboundField(row, "requiredPallets", "required_pallets")) || 0,
+      scannedPallets: Number(pickOutboundField(row, "scannedPallets", "scanned_pallets")) || 0,
+      remainingPallets: Number(pickOutboundField(row, "remainingPallets", "remaining_pallets")) || 0,
+      canClose: (row && row.canClose === true) || (row && row.can_close === true),
+      isClosed: (row && row.isClosed === true) || (row && row.is_closed === true),
+      operationFingerprint: String(pickOutboundField(row, "operationFingerprint", "operation_fingerprint") || ""),
       draftOutboundDocId:
         Number(pickOutboundField(row, "draftOutboundDocId", "draft_outbound_doc_id")) || 0,
       draftOutboundDocRef: String(
@@ -1343,6 +1349,12 @@
           partnerName: String(payload.partner_name || ""),
           prdDocId: Number(payload.prd_doc_id) || 0,
           prdDocRef: String(payload.prd_doc_ref || ""),
+          requiredPallets: Number(payload.required_pallets) || 0,
+          scannedPallets: Number(payload.scanned_pallets) || 0,
+          remainingPallets: Number(payload.remaining_pallets) || 0,
+          canClose: payload.can_close === true,
+          isClosed: payload.is_closed === true,
+          operationFingerprint: String(payload.operation_fingerprint || ""),
           document: payload.document ? normalizeProductionPalletDocument(payload.document) : null,
         };
       });
@@ -1361,6 +1373,21 @@
         );
       })
       .then(normalizeProductionPalletDocument);
+  }
+
+  function apiCompleteProductionFilling(orderId) {
+    var target = Number(orderId);
+    if (!target) {
+      return Promise.reject(new Error("INVALID_ORDER_ID"));
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/tsd/production/orders/" + encodeURIComponent(target) + "/complete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ device_id: getStoredDeviceId() }),
+        });
+      });
   }
 
   function apiScanProductionPallet(payload) {
@@ -2944,6 +2971,7 @@
     apiGetDocLines: apiGetDocLines,
     apiGetProductionFillingOrders: apiGetProductionFillingOrders,
     apiGetProductionFillingContext: apiGetProductionFillingContext,
+    apiCompleteProductionFilling: apiCompleteProductionFilling,
     apiGetProductionFillingDocs: apiGetProductionFillingDocs,
     apiGetProductionPallets: apiGetProductionPallets,
     apiScanProductionPallet: apiScanProductionPallet,

@@ -547,6 +547,173 @@ LEFT JOIN pallet_summary ps ON ps.order_id = ob.id";
         transaction.Commit();
     }
 
+    public ProductionFillingCompletion? GetProductionFillingCompletion(long orderId, string operationFingerprint)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT order_id, operation_fingerprint, completed_at, completed_by_device_id
+FROM production_filling_completions
+WHERE order_id = @order_id AND operation_fingerprint = @operation_fingerprint;");
+            command.Parameters.AddWithValue("@order_id", orderId);
+            command.Parameters.AddWithValue("@operation_fingerprint", operationFingerprint);
+            using var reader = command.ExecuteReader();
+            return reader.Read()
+                ? new ProductionFillingCompletion
+                {
+                    OrderId = reader.GetInt64(0),
+                    OperationFingerprint = reader.GetString(1),
+                    CompletedAt = reader.GetDateTime(2),
+                    CompletedByDeviceId = reader.IsDBNull(3) ? null : reader.GetString(3)
+                }
+                : null;
+        });
+    }
+
+    public IReadOnlyList<long> GetProductionFillingReadyOrderIds()
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT p.order_id
+FROM production_pallets p
+WHERE p.order_id IS NOT NULL
+GROUP BY p.order_id
+HAVING COUNT(*) FILTER (WHERE UPPER(COALESCE(p.status, '')) <> 'CANCELLED') > 0
+   AND COUNT(*) FILTER (WHERE UPPER(COALESCE(p.status, '')) NOT IN ('FILLED', 'CANCELLED')) = 0;");
+            using var reader = command.ExecuteReader();
+            var orderIds = new List<long>();
+            while (reader.Read())
+            {
+                orderIds.Add(reader.GetInt64(0));
+            }
+            return orderIds;
+        });
+    }
+
+    public void AddProductionFillingCompletion(ProductionFillingCompletion completion)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO production_filling_completions(order_id, operation_fingerprint, completed_at, completed_by_device_id)
+VALUES (@order_id, @operation_fingerprint, @completed_at, @completed_by_device_id)
+ON CONFLICT (order_id, operation_fingerprint) DO NOTHING;");
+            command.Parameters.AddWithValue("@order_id", completion.OrderId);
+            command.Parameters.AddWithValue("@operation_fingerprint", completion.OperationFingerprint);
+            command.Parameters.AddWithValue("@completed_at", completion.CompletedAt);
+            command.Parameters.AddWithValue("@completed_by_device_id", (object?)completion.CompletedByDeviceId ?? DBNull.Value);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public bool AddBusinessNotification(BusinessNotification notification)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO business_notifications(event_type, severity, title, message, entity_type, entity_id, entity_ref, created_at, source, dedupe_key)
+VALUES (@event_type, @severity, @title, @message, @entity_type, @entity_id, @entity_ref, @created_at, @source, @dedupe_key)
+ON CONFLICT (dedupe_key) DO NOTHING;");
+            command.Parameters.AddWithValue("@event_type", notification.EventType);
+            command.Parameters.AddWithValue("@severity", notification.Severity);
+            command.Parameters.AddWithValue("@title", notification.Title);
+            command.Parameters.AddWithValue("@message", notification.Message);
+            command.Parameters.AddWithValue("@entity_type", (object?)notification.EntityType ?? DBNull.Value);
+            command.Parameters.AddWithValue("@entity_id", (object?)notification.EntityId ?? DBNull.Value);
+            command.Parameters.AddWithValue("@entity_ref", (object?)notification.EntityRef ?? DBNull.Value);
+            command.Parameters.AddWithValue("@created_at", notification.CreatedAt);
+            command.Parameters.AddWithValue("@source", notification.Source);
+            command.Parameters.AddWithValue("@dedupe_key", notification.DedupeKey);
+            return command.ExecuteNonQuery() > 0;
+        });
+    }
+
+    public IReadOnlyList<BusinessNotification> GetBusinessNotifications(bool unreadOnly, int limit, string readerKey)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT n.id, n.event_type, n.severity, n.title, n.message, n.entity_type, n.entity_id, n.entity_ref,
+       n.created_at, n.source, n.dedupe_key, (r.notification_id IS NOT NULL) AS is_read
+FROM business_notifications n
+LEFT JOIN business_notification_reads r ON r.notification_id = n.id AND r.reader_key = @reader_key
+WHERE (@unread_only = FALSE OR r.notification_id IS NULL)
+ORDER BY n.created_at DESC, n.id DESC
+LIMIT @limit;");
+            command.Parameters.AddWithValue("@reader_key", readerKey);
+            command.Parameters.AddWithValue("@unread_only", unreadOnly);
+            command.Parameters.AddWithValue("@limit", Math.Clamp(limit, 1, 500));
+            using var reader = command.ExecuteReader();
+            var rows = new List<BusinessNotification>();
+            while (reader.Read())
+            {
+                rows.Add(new BusinessNotification
+                {
+                    Id = reader.GetInt64(0),
+                    EventType = reader.GetString(1),
+                    Severity = reader.GetString(2),
+                    Title = reader.GetString(3),
+                    Message = reader.GetString(4),
+                    EntityType = reader.IsDBNull(5) ? null : reader.GetString(5),
+                    EntityId = reader.IsDBNull(6) ? null : reader.GetInt64(6),
+                    EntityRef = reader.IsDBNull(7) ? null : reader.GetString(7),
+                    CreatedAt = reader.GetDateTime(8),
+                    Source = reader.GetString(9),
+                    DedupeKey = reader.GetString(10),
+                    IsRead = reader.GetBoolean(11)
+                });
+            }
+            return rows;
+        });
+    }
+
+    public int CountUnreadBusinessNotifications(string readerKey)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT COUNT(*)
+FROM business_notifications n
+LEFT JOIN business_notification_reads r ON r.notification_id = n.id AND r.reader_key = @reader_key
+WHERE r.notification_id IS NULL;");
+            command.Parameters.AddWithValue("@reader_key", readerKey);
+            return Convert.ToInt32(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
+        });
+    }
+
+    public void MarkBusinessNotificationRead(long notificationId, string readerKey, DateTime readAt)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO business_notification_reads(notification_id, reader_key, read_at)
+SELECT id, @reader_key, @read_at FROM business_notifications WHERE id = @notification_id
+ON CONFLICT (notification_id, reader_key) DO NOTHING;");
+            command.Parameters.AddWithValue("@notification_id", notificationId);
+            command.Parameters.AddWithValue("@reader_key", readerKey);
+            command.Parameters.AddWithValue("@read_at", readAt);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void MarkAllBusinessNotificationsRead(string readerKey, DateTime readAt)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO business_notification_reads(notification_id, reader_key, read_at)
+SELECT id, @reader_key, @read_at FROM business_notifications
+ON CONFLICT (notification_id, reader_key) DO NOTHING;");
+            command.Parameters.AddWithValue("@reader_key", readerKey);
+            command.Parameters.AddWithValue("@read_at", readAt);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
     public long CountLedgerEntries()
     {
         return WithConnection(connection =>

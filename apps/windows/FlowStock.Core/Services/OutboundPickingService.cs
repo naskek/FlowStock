@@ -1,5 +1,7 @@
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace FlowStock.Core.Services;
 
@@ -45,7 +47,9 @@ public sealed class OutboundPickingService
                 OrderedQty = details.OrderedQty,
                 ShippedQty = details.ShippedQty,
                 RemainingQty = details.RemainingQty,
-                ScannedQty = details.ScannedQty
+                ScannedQty = details.ScannedQty,
+                IsClosed = details.IsClosed,
+                OperationFingerprint = details.OperationFingerprint
             })
             .ToArray();
     }
@@ -68,6 +72,11 @@ public sealed class OutboundPickingService
             ? 0d
             : _store.GetDocLines(draft.Id).Sum(line => Math.Max(0, line.Qty));
 
+        var operationFingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join(
+            "|",
+            expected.OrderBy(hu => hu.HuCode, StringComparer.OrdinalIgnoreCase)
+                .Select(hu => $"{hu.HuCode}:{(pickedHuCodes.Contains(hu.HuCode) ? "1" : "0")}"))))).ToLowerInvariant();
+
         return new OutboundPickingOrderDetails
         {
             OrderId = order.Id,
@@ -82,6 +91,8 @@ public sealed class OutboundPickingService
             ShippedQty = progress.ShippedQty,
             RemainingQty = progress.RemainingQty,
             ScannedQty = scannedQty,
+            IsClosed = pickingDoc?.Status == DocStatus.Closed,
+            OperationFingerprint = operationFingerprint,
             Hus = expected
                 .OrderBy(hu => hu.HuCode, StringComparer.OrdinalIgnoreCase)
                 .Select(hu => new OutboundPickingHuRow
@@ -198,24 +209,6 @@ public sealed class OutboundPickingService
             });
 
             var details = GetDetails(order.Id);
-            if (_options.OutboundAutoCloseOnComplete && details.IsComplete)
-            {
-                var autoClose = TryAutoCloseOutbound(order.Id);
-                if (!autoClose.Success)
-                {
-                    return OutboundPickingScanResult.Failure(autoClose.ErrorCode ?? "OUTBOUND_CLOSE_FAILED", autoClose.Message);
-                }
-
-                return new OutboundPickingScanResult
-                {
-                    Success = true,
-                    Message = autoClose.Message,
-                    OutboundClosed = true,
-                    ClosedOutboundDocRef = autoClose.ClosedDocRef,
-                    Order = autoClose.Order ?? details
-                };
-            }
-
             return new OutboundPickingScanResult
             {
                 Success = true,
@@ -290,7 +283,7 @@ public sealed class OutboundPickingService
                     $"Отгружено {FormatQty(details.ScannedQty)} из {FormatQty(details.RemainingQty)}. Подтвердите частичную отгрузку.");
             }
 
-            if (_options.OutboundAutoCloseOnComplete)
+            if (details.IsComplete || allowPartial)
             {
                 var autoClose = TryAutoCloseOutbound(order.Id);
                 if (!autoClose.Success)

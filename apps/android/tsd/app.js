@@ -3420,8 +3420,34 @@
         summary: context.document ? context.document.summary : null,
       },
       document: context.document || null,
+      progress: {
+        requiredPallets: Number(context.requiredPallets) || 0,
+        scannedPallets: Number(context.scannedPallets) || 0,
+        remainingPallets: Number(context.remainingPallets) || 0,
+        canClose: context.canClose === true,
+        isClosed: context.isClosed === true,
+        operationFingerprint: String(context.operationFingerprint || ""),
+      },
       doc: null,
     };
+  }
+
+  function buildClosePromptStateKey(kind, operation) {
+    operation = operation || {};
+    return [kind, String(operation.operationFingerprint || ""), Number(operation.requiredPallets) || 0,
+      Number(operation.scannedPallets) || 0, Number(operation.remainingPallets) || 0].join("|");
+  }
+
+  function shouldPromptOperationClose(kind, operation) {
+    return !!operation && operation.canClose === true && operation.isClosed !== true &&
+      (typeof sessionStorage === "undefined" ||
+        sessionStorage.getItem("flowstock-close-prompt-declined") !== buildClosePromptStateKey(kind, operation));
+  }
+
+  function declineOperationClosePrompt(kind, operation) {
+    if (typeof sessionStorage !== "undefined") {
+      sessionStorage.setItem("flowstock-close-prompt-declined", buildClosePromptStateKey(kind, operation));
+    }
   }
 
   function loadFillingContext(orderId) {
@@ -3463,6 +3489,10 @@
       escapeHtml(buildFillingScanHeaderLine(work, summary)) +
       "</div>" +
       messageHtml +
+      (context.progress && context.progress.canClose && !context.progress.isClosed
+        ? '    <div class="filling-message filling-message-success">Все паллеты отсканированы. Документ не закрыт.</div>' +
+          '    <div class="actions-bar"><button class="btn primary-btn" id="fillingCompleteBtn" type="button">Закрыть документ</button></div>'
+        : "") +
       '    <div class="filling-scan-card filling-scan-card--compact filling-scan-slot">' +
       '      <input class="form-input filling-scan-input tsd-scan-input-hidden filling-scan-input-hidden" id="fillingScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" placeholder="HU-000001" />' +
       "    </div>" +
@@ -3870,6 +3900,19 @@
         Number(pickOutboundViewValue(normalized, raw, "scannedQty", "scanned_qty")) || 0,
       isComplete:
         (normalized && normalized.isComplete === true) || (raw && raw.is_complete === true),
+      requiredPallets:
+        Number(pickOutboundViewValue(normalized, raw, "requiredPallets", "required_pallets")) || 0,
+      scannedPallets:
+        Number(pickOutboundViewValue(normalized, raw, "scannedPallets", "scanned_pallets")) || 0,
+      remainingPallets:
+        Number(pickOutboundViewValue(normalized, raw, "remainingPallets", "remaining_pallets")) || 0,
+      canClose:
+        (normalized && normalized.canClose === true) || (raw && raw.can_close === true),
+      isClosed:
+        (normalized && normalized.isClosed === true) || (raw && raw.is_closed === true),
+      operationFingerprint: String(
+        pickOutboundViewValue(normalized, raw, "operationFingerprint", "operation_fingerprint") || ""
+      ),
       draftOutboundDocId:
         Number(pickOutboundViewValue(normalized, raw, "draftOutboundDocId", "draft_outbound_doc_id")) || 0,
       draftOutboundDocRef: String(
@@ -4209,15 +4252,16 @@
       '      <div>Осталось <strong>' + escapeHtml(formatOrderQtyValue(order.remainingQty)) + "</strong></div>" +
       '      <div>Отсканировано сейчас <strong>' + escapeHtml(formatOrderQtyValue(order.scannedQty)) + "</strong></div>" +
       "    </div>" +
-      (complete
-        ? '    <div class="filling-message filling-message-success">Все паллеты подобраны. Отгрузка проведена.</div>'
+      (complete && !order.isClosed
+        ? '    <div class="filling-message filling-message-success">Все паллеты отсканированы. Документ не закрыт.</div>'
         : "") +
       '    <div class="filling-scan-card filling-scan-card--compact filling-scan-slot">' +
       '      <input class="form-input filling-scan-input tsd-scan-input-hidden" id="outboundPickingScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" placeholder="HU-000001" />' +
       "    </div>" +
       renderOutboundPickingHuList(order.hus) +
-      (order.scannedQty > 0
-        ? '    <div class="actions-bar"><button class="btn btn-primary" id="outboundPickingCompleteBtn" type="button">Завершить отгрузку</button></div>'
+      (order.scannedQty > 0 && !order.isClosed
+        ? '    <div class="actions-bar"><button class="btn btn-primary" id="outboundPickingCompleteBtn" type="button">' +
+          (complete ? "Закрыть документ" : "Завершить частичную отгрузку") + "</button></div>"
         : "") +
       "  </div>" +
       "</section>";
@@ -7302,20 +7346,19 @@
   }
 
   function handleProductionFillSuccess(context, preview, result) {
-    if (isProductionFillFinal(result)) {
-      renderFillingCompletionScreen(context, result, null);
-      return Promise.resolve();
-    }
-
     var fillOrderId = resolveFillingOrderId(
       preview,
       context.workItem && context.workItem.orderId
     );
     return loadFillingContext(fillOrderId)
       .then(function (nextContext) {
-        if (shouldRenderProductionFillCompletion(result, nextContext, null)) {
-          renderFillingCompletionScreen(context, result, null);
-          return;
+        if (shouldPromptOperationClose("filling", nextContext.progress)) {
+          if (typeof window.confirm === "function" && window.confirm("Все паллеты отсканированы.\nЗакрыть документ?")) {
+            return TsdStorage.apiCompleteProductionFilling(fillOrderId).then(function () {
+              renderFillingCompletionScreen(nextContext, result, null);
+            });
+          }
+          declineOperationClosePrompt("filling", nextContext.progress);
         }
         var remainingPalletCount = getRemainingPalletCountFromFillingContext(nextContext);
         var successMessage = buildProductionFillSuccessMessage(result, remainingPalletCount);
@@ -7433,6 +7476,7 @@
 
   function wireFillingScan(context, state) {
     var scanInput = document.getElementById("fillingScanInput");
+    var completeBtn = document.getElementById("fillingCompleteBtn");
     var activePreview = state && state.preview;
 
     function focusScan() {
@@ -7527,6 +7571,19 @@
         }
       });
       focusScan();
+    }
+
+    if (completeBtn) {
+      completeBtn.addEventListener("click", function () {
+        completeBtn.disabled = true;
+        TsdStorage.apiCompleteProductionFilling(context.workItem && context.workItem.orderId)
+          .then(function () {
+            renderFillingCompletionScreen(context, { message: "Операция наполнения завершена." }, null);
+          })
+          .catch(function (error) {
+            refreshContext({ message: mapFillingError(error), messageType: "error", preview: null });
+          });
+      });
     }
 
     setScanHandler(function (scan) {
@@ -7648,9 +7705,17 @@
             (result && result.order) || order
           );
           var complete = nextOrder.isComplete === true;
+          if (shouldPromptOperationClose("outbound", nextOrder)) {
+            if (typeof window.confirm === "function" && window.confirm("Все паллеты отсканированы.\nЗакрыть документ?")) {
+              return TsdStorage.apiCompleteOutboundPicking(orderId, false).then(function () {
+                navigate("/outbound");
+              });
+            }
+            declineOperationClosePrompt("outbound", nextOrder);
+          }
           renderOutboundPickingOrder(nextOrder, {
             message: complete
-              ? "Все паллеты подобраны. Отгрузка проведена."
+              ? "Все паллеты отсканированы. Готово к закрытию."
               : (result && result.message) || "HU подобрана.",
             messageType: result && result.alreadyPicked ? "warn" : "success",
           });

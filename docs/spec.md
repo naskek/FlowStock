@@ -113,15 +113,23 @@
   - Вся операция выполняется одной серверной транзакцией: если закрытие PRD или запись `ledger` не прошли, `production_pallets.status`, `production_pallet_lines.filled_qty`, перенос строк в dedicated PRD и `ledger` откатываются.
   - Для mixed pallet `ledger` пишется по компонентам `production_pallet_lines`/`doc_lines`, по одной строке на товар, а не по агрегированным полям `production_pallets`.
 - WPF close PRD **не обязателен** в happy path palletized production; WPF — мониторинг, исключения и ручные correction UI, а не обычный gate на каждую паллету.
+- После наполнения всех обязательных паллет TSD явно подтверждает завершение родительской операции через `POST /api/tsd/production/orders/{orderId}/complete`. `production_filling_completions` — только UX/idempotency marker по fingerprint актуального паллетного плана; он не заменяет `orders.status`, не пишет `ledger` и не меняет lifecycle заказа.
+- Fingerprint включает актуальные pallet IDs, HU, плановые количества и component/line composition. Изменение плана делает старый completion-marker неактуальным.
 
 ### Normal TSD outbound flow (`Отгрузка`)
 
 - Работает по **физически зарезервированным** HU (`order_receipt_plan_lines` + `FILLED` production pallets с положительным `ledger`).
-- При `FlowStock:OutboundAutoCloseOnComplete = true` (default) последний scan или `complete` закрывает `OUTBOUND`, пишет `ledger` `−qty`, обновляет статус заказа; отдельный WPF close в happy path **не требуется**.
+- Последний scan только фиксирует подбор и возвращает серверные progress/`can_close`/fingerprint. `OUTBOUND` закрывается и пишет `ledger` `−qty` только после явного подтверждения TSD через `complete`; частичное подтверждаемое закрытие сохраняется.
 - `/api/tsd/outbound/orders/{orderId}` возвращает для mixed pallet состав HU в `hus[].lines[]` (`item_id`, `order_line_id`, `item_name`, `qty`), а TSD отображает эти компоненты под HU-кодом.
 - Повторный scan уже подобранной HU идемпотентен: строки `OUTBOUND` и `ledger` не дублируются, включая случай уже auto-closed отгрузки.
-- При `OutboundAutoCloseOnComplete = false` TSD только собирает draft `OUTBOUND`; проводка и `ledger` — через WPF `Close`.
 - Draft/picked `OUTBOUND` **без** close не влияют на stock и `shipped_qty`.
+- TSD подавляет повторный prompt после ответа `Нет` только для неизменившихся server fingerprint и progress-state.
+
+### Центр событий WPF
+
+- Колокольчик открывает `Центр событий`: вкладка `Требуют действия` сохраняет текущие incoming requests, вкладка `Журнал событий` показывает persisted крупные business notifications.
+- `business_notifications` является append-only журналом с уникальным `dedupe_key`; read-state хранится отдельно в `business_notification_reads` с reader-key `wpf-global`.
+- Одна транзакция может создать несколько уведомлений только для разных бизнес-смыслов и разных `dedupe_key`, например закрытие OUT и переход заказа в `SHIPPED`. Повторный finalize не создает дубли.
 
 ### CUSTOMER HU reservation (read-model)
 
@@ -176,7 +184,7 @@
   - `Общий HU / микс-паллета` задается в заказе/планировании паллет, а не в PRD. В WPF карточке заказа у каждой строки есть галочка `Общий HU` и номер группы; строки с одинаковым `production_pallet_group` (≥2 строк) планируются на один общий HU без проверки `items.max_qty_per_hu`. Лимит `max_qty_per_hu` применяется только к обычному авто-планированию без ручной группы;
   - В строках заказа отображаются назначенные `HU паллет`. Повторное `Сформировать план паллет` до печати пересобирает нераспечатанный план по текущим галочкам строк и назначает новые HU без создания дублей; после `PRINTED`/`FILLED` переназначение запрещено.
   - `POST /api/docs/{docId}/production-pallets/plan` создает плановые паллеты PRD из текущих строк документа с `to_hu` и возвращает summary;
-  - `GET /api/tsd/production/filling-orders` возвращает только заказы с уже подготовленными паллетами, где есть не наполненные паллеты; оператор выбирает заказ, а не PRD;
+  - `GET /api/tsd/production/filling-orders` возвращает заказы с подготовленными паллетами, включая полностью наполненные операции без explicit finalize со статусом `Готово к закрытию`; оператор выбирает заказ, а не PRD;
   - `GET /api/tsd/production/orders/{orderId}/filling-context` возвращает существующий PRD/session и план паллет; TSD не создает HU и не формирует план паллет;
   - HU для новой production pallet модели генерируется сервером в формате `HU-0000001` через PostgreSQL sequence `hu_code_seq`; ручной HU generator/реестр остается legacy/internal совместимостью и не является нормальным production flow;
   - для выпуска с планом паллет старое распределение HU не подбирает новые HU: допустимый набор HU задается `production_pallets`;
@@ -188,7 +196,7 @@
   - partial mixed HU имеет derived `PARTIALLY_FILLED`, `can_fill=true` и остаётся в `filling-orders`, `filling-context` и scan flow до заполнения всех component lines. Scan/context возвращают завершённые компоненты как `is_completed=true`, а незавершённые — как доступные для следующего component fill;
   - при `FlowStock:ProductionAutoCloseOnFill = true` (ветка `new-ledger-logic`, default) сервер после fill изолирует паллету в отдельный PRD, закрывает его и пишет `ledger` (+qty); WPF close PRD в normal path не требуется;
   - `PLANNED`/`PRINTED` не являются физическим stock; физический факт — только `ledger` после close PRD;
-  - TSD outbound: при `FlowStock:OutboundAutoCloseOnComplete = true` последний scan/complete закрывает OUT и пишет `ledger` (−qty);
+  - TSD outbound: последний scan не закрывает OUT; explicit `complete` после подтверждения повторно проверяет серверное состояние, закрывает OUT и пишет `ledger` (−qty);
   - резерв HU для CUSTOMER (`order_receipt_plan_lines`) допускает только `LEDGER_STOCK`; `INTERNAL_FILLED` не используется;
   - idempotency offline/retry для TSD scan — отдельная таблица событий планируется позже (пока не в схеме БД);
   - в пользовательских текстах используется термин `паллета`, а `HU` остается техническим идентификатором.

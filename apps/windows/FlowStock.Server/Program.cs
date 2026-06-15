@@ -2298,12 +2298,15 @@ app.MapGet("/api/requests/summary", (IDataStore store) =>
     var itemCount = store.GetItemRequests(false).Count;
     var orderCount = store.GetOrderRequests(false).Count;
     var readyHuBindingPending = ReadyHuBindingEndpoint.CountPendingNotifications(store);
+    var businessNotificationsUnread = store.CountUnreadBusinessNotifications(BusinessNotificationEndpoints.WpfReaderKey);
     return Results.Ok(new
     {
         item_requests_pending = itemCount,
         order_requests_pending = orderCount,
         ready_hu_binding_pending = readyHuBindingPending,
-        total_pending = itemCount + orderCount + readyHuBindingPending
+        action_required_count = itemCount + orderCount + readyHuBindingPending,
+        business_notifications_unread = businessNotificationsUnread,
+        total_pending = itemCount + orderCount + readyHuBindingPending + businessNotificationsUnread
     });
 });
 
@@ -2828,6 +2831,7 @@ PlannerEndpoints.Map(app);
 WarehouseBoardStateEndpoints.Map(app);
 WarehouseProductionStateEndpoint.Map(app);
 TsdOutboundPickingEndpoints.Map(app);
+BusinessNotificationEndpoints.Map(app);
 WarehouseTaskEndpoints.Map(app);
 NegativeStockDiagnosticsEndpoints.Map(app);
 HuBalanceDiagnosticsEndpoints.Map(app);

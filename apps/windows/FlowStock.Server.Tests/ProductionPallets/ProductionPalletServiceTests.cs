@@ -1348,7 +1348,7 @@ public sealed class ProductionPalletServiceTests
         var harness = CreateHarnessWithSixPallets(filledCount: 6);
         var service = new ProductionPalletService(harness.Store);
 
-        Assert.Empty(service.GetFillingOrders());
+        Assert.Contains(service.GetFillingOrders(), order => order.OrderId == 10 && order.Progress.CanClose);
     }
 
     [Fact]
@@ -1409,7 +1409,7 @@ public sealed class ProductionPalletServiceTests
         Assert.Equal(2, secondFill.Document?.Summary.FilledPalletCount);
         Assert.True(duplicateFill.Success);
         Assert.True(duplicateFill.AlreadyFilled);
-        Assert.Empty(service.GetFillingOrders());
+        Assert.Contains(service.GetFillingOrders(), order => order.OrderId == 10 && order.Progress.CanClose);
         Assert.Empty(harness.LedgerEntries);
     }
 
@@ -1471,10 +1471,9 @@ public sealed class ProductionPalletServiceTests
         Assert.True(service.Fill(hu, "TSD-01", orderId: 10).Success);
         Assert.Equal(OrderStatus.Accepted, harness.GetOrder(10).Status);
 
-        var ex = Assert.Throws<InvalidOperationException>(() => service.GetFillingContext(10));
-
-        Assert.Contains("завершён", ex.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("Нет паллет к наполнению", ex.Message, StringComparison.OrdinalIgnoreCase);
+        var context = service.GetFillingContext(10);
+        Assert.True(context.Progress.CanClose);
+        Assert.False(context.Progress.IsClosed);
     }
 
     [Fact]

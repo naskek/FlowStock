@@ -55,7 +55,7 @@ public sealed class ProductionPalletAutoCloseTests
 
         Assert.True(result.Success, result.Error);
         Assert.Equal(ProductionPalletStatus.Filled, harness.Store.GetProductionPalletByHu(pallet.HuCode)?.Status);
-        Assert.DoesNotContain(service.GetFillingOrders(), order => order.OrderId == 10);
+        Assert.Contains(service.GetFillingOrders(), order => order.OrderId == 10 && order.Progress.CanClose);
         Assert.Single(harness.LedgerEntries);
     }
 
@@ -312,8 +312,8 @@ public sealed class ProductionPalletAutoCloseTests
         Assert.Equal(3, result.TotalComponentCount);
         Assert.Equal(3, harness.LedgerEntries.Count(entry =>
             string.Equals(entry.HuCode, mixed.HuCode, StringComparison.OrdinalIgnoreCase)));
-        Assert.DoesNotContain(service.GetFillingOrders(), order => order.OrderId == 103);
-        Assert.Throws<InvalidOperationException>(() => service.GetFillingContext(103));
+        Assert.Contains(service.GetFillingOrders(), order => order.OrderId == 103 && order.Progress.CanClose);
+        Assert.True(service.GetFillingContext(103).Progress.CanClose);
     }
 
     [Fact]

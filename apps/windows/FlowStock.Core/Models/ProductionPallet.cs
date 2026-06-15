@@ -120,6 +120,7 @@ public sealed class ProductionFillingOrder
     public long? PrdDocId { get; init; }
     public string? PrdDocRef { get; init; }
     public ProductionPalletSummary Summary { get; init; } = new();
+    public ProductionOperationProgress Progress { get; init; } = new();
 }
 
 public sealed class ProductionFillingContext
@@ -134,6 +135,26 @@ public sealed class ProductionFillingContext
     public long PrdDocId { get; init; }
     public string PrdDocRef { get; init; } = string.Empty;
     public ProductionPalletDocument Document { get; init; } = new();
+    public ProductionOperationProgress Progress { get; init; } = new();
+}
+
+public sealed class ProductionOperationProgress
+{
+    public int RequiredPallets { get; init; }
+    public int ScannedPallets { get; init; }
+    public int RemainingPallets { get; init; }
+    public bool CanClose { get; init; }
+    public bool IsClosed { get; init; }
+    public string OperationFingerprint { get; init; } = string.Empty;
+}
+
+public sealed class ProductionFillingCompleteResult
+{
+    public bool Success { get; init; }
+    public string? Error { get; init; }
+    public string Message { get; init; } = string.Empty;
+    public DateTime? ClosedAt { get; init; }
+    public ProductionFillingContext? Context { get; init; }
 }
 
 public sealed class ProductionPalletOrderPlanResult
@@ -313,6 +334,7 @@ public sealed class ProductionPalletFillResult
     public int TotalComponentCount { get; init; }
     public bool LedgerWritten { get; init; }
     public string? Message { get; init; }
+    public ProductionOperationProgress? Progress { get; init; }
 
     public static ProductionPalletFillResult Failure(string error)
     {

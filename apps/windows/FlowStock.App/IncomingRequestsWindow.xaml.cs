@@ -9,6 +9,7 @@ public partial class IncomingRequestsWindow : Window
 {
     private readonly AppServices _services;
     private readonly ObservableCollection<IncomingRequestRow> _rows = new();
+    private readonly ObservableCollection<BusinessNotification> _notificationRows = new();
     private readonly Action? _onChanged;
     private bool _commandInProgress;
     private bool _liveRefreshPending;
@@ -28,6 +29,7 @@ public partial class IncomingRequestsWindow : Window
         InitializeComponent();
 
         RequestsGrid.ItemsSource = _rows;
+        NotificationsGrid.ItemsSource = _notificationRows;
         RequestsGrid.SelectionChanged += RequestsGrid_SelectionChanged;
         RequestTypeFilterCombo.ItemsSource = _filterOptions;
         RequestTypeFilterCombo.DisplayMemberPath = nameof(IncomingRequestTypeFilterOption.Label);
@@ -38,13 +40,13 @@ public partial class IncomingRequestsWindow : Window
             () => _liveRefreshPending = true);
         Activated += (_, _) => ApplyPendingLiveRefresh();
         Closed += (_, _) => _liveRefreshSubscription.Dispose();
-        LoadRequests();
+        LoadAll();
     }
 
     private void ApplyLiveRefresh()
     {
         _liveRefreshPending = false;
-        LoadRequests();
+        LoadAll();
     }
 
     private void ApplyPendingLiveRefresh()
@@ -87,6 +89,62 @@ public partial class IncomingRequestsWindow : Window
         UpdateButtons();
     }
 
+    private void LoadAll()
+    {
+        LoadRequests();
+        LoadNotifications();
+    }
+
+    private void LoadNotifications()
+    {
+        _notificationRows.Clear();
+        var includeRead = ShowReadNotificationsCheck?.IsChecked == true;
+        if (_services.WpfIncomingRequestsApi.TryGetBusinessNotifications(includeRead, out var notifications))
+        {
+            foreach (var notification in notifications)
+            {
+                _notificationRows.Add(notification);
+            }
+        }
+
+        EventJournalTab.Header = $"Журнал событий ({_notificationRows.Count(row => !row.IsRead)})";
+        ActionRequiredTab.Header = $"Требуют действия ({_rows.Count(row => row.CanApprove || row.CanReject)})";
+        UpdateNotificationButtons();
+    }
+
+    private void NotificationsGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        UpdateNotificationButtons();
+    }
+
+    private void UpdateNotificationButtons()
+    {
+        MarkNotificationReadButton.IsEnabled = NotificationsGrid.SelectedItems
+            .Cast<BusinessNotification>()
+            .Any(notification => !notification.IsRead);
+    }
+
+    private async void MarkNotificationRead_Click(object sender, RoutedEventArgs e)
+    {
+        foreach (var notification in NotificationsGrid.SelectedItems.Cast<BusinessNotification>().Where(row => !row.IsRead).ToList())
+        {
+            await _services.WpfIncomingRequestsApi.TryMarkBusinessNotificationReadAsync(notification.Id).ConfigureAwait(true);
+        }
+        LoadNotifications();
+        _onChanged?.Invoke();
+    }
+
+    private async void MarkAllNotificationsRead_Click(object sender, RoutedEventArgs e)
+    {
+        await _services.WpfIncomingRequestsApi.TryMarkAllBusinessNotificationsReadAsync().ConfigureAwait(true);
+        LoadNotifications();
+        _onChanged?.Invoke();
+    }
+
+    private void RefreshNotifications_Click(object sender, RoutedEventArgs e) => LoadNotifications();
+
+    private void ShowReadNotifications_Changed(object sender, RoutedEventArgs e) => LoadNotifications();
+
     private void RequestsGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
         UpdateButtons();
@@ -121,13 +179,13 @@ public partial class IncomingRequestsWindow : Window
         var selected = GetSelectedForApprove();
         if (selected.Count == 0)
         {
-            MessageBox.Show("Выберите необработанные запросы.", "Входящие запросы", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Выберите необработанные запросы.", "Центр событий", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
         var confirm = MessageBox.Show(
             $"Подтвердить/обработать выбранные запросы ({selected.Count})?",
-            "Входящие запросы",
+            "Центр событий",
             MessageBoxButton.YesNo,
             MessageBoxImage.Question,
             MessageBoxResult.No);
@@ -196,13 +254,13 @@ public partial class IncomingRequestsWindow : Window
         if (errors.Count > 0)
         {
             var text = "Часть запросов не удалось обработать:\n" + string.Join("\n", errors);
-            MessageBox.Show(text, "Входящие запросы", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(text, "Центр событий", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
         MessageBox.Show(
             $"Обработано запросов по товарам: {processedItems}\nПодтверждено заявок по заказам: {approvedOrders}",
-            "Входящие запросы",
+            "Центр событий",
             MessageBoxButton.OK,
             MessageBoxImage.Information);
     }
@@ -212,13 +270,13 @@ public partial class IncomingRequestsWindow : Window
         var selected = GetSelectedForReject();
         if (selected.Count == 0)
         {
-            MessageBox.Show("Выберите заявки по заказам в статусе ожидания.", "Входящие запросы", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Выберите заявки по заказам в статусе ожидания.", "Центр событий", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
         var confirm = MessageBox.Show(
             $"Отклонить выбранные заявки по заказам ({selected.Count})?",
-            "Входящие запросы",
+            "Центр событий",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning,
             MessageBoxResult.No);
@@ -283,7 +341,7 @@ public partial class IncomingRequestsWindow : Window
     {
         if (RequestsGrid.SelectedItem is not IncomingRequestRow row)
         {
-            MessageBox.Show("Выберите одну заявку.", "Входящие запросы", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Выберите одну заявку.", "Центр событий", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -299,7 +357,7 @@ public partial class IncomingRequestsWindow : Window
             return;
         }
 
-        MessageBox.Show("Для выбранного запроса подробности недоступны.", "Входящие запросы", MessageBoxButton.OK, MessageBoxImage.Information);
+        MessageBox.Show("Для выбранного запроса подробности недоступны.", "Центр событий", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     private void RequestsGrid_MouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)

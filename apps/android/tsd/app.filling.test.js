@@ -247,12 +247,13 @@ assert(
   "production fill overlay should delegate post-fill flow to handleProductionFillSuccess"
 );
 assert(
-  appJs.includes("function isProductionFillFinal(") &&
-    appJs.includes("function handleProductionFillSuccess(") &&
-    appJs.includes("isProductionFillFinal(result)") &&
-    extractFunctionBody(appJs, "handleProductionFillSuccess").includes("isProductionFillFinal(result)"),
-  "post-fill handler should skip context reload when fill result is already final"
+  appJs.includes("function handleProductionFillSuccess(") &&
+    extractFunctionBody(appJs, "handleProductionFillSuccess").includes("loadFillingContext(fillOrderId)") &&
+    extractFunctionBody(appJs, "handleProductionFillSuccess").includes("shouldPromptOperationClose"),
+  "post-fill handler should reload server progress before offering explicit finalize"
 );
+assert(appJs.includes("buildClosePromptStateKey") && appJs.includes("operationFingerprint"),
+  "declined close prompt should be scoped to server fingerprint and progress state");
 assert(
   !extractFunctionBody(appJs, "isProductionFillFinal").includes("isProductionFillPrdClosed"),
   "fill final detection must not treat PRD auto-close as order completion"
@@ -876,7 +877,7 @@ assert.strictEqual(
   true,
   "order may be marked done after final component when no pallets remain"
 );
-assert(appVersionJs.includes('var version = "34"'), "TSD shell version should be bumped for partial mixed filling fix");
+assert(appVersionJs.includes('var version = "35"'), "TSD shell version should be bumped for explicit finalize flow");
 assert(
   appJs.includes("Не удалось загрузить заказы для наполнения") && appJs.includes("console.error(error)"),
   "filling API failures should be visible and logged"
@@ -1051,8 +1052,8 @@ async function runFillSuccessRuntimeTests() {
   });
   assert.strictEqual(
     orderCompletedHarness.fillingContextCalls,
-    0,
-    "explicit order_completed should skip filling-context reload"
+    1,
+    "explicit order_completed should still reload server progress before finalize UX"
   );
   assert.match(orderCompletedHarness.appEl.innerHTML, /Паллета наполнена\. Заказ выполнен\./);
 

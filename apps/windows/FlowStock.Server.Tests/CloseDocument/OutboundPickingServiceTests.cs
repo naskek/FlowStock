@@ -211,7 +211,7 @@ public sealed class OutboundPickingServiceTests
     }
 
     [Fact]
-    public void CompleteMarksReadyButDoesNotClose()
+    public void CompleteExplicitlyClosesEvenWhenLegacyAutoCloseOptionIsDisabled()
     {
         var harness = CreateBasicPickingHarness();
         var service = CreatePickingService(harness, autoClose: false);
@@ -220,27 +220,28 @@ public sealed class OutboundPickingServiceTests
         var result = service.Complete(20);
 
         Assert.True(result.Success);
-        Assert.Equal("Все паллеты подобраны. Ожидает проведения в WPF.", result.Message);
+        Assert.True(result.OutboundClosed);
         var details = result.Order;
         Assert.NotNull(details);
         var draftId = details.DraftOutboundDocId!.Value;
         var draft = harness.GetDoc(draftId);
-        Assert.Equal(DocStatus.Draft, draft.Status);
-        Assert.Equal("TSD OUTBOUND PICKING READY", draft.Comment);
-        Assert.Empty(harness.LedgerEntries);
-        Assert.Equal(OrderStatus.Accepted, harness.GetOrder(20).Status);
+        Assert.Equal(DocStatus.Closed, draft.Status);
+        Assert.Single(harness.LedgerEntries);
+        Assert.Equal(OrderStatus.Shipped, harness.GetOrder(20).Status);
     }
 
     [Fact]
-    public void ScanWithAutoCloseWritesLedgerAndShipsOrder()
+    public void LastScanDoesNotCloseUntilExplicitComplete()
     {
         var harness = CreateBasicPickingHarness();
         var picking = CreatePickingService(harness, autoClose: true);
         var scan = picking.Scan(20, "HU-000001", "TSD-01");
 
         Assert.True(scan.Success, $"{scan.ErrorCode}: {scan.Message}");
-        Assert.True(scan.OutboundClosed);
-        Assert.NotNull(scan.ClosedOutboundDocRef);
+        Assert.False(scan.OutboundClosed);
+        Assert.True(scan.Order!.CanClose);
+        Assert.Empty(harness.LedgerEntries);
+        Assert.True(picking.Complete(20).OutboundClosed);
         var ledger = Assert.Single(harness.LedgerEntries);
         Assert.Equal(-5, ledger.QtyDelta);
         Assert.Equal(OrderStatus.Shipped, harness.GetOrder(20).Status);
@@ -267,7 +268,6 @@ public sealed class OutboundPickingServiceTests
         var harness = CreateBasicPickingHarness();
         var picking = CreatePickingService(harness, autoClose: false);
         picking.Scan(20, "HU-000001", "TSD-01");
-        picking.Complete(20);
         var draftId = picking.GetDetails(20).DraftOutboundDocId!.Value;
 
         var close = harness.CreateService().TryCloseDoc(draftId, allowNegative: false);
@@ -313,21 +313,18 @@ public sealed class OutboundPickingServiceTests
 
         var first = picking.Scan(79, "HU-0000506", "TSD-01");
         Assert.True(first.Success, $"{first.ErrorCode}: {first.Message}");
-        Assert.True(first.OutboundClosed);
-        Assert.NotNull(first.ClosedOutboundDocRef);
+        Assert.False(first.OutboundClosed);
         var line = Assert.Single(harness.GetDocLines(first.Order!.DraftOutboundDocId!.Value));
         Assert.Equal(208, line.OrderLineId);
         Assert.Equal(30, line.ItemId);
         Assert.Equal(1890, line.Qty);
         Assert.Equal(1, line.FromLocationId);
         Assert.Equal("HU-0000506", line.FromHu);
-        var outboundLedger = harness.LedgerEntries.Where(entry => entry.QtyDelta < 0).ToArray();
-        Assert.Equal(-1890, Assert.Single(outboundLedger).QtyDelta);
-        Assert.Equal(OrderStatus.Shipped, harness.GetOrder(79).Status);
+        Assert.DoesNotContain(harness.LedgerEntries, entry => entry.QtyDelta < 0);
 
         var repeatScan = picking.Scan(79, "HU-0000506", "TSD-01");
-        Assert.False(repeatScan.Success);
-        Assert.Equal("HU_ALREADY_SHIPPED", repeatScan.ErrorCode);
+        Assert.True(repeatScan.Success);
+        Assert.True(repeatScan.AlreadyPicked);
 
         var repeatComplete = picking.Complete(79);
         Assert.True(repeatComplete.Success, $"{repeatComplete.ErrorCode}: {repeatComplete.Message}");
@@ -382,7 +379,9 @@ public sealed class OutboundPickingServiceTests
         var finalScan = picking.Scan(20, "HU-000003", "TSD-01");
 
         Assert.True(finalScan.Success, $"{finalScan.ErrorCode}: {finalScan.Message}");
-        Assert.True(finalScan.OutboundClosed);
+        Assert.False(finalScan.OutboundClosed);
+        Assert.True(finalScan.Order!.CanClose);
+        Assert.True(picking.Complete(20).OutboundClosed);
         Assert.Equal(OrderStatus.Shipped, harness.GetOrder(20).Status);
         Assert.Equal(-15, harness.LedgerEntries.Sum(entry => entry.QtyDelta));
     }

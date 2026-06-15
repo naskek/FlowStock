@@ -94,6 +94,7 @@ public interface IDataStore
     ProductionPallet? GetProductionPalletByHu(string huCode);
     ProductionPallet? GetProductionPalletByHuForUpdate(string huCode);
     IReadOnlyList<ProductionPalletWorkItem> GetActiveProductionPalletWorkItems();
+    IReadOnlyList<long> GetProductionFillingReadyOrderIds();
     bool HasProductionPallets(long docId);
     bool HasProductionPalletLinesForDoc(long docId);
     void ClearPlannedProductionPalletPlan(long docId);
@@ -135,6 +136,8 @@ public interface IDataStore
         IReadOnlyCollection<long> docLineIds);
     int MarkProductionPalletsPrintedByOrder(long orderId, DateTime printedAt);
     int MarkProductionPalletsPrinted(long orderId, IReadOnlyCollection<long> palletIds, DateTime printedAt);
+    ProductionFillingCompletion? GetProductionFillingCompletion(long orderId, string operationFingerprint);
+    void AddProductionFillingCompletion(ProductionFillingCompletion completion);
     IReadOnlyList<ProductionPallet> GetFilledProductionPalletsByItemAndLocation(long itemId, long locationId);
     IReadOnlyList<FilledProductionPalletStockMetrics> GetFilledProductionPalletStockMetrics();
     OrderProducedStockReleaseResult ReleaseProducedCustomerStockForOrderLine(long orderId, long orderLineId);
@@ -217,6 +220,12 @@ public interface IDataStore
     long AddOrderRequest(OrderRequest request);
     IReadOnlyList<OrderRequest> GetOrderRequests(bool includeResolved);
     void ResolveOrderRequest(long requestId, string status, string resolvedBy, string? note, long? appliedOrderId);
+
+    bool AddBusinessNotification(BusinessNotification notification);
+    IReadOnlyList<BusinessNotification> GetBusinessNotifications(bool unreadOnly, int limit, string readerKey);
+    int CountUnreadBusinessNotifications(string readerKey);
+    void MarkBusinessNotificationRead(long notificationId, string readerKey, DateTime readAt);
+    void MarkAllBusinessNotificationsRead(string readerKey, DateTime readAt);
 
     Guid AddMarkingCodeImport(MarkingCodeImport import);
     MarkingCodeImport? FindMarkingCodeImportByHash(string fileHash);

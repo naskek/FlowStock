@@ -21,6 +21,7 @@ public static class ProductionPalletEndpoints
         app.MapGet("/api/tsd/production/filling-orders", HandleFillingOrders);
         app.MapGet("/api/tsd/production/orders/{orderId:long}/filling-context", HandleFillingContext);
         app.MapPost("/api/tsd/production/orders/{orderId:long}/start-filling", HandleStartFilling);
+        app.MapPost("/api/tsd/production/orders/{orderId:long}/complete", HandleCompleteFilling);
         app.MapGet("/api/tsd/production/filling-docs", HandleWorkItems);
         app.MapPost("/api/tsd/production/scan-pallet", HandleScan);
         app.MapPost("/api/tsd/production/fill-pallet", HandleFill);
@@ -398,6 +399,33 @@ public static class ProductionPalletEndpoints
         }
     }
 
+    private static IResult HandleCompleteFilling(long orderId, ProductionFillingCompleteRequest request, ProductionPalletService service, IDataStore store)
+    {
+        try
+        {
+            var result = service.CompleteFilling(orderId, request.DeviceId);
+            if (!result.Success)
+            {
+                return Results.BadRequest(new { ok = false, error = result.Error, message = result.Message });
+            }
+
+            return Results.Ok(new
+            {
+                ok = true,
+                message = result.Message,
+                is_closed = true,
+                closed_at = result.ClosedAt,
+                operation_id = orderId,
+                context = result.Context == null ? null : MapFillingContext(result.Context)
+            });
+        }
+        catch (Exception ex)
+        {
+            BusinessNotificationEndpoints.TryAddFinalizeFailure(store, "PRODUCTION_FILLING", orderId, null, ex);
+            return Results.Json(new { ok = false, error = "FILLING_COMPLETE_FAILED", message = ex.Message }, statusCode: 500);
+        }
+    }
+
     private static IResult HandleScan(ProductionPalletScanRequest request, ProductionPalletService service)
     {
         try
@@ -508,7 +536,13 @@ public static class ProductionPalletEndpoints
             partner_name = order.PartnerName,
             prd_doc_id = order.PrdDocId,
             prd_doc_ref = order.PrdDocRef,
-            summary = MapSummary(order.Summary)
+            summary = MapSummary(order.Summary),
+            required_pallets = order.Progress.RequiredPallets,
+            scanned_pallets = order.Progress.ScannedPallets,
+            remaining_pallets = order.Progress.RemainingPallets,
+            can_close = order.Progress.CanClose,
+            is_closed = order.Progress.IsClosed,
+            operation_fingerprint = order.Progress.OperationFingerprint
         };
     }
 
@@ -525,6 +559,12 @@ public static class ProductionPalletEndpoints
             partner_name = context.PartnerName,
             prd_doc_id = context.PrdDocId,
             prd_doc_ref = context.PrdDocRef,
+            required_pallets = context.Progress.RequiredPallets,
+            scanned_pallets = context.Progress.ScannedPallets,
+            remaining_pallets = context.Progress.RemainingPallets,
+            can_close = context.Progress.CanClose,
+            is_closed = context.Progress.IsClosed,
+            operation_fingerprint = context.Progress.OperationFingerprint,
             document = MapDocument(context.Document)
         };
     }
@@ -715,6 +755,12 @@ public static class ProductionPalletEndpoints
         [JsonPropertyName("hu_code")]
         public string? HuCode { get; init; }
 
+        [JsonPropertyName("device_id")]
+        public string? DeviceId { get; init; }
+    }
+
+    private sealed class ProductionFillingCompleteRequest
+    {
         [JsonPropertyName("device_id")]
         public string? DeviceId { get; init; }
     }

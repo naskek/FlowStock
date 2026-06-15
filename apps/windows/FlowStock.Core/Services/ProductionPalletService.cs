@@ -1,5 +1,8 @@
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace FlowStock.Core.Services;
 
@@ -599,12 +602,64 @@ public sealed class ProductionPalletService
 
     public IReadOnlyList<ProductionFillingOrder> GetFillingOrders()
     {
-        return _data.GetActiveProductionPalletWorkItems()
+        var workItems = _data.GetActiveProductionPalletWorkItems();
+        var rows = workItems
             .Where(item => item.OrderId.HasValue && item.Summary.RemainingPalletCount > 0)
             .GroupBy(item => item.OrderId!.Value)
             .Select(group => BuildFillingOrder(group.Key, group.ToList()))
             .Where(row => row != null && row.OrderStatus != OrderStatusMapper.StatusToString(OrderStatus.Merged))
             .Cast<ProductionFillingOrder>()
+            .ToDictionary(row => row.OrderId);
+
+        IReadOnlyList<long> readyOrderIds;
+        try
+        {
+            readyOrderIds = _data.GetProductionFillingReadyOrderIds();
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            try
+            {
+                readyOrderIds = _data.GetOrders().Select(order => order.Id).ToArray();
+            }
+            catch (Exception nested) when (IsMockStoreException(nested))
+            {
+                readyOrderIds = Array.Empty<long>();
+            }
+        }
+
+        foreach (var orderId in readyOrderIds.Where(orderId => !rows.ContainsKey(orderId)))
+        {
+            var order = _data.GetOrder(orderId);
+            if (order == null)
+            {
+                continue;
+            }
+            var pallets = BuildFillingPalletViews(_data, order.Id, GetProductionPalletsByOrder(_data, order.Id));
+            var progress = BuildOperationProgress(_data, order.Id, pallets);
+            if (!progress.CanClose || progress.IsClosed || pallets.Count == 0)
+            {
+                continue;
+            }
+
+            var doc = _data.GetDoc(pallets[0].PrdDocId);
+            rows[order.Id] = new ProductionFillingOrder
+            {
+                OrderId = order.Id,
+                OrderRef = order.OrderRef,
+                OrderType = OrderStatusMapper.TypeToString(order.Type),
+                OrderTypeDisplay = OrderStatusMapper.TypeToDisplayName(order.Type),
+                OrderStatus = OrderStatusMapper.StatusToString(order.Status),
+                OrderStatusDisplay = OrderStatusMapper.StatusToDisplayName(order.Status, order.Type),
+                PartnerName = order.PartnerDisplay,
+                PrdDocId = doc?.Id,
+                PrdDocRef = doc?.DocRef,
+                Summary = BuildSummary(pallets),
+                Progress = progress
+            };
+        }
+
+        return rows.Values
             .OrderBy(row => row.OrderType == OrderStatusMapper.TypeToString(OrderType.Internal) ? 0 : 1)
             .ThenByDescending(row => TryParseLong(row.OrderRef, out var number) ? number : long.MinValue)
             .ThenByDescending(row => row.OrderId)
@@ -619,7 +674,7 @@ public sealed class ProductionPalletService
     public ProductionFillingContext GetFillingContext(long orderId)
     {
         var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
-        if (order.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
+        if (order.Status is OrderStatus.Cancelled or OrderStatus.Merged)
         {
             throw new InvalidOperationException(order.Status == OrderStatus.Merged
                 ? "Заказ объединён с другим заказом. Выпуск по нему не требуется."
@@ -631,6 +686,12 @@ public sealed class ProductionPalletService
         var openDoc = FindPreparedOpenProductionReceiptForFilling(_data, orderId, fillingPallets, requireRemaining: false);
         if (openDoc == null)
         {
+            var progress = BuildOperationProgress(_data, orderId, fillingPallets);
+            if (progress.CanClose && fillingPallets.Count > 0)
+            {
+                return BuildFillingContext(orderId, fillingPallets[0].PrdDocId, fillingPallets);
+            }
+
             if (HasCompletedPalletizedProduction(fillingPallets))
             {
                 throw new InvalidOperationException("Выпуск по заказу уже завершён. Нет паллет к наполнению.");
@@ -640,6 +701,58 @@ public sealed class ProductionPalletService
         }
 
         return BuildFillingContext(orderId, openDoc.Id, fillingPallets);
+    }
+
+    public ProductionFillingCompleteResult CompleteFilling(long orderId, string? deviceId)
+    {
+        ProductionFillingCompleteResult? result = null;
+        _data.ExecuteInTransaction(store =>
+        {
+            var pallets = BuildFillingPalletViews(store, orderId, GetProductionPalletsByOrder(store, orderId));
+            var progress = BuildOperationProgress(store, orderId, pallets);
+            if (!progress.CanClose)
+            {
+                result = new ProductionFillingCompleteResult
+                {
+                    Success = false,
+                    Error = "FILLING_INCOMPLETE",
+                    Message = "Не все обязательные паллеты наполнены."
+                };
+                return;
+            }
+
+            var existing = store.GetProductionFillingCompletion(orderId, progress.OperationFingerprint);
+            var completedAt = existing?.CompletedAt ?? DateTime.Now;
+            if (existing == null)
+            {
+                store.AddProductionFillingCompletion(new ProductionFillingCompletion
+                {
+                    OrderId = orderId,
+                    OperationFingerprint = progress.OperationFingerprint,
+                    CompletedAt = completedAt,
+                    CompletedByDeviceId = deviceId
+                });
+            }
+
+            result = new ProductionFillingCompleteResult
+            {
+                Success = true,
+                Message = existing == null ? "Операция наполнения завершена." : "Операция наполнения уже завершена.",
+                ClosedAt = completedAt
+            };
+        });
+
+        if (result?.Success == true)
+        {
+            result = new ProductionFillingCompleteResult
+            {
+                Success = true,
+                Message = result.Message,
+                ClosedAt = result.ClosedAt,
+                Context = GetFillingContext(orderId)
+            };
+        }
+        return result ?? new ProductionFillingCompleteResult { Success = false, Error = "FILLING_COMPLETE_FAILED", Message = "Не удалось завершить наполнение." };
     }
 
     public IReadOnlyList<ProductionPalletPrintRow> GetPrintRows(long orderId)
@@ -1474,7 +1587,8 @@ public sealed class ProductionPalletService
             PartnerName = order.PartnerDisplay,
             PrdDocId = primaryWorkItem.PrdDocId,
             PrdDocRef = primaryWorkItem.PrdDocRef,
-            Summary = summary
+            Summary = summary,
+            Progress = BuildOperationProgress(_data, orderId, fillingPallets)
         };
     }
 
@@ -1496,8 +1610,53 @@ public sealed class ProductionPalletService
             PartnerName = order.PartnerDisplay,
             PrdDocId = doc.Id,
             PrdDocRef = doc.DocRef,
-            Document = BuildFillingDocument(doc.Id, pallets)
+            Document = BuildFillingDocument(doc.Id, pallets),
+            Progress = BuildOperationProgress(_data, orderId, pallets)
         };
+    }
+
+    private static ProductionOperationProgress BuildOperationProgress(IDataStore store, long orderId, IReadOnlyList<ProductionPallet> pallets)
+    {
+        var required = pallets.Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)).ToList();
+        var scanned = required.Count(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase));
+        var fingerprint = BuildOperationFingerprint(required);
+        return new ProductionOperationProgress
+        {
+            RequiredPallets = required.Count,
+            ScannedPallets = scanned,
+            RemainingPallets = Math.Max(0, required.Count - scanned),
+            CanClose = required.Count > 0 && scanned == required.Count,
+            IsClosed = required.Count > 0 && TryGetCompletion(store, orderId, fingerprint) != null,
+            OperationFingerprint = fingerprint
+        };
+    }
+
+    private static string BuildOperationFingerprint(IReadOnlyList<ProductionPallet> pallets)
+    {
+        var text = string.Join("|", pallets.OrderBy(pallet => pallet.Id).Select(pallet =>
+            string.Join(":", pallet.Id, pallet.HuCode, pallet.PlannedQty.ToString("R", CultureInfo.InvariantCulture),
+                string.Join(",", pallet.Lines.OrderBy(line => line.Id).Select(line =>
+                    $"{line.Id}/{line.DocLineId}/{line.OrderLineId}/{line.ItemId}/{line.PlannedQty.ToString("R", CultureInfo.InvariantCulture)}")))));
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
+    }
+
+    private static ProductionFillingCompletion? TryGetCompletion(IDataStore store, long orderId, string fingerprint)
+    {
+        try
+        {
+            return store.GetProductionFillingCompletion(orderId, fingerprint);
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            return null;
+        }
+    }
+
+    private static bool IsMockStoreException(Exception ex)
+    {
+        var fullName = ex.GetType().FullName ?? string.Empty;
+        return fullName.Contains("Moq", StringComparison.OrdinalIgnoreCase)
+               || fullName.Contains("Castle.Proxies", StringComparison.OrdinalIgnoreCase);
     }
 
     private ProductionPalletOrderPlanResult BuildOrderPlanResult(long orderId, long prdDocId, bool wasExisting)

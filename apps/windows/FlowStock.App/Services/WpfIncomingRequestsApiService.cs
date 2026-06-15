@@ -50,16 +50,31 @@ public sealed class WpfIncomingRequestsApiService
 
     public bool TryGetSummary(out IncomingRequestsSummary summary)
     {
-        summary = new IncomingRequestsSummary(0, 0, 0);
+        summary = new IncomingRequestsSummary(0, 0, 0, 0);
         return TryRead(
             "/api/requests/summary",
             root => new IncomingRequestsSummary(
                 ReadInt32(root, "item_requests_pending"),
                 ReadInt32(root, "order_requests_pending"),
-                ReadInt32(root, "ready_hu_binding_pending")),
+                ReadInt32(root, "ready_hu_binding_pending"),
+                ReadInt32(root, "business_notifications_unread")),
             "incoming-requests-summary",
             out summary);
     }
+
+    public bool TryGetBusinessNotifications(bool includeRead, out IReadOnlyList<BusinessNotification> notifications)
+    {
+        notifications = Array.Empty<BusinessNotification>();
+        var path = includeRead ? "/api/notifications?limit=100" : "/api/notifications?unreadOnly=true&limit=100";
+        return TryRead(path, root => root.EnumerateArray().Select(MapBusinessNotification).ToList(),
+            "business-notifications", out notifications);
+    }
+
+    public Task<bool> TryMarkBusinessNotificationReadAsync(long notificationId, CancellationToken cancellationToken = default) =>
+        TryPostAsync($"/api/notifications/{notificationId}/read", null, "business-notification-read", cancellationToken);
+
+    public Task<bool> TryMarkAllBusinessNotificationsReadAsync(CancellationToken cancellationToken = default) =>
+        TryPostAsync("/api/notifications/read-all", null, "business-notifications-read-all", cancellationToken);
 
     public async Task<bool> TryResolveItemRequestAsync(long requestId, CancellationToken cancellationToken = default)
     {
@@ -323,6 +338,21 @@ public sealed class WpfIncomingRequestsApiService
         };
     }
 
+    private static BusinessNotification MapBusinessNotification(JsonElement element) => new()
+    {
+        Id = ReadInt64(element, "id"),
+        EventType = ReadString(element, "event_type") ?? string.Empty,
+        Severity = ReadString(element, "severity") ?? "INFO",
+        Title = ReadString(element, "title") ?? string.Empty,
+        Message = ReadString(element, "message") ?? string.Empty,
+        EntityType = ReadString(element, "entity_type"),
+        EntityId = ReadNullableInt64(element, "entity_id"),
+        EntityRef = ReadString(element, "entity_ref"),
+        CreatedAt = ReadDateTime(element, "created_at"),
+        Source = ReadString(element, "source") ?? "SERVER",
+        IsRead = element.TryGetProperty("is_read", out var isRead) && isRead.ValueKind == JsonValueKind.True
+    };
+
     private static string? ReadString(JsonElement element, string propertyName)
     {
         return element.TryGetProperty(propertyName, out var value) && value.ValueKind != JsonValueKind.Null
@@ -405,9 +435,11 @@ public sealed class WpfIncomingRequestsApiService
 public sealed record IncomingRequestsSummary(
     int ItemRequestsPending,
     int OrderRequestsPending,
-    int ReadyHuBindingPending)
+    int ReadyHuBindingPending,
+    int BusinessNotificationsUnread = 0)
 {
-    public int TotalPending => ItemRequestsPending + OrderRequestsPending + ReadyHuBindingPending;
+    public int ActionRequiredCount => ItemRequestsPending + OrderRequestsPending + ReadyHuBindingPending;
+    public int TotalPending => ActionRequiredCount + BusinessNotificationsUnread;
 }
 
 internal sealed record WpfIncomingRequestsApiConfiguration(string? BaseUrl, int TimeoutSeconds, bool AllowInvalidTls);

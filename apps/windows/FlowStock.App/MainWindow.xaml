@@ -24,7 +24,7 @@
                     <MenuItem Header="Нумерация документов..." Click="DocNumberingSettingsMenu_Click" />
                 </MenuItem>
                 <MenuItem Header="Сервис">
-                    <MenuItem Header="Входящие запросы..." Click="OpenIncomingRequests_Click" />
+                    <MenuItem Header="Центр событий..." Click="OpenIncomingRequests_Click" />
                     <Separator />
                     <MenuItem Header="Резервные копии..." Click="OpenBackupManager_Click" />
                     <MenuItem Header="Администрирование..." Click="OpenAdmin_Click" />
@@ -862,5 +862,4 @@
         </Border>
     </DockPanel>
 </Window>
-
 

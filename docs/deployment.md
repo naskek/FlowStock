@@ -93,6 +93,8 @@ bash deploy/scripts/bootstrap_local_ca.sh
 Это делается один раз на устройство, пока используется тот же root CA.
 
 ## Первый deploy на пустой production
+Перед production deploy с миграцией `V0025__tsd_explicit_finalize_and_business_notifications.sql` обязательно создать свежий backup PostgreSQL. Миграция добавляет только marker явного завершения наполнения и append-only журнал/read-state уведомлений; она не изменяет `ledger`, документы или статусы заказов.
+
 1. Подготовьте env:
 ```bash
 cd /opt/FlowStock

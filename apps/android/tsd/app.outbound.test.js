@@ -160,7 +160,13 @@ assert(
   !renderOutboundPickingOrderBody.includes("filling-scan-hint"),
   "outbound scan screen should not render visible scanner hint text"
 );
-assert.match(renderOutboundPickingOrderBody, /Завершить отгрузку/);
+assert.match(renderOutboundPickingOrderBody, /Закрыть документ/);
+assert.match(renderOutboundPickingOrderBody, /Завершить частичную отгрузку/);
+assert(
+  appJs.includes("shouldPromptOperationClose(\"outbound\", nextOrder)") &&
+    appJs.includes("apiCompleteOutboundPicking(orderId, false)"),
+  "last outbound scan should offer explicit server finalize"
+);
 assert.match(renderOutboundPickingOrderBody, /outbound-picking-progress/);
 assert(
   appJs.includes("var showTsdBelowMinimumEntry = false"),
@@ -352,7 +358,7 @@ assert.match(appEl.innerHTML, /Заказано <strong>15<\/strong>/);
 assert.match(appEl.innerHTML, /Уже отгружено <strong>5<\/strong>/);
 assert.match(appEl.innerHTML, /Осталось <strong>10<\/strong>/);
 assert.match(appEl.innerHTML, /Отсканировано сейчас <strong>5<\/strong>/);
-assert.match(appEl.innerHTML, /Завершить отгрузку/);
+assert.match(appEl.innerHTML, /Завершить частичную отгрузку/);
 assert.strictEqual(
   hooks.buildOutboundPickingSummaryLine({
     order_ref: "003",

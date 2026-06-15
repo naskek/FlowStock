@@ -3194,15 +3194,16 @@ public partial class MainWindow : Window
         var itemCount = summary.ItemRequestsPending;
         var orderCount = summary.OrderRequestsPending;
         var readyHuCount = summary.ReadyHuBindingPending;
+        var notificationCount = summary.BusinessNotificationsUnread;
         var count = summary.TotalPending;
         ItemRequestsCountText.Text = count.ToString();
         ItemRequestsBadge.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
         ItemRequestsButton.ToolTip = count > 0
-            ? BuildIncomingRequestsTooltip(count, itemCount, orderCount, readyHuCount)
-            : "Входящие запросы";
+            ? BuildIncomingRequestsTooltip(count, itemCount, orderCount, readyHuCount, notificationCount)
+            : "Центр событий";
     }
 
-    private static string BuildIncomingRequestsTooltip(int totalCount, int itemCount, int orderCount, int readyHuCount)
+    private static string BuildIncomingRequestsTooltip(int totalCount, int itemCount, int orderCount, int readyHuCount, int notificationCount)
     {
         var parts = new List<string>
         {
@@ -3213,8 +3214,12 @@ public partial class MainWindow : Window
         {
             parts.Add($"готовые HU: {readyHuCount}");
         }
+        if (notificationCount > 0)
+        {
+            parts.Add($"новые события: {notificationCount}");
+        }
 
-        return $"Входящие запросы: {totalCount} ({string.Join(", ", parts)})";
+        return $"Центр событий: {totalCount} ({string.Join(", ", parts)})";
     }
 
     private void ClearItemForm()

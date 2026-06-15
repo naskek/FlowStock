@@ -56,28 +56,36 @@ public static class TsdOutboundPickingEndpoints
         });
     }
 
-    private static Results<Ok<object>, BadRequest<object>> HandleComplete(long orderId, OutboundPickingCompleteRequest request, OutboundPickingService service)
+    private static IResult HandleComplete(long orderId, OutboundPickingCompleteRequest request, OutboundPickingService service, FlowStock.Core.Abstractions.IDataStore store)
     {
-        var result = service.Complete(orderId, request.AllowPartial);
-        if (!result.Success)
+        try
         {
-            return TypedResults.BadRequest((object)new
+            var result = service.Complete(orderId, request.AllowPartial);
+            if (!result.Success)
             {
-                ok = false,
-                error = result.ErrorCode,
-                message = result.Message
+                return TypedResults.BadRequest((object)new
+                {
+                    ok = false,
+                    error = result.ErrorCode,
+                    message = result.Message
+                });
+            }
+
+            return TypedResults.Ok((object)new
+            {
+                ok = true,
+                message = result.Message,
+                outbound_closed = result.OutboundClosed,
+                closed_outbound_doc_id = result.ClosedOutboundDocId,
+                closed_outbound_doc_ref = result.ClosedOutboundDocRef,
+                order = result.Order == null ? null : MapOrderDetails(result.Order)
             });
         }
-
-        return TypedResults.Ok((object)new
+        catch (Exception ex)
         {
-            ok = true,
-            message = result.Message,
-            outbound_closed = result.OutboundClosed,
-            closed_outbound_doc_id = result.ClosedOutboundDocId,
-            closed_outbound_doc_ref = result.ClosedOutboundDocRef,
-            order = result.Order == null ? null : MapOrderDetails(result.Order)
-        });
+            BusinessNotificationEndpoints.TryAddFinalizeFailure(store, "OUTBOUND", orderId, null, ex);
+            return Results.Json(new { ok = false, error = "OUTBOUND_CLOSE_FAILED", message = ex.Message }, statusCode: 500);
+        }
     }
 
     private static object MapOrderRow(OutboundPickingOrderRow row)
@@ -94,7 +102,13 @@ public static class TsdOutboundPickingEndpoints
             shipped_qty = row.ShippedQty,
             remaining_qty = row.RemainingQty,
             scanned_qty = row.ScannedQty,
-            is_complete = row.IsComplete
+            is_complete = row.IsComplete,
+            required_pallets = row.RequiredPallets,
+            scanned_pallets = row.ScannedPallets,
+            remaining_pallets = row.RemainingPallets,
+            can_close = row.CanClose,
+            is_closed = row.IsClosed,
+            operation_fingerprint = row.OperationFingerprint
         };
     }
 
@@ -115,6 +129,12 @@ public static class TsdOutboundPickingEndpoints
             remaining_qty = details.RemainingQty,
             scanned_qty = details.ScannedQty,
             is_complete = details.IsComplete,
+            required_pallets = details.RequiredPallets,
+            scanned_pallets = details.ScannedPallets,
+            remaining_pallets = details.RemainingPallets,
+            can_close = details.CanClose,
+            is_closed = details.IsClosed,
+            operation_fingerprint = details.OperationFingerprint,
             hus = details.Hus.Select(MapHu).ToArray()
         };
     }
