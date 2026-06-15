@@ -1689,6 +1689,66 @@
       });
   }
 
+  function normalizeTsdHuAction(action) {
+    if (!action) {
+      return null;
+    }
+    return {
+      type: String(action.type || ""),
+      label: String(action.label || ""),
+      huCode: String(action.hu_code || action.huCode || ""),
+      orderId: Number(action.order_id || action.orderId) || null,
+      orderRef: String(action.order_ref || action.orderRef || ""),
+      docId: Number(action.doc_id || action.docId) || null,
+      docRef: String(action.doc_ref || action.docRef || ""),
+      message: String(action.message || ""),
+    };
+  }
+
+  function normalizeTsdHuView(payload) {
+    var row = payload || {};
+    return {
+      known: row.known === true,
+      huCode: String(row.hu_code || row.huCode || ""),
+      state: String(row.state || ""),
+      title: String(row.title || ""),
+      description: String(row.description || ""),
+      cardAction: normalizeTsdHuAction(row.card_action || row.cardAction),
+      documentActions: Array.isArray(row.document_actions || row.documentActions)
+        ? (row.document_actions || row.documentActions).map(normalizeTsdHuAction).filter(Boolean)
+        : [],
+      stock: Array.isArray(row.stock) ? row.stock : [],
+      productionPallets: Array.isArray(row.production_pallets || row.productionPallets)
+        ? row.production_pallets || row.productionPallets
+        : [],
+      reservations: Array.isArray(row.reservations) ? row.reservations : [],
+      documents: Array.isArray(row.documents) ? row.documents : [],
+      latestMovement: row.latest_movement || row.latestMovement || null,
+    };
+  }
+
+  function apiResolveHu(code) {
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(
+          baseUrl + "/api/tsd/hu/resolve?code=" + encodeURIComponent(String(code || "")),
+          { method: "GET" }
+        );
+      })
+      .then(normalizeTsdHuView);
+  }
+
+  function apiGetHuCard(code) {
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(
+          baseUrl + "/api/tsd/hu/card?code=" + encodeURIComponent(String(code || "")),
+          { method: "GET" }
+        );
+      })
+      .then(normalizeTsdHuView);
+  }
+
   function apiGetHus(options) {
     var opts = options || {};
     var take = Number(opts.take);
@@ -1735,6 +1795,9 @@
     init: true,
     ensureDefaults: true,
     normalizeOutboundPickingOrder: true,
+    normalizeTsdHuView: true,
+    apiResolveHu: true,
+    apiGetHuCard: true,
   };
 
   function wrapOnline(storage) {
@@ -2969,6 +3032,8 @@
     apiGetStockRows: apiGetStockRows,
     apiGetStockByBarcode: apiGetStockByBarcode,
     apiGetHuStockRows: apiGetHuStockRows,
+    apiResolveHu: apiResolveHu,
+    apiGetHuCard: apiGetHuCard,
     apiGetHus: apiGetHus,
     apiGetPartners: apiGetPartners,
     apiGetDocs: apiGetDocs,
@@ -2996,6 +3061,7 @@
     apiScanOutboundPickingHu: apiScanOutboundPickingHu,
     apiCompleteOutboundPicking: apiCompleteOutboundPicking,
     normalizeOutboundPickingOrder: normalizeOutboundPickingOrder,
+    normalizeTsdHuView: normalizeTsdHuView,
     apiLogin: apiLogin,
   };
 

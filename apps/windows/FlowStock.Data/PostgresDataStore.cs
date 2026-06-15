@@ -9,7 +9,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore
+public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, ITsdHuResolverStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore
 {
     private readonly string _connectionString;
     private readonly NpgsqlConnection? _connection;
@@ -9215,6 +9215,274 @@ HAVING ABS(COALESCE(SUM(qty_delta), 0)) > @qty_tolerance;
             }
 
             return rows;
+        });
+    }
+
+    public TsdHuFacts GetTsdHuFacts(string huCode)
+    {
+        var normalizedHu = (huCode ?? string.Empty).Trim().ToUpperInvariant();
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT status, created_at, closed_at
+FROM hus
+WHERE UPPER(BTRIM(hu_code)) = @hu_code
+LIMIT 1;
+
+SELECT l.item_id,
+       i.name,
+       COALESCE(i.base_uom, 'шт'),
+       l.location_id,
+       loc.code,
+       SUM(l.qty_delta)::double precision
+FROM ledger l
+INNER JOIN items i ON i.id = l.item_id
+INNER JOIN locations loc ON loc.id = l.location_id
+WHERE UPPER(BTRIM(COALESCE(l.hu_code, l.hu))) = @hu_code
+GROUP BY l.item_id, i.name, i.base_uom, l.location_id, loc.code
+HAVING SUM(l.qty_delta) > @qty_tolerance
+ORDER BY i.name, loc.code;
+
+SELECT pp.id,
+       pp.status,
+       pp.prd_doc_id,
+       d.doc_ref,
+       d.status,
+       pp.order_id,
+       COALESCE(o.order_ref, d.order_ref),
+       o.order_type,
+       o.status,
+       COALESCE(pp.pallet_no, 0),
+       COALESCE(pp.pallet_count, 0),
+       pp.filled_at,
+       COALESCE(pll.item_id, pp.item_id),
+       COALESCE(component.name, fallback_item.name),
+       COALESCE(component.base_uom, fallback_item.base_uom, 'шт'),
+       COALESCE(pll.planned_qty, pp.planned_qty)::double precision,
+       COALESCE(pll.filled_qty, CASE WHEN UPPER(BTRIM(pp.status)) = 'FILLED' THEN pp.planned_qty ELSE 0 END)::double precision
+FROM production_pallets pp
+INNER JOIN docs d ON d.id = pp.prd_doc_id
+LEFT JOIN orders o ON o.id = pp.order_id
+LEFT JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
+LEFT JOIN items component ON component.id = pll.item_id
+INNER JOIN items fallback_item ON fallback_item.id = pp.item_id
+WHERE UPPER(BTRIM(pp.hu_code)) = @hu_code
+ORDER BY pp.id, pll.id NULLS FIRST;
+
+SELECT p.order_id,
+       o.order_ref,
+       o.order_type,
+       o.status,
+       p.item_id,
+       i.name,
+       SUM(p.qty_planned)::double precision
+FROM order_receipt_plan_lines p
+INNER JOIN orders o ON o.id = p.order_id
+INNER JOIN items i ON i.id = p.item_id
+WHERE UPPER(BTRIM(p.to_hu)) = @hu_code
+  AND p.qty_planned > @qty_tolerance
+GROUP BY p.order_id, o.order_ref, o.order_type, o.status, p.item_id, i.name
+ORDER BY p.order_id, p.item_id;
+
+SELECT d.id,
+       d.doc_ref,
+       d.type,
+       d.status,
+       d.order_id,
+       COALESCE(o.order_ref, d.order_ref),
+       o.order_type,
+       o.status,
+       CASE WHEN UPPER(BTRIM(dl.from_hu)) = @hu_code THEN 'FROM' ELSE 'TO' END,
+       dl.item_id,
+       i.name,
+       COALESCE(i.base_uom, 'шт'),
+       dl.qty::double precision,
+       d.created_at,
+       d.closed_at
+FROM doc_lines dl
+INNER JOIN docs d ON d.id = dl.doc_id
+INNER JOIN items i ON i.id = dl.item_id
+LEFT JOIN orders o ON o.id = d.order_id
+WHERE dl.qty > @qty_tolerance
+  AND (UPPER(BTRIM(dl.from_hu)) = @hu_code OR UPPER(BTRIM(dl.to_hu)) = @hu_code)
+  AND NOT EXISTS (
+      SELECT 1
+      FROM doc_lines newer
+      WHERE newer.replaces_line_id = dl.id
+  )
+ORDER BY d.id DESC, dl.id;
+
+SELECT l.id,
+       l.doc_id,
+       d.doc_ref,
+       d.type,
+       l.item_id,
+       i.name,
+       loc.code,
+       l.qty_delta::double precision,
+       l.ts
+FROM ledger l
+INNER JOIN docs d ON d.id = l.doc_id
+INNER JOIN items i ON i.id = l.item_id
+INNER JOIN locations loc ON loc.id = l.location_id
+WHERE UPPER(BTRIM(COALESCE(l.hu_code, l.hu))) = @hu_code
+ORDER BY l.id DESC
+LIMIT 1;
+");
+            command.Parameters.AddWithValue("@hu_code", normalizedHu);
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+
+            using var reader = command.ExecuteReader();
+            TsdHuRegistryFact? registry = null;
+            if (reader.Read())
+            {
+                registry = new TsdHuRegistryFact
+                {
+                    Status = reader.GetString(0),
+                    CreatedAt = FromDbDate(reader.GetString(1)) ?? DateTime.MinValue,
+                    ClosedAt = FromDbDate(reader.IsDBNull(2) ? null : reader.GetString(2))
+                };
+            }
+
+            reader.NextResult();
+            var stock = new List<TsdHuStockFact>();
+            while (reader.Read())
+            {
+                stock.Add(new TsdHuStockFact
+                {
+                    ItemId = reader.GetInt64(0),
+                    ItemName = reader.GetString(1),
+                    Uom = reader.GetString(2),
+                    LocationId = reader.GetInt64(3),
+                    LocationCode = reader.GetString(4),
+                    Qty = reader.GetDouble(5)
+                });
+            }
+
+            reader.NextResult();
+            var palletRows = new List<TsdHuProductionPalletFact>();
+            while (reader.Read())
+            {
+                palletRows.Add(new TsdHuProductionPalletFact
+                {
+                    PalletId = reader.GetInt64(0),
+                    Status = reader.GetString(1),
+                    PrdDocId = reader.GetInt64(2),
+                    PrdDocRef = reader.GetString(3),
+                    PrdDocStatus = reader.GetString(4),
+                    OrderId = reader.IsDBNull(5) ? null : reader.GetInt64(5),
+                    OrderRef = reader.IsDBNull(6) ? null : reader.GetString(6),
+                    OrderType = reader.IsDBNull(7) ? null : reader.GetString(7),
+                    OrderStatus = reader.IsDBNull(8) ? null : reader.GetString(8),
+                    PalletNo = reader.GetInt32(9),
+                    PalletCount = reader.GetInt32(10),
+                    FilledAt = FromDbDate(reader.IsDBNull(11) ? null : reader.GetString(11)),
+                    Components = new[]
+                    {
+                        new TsdHuComponentFact
+                        {
+                            ItemId = reader.GetInt64(12),
+                            ItemName = reader.GetString(13),
+                            Uom = reader.GetString(14),
+                            PlannedQty = reader.GetDouble(15),
+                            FilledQty = reader.GetDouble(16)
+                        }
+                    }
+                });
+            }
+
+            var pallets = palletRows
+                .GroupBy(row => row.PalletId)
+                .Select(group =>
+                {
+                    var row = group.First();
+                    return new TsdHuProductionPalletFact
+                    {
+                        PalletId = row.PalletId,
+                        Status = row.Status,
+                        PrdDocId = row.PrdDocId,
+                        PrdDocRef = row.PrdDocRef,
+                        PrdDocStatus = row.PrdDocStatus,
+                        OrderId = row.OrderId,
+                        OrderRef = row.OrderRef,
+                        OrderType = row.OrderType,
+                        OrderStatus = row.OrderStatus,
+                        PalletNo = row.PalletNo,
+                        PalletCount = row.PalletCount,
+                        FilledAt = row.FilledAt,
+                        Components = group.SelectMany(item => item.Components).ToArray()
+                    };
+                })
+                .ToArray();
+
+            reader.NextResult();
+            var reservations = new List<TsdHuReservationFact>();
+            while (reader.Read())
+            {
+                reservations.Add(new TsdHuReservationFact
+                {
+                    OrderId = reader.GetInt64(0),
+                    OrderRef = reader.GetString(1),
+                    OrderType = reader.GetString(2),
+                    OrderStatus = reader.GetString(3),
+                    ItemId = reader.GetInt64(4),
+                    ItemName = reader.GetString(5),
+                    Qty = reader.GetDouble(6)
+                });
+            }
+
+            reader.NextResult();
+            var documents = new List<TsdHuDocumentFact>();
+            while (reader.Read())
+            {
+                documents.Add(new TsdHuDocumentFact
+                {
+                    DocId = reader.GetInt64(0),
+                    DocRef = reader.GetString(1),
+                    DocType = reader.GetString(2),
+                    DocStatus = reader.GetString(3),
+                    OrderId = reader.IsDBNull(4) ? null : reader.GetInt64(4),
+                    OrderRef = reader.IsDBNull(5) ? null : reader.GetString(5),
+                    OrderType = reader.IsDBNull(6) ? null : reader.GetString(6),
+                    OrderStatus = reader.IsDBNull(7) ? null : reader.GetString(7),
+                    Direction = reader.GetString(8),
+                    ItemId = reader.GetInt64(9),
+                    ItemName = reader.GetString(10),
+                    Uom = reader.GetString(11),
+                    Qty = reader.GetDouble(12),
+                    CreatedAt = FromDbDate(reader.GetString(13)) ?? DateTime.MinValue,
+                    ClosedAt = FromDbDate(reader.IsDBNull(14) ? null : reader.GetString(14))
+                });
+            }
+
+            reader.NextResult();
+            TsdHuMovementFact? latestMovement = null;
+            if (reader.Read())
+            {
+                latestMovement = new TsdHuMovementFact
+                {
+                    LedgerId = reader.GetInt64(0),
+                    DocId = reader.GetInt64(1),
+                    DocRef = reader.GetString(2),
+                    DocType = reader.GetString(3),
+                    ItemId = reader.GetInt64(4),
+                    ItemName = reader.GetString(5),
+                    LocationCode = reader.GetString(6),
+                    QtyDelta = reader.GetDouble(7),
+                    Timestamp = LedgerTimestampParser.TryParse(reader.GetString(8)) ?? DateTime.MinValue
+                };
+            }
+
+            return new TsdHuFacts
+            {
+                HuCode = normalizedHu,
+                Registry = registry,
+                Stock = stock,
+                ProductionPallets = pallets,
+                Reservations = reservations,
+                Documents = documents,
+                LatestMovement = latestMovement
+            };
         });
     }
 

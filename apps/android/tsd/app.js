@@ -562,6 +562,14 @@
     applySoftKeyboardSetting(document);
   }
 
+  function finishRouteRender() {
+    applySoftKeyboardSetting(app);
+    if (!scanHandlerActive) {
+      installGlobalHuScanHandler();
+    }
+    ensureScanFocus();
+  }
+
   function normalizeTsdTheme(value) {
     return String(value || "").trim().toLowerCase() === TSD_THEME_DARK
       ? TSD_THEME_DARK
@@ -1659,6 +1667,9 @@
     if (parts[0] === "order" && parts[1]) {
       return { name: "order", id: decodeURIComponent(parts[1]) };
     }
+    if (parts[0] === "hu" && parts[1]) {
+      return { name: "huCard", id: decodeURIComponent(parts[1]) };
+    }
     return { name: parts[0] };
   }
 
@@ -1731,6 +1742,9 @@
     }
     if (parts[0] === "order" && parts[1]) {
       return { name: "order", id: decodeURIComponent(parts[1]) };
+    }
+    if (parts[0] === "hu" && parts[1]) {
+      return { name: "huCard", id: decodeURIComponent(parts[1]) };
     }
     return { name: parts[0] };
   }
@@ -1879,6 +1893,9 @@
     if (route.name === "order") {
       return "/orders";
     }
+    if (route.name === "huCard") {
+      return origin && origin.charAt(0) === "/" ? origin : "/hu";
+    }
     if (route.name === "stock" || route.name === "settings" || route.name === "items") {
       return "/home";
     }
@@ -1950,7 +1967,7 @@
     if (route.name === "login") {
       app.innerHTML = renderLogin();
       wireLogin();
-      applySoftKeyboardSetting(app);
+      finishRouteRender();
       return;
     }
 
@@ -1999,11 +2016,11 @@
           }
           app.innerHTML = renderDocsList(list, route.op, notice);
           wireDocsList();
-          applySoftKeyboardSetting(app);
+          finishRouteRender();
         })
         .catch(function () {
           app.innerHTML = renderError("Ошибка загрузки документов");
-          applySoftKeyboardSetting(app);
+          finishRouteRender();
         });
       return;
     }
@@ -2015,7 +2032,7 @@
       }
       app.innerHTML = renderOperationsMenu();
       wireOperationsMenu();
-      applySoftKeyboardSetting(app);
+      finishRouteRender();
       return;
     }
 
@@ -2030,12 +2047,12 @@
         .then(function (items) {
           app.innerHTML = renderFillingList(items || []);
           wireFillingList();
-          applySoftKeyboardSetting(app);
+          finishRouteRender();
         })
         .catch(function (error) {
           console.error(error);
           app.innerHTML = renderError("Не удалось загрузить заказы для наполнения");
-          applySoftKeyboardSetting(app);
+          finishRouteRender();
         });
       return;
     }
@@ -2054,7 +2071,7 @@
         .catch(function (error) {
           console.error(error);
           app.innerHTML = renderError(String(error && error.message ? error.message : "Ошибка загрузки наполнения"));
-          applySoftKeyboardSetting(app);
+          finishRouteRender();
         });
       return;
     }
@@ -2070,12 +2087,12 @@
         .then(function (orders) {
           app.innerHTML = renderOutboundPickingList(orders || []);
           wireOutboundPickingList();
-          applySoftKeyboardSetting(app);
+          finishRouteRender();
         })
         .catch(function (error) {
           console.error(error);
           app.innerHTML = renderError("Не удалось загрузить заказы для отгрузки");
-          applySoftKeyboardSetting(app);
+          finishRouteRender();
         });
       return;
     }
@@ -2094,7 +2111,7 @@
         .catch(function (error) {
           console.error(error);
           app.innerHTML = renderError(String(error && error.message ? error.message : "Ошибка загрузки отгрузки"));
-          applySoftKeyboardSetting(app);
+          finishRouteRender();
         });
       return;
     }
@@ -2113,12 +2130,12 @@
         .then(function (tasks) {
           app.innerHTML = renderWarehouseTasksList(tasks || []);
           wireWarehouseTasksList();
-          applySoftKeyboardSetting(app);
+          finishRouteRender();
         })
         .catch(function (error) {
           console.error(error);
           app.innerHTML = renderError(mapWarehouseTaskError(error));
-          applySoftKeyboardSetting(app);
+          finishRouteRender();
         });
       return;
     }
@@ -2141,7 +2158,7 @@
           .then(function (doc) {
             if (!doc) {
               app.innerHTML = renderError("Документ не найден");
-              applySoftKeyboardSetting(app);
+              finishRouteRender();
               return;
             }
             if (!isOperationEnabled(doc.op)) {
@@ -2157,23 +2174,23 @@
                 }
                 app.innerHTML = renderServerDoc(doc, lines || []);
                 wireServerDoc(doc, lines || []);
-                applySoftKeyboardSetting(app);
+                finishRouteRender();
               })
               .catch(function () {
                 app.innerHTML = renderError("Ошибка загрузки строк документа");
-                applySoftKeyboardSetting(app);
+                finishRouteRender();
               });
           })
           .catch(function () {
             app.innerHTML = renderError("Ошибка загрузки документа");
-            applySoftKeyboardSetting(app);
+            finishRouteRender();
           });
       } else {
         TsdStorage.getDoc(route.id)
           .then(function (doc) {
             if (!doc) {
               app.innerHTML = renderError("Документ не найден");
-              applySoftKeyboardSetting(app);
+              finishRouteRender();
               return;
             }
             if (!isOperationEnabled(doc.op)) {
@@ -2183,11 +2200,11 @@
             setCurrentClientBlockContext(getOperationBlockKey(doc.op) || currentClientBlockContext);
             app.innerHTML = renderDoc(doc);
             wireDoc(doc);
-            applySoftKeyboardSetting(app);
+            finishRouteRender();
           })
           .catch(function () {
             app.innerHTML = renderError("Ошибка загрузки документа");
-            applySoftKeyboardSetting(app);
+            finishRouteRender();
           });
       }
       return;
@@ -2196,14 +2213,14 @@
     if (route.name === "settings") {
       app.innerHTML = renderSettings();
       wireSettings();
-      applySoftKeyboardSetting(app);
+      finishRouteRender();
       return;
     }
 
     if (route.name === "orders") {
       app.innerHTML = renderOrders();
       wireOrders();
-      applySoftKeyboardSetting(app);
+      finishRouteRender();
       return;
     }
 
@@ -2213,7 +2230,7 @@
         .then(function (order) {
           if (!order) {
             app.innerHTML = renderError("Заказ не найден");
-            applySoftKeyboardSetting(app);
+            finishRouteRender();
             return;
           }
           return Promise.all([
@@ -2227,16 +2244,16 @@
             .then(function (results) {
               app.innerHTML = renderOrderDetails(order, results[0] || [], results[1] || []);
               wireOrderDetails();
-              applySoftKeyboardSetting(app);
+              finishRouteRender();
             })
             .catch(function () {
               app.innerHTML = renderError("Ошибка загрузки строк заказа");
-              applySoftKeyboardSetting(app);
+              finishRouteRender();
             });
         })
         .catch(function () {
           app.innerHTML = renderError("Ошибка загрузки заказа");
-          applySoftKeyboardSetting(app);
+          finishRouteRender();
         });
       return;
     }
@@ -2244,27 +2261,42 @@
     if (route.name === "items") {
       app.innerHTML = renderItems();
       wireItems();
-      applySoftKeyboardSetting(app);
+      finishRouteRender();
       return;
     }
 
     if (route.name === "stock") {
       app.innerHTML = renderStock();
       wireStock();
-      applySoftKeyboardSetting(app);
+      finishRouteRender();
       return;
     }
 
     if (route.name === "hu") {
       app.innerHTML = renderHuLookup();
       wireHuLookup();
-      applySoftKeyboardSetting(app);
+      finishRouteRender();
+      return;
+    }
+
+    if (route.name === "huCard") {
+      app.innerHTML = renderLoading();
+      TsdStorage.apiGetHuCard(route.id)
+        .then(function (card) {
+          app.innerHTML = renderTsdHuCard(card);
+          wireTsdHuCard(card);
+          finishRouteRender();
+        })
+        .catch(function () {
+          app.innerHTML = renderError("Ошибка загрузки карточки HU");
+          finishRouteRender();
+        });
       return;
     }
 
     app.innerHTML = renderHome();
     wireHome();
-    applySoftKeyboardSetting(app);
+    finishRouteRender();
   }
 
   function canRefreshClientBlocksForCurrentRoute() {
@@ -3689,7 +3721,7 @@
   function renderFillingScanScreen(context, state) {
     app.innerHTML = renderFillingScan(context, state || {});
     wireFillingScan(context, state || {});
-    applySoftKeyboardSetting(app);
+    finishRouteRender();
   }
 
   function renderFillingLoading() {
@@ -4293,7 +4325,7 @@
       "</section>";
 
     wireOutboundPickingOrder(order || {}, state || {});
-    applySoftKeyboardSetting(app);
+    finishRouteRender();
   }
 
   function renderStock() {
@@ -4503,6 +4535,256 @@
       "  </div>" +
       "</section>"
     );
+  }
+
+  var globalHuResolvePending = false;
+
+  function getCurrentRoutePath() {
+    var hash = String((window.location && window.location.hash) || "").replace(/^#/, "");
+    return hash && hash.charAt(0) === "/" ? hash : "/home";
+  }
+
+  function installGlobalHuScanHandler() {
+    if (scanHandlerActive || isManualOverlayOpen() || (currentRoute && currentRoute.name === "login")) {
+      return false;
+    }
+    setScanHandler(handleGlobalHuScan);
+    return true;
+  }
+
+  function handleGlobalHuScan(scan, options) {
+    var opts = options || {};
+    var rawValue = scan && scan.value ? scan.value : scan;
+    var huCode = extractHuCode(rawValue);
+    if (!huCode || globalHuResolvePending) {
+      return Promise.resolve({ accepted: false });
+    }
+    globalHuResolvePending = true;
+    var resolveHu = opts.resolveHu || TsdStorage.apiResolveHu;
+    var notify = opts.notify || function (message) { window.alert(message); };
+    var openChoice = opts.openChoice || openGlobalHuChoiceOverlay;
+    return resolveHu(huCode)
+      .then(function (result) {
+        if (!result || result.known !== true) {
+          notify("HU неизвестен: " + huCode);
+          return { accepted: true, known: false };
+        }
+        openChoice(result);
+        return { accepted: true, known: true, result: result };
+      })
+      .catch(function (error) {
+        var message = error && error.status
+          ? "Ошибка проверки HU. Попробуйте ещё раз."
+          : "Нет связи с сервером. HU не проверен.";
+        notify(message);
+        return { accepted: true, error: error };
+      })
+      .finally(function () {
+        globalHuResolvePending = false;
+      });
+  }
+
+  function executeTsdHuAction(action) {
+    if (!action) {
+      return false;
+    }
+    var type = String(action.type || "").toUpperCase();
+    if (type === "OPEN_HU_CARD" && action.huCode) {
+      setNavOrigin(getCurrentRoutePath());
+      navigate("/hu/" + encodeURIComponent(action.huCode));
+      return true;
+    }
+    if (type === "OPEN_FILLING" && action.orderId) {
+      navigate("/filling/" + encodeURIComponent(action.orderId));
+      return true;
+    }
+    if (type === "OPEN_OUTBOUND" && action.orderId) {
+      navigate("/outbound/" + encodeURIComponent(action.orderId));
+      return true;
+    }
+    if (type === "OPEN_ORDER" && action.orderId) {
+      navigate("/order/" + encodeURIComponent(action.orderId));
+      return true;
+    }
+    if (type === "OPEN_DOCUMENT" && action.docId) {
+      navigate("/doc/" + encodeURIComponent(action.docId));
+      return true;
+    }
+    if (type === "SHOW_MESSAGE") {
+      window.alert(action.message || action.label || "");
+      return true;
+    }
+    return false;
+  }
+
+  function openGlobalHuChoiceOverlay(result) {
+    var overlay = document.createElement("div");
+    overlay.className = "overlay overlay--centered global-hu-overlay";
+    overlay.setAttribute("tabindex", "-1");
+    var actions = Array.isArray(result.documentActions) ? result.documentActions : [];
+    var relatedLabel = actions.length > 1 ? "Связанные документы" : "Связанный документ";
+    overlay.innerHTML =
+      '<div class="overlay-card confirm-card">' +
+      '  <div class="overlay-header">' +
+      '    <div class="overlay-title">' + escapeHtml(result.huCode + " найден") + "</div>" +
+      '    <button class="btn btn-ghost overlay-close" type="button">Закрыть</button>' +
+      "  </div>" +
+      '  <div class="confirm-message"><strong>' + escapeHtml(result.title || result.state) + "</strong><br>" +
+      escapeHtml(result.description || "") + "</div>" +
+      '  <div class="global-hu-related-list" id="globalHuRelatedList"></div>' +
+      '  <div class="confirm-actions">' +
+      '    <button class="btn primary-btn" id="globalHuCardBtn" type="button">Карточка паллеты / HU</button>' +
+      (actions.length
+        ? '    <button class="btn btn-outline" id="globalHuRelatedBtn" type="button">' + escapeHtml(relatedLabel) + "</button>"
+        : "") +
+      '    <button class="btn btn-outline overlay-cancel" type="button">Назад</button>' +
+      "  </div>" +
+      "</div>";
+
+    function close() {
+      if (!overlay.parentNode) {
+        return;
+      }
+      unlockOverlayScroll();
+      overlay.parentNode.removeChild(overlay);
+      document.removeEventListener("keydown", onKeyDown);
+      ensureScanFocus();
+    }
+
+    function choose(action) {
+      close();
+      executeTsdHuAction(action);
+    }
+
+    function showRelatedActions() {
+      var list = overlay.querySelector("#globalHuRelatedList");
+      if (!list) {
+        return;
+      }
+      list.innerHTML = actions.map(function (action, index) {
+        return '<button class="btn btn-outline global-hu-related-action" type="button" data-global-hu-action="' +
+          index + '">' + escapeHtml(action.label || action.type) + "</button>";
+      }).join("");
+      list.querySelectorAll("[data-global-hu-action]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          choose(actions[Number(button.getAttribute("data-global-hu-action"))]);
+        });
+      });
+    }
+
+    function onKeyDown(event) {
+      if (event.key === "Escape") {
+        close();
+      }
+    }
+
+    document.body.appendChild(overlay);
+    lockOverlayScroll();
+    document.addEventListener("keydown", onKeyDown);
+    overlay.querySelector(".overlay-close").addEventListener("click", close);
+    overlay.querySelector(".overlay-cancel").addEventListener("click", close);
+    overlay.querySelector("#globalHuCardBtn").addEventListener("click", function () {
+      choose(result.cardAction);
+    });
+    var relatedBtn = overlay.querySelector("#globalHuRelatedBtn");
+    if (relatedBtn) {
+      relatedBtn.addEventListener("click", function () {
+        if (actions.length === 1) {
+          choose(actions[0]);
+          return;
+        }
+        showRelatedActions();
+      });
+    }
+    focusOverlay(overlay);
+  }
+
+  function getTsdHuRowValue(row, camel, snake) {
+    if (!row) {
+      return null;
+    }
+    return row[camel] != null ? row[camel] : row[snake];
+  }
+
+  function renderTsdHuCard(card) {
+    if (!card || card.known !== true) {
+      return renderError("HU не найден");
+    }
+    var stock = Array.isArray(card.stock) ? card.stock : [];
+    var pallets = Array.isArray(card.productionPallets) ? card.productionPallets : [];
+    var reservations = Array.isArray(card.reservations) ? card.reservations : [];
+    var documents = Array.isArray(card.documents) ? card.documents : [];
+    var actions = Array.isArray(card.documentActions) ? card.documentActions : [];
+    var stockHtml = stock.length ? stock.map(function (row) {
+      return '<div class="hu-line"><div>' +
+        escapeHtml(getTsdHuRowValue(row, "itemName", "item_name") || "Товар") +
+        '<div class="hu-card-meta">Локация: ' +
+        escapeHtml(getTsdHuRowValue(row, "locationCode", "location_code") || "-") +
+        "</div></div><div>" +
+        escapeHtml(formatQtyWithUnit(getTsdHuRowValue(row, "qty", "qty"), getTsdHuRowValue(row, "uom", "uom") || "шт")) +
+        "</div></div>";
+    }).join("") : '<div class="status-muted">Положительного складского остатка нет.</div>';
+    var palletHtml = pallets.map(function (row) {
+      var components = Array.isArray(row.components) ? row.components : [];
+      return '<div class="hu-line"><div>' +
+        escapeHtml("Паллета " + (getTsdHuRowValue(row, "palletNo", "pallet_no") || "-") +
+          " / " + (getTsdHuRowValue(row, "palletCount", "pallet_count") || "-")) +
+        '<div class="hu-card-meta">' +
+        escapeHtml(getTsdHuRowValue(row, "prdDocRef", "prd_doc_ref") || "") +
+        "</div></div><div>" +
+        escapeHtml(getTsdHuRowValue(row, "status", "status") || "") +
+        (components.length ? '<div class="hu-card-meta">' + escapeHtml(components.map(function (component) {
+          return (getTsdHuRowValue(component, "itemName", "item_name") || "Товар") + ": " +
+            formatQtyWithUnit(getTsdHuRowValue(component, "plannedQty", "planned_qty"), getTsdHuRowValue(component, "uom", "uom") || "шт");
+        }).join(", ")) + "</div>" : "") +
+        "</div></div>";
+    }).join("");
+    var reservationHtml = reservations.map(function (row) {
+      return '<div class="hu-line"><div>' +
+        escapeHtml("Заказ " + (getTsdHuRowValue(row, "orderRef", "order_ref") || getTsdHuRowValue(row, "orderId", "order_id"))) +
+        '<div class="hu-card-meta">' + escapeHtml(getTsdHuRowValue(row, "orderStatus", "order_status") || "") +
+        "</div></div><div>" + escapeHtml(formatQtyWithUnit(getTsdHuRowValue(row, "qty", "qty"), "шт")) + "</div></div>";
+    }).join("");
+    var documentHtml = documents.map(function (row) {
+      return '<div class="hu-line"><div>' +
+        escapeHtml(getTsdHuRowValue(row, "docRef", "doc_ref") || "Документ") +
+        '<div class="hu-card-meta">' +
+        escapeHtml((getTsdHuRowValue(row, "docType", "doc_type") || "") + " · " +
+          (getTsdHuRowValue(row, "docStatus", "doc_status") || "")) +
+        "</div></div><div>" +
+        escapeHtml(formatQtyWithUnit(getTsdHuRowValue(row, "qty", "qty"), getTsdHuRowValue(row, "uom", "uom") || "шт")) +
+        "</div></div>";
+    }).join("");
+    var actionHtml = actions.map(function (action, index) {
+      return '<button class="btn btn-outline" type="button" data-hu-card-action="' + index + '">' +
+        escapeHtml(action.label || action.type) + "</button>";
+    }).join("");
+    var movement = card.latestMovement;
+    var movementHtml = movement
+      ? '<div class="hu-card-meta">Последнее движение: ' +
+        escapeHtml(getTsdHuRowValue(movement, "docRef", "doc_ref") || "-") + " · " +
+        escapeHtml(formatDateTime(getTsdHuRowValue(movement, "timestamp", "timestamp"))) + "</div>"
+      : '<div class="hu-card-meta">Последнее движение: -</div>';
+
+    return '<section class="screen"><div class="screen-card">' +
+      '<div class="section-title">' + escapeHtml(card.huCode) + "</div>" +
+      '<div class="hu-card"><div class="hu-card-title">' + escapeHtml(card.title || card.state) + "</div>" +
+      '<div class="hu-card-meta">' + escapeHtml(card.description || "") + "</div>" + movementHtml + "</div>" +
+      '<div class="section-title">Складской остаток</div><div class="hu-lines">' + stockHtml + "</div>" +
+      (palletHtml ? '<div class="section-title">Производственная паллета</div><div class="hu-lines">' + palletHtml + "</div>" : "") +
+      (reservationHtml ? '<div class="section-title">Привязка к заказу</div><div class="hu-lines">' + reservationHtml + "</div>" : "") +
+      (documentHtml ? '<div class="section-title">Связанные документы</div><div class="hu-lines">' + documentHtml + "</div>" : "") +
+      (actionHtml ? '<div class="hu-actions">' + actionHtml + "</div>" : "") +
+      "</div></section>";
+  }
+
+  function wireTsdHuCard(card) {
+    var actions = Array.isArray(card && card.documentActions) ? card.documentActions : [];
+    document.querySelectorAll("[data-hu-card-action]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        executeTsdHuAction(actions[Number(button.getAttribute("data-hu-card-action"))]);
+      });
+    });
   }
 
   function wireStock() {
@@ -5715,32 +5997,6 @@
         .catch(function () {
           setMessage("Ошибка чтения данных HU.");
         });
-    }
-
-    function extractHuCode(value) {
-      var normalized = normalizeValue(value).toUpperCase();
-      if (!normalized) {
-        return "";
-      }
-      normalized = normalized
-        .replace(/\u041D/g, "H") // Cyrillic Н -> Latin H
-        .replace(/\u0423/g, "U"); // Cyrillic У -> Latin U
-      var cleaned = normalized.replace(/[^A-Z0-9-]/g, "");
-      if (!cleaned) {
-        return "";
-      }
-      var match = cleaned.match(/HU-?\d{6}/);
-      if (!match) {
-        if (window.console) {
-          console.log("[hu] no match", { normalized: normalized, cleaned: cleaned });
-        }
-        return "";
-      }
-      var digits = match[0].replace(/[^0-9]/g, "");
-      if (digits.length !== 6) {
-        return "";
-      }
-      return "HU-" + digits;
     }
 
     function isValidHuFormat(value) {
@@ -7093,7 +7349,7 @@
           if (currentRoute && currentRoute.name === "tasks") {
             app.innerHTML = renderWarehouseTasksList(tasks || []);
             wireWarehouseTasksList();
-            applySoftKeyboardSetting(app);
+            finishRouteRender();
           }
         })
         .catch(function () {
@@ -7118,13 +7374,13 @@
         return startPromise.then(function (freshPayload) {
           app.innerHTML = renderWarehouseTaskDetail(freshPayload, state || {});
           wireWarehouseTaskDetail(taskId);
-          applySoftKeyboardSetting(app);
+          finishRouteRender();
         });
       })
       .catch(function (error) {
         console.error(error);
         app.innerHTML = renderError(mapWarehouseTaskError(error));
-        applySoftKeyboardSetting(app);
+        finishRouteRender();
       });
   }
 
@@ -7251,7 +7507,7 @@
           if (currentRoute && currentRoute.name === "filling") {
             app.innerHTML = renderFillingList(items || []);
             wireFillingList();
-            applySoftKeyboardSetting(app);
+            finishRouteRender();
           }
         })
         .catch(function () {
@@ -7462,7 +7718,7 @@
         navigate("/filling");
       });
     }
-    applySoftKeyboardSetting(app);
+    finishRouteRender();
   }
 
   function getTsdErrorDetails(error) {
@@ -7688,7 +7944,7 @@
           if (currentRoute && currentRoute.name === "outbound") {
             app.innerHTML = renderOutboundPickingList(orders || []);
             wireOutboundPickingList();
-            applySoftKeyboardSetting(app);
+            finishRouteRender();
           }
         })
         .catch(function () {
@@ -12276,14 +12532,11 @@
     if (!cleaned) {
       return "";
     }
-    var match = cleaned.match(/HU-?\d{6}/);
+    var match = cleaned.match(/HU-?(\d{6,})/);
     if (!match) {
       return "";
     }
-    var digits = match[0].replace(/[^0-9]/g, "");
-    if (digits.length !== 6) {
-      return "";
-    }
+    var digits = match[1];
     return "HU-" + digits;
   }
 
@@ -13576,6 +13829,20 @@
     window.FlowStockTsdTestHooks.getStoredTsdTheme = getStoredTsdTheme;
     window.FlowStockTsdTestHooks.normalizeTsdTheme = normalizeTsdTheme;
     window.FlowStockTsdTestHooks.initTsdTheme = initTsdTheme;
+    window.FlowStockTsdTestHooks.extractHuCode = extractHuCode;
+    window.FlowStockTsdTestHooks.installGlobalHuScanHandler = installGlobalHuScanHandler;
+    window.FlowStockTsdTestHooks.handleGlobalHuScan = handleGlobalHuScan;
+    window.FlowStockTsdTestHooks.setScanHandler = setScanHandler;
+    window.FlowStockTsdTestHooks.getActiveScanHandler = function () { return activeScanHandler; };
+    window.FlowStockTsdTestHooks.isScanHandlerActive = function () { return scanHandlerActive; };
+    window.FlowStockTsdTestHooks.initScannerManager = initScannerManager;
+    window.FlowStockTsdTestHooks.finishRouteRender = finishRouteRender;
+    window.FlowStockTsdTestHooks.renderRouteInternal = renderRouteInternal;
+    window.FlowStockTsdTestHooks.renderFillingScanScreen = renderFillingScanScreen;
+    window.FlowStockTsdTestHooks.openGlobalHuChoiceOverlay = openGlobalHuChoiceOverlay;
+    window.FlowStockTsdTestHooks.executeTsdHuAction = executeTsdHuAction;
+    window.FlowStockTsdTestHooks.renderTsdHuCard = renderTsdHuCard;
+    window.FlowStockTsdTestHooks.getRouteFromPath = getRouteFromPath;
   }
 
   if (document.documentElement) {

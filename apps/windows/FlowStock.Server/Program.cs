@@ -38,6 +38,7 @@ builder.Services.AddSingleton<PostgresDataStore>(_ =>
     return new PostgresDataStore(postgresConnectionString);
 });
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.IDataStore>(sp => sp.GetRequiredService<PostgresDataStore>());
+builder.Services.AddSingleton<FlowStock.Core.Abstractions.ITsdHuResolverStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton<IApiDocStore>(new PostgresApiDocStore(postgresConnectionString));
 builder.Services.Configure<FlowStockLedgerFlowOptions>(
     builder.Configuration.GetSection(FlowStockLedgerFlowOptions.SectionName));
@@ -56,6 +57,7 @@ builder.Services.AddSingleton<OutboundPickingService>(sp => new OutboundPickingS
     sp.GetRequiredService<IDataStore>(),
     sp.GetRequiredService<DocumentService>(),
     sp.GetRequiredService<FlowStockLedgerFlowOptions>()));
+builder.Services.AddSingleton<TsdHuResolverService>();
 builder.Services.AddSingleton<FlowStock.Core.Services.Warehouse.WarehouseActionBundleService>();
 builder.Services.AddSingleton<FlowStock.Core.Services.Warehouse.WarehouseTaskExecutionService>();
 builder.Services.AddSingleton<CatalogService>();
@@ -2831,6 +2833,7 @@ PlannerEndpoints.Map(app);
 WarehouseBoardStateEndpoints.Map(app);
 WarehouseProductionStateEndpoint.Map(app);
 TsdOutboundPickingEndpoints.Map(app);
+TsdHuResolverEndpoints.Map(app);
 BusinessNotificationEndpoints.Map(app);
 WarehouseTaskEndpoints.Map(app);
 NegativeStockDiagnosticsEndpoints.Map(app);

@@ -860,6 +860,17 @@ body {
   gap: 8px;
 }
 
+.global-hu-related-list,
+.hu-actions {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.global-hu-related-list:empty {
+  display: none;
+}
+
 .hu-line {
   display: flex;
   justify-content: space-between;
