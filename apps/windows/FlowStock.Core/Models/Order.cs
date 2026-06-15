@@ -30,9 +30,15 @@ public sealed class Order
     public double PlannedQty { get; init; }
     public double FilledQty { get; init; }
     public string PalletPlanStatus { get; init; } = string.Empty;
+    public double ShipmentOrderedQty { get; init; }
+    public double ShipmentShippedQty { get; init; }
+    public double ShipmentRemainingQty { get; init; }
+    public bool IsPartiallyShipped { get; init; }
 
     public string TypeDisplay => OrderStatusMapper.TypeToDisplayName(Type);
-    public string StatusDisplay => OrderStatusMapper.StatusToDisplayName(Status, Type);
+    public string StatusDisplay => IsPartiallyShipped
+        ? "Частично отгружено"
+        : OrderStatusMapper.StatusToDisplayName(Status, Type);
     public MarkingStatus EffectiveMarkingStatus
     {
         get

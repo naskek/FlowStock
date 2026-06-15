@@ -57,6 +57,11 @@ public sealed class CustomerOrderHuBindingCoordinator : IDisposable
         ScheduleCandidatesRefresh();
     }
 
+    public void EndLoadWithoutCandidateRefresh()
+    {
+        _isLoading = false;
+    }
+
     public bool EnsureLineCandidatesLoaded(string clientLineKey)
     {
         if (!_isCustomerOrder)
@@ -76,7 +81,11 @@ public sealed class CustomerOrderHuBindingCoordinator : IDisposable
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
-    public void SetOrderContext(long? orderId, OrderType orderType, IEnumerable<OrderLineView?>? lines)
+    public void SetOrderContext(
+        long? orderId,
+        OrderType orderType,
+        IEnumerable<OrderLineView?>? lines,
+        bool reloadReservations = true)
     {
         _orderId = orderId;
         _isCustomerOrder = orderType == OrderType.Customer;
@@ -107,17 +116,23 @@ public sealed class CustomerOrderHuBindingCoordinator : IDisposable
             }
 
             state.AttachLine(line, orderId);
-            state.BeginServerReservationReload();
+            if (reloadReservations)
+            {
+                state.BeginServerReservationReload();
+            }
             _states[key] = state;
             Lines.Add(new CustomerOrderLinePresentation(state));
         }
 
-        if (orderId.HasValue)
+        if (reloadReservations && orderId.HasValue)
         {
             ApplyExistingPlanLines(orderId.Value);
         }
 
-        ScheduleCandidatesRefresh();
+        if (reloadReservations)
+        {
+            ScheduleCandidatesRefresh();
+        }
     }
 
     public void NotifyLineChanged(OrderLineView? line)

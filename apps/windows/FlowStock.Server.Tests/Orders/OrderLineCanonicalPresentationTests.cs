@@ -90,4 +90,29 @@ public sealed class OrderLineCanonicalPresentationTests
         Assert.Equal("HU-0000601 · план · 600", rows[0].DisplayText);
         Assert.Equal("HU-0000602", rows[1].HuCode);
     }
+
+    [Fact]
+    public void HuDisplayRows_MergeFutureAndFateRows_InDeterministicCategoryOrder()
+    {
+        var line = new OrderLineView
+        {
+            ProductionHuDisplayEntries =
+            [
+                new OrderLineHuDisplayEntry("HU-PRINTED", "напечатано", 378, false, 2),
+                new OrderLineHuDisplayEntry("HU-FILLED-OLD", "наполнено", 378, false, 2)
+            ],
+            HuFateDisplayEntries =
+            [
+                new OrderLineHuDisplayEntry("HU-SHIPPED", "отгружено", 600, false, OrderLineHuFateDisplayBuilder.ShippedSortOrder),
+                new OrderLineHuDisplayEntry("HU-RESERVED", "резерв", 378, false, OrderLineHuFateDisplayBuilder.ReservedSortOrder),
+                new OrderLineHuDisplayEntry("HU-FILLED-B", "наполнено", 378, false, OrderLineHuFateDisplayBuilder.FilledSortOrder),
+                new OrderLineHuDisplayEntry("HU-FILLED-A", "наполнено", 378, false, OrderLineHuFateDisplayBuilder.FilledSortOrder)
+            ]
+        };
+
+        Assert.Equal(
+            ["HU-PRINTED", "HU-FILLED-A", "HU-FILLED-B", "HU-RESERVED", "HU-SHIPPED"],
+            line.HuDisplayRows.Select(row => row.HuCode));
+        Assert.DoesNotContain(line.HuDisplayRows, row => row.HuCode == "HU-FILLED-OLD");
+    }
 }

@@ -184,6 +184,57 @@ public sealed class ProductionPlanConsistencyDiagnosticsEndpointTests
         });
     }
 
+    [Fact]
+    public async Task ProductionPlanConsistency_PlannedPartialMixedPalletWithoutLedger_IsAllowed()
+    {
+        var harness = CreateHarness(orderId: 103, orderRef: "103", orderQty: 600);
+        SeedPartialMixedPallet(harness, 103, 10301, 1030, ProductionPalletStatus.Planned, seedLedger: false);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        using var response = await host.Client.GetAsync("/api/diagnostics/production-plan-consistency");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.DoesNotContain(
+            (await ReadItems(response)).EnumerateArray(),
+            item => item.GetProperty("order_id").GetInt64() == 103);
+    }
+
+    [Fact]
+    public async Task ProductionPlanConsistency_PartialMixedPalletWithLedger_IsDiagnosed()
+    {
+        var harness = CreateHarness(orderId: 104, orderRef: "104", orderQty: 600);
+        SeedPartialMixedPallet(harness, 104, 10401, 1040, ProductionPalletStatus.Printed, seedLedger: true);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        using var response = await host.Client.GetAsync("/api/diagnostics/production-plan-consistency");
+
+        var items = (await ReadItems(response)).EnumerateArray()
+            .Where(item => item.GetProperty("order_id").GetInt64() == 104)
+            .ToArray();
+        Assert.NotEmpty(items);
+        Assert.All(items, item => Assert.Equal(
+            ProductionPlanConsistencyProblemCode.PartialPalletHasLedger,
+            item.GetProperty("problem_code").GetString()));
+    }
+
+    [Fact]
+    public async Task ProductionPlanConsistency_PartialMixedPalletWithInvalidPersistedStatus_IsDiagnosed()
+    {
+        var harness = CreateHarness(orderId: 105, orderRef: "105", orderQty: 600);
+        SeedPartialMixedPallet(harness, 105, 10501, 1050, "BROKEN", seedLedger: false);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        using var response = await host.Client.GetAsync("/api/diagnostics/production-plan-consistency");
+
+        var items = (await ReadItems(response)).EnumerateArray()
+            .Where(item => item.GetProperty("order_id").GetInt64() == 105)
+            .ToArray();
+        Assert.NotEmpty(items);
+        Assert.All(items, item => Assert.Equal(
+            ProductionPlanConsistencyProblemCode.PartialPalletInvalidStatus,
+            item.GetProperty("problem_code").GetString()));
+    }
+
     private static async Task<JsonElement> ReadItems(HttpResponseMessage response)
     {
         var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -307,6 +358,86 @@ public sealed class ProductionPlanConsistencyDiagnosticsEndpointTests
             {
                 harness.SeedLedgerEntry(prdDocId, 6, 10, palletQty, huCode);
             }
+        }
+    }
+
+    private static void SeedPartialMixedPallet(
+        CloseDocumentHarness harness,
+        long orderId,
+        long orderLineId,
+        long prdDocId,
+        string status,
+        bool seedLedger)
+    {
+        harness.SeedDoc(new Doc
+        {
+            Id = prdDocId,
+            DocRef = $"PRD-{prdDocId:000}",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = orderId,
+            OrderRef = orderId.ToString("000"),
+            CreatedAt = DateTime.UtcNow
+        });
+        var lineIds = new[] { prdDocId * 100 + 1, prdDocId * 100 + 2 };
+        foreach (var lineId in lineIds)
+        {
+            harness.SeedLine(new DocLine
+            {
+                Id = lineId,
+                DocId = prdDocId,
+                OrderLineId = orderLineId,
+                ItemId = 6,
+                Qty = 300,
+                ToLocationId = 10,
+                ToHu = $"HU-MIX-{orderId}",
+                PackSingleHu = true
+            });
+        }
+
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = prdDocId * 10,
+            PrdDocId = prdDocId,
+            DocLineId = lineIds[0],
+            OrderId = orderId,
+            ItemId = 6,
+            ItemName = "Микс",
+            HuCode = $"HU-MIX-{orderId}",
+            PlannedQty = 600,
+            ToLocationId = 10,
+            Status = status,
+            CreatedAt = DateTime.UtcNow,
+            Lines =
+            [
+                new ProductionPalletComponentLine
+                {
+                    Id = lineIds[0],
+                    ProductionPalletId = prdDocId * 10,
+                    DocLineId = lineIds[0],
+                    OrderLineId = orderLineId,
+                    ItemId = 6,
+                    PlannedQty = 300,
+                    FilledQty = 300,
+                    FilledAt = DateTime.UtcNow,
+                    CreatedAt = DateTime.UtcNow
+                },
+                new ProductionPalletComponentLine
+                {
+                    Id = lineIds[1],
+                    ProductionPalletId = prdDocId * 10,
+                    DocLineId = lineIds[1],
+                    OrderLineId = orderLineId,
+                    ItemId = 6,
+                    PlannedQty = 300,
+                    FilledQty = 0,
+                    CreatedAt = DateTime.UtcNow
+                }
+            ]
+        });
+        if (seedLedger)
+        {
+            harness.SeedLedgerEntry(prdDocId, 6, 10, 300, $"HU-MIX-{orderId}");
         }
     }
 

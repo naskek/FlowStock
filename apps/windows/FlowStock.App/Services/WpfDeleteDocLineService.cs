@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net.Http;
 using FlowStock.Core.Models;
+using FlowStock.Core.Services;
 using Npgsql;
 
 namespace FlowStock.App;
@@ -200,6 +201,7 @@ public sealed class WpfDeleteDocLineService
         {
             "DOC_NOT_FOUND" => "Сервер не нашел документ для удаления строки. Проверьте синхронизацию api_docs и повторите.",
             "DOC_NOT_DRAFT" => "Сервер не разрешает удалять строки в документе, который уже не является черновиком.",
+            DocumentService.ProductionReceiptLineDeleteForbiddenCode => DocumentService.ProductionReceiptLineDeleteForbiddenMessage,
             "EVENT_ID_CONFLICT" => "Сервер отклонил запрос из-за конфликта event_id. Обновите документ и повторите действие.",
             "UNKNOWN_LINE" => "Сервер не нашел выбранную строку документа.",
             _ => string.IsNullOrWhiteSpace(errorCode)
@@ -211,6 +213,7 @@ public sealed class WpfDeleteDocLineService
         {
             "DOC_NOT_FOUND" => WpfDeleteDocLineResultKind.NotFound,
             "DOC_NOT_DRAFT" => WpfDeleteDocLineResultKind.ValidationFailed,
+            DocumentService.ProductionReceiptLineDeleteForbiddenCode => WpfDeleteDocLineResultKind.ValidationFailed,
             "EVENT_ID_CONFLICT" => WpfDeleteDocLineResultKind.EventConflict,
             "UNKNOWN_LINE" => WpfDeleteDocLineResultKind.ValidationFailed,
             _ => WpfDeleteDocLineResultKind.ServerRejected

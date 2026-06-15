@@ -9,6 +9,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using System.Windows.Input;
+using System.Windows.Media;
 using FlowStock.Core.Models;
 using FlowStock.Core.Services;
 using Microsoft.Win32;
@@ -37,6 +38,15 @@ public partial class OrderDetailsWindow : Window
     private bool _suppressPartnerFilter;
     private bool _productionPalletHuLocked;
     private bool _isQtyPersistInProgress;
+    private bool _liveRefreshPending;
+    private bool _liveRefreshInProgress;
+    private bool _isOrderLinesGridSorting;
+    private bool _suppressOrderLineSelectionChanged;
+    private long _orderLineSelectionRestoreGeneration;
+    private long _orderLinesGridColumnWidthRestoreGeneration;
+    private long _orderLinesGridSortingGeneration;
+    private readonly IDisposable _liveRefreshSubscription;
+    private long _huFateDisplayLoadGeneration;
     private readonly CustomerOrderHuBindingCoordinator _huBinding;
 
     public event EventHandler? OrderStateChanged;
@@ -49,6 +59,7 @@ public partial class OrderDetailsWindow : Window
             orderId => services.DataStore.GetOrderReceiptPlanLines(orderId));
         InitializeComponent();
         InitializeData();
+        _liveRefreshSubscription = RegisterLiveRefresh();
         LoadPartners();
         PrepareNewOrder();
     }
@@ -62,13 +73,78 @@ public partial class OrderDetailsWindow : Window
         _orderId = orderId;
         InitializeComponent();
         InitializeData();
+        _liveRefreshSubscription = RegisterLiveRefresh();
         LoadPartners();
         LoadOrder();
+    }
+
+    private IDisposable RegisterLiveRefresh()
+    {
+        Activated += (_, _) => ApplyPendingLiveRefresh();
+        Closed += (_, _) => _liveRefreshSubscription.Dispose();
+        return _services.LiveRefresh.Register(
+            CanApplyLiveRefresh,
+            ApplyLiveRefresh,
+            () => _liveRefreshPending = true);
+    }
+
+    private bool CanApplyLiveRefresh()
+    {
+        return _orderId.HasValue
+               && IsVisible
+               && IsActive
+               && !_isLoading
+               && !_hasUnsavedChanges
+               && !_isQtyPersistInProgress
+               && !_liveRefreshInProgress
+               && !IsOrderLinesGridInteracting();
+    }
+
+    private bool IsOrderLinesGridInteracting()
+    {
+        return OrderLinesGrid.IsKeyboardFocusWithin
+               || OrderLinesGrid.IsMouseOver
+               || _isOrderLinesGridSorting
+               || _suppressOrderLineSelectionChanged
+               || WpfLiveRefreshGuard.IsDataGridEditing(OrderLinesGrid)
+               || CaptureSelectedOrderLineId().HasValue;
+    }
+
+    private void ApplyLiveRefresh()
+    {
+        if (!CanApplyLiveRefresh())
+        {
+            _liveRefreshPending = true;
+            return;
+        }
+
+        _liveRefreshPending = false;
+        _liveRefreshInProgress = true;
+        try
+        {
+            LoadOrder(CaptureSelectedOrderLineId());
+        }
+        finally
+        {
+            _liveRefreshInProgress = false;
+        }
+    }
+
+    private void ApplyPendingLiveRefresh()
+    {
+        if (_liveRefreshPending)
+        {
+            ApplyLiveRefresh();
+        }
     }
 
     private void InitializeData()
     {
         OrderLinesGrid.ItemsSource = _huBinding.Lines;
+        OrderLinesGrid.CellEditEnding += (_, _) => Dispatcher.BeginInvoke(ApplyPendingLiveRefresh);
+        OrderLinesGrid.MouseLeave += (_, _) => Dispatcher.BeginInvoke(ApplyPendingLiveRefresh);
+        OrderLinesGrid.LostKeyboardFocus += (_, _) => Dispatcher.BeginInvoke(ApplyPendingLiveRefresh);
+        OrderLinesGrid.Sorting += OrderLinesGrid_Sorting;
         PartnerCombo.ItemsSource = _partners;
         TypeCombo.ItemsSource = _typeOptions;
 
@@ -204,6 +280,8 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
+        var selectedLineId = reselectLineId ?? CaptureSelectedOrderLineId();
+        var columnWidths = CaptureOrderLinesGridColumnWidths();
         BeginLoad();
         _huBinding.BeginLoad();
         _order = _services.WpfReadApi.TryGetOrder(_orderId.Value, out var apiOrder)
@@ -249,10 +327,12 @@ public partial class OrderDetailsWindow : Window
         UpdatePalletButtons();
         SyncHuBindingLines();
         _huBinding.EndLoad();
-        ApplyProductionHuCodesFromStore(_order.Id);
+        ApplyProductionHuCodesFromStore(_order.Id, includeFate: false);
         ForceOrderLinesGridRefresh();
         EndLoad();
-        RestoreSelectedOrderLine(reselectLineId ?? _selectedLine?.Id);
+        RestoreSelectedOrderLineByIdDeferred(selectedLineId);
+        RestoreOrderLinesGridColumnWidthsDeferred(columnWidths);
+        ScheduleDeferredHuFateDisplayLoad(_order.Id);
     }
 
     private void Save_Click(object sender, RoutedEventArgs e)
@@ -472,7 +552,7 @@ public partial class OrderDetailsWindow : Window
         };
         if (dialog.ShowDialog() == true)
         {
-            LoadOrder(_selectedLine?.Id);
+            LoadOrder(CaptureSelectedOrderLineId());
             OrderStateChanged?.Invoke(this, EventArgs.Empty);
         }
     }
@@ -646,7 +726,8 @@ public partial class OrderDetailsWindow : Window
                 })
                 .ToArray();
             var groups = FlowStock.Core.Services.PalletLabelPrintSelectionService.BuildGroups(coreRows);
-            var dialog = new PalletLabelPrintSelectionWindow(groups)
+            var savedCopies = _services.Settings.Load().PalletLabels.Copies;
+            var dialog = new PalletLabelPrintSelectionWindow(groups, savedCopies)
             {
                 Owner = this
             };
@@ -662,7 +743,12 @@ public partial class OrderDetailsWindow : Window
                 return;
             }
 
-            var printResult = await Task.Run(() => _services.PalletLabelPrinter.Print(selectedRows)).ConfigureAwait(true);
+            var copies = dialog.Copies;
+            var settingsToSave = _services.Settings.Load();
+            settingsToSave.PalletLabels.Copies = copies;
+            _services.Settings.Save(settingsToSave);
+
+            var printResult = await Task.Run(() => _services.PalletLabelPrinter.Print(selectedRows, copies)).ConfigureAwait(true);
             if (!printResult.IsSuccess)
             {
                 MessageBox.Show(printResult.Message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -893,7 +979,7 @@ public partial class OrderDetailsWindow : Window
             {
                 if (dialog.HasFatalError)
                 {
-                    LoadOrder(_selectedLine?.Id);
+                    LoadOrder(CaptureSelectedOrderLineId());
                 }
 
                 return false;
@@ -908,7 +994,7 @@ public partial class OrderDetailsWindow : Window
                 "Привязка HU",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
-            LoadOrder(_selectedLine?.Id);
+            LoadOrder(CaptureSelectedOrderLineId());
             return false;
         }
     }
@@ -931,7 +1017,7 @@ public partial class OrderDetailsWindow : Window
                     "Привязка HU",
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning);
-                LoadOrder(_selectedLine?.Id);
+                LoadOrder(CaptureSelectedOrderLineId());
                 return false;
             }
         }
@@ -942,14 +1028,14 @@ public partial class OrderDetailsWindow : Window
                 "Привязка HU",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
-            LoadOrder(_selectedLine?.Id);
+            LoadOrder(CaptureSelectedOrderLineId());
             return false;
         }
 
         _huBinding.MarkApplyCommitted();
         if (reloadAfterSuccess)
         {
-            LoadOrder(_selectedLine?.Id);
+            LoadOrder(CaptureSelectedOrderLineId());
         }
         else
         {
@@ -1084,14 +1170,15 @@ public partial class OrderDetailsWindow : Window
         }
     }
 
-    private void SyncHuBindingLines()
+    private void SyncHuBindingLines(bool reloadReservations = true)
     {
         if (GetSelectedOrderType() != OrderType.Customer)
         {
             return;
         }
 
-        _huBinding.SetOrderContext(_orderId, OrderType.Customer, _lines);
+        PreserveSelectedOrderLine(
+            () => _huBinding.SetOrderContext(_orderId, OrderType.Customer, _lines, reloadReservations));
     }
 
     private void AddLine_Click(object sender, RoutedEventArgs e)
@@ -1164,42 +1251,162 @@ public partial class OrderDetailsWindow : Window
 
     private void SelectOrderLine(OrderLineView line)
     {
-        OrderLinesGrid.SelectedItem = line;
-        OrderLinesGrid.ScrollIntoView(line);
-        _selectedLine = line;
-        EditLineButton.IsEnabled = EnsureEditable(false);
+        var gridItem = line.Id > 0
+            ? ResolveGridItemForLineId(line.Id)
+            : GetSelectedOrderType() == OrderType.Customer
+                ? _huBinding.Lines.FirstOrDefault(row => ReferenceEquals(row.Line, line))
+                : line;
+        ApplySelectedOrderLine(gridItem, line);
     }
 
-    private void RestoreSelectedOrderLine(long? lineId)
+    private long? CaptureSelectedOrderLineId()
     {
-        if (!lineId.HasValue || lineId.Value <= 0)
+        var line = GetSelectedOrderLine() ?? _selectedLine;
+        return line?.Id > 0 ? line.Id : null;
+    }
+
+    private object? ResolveGridItemForLineId(long lineId)
+    {
+        return GetSelectedOrderType() == OrderType.Customer
+            ? _huBinding.Lines.FirstOrDefault(row => row.Line.Id == lineId)
+            : _lines.FirstOrDefault(line => line.Id == lineId);
+    }
+
+    private void RestoreSelectedOrderLineById(long? lineId)
+    {
+        _orderLineSelectionRestoreGeneration++;
+        RestoreSelectedOrderLineByIdCore(lineId);
+    }
+
+    private void RestoreSelectedOrderLineByIdDeferred(long? lineId)
+    {
+        var generation = ++_orderLineSelectionRestoreGeneration;
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (generation == _orderLineSelectionRestoreGeneration)
+            {
+                RestoreSelectedOrderLineByIdCore(lineId);
+            }
+        }));
+    }
+
+    private void RestoreSelectedOrderLineByIdCore(long? lineId)
+    {
+        var gridItem = lineId.HasValue && lineId.Value > 0
+            ? ResolveGridItemForLineId(lineId.Value)
+            : null;
+        if (!TryGetLineFromGridContext(gridItem, out var line))
+        {
+            ApplySelectedOrderLine(null, null);
+            return;
+        }
+
+        ApplySelectedOrderLine(gridItem, line);
+    }
+
+    private void ApplySelectedOrderLine(object? gridItem, OrderLineView? line)
+    {
+        var previousSuppress = _suppressOrderLineSelectionChanged;
+        _suppressOrderLineSelectionChanged = true;
+        try
+        {
+            OrderLinesGrid.SelectedItem = gridItem;
+            _selectedLine = line;
+            if (gridItem != null)
+            {
+                OrderLinesGrid.ScrollIntoView(gridItem);
+            }
+        }
+        finally
+        {
+            _suppressOrderLineSelectionChanged = previousSuppress;
+        }
+
+        UpdateSelectedOrderLineUi();
+    }
+
+    private void PreserveSelectedOrderLine(Action update, bool restoreDeferred = false)
+    {
+        var selectedLineId = CaptureSelectedOrderLineId();
+        var columnWidths = CaptureOrderLinesGridColumnWidths();
+        var previousSuppress = _suppressOrderLineSelectionChanged;
+        _suppressOrderLineSelectionChanged = true;
+        try
+        {
+            update();
+        }
+        finally
+        {
+            _suppressOrderLineSelectionChanged = previousSuppress;
+        }
+
+        if (restoreDeferred)
+        {
+            RestoreSelectedOrderLineByIdDeferred(selectedLineId);
+        }
+        else
+        {
+            RestoreSelectedOrderLineById(selectedLineId);
+        }
+
+        RestoreOrderLinesGridColumnWidthsDeferred(columnWidths);
+    }
+
+    private Dictionary<DataGridColumn, double> CaptureOrderLinesGridColumnWidths()
+    {
+        return OrderLinesGrid.Columns
+            .Where(column => column.Visibility == Visibility.Visible && column.ActualWidth > 0)
+            .ToDictionary(column => column, column => column.ActualWidth);
+    }
+
+    private void RestoreOrderLinesGridColumnWidths(IReadOnlyDictionary<DataGridColumn, double> columnWidths)
+    {
+        foreach (var column in OrderLinesGrid.Columns)
+        {
+            if (columnWidths.TryGetValue(column, out var width) && width > 0)
+            {
+                column.Width = new DataGridLength(width, DataGridLengthUnitType.Pixel);
+            }
+        }
+    }
+
+    private void RestoreOrderLinesGridColumnWidthsDeferred(IReadOnlyDictionary<DataGridColumn, double> columnWidths)
+    {
+        var generation = ++_orderLinesGridColumnWidthRestoreGeneration;
+        Dispatcher.BeginInvoke(
+            new Action(() =>
+            {
+                if (generation != _orderLinesGridColumnWidthRestoreGeneration)
+                {
+                    return;
+                }
+
+                RestoreOrderLinesGridColumnWidths(columnWidths);
+            }),
+            System.Windows.Threading.DispatcherPriority.Loaded);
+    }
+
+    private void SetOrderLinesGridItemsSourcePreservingSelection()
+    {
+        System.Collections.IEnumerable source = GetSelectedOrderType() == OrderType.Customer
+            ? _huBinding.Lines
+            : _lines;
+        if (ReferenceEquals(OrderLinesGrid.ItemsSource, source))
         {
             return;
         }
 
-        var line = _lines.FirstOrDefault(candidate => candidate.Id == lineId.Value);
-        if (line == null)
-        {
-            _selectedLine = null;
-            return;
-        }
+        PreserveSelectedOrderLine(() => OrderLinesGrid.ItemsSource = source, restoreDeferred: true);
+    }
 
-        SelectOrderLine(line);
+    private void RefreshOrderLinesGridPreservingSelection()
+    {
+        PreserveSelectedOrderLine(() => OrderLinesGrid.Items.Refresh(), restoreDeferred: true);
     }
 
     private void ForceOrderLinesGridRefresh()
     {
-        OrderLinesGrid.ItemsSource = null;
-        if (GetSelectedOrderType() == OrderType.Customer)
-        {
-            OrderLinesGrid.ItemsSource = _huBinding.Lines;
-        }
-        else
-        {
-            OrderLinesGrid.ItemsSource = _lines;
-        }
-
-        OrderLinesGrid.Items.Refresh();
+        SetOrderLinesGridItemsSourcePreservingSelection();
         UpdateEmptyState();
     }
 
@@ -1299,7 +1506,7 @@ public partial class OrderDetailsWindow : Window
             _huBinding.NotifyLineChanged(line);
         }
 
-        OrderLinesGrid.Items.Refresh();
+        RefreshOrderLinesGridPreservingSelection();
     }
 
     private bool TryConfirmCustomerReservedHuReduction(
@@ -1694,7 +1901,7 @@ public partial class OrderDetailsWindow : Window
 
             line.NotifyPresentationChanged();
             MarkDirty();
-            OrderLinesGrid.Items.Refresh();
+            RefreshOrderLinesGridPreservingSelection();
             UpdatePalletButtons();
         }
         catch (Exception ex)
@@ -1755,7 +1962,7 @@ public partial class OrderDetailsWindow : Window
             line.ProductionPalletGroup = ProductionPalletGroupHelper.Format(line.MixedPalletGroupNumber);
             line.NotifyPresentationChanged();
             MarkDirty();
-            OrderLinesGrid.Items.Refresh();
+            RefreshOrderLinesGridPreservingSelection();
         }
         catch (Exception ex)
         {
@@ -1774,7 +1981,7 @@ public partial class OrderDetailsWindow : Window
         try
         {
             OrderLinesGrid.CancelEdit(DataGridEditingUnit.Cell);
-            OrderLinesGrid.Items.Refresh();
+            RefreshOrderLinesGridPreservingSelection();
         }
         catch (Exception ex)
         {
@@ -1784,10 +1991,46 @@ public partial class OrderDetailsWindow : Window
 
     private void OrderLinesGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        if (_suppressOrderLineSelectionChanged)
+        {
+            return;
+        }
+
+        _orderLineSelectionRestoreGeneration++;
         _selectedLine = GetSelectedOrderLine();
+        UpdateSelectedOrderLineUi();
+        if (!CaptureSelectedOrderLineId().HasValue)
+        {
+            Dispatcher.BeginInvoke(ApplyPendingLiveRefresh);
+        }
+    }
+
+    private void UpdateSelectedOrderLineUi()
+    {
         DeleteLineButton.IsEnabled = _selectedLine != null && EnsureEditable(false);
         EditLineButton.IsEnabled = _selectedLine != null && EnsureEditable(false);
         UpdateMarkingExportButton();
+    }
+
+    private void OrderLinesGrid_Sorting(object? sender, DataGridSortingEventArgs e)
+    {
+        var columnWidths = CaptureOrderLinesGridColumnWidths();
+        var generation = ++_orderLinesGridSortingGeneration;
+        _isOrderLinesGridSorting = true;
+        Dispatcher.BeginInvoke(
+            new Action(() =>
+            {
+                if (generation != _orderLinesGridSortingGeneration)
+                {
+                    return;
+                }
+
+                _orderLinesGridColumnWidthRestoreGeneration++;
+                RestoreOrderLinesGridColumnWidths(columnWidths);
+                _isOrderLinesGridSorting = false;
+                Dispatcher.BeginInvoke(ApplyPendingLiveRefresh);
+            }),
+            System.Windows.Threading.DispatcherPriority.Loaded);
     }
 
     private OrderLineView? GetSelectedOrderLine()
@@ -1823,12 +2066,82 @@ public partial class OrderDetailsWindow : Window
 
     private void OrderLinesGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
-        if (_selectedLine == null || !EnsureEditable(false))
+        if (!TryResolveDoubleClickedOrderLine(e.OriginalSource as DependencyObject, out var gridItem, out var line)
+            || !EnsureEditable(false))
         {
             return;
         }
 
+        e.Handled = true;
+        ApplySelectedOrderLine(gridItem, line);
         EditLine_Click(sender, new RoutedEventArgs());
+    }
+
+    private bool TryResolveDoubleClickedOrderLine(
+        DependencyObject? source,
+        out object gridItem,
+        out OrderLineView line)
+    {
+        gridItem = null!;
+        line = null!;
+        for (var current = source; current != null; current = VisualTreeHelper.GetParent(current))
+        {
+            if (current is System.Windows.Controls.Primitives.ButtonBase
+                or System.Windows.Controls.Primitives.TextBoxBase
+                or System.Windows.Controls.ComboBox
+                or DatePicker
+                or DataGridColumnHeader
+                or DataGridRowHeader)
+            {
+                return false;
+            }
+
+            if (current is DataGridCell cell)
+            {
+                var cellRow = FindVisualAncestor<DataGridRow>(cell);
+                return TryResolveOrderLineFromRow(cellRow, out gridItem, out line);
+            }
+
+            if (current is DataGridRow directRow)
+            {
+                return TryResolveOrderLineFromRow(directRow, out gridItem, out line);
+            }
+
+            if (ReferenceEquals(current, OrderLinesGrid))
+            {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    private bool TryResolveOrderLineFromRow(DataGridRow? row, out object gridItem, out OrderLineView line)
+    {
+        gridItem = null!;
+        line = null!;
+        if (row == null
+            || !ReferenceEquals(ItemsControl.ItemsControlFromItemContainer(row), OrderLinesGrid)
+            || !TryGetLineFromGridContext(row.Item, out line))
+        {
+            return false;
+        }
+
+        gridItem = row.Item;
+        return true;
+    }
+
+    private static T? FindVisualAncestor<T>(DependencyObject? source) where T : DependencyObject
+    {
+        for (var current = source; current != null; current = VisualTreeHelper.GetParent(current))
+        {
+            if (current is T ancestor)
+            {
+                return ancestor;
+            }
+        }
+
+        return null;
     }
 
     private void RefreshLineMetrics()
@@ -1886,7 +2199,7 @@ public partial class OrderDetailsWindow : Window
         }
 
         UpdateEmptyState();
-        OrderLinesGrid.Items.Refresh();
+        RefreshOrderLinesGridPreservingSelection();
         UpdateMarkingExportButton();
         SyncHuBindingLines();
     }
@@ -1916,7 +2229,7 @@ public partial class OrderDetailsWindow : Window
 
         RefreshProductionPalletGroupEditability();
         UpdateEmptyState();
-        OrderLinesGrid.Items.Refresh();
+        RefreshOrderLinesGridPreservingSelection();
         UpdatePalletButtons();
         SyncHuBindingLines();
         return true;
@@ -2016,6 +2329,13 @@ public partial class OrderDetailsWindow : Window
 
         var canPlan = _orderId.HasValue && _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged);
         var canPrint = _orderId.HasValue && _order?.Status is not (OrderStatus.Cancelled or OrderStatus.Merged);
+        if (_liveRefreshInProgress)
+        {
+            PlanPalletsButton.IsEnabled = canPlan;
+            PrintPalletLabelsButton.IsEnabled = canPrint;
+            return;
+        }
+
         var canDeletePlan = _orderId.HasValue
                             && _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
                             && HasOpenProductionPalletPlan(_orderId.Value);
@@ -2219,19 +2539,27 @@ public partial class OrderDetailsWindow : Window
                || string.Equals(status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase);
     }
 
-    private void ApplyProductionHuCodesFromStore(long orderId)
+    private void ApplyProductionHuCodesFromStore(long orderId, bool includeFate)
     {
         try
         {
             var huByLine = ProductionOrderLineHuCodes.BuildByOrder(_services.DataStore, orderId);
             var productionDisplayByLine = ProductionOrderLineHuCodes.BuildProductionDisplayByOrder(_services.DataStore, orderId);
+            var fateDisplayByLine = includeFate
+                ? OrderLineHuFateDisplayBuilder.BuildByOrder(_services.DataStore, orderId)
+                : new Dictionary<long, OrderLineHuDisplayEntry[]>();
+
             foreach (var line in _lines)
             {
                 productionDisplayByLine.TryGetValue(line.Id, out var displayEntries);
                 line.ProductionHuDisplayEntries = displayEntries ?? Array.Empty<OrderLineHuDisplayEntry>();
 
+                fateDisplayByLine.TryGetValue(line.Id, out var fateEntries);
+                line.HuFateDisplayEntries = fateEntries ?? Array.Empty<OrderLineHuDisplayEntry>();
+
                 if (!huByLine.TryGetValue(line.Id, out var codes) || codes.Length == 0)
                 {
+                    line.ProductionHuCodes = string.Empty;
                     continue;
                 }
 
@@ -2245,6 +2573,43 @@ public partial class OrderDetailsWindow : Window
         catch (Exception ex)
         {
             _services.AppLogger.Error($"Apply production HU codes for order_id={orderId} failed", ex);
+        }
+    }
+
+    private void ScheduleDeferredHuFateDisplayLoad(long orderId)
+    {
+        var generation = ++_huFateDisplayLoadGeneration;
+
+        Dispatcher.BeginInvoke(
+            new Action(() => _ = LoadHuFateDisplayAsync(orderId, generation)),
+            System.Windows.Threading.DispatcherPriority.ContextIdle);
+    }
+
+    private async Task LoadHuFateDisplayAsync(long orderId, long generation)
+    {
+        try
+        {
+            var fateDisplayByLine = await Task.Run(() =>
+                OrderLineHuFateDisplayBuilder.BuildByOrder(_services.DataStore, orderId)).ConfigureAwait(true);
+
+            if (generation != _huFateDisplayLoadGeneration
+                || !_orderId.HasValue
+                || _orderId.Value != orderId)
+            {
+                return;
+            }
+
+            foreach (var line in _lines)
+            {
+                fateDisplayByLine.TryGetValue(line.Id, out var fateEntries);
+                line.HuFateDisplayEntries = fateEntries ?? Array.Empty<OrderLineHuDisplayEntry>();
+            }
+
+            RefreshOrderLinesGridPreservingSelection();
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error($"Deferred HU fate display load for order_id={orderId} failed", ex);
         }
     }
 
@@ -2313,7 +2678,7 @@ public partial class OrderDetailsWindow : Window
         ShortageColumn.Visibility = type == OrderType.Internal ? Visibility.Collapsed : Visibility.Visible;
 
         var isCustomer = type == OrderType.Customer;
-        OrderLinesGrid.ItemsSource = isCustomer ? _huBinding.Lines : _lines;
+        SetOrderLinesGridItemsSourcePreservingSelection();
         HuAvailableColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;
         HuBoundColumn.Visibility = Visibility.Visible;
         HuRemainingColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;
@@ -2384,6 +2749,10 @@ public partial class OrderDetailsWindow : Window
         _isLoading = false;
         _hasUnsavedChanges = false;
         UpdateReadyHuBindingButton();
+        if (_liveRefreshPending && !_liveRefreshInProgress)
+        {
+            Dispatcher.BeginInvoke(ApplyPendingLiveRefresh);
+        }
     }
 
     private void MarkDirty()

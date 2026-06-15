@@ -1352,7 +1352,9 @@ public sealed class WpfReadApiService
     private static Order MapOrder(JsonElement element)
     {
         var type = OrderStatusMapper.TypeFromString(ReadString(element, "order_type")) ?? OrderType.Customer;
-        var status = ParseOrderStatus(ReadString(element, "status"), type);
+        var status = ParseOrderStatus(
+            ReadString(element, "order_status") ?? ReadString(element, "status"),
+            type);
 
         return new Order
         {
@@ -1384,6 +1386,10 @@ public sealed class WpfReadApiService
             PlannedQty = ReadDouble(element, "planned_qty"),
             FilledQty = ReadDouble(element, "filled_qty"),
             PalletPlanStatus = ReadString(element, "pallet_plan_status") ?? string.Empty,
+            ShipmentOrderedQty = ReadDouble(element, "shipment_ordered_qty"),
+            ShipmentShippedQty = ReadDouble(element, "shipment_shipped_qty"),
+            ShipmentRemainingQty = ReadDouble(element, "shipment_remaining_qty"),
+            IsPartiallyShipped = ReadBool(element, "is_partially_shipped"),
             CreatedAt = ReadDateTime(element, "created_at") ?? DateTime.MinValue,
             ShippedAt = ReadDateTime(element, "shipped_at")
         };

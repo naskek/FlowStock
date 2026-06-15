@@ -160,10 +160,8 @@ assert(
   !renderOutboundPickingOrderBody.includes("filling-scan-hint"),
   "outbound scan screen should not render visible scanner hint text"
 );
-assert(
-  !renderOutboundPickingOrderBody.includes("Завершить подбор"),
-  "outbound scan screen should not render manual complete button"
-);
+assert.match(renderOutboundPickingOrderBody, /Завершить отгрузку/);
+assert.match(renderOutboundPickingOrderBody, /outbound-picking-progress/);
 assert(
   appJs.includes("var showTsdBelowMinimumEntry = false"),
   "home below-minimum entry should be gated by a frontend-only flag"
@@ -338,6 +336,23 @@ assert.match(appEl.innerHTML, /HU-000001/);
 assert.match(appEl.innerHTML, /filling-pallet-group-title/);
 assert.match(appEl.innerHTML, /Горчица/);
 assert.doesNotMatch(appEl.innerHTML, /Горчица, 1 шт/);
+
+hooks.renderOutboundPickingOrder(
+  {
+    ...snakeCaseOrder,
+    ordered_qty: 15,
+    shipped_qty: 5,
+    remaining_qty: 10,
+    scanned_qty: 5,
+    hus: [],
+  },
+  {}
+);
+assert.match(appEl.innerHTML, /Заказано <strong>15<\/strong>/);
+assert.match(appEl.innerHTML, /Уже отгружено <strong>5<\/strong>/);
+assert.match(appEl.innerHTML, /Осталось <strong>10<\/strong>/);
+assert.match(appEl.innerHTML, /Отсканировано сейчас <strong>5<\/strong>/);
+assert.match(appEl.innerHTML, /Завершить отгрузку/);
 assert.strictEqual(
   hooks.buildOutboundPickingSummaryLine({
     order_ref: "003",

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using FlowStock.Core.Models;
+using FlowStock.Core.Services;
 using FlowStock.Server;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
 using FlowStock.Server.Tests.DeleteDocLine.Infrastructure;
@@ -57,6 +58,47 @@ public sealed class ValidationTests
         Assert.Empty(harness.LedgerEntries);
     }
 
+    [Fact]
+    public async Task ProductionReceiptDraft_FailsWithoutTombstone()
+    {
+        var (harness, apiStore, docUid) = CreateProductionReceiptScenarioWithLine();
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        using var response = await host.Client.PostAsJsonAsync(
+            $"/api/docs/{docUid}/lines/delete",
+            new DeleteDocLineRequest
+            {
+                EventId = "evt-line-delete-prd-001",
+                DeviceId = "API-01",
+                LineId = 1
+            });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<ApiErrorResult>();
+        Assert.NotNull(payload);
+        Assert.False(payload.Ok);
+        Assert.Equal(DocumentService.ProductionReceiptLineDeleteForbiddenCode, payload.Error);
+        Assert.Equal(DocumentService.ProductionReceiptLineDeleteForbiddenMessage, payload.Message);
+        Assert.Single(harness.GetDocLines(1));
+        Assert.Single(harness.GetAllDocLines(1));
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void DocumentService_ProductionReceiptDraft_BlocksSingleAndBatchDelete()
+    {
+        var (harness, _, _) = CreateProductionReceiptScenarioWithLine();
+        var service = harness.CreateService();
+
+        var singleError = Assert.Throws<InvalidOperationException>(() => service.DeleteDocLine(1, 1));
+        var batchError = Assert.Throws<InvalidOperationException>(() => service.DeleteDocLines(1, [1]));
+
+        Assert.Equal(DocumentService.ProductionReceiptLineDeleteForbiddenMessage, singleError.Message);
+        Assert.Equal(DocumentService.ProductionReceiptLineDeleteForbiddenMessage, batchError.Message);
+        Assert.Single(harness.GetDocLines(1));
+        Assert.Single(harness.GetAllDocLines(1));
+    }
+
     private static (CloseDocumentHarness Harness, InMemoryApiDocStore ApiStore, string DocUid) CreateClosedScenarioWithLine()
     {
         const string docUid = "line-delete-closed-001";
@@ -104,6 +146,46 @@ public sealed class ValidationTests
             toLocationId: 10,
             fromHu: null,
             toHu: null,
+            deviceId: "API-01");
+
+        return (harness, apiStore, docUid);
+    }
+
+    private static (CloseDocumentHarness Harness, InMemoryApiDocStore ApiStore, string DocUid) CreateProductionReceiptScenarioWithLine()
+    {
+        const string docUid = "line-delete-prd-001";
+        var harness = new CloseDocumentHarness();
+        harness.SeedDoc(new Doc
+        {
+            Id = 1,
+            DocRef = "PRD-LINE-DELETE-001",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            CreatedAt = new DateTime(2026, 6, 8, 10, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 1,
+            DocId = 1,
+            ItemId = 100,
+            Qty = 5,
+            ToLocationId = 10,
+            ToHu = "HU-PRD-001",
+            UomCode = "BOX"
+        });
+
+        var apiStore = new InMemoryApiDocStore();
+        apiStore.AddApiDoc(
+            docUid,
+            docId: 1,
+            status: "DRAFT",
+            docType: "PRODUCTION_RECEIPT",
+            docRef: "PRD-LINE-DELETE-001",
+            partnerId: null,
+            fromLocationId: null,
+            toLocationId: 10,
+            fromHu: null,
+            toHu: "HU-PRD-001",
             deviceId: "API-01");
 
         return (harness, apiStore, docUid);

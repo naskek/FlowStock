@@ -74,5 +74,5 @@ public sealed record PalletLabelPrintResult(bool IsSuccess, string Message, int 
 
 public interface IPalletLabelPrintService
 {
-    PalletLabelPrintResult Print(IReadOnlyList<PalletLabelPrintRow> rows);
+    PalletLabelPrintResult Print(IReadOnlyList<PalletLabelPrintRow> rows, int? copiesOverride = null);
 }

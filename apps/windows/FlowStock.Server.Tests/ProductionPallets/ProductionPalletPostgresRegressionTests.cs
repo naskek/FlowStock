@@ -73,6 +73,28 @@ public sealed class ProductionPalletPostgresRegressionTests
     }
 
     [Fact]
+    public void DetachRemovableProductionPalletPlanForDraftReceiptCancel_Sql_DeletesPlanWithoutNullingForeignKeys()
+    {
+        var source = File.ReadAllText(GetPostgresDataStorePath());
+        var methodIndex = source.IndexOf(
+            "public void DetachRemovableProductionPalletPlanForDraftReceiptCancel",
+            StringComparison.Ordinal);
+        Assert.True(methodIndex >= 0);
+
+        var methodEnd = source.IndexOf(
+            "public ProductionPalletPlanCleanupCounts ClearPlannedProductionPalletPlanForOrderLines",
+            methodIndex,
+            StringComparison.Ordinal);
+        Assert.True(methodEnd > methodIndex);
+
+        var methodBody = source[methodIndex..methodEnd];
+        Assert.Contains("DELETE FROM production_pallet_lines pll", methodBody, StringComparison.Ordinal);
+        Assert.Contains("DELETE FROM production_pallets", methodBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("doc_line_id = NULL", methodBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("prd_doc_id = NULL", methodBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void NullableExcludePalletIdParameter_DoesNotFailPostgresTypeInference()
     {
         var connectionString = ResolvePostgresTestConnectionString();

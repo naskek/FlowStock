@@ -22,6 +22,8 @@ public sealed class ProductionFillCloseService
         _options = options;
     }
 
+    public bool AutoCloseEnabled => _options.ProductionAutoCloseOnFill;
+
     public ProductionFillAutoCloseResult TryAutoCloseAfterFill(ProductionPallet pallet)
     {
         ArgumentNullException.ThrowIfNull(pallet);

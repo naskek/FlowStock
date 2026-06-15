@@ -7,6 +7,10 @@ namespace FlowStock.Core.Services;
 
 public sealed class DocumentService
 {
+    public const string ProductionReceiptLineDeleteForbiddenCode = "PRD_LINE_DELETE_FORBIDDEN";
+    public const string ProductionReceiptLineDeleteForbiddenMessage =
+        "Строки выпуска PRD нельзя удалять вручную. Измените паллетный план или заказ.";
+
     private readonly IDataStore _data;
     private const string AutoHuCreatedBy = "WINDOWS-AUTO";
     private const string ProductionPalletHuDistributionMessage = "Для выпуска с планом паллет распределение HU выполняется через план паллет";
@@ -276,17 +280,34 @@ public sealed class DocumentService
         }
 
         var closedAt = DateTime.Now;
+        var transactionErrors = new List<string>();
 
         var transactionStopwatch = Stopwatch.StartNew();
         _data.ExecuteInTransaction(store =>
         {
             var doc = store.GetDoc(docId);
-            if (doc == null || doc.Status == DocStatus.Closed)
+            if (doc == null)
             {
+                transactionErrors.Add("Документ не найден.");
+                return;
+            }
+
+            if (doc.Status == DocStatus.Closed)
+            {
+                transactionErrors.Add("Документ уже закрыт.");
                 return;
             }
 
             var lines = EnsureOrderLineLinks(store, doc, store.GetDocLines(docId));
+            if (doc.Type == DocType.Outbound)
+            {
+                transactionErrors.AddRange(BuildTransactionalOutboundErrors(store, doc, lines));
+                if (transactionErrors.Count > 0)
+                {
+                    return;
+                }
+            }
+
             var hasProductionPallets = doc.Type == DocType.ProductionReceipt && store.HasProductionPallets(docId);
             Dictionary<StockKey, double>? inventoryTotals = doc.Type == DocType.Inventory
                 ? new Dictionary<StockKey, double>()
@@ -559,6 +580,16 @@ public sealed class DocumentService
         });
         transactionStopwatch.Stop();
         timing.LedgerTransactionMs = transactionStopwatch.ElapsedMilliseconds;
+
+        if (transactionErrors.Count > 0)
+        {
+            return new CloseDocResult
+            {
+                Success = false,
+                Errors = transactionErrors,
+                Timing = timing
+            };
+        }
 
         return new CloseDocResult { Success = true, Timing = timing };
     }
@@ -1433,6 +1464,8 @@ public sealed class DocumentService
             throw new InvalidOperationException("Документ уже закрыт.");
         }
 
+        EnsureManualLineDeleteAllowed(doc);
+
         var line = _data.GetDocLines(docId).FirstOrDefault(l => l.Id == docLineId);
         if (line == null)
         {
@@ -1472,6 +1505,8 @@ public sealed class DocumentService
             throw new InvalidOperationException("Документ уже закрыт.");
         }
 
+        EnsureManualLineDeleteAllowed(doc);
+
         var selectedIds = docLineIds
             .Distinct()
             .ToList();
@@ -1491,6 +1526,14 @@ public sealed class DocumentService
                 store.DeleteDocLine(id);
             }
         });
+    }
+
+    private static void EnsureManualLineDeleteAllowed(Doc doc)
+    {
+        if (doc.Type == DocType.ProductionReceipt)
+        {
+            throw new InvalidOperationException(ProductionReceiptLineDeleteForbiddenMessage);
+        }
     }
 
     private static IReadOnlyList<DocLine> EnsureOrderLineLinks(IDataStore store, Doc doc, IReadOnlyList<DocLine> lines)
@@ -1977,6 +2020,11 @@ public sealed class DocumentService
             }
         }
 
+        if (doc.Type == DocType.Outbound)
+        {
+            check.Errors.AddRange(BuildMixedOutboundHuErrors(_data, doc, lines));
+        }
+
         if (doc.Type == DocType.ProductionReceipt && hasProductionPallets)
         {
             var pallets = _data.GetProductionPalletsByDoc(docId)
@@ -1985,6 +2033,11 @@ public sealed class DocumentService
             if (pallets.Any(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
             {
                 check.Errors.Add("Нельзя закрыть выпуск: есть ненаполненные паллеты");
+            }
+
+            if (pallets.Any(pallet => pallet.IsMixedPallet && !pallet.AreAllComponentsFilled))
+            {
+                check.Errors.Add("Нельзя закрыть выпуск: есть не полностью наполненные микс-паллеты");
             }
 
             var docLinesById = lines.ToDictionary(line => line.Id, line => line);
@@ -2254,6 +2307,162 @@ public sealed class DocumentService
     private static Dictionary<long, HashSet<string>> BuildOrderBoundHuByItem(IDataStore store, long orderId)
     {
         return CustomerOutboundBoundHuService.BuildOrderBoundHuByItem(store, orderId);
+    }
+
+    private static IReadOnlyList<string> BuildTransactionalOutboundErrors(
+        IDataStore store,
+        Doc doc,
+        IReadOnlyList<DocLine> lines)
+    {
+        var errors = new List<string>();
+        var duplicateKeys = new HashSet<(long? OrderLineId, long ItemId, string HuCode)>();
+        var requestedByOrderLine = new Dictionary<long, double>();
+        var requestedByStock = new Dictionary<StockKey, double>();
+        var orderBoundHuByItem = doc.OrderId.HasValue
+            ? BuildOrderBoundHuByItem(store, doc.OrderId.Value)
+            : null;
+
+        foreach (var line in lines)
+        {
+            var huCode = NormalizeHuValue(line.FromHu ?? doc.ShippingRef);
+            if (doc.OrderId.HasValue && !line.OrderLineId.HasValue)
+            {
+                errors.Add($"Товар {line.ItemId}: не найдена строка заказа для отгрузки.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(huCode))
+            {
+                if (!duplicateKeys.Add((line.OrderLineId, line.ItemId, huCode)))
+                {
+                    errors.Add($"HU {huCode}: повторная строка отгрузки для той же позиции заказа.");
+                }
+
+                if (doc.OrderId.HasValue)
+                {
+                    var allowed = orderBoundHuByItem != null
+                                  && orderBoundHuByItem.TryGetValue(line.ItemId, out var codes)
+                        ? codes
+                        : EmptyHuSet;
+                    if (!allowed.Contains(huCode))
+                    {
+                        errors.Add($"HU {huCode}: не относится к выбранному заказу.");
+                    }
+                }
+
+                if (line.FromLocationId.HasValue)
+                {
+                    var key = new StockKey(line.ItemId, line.FromLocationId.Value, huCode);
+                    requestedByStock[key] = requestedByStock.TryGetValue(key, out var requested)
+                        ? requested + line.Qty
+                        : line.Qty;
+                }
+            }
+
+            if (line.OrderLineId.HasValue)
+            {
+                requestedByOrderLine[line.OrderLineId.Value] =
+                    requestedByOrderLine.TryGetValue(line.OrderLineId.Value, out var requested)
+                        ? requested + line.Qty
+                        : line.Qty;
+            }
+        }
+
+        if (doc.OrderId.HasValue)
+        {
+            var remainingByLine = store.GetOrderShipmentRemaining(doc.OrderId.Value)
+                .ToDictionary(line => line.OrderLineId, line => line.QtyRemaining);
+            foreach (var entry in requestedByOrderLine)
+            {
+                if (!remainingByLine.TryGetValue(entry.Key, out var remaining)
+                    || entry.Value > remaining + QtyTolerance)
+                {
+                    errors.Add($"Строка заказа {entry.Key}: превышен актуальный остаток к отгрузке.");
+                }
+            }
+        }
+
+        foreach (var entry in requestedByStock)
+        {
+            var available = store.GetLedgerBalance(entry.Key.ItemId, entry.Key.LocationId, entry.Key.Hu);
+            if (entry.Value > available + QtyTolerance)
+            {
+                errors.Add($"HU {entry.Key.Hu}: недостаточный актуальный остаток на складе.");
+            }
+        }
+
+        errors.AddRange(BuildMixedOutboundHuErrors(store, doc, lines));
+        return errors.Distinct(StringComparer.CurrentCulture).ToArray();
+    }
+
+    private static IReadOnlyList<string> BuildMixedOutboundHuErrors(
+        IDataStore store,
+        Doc doc,
+        IReadOnlyList<DocLine> lines)
+    {
+        if (doc.Type != DocType.Outbound)
+        {
+            return Array.Empty<string>();
+        }
+
+        var actualByHu = lines
+            .Select(line => new { Line = line, HuCode = NormalizeHuValue(line.FromHu ?? doc.ShippingRef) })
+            .Where(row => !string.IsNullOrWhiteSpace(row.HuCode))
+            .GroupBy(row => row.HuCode!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(row => row.Line).ToArray(),
+                StringComparer.OrdinalIgnoreCase);
+
+        var expectedByHu = doc.OrderId.HasValue
+            ? CustomerOutboundBoundHuService.GetUnshippedOutboundHuLines(store, doc.OrderId.Value)
+                .GroupBy(line => NormalizeHuValue(line.HuCode)!, StringComparer.OrdinalIgnoreCase)
+                .Where(group => group.Count() > 1)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group
+                        .GroupBy(line => line.ItemId)
+                        .ToDictionary(itemGroup => itemGroup.Key, itemGroup => itemGroup.Sum(line => line.Qty)),
+                    StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, Dictionary<long, double>>(StringComparer.OrdinalIgnoreCase);
+
+        var errors = new List<string>();
+        foreach (var entry in actualByHu)
+        {
+            Dictionary<long, double>? requiredByItem = null;
+            var isMixedHu = false;
+            var pallet = store.GetProductionPalletByHu(entry.Key);
+            if (pallet?.IsMixedPallet == true)
+            {
+                isMixedHu = true;
+                requiredByItem = pallet.Lines
+                    .GroupBy(line => line.ItemId)
+                    .ToDictionary(group => group.Key, group => group.Sum(line => line.PlannedQty));
+            }
+            else if (expectedByHu.TryGetValue(entry.Key, out requiredByItem))
+            {
+                isMixedHu = true;
+            }
+
+            if (!isMixedHu || requiredByItem == null)
+            {
+                continue;
+            }
+
+            var actualByItem = entry.Value
+                .GroupBy(line => line.ItemId)
+                .ToDictionary(group => group.Key, group => group.Sum(line => line.Qty));
+            var isComplete = actualByItem.Count == requiredByItem.Count
+                             && requiredByItem.All(required =>
+                                 actualByItem.TryGetValue(required.Key, out var actualQty)
+                                 && Math.Abs(actualQty - required.Value) <= QtyTolerance);
+            if (!isComplete)
+            {
+                errors.Add("MIXED_HU_SHIP_AS_WHOLE_REQUIRED");
+                errors.Add($"Микс-паллета {entry.Key} должна отгружаться целиком.");
+            }
+        }
+
+        return errors;
     }
 
     private static void TryRefreshLinkedOrderStatus(
@@ -3083,4 +3292,3 @@ public sealed class DocumentService
         public List<string> Warnings { get; } = new();
     }
 }
-

@@ -1,0 +1,77 @@
+<Window x:Class="FlowStock.App.MixedPalletComponentFillWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="{Binding Title}"
+        Height="520" Width="820"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="CanResizeWithGrip">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,8">
+            <TextBlock Text="{Binding Title}" FontSize="16" FontWeight="SemiBold" />
+            <TextBlock Text="{Binding ProgressDisplay}" Foreground="Gray" Margin="0,4,0,0" />
+        </StackPanel>
+
+        <TextBlock Grid.Row="1"
+                   Text="Отметьте компоненты, которые физически уже лежат на паллете. Количество не вводится: выбранная строка считается полностью уложенной."
+                   TextWrapping="Wrap"
+                   Margin="0,0,0,8" />
+
+        <DataGrid x:Name="ComponentsGrid"
+                  Grid.Row="2"
+                  AutoGenerateColumns="False"
+                  CanUserAddRows="False"
+                  CanUserDeleteRows="False"
+                  HeadersVisibility="Column"
+                  IsReadOnly="False"
+                  ItemsSource="{Binding Rows}"
+                  SelectionMode="Single">
+            <DataGrid.GroupStyle>
+                <GroupStyle>
+                    <GroupStyle.HeaderTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding Name}"
+                                       FontWeight="SemiBold"
+                                       Margin="0,8,0,4" />
+                        </DataTemplate>
+                    </GroupStyle.HeaderTemplate>
+                </GroupStyle>
+            </DataGrid.GroupStyle>
+            <DataGrid.Columns>
+                <DataGridTemplateColumn Header="" Width="48">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <CheckBox HorizontalAlignment="Center"
+                                      IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                      IsEnabled="{Binding IsSelectable}" />
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTextColumn Header="Компонент" Binding="{Binding ItemName}" IsReadOnly="True" Width="*" />
+                <DataGridTextColumn Header="Количество" Binding="{Binding QtyDisplay}" IsReadOnly="True" Width="160" />
+                <DataGridTextColumn Header="Статус" Binding="{Binding StateDisplay}" IsReadOnly="True" Width="120" />
+                <DataGridTextColumn Header="Наполнено" Binding="{Binding FilledAtDisplay}" IsReadOnly="True" Width="150" />
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button x:Name="ConfirmButton"
+                    Content="Подтвердить"
+                    Width="130"
+                    IsDefault="True"
+                    IsEnabled="{Binding CanConfirm}"
+                    Click="Confirm_Click" />
+            <Button Content="Отмена"
+                    Width="120"
+                    IsCancel="True"
+                    Margin="8,0,0,0"
+                    Click="Cancel_Click" />
+        </StackPanel>
+    </Grid>
+</Window>

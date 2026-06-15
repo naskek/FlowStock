@@ -450,6 +450,115 @@ public sealed class WpfProductionPalletApiService
         }
     }
 
+    public async Task<WpfProductionPalletDocumentApiResult> TryGetProductionPalletDocumentAsync(
+        long prdDocId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (!TryLoadConfiguration(out var configuration))
+            {
+                _logger.Info("Production pallet document API skipped: server base URL is not configured.");
+                return WpfProductionPalletDocumentApiResult.Failure("FlowStock Server API не настроен.");
+            }
+
+            using var handler = CreateHandler(configuration);
+            using var client = CreateClient(handler, configuration);
+            using var response = await client.GetAsync($"/api/docs/{prdDocId}/production-pallets", cancellationToken)
+                .ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return WpfProductionPalletDocumentApiResult.Failure(
+                    MapProductionPalletError(await ReadApiErrorAsync(response).ConfigureAwait(false)));
+            }
+
+            var payload = await response.Content.ReadFromJsonAsync<FillDocumentResponse>(JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+            if (payload == null)
+            {
+                return WpfProductionPalletDocumentApiResult.Failure("Сервер вернул пустой ответ.");
+            }
+
+            return new WpfProductionPalletDocumentApiResult(true, string.Empty, MapDocument(payload));
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Production pallet document load failed", ex);
+            return WpfProductionPalletDocumentApiResult.Failure(ex.Message);
+        }
+    }
+
+    public async Task<WpfProductionPalletMixedComponentFillApiResult> TryFillMixedPalletComponentsAsync(
+        long prdDocId,
+        long? orderId,
+        string huCode,
+        IReadOnlyList<long> componentLineIds,
+        string? deviceId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (componentLineIds.Count == 0)
+            {
+                return WpfProductionPalletMixedComponentFillApiResult.Failure("Выберите хотя бы один компонент микс-паллеты.");
+            }
+
+            if (!TryLoadConfiguration(out var configuration))
+            {
+                _logger.Info("Production pallet mixed component fill skipped: server base URL is not configured.");
+                return WpfProductionPalletMixedComponentFillApiResult.Failure("FlowStock Server API не настроен.");
+            }
+
+            using var handler = CreateHandler(configuration);
+            using var client = CreateClient(handler, configuration);
+            using var response = await client.PostAsJsonAsync("/api/tsd/production/fill-mixed-pallet-components", new
+                {
+                    order_id = orderId,
+                    prd_doc_id = prdDocId,
+                    hu_code = huCode,
+                    device_id = deviceId,
+                    component_line_ids = componentLineIds
+                }, cancellationToken)
+                .ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return WpfProductionPalletMixedComponentFillApiResult.Failure(
+                    MapProductionPalletError(await ReadApiErrorAsync(response).ConfigureAwait(false)));
+            }
+
+            var payload = await response.Content.ReadFromJsonAsync<MixedComponentFillResponse>(JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+            if (payload == null)
+            {
+                return WpfProductionPalletMixedComponentFillApiResult.Failure("Сервер вернул пустой ответ.");
+            }
+
+            var message = string.IsNullOrWhiteSpace(payload.Message)
+                ? payload.PrdAutoClosed || payload.LedgerWritten
+                    ? "Микс-паллета полностью наполнена и проведена."
+                    : "Компоненты отмечены. HU ещё не готов полностью."
+                : payload.Message!;
+
+            return new WpfProductionPalletMixedComponentFillApiResult(
+                true,
+                message,
+                payload.AlreadyFilled,
+                payload.EffectiveStatus ?? string.Empty,
+                payload.FilledComponentCount,
+                payload.TotalComponentCount,
+                payload.LedgerWritten,
+                payload.PrdAutoClosed,
+                payload.ClosedPrdDocRef,
+                payload.Pallet == null ? null : MapPallet(payload.Pallet),
+                payload.Document == null ? null : MapDocument(payload.Document));
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Production pallet mixed component fill failed", ex);
+            return WpfProductionPalletMixedComponentFillApiResult.Failure(ex.Message);
+        }
+    }
+
     private bool TryLoadConfiguration(out WpfProductionPalletApiConfiguration configuration)
     {
         var settings = _settings.Load().Server ?? new ServerSettings();
@@ -502,6 +611,72 @@ public sealed class WpfProductionPalletApiService
         }
 
         return $"Server returned {(int)response.StatusCode} {response.ReasonPhrase}.";
+    }
+
+    private static string MapProductionPalletError(string error)
+    {
+        return error switch
+        {
+            "HU_REQUIRED" => "Укажите HU паллеты.",
+            "COMPONENT_LINE_IDS_REQUIRED" => "Выберите хотя бы один компонент микс-паллеты.",
+            "PRODUCTION_AUTO_CLOSE_REQUIRED" => "Автозакрытие PRD при наполнении отключено. Наполнение микс-паллеты недоступно.",
+            "PALLET_NOT_FOUND" => "HU паллеты не найден.",
+            "PALLET_BELONGS_TO_ANOTHER_ORDER" => "Паллета относится к другому заказу или PRD.",
+            "PRD_NOT_FOUND" => "PRD для паллеты не найден.",
+            "PRD_ALREADY_CLOSED" => "PRD уже закрыт.",
+            "PALLET_CANCELLED" => "Паллета отменена.",
+            "PALLET_NOT_MIXED" => "Выбранная паллета не является микс-паллетой.",
+            "PALLET_ORDER_LINES_INVALID" => "Строки заказа для паллеты изменились. Обновите документ и повторите операцию.",
+            "COMPONENT_NOT_IN_PALLET" => "Один из выбранных компонентов уже не относится к этой HU. Обновите документ и повторите операцию.",
+            "MIXED_COMPONENT_FILL_FAILED" => "Не удалось отметить компоненты микс-паллеты.",
+            "MIXED_COMPONENT_SELECTION_REQUIRED" => "Для микс-паллеты выберите наполненные компоненты.",
+            _ => string.IsNullOrWhiteSpace(error) ? "Не удалось выполнить операцию с паллетой." : error
+        };
+    }
+
+    private static WpfProductionPalletDocument MapDocument(FillDocumentResponse document)
+    {
+        return new WpfProductionPalletDocument(
+            document.PrdDocId,
+            new WpfProductionPalletSummary(
+                document.Summary?.PlannedPalletCount ?? 0,
+                document.Summary?.FilledPalletCount ?? 0,
+                document.Summary?.RemainingPalletCount ?? 0),
+            (document.Pallets ?? Array.Empty<FillPalletResponse>()).Select(MapPallet).ToArray());
+    }
+
+    private static WpfProductionPalletDetail MapPallet(FillPalletResponse pallet)
+    {
+        return new WpfProductionPalletDetail(
+            pallet.Id,
+            pallet.PrdDocId,
+            pallet.DocLineId,
+            pallet.OrderId,
+            pallet.OrderLineId,
+            pallet.ItemId,
+            pallet.ItemName ?? string.Empty,
+            pallet.HuCode ?? string.Empty,
+            pallet.PlannedQty,
+            pallet.Status ?? string.Empty,
+            pallet.EffectiveStatus ?? pallet.Status ?? string.Empty,
+            pallet.IsMixedPallet,
+            pallet.FilledComponentCount,
+            pallet.TotalComponentCount,
+            (pallet.Lines ?? Array.Empty<FillPalletLineResponse>()).Select(MapPalletLine).ToArray(),
+            pallet.FilledAt);
+    }
+
+    private static WpfProductionPalletComponentDetail MapPalletLine(FillPalletLineResponse line)
+    {
+        return new WpfProductionPalletComponentDetail(
+            line.ComponentLineId,
+            line.ItemId,
+            line.ItemName ?? string.Empty,
+            line.PlannedQty,
+            line.FilledQty,
+            line.FilledAt,
+            line.IsCompleted,
+            string.IsNullOrWhiteSpace(line.Uom) ? "шт" : line.Uom!);
     }
 
     private static PalletLabelPrintRow MapPrintRow(PrintRowResponse row)
@@ -838,17 +1013,65 @@ public sealed class WpfProductionPalletApiService
 
     private sealed class FillPalletResponse
     {
+        [JsonPropertyName("id")]
+        public long Id { get; init; }
+
+        [JsonPropertyName("prd_doc_id")]
+        public long PrdDocId { get; init; }
+
+        [JsonPropertyName("doc_line_id")]
+        public long DocLineId { get; init; }
+
+        [JsonPropertyName("order_id")]
+        public long? OrderId { get; init; }
+
+        [JsonPropertyName("order_line_id")]
+        public long? OrderLineId { get; init; }
+
+        [JsonPropertyName("item_id")]
+        public long ItemId { get; init; }
+
+        [JsonPropertyName("item_name")]
+        public string? ItemName { get; init; }
+
         [JsonPropertyName("hu_code")]
         public string? HuCode { get; init; }
 
+        [JsonPropertyName("planned_qty")]
+        public double PlannedQty { get; init; }
+
         [JsonPropertyName("status")]
         public string? Status { get; init; }
+
+        [JsonPropertyName("effective_status")]
+        public string? EffectiveStatus { get; init; }
+
+        [JsonPropertyName("is_mixed_pallet")]
+        public bool IsMixedPallet { get; init; }
+
+        [JsonPropertyName("filled_component_count")]
+        public int FilledComponentCount { get; init; }
+
+        [JsonPropertyName("total_component_count")]
+        public int TotalComponentCount { get; init; }
+
+        [JsonPropertyName("lines")]
+        public FillPalletLineResponse[]? Lines { get; init; }
+
+        [JsonPropertyName("filled_at")]
+        public DateTime? FilledAt { get; init; }
     }
 
     private sealed class FillDocumentResponse
     {
+        [JsonPropertyName("prd_doc_id")]
+        public long PrdDocId { get; init; }
+
         [JsonPropertyName("summary")]
         public FillSummaryResponse? Summary { get; init; }
+
+        [JsonPropertyName("pallets")]
+        public FillPalletResponse[]? Pallets { get; init; }
     }
 
     private sealed class FillSummaryResponse
@@ -861,6 +1084,66 @@ public sealed class WpfProductionPalletApiService
 
         [JsonPropertyName("remaining_pallet_count")]
         public int RemainingPalletCount { get; init; }
+    }
+
+    private sealed class FillPalletLineResponse
+    {
+        [JsonPropertyName("component_line_id")]
+        public long ComponentLineId { get; init; }
+
+        [JsonPropertyName("item_id")]
+        public long ItemId { get; init; }
+
+        [JsonPropertyName("item_name")]
+        public string? ItemName { get; init; }
+
+        [JsonPropertyName("planned_qty")]
+        public double PlannedQty { get; init; }
+
+        [JsonPropertyName("filled_qty")]
+        public double FilledQty { get; init; }
+
+        [JsonPropertyName("filled_at")]
+        public DateTime? FilledAt { get; init; }
+
+        [JsonPropertyName("is_completed")]
+        public bool IsCompleted { get; init; }
+
+        [JsonPropertyName("uom")]
+        public string? Uom { get; init; }
+    }
+
+    private sealed class MixedComponentFillResponse
+    {
+        [JsonPropertyName("already_filled")]
+        public bool AlreadyFilled { get; init; }
+
+        [JsonPropertyName("effective_status")]
+        public string? EffectiveStatus { get; init; }
+
+        [JsonPropertyName("filled_component_count")]
+        public int FilledComponentCount { get; init; }
+
+        [JsonPropertyName("total_component_count")]
+        public int TotalComponentCount { get; init; }
+
+        [JsonPropertyName("ledger_written")]
+        public bool LedgerWritten { get; init; }
+
+        [JsonPropertyName("prd_auto_closed")]
+        public bool PrdAutoClosed { get; init; }
+
+        [JsonPropertyName("closed_prd_doc_ref")]
+        public string? ClosedPrdDocRef { get; init; }
+
+        [JsonPropertyName("message")]
+        public string? Message { get; init; }
+
+        [JsonPropertyName("pallet")]
+        public FillPalletResponse? Pallet { get; init; }
+
+        [JsonPropertyName("document")]
+        public FillDocumentResponse? Document { get; init; }
     }
 }
 
@@ -981,6 +1264,85 @@ public sealed record WpfProductionPalletFillApiResult(
         return new WpfProductionPalletFillApiResult(false, message, false, string.Empty, string.Empty, 0, 0, 0);
     }
 }
+
+public sealed record WpfProductionPalletDocumentApiResult(
+    bool IsSuccess,
+    string Message,
+    WpfProductionPalletDocument? Document)
+{
+    public static WpfProductionPalletDocumentApiResult Failure(string message)
+    {
+        return new WpfProductionPalletDocumentApiResult(false, message, null);
+    }
+}
+
+public sealed record WpfProductionPalletMixedComponentFillApiResult(
+    bool IsSuccess,
+    string Message,
+    bool AlreadyFilled,
+    string EffectiveStatus,
+    int FilledComponentCount,
+    int TotalComponentCount,
+    bool LedgerWritten,
+    bool PrdAutoClosed,
+    string? ClosedPrdDocRef,
+    WpfProductionPalletDetail? Pallet,
+    WpfProductionPalletDocument? Document)
+{
+    public static WpfProductionPalletMixedComponentFillApiResult Failure(string message)
+    {
+        return new WpfProductionPalletMixedComponentFillApiResult(
+            false,
+            message,
+            false,
+            string.Empty,
+            0,
+            0,
+            false,
+            false,
+            null,
+            null,
+            null);
+    }
+}
+
+public sealed record WpfProductionPalletDocument(
+    long PrdDocId,
+    WpfProductionPalletSummary Summary,
+    IReadOnlyList<WpfProductionPalletDetail> Pallets);
+
+public sealed record WpfProductionPalletSummary(
+    int PlannedPalletCount,
+    int FilledPalletCount,
+    int RemainingPalletCount);
+
+public sealed record WpfProductionPalletDetail(
+    long Id,
+    long PrdDocId,
+    long DocLineId,
+    long? OrderId,
+    long? OrderLineId,
+    long ItemId,
+    string ItemName,
+    string HuCode,
+    double PlannedQty,
+    string Status,
+    string EffectiveStatus,
+    bool IsMixedPallet,
+    int FilledComponentCount,
+    int TotalComponentCount,
+    IReadOnlyList<WpfProductionPalletComponentDetail> Lines,
+    DateTime? FilledAt);
+
+public sealed record WpfProductionPalletComponentDetail(
+    long ComponentLineId,
+    long ItemId,
+    string ItemName,
+    double PlannedQty,
+    double FilledQty,
+    DateTime? FilledAt,
+    bool IsCompleted,
+    string Uom);
 
 public sealed record WpfProducedStockReleaseApiResult(
     bool IsSuccess,

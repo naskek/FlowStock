@@ -3,7 +3,13 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 
+const corePath = path.join(__dirname, "pc-core.js");
+const authPath = path.join(__dirname, "pc-auth.js");
+const orderModalPath = path.join(__dirname, "pc-order-modal.js");
+const catalogPath = path.join(__dirname, "pc-catalog.js");
+const stockPath = path.join(__dirname, "pc-stock.js");
 const appPath = path.join(__dirname, "app.js");
+const styles = fs.readFileSync(path.join(__dirname, "styles.css"), "utf8");
 const hooks = {};
 const context = {
   console,
@@ -22,6 +28,11 @@ const context = {
 
 context.window.document = context.document;
 vm.createContext(context);
+vm.runInContext(fs.readFileSync(corePath, "utf8"), context, { filename: corePath });
+vm.runInContext(fs.readFileSync(authPath, "utf8"), context, { filename: authPath });
+vm.runInContext(fs.readFileSync(orderModalPath, "utf8"), context, { filename: orderModalPath });
+vm.runInContext(fs.readFileSync(catalogPath, "utf8"), context, { filename: catalogPath });
+vm.runInContext(fs.readFileSync(stockPath, "utf8"), context, { filename: stockPath });
 vm.runInContext(fs.readFileSync(appPath, "utf8"), context, { filename: appPath });
 
 const pc = context.window.FlowStockPcTestHooks;
@@ -188,6 +199,19 @@ const orderLinesWithPalletHtml = pc.renderOrderLinesTable(
 assert.doesNotMatch(orderLinesWithPalletHtml, /pc-order-line-coverage-covered/);
 assert.match(orderLinesWithPalletHtml, /Наполнение/);
 assert.match(orderLinesWithPalletHtml, /Наполнено 1 \/ 2/);
+assert.match(
+  orderLinesWithPalletHtml,
+  /<th>Товар<\/th><th>SKU \/ ШК<\/th><th>GTIN<\/th><th>Заказано<\/th><th>Наполнение<\/th>/
+);
+assert.match(orderLinesWithPalletHtml, /pc-order-lines-table-wrap/);
+assert.match(orderLinesWithPalletHtml, /pc-order-lines-col-item/);
+assert.match(orderLinesWithPalletHtml, /pc-order-lines-col-filling/);
+assert.match(styles, /\.pc-order-lines-table\s*\{[^}]*width:\s*100%;[^}]*table-layout:\s*fixed;/s);
+assert.match(styles, /\.pc-order-lines-table-wrap\s*\{[^}]*width:\s*100%;[^}]*overflow-x:\s*auto;/s);
+assert.doesNotMatch(orderLinesWithPalletHtml, /<th>В наличии<\/th>/);
+assert.doesNotMatch(orderLinesWithPalletHtml, /<th>Назначение<\/th>/);
+assert.doesNotMatch(orderLinesWithPalletHtml, /<th>Отгружено<\/th>/);
+assert.doesNotMatch(orderLinesWithPalletHtml, /<th>Выпущено<\/th>/);
 
 const orderLinesCompletePalletHtml = pc.renderOrderLinesTable(
   [
@@ -207,8 +231,152 @@ const orderLinesCompletePalletHtml = pc.renderOrderLinesTable(
   { order_type: "INTERNAL", order_status: "IN_PROGRESS" }
 );
 assert.match(orderLinesCompletePalletHtml, /pc-order-line-coverage-covered/);
-assert.match(orderLinesCompletePalletHtml, /pc-icon-status/);
-assert.doesNotMatch(orderLinesCompletePalletHtml, />Наполнено 2 \/ 2</);
+assert.match(orderLinesCompletePalletHtml, />Наполнено 2 \/ 2</);
+
+const mixedComponentFilledLineHtml = pc.renderOrderLinesTable(
+  [
+    {
+      item_name: "Горчица",
+      barcode: "SKU-001",
+      gtin: "04607186951520",
+      production_purpose: "CUSTOMER_ORDER",
+      qty_ordered: 1,
+      qty_shipped: 0,
+      qty_available: 0,
+      can_ship_now: 0,
+      planned_pallet_count: 1,
+      filled_pallet_count: 1,
+      pallet_planned_qty: 1,
+      pallet_filled_qty: 1,
+    },
+  ],
+  { order_type: "CUSTOMER", order_status: "IN_PROGRESS" }
+);
+assert.match(mixedComponentFilledLineHtml, /pc-order-line-coverage-covered/);
+assert.doesNotMatch(mixedComponentFilledLineHtml, /pc-order-line-coverage-missing/);
+assert.match(mixedComponentFilledLineHtml, />Наполнено 1 \/ 1</);
+
+const mixedComponentPartialLineHtml = pc.renderOrderLinesTable(
+  [
+    {
+      item_name: "Горчица",
+      barcode: "SKU-001",
+      gtin: "04607186951520",
+      production_purpose: "CUSTOMER_ORDER",
+      qty_ordered: 1,
+      qty_shipped: 0,
+      qty_available: 0,
+      can_ship_now: 0,
+      planned_pallet_count: 1,
+      filled_pallet_count: 0,
+      pallet_planned_qty: 1,
+      pallet_filled_qty: 0.5,
+    },
+  ],
+  { order_type: "CUSTOMER", order_status: "IN_PROGRESS" }
+);
+assert.match(mixedComponentPartialLineHtml, /pc-order-line-coverage-partial/);
+assert.doesNotMatch(mixedComponentPartialLineHtml, /pc-order-line-coverage-missing/);
+assert.match(mixedComponentPartialLineHtml, />Наполнено 0\.5 \/ 1</);
+assert.match(styles, /\.pc-order-line-coverage-partial td\s*\{[^}]*background:\s*#fef3c7;/s);
+
+const mixedComponentOrder = {
+  id: 4,
+  order_ref: "004",
+  order_type: "CUSTOMER",
+  order_status: "IN_PROGRESS",
+  due_date: "2026-06-01",
+  shipped_at: null,
+  planned_pallet_count: 1,
+  filled_pallet_count: 1,
+};
+const mixedComponentLines = [
+  {
+    item_name: "Горчица",
+    barcode: "SKU-001",
+    gtin: "04607186951520",
+    production_purpose: "CUSTOMER_ORDER",
+    qty_ordered: 1,
+    qty_shipped: 0,
+    qty_available: 0,
+    can_ship_now: 0,
+    planned_pallet_count: 1,
+    filled_pallet_count: 1,
+    pallet_planned_qty: 1,
+    pallet_filled_qty: 1,
+  },
+];
+const modalUpdatesAfterMixedFill = pc.getOrderModalContentUpdates(mixedComponentOrder, mixedComponentLines);
+assert.match(modalUpdatesAfterMixedFill.linesHtml, />Наполнено 1 \/ 1</);
+assert.match(modalUpdatesAfterMixedFill.linesHtml, /pc-order-line-coverage-covered/);
+assert.strictEqual(Object.prototype.hasOwnProperty.call(modalUpdatesAfterMixedFill, "summaryHtml"), false);
+
+const modalDom = {
+  datesEl: { textContent: "" },
+  readinessEl: { outerHTML: '<span id="orderReadinessBadge"></span>' },
+  linesEl: { innerHTML: "" },
+  querySelector: function (selector) {
+    if (selector === "#orderDatesStatus") {
+      return this.datesEl;
+    }
+    if (selector === "#orderReadinessBadge") {
+      return this.readinessEl;
+    }
+    if (selector === "#orderLinesWrap") {
+      return this.linesEl;
+    }
+    return null;
+  },
+};
+pc.applyOrderModalContentUpdates(modalDom, modalUpdatesAfterMixedFill);
+assert.match(modalDom.linesEl.innerHTML, />Наполнено 1 \/ 1</);
+
+const completedOrderModalUpdates = pc.getOrderModalContentUpdates(
+  {
+    order_ref: "004",
+    order_type: "CUSTOMER",
+    order_status: "SHIPPED",
+    marking_effective_status: "PRINTED",
+    has_production_pallet_plan: true,
+    planned_pallet_count: 1,
+    filled_pallet_count: 1,
+  },
+  [
+    {
+      item_name: "Горчица",
+      qty_ordered: 1824,
+      qty_shipped: 1824,
+      planned_pallet_count: 1,
+      filled_pallet_count: 1,
+      show_pallet_completed_icon: true,
+      pallet_fill_title: "Паллеты: 1 / 1",
+    },
+  ]
+);
+assert.strictEqual(Object.prototype.hasOwnProperty.call(completedOrderModalUpdates, "summaryHtml"), false);
+assert.doesNotMatch(completedOrderModalUpdates.linesHtml, /pc-order-modal-summary/);
+assert.match(completedOrderModalUpdates.linesHtml, /pc-icon-status/);
+
+let modalRefreshCalls = 0;
+pc.__setOpenOrderModalControllerForTest({
+  modal: { isConnected: true },
+  refresh: function () {
+    modalRefreshCalls += 1;
+  },
+});
+pc.refreshOpenOrderModalIfNeeded();
+assert.strictEqual(modalRefreshCalls, 1, "live refresh hook should call open order modal refresh");
+pc.clearOpenOrderModalController();
+assert.strictEqual(pc.getOpenOrderModalController(), null);
+
+pc.__setOpenOrderModalControllerForTest({
+  modal: { isConnected: false },
+  refresh: function () {
+    modalRefreshCalls += 1;
+  },
+});
+pc.refreshOpenOrderModalIfNeeded();
+assert.strictEqual(pc.getOpenOrderModalController(), null, "stale disconnected modal controller should be cleared");
 
 const internalPlannedOnlyHtml = pc.renderOrderLinesTable(
   [
@@ -303,6 +471,155 @@ const shippedCustomerStalePalletFallbackHtml = pc.renderOrderLinesTable(
 );
 assert.doesNotMatch(shippedCustomerStalePalletFallbackHtml, /Наполнено 2 \/ 5/);
 assert.match(shippedCustomerStalePalletFallbackHtml, /pc-icon-status/);
+
+const expandedCustomerOrderLineHtml = pc.renderOrderLinesTable(
+  [
+    {
+      id: 501,
+      item_name: "Горчица",
+      barcode: "SKU-001",
+      gtin: "04607186951520",
+      qty_ordered: 100,
+      warehouse_hu_rows: [
+        {
+          hu_code: "HU-LINE",
+          qty: 40,
+          location_name: "Основной склад",
+          stock_status: "LEDGER_STOCK",
+          is_bound_to_order: true,
+        },
+      ],
+      production_hu_rows: [
+        {
+          hu_code: "HU-PRODUCTION",
+          pallet_status: "FILLED",
+          planned_qty: 60,
+          filled_qty: 60,
+          prd_ref: "PRD-050",
+          fate_code: "SHIPPED",
+          fate_label: "→ отгружено заказ 004",
+          fate_order_ref: "004",
+          fate_doc_ref: "OUT-2026-000004",
+          fate_qty: 60,
+        },
+      ],
+      shipped_hu_rows: [{ hu_code: "HU-LINE", qty: 20 }],
+      coverage: {
+        ordered_qty: 100,
+        warehouse_bound_qty: 40,
+        production_filled_qty: 60,
+        shipped_qty: 20,
+        covered_qty: 80,
+        missing_qty: 20,
+      },
+    },
+  ],
+  { order_ref: "003", order_type: "CUSTOMER", order_status: "IN_PROGRESS" },
+  { 501: true }
+);
+assert.match(expandedCustomerOrderLineHtml, /data-order-line-toggle="501"/);
+assert.match(expandedCustomerOrderLineHtml, /aria-expanded="true"/);
+assert.match(expandedCustomerOrderLineHtml, />HU по строке заказа</);
+assert.strictEqual((expandedCustomerOrderLineHtml.match(/HU-LINE/g) || []).length, 3);
+assert.match(expandedCustomerOrderLineHtml, /На складе/);
+assert.match(expandedCustomerOrderLineHtml, /Отгружен/);
+assert.match(expandedCustomerOrderLineHtml, /HU-PRODUCTION/);
+assert.match(expandedCustomerOrderLineHtml, /Движение HU/);
+assert.match(expandedCustomerOrderLineHtml, /Передано в заказ 004/);
+assert.match(expandedCustomerOrderLineHtml, /OUT: OUT-2026-000004/);
+assert.match(expandedCustomerOrderLineHtml, />Отгрузка этой строки заказа</);
+assert.match(expandedCustomerOrderLineHtml, /Резерв этого заказа/);
+assert.match(expandedCustomerOrderLineHtml, /Не хватает/);
+assert.match(expandedCustomerOrderLineHtml, /is-missing/);
+
+const expandedLineWithoutExactCoverageHtml = pc.renderOrderLinesTable(
+  [
+    {
+      id: 502,
+      item_name: "Горчица",
+      qty_ordered: 100,
+      shortage: 25,
+      warehouse_hu_rows: [],
+      production_hu_rows: [],
+      shipped_hu_rows: [],
+    },
+  ],
+  { order_type: "CUSTOMER", order_status: "IN_PROGRESS" },
+  { 502: true }
+);
+assert.match(expandedLineWithoutExactCoverageHtml, /HU не привязаны/);
+assert.strictEqual((expandedLineWithoutExactCoverageHtml.match(/HU не привязаны/g) || []).length, 1);
+assert.match(expandedLineWithoutExactCoverageHtml, />Отгрузка этой строки заказа</);
+assert.match(expandedLineWithoutExactCoverageHtml, /По этой строке заказа отгрузки нет/);
+assert.match(expandedLineWithoutExactCoverageHtml, /Точный итог покрытия недоступен/);
+assert.match(expandedLineWithoutExactCoverageHtml, /Существующий серверный дефицит: 25/);
+assert.doesNotMatch(expandedLineWithoutExactCoverageHtml, /pc-order-line-coverage-grid/);
+
+const expandedCustomerLineWithOnlyShippedHuHtml = pc.renderOrderLinesTable(
+  [
+    {
+      id: 504,
+      item_name: "Горчица",
+      qty_ordered: 1824,
+      warehouse_hu_rows: [],
+      production_hu_rows: [],
+      shipped_hu_rows: [{ hu_code: "HU-0002083", qty: 1824 }],
+      coverage: { ordered_qty: 1824, covered_qty: 1824, missing_qty: 0, shipped_qty: 1824 },
+    },
+  ],
+  { order_ref: "004", order_type: "CUSTOMER", order_status: "SHIPPED" },
+  { 504: true }
+);
+assert.match(expandedCustomerLineWithOnlyShippedHuHtml, />HU по строке заказа</);
+assert.match(expandedCustomerLineWithOnlyShippedHuHtml, /HU-0002083/);
+assert.match(expandedCustomerLineWithOnlyShippedHuHtml, /Отгружен/);
+assert.match(
+  expandedCustomerLineWithOnlyShippedHuHtml,
+  /HU-0002083<\/td><td>1824<\/td><td>-<\/td><td>Отгружен/
+);
+assert.doesNotMatch(expandedCustomerLineWithOnlyShippedHuHtml, /HU не привязаны/);
+assert.match(expandedCustomerLineWithOnlyShippedHuHtml, />Отгрузка этой строки заказа</);
+
+const expandedInternalOrderLineHtml = pc.renderOrderLinesTable(
+  [
+    {
+      id: 503,
+      item_name: "Горчица",
+      qty_ordered: 100,
+      production_hu_rows: [
+        {
+          hu_code: "HU-INTERNAL",
+          pallet_status: "FILLED",
+          planned_qty: 1824,
+          filled_qty: 1824,
+          prd_ref: "PRD-051",
+          fate_code: "SHIPPED",
+          fate_label: "→ отгружено заказ 004",
+          fate_order_ref: "004",
+          fate_doc_ref: "OUT-2026-000013",
+          fate_qty: 1824,
+        },
+      ],
+      coverage: { ordered_qty: 2000, covered_qty: 1824, missing_qty: 176 },
+    },
+  ],
+  { order_ref: "003", order_type: "INTERNAL", order_status: "IN_PROGRESS" },
+  { 503: true }
+);
+assert.match(expandedInternalOrderLineHtml, /HU-INTERNAL/);
+assert.match(expandedInternalOrderLineHtml, /Движение HU/);
+assert.match(
+  expandedInternalOrderLineHtml,
+  /Передано в заказ 004 · OUT: OUT-2026-000013 · 1824/
+);
+assert.match(expandedInternalOrderLineHtml, />Итог выпуска</);
+assert.match(expandedInternalOrderLineHtml, />Выпущено</);
+assert.match(expandedInternalOrderLineHtml, />Осталось выпустить</);
+assert.doesNotMatch(expandedInternalOrderLineHtml, /Резерв этого заказа/);
+assert.doesNotMatch(expandedInternalOrderLineHtml, />HU по строке заказа</);
+assert.doesNotMatch(expandedInternalOrderLineHtml, />Отгрузка этой строки заказа</);
+assert.doesNotMatch(expandedInternalOrderLineHtml, /Отгружено по строке/);
+assert.doesNotMatch(expandedInternalOrderLineHtml, /По этой строке заказа отгрузки нет/);
 
 const shippedCustomerStalePalletListHtml = pc.renderOrdersTable([
   {
@@ -543,12 +860,12 @@ assert.ok(
   "separate production need tab must be hidden from normal PC navigation"
 );
 assert.match(
-  fs.readFileSync(appPath, "utf8"),
+  fs.readFileSync(stockPath, "utf8"),
   /\/api\/reports\/warehouse-production-state/,
   "stock page must load warehouse-production-state"
 );
 assert.match(
-  fs.readFileSync(appPath, "utf8"),
+  fs.readFileSync(stockPath, "utf8"),
   /Не удалось загрузить объединённое состояние склада/,
   "warehouse-production-state endpoint error must show readable message"
 );
@@ -839,7 +1156,8 @@ assert.doesNotMatch(catalogHtml, /<th[^>]*>\s*GTIN\s*<\/th>/);
 assert.doesNotMatch(catalogHtml, /<th[^>]*>[^<]*ШК[^<]*<\/th>/);
 
 
-const pcAppSourceForOrderRefSort = fs.readFileSync(appPath, "utf8");
+const pcAppSourceForOrderRefSort =
+  fs.readFileSync(appPath, "utf8") + fs.readFileSync(orderModalPath, "utf8");
 assert(
   pcAppSourceForOrderRefSort.includes('orderRef: { type: "number", getValue: function (row) { return Number(String(row.order_ref || "").trim()) || 0; } }'),
   "orderRef sort column should be numeric so PC orders sort 117, 116, 115, 112 instead of string/DOM order"
@@ -851,4 +1169,19 @@ assert(
 assert(
   !pcAppSourceForOrderRefSort.includes("return sortPendingOrdersFirst(sortedRows);"),
   "explicit column sorting must not be overridden by pending-first promotion"
+);
+assert.match(
+  pcAppSourceForOrderRefSort,
+  /refreshOpenOrderModalIfNeeded\(\)/,
+  "live refresh should also refresh an open order modal"
+);
+assert.match(
+  pcAppSourceForOrderRefSort,
+  /openOrderModalController = \{/,
+  "open order modal should register a live refresh controller"
+);
+assert.match(
+  pcAppSourceForOrderRefSort,
+  /expandedOrderLineIds:\s*\{\}/,
+  "open order modal should keep expanded order line state across live refresh"
 );

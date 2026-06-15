@@ -10,6 +10,9 @@ public partial class IncomingRequestsWindow : Window
     private readonly AppServices _services;
     private readonly ObservableCollection<IncomingRequestRow> _rows = new();
     private readonly Action? _onChanged;
+    private bool _commandInProgress;
+    private bool _liveRefreshPending;
+    private readonly IDisposable _liveRefreshSubscription;
     private readonly IReadOnlyList<IncomingRequestTypeFilterOption> _filterOptions =
     [
         new("Все", IncomingRequestTypeFilter.All),
@@ -29,7 +32,27 @@ public partial class IncomingRequestsWindow : Window
         RequestTypeFilterCombo.ItemsSource = _filterOptions;
         RequestTypeFilterCombo.DisplayMemberPath = nameof(IncomingRequestTypeFilterOption.Label);
         RequestTypeFilterCombo.SelectedIndex = 0;
+        _liveRefreshSubscription = _services.LiveRefresh.Register(
+            () => IsVisible && IsActive && !_commandInProgress && !WpfLiveRefreshGuard.IsDataGridEditing(RequestsGrid),
+            ApplyLiveRefresh,
+            () => _liveRefreshPending = true);
+        Activated += (_, _) => ApplyPendingLiveRefresh();
+        Closed += (_, _) => _liveRefreshSubscription.Dispose();
         LoadRequests();
+    }
+
+    private void ApplyLiveRefresh()
+    {
+        _liveRefreshPending = false;
+        LoadRequests();
+    }
+
+    private void ApplyPendingLiveRefresh()
+    {
+        if (_liveRefreshPending && IsVisible && IsActive && !_commandInProgress)
+        {
+            ApplyLiveRefresh();
+        }
     }
 
     private void LoadRequests()
@@ -113,6 +136,7 @@ public partial class IncomingRequestsWindow : Window
             return;
         }
 
+        _commandInProgress = true;
         var resolvedBy = Environment.UserName;
         var processedItems = 0;
         var approvedOrders = 0;
@@ -166,6 +190,8 @@ public partial class IncomingRequestsWindow : Window
 
         LoadRequests();
         _onChanged?.Invoke();
+        _commandInProgress = false;
+        ApplyPendingLiveRefresh();
 
         if (errors.Count > 0)
         {
@@ -201,27 +227,36 @@ public partial class IncomingRequestsWindow : Window
             return;
         }
 
-        var resolvedBy = Environment.UserName;
-        foreach (var row in selected)
+        _commandInProgress = true;
+        try
         {
-            var orderRequest = row.OrderRequest!;
-            var resolved = await _services.WpfIncomingRequestsApi
-                .TryResolveOrderRequestAsync(
-                    orderRequest.Id,
-                    OrderRequestStatus.Rejected,
-                    resolvedBy,
-                    "Отклонено оператором WPF.",
-                    null)
-                .ConfigureAwait(true);
-
-            if (!resolved)
+            var resolvedBy = Environment.UserName;
+            foreach (var row in selected)
             {
-                throw new InvalidOperationException($"Не удалось отклонить заявку #{orderRequest.Id} через сервер.");
-            }
-        }
+                var orderRequest = row.OrderRequest!;
+                var resolved = await _services.WpfIncomingRequestsApi
+                    .TryResolveOrderRequestAsync(
+                        orderRequest.Id,
+                        OrderRequestStatus.Rejected,
+                        resolvedBy,
+                        "Отклонено оператором WPF.",
+                        null)
+                    .ConfigureAwait(true);
 
-        LoadRequests();
-        _onChanged?.Invoke();
+                if (!resolved)
+                {
+                    throw new InvalidOperationException($"Не удалось отклонить заявку #{orderRequest.Id} через сервер.");
+                }
+            }
+
+            LoadRequests();
+            _onChanged?.Invoke();
+        }
+        finally
+        {
+            _commandInProgress = false;
+            ApplyPendingLiveRefresh();
+        }
     }
 
     private void Refresh_Click(object sender, RoutedEventArgs e)

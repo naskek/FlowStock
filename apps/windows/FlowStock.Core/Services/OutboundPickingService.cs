@@ -41,7 +41,11 @@ public sealed class OutboundPickingService
                 PartnerName = details.PartnerName,
                 Status = details.Status,
                 ExpectedHuCount = details.ExpectedHuCount,
-                PickedHuCount = details.PickedHuCount
+                PickedHuCount = details.PickedHuCount,
+                OrderedQty = details.OrderedQty,
+                ShippedQty = details.ShippedQty,
+                RemainingQty = details.RemainingQty,
+                ScannedQty = details.ScannedQty
             })
             .ToArray();
     }
@@ -59,17 +63,25 @@ public sealed class OutboundPickingService
                 .Where(code => !string.IsNullOrWhiteSpace(code))
                 .Cast<string>()
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var progress = OrderShipmentProgressService.Get(_store, order.Id);
+        var scannedQty = draft == null
+            ? 0d
+            : _store.GetDocLines(draft.Id).Sum(line => Math.Max(0, line.Qty));
 
         return new OutboundPickingOrderDetails
         {
             OrderId = order.Id,
             OrderRef = order.OrderRef,
             PartnerName = order.PartnerName ?? string.Empty,
-            Status = order.StatusDisplay,
+            Status = progress.IsPartiallyShipped ? "Частично отгружено" : order.StatusDisplay,
             DraftOutboundDocId = draft?.Id ?? pickingDoc?.Id,
             DraftOutboundDocRef = draft?.DocRef ?? pickingDoc?.DocRef,
             ExpectedHuCount = expected.Count,
             PickedHuCount = expected.Count(hu => pickedHuCodes.Contains(hu.HuCode)),
+            OrderedQty = progress.OrderedQty,
+            ShippedQty = progress.ShippedQty,
+            RemainingQty = progress.RemainingQty,
+            ScannedQty = scannedQty,
             Hus = expected
                 .OrderBy(hu => hu.HuCode, StringComparer.OrdinalIgnoreCase)
                 .Select(hu => new OutboundPickingHuRow
@@ -219,24 +231,21 @@ public sealed class OutboundPickingService
 
     private OutboundPickingScanResult? TryBuildAlreadyPickedClosedScan(long orderId, string huCode)
     {
-        var pickingDoc = FindTsdPickingOutbound(orderId);
-        if (pickingDoc?.Status != DocStatus.Closed || !IsHuPicked(pickingDoc.Id, huCode))
+        var pickingDoc = _store.GetDocsByOrder(orderId)
+            .Where(doc => doc.Type == DocType.Outbound && doc.Status == DocStatus.Closed)
+            .OrderByDescending(doc => doc.Id)
+            .FirstOrDefault(doc => IsHuPicked(doc.Id, huCode));
+        if (pickingDoc == null)
         {
             return null;
         }
 
-        return new OutboundPickingScanResult
-        {
-            Success = true,
-            AlreadyPicked = true,
-            OutboundClosed = true,
-            ClosedOutboundDocRef = pickingDoc.DocRef,
-            Message = $"HU уже подобрана, отгрузка проведена ({pickingDoc.DocRef}).",
-            Order = GetDetails(orderId)
-        };
+        return OutboundPickingScanResult.Failure(
+            "HU_ALREADY_SHIPPED",
+            $"HU уже отгружен по этому заказу ({pickingDoc.DocRef}).");
     }
 
-    public OutboundPickingCompleteResult Complete(long orderId)
+    public OutboundPickingCompleteResult Complete(long orderId, bool allowPartial = false)
     {
         try
         {
@@ -269,9 +278,16 @@ public sealed class OutboundPickingService
                 return OutboundPickingCompleteResult.Failure("NO_EXPECTED_HU", "Для заказа нет ожидаемых HU к отгрузке.");
             }
 
-            if (!details.IsComplete)
+            if (details.PickedHuCount == 0)
             {
-                return OutboundPickingCompleteResult.Failure("PICKING_INCOMPLETE", "Не все паллеты подобраны.");
+                return OutboundPickingCompleteResult.Failure("NOTHING_PICKED", "Не отсканировано ни одной HU.");
+            }
+
+            if (!details.IsComplete && !allowPartial)
+            {
+                return OutboundPickingCompleteResult.Failure(
+                    "PARTIAL_CONFIRMATION_REQUIRED",
+                    $"Отгружено {FormatQty(details.ScannedQty)} из {FormatQty(details.RemainingQty)}. Подтвердите частичную отгрузку.");
             }
 
             if (_options.OutboundAutoCloseOnComplete)
@@ -305,7 +321,9 @@ public sealed class OutboundPickingService
             return new OutboundPickingCompleteResult
             {
                 Success = true,
-                Message = "Все паллеты подобраны. Ожидает проведения в WPF.",
+                Message = details.IsComplete
+                    ? "Все паллеты подобраны. Ожидает проведения в WPF."
+                    : "Частичная отгрузка подготовлена. Ожидает проведения в WPF.",
                 Order = GetDetails(order.Id)
             };
         }
@@ -534,13 +552,24 @@ public sealed class OutboundPickingService
             return true;
         }
 
-        return CustomerOutboundBoundHuService.GetUnshippedOutboundHuLines(_store, order.Id).Count > 0
-               && !CustomerOutboundBoundHuService.HasReceiptProductionNeed(_store, order.Id);
+        var hasExpectedHu = CustomerOutboundBoundHuService.GetUnshippedOutboundHuLines(_store, order.Id).Count > 0;
+        if (!hasExpectedHu)
+        {
+            return false;
+        }
+
+        return OrderShipmentProgressService.Get(_store, order.Id).IsPartiallyShipped
+               || !CustomerOutboundBoundHuService.HasReceiptProductionNeed(_store, order.Id);
     }
 
     private static string? NormalizeHu(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToUpperInvariant();
+    }
+
+    private static string FormatQty(double value)
+    {
+        return value.ToString("0.###", System.Globalization.CultureInfo.CurrentCulture);
     }
 
     private sealed record ExpectedHu(

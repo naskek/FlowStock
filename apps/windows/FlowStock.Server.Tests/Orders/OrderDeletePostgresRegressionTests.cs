@@ -202,7 +202,7 @@ public sealed class OrderDeletePostgresRegressionTests
     }
 
     [Fact]
-    public async Task PutUpdate_RemovingCustomerLineWithPlannedPalletDocLineReference_RemovesPlannedPalletPlan()
+    public async Task PutUpdate_RemovingCustomerLineWithPlannedPalletDocLineReference_RemovesActivePlannedPalletPlan()
     {
         var connectionString = ResolvePostgresTestConnectionString();
         if (connectionString == null)
@@ -227,7 +227,7 @@ public sealed class OrderDeletePostgresRegressionTests
 
             Assert.True(payload.Ok);
             Assert.DoesNotContain(scopedStore.GetOrderLines(fixture.OrderId), line => line.Id == fixture.DeletedOrderLineId);
-            AssertPlannedPalletPlanRemoved(scopedStore, plan);
+            AssertActivePalletPlanRemoved(scopedStore, plan);
             AssertNoActiveOrphanPallets(scopedStore.GetProductionPalletsByDoc(plan.PrdDocId));
         });
     }
@@ -279,7 +279,7 @@ public sealed class OrderDeletePostgresRegressionTests
     }
 
     [Fact]
-    public async Task PutUpdate_RemovingCustomerLineWithPrintedPallets_ReturnsBusinessBadRequest()
+    public async Task PutUpdate_RemovingCustomerLineWithPrintedPallets_RemovesActiveFuturePlan()
     {
         var connectionString = ResolvePostgresTestConnectionString();
         if (connectionString == null)
@@ -297,6 +297,50 @@ public sealed class OrderDeletePostgresRegressionTests
                 ProductionPalletStatus.Printed);
 
             await using var host = await PostgresOrderUpdateHost.StartAsync(scopedStore);
+            var payload = await UpdateOrderHttpApi.UpdateAsync(
+                host.Client,
+                fixture.OrderId,
+                BuildDeleteFirstLineRequest(fixture));
+
+            Assert.True(payload.Ok);
+            Assert.DoesNotContain(scopedStore.GetOrderLines(fixture.OrderId), line => line.Id == fixture.DeletedOrderLineId);
+            var palletAfter = Assert.Single(scopedStore.GetProductionPalletsByDoc(plan.PrdDocId));
+            Assert.Equal(plan.PalletId, palletAfter.Id);
+            Assert.Equal(ProductionPalletStatus.Cancelled, palletAfter.Status);
+            AssertActivePalletPlanRemoved(scopedStore, plan);
+        });
+    }
+
+    [Fact]
+    public async Task PutUpdate_RemovingCustomerLineWithPrintedPartiallyFilledMixedPallet_ReturnsBusinessBadRequest()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        await RunInRollbackTransactionAsync(connectionString, async scopedStore =>
+        {
+            EnsureAtLeastOneLocation(scopedStore);
+            var fixture = SeedCustomerOrderWithTwoLines(scopedStore, deletedQty: 300, remainingQty: 300, group: "MIX-PARTIAL");
+            var plan = new ProductionPalletService(scopedStore).PlanOrder(fixture.OrderId);
+            var pallet = Assert.Single(scopedStore.GetProductionPalletsByDoc(plan.PrdDocId));
+            Assert.Equal(2, pallet.Lines.Count);
+            Assert.Equal(1, scopedStore.MarkProductionPalletsPrinted(fixture.OrderId, [pallet.Id], DateTime.UtcNow));
+
+            var deletedLineComponent = Assert.Single(pallet.Lines, line => line.OrderLineId == fixture.DeletedOrderLineId);
+            Assert.Equal(1, scopedStore.MarkProductionPalletComponentsFilled(
+                pallet.Id,
+                [deletedLineComponent.Id],
+                new DateTime(2026, 6, 8, 12, 0, 0, DateTimeKind.Utc)));
+
+            var partiallyFilled = Assert.Single(scopedStore.GetProductionPalletsByDoc(plan.PrdDocId));
+            Assert.Equal(ProductionPalletStatus.Printed, partiallyFilled.Status);
+            Assert.True(partiallyFilled.HasComponentProgress);
+            Assert.Equal(0, scopedStore.CountLedgerEntriesByDocId(plan.PrdDocId));
+
+            await using var host = await PostgresOrderUpdateHost.StartAsync(scopedStore);
             using var response = await UpdateOrderHttpApi.PutRawAsync(
                 host.Client,
                 fixture.OrderId,
@@ -305,12 +349,13 @@ public sealed class OrderDeletePostgresRegressionTests
             var payload = await UpdateOrderHttpApi.ReadApiErrorResultAsync(response, HttpStatusCode.BadRequest);
             Assert.False(payload.Ok);
             Assert.Equal("ORDER_LINE_PALLET_PLAN_NOT_PLANNED", payload.Error);
-            Assert.DoesNotContain("fkey", payload.Message ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("частично наполненная микс-паллета", payload.Message ?? string.Empty, StringComparison.OrdinalIgnoreCase);
             Assert.Contains(scopedStore.GetOrderLines(fixture.OrderId), line => line.Id == fixture.DeletedOrderLineId);
+
             var palletAfter = Assert.Single(scopedStore.GetProductionPalletsByDoc(plan.PrdDocId));
-            Assert.Equal(plan.PalletId, palletAfter.Id);
-            Assert.Equal(fixture.DeletedOrderLineId, palletAfter.OrderLineId);
+            Assert.Equal(pallet.Id, palletAfter.Id);
             Assert.Equal(ProductionPalletStatus.Printed, palletAfter.Status);
+            Assert.True(palletAfter.HasComponentProgress);
         });
     }
 
@@ -775,9 +820,12 @@ public sealed class OrderDeletePostgresRegressionTests
         Assert.Null(docLine.OrderLineId);
     }
 
-    private static void AssertPlannedPalletPlanRemoved(IDataStore store, PalletPlanFixture plan)
+    private static void AssertActivePalletPlanRemoved(IDataStore store, PalletPlanFixture plan)
     {
-        Assert.DoesNotContain(store.GetProductionPalletsByDoc(plan.PrdDocId), pallet => pallet.Id == plan.PalletId);
+        Assert.DoesNotContain(
+            store.GetProductionPalletsByDoc(plan.PrdDocId),
+            pallet => pallet.Id == plan.PalletId
+                      && !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(store.GetDocLines(plan.PrdDocId), line => line.Id == plan.DocLineId);
     }
 

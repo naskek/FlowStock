@@ -68,7 +68,7 @@ public static class CustomerOutboundBoundHuService
                 OrderLineId = planLine.OrderLineId,
                 ItemId = planLine.ItemId,
                 ItemName = planLine.ItemName,
-                Qty = remainingQty,
+                Qty = Math.Min(remainingQty, stockRow.Qty),
                 HuCode = huCode,
                 FromLocationId = locationId,
                 FromLocationCode = locationCode
@@ -186,11 +186,41 @@ public static class CustomerOutboundBoundHuService
             MergeOutboundHuLine(merged, line);
         }
 
-        return merged.Values
+        var shipmentRemainingByOrderLine = store.GetOrderShipmentRemaining(orderId)
+            .Where(line => line.QtyRemaining > QtyTolerance)
+            .ToDictionary(line => line.OrderLineId, line => line.QtyRemaining);
+        var result = new List<CustomerOutboundBoundHuLine>();
+        foreach (var line in merged.Values
             .OrderBy(line => line.HuCode, StringComparer.OrdinalIgnoreCase)
             .ThenBy(line => line.OrderLineId)
-            .ThenBy(line => line.ItemId)
-            .ToArray();
+            .ThenBy(line => line.ItemId))
+        {
+            if (!shipmentRemainingByOrderLine.TryGetValue(line.OrderLineId, out var remaining)
+                || remaining <= QtyTolerance)
+            {
+                continue;
+            }
+
+            var qty = Math.Min(Math.Max(0, line.Qty), remaining);
+            if (qty <= QtyTolerance)
+            {
+                continue;
+            }
+
+            result.Add(new CustomerOutboundBoundHuLine
+            {
+                OrderLineId = line.OrderLineId,
+                ItemId = line.ItemId,
+                ItemName = line.ItemName,
+                Qty = qty,
+                HuCode = line.HuCode,
+                FromLocationId = line.FromLocationId,
+                FromLocationCode = line.FromLocationCode
+            });
+            shipmentRemainingByOrderLine[line.OrderLineId] = remaining - qty;
+        }
+
+        return result;
     }
 
     public static int SyncDraftOutboundFromBoundHu(IDataStore store, long docId, bool replaceAll = false)

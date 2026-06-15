@@ -296,12 +296,18 @@ public static class OrderUpdateEndpoint
         }
 
         if (ex.Message.Contains("Нельзя уменьшить количество ниже уже заполненного/отгруженного объема", StringComparison.OrdinalIgnoreCase)
-            || ex.Message.Contains("Нельзя уменьшить количество ниже уже заполненного/выпущенного объема", StringComparison.OrdinalIgnoreCase))
+            || ex.Message.Contains("Нельзя уменьшить количество ниже уже заполненного/выпущенного объема", StringComparison.OrdinalIgnoreCase)
+            || ex.Message.Contains("Количество меньше защищенного покрытия", StringComparison.OrdinalIgnoreCase))
         {
             return "ORDER_LINE_QTY_BELOW_COVERAGE";
         }
 
         if (ex.Message.Contains("есть заполненные паллеты/HU", StringComparison.OrdinalIgnoreCase))
+        {
+            return "ORDER_LINE_HAS_FILLED_PALLETS";
+        }
+
+        if (ex.Message.Contains("нельзя удалить строку, защищенное покрытие", StringComparison.OrdinalIgnoreCase))
         {
             return "ORDER_LINE_HAS_FILLED_PALLETS";
         }

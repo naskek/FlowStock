@@ -10,6 +10,7 @@ public partial class App : Application
     private readonly FileLogger _fallbackLogger = new(Path.Combine(AppPaths.LogsDir, "app.log"));
     private FileLogger? _appLogger;
     private string _logPath = Path.Combine(AppPaths.LogsDir, "app.log");
+    private AppServices? _services;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -21,6 +22,7 @@ public partial class App : Application
         try
         {
             var services = AppServices.CreateDefault();
+            _services = services;
             _appLogger = services.AppLogger;
             _logPath = services.AppLogPath;
             if (!services.IsDatabaseAvailable)
@@ -35,6 +37,7 @@ public partial class App : Application
             var mainWindow = new MainWindow(services);
             MainWindow = mainWindow;
             mainWindow.Show();
+            services.LiveRefresh.Start(Dispatcher);
         }
         catch (Exception ex)
         {
@@ -42,6 +45,12 @@ public partial class App : Application
             MessageBox.Show($"Startup error. See log: {_logPath}\n{DatabaseErrorFormatter.Format(ex)}", "FlowStock", MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(-1);
         }
+    }
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        _services?.LiveRefresh.Dispose();
+        base.OnExit(e);
     }
 
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)

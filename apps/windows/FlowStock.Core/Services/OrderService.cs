@@ -498,6 +498,7 @@ public sealed class OrderService
                 .Select(line => (line.ItemId, ProductionPurpose: ResolveLinePurpose(type, line.ProductionPurpose)))
                 .ToHashSet();
             var linesNeedingPalletSync = new List<(long OrderLineId, double OrderedQty, double OldOrderedQty)>();
+            var additionallyAffectedPalletLineIds = new HashSet<long>();
 
             foreach (var entry in existingByItem)
             {
@@ -555,7 +556,10 @@ public sealed class OrderService
                     if (!string.Equals(NormalizePalletGroup(primary.ProductionPalletGroup), incomingGroup, StringComparison.OrdinalIgnoreCase))
                     {
                         EnsureOrderLineHasNoNonPlannedPallets(store, orderId, primary, "изменить настройку общего HU");
-                        ClearPlannedProductionPalletsForOrderLine(store, orderId, primary.Id);
+                        foreach (var affectedLineId in ClearPlannedProductionPalletsForOrderLine(store, orderId, primary.Id))
+                        {
+                            additionallyAffectedPalletLineIds.Add(affectedLineId);
+                        }
                         store.UpdateOrderLineProductionPalletGroup(primary.Id, incomingGroup);
                     }
 
@@ -563,7 +567,10 @@ public sealed class OrderService
                     for (var i = 1; i < matched.Count; i++)
                     {
                         ValidateOrderLineCanBeDeleted(store, orderId, matched[i]);
-                        ClearPlannedProductionPalletsForOrderLine(store, orderId, matched[i].Id);
+                        foreach (var affectedLineId in ClearPlannedProductionPalletsForOrderLine(store, orderId, matched[i].Id))
+                        {
+                            additionallyAffectedPalletLineIds.Add(affectedLineId);
+                        }
                         ClearCustomerReservationsForOrderLine(store, orderId, matched[i].Id, type);
                         store.DeleteOrderLine(matched[i].Id);
                     }
@@ -594,7 +601,10 @@ public sealed class OrderService
                 foreach (var staleLine in entry.Value)
                 {
                     ValidateOrderLineCanBeDeleted(store, orderId, staleLine);
-                    ClearPlannedProductionPalletsForOrderLine(store, orderId, staleLine.Id);
+                    foreach (var affectedLineId in ClearPlannedProductionPalletsForOrderLine(store, orderId, staleLine.Id))
+                    {
+                        additionallyAffectedPalletLineIds.Add(affectedLineId);
+                    }
                     ClearCustomerReservationsForOrderLine(store, orderId, staleLine.Id, type);
                     store.DeleteOrderLine(staleLine.Id);
                 }
@@ -602,6 +612,7 @@ public sealed class OrderService
 
             if (type == OrderType.Customer)
             {
+                QueueAffectedPalletLines(store, orderId, linesNeedingPalletSync, additionallyAffectedPalletLineIds);
                 foreach (var (orderLineId, orderedQty, oldOrderedQty) in linesNeedingPalletSync)
                 {
                     TrySyncProductionPalletPlanForOrderLine(store, orderId, orderLineId, orderedQty, oldOrderedQty);
@@ -610,6 +621,7 @@ public sealed class OrderService
             else
             {
                 TryRebuildOrderReceiptPlan(store, orderId);
+                QueueAffectedPalletLines(store, orderId, linesNeedingPalletSync, additionallyAffectedPalletLineIds);
                 foreach (var (orderLineId, orderedQty, oldOrderedQty) in linesNeedingPalletSync)
                 {
                     TrySyncProductionPalletPlanForOrderLine(store, orderId, orderLineId, orderedQty, oldOrderedQty);
@@ -675,19 +687,7 @@ public sealed class OrderService
                 selectedHuCodes);
         }
 
-        var currentReservedQty = currentReservations.Sum(planLine => Math.Max(0, planLine.QtyPlanned));
-        if (requestedQty + QtyTolerance >= currentReservedQty)
-        {
-            return requestedQty;
-        }
-
-        var keptReservations = SelectCustomerReservationsToKeep(currentReservations, requestedQty);
-        store.ReplaceOrderReceiptPlanLinesForOrderLines(orderId, [line.Id], keptReservations);
-
-        var keptQty = keptReservations.Sum(planLine => Math.Max(0, planLine.QtyPlanned));
-        return keptQty > QtyTolerance
-            ? keptQty
-            : requestedQty;
+        return requestedQty;
     }
 
     private static double NormalizeCustomerQtyForSelectedReservations(
@@ -750,49 +750,6 @@ public sealed class OrderService
         }
 
         return result;
-    }
-
-    private static IReadOnlyList<OrderReceiptPlanLine> SelectCustomerReservationsToKeep(
-        IReadOnlyList<OrderReceiptPlanLine> reservations,
-        double requestedQty)
-    {
-        // Deterministic subset: stable plan order, greatest total not exceeding requested qty.
-        var targetUnits = ToReservationQtyUnits(requestedQty);
-        if (targetUnits <= 0)
-        {
-            return Array.Empty<OrderReceiptPlanLine>();
-        }
-
-        var bestByTotal = new Dictionary<long, List<OrderReceiptPlanLine>>
-        {
-            [0] = new()
-        };
-        foreach (var reservation in reservations)
-        {
-            var reservationUnits = ToReservationQtyUnits(reservation.QtyPlanned);
-            if (reservationUnits <= 0)
-            {
-                continue;
-            }
-
-            foreach (var snapshot in bestByTotal.ToArray())
-            {
-                var candidateTotal = snapshot.Key + reservationUnits;
-                if (candidateTotal > targetUnits || bestByTotal.ContainsKey(candidateTotal))
-                {
-                    continue;
-                }
-
-                var candidate = new List<OrderReceiptPlanLine>(snapshot.Value)
-                {
-                    reservation
-                };
-                bestByTotal[candidateTotal] = candidate;
-            }
-        }
-
-        var bestTotal = bestByTotal.Keys.Max();
-        return bestByTotal[bestTotal];
     }
 
     private static long ToReservationQtyUnits(double qty)
@@ -971,16 +928,26 @@ public sealed class OrderService
         double newQty,
         OrderType orderType)
     {
+        if (orderType == OrderType.Customer)
+        {
+            var coverage = CustomerProtectedCoverageCalculator.BuildByOrderLine(store, orderId)
+                .GetValueOrDefault(line.Id);
+            var protectedQty = coverage?.DeduplicatedQty ?? 0d;
+            if (newQty + QtyTolerance < protectedQty)
+            {
+                throw new InvalidOperationException(
+                    $"Количество меньше защищенного покрытия: защищено {OrderLineQtyChangeRules.FormatLockedQty(protectedQty)}, новое количество {OrderLineQtyChangeRules.FormatLockedQty(newQty)}.");
+            }
+
+            return;
+        }
+
         var shippedTotals = store.GetShippedTotalsByOrderLine(orderId);
         var shippedQty = shippedTotals.TryGetValue(line.Id, out var shipped)
             ? Math.Max(0, shipped)
             : 0d;
         var filledQty = Math.Max(0, store.GetFilledProductionPalletQtyByOrderLine(line.Id));
-        var reservedQty = orderType == OrderType.Customer
-            ? store.GetOrderReceiptPlanLines(orderId)
-                .Where(planLine => planLine.OrderLineId == line.Id)
-                .Sum(planLine => Math.Max(0, planLine.QtyPlanned))
-            : 0d;
+        var reservedQty = 0d;
         if (!OrderLineQtyChangeRules.TryValidateQtyChange(
                 newQty,
                 shippedQty,
@@ -989,9 +956,7 @@ public sealed class OrderService
                 orderType,
                 out var errorMessage))
         {
-            throw new InvalidOperationException(orderType == OrderType.Customer
-                ? BuildCustomerQtyReductionBlockedMessage(store, orderId, line, shippedQty, filledQty, reservedQty)
-                : errorMessage);
+            throw new InvalidOperationException(errorMessage);
         }
     }
 
@@ -1038,12 +1003,15 @@ public sealed class OrderService
                 $"{GetOrderLineItemName(store, line)}: нельзя удалить строку, есть заполненные паллеты/HU.");
         }
 
-        var nonPlanned = activePallets.FirstOrDefault(pallet =>
-            !string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase));
-        if (nonPlanned != null)
+        var order = store.GetOrder(orderId);
+        var protectedQty = order?.Type == OrderType.Customer
+            ? CustomerProtectedCoverageCalculator.BuildByOrderLine(store, orderId).GetValueOrDefault(line.Id)?.DeduplicatedQty ?? 0d
+            : OrderReceiptRemainingCalculator.BuildConfirmedReceiptLedgerTotalsByOrderLine(store, orderId)
+                .GetValueOrDefault(line.Id);
+        if (protectedQty > QtyTolerance)
         {
             throw new InvalidOperationException(
-                $"{GetOrderLineItemName(store, line)}: нельзя удалить строку, паллетный план уже напечатан или находится в фактическом состоянии.");
+                $"{GetOrderLineItemName(store, line)}: нельзя удалить строку, защищенное покрытие {OrderLineQtyChangeRules.FormatLockedQty(protectedQty)}.");
         }
     }
 
@@ -1063,18 +1031,28 @@ public sealed class OrderService
                 $"{GetOrderLineItemName(store, line)}: нельзя {action}, есть заполненные паллеты/HU.");
         }
 
-        var nonPlanned = activePallets.FirstOrDefault(pallet =>
-            !string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase));
-        if (nonPlanned != null)
-        {
-            throw new InvalidOperationException(
-                $"{GetOrderLineItemName(store, line)}: нельзя {action}, паллетный план уже напечатан или находится в фактическом состоянии.");
-        }
     }
 
-    private static void ClearPlannedProductionPalletsForOrderLine(IDataStore store, long orderId, long orderLineId)
+    private static IReadOnlyList<long> ClearPlannedProductionPalletsForOrderLine(IDataStore store, long orderId, long orderLineId)
     {
-        store.ClearPlannedProductionPalletPlanForOrderLines(orderId, [orderLineId]);
+        return new ProductionPalletService(store)
+            .CancelFuturePlanForOrderLineAndResolveAffectedLinesInStore(store, orderId, orderLineId);
+    }
+
+    private static void QueueAffectedPalletLines(
+        IDataStore store,
+        long orderId,
+        ICollection<(long OrderLineId, double OrderedQty, double OldOrderedQty)> linesNeedingPalletSync,
+        IEnumerable<long> affectedOrderLineIds)
+    {
+        var alreadyQueued = linesNeedingPalletSync.Select(entry => entry.OrderLineId).ToHashSet();
+        foreach (var line in store.GetOrderLines(orderId).Where(line => affectedOrderLineIds.Contains(line.Id)))
+        {
+            if (alreadyQueued.Add(line.Id))
+            {
+                linesNeedingPalletSync.Add((line.Id, line.QtyOrdered, line.QtyOrdered));
+            }
+        }
     }
 
     private static void ClearCustomerReservationsForOrderLine(
@@ -2185,4 +2163,3 @@ public sealed class FullyShippedCustomerOrderStatusRefreshRow
     public double TotalShippedQty { get; init; }
     public bool Updated { get; init; }
 }
-

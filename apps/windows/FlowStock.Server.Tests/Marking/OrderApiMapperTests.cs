@@ -205,6 +205,34 @@ public sealed class OrderApiMapperTests
     }
 
     [Fact]
+    public void MapOrder_ReturnsDerivedPartiallyShippedDisplay_WithoutChangingPersistedStatus()
+    {
+        var order = new Order
+        {
+            Id = 58,
+            OrderRef = "058",
+            Type = OrderType.Customer,
+            Status = OrderStatus.Accepted,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        var json = JsonSerializer.SerializeToElement(OrderApiMapper.MapOrder(
+            order,
+            hasShipmentRemaining: true,
+            shipmentProgress: new OrderShipmentProgress
+            {
+                OrderedQty = 15,
+                ShippedQty = 5,
+                RemainingQty = 10
+            }));
+
+        Assert.Equal("ACCEPTED", json.GetProperty("order_status").GetString());
+        Assert.Equal("Частично отгружено", json.GetProperty("order_status_display").GetString());
+        Assert.True(json.GetProperty("is_partially_shipped").GetBoolean());
+        Assert.Equal(10, json.GetProperty("shipment_remaining_qty").GetDouble());
+    }
+
+    [Fact]
     public void MapOrder_ReturnsProductionPalletPlanFields()
     {
         var order = new Order

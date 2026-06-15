@@ -17,7 +17,7 @@ public sealed class BarTenderPalletLabelPrintService : IPalletLabelPrintService
         _baseDir = baseDir;
     }
 
-    public PalletLabelPrintResult Print(IReadOnlyList<PalletLabelPrintRow> rows)
+    public PalletLabelPrintResult Print(IReadOnlyList<PalletLabelPrintRow> rows, int? copiesOverride = null)
     {
         if (rows.Count == 0)
         {
@@ -30,7 +30,7 @@ public sealed class BarTenderPalletLabelPrintService : IPalletLabelPrintService
             return PalletLabelPrintResult.Failure(validationError);
         }
 
-        var config = LoadConfiguration();
+        var config = LoadConfiguration(copiesOverride);
         if (string.IsNullOrWhiteSpace(config.TemplatePath) || !File.Exists(config.TemplatePath))
         {
             return PalletLabelPrintResult.Failure($"Файл шаблона паллетной этикетки не найден: {config.TemplatePath}");
@@ -79,7 +79,7 @@ public sealed class BarTenderPalletLabelPrintService : IPalletLabelPrintService
         }
     }
 
-    private PalletLabelPrinterConfiguration LoadConfiguration()
+    private PalletLabelPrinterConfiguration LoadConfiguration(int? copiesOverride)
     {
         var labels = _settings.Load().PalletLabels ?? new PalletLabelSettings();
         var templatePath = ReadEnvOrSettings("FLOWSTOCK_PALLET_LABEL_TEMPLATE_PATH", labels.TemplatePath);
@@ -93,7 +93,7 @@ public sealed class BarTenderPalletLabelPrintService : IPalletLabelPrintService
             templatePath = Path.Combine(_baseDir, templatePath);
         }
 
-        var copies = ReadEnvInt("FLOWSTOCK_PALLET_LABEL_COPIES") ?? labels.Copies;
+        var copies = copiesOverride ?? ReadEnvInt("FLOWSTOCK_PALLET_LABEL_COPIES") ?? labels.Copies;
         copies = Math.Clamp(copies, 1, 100);
 
         return new PalletLabelPrinterConfiguration(

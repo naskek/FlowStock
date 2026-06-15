@@ -92,20 +92,21 @@ public sealed class ReadyHuBindingReadModelService
         {
             var shipmentRemainingByLine = _dataStore.GetOrderShipmentRemaining(order.Id)
                 .ToDictionary(line => line.OrderLineId);
-            if (shipmentRemainingByLine.Count == 0)
-            {
-                continue;
-            }
-
+            var orderLines = _dataStore.GetOrderLines(order.Id).OrderBy(line => line.Id).ToArray();
+            var producedByLine = OrderReceiptRemainingCalculator.BuildConfirmedReceiptLedgerTotalsByOrderLine(
+                _dataStore,
+                order.Id,
+                orderLines);
+            var openProductionPalletQtyByLine = BuildOpenProductionPalletQtyByOrderLine(order.Id);
             var currentBoundByLine = _dataStore.GetOrderReceiptPlanLines(order.Id)
                 .Where(line => line.QtyPlanned > QtyTolerance)
                 .Where(line => !string.IsNullOrWhiteSpace(line.ToHu))
                 .GroupBy(line => line.OrderLineId)
                 .ToDictionary(group => group.Key, group => group.ToArray());
 
-            foreach (var orderLine in _dataStore.GetOrderLines(order.Id).OrderBy(line => line.Id))
+            foreach (var orderLine in orderLines)
             {
-                if (orderLine.ItemId <= 0 || !shipmentRemainingByLine.TryGetValue(orderLine.Id, out var shipmentLine))
+                if (orderLine.ItemId <= 0)
                 {
                     continue;
                 }
@@ -113,12 +114,19 @@ public sealed class ReadyHuBindingReadModelService
                 currentBoundByLine.TryGetValue(orderLine.Id, out var currentBound);
                 currentBound ??= Array.Empty<OrderReceiptPlanLine>();
                 var currentBoundQty = currentBound.Sum(line => Math.Max(0, line.QtyPlanned));
-                var maxAdditional = Math.Max(0, shipmentLine.QtyRemaining - currentBoundQty);
+                var producedQty = producedByLine.TryGetValue(orderLine.Id, out var produced) ? Math.Max(0, produced) : 0d;
+                var openProductionPalletQty = openProductionPalletQtyByLine.TryGetValue(orderLine.Id, out var openQty)
+                    ? Math.Max(0, openQty)
+                    : 0d;
+                var maxAdditional = Math.Max(
+                    0,
+                    orderLine.QtyOrdered - producedQty - openProductionPalletQty - currentBoundQty);
                 if (maxAdditional <= QtyTolerance)
                 {
                     continue;
                 }
 
+                shipmentRemainingByLine.TryGetValue(orderLine.Id, out var shipmentLine);
                 result.Add(new CompatibleLineContext(
                     order,
                     new ReadyHuBindingCompatibleLineRow
@@ -127,8 +135,8 @@ public sealed class ReadyHuBindingReadModelService
                         ItemId = orderLine.ItemId,
                         ItemName = ResolveItemName(orderLine.ItemId),
                         QtyOrdered = orderLine.QtyOrdered,
-                        QtyShipped = shipmentLine.QtyShipped,
-                        ShipmentRemainingQty = shipmentLine.QtyRemaining,
+                        QtyShipped = shipmentLine?.QtyShipped ?? orderLine.QtyOrdered,
+                        ShipmentRemainingQty = shipmentLine?.QtyRemaining ?? 0d,
                         CurrentBoundHuCodes = currentBound
                             .Select(line => NormalizeHu(line.ToHu))
                             .Where(code => !string.IsNullOrWhiteSpace(code))
@@ -143,6 +151,48 @@ public sealed class ReadyHuBindingReadModelService
         }
 
         return result;
+    }
+
+    private IReadOnlyDictionary<long, double> BuildOpenProductionPalletQtyByOrderLine(long orderId)
+    {
+        var totals = new Dictionary<long, double>();
+        foreach (var doc in _dataStore.GetDocsByOrder(orderId)
+                     .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status != DocStatus.Closed))
+        {
+            foreach (var pallet in _dataStore.GetProductionPalletsByDoc(doc.Id).Where(IsOpenProductionPallet))
+            {
+                if (pallet.Lines.Count > 0)
+                {
+                    foreach (var line in pallet.Lines.Where(line => line.OrderLineId.HasValue))
+                    {
+                        AddQty(totals, line.OrderLineId!.Value, line.PlannedQty);
+                    }
+
+                    continue;
+                }
+
+                if (pallet.OrderLineId.HasValue)
+                {
+                    AddQty(totals, pallet.OrderLineId.Value, pallet.PlannedQty);
+                }
+            }
+        }
+
+        return totals;
+    }
+
+    private static bool IsOpenProductionPallet(ProductionPallet pallet) =>
+        string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase);
+
+    private static void AddQty(IDictionary<long, double> totals, long orderLineId, double qty)
+    {
+        if (qty <= QtyTolerance)
+        {
+            return;
+        }
+
+        totals[orderLineId] = totals.TryGetValue(orderLineId, out var current) ? current + qty : qty;
     }
 
     private ReadyHuBindingHuRow BuildHuRow(

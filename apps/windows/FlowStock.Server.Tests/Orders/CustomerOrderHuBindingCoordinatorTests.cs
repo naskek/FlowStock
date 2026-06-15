@@ -365,6 +365,10 @@ public sealed class CustomerOrderHuBindingCoordinatorTests
                 ProductionHuDisplayEntries =
                 [
                     new OrderLineHuDisplayEntry("HU-0000576", "план", 600, IsWarehouseBound: false, SortOrder: 2)
+                ],
+                HuFateDisplayEntries =
+                [
+                    new OrderLineHuDisplayEntry("HU-HISTORY", "отгружено", 600, IsWarehouseBound: false, SortOrder: 4)
                 ]
             },
             orderId: 78);
@@ -379,6 +383,7 @@ public sealed class CustomerOrderHuBindingCoordinatorTests
         Assert.Equal("HU-0000576", rows[1].HuCode);
         Assert.Equal("план", rows[1].Label);
         Assert.False(rows[1].IsBold);
+        Assert.DoesNotContain(rows, row => row.HuCode == "HU-HISTORY");
     }
 
     [Fact]

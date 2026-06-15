@@ -669,7 +669,9 @@ internal sealed class ProductionPalletTsdHttpHost : IAsyncDisposable
 
     public HttpClient Client { get; }
 
-    public static async Task<ProductionPalletTsdHttpHost> StartAsync(CloseDocumentHarness harness)
+    public static async Task<ProductionPalletTsdHttpHost> StartAsync(
+        CloseDocumentHarness harness,
+        ProductionPalletService? service = null)
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions
         {
@@ -678,7 +680,14 @@ internal sealed class ProductionPalletTsdHttpHost : IAsyncDisposable
         });
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Services.AddSingleton<IDataStore>(harness.Store);
-        builder.Services.AddSingleton(sp => new ProductionPalletService(sp.GetRequiredService<IDataStore>()));
+        if (service == null)
+        {
+            builder.Services.AddSingleton(sp => new ProductionPalletService(sp.GetRequiredService<IDataStore>()));
+        }
+        else
+        {
+            builder.Services.AddSingleton(service);
+        }
         var app = builder.Build();
         ProductionPalletEndpoints.Map(app);
         await app.StartAsync();

@@ -1,3 +1,4 @@
+using System.Net.Http.Json;
 using FlowStock.Core.Models;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
 using FlowStock.Server.Tests.UpdateOrder.Infrastructure;
@@ -70,7 +71,7 @@ public sealed class LineReplacementTests
     }
 
     [Fact]
-    public async Task DeleteReservedCustomerLine_RemovesLineAndItsHuReservation()
+    public async Task DeleteReservedCustomerLine_IsBlockedByProtectedReadyHuBinding()
     {
         var (harness, apiStore, orderId) = UpdateOrderHttpScenario.CreateCustomerScenario();
         harness.SeedOrderReceiptPlanLines(
@@ -87,9 +88,8 @@ public sealed class LineReplacementTests
             });
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
 
-        var payload = await UpdateOrderHttpApi.UpdateAsync(
-            host.Client,
-            orderId,
+        using var response = await host.Client.PutAsJsonAsync(
+            $"/api/orders/{orderId}",
             new UpdateOrderHttpApi.UpdateOrderRequest
             {
                 OrderRef = "002",
@@ -102,11 +102,9 @@ public sealed class LineReplacementTests
                 ]
             });
 
-        Assert.Equal(1, payload.LineCount);
-
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, response.StatusCode);
         var lines = harness.GetOrderLines(orderId);
-        Assert.Single(lines);
-        Assert.DoesNotContain(lines, line => line.Id == 101 || line.ItemId == 1001);
-        Assert.DoesNotContain(harness.GetOrderReceiptPlanLines(orderId), line => line.OrderLineId == 101);
+        Assert.Contains(lines, line => line.Id == 101 && line.ItemId == 1001);
+        Assert.Contains(harness.GetOrderReceiptPlanLines(orderId), line => line.OrderLineId == 101);
     }
 }

@@ -4,6 +4,7 @@ public static class ProductionPalletStatus
 {
     public const string Planned = "PLANNED";
     public const string Printed = "PRINTED";
+    public const string PartiallyFilled = "PARTIALLY_FILLED";
     public const string Filled = "FILLED";
     public const string Cancelled = "CANCELLED";
 }
@@ -32,6 +33,20 @@ public sealed class ProductionPallet
     public DateTime CreatedAt { get; init; }
     public IReadOnlyList<ProductionPalletComponentLine> Lines { get; init; } = Array.Empty<ProductionPalletComponentLine>();
     public bool IsMixedPallet => Lines.Count > 1;
+    public int FilledComponentCount => Lines.Count(line => line.IsCompleted);
+    public int TotalComponentCount => Lines.Count;
+    public bool HasComponentProgress => Lines.Any(line => line.FilledQty > StockQuantityRules.QtyTolerance);
+    public bool AreAllComponentsFilled => Lines.Count > 0 && Lines.All(line => line.IsCompleted);
+    public string EffectiveStatus =>
+        string.Equals(Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)
+            ? ProductionPalletStatus.Filled
+            : IsMixedPallet && HasComponentProgress && !AreAllComponentsFilled
+                ? ProductionPalletStatus.PartiallyFilled
+                : Status;
+    public bool CanFill =>
+        !AreAllComponentsFilled
+        && (string.Equals(Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase));
 }
 
 public sealed class ProductionPalletComponentLine
@@ -46,7 +61,9 @@ public sealed class ProductionPalletComponentLine
     public string Uom { get; init; } = "шт";
     public double PlannedQty { get; init; }
     public double FilledQty { get; init; }
+    public DateTime? FilledAt { get; init; }
     public DateTime CreatedAt { get; init; }
+    public bool IsCompleted => FilledQty + StockQuantityRules.QtyTolerance >= PlannedQty;
 }
 
 public sealed class ProductionPalletSummary
@@ -257,6 +274,8 @@ public sealed class ProductionPalletScanResult
     public int PalletIndex { get; init; }
     public int PalletCount { get; init; }
     public string PalletStatus { get; init; } = ProductionPalletStatus.Planned;
+    public string EffectiveStatus { get; init; } = ProductionPalletStatus.Planned;
+    public bool CanFill { get; init; }
     public ProductionPalletDocument? Document { get; init; }
 
     public static ProductionPalletScanResult Failure(string error)
@@ -267,10 +286,15 @@ public sealed class ProductionPalletScanResult
 
 public sealed class ProductionPalletScanLine
 {
+    public long ComponentLineId { get; init; }
     public long ItemId { get; init; }
     public string ItemName { get; init; } = string.Empty;
     public string? Brand { get; init; }
     public double Qty { get; init; }
+    public double PlannedQty { get; init; }
+    public double FilledQty { get; init; }
+    public DateTime? FilledAt { get; init; }
+    public bool IsCompleted { get; init; }
     public string Uom { get; init; } = "шт";
 }
 
@@ -284,6 +308,11 @@ public sealed class ProductionPalletFillResult
     public string? ClosedPrdDocRef { get; init; }
     public ProductionPallet? Pallet { get; init; }
     public ProductionPalletDocument? Document { get; init; }
+    public string EffectiveStatus { get; init; } = string.Empty;
+    public int FilledComponentCount { get; init; }
+    public int TotalComponentCount { get; init; }
+    public bool LedgerWritten { get; init; }
+    public string? Message { get; init; }
 
     public static ProductionPalletFillResult Failure(string error)
     {

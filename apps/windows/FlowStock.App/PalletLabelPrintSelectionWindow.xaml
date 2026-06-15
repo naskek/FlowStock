@@ -27,6 +27,8 @@
                       Unchecked="CategoryCheckBox_Changed" />
             <Button Content="Выделить все" Width="120" Click="SelectAll_Click" />
             <Button Content="Снять все" Width="120" Margin="8,0,0,0" Click="ClearAll_Click" />
+            <TextBlock Text="Количество копий:" Margin="16,0,4,0" VerticalAlignment="Center" />
+            <TextBox x:Name="CopiesBox" Width="50" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" />
         </WrapPanel>
         <TextBlock x:Name="SummaryText"
                    Grid.Row="1"

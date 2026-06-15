@@ -46,6 +46,7 @@ public sealed class AppServices
     public WpfBatchAddDocLineService WpfBatchAddDocLines { get; }
     public WpfUpdateDocLineService WpfUpdateDocLines { get; }
     public WpfDeleteDocLineService WpfDeleteDocLines { get; }
+    public WpfLiveRefreshCoordinator LiveRefresh { get; }
     public IPalletLabelPrintService PalletLabelPrinter { get; }
     public FileLogger AppLogger { get; }
     public FileLogger AdminLogger { get; }
@@ -114,6 +115,7 @@ public sealed class AppServices
         WpfBatchAddDocLines = new WpfBatchAddDocLineService(connectionString, Settings, appLogger);
         WpfUpdateDocLines = new WpfUpdateDocLineService(connectionString, Settings, appLogger);
         WpfDeleteDocLines = new WpfDeleteDocLineService(connectionString, Settings, appLogger);
+        LiveRefresh = new WpfLiveRefreshCoordinator(new WpfLiveUpdateClient(Settings, appLogger), appLogger);
         PalletLabelPrinter = new BarTenderPalletLabelPrintService(Settings, appLogger, baseDir);
         DatabasePath = databaseTarget;
         ConnectionString = connectionString;

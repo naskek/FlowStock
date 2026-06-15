@@ -122,6 +122,49 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
         });
     }
 
+    [Fact]
+    public async Task OrderList_DefaultOrdering_NoLimitAndPagedSortRealOrdersByNumericOrderRefBeforeCreatedAtAndId()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        await RunInRollbackTransactionAsync(connectionString, scopedStore =>
+        {
+            var numericPrefix = DateTime.UtcNow.Ticks.ToString()[^8..];
+
+            SeedCustomerOrder(scopedStore, numericPrefix + "117", new DateTime(2026, 5, 1, 8, 0, 0, DateTimeKind.Utc));
+            SeedCustomerOrder(scopedStore, numericPrefix + "116", new DateTime(2026, 5, 2, 8, 0, 0, DateTimeKind.Utc));
+            SeedCustomerOrder(scopedStore, numericPrefix + "119", new DateTime(2026, 5, 3, 8, 0, 0, DateTimeKind.Utc));
+            SeedCustomerOrder(scopedStore, numericPrefix + "118", new DateTime(2026, 5, 4, 8, 0, 0, DateTimeKind.Utc));
+
+            var pagedRefs = new OrderService(scopedStore)
+                .GetOrdersPage(includeInternal: true, numericPrefix, limit: 10, offset: 0)
+                .Select(order => order.OrderRef)
+                .ToArray();
+            var noLimitRefs = OrderPageSortSql.SortOrders(
+                    new OrderService(scopedStore).GetOrders()
+                        .Where(order => order.OrderRef.Contains(numericPrefix, StringComparison.OrdinalIgnoreCase))
+                        .Where(order => order.Status is not (OrderStatus.Cancelled or OrderStatus.Merged)),
+                    includeCancelledMerged: false)
+                .Select(order => order.OrderRef)
+                .ToArray();
+
+            var expectedRefs = new[]
+            {
+                numericPrefix + "119",
+                numericPrefix + "118",
+                numericPrefix + "117",
+                numericPrefix + "116"
+            };
+            Assert.Equal(expectedRefs, pagedRefs);
+            Assert.Equal(expectedRefs, noLimitRefs);
+            return Task.CompletedTask;
+        });
+    }
+
     private static JsonElement MapOrderJson(Order order)
     {
         return JsonSerializer.SerializeToElement(OrderApiMapper.MapOrder(

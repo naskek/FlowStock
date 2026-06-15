@@ -259,9 +259,12 @@
       if (event.key === "Enter") {
         if (isScanTarget) {
           unlockScanTarget(event.target);
-        }
-        if (!buffer && isScanTarget && event.target && event.target.value) {
-          buffer = event.target.value;
+          var targetValue = event.target && event.target.value ? event.target.value : "";
+          if (targetValue) {
+            emit(targetValue, { reason: "enter" });
+            event.preventDefault();
+          }
+          return;
         }
         if (buffer) {
           flushBuffer("enter");
@@ -286,6 +289,7 @@
       ) {
         if (isScanTarget) {
           unlockScanTarget(event.target);
+          return;
         }
         buffer += event.key;
         scheduleFlush(keyDelayMs, "keydown");
@@ -300,15 +304,9 @@
       if (!target || target === scanSink) {
         return;
       }
-      if (!isScanAllowedTarget(target)) {
+      if (isScanAllowedTarget(target)) {
         return;
       }
-      var value = target.value || "";
-      if (!value) {
-        return;
-      }
-      buffer = value;
-      scheduleFlush(inputDelayMs, "input");
     }
 
     function start() {

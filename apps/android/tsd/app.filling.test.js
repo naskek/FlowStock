@@ -127,6 +127,36 @@ assert(
     appJs.includes("handleScannedValue(scanInput.value)"),
   "filling scan input should submit typed scanner text on Enter"
 );
+const fillingHandleScannedValue = extractFunctionBody(appJs, "wireFillingScan");
+assert(
+  appJs.includes("function submitFillingScan(rawValue, context, options)") &&
+    appJs.includes("function isProbablyCompleteHuScan(value, context)") &&
+    fillingHandleScannedValue.includes("submitFillingScan(value, context") &&
+    !fillingHandleScannedValue.includes('String(value || "").trim()'),
+  "filling scan should submit through centralized submitFillingScan guard"
+);
+assert(
+  appJs.includes("function isMixedFillingPallet(pallet)") &&
+    appJs.includes("function renderFillingMixedPalletLines(pallet)") &&
+    appJs.includes("function getFillingPalletGroupDisplayTitle(group)") &&
+    fillingHandleScannedValue.includes("submitFillingScan(value, context"),
+  "mixed pallet presentation should not change filling scan submit guard"
+);
+const handleDocKeydownBody = extractFunctionBody(scannerJs, "handleDocKeydown");
+const handleDocInputBody = extractFunctionBody(scannerJs, "handleDocInput");
+assert(
+  handleDocKeydownBody.includes('emit(targetValue, { reason: "enter" })') &&
+    handleDocKeydownBody.includes("if (isScanTarget)") &&
+    handleDocKeydownBody.indexOf("if (isScanTarget)") <
+      handleDocKeydownBody.indexOf("buffer += event.key"),
+  "scan target Enter should emit full input value without keydown partial flush"
+);
+assert(
+  handleDocInputBody.includes("if (isScanAllowedTarget(target))") &&
+    handleDocInputBody.includes("return;") &&
+    !handleDocInputBody.includes("scheduleFlush"),
+  "scan-allowed input events should not schedule partial flush"
+);
 assert(
   scannerJs.includes("function unlockScanTarget(target)") &&
     scannerJs.includes('target.getAttribute("data-scan-readonly") !== "1"') &&
@@ -135,9 +165,8 @@ assert(
 );
 assert(
   scannerJs.includes("buffer += event.key") &&
-    scannerJs.includes('flushBuffer("enter")') &&
-    scannerJs.includes("isScanAllowedTarget(event.target)"),
-  "keyboard scanner should collect scanner key events and flush on Enter"
+    scannerJs.includes('flushBuffer("enter")'),
+  "keyboard scanner should still buffer global key events for non-scan targets"
 );
 assert(
   appJs.includes("TsdStorage.apiScanProductionPallet({") &&
@@ -191,6 +220,11 @@ assert(
   "final pallet fill should show pallet posted, PRD closed, and order completed status"
 );
 assert(
+  storageJs.includes("normalizeProductionFillResult") &&
+    storageJs.includes(".then(normalizeProductionFillResult)"),
+  "fill APIs should normalize single and mixed fill responses through shared mapper"
+);
+assert(
   storageJs.includes("prd_auto_closed") && storageJs.includes("closed_prd_doc_ref"),
   "fill API mapping should expose auto-closed PRD fields from the server"
 );
@@ -208,12 +242,30 @@ assert(
 
 const fillOverlay = extractFunctionBody(appJs, "openFillingPreviewOverlay");
 assert(
-  fillOverlay.includes("loadFillingContext(fillOrderId)") &&
-    fillOverlay.includes("shouldRenderProductionFillCompletion(result, nextContext, null)") &&
-    fillOverlay.includes("shouldRenderProductionFillCompletion(result, null, reloadError)") &&
-  !fillOverlay.includes("document: nextDocument") &&
-  !fillOverlay.includes("result.document"),
-  "production fill should reload context for normal scans and render final success when reload reports completion"
+  fillOverlay.includes("handleProductionFillSuccess(context, preview, result)") &&
+    !fillOverlay.includes("loadFillingContext(fillOrderId)"),
+  "production fill overlay should delegate post-fill flow to handleProductionFillSuccess"
+);
+assert(
+  appJs.includes("function isProductionFillFinal(") &&
+    appJs.includes("function handleProductionFillSuccess(") &&
+    appJs.includes("isProductionFillFinal(result)") &&
+    extractFunctionBody(appJs, "handleProductionFillSuccess").includes("isProductionFillFinal(result)"),
+  "post-fill handler should skip context reload when fill result is already final"
+);
+assert(
+  !extractFunctionBody(appJs, "isProductionFillFinal").includes("isProductionFillPrdClosed"),
+  "fill final detection must not treat PRD auto-close as order completion"
+);
+assert(
+  storageJs.includes("orderCompleted") && storageJs.includes("remainingFillablePalletCount"),
+  "fill result normalization should expose order-level completion fields when backend provides them"
+);
+const submitFillingScanBody = extractFunctionBody(appJs, "submitFillingScan");
+assert(
+  !submitFillingScanBody.includes("handleProductionFillSuccess") &&
+    !submitFillingScanBody.includes("isProductionFillFinal"),
+  "filling scan guard should stay independent from fill completion reload logic"
 );
 
 const hooks = {};
@@ -263,6 +315,27 @@ vmContext.window.navigator = vmContext.navigator;
 vm.createContext(vmContext);
 vm.runInContext(appJs, vmContext, { filename: "app.js" });
 
+const visibleFillingContext = {
+  document: {
+    pallets: [{ huCode: "HU-0001164" }, { huCode: "HU-0001165" }],
+  },
+};
+assert.strictEqual(
+  hooks.resolveFillingScannedHu("HU0001164", visibleFillingContext),
+  "HU-0001164",
+  "filling scan should map compact scanner text to visible pallet HU"
+);
+assert.strictEqual(
+  hooks.resolveFillingScannedHu("0001164", visibleFillingContext),
+  "HU-0001164",
+  "filling scan should map digits-only scanner text to visible pallet HU"
+);
+assert.strictEqual(
+  hooks.resolveFillingScannedHu("\u041DU-0001164", visibleFillingContext),
+  "HU-0001164",
+  "filling scan should normalize Cyrillic H lookalike before pallet lookup"
+);
+
 const unavailableAfterFill = new Error("Заказ недоступен для наполнения.");
 assert.strictEqual(
   hooks.isFillingContextUnavailableAfterSuccessfulFill(unavailableAfterFill),
@@ -295,6 +368,71 @@ assert.strictEqual(
   ),
   false,
   "non-final pallet fill should keep the filling screen active after context reload"
+);
+assert.strictEqual(
+  hooks.isProductionFillFinal({
+    ok: true,
+    prdAutoClosed: true,
+    closedPrdDocRef: "PRD-2026-000001",
+  }),
+  false,
+  "PRD auto-close alone must not mark order filling as final"
+);
+assert.strictEqual(
+  hooks.isProductionFillFinal({
+    ok: true,
+    closedPrdDocRef: "PRD-2026-000001",
+  }),
+  false,
+  "closed PRD reference alone must not mark order filling as final"
+);
+assert.strictEqual(
+  hooks.isProductionFillFinal({
+    ok: true,
+    prdAutoClosed: true,
+    document: { summary: { remainingPalletCount: 0 } },
+  }),
+  false,
+  "PRD-scoped zero remaining in fill document must not skip order context reload"
+);
+assert.strictEqual(
+  hooks.isProductionFillFinal({
+    ok: true,
+    order_completed: true,
+  }),
+  true,
+  "explicit order_completed from server should mark fill as final"
+);
+assert.strictEqual(
+  hooks.isProductionFillFinal({
+    ok: true,
+    remaining_fillable_pallet_count: 0,
+  }),
+  true,
+  "order-level remaining_fillable_pallet_count zero should mark fill as final"
+);
+assert.strictEqual(
+  hooks.isProductionFillFinal({
+    ok: true,
+    effectiveStatus: "PARTIALLY_FILLED",
+    document: { summary: { remainingPalletCount: 1 } },
+  }),
+  false,
+  "partial mixed fill should not be treated as final while pallets remain"
+);
+assert.strictEqual(
+  hooks.getRemainingPalletCountFromFillResult({
+    document: { summary: { remainingPalletCount: 2 } },
+  }),
+  2,
+  "fill result should expose remaining pallet count from normalized document summary"
+);
+assert.strictEqual(
+  hooks.getRemainingFillablePalletCountFromFillResult({
+    remainingFillablePalletCount: 1,
+  }),
+  1,
+  "fill result should expose order-level remaining fillable pallet count when provided"
 );
 assert.strictEqual(
   hooks.buildProductionFillCompletionMessage({ ok: true, prdAutoClosed: true }, null),
@@ -492,6 +630,125 @@ assert.match(
   /<li class="filling-pallet-item filling-pallet-item--compact (?:is-filled|is-pending)">/,
   "filling pallet rows should remain compact display-only list items"
 );
+assert.doesNotMatch(
+  fillingPalletListHtml,
+  /filling-mixed-component-line|filling-mixed-component-indicator/,
+  "single pallet list should not render mixed component indicators"
+);
+const singlePalletRowHtml = hooks.renderFillingPalletHuRow({
+  huCode: "HU-0001199",
+  itemName: "Горчица, Печагин, 1 кг",
+  status: "PENDING",
+});
+assert.match(singlePalletRowHtml, /HU-0001199/);
+assert.doesNotMatch(
+  singlePalletRowHtml,
+  /filling-mixed-pallet-item|outbound-picking-hu-lines|filling-mixed-component-line/,
+  "single pallet row HTML should stay compact without component list"
+);
+
+const mixedFillingPalletFixture = {
+  huCode: "HU-0001201",
+  isMixedPallet: true,
+  status: "PLANNED",
+  effectiveStatus: "PARTIALLY_FILLED",
+  filledComponentCount: 1,
+  totalComponentCount: 3,
+  lines: [
+    {
+      itemName: "Горчица Печагин, 200 гр",
+      plannedQty: 200,
+      filledQty: 0,
+      isCompleted: false,
+      uom: "шт",
+    },
+    {
+      itemName: "Хрен столовый, Печагин, 200 гр",
+      plannedQty: 200,
+      filledQty: 200,
+      isCompleted: true,
+      uom: "шт",
+    },
+    {
+      itemName: "Аджика, Печагин, 200 гр",
+      plannedQty: 200,
+      filledQty: 0,
+      isCompleted: false,
+      uom: "шт",
+    },
+  ],
+};
+const partialMixedPalletHtml = hooks.renderFillingPalletStatusList([mixedFillingPalletFixture]);
+assert.match(partialMixedPalletHtml, /Микс-паллета · 1 \/ 3/);
+assert.match(partialMixedPalletHtml, /HU-0001201/);
+assert.match(partialMixedPalletHtml, /Горчица Печагин, 200 гр/);
+assert.match(partialMixedPalletHtml, /Хрен столовый, Печагин, 200 гр/);
+assert.match(partialMixedPalletHtml, /Аджика, Печагин, 200 гр/);
+assert.match(partialMixedPalletHtml, /0 шт \/ 200 шт/);
+assert.match(partialMixedPalletHtml, /200 шт \/ 200 шт/);
+assert.match(
+  partialMixedPalletHtml,
+  /filling-mixed-component-line is-completed[\s\S]*Хрен столовый, Печагин, 200 гр/,
+  "completed mixed component should render checked indicator"
+);
+assert.match(
+  partialMixedPalletHtml,
+  /filling-mixed-component-line is-pending[\s\S]*Горчица Печагин, 200 гр/,
+  "incomplete mixed component should render waiting indicator"
+);
+
+const fullMixedFillingPalletFixture = {
+  huCode: "HU-0001201",
+  isMixedPallet: true,
+  status: "FILLED",
+  effectiveStatus: "FILLED",
+  filledComponentCount: 3,
+  totalComponentCount: 3,
+  lines: mixedFillingPalletFixture.lines.map(function (line) {
+    return {
+      itemName: line.itemName,
+      plannedQty: line.plannedQty,
+      filledQty: line.plannedQty,
+      isCompleted: true,
+      uom: line.uom,
+    };
+  }),
+};
+const fullMixedPalletHtml = hooks.renderFillingPalletStatusList([fullMixedFillingPalletFixture]);
+assert.match(fullMixedPalletHtml, /Микс-паллета · 3 \/ 3/);
+assert.match(fullMixedPalletHtml, /filling-mixed-component-line is-completed/);
+assert.doesNotMatch(
+  fullMixedPalletHtml,
+  /filling-mixed-component-line is-pending/,
+  "fully filled mixed pallet should not render waiting component lines"
+);
+
+const partiallyFilledPalletHtml = hooks.renderFillingPalletStatusList([
+  {
+    id: 6,
+    huCode: "HU-0000870",
+    itemName: "Микс-паллета",
+    status: "PLANNED",
+    effectiveStatus: "PARTIALLY_FILLED",
+    filledComponentCount: 1,
+    totalComponentCount: 3,
+    canFill: true,
+  },
+]);
+assert.strictEqual(
+  hooks.isFillingPalletCompleted({
+    status: "PLANNED",
+    effectiveStatus: "PARTIALLY_FILLED",
+    canFill: true,
+  }),
+  false,
+  "partially filled mixed HU should remain available instead of being treated as filled"
+);
+assert.match(
+  partiallyFilledPalletHtml,
+  /is-pending[\s\S]*HU-0000870|HU-0000870[\s\S]*is-pending/,
+  "partially filled mixed HU should render as pending and available"
+);
 const adjikaTitleIndex = fillingPalletListHtml.indexOf("Аджика Печагин, 200 гр");
 const mustardTitleIndex = fillingPalletListHtml.indexOf("Горчица Печагин, 200 гр");
 const hu742Index = fillingPalletListHtml.indexOf("HU-0000742");
@@ -553,16 +810,73 @@ assert(
   "outbound order screen should scan expected HU through the server"
 );
 assert(
-  appJs.includes("TsdStorage.apiCompleteOutboundPicking(orderId)") &&
-    appJs.includes("Все паллеты подобраны. Отгрузка проведена."),
-  "outbound picking complete should reflect server auto-close message"
+  appJs.includes("TsdStorage.apiCompleteOutboundPicking(orderId, allowPartial)") &&
+    storageJs.includes("allow_partial") &&
+    appJs.includes("Закрыть частичную отгрузку?"),
+  "outbound picking complete should support explicit partial close confirmation"
 );
 assert(
   appJs.includes("Микс-паллета") &&
     appJs.includes("preview.lines") &&
-    appJs.includes("filling-preview-composition"),
-  "mixed pallet preview should render composition lines"
+    appJs.includes("filling-preview-composition") &&
+    appJs.includes("filling-component-checkbox") &&
+    appJs.includes("TsdStorage.apiFillMixedProductionPalletComponents") &&
+    storageJs.includes("/api/tsd/production/fill-mixed-pallet-components"),
+  "mixed pallet preview should select and submit component lines"
 );
+assert(
+  appJs.includes("updateMixedConfirmState") && appJs.includes("result.message"),
+  "mixed component fill should require a selection and show partial-save message"
+);
+const partialMixedPreviewHtml = hooks.buildFillingPreviewHtml(
+  {
+    isMixedPallet: true,
+    orderRef: "103",
+    huCode: "HU-0000870",
+    palletIndex: 1,
+    palletCount: 1,
+    effectiveStatus: "PARTIALLY_FILLED",
+    canFill: true,
+    filledComponentCount: 1,
+    totalComponentCount: 3,
+    lines: [
+      { componentLineId: 1, itemName: "Хрен 200 гр", plannedQty: 200, uom: "шт", isCompleted: true },
+      { componentLineId: 2, itemName: "Аджика 200 гр", plannedQty: 200, uom: "шт", isCompleted: false },
+      { componentLineId: 3, itemName: "Горчица 200 гр", plannedQty: 200, uom: "шт", isCompleted: false },
+    ],
+  },
+  { orderRef: "103" }
+);
+assert.match(
+  partialMixedPreviewHtml,
+  /value="1" checked disabled/,
+  "completed mixed component should be checked and disabled"
+);
+assert.match(
+  partialMixedPreviewHtml,
+  /value="2" \/>/,
+  "remaining mixed component should stay unchecked and enabled"
+);
+assert.match(partialMixedPreviewHtml, /Хрен 200 гр — 200 шт · наполнено/);
+assert.strictEqual(
+  hooks.shouldRenderProductionFillCompletion(
+    { ok: true, effective_status: "PARTIALLY_FILLED" },
+    { document: { summary: { remainingPalletCount: 1 } } },
+    null
+  ),
+  false,
+  "order should not be marked done while mixed HU has incomplete components"
+);
+assert.strictEqual(
+  hooks.shouldRenderProductionFillCompletion(
+    { ok: true, effective_status: "FILLED" },
+    { document: { summary: { remainingPalletCount: 0 } } },
+    null
+  ),
+  true,
+  "order may be marked done after final component when no pallets remain"
+);
+assert(appVersionJs.includes('var version = "34"'), "TSD shell version should be bumped for partial mixed filling fix");
 assert(
   appJs.includes("Не удалось загрузить заказы для наполнения") && appJs.includes("console.error(error)"),
   "filling API failures should be visible and logged"
@@ -613,4 +927,285 @@ assert(
   "app.js should expose busy guard and avoid forced API-version reload"
 );
 
-console.log("TSD filling presentation tests passed.");
+function createFillSuccessHarness(contextHandler) {
+  const localHooks = {};
+  const localAppEl = {
+    innerHTML: "",
+    querySelectorAll: function () {
+      return [];
+    },
+  };
+  let fillingContextCalls = 0;
+  const localVmContext = {
+    console,
+    TsdStorage: {
+      apiGetProductionFillingContext: function (orderId) {
+        fillingContextCalls += 1;
+        return contextHandler(orderId, fillingContextCalls);
+      },
+    },
+    window: {
+      FlowStockTsdTestHooks: localHooks,
+      location: { hash: "" },
+      setTimeout: function () {
+        return 0;
+      },
+      clearTimeout: function () {},
+      setInterval: function () {
+        return 0;
+      },
+      addEventListener: function () {},
+    },
+    document: {
+      getElementById: function (id) {
+        if (id === "app") {
+          return localAppEl;
+        }
+        if (id === "fillingCompletionListBtn") {
+          return { addEventListener: function () {} };
+        }
+        return null;
+      },
+      querySelector: function () {
+        return null;
+      },
+      querySelectorAll: function () {
+        return [];
+      },
+      addEventListener: function () {},
+    },
+    localStorage: {
+      setItem: function () {},
+      getItem: function () {
+        return null;
+      },
+    },
+    navigator: {},
+  };
+  localVmContext.window.document = localVmContext.document;
+  localVmContext.window.localStorage = localVmContext.localStorage;
+  localVmContext.window.navigator = localVmContext.navigator;
+  vm.createContext(localVmContext);
+  vm.runInContext(appJs, localVmContext, { filename: "app.js" });
+  return {
+    hooks: localHooks,
+    appEl: localAppEl,
+    get fillingContextCalls() {
+      return fillingContextCalls;
+    },
+    resetCalls: function () {
+      fillingContextCalls = 0;
+    },
+  };
+}
+
+async function runFillSuccessRuntimeTests() {
+  const fillContext = {
+    workItem: { orderId: 120, orderRef: "120" },
+    document: {
+      summary: { remainingPalletCount: 1, filledPalletCount: 1, plannedPalletCount: 2 },
+      pallets: [{ huCode: "HU-0001204", status: "PENDING" }],
+    },
+  };
+  const preview = { orderId: 120, prdDocId: 55, huCode: "HU-0001203" };
+
+  const prdClosedHarness = createFillSuccessHarness(function () {
+    return Promise.resolve({
+      orderId: 120,
+      orderRef: "120",
+      prdDocId: 56,
+      document: {
+        summary: { remainingPalletCount: 2, filledPalletCount: 1, plannedPalletCount: 3 },
+        pallets: [
+          { huCode: "HU-0001204", status: "PENDING" },
+          { huCode: "HU-0001205", status: "PENDING" },
+        ],
+      },
+    });
+  });
+  prdClosedHarness.resetCalls();
+  await prdClosedHarness.hooks.handleProductionFillSuccess(fillContext, preview, {
+    ok: true,
+    prdAutoClosed: true,
+    closedPrdDocRef: "PRD-2026-000001",
+    document: { summary: { remainingPalletCount: 0 } },
+  });
+  assert.strictEqual(
+    prdClosedHarness.fillingContextCalls,
+    1,
+    "PRD auto-close with remaining order pallets should reload filling context"
+  );
+  assert.match(prdClosedHarness.appEl.innerHTML, /id="fillingScanInput"/);
+  assert.match(prdClosedHarness.appEl.innerHTML, /PRD PRD-2026-000001 закрыт\./);
+  assert.doesNotMatch(prdClosedHarness.appEl.innerHTML, /filling-completion-card/);
+
+  const orderCompletedHarness = createFillSuccessHarness(function () {
+    return Promise.reject(new Error("Заказ недоступен для наполнения."));
+  });
+  orderCompletedHarness.resetCalls();
+  await orderCompletedHarness.hooks.handleProductionFillSuccess(fillContext, preview, {
+    ok: true,
+    orderCompleted: true,
+    prdAutoClosed: true,
+    closedPrdDocRef: "PRD-2026-000001",
+  });
+  assert.strictEqual(
+    orderCompletedHarness.fillingContextCalls,
+    0,
+    "explicit order_completed should skip filling-context reload"
+  );
+  assert.match(orderCompletedHarness.appEl.innerHTML, /Паллета наполнена\. Заказ выполнен\./);
+
+  const partialHarness = createFillSuccessHarness(function () {
+    return Promise.resolve({
+      orderId: 120,
+      orderRef: "120",
+      prdDocId: 55,
+      document: {
+        summary: { remainingPalletCount: 1, filledPalletCount: 1, plannedPalletCount: 2 },
+        pallets: [{ huCode: "HU-0001204", status: "PENDING" }],
+      },
+    });
+  });
+  partialHarness.resetCalls();
+  await partialHarness.hooks.handleProductionFillSuccess(fillContext, preview, {
+    ok: true,
+    effectiveStatus: "PARTIALLY_FILLED",
+    document: { summary: { remainingPalletCount: 1 } },
+  });
+  assert.strictEqual(
+    partialHarness.fillingContextCalls,
+    1,
+    "partial mixed fill should reload filling context once"
+  );
+  assert.match(partialHarness.appEl.innerHTML, /id="fillingScanInput"/);
+
+  const reloadFallbackHarness = createFillSuccessHarness(function () {
+    return Promise.reject(new Error("Выпуск по заказу уже завершён. Нет паллет к наполнению."));
+  });
+  reloadFallbackHarness.resetCalls();
+  await reloadFallbackHarness.hooks.handleProductionFillSuccess(fillContext, preview, {
+    ok: true,
+    effectiveStatus: "PARTIALLY_FILLED",
+  });
+  assert.strictEqual(
+    reloadFallbackHarness.fillingContextCalls,
+    1,
+    "non-final fill without summary should still attempt one context reload"
+  );
+  assert.match(
+    reloadFallbackHarness.appEl.innerHTML,
+    /Паллета наполнена\. Заказ выполнен\./,
+    "context reload no-pallets after fill should render completion instead of throwing"
+  );
+}
+
+async function runFillingScanGuardTests() {
+  const fillingContext1203 = {
+    workItem: { orderId: 120, prdDocId: 55 },
+    document: {
+      pallets: [{ huCode: "HU-0001203" }],
+    },
+  };
+
+  function createScanRecorder() {
+    const calls = [];
+    return {
+      calls: calls,
+      executeScan: function (huCode) {
+        calls.push(huCode);
+        return Promise.resolve({ ok: true, huCode: huCode });
+      },
+    };
+  }
+
+  hooks.resetFillingScanGuards();
+  const partialRecorder = createScanRecorder();
+  const partialFragments = ["H", "HU", "HU-", "001203"];
+  for (const fragment of partialFragments) {
+    assert.strictEqual(
+      hooks.isProbablyCompleteHuScan(fragment, fillingContext1203),
+      false,
+      "partial fragment should be rejected: " + fragment
+    );
+    const outcome = await hooks.submitFillingScan(fragment, fillingContext1203, {
+      executeScan: partialRecorder.executeScan,
+    });
+    assert.strictEqual(outcome.accepted, false, "partial fragment submit should be ignored: " + fragment);
+  }
+  assert.strictEqual(partialRecorder.calls.length, 0, "partial fragments must not call scan API");
+
+  hooks.resetFillingScanGuards();
+  const fullRecorder = createScanRecorder();
+  const fullOutcome = await hooks.submitFillingScan("HU-0001203", fillingContext1203, {
+    executeScan: fullRecorder.executeScan,
+  });
+  assert.strictEqual(fullOutcome.accepted, true);
+  assert.strictEqual(fullRecorder.calls.length, 1);
+  assert.strictEqual(fullRecorder.calls[0], "HU-0001203");
+
+  hooks.resetFillingScanGuards();
+  const compactRecorder = createScanRecorder();
+  await hooks.submitFillingScan("HU0001203", fillingContext1203, {
+    executeScan: compactRecorder.executeScan,
+  });
+  assert.strictEqual(compactRecorder.calls.length, 1);
+  assert.strictEqual(compactRecorder.calls[0], "HU-0001203");
+
+  hooks.resetFillingScanGuards();
+  const digitsRecorder = createScanRecorder();
+  await hooks.submitFillingScan("0001203", fillingContext1203, {
+    executeScan: digitsRecorder.executeScan,
+  });
+  assert.strictEqual(digitsRecorder.calls.length, 1);
+  assert.strictEqual(digitsRecorder.calls[0], "HU-0001203");
+
+  hooks.resetFillingScanGuards();
+  const duplicateRecorder = createScanRecorder();
+  await hooks.submitFillingScan("HU-0001203", fillingContext1203, {
+    executeScan: duplicateRecorder.executeScan,
+  });
+  await hooks.submitFillingScan("HU-0001203", fillingContext1203, {
+    executeScan: duplicateRecorder.executeScan,
+  });
+  assert.strictEqual(duplicateRecorder.calls.length, 1, "duplicate HU within dedup window should scan once");
+
+  hooks.resetFillingScanGuards();
+  const rerenderRecorder = createScanRecorder();
+  let releaseInFlightScan;
+  const inFlightScanPromise = hooks.submitFillingScan("HU-0001203", fillingContext1203, {
+    executeScan: function (huCode) {
+      rerenderRecorder.calls.push(huCode);
+      return new Promise(function (resolve) {
+        releaseInFlightScan = resolve;
+      });
+    },
+  });
+  await Promise.resolve();
+  const rerenderDuplicate = await hooks.submitFillingScan("HU-0001203", fillingContext1203, {
+    executeScan: rerenderRecorder.executeScan,
+  });
+  assert.strictEqual(rerenderDuplicate.accepted, false);
+  assert.strictEqual(rerenderRecorder.calls.length, 1, "rerender duplicate should stay blocked while scan is in flight");
+  releaseInFlightScan({ ok: true });
+  await inFlightScanPromise;
+
+  hooks.resetFillingScanGuards();
+  const dualSourceRecorder = createScanRecorder();
+  const dualExecute = dualSourceRecorder.executeScan;
+  await Promise.all([
+    hooks.submitFillingScan("HU-0001203", fillingContext1203, { executeScan: dualExecute }),
+    hooks.submitFillingScan("HU0001203", fillingContext1203, { executeScan: dualExecute }),
+  ]);
+  assert.strictEqual(dualSourceRecorder.calls.length, 1, "Enter and scanner sources should dedupe to one API call");
+}
+
+runFillSuccessRuntimeTests()
+  .then(runFillingScanGuardTests)
+  .then(function () {
+    console.log("TSD filling presentation tests passed.");
+  })
+  .catch(function (error) {
+    console.error(error);
+    process.exit(1);
+  });

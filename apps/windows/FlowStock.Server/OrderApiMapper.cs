@@ -13,7 +13,8 @@ public static class OrderApiMapper
         bool? needsProductionPalletPlan = null,
         ProductionPalletSummary? palletSummary = null,
         string? palletPlanStatus = null,
-        OrderPalletFillPresentation? palletFill = null)
+        OrderPalletFillPresentation? palletFill = null,
+        OrderShipmentProgress? shipmentProgress = null)
     {
         var markingStatus = order.MarkingCompleted
             ? MarkingStatus.Printed
@@ -25,6 +26,9 @@ public static class OrderApiMapper
             needsProductionPalletPlan ?? false,
             hasProductionPalletPlan ?? false,
             palletSummary);
+        var statusDisplay = shipmentProgress?.IsPartiallyShipped == true
+            ? "Частично отгружено"
+            : OrderStatusMapper.StatusToDisplayName(order.Status, order.Type);
 
         return new
         {
@@ -36,8 +40,8 @@ public static class OrderApiMapper
             partner_code = order.PartnerCode,
             due_date = order.DueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             order_status = OrderStatusMapper.StatusToString(order.Status),
-            order_status_display = OrderStatusMapper.StatusToDisplayName(order.Status, order.Type),
-            status = OrderStatusMapper.StatusToDisplayName(order.Status, order.Type),
+            order_status_display = statusDisplay,
+            status = statusDisplay,
             comment = order.Comment,
             bind_reserved_stock = order.UseReservedStock,
             marking_status = MarkingStatusMapper.ToString(markingStatus),
@@ -53,6 +57,10 @@ public static class OrderApiMapper
             created_at = order.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
             shipped_at = order.ShippedAt?.ToString("O", CultureInfo.InvariantCulture),
             has_shipment_remaining = hasShipmentRemaining,
+            shipment_ordered_qty = shipmentProgress?.OrderedQty ?? 0d,
+            shipment_shipped_qty = shipmentProgress?.ShippedQty ?? 0d,
+            shipment_remaining_qty = shipmentProgress?.RemainingQty ?? 0d,
+            is_partially_shipped = shipmentProgress?.IsPartiallyShipped ?? false,
             has_production_pallet_plan = hasProductionPalletPlan,
             needs_production_pallet_plan = needsProductionPalletPlan,
             planned_pallet_count = palletSummary.PlannedPalletCount,

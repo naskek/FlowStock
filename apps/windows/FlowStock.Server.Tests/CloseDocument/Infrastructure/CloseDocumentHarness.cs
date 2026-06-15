@@ -55,6 +55,20 @@ internal sealed class CloseDocumentHarness
     public IReadOnlyList<MarkingOrder> MarkingOrders => _markingOrders.Values.OrderBy(order => order.CreatedAt).ToArray();
     public IReadOnlyList<MarkingCode> MarkingCodes => _markingCodes.Values.OrderBy(code => code.CreatedAt).ToArray();
 
+    public void VerifyNoGlobalHuFateReads()
+    {
+        _store.Verify(store => store.GetOrders(), Times.Never);
+        _store.Verify(store => store.GetDocs(), Times.Never);
+    }
+
+    public void VerifyScopedHuFateLookup(Times times)
+    {
+        _store.As<IOptimizedOrderLineHuFateStore>()
+            .Verify(
+                store => store.GetScopedOrderLineHuFateCandidates(It.IsAny<IReadOnlyCollection<ScopedOrderLineHuFateKey>>()),
+                times);
+    }
+
     public void FailNextUpdateOrderLineQty()
     {
         _failNextUpdateOrderLineQty = true;
@@ -290,6 +304,7 @@ internal sealed class CloseDocumentHarness
                 Uom = line.Uom,
                 PlannedQty = line.PlannedQty,
                 FilledQty = line.FilledQty,
+                FilledAt = line.FilledAt,
                 CreatedAt = line.CreatedAt
             }).ToArray()
         };
@@ -649,6 +664,10 @@ internal sealed class CloseDocumentHarness
 
     private void ConfigureStore()
     {
+        _store.As<IOptimizedOrderLineHuFateStore>()
+            .Setup(store => store.GetScopedOrderLineHuFateCandidates(It.IsAny<IReadOnlyCollection<ScopedOrderLineHuFateKey>>()))
+            .Returns<IReadOnlyCollection<ScopedOrderLineHuFateKey>>(BuildScopedOrderLineHuFateCandidates);
+
         _store.Setup(store => store.Initialize());
 
         _store.Setup(store => store.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
@@ -1759,11 +1778,17 @@ internal sealed class CloseDocumentHarness
 
                 foreach (var group in GetActiveDocLines(docId)
                              .Where(line => line.Qty > 0 && !string.IsNullOrWhiteSpace(line.ToHu))
-                             .GroupBy(line => NormalizeHu(line.ToHu), StringComparer.OrdinalIgnoreCase))
+                             .GroupBy(line => line.PackSingleHu
+                                 ? $"HU:{NormalizeHu(line.ToHu)}"
+                                 : $"LINE:{line.Id}", StringComparer.OrdinalIgnoreCase))
                 {
+                    var firstGroupLine = group.OrderBy(line => line.Id).First();
+                    var groupHu = NormalizeHu(firstGroupLine.ToHu);
                     if (_productionPallets.Values.Any(pallet => pallet.PrdDocId == docId
-                                                                && string.Equals(NormalizeHu(pallet.HuCode), group.Key, StringComparison.OrdinalIgnoreCase)
-                                                                && !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)))
+                                                                && !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)
+                                                                && (firstGroupLine.PackSingleHu
+                                                                    ? string.Equals(NormalizeHu(pallet.HuCode), groupHu, StringComparison.OrdinalIgnoreCase)
+                                                                    : pallet.DocLineId == firstGroupLine.Id)))
                     {
                         continue;
                     }
@@ -1852,6 +1877,8 @@ internal sealed class CloseDocumentHarness
                     string.Equals(NormalizeHu(pallet.HuCode), NormalizeHu(huCode), StringComparison.OrdinalIgnoreCase));
                 return found == null ? null : CloneProductionPallet(found);
             });
+        _store.Setup(store => store.GetProductionPalletByHuForUpdate(It.IsAny<string>()))
+            .Returns<string>(huCode => _store.Object.GetProductionPalletByHu(huCode));
 
         _store.Setup(store => store.GetFilledProductionPalletsByItemAndLocation(It.IsAny<long>(), It.IsAny<long>()))
             .Returns<long, long>((itemId, locationId) => _productionPallets.Values
@@ -2164,9 +2191,66 @@ internal sealed class CloseDocumentHarness
                         Uom = line.Uom,
                         PlannedQty = line.PlannedQty,
                         FilledQty = line.PlannedQty,
+                        FilledAt = filledAt,
                         CreatedAt = line.CreatedAt
                     }).ToArray()
                 };
+            });
+
+        _store.Setup(store => store.MarkProductionPalletComponentsFilled(
+                It.IsAny<long>(),
+                It.IsAny<IReadOnlyCollection<long>>(),
+                It.IsAny<DateTime>()))
+            .Returns<long, IReadOnlyCollection<long>, DateTime>((palletId, componentLineIds, filledAt) =>
+            {
+                if (!_productionPallets.TryGetValue(palletId, out var current))
+                {
+                    return 0;
+                }
+
+                var ids = componentLineIds.ToHashSet();
+                var updatedCount = current.Lines.Count(line => ids.Contains(line.Id) && !line.IsCompleted);
+                _productionPallets[palletId] = CloneProductionPallet(new ProductionPallet
+                {
+                    Id = current.Id,
+                    PrdDocId = current.PrdDocId,
+                    DocLineId = current.DocLineId,
+                    OrderId = current.OrderId,
+                    OrderLineId = current.OrderLineId,
+                    ItemId = current.ItemId,
+                    ItemName = current.ItemName,
+                    HuCode = current.HuCode,
+                    PlannedQty = current.PlannedQty,
+                    ToLocationId = current.ToLocationId,
+                    ToLocationCode = current.ToLocationCode,
+                    Status = current.Status,
+                    PalletNo = current.PalletNo,
+                    PalletCount = current.PalletCount,
+                    PrintedAt = current.PrintedAt,
+                    FilledAt = current.FilledAt,
+                    FilledByDeviceId = current.FilledByDeviceId,
+                    CancelReason = current.CancelReason,
+                    CancelledAt = current.CancelledAt,
+                    CreatedAt = current.CreatedAt,
+                    Lines = current.Lines.Select(line => ids.Contains(line.Id)
+                        ? new ProductionPalletComponentLine
+                        {
+                            Id = line.Id,
+                            ProductionPalletId = line.ProductionPalletId,
+                            DocLineId = line.DocLineId,
+                            OrderLineId = line.OrderLineId,
+                            ItemId = line.ItemId,
+                            ItemName = line.ItemName,
+                            Brand = line.Brand,
+                            Uom = line.Uom,
+                            PlannedQty = line.PlannedQty,
+                            FilledQty = line.PlannedQty,
+                            FilledAt = line.FilledAt ?? filledAt,
+                            CreatedAt = line.CreatedAt
+                        }
+                        : line).ToArray()
+                });
+                return updatedCount;
             });
 
         _store.Setup(store => store.CancelProductionPallets(It.IsAny<IReadOnlyList<long>>()))
@@ -2824,6 +2908,22 @@ internal sealed class CloseDocumentHarness
             var openPalletPlannedQty = openPalletRows.Sum(row => row.PlannedQty);
             var palletPlannedQty = itemPalletRows.Sum(row => row.PlannedQty);
             var palletFilledQty = itemPalletRows.Sum(row => row.FilledQty);
+            var persistedFilledPalletQty = itemPalletRows
+                .Where(row => string.Equals(row.Pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+                .Sum(row => row.FilledQty);
+            var partialPallets = itemPalletRows
+                .Select(row => _productionPallets.GetValueOrDefault(row.Pallet.PalletId))
+                .Where(pallet => pallet?.IsMixedPallet == true && pallet.HasComponentProgress && !pallet.AreAllComponentsFilled)
+                .Cast<ProductionPallet>()
+                .DistinctBy(pallet => pallet.Id)
+                .ToArray();
+            var hasPartialPalletWithLedger = partialPallets.Any(pallet =>
+                _postedLedger.Any(entry => entry.QtyDelta > StockQuantityRules.QtyTolerance
+                                            && entry.ItemId == key.ItemId
+                                            && string.Equals(NormalizeHu(entry.HuCode), NormalizeHu(pallet.HuCode), StringComparison.OrdinalIgnoreCase)));
+            var hasPartialPalletInvalidStatus = partialPallets.Any(pallet =>
+                !string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase));
             var openPalletFilledQty = openPalletRows.Sum(row => row.FilledQty);
             var ledgerQtyByDocStatus = BuildProductionPlanConsistencyLedgerQtyByDocStatus(key);
             var ledgerClosedPrdQty = ledgerQtyByDocStatus.ClosedQty;
@@ -2842,11 +2942,13 @@ internal sealed class CloseDocumentHarness
                 openPrdDocQty,
                 closedPrdDocQty,
                 openPalletPlannedQty,
-                palletFilledQty,
+                persistedFilledPalletQty,
                 ledgerClosedPrdQty,
                 ledgerOpenPrdQty,
                 hasOpenPrd,
-                hasClosedPrd);
+                hasClosedPrd,
+                hasPartialPalletWithLedger,
+                hasPartialPalletInvalidStatus);
             if (string.IsNullOrWhiteSpace(problemCode))
             {
                 continue;
@@ -3060,11 +3162,13 @@ internal sealed class CloseDocumentHarness
         double openPrdDocQty,
         double closedPrdDocQty,
         double openPalletPlannedQty,
-        double palletFilledQty,
+        double persistedFilledPalletQty,
         double ledgerClosedPrdQty,
         double ledgerOpenPrdQty,
         bool hasOpenPrd,
-        bool hasClosedPrd)
+        bool hasClosedPrd,
+        bool hasPartialPalletWithLedger,
+        bool hasPartialPalletInvalidStatus)
     {
         if (order.Status == OrderStatus.Merged && openPalletPlannedQty > StockQuantityRules.QtyTolerance)
         {
@@ -3100,14 +3204,24 @@ internal sealed class CloseDocumentHarness
             return ProductionPlanConsistencyProblemCode.ClosedPrdLedgerMismatch;
         }
 
-        if (palletFilledQty > StockQuantityRules.QtyTolerance
+        if (persistedFilledPalletQty > StockQuantityRules.QtyTolerance
             && hasOpenPrd
             && ledgerOpenPrdQty <= StockQuantityRules.QtyTolerance)
         {
             return ProductionPlanConsistencyProblemCode.FilledPalletMissingLedger;
         }
 
-        if (palletFilledQty > StockQuantityRules.QtyTolerance && hasOpenPrd)
+        if (hasPartialPalletInvalidStatus)
+        {
+            return ProductionPlanConsistencyProblemCode.PartialPalletInvalidStatus;
+        }
+
+        if (hasPartialPalletWithLedger)
+        {
+            return ProductionPlanConsistencyProblemCode.PartialPalletHasLedger;
+        }
+
+        if (persistedFilledPalletQty > StockQuantityRules.QtyTolerance && hasOpenPrd)
         {
             return ProductionPlanConsistencyProblemCode.FilledPalletsWithDraftPrd;
         }
@@ -3171,6 +3285,10 @@ internal sealed class CloseDocumentHarness
                 "Filled pallet ledger exists while PRD is still open. If quantities are aligned, close the PRD; otherwise review diagnostics before closing.",
             ProductionPlanConsistencyProblemCode.FilledPalletMissingLedger =>
                 "Filled production pallet has an open PRD and no positive receipt ledger. Use controlled maintenance repair; do not edit ledger manually.",
+            ProductionPlanConsistencyProblemCode.PartialPalletHasLedger =>
+                "Partially filled mixed pallet already has receipt ledger. Stop filling and review the HU before any correction.",
+            ProductionPlanConsistencyProblemCode.PartialPalletInvalidStatus =>
+                "Partial component progress is stored under an invalid pallet status. Review the HU before continuing.",
             ProductionPlanConsistencyProblemCode.ShippedCustomerWithOpenPrd =>
                 "Customer order is already shipped but has an open PRD/pallet plan. Review and cancel or repair the open production plan.",
             ProductionPlanConsistencyProblemCode.MergedOrderWithPalletPlan =>
@@ -3611,6 +3729,99 @@ internal sealed class CloseDocumentHarness
             .ToArray();
     }
 
+    private IReadOnlyList<ScopedOrderLineHuFateCandidate> BuildScopedOrderLineHuFateCandidates(
+        IReadOnlyCollection<ScopedOrderLineHuFateKey> keys)
+    {
+        var requested = keys
+            .Where(key => key.ItemId > 0 && !string.IsNullOrWhiteSpace(key.HuCode))
+            .Select(key => new ScopedOrderLineHuFateKey(key.ItemId, key.HuCode.Trim().ToUpperInvariant()))
+            .ToHashSet();
+        var rows = new List<ScopedOrderLineHuFateCandidate>();
+
+        rows.AddRange(BuildHuStockRows()
+            .Where(row => row.Qty > StockQuantityRules.QtyTolerance)
+            .Select(row => new
+            {
+                Row = row,
+                Key = new ScopedOrderLineHuFateKey(row.ItemId, row.HuCode.Trim().ToUpperInvariant())
+            })
+            .Where(row => requested.Contains(row.Key))
+            .GroupBy(row => row.Key)
+            .Select(group => new ScopedOrderLineHuFateCandidate
+            {
+                Kind = ScopedOrderLineHuFateDisplayBuilder.StockCandidateKind,
+                ItemId = group.Key.ItemId,
+                HuCode = group.Key.HuCode,
+                Qty = group.Sum(row => row.Row.Qty)
+            }));
+
+        foreach (var pair in _orderReceiptPlanLines)
+        {
+            if (!_orders.TryGetValue(pair.Key, out var order)
+                || order.Type != OrderType.Customer
+                || order.Status is OrderStatus.Cancelled or OrderStatus.Shipped or OrderStatus.Merged)
+            {
+                continue;
+            }
+
+            rows.AddRange(pair.Value
+                .Where(line => line.OrderLineId > 0
+                               && line.QtyPlanned > StockQuantityRules.QtyTolerance
+                               && !string.IsNullOrWhiteSpace(line.ToHu))
+                .Select(line => new
+                {
+                    Line = line,
+                    Key = new ScopedOrderLineHuFateKey(line.ItemId, line.ToHu!.Trim().ToUpperInvariant())
+                })
+                .Where(row => requested.Contains(row.Key))
+                .Select(row => new ScopedOrderLineHuFateCandidate
+                {
+                    Kind = ScopedOrderLineHuFateDisplayBuilder.ReservationCandidateKind,
+                    ItemId = row.Key.ItemId,
+                    HuCode = row.Key.HuCode,
+                    Qty = row.Line.QtyPlanned,
+                    TargetOrderId = order.Id,
+                    TargetOrderLineId = row.Line.OrderLineId,
+                    TargetOrderRef = order.OrderRef
+                }));
+        }
+
+        foreach (var doc in _docs.Values.Where(doc => doc.Type == DocType.Outbound
+                                                       && doc.Status == DocStatus.Closed
+                                                       && doc.OrderId.HasValue
+                                                       && _orders.TryGetValue(doc.OrderId.Value, out var order)
+                                                       && order.Type == OrderType.Customer))
+        {
+            var targetOrder = _orders[doc.OrderId!.Value];
+            rows.AddRange(GetActiveDocLines(doc.Id)
+                .Where(line => line.OrderLineId.HasValue
+                               && line.Qty > StockQuantityRules.QtyTolerance
+                               && !string.IsNullOrWhiteSpace(line.FromHu))
+                .Select(line => new
+                {
+                    Line = line,
+                    Key = new ScopedOrderLineHuFateKey(line.ItemId, line.FromHu!.Trim().ToUpperInvariant())
+                })
+                .Where(row => requested.Contains(row.Key))
+                .Select(row => new ScopedOrderLineHuFateCandidate
+                {
+                    Kind = ScopedOrderLineHuFateDisplayBuilder.ShipmentCandidateKind,
+                    ItemId = row.Key.ItemId,
+                    HuCode = row.Key.HuCode,
+                    Qty = row.Line.Qty,
+                    TargetOrderId = targetOrder.Id,
+                    TargetOrderLineId = row.Line.OrderLineId,
+                    TargetOrderRef = targetOrder.OrderRef,
+                    DocId = doc.Id,
+                    DocRef = doc.DocRef,
+                    ClosedAt = doc.ClosedAt,
+                    CreatedAt = doc.CreatedAt
+                }));
+        }
+
+        return rows;
+    }
+
     private IReadOnlyList<NegativeStockBalanceRow> BuildNegativeStockBalances()
     {
         return BuildHuStockRows()
@@ -3929,38 +4140,7 @@ internal sealed class CloseDocumentHarness
 
         foreach (var pallet in targetPallets)
         {
-            _productionPallets[pallet.Id] = new ProductionPallet
-            {
-                Id = pallet.Id,
-                PrdDocId = 0,
-                DocLineId = 0,
-                OrderId = null,
-                OrderLineId = null,
-                ItemId = pallet.ItemId,
-                ItemName = pallet.ItemName,
-                HuCode = pallet.HuCode,
-                PlannedQty = pallet.PlannedQty,
-                ToLocationId = pallet.ToLocationId,
-                ToLocationCode = pallet.ToLocationCode,
-                Status = pallet.Status,
-                FilledAt = pallet.FilledAt,
-                FilledByDeviceId = pallet.FilledByDeviceId,
-                CreatedAt = pallet.CreatedAt,
-                Lines = pallet.Lines.Select(line => new ProductionPalletComponentLine
-                {
-                    Id = line.Id,
-                    ProductionPalletId = line.ProductionPalletId,
-                    DocLineId = 0,
-                    OrderLineId = null,
-                    ItemId = line.ItemId,
-                    ItemName = line.ItemName,
-                    Brand = line.Brand,
-                    Uom = line.Uom,
-                    PlannedQty = line.PlannedQty,
-                    FilledQty = line.FilledQty,
-                    CreatedAt = line.CreatedAt
-                }).ToArray()
-            };
+            _productionPallets.Remove(pallet.Id);
         }
     }
 

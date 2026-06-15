@@ -52,6 +52,7 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
             .First()
             .HuCode;
         Assert.True(palletService.Fill(filledHu, "TSD-01").Success);
+        fixture.Harness.SeedLedgerEntry(plan.PrdDocId, fixture.ItemId, 1, 600, filledHu);
         await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
 
         using var response = await UpdateOrderHttpApi.PutRawAsync(
@@ -62,8 +63,8 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
         var error = await UpdateOrderHttpApi.ReadApiErrorResultAsync(response, HttpStatusCode.BadRequest);
         Assert.False(error.Ok);
         Assert.Equal("ORDER_LINE_QTY_BELOW_COVERAGE", error.Error);
-        Assert.Contains(filledHu, error.Message ?? string.Empty, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("FILLED", error.Message ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("защищено 600", error.Message ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("новое количество 500", error.Message ?? string.Empty, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(1200, Assert.Single(fixture.Harness.Store.GetOrderLines(fixture.OrderId)).QtyOrdered, 3);
     }
 
@@ -97,7 +98,7 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
         var payload = await UpdateOrderHttpApi.UpdateAsync(
             host.Client,
             fixture.OrderId,
-            BuildUpdateRequest(fixture, qtyOrdered: 2300));
+            BuildUpdateRequest(fixture, qtyOrdered: 2300, ["HU-000009", "HU-000010", "HU-000011"]));
 
         Assert.True(payload.Ok);
         Assert.Equal(1800, Assert.Single(fixture.Harness.Store.GetOrderLines(fixture.OrderId)).QtyOrdered, 3);
@@ -188,7 +189,7 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
         var payload = await UpdateOrderHttpApi.UpdateAsync(
             host.Client,
             fixture.OrderId,
-            BuildUpdateRequest(fixture, qtyOrdered: 1200));
+            BuildUpdateRequest(fixture, qtyOrdered: 1200, ["HU-000009", "HU-000010"]));
 
         Assert.True(payload.Ok);
         Assert.Equal(1200, Assert.Single(fixture.Harness.Store.GetOrderLines(fixture.OrderId)).QtyOrdered, 3);
@@ -291,7 +292,7 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
         var payload = await UpdateOrderHttpApi.UpdateAsync(
             host.Client,
             fixture.OrderId,
-            BuildUpdateRequest(fixture, qtyOrdered: 1200));
+            BuildUpdateRequest(fixture, qtyOrdered: 1200, ["HU-000009", "HU-000010"]));
 
         Assert.True(payload.Ok);
         var sourcePallets = fixture.Harness.Store.GetProductionPalletsByDoc(9000);
@@ -331,6 +332,7 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
             FilledAt = new DateTime(2026, 5, 25, 12, 0, 0, DateTimeKind.Utc),
             CreatedAt = new DateTime(2026, 5, 25, 11, 0, 0, DateTimeKind.Utc)
         });
+        fixture.Harness.SeedLedgerEntry(9100, fixture.ItemId, 1, 600, "HU-FILLED-CUSTOMER");
         await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
 
         using var response = await UpdateOrderHttpApi.PutRawAsync(
@@ -340,7 +342,8 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
 
         var error = await UpdateOrderHttpApi.ReadApiErrorResultAsync(response, HttpStatusCode.BadRequest);
         Assert.False(error.Ok);
-        Assert.Contains("HU-FILLED-CUSTOMER", error.Message ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("защищено 1200", error.Message ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("новое количество 500", error.Message ?? string.Empty, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("HU-RESERVED-001", error.Message ?? string.Empty, StringComparison.OrdinalIgnoreCase);
     }
 

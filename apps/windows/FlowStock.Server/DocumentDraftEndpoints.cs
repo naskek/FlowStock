@@ -2365,6 +2365,24 @@ public static class DocumentDraftEndpoints
                 deviceId: deleteRequest.DeviceId);
         }
 
+        if (existingDoc.Type == DocType.ProductionReceipt)
+        {
+            return LogDeleteAndReturn(
+                Results.BadRequest(new ApiErrorResult(
+                    false,
+                    DocumentService.ProductionReceiptLineDeleteForbiddenCode,
+                    DocumentService.ProductionReceiptLineDeleteForbiddenMessage)),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docId: docInfo.DocId,
+                docRef: docInfo.DocRef,
+                docType: DocTypeMapper.ToOpString(existingDoc.Type),
+                docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                errors: [DocumentService.ProductionReceiptLineDeleteForbiddenCode],
+                eventId: deleteRequest.EventId,
+                deviceId: deleteRequest.DeviceId);
+        }
+
         var docType = ParseDocType(docInfo.DocType);
         if (docType == null)
         {

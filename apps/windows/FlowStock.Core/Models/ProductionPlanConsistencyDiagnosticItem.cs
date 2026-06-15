@@ -7,6 +7,8 @@ public static class ProductionPlanConsistencyProblemCode
     public const string PrdLinesExceedOrderQty = "PRD_LINES_EXCEED_ORDER_QTY";
     public const string FilledPalletsWithDraftPrd = "FILLED_PALLETS_WITH_DRAFT_PRD";
     public const string FilledPalletMissingLedger = "FILLED_PALLET_MISSING_LEDGER";
+    public const string PartialPalletHasLedger = "PARTIAL_PALLET_HAS_LEDGER";
+    public const string PartialPalletInvalidStatus = "PARTIAL_PALLET_INVALID_STATUS";
     public const string ShippedCustomerWithOpenPrd = "SHIPPED_CUSTOMER_WITH_OPEN_PRD";
     public const string MergedOrderWithPalletPlan = "MERGED_ORDER_WITH_PALLET_PLAN";
     public const string ClosedPrdLedgerMismatch = "CLOSED_PRD_LEDGER_MISMATCH";

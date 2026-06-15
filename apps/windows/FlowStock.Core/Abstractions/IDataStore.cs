@@ -92,6 +92,7 @@ public interface IDataStore
     string CreateProductionPalletHuCode(string? createdBy);
     IReadOnlyList<ProductionPallet> GetProductionPalletsByDoc(long docId);
     ProductionPallet? GetProductionPalletByHu(string huCode);
+    ProductionPallet? GetProductionPalletByHuForUpdate(string huCode);
     IReadOnlyList<ProductionPalletWorkItem> GetActiveProductionPalletWorkItems();
     bool HasProductionPallets(long docId);
     bool HasProductionPalletLinesForDoc(long docId);
@@ -120,6 +121,10 @@ public interface IDataStore
         long itemId,
         IReadOnlyList<string> huCodes);
     void MarkProductionPalletFilled(long palletId, DateTime filledAt, string? deviceId);
+    int MarkProductionPalletComponentsFilled(
+        long palletId,
+        IReadOnlyCollection<long> componentLineIds,
+        DateTime filledAt);
     int CancelProductionPallets(IReadOnlyList<long> palletIds);
     int CancelProductionPalletsForReadyHuBinding(IReadOnlyList<long> palletIds, string reason, DateTime cancelledAt);
     int RemoveDocLinesForProductionPallets(IReadOnlyCollection<long> productionPalletIds);
@@ -317,4 +322,3 @@ public interface IDataStore
     IReadOnlyList<WarehouseTaskEvent> GetWarehouseTaskEvents(long taskId);
     bool IsHuLockedByActiveWarehouseTask(string huCode, long? excludeBundleId);
 }
-

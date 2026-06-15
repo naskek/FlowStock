@@ -11,7 +11,6 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
-using ExcelDataReader;
 using FlowStock.App.Services;
 using FlowStock.Core.Models;
 using Microsoft.Win32;
@@ -38,16 +37,16 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<StockHuFilterOption> _stockHuFilters = new();
     private readonly ObservableCollection<StockItemTypeFilterOption> _stockItemTypeFilters = new();
     private readonly ObservableCollection<KmCodeBatch> _kmBatches = new();
-    private readonly DispatcherTimer _autoRefreshTimer;
+    private readonly IDisposable _liveRefreshSubscription;
+    private readonly HashSet<int> _pendingLiveRefreshTabs = new();
     private readonly HashSet<long> _expandedStockItemIds = new();
     private bool _autoRefreshInProgress;
     private bool _serverApiUnavailableAtStartup;
     private bool _suppressStockFilterSelectionChanged;
-    private static bool _excelEncodingRegistered;
-    private static readonly TimeSpan AutoRefreshInterval = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan StockRefreshDebounceInterval = TimeSpan.FromMilliseconds(200);
     private static readonly TimeSpan StockGridScrollIdleDelay = TimeSpan.FromSeconds(1.5);
     private static readonly TimeSpan StockRefreshDeferWhileScrolling = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan ItemRequestsBadgeRefreshInterval = TimeSpan.FromSeconds(30);
     private DispatcherTimer? _stockRefreshDebounceTimer;
     private bool _stockRefreshDebounceTickAttached;
     private DispatcherTimer? _stockGridScrollIdleTimer;
@@ -59,6 +58,9 @@ public partial class MainWindow : Window
     private bool _stockGridScrollTrackingAttached;
     private System.Windows.Controls.ScrollViewer? _warehouseProductionStateScrollViewer;
     private bool _stockGridUserScrolling;
+    private DispatcherTimer? _itemRequestsBadgeRefreshTimer;
+    private bool _itemRequestsBadgeUpdateInProgress;
+    private bool _itemRequestsBadgeUpdatePending;
     private readonly List<DocTypeFilterOption> _docTypeFilters = new()
     {
         new DocTypeFilterOption(null, "Все"),
@@ -129,15 +131,26 @@ public partial class MainWindow : Window
         ApplyDeleteMode();
         ApplyExperimentalTabVisibility();
         UpdateStockModeUi();
+        foreach (var grid in new[]
+                 {
+                     StockGrid, WarehouseProductionStateGrid, ProductionNeedGrid, DocsGrid, OrdersGrid,
+                     WarehouseBundlesGrid, ItemsGrid, LocationsGrid, PartnersGrid, KmBatchesGrid
+                 })
+        {
+            grid.CellEditEnding += (_, _) => Dispatcher.BeginInvoke(RefreshPendingActiveTab);
+        }
 
         TryLoadAllOnStartup();
         ClearItemForm();
         ClearLocationForm();
         ClearPartnerForm();
 
-        _autoRefreshTimer = new DispatcherTimer { Interval = AutoRefreshInterval };
-        _autoRefreshTimer.Tick += AutoRefreshTimer_Tick;
+        _liveRefreshSubscription = _services.LiveRefresh.Register(
+            CanApplyLiveRefresh,
+            ApplyLiveRefresh,
+            MarkAllTabsPendingLiveRefresh);
         Loaded += MainWindow_Loaded;
+        Activated += (_, _) => RefreshPendingActiveTab();
         Closed += MainWindow_Closed;
     }
 
@@ -285,19 +298,20 @@ public partial class MainWindow : Window
         LoadOrders();
         LoadStock(null);
         LoadLowStockView();
-        UpdateItemRequestsBadge();
     }
 
     private void MainWindow_Loaded(object? sender, RoutedEventArgs e)
     {
         AttachWarehouseProductionStateGridScrollTracking();
+        ScheduleItemRequestsBadgeUpdate();
+        StartItemRequestsBadgeRefreshTimer();
 
         if (_serverApiUnavailableAtStartup)
         {
             return;
         }
 
-        _autoRefreshTimer.Start();
+        RefreshPendingActiveTab();
     }
 
     private void AttachWarehouseProductionStateGridScrollTracking()
@@ -446,27 +460,77 @@ public partial class MainWindow : Window
 
     private void MainWindow_Closed(object? sender, EventArgs e)
     {
-        _autoRefreshTimer.Stop();
+        _itemRequestsBadgeRefreshTimer?.Stop();
+        _liveRefreshSubscription.Dispose();
     }
 
-    private void AutoRefreshTimer_Tick(object? sender, EventArgs e)
+    private bool CanApplyLiveRefresh()
     {
+        return IsLoaded
+               && IsVisible
+               && IsActive
+               && !_autoRefreshInProgress
+               && !IsActiveTabEditing();
+    }
+
+    private bool IsActiveTabEditing()
+    {
+        if (MainTabs.SelectedIndex is TabItemsIndex or TabLocationsIndex or TabPartnersIndex
+            && Keyboard.FocusedElement is System.Windows.Controls.Primitives.TextBoxBase or System.Windows.Controls.ComboBox)
+        {
+            return true;
+        }
+
+        return MainTabs.SelectedIndex switch
+        {
+            TabStatusIndex => WpfLiveRefreshGuard.IsDataGridEditing(StockGrid)
+                              || WpfLiveRefreshGuard.IsDataGridEditing(WarehouseProductionStateGrid),
+            TabProductionNeedIndex => WpfLiveRefreshGuard.IsDataGridEditing(ProductionNeedGrid),
+            TabDocsIndex => WpfLiveRefreshGuard.IsDataGridEditing(DocsGrid),
+            TabOrdersIndex => WpfLiveRefreshGuard.IsDataGridEditing(OrdersGrid),
+            TabTasksIndex => WpfLiveRefreshGuard.IsDataGridEditing(WarehouseBundlesGrid),
+            TabItemsIndex => WpfLiveRefreshGuard.IsDataGridEditing(ItemsGrid),
+            TabLocationsIndex => WpfLiveRefreshGuard.IsDataGridEditing(LocationsGrid),
+            TabPartnersIndex => WpfLiveRefreshGuard.IsDataGridEditing(PartnersGrid),
+            TabKmIndex => WpfLiveRefreshGuard.IsDataGridEditing(KmBatchesGrid),
+            _ => false
+        };
+    }
+
+    private void ApplyLiveRefresh()
+    {
+        MarkAllTabsPendingLiveRefresh();
+        RefreshPendingActiveTab();
+    }
+
+    private void MarkAllTabsPendingLiveRefresh()
+    {
+        for (var tabIndex = TabStatusIndex; tabIndex <= TabKmIndex; tabIndex++)
+        {
+            _pendingLiveRefreshTabs.Add(tabIndex);
+        }
+    }
+
+    private void RefreshPendingActiveTab()
+    {
+        var selectedIndex = MainTabs.SelectedIndex;
+        if (!_pendingLiveRefreshTabs.Contains(selectedIndex) || !CanApplyLiveRefresh())
+        {
+            return;
+        }
+
+        _pendingLiveRefreshTabs.Remove(selectedIndex);
         RefreshActiveTab();
     }
 
     private void MainTabs_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
-        if (!IsLoaded)
+        if (!IsLoaded || !ReferenceEquals(e.Source, MainTabs))
         {
             return;
         }
 
-        if (!ReferenceEquals(e.Source, MainTabs))
-        {
-            return;
-        }
-
-        RefreshActiveTab();
+        RefreshPendingActiveTab();
     }
 
     private void RefreshActiveTab()
@@ -519,8 +583,6 @@ public partial class MainWindow : Window
                     LoadKmBatches();
                     break;
             }
-
-            UpdateItemRequestsBadge();
         }
         catch (Exception ex)
         {
@@ -2279,248 +2341,6 @@ public partial class MainWindow : Window
         EditItem_Click(sender, new RoutedEventArgs());
     }
 
-    private ImportItemsSummary ImportItemsFromExcel(string filePath)
-    {
-        EnsureExcelEncoding();
-
-        var existingItems = _services.WpfReadApi.TryGetItems(null, out var apiItems)
-            ? apiItems
-            : Array.Empty<Item>();
-        var existingCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var item in existingItems)
-        {
-            AddBarcodeVariants(existingCodes, item.Barcode);
-            AddBarcodeVariants(existingCodes, item.Gtin);
-        }
-        var seenCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        var created = 0;
-        var duplicates = 0;
-        var emptyRows = 0;
-        var invalidRows = 0;
-        var errors = 0;
-        var rowIndex = 0;
-
-        using var stream = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-        using var reader = ExcelReaderFactory.CreateReader(stream);
-
-        do
-        {
-            while (reader.Read())
-            {
-                var code = NormalizeImportedBarcode(ReadExcelCell(reader, 0));
-                var name = NormalizeIdentifier(ReadExcelCell(reader, 1));
-
-                if (rowIndex == 0 && IsHeaderRow(code, name))
-                {
-                    rowIndex++;
-                    continue;
-                }
-
-                rowIndex++;
-
-                if (string.IsNullOrWhiteSpace(code) && string.IsNullOrWhiteSpace(name))
-                {
-                    emptyRows++;
-                    continue;
-                }
-
-                if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(name))
-                {
-                    invalidRows++;
-                    continue;
-                }
-
-                if (IsBarcodeSeen(seenCodes, code))
-                {
-                    duplicates++;
-                    continue;
-                }
-
-                if (existingCodes.Contains(code))
-                {
-                    duplicates++;
-                    continue;
-                }
-
-                try
-                {
-                    AddBarcodeVariants(seenCodes, code);
-                    var gtin = IsDigitsOnly(code) ? code : null;
-                    var createdResult = _services.WpfCatalogApi.TryCreateItemAsync(new Item
-                        {
-                            Name = name,
-                            Barcode = code,
-                            Gtin = gtin,
-                            BaseUom = "шт",
-                            IsMarked = false
-                        })
-                        .ConfigureAwait(false)
-                        .GetAwaiter()
-                        .GetResult();
-                    if (!createdResult.IsSuccess)
-                    {
-                        if (string.Equals(createdResult.Error, "ITEM_ALREADY_EXISTS", StringComparison.OrdinalIgnoreCase))
-                        {
-                            duplicates++;
-                            continue;
-                        }
-
-                        throw new InvalidOperationException(createdResult.Error ?? "Не удалось создать товар через сервер.");
-                    }
-                    created++;
-                    AddBarcodeVariants(existingCodes, code);
-                    AddBarcodeVariants(existingCodes, gtin);
-                }
-                catch (ArgumentException)
-                {
-                    invalidRows++;
-                }
-                catch (PostgresException ex) when (IsPostgresConstraint(ex))
-                {
-                    duplicates++;
-                }
-                catch
-                {
-                    errors++;
-                }
-            }
-
-            break;
-        } while (reader.NextResult());
-
-        return new ImportItemsSummary(created, duplicates, emptyRows, invalidRows, errors);
-    }
-
-    private static void EnsureExcelEncoding()
-    {
-        if (_excelEncodingRegistered)
-        {
-            return;
-        }
-
-        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
-        _excelEncodingRegistered = true;
-    }
-
-    private static string? ReadExcelCell(IExcelDataReader reader, int index)
-    {
-        if (index < 0 || index >= reader.FieldCount)
-        {
-            return null;
-        }
-
-        var value = reader.GetValue(index);
-        if (value == null)
-        {
-            return null;
-        }
-
-        if (value is double number)
-        {
-            return number.ToString("0", CultureInfo.InvariantCulture);
-        }
-
-        if (value is float numberFloat)
-        {
-            return numberFloat.ToString("0", CultureInfo.InvariantCulture);
-        }
-
-        if (value is decimal numberDecimal)
-        {
-            return numberDecimal.ToString("0", CultureInfo.InvariantCulture);
-        }
-
-        return Convert.ToString(value, CultureInfo.InvariantCulture);
-    }
-
-    private static bool IsHeaderRow(string? code, string? name)
-    {
-        var combined = $"{code} {name}".Trim();
-        if (string.IsNullOrWhiteSpace(combined))
-        {
-            return false;
-        }
-
-        var lower = combined.ToLowerInvariant();
-        return lower.Contains("sku")
-               || lower.Contains("gtin")
-               || lower.Contains("штрих")
-               || lower.Contains("наимен")
-               || lower.Contains("name");
-    }
-
-    private static string? NormalizeImportedBarcode(string? value)
-    {
-        var trimmed = NormalizeIdentifier(value);
-        if (string.IsNullOrWhiteSpace(trimmed))
-        {
-            return null;
-        }
-
-        if (!IsDigitsOnly(trimmed))
-        {
-            return trimmed;
-        }
-
-        return trimmed.Length < 14 ? trimmed.PadLeft(14, '0') : trimmed;
-    }
-
-    private static void AddBarcodeVariants(HashSet<string> target, string? code)
-    {
-        var trimmed = NormalizeIdentifier(code);
-        if (string.IsNullOrWhiteSpace(trimmed))
-        {
-            return;
-        }
-
-        target.Add(trimmed);
-        if (!IsDigitsOnly(trimmed))
-        {
-            return;
-        }
-
-        if (trimmed.Length == 13)
-        {
-            target.Add("0" + trimmed);
-        }
-        else if (trimmed.Length == 14 && trimmed.StartsWith("0", StringComparison.Ordinal))
-        {
-            target.Add(trimmed.Substring(1));
-        }
-    }
-
-    private static bool IsBarcodeSeen(HashSet<string> seen, string? code)
-    {
-        var trimmed = NormalizeIdentifier(code);
-        if (string.IsNullOrWhiteSpace(trimmed))
-        {
-            return false;
-        }
-
-        if (seen.Contains(trimmed))
-        {
-            return true;
-        }
-
-        if (!IsDigitsOnly(trimmed))
-        {
-            return false;
-        }
-
-        if (trimmed.Length == 13)
-        {
-            return seen.Contains("0" + trimmed);
-        }
-
-        if (trimmed.Length == 14 && trimmed.StartsWith("0", StringComparison.Ordinal))
-        {
-            return seen.Contains(trimmed.Substring(1));
-        }
-
-        return false;
-    }
-
     private async void DeleteItem_Click(object sender, RoutedEventArgs e)
     {
         var itemsToDelete = GetSelectedItemsForDelete();
@@ -3097,11 +2917,12 @@ public partial class MainWindow : Window
 
     private void OpenIncomingRequests_Click(object sender, RoutedEventArgs e)
     {
+        ScheduleItemRequestsBadgeUpdate();
         var window = new IncomingRequestsWindow(_services, () =>
         {
             LoadStock(StatusSearchBox.Text);
             LoadOrders();
-            UpdateItemRequestsBadge();
+            ScheduleItemRequestsBadgeUpdate();
         })
         {
             Owner = this
@@ -3109,7 +2930,7 @@ public partial class MainWindow : Window
         window.ShowDialog();
         LoadStock(StatusSearchBox.Text);
         LoadOrders();
-        UpdateItemRequestsBadge();
+        ScheduleItemRequestsBadgeUpdate();
     }
 
     private void OpenTsdDevices_Click(object sender, RoutedEventArgs e)
@@ -3207,7 +3028,7 @@ public partial class MainWindow : Window
                 LoadOrders();
                 LoadStock(StatusSearchBox.Text);
                 LoadKmBatches();
-                UpdateItemRequestsBadge();
+                ScheduleItemRequestsBadgeUpdate();
             });
         window.Owner = this;
         window.ShowDialog();
@@ -3311,33 +3132,74 @@ public partial class MainWindow : Window
         window.Owner = this;
         window.ShowDialog();
     }
-    private void UpdateItemRequestsBadge()
+    private void StartItemRequestsBadgeRefreshTimer()
+    {
+        if (_itemRequestsBadgeRefreshTimer != null)
+        {
+            return;
+        }
+
+        _itemRequestsBadgeRefreshTimer = new DispatcherTimer
+        {
+            Interval = ItemRequestsBadgeRefreshInterval
+        };
+        _itemRequestsBadgeRefreshTimer.Tick += (_, _) => ScheduleItemRequestsBadgeUpdate();
+        _itemRequestsBadgeRefreshTimer.Start();
+    }
+
+    private void ScheduleItemRequestsBadgeUpdate()
+    {
+        if (_itemRequestsBadgeUpdateInProgress)
+        {
+            _itemRequestsBadgeUpdatePending = true;
+            return;
+        }
+
+        _ = RefreshItemRequestsBadgeAsync();
+    }
+
+    private async Task RefreshItemRequestsBadgeAsync()
+    {
+        _itemRequestsBadgeUpdateInProgress = true;
+        try
+        {
+            do
+            {
+                _itemRequestsBadgeUpdatePending = false;
+                var summary = await Task.Run(() =>
+                    _services.WpfIncomingRequestsApi.TryGetSummary(out var apiSummary)
+                        ? apiSummary
+                        : new IncomingRequestsSummary(0, 0, 0));
+
+                ApplyItemRequestsBadgeSummary(summary);
+            } while (_itemRequestsBadgeUpdatePending);
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error("Incoming requests badge update failed", ex);
+        }
+        finally
+        {
+            _itemRequestsBadgeUpdateInProgress = false;
+        }
+    }
+
+    private void ApplyItemRequestsBadgeSummary(IncomingRequestsSummary summary)
     {
         if (ItemRequestsBadge == null || ItemRequestsCountText == null)
         {
             return;
         }
 
-        try
-        {
-            var summary = _services.WpfIncomingRequestsApi.TryGetSummary(out var apiSummary)
-                ? apiSummary
-                : new IncomingRequestsSummary(0, 0, 0);
-
-            var itemCount = summary.ItemRequestsPending;
-            var orderCount = summary.OrderRequestsPending;
-            var readyHuCount = summary.ReadyHuBindingPending;
-            var count = summary.TotalPending;
-            ItemRequestsCountText.Text = count.ToString();
-            ItemRequestsBadge.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
-            ItemRequestsButton.ToolTip = count > 0
-                ? BuildIncomingRequestsTooltip(count, itemCount, orderCount, readyHuCount)
-                : "Входящие запросы";
-        }
-        catch (Exception ex)
-        {
-            _services.AppLogger.Error("Incoming requests badge update failed", ex);
-        }
+        var itemCount = summary.ItemRequestsPending;
+        var orderCount = summary.OrderRequestsPending;
+        var readyHuCount = summary.ReadyHuBindingPending;
+        var count = summary.TotalPending;
+        ItemRequestsCountText.Text = count.ToString();
+        ItemRequestsBadge.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        ItemRequestsButton.ToolTip = count > 0
+            ? BuildIncomingRequestsTooltip(count, itemCount, orderCount, readyHuCount)
+            : "Входящие запросы";
     }
 
     private static string BuildIncomingRequestsTooltip(int totalCount, int itemCount, int orderCount, int readyHuCount)
@@ -3391,24 +3253,6 @@ public partial class MainWindow : Window
     private static string? NormalizeIdentifier(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-    }
-
-    private static bool IsDigitsOnly(string? value)
-    {
-        if (string.IsNullOrEmpty(value))
-        {
-            return false;
-        }
-
-        foreach (var ch in value)
-        {
-            if (!char.IsDigit(ch))
-            {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     private static bool IsPostgresConstraint(PostgresException ex)
@@ -3998,6 +3842,4 @@ public partial class MainWindow : Window
         public string ShortageDisplay { get; init; } = string.Empty;
     }
 
-    private sealed record ImportItemsSummary(int Created, int Duplicates, int EmptyRows, int InvalidRows, int Errors);
 }
-
