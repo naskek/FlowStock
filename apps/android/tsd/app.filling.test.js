@@ -268,6 +268,18 @@ assert(
     !submitFillingScanBody.includes("isProductionFillFinal"),
   "filling scan guard should stay independent from fill completion reload logic"
 );
+const fetchJsonWithTimeoutBody = extractFunctionBody(storageJs, "fetchJsonWithTimeout");
+assert(
+  fetchJsonWithTimeoutBody.includes("requestError.status = response.status") &&
+    fetchJsonWithTimeoutBody.includes("requestError.code = code") &&
+    fetchJsonWithTimeoutBody.includes("requestError.payload = payload") &&
+    fetchJsonWithTimeoutBody.includes('new Error(message || code || "SERVER_ERROR")'),
+  "TSD HTTP errors should preserve status, code, message and payload"
+);
+assert(
+  fetchJsonWithTimeoutBody.includes('if (code === "BLOCK_DISABLED")'),
+  "BLOCK_DISABLED notification should use the structured server error code"
+);
 
 const hooks = {};
 const appEl = {
@@ -336,6 +348,23 @@ assert.strictEqual(
   "HU-0001164",
   "filling scan should normalize Cyrillic H lookalike before pallet lookup"
 );
+[
+  "Паллета не найдена в плане выпуска",
+  "Эта паллета относится к другому заказу",
+  "Паллета отменена",
+  "Паллета отменена и не может быть наполнена.",
+  "Выпуск превышает остаток по строке заказа",
+].forEach(function (message) {
+  assert.strictEqual(
+    hooks.mapFillingError({
+      code: "FILL_REJECTED",
+      message: "FILL_REJECTED",
+      payload: { error: "FILL_REJECTED", message: message },
+    }),
+    message,
+    "filling should keep the server rejection visible: " + message
+  );
+});
 
 const unavailableAfterFill = new Error("Заказ недоступен для наполнения.");
 assert.strictEqual(
@@ -450,6 +479,26 @@ const fillingScanHtml = hooks.renderFillingScan(
     },
   },
   {}
+);
+const fillingScanErrorHtml = hooks.renderFillingScan(
+  {
+    workItem: { orderRef: "104", prdDocRef: "PRD-2026-000001" },
+    document: {
+      summary: { filledPalletCount: 0, plannedPalletCount: 1 },
+      pallets: [{ huCode: "HU-000001", itemName: "Товар", status: "PENDING" }],
+    },
+  },
+  { message: "Эта паллета относится к другому заказу", messageType: "error" }
+);
+assert.match(
+  fillingScanErrorHtml,
+  /filling-message filling-message-error[\s\S]*Эта паллета относится к другому заказу/
+);
+assert(
+  fillingHandleScannedValue.includes("return refreshContext({") &&
+    fillingHandleScannedValue.includes("message: mapFillingError(error)") &&
+    fillingHandleScannedValue.includes("focusScan()"),
+  "rejected filling scan should keep the error through refresh and restore scanner focus"
 );
 assert.match(
   fillingScanHtml,

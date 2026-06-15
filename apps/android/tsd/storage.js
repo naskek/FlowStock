@@ -135,11 +135,16 @@
           })
           .then(function (payload) {
             if (!response.ok) {
-              var message = (payload && (payload.error || payload.message)) || "SERVER_ERROR";
-              if (message === "BLOCK_DISABLED") {
+              var code = payload && payload.error ? String(payload.error).trim() : "";
+              var message = payload && payload.message ? String(payload.message).trim() : "";
+              var requestError = new Error(message || code || "SERVER_ERROR");
+              requestError.status = response.status;
+              requestError.code = code;
+              requestError.payload = payload;
+              if (code === "BLOCK_DISABLED") {
                 notifyBlockDisabled(url, payload);
               }
-              throw new Error(message);
+              throw requestError;
             }
             if (!payload && response.status !== 204) {
               throw new Error("INVALID_RESPONSE");

@@ -16,11 +16,15 @@ let outboundClickHandler = null;
 let outboundScanHandler = null;
 let lastScanRequest = null;
 let currentOutboundOrder = null;
+let nextOutboundScanError = null;
+let scanInputFocusCount = 0;
 const scanInputEl = {
   value: "",
   isConnected: true,
   disabled: false,
-  focus: function () {},
+  focus: function () {
+    scanInputFocusCount += 1;
+  },
   addEventListener: function (type, handler) {
     if (type === "keydown") {
       outboundScanHandler = handler;
@@ -101,6 +105,11 @@ const context = {
         huCode,
         url: "/api/tsd/outbound/orders/" + encodeURIComponent(orderId) + "/scan",
       };
+      if (nextOutboundScanError) {
+        const error = nextOutboundScanError;
+        nextOutboundScanError = null;
+        return Promise.reject(error);
+      }
       return Promise.resolve({
         message: "HU подобрана.",
         order: {
@@ -433,6 +442,39 @@ assert.strictEqual(
   hooks.resolveOutboundPickingScannedHu("prefix:HU-0000726:suffix", outboundScanOrder),
   "HU-0000726"
 );
+assert.strictEqual(hooks.mapOutboundPickingError({ code: "HU_REQUIRED" }), "Отсканируйте HU.");
+assert.strictEqual(
+  hooks.mapOutboundPickingError({ code: "HU_NOT_EXPECTED" }),
+  "HU не ожидается для выбранного заказа."
+);
+assert.strictEqual(
+  hooks.mapOutboundPickingError({ code: "HU_PICKED_IN_OTHER_OUTBOUND" }),
+  "HU уже подобрана в другом открытом документе отгрузки."
+);
+assert.strictEqual(
+  hooks.mapOutboundPickingError({ code: "HU_ALREADY_SHIPPED" }),
+  "HU уже отгружен."
+);
+assert.strictEqual(
+  hooks.mapOutboundPickingError({ code: "NO_SHIPMENT_REMAINING" }),
+  "По заказу не осталось количества к отгрузке для этой HU."
+);
+assert.strictEqual(
+  hooks.mapOutboundPickingError({ code: "SHIPMENT_REMAINING_EXCEEDED" }),
+  "По заказу не осталось количества к отгрузке для этой HU."
+);
+assert.strictEqual(
+  hooks.mapOutboundPickingError({
+    code: "UNKNOWN_SCAN_ERROR",
+    message: "UNKNOWN_SCAN_ERROR",
+    payload: { error: "UNKNOWN_SCAN_ERROR", message: "Сервер объяснил ошибку." },
+  }),
+  "Сервер объяснил ошибку."
+);
+assert.strictEqual(
+  hooks.mapOutboundPickingError({ code: "UNKNOWN_SCAN_ERROR", message: "UNKNOWN_SCAN_ERROR" }),
+  "Ошибка скана HU. Проверьте паллету и заказ."
+);
 
 async function scanOutboundHu(rawValue) {
   currentOutboundOrder = outboundScanOrder;
@@ -463,6 +505,26 @@ async function scanOutboundHu(rawValue) {
   request = await scanOutboundHu("prefix:HU-0000726:suffix");
   assert.strictEqual(request.huCode, "HU-0000726");
   assert.strictEqual(request.url, "/api/tsd/outbound/orders/95/scan");
+
+  const rejectedScanError = new Error("HU_NOT_EXPECTED");
+  rejectedScanError.status = 409;
+  rejectedScanError.code = "HU_NOT_EXPECTED";
+  rejectedScanError.payload = {
+    error: "HU_NOT_EXPECTED",
+    message: "HU не ожидается для выбранного заказа.",
+  };
+  nextOutboundScanError = rejectedScanError;
+  scanInputFocusCount = 0;
+  await scanOutboundHu("HU-0000726");
+  await new Promise(function (resolve) {
+    setImmediate(resolve);
+  });
+  assert.match(
+    appEl.innerHTML,
+    /filling-message filling-message-error[\s\S]*HU не ожидается для выбранного заказа\./
+  );
+  assert.strictEqual(scanInputEl.value, "");
+  assert(scanInputFocusCount > 0, "rejected outbound scan should restore scanner focus");
 
   console.log("TSD outbound presentation tests passed.");
 })().catch(function (error) {

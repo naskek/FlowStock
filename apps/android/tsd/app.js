@@ -7439,12 +7439,30 @@
     applySoftKeyboardSetting(app);
   }
 
+  function getTsdErrorDetails(error) {
+    var payload = error && error.payload ? error.payload : null;
+    var code = String(
+      (error && error.code) ||
+        (payload && payload.error) ||
+        ""
+    ).trim();
+    var payloadMessage = String((payload && payload.message) || "").trim();
+    var rawMessage = String(error && error.message ? error.message : error || "").trim();
+    return {
+      code: code,
+      message: payloadMessage || (rawMessage && rawMessage !== code ? rawMessage : ""),
+      rawMessage: rawMessage,
+    };
+  }
+
   function mapFillingError(error) {
-    var message = String(error && error.message ? error.message : error || "").trim();
-    if (!message || message === "Failed to fetch" || message === "AbortError") {
+    var details = getTsdErrorDetails(error);
+    var code = details.code;
+    var message = details.message || details.rawMessage;
+    if (!message || details.rawMessage === "Failed to fetch" || details.rawMessage === "AbortError") {
       return "Нет связи с сервером. Наполнение не подтверждено.";
     }
-    if (message === "SERVER_ERROR" || message === "INVALID_RESPONSE") {
+    if (code === "SERVER_ERROR" || code === "INVALID_RESPONSE" || message === "SERVER_ERROR" || message === "INVALID_RESPONSE") {
       return "Сервер вернул ошибку при наполнении. Проверьте лог FlowStock Server.";
     }
     if (message === "Паллета не найдена в плане выпуска") {
@@ -7462,13 +7480,14 @@
     if (message === "Документ выпуска уже закрыт.") {
       return "Документ выпуска уже закрыт.";
     }
-    if (message === "MIXED_COMPONENT_SELECTION_REQUIRED" || message === "COMPONENT_LINE_IDS_REQUIRED") {
+    if (code === "MIXED_COMPONENT_SELECTION_REQUIRED" || code === "COMPONENT_LINE_IDS_REQUIRED" ||
+        message === "MIXED_COMPONENT_SELECTION_REQUIRED" || message === "COMPONENT_LINE_IDS_REQUIRED") {
       return "Выберите хотя бы один незаполненный компонент микс-паллеты.";
     }
-    if (message === "PRODUCTION_AUTO_CLOSE_REQUIRED") {
+    if (code === "PRODUCTION_AUTO_CLOSE_REQUIRED" || message === "PRODUCTION_AUTO_CLOSE_REQUIRED") {
       return "Частичное наполнение mixed HU требует включённого автоматического проведения выпуска.";
     }
-    if (message === "COMPONENT_NOT_IN_PALLET") {
+    if (code === "COMPONENT_NOT_IN_PALLET" || message === "COMPONENT_NOT_IN_PALLET") {
       return "Состав паллеты изменился. Отсканируйте HU повторно.";
     }
     return message;
@@ -7597,32 +7616,30 @@
   }
 
   function mapOutboundPickingError(error) {
-    var message = String(error && error.message ? error.message : error || "").trim();
-    if (!message || message === "Failed to fetch" || message === "AbortError") {
+    var details = getTsdErrorDetails(error);
+    var code = details.code || details.rawMessage;
+    if (details.rawMessage === "Failed to fetch" || details.rawMessage === "AbortError") {
       return "Нет связи с сервером. Подбор не сохранен.";
     }
-    if (message === "SERVER_ERROR" || message === "INVALID_RESPONSE") {
-      return "Сервер вернул ошибку при подборе. Проверьте лог FlowStock Server.";
-    }
-    if (message === "HU_REQUIRED") {
+    if (code === "HU_REQUIRED") {
       return "Отсканируйте HU.";
     }
-    if (message === "HU_NOT_EXPECTED") {
+    if (code === "HU_NOT_EXPECTED") {
       return "HU не ожидается для выбранного заказа.";
     }
-    if (message === "HU_PICKED_IN_OTHER_OUTBOUND") {
+    if (code === "HU_PICKED_IN_OTHER_OUTBOUND") {
       return "HU уже подобрана в другом открытом документе отгрузки.";
     }
-    if (message === "PICKING_INCOMPLETE" || message === "PARTIAL_CONFIRMATION_REQUIRED") {
+    if (code === "PICKING_INCOMPLETE" || code === "PARTIAL_CONFIRMATION_REQUIRED") {
       return "Подтвердите частичную отгрузку.";
     }
-    if (message === "HU_ALREADY_SHIPPED") {
-      return "HU уже отгружен по этому заказу.";
+    if (code === "HU_ALREADY_SHIPPED") {
+      return "HU уже отгружен.";
     }
-    if (message === "NO_SHIPMENT_REMAINING" || message === "SHIPMENT_REMAINING_EXCEEDED") {
+    if (code === "NO_SHIPMENT_REMAINING" || code === "SHIPMENT_REMAINING_EXCEEDED") {
       return "По заказу не осталось количества к отгрузке для этой HU.";
     }
-    return message || "Ошибка подбора.";
+    return details.message || "Ошибка скана HU. Проверьте паллету и заказ.";
   }
 
   function wireOutboundPickingList() {
@@ -7726,9 +7743,12 @@
               rawScanValue: rawScanValue,
               resolvedHuCode: huCode,
               orderId: orderId,
+              status: error && error.status,
+              code: error && error.code,
+              message: error && error.message,
             });
           }
-          refreshOrder({
+          return refreshOrder({
             message: mapOutboundPickingError(error),
             messageType: "error",
           });
@@ -13479,6 +13499,8 @@
       getRemainingFillablePalletCountFromFillResult;
     window.FlowStockTsdTestHooks.isProductionFillFinal = isProductionFillFinal;
     window.FlowStockTsdTestHooks.handleProductionFillSuccess = handleProductionFillSuccess;
+    window.FlowStockTsdTestHooks.mapFillingError = mapFillingError;
+    window.FlowStockTsdTestHooks.mapOutboundPickingError = mapOutboundPickingError;
     window.FlowStockTsdTestHooks.normalizeOutboundPickingOrderView = normalizeOutboundPickingOrderView;
     window.FlowStockTsdTestHooks.resolveOutboundPickingScannedHu = resolveOutboundPickingScannedHu;
     window.FlowStockTsdTestHooks.resolveFillingScannedHu = resolveFillingScannedHu;
