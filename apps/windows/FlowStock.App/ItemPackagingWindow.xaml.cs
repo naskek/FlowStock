@@ -29,11 +29,9 @@ public partial class ItemPackagingWindow : Window
     {
         _item = (_services.WpfReadApi.TryGetItems(null, out var apiItems) ? apiItems : Array.Empty<Item>())
             .FirstOrDefault(item => item.Id == _itemId);
-        var title = _item == null ? "Товар не найден" : $"Товар: {_item.Name} (база: {_item.BaseUom})";
+        var title = _item == null ? "Товар не найден" : $"Товар: {_item.Name} (складская единица: {_item.BaseUom})";
         ItemTitleText.Text = title;
-        PackagingFactorLabel.Text = _item == null
-            ? "Количество в упаковке (база)"
-            : $"Количество в упаковке ({_item.BaseUom})";
+        PackagingFactorLabel.Text = "Коэффициент к складской единице";
     }
 
     private void LoadPackagings()
@@ -97,13 +95,13 @@ public partial class ItemPackagingWindow : Window
                 .ConfigureAwait(true);
             if (!result.IsSuccess)
             {
-                throw new InvalidOperationException(result.Error ?? "Не удалось создать упаковку через сервер.");
+                throw new InvalidOperationException(result.Error ?? "Не удалось создать упаковочную единицу / кратность через сервер.");
             }
             LoadPackagings();
         }
         catch (Exception ex)
         {
-            MessageBox.Show(ex.Message, "Упаковки", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(ex.Message, "Упаковочные единицы / кратности", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -111,7 +109,7 @@ public partial class ItemPackagingWindow : Window
     {
         if (_selectedPackaging == null)
         {
-            MessageBox.Show("Выберите упаковку.", "Упаковки", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Выберите упаковочную единицу / кратность.", "Упаковочные единицы / кратности", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -128,13 +126,13 @@ public partial class ItemPackagingWindow : Window
                 .ConfigureAwait(true);
             if (!result.IsSuccess)
             {
-                throw new InvalidOperationException(result.Error ?? "Не удалось обновить упаковку через сервер.");
+                throw new InvalidOperationException(result.Error ?? "Не удалось обновить упаковочную единицу / кратность через сервер.");
             }
             LoadPackagings();
         }
         catch (Exception ex)
         {
-            MessageBox.Show(ex.Message, "Упаковки", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(ex.Message, "Упаковочные единицы / кратности", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -142,11 +140,11 @@ public partial class ItemPackagingWindow : Window
     {
         if (_selectedPackaging == null)
         {
-            MessageBox.Show("Выберите упаковку.", "Упаковки", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Выберите упаковочную единицу / кратность.", "Упаковочные единицы / кратности", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        var confirm = MessageBox.Show("Удалить выбранную упаковку?", "Упаковки", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+        var confirm = MessageBox.Show("Удалить выбранную упаковочную единицу / кратность?", "Упаковочные единицы / кратности", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
         if (confirm != MessageBoxResult.Yes)
         {
             return;
@@ -159,13 +157,13 @@ public partial class ItemPackagingWindow : Window
                 .ConfigureAwait(true);
             if (!result.IsSuccess)
             {
-                throw new InvalidOperationException(result.Error ?? "Не удалось удалить упаковку через сервер.");
+                throw new InvalidOperationException(result.Error ?? "Не удалось удалить упаковочную единицу / кратность через сервер.");
             }
             LoadPackagings();
         }
         catch (Exception ex)
         {
-            MessageBox.Show(ex.Message, "Упаковки", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(ex.Message, "Упаковочные единицы / кратности", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -173,7 +171,7 @@ public partial class ItemPackagingWindow : Window
     {
         if (_selectedPackaging == null)
         {
-            MessageBox.Show("Выберите упаковку.", "Упаковки", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Выберите упаковочную единицу / кратность.", "Упаковочные единицы / кратности", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -184,14 +182,14 @@ public partial class ItemPackagingWindow : Window
                 .ConfigureAwait(true);
             if (!result.IsSuccess)
             {
-                throw new InvalidOperationException(result.Error ?? "Не удалось установить упаковку по умолчанию через сервер.");
+                throw new InvalidOperationException(result.Error ?? "Не удалось установить упаковочную единицу / кратность по умолчанию через сервер.");
             }
-            MessageBox.Show("Упаковка по умолчанию установлена.", "Упаковки", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Упаковочная единица / кратность по умолчанию установлена.", "Упаковочные единицы / кратности", MessageBoxButton.OK, MessageBoxImage.Information);
             LoadItem();
         }
         catch (Exception ex)
         {
-            MessageBox.Show(ex.Message, "Упаковки", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(ex.Message, "Упаковочные единицы / кратности", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -204,26 +202,26 @@ public partial class ItemPackagingWindow : Window
 
         if (string.IsNullOrWhiteSpace(code))
         {
-            MessageBox.Show("Введите код упаковки.", "Упаковки", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("Введите код упаковочной единицы / кратности.", "Упаковочные единицы / кратности", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
 
         if (string.IsNullOrWhiteSpace(name))
         {
-            MessageBox.Show("Введите наименование упаковки.", "Упаковки", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("Введите наименование упаковочной единицы / кратности.", "Упаковочные единицы / кратности", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
 
         if (!double.TryParse(PackagingFactorBox.Text, NumberStyles.Float, CultureInfo.CurrentCulture, out factor) || factor <= 0)
         {
-            MessageBox.Show("Введите корректный коэффициент.", "Упаковки", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("Введите корректный коэффициент.", "Упаковочные единицы / кратности", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
 
         if (!string.IsNullOrWhiteSpace(PackagingSortBox.Text)
             && (!int.TryParse(PackagingSortBox.Text, NumberStyles.Integer, CultureInfo.CurrentCulture, out sortOrder) || sortOrder < 0))
         {
-            MessageBox.Show("Введите корректный порядок сортировки.", "Упаковки", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("Введите корректный порядок сортировки.", "Упаковочные единицы / кратности", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
 

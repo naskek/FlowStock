@@ -61,7 +61,6 @@ public partial class ItemEditWindow : Window
         if (_item == null)
         {
             Title = "Добавление товара";
-            IdBox.Text = "(будет присвоен)";
             MaxQtyPerHuBox.Text = string.Empty;
             UomCombo.SelectedItem = _uoms.FirstOrDefault(u => string.Equals(u.Name, "шт", StringComparison.OrdinalIgnoreCase))
                                     ?? _uoms.FirstOrDefault();
@@ -69,13 +68,11 @@ public partial class ItemEditWindow : Window
             ItemTypeCombo.SelectedItem = _itemTypes.FirstOrDefault(t => t.Id.HasValue) ?? _itemTypes.FirstOrDefault();
             MinStockQtyBox.Text = string.Empty;
             IsActiveCheck.IsChecked = true;
-            UpdateMinStockControls();
-            UpdateMarkingStatusText();
+            UpdateTypeDrivenControls();
             return;
         }
 
-        Title = $"Редактирование товара #{_item.Id}";
-        IdBox.Text = _item.Id.ToString(CultureInfo.InvariantCulture);
+        Title = "Редактирование товара";
         NameBox.Text = _item.Name;
         BarcodeBox.Text = _item.Barcode ?? string.Empty;
         GtinBox.Text = _item.Gtin ?? string.Empty;
@@ -95,8 +92,7 @@ public partial class ItemEditWindow : Window
             ? _item.MinStockQty.Value.ToString("0.###", CultureInfo.InvariantCulture)
             : string.Empty;
         IsActiveCheck.IsChecked = _item.IsActive;
-        UpdateMinStockControls();
-        UpdateMarkingStatusText();
+        UpdateTypeDrivenControls();
     }
 
     private async void Save_Click(object sender, RoutedEventArgs e)
@@ -128,35 +124,40 @@ public partial class ItemEditWindow : Window
             return;
         }
 
-        if (!TryParseMaxQtyPerHu(MaxQtyPerHuBox.Text, out var maxQtyPerHu))
-        {
-            return;
-        }
-
-        if (!TryParseMinStockQty(MinStockQtyBox.Text, out var minStockQty))
-        {
-            return;
-        }
-
-        if (!TryValidateItemIdentifiers(barcode, gtin, _item?.Id))
-        {
-            return;
-        }
-
         var baseUom = (UomCombo.SelectedItem as Uom)?.Name;
         var taraId = (TaraCombo.SelectedItem as TaraOption)?.Id;
         var itemType = ItemTypeCombo.SelectedItem as ItemTypeOption;
         var itemTypeId = itemType?.Id;
         var isActive = IsActiveCheck.IsChecked != false;
 
-        if (itemType?.EnableMinStockControl != true)
+        double? minStockQty = null;
+        if (itemType?.EnableMinStockControl == true
+            && !TryParseMinStockQty(MinStockQtyBox.Text, out minStockQty))
         {
-            minStockQty = null;
+            return;
         }
 
-        if (itemType?.EnableHuDistribution == true && !maxQtyPerHu.HasValue)
+        double? maxQtyPerHu;
+        if (itemType?.EnableHuDistribution == true)
         {
-            MessageBox.Show("Для выбранного типа номенклатуры обязательно заполнить поле \"Макс на 1 HU\".", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
+            if (!TryParseMaxQtyPerHu(MaxQtyPerHuBox.Text, out maxQtyPerHu))
+            {
+                return;
+            }
+
+            if (!maxQtyPerHu.HasValue)
+            {
+                MessageBox.Show("Для выбранного типа номенклатуры обязательно заполнить поле \"Макс. в 1 HU\".", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+        }
+        else
+        {
+            maxQtyPerHu = _item?.MaxQtyPerHu;
+        }
+
+        if (!TryValidateItemIdentifiers(barcode, gtin, _item?.Id))
+        {
             return;
         }
 
@@ -384,8 +385,7 @@ public partial class ItemEditWindow : Window
 
     private void ItemTypeCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
-        UpdateMinStockControls();
-        UpdateMarkingStatusText();
+        UpdateTypeDrivenControls();
     }
 
     private void GtinBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
@@ -393,15 +393,28 @@ public partial class ItemEditWindow : Window
         UpdateMarkingStatusText();
     }
 
-    private void UpdateMinStockControls()
+    private void UpdateTypeDrivenControls()
     {
         var selectedType = ItemTypeCombo.SelectedItem as ItemTypeOption;
-        var isEnabled = selectedType?.EnableMinStockControl == true;
-        MinStockQtyBox.IsEnabled = isEnabled;
-        if (!isEnabled)
+        var minStockVisibility = selectedType?.EnableMinStockControl == true
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        MinStockQtyLabel.Visibility = minStockVisibility;
+        MinStockQtyBox.Visibility = minStockVisibility;
+        MinStockQtyBox.IsEnabled = minStockVisibility == Visibility.Visible;
+        if (minStockVisibility != Visibility.Visible)
         {
             MinStockQtyBox.Text = string.Empty;
         }
+
+        var maxQtyPerHuVisibility = selectedType?.EnableHuDistribution == true
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        MaxQtyPerHuLabel.Visibility = maxQtyPerHuVisibility;
+        MaxQtyPerHuBox.Visibility = maxQtyPerHuVisibility;
+        MaxQtyPerHuBox.IsEnabled = maxQtyPerHuVisibility == Visibility.Visible;
+
+        UpdateMarkingStatusText();
     }
 
     private void UpdateMarkingStatusText()
@@ -412,6 +425,12 @@ public partial class ItemEditWindow : Window
         }
 
         var selectedType = ItemTypeCombo.SelectedItem as ItemTypeOption;
+        var visibility = selectedType?.EnableMarking == true
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        MarkingStatusLabel.Visibility = visibility;
+        MarkingStatusText.Visibility = visibility;
+
         if (selectedType?.EnableMarking == true)
         {
             MarkingStatusText.Text = string.IsNullOrWhiteSpace(GtinBox.Text)
@@ -420,7 +439,7 @@ public partial class ItemEditWindow : Window
             return;
         }
 
-        MarkingStatusText.Text = "нет, тип не маркируется";
+        MarkingStatusText.Text = string.Empty;
     }
 
     private sealed record TaraOption(long? Id, string Name)

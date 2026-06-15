@@ -20,7 +20,7 @@
                     <Separator />
                     <MenuItem Header="Ед. измерения..." Click="UomMenu_Click" />
                     <MenuItem Header="Причины списания..." Click="WriteOffReasonsMenu_Click" />
-                    <MenuItem Header="Упаковки..." Click="PackagingManager_Click" />
+                    <MenuItem Header="Упаковочные единицы / кратности..." Click="PackagingManager_Click" />
                     <MenuItem Header="Нумерация документов..." Click="DocNumberingSettingsMenu_Click" />
                 </MenuItem>
                 <MenuItem Header="Сервис">
@@ -744,8 +744,8 @@
                         <Button Content="Добавить" Click="AddItem_Click" TabIndex="1" />
                         <Button x:Name="ItemEditButton" Content="Редактировать" Click="EditItem_Click" Margin="8,0,0,0" TabIndex="2" />
                         <Button x:Name="ItemDeleteButton" Content="Удалить" Click="DeleteItem_Click" Margin="8,0,0,0" TabIndex="3" />
-                        <Button x:Name="ItemPackagingButton" Content="Упаковки..." Margin="8,0,0,0"
-                                Width="140" Click="ItemPackaging_Click" TabIndex="4" />
+                        <Button x:Name="ItemPackagingButton" Content="Упаковочные единицы / кратности..." Margin="8,0,0,0"
+                                Width="250" Click="ItemPackaging_Click" TabIndex="4" />
                         <Button Content="Импорт Excel..." Click="ImportItems_Click" Width="140" Margin="8,0,0,0" TabIndex="5" />
                     </StackPanel>
                     <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
@@ -761,7 +761,6 @@
                               MouseDoubleClick="ItemsGrid_MouseDoubleClick"
                               KeyDown="ItemsGrid_KeyDown" TabIndex="20">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="ID" Binding="{Binding Id}" Width="Auto" MaxWidth="120" />
                             <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="SKU / штрихкод" Binding="{Binding Barcode}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="Auto" MaxWidth="320" />
@@ -863,6 +862,5 @@
         </Border>
     </DockPanel>
 </Window>
-
 
 

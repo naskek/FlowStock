@@ -193,10 +193,10 @@
   - Добавлен блок позиций ниже минимума над основным списком.
   - Ручной поиск по отдельному полю убран, вместо него используются встроенные фильтры.
 - Documents: список + детали + проведение.
-- Items: список с ID + modal create/edit (`name`, `is_active`, `barcode/SKU`, `gtin`, `brand`, `volume`, `shelf life months`, `max qty per HU`, `tara`, `uom`, `item_type`, `min_stock_qty`) + вычисляемый статус ЧЗ + Excel import с preview и column mapping. Ручной чекбокс маркировки в карточке товара не используется.
-- Item types: редактор справочника типов номенклатуры (создание, редактирование, удаление/деактивация при использовании, настройка флагов `is_visible_in_product_catalog`, `enable_min_stock_control`, `min_stock_uses_order_binding`, `enable_order_reservation`, `enable_marking`).
+- Items: список без технического ID БД + modal create/edit (`name`, `is_active`, `barcode/SKU`, `gtin`, `brand`, `volume`, `shelf life months`, `max qty per HU`, `tara`, `uom`, `item_type`, `min_stock_qty`) + вычисляемый статус ЧЗ + Excel import с preview и column mapping. В карточке товара подпись и поле `min_stock_qty` показываются только при `item_types.enable_min_stock_control = true`; подпись и поле `max_qty_per_hu` показываются и требуют положительное значение только при `item_types.enable_hu_distribution = true`. При сохранении существующего товара с выключенным HU-распределением WPF сохраняет прежнее `max_qty_per_hu`, не валидирует и не очищает его; для нового товара значение может быть `NULL`. Ручной чекбокс маркировки в карточке товара не используется.
+- Item types: редактор справочника типов номенклатуры (создание, редактирование, удаление/деактивация при использовании, настройка флагов `is_visible_in_product_catalog`, `enable_min_stock_control`, `min_stock_uses_order_binding`, `enable_order_reservation`, `enable_hu_distribution`, `enable_marking`).
   - Для новых типов `is_visible_in_product_catalog` по умолчанию включен; после миграции V0005 тип `Без типа` (`GENERAL`) автоматически помечается видимым в PC каталоге.
-- Item packagings: редактор упаковок в карточке товара и общий packaging manager используют server API для list/create/update/deactivate/set-default.
+- Item packagings: операторские редакторы `Упаковочные единицы / кратности` в карточке товара и общем справочнике используют server API для list/create/update/deactivate/set-default; технические `item_packaging`/`factor_to_base` и API-контракт не переименовываются.
 - Tara: редактор справочника в разделе `Справочники`.
 - Причины списания: редактор справочника причин списания в разделе `Справочники` поддерживает добавление и удаление причин.
 - Locations: список с ID + modal create/edit (`code`, `name`).
@@ -244,7 +244,7 @@
 - В карточке товара WPF показывает вычисляемый статус:
   - `Маркировка ЧЗ: да`, если тип поддерживает ЧЗ и GTIN заполнен;
   - `Маркировка ЧЗ: нет, GTIN не заполнен`, если тип поддерживает ЧЗ, но GTIN пустой;
-  - `Маркировка ЧЗ: нет, тип не маркируется`, если тип не поддерживает ЧЗ.
+  - строка `Маркировка ЧЗ` полностью скрыта, если тип не поддерживает ЧЗ.
 - В окне заказа команда `Сформировать Excel ЧЗ` сначала вызывает `GET /api/orders/{orderId}/marking/preview` (без side effects), затем после подтверждения оператора — `POST /api/orders/{orderId}/marking/export`. Сервер сам читает `orders`/`order_lines`, создает или переиспользует order-based `marking_order` и формирует временные synthetic `marking_code`.
   - Для `CUSTOMER` Excel создается на нехватку после учета уже покрытого складского объема: `max(0, qty_ordered - shipped_qty - reserved_qty - existing_order_code_qty)`.
   - Для `INTERNAL` Excel создается на объем выпуска внутреннего заказа: `max(0, qty_ordered - existing_codes_for_this_internal_order)`.
