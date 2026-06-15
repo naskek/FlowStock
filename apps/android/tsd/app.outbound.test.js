@@ -4,6 +4,7 @@ const path = require("path");
 const vm = require("vm");
 
 const appJs = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
+const storageJs = fs.readFileSync(path.join(__dirname, "storage.js"), "utf8");
 
 const hooks = {};
 const appEl = {
@@ -14,10 +15,14 @@ const appEl = {
 };
 let outboundClickHandler = null;
 let outboundScanHandler = null;
+let outboundCompleteHandler = null;
 let lastScanRequest = null;
+let lastCompleteRequest = null;
 let currentOutboundOrder = null;
+let nextOutboundScanOrder = null;
 let nextOutboundScanError = null;
 let scanInputFocusCount = 0;
+const confirmMessages = [];
 const scanInputEl = {
   value: "",
   isConnected: true,
@@ -33,7 +38,11 @@ const scanInputEl = {
 };
 const completeBtnEl = {
   disabled: false,
-  addEventListener: function () {},
+  addEventListener: function (type, handler) {
+    if (type === "click") {
+      outboundCompleteHandler = handler;
+    }
+  },
 };
 
 const context = {
@@ -52,6 +61,10 @@ const context = {
       return 0;
     },
     addEventListener: function () {},
+    confirm: function (message) {
+      confirmMessages.push(message);
+      return true;
+    },
   },
   document: {
     getElementById: function (id) {
@@ -110,9 +123,11 @@ const context = {
         nextOutboundScanError = null;
         return Promise.reject(error);
       }
+      const resultOrder = nextOutboundScanOrder;
+      nextOutboundScanOrder = null;
       return Promise.resolve({
         message: "HU подобрана.",
-        order: {
+        order: resultOrder || {
           ...currentOutboundOrder,
           picked_hu_count: 1,
         },
@@ -121,7 +136,8 @@ const context = {
     apiGetOutboundPickingOrder: function () {
       return Promise.resolve(currentOutboundOrder);
     },
-    apiCompleteOutboundPicking: function () {
+    apiCompleteOutboundPicking: function (orderId, allowPartial) {
+      lastCompleteRequest = { orderId, allowPartial };
       return Promise.resolve({ order: currentOutboundOrder });
     },
   },
@@ -176,6 +192,10 @@ assert(
     appJs.includes("apiCompleteOutboundPicking(orderId, false)"),
   "last outbound scan should offer explicit server finalize"
 );
+assert(
+  /var ONLINE_SKIP = \{[^}]*normalizeOutboundPickingOrder: true,/.test(storageJs),
+  "outbound order normalizer should remain synchronous through the online wrapper"
+);
 assert.match(renderOutboundPickingOrderBody, /outbound-picking-progress/);
 assert(
   appJs.includes("var showTsdBelowMinimumEntry = false"),
@@ -218,6 +238,49 @@ const snakeCaseOrder = {
   draft_outbound_doc_id: 123,
   draft_outbound_doc_ref: "OUT-2026-000123",
 };
+
+const completeSecondOutboundOrder = {
+  order_id: 96,
+  order_ref: "004",
+  partner_name: "Тестовый клиент",
+  status: "Частично отгружено",
+  expected_hu_count: 9,
+  picked_hu_count: 9,
+  ordered_qty: 6000,
+  shipped_qty: 600,
+  remaining_qty: 5400,
+  scanned_qty: 5400,
+  is_complete: true,
+  required_pallets: 9,
+  scanned_pallets: 9,
+  remaining_pallets: 0,
+  can_close: true,
+  is_closed: false,
+  operation_fingerprint: "second-outbound-complete",
+  hus: [],
+};
+const normalizedCompleteSecondOutboundOrder =
+  hooks.normalizeOutboundPickingOrderView(completeSecondOutboundOrder);
+assert.strictEqual(normalizedCompleteSecondOutboundOrder.isComplete, true);
+assert.strictEqual(normalizedCompleteSecondOutboundOrder.canClose, true);
+assert.strictEqual(normalizedCompleteSecondOutboundOrder.isClosed, false);
+assert.strictEqual(normalizedCompleteSecondOutboundOrder.operationFingerprint, "second-outbound-complete");
+assert.strictEqual(normalizedCompleteSecondOutboundOrder.expectedHuCount, 9);
+assert.strictEqual(normalizedCompleteSecondOutboundOrder.pickedHuCount, 9);
+assert.strictEqual(normalizedCompleteSecondOutboundOrder.requiredPallets, 9);
+assert.strictEqual(normalizedCompleteSecondOutboundOrder.scannedPallets, 9);
+assert.strictEqual(normalizedCompleteSecondOutboundOrder.remainingPallets, 0);
+assert.strictEqual(normalizedCompleteSecondOutboundOrder.orderedQty, 6000);
+assert.strictEqual(normalizedCompleteSecondOutboundOrder.shippedQty, 600);
+assert.strictEqual(normalizedCompleteSecondOutboundOrder.remainingQty, 5400);
+assert.strictEqual(normalizedCompleteSecondOutboundOrder.scannedQty, 5400);
+assert.strictEqual(hooks.isOutboundPickingOperationComplete(normalizedCompleteSecondOutboundOrder), true);
+assert.strictEqual(hooks.isOutboundPickingOperationPartial(normalizedCompleteSecondOutboundOrder), false);
+const camelCaseCompleteSecondOutboundOrder =
+  hooks.normalizeOutboundPickingOrderView(normalizedCompleteSecondOutboundOrder);
+assert.strictEqual(camelCaseCompleteSecondOutboundOrder.isComplete, true);
+assert.strictEqual(camelCaseCompleteSecondOutboundOrder.canClose, true);
+assert.strictEqual(camelCaseCompleteSecondOutboundOrder.isClosed, false);
 
 const listHtml = hooks.renderOutboundPickingList([snakeCaseOrder]);
 assert.match(listHtml, /data-outbound-order="93"/);
@@ -368,6 +431,21 @@ assert.match(appEl.innerHTML, /Уже отгружено <strong>5<\/strong>/);
 assert.match(appEl.innerHTML, /Осталось <strong>10<\/strong>/);
 assert.match(appEl.innerHTML, /Отсканировано сейчас <strong>5<\/strong>/);
 assert.match(appEl.innerHTML, /Завершить частичную отгрузку/);
+
+hooks.renderOutboundPickingOrder(completeSecondOutboundOrder, {});
+assert.match(appEl.innerHTML, /Закрыть документ/);
+assert.doesNotMatch(appEl.innerHTML, /Завершить частичную отгрузку/);
+
+hooks.renderOutboundPickingOrder(
+  {
+    ...completeSecondOutboundOrder,
+    is_complete: false,
+    can_close: false,
+  },
+  {}
+);
+assert.match(appEl.innerHTML, /Закрыть документ/);
+assert.doesNotMatch(appEl.innerHTML, /Завершить частичную отгрузку/);
 assert.strictEqual(
   hooks.buildOutboundPickingSummaryLine({
     order_ref: "003",
@@ -476,11 +554,12 @@ assert.strictEqual(
   "Ошибка скана HU. Проверьте паллету и заказ."
 );
 
-async function scanOutboundHu(rawValue) {
-  currentOutboundOrder = outboundScanOrder;
+async function scanOutboundHu(rawValue, order, scanResultOrder) {
+  currentOutboundOrder = order || outboundScanOrder;
+  nextOutboundScanOrder = scanResultOrder || null;
   lastScanRequest = null;
   outboundScanHandler = null;
-  hooks.renderOutboundPickingOrder(outboundScanOrder, {});
+  hooks.renderOutboundPickingOrder(currentOutboundOrder, {});
   assert.strictEqual(typeof outboundScanHandler, "function");
   scanInputEl.value = rawValue;
   outboundScanHandler({
@@ -493,6 +572,45 @@ async function scanOutboundHu(rawValue) {
 }
 
 (async function () {
+  lastCompleteRequest = null;
+  outboundCompleteHandler = null;
+  completeBtnEl.disabled = false;
+  hooks.renderOutboundPickingOrder(
+    {
+      ...completeSecondOutboundOrder,
+      is_complete: false,
+    },
+    {}
+  );
+  assert.strictEqual(typeof outboundCompleteHandler, "function");
+  outboundCompleteHandler();
+  await new Promise(function (resolve) {
+    setImmediate(resolve);
+  });
+  assert.deepStrictEqual(lastCompleteRequest, { orderId: 96, allowPartial: false });
+
+  lastCompleteRequest = null;
+  outboundCompleteHandler = null;
+  completeBtnEl.disabled = false;
+  hooks.renderOutboundPickingOrder(
+    {
+      ...completeSecondOutboundOrder,
+      picked_hu_count: 8,
+      scanned_qty: 4800,
+      is_complete: false,
+      scanned_pallets: 8,
+      remaining_pallets: 1,
+      can_close: false,
+    },
+    {}
+  );
+  assert.strictEqual(typeof outboundCompleteHandler, "function");
+  outboundCompleteHandler();
+  await new Promise(function (resolve) {
+    setImmediate(resolve);
+  });
+  assert.deepStrictEqual(lastCompleteRequest, { orderId: 96, allowPartial: true });
+
   let request = await scanOutboundHu("HU-0000726");
   assert.strictEqual(request.huCode, "HU-0000726");
   assert.strictEqual(request.orderId, 95);
@@ -505,6 +623,36 @@ async function scanOutboundHu(rawValue) {
   request = await scanOutboundHu("prefix:HU-0000726:suffix");
   assert.strictEqual(request.huCode, "HU-0000726");
   assert.strictEqual(request.url, "/api/tsd/outbound/orders/95/scan");
+
+  const finalSecondOutboundScanOrder = {
+    ...outboundScanOrder,
+    order_id: 96,
+    order_ref: "004",
+    expected_hu_count: 9,
+    picked_hu_count: 8,
+    ordered_qty: 6000,
+    shipped_qty: 600,
+    remaining_qty: 5400,
+    scanned_qty: 4800,
+    required_pallets: 9,
+    scanned_pallets: 8,
+    remaining_pallets: 1,
+    operation_fingerprint: "second-outbound-before-final-scan",
+  };
+  confirmMessages.length = 0;
+  lastCompleteRequest = null;
+  request = await scanOutboundHu(
+    "HU-0000726",
+    finalSecondOutboundScanOrder,
+    completeSecondOutboundOrder
+  );
+  await new Promise(function (resolve) {
+    setImmediate(resolve);
+  });
+  assert.strictEqual(request.orderId, 96);
+  assert.strictEqual(confirmMessages.length, 1);
+  assert.match(confirmMessages[0], /Все паллеты отсканированы/);
+  assert.deepStrictEqual(lastCompleteRequest, { orderId: 96, allowPartial: false });
 
   const rejectedScanError = new Error("HU_NOT_EXPECTED");
   rejectedScanError.status = 409;

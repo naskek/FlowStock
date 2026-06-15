@@ -3439,7 +3439,11 @@
   }
 
   function shouldPromptOperationClose(kind, operation) {
-    return !!operation && operation.canClose === true && operation.isClosed !== true &&
+    var canClose =
+      !!operation &&
+      (operation.canClose === true ||
+        (kind === "outbound" && isOutboundPickingOperationComplete(operation)));
+    return canClose && operation.isClosed !== true &&
       (typeof sessionStorage === "undefined" ||
         sessionStorage.getItem("flowstock-close-prompt-declined") !== buildClosePromptStateKey(kind, operation));
   }
@@ -3899,7 +3903,7 @@
       scannedQty:
         Number(pickOutboundViewValue(normalized, raw, "scannedQty", "scanned_qty")) || 0,
       isComplete:
-        (normalized && normalized.isComplete === true) || (raw && raw.is_complete === true),
+        pickOutboundViewValue(normalized, raw, "isComplete", "is_complete") === true,
       requiredPallets:
         Number(pickOutboundViewValue(normalized, raw, "requiredPallets", "required_pallets")) || 0,
       scannedPallets:
@@ -3907,9 +3911,9 @@
       remainingPallets:
         Number(pickOutboundViewValue(normalized, raw, "remainingPallets", "remaining_pallets")) || 0,
       canClose:
-        (normalized && normalized.canClose === true) || (raw && raw.can_close === true),
+        pickOutboundViewValue(normalized, raw, "canClose", "can_close") === true,
       isClosed:
-        (normalized && normalized.isClosed === true) || (raw && raw.is_closed === true),
+        pickOutboundViewValue(normalized, raw, "isClosed", "is_closed") === true,
       operationFingerprint: String(
         pickOutboundViewValue(normalized, raw, "operationFingerprint", "operation_fingerprint") || ""
       ),
@@ -3924,6 +3928,28 @@
           ? raw.hus.map(normalizeOutboundPickingHuView)
           : [],
     };
+  }
+
+  function isOutboundPickingOperationComplete(order) {
+    order = order || {};
+    var remainingQty = Number(order.remainingQty) || 0;
+    var scannedQty = Number(order.scannedQty) || 0;
+    return (
+      order.canClose === true ||
+      order.isComplete === true ||
+      (remainingQty > 0 && scannedQty >= remainingQty)
+    );
+  }
+
+  function isOutboundPickingOperationPartial(order) {
+    order = order || {};
+    var remainingQty = Number(order.remainingQty) || 0;
+    var scannedQty = Number(order.scannedQty) || 0;
+    return (
+      !isOutboundPickingOperationComplete(order) &&
+      scannedQty > 0 &&
+      scannedQty < remainingQty
+    );
   }
 
   function normalizeOutboundPickingScanText(value) {
@@ -4232,7 +4258,7 @@
 
   function renderOutboundPickingOrder(order, state) {
     order = normalizeOutboundPickingOrderView(order);
-    var complete = order.isComplete === true;
+    var complete = isOutboundPickingOperationComplete(order);
     var message = state && state.message ? String(state.message) : "";
     var messageType = state && state.messageType ? String(state.messageType) : "";
     var messageHtml = message
@@ -7721,7 +7747,7 @@
           var nextOrder = normalizeOutboundPickingOrderView(
             (result && result.order) || order
           );
-          var complete = nextOrder.isComplete === true;
+          var complete = isOutboundPickingOperationComplete(nextOrder);
           if (shouldPromptOperationClose("outbound", nextOrder)) {
             if (typeof window.confirm === "function" && window.confirm("Все паллеты отсканированы.\nЗакрыть документ?")) {
               return TsdStorage.apiCompleteOutboundPicking(orderId, false).then(function () {
@@ -7772,7 +7798,7 @@
         }
         completeBusy = true;
         completeBtn.disabled = true;
-        var allowPartial = order.isComplete !== true;
+        var allowPartial = isOutboundPickingOperationPartial(order);
         if (
           allowPartial &&
           typeof window.confirm === "function" &&
@@ -13502,6 +13528,8 @@
     window.FlowStockTsdTestHooks.mapFillingError = mapFillingError;
     window.FlowStockTsdTestHooks.mapOutboundPickingError = mapOutboundPickingError;
     window.FlowStockTsdTestHooks.normalizeOutboundPickingOrderView = normalizeOutboundPickingOrderView;
+    window.FlowStockTsdTestHooks.isOutboundPickingOperationComplete = isOutboundPickingOperationComplete;
+    window.FlowStockTsdTestHooks.isOutboundPickingOperationPartial = isOutboundPickingOperationPartial;
     window.FlowStockTsdTestHooks.resolveOutboundPickingScannedHu = resolveOutboundPickingScannedHu;
     window.FlowStockTsdTestHooks.resolveFillingScannedHu = resolveFillingScannedHu;
     window.FlowStockTsdTestHooks.isProbablyCompleteHuScan = isProbablyCompleteHuScan;

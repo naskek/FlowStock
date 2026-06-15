@@ -1734,6 +1734,7 @@
     getBaseUrl: true,
     init: true,
     ensureDefaults: true,
+    normalizeOutboundPickingOrder: true,
   };
 
   function wrapOnline(storage) {
