@@ -53,6 +53,8 @@ public sealed class ReadyHuBindingEndpointTests
         Assert.Equal(0, document.RootElement.GetProperty("business_notifications_unread").GetInt32());
         Assert.Equal(1, document.RootElement.GetProperty("total_pending").GetInt32());
         Assert.Equal(ledgerCountBefore, harness.LedgerEntries.Count);
+        harness.VerifyRequestsSummaryCountPathUsed(Times.Once());
+        harness.VerifyRequestListsNotUsed();
         harness.VerifyReadyHuBindingSummaryPathUsed(Times.Once());
         harness.VerifyReadyHuBindingFullReadModelNotUsed();
     }
@@ -75,6 +77,65 @@ public sealed class ReadyHuBindingEndpointTests
         Assert.Equal(0, document.RootElement.GetProperty("business_notifications_unread").GetInt32());
         Assert.Equal(0, document.RootElement.GetProperty("total_pending").GetInt32());
         Assert.Equal(ledgerCountBefore, harness.LedgerEntries.Count);
+        harness.VerifyRequestsSummaryCountPathUsed(Times.Once());
+        harness.VerifyRequestListsNotUsed();
+        harness.VerifyReadyHuBindingSummaryPathUsed(Times.Once());
+        harness.VerifyReadyHuBindingFullReadModelNotUsed();
+    }
+
+    [Fact]
+    public async Task RequestsSummary_IncludesPendingItemAndOrderCountsWithoutMaterializingLists()
+    {
+        var harness = CreateHarness();
+        harness.SeedItemRequest(new ItemRequest
+        {
+            Id = 1,
+            Barcode = "460000000001",
+            Comment = "missing item",
+            CreatedAt = new DateTime(2026, 5, 1, 12, 0, 0, DateTimeKind.Utc),
+            Status = "NEW"
+        });
+        harness.SeedItemRequest(new ItemRequest
+        {
+            Id = 2,
+            Barcode = "460000000002",
+            Comment = "resolved item",
+            CreatedAt = new DateTime(2026, 5, 1, 12, 5, 0, DateTimeKind.Utc),
+            Status = "RESOLVED",
+            ResolvedAt = new DateTime(2026, 5, 1, 12, 10, 0, DateTimeKind.Utc)
+        });
+        harness.SeedOrderRequest(new OrderRequest
+        {
+            Id = 10,
+            RequestType = "CREATE_ORDER",
+            PayloadJson = "{}",
+            Status = OrderRequestStatus.Pending,
+            CreatedAt = new DateTime(2026, 5, 1, 13, 0, 0, DateTimeKind.Utc)
+        });
+        harness.SeedOrderRequest(new OrderRequest
+        {
+            Id = 11,
+            RequestType = "CREATE_ORDER",
+            PayloadJson = "{}",
+            Status = OrderRequestStatus.Approved,
+            CreatedAt = new DateTime(2026, 5, 1, 13, 5, 0, DateTimeKind.Utc)
+        });
+        var ledgerCountBefore = harness.LedgerEntries.Count;
+        await using var host = await ReadyHuBindingHost.StartAsync(harness.Store);
+
+        using var response = await host.Client.GetAsync("/api/requests/summary");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        Assert.Equal(1, document.RootElement.GetProperty("item_requests_pending").GetInt32());
+        Assert.Equal(1, document.RootElement.GetProperty("order_requests_pending").GetInt32());
+        Assert.Equal(0, document.RootElement.GetProperty("ready_hu_binding_pending").GetInt32());
+        Assert.Equal(2, document.RootElement.GetProperty("action_required_count").GetInt32());
+        Assert.Equal(0, document.RootElement.GetProperty("business_notifications_unread").GetInt32());
+        Assert.Equal(2, document.RootElement.GetProperty("total_pending").GetInt32());
+        Assert.Equal(ledgerCountBefore, harness.LedgerEntries.Count);
+        harness.VerifyRequestsSummaryCountPathUsed(Times.Once());
+        harness.VerifyRequestListsNotUsed();
         harness.VerifyReadyHuBindingSummaryPathUsed(Times.Once());
         harness.VerifyReadyHuBindingFullReadModelNotUsed();
     }
@@ -83,10 +144,18 @@ public sealed class ReadyHuBindingEndpointTests
     public void ProgramRequestsSummary_UsesReadyHuBindingPendingField()
     {
         var source = ReadRepoFile("apps", "windows", "FlowStock.Server", "Program.cs");
+        var start = source.IndexOf("app.MapGet(\"/api/requests/summary\"", StringComparison.Ordinal);
+        var end = source.IndexOf("app.MapPost(\"/api/orders/requests/{requestId:long}/resolve\"", start, StringComparison.Ordinal);
+        var summaryEndpoint = source[start..end];
 
-        Assert.Contains("ready_hu_binding_pending", source);
-        Assert.Contains("ReadyHuBindingEndpoint.CountPendingNotifications(store)", source);
-        Assert.Contains("total_pending = itemCount + orderCount + readyHuBindingPending", source);
+        Assert.Contains("ready_hu_binding_pending", summaryEndpoint);
+        Assert.Contains("IRequestsSummaryStore", summaryEndpoint);
+        Assert.Contains("CountPendingItemRequests()", summaryEndpoint);
+        Assert.Contains("CountPendingOrderRequests()", summaryEndpoint);
+        Assert.Contains("ReadyHuBindingEndpoint.CountPendingNotifications(store)", summaryEndpoint);
+        Assert.Contains("total_pending = itemCount + orderCount + readyHuBindingPending", summaryEndpoint);
+        Assert.DoesNotContain("GetItemRequests(false)", summaryEndpoint, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetOrderRequests(false)", summaryEndpoint, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -189,8 +258,9 @@ public sealed class ReadyHuBindingEndpointTests
             ReadyHuBindingEndpoint.Map(app);
             app.MapGet("/api/requests/summary", (IDataStore dataStore) =>
             {
-                var itemCount = dataStore.GetItemRequests(false).Count;
-                var orderCount = dataStore.GetOrderRequests(false).Count;
+                var summaryStore = dataStore as IRequestsSummaryStore;
+                var itemCount = summaryStore?.CountPendingItemRequests() ?? 0;
+                var orderCount = summaryStore?.CountPendingOrderRequests() ?? 0;
                 var readyHuBindingPending = ReadyHuBindingEndpoint.CountPendingNotifications(dataStore);
                 var businessNotificationsUnread = dataStore.CountUnreadBusinessNotifications(BusinessNotificationEndpoints.WpfReaderKey);
                 return Results.Ok(new

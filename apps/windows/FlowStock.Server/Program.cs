@@ -2297,8 +2297,9 @@ app.MapGet("/api/orders/requests", (HttpRequest request, IDataStore store) =>
 
 app.MapGet("/api/requests/summary", (IDataStore store) =>
 {
-    var itemCount = store.GetItemRequests(false).Count;
-    var orderCount = store.GetOrderRequests(false).Count;
+    var summaryStore = store as IRequestsSummaryStore;
+    var itemCount = summaryStore?.CountPendingItemRequests() ?? 0;
+    var orderCount = summaryStore?.CountPendingOrderRequests() ?? 0;
     var readyHuBindingPending = ReadyHuBindingEndpoint.CountPendingNotifications(store);
     var businessNotificationsUnread = store.CountUnreadBusinessNotifications(BusinessNotificationEndpoints.WpfReaderKey);
     return Results.Ok(new

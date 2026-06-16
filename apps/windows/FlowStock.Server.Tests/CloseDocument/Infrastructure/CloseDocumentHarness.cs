@@ -89,6 +89,20 @@ internal sealed class CloseDocumentHarness
         _store.Verify(store => store.GetHuOrderContextRows(), Times.Never);
     }
 
+    public void VerifyRequestsSummaryCountPathUsed(Times times)
+    {
+        _store.As<IRequestsSummaryStore>()
+            .Verify(store => store.CountPendingItemRequests(), times);
+        _store.As<IRequestsSummaryStore>()
+            .Verify(store => store.CountPendingOrderRequests(), times);
+    }
+
+    public void VerifyRequestListsNotUsed()
+    {
+        _store.Verify(store => store.GetItemRequests(It.IsAny<bool>()), Times.Never);
+        _store.Verify(store => store.GetOrderRequests(It.IsAny<bool>()), Times.Never);
+    }
+
     public void FailNextUpdateOrderLineQty()
     {
         _failNextUpdateOrderLineQty = true;
@@ -151,6 +165,10 @@ internal sealed class CloseDocumentHarness
             .Select(CloneOrderRequest)
             .ToArray();
     }
+
+    private int CountPendingItemRequests() => GetItemRequests(includeResolved: false).Count;
+
+    private int CountPendingOrderRequests() => GetOrderRequests(includeResolved: false).Count;
 
     public IReadOnlyList<DocLine> GetDocLines(long docId)
     {
@@ -756,6 +774,14 @@ internal sealed class CloseDocumentHarness
         _store.As<IReadyHuBindingSummaryStore>()
             .Setup(store => store.HasPendingReadyHuBinding())
             .Returns(() => HasPendingReadyHuBindingInHarness());
+
+        _store.As<IRequestsSummaryStore>()
+            .Setup(store => store.CountPendingItemRequests())
+            .Returns(() => CountPendingItemRequests());
+
+        _store.As<IRequestsSummaryStore>()
+            .Setup(store => store.CountPendingOrderRequests())
+            .Returns(() => CountPendingOrderRequests());
 
         _store.As<IOptimizedOrderLineHuFateStore>()
             .Setup(store => store.GetScopedOrderLineHuFateCandidates(It.IsAny<IReadOnlyCollection<ScopedOrderLineHuFateKey>>()))
