@@ -69,6 +69,26 @@ internal sealed class CloseDocumentHarness
                 times);
     }
 
+    public void VerifyReadyHuBindingSummaryPathUsed(Times times)
+    {
+        _store.As<IReadyHuBindingSummaryStore>()
+            .Verify(store => store.HasPendingReadyHuBinding(), times);
+    }
+
+    public void VerifyReadyHuBindingFullReadModelNotUsed()
+    {
+        _store.As<IOptimizedHuReservationCandidatesStore>()
+            .Verify(
+                store => store.GetHuReservationCandidateSources(
+                    It.IsAny<long?>(),
+                    It.IsAny<IReadOnlyCollection<long>>(),
+                    It.IsAny<IReadOnlyCollection<string>>()),
+                Times.Never);
+        _store.Verify(store => store.GetLocations(), Times.Never);
+        _store.Verify(store => store.GetHuStockRows(), Times.Never);
+        _store.Verify(store => store.GetHuOrderContextRows(), Times.Never);
+    }
+
     public void FailNextUpdateOrderLineQty()
     {
         _failNextUpdateOrderLineQty = true;
@@ -662,8 +682,81 @@ internal sealed class CloseDocumentHarness
         _nextProductionPalletHuNumber = Math.Max(_nextProductionPalletHuNumber, ExtractHuNumber(pallet.HuCode) + 1);
     }
 
+    private bool HasPendingReadyHuBindingInHarness()
+    {
+        var reservedHu = _orderReceiptPlanLines
+            .SelectMany(pair => pair.Value)
+            .Where(line => line.QtyPlanned > StockQuantityRules.QtyTolerance)
+            .Select(line => NormalizeHu(line.ToHu))
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Cast<string>()
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var pallet in _productionPallets.Values
+                     .Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+                     .Where(pallet => pallet.OrderId.HasValue)
+                     .Where(pallet => !string.IsNullOrWhiteSpace(pallet.HuCode)))
+        {
+            if (_orders.TryGetValue(pallet.OrderId!.Value, out var order)
+                && order.Type == OrderType.Customer
+                && order.Status is not OrderStatus.Shipped and not OrderStatus.Cancelled and not OrderStatus.Merged)
+            {
+                reservedHu.Add(NormalizeHu(pallet.HuCode)!);
+            }
+        }
+
+        var freeBalances = _seedBalances
+            .Where(pair => pair.Value > StockQuantityRules.QtyTolerance)
+            .Where(pair => !string.IsNullOrWhiteSpace(pair.Key.HuCode))
+            .Where(pair => !reservedHu.Contains(pair.Key.HuCode!))
+            .ToArray();
+        if (freeBalances.Length == 0)
+        {
+            return false;
+        }
+
+        foreach (var order in _orders.Values
+                     .Where(order => order.Type == OrderType.Customer)
+                     .Where(order => order.Status is OrderStatus.InProgress or OrderStatus.Accepted))
+        {
+            var orderLines = _orderLinesByOrder.TryGetValue(order.Id, out var lines)
+                ? lines
+                : new List<OrderLine>();
+            var currentBoundByLine = _orderReceiptPlanLines.TryGetValue(order.Id, out var planLines)
+                ? planLines
+                    .Where(line => line.QtyPlanned > StockQuantityRules.QtyTolerance)
+                    .Where(line => !string.IsNullOrWhiteSpace(line.ToHu))
+                    .GroupBy(line => line.OrderLineId)
+                    .ToDictionary(group => group.Key, group => group.Sum(line => Math.Max(0, line.QtyPlanned)))
+                : new Dictionary<long, double>();
+
+            foreach (var line in orderLines.Where(line => line.ItemId > 0))
+            {
+                var currentBoundQty = currentBoundByLine.TryGetValue(line.Id, out var boundQty) ? boundQty : 0d;
+                var maxAdditionalQty = Math.Max(0, line.QtyOrdered - currentBoundQty);
+                if (maxAdditionalQty <= StockQuantityRules.QtyTolerance)
+                {
+                    continue;
+                }
+
+                if (freeBalances.Any(balance =>
+                        balance.Key.ItemId == line.ItemId
+                        && balance.Value <= maxAdditionalQty + StockQuantityRules.QtyTolerance))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     private void ConfigureStore()
     {
+        _store.As<IReadyHuBindingSummaryStore>()
+            .Setup(store => store.HasPendingReadyHuBinding())
+            .Returns(() => HasPendingReadyHuBindingInHarness());
+
         _store.As<IOptimizedOrderLineHuFateStore>()
             .Setup(store => store.GetScopedOrderLineHuFateCandidates(It.IsAny<IReadOnlyCollection<ScopedOrderLineHuFateKey>>()))
             .Returns<IReadOnlyCollection<ScopedOrderLineHuFateKey>>(BuildScopedOrderLineHuFateCandidates);
@@ -1329,6 +1422,9 @@ internal sealed class CloseDocumentHarness
 
         _store.Setup(store => store.GetOrderRequests(It.IsAny<bool>()))
             .Returns<bool>(includeResolved => GetOrderRequests(includeResolved));
+
+        _store.Setup(store => store.CountUnreadBusinessNotifications(It.IsAny<string>()))
+            .Returns(0);
 
         _store.Setup(store => store.ResolveOrderRequest(
                 It.IsAny<long>(),

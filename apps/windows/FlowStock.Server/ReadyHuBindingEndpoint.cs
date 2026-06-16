@@ -19,7 +19,7 @@ public static class ReadyHuBindingEndpoint
     }
 
     public static int CountPendingNotifications(IDataStore store) =>
-        new ReadyHuBindingReadModelService(store).Build().HuCount > 0 ? 1 : 0;
+        store is IReadyHuBindingSummaryStore summaryStore && summaryStore.HasPendingReadyHuBinding() ? 1 : 0;
 
     public static ReadyHuBindingResponse MapResponse(ReadyHuBindingReadModel readModel)
     {

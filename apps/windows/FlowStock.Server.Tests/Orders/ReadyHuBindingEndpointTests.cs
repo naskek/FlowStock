@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Moq;
 
 namespace FlowStock.Server.Tests.Orders;
 
@@ -38,28 +39,44 @@ public sealed class ReadyHuBindingEndpointTests
     public async Task RequestsSummary_IncludesReadyHuBindingPending()
     {
         var harness = CreateHarnessWithReadyHu();
+        var ledgerCountBefore = harness.LedgerEntries.Count;
         await using var host = await ReadyHuBindingHost.StartAsync(harness.Store);
 
         using var response = await host.Client.GetAsync("/api/requests/summary");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        Assert.Equal(0, document.RootElement.GetProperty("item_requests_pending").GetInt32());
+        Assert.Equal(0, document.RootElement.GetProperty("order_requests_pending").GetInt32());
         Assert.Equal(1, document.RootElement.GetProperty("ready_hu_binding_pending").GetInt32());
+        Assert.Equal(1, document.RootElement.GetProperty("action_required_count").GetInt32());
+        Assert.Equal(0, document.RootElement.GetProperty("business_notifications_unread").GetInt32());
         Assert.Equal(1, document.RootElement.GetProperty("total_pending").GetInt32());
+        Assert.Equal(ledgerCountBefore, harness.LedgerEntries.Count);
+        harness.VerifyReadyHuBindingSummaryPathUsed(Times.Once());
+        harness.VerifyReadyHuBindingFullReadModelNotUsed();
     }
 
     [Fact]
     public async Task RequestsSummary_ReadyHuBindingPendingIsZeroWhenNoCompatibleFreeHuExists()
     {
         var harness = CreateHarness();
+        var ledgerCountBefore = harness.LedgerEntries.Count;
         await using var host = await ReadyHuBindingHost.StartAsync(harness.Store);
 
         using var response = await host.Client.GetAsync("/api/requests/summary");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        Assert.Equal(0, document.RootElement.GetProperty("item_requests_pending").GetInt32());
+        Assert.Equal(0, document.RootElement.GetProperty("order_requests_pending").GetInt32());
         Assert.Equal(0, document.RootElement.GetProperty("ready_hu_binding_pending").GetInt32());
+        Assert.Equal(0, document.RootElement.GetProperty("action_required_count").GetInt32());
+        Assert.Equal(0, document.RootElement.GetProperty("business_notifications_unread").GetInt32());
         Assert.Equal(0, document.RootElement.GetProperty("total_pending").GetInt32());
+        Assert.Equal(ledgerCountBefore, harness.LedgerEntries.Count);
+        harness.VerifyReadyHuBindingSummaryPathUsed(Times.Once());
+        harness.VerifyReadyHuBindingFullReadModelNotUsed();
     }
 
     [Fact]
@@ -70,6 +87,20 @@ public sealed class ReadyHuBindingEndpointTests
         Assert.Contains("ready_hu_binding_pending", source);
         Assert.Contains("ReadyHuBindingEndpoint.CountPendingNotifications(store)", source);
         Assert.Contains("total_pending = itemCount + orderCount + readyHuBindingPending", source);
+    }
+
+    [Fact]
+    public void RequestsSummaryCount_UsesCheapSummaryStoreInsteadOfFullReadyHuReadModel()
+    {
+        var source = ReadRepoFile("apps", "windows", "FlowStock.Server", "ReadyHuBindingEndpoint.cs");
+        var start = source.IndexOf("public static int CountPendingNotifications", StringComparison.Ordinal);
+        var end = source.IndexOf("public static ReadyHuBindingResponse", start, StringComparison.Ordinal);
+        var method = source[start..end];
+
+        Assert.Contains("IReadyHuBindingSummaryStore", method);
+        Assert.Contains("HasPendingReadyHuBinding()", method);
+        Assert.DoesNotContain("ReadyHuBindingReadModelService", method, StringComparison.Ordinal);
+        Assert.DoesNotContain(".Build()", method, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -161,12 +192,15 @@ public sealed class ReadyHuBindingEndpointTests
                 var itemCount = dataStore.GetItemRequests(false).Count;
                 var orderCount = dataStore.GetOrderRequests(false).Count;
                 var readyHuBindingPending = ReadyHuBindingEndpoint.CountPendingNotifications(dataStore);
+                var businessNotificationsUnread = dataStore.CountUnreadBusinessNotifications(BusinessNotificationEndpoints.WpfReaderKey);
                 return Results.Ok(new
                 {
                     item_requests_pending = itemCount,
                     order_requests_pending = orderCount,
                     ready_hu_binding_pending = readyHuBindingPending,
-                    total_pending = itemCount + orderCount + readyHuBindingPending
+                    action_required_count = itemCount + orderCount + readyHuBindingPending,
+                    business_notifications_unread = businessNotificationsUnread,
+                    total_pending = itemCount + orderCount + readyHuBindingPending + businessNotificationsUnread
                 });
             });
             await app.StartAsync();

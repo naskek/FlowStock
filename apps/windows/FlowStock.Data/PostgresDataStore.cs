@@ -11,7 +11,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore
+public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore
 {
     private readonly string _connectionString;
     private readonly NpgsqlConnection? _connection;
@@ -8468,6 +8468,241 @@ WHERE p.hu_code IS NOT NULL
             }
 
             return result.ToList();
+        });
+    }
+
+    public bool HasPendingReadyHuBinding()
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH active_orders AS (
+    SELECT id
+    FROM orders
+    WHERE order_type = @customer_order_type
+      AND status IN (@in_progress_status, @accepted_status)
+),
+active_order_lines AS (
+    SELECT ol.id AS order_line_id,
+           ol.order_id,
+           ol.item_id,
+           GREATEST(0, ol.qty_ordered)::double precision AS qty_ordered
+    FROM order_lines ol
+    INNER JOIN active_orders ao ON ao.id = ol.order_id
+    WHERE ol.item_id > 0
+      AND ol.qty_ordered > @qty_tolerance
+),
+ledger_stock AS (
+    SELECT led.item_id,
+           UPPER(BTRIM(COALESCE(led.hu_code, led.hu))) AS hu_code,
+           SUM(led.qty_delta)::double precision AS qty
+    FROM ledger led
+    INNER JOIN (SELECT DISTINCT item_id FROM active_order_lines) items ON items.item_id = led.item_id
+    WHERE NULLIF(BTRIM(COALESCE(led.hu_code, led.hu)), '') IS NOT NULL
+    GROUP BY led.item_id, UPPER(BTRIM(COALESCE(led.hu_code, led.hu)))
+    HAVING SUM(led.qty_delta) > @qty_tolerance
+),
+reserved_hu AS (
+    SELECT p.item_id,
+           UPPER(BTRIM(p.to_hu)) AS hu_code
+    FROM order_receipt_plan_lines p
+    INNER JOIN orders o ON o.id = p.order_id
+    WHERE p.qty_planned > @qty_tolerance
+      AND NULLIF(BTRIM(p.to_hu), '') IS NOT NULL
+      AND o.order_type = @customer_order_type
+      AND o.status NOT IN (@shipped_status, @cancelled_status, @merged_status)
+
+    UNION
+
+    SELECT p.item_id,
+           UPPER(BTRIM(p.hu_code)) AS hu_code
+    FROM production_pallets p
+    INNER JOIN orders o ON o.id = p.order_id
+    WHERE p.order_id IS NOT NULL
+      AND p.status = @filled_pallet_status
+      AND NULLIF(BTRIM(p.hu_code), '') IS NOT NULL
+      AND o.order_type = @customer_order_type
+      AND o.status NOT IN (@shipped_status, @cancelled_status, @merged_status)
+),
+free_ledger_hu AS (
+    SELECT stock.item_id,
+           stock.hu_code,
+           stock.qty
+    FROM ledger_stock stock
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM reserved_hu reserved
+        WHERE reserved.item_id = stock.item_id
+          AND reserved.hu_code = stock.hu_code
+    )
+),
+current_bound_by_line AS (
+    SELECT p.order_line_id,
+           SUM(GREATEST(0, p.qty_planned))::double precision AS qty
+    FROM order_receipt_plan_lines p
+    INNER JOIN active_order_lines ol ON ol.order_line_id = p.order_line_id
+                                   AND ol.order_id = p.order_id
+                                   AND ol.item_id = p.item_id
+    WHERE p.qty_planned > @qty_tolerance
+      AND NULLIF(BTRIM(p.to_hu), '') IS NOT NULL
+    GROUP BY p.order_line_id
+),
+open_pallet_qty_by_line AS (
+    SELECT source.order_line_id,
+           SUM(source.qty)::double precision AS qty
+    FROM (
+        SELECT pll.order_line_id,
+               GREATEST(0, pll.planned_qty)::double precision AS qty
+        FROM production_pallets pp
+        INNER JOIN docs d ON d.id = pp.prd_doc_id
+        INNER JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
+        INNER JOIN active_order_lines ol ON ol.order_line_id = pll.order_line_id
+                                       AND ol.order_id = pp.order_id
+                                       AND ol.item_id = pll.item_id
+        WHERE d.type = @production_doc_type
+          AND d.status <> @closed_doc_status
+          AND pp.status IN (@planned_pallet_status, @printed_pallet_status)
+          AND pll.order_line_id IS NOT NULL
+          AND pll.planned_qty > @qty_tolerance
+
+        UNION ALL
+
+        SELECT pp.order_line_id,
+               GREATEST(0, pp.planned_qty)::double precision AS qty
+        FROM production_pallets pp
+        INNER JOIN docs d ON d.id = pp.prd_doc_id
+        INNER JOIN active_order_lines ol ON ol.order_line_id = pp.order_line_id
+                                       AND ol.order_id = pp.order_id
+                                       AND ol.item_id = pp.item_id
+        WHERE d.type = @production_doc_type
+          AND d.status <> @closed_doc_status
+          AND pp.status IN (@planned_pallet_status, @printed_pallet_status)
+          AND pp.order_line_id IS NOT NULL
+          AND pp.planned_qty > @qty_tolerance
+          AND NOT EXISTS (
+              SELECT 1
+              FROM production_pallet_lines pll
+              WHERE pll.production_pallet_id = pp.id
+          )
+    ) source
+    GROUP BY source.order_line_id
+),
+ledger_doc_item_hu AS (
+    SELECT led.doc_id,
+           led.item_id,
+           NULLIF(UPPER(BTRIM(COALESCE(led.hu_code, led.hu))), '') AS hu_code,
+           SUM(led.qty_delta)::double precision AS qty
+    FROM ledger led
+    WHERE led.doc_id IS NOT NULL
+      AND led.qty_delta > @qty_tolerance
+    GROUP BY led.doc_id, led.item_id, NULLIF(UPPER(BTRIM(COALESCE(led.hu_code, led.hu))), '')
+),
+produced_by_line AS (
+    SELECT source.order_line_id,
+           SUM(source.qty)::double precision AS qty
+    FROM (
+        SELECT pll.order_line_id,
+               LEAST(
+                   CASE WHEN pll.filled_qty > @qty_tolerance THEN pll.filled_qty ELSE pll.planned_qty END,
+                   GREATEST(0, COALESCE(ledger.qty, 0)))::double precision AS qty
+        FROM production_pallets pp
+        INNER JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
+        INNER JOIN active_order_lines ol ON ol.order_line_id = pll.order_line_id
+                                       AND ol.order_id = pp.order_id
+                                       AND ol.item_id = pll.item_id
+        LEFT JOIN ledger_doc_item_hu ledger ON ledger.doc_id = pp.prd_doc_id
+                                           AND ledger.item_id = pll.item_id
+                                           AND ledger.hu_code IS NOT DISTINCT FROM NULLIF(UPPER(BTRIM(pp.hu_code)), '')
+        WHERE pp.status = @filled_pallet_status
+          AND pll.order_line_id IS NOT NULL
+          AND (pll.planned_qty > @qty_tolerance OR pll.filled_qty > @qty_tolerance)
+
+        UNION ALL
+
+        SELECT pp.order_line_id,
+               LEAST(
+                   pp.planned_qty,
+                   GREATEST(0, COALESCE(ledger.qty, 0)))::double precision AS qty
+        FROM production_pallets pp
+        INNER JOIN active_order_lines ol ON ol.order_line_id = pp.order_line_id
+                                       AND ol.order_id = pp.order_id
+                                       AND ol.item_id = pp.item_id
+        LEFT JOIN ledger_doc_item_hu ledger ON ledger.doc_id = pp.prd_doc_id
+                                           AND ledger.item_id = pp.item_id
+                                           AND ledger.hu_code IS NOT DISTINCT FROM NULLIF(UPPER(BTRIM(pp.hu_code)), '')
+        WHERE pp.status = @filled_pallet_status
+          AND pp.order_line_id IS NOT NULL
+          AND pp.planned_qty > @qty_tolerance
+          AND NOT EXISTS (
+              SELECT 1
+              FROM production_pallet_lines pll
+              WHERE pll.production_pallet_id = pp.id
+          )
+
+        UNION ALL
+
+        SELECT dl.order_line_id,
+               LEAST(
+                   dl.qty,
+                   GREATEST(0, COALESCE(ledger.qty, 0)))::double precision AS qty
+        FROM doc_lines dl
+        INNER JOIN docs d ON d.id = dl.doc_id
+        INNER JOIN active_order_lines ol ON ol.order_line_id = dl.order_line_id
+                                       AND ol.order_id = d.order_id
+                                       AND ol.item_id = dl.item_id
+        LEFT JOIN ledger_doc_item_hu ledger ON ledger.doc_id = dl.doc_id
+                                           AND ledger.item_id = dl.item_id
+                                           AND ledger.hu_code IS NOT DISTINCT FROM NULLIF(UPPER(BTRIM(dl.to_hu)), '')
+        WHERE d.type = @production_doc_type
+          AND d.status = @closed_doc_status
+          AND dl.order_line_id IS NOT NULL
+          AND dl.qty > @qty_tolerance
+          AND NOT EXISTS (
+              SELECT 1
+              FROM production_pallets pp
+              WHERE pp.prd_doc_id = d.id
+                AND pp.status <> @cancelled_pallet_status
+          )
+    ) source
+    WHERE source.qty > @qty_tolerance
+    GROUP BY source.order_line_id
+),
+compatible_lines AS (
+    SELECT ol.order_line_id,
+           ol.item_id,
+           GREATEST(
+               0,
+               ol.qty_ordered
+               - COALESCE(produced.qty, 0)
+               - COALESCE(open_pallet.qty, 0)
+               - COALESCE(current_bound.qty, 0))::double precision AS max_additional_qty
+    FROM active_order_lines ol
+    LEFT JOIN produced_by_line produced ON produced.order_line_id = ol.order_line_id
+    LEFT JOIN open_pallet_qty_by_line open_pallet ON open_pallet.order_line_id = ol.order_line_id
+    LEFT JOIN current_bound_by_line current_bound ON current_bound.order_line_id = ol.order_line_id
+)
+SELECT EXISTS (
+    SELECT 1
+    FROM compatible_lines line
+    INNER JOIN free_ledger_hu hu ON hu.item_id = line.item_id
+    WHERE line.max_additional_qty > @qty_tolerance
+      AND hu.qty <= line.max_additional_qty + @qty_tolerance
+    LIMIT 1
+);");
+            command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+            command.Parameters.AddWithValue("@in_progress_status", OrderStatusMapper.StatusToString(OrderStatus.InProgress));
+            command.Parameters.AddWithValue("@accepted_status", OrderStatusMapper.StatusToString(OrderStatus.Accepted));
+            command.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+            command.Parameters.AddWithValue("@cancelled_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+            command.Parameters.AddWithValue("@merged_status", OrderStatusMapper.StatusToString(OrderStatus.Merged));
+            command.Parameters.AddWithValue("@production_doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+            command.Parameters.AddWithValue("@closed_doc_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+            command.Parameters.AddWithValue("@planned_pallet_status", ProductionPalletStatus.Planned);
+            command.Parameters.AddWithValue("@printed_pallet_status", ProductionPalletStatus.Printed);
+            command.Parameters.AddWithValue("@filled_pallet_status", ProductionPalletStatus.Filled);
+            command.Parameters.AddWithValue("@cancelled_pallet_status", ProductionPalletStatus.Cancelled);
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+            return Convert.ToBoolean(command.ExecuteScalar() ?? false, CultureInfo.InvariantCulture);
         });
     }
 
