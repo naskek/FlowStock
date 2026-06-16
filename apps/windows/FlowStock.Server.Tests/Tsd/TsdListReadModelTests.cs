@@ -1,6 +1,9 @@
+using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 using FlowStock.Core.Services;
+using FlowStock.Data;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
+using Moq;
 using System.Reflection;
 using System.Text.Json;
 
@@ -21,6 +24,110 @@ public sealed class TsdListReadModelTests
         var getOrdersBody = source[getOrdersStart..getDetailsStart];
         Assert.DoesNotContain("GetDetails(", getOrdersBody, StringComparison.Ordinal);
         Assert.DoesNotContain(".Hus", getOrdersBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PostgresDataStore_ImplementsOptimizedOutboundListStore()
+    {
+        var store = new PostgresDataStore("Host=localhost;Database=flowstock;Username=flowstock;Password=flowstock");
+
+        Assert.IsAssignableFrom<IOptimizedTsdOutboundPickingStore>(store);
+    }
+
+    [Fact]
+    public void OutboundGetOrders_UsesOptimizedStoreWithoutHeavyFallbackReads()
+    {
+        var rows = new[]
+        {
+            new OutboundPickingOrderRow
+            {
+                OrderId = 20,
+                OrderRef = "SO-020",
+                PartnerName = "Тестовый клиент",
+                Status = "Готов",
+                ExpectedHuCount = 1,
+                PickedHuCount = 0,
+                OrderedQty = 5,
+                RemainingQty = 5,
+                OperationFingerprint = "fingerprint"
+            }
+        };
+        var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.As<IOptimizedTsdOutboundPickingStore>()
+            .Setup(data => data.GetTsdOutboundOrderRows())
+            .Returns(rows);
+        var service = new OutboundPickingService(store.Object, new DocumentService(store.Object));
+
+        var result = service.GetOrders();
+
+        var row = Assert.Single(result);
+        Assert.Equal(20, row.OrderId);
+        store.As<IOptimizedTsdOutboundPickingStore>()
+            .Verify(data => data.GetTsdOutboundOrderRows(), Times.Once);
+        store.Verify(data => data.GetOrders(), Times.Never);
+        store.Verify(data => data.GetHuStockRows(), Times.Never);
+        store.Verify(data => data.GetLocations(), Times.Never);
+        store.Verify(data => data.GetOrderReceiptPlanLinesByOrderIds(It.IsAny<IReadOnlyCollection<long>>()), Times.Never);
+        store.Verify(data => data.GetProductionPalletsByOrderIds(It.IsAny<IReadOnlyCollection<long>>()), Times.Never);
+        store.Verify(data => data.GetDocLinesByDocIds(It.IsAny<IReadOnlyCollection<long>>()), Times.Never);
+        store.Verify(data => data.GetShippedTotalsByOrderIds(It.IsAny<IReadOnlyCollection<long>>()), Times.Never);
+    }
+
+    [Fact]
+    public void PostgresOutboundReadModel_UsesSingleSqlCommandAndDistinctHuCount()
+    {
+        var source = File.ReadAllText(GetRepoPath("apps", "windows", "FlowStock.Data", "PostgresDataStore.cs"));
+
+        var methodStart = source.IndexOf("public IReadOnlyList<OutboundPickingOrderRow> GetTsdOutboundOrderRows()", StringComparison.Ordinal);
+        var nextMethodStart = source.IndexOf("public IReadOnlyList<Order> GetOrdersPage(", methodStart, StringComparison.Ordinal);
+        Assert.True(methodStart >= 0);
+        Assert.True(nextMethodStart > methodStart);
+
+        var methodBody = source[methodStart..nextMethodStart];
+        Assert.Equal(1, CountOccurrences(methodBody, "CreateCommand("));
+        Assert.Contains("COUNT(DISTINCT hu_code)::int AS expected_hu_count", source, StringComparison.Ordinal);
+        Assert.Contains("SELECT DISTINCT order_id, hu_code", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetHuStockRows()", methodBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetLocations()", methodBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("CustomerOutboundBoundHuBatchCache.Load", methodBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetDetails(", methodBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("OrderShipmentProgressService.Get", methodBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OptimizedOutboundListRows_CanRepresentMixedPartialAndDraftScanWithoutHus()
+    {
+        var rows = new[]
+        {
+            new OutboundPickingOrderRow
+            {
+                OrderId = 79,
+                OrderRef = "080",
+                PartnerName = "Клиент 080",
+                Status = "Частично отгружено",
+                ExpectedHuCount = 1,
+                PickedHuCount = 1,
+                OrderedQty = 1200,
+                ShippedQty = 600,
+                RemainingQty = 600,
+                ScannedQty = 600,
+                OperationFingerprint = "fingerprint"
+            }
+        };
+        var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.As<IOptimizedTsdOutboundPickingStore>()
+            .Setup(data => data.GetTsdOutboundOrderRows())
+            .Returns(rows);
+
+        var result = new OutboundPickingService(store.Object, new DocumentService(store.Object)).GetOrders();
+        var row = Assert.Single(result);
+
+        Assert.Equal(1, row.ExpectedHuCount);
+        Assert.Equal(1, row.PickedHuCount);
+        Assert.Equal("Частично отгружено", row.Status);
+        Assert.Equal(600, row.ScannedQty);
+        Assert.True(row.IsComplete);
+        Assert.False(HasProperty(typeof(OutboundPickingOrderRow), "Hus"));
     }
 
     [Fact]
@@ -117,6 +224,19 @@ public sealed class TsdListReadModelTests
     {
         return type.GetProperties(BindingFlags.Instance | BindingFlags.Public)
             .Any(property => string.Equals(property.Name, propertyName, StringComparison.Ordinal));
+    }
+
+    private static int CountOccurrences(string source, string value)
+    {
+        var count = 0;
+        var index = 0;
+        while ((index = source.IndexOf(value, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += value.Length;
+        }
+
+        return count;
     }
 
     private static OutboundPickingService CreatePickingService(CloseDocumentHarness harness)

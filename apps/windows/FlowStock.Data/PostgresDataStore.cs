@@ -1,5 +1,7 @@
 using System.Globalization;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 using FlowStock.Core.Models.Marking;
@@ -9,7 +11,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, ITsdHuResolverStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore
+public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore
 {
     private readonly string _connectionString;
     private readonly NpgsqlConnection? _connection;
@@ -64,6 +66,369 @@ SELECT p.id,
 FROM production_pallets p
 INNER JOIN items i ON i.id = p.item_id
 LEFT JOIN locations l ON l.id = p.to_location_id";
+    public const string TsdOutboundOrderRowsSql = @"
+WITH candidate_orders AS (
+    SELECT o.id,
+           o.order_ref,
+           o.status AS persisted_status,
+           COALESCE(p.name, '') AS partner_name
+    FROM orders o
+    LEFT JOIN partners p ON p.id = o.partner_id
+    WHERE o.order_type = @customer_order_type
+      AND o.status NOT IN (@draft_order_status, @shipped_order_status, @cancelled_order_status, @merged_order_status)
+),
+order_line_scope AS (
+    SELECT ol.id AS order_line_id,
+           ol.order_id,
+           ol.item_id,
+           GREATEST(0, ol.qty_ordered)::double precision AS qty_ordered
+    FROM order_lines ol
+    INNER JOIN candidate_orders co ON co.id = ol.order_id
+),
+active_doc_lines AS (
+    SELECT dl.id,
+           dl.doc_id,
+           dl.order_line_id,
+           dl.item_id,
+           dl.qty,
+           dl.from_hu,
+           dl.to_hu
+    FROM doc_lines dl
+    WHERE dl.qty > @qty_tolerance
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+),
+closed_shipped_by_line AS (
+    SELECT dl.order_line_id,
+           SUM(dl.qty)::double precision AS shipped_qty
+    FROM active_doc_lines dl
+    INNER JOIN order_line_scope ols ON ols.order_line_id = dl.order_line_id
+    INNER JOIN docs d ON d.id = dl.doc_id
+                AND d.order_id = ols.order_id
+                AND d.type = @outbound_doc_type
+                AND d.status = @closed_doc_status
+    GROUP BY dl.order_line_id
+),
+closed_shipped_by_line_hu AS (
+    SELECT dl.order_line_id,
+           UPPER(BTRIM(dl.from_hu)) AS hu_code,
+           SUM(dl.qty)::double precision AS shipped_qty
+    FROM active_doc_lines dl
+    INNER JOIN order_line_scope ols ON ols.order_line_id = dl.order_line_id
+    INNER JOIN docs d ON d.id = dl.doc_id
+                AND d.order_id = ols.order_id
+                AND d.type = @outbound_doc_type
+                AND d.status = @closed_doc_status
+    WHERE NULLIF(BTRIM(dl.from_hu), '') IS NOT NULL
+    GROUP BY dl.order_line_id, UPPER(BTRIM(dl.from_hu))
+),
+shipment_line_remaining AS (
+    SELECT ols.order_line_id,
+           ols.order_id,
+           ols.item_id,
+           ols.qty_ordered,
+           COALESCE(ship.shipped_qty, 0)::double precision AS shipped_qty,
+           GREATEST(0, ols.qty_ordered - COALESCE(ship.shipped_qty, 0))::double precision AS remaining_qty
+    FROM order_line_scope ols
+    LEFT JOIN closed_shipped_by_line ship ON ship.order_line_id = ols.order_line_id
+),
+shipment_progress AS (
+    SELECT co.id AS order_id,
+           COALESCE(SUM(slr.qty_ordered), 0)::double precision AS ordered_qty,
+           COALESCE(SUM(slr.shipped_qty), 0)::double precision AS shipped_qty,
+           COALESCE(SUM(slr.remaining_qty), 0)::double precision AS remaining_qty
+    FROM candidate_orders co
+    LEFT JOIN shipment_line_remaining slr ON slr.order_id = co.id
+    GROUP BY co.id
+),
+warehouse_plan_lines AS (
+    SELECT p.order_id,
+           p.order_line_id,
+           p.item_id,
+           UPPER(BTRIM(p.to_hu)) AS hu_code,
+           SUM(p.qty_planned)::double precision AS qty_planned
+    FROM order_receipt_plan_lines p
+    INNER JOIN order_line_scope ols ON ols.order_line_id = p.order_line_id
+                                 AND ols.order_id = p.order_id
+                                 AND ols.item_id = p.item_id
+    WHERE p.qty_planned > @qty_tolerance
+      AND NULLIF(BTRIM(p.to_hu), '') IS NOT NULL
+    GROUP BY p.order_id, p.order_line_id, p.item_id, UPPER(BTRIM(p.to_hu))
+),
+filled_pallet_lines AS (
+    SELECT pp.order_id,
+           pll.order_line_id,
+           pll.item_id,
+           UPPER(BTRIM(pp.hu_code)) AS hu_code,
+           SUM(pll.planned_qty)::double precision AS planned_qty,
+           pp.prd_doc_id
+    FROM production_pallets pp
+    INNER JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
+    INNER JOIN order_line_scope ols ON ols.order_line_id = pll.order_line_id
+                                 AND ols.order_id = pp.order_id
+                                 AND ols.item_id = pll.item_id
+    WHERE pp.status = @pallet_filled_status
+      AND pp.order_id IS NOT NULL
+      AND pll.order_line_id IS NOT NULL
+      AND pll.planned_qty > @qty_tolerance
+      AND NULLIF(BTRIM(pp.hu_code), '') IS NOT NULL
+    GROUP BY pp.order_id, pll.order_line_id, pll.item_id, UPPER(BTRIM(pp.hu_code)), pp.prd_doc_id
+    UNION ALL
+    SELECT pp.order_id,
+           pp.order_line_id,
+           pp.item_id,
+           UPPER(BTRIM(pp.hu_code)) AS hu_code,
+           SUM(pp.planned_qty)::double precision AS planned_qty,
+           pp.prd_doc_id
+    FROM production_pallets pp
+    INNER JOIN order_line_scope ols ON ols.order_line_id = pp.order_line_id
+                                 AND ols.order_id = pp.order_id
+                                 AND ols.item_id = pp.item_id
+    WHERE pp.status = @pallet_filled_status
+      AND pp.order_id IS NOT NULL
+      AND pp.order_line_id IS NOT NULL
+      AND pp.planned_qty > @qty_tolerance
+      AND NULLIF(BTRIM(pp.hu_code), '') IS NOT NULL
+      AND NOT EXISTS (
+          SELECT 1
+          FROM production_pallet_lines pll
+          WHERE pll.production_pallet_id = pp.id
+      )
+    GROUP BY pp.order_id, pp.order_line_id, pp.item_id, UPPER(BTRIM(pp.hu_code)), pp.prd_doc_id
+),
+candidate_hu_items AS (
+    SELECT item_id, hu_code FROM warehouse_plan_lines
+    UNION
+    SELECT item_id, hu_code FROM filled_pallet_lines
+),
+ledger_by_hu_item AS (
+    SELECT chi.item_id,
+           chi.hu_code,
+           SUM(l.qty_delta)::double precision AS qty
+    FROM candidate_hu_items chi
+    INNER JOIN ledger l ON l.item_id = chi.item_id
+                       AND UPPER(BTRIM(COALESCE(l.hu_code, l.hu))) = chi.hu_code
+    GROUP BY chi.item_id, chi.hu_code
+    HAVING SUM(l.qty_delta) > @qty_tolerance
+),
+positive_prd_ledger_by_doc_item_hu AS (
+    SELECT l.doc_id,
+           fpl.item_id,
+           fpl.hu_code,
+           SUM(l.qty_delta)::double precision AS qty
+    FROM (
+        SELECT DISTINCT prd_doc_id, item_id, hu_code
+        FROM filled_pallet_lines
+    ) fpl
+    INNER JOIN ledger l ON l.doc_id = fpl.prd_doc_id
+                       AND l.item_id = fpl.item_id
+                       AND UPPER(BTRIM(COALESCE(l.hu_code, l.hu))) = fpl.hu_code
+                       AND l.qty_delta > @qty_tolerance
+    GROUP BY l.doc_id, fpl.item_id, fpl.hu_code
+),
+legacy_receipt_totals AS (
+    SELECT dl.order_line_id,
+           SUM(dl.qty)::double precision AS qty_received
+    FROM active_doc_lines dl
+    INNER JOIN order_line_scope ols ON ols.order_line_id = dl.order_line_id
+    INNER JOIN docs d ON d.id = dl.doc_id
+                AND d.order_id = ols.order_id
+                AND d.type = @production_doc_type
+                AND d.status = @closed_doc_status
+    WHERE NOT EXISTS (
+          SELECT 1
+          FROM production_pallets pp
+          WHERE pp.prd_doc_id = d.id
+            AND pp.status <> @pallet_cancelled_status
+      )
+    GROUP BY dl.order_line_id
+),
+filled_pallet_receipt_totals AS (
+    SELECT fpl.order_line_id,
+           SUM(LEAST(fpl.planned_qty, prd.qty))::double precision AS qty_received
+    FROM filled_pallet_lines fpl
+    INNER JOIN positive_prd_ledger_by_doc_item_hu prd ON prd.doc_id = fpl.prd_doc_id
+                                                     AND prd.item_id = fpl.item_id
+                                                     AND prd.hu_code = fpl.hu_code
+    GROUP BY fpl.order_line_id
+),
+receipt_totals AS (
+    SELECT order_line_id,
+           SUM(qty_received)::double precision AS qty_received
+    FROM (
+        SELECT order_line_id, qty_received FROM legacy_receipt_totals
+        UNION ALL
+        SELECT order_line_id, qty_received FROM filled_pallet_receipt_totals
+    ) receipt_sources
+    GROUP BY order_line_id
+),
+reserved_totals AS (
+    SELECT wpl.order_line_id,
+           SUM(LEAST(wpl.qty_planned, stock.qty))::double precision AS qty_reserved
+    FROM warehouse_plan_lines wpl
+    INNER JOIN ledger_by_hu_item stock ON stock.item_id = wpl.item_id
+                                      AND stock.hu_code = wpl.hu_code
+    GROUP BY wpl.order_line_id
+),
+receipt_need AS (
+    SELECT co.id AS order_id,
+           COALESCE(BOOL_OR(ols.qty_ordered
+               - COALESCE(receipt.qty_received, 0)
+               - COALESCE(reserved.qty_reserved, 0) > @qty_tolerance), FALSE) AS has_receipt_need
+    FROM candidate_orders co
+    LEFT JOIN order_line_scope ols ON ols.order_id = co.id
+    LEFT JOIN receipt_totals receipt ON receipt.order_line_id = ols.order_line_id
+    LEFT JOIN reserved_totals reserved ON reserved.order_line_id = ols.order_line_id
+    GROUP BY co.id
+),
+expected_line_sources AS (
+    SELECT wpl.order_id,
+           wpl.order_line_id,
+           wpl.hu_code,
+           LEAST(
+               GREATEST(0, wpl.qty_planned - COALESCE(shipped_hu.shipped_qty, 0)),
+               stock.qty,
+               slr.remaining_qty)::double precision AS qty
+    FROM warehouse_plan_lines wpl
+    INNER JOIN ledger_by_hu_item stock ON stock.item_id = wpl.item_id
+                                      AND stock.hu_code = wpl.hu_code
+    INNER JOIN shipment_line_remaining slr ON slr.order_line_id = wpl.order_line_id
+                                          AND slr.remaining_qty > @qty_tolerance
+    LEFT JOIN closed_shipped_by_line_hu shipped_hu ON shipped_hu.order_line_id = wpl.order_line_id
+                                                  AND shipped_hu.hu_code = wpl.hu_code
+    WHERE wpl.qty_planned - COALESCE(shipped_hu.shipped_qty, 0) > @qty_tolerance
+    UNION ALL
+    SELECT fpl.order_id,
+           fpl.order_line_id,
+           fpl.hu_code,
+           LEAST(
+               GREATEST(0, fpl.planned_qty - COALESCE(shipped_hu.shipped_qty, 0)),
+               stock.qty,
+               slr.remaining_qty)::double precision AS qty
+    FROM filled_pallet_lines fpl
+    INNER JOIN ledger_by_hu_item stock ON stock.item_id = fpl.item_id
+                                      AND stock.hu_code = fpl.hu_code
+    INNER JOIN shipment_line_remaining slr ON slr.order_line_id = fpl.order_line_id
+                                          AND slr.remaining_qty > @qty_tolerance
+    LEFT JOIN closed_shipped_by_line_hu shipped_hu ON shipped_hu.order_line_id = fpl.order_line_id
+                                                  AND shipped_hu.hu_code = fpl.hu_code
+    WHERE fpl.planned_qty - COALESCE(shipped_hu.shipped_qty, 0) > @qty_tolerance
+),
+expected_hus AS (
+    SELECT DISTINCT order_id, hu_code
+    FROM expected_line_sources
+    WHERE qty > @qty_tolerance
+),
+expected_agg AS (
+    SELECT order_id,
+           COUNT(DISTINCT hu_code)::int AS expected_hu_count
+    FROM expected_hus
+    GROUP BY order_id
+),
+tsd_docs AS (
+    SELECT d.order_id,
+           TRUE AS has_tsd_doc
+    FROM docs d
+    INNER JOIN candidate_orders co ON co.id = d.order_id
+    WHERE d.type = @outbound_doc_type
+      AND UPPER(BTRIM(COALESCE(d.comment, ''))) LIKE UPPER(@tsd_picking_comment) || '%'
+    GROUP BY d.order_id
+),
+selected_doc AS (
+    SELECT order_id, id, status
+    FROM (
+        SELECT d.order_id,
+               d.id,
+               d.status,
+               ROW_NUMBER() OVER (
+                   PARTITION BY d.order_id
+                   ORDER BY CASE WHEN d.status = @draft_doc_status THEN 0 ELSE 1 END,
+                            CASE WHEN d.status = @draft_doc_status THEN d.id ELSE -d.id END
+               ) AS rn
+        FROM docs d
+        INNER JOIN candidate_orders co ON co.id = d.order_id
+        WHERE d.type = @outbound_doc_type
+          AND (d.status = @draft_doc_status
+               OR UPPER(BTRIM(COALESCE(d.comment, ''))) LIKE UPPER(@tsd_picking_comment) || '%')
+    ) ranked
+    WHERE rn = 1
+),
+picked_hus AS (
+    SELECT sd.order_id,
+           UPPER(BTRIM(dl.from_hu)) AS hu_code
+    FROM selected_doc sd
+    INNER JOIN active_doc_lines dl ON dl.doc_id = sd.id
+    WHERE NULLIF(BTRIM(dl.from_hu), '') IS NOT NULL
+    GROUP BY sd.order_id, UPPER(BTRIM(dl.from_hu))
+),
+picked_agg AS (
+    SELECT expected.order_id,
+           COUNT(DISTINCT picked.hu_code)::int AS picked_hu_count
+    FROM expected_hus expected
+    INNER JOIN picked_hus picked ON picked.order_id = expected.order_id
+                                AND picked.hu_code = expected.hu_code
+    GROUP BY expected.order_id
+),
+scanned_agg AS (
+    SELECT sd.order_id,
+           COALESCE(SUM(dl.qty), 0)::double precision AS scanned_qty
+    FROM selected_doc sd
+    INNER JOIN active_doc_lines dl ON dl.doc_id = sd.id
+    WHERE sd.status = @draft_doc_status
+    GROUP BY sd.order_id
+),
+fingerprint_source AS (
+    SELECT expected.order_id,
+           STRING_AGG(
+               expected.hu_code || ':' || CASE WHEN picked.hu_code IS NULL THEN '0' ELSE '1' END,
+               '|' ORDER BY expected.hu_code) AS source
+    FROM expected_hus expected
+    LEFT JOIN picked_hus picked ON picked.order_id = expected.order_id
+                               AND picked.hu_code = expected.hu_code
+    GROUP BY expected.order_id
+)
+SELECT co.id,
+       co.order_ref,
+       co.partner_name,
+       CASE
+           WHEN progress.shipped_qty > @qty_tolerance
+                AND progress.remaining_qty > @qty_tolerance THEN @partial_status_display
+           WHEN co.persisted_status = @accepted_order_status THEN @accepted_status_display
+           WHEN co.persisted_status = @in_progress_order_status THEN @in_progress_status_display
+           WHEN co.persisted_status = @draft_order_status THEN @draft_status_display
+           WHEN co.persisted_status = @shipped_order_status THEN @shipped_status_display
+           WHEN co.persisted_status = @cancelled_order_status THEN @cancelled_status_display
+           WHEN co.persisted_status = @merged_order_status THEN @merged_status_display
+           ELSE co.persisted_status
+       END AS status_display,
+       COALESCE(expected.expected_hu_count, 0)::int AS expected_hu_count,
+       COALESCE(picked.picked_hu_count, 0)::int AS picked_hu_count,
+       progress.ordered_qty,
+       progress.shipped_qty,
+       progress.remaining_qty,
+       COALESCE(scanned.scanned_qty, 0)::double precision AS scanned_qty,
+       COALESCE(selected.status = @closed_doc_status, FALSE) AS is_closed,
+       COALESCE(fingerprint.source, '') AS fingerprint_source
+FROM candidate_orders co
+INNER JOIN shipment_progress progress ON progress.order_id = co.id
+INNER JOIN expected_agg expected ON expected.order_id = co.id
+LEFT JOIN picked_agg picked ON picked.order_id = co.id
+LEFT JOIN scanned_agg scanned ON scanned.order_id = co.id
+LEFT JOIN selected_doc selected ON selected.order_id = co.id
+LEFT JOIN tsd_docs tsd ON tsd.order_id = co.id
+LEFT JOIN receipt_need receipt_need ON receipt_need.order_id = co.id
+LEFT JOIN fingerprint_source fingerprint ON fingerprint.order_id = co.id
+WHERE expected.expected_hu_count > 0
+  AND (
+      co.persisted_status = @accepted_order_status
+      OR COALESCE(tsd.has_tsd_doc, FALSE)
+      OR (progress.shipped_qty > @qty_tolerance AND progress.remaining_qty > @qty_tolerance)
+      OR NOT COALESCE(receipt_need.has_receipt_need, FALSE)
+  )
+ORDER BY LOWER(co.order_ref), co.order_ref;";
     private const string OrderSelectBase = @"
 WITH order_scope AS (
     {ORDER_SCOPE}
@@ -4152,6 +4517,37 @@ orders_read_model.created_at DESC,
             }
 
             return orders;
+        });
+    }
+
+    public IReadOnlyList<OutboundPickingOrderRow> GetTsdOutboundOrderRows()
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, TsdOutboundOrderRowsSql);
+            AddTsdOutboundOrderRowsParameters(command);
+            using var reader = command.ExecuteReader();
+            var rows = new List<OutboundPickingOrderRow>();
+            while (reader.Read())
+            {
+                rows.Add(new OutboundPickingOrderRow
+                {
+                    OrderId = reader.GetInt64(0),
+                    OrderRef = reader.GetString(1),
+                    PartnerName = reader.GetString(2),
+                    Status = reader.GetString(3),
+                    ExpectedHuCount = reader.GetInt32(4),
+                    PickedHuCount = reader.GetInt32(5),
+                    OrderedQty = reader.GetDouble(6),
+                    ShippedQty = reader.GetDouble(7),
+                    RemainingQty = reader.GetDouble(8),
+                    ScannedQty = reader.GetDouble(9),
+                    IsClosed = reader.GetBoolean(10),
+                    OperationFingerprint = BuildTsdOutboundOperationFingerprint(reader.GetString(11))
+                });
+            }
+
+            return rows;
         });
     }
 
@@ -10862,6 +11258,37 @@ RETURNING id;
         command.Parameters.AddWithValue("@marking_status_failed", MarkingOrderStatus.Failed);
         command.Parameters.AddWithValue("@production_need_source_type", MarkingNeedCreationService.ProductionNeedSourceType);
         command.Parameters.AddWithValue("@production_order_source_type", MarkingNeedCreationService.ProductionOrderSourceType);
+    }
+
+    private static void AddTsdOutboundOrderRowsParameters(NpgsqlCommand command)
+    {
+        command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+        command.Parameters.AddWithValue("@draft_order_status", OrderStatusMapper.StatusToString(OrderStatus.Draft));
+        command.Parameters.AddWithValue("@accepted_order_status", OrderStatusMapper.StatusToString(OrderStatus.Accepted));
+        command.Parameters.AddWithValue("@in_progress_order_status", OrderStatusMapper.StatusToString(OrderStatus.InProgress));
+        command.Parameters.AddWithValue("@shipped_order_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+        command.Parameters.AddWithValue("@cancelled_order_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+        command.Parameters.AddWithValue("@merged_order_status", OrderStatusMapper.StatusToString(OrderStatus.Merged));
+        command.Parameters.AddWithValue("@draft_doc_status", DocTypeMapper.StatusToString(DocStatus.Draft));
+        command.Parameters.AddWithValue("@closed_doc_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+        command.Parameters.AddWithValue("@outbound_doc_type", DocTypeMapper.ToOpString(DocType.Outbound));
+        command.Parameters.AddWithValue("@production_doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+        command.Parameters.AddWithValue("@pallet_filled_status", ProductionPalletStatus.Filled);
+        command.Parameters.AddWithValue("@pallet_cancelled_status", ProductionPalletStatus.Cancelled);
+        command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+        command.Parameters.AddWithValue("@tsd_picking_comment", "TSD OUTBOUND PICKING");
+        command.Parameters.AddWithValue("@partial_status_display", "Частично отгружено");
+        command.Parameters.AddWithValue("@draft_status_display", OrderStatusMapper.StatusToDisplayName(OrderStatus.Draft, OrderType.Customer));
+        command.Parameters.AddWithValue("@accepted_status_display", OrderStatusMapper.StatusToDisplayName(OrderStatus.Accepted, OrderType.Customer));
+        command.Parameters.AddWithValue("@in_progress_status_display", OrderStatusMapper.StatusToDisplayName(OrderStatus.InProgress, OrderType.Customer));
+        command.Parameters.AddWithValue("@shipped_status_display", OrderStatusMapper.StatusToDisplayName(OrderStatus.Shipped, OrderType.Customer));
+        command.Parameters.AddWithValue("@cancelled_status_display", OrderStatusMapper.StatusToDisplayName(OrderStatus.Cancelled, OrderType.Customer));
+        command.Parameters.AddWithValue("@merged_status_display", OrderStatusMapper.StatusToDisplayName(OrderStatus.Merged, OrderType.Customer));
+    }
+
+    private static string BuildTsdOutboundOperationFingerprint(string source)
+    {
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(source ?? string.Empty))).ToLowerInvariant();
     }
 
     private static string BuildOrderSelectSql(string orderScopeSql)

@@ -31,6 +31,11 @@ public sealed class OutboundPickingService
 
     public IReadOnlyList<OutboundPickingOrderRow> GetOrders()
     {
+        if (_store is IOptimizedTsdOutboundPickingStore optimizedStore)
+        {
+            return optimizedStore.GetTsdOutboundOrderRows();
+        }
+
         var candidateOrders = _store.GetOrders()
             .Where(order => order.Type == OrderType.Customer
                             && order.Status is not (OrderStatus.Draft or OrderStatus.Cancelled or OrderStatus.Merged))
