@@ -3516,16 +3516,14 @@ static List<object> MapOrdersWithShipmentRemaining(IEnumerable<Order> orders, ID
         return new List<object>();
     }
 
-    var palletSummariesByOrderId = BuildOrderOwnedProductionPalletSummaries(store, orderList);
-
     if (orderList.All(order => order.ListMetricsLoaded))
     {
         return orderList
-            .Select(order => MapOrderWithLoadedMetrics(
-                order,
-                GetPalletSummary(palletSummariesByOrderId, order.Id, BuildLoadedPalletSummary(order))))
+            .Select(order => MapOrderWithLoadedMetrics(order, BuildLoadedPalletSummary(order)))
             .ToList();
     }
+
+    var palletSummariesByOrderId = BuildOrderOwnedProductionPalletSummaries(store, orderList);
 
     if (store is IOptimizedOrderListMetricsStore optimizedStore)
     {

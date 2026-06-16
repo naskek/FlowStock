@@ -71,13 +71,22 @@ public sealed class OrderListClientPerfGuardTests
     }
 
     [Fact]
-    public void WebOrderListMapper_UsesBatchOrderOwnedPalletSummariesForListRows()
+    public void WebOrderListMapper_SkipsBatchOrderOwnedPalletSummariesForLoadedListRows()
     {
         var source = File.ReadAllText(GetRepoPath("apps", "windows", "FlowStock.Server", "Program.cs"));
         var mapperStart = source.IndexOf("static List<object> MapOrdersWithShipmentRemaining", StringComparison.Ordinal);
         var mapperEnd = source.IndexOf("static object MapOrderWithShipmentRemaining", mapperStart, StringComparison.Ordinal);
         var mapper = source[mapperStart..mapperEnd];
+        var loadedMetricsBranchStart = mapper.IndexOf("if (orderList.All(order => order.ListMetricsLoaded))", StringComparison.Ordinal);
+        var batchSummaryStart = mapper.IndexOf("var palletSummariesByOrderId = BuildOrderOwnedProductionPalletSummaries(store, orderList)", StringComparison.Ordinal);
+        var optimizedMetricsBranchStart = mapper.IndexOf("if (store is IOptimizedOrderListMetricsStore optimizedStore)", StringComparison.Ordinal);
+        var loadedMetricsBranch = mapper[loadedMetricsBranchStart..batchSummaryStart];
 
+        Assert.True(loadedMetricsBranchStart >= 0, "Loaded list metrics branch must be present.");
+        Assert.True(batchSummaryStart > loadedMetricsBranchStart, "Batch pallet summaries must be fallback-only after loaded metrics branch.");
+        Assert.True(optimizedMetricsBranchStart > batchSummaryStart, "Batch pallet summaries must still feed the optimized metrics fallback branch.");
+        Assert.Contains("BuildLoadedPalletSummary(order)", loadedMetricsBranch, StringComparison.Ordinal);
+        Assert.DoesNotContain("BuildOrderOwnedProductionPalletSummaries", loadedMetricsBranch, StringComparison.Ordinal);
         Assert.Contains("BuildOrderOwnedProductionPalletSummaries(store, orderList)", mapper, StringComparison.Ordinal);
         Assert.Contains("IOrderOwnedPalletSummaryBatchStore", source, StringComparison.Ordinal);
         Assert.Contains("GetOrderOwnedProductionPalletSummaries", source, StringComparison.Ordinal);
