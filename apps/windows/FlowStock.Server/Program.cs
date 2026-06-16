@@ -2042,7 +2042,7 @@ app.MapGet("/api/orders/{orderId:long}", (long orderId, IDataStore store) =>
         return Results.NotFound(new ApiResult(false, "ORDER_NOT_FOUND"));
     }
 
-    return Results.Ok(MapOrdersWithShipmentRemaining([order], store).First());
+    return Results.Ok(MapOrderWithShipmentRemaining(order, store));
 });
 
 app.MapGet("/api/orders/{orderId:long}/shipment-remaining", (long orderId, IDataStore store) =>
@@ -3516,10 +3516,14 @@ static List<object> MapOrdersWithShipmentRemaining(IEnumerable<Order> orders, ID
         return new List<object>();
     }
 
+    var palletSummariesByOrderId = BuildOrderOwnedProductionPalletSummaries(store, orderList);
+
     if (orderList.All(order => order.ListMetricsLoaded))
     {
         return orderList
-            .Select(order => MapOrderWithLoadedMetrics(order, store))
+            .Select(order => MapOrderWithLoadedMetrics(
+                order,
+                GetPalletSummary(palletSummariesByOrderId, order.Id, BuildLoadedPalletSummary(order))))
             .ToList();
     }
 
@@ -3530,7 +3534,10 @@ static List<object> MapOrdersWithShipmentRemaining(IEnumerable<Order> orders, ID
             .Select(order =>
             {
                 metricsByOrderId.TryGetValue(order.Id, out var metrics);
-                return MapOrderWithMetrics(order, metrics, store);
+                return MapOrderWithMetrics(
+                    order,
+                    metrics,
+                    GetPalletSummary(palletSummariesByOrderId, order.Id, metrics?.PalletSummary ?? new ProductionPalletSummary()));
             })
             .ToList();
     }
@@ -3540,9 +3547,8 @@ static List<object> MapOrdersWithShipmentRemaining(IEnumerable<Order> orders, ID
         .ToList();
 }
 
-static object MapOrderWithLoadedMetrics(Order order, IDataStore store)
+static object MapOrderWithLoadedMetrics(Order order, ProductionPalletSummary palletSummary)
 {
-    var palletSummary = BuildOrderOwnedProductionPalletSummary(store, order.Id);
     var hasProductionPalletPlan = palletSummary.PlannedPalletCount > 0;
     var shipmentProgress = new OrderShipmentProgress
     {
@@ -3560,12 +3566,11 @@ static object MapOrderWithLoadedMetrics(Order order, IDataStore store)
         shipmentProgress: shipmentProgress);
 }
 
-static object MapOrderWithMetrics(Order order, OrderListMetrics? metrics, IDataStore store)
+static object MapOrderWithMetrics(Order order, OrderListMetrics? metrics, ProductionPalletSummary palletSummary)
 {
     var hasShipmentRemaining = metrics?.HasShipmentRemaining ?? false;
     var needsProductionPalletPlan = order.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled)
                                     && (metrics?.HasReceiptRemaining ?? false);
-    var palletSummary = BuildOrderOwnedProductionPalletSummary(store, order.Id);
     var hasProductionPalletPlan = palletSummary.PlannedPalletCount > 0;
     var shipmentProgress = new OrderShipmentProgress
     {
@@ -3609,6 +3614,41 @@ static object MapOrderWithShipmentRemaining(Order order, IDataStore store)
 static ProductionPalletSummary BuildOrderOwnedProductionPalletSummary(IDataStore store, long orderId)
 {
     return ProductionPalletService.BuildOrderOwnedPalletSummary(store, orderId);
+}
+
+static IReadOnlyDictionary<long, ProductionPalletSummary> BuildOrderOwnedProductionPalletSummaries(
+    IDataStore store,
+    IReadOnlyList<Order> orders)
+{
+    if (orders.Count == 0 || store is not IOrderOwnedPalletSummaryBatchStore batchStore)
+    {
+        return new Dictionary<long, ProductionPalletSummary>();
+    }
+
+    return batchStore.GetOrderOwnedProductionPalletSummaries(orders.Select(order => order.Id).ToArray());
+}
+
+static ProductionPalletSummary GetPalletSummary(
+    IReadOnlyDictionary<long, ProductionPalletSummary> summariesByOrderId,
+    long orderId,
+    ProductionPalletSummary fallback)
+{
+    return summariesByOrderId.TryGetValue(orderId, out var summary)
+        ? summary
+        : fallback;
+}
+
+static ProductionPalletSummary BuildLoadedPalletSummary(Order order)
+{
+    return new ProductionPalletSummary
+    {
+        PlannedPalletCount = order.PlannedPalletCount,
+        PlannedQty = order.PlannedQty,
+        FilledPalletCount = order.FilledPalletCount,
+        FilledQty = order.FilledQty,
+        RemainingPalletCount = Math.Max(0, order.PlannedPalletCount - order.FilledPalletCount),
+        RemainingQty = Math.Max(0, order.PlannedQty - order.FilledQty)
+    };
 }
 
 static bool IsProductionPalletFillingStarted(IDataStore store, Doc doc)

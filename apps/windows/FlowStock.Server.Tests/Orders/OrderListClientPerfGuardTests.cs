@@ -71,16 +71,22 @@ public sealed class OrderListClientPerfGuardTests
     }
 
     [Fact]
-    public void WebOrderListMapper_RecomputesPalletSummaryThroughOrderOwnedFilter()
+    public void WebOrderListMapper_UsesBatchOrderOwnedPalletSummariesForListRows()
     {
         var source = File.ReadAllText(GetRepoPath("apps", "windows", "FlowStock.Server", "Program.cs"));
+        var mapperStart = source.IndexOf("static List<object> MapOrdersWithShipmentRemaining", StringComparison.Ordinal);
+        var mapperEnd = source.IndexOf("static object MapOrderWithShipmentRemaining", mapperStart, StringComparison.Ordinal);
+        var mapper = source[mapperStart..mapperEnd];
 
-        Assert.Contains("MapOrderWithLoadedMetrics(Order order, IDataStore store)", source, StringComparison.Ordinal);
-        Assert.Contains("MapOrderWithMetrics(Order order, OrderListMetrics? metrics, IDataStore store)", source, StringComparison.Ordinal);
-        Assert.Contains("BuildOrderOwnedProductionPalletSummary(store, order.Id)", source, StringComparison.Ordinal);
-        Assert.Contains("ProductionPalletService.BuildOrderOwnedPalletSummary(store, orderId)", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("metrics?.PalletSummary ?? new ProductionPalletSummary()", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("PlannedPalletCount = order.PlannedPalletCount", source, StringComparison.Ordinal);
+        Assert.Contains("BuildOrderOwnedProductionPalletSummaries(store, orderList)", mapper, StringComparison.Ordinal);
+        Assert.Contains("IOrderOwnedPalletSummaryBatchStore", source, StringComparison.Ordinal);
+        Assert.Contains("GetOrderOwnedProductionPalletSummaries", source, StringComparison.Ordinal);
+        Assert.Contains("MapOrderWithLoadedMetrics(Order order, ProductionPalletSummary palletSummary)", source, StringComparison.Ordinal);
+        Assert.Contains("MapOrderWithMetrics(Order order, OrderListMetrics? metrics, ProductionPalletSummary palletSummary)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("BuildOrderOwnedProductionPalletSummary(store, order.Id)", mapper, StringComparison.Ordinal);
+        Assert.DoesNotContain("ProductionPalletService.BuildOrderOwnedPalletSummary(store, orderId)", mapper, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetProductionPalletsByDoc(doc.Id)", mapper, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetDocsByOrder(order.Id)", mapper, StringComparison.Ordinal);
     }
 
     private static string GetRepoPath(params string[] parts)

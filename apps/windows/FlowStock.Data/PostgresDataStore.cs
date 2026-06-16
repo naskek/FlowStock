@@ -11,7 +11,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore
+public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore
 {
     private readonly string _connectionString;
     private readonly NpgsqlConnection? _connection;
@@ -1040,6 +1040,31 @@ ORDER BY order_id, id;
 
             return GroupByOrderId(lines, line => line.OrderId);
         });
+    }
+
+    public IReadOnlyDictionary<long, ProductionPalletSummary> GetOrderOwnedProductionPalletSummaries(IReadOnlyCollection<long> orderIds)
+    {
+        var ids = NormalizePositiveDistinctIds(orderIds);
+        if (ids.Length == 0)
+        {
+            return new Dictionary<long, ProductionPalletSummary>();
+        }
+
+        var palletsByOrderId = GetProductionPalletsByOrderIds(ids);
+        var linesByOrderId = GetOrderLinesByOrderIds(ids);
+        var result = new Dictionary<long, ProductionPalletSummary>();
+        foreach (var orderId in ids)
+        {
+            palletsByOrderId.TryGetValue(orderId, out var pallets);
+            linesByOrderId.TryGetValue(orderId, out var lines);
+            result[orderId] = ProductionPalletService.BuildSummary(
+                ProductionPalletService.BuildOrderOwnedPalletViews(
+                    orderId,
+                    pallets ?? Array.Empty<ProductionPallet>(),
+                    (lines ?? Array.Empty<OrderLine>()).ToDictionary(line => line.Id)));
+        }
+
+        return result;
     }
 
     public IReadOnlyList<ProductionFillingCompletion> GetProductionFillingCompletionsByOrderIds(IReadOnlyCollection<long> orderIds)

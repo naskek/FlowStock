@@ -103,6 +103,12 @@ internal sealed class CloseDocumentHarness
             .Verify(store => store.GetProductionPalletSummariesByDocIds(It.IsAny<IReadOnlyCollection<long>>()), times);
     }
 
+    public void VerifyOrderOwnedPalletSummaryBatchPathUsed(Times times)
+    {
+        _store.As<IOrderOwnedPalletSummaryBatchStore>()
+            .Verify(store => store.GetOrderOwnedProductionPalletSummaries(It.IsAny<IReadOnlyCollection<long>>()), times);
+    }
+
     public void VerifyProductionPalletDetailPathNotUsed()
     {
         _store.Verify(store => store.GetProductionPalletsByDoc(It.IsAny<long>()), Times.Never);
@@ -797,6 +803,10 @@ internal sealed class CloseDocumentHarness
         _store.As<IProductionPalletSummaryBatchStore>()
             .Setup(store => store.GetProductionPalletSummariesByDocIds(It.IsAny<IReadOnlyCollection<long>>()))
             .Returns<IReadOnlyCollection<long>>(GetProductionPalletSummariesByDocIds);
+
+        _store.As<IOrderOwnedPalletSummaryBatchStore>()
+            .Setup(store => store.GetOrderOwnedProductionPalletSummaries(It.IsAny<IReadOnlyCollection<long>>()))
+            .Returns<IReadOnlyCollection<long>>(GetOrderOwnedProductionPalletSummaries);
 
         _store.As<IOptimizedOrderLineHuFateStore>()
             .Setup(store => store.GetScopedOrderLineHuFateCandidates(It.IsAny<IReadOnlyCollection<ScopedOrderLineHuFateKey>>()))
@@ -2745,6 +2755,31 @@ internal sealed class CloseDocumentHarness
             .ToDictionary(
                 group => group.Key,
                 group => ProductionPalletService.BuildSummary(group.Select(CloneProductionPallet).ToArray()));
+    }
+
+    private IReadOnlyDictionary<long, ProductionPalletSummary> GetOrderOwnedProductionPalletSummaries(IReadOnlyCollection<long> orderIds)
+    {
+        var ids = (orderIds ?? Array.Empty<long>())
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
+        if (ids.Length == 0)
+        {
+            return new Dictionary<long, ProductionPalletSummary>();
+        }
+
+        var palletsByOrderId = _store.Object.GetProductionPalletsByOrderIds(ids);
+        var orderLinesByOrderId = _store.Object.GetOrderLinesByOrderIds(ids);
+        return ids.ToDictionary(orderId => orderId, orderId =>
+        {
+            palletsByOrderId.TryGetValue(orderId, out var pallets);
+            orderLinesByOrderId.TryGetValue(orderId, out var lines);
+            return ProductionPalletService.BuildSummary(
+                ProductionPalletService.BuildOrderOwnedPalletViews(
+                    orderId,
+                    pallets ?? Array.Empty<ProductionPallet>(),
+                    (lines ?? Array.Empty<OrderLine>()).ToDictionary(line => line.Id)));
+        });
     }
 
     private IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemainingLines(long orderId)
