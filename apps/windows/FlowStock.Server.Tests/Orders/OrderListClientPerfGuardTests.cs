@@ -98,6 +98,32 @@ public sealed class OrderListClientPerfGuardTests
         Assert.DoesNotContain("GetDocsByOrder(order.Id)", mapper, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void WebOrderListPerfLog_HasPhaseTimingFields_AndNoPayloadLogging()
+    {
+        var source = File.ReadAllText(GetRepoPath("apps", "windows", "FlowStock.Server", "Program.cs"));
+        var logStart = source.IndexOf("static void LogOrdersListPerf", StringComparison.Ordinal);
+        var logEnd = source.IndexOf("static object MapOrderWithLoadedMetrics", logStart, StringComparison.Ordinal);
+        var logSection = source[logStart..logEnd];
+
+        Assert.Contains("PERF orders-list path=/api/orders", logSection, StringComparison.Ordinal);
+        Assert.Contains("include_internal={IncludeInternal}", logSection, StringComparison.Ordinal);
+        Assert.Contains("include_pending_requests={IncludePendingRequests}", logSection, StringComparison.Ordinal);
+        Assert.Contains("limit={Limit}", logSection, StringComparison.Ordinal);
+        Assert.Contains("offset={Offset}", logSection, StringComparison.Ordinal);
+        Assert.Contains("q_present={QueryPresent}", logSection, StringComparison.Ordinal);
+        Assert.Contains("include_cancelled_merged={IncludeCancelledMerged}", logSection, StringComparison.Ordinal);
+        Assert.Contains("rows={Rows}", logSection, StringComparison.Ordinal);
+        Assert.Contains("loaded_metrics_count={LoadedMetricsCount}", logSection, StringComparison.Ordinal);
+        Assert.Contains("get_orders_ms={GetOrdersMs}", logSection, StringComparison.Ordinal);
+        Assert.Contains("build_fallback_summaries_ms={BuildFallbackSummariesMs}", logSection, StringComparison.Ordinal);
+        Assert.Contains("map_ms={MapMs}", logSection, StringComparison.Ordinal);
+        Assert.Contains("total_ms={TotalMs}", logSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("PayloadJson", logSection, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("ReadFromJson", logSection, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Body", logSection, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static string GetRepoPath(params string[] parts)
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

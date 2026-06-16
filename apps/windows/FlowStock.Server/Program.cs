@@ -1923,8 +1923,13 @@ app.MapPost("/api/docs/{docId:long}/lines/{lineId:long}/pack-single-hu", async (
     return Results.Ok(new ApiResult(true));
 });
 
-app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>
+app.MapGet("/api/orders", (HttpRequest request, IDataStore store, ILoggerFactory loggerFactory) =>
 {
+    var totalStopwatch = Stopwatch.StartNew();
+    var getOrdersMs = 0L;
+    var mapTimings = new OrdersListMapTimings();
+    var rows = 0;
+    var loadedMetricsCount = 0;
     var query = request.Query["q"].ToString();
     var normalized = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
     var includeInternal = string.Equals(request.Query["include_internal"], "1", StringComparison.OrdinalIgnoreCase)
@@ -1953,15 +1958,35 @@ app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>
         if (remainingLimit > 0)
         {
             var realOffset = Math.Max(0, offset - pendingRows.Count);
-            page.AddRange(MapOrdersWithShipmentRemaining(
-                orderService.GetOrdersPage(includeInternal, normalized, remainingLimit, realOffset, includeCancelledMerged),
-                store));
+            var getOrdersStopwatch = Stopwatch.StartNew();
+            var orderRows = orderService
+                .GetOrdersPage(includeInternal, normalized, remainingLimit, realOffset, includeCancelledMerged)
+                .ToList();
+            getOrdersMs = getOrdersStopwatch.ElapsedMilliseconds;
+            loadedMetricsCount = orderRows.Count(order => order.ListMetricsLoaded);
+            page.AddRange(MapOrdersWithShipmentRemaining(orderRows, store, mapTimings));
         }
 
+        rows = page.Count;
+        LogOrdersListPerf(
+            loggerFactory,
+            includeInternal,
+            includePendingRequests,
+            limit,
+            offset,
+            normalized,
+            includeCancelledMerged,
+            rows,
+            loadedMetricsCount,
+            getOrdersMs,
+            mapTimings,
+            totalStopwatch.ElapsedMilliseconds);
         return Results.Ok(page);
     }
 
+    var unpagedGetOrdersStopwatch = Stopwatch.StartNew();
     var orders = orderService.GetOrders();
+    getOrdersMs = unpagedGetOrdersStopwatch.ElapsedMilliseconds;
     if (!includeInternal)
     {
         orders = orders.Where(order => order.Type == OrderType.Customer).ToList();
@@ -1992,9 +2017,23 @@ app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>
         list.AddRange(GetPendingCreateOrderRows(store, normalized));
     }
 
-    list.AddRange(MapOrdersWithShipmentRemaining(
-        OrderPageSortSql.SortOrders(orders, includeCancelledMerged),
-        store));
+    var sortedOrders = OrderPageSortSql.SortOrders(orders, includeCancelledMerged).ToList();
+    loadedMetricsCount = sortedOrders.Count(order => order.ListMetricsLoaded);
+    list.AddRange(MapOrdersWithShipmentRemaining(sortedOrders, store, mapTimings));
+    rows = list.Count;
+    LogOrdersListPerf(
+        loggerFactory,
+        includeInternal,
+        includePendingRequests,
+        limit,
+        offset,
+        normalized,
+        includeCancelledMerged,
+        rows,
+        loadedMetricsCount,
+        getOrdersMs,
+        mapTimings,
+        totalStopwatch.ElapsedMilliseconds);
     return Results.Ok(list);
 });
 
@@ -3508,27 +3547,37 @@ static object MapDoc(
     };
 }
 
-static List<object> MapOrdersWithShipmentRemaining(IEnumerable<Order> orders, IDataStore store)
+static List<object> MapOrdersWithShipmentRemaining(
+    IEnumerable<Order> orders,
+    IDataStore store,
+    OrdersListMapTimings? perf = null)
 {
     var orderList = orders.ToList();
     if (orderList.Count == 0)
     {
+        perf?.SetMapMs(0);
         return new List<object>();
     }
 
     if (orderList.All(order => order.ListMetricsLoaded))
     {
-        return orderList
+        var loadedMapStopwatch = Stopwatch.StartNew();
+        var mapped = orderList
             .Select(order => MapOrderWithLoadedMetrics(order, BuildLoadedPalletSummary(order)))
             .ToList();
+        perf?.SetMapMs(loadedMapStopwatch.ElapsedMilliseconds);
+        return mapped;
     }
 
+    var fallbackStopwatch = Stopwatch.StartNew();
     var palletSummariesByOrderId = BuildOrderOwnedProductionPalletSummaries(store, orderList);
+    perf?.SetBuildFallbackSummariesMs(fallbackStopwatch.ElapsedMilliseconds);
 
+    var mapStopwatch = Stopwatch.StartNew();
     if (store is IOptimizedOrderListMetricsStore optimizedStore)
     {
         var metricsByOrderId = optimizedStore.GetOrderListMetrics(orderList.Select(order => order.Id).ToArray());
-        return orderList
+        var mapped = orderList
             .Select(order =>
             {
                 metricsByOrderId.TryGetValue(order.Id, out var metrics);
@@ -3538,11 +3587,46 @@ static List<object> MapOrdersWithShipmentRemaining(IEnumerable<Order> orders, ID
                     GetPalletSummary(palletSummariesByOrderId, order.Id, metrics?.PalletSummary ?? new ProductionPalletSummary()));
             })
             .ToList();
+        perf?.SetMapMs(mapStopwatch.ElapsedMilliseconds);
+        return mapped;
     }
 
-    return orderList
+    var fallbackMapped = orderList
         .Select(order => MapOrderWithShipmentRemaining(order, store))
         .ToList();
+    perf?.SetMapMs(mapStopwatch.ElapsedMilliseconds);
+    return fallbackMapped;
+}
+
+static void LogOrdersListPerf(
+    ILoggerFactory loggerFactory,
+    bool includeInternal,
+    bool includePendingRequests,
+    int? limit,
+    int offset,
+    string? normalizedQuery,
+    bool includeCancelledMerged,
+    int rows,
+    int loadedMetricsCount,
+    long getOrdersMs,
+    OrdersListMapTimings mapTimings,
+    long totalMs)
+{
+    var logger = loggerFactory.CreateLogger("FlowStock.Performance");
+    logger.LogInformation(
+        "PERF orders-list path=/api/orders include_internal={IncludeInternal} include_pending_requests={IncludePendingRequests} limit={Limit} offset={Offset} q_present={QueryPresent} include_cancelled_merged={IncludeCancelledMerged} rows={Rows} loaded_metrics_count={LoadedMetricsCount} get_orders_ms={GetOrdersMs} build_fallback_summaries_ms={BuildFallbackSummariesMs} map_ms={MapMs} total_ms={TotalMs}",
+        includeInternal,
+        includePendingRequests,
+        limit,
+        offset,
+        !string.IsNullOrWhiteSpace(normalizedQuery),
+        includeCancelledMerged,
+        rows,
+        loadedMetricsCount,
+        getOrdersMs,
+        mapTimings.BuildFallbackSummariesMs,
+        mapTimings.MapMs,
+        totalMs);
 }
 
 static object MapOrderWithLoadedMetrics(Order order, ProductionPalletSummary palletSummary)
@@ -4206,4 +4290,20 @@ enum PartnerRoleFilter
     Supplier,
     Both,
     Unknown
+}
+
+sealed class OrdersListMapTimings
+{
+    public long BuildFallbackSummariesMs { get; private set; }
+    public long MapMs { get; private set; }
+
+    public void SetBuildFallbackSummariesMs(long elapsedMs)
+    {
+        BuildFallbackSummariesMs = elapsedMs;
+    }
+
+    public void SetMapMs(long elapsedMs)
+    {
+        MapMs = elapsedMs;
+    }
 }
