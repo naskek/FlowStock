@@ -2873,36 +2873,355 @@
     return result;
   }
 
-  function renderOrderLineHuList(title, hus, tone) {
-    if (!hus || !hus.length) {
+  function normalizeOrderLineHuCode(value) {
+    return String(value || "").trim().toUpperCase();
+  }
+
+  function readOrderLineArray(source, camel, snake) {
+    if (!source) {
+      return [];
+    }
+    if (Array.isArray(source[camel])) {
+      return source[camel];
+    }
+    if (Array.isArray(source[snake])) {
+      return source[snake];
+    }
+    return [];
+  }
+
+  function formatOrderHuQty(value) {
+    if (value == null) {
+      return "—";
+    }
+    var num = Number(value);
+    if (!isFinite(num)) {
+      return "—";
+    }
+    return formatOrderQtyValue(num) + " шт.";
+  }
+
+  function addUniqueText(values, text) {
+    var value = String(text || "").trim();
+    if (!value) {
+      return;
+    }
+    if (
+      values.some(function (existing) {
+        return String(existing).toUpperCase() === value.toUpperCase();
+      })
+    ) {
+      return;
+    }
+    values.push(value);
+  }
+
+  function ensureOrderLineHuRow(map, rows, huCode) {
+    var code = String(huCode || "").trim();
+    var key = normalizeOrderLineHuCode(code);
+    if (!key) {
+      return null;
+    }
+    if (!map[key]) {
+      map[key] = {
+        huCode: code,
+        production: null,
+        warehouse: null,
+        shipped: null,
+      };
+      rows.push(map[key]);
+    }
+    return map[key];
+  }
+
+  function addProductionHuRow(map, rows, source) {
+    var target = ensureOrderLineHuRow(map, rows, source && (source.huCode || source.hu_code));
+    if (!target) {
+      return;
+    }
+    if (!target.production) {
+      target.production = {
+        plannedQty: 0,
+        filledQty: 0,
+        hasPlannedQty: false,
+        hasFilledQty: false,
+        statuses: [],
+        prdRefs: [],
+        fateCode: "",
+        fateLabel: "",
+        fateQty: null,
+      };
+    }
+    var plannedQty = readOrderLineNumber(source, ["plannedQty", "planned_qty"]);
+    var filledQty = readOrderLineNumber(source, ["filledQty", "filled_qty"]);
+    if (plannedQty != null) {
+      target.production.plannedQty += Math.max(0, plannedQty);
+      target.production.hasPlannedQty = true;
+    }
+    if (filledQty != null) {
+      target.production.filledQty += Math.max(0, filledQty);
+      target.production.hasFilledQty = true;
+    }
+    addUniqueText(target.production.statuses, source && (source.palletStatus || source.pallet_status));
+    addUniqueText(target.production.prdRefs, source && (source.prdRef || source.prd_ref));
+    if (!target.production.fateLabel && source && (source.fateLabel || source.fate_label)) {
+      target.production.fateLabel = String(source.fateLabel || source.fate_label || "");
+      target.production.fateCode = String(source.fateCode || source.fate_code || "");
+      target.production.fateQty = readOrderLineNumber(source, ["fateQty", "fate_qty"]);
+    }
+  }
+
+  function addWarehouseHuRow(map, rows, source) {
+    var target = ensureOrderLineHuRow(map, rows, source && (source.huCode || source.hu_code || source.hu));
+    if (!target) {
+      return;
+    }
+    if (!target.warehouse) {
+      target.warehouse = {
+        qty: 0,
+        hasQty: false,
+        locationCode: "",
+        locationName: "",
+        stockStatus: "",
+        isBoundToOrder: false,
+      };
+    }
+    var qty = readOrderLineNumber(source, ["qty"]);
+    if (qty != null) {
+      target.warehouse.qty += Math.max(0, qty);
+      target.warehouse.hasQty = true;
+    }
+    if (!target.warehouse.locationCode && source && (source.locationCode || source.location_code)) {
+      target.warehouse.locationCode = String(source.locationCode || source.location_code || "");
+    }
+    if (!target.warehouse.locationName && source && (source.locationName || source.location_name)) {
+      target.warehouse.locationName = String(source.locationName || source.location_name || "");
+    }
+    if (!target.warehouse.stockStatus && source && (source.stockStatus || source.stock_status)) {
+      target.warehouse.stockStatus = String(source.stockStatus || source.stock_status || "");
+    }
+    target.warehouse.isBoundToOrder =
+      target.warehouse.isBoundToOrder ||
+      (source && (source.isBoundToOrder === true || source.is_bound_to_order === true));
+  }
+
+  function addShippedHuRow(map, rows, source) {
+    var target = ensureOrderLineHuRow(map, rows, source && (source.huCode || source.hu_code || source.hu));
+    if (!target) {
+      return;
+    }
+    if (!target.shipped) {
+      target.shipped = {
+        qty: 0,
+        hasQty: false,
+      };
+    }
+    var qty = readOrderLineNumber(source, ["qty"]);
+    if (qty != null) {
+      target.shipped.qty += Math.max(0, qty);
+      target.shipped.hasQty = true;
+    }
+  }
+
+  function buildOrderLineHuRows(line, boundHuRows) {
+    var map = {};
+    var rows = [];
+    var productionRows = readOrderLineArray(line, "productionHuRows", "production_hu_rows");
+    var warehouseRows = readOrderLineArray(line, "warehouseHuRows", "warehouse_hu_rows");
+    var shippedRows = readOrderLineArray(line, "shippedHuRows", "shipped_hu_rows");
+
+    productionRows.forEach(function (row) {
+      addProductionHuRow(map, rows, row);
+    });
+    if (!productionRows.length) {
+      getOrderLineProductionHuCodes(line).forEach(function (hu) {
+        addProductionHuRow(map, rows, { huCode: hu });
+      });
+    }
+    warehouseRows.forEach(function (row) {
+      addWarehouseHuRow(map, rows, row);
+    });
+    if (!warehouseRows.length) {
+      (boundHuRows || []).forEach(function (hu) {
+        addWarehouseHuRow(map, rows, { huCode: hu, isBoundToOrder: true });
+      });
+    }
+    shippedRows.forEach(function (row) {
+      addShippedHuRow(map, rows, row);
+    });
+
+    return rows.sort(function (left, right) {
+      return String(left.huCode).localeCompare(String(right.huCode), "ru-RU", {
+        numeric: true,
+        sensitivity: "base",
+      });
+    });
+  }
+
+  function getOrderLineHuStatus(row) {
+    var production = row && row.production;
+    var warehouse = row && row.warehouse;
+    var shipped = row && row.shipped;
+    if (production) {
+      var hasProblem = production.statuses.some(function (status) {
+        var normalized = normalizeOrderLineHuCode(status);
+        return normalized === "ERROR" || normalized === "PROBLEM" || normalized === "CANCELLED";
+      });
+      if (hasProblem) {
+        return { label: "Проблема", tone: "problem" };
+      }
+      var plannedQty = production.hasPlannedQty ? Number(production.plannedQty) || 0 : 0;
+      var filledQty = production.hasFilledQty ? Number(production.filledQty) || 0 : 0;
+      if (plannedQty > 0 && filledQty >= plannedQty) {
+        return { label: "Наполнена", tone: "filled" };
+      }
+      if (filledQty > 0 && filledQty < plannedQty) {
+        return { label: "Частично", tone: "partial" };
+      }
+      return { label: "Ожидает", tone: "waiting" };
+    }
+    if (warehouse) {
+      return warehouse.isBoundToOrder
+        ? { label: "Зарезервирована", tone: "reserved" }
+        : { label: "На складе", tone: "stock" };
+    }
+    if (shipped) {
+      return { label: "Отгружена", tone: "shipped" };
+    }
+    return { label: "Проблема", tone: "problem" };
+  }
+
+  function formatOrderLineHuLocation(warehouse) {
+    if (!warehouse) {
       return "";
     }
+    if (warehouse.locationCode && warehouse.locationName) {
+      return warehouse.locationCode + " — " + warehouse.locationName;
+    }
+    if (warehouse.locationCode) {
+      return warehouse.locationCode;
+    }
+    return "на складе";
+  }
+
+  function getOrderLineHuMovementText(row) {
+    var production = row && row.production;
+    var warehouse = row && row.warehouse;
+    var shipped = row && row.shipped;
+    if (warehouse && warehouse.hasQty) {
+      return formatOrderLineHuLocation(warehouse) + " · " + formatOrderHuQty(warehouse.qty);
+    }
+    if (production && production.fateLabel) {
+      return production.fateLabel + (production.fateQty != null ? " · " + formatOrderHuQty(production.fateQty) : "");
+    }
+    if (shipped && shipped.hasQty) {
+      return "отгружена · " + formatOrderHuQty(shipped.qty);
+    }
+    return "—";
+  }
+
+  function renderOrderLineHuCard(row) {
+    var status = getOrderLineHuStatus(row);
+    var production = row.production;
+    var warehouse = row.warehouse;
+    var shipped = row.shipped;
+    var body = "";
+
+    if (production) {
+      body +=
+        '<div class="order-line-hu-card-meta">План: ' +
+        escapeHtml(production.hasPlannedQty ? formatOrderQtyValue(production.plannedQty) : "—") +
+        " · Наполнено: " +
+        escapeHtml(production.hasFilledQty ? formatOrderQtyValue(production.filledQty) : "0") +
+        "</div>";
+      body +=
+        '<div class="order-line-hu-card-sub">PRD: ' +
+        escapeHtml(production.prdRefs.length ? production.prdRefs.join(", ") : "—") +
+        "</div>";
+      body +=
+        '<div class="order-line-hu-card-sub">Движение: ' +
+        escapeHtml(getOrderLineHuMovementText(row)) +
+        "</div>";
+    } else if (warehouse) {
+      body += '<div class="order-line-hu-card-meta">План: —</div>';
+      body +=
+        '<div class="order-line-hu-card-sub">' +
+        escapeHtml(warehouse.isBoundToOrder ? "Привязано к заказу: " : "На складе: ") +
+        escapeHtml(warehouse.hasQty ? formatOrderHuQty(warehouse.qty) : "—") +
+        "</div>";
+      body +=
+        '<div class="order-line-hu-card-sub">Движение: ' +
+        escapeHtml(getOrderLineHuMovementText(row)) +
+        "</div>";
+    } else if (shipped) {
+      body += '<div class="order-line-hu-card-meta">План: —</div>';
+      body += '<div class="order-line-hu-card-sub">PRD: —</div>';
+      body +=
+        '<div class="order-line-hu-card-sub">Движение: ' +
+        escapeHtml(getOrderLineHuMovementText(row)) +
+        "</div>";
+    }
+
     return (
-      '<div class="order-line-hu-section">' +
-      '  <div class="order-line-hu-section-title">' +
-      escapeHtml(title) +
+      '<div class="order-line-hu-card order-line-hu-card--' +
+      escapeHtml(status.tone) +
+      '">' +
+      '  <div class="order-line-hu-card-head">' +
+      '    <div class="order-line-hu-code">' +
+      escapeHtml(row.huCode) +
       "</div>" +
-      '  <ul class="order-line-hu-list">' +
-      hus
-        .map(function (hu) {
-          return (
-            '<li class="order-line-hu-item order-line-hu-item--' +
-            escapeHtml(tone || "neutral") +
-            '">' +
-            '  <span class="order-line-hu-code">' +
-            escapeHtml(hu) +
-            "</span>" +
-            "</li>"
-          );
-        })
-        .join("") +
-      "  </ul>" +
+      '    <span class="order-line-hu-status order-line-hu-status--' +
+      escapeHtml(status.tone) +
+      '">' +
+      escapeHtml(status.label) +
+      "</span>" +
+      "  </div>" +
+      body +
+      "</div>"
+    );
+  }
+
+  function readOrderLineCoverageNumber(line, camel, snake) {
+    var coverage = line && (line.coverage || line.coverage_read_model);
+    return coverage ? readOrderLineNumber(coverage, [camel, snake]) : null;
+  }
+
+  function renderOrderLineProductionSummary(line) {
+    var ordered = readOrderLineCoverageNumber(line, "orderedQty", "ordered_qty");
+    if (ordered == null) {
+      ordered = readOrderLineNumber(line, ["orderedQty", "qty_ordered"]);
+    }
+    var produced = readOrderLineCoverageNumber(line, "productionFilledQty", "production_filled_qty");
+    if (produced == null) {
+      produced = readOrderLineNumber(line, ["palletFilledQty", "pallet_filled_qty"]);
+    }
+    var remaining = readOrderLineCoverageNumber(line, "missingQty", "missing_qty");
+    if (remaining == null && ordered != null) {
+      remaining = Math.max(0, Number(ordered || 0) - Number(produced || 0));
+    }
+    if (ordered == null && produced == null && remaining == null) {
+      return "";
+    }
+    var remainingPositive = Number(remaining || 0) > 0;
+    return (
+      '<div class="order-line-production-summary">' +
+      '  <div class="order-line-production-summary-title">Итог выпуска</div>' +
+      '  <div class="order-line-production-summary-row"><span>Заказано</span><strong>' +
+      escapeHtml(formatOrderQtyValue(ordered || 0)) +
+      "</strong></div>" +
+      '  <div class="order-line-production-summary-row"><span>Выпущено</span><strong>' +
+      escapeHtml(formatOrderQtyValue(produced || 0)) +
+      "</strong></div>" +
+      '  <div class="order-line-production-summary-row' +
+      (remainingPositive ? " is-warning" : "") +
+      '"><span>Осталось выпустить</span><strong>' +
+      escapeHtml(formatOrderQtyValue(remaining || 0)) +
+      "</strong></div>" +
       "</div>"
     );
   }
 
   function renderOrderLineHuDetails(line, boundHuRows) {
-    var productionHuCodes = getOrderLineProductionHuCodes(line);
     var plannedQty = readOrderLineNumber(line, ["palletPlannedQty", "pallet_planned_qty"]);
     var filledQty = readOrderLineNumber(line, ["palletFilledQty", "pallet_filled_qty"]);
     var plannedCount = readOrderLineNumber(line, ["plannedPalletCount", "planned_pallet_count"]);
@@ -2928,8 +3247,19 @@
       );
     }
 
-    sections += renderOrderLineHuList("Производственные HU", productionHuCodes, "production");
-    sections += renderOrderLineHuList("Складские HU по товару", boundHuRows || [], "warehouse");
+    var huRows = buildOrderLineHuRows(line, boundHuRows);
+    if (huRows.length) {
+      sections +=
+        '<div class="order-line-hu-section order-line-production-plan">' +
+        '  <div class="order-line-hu-section-title">Производство / план паллет</div>' +
+        '  <div class="order-line-hu-cards">' +
+        huRows.map(renderOrderLineHuCard).join("") +
+        "  </div>" +
+        renderOrderLineProductionSummary(line) +
+        "</div>";
+    } else {
+      sections += renderOrderLineProductionSummary(line);
+    }
 
     if (!summaryParts.length && !sections) {
       return '<div class="order-line-hu-empty">HU по строке не найдены в read-model.</div>';
@@ -4804,7 +5134,7 @@
       return "Запланирована к наполнению";
     }
     if (normalized === "PLANNED") {
-      return "Запланирована";
+      return "Запланирована к наполнению";
     }
     if (normalized === "FILLED_PRODUCTION_PALLET") {
       return "Наполнена";
@@ -4924,6 +5254,30 @@
     return (action && (action.label || action.type)) || "";
   }
 
+  function renderTsdHuIcon(name, extraClass) {
+    var iconClass = "hu-icon" + (extraClass ? " " + extraClass : "");
+    var attrs = 'class="' + iconClass + '" viewBox="0 0 24 24" aria-hidden="true" focusable="false"';
+    var paths = {
+      "check-circle": '<path d="M20 6 9 17l-5-5"></path><circle cx="12" cy="12" r="10"></circle>',
+      package: '<path d="m21 16-9 5-9-5V8l9-5 9 5v8Z"></path><path d="m3.5 8.5 8.5 4.7 8.5-4.7"></path><path d="M12 13v8"></path>',
+      document: '<path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7Z"></path><path d="M14 2v5h5"></path><path d="M9 13h6"></path><path d="M9 17h6"></path>',
+      "info-circle": '<circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path>',
+      "chevron-down": '<path d="m6 9 6 6 6-6"></path>',
+    };
+    return "<svg " + attrs + ">" + (paths[name] || paths["info-circle"]) + "</svg>";
+  }
+
+  function getTsdHuActionIconName(action) {
+    var type = normalizeTsdHuCodeValue(action && action.type);
+    if (type === "OPEN_FILLING" || type === "OPEN_OUTBOUND") {
+      return "package";
+    }
+    if (type === "OPEN_ORDER" || type === "OPEN_DOCUMENT") {
+      return "document";
+    }
+    return "info-circle";
+  }
+
   function buildTsdHuContentRows(stock, pallets, reservations, documents) {
     var rows = [];
     (Array.isArray(pallets) ? pallets : []).forEach(function (pallet) {
@@ -4969,29 +5323,32 @@
 
   function renderTsdHuContentRows(rows) {
     if (!rows.length) {
-      return '<div class="status-muted">Содержимое не найдено</div>';
+      return '<div class="hu-detail-muted">Содержимое не найдено</div>';
     }
     var totalQty = 0;
     var totalUom = rows[0].uom || "шт";
     var canShowTotal = rows.length > 1;
     var html = rows.map(function (row) {
       var qty = Number(row.qty);
+      var qtyDisplay = "";
       if (!isFinite(qty)) {
         canShowTotal = false;
-        qty = 0;
+        qtyDisplay = "—";
+      } else {
+        totalQty += qty;
+        qtyDisplay = formatQtyWithUnit(qty, row.uom || "шт");
       }
       if ((row.uom || "шт") !== totalUom) {
         canShowTotal = false;
       }
-      totalQty += qty;
-      return '<div class="hu-line"><div>' +
+      return '<div class="hu-content-row"><div class="hu-content-name">' +
         escapeHtml(row.itemName || "Товар") +
-        "</div><div>" +
-        escapeHtml(formatQtyWithUnit(qty, row.uom || "шт")) +
+        '</div><div class="hu-content-qty">' +
+        escapeHtml(qtyDisplay) +
         "</div></div>";
     }).join("");
     if (canShowTotal) {
-      html += '<div class="hu-line hu-line-total"><div>Итого</div><div>' +
+      html += '<div class="hu-content-row hu-content-row--total"><div class="hu-content-name">Итого</div><div class="hu-content-qty">' +
         escapeHtml(formatQtyWithUnit(totalQty, totalUom)) +
         "</div></div>";
     }
@@ -5003,7 +5360,7 @@
       return Number(getTsdHuRowValue(row, "qty", "qty")) > 0;
     });
     if (!positiveStock.length) {
-      return '<div class="status-muted">' +
+      return '<div class="hu-detail-muted">' +
         escapeHtml(normalizeTsdHuCodeValue(state) === "PLANNED_PRODUCTION" ? "Еще не на складе" : "Нет на складе") +
         "</div>";
     }
@@ -5011,14 +5368,14 @@
     var rows = positiveStock.map(function (row) {
       var code = getTsdHuRowValue(row, "locationCode", "location_code") || "-";
       var name = getTsdHuRowValue(row, "locationName", "location_name") || "";
-      var label = name ? code + " - " + name : code;
+      var label = name ? code + " — " + name : code;
       if (seen[label]) {
         return "";
       }
       seen[label] = true;
-      return '<div class="hu-line"><div>' + escapeHtml(label) + "</div></div>";
+      return '<div class="hu-detail-text">' + escapeHtml(label) + "</div>";
     }).filter(Boolean).join("");
-    return rows || '<div class="status-muted">Нет на складе</div>';
+    return rows || '<div class="hu-detail-muted">Нет на складе</div>';
   }
 
   function findTsdHuOrderRow(reservations, pallets, documents) {
@@ -5038,15 +5395,13 @@
   function renderTsdHuOrderRows(reservations, pallets, documents) {
     var row = findTsdHuOrderRow(reservations, pallets, documents);
     if (!row) {
-      return '<div class="status-muted">Не привязана</div>';
+      return '<div class="hu-detail-muted">Не привязана</div>';
     }
     var orderRef = getTsdHuRowValue(row, "orderRef", "order_ref") || getTsdHuRowValue(row, "orderId", "order_id") || "-";
     var orderType = getTsdHuOrderTypeLabel(getTsdHuRowValue(row, "orderType", "order_type"));
-    var partnerName = getTsdHuRowValue(row, "partnerName", "partner_name") || "";
-    return '<div class="hu-line"><div>' +
+    return '<div class="hu-detail-text">' +
       escapeHtml(orderRef + " - " + orderType) +
-      (partnerName ? '<div class="hu-card-meta">Контрагент: ' + escapeHtml(partnerName) + "</div>" : "") +
-      "</div></div>";
+      "</div>";
   }
 
   function buildTsdHuTechnicalRows(card, pallets, documents) {
@@ -5072,6 +5427,11 @@
         add([prdRef, "Выпуск", getTsdHuDocStatusLabel(getTsdHuRowValue(row, "prdDocStatus", "prd_doc_status"))].filter(Boolean).join(" · "));
       }
     });
+    var orderRow = findTsdHuOrderRow(card && card.reservations, pallets, documents);
+    var partnerName = getTsdHuRowValue(orderRow, "partnerName", "partner_name") || "";
+    if (partnerName) {
+      add("Контрагент: " + partnerName);
+    }
     var movement = card && card.latestMovement;
     if (movement) {
       add("Последнее движение: " +
@@ -5096,23 +5456,46 @@
     var orderHtml = renderTsdHuOrderRows(reservations, pallets, documents);
     var technicalRows = buildTsdHuTechnicalRows(card, pallets, documents);
     var technicalHtml = technicalRows.length
-      ? '<details class="hu-technical"><summary>Техническая информация</summary><div class="hu-lines">' +
+      ? '<details class="hu-technical-card"><summary><span>' +
+        renderTsdHuIcon("info-circle", "hu-technical-icon") +
+        "Техническая информация</span>" +
+        renderTsdHuIcon("chevron-down", "hu-technical-chevron") +
+        '</summary><div class="hu-technical-body">' +
         technicalRows.map(function (row) {
-          return '<div class="hu-line"><div>' + escapeHtml(row) + "</div></div>";
+          return '<div class="hu-technical-row">' + escapeHtml(row) + "</div>";
         }).join("") +
         "</div></details>"
       : "";
     var actionHtml = actions.map(function (action, index) {
-      return '<button class="btn btn-outline" type="button" data-hu-card-action="' + index + '">' +
-        escapeHtml(getTsdHuActionLabel(action, documents)) + "</button>";
+      var tone = index === 0 ? "primary" : "secondary";
+      return '<button class="hu-action-btn hu-action-btn--' + tone + '" type="button" data-hu-card-action="' + index + '">' +
+        renderTsdHuIcon(getTsdHuActionIconName(action), "hu-action-icon") +
+        '<span>' + escapeHtml(getTsdHuActionLabel(action, documents)) + "</span></button>";
     }).join("");
 
-    return '<section class="screen"><div class="screen-card">' +
-      '<div class="section-title">' + escapeHtml(card.huCode) + "</div>" +
-      '<div class="hu-card"><div class="hu-card-title">Статус: ' + escapeHtml(getTsdHuStatusLabel(card.state || card.title)) + "</div></div>" +
-      '<div class="section-title">Содержимое</div><div class="hu-lines">' + contentHtml + "</div>" +
-      '<div class="section-title">Местоположение</div><div class="hu-lines">' + locationHtml + "</div>" +
-      '<div class="section-title">Заказ</div><div class="hu-lines">' + orderHtml + "</div>" +
+    return '<section class="hu-card-screen"><div class="hu-card-container">' +
+      '<h1 class="hu-card-heading">' + escapeHtml(card.huCode) + "</h1>" +
+      '<article class="hu-detail-card" aria-label="Карточка HU">' +
+      '  <section class="hu-detail-section hu-detail-section--status">' +
+      '    <div class="hu-detail-section-title">Статус</div>' +
+      '    <div class="hu-status-panel">' +
+      renderTsdHuIcon("check-circle", "hu-status-icon") +
+      '      <span>' + escapeHtml(getTsdHuStatusLabel(card.state || card.title)) + "</span>" +
+      "    </div>" +
+      "  </section>" +
+      '  <section class="hu-detail-section">' +
+      '    <div class="hu-detail-section-title">Содержимое</div>' +
+      '    <div class="hu-content-list">' + contentHtml + "</div>" +
+      "  </section>" +
+      '  <section class="hu-detail-section">' +
+      '    <div class="hu-detail-section-title">Местоположение</div>' +
+      '    <div class="hu-detail-lines">' + locationHtml + "</div>" +
+      "  </section>" +
+      '  <section class="hu-detail-section">' +
+      '    <div class="hu-detail-section-title">Заказ</div>' +
+      '    <div class="hu-detail-lines">' + orderHtml + "</div>" +
+      "  </section>" +
+      "</article>" +
       (actionHtml ? '<div class="hu-actions">' + actionHtml + "</div>" : "") +
       technicalHtml +
       "</div></section>";

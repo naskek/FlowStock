@@ -332,7 +332,7 @@ async function main() {
 
   assert(storageJs.includes("/api/tsd/hu/resolve?code="));
   assert(storageJs.includes("/api/tsd/hu/card?code="));
-  assert(appVersionJs.includes('var version = "41"'));
+  assert(appVersionJs.includes('var version = "43"'));
   assert(serviceWorkerJs.includes('importScripts("./app-version.js")'));
   assert(serviceWorkerJs.includes('"./app.js"'));
 
@@ -508,6 +508,8 @@ async function main() {
   assert.strictEqual(huCardCalls, huCardCallsBefore + 1, "HU card route should load apiGetHuCard");
   assert.strictEqual(lastHuCardCode, "HU-000321");
   assert.match(appEl.innerHTML, /HU-000321/);
+  assert.match(appEl.innerHTML, /hu-card-screen/);
+  assert.match(appEl.innerHTML, /hu-detail-card/);
   assert.match(appEl.innerHTML, /Открыть заказ 005/);
   assert.strictEqual(huCardActionButtons.length, 1, "HU card should wire action buttons");
   huCardActionButtons[0].click();
@@ -573,7 +575,10 @@ async function main() {
     documentActions: [],
   });
   assert.match(freeCardHtml, /HU-000321/);
-  assert.match(freeCardHtml, /Статус: На складе/);
+  assert.match(freeCardHtml, /hu-card-heading/);
+  assert.match(freeCardHtml, /hu-status-panel/);
+  assert.match(freeCardHtml, /На складе/);
+  assert.doesNotMatch(freeCardHtml, /Статус:/);
   assert.match(freeCardHtml, /MAIN/);
   assert.strictEqual((freeCardHtml.match(/600 шт/g) || []).length, 1, "free HU card should show qty once");
   assert.doesNotMatch(freeCardHtml, /data-hu-card-action/);
@@ -609,11 +614,13 @@ async function main() {
     latestMovement: { doc_ref: "PRD-1490", timestamp: "2026-01-02T03:04:05Z" },
     documentActions: [{ type: "OPEN_DOCUMENT", docId: 1490, label: "PRD-1490" }],
   });
-  assert.match(filledCardHtml, /Статус: Наполнена/);
+  assert.match(filledCardHtml, /Наполнена/);
+  assert.match(filledCardHtml, /hu-content-row/);
   assert.strictEqual((filledCardHtml.match(/378 шт/g) || []).length, 1, "filled HU main content should show qty once");
   assert.doesNotMatch(filledCardHtml, /read-only/);
   assert.doesNotMatch(filledCardHtml, /PRODUCTION_RECEIPT/);
   assert.doesNotMatch(filledCardHtml, /CLOSED/);
+  assert.doesNotMatch(filledCardHtml, /FILLED/);
   assert.match(filledCardHtml, /Открыть документ выпуска/);
   assert(
     filledCardHtml.indexOf("PRD-1490") > filledCardHtml.indexOf("Техническая информация"),
@@ -634,11 +641,18 @@ async function main() {
     ],
     reservations: [],
     documents: [],
-    documentActions: [{ type: "OPEN_FILLING", orderId: 619, label: "Открыть наполнение заказа 006" }],
+    documentActions: [
+      { type: "OPEN_FILLING", orderId: 619, label: "Открыть наполнение заказа 006" },
+      { type: "OPEN_ORDER", orderId: 619, label: "Открыть заказ 006" },
+    ],
   });
-  assert.match(plannedCardHtml, /Статус: Запланирована к наполнению/);
+  assert.match(plannedCardHtml, /Запланирована к наполнению/);
+  assert.doesNotMatch(plannedCardHtml, /PLANNED/);
   assert.match(plannedCardHtml, /Еще не на складе/);
   assert.match(plannedCardHtml, /Открыть наполнение заказа 006/);
+  assert.match(plannedCardHtml, /hu-action-btn--primary/);
+  assert.match(plannedCardHtml, /hu-action-btn--secondary/);
+  assert.match(plannedCardHtml, /Открыть заказ 006/);
 
   const mixedCardHtml = hooks.renderTsdHuCard({
     known: true,

@@ -314,6 +314,77 @@
       }
       return null;
     }
+    function normalizeProductionHuRow(row) {
+      if (!row) {
+        return null;
+      }
+      var hu = String(row.hu_code || row.huCode || "").trim();
+      if (!hu) {
+        return null;
+      }
+      return {
+        huCode: hu,
+        palletStatus: String(row.pallet_status || row.palletStatus || ""),
+        plannedQty: optionalNumber(row.planned_qty, row.plannedQty),
+        filledQty: optionalNumber(row.filled_qty, row.filledQty),
+        prdRef: String(row.prd_ref || row.prdRef || ""),
+        fateCode: String(row.fate_code || row.fateCode || ""),
+        fateLabel: String(row.fate_label || row.fateLabel || ""),
+        fateOrderRef: String(row.fate_order_ref || row.fateOrderRef || ""),
+        fateDocRef: String(row.fate_doc_ref || row.fateDocRef || ""),
+        fateQty: optionalNumber(row.fate_qty, row.fateQty),
+      };
+    }
+    function normalizeWarehouseHuRow(row) {
+      if (!row) {
+        return null;
+      }
+      var hu = String(row.hu_code || row.huCode || row.hu || "").trim();
+      if (!hu) {
+        return null;
+      }
+      return {
+        huCode: hu,
+        qty: optionalNumber(row.qty),
+        locationCode: String(row.location_code || row.locationCode || ""),
+        locationName: String(row.location_name || row.locationName || ""),
+        stockStatus: String(row.stock_status || row.stockStatus || ""),
+        isBoundToOrder: row.is_bound_to_order === true || row.isBoundToOrder === true,
+      };
+    }
+    function normalizeShippedHuRow(row) {
+      if (!row) {
+        return null;
+      }
+      var hu = String(row.hu_code || row.huCode || row.hu || "").trim();
+      if (!hu) {
+        return null;
+      }
+      return {
+        huCode: hu,
+        qty: optionalNumber(row.qty),
+      };
+    }
+    function normalizeCoverage(row) {
+      if (!row) {
+        return null;
+      }
+      return {
+        orderedQty: optionalNumber(row.ordered_qty, row.orderedQty),
+        warehouseBoundQty: optionalNumber(row.warehouse_bound_qty, row.warehouseBoundQty),
+        productionFilledQty: optionalNumber(row.production_filled_qty, row.productionFilledQty),
+        shippedQty: optionalNumber(row.shipped_qty, row.shippedQty),
+        coveredQty: optionalNumber(row.covered_qty, row.coveredQty),
+        missingQty: optionalNumber(row.missing_qty, row.missingQty),
+      };
+    }
+    function normalizeRows(rows, mapper) {
+      return (Array.isArray(rows) ? rows : [])
+        .map(mapper)
+        .filter(function (row) {
+          return !!row;
+        });
+    }
     var productionHuCodes = [];
     if (Array.isArray(line.production_hu_codes)) {
       productionHuCodes = line.production_hu_codes;
@@ -369,6 +440,10 @@
       palletFillLabel: String(line.pallet_fill_label || line.palletFillLabel || ""),
       palletFillTone: String(line.pallet_fill_tone || line.palletFillTone || ""),
       palletFillTitle: String(line.pallet_fill_title || line.palletFillTitle || ""),
+      productionHuRows: normalizeRows(line.production_hu_rows || line.productionHuRows, normalizeProductionHuRow),
+      warehouseHuRows: normalizeRows(line.warehouse_hu_rows || line.warehouseHuRows, normalizeWarehouseHuRow),
+      shippedHuRows: normalizeRows(line.shipped_hu_rows || line.shippedHuRows, normalizeShippedHuRow),
+      coverage: normalizeCoverage(line.coverage),
     };
   }
 
