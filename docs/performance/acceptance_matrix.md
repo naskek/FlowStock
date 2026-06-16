@@ -34,3 +34,13 @@ This matrix maps master plan findings to execution waves. Targets are production
 - No endpoint migration is complete until contract tests and no-N+1/perf guards pass.
 - No projection is operational until rebuild and check tooling exists.
 - No performance fix may change ledger semantics, closed-document behavior, correction flow, or business rules.
+
+## Production snapshot verification — 2026-06-16
+
+Verified on restored production snapshot lowstock_prodcheck, dump from lowstock-postgres-1.
+
+- /api/requests/summary: cold 43 ms, warm ~24-29 ms, target <50 ms — PASS.
+- /api/docs: cold 443 ms, warm ~24-32 ms, target <200 ms warm — PASS.
+- Snapshot size: 174 MB.
+- Rows: orders 139, docs 452, doc_lines 2299, ledger 1164, production_pallets 336, production_pallet_lines 365, marking_code 310052.
+- Production was not modified.
