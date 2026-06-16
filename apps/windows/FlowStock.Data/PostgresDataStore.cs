@@ -722,40 +722,50 @@ needed_marking_keys AS (
     FROM markable_item_need
     WHERE qty_for_marking > 0
 ),
-free_code_stats AS (
-    SELECT COALESCE(mo.order_id, mo.source_order_id) AS order_id,
-           COALESCE(mo.item_id, 0) AS item_id,
-           COALESCE(NULLIF(BTRIM(COALESCE(mo.gtin, c.gtin)), ''), '') AS gtin,
-           COUNT(*) AS codes_total
-    FROM marking_code c
-    INNER JOIN marking_order mo ON mo.id = c.marking_order_id
-    WHERE c.status IN (@marking_code_status_reserved, @marking_code_status_printed)
-      AND c.receipt_doc_id IS NULL
-      AND c.receipt_line_id IS NULL
+selected_marking_orders AS (
+    SELECT mo.id,
+           COALESCE(mo.order_id, mo.source_order_id) AS order_id,
+           mo.item_id,
+           mo.gtin
+    FROM marking_order mo
+    INNER JOIN order_scope os ON os.id = COALESCE(mo.order_id, mo.source_order_id)
+    WHERE COALESCE(mo.order_id, mo.source_order_id) IS NOT NULL
       AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
       AND (mo.source_type IN (@production_need_source_type, @production_order_source_type)
            OR mo.order_id IS NOT NULL)
-      AND COALESCE(mo.order_id, mo.source_order_id) IS NOT NULL
+),
+free_code_stats AS (
+    SELECT smo.order_id,
+           COALESCE(smo.item_id, 0) AS item_id,
+           COALESCE(NULLIF(BTRIM(COALESCE(smo.gtin, c.gtin)), ''), '') AS gtin,
+           COUNT(*) AS codes_total
+    FROM selected_marking_orders smo
+    INNER JOIN marking_code c ON c.marking_order_id = smo.id
+    WHERE c.status IN (@marking_code_status_reserved, @marking_code_status_printed)
+      AND c.receipt_doc_id IS NULL
+      AND c.receipt_line_id IS NULL
       AND EXISTS (
           SELECT 1
           FROM markable_item_need need
-          WHERE need.order_id = COALESCE(mo.order_id, mo.source_order_id)
-            AND (COALESCE(mo.item_id, 0) = need.item_id
+          WHERE need.order_id = smo.order_id
+            AND (COALESCE(smo.item_id, 0) = need.item_id
              OR (need.gtin IS NOT NULL
-                 AND COALESCE(NULLIF(BTRIM(COALESCE(mo.gtin, c.gtin)), ''), '') = COALESCE(need.gtin, '')))
+                 AND COALESCE(NULLIF(BTRIM(COALESCE(smo.gtin, c.gtin)), ''), '') = COALESCE(need.gtin, '')))
       )
-    GROUP BY COALESCE(mo.order_id, mo.source_order_id),
-             COALESCE(mo.item_id, 0),
-             COALESCE(NULLIF(BTRIM(COALESCE(mo.gtin, c.gtin)), ''), '')
+    GROUP BY smo.order_id,
+             COALESCE(smo.item_id, 0),
+             COALESCE(NULLIF(BTRIM(COALESCE(smo.gtin, c.gtin)), ''), '')
 ),
 bound_code_stats AS (
     SELECT ols.order_id,
            ols.item_id,
            COALESCE(NULLIF(BTRIM(i.gtin), ''), '') AS gtin,
            COUNT(*) AS codes_total
-    FROM marking_code c
-    INNER JOIN doc_lines dl ON dl.id = c.receipt_line_id
-    INNER JOIN order_lines_scope ols ON ols.id = dl.order_line_id
+    FROM order_lines_scope ols
+    INNER JOIN doc_lines dl ON dl.order_line_id = ols.id
+    INNER JOIN marking_code c ON c.receipt_line_id = dl.id
+    INNER JOIN selected_marking_orders smo ON smo.id = c.marking_order_id
+                                         AND smo.order_id = ols.order_id
     INNER JOIN items i ON i.id = ols.item_id
     WHERE c.status <> @marking_code_status_voided
     GROUP BY ols.order_id,

@@ -68,9 +68,33 @@ public sealed class OrderGetOrdersPageSqlTests
     {
         var sql = File.ReadAllText(GetPostgresDataStorePath()).Replace("\r\n", "\n", StringComparison.Ordinal);
 
-        Assert.Contains("SELECT COALESCE(mo.order_id, mo.source_order_id) AS order_id", sql, StringComparison.Ordinal);
-        Assert.Contains("AND COALESCE(mo.order_id, mo.source_order_id) IS NOT NULL", sql, StringComparison.Ordinal);
+        Assert.Contains("selected_marking_orders AS", sql, StringComparison.Ordinal);
+        Assert.Contains("COALESCE(mo.order_id, mo.source_order_id) AS order_id", sql, StringComparison.Ordinal);
+        Assert.Contains("INNER JOIN order_scope os ON os.id = COALESCE(mo.order_id, mo.source_order_id)", sql, StringComparison.Ordinal);
         Assert.Contains("WHERE free.order_id = need.order_id", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OrderListMarkingCodeAggregates_AreScopedToSelectedOrdersBeforeTouchingMarkingCode()
+    {
+        var sql = File.ReadAllText(GetPostgresDataStorePath()).Replace("\r\n", "\n", StringComparison.Ordinal);
+        var selectedStart = sql.IndexOf("selected_marking_orders AS", StringComparison.Ordinal);
+        var freeStart = sql.IndexOf("free_code_stats AS", StringComparison.Ordinal);
+        var boundStart = sql.IndexOf("bound_code_stats AS", StringComparison.Ordinal);
+        var freeSection = sql[freeStart..boundStart];
+        var boundEnd = sql.IndexOf("marking_rollup AS", boundStart, StringComparison.Ordinal);
+        var boundSection = sql[boundStart..boundEnd];
+
+        Assert.True(selectedStart > 0, "selected_marking_orders CTE must exist.");
+        Assert.True(selectedStart < freeStart, "selected_marking_orders must be built before free_code_stats.");
+        Assert.True(selectedStart < boundStart, "selected_marking_orders must be built before bound_code_stats.");
+        Assert.Contains("INNER JOIN order_scope os ON os.id = COALESCE(mo.order_id, mo.source_order_id)", sql, StringComparison.Ordinal);
+        Assert.Contains("FROM selected_marking_orders smo", freeSection, StringComparison.Ordinal);
+        Assert.Contains("INNER JOIN marking_code c ON c.marking_order_id = smo.id", freeSection, StringComparison.Ordinal);
+        Assert.Contains("FROM order_lines_scope ols", boundSection, StringComparison.Ordinal);
+        Assert.Contains("INNER JOIN marking_code c ON c.receipt_line_id = dl.id", boundSection, StringComparison.Ordinal);
+        Assert.Contains("INNER JOIN selected_marking_orders smo ON smo.id = c.marking_order_id", boundSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("FROM marking_code c\n    INNER JOIN marking_order mo", freeSection, StringComparison.Ordinal);
     }
 
     private static string GetPostgresDataStorePath()
