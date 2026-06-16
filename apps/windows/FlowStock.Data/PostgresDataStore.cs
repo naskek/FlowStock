@@ -11,7 +11,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore
+public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore
 {
     private readonly string _connectionString;
     private readonly NpgsqlConnection? _connection;
@@ -2942,6 +2942,82 @@ ON CONFLICT (hu_code) DO NOTHING;
     public IReadOnlyList<ProductionPallet> GetProductionPalletsByDoc(long docId)
     {
         return WithConnection(connection => GetProductionPalletsByDoc(connection, docId));
+    }
+
+    public IReadOnlyDictionary<long, ProductionPalletSummary> GetProductionPalletSummariesByDocIds(IReadOnlyCollection<long> docIds)
+    {
+        var ids = NormalizePositiveDistinctIds(docIds);
+        if (ids.Length == 0)
+        {
+            return new Dictionary<long, ProductionPalletSummary>();
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH line_totals AS (
+    SELECT pll.production_pallet_id,
+           COUNT(*) AS line_count,
+           COALESCE(SUM(pll.planned_qty), 0)::double precision AS planned_qty,
+           COUNT(*) FILTER (WHERE COALESCE(pll.filled_qty, 0) + @qty_tolerance >= pll.planned_qty) AS completed_line_count
+    FROM production_pallet_lines pll
+    INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
+    WHERE pp.prd_doc_id = ANY(@doc_ids)
+    GROUP BY pll.production_pallet_id
+),
+pallet_source AS (
+    SELECT pp.prd_doc_id,
+           UPPER(COALESCE(pp.status, '')) AS status,
+           CASE
+               WHEN COALESCE(lt.line_count, 0) > 0 THEN COALESCE(lt.planned_qty, 0)
+               ELSE pp.planned_qty
+           END AS planned_qty,
+           COALESCE(lt.line_count, 0) > 0
+           AND COALESCE(lt.completed_line_count, 0) = COALESCE(lt.line_count, 0) AS all_components_filled
+    FROM production_pallets pp
+    LEFT JOIN line_totals lt ON lt.production_pallet_id = pp.id
+    WHERE pp.prd_doc_id = ANY(@doc_ids)
+)
+SELECT ps.prd_doc_id,
+       COUNT(*) FILTER (WHERE ps.status <> @cancelled_status)::int AS planned_pallet_count,
+       COALESCE(SUM(ps.planned_qty) FILTER (WHERE ps.status <> @cancelled_status), 0)::double precision AS planned_qty,
+       COUNT(*) FILTER (WHERE ps.status = @filled_status)::int AS filled_pallet_count,
+       COALESCE(SUM(ps.planned_qty) FILTER (WHERE ps.status = @filled_status), 0)::double precision AS filled_qty,
+       COUNT(*) FILTER (
+           WHERE ps.status IN (@planned_status, @printed_status)
+             AND NOT ps.all_components_filled
+       )::int AS remaining_pallet_count,
+       COALESCE(SUM(ps.planned_qty) FILTER (
+           WHERE ps.status IN (@planned_status, @printed_status)
+             AND NOT ps.all_components_filled
+       ), 0)::double precision AS remaining_qty
+FROM pallet_source ps
+GROUP BY ps.prd_doc_id;
+");
+            command.Parameters.Add("@doc_ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint).Value = ids;
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+            command.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
+            command.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
+            command.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+            command.Parameters.AddWithValue("@printed_status", ProductionPalletStatus.Printed);
+
+            using var reader = command.ExecuteReader();
+            var result = new Dictionary<long, ProductionPalletSummary>();
+            while (reader.Read())
+            {
+                result[reader.GetInt64(0)] = new ProductionPalletSummary
+                {
+                    PlannedPalletCount = reader.GetInt32(1),
+                    PlannedQty = reader.GetDouble(2),
+                    FilledPalletCount = reader.GetInt32(3),
+                    FilledQty = reader.GetDouble(4),
+                    RemainingPalletCount = reader.GetInt32(5),
+                    RemainingQty = reader.GetDouble(6)
+                };
+            }
+
+            return result;
+        });
     }
 
     public ProductionPallet? GetProductionPalletByHu(string huCode)

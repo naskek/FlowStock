@@ -97,6 +97,17 @@ internal sealed class CloseDocumentHarness
             .Verify(store => store.CountPendingOrderRequests(), times);
     }
 
+    public void VerifyProductionPalletSummaryBatchPathUsed(Times times)
+    {
+        _store.As<IProductionPalletSummaryBatchStore>()
+            .Verify(store => store.GetProductionPalletSummariesByDocIds(It.IsAny<IReadOnlyCollection<long>>()), times);
+    }
+
+    public void VerifyProductionPalletDetailPathNotUsed()
+    {
+        _store.Verify(store => store.GetProductionPalletsByDoc(It.IsAny<long>()), Times.Never);
+    }
+
     public void VerifyRequestListsNotUsed()
     {
         _store.Verify(store => store.GetItemRequests(It.IsAny<bool>()), Times.Never);
@@ -782,6 +793,10 @@ internal sealed class CloseDocumentHarness
         _store.As<IRequestsSummaryStore>()
             .Setup(store => store.CountPendingOrderRequests())
             .Returns(() => CountPendingOrderRequests());
+
+        _store.As<IProductionPalletSummaryBatchStore>()
+            .Setup(store => store.GetProductionPalletSummariesByDocIds(It.IsAny<IReadOnlyCollection<long>>()))
+            .Returns<IReadOnlyCollection<long>>(GetProductionPalletSummariesByDocIds);
 
         _store.As<IOptimizedOrderLineHuFateStore>()
             .Setup(store => store.GetScopedOrderLineHuFateCandidates(It.IsAny<IReadOnlyCollection<ScopedOrderLineHuFateKey>>()))
@@ -2711,6 +2726,25 @@ internal sealed class CloseDocumentHarness
             .OrderBy(pallet => pallet.Id)
             .Select(CloneProductionPallet)
             .ToArray();
+    }
+
+    private IReadOnlyDictionary<long, ProductionPalletSummary> GetProductionPalletSummariesByDocIds(IReadOnlyCollection<long> docIds)
+    {
+        var ids = (docIds ?? Array.Empty<long>())
+            .Where(id => id > 0)
+            .Distinct()
+            .ToHashSet();
+        if (ids.Count == 0)
+        {
+            return new Dictionary<long, ProductionPalletSummary>();
+        }
+
+        return _productionPallets.Values
+            .Where(pallet => ids.Contains(pallet.PrdDocId))
+            .GroupBy(pallet => pallet.PrdDocId)
+            .ToDictionary(
+                group => group.Key,
+                group => ProductionPalletService.BuildSummary(group.Select(CloneProductionPallet).ToArray()));
     }
 
     private IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemainingLines(long orderId)

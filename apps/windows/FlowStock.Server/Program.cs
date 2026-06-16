@@ -1584,42 +1584,7 @@ app.MapDelete("/api/partners/{partnerId:long}", (long partnerId, CatalogService 
     }
 });
 
-app.MapGet("/api/docs", (HttpRequest request, IDataStore store) =>
-{
-    var op = request.Query["op"].ToString();
-    var status = request.Query["status"].ToString();
-    var typeFilter = string.IsNullOrWhiteSpace(op) ? null : DocTypeMapper.FromOpString(op);
-    var statusFilter = string.IsNullOrWhiteSpace(status) ? null : DocTypeMapper.StatusFromString(status);
-
-    var docs = store.GetDocs();
-    if (typeFilter.HasValue)
-    {
-        docs = docs.Where(doc => doc.Type == typeFilter.Value).ToList();
-    }
-    if (statusFilter.HasValue)
-    {
-        docs = docs.Where(doc => doc.Status == statusFilter.Value).ToList();
-    }
-
-    var list = docs
-        .OrderByDescending(doc => doc.CreatedAt)
-        .Select(doc =>
-        {
-            var summary = BuildProductionPalletSummary(store, doc);
-            var hasProductionPalletPlan = summary.PlannedPalletCount > 0;
-            var productionPalletFillingStarted = doc.Type == DocType.ProductionReceipt
-                                                 && doc.Status == DocStatus.Draft
-                                                 && summary.FilledPalletCount > 0;
-            return MapDoc(
-                doc,
-                productionPalletFillingStarted,
-                hasProductionPalletPlan,
-                summary,
-                BuildPalletFillingStatus(summary));
-        })
-        .ToList();
-    return Results.Ok(list);
-});
+DocsEndpoint.Map(app);
 
 app.MapGet("/api/docs/next-ref", (HttpRequest request, DocumentService docs) =>
 {
