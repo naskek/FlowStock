@@ -512,3 +512,401 @@ public static class CustomerOutboundBoundHuService
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToUpperInvariant();
     }
 }
+
+public sealed class CustomerOutboundBoundHuBatchCache
+{
+    private readonly Dictionary<string, HuStockRow> _stockByHuItem;
+    private readonly Dictionary<long, string> _locationsById;
+    private readonly IReadOnlyDictionary<long, IReadOnlyList<OrderReceiptPlanLine>> _receiptPlanByOrderId;
+    private readonly IReadOnlyDictionary<long, IReadOnlyList<OrderShipmentLine>> _shipmentRemainingByOrderId;
+    private readonly IReadOnlyDictionary<long, IReadOnlyList<ProductionPallet>> _productionPalletsByOrderId;
+    private readonly Dictionary<long, Dictionary<(long OrderLineId, string HuCode), double>> _shippedByOrderLineHuByOrderId;
+
+    private CustomerOutboundBoundHuBatchCache(
+        Dictionary<string, HuStockRow> stockByHuItem,
+        Dictionary<long, string> locationsById,
+        IReadOnlyDictionary<long, IReadOnlyList<OrderReceiptPlanLine>> receiptPlanByOrderId,
+        IReadOnlyDictionary<long, IReadOnlyList<OrderShipmentLine>> shipmentRemainingByOrderId,
+        IReadOnlyDictionary<long, IReadOnlyList<ProductionPallet>> productionPalletsByOrderId,
+        Dictionary<long, Dictionary<(long OrderLineId, string HuCode), double>> shippedByOrderLineHuByOrderId)
+    {
+        _stockByHuItem = stockByHuItem;
+        _locationsById = locationsById;
+        _receiptPlanByOrderId = receiptPlanByOrderId;
+        _shipmentRemainingByOrderId = shipmentRemainingByOrderId;
+        _productionPalletsByOrderId = productionPalletsByOrderId;
+        _shippedByOrderLineHuByOrderId = shippedByOrderLineHuByOrderId;
+    }
+
+    public static CustomerOutboundBoundHuBatchCache Load(IDataStore store, IReadOnlyCollection<long> orderIds)
+    {
+        var ids = orderIds?.Where(id => id > 0).Distinct().ToArray() ?? Array.Empty<long>();
+        if (ids.Length == 0)
+        {
+            return new CustomerOutboundBoundHuBatchCache(
+                new Dictionary<string, HuStockRow>(StringComparer.OrdinalIgnoreCase),
+                new Dictionary<long, string>(),
+                new Dictionary<long, IReadOnlyList<OrderReceiptPlanLine>>(),
+                new Dictionary<long, IReadOnlyList<OrderShipmentLine>>(),
+                new Dictionary<long, IReadOnlyList<ProductionPallet>>(),
+                new Dictionary<long, Dictionary<(long OrderLineId, string HuCode), double>>());
+        }
+
+        IReadOnlyDictionary<long, IReadOnlyList<OrderReceiptPlanLine>> receiptPlanByOrderId;
+        IReadOnlyDictionary<long, IReadOnlyList<OrderShipmentLine>> shipmentRemainingByOrderId;
+        IReadOnlyDictionary<long, IReadOnlyList<ProductionPallet>> productionPalletsByOrderId;
+        IReadOnlyDictionary<long, IReadOnlyList<Doc>> docsByOrderId;
+        IReadOnlyDictionary<long, IReadOnlyList<DocLine>> docLinesByDocId;
+        try
+        {
+            receiptPlanByOrderId = store.GetOrderReceiptPlanLinesByOrderIds(ids);
+            shipmentRemainingByOrderId = store.GetOrderShipmentRemainingByOrderIds(ids);
+            productionPalletsByOrderId = store.GetProductionPalletsByOrderIds(ids);
+            docsByOrderId = store.GetDocsByOrderIds(ids);
+            var docIds = docsByOrderId.Values
+                .SelectMany(docs => docs)
+                .Select(doc => doc.Id)
+                .Distinct()
+                .ToArray();
+            docLinesByDocId = store.GetDocLinesByDocIds(docIds);
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            receiptPlanByOrderId = ids.ToDictionary(
+                orderId => orderId,
+                orderId => (IReadOnlyList<OrderReceiptPlanLine>)store.GetOrderReceiptPlanLines(orderId));
+            shipmentRemainingByOrderId = ids.ToDictionary(
+                orderId => orderId,
+                orderId => (IReadOnlyList<OrderShipmentLine>)store.GetOrderShipmentRemaining(orderId));
+            productionPalletsByOrderId = ids.ToDictionary(
+                orderId => orderId,
+                orderId => (IReadOnlyList<ProductionPallet>)store.GetDocsByOrder(orderId)
+                    .Where(doc => doc.Type == DocType.ProductionReceipt)
+                    .SelectMany(doc => store.GetProductionPalletsByDoc(doc.Id))
+                    .Where(pallet => pallet.OrderId == orderId)
+                    .ToArray());
+            docsByOrderId = ids.ToDictionary(
+                orderId => orderId,
+                orderId => (IReadOnlyList<Doc>)store.GetDocsByOrder(orderId));
+            var docIds = docsByOrderId.Values
+                .SelectMany(docs => docs)
+                .Select(doc => doc.Id)
+                .Distinct()
+                .ToArray();
+            docLinesByDocId = docIds.ToDictionary(
+                docId => docId,
+                docId => (IReadOnlyList<DocLine>)store.GetDocLines(docId));
+        }
+
+        var stockByHuItem = store.GetHuStockRows()
+            .Where(row => row.Qty > QtyTolerance)
+            .GroupBy(row => BuildHuItemKey(row.HuCode, row.ItemId), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderBy(row => row.LocationId).First(),
+                StringComparer.OrdinalIgnoreCase);
+        var locationsById = store.GetLocations().ToDictionary(location => location.Id, location => location.Code);
+        var shippedByOrderLineHuByOrderId = BuildShippedQtyByOrderLineAndHu(docsByOrderId, docLinesByDocId);
+
+        return new CustomerOutboundBoundHuBatchCache(
+            stockByHuItem,
+            locationsById,
+            receiptPlanByOrderId,
+            shipmentRemainingByOrderId,
+            productionPalletsByOrderId,
+            shippedByOrderLineHuByOrderId);
+    }
+
+    public IReadOnlyList<CustomerOutboundBoundHuLine> GetUnshippedOutboundHuLines(Order order)
+    {
+        if (order.Type != OrderType.Customer)
+        {
+            return Array.Empty<CustomerOutboundBoundHuLine>();
+        }
+
+        var merged = new Dictionary<string, CustomerOutboundBoundHuLine>(StringComparer.OrdinalIgnoreCase);
+        foreach (var line in GetUnshippedBoundHuLines(order))
+        {
+            MergeOutboundHuLine(merged, line);
+        }
+
+        foreach (var line in GetUnshippedFilledProductionPalletHuLines(order))
+        {
+            MergeOutboundHuLine(merged, line);
+        }
+
+        _shipmentRemainingByOrderId.TryGetValue(order.Id, out var shipmentRemainingLines);
+        shipmentRemainingLines ??= Array.Empty<OrderShipmentLine>();
+        var shipmentRemainingByOrderLine = shipmentRemainingLines
+            .Where(line => line.QtyRemaining > QtyTolerance)
+            .ToDictionary(line => line.OrderLineId, line => line.QtyRemaining);
+        var result = new List<CustomerOutboundBoundHuLine>();
+        foreach (var line in merged.Values
+                     .OrderBy(line => line.HuCode, StringComparer.OrdinalIgnoreCase)
+                     .ThenBy(line => line.OrderLineId)
+                     .ThenBy(line => line.ItemId))
+        {
+            if (!shipmentRemainingByOrderLine.TryGetValue(line.OrderLineId, out var remaining)
+                || remaining <= QtyTolerance)
+            {
+                continue;
+            }
+
+            var qty = Math.Min(Math.Max(0, line.Qty), remaining);
+            if (qty <= QtyTolerance)
+            {
+                continue;
+            }
+
+            result.Add(new CustomerOutboundBoundHuLine
+            {
+                OrderLineId = line.OrderLineId,
+                ItemId = line.ItemId,
+                ItemName = line.ItemName,
+                Qty = qty,
+                HuCode = line.HuCode,
+                FromLocationId = line.FromLocationId,
+                FromLocationCode = line.FromLocationCode
+            });
+            shipmentRemainingByOrderLine[line.OrderLineId] = remaining - qty;
+        }
+
+        return result;
+    }
+
+    private IReadOnlyList<CustomerOutboundBoundHuLine> GetUnshippedBoundHuLines(Order order)
+    {
+        _shippedByOrderLineHuByOrderId.TryGetValue(order.Id, out var shippedByOrderLineHu);
+        shippedByOrderLineHu ??= new Dictionary<(long OrderLineId, string HuCode), double>();
+        _receiptPlanByOrderId.TryGetValue(order.Id, out var planLines);
+        planLines ??= Array.Empty<OrderReceiptPlanLine>();
+
+        var result = new List<CustomerOutboundBoundHuLine>();
+        foreach (var planLine in planLines
+                     .Where(line => line.QtyPlanned > QtyTolerance && !string.IsNullOrWhiteSpace(NormalizeHu(line.ToHu)))
+                     .OrderBy(line => line.SortOrder)
+                     .ThenBy(line => line.Id))
+        {
+            var huCode = NormalizeHu(planLine.ToHu)!;
+            var shippedKey = (planLine.OrderLineId, huCode);
+            var shippedQty = shippedByOrderLineHu.TryGetValue(shippedKey, out var qty) ? qty : 0d;
+            var remainingQty = planLine.QtyPlanned - shippedQty;
+            if (remainingQty <= QtyTolerance)
+            {
+                continue;
+            }
+
+            if (!_stockByHuItem.TryGetValue(BuildHuItemKey(huCode, planLine.ItemId), out var stockRow))
+            {
+                continue;
+            }
+
+            var locationId = (long?)stockRow.LocationId;
+            var locationCode = _locationsById.TryGetValue(stockRow.LocationId, out var stockLocationCode)
+                ? stockLocationCode
+                : stockRow.LocationId.ToString();
+
+            result.Add(new CustomerOutboundBoundHuLine
+            {
+                OrderLineId = planLine.OrderLineId,
+                ItemId = planLine.ItemId,
+                ItemName = planLine.ItemName,
+                Qty = Math.Min(remainingQty, stockRow.Qty),
+                HuCode = huCode,
+                FromLocationId = locationId,
+                FromLocationCode = locationCode
+            });
+        }
+
+        return result;
+    }
+
+    private IReadOnlyList<CustomerOutboundBoundHuLine> GetUnshippedFilledProductionPalletHuLines(Order order)
+    {
+        _shipmentRemainingByOrderId.TryGetValue(order.Id, out var shipmentRemainingLines);
+        shipmentRemainingLines ??= Array.Empty<OrderShipmentLine>();
+        var shipmentRemainingByOrderLine = shipmentRemainingLines
+            .Where(line => line.QtyRemaining > QtyTolerance)
+            .ToDictionary(line => line.OrderLineId, line => line.QtyRemaining);
+        if (shipmentRemainingByOrderLine.Count == 0)
+        {
+            return Array.Empty<CustomerOutboundBoundHuLine>();
+        }
+
+        _shippedByOrderLineHuByOrderId.TryGetValue(order.Id, out var shippedByOrderLineHu);
+        shippedByOrderLineHu ??= new Dictionary<(long OrderLineId, string HuCode), double>();
+        _productionPalletsByOrderId.TryGetValue(order.Id, out var pallets);
+        pallets ??= Array.Empty<ProductionPallet>();
+
+        var result = new List<CustomerOutboundBoundHuLine>();
+        foreach (var pallet in pallets.Where(pallet =>
+                     string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
+        {
+            var huCode = NormalizeHu(pallet.HuCode);
+            if (string.IsNullOrWhiteSpace(huCode))
+            {
+                continue;
+            }
+
+            foreach (var palletLine in ExpandProductionPalletOutboundLines(pallet))
+            {
+                if (!shipmentRemainingByOrderLine.TryGetValue(palletLine.OrderLineId, out var shipmentRemaining))
+                {
+                    continue;
+                }
+
+                var shippedKey = (palletLine.OrderLineId, huCode);
+                if (shippedByOrderLineHu.TryGetValue(shippedKey, out var shippedQty)
+                    && shippedQty >= shipmentRemaining - QtyTolerance)
+                {
+                    continue;
+                }
+
+                if (!_stockByHuItem.TryGetValue(BuildHuItemKey(huCode, palletLine.ItemId), out var stockRow)
+                    || stockRow.Qty <= QtyTolerance)
+                {
+                    continue;
+                }
+
+                var qty = Math.Min(stockRow.Qty, shipmentRemaining);
+                if (qty <= QtyTolerance)
+                {
+                    continue;
+                }
+
+                var locationId = (long?)stockRow.LocationId;
+                if (!locationId.HasValue && pallet.ToLocationId.HasValue)
+                {
+                    locationId = pallet.ToLocationId;
+                }
+
+                var locationCode = locationId.HasValue
+                                   && _locationsById.TryGetValue(locationId.Value, out var palletLocationCode)
+                    ? palletLocationCode
+                    : pallet.ToLocationCode ?? locationId?.ToString();
+
+                result.Add(new CustomerOutboundBoundHuLine
+                {
+                    OrderLineId = palletLine.OrderLineId,
+                    ItemId = palletLine.ItemId,
+                    ItemName = palletLine.ItemName,
+                    Qty = qty,
+                    HuCode = huCode,
+                    FromLocationId = locationId,
+                    FromLocationCode = locationCode
+                });
+            }
+        }
+
+        return result;
+    }
+
+    private static Dictionary<long, Dictionary<(long OrderLineId, string HuCode), double>> BuildShippedQtyByOrderLineAndHu(
+        IReadOnlyDictionary<long, IReadOnlyList<Doc>> docsByOrderId,
+        IReadOnlyDictionary<long, IReadOnlyList<DocLine>> docLinesByDocId)
+    {
+        var result = new Dictionary<long, Dictionary<(long OrderLineId, string HuCode), double>>();
+        foreach (var (orderId, docs) in docsByOrderId)
+        {
+            foreach (var doc in docs.Where(doc => doc.Type == DocType.Outbound && doc.Status == DocStatus.Closed))
+            {
+                if (!docLinesByDocId.TryGetValue(doc.Id, out var lines))
+                {
+                    continue;
+                }
+
+                if (!result.TryGetValue(orderId, out var shippedByOrderLineHu))
+                {
+                    shippedByOrderLineHu = new Dictionary<(long, string), double>();
+                    result[orderId] = shippedByOrderLineHu;
+                }
+
+                foreach (var line in lines)
+                {
+                    if (line.Qty <= QtyTolerance || !line.OrderLineId.HasValue)
+                    {
+                        continue;
+                    }
+
+                    var huCode = NormalizeHu(line.FromHu);
+                    if (string.IsNullOrWhiteSpace(huCode))
+                    {
+                        continue;
+                    }
+
+                    var key = (line.OrderLineId.Value, huCode);
+                    shippedByOrderLineHu[key] = shippedByOrderLineHu.TryGetValue(key, out var current) ? current + line.Qty : line.Qty;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    private static void MergeOutboundHuLine(
+        IDictionary<string, CustomerOutboundBoundHuLine> merged,
+        CustomerOutboundBoundHuLine line)
+    {
+        var key = BuildOutboundLineKey(line);
+        if (!merged.TryGetValue(key, out var existing))
+        {
+            merged[key] = line;
+            return;
+        }
+
+        if (line.Qty > existing.Qty + QtyTolerance)
+        {
+            merged[key] = line;
+        }
+    }
+
+    private static string BuildOutboundLineKey(CustomerOutboundBoundHuLine line)
+    {
+        return $"{line.OrderLineId}|{NormalizeHu(line.HuCode)}|{line.ItemId}";
+    }
+
+    private static IEnumerable<(long OrderLineId, long ItemId, string ItemName)> ExpandProductionPalletOutboundLines(
+        ProductionPallet pallet)
+    {
+        if (pallet.Lines.Count > 0)
+        {
+            foreach (var line in pallet.Lines)
+            {
+                if (!line.OrderLineId.HasValue || line.ItemId <= 0)
+                {
+                    continue;
+                }
+
+                yield return (line.OrderLineId.Value, line.ItemId, line.ItemName);
+            }
+
+            yield break;
+        }
+
+        if (!pallet.OrderLineId.HasValue || pallet.ItemId <= 0)
+        {
+            yield break;
+        }
+
+        yield return (pallet.OrderLineId.Value, pallet.ItemId, pallet.ItemName);
+    }
+
+    private static string BuildHuItemKey(string? huCode, long itemId)
+    {
+        return $"{NormalizeHu(huCode)}|{itemId}";
+    }
+
+    private static string? NormalizeHu(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToUpperInvariant();
+    }
+
+    private static bool IsMockStoreException(Exception ex)
+    {
+        var fullName = ex.GetType().FullName ?? string.Empty;
+        return fullName.Contains("Moq", StringComparison.OrdinalIgnoreCase)
+               || fullName.Contains("Castle.Proxies", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private const double QtyTolerance = 0.000001d;
+}

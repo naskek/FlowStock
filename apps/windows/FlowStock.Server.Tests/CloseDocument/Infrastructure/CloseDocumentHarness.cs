@@ -1926,6 +1926,73 @@ internal sealed class CloseDocumentHarness
                 .OrderByDescending(item => item.PrdDocId)
                 .ToArray());
 
+        _store.Setup(store => store.GetProductionFillingReadyOrderIds())
+            .Returns(() => _productionPallets.Values
+                .Where(pallet => pallet.OrderId.HasValue)
+                .GroupBy(pallet => pallet.OrderId!.Value)
+                .Where(group => group.Any(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                                && group.All(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)
+                                                       || string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                                && group.Any(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
+                .Select(group => group.Key)
+                .ToArray());
+
+        _store.Setup(store => store.GetOrdersByIds(It.IsAny<IReadOnlyCollection<long>>()))
+            .Returns<IReadOnlyCollection<long>>(ids => ids
+                .Where(id => _orders.ContainsKey(id))
+                .Select(id => BuildOrderSnapshot(_orders[id]))
+                .ToArray());
+
+        _store.Setup(store => store.GetProductionPalletsByOrderIds(It.IsAny<IReadOnlyCollection<long>>()))
+            .Returns<IReadOnlyCollection<long>>(ids => ids.ToDictionary(
+                orderId => orderId,
+                orderId => (IReadOnlyList<ProductionPallet>)_productionPallets.Values
+                    .Where(pallet => pallet.OrderId == orderId)
+                    .OrderBy(pallet => pallet.Id)
+                    .Select(CloneProductionPallet)
+                    .ToArray()));
+
+        _store.Setup(store => store.GetOrderLinesByOrderIds(It.IsAny<IReadOnlyCollection<long>>()))
+            .Returns<IReadOnlyCollection<long>>(ids => ids.ToDictionary(
+                orderId => orderId,
+                orderId => (IReadOnlyList<OrderLine>)GetOrderLines(orderId)));
+
+        _store.Setup(store => store.GetProductionFillingCompletionsByOrderIds(It.IsAny<IReadOnlyCollection<long>>()))
+            .Returns(Array.Empty<ProductionFillingCompletion>());
+
+        _store.Setup(store => store.GetDocsByOrderIds(It.IsAny<IReadOnlyCollection<long>>()))
+            .Returns<IReadOnlyCollection<long>>(ids => ids.ToDictionary(
+                orderId => orderId,
+                orderId => (IReadOnlyList<Doc>)_docs.Values
+                    .Where(doc => doc.OrderId == orderId)
+                    .OrderByDescending(doc => doc.CreatedAt)
+                    .ThenByDescending(doc => doc.Id)
+                    .Select(CloneDoc)
+                    .ToArray()));
+
+        _store.Setup(store => store.GetDocLinesByDocIds(It.IsAny<IReadOnlyCollection<long>>()))
+            .Returns<IReadOnlyCollection<long>>(docIds => docIds.ToDictionary(
+                docId => docId,
+                docId => (IReadOnlyList<DocLine>)GetActiveDocLines(docId)));
+
+        _store.Setup(store => store.GetOrderReceiptPlanLinesByOrderIds(It.IsAny<IReadOnlyCollection<long>>()))
+            .Returns<IReadOnlyCollection<long>>(ids => ids.ToDictionary(
+                orderId => orderId,
+                orderId => (IReadOnlyList<OrderReceiptPlanLine>)GetOrderReceiptPlanLines(orderId)));
+
+        _store.Setup(store => store.GetOrderShipmentRemainingByOrderIds(It.IsAny<IReadOnlyCollection<long>>()))
+            .Returns<IReadOnlyCollection<long>>(ids => ids.ToDictionary(
+                orderId => orderId,
+                orderId => (IReadOnlyList<OrderShipmentLine>)BuildOrderShipmentRemaining(orderId)));
+
+        _store.Setup(store => store.GetShippedTotalsByOrderIds(It.IsAny<IReadOnlyCollection<long>>()))
+            .Returns<IReadOnlyCollection<long>>(ids => ids.ToDictionary(
+                orderId => orderId,
+                orderId => (IReadOnlyDictionary<long, double>)(
+                    _shippedTotalsByOrderLine.TryGetValue(orderId, out var totals)
+                        ? totals
+                        : new Dictionary<long, double>())));
+
         _store.Setup(store => store.HasProductionPallets(It.IsAny<long>()))
             .Returns<long>(docId => _productionPallets.Values.Any(pallet =>
                 pallet.PrdDocId == docId
