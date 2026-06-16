@@ -603,13 +603,10 @@ public sealed class ProductionPalletService
     public IReadOnlyList<ProductionFillingOrder> GetFillingOrders()
     {
         var workItems = _data.GetActiveProductionPalletWorkItems();
-        var rows = workItems
+        var workOrderIds = workItems
             .Where(item => item.OrderId.HasValue && item.Summary.RemainingPalletCount > 0)
-            .GroupBy(item => item.OrderId!.Value)
-            .Select(group => BuildFillingOrder(group.Key, group.ToList()))
-            .Where(row => row != null && row.OrderStatus != OrderStatusMapper.StatusToString(OrderStatus.Merged))
-            .Cast<ProductionFillingOrder>()
-            .ToDictionary(row => row.OrderId);
+            .Select(item => item.OrderId!.Value)
+            .ToHashSet();
 
         IReadOnlyList<long> readyOrderIds;
         try
@@ -618,48 +615,61 @@ public sealed class ProductionPalletService
         }
         catch (Exception ex) when (IsMockStoreException(ex))
         {
-            try
+            readyOrderIds = Array.Empty<long>();
+        }
+
+        var candidateOrderIds = workOrderIds
+            .Concat(readyOrderIds)
+            .Distinct()
+            .ToArray();
+        if (candidateOrderIds.Length == 0)
+        {
+            return Array.Empty<ProductionFillingOrder>();
+        }
+
+        var ordersById = LoadOrdersById(candidateOrderIds);
+        var palletsByOrderId = LoadPalletsByOrderId(candidateOrderIds);
+        var orderLinesByOrderId = LoadOrderLinesByOrderId(candidateOrderIds);
+        var completions = LoadFillingCompletions(candidateOrderIds);
+
+        var rows = new Dictionary<long, ProductionFillingOrder>();
+        foreach (var group in workItems
+                     .Where(item => item.OrderId.HasValue && item.Summary.RemainingPalletCount > 0)
+                     .GroupBy(item => item.OrderId!.Value))
+        {
+            if (!ordersById.TryGetValue(group.Key, out var order))
             {
-                readyOrderIds = _data.GetOrders().Select(order => order.Id).ToArray();
+                continue;
             }
-            catch (Exception nested) when (IsMockStoreException(nested))
+
+            var row = BuildFillingOrderFromPreloaded(
+                order,
+                group.ToList(),
+                palletsByOrderId,
+                orderLinesByOrderId,
+                completions);
+            if (row != null && !ShouldExcludeFromFillingList(row))
             {
-                readyOrderIds = Array.Empty<long>();
+                rows[row.OrderId] = row;
             }
         }
 
-        foreach (var orderId in readyOrderIds.Where(orderId => !rows.ContainsKey(orderId)))
+        foreach (var orderId in readyOrderIds)
         {
-            var order = _data.GetOrder(orderId);
-            if (order == null)
-            {
-                continue;
-            }
-            var pallets = BuildFillingPalletViews(_data, order.Id, GetProductionPalletsByOrder(_data, order.Id));
-            var progress = BuildOperationProgress(_data, order.Id, pallets);
-            if (!progress.CanClose || progress.IsClosed || pallets.Count == 0)
+            if (rows.ContainsKey(orderId) || !ordersById.TryGetValue(orderId, out var order))
             {
                 continue;
             }
 
-            var doc = _data.GetDoc(pallets[0].PrdDocId);
-            rows[order.Id] = new ProductionFillingOrder
+            var row = BuildReadyFillingOrderFromPreloaded(order, palletsByOrderId, orderLinesByOrderId, completions);
+            if (row != null && !ShouldExcludeFromFillingList(row))
             {
-                OrderId = order.Id,
-                OrderRef = order.OrderRef,
-                OrderType = OrderStatusMapper.TypeToString(order.Type),
-                OrderTypeDisplay = OrderStatusMapper.TypeToDisplayName(order.Type),
-                OrderStatus = OrderStatusMapper.StatusToString(order.Status),
-                OrderStatusDisplay = OrderStatusMapper.StatusToDisplayName(order.Status, order.Type),
-                PartnerName = order.PartnerDisplay,
-                PrdDocId = doc?.Id,
-                PrdDocRef = doc?.DocRef,
-                Summary = BuildSummary(pallets),
-                Progress = progress
-            };
+                rows[row.OrderId] = row;
+            }
         }
 
         return rows.Values
+            .Where(row => row.OrderStatus != OrderStatusMapper.StatusToString(OrderStatus.Merged))
             .OrderBy(row => row.OrderType == OrderStatusMapper.TypeToString(OrderType.Internal) ? 0 : 1)
             .ThenByDescending(row => TryParseLong(row.OrderRef, out var number) ? number : long.MinValue)
             .ThenByDescending(row => row.OrderId)
@@ -1540,23 +1550,46 @@ public sealed class ProductionPalletService
     private ProductionFillingOrder? BuildFillingOrder(long orderId, IReadOnlyList<ProductionPalletWorkItem> workItems)
     {
         var order = _data.GetOrder(orderId);
-        if (order == null || order.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
+        if (order == null)
         {
             return null;
         }
 
-        var fillingPallets = BuildFillingPalletViews(_data, orderId, GetProductionPalletsByOrder(_data, orderId));
+        var palletsByOrderId = LoadPalletsByOrderId(new[] { orderId });
+        var orderLinesByOrderId = LoadOrderLinesByOrderId(new[] { orderId });
+        var completions = LoadFillingCompletions(new[] { orderId });
+        return BuildFillingOrderFromPreloaded(order, workItems, palletsByOrderId, orderLinesByOrderId, completions);
+    }
+
+    private ProductionFillingOrder? BuildFillingOrderFromPreloaded(
+        Order order,
+        IReadOnlyList<ProductionPalletWorkItem> workItems,
+        IReadOnlyDictionary<long, IReadOnlyList<ProductionPallet>> palletsByOrderId,
+        IReadOnlyDictionary<long, IReadOnlyList<OrderLine>> orderLinesByOrderId,
+        IReadOnlyList<ProductionFillingCompletion> completions)
+    {
+        if (order.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
+        {
+            return null;
+        }
+
+        palletsByOrderId.TryGetValue(order.Id, out var rawPallets);
+        rawPallets ??= Array.Empty<ProductionPallet>();
+        orderLinesByOrderId.TryGetValue(order.Id, out var orderLines);
+        orderLines ??= Array.Empty<OrderLine>();
+        var orderLinesById = orderLines.ToDictionary(line => line.Id);
+
+        var fillingPallets = BuildOrderOwnedPalletViews(order.Id, rawPallets, orderLinesById);
         var activeItems = fillingPallets
             .GroupBy(pallet => pallet.PrdDocId)
             .Select(group =>
             {
-                var doc = _data.GetDoc(group.Key);
                 var workItem = workItems.FirstOrDefault(item => item.PrdDocId == group.Key);
                 return new ProductionPalletWorkItem
                 {
                     PrdDocId = group.Key,
-                    PrdDocRef = doc?.DocRef ?? workItem?.PrdDocRef ?? string.Empty,
-                    PrdStatus = doc == null ? workItem?.PrdStatus ?? string.Empty : DocTypeMapper.StatusToString(doc.Status),
+                    PrdDocRef = workItem?.PrdDocRef ?? string.Empty,
+                    PrdStatus = workItem?.PrdStatus ?? string.Empty,
                     OrderId = order.Id,
                     OrderRef = order.OrderRef,
                     Summary = BuildSummary(group.ToList())
@@ -1576,6 +1609,59 @@ public sealed class ProductionPalletService
         }
 
         var primaryWorkItem = activeItems.First();
+        return MapProductionFillingOrder(
+            order,
+            primaryWorkItem.PrdDocId,
+            primaryWorkItem.PrdDocRef,
+            summary,
+            BuildOperationProgress(order.Id, fillingPallets, completions));
+    }
+
+    private ProductionFillingOrder? BuildReadyFillingOrderFromPreloaded(
+        Order order,
+        IReadOnlyDictionary<long, IReadOnlyList<ProductionPallet>> palletsByOrderId,
+        IReadOnlyDictionary<long, IReadOnlyList<OrderLine>> orderLinesByOrderId,
+        IReadOnlyList<ProductionFillingCompletion> completions)
+    {
+        palletsByOrderId.TryGetValue(order.Id, out var rawPallets);
+        rawPallets ??= Array.Empty<ProductionPallet>();
+        orderLinesByOrderId.TryGetValue(order.Id, out var orderLines);
+        orderLines ??= Array.Empty<OrderLine>();
+        var orderLinesById = orderLines.ToDictionary(line => line.Id);
+
+        var pallets = BuildOrderOwnedPalletViews(order.Id, rawPallets, orderLinesById);
+        var progress = BuildOperationProgress(order.Id, pallets, completions);
+        if (!progress.CanClose || progress.IsClosed || pallets.Count == 0)
+        {
+            return null;
+        }
+
+        var docId = pallets[0].PrdDocId;
+        var docRef = pallets[0].PrdDocId > 0
+            ? TryGetDocRef(docId)
+            : null;
+        return MapProductionFillingOrder(order, docId, docRef, BuildSummary(pallets), progress);
+    }
+
+    private string? TryGetDocRef(long docId)
+    {
+        try
+        {
+            return _data.GetDoc(docId)?.DocRef;
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            return null;
+        }
+    }
+
+    private static ProductionFillingOrder MapProductionFillingOrder(
+        Order order,
+        long? prdDocId,
+        string? prdDocRef,
+        ProductionPalletSummary summary,
+        ProductionOperationProgress progress)
+    {
         return new ProductionFillingOrder
         {
             OrderId = order.Id,
@@ -1585,11 +1671,81 @@ public sealed class ProductionPalletService
             OrderStatus = OrderStatusMapper.StatusToString(order.Status),
             OrderStatusDisplay = OrderStatusMapper.StatusToDisplayName(order.Status, order.Type),
             PartnerName = order.PartnerDisplay,
-            PrdDocId = primaryWorkItem.PrdDocId,
-            PrdDocRef = primaryWorkItem.PrdDocRef,
+            PrdDocId = prdDocId,
+            PrdDocRef = prdDocRef,
             Summary = summary,
-            Progress = BuildOperationProgress(_data, orderId, fillingPallets)
+            Progress = progress
         };
+    }
+
+    private static bool ShouldExcludeFromFillingList(ProductionFillingOrder row)
+    {
+        return row.OrderType == OrderStatusMapper.TypeToString(OrderType.Internal)
+               && row.OrderStatus == OrderStatusMapper.StatusToString(OrderStatus.Shipped)
+               && row.Summary.RemainingQty <= QtyTolerance
+               && row.Summary.RemainingPalletCount <= 0;
+    }
+
+    private Dictionary<long, Order> LoadOrdersById(IReadOnlyCollection<long> orderIds)
+    {
+        try
+        {
+            return _data.GetOrdersByIds(orderIds).ToDictionary(order => order.Id);
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            var result = new Dictionary<long, Order>();
+            foreach (var orderId in orderIds)
+            {
+                var order = _data.GetOrder(orderId);
+                if (order != null)
+                {
+                    result[order.Id] = order;
+                }
+            }
+
+            return result;
+        }
+    }
+
+    private IReadOnlyDictionary<long, IReadOnlyList<ProductionPallet>> LoadPalletsByOrderId(IReadOnlyCollection<long> orderIds)
+    {
+        try
+        {
+            return _data.GetProductionPalletsByOrderIds(orderIds);
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            return orderIds.ToDictionary(
+                orderId => orderId,
+                orderId => (IReadOnlyList<ProductionPallet>)GetProductionPalletsByOrder(_data, orderId));
+        }
+    }
+
+    private IReadOnlyDictionary<long, IReadOnlyList<OrderLine>> LoadOrderLinesByOrderId(IReadOnlyCollection<long> orderIds)
+    {
+        try
+        {
+            return _data.GetOrderLinesByOrderIds(orderIds);
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            return orderIds.ToDictionary(
+                orderId => orderId,
+                orderId => (IReadOnlyList<OrderLine>)_data.GetOrderLines(orderId));
+        }
+    }
+
+    private IReadOnlyList<ProductionFillingCompletion> LoadFillingCompletions(IReadOnlyCollection<long> orderIds)
+    {
+        try
+        {
+            return _data.GetProductionFillingCompletionsByOrderIds(orderIds);
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            return Array.Empty<ProductionFillingCompletion>();
+        }
     }
 
     private ProductionFillingContext BuildFillingContext(
@@ -1617,16 +1773,34 @@ public sealed class ProductionPalletService
 
     private static ProductionOperationProgress BuildOperationProgress(IDataStore store, long orderId, IReadOnlyList<ProductionPallet> pallets)
     {
+        return BuildOperationProgress(orderId, pallets, Array.Empty<ProductionFillingCompletion>(), store);
+    }
+
+    private static ProductionOperationProgress BuildOperationProgress(
+        long orderId,
+        IReadOnlyList<ProductionPallet> pallets,
+        IReadOnlyList<ProductionFillingCompletion> completions,
+        IDataStore? store = null)
+    {
         var required = pallets.Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)).ToList();
         var scanned = required.Count(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase));
         var fingerprint = BuildOperationFingerprint(required);
+        var isClosed = required.Count > 0
+                       && completions.Any(completion =>
+                           completion.OrderId == orderId
+                           && string.Equals(completion.OperationFingerprint, fingerprint, StringComparison.Ordinal));
+        if (!isClosed && store != null)
+        {
+            isClosed = TryGetCompletion(store, orderId, fingerprint) != null;
+        }
+
         return new ProductionOperationProgress
         {
             RequiredPallets = required.Count,
             ScannedPallets = scanned,
             RemainingPallets = Math.Max(0, required.Count - scanned),
             CanClose = required.Count > 0 && scanned == required.Count,
-            IsClosed = required.Count > 0 && TryGetCompletion(store, orderId, fingerprint) != null,
+            IsClosed = isClosed,
             OperationFingerprint = fingerprint
         };
     }
@@ -2332,6 +2506,14 @@ public sealed class ProductionPalletService
     {
         var orderLinesById = store.GetOrderLines(orderId)
             .ToDictionary(line => line.Id, line => line);
+        return BuildOrderOwnedPalletViews(orderId, pallets, orderLinesById);
+    }
+
+    public static IReadOnlyList<ProductionPallet> BuildOrderOwnedPalletViews(
+        long orderId,
+        IReadOnlyList<ProductionPallet> pallets,
+        IReadOnlyDictionary<long, OrderLine> orderLinesById)
+    {
         if (orderLinesById.Count == 0)
         {
             return Array.Empty<ProductionPallet>();

@@ -591,6 +591,371 @@ HAVING COUNT(*) FILTER (WHERE UPPER(COALESCE(p.status, '')) <> 'CANCELLED') > 0
         });
     }
 
+    public IReadOnlyList<Order> GetOrdersByIds(IReadOnlyCollection<long> orderIds)
+    {
+        var ids = NormalizePositiveDistinctIds(orderIds);
+        if (ids.Length == 0)
+        {
+            return Array.Empty<Order>();
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, $@"
+{BuildOrderSelectSql("SELECT id FROM orders WHERE id = ANY(@order_ids)")}
+");
+            AddOrderSelectParameters(command);
+            command.Parameters.Add("@order_ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint).Value = ids;
+            using var reader = command.ExecuteReader();
+            var orders = new List<Order>();
+            while (reader.Read())
+            {
+                orders.Add(ReadOrder(reader));
+            }
+
+            return orders;
+        });
+    }
+
+    public IReadOnlyDictionary<long, IReadOnlyList<ProductionPallet>> GetProductionPalletsByOrderIds(IReadOnlyCollection<long> orderIds)
+    {
+        var ids = NormalizePositiveDistinctIds(orderIds);
+        if (ids.Length == 0)
+        {
+            return new Dictionary<long, IReadOnlyList<ProductionPallet>>();
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, $@"
+{ProductionPalletSelectSql}
+INNER JOIN docs d ON d.id = p.prd_doc_id
+WHERE p.order_id = ANY(@order_ids)
+  AND d.type = @doc_type
+ORDER BY p.order_id, p.id;
+");
+            command.Parameters.Add("@order_ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint).Value = ids;
+            command.Parameters.AddWithValue("@doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+            using var reader = command.ExecuteReader();
+            var pallets = new List<ProductionPallet>();
+            while (reader.Read())
+            {
+                pallets.Add(ReadProductionPallet(reader));
+            }
+
+            reader.Close();
+            AttachProductionPalletLines(connection, pallets);
+            return GroupByOrderId(pallets, pallet => pallet.OrderId);
+        });
+    }
+
+    public IReadOnlyDictionary<long, IReadOnlyList<OrderLine>> GetOrderLinesByOrderIds(IReadOnlyCollection<long> orderIds)
+    {
+        var ids = NormalizePositiveDistinctIds(orderIds);
+        if (ids.Length == 0)
+        {
+            return new Dictionary<long, IReadOnlyList<OrderLine>>();
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT id, order_id, item_id, qty_ordered, production_purpose, production_pallet_group
+FROM order_lines
+WHERE order_id = ANY(@order_ids)
+ORDER BY order_id, id;
+");
+            command.Parameters.Add("@order_ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint).Value = ids;
+            using var reader = command.ExecuteReader();
+            var lines = new List<OrderLine>();
+            while (reader.Read())
+            {
+                lines.Add(ReadOrderLine(reader));
+            }
+
+            return GroupByOrderId(lines, line => line.OrderId);
+        });
+    }
+
+    public IReadOnlyList<ProductionFillingCompletion> GetProductionFillingCompletionsByOrderIds(IReadOnlyCollection<long> orderIds)
+    {
+        var ids = NormalizePositiveDistinctIds(orderIds);
+        if (ids.Length == 0)
+        {
+            return Array.Empty<ProductionFillingCompletion>();
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT order_id, operation_fingerprint, completed_at, completed_by_device_id
+FROM production_filling_completions
+WHERE order_id = ANY(@order_ids);
+");
+            command.Parameters.Add("@order_ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint).Value = ids;
+            using var reader = command.ExecuteReader();
+            var rows = new List<ProductionFillingCompletion>();
+            while (reader.Read())
+            {
+                rows.Add(new ProductionFillingCompletion
+                {
+                    OrderId = reader.GetInt64(0),
+                    OperationFingerprint = reader.GetString(1),
+                    CompletedAt = reader.GetDateTime(2),
+                    CompletedByDeviceId = reader.IsDBNull(3) ? null : reader.GetString(3)
+                });
+            }
+
+            return rows;
+        });
+    }
+
+    public IReadOnlyDictionary<long, IReadOnlyList<Doc>> GetDocsByOrderIds(IReadOnlyCollection<long> orderIds)
+    {
+        var ids = NormalizePositiveDistinctIds(orderIds);
+        if (ids.Length == 0)
+        {
+            return new Dictionary<long, IReadOnlyList<Doc>>();
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, $@"
+{DocSelectBase}
+WHERE d.order_id = ANY(@order_ids)
+ORDER BY d.order_id, d.created_at DESC, d.id DESC;
+");
+            command.Parameters.Add("@order_ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint).Value = ids;
+            using var reader = command.ExecuteReader();
+            var docs = new List<Doc>();
+            while (reader.Read())
+            {
+                docs.Add(ReadDoc(reader));
+            }
+
+            return GroupByOrderId(docs, doc => doc.OrderId);
+        });
+    }
+
+    public IReadOnlyDictionary<long, IReadOnlyList<DocLine>> GetDocLinesByDocIds(IReadOnlyCollection<long> docIds)
+    {
+        var ids = NormalizePositiveDistinctIds(docIds);
+        if (ids.Length == 0)
+        {
+            return new Dictionary<long, IReadOnlyList<DocLine>>();
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT dl.id,
+       dl.doc_id,
+       dl.replaces_line_id,
+       dl.order_line_id,
+       dl.production_purpose,
+       dl.item_id,
+       dl.qty,
+       dl.qty_input,
+       dl.uom_code,
+       dl.from_location_id,
+       dl.to_location_id,
+       dl.from_hu,
+       dl.to_hu,
+       dl.pack_single_hu
+FROM doc_lines dl
+INNER JOIN docs d ON d.id = dl.doc_id
+WHERE dl.doc_id = ANY(@doc_ids)
+  AND (
+      (d.type = @inventory_correction_type AND ABS(dl.qty) > @qty_tolerance)
+      OR (d.type <> @inventory_correction_type AND dl.qty > @qty_tolerance)
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM doc_lines newer
+      WHERE newer.replaces_line_id = dl.id
+  )
+ORDER BY dl.doc_id, dl.id;
+");
+            command.Parameters.Add("@doc_ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint).Value = ids;
+            command.Parameters.AddWithValue("@inventory_correction_type", DocTypeMapper.ToOpString(DocType.InventoryCorrection));
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+            using var reader = command.ExecuteReader();
+            var lines = new List<DocLine>();
+            while (reader.Read())
+            {
+                lines.Add(ReadDocLine(reader));
+            }
+
+            return GroupByDocId(lines, line => line.DocId);
+        });
+    }
+
+    public IReadOnlyDictionary<long, IReadOnlyList<OrderReceiptPlanLine>> GetOrderReceiptPlanLinesByOrderIds(IReadOnlyCollection<long> orderIds)
+    {
+        var ids = NormalizePositiveDistinctIds(orderIds);
+        if (ids.Length == 0)
+        {
+            return new Dictionary<long, IReadOnlyList<OrderReceiptPlanLine>>();
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT p.id,
+       p.order_id,
+       p.order_line_id,
+       p.item_id,
+       i.name,
+       p.qty_planned,
+       p.to_location_id,
+       l.code,
+       l.name,
+       p.to_hu,
+       p.sort_order
+FROM order_receipt_plan_lines p
+INNER JOIN items i ON i.id = p.item_id
+LEFT JOIN locations l ON l.id = p.to_location_id
+WHERE p.order_id = ANY(@order_ids)
+ORDER BY p.order_id, p.sort_order, p.id;
+");
+            command.Parameters.Add("@order_ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint).Value = ids;
+            using var reader = command.ExecuteReader();
+            var lines = new List<OrderReceiptPlanLine>();
+            while (reader.Read())
+            {
+                lines.Add(new OrderReceiptPlanLine
+                {
+                    Id = reader.GetInt64(0),
+                    OrderId = reader.GetInt64(1),
+                    OrderLineId = reader.GetInt64(2),
+                    ItemId = reader.GetInt64(3),
+                    ItemName = reader.GetString(4),
+                    QtyPlanned = reader.GetDouble(5),
+                    ToLocationId = reader.IsDBNull(6) ? null : reader.GetInt64(6),
+                    ToLocationCode = reader.IsDBNull(7) ? null : reader.GetString(7),
+                    ToLocationName = reader.IsDBNull(8) ? null : reader.GetString(8),
+                    ToHu = reader.IsDBNull(9) ? null : reader.GetString(9),
+                    SortOrder = reader.IsDBNull(10) ? 0 : reader.GetInt32(10)
+                });
+            }
+
+            return GroupByOrderId(lines, line => line.OrderId);
+        });
+    }
+
+    public IReadOnlyDictionary<long, IReadOnlyList<OrderShipmentLine>> GetOrderShipmentRemainingByOrderIds(IReadOnlyCollection<long> orderIds)
+    {
+        var ids = NormalizePositiveDistinctIds(orderIds);
+        if (ids.Length == 0)
+        {
+            return new Dictionary<long, IReadOnlyList<OrderShipmentLine>>();
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT ol.id,
+       ol.order_id,
+       ol.item_id,
+       i.name,
+       ol.qty_ordered,
+       COALESCE(s.sum_qty, 0) AS shipped_qty,
+       GREATEST(0, ol.qty_ordered - COALESCE(s.sum_qty, 0)) AS remaining
+FROM order_lines ol
+INNER JOIN items i ON i.id = ol.item_id
+LEFT JOIN (
+    SELECT d.order_id,
+           dl.order_line_id,
+           SUM(dl.qty) AS sum_qty
+    FROM doc_lines dl
+    INNER JOIN docs d ON d.id = dl.doc_id
+    WHERE d.status = @status
+      AND d.type = @doc_type
+      AND d.order_id = ANY(@order_ids)
+      AND dl.order_line_id IS NOT NULL
+      AND dl.qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+    GROUP BY d.order_id, dl.order_line_id
+) s ON s.order_line_id = ol.id AND s.order_id = ol.order_id
+WHERE ol.order_id = ANY(@order_ids)
+ORDER BY ol.order_id, ol.id;
+");
+            command.Parameters.Add("@order_ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint).Value = ids;
+            command.Parameters.AddWithValue("@status", DocTypeMapper.StatusToString(DocStatus.Closed));
+            command.Parameters.AddWithValue("@doc_type", DocTypeMapper.ToOpString(DocType.Outbound));
+            using var reader = command.ExecuteReader();
+            var lines = new List<OrderShipmentLine>();
+            while (reader.Read())
+            {
+                lines.Add(new OrderShipmentLine
+                {
+                    OrderLineId = reader.GetInt64(0),
+                    OrderId = reader.GetInt64(1),
+                    ItemId = reader.GetInt64(2),
+                    ItemName = reader.GetString(3),
+                    QtyOrdered = reader.GetDouble(4),
+                    QtyShipped = reader.GetDouble(5),
+                    QtyRemaining = reader.GetDouble(6)
+                });
+            }
+
+            return GroupByOrderId(lines, line => line.OrderId);
+        });
+    }
+
+    public IReadOnlyDictionary<long, IReadOnlyDictionary<long, double>> GetShippedTotalsByOrderIds(IReadOnlyCollection<long> orderIds)
+    {
+        var ids = NormalizePositiveDistinctIds(orderIds);
+        if (ids.Length == 0)
+        {
+            return new Dictionary<long, IReadOnlyDictionary<long, double>>();
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT d.order_id, dl.order_line_id, COALESCE(SUM(dl.qty), 0)
+FROM docs d
+INNER JOIN doc_lines dl ON dl.doc_id = d.id
+WHERE d.type = @type
+  AND d.status = @status
+  AND d.order_id = ANY(@order_ids)
+  AND dl.order_line_id IS NOT NULL
+  AND dl.qty > 0
+  AND NOT EXISTS (
+      SELECT 1
+      FROM doc_lines newer
+      WHERE newer.replaces_line_id = dl.id
+  )
+GROUP BY d.order_id, dl.order_line_id;
+");
+            command.Parameters.AddWithValue("@type", DocTypeMapper.ToOpString(DocType.Outbound));
+            command.Parameters.AddWithValue("@status", DocTypeMapper.StatusToString(DocStatus.Closed));
+            command.Parameters.Add("@order_ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint).Value = ids;
+            using var reader = command.ExecuteReader();
+            var totalsByOrder = new Dictionary<long, Dictionary<long, double>>();
+            while (reader.Read())
+            {
+                var orderId = reader.GetInt64(0);
+                if (!totalsByOrder.TryGetValue(orderId, out var totals))
+                {
+                    totals = new Dictionary<long, double>();
+                    totalsByOrder[orderId] = totals;
+                }
+
+                totals[reader.GetInt64(1)] = reader.GetDouble(2);
+            }
+
+            return totalsByOrder.ToDictionary(
+                pair => pair.Key,
+                pair => (IReadOnlyDictionary<long, double>)pair.Value);
+        });
+    }
+
     public void AddProductionFillingCompletion(ProductionFillingCompletion completion)
     {
         WithConnection(connection =>
@@ -13262,5 +13627,32 @@ FROM warehouse_task_lines tl " + whereClause;
         }
 
         return null;
+    }
+
+    private static long[] NormalizePositiveDistinctIds(IReadOnlyCollection<long> ids)
+    {
+        return ids?.Where(id => id > 0).Distinct().ToArray() ?? Array.Empty<long>();
+    }
+
+    private static Dictionary<long, IReadOnlyList<T>> GroupByOrderId<T>(IEnumerable<T> rows, Func<T, long> orderIdSelector)
+    {
+        return rows
+            .GroupBy(orderIdSelector)
+            .ToDictionary(group => group.Key, group => (IReadOnlyList<T>)group.ToList());
+    }
+
+    private static Dictionary<long, IReadOnlyList<T>> GroupByOrderId<T>(IEnumerable<T> rows, Func<T, long?> orderIdSelector)
+    {
+        return rows
+            .Where(row => orderIdSelector(row).HasValue)
+            .GroupBy(row => orderIdSelector(row)!.Value)
+            .ToDictionary(group => group.Key, group => (IReadOnlyList<T>)group.ToList());
+    }
+
+    private static Dictionary<long, IReadOnlyList<T>> GroupByDocId<T>(IEnumerable<T> rows, Func<T, long> docIdSelector)
+    {
+        return rows
+            .GroupBy(docIdSelector)
+            .ToDictionary(group => group.Key, group => (IReadOnlyList<T>)group.ToList());
     }
 }

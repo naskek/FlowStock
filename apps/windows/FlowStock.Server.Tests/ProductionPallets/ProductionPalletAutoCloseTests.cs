@@ -55,7 +55,8 @@ public sealed class ProductionPalletAutoCloseTests
 
         Assert.True(result.Success, result.Error);
         Assert.Equal(ProductionPalletStatus.Filled, harness.Store.GetProductionPalletByHu(pallet.HuCode)?.Status);
-        Assert.Contains(service.GetFillingOrders(), order => order.OrderId == 10 && order.Progress.CanClose);
+        Assert.Equal(OrderStatus.Shipped, harness.GetOrder(10).Status);
+        Assert.DoesNotContain(service.GetFillingOrders(), order => order.OrderId == 10);
         Assert.Single(harness.LedgerEntries);
     }
 

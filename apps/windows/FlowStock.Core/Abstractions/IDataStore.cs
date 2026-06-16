@@ -95,6 +95,15 @@ public interface IDataStore
     ProductionPallet? GetProductionPalletByHuForUpdate(string huCode);
     IReadOnlyList<ProductionPalletWorkItem> GetActiveProductionPalletWorkItems();
     IReadOnlyList<long> GetProductionFillingReadyOrderIds();
+    IReadOnlyList<Order> GetOrdersByIds(IReadOnlyCollection<long> orderIds);
+    IReadOnlyDictionary<long, IReadOnlyList<ProductionPallet>> GetProductionPalletsByOrderIds(IReadOnlyCollection<long> orderIds);
+    IReadOnlyDictionary<long, IReadOnlyList<OrderLine>> GetOrderLinesByOrderIds(IReadOnlyCollection<long> orderIds);
+    IReadOnlyList<ProductionFillingCompletion> GetProductionFillingCompletionsByOrderIds(IReadOnlyCollection<long> orderIds);
+    IReadOnlyDictionary<long, IReadOnlyList<Doc>> GetDocsByOrderIds(IReadOnlyCollection<long> orderIds);
+    IReadOnlyDictionary<long, IReadOnlyList<DocLine>> GetDocLinesByDocIds(IReadOnlyCollection<long> docIds);
+    IReadOnlyDictionary<long, IReadOnlyList<OrderReceiptPlanLine>> GetOrderReceiptPlanLinesByOrderIds(IReadOnlyCollection<long> orderIds);
+    IReadOnlyDictionary<long, IReadOnlyList<OrderShipmentLine>> GetOrderShipmentRemainingByOrderIds(IReadOnlyCollection<long> orderIds);
+    IReadOnlyDictionary<long, IReadOnlyDictionary<long, double>> GetShippedTotalsByOrderIds(IReadOnlyCollection<long> orderIds);
     bool HasProductionPallets(long docId);
     bool HasProductionPalletLinesForDoc(long docId);
     void ClearPlannedProductionPalletPlan(long docId);

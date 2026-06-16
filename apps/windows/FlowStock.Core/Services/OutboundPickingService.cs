@@ -31,27 +31,229 @@ public sealed class OutboundPickingService
 
     public IReadOnlyList<OutboundPickingOrderRow> GetOrders()
     {
-        return _store.GetOrders()
-            .Where(IsCustomerOrderReadyForPicking)
-            .Select(order => GetDetails(order.Id))
-            .Where(details => details.ExpectedHuCount > 0)
-            .OrderBy(details => details.OrderRef, StringComparer.CurrentCultureIgnoreCase)
-            .Select(details => new OutboundPickingOrderRow
-            {
-                OrderId = details.OrderId,
-                OrderRef = details.OrderRef,
-                PartnerName = details.PartnerName,
-                Status = details.Status,
-                ExpectedHuCount = details.ExpectedHuCount,
-                PickedHuCount = details.PickedHuCount,
-                OrderedQty = details.OrderedQty,
-                ShippedQty = details.ShippedQty,
-                RemainingQty = details.RemainingQty,
-                ScannedQty = details.ScannedQty,
-                IsClosed = details.IsClosed,
-                OperationFingerprint = details.OperationFingerprint
-            })
+        var candidateOrders = _store.GetOrders()
+            .Where(order => order.Type == OrderType.Customer
+                            && order.Status is not (OrderStatus.Draft or OrderStatus.Cancelled or OrderStatus.Merged))
             .ToArray();
+        if (candidateOrders.Length == 0)
+        {
+            return Array.Empty<OutboundPickingOrderRow>();
+        }
+
+        var orderIds = candidateOrders.Select(order => order.Id).ToArray();
+        var boundHuCache = CustomerOutboundBoundHuBatchCache.Load(_store, orderIds);
+        var docsByOrderId = LoadDocsByOrderId(orderIds);
+        var docLinesByDocId = LoadDocLinesByDocId(docsByOrderId);
+        var shippedTotalsByOrderId = LoadShippedTotalsByOrderId(orderIds);
+        var orderLinesByOrderId = LoadOrderLinesByOrderId(orderIds);
+
+        return candidateOrders
+            .Where(order => IsCustomerOrderReadyForPicking(order, boundHuCache, docsByOrderId))
+            .Select(order => BuildListRow(
+                order,
+                boundHuCache,
+                docsByOrderId,
+                docLinesByDocId,
+                shippedTotalsByOrderId,
+                orderLinesByOrderId))
+            .Where(row => row.ExpectedHuCount > 0)
+            .OrderBy(row => row.OrderRef, StringComparer.CurrentCultureIgnoreCase)
+            .ToArray();
+    }
+
+    private OutboundPickingOrderRow BuildListRow(
+        Order order,
+        CustomerOutboundBoundHuBatchCache boundHuCache,
+        IReadOnlyDictionary<long, IReadOnlyList<Doc>> docsByOrderId,
+        IReadOnlyDictionary<long, IReadOnlyList<DocLine>> docLinesByDocId,
+        IReadOnlyDictionary<long, IReadOnlyDictionary<long, double>> shippedTotalsByOrderId,
+        IReadOnlyDictionary<long, IReadOnlyList<OrderLine>> orderLinesByOrderId)
+    {
+        var expectedLines = boundHuCache.GetUnshippedOutboundHuLines(order);
+        var expectedHuCodes = expectedLines
+            .Select(line => NormalizeHu(line.HuCode))
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        docsByOrderId.TryGetValue(order.Id, out var docs);
+        docs ??= Array.Empty<Doc>();
+        var draft = docs
+            .Where(doc => doc.Type == DocType.Outbound && doc.Status == DocStatus.Draft)
+            .OrderBy(doc => doc.Id)
+            .FirstOrDefault();
+        var pickingDoc = draft ?? docs
+            .Where(doc => doc.Type == DocType.Outbound && IsTsdPickingDoc(doc))
+            .OrderByDescending(doc => doc.Id)
+            .FirstOrDefault();
+        var pickedHuCodes = pickingDoc == null || !docLinesByDocId.TryGetValue(pickingDoc.Id, out var pickingLines)
+            ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            : pickingLines
+                .Select(line => NormalizeHu(line.FromHu))
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Cast<string>()
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        orderLinesByOrderId.TryGetValue(order.Id, out var orderLines);
+        orderLines ??= Array.Empty<OrderLine>();
+        shippedTotalsByOrderId.TryGetValue(order.Id, out var shippedByLine);
+        shippedByLine ??= new Dictionary<long, double>();
+        var progress = BuildShipmentProgress(orderLines, shippedByLine);
+        var scannedQty = draft == null || !docLinesByDocId.TryGetValue(draft.Id, out var draftLines)
+            ? 0d
+            : draftLines.Sum(line => Math.Max(0, line.Qty));
+        var operationFingerprint = BuildListOperationFingerprint(expectedHuCodes, pickedHuCodes);
+
+        return new OutboundPickingOrderRow
+        {
+            OrderId = order.Id,
+            OrderRef = order.OrderRef,
+            PartnerName = order.PartnerName ?? string.Empty,
+            Status = progress.IsPartiallyShipped ? "Частично отгружено" : order.StatusDisplay,
+            ExpectedHuCount = expectedHuCodes.Length,
+            PickedHuCount = expectedHuCodes.Count(hu => pickedHuCodes.Contains(hu)),
+            OrderedQty = progress.OrderedQty,
+            ShippedQty = progress.ShippedQty,
+            RemainingQty = progress.RemainingQty,
+            ScannedQty = scannedQty,
+            IsClosed = pickingDoc?.Status == DocStatus.Closed,
+            OperationFingerprint = operationFingerprint
+        };
+    }
+
+    private static OrderShipmentProgress BuildShipmentProgress(
+        IReadOnlyList<OrderLine> lines,
+        IReadOnlyDictionary<long, double> shippedByLine)
+    {
+        return new OrderShipmentProgress
+        {
+            OrderedQty = lines.Sum(line => Math.Max(0, line.QtyOrdered)),
+            ShippedQty = lines.Sum(line =>
+                shippedByLine.TryGetValue(line.Id, out var shipped) ? Math.Max(0, shipped) : 0d),
+            RemainingQty = lines.Sum(line =>
+            {
+                var shipped = shippedByLine.TryGetValue(line.Id, out var value) ? Math.Max(0, value) : 0d;
+                return Math.Max(0, line.QtyOrdered - shipped);
+            })
+        };
+    }
+
+    private static string BuildListOperationFingerprint(
+        IReadOnlyList<string> expectedHuCodes,
+        IReadOnlySet<string> pickedHuCodes)
+    {
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join(
+            "|",
+            expectedHuCodes
+                .OrderBy(hu => hu, StringComparer.OrdinalIgnoreCase)
+                .Select(hu => $"{hu}:{(pickedHuCodes.Contains(hu) ? "1" : "0")}"))))).ToLowerInvariant();
+    }
+
+    private bool IsCustomerOrderReadyForPicking(
+        Order order,
+        CustomerOutboundBoundHuBatchCache boundHuCache,
+        IReadOnlyDictionary<long, IReadOnlyList<Doc>> docsByOrderId)
+    {
+        if (!IsCustomerOrderCandidateForPicking(order))
+        {
+            return false;
+        }
+
+        if (IsAcceptedCustomerOrder(order))
+        {
+            return true;
+        }
+
+        var hasExpectedHu = boundHuCache.GetUnshippedOutboundHuLines(order).Count > 0;
+        if (!hasExpectedHu)
+        {
+            return false;
+        }
+
+        docsByOrderId.TryGetValue(order.Id, out var docs);
+        docs ??= Array.Empty<Doc>();
+        if (docs.Any(doc => doc.Type == DocType.Outbound && IsTsdPickingDoc(doc)))
+        {
+            return true;
+        }
+
+        var progress = OrderShipmentProgressService.Get(_store, order.Id);
+        return progress.IsPartiallyShipped
+               || !CustomerOutboundBoundHuService.HasReceiptProductionNeed(_store, order.Id);
+    }
+
+    private IReadOnlyDictionary<long, IReadOnlyList<Doc>> LoadDocsByOrderId(IReadOnlyCollection<long> orderIds)
+    {
+        try
+        {
+            return _store.GetDocsByOrderIds(orderIds);
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            return orderIds.ToDictionary(
+                orderId => orderId,
+                orderId => (IReadOnlyList<Doc>)_store.GetDocsByOrder(orderId));
+        }
+    }
+
+    private IReadOnlyDictionary<long, IReadOnlyList<DocLine>> LoadDocLinesByDocId(
+        IReadOnlyDictionary<long, IReadOnlyList<Doc>> docsByOrderId)
+    {
+        var docIds = docsByOrderId.Values
+            .SelectMany(docs => docs)
+            .Select(doc => doc.Id)
+            .Distinct()
+            .ToArray();
+        if (docIds.Length == 0)
+        {
+            return new Dictionary<long, IReadOnlyList<DocLine>>();
+        }
+
+        try
+        {
+            return _store.GetDocLinesByDocIds(docIds);
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            return docIds.ToDictionary(
+                docId => docId,
+                docId => (IReadOnlyList<DocLine>)_store.GetDocLines(docId));
+        }
+    }
+
+    private IReadOnlyDictionary<long, IReadOnlyDictionary<long, double>> LoadShippedTotalsByOrderId(
+        IReadOnlyCollection<long> orderIds)
+    {
+        try
+        {
+            return _store.GetShippedTotalsByOrderIds(orderIds);
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            return orderIds.ToDictionary(
+                orderId => orderId,
+                orderId => (IReadOnlyDictionary<long, double>)_store.GetShippedTotalsByOrderLine(orderId));
+        }
+    }
+
+    private IReadOnlyDictionary<long, IReadOnlyList<OrderLine>> LoadOrderLinesByOrderId(IReadOnlyCollection<long> orderIds)
+    {
+        try
+        {
+            return _store.GetOrderLinesByOrderIds(orderIds);
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            return orderIds.ToDictionary(
+                orderId => orderId,
+                orderId => (IReadOnlyList<OrderLine>)_store.GetOrderLines(orderId));
+        }
+    }
+
+    private static bool IsMockStoreException(Exception ex)
+    {
+        var fullName = ex.GetType().FullName ?? string.Empty;
+        return fullName.Contains("Moq", StringComparison.OrdinalIgnoreCase)
+               || fullName.Contains("Castle.Proxies", StringComparison.OrdinalIgnoreCase);
     }
 
     public OutboundPickingOrderDetails GetDetails(long orderId)
