@@ -11,6 +11,7 @@ const serviceWorkerJs = fs.readFileSync(path.join(__dirname, "service-worker.js"
 const hooks = {};
 const alerts = [];
 const overlays = [];
+const sessionStore = {};
 let scannerHandler = null;
 let scannerFocusCount = 0;
 let scannerSetHandlerCount = 0;
@@ -144,9 +145,14 @@ const context = {
     FlowStockTsdTestHooks: hooks,
     location: { hash: "#/home" },
     sessionStorage: {
-      setItem: function () {},
-      getItem: function () {
-        return null;
+      setItem: function (key, value) {
+        sessionStore[key] = String(value);
+      },
+      getItem: function (key) {
+        return Object.prototype.hasOwnProperty.call(sessionStore, key) ? sessionStore[key] : null;
+      },
+      removeItem: function (key) {
+        delete sessionStore[key];
       },
     },
     localStorage: {
@@ -326,7 +332,7 @@ async function main() {
 
   assert(storageJs.includes("/api/tsd/hu/resolve?code="));
   assert(storageJs.includes("/api/tsd/hu/card?code="));
-  assert(appVersionJs.includes('var version = "39"'));
+  assert(appVersionJs.includes('var version = "41"'));
   assert(serviceWorkerJs.includes('importScripts("./app-version.js")'));
   assert(serviceWorkerJs.includes('"./app.js"'));
 
@@ -363,6 +369,119 @@ async function main() {
   assert.deepStrictEqual(alerts, ["HU неизвестен: HU-999999"]);
   assert.strictEqual(context.window.location.hash, "#/home", "unknown HU must not navigate to a HU card");
 
+  context.window.location.hash = "#/hu";
+  const resolveCallsBeforeHuRoute = resolveCalls;
+  hooks.renderRouteInternal({ name: "hu" });
+  await flushPromises();
+  assert.strictEqual(typeof scannerHandler, "function");
+  scannerHandler({ value: "HU-000124", source: "test" });
+  await flushPromises();
+  assert.strictEqual(resolveCalls, resolveCallsBeforeHuRoute + 1, "/hu route scan should delegate HU to global resolver");
+  assert.strictEqual(context.window.location.hash, "/hu/HU-000124", "/hu route scan should open HU card when lookup overlay is closed");
+
+  context.window.location.hash = "#/items";
+  let prevented = false;
+  const resolveCallsBeforeItemsInput = resolveCalls;
+  assert.strictEqual(
+    hooks.handleNeutralHuInputEnter(
+      { key: "Enter", preventDefault: function () { prevented = true; } },
+      { value: "HU-000125" }
+    ),
+    true,
+    "items search Enter should accept HU scans through neutral delegation"
+  );
+  await flushPromises();
+  assert.strictEqual(prevented, true);
+  assert.strictEqual(resolveCalls, resolveCallsBeforeItemsInput + 1, "items HU input should call resolver");
+  assert.strictEqual(context.window.location.hash, "/hu/HU-000125", "items HU input should open HU card");
+
+  context.window.location.hash = "#/items";
+  const resolveCallsBeforeItemsScan = resolveCalls;
+  const itemsScanResult = await hooks.handleGlobalHuScan({ value: "HU-000130", source: "test" });
+  assert.strictEqual(itemsScanResult.known, true);
+  assert.strictEqual(resolveCalls, resolveCallsBeforeItemsScan + 1, "items neutral route scan should call resolver");
+  assert.strictEqual(context.window.location.hash, "/hu/HU-000130", "items neutral route scan should open HU card");
+
+  context.window.location.hash = "#/orders";
+  prevented = false;
+  const resolveCallsBeforeOrdersInput = resolveCalls;
+  assert.strictEqual(
+    hooks.handleNeutralHuInputEnter(
+      { key: "Enter", preventDefault: function () { prevented = true; } },
+      { value: "SKU-100" },
+      function (event, value) {
+        assert.strictEqual(value, "SKU-100");
+        return true;
+      }
+    ),
+    true,
+    "orders search Enter should keep non-HU fallback logic"
+  );
+  await flushPromises();
+  assert.strictEqual(prevented, false);
+  assert.strictEqual(resolveCalls, resolveCallsBeforeOrdersInput, "orders non-HU input should not call resolver");
+
+  context.window.location.hash = "#/orders";
+  const resolveCallsBeforeOrdersHuInput = resolveCalls;
+  assert.strictEqual(
+    hooks.handleNeutralHuInputEnter(
+      { key: "Enter", preventDefault: function () {} },
+      { value: "HU-000126" }
+    ),
+    true,
+    "orders search Enter should accept HU scans through neutral delegation"
+  );
+  await flushPromises();
+  assert.strictEqual(resolveCalls, resolveCallsBeforeOrdersHuInput + 1, "orders HU input should call resolver");
+  assert.strictEqual(context.window.location.hash, "/hu/HU-000126", "orders HU input should open HU card");
+
+  context.window.location.hash = "#/orders";
+  const resolveCallsBeforeOrdersScan = resolveCalls;
+  const ordersScanResult = await hooks.handleGlobalHuScan({ value: "HU-000131", source: "test" });
+  assert.strictEqual(ordersScanResult.known, true);
+  assert.strictEqual(resolveCalls, resolveCallsBeforeOrdersScan + 1, "orders neutral route scan should call resolver");
+  assert.strictEqual(context.window.location.hash, "/hu/HU-000131", "orders neutral route scan should open HU card");
+
+  context.window.location.hash = "#/order/777";
+  context.document.activeElement = null;
+  const resolveCallsBeforeOrderScan = resolveCalls;
+  const orderScanResult = await hooks.handleGlobalHuScan({ value: "HU-000127", source: "test" });
+  assert.strictEqual(orderScanResult.known, true);
+  assert.strictEqual(resolveCalls, resolveCallsBeforeOrderScan + 1, "order screen without active input should use global HU router");
+  assert.strictEqual(context.window.location.hash, "/hu/HU-000127", "order screen scan should open HU card when no input is active");
+
+  context.window.location.hash = "#/order/777";
+  context.document.activeElement = {
+    tagName: "INPUT",
+    isContentEditable: false,
+    getAttribute: function () {
+      return null;
+    },
+  };
+  const resolveCallsBeforeBlockedOrderScan = resolveCalls;
+  const blockedOrderScanResult = await hooks.handleGlobalHuScan({ value: "HU-000128", source: "test" });
+  assert.strictEqual(blockedOrderScanResult.accepted, false);
+  assert.strictEqual(blockedOrderScanResult.blocked, "active-input");
+  assert.strictEqual(resolveCalls, resolveCallsBeforeBlockedOrderScan, "order screen active input should block raw global scan");
+  assert.strictEqual(context.window.location.hash, "#/order/777", "blocked order scan should not navigate");
+
+  context.window.location.hash = "#/order/777";
+  const resolveCallsBeforeOrderInputDelegation = resolveCalls;
+  prevented = false;
+  assert.strictEqual(
+    hooks.handleNeutralHuInputEnter(
+      { key: "Enter", preventDefault: function () { prevented = true; } },
+      { value: "HU-000129" }
+    ),
+    true,
+    "future order input should delegate HU Enter to global router"
+  );
+  await flushPromises();
+  assert.strictEqual(prevented, true);
+  assert.strictEqual(resolveCalls, resolveCallsBeforeOrderInputDelegation + 1, "future order input HU should call resolver");
+  assert.strictEqual(context.window.location.hash, "/hu/HU-000129", "future order input HU should open HU card");
+  context.document.activeElement = null;
+
   overlays.length = 0;
   const resolveCallsBeforeOutbound = resolveCalls;
   hooks.renderOutboundPickingOrder(outboundOrder, {});
@@ -393,6 +512,53 @@ async function main() {
   assert.strictEqual(huCardActionButtons.length, 1, "HU card should wire action buttons");
   huCardActionButtons[0].click();
   assert.strictEqual(context.window.location.hash, "/order/619", "HU card action should keep existing navigation behavior");
+  assert.strictEqual(hooks.getNavOrigin(), "/hu/HU-000321", "HU card action should save HU card origin");
+  assert.strictEqual(hooks.navigateBack({ name: "order", id: "619" }), "/hu/HU-000321");
+  assert.strictEqual(context.window.location.hash, "/hu/HU-000321", "order back should return to HU card origin");
+  assert.strictEqual(hooks.getNavOrigin(), null, "back navigation should clear saved origin");
+
+  hooks.clearNavOrigin();
+  context.window.location.hash = "#/order/777";
+  assert.strictEqual(hooks.navigateBack({ name: "order", id: "777" }), "/orders");
+  assert.strictEqual(context.window.location.hash, "/orders", "direct order back should use standard fallback");
+  assert.strictEqual(hooks.getNavOrigin(), null);
+
+  context.window.location.hash = "#/hu/HU-0001334";
+  assert.strictEqual(hooks.executeTsdHuAction({ type: "OPEN_DOCUMENT", docId: 1490 }), true);
+  assert.strictEqual(context.window.location.hash, "/doc/1490");
+  assert.strictEqual(hooks.getNavOrigin(), "/hu/HU-0001334");
+  assert.strictEqual(hooks.navigateBack({ name: "doc", id: "1490" }), "/hu/HU-0001334");
+  assert.strictEqual(context.window.location.hash, "/hu/HU-0001334", "document back should return to HU card origin");
+  assert.strictEqual(hooks.getNavOrigin(), null);
+
+  context.window.location.hash = "#/hu/HU-0001334";
+  assert.strictEqual(hooks.executeTsdHuAction({ type: "OPEN_FILLING", orderId: 619 }), true);
+  assert.strictEqual(context.window.location.hash, "/filling/619");
+  assert.strictEqual(hooks.getNavOrigin(), "/hu/HU-0001334");
+  assert.strictEqual(hooks.navigateBack({ name: "fillingDoc", id: "619" }), "/hu/HU-0001334");
+  assert.strictEqual(context.window.location.hash, "/hu/HU-0001334", "filling back should return to HU card origin");
+  assert.strictEqual(hooks.getNavOrigin(), null);
+
+  context.window.location.hash = "#/hu/HU-0001334";
+  assert.strictEqual(hooks.executeTsdHuAction({ type: "OPEN_OUTBOUND", orderId: 620 }), true);
+  assert.strictEqual(context.window.location.hash, "/outbound/620");
+  assert.strictEqual(hooks.getNavOrigin(), "/hu/HU-0001334");
+  assert.strictEqual(hooks.navigateBack({ name: "outboundOrder", id: "620" }), "/hu/HU-0001334");
+  assert.strictEqual(context.window.location.hash, "/hu/HU-0001334", "outbound back should return to HU card origin");
+  assert.strictEqual(hooks.getNavOrigin(), null);
+
+  context.window.location.hash = "#/orders";
+  hooks.setNavOrigin("/orders");
+  context.window.location.hash = "/order/620";
+  assert.strictEqual(hooks.navigateBack({ name: "order", id: "620" }), "/orders");
+  assert.strictEqual(context.window.location.hash, "/orders", "orders-origin back must not leak an old HU origin");
+  assert.strictEqual(hooks.getNavOrigin(), null);
+
+  hooks.clearNavOrigin();
+  context.window.location.hash = "#/hu/HU-000654";
+  hooks.renderRouteInternal({ name: "huCard", id: "HU-000654" });
+  await flushPromises();
+  assert.strictEqual(hooks.getNavOrigin(), null, "detail route render must not create nav origin");
 
   const freeCardHtml = hooks.renderTsdHuCard({
     known: true,
@@ -407,9 +573,95 @@ async function main() {
     documentActions: [],
   });
   assert.match(freeCardHtml, /HU-000321/);
-  assert.match(freeCardHtml, /Свободная HU/);
+  assert.match(freeCardHtml, /Статус: На складе/);
   assert.match(freeCardHtml, /MAIN/);
+  assert.strictEqual((freeCardHtml.match(/600 шт/g) || []).length, 1, "free HU card should show qty once");
   assert.doesNotMatch(freeCardHtml, /data-hu-card-action/);
+
+  const filledCardHtml = hooks.renderTsdHuCard({
+    known: true,
+    huCode: "HU-000555",
+    state: "FILLED_PRODUCTION_PALLET",
+    stock: [],
+    productionPallets: [
+      {
+        pallet_no: 1,
+        pallet_count: 1,
+        prd_doc_ref: "PRD-1490",
+        prd_doc_status: "CLOSED",
+        order_ref: "005",
+        order_type: "INTERNAL",
+        components: [{ item_name: "Аджика 500 мл", filled_qty: 378, planned_qty: 378, uom: "шт" }],
+      },
+    ],
+    reservations: [],
+    documents: [
+      {
+        doc_id: 1490,
+        doc_ref: "PRD-1490",
+        doc_type: "PRODUCTION_RECEIPT",
+        doc_status: "CLOSED",
+        item_name: "Аджика 500 мл",
+        qty: 378,
+        uom: "шт",
+      },
+    ],
+    latestMovement: { doc_ref: "PRD-1490", timestamp: "2026-01-02T03:04:05Z" },
+    documentActions: [{ type: "OPEN_DOCUMENT", docId: 1490, label: "PRD-1490" }],
+  });
+  assert.match(filledCardHtml, /Статус: Наполнена/);
+  assert.strictEqual((filledCardHtml.match(/378 шт/g) || []).length, 1, "filled HU main content should show qty once");
+  assert.doesNotMatch(filledCardHtml, /read-only/);
+  assert.doesNotMatch(filledCardHtml, /PRODUCTION_RECEIPT/);
+  assert.doesNotMatch(filledCardHtml, /CLOSED/);
+  assert.match(filledCardHtml, /Открыть документ выпуска/);
+  assert(
+    filledCardHtml.indexOf("PRD-1490") > filledCardHtml.indexOf("Техническая информация"),
+    "production document ref should be in technical block"
+  );
+
+  const plannedCardHtml = hooks.renderTsdHuCard({
+    known: true,
+    huCode: "HU-000556",
+    state: "PLANNED_PRODUCTION",
+    stock: [],
+    productionPallets: [
+      {
+        order_ref: "006",
+        order_type: "INTERNAL",
+        components: [{ item_name: "Соус 250 мл", planned_qty: 378, uom: "шт" }],
+      },
+    ],
+    reservations: [],
+    documents: [],
+    documentActions: [{ type: "OPEN_FILLING", orderId: 619, label: "Открыть наполнение заказа 006" }],
+  });
+  assert.match(plannedCardHtml, /Статус: Запланирована к наполнению/);
+  assert.match(plannedCardHtml, /Еще не на складе/);
+  assert.match(plannedCardHtml, /Открыть наполнение заказа 006/);
+
+  const mixedCardHtml = hooks.renderTsdHuCard({
+    known: true,
+    huCode: "HU-000557",
+    state: "FILLED_PRODUCTION_PALLET",
+    stock: [],
+    productionPallets: [
+      {
+        order_ref: "007",
+        components: [
+          { item_name: "Соус острый", filled_qty: 189, uom: "шт" },
+          { item_name: "Соус мягкий", filled_qty: 189, uom: "шт" },
+        ],
+      },
+    ],
+    reservations: [],
+    documents: [],
+    documentActions: [],
+  });
+  assert.match(mixedCardHtml, /Соус острый/);
+  assert.match(mixedCardHtml, /Соус мягкий/);
+  assert.match(mixedCardHtml, /Итого/);
+  assert.match(mixedCardHtml, /378 шт/);
 
   console.log("TSD global HU-router scan pipeline tests passed.");
 }

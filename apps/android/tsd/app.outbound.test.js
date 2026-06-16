@@ -226,6 +226,11 @@ assert.strictEqual(
   "/outbound",
   "outbound order back should return to outbound order list"
 );
+assert.strictEqual(
+  hooks.getBackRouteForRoute({ name: "outboundOrder" }, "/hu/HU-0001334"),
+  "/hu/HU-0001334",
+  "outbound order back should honor HU card origin"
+);
 
 const snakeCaseOrder = {
   order_id: 93,

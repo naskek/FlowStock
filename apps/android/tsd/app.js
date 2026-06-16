@@ -874,6 +874,21 @@
     }
   }
 
+  function clearNavOrigin() {
+    if (!window.sessionStorage) {
+      return;
+    }
+    try {
+      sessionStorage.removeItem(NAV_ORIGIN_KEY);
+    } catch (error) {
+      // ignore
+    }
+  }
+
+  function isRouteOrigin(origin) {
+    return typeof origin === "string" && origin.charAt(0) === "/";
+  }
+
   function setScanHighlight(active) {
     var scanCard = document.querySelector(".scan-card");
     if (scanCard) {
@@ -1857,6 +1872,7 @@
     if (!route) {
       return "/home";
     }
+    var routeOrigin = isRouteOrigin(origin) ? origin : "";
     if (route.name === "home") {
       return "/home";
     }
@@ -1867,16 +1883,25 @@
       return "/operations";
     }
     if (route.name === "fillingDoc") {
+      if (routeOrigin) {
+        return routeOrigin;
+      }
       return "/filling";
     }
     if (route.name === "outbound") {
       return "/operations";
     }
     if (route.name === "outboundOrder") {
+      if (routeOrigin) {
+        return routeOrigin;
+      }
       return "/outbound";
     }
     if (route.name === "docs") {
       return "/operations";
+    }
+    if (route.name === "doc" && routeOrigin) {
+      return routeOrigin;
     }
     if (route.name === "doc" || route.name === "new") {
       if (origin === "history") {
@@ -1891,15 +1916,25 @@
       return "/home";
     }
     if (route.name === "order") {
+      if (routeOrigin) {
+        return routeOrigin;
+      }
       return "/orders";
     }
     if (route.name === "huCard") {
-      return origin && origin.charAt(0) === "/" ? origin : "/hu";
+      return routeOrigin || "/hu";
     }
     if (route.name === "stock" || route.name === "settings" || route.name === "items") {
       return "/home";
     }
     return "/home";
+  }
+
+  function navigateBack(route) {
+    var backRoute = getBackRouteForRoute(route || currentRoute, getNavOrigin());
+    navigate(backRoute);
+    clearNavOrigin();
+    return backRoute;
   }
 
   function renderRoute() {
@@ -4559,6 +4594,9 @@
     if (!huCode || globalHuResolvePending) {
       return Promise.resolve({ accepted: false });
     }
+    if (!opts.allowActiveInput && shouldBlockGlobalHuScanForActiveInput()) {
+      return Promise.resolve({ accepted: false, blocked: "active-input" });
+    }
     globalHuResolvePending = true;
     var resolveHu = opts.resolveHu || TsdStorage.apiResolveHu;
     var notify = opts.notify || function (message) { window.alert(message); };
@@ -4584,6 +4622,52 @@
       });
   }
 
+  function isTextEntryElement(el) {
+    if (!el) {
+      return false;
+    }
+    if (isScanAllowedElement(el)) {
+      return false;
+    }
+    if (el.isContentEditable) {
+      return true;
+    }
+    var tag = el.tagName ? String(el.tagName).toUpperCase() : "";
+    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+  }
+
+  function shouldBlockGlobalHuScanForActiveInput() {
+    var route = getRouteFromPath(getCurrentRoutePath());
+    return route && route.name === "order" && isTextEntryElement(document.activeElement);
+  }
+
+  function handleNeutralHuScan(scan, fallback) {
+    var rawValue = scan && scan.value ? scan.value : scan;
+    if (extractHuCode(rawValue)) {
+      return handleGlobalHuScan(scan);
+    }
+    if (typeof fallback === "function") {
+      return fallback(rawValue, scan);
+    }
+    return Promise.resolve({ accepted: false });
+  }
+
+  function handleNeutralHuInputEnter(event, input, fallback) {
+    if (!event || event.key !== "Enter") {
+      return false;
+    }
+    var rawValue = input && input.value ? input.value : "";
+    if (extractHuCode(rawValue)) {
+      event.preventDefault();
+      handleGlobalHuScan(rawValue, { allowActiveInput: true });
+      return true;
+    }
+    if (typeof fallback === "function") {
+      return fallback(event, rawValue) === true;
+    }
+    return false;
+  }
+
   function executeTsdHuAction(action) {
     if (!action) {
       return false;
@@ -4595,18 +4679,22 @@
       return true;
     }
     if (type === "OPEN_FILLING" && action.orderId) {
+      setNavOrigin(getCurrentRoutePath());
       navigate("/filling/" + encodeURIComponent(action.orderId));
       return true;
     }
     if (type === "OPEN_OUTBOUND" && action.orderId) {
+      setNavOrigin(getCurrentRoutePath());
       navigate("/outbound/" + encodeURIComponent(action.orderId));
       return true;
     }
     if (type === "OPEN_ORDER" && action.orderId) {
+      setNavOrigin(getCurrentRoutePath());
       navigate("/order/" + encodeURIComponent(action.orderId));
       return true;
     }
     if (type === "OPEN_DOCUMENT" && action.docId) {
+      setNavOrigin(getCurrentRoutePath());
       navigate("/doc/" + encodeURIComponent(action.docId));
       return true;
     }
@@ -4706,6 +4794,294 @@
     return row[camel] != null ? row[camel] : row[snake];
   }
 
+  function normalizeTsdHuCodeValue(value) {
+    return String(value || "").trim().toUpperCase();
+  }
+
+  function getTsdHuStatusLabel(state) {
+    var normalized = normalizeTsdHuCodeValue(state);
+    if (normalized === "PLANNED_PRODUCTION") {
+      return "Запланирована к наполнению";
+    }
+    if (normalized === "PLANNED") {
+      return "Запланирована";
+    }
+    if (normalized === "FILLED_PRODUCTION_PALLET") {
+      return "Наполнена";
+    }
+    if (normalized === "FILLED") {
+      return "Наполнена";
+    }
+    if (normalized === "CLOSED") {
+      return "Закрыта";
+    }
+    if (normalized === "WAREHOUSE_FREE" || normalized === "WAREHOUSE_RESERVED") {
+      return "На складе";
+    }
+    if (normalized === "OUTBOUND_EXPECTED") {
+      return "Ожидается к отгрузке";
+    }
+    if (normalized === "OUTBOUND_PICKED") {
+      return "В отгрузке";
+    }
+    if (normalized === "SHIPPED") {
+      return "Отгружена";
+    }
+    if (normalized === "UNKNOWN") {
+      return "Неизвестна";
+    }
+    if (normalized === "AMBIGUOUS") {
+      return "Требует выбора";
+    }
+    if (normalized === "HISTORY_ONLY") {
+      return "История HU";
+    }
+    return state ? String(state) : "Неизвестна";
+  }
+
+  function getTsdHuDocTypeLabel(value) {
+    var normalized = normalizeTsdHuCodeValue(value);
+    if (normalized === "PRODUCTION_RECEIPT") {
+      return "Выпуск";
+    }
+    if (normalized === "OUTBOUND") {
+      return "Отгрузка";
+    }
+    if (normalized === "INBOUND") {
+      return "Приемка";
+    }
+    if (normalized === "MOVE") {
+      return "Перемещение";
+    }
+    if (normalized === "WRITE_OFF") {
+      return "Списание";
+    }
+    if (normalized === "INVENTORY" || normalized === "INVENTORY_CORRECTION") {
+      return "Инвентаризация";
+    }
+    return value ? String(value) : "Документ";
+  }
+
+  function getTsdHuDocStatusLabel(value) {
+    var normalized = normalizeTsdHuCodeValue(value);
+    if (normalized === "CLOSED") {
+      return "Закрыт";
+    }
+    if (normalized === "FILLED") {
+      return "Наполнен";
+    }
+    if (normalized === "PLANNED") {
+      return "Запланирован";
+    }
+    if (normalized === "DRAFT") {
+      return "Черновик";
+    }
+    if (normalized === "CANCELLED") {
+      return "Отменен";
+    }
+    return value ? String(value) : "";
+  }
+
+  function getTsdHuOrderTypeLabel(value) {
+    var normalized = normalizeTsdHuCodeValue(value);
+    if (normalized === "CUSTOMER") {
+      return "Клиентский заказ";
+    }
+    if (normalized === "INTERNAL") {
+      return "Внутренний заказ";
+    }
+    return "Заказ";
+  }
+
+  function getTsdHuActionLabel(action, documents) {
+    var type = normalizeTsdHuCodeValue(action && action.type);
+    if (type === "OPEN_DOCUMENT") {
+      var docId = Number(action && action.docId) || Number(action && action.doc_id) || 0;
+      var documentRow = (Array.isArray(documents) ? documents : []).filter(function (row) {
+        return Number(getTsdHuRowValue(row, "docId", "doc_id")) === docId;
+      })[0] || null;
+      var docType = normalizeTsdHuCodeValue(getTsdHuRowValue(documentRow, "docType", "doc_type"));
+      if (docType === "PRODUCTION_RECEIPT") {
+        return "Открыть документ выпуска";
+      }
+      if (docType === "OUTBOUND") {
+        return "Открыть документ отгрузки";
+      }
+      return "Открыть документ";
+    }
+    if (type === "OPEN_ORDER") {
+      return (action && action.label) || "Открыть заказ";
+    }
+    if (type === "OPEN_FILLING") {
+      return (action && action.label) || "Открыть наполнение";
+    }
+    if (type === "OPEN_OUTBOUND") {
+      return (action && action.label) || "Открыть отгрузку";
+    }
+    if (type === "OPEN_HU_CARD") {
+      return (action && action.label) || "Открыть карточку HU";
+    }
+    return (action && (action.label || action.type)) || "";
+  }
+
+  function buildTsdHuContentRows(stock, pallets, reservations, documents) {
+    var rows = [];
+    (Array.isArray(pallets) ? pallets : []).forEach(function (pallet) {
+      var components = Array.isArray(pallet.components) ? pallet.components : [];
+      components.forEach(function (component) {
+        rows.push({
+          itemName: getTsdHuRowValue(component, "itemName", "item_name") || "Товар",
+          qty: getTsdHuRowValue(component, "filledQty", "filled_qty") ||
+            getTsdHuRowValue(component, "plannedQty", "planned_qty"),
+          uom: getTsdHuRowValue(component, "uom", "uom") || "шт",
+        });
+      });
+    });
+    if (!rows.length) {
+      (Array.isArray(stock) ? stock : []).forEach(function (row) {
+        rows.push({
+          itemName: getTsdHuRowValue(row, "itemName", "item_name") || "Товар",
+          qty: getTsdHuRowValue(row, "qty", "qty"),
+          uom: getTsdHuRowValue(row, "uom", "uom") || "шт",
+        });
+      });
+    }
+    if (!rows.length) {
+      (Array.isArray(reservations) ? reservations : []).forEach(function (row) {
+        rows.push({
+          itemName: getTsdHuRowValue(row, "itemName", "item_name") || "Товар",
+          qty: getTsdHuRowValue(row, "qty", "qty"),
+          uom: "шт",
+        });
+      });
+    }
+    if (!rows.length) {
+      (Array.isArray(documents) ? documents : []).forEach(function (row) {
+        rows.push({
+          itemName: getTsdHuRowValue(row, "itemName", "item_name") || "Товар",
+          qty: getTsdHuRowValue(row, "qty", "qty"),
+          uom: getTsdHuRowValue(row, "uom", "uom") || "шт",
+        });
+      });
+    }
+    return rows;
+  }
+
+  function renderTsdHuContentRows(rows) {
+    if (!rows.length) {
+      return '<div class="status-muted">Содержимое не найдено</div>';
+    }
+    var totalQty = 0;
+    var totalUom = rows[0].uom || "шт";
+    var canShowTotal = rows.length > 1;
+    var html = rows.map(function (row) {
+      var qty = Number(row.qty);
+      if (!isFinite(qty)) {
+        canShowTotal = false;
+        qty = 0;
+      }
+      if ((row.uom || "шт") !== totalUom) {
+        canShowTotal = false;
+      }
+      totalQty += qty;
+      return '<div class="hu-line"><div>' +
+        escapeHtml(row.itemName || "Товар") +
+        "</div><div>" +
+        escapeHtml(formatQtyWithUnit(qty, row.uom || "шт")) +
+        "</div></div>";
+    }).join("");
+    if (canShowTotal) {
+      html += '<div class="hu-line hu-line-total"><div>Итого</div><div>' +
+        escapeHtml(formatQtyWithUnit(totalQty, totalUom)) +
+        "</div></div>";
+    }
+    return html;
+  }
+
+  function renderTsdHuLocationRows(stock, state) {
+    var positiveStock = (Array.isArray(stock) ? stock : []).filter(function (row) {
+      return Number(getTsdHuRowValue(row, "qty", "qty")) > 0;
+    });
+    if (!positiveStock.length) {
+      return '<div class="status-muted">' +
+        escapeHtml(normalizeTsdHuCodeValue(state) === "PLANNED_PRODUCTION" ? "Еще не на складе" : "Нет на складе") +
+        "</div>";
+    }
+    var seen = {};
+    var rows = positiveStock.map(function (row) {
+      var code = getTsdHuRowValue(row, "locationCode", "location_code") || "-";
+      var name = getTsdHuRowValue(row, "locationName", "location_name") || "";
+      var label = name ? code + " - " + name : code;
+      if (seen[label]) {
+        return "";
+      }
+      seen[label] = true;
+      return '<div class="hu-line"><div>' + escapeHtml(label) + "</div></div>";
+    }).filter(Boolean).join("");
+    return rows || '<div class="status-muted">Нет на складе</div>';
+  }
+
+  function findTsdHuOrderRow(reservations, pallets, documents) {
+    var sources = []
+      .concat(Array.isArray(reservations) ? reservations : [])
+      .concat(Array.isArray(pallets) ? pallets : [])
+      .concat(Array.isArray(documents) ? documents : []);
+    for (var i = 0; i < sources.length; i += 1) {
+      var row = sources[i];
+      if (getTsdHuRowValue(row, "orderId", "order_id") || getTsdHuRowValue(row, "orderRef", "order_ref")) {
+        return row;
+      }
+    }
+    return null;
+  }
+
+  function renderTsdHuOrderRows(reservations, pallets, documents) {
+    var row = findTsdHuOrderRow(reservations, pallets, documents);
+    if (!row) {
+      return '<div class="status-muted">Не привязана</div>';
+    }
+    var orderRef = getTsdHuRowValue(row, "orderRef", "order_ref") || getTsdHuRowValue(row, "orderId", "order_id") || "-";
+    var orderType = getTsdHuOrderTypeLabel(getTsdHuRowValue(row, "orderType", "order_type"));
+    var partnerName = getTsdHuRowValue(row, "partnerName", "partner_name") || "";
+    return '<div class="hu-line"><div>' +
+      escapeHtml(orderRef + " - " + orderType) +
+      (partnerName ? '<div class="hu-card-meta">Контрагент: ' + escapeHtml(partnerName) + "</div>" : "") +
+      "</div></div>";
+  }
+
+  function buildTsdHuTechnicalRows(card, pallets, documents) {
+    var rows = [];
+    var seen = {};
+    function add(value) {
+      var text = String(value || "").trim();
+      if (!text || seen[text]) {
+        return;
+      }
+      seen[text] = true;
+      rows.push(text);
+    }
+    (Array.isArray(documents) ? documents : []).forEach(function (row) {
+      var docRef = getTsdHuRowValue(row, "docRef", "doc_ref") || "Документ";
+      var docType = getTsdHuDocTypeLabel(getTsdHuRowValue(row, "docType", "doc_type"));
+      var docStatus = getTsdHuDocStatusLabel(getTsdHuRowValue(row, "docStatus", "doc_status"));
+      add([docRef, docType, docStatus].filter(Boolean).join(" · "));
+    });
+    (Array.isArray(pallets) ? pallets : []).forEach(function (row) {
+      var prdRef = getTsdHuRowValue(row, "prdDocRef", "prd_doc_ref");
+      if (prdRef) {
+        add([prdRef, "Выпуск", getTsdHuDocStatusLabel(getTsdHuRowValue(row, "prdDocStatus", "prd_doc_status"))].filter(Boolean).join(" · "));
+      }
+    });
+    var movement = card && card.latestMovement;
+    if (movement) {
+      add("Последнее движение: " +
+        (getTsdHuRowValue(movement, "docRef", "doc_ref") || "-") +
+        " · " +
+        formatDateTime(getTsdHuRowValue(movement, "timestamp", "timestamp")));
+    }
+    return rows;
+  }
+
   function renderTsdHuCard(card) {
     if (!card || card.known !== true) {
       return renderError("HU не найден");
@@ -4715,66 +5091,30 @@
     var reservations = Array.isArray(card.reservations) ? card.reservations : [];
     var documents = Array.isArray(card.documents) ? card.documents : [];
     var actions = Array.isArray(card.documentActions) ? card.documentActions : [];
-    var stockHtml = stock.length ? stock.map(function (row) {
-      return '<div class="hu-line"><div>' +
-        escapeHtml(getTsdHuRowValue(row, "itemName", "item_name") || "Товар") +
-        '<div class="hu-card-meta">Локация: ' +
-        escapeHtml(getTsdHuRowValue(row, "locationCode", "location_code") || "-") +
-        "</div></div><div>" +
-        escapeHtml(formatQtyWithUnit(getTsdHuRowValue(row, "qty", "qty"), getTsdHuRowValue(row, "uom", "uom") || "шт")) +
-        "</div></div>";
-    }).join("") : '<div class="status-muted">Положительного складского остатка нет.</div>';
-    var palletHtml = pallets.map(function (row) {
-      var components = Array.isArray(row.components) ? row.components : [];
-      return '<div class="hu-line"><div>' +
-        escapeHtml("Паллета " + (getTsdHuRowValue(row, "palletNo", "pallet_no") || "-") +
-          " / " + (getTsdHuRowValue(row, "palletCount", "pallet_count") || "-")) +
-        '<div class="hu-card-meta">' +
-        escapeHtml(getTsdHuRowValue(row, "prdDocRef", "prd_doc_ref") || "") +
-        "</div></div><div>" +
-        escapeHtml(getTsdHuRowValue(row, "status", "status") || "") +
-        (components.length ? '<div class="hu-card-meta">' + escapeHtml(components.map(function (component) {
-          return (getTsdHuRowValue(component, "itemName", "item_name") || "Товар") + ": " +
-            formatQtyWithUnit(getTsdHuRowValue(component, "plannedQty", "planned_qty"), getTsdHuRowValue(component, "uom", "uom") || "шт");
-        }).join(", ")) + "</div>" : "") +
-        "</div></div>";
-    }).join("");
-    var reservationHtml = reservations.map(function (row) {
-      return '<div class="hu-line"><div>' +
-        escapeHtml("Заказ " + (getTsdHuRowValue(row, "orderRef", "order_ref") || getTsdHuRowValue(row, "orderId", "order_id"))) +
-        '<div class="hu-card-meta">' + escapeHtml(getTsdHuRowValue(row, "orderStatus", "order_status") || "") +
-        "</div></div><div>" + escapeHtml(formatQtyWithUnit(getTsdHuRowValue(row, "qty", "qty"), "шт")) + "</div></div>";
-    }).join("");
-    var documentHtml = documents.map(function (row) {
-      return '<div class="hu-line"><div>' +
-        escapeHtml(getTsdHuRowValue(row, "docRef", "doc_ref") || "Документ") +
-        '<div class="hu-card-meta">' +
-        escapeHtml((getTsdHuRowValue(row, "docType", "doc_type") || "") + " · " +
-          (getTsdHuRowValue(row, "docStatus", "doc_status") || "")) +
-        "</div></div><div>" +
-        escapeHtml(formatQtyWithUnit(getTsdHuRowValue(row, "qty", "qty"), getTsdHuRowValue(row, "uom", "uom") || "шт")) +
-        "</div></div>";
-    }).join("");
+    var contentHtml = renderTsdHuContentRows(buildTsdHuContentRows(stock, pallets, reservations, documents));
+    var locationHtml = renderTsdHuLocationRows(stock, card.state);
+    var orderHtml = renderTsdHuOrderRows(reservations, pallets, documents);
+    var technicalRows = buildTsdHuTechnicalRows(card, pallets, documents);
+    var technicalHtml = technicalRows.length
+      ? '<details class="hu-technical"><summary>Техническая информация</summary><div class="hu-lines">' +
+        technicalRows.map(function (row) {
+          return '<div class="hu-line"><div>' + escapeHtml(row) + "</div></div>";
+        }).join("") +
+        "</div></details>"
+      : "";
     var actionHtml = actions.map(function (action, index) {
       return '<button class="btn btn-outline" type="button" data-hu-card-action="' + index + '">' +
-        escapeHtml(action.label || action.type) + "</button>";
+        escapeHtml(getTsdHuActionLabel(action, documents)) + "</button>";
     }).join("");
-    var movement = card.latestMovement;
-    var movementHtml = movement
-      ? '<div class="hu-card-meta">Последнее движение: ' +
-        escapeHtml(getTsdHuRowValue(movement, "docRef", "doc_ref") || "-") + " · " +
-        escapeHtml(formatDateTime(getTsdHuRowValue(movement, "timestamp", "timestamp"))) + "</div>"
-      : '<div class="hu-card-meta">Последнее движение: -</div>';
 
     return '<section class="screen"><div class="screen-card">' +
       '<div class="section-title">' + escapeHtml(card.huCode) + "</div>" +
-      '<div class="hu-card"><div class="hu-card-title">' + escapeHtml(card.title || card.state) + "</div>" +
-      '<div class="hu-card-meta">' + escapeHtml(card.description || "") + "</div>" + movementHtml + "</div>" +
-      '<div class="section-title">Складской остаток</div><div class="hu-lines">' + stockHtml + "</div>" +
-      (palletHtml ? '<div class="section-title">Производственная паллета</div><div class="hu-lines">' + palletHtml + "</div>" : "") +
-      (reservationHtml ? '<div class="section-title">Привязка к заказу</div><div class="hu-lines">' + reservationHtml + "</div>" : "") +
-      (documentHtml ? '<div class="section-title">Связанные документы</div><div class="hu-lines">' + documentHtml + "</div>" : "") +
+      '<div class="hu-card"><div class="hu-card-title">Статус: ' + escapeHtml(getTsdHuStatusLabel(card.state || card.title)) + "</div></div>" +
+      '<div class="section-title">Содержимое</div><div class="hu-lines">' + contentHtml + "</div>" +
+      '<div class="section-title">Местоположение</div><div class="hu-lines">' + locationHtml + "</div>" +
+      '<div class="section-title">Заказ</div><div class="hu-lines">' + orderHtml + "</div>" +
       (actionHtml ? '<div class="hu-actions">' + actionHtml + "</div>" : "") +
+      technicalHtml +
       "</div></section>";
   }
 
@@ -5693,8 +6033,8 @@
         lastStockValue = trimmed;
         scanInput.value = trimmed;
       }
-      if (normalizeHuCode(trimmed)) {
-        showHuStock(trimmed);
+      if (extractHuCode(trimmed)) {
+        handleGlobalHuScan(trimmed);
         clearScanInput();
         return;
       }
@@ -6041,10 +6381,11 @@
     }
 
     function handleScanEvent(scan) {
+      var value = scan && scan.value ? scan.value : scan;
       if (!lookupOverlay) {
+        handleNeutralHuScan(value);
         return;
       }
-      var value = scan && scan.value ? scan.value : scan;
       setLookupValue(value, true);
     }
 
@@ -7493,6 +7834,7 @@
       item.addEventListener("click", function () {
         var orderId = item.getAttribute("data-filling-order");
         if (orderId) {
+          setNavOrigin("/filling");
           navigate("/filling/" + encodeURIComponent(orderId));
         }
       });
@@ -7930,6 +8272,7 @@
       item.addEventListener("click", function () {
         var orderId = item.getAttribute("data-outbound-order");
         if (orderId) {
+          setNavOrigin("/outbound");
           navigate("/outbound/" + encodeURIComponent(orderId));
         }
       });
@@ -8237,6 +8580,7 @@
       items.forEach(function (item) {
         item.addEventListener("click", function () {
           var orderId = item.getAttribute("data-order");
+          setNavOrigin("/orders");
           navigate("/order/" + encodeURIComponent(orderId));
         });
       });
@@ -8276,6 +8620,9 @@
     if (searchInput) {
       searchInput.addEventListener("input", function () {
         loadOrders(searchInput.value);
+      });
+      searchInput.addEventListener("keydown", function (event) {
+        handleNeutralHuInputEnter(event, searchInput);
       });
     }
 
@@ -8451,6 +8798,9 @@
     if (searchInput) {
       searchInput.addEventListener("input", function () {
         applyFilters();
+      });
+      searchInput.addEventListener("keydown", function (event) {
+        handleNeutralHuInputEnter(event, searchInput);
       });
     }
     if (brandSelect) {
@@ -11845,6 +12195,7 @@
         if (!doc.header.order_id) {
           return;
         }
+        setNavOrigin(getCurrentRoutePath());
         navigate("/order/" + encodeURIComponent(doc.header.order_id));
       });
     }
@@ -13799,6 +14150,10 @@
     window.FlowStockTsdTestHooks.getRouteTransitionKey = getRouteTransitionKey;
     window.FlowStockTsdTestHooks.prepareRouteTransition = prepareRouteTransition;
     window.FlowStockTsdTestHooks.getBackRouteForRoute = getBackRouteForRoute;
+    window.FlowStockTsdTestHooks.setNavOrigin = setNavOrigin;
+    window.FlowStockTsdTestHooks.getNavOrigin = getNavOrigin;
+    window.FlowStockTsdTestHooks.clearNavOrigin = clearNavOrigin;
+    window.FlowStockTsdTestHooks.navigateBack = navigateBack;
     window.FlowStockTsdTestHooks.getOrderLineReadyToShipQty = getOrderLineReadyToShipQty;
     window.FlowStockTsdTestHooks.renderOrderDetails = renderOrderDetails;
     window.FlowStockTsdTestHooks.renderOrderLineHuDetails = renderOrderLineHuDetails;
@@ -13832,6 +14187,8 @@
     window.FlowStockTsdTestHooks.extractHuCode = extractHuCode;
     window.FlowStockTsdTestHooks.installGlobalHuScanHandler = installGlobalHuScanHandler;
     window.FlowStockTsdTestHooks.handleGlobalHuScan = handleGlobalHuScan;
+    window.FlowStockTsdTestHooks.handleNeutralHuScan = handleNeutralHuScan;
+    window.FlowStockTsdTestHooks.handleNeutralHuInputEnter = handleNeutralHuInputEnter;
     window.FlowStockTsdTestHooks.setScanHandler = setScanHandler;
     window.FlowStockTsdTestHooks.getActiveScanHandler = function () { return activeScanHandler; };
     window.FlowStockTsdTestHooks.isScanHandlerActive = function () { return scanHandlerActive; };
@@ -13948,11 +14305,7 @@
 
         if (backBtn) {
           backBtn.addEventListener("click", function () {
-            if (!currentRoute) {
-              navigate("/home");
-              return;
-            }
-            navigate(getBackRouteForRoute(currentRoute, getNavOrigin()));
+            navigateBack();
           });
         }
 
