@@ -16,7 +16,14 @@ let scannerFocusCount = 0;
 let scannerSetHandlerCount = 0;
 let resolveCalls = 0;
 let fillingScanCalls = 0;
+let fillingFillCalls = 0;
+let fillingMixedFillCalls = 0;
 let outboundScanCalls = 0;
+let outboundCompleteCalls = 0;
+let huCardCalls = 0;
+let lastHuCardCode = "";
+let huCardActionButtons = [];
+let nextResolveResult = null;
 
 const appEl = {
   innerHTML: "",
@@ -36,6 +43,31 @@ function createButton() {
     },
     focus: function () {},
   };
+}
+
+function createHuCardActionButtons() {
+  huCardActionButtons = [];
+  const matches = appEl.innerHTML.matchAll(/data-hu-card-action="(\d+)"/g);
+  for (const match of matches) {
+    const actionIndex = match[1];
+    const button = createButton();
+    let clickHandler = null;
+    button.addEventListener = function (event, handler) {
+      if (event === "click") {
+        clickHandler = handler;
+      }
+    };
+    button.getAttribute = function (name) {
+      return name === "data-hu-card-action" ? actionIndex : null;
+    };
+    button.click = function () {
+      if (clickHandler) {
+        clickHandler({ preventDefault: function () {} });
+      }
+    };
+    huCardActionButtons.push(button);
+  }
+  return huCardActionButtons;
 }
 
 function createOverlay() {
@@ -181,7 +213,13 @@ const context = {
       return null;
     },
     querySelectorAll: function (selector) {
-      return selector === ".overlay" ? overlays : [];
+      if (selector === ".overlay") {
+        return overlays;
+      }
+      if (selector === "[data-hu-card-action]") {
+        return createHuCardActionButtons();
+      }
+      return [];
     },
     addEventListener: function () {},
     removeEventListener: function () {},
@@ -201,6 +239,11 @@ const context = {
     },
     apiResolveHu: function (code) {
       resolveCalls += 1;
+      if (nextResolveResult) {
+        const result = nextResolveResult;
+        nextResolveResult = null;
+        return Promise.resolve(typeof result === "function" ? result(code) : result);
+      }
       return Promise.resolve({
         known: true,
         huCode: code,
@@ -211,12 +254,33 @@ const context = {
         documentActions: [{ type: "OPEN_FILLING", orderId: 619, label: "Открыть наполнение заказа 005" }],
       });
     },
-    apiGetHuCard: function () {
-      return Promise.resolve(null);
+    apiGetHuCard: function (code) {
+      huCardCalls += 1;
+      lastHuCardCode = code;
+      return Promise.resolve({
+        known: true,
+        huCode: code,
+        state: "PLANNED_PRODUCTION",
+        title: "HU запланирована к наполнению",
+        description: "Заказ 005",
+        stock: [],
+        productionPallets: [],
+        reservations: [],
+        documents: [],
+        documentActions: [{ type: "OPEN_ORDER", orderId: 619, label: "Открыть заказ 005" }],
+      });
     },
     apiScanProductionPallet: function () {
       fillingScanCalls += 1;
       return Promise.resolve({ alreadyFilled: true });
+    },
+    apiFillProductionPallet: function () {
+      fillingFillCalls += 1;
+      return Promise.resolve({});
+    },
+    apiFillMixedProductionPalletComponents: function () {
+      fillingMixedFillCalls += 1;
+      return Promise.resolve({});
     },
     apiGetProductionFillingContext: function () {
       return Promise.resolve(fillingContext);
@@ -229,6 +293,7 @@ const context = {
       return Promise.resolve(outboundOrder);
     },
     apiCompleteOutboundPicking: function () {
+      outboundCompleteCalls += 1;
       return Promise.resolve({});
     },
   },
@@ -261,7 +326,7 @@ async function main() {
 
   assert(storageJs.includes("/api/tsd/hu/resolve?code="));
   assert(storageJs.includes("/api/tsd/hu/card?code="));
-  assert(appVersionJs.includes('var version = "38"'));
+  assert(appVersionJs.includes('var version = "39"'));
   assert(serviceWorkerJs.includes('importScripts("./app-version.js")'));
   assert(serviceWorkerJs.includes('"./app.js"'));
 
@@ -280,10 +345,23 @@ async function main() {
   scannerHandler({ value: "HU-000123", source: "test" });
   await flushPromises();
   assert.strictEqual(resolveCalls, 1, "home scan should call apiResolveHu through scanner manager");
-  assert.strictEqual(overlays.length, 1, "known HU should show the choice overlay");
-  assert.strictEqual(context.window.location.hash, homeHash, "global scan must not navigate automatically");
+  assert.strictEqual(overlays.length, 0, "known HU should not show the choice overlay");
+  assert.strictEqual(context.window.location.hash, "/hu/HU-000123", "known HU should navigate to HU card");
+  assert.notStrictEqual(context.window.location.hash, homeHash, "known HU should leave the neutral route");
   assert.strictEqual(fillingScanCalls, 0);
+  assert.strictEqual(fillingFillCalls, 0);
+  assert.strictEqual(fillingMixedFillCalls, 0);
   assert.strictEqual(outboundScanCalls, 0);
+  assert.strictEqual(outboundCompleteCalls, 0);
+
+  context.window.location.hash = "#/home";
+  alerts.length = 0;
+  nextResolveResult = { known: false };
+  scannerHandler({ value: "HU-999999", source: "test" });
+  await flushPromises();
+  assert.strictEqual(resolveCalls, 2, "unknown home scan should call apiResolveHu through scanner manager");
+  assert.deepStrictEqual(alerts, ["HU неизвестен: HU-999999"]);
+  assert.strictEqual(context.window.location.hash, "#/home", "unknown HU must not navigate to a HU card");
 
   overlays.length = 0;
   const resolveCallsBeforeOutbound = resolveCalls;
@@ -303,20 +381,18 @@ async function main() {
   assert.strictEqual(resolveCalls, resolveCallsBeforeFilling, "filling active handler must bypass global resolver");
   assert.strictEqual(fillingScanCalls, 1, "filling active handler should receive physical scan");
 
-  alerts.length = 0;
-  const unknown = await hooks.handleGlobalHuScan("HU-999999", {
-    resolveHu: function () {
-      return Promise.resolve({ known: false });
-    },
-    openChoice: function () {
-      throw new Error("unknown HU must not open choice overlay");
-    },
-    notify: function (message) {
-      alerts.push(message);
-    },
-  });
-  assert.strictEqual(unknown.known, false);
-  assert.deepStrictEqual(alerts, ["HU неизвестен: HU-999999"]);
+  hooks.setScanHandler(null);
+  context.window.location.hash = "#/hu/HU-000321";
+  const huCardCallsBefore = huCardCalls;
+  hooks.renderRouteInternal({ name: "huCard", id: "HU-000321" });
+  await flushPromises();
+  assert.strictEqual(huCardCalls, huCardCallsBefore + 1, "HU card route should load apiGetHuCard");
+  assert.strictEqual(lastHuCardCode, "HU-000321");
+  assert.match(appEl.innerHTML, /HU-000321/);
+  assert.match(appEl.innerHTML, /Открыть заказ 005/);
+  assert.strictEqual(huCardActionButtons.length, 1, "HU card should wire action buttons");
+  huCardActionButtons[0].click();
+  assert.strictEqual(context.window.location.hash, "/order/619", "HU card action should keep existing navigation behavior");
 
   const freeCardHtml = hooks.renderTsdHuCard({
     known: true,

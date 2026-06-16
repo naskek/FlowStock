@@ -4562,14 +4562,14 @@
     globalHuResolvePending = true;
     var resolveHu = opts.resolveHu || TsdStorage.apiResolveHu;
     var notify = opts.notify || function (message) { window.alert(message); };
-    var openChoice = opts.openChoice || openGlobalHuChoiceOverlay;
     return resolveHu(huCode)
       .then(function (result) {
         if (!result || result.known !== true) {
           notify("HU неизвестен: " + huCode);
           return { accepted: true, known: false };
         }
-        openChoice(result);
+        setNavOrigin(getCurrentRoutePath());
+        navigate("/hu/" + encodeURIComponent(huCode));
         return { accepted: true, known: true, result: result };
       })
       .catch(function (error) {
