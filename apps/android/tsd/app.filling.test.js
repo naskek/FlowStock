@@ -926,7 +926,7 @@ assert.strictEqual(
   true,
   "order may be marked done after final component when no pallets remain"
 );
-assert(appVersionJs.includes('var version = "44"'), "TSD shell version should be bumped for HU lookup refactor");
+assert(appVersionJs.includes('var version = "45"'), "TSD shell version should be bumped for HU lookup refactor");
 assert(
   appJs.includes("Не удалось загрузить заказы для наполнения") && appJs.includes("console.error(error)"),
   "filling API failures should be visible and logged"
