@@ -71,7 +71,8 @@ public sealed class OrderGetOrdersPageSqlTests
         Assert.Contains("selected_marking_orders AS", sql, StringComparison.Ordinal);
         Assert.Contains("COALESCE(mo.order_id, mo.source_order_id) AS order_id", sql, StringComparison.Ordinal);
         Assert.Contains("INNER JOIN order_scope os ON os.id = COALESCE(mo.order_id, mo.source_order_id)", sql, StringComparison.Ordinal);
-        Assert.Contains("INNER JOIN selected_marking_orders smo ON smo.order_id = need.order_id", sql, StringComparison.Ordinal);
+        Assert.Contains("FROM selected_marking_orders smo", sql, StringComparison.Ordinal);
+        Assert.Contains("INNER JOIN free_code_buckets bucket ON bucket.order_id = need.order_id", sql, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -79,46 +80,89 @@ public sealed class OrderGetOrdersPageSqlTests
     {
         var sql = File.ReadAllText(GetPostgresDataStorePath()).Replace("\r\n", "\n", StringComparison.Ordinal);
         var selectedStart = sql.IndexOf("selected_marking_orders AS", StringComparison.Ordinal);
-        var freeStart = sql.IndexOf("free_marking_need_coverage AS", StringComparison.Ordinal);
-        var boundStart = sql.IndexOf("bound_marking_need_coverage AS", StringComparison.Ordinal);
-        var freeSection = sql[freeStart..boundStart];
-        var boundEnd = sql.IndexOf("\nmarking_need_coverage AS", boundStart, StringComparison.Ordinal);
-        var boundSection = sql[boundStart..boundEnd];
+        var freeRowsStart = sql.IndexOf("free_code_bucket_rows AS", StringComparison.Ordinal);
+        var freeBucketsStart = sql.IndexOf("free_code_buckets AS", StringComparison.Ordinal);
+        var boundRowsStart = sql.IndexOf("bound_code_bucket_rows AS", StringComparison.Ordinal);
+        var boundBucketsStart = sql.IndexOf("bound_code_buckets AS", StringComparison.Ordinal);
+        var freeRowsSection = sql[freeRowsStart..freeBucketsStart];
+        var boundRowsSection = sql[boundRowsStart..boundBucketsStart];
 
         Assert.True(selectedStart > 0, "selected_marking_orders CTE must exist.");
-        Assert.True(selectedStart < freeStart, "selected_marking_orders must be built before free_marking_need_coverage.");
-        Assert.True(selectedStart < boundStart, "selected_marking_orders must be built before bound_marking_need_coverage.");
+        Assert.True(selectedStart < freeRowsStart, "selected_marking_orders must be built before free code bucket rows.");
+        Assert.True(selectedStart < boundRowsStart, "selected_marking_orders must be built before bound code bucket rows.");
         Assert.Contains("INNER JOIN order_scope os ON os.id = COALESCE(mo.order_id, mo.source_order_id)", sql, StringComparison.Ordinal);
-        Assert.Contains("FROM markable_item_need need", freeSection, StringComparison.Ordinal);
-        Assert.Contains("INNER JOIN selected_marking_orders smo ON smo.order_id = need.order_id", freeSection, StringComparison.Ordinal);
-        Assert.Contains("INNER JOIN marking_code c ON c.marking_order_id = smo.id", freeSection, StringComparison.Ordinal);
-        Assert.Contains("FROM markable_item_need need", boundSection, StringComparison.Ordinal);
-        Assert.Contains("INNER JOIN order_lines_scope ols ON ols.order_id = need.order_id", boundSection, StringComparison.Ordinal);
-        Assert.Contains("INNER JOIN marking_code c ON c.receipt_line_id = dl.id", boundSection, StringComparison.Ordinal);
-        Assert.Contains("INNER JOIN selected_marking_orders smo ON smo.id = c.marking_order_id", boundSection, StringComparison.Ordinal);
-        Assert.DoesNotContain("FROM marking_code c\n    INNER JOIN marking_order mo", freeSection, StringComparison.Ordinal);
+        Assert.Contains("SELECT DISTINCT c.id AS code_id", freeRowsSection, StringComparison.Ordinal);
+        Assert.Contains("FROM selected_marking_orders smo", freeRowsSection, StringComparison.Ordinal);
+        Assert.Contains("INNER JOIN marking_code c ON c.marking_order_id = smo.id", freeRowsSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("markable_item_need need", freeRowsSection, StringComparison.Ordinal);
+        Assert.Contains("SELECT DISTINCT c.id AS code_id", boundRowsSection, StringComparison.Ordinal);
+        Assert.Contains("FROM order_lines_scope ols", boundRowsSection, StringComparison.Ordinal);
+        Assert.Contains("INNER JOIN marking_code c ON c.receipt_line_id = dl.id", boundRowsSection, StringComparison.Ordinal);
+        Assert.Contains("INNER JOIN selected_marking_orders smo ON smo.id = c.marking_order_id", boundRowsSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("markable_item_need need", boundRowsSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("FROM marking_code c\n    INNER JOIN marking_order mo", freeRowsSection, StringComparison.Ordinal);
     }
 
     [Fact]
     public void OrderListMarkingCoverage_UsesSetBasedNeedAndOrderRollups()
     {
         var sql = File.ReadAllText(GetPostgresDataStorePath()).Replace("\r\n", "\n", StringComparison.Ordinal);
-        var coverageStart = sql.IndexOf("free_marking_need_coverage AS", StringComparison.Ordinal);
+        var coverageStart = sql.IndexOf("free_code_bucket_rows AS", StringComparison.Ordinal);
         var rollupStart = sql.IndexOf("marking_rollup AS", StringComparison.Ordinal);
         var coverageSection = sql[coverageStart..rollupStart];
         var rollupEnd = sql.IndexOf(")\nSELECT ob.id", rollupStart, StringComparison.Ordinal);
         var rollupSection = sql[rollupStart..rollupEnd];
 
+        Assert.Contains("free_code_bucket_rows AS", sql, StringComparison.Ordinal);
+        Assert.Contains("free_code_buckets AS", sql, StringComparison.Ordinal);
+        Assert.Contains("free_need_matches AS", sql, StringComparison.Ordinal);
         Assert.Contains("free_marking_need_coverage AS", sql, StringComparison.Ordinal);
+        Assert.Contains("bound_code_bucket_rows AS", sql, StringComparison.Ordinal);
+        Assert.Contains("bound_code_buckets AS", sql, StringComparison.Ordinal);
+        Assert.Contains("bound_need_matches AS", sql, StringComparison.Ordinal);
         Assert.Contains("bound_marking_need_coverage AS", sql, StringComparison.Ordinal);
         Assert.Contains("marking_need_coverage AS", sql, StringComparison.Ordinal);
         Assert.Contains("marking_code_covered_by_order AS", sql, StringComparison.Ordinal);
-        Assert.Contains("COUNT(DISTINCT c.id) AS codes_total", coverageSection, StringComparison.Ordinal);
+        Assert.Contains("COUNT(*) AS free_qty", coverageSection, StringComparison.Ordinal);
+        Assert.Contains("COUNT(*) AS bound_qty", coverageSection, StringComparison.Ordinal);
+        Assert.Contains("SUM(matched_qty) AS codes_total", coverageSection, StringComparison.Ordinal);
+        Assert.Contains("UNION ALL", coverageSection, StringComparison.Ordinal);
+        Assert.Contains("AND bucket.item_id <> need.item_id", coverageSection, StringComparison.Ordinal);
+        Assert.Contains("AND NULLIF(BTRIM(need.gtin), '') IS NOT NULL", coverageSection, StringComparison.Ordinal);
         Assert.Contains("LEFT JOIN marking_code_covered_by_order mcb ON mcb.order_id = ob.id", rollupSection, StringComparison.Ordinal);
         Assert.Contains("AND NOT COALESCE(mcb.has_uncovered_positive_need, FALSE) AS marking_completed", rollupSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("COUNT(DISTINCT c.id)", coverageSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("FROM markable_item_need need\n    INNER JOIN selected_marking_orders", coverageSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("FROM markable_item_need need\n    INNER JOIN order_lines_scope", coverageSection, StringComparison.Ordinal);
         Assert.DoesNotContain("LEFT JOIN LATERAL", rollupSection, StringComparison.Ordinal);
         Assert.DoesNotContain("free_code_stats", rollupSection, StringComparison.Ordinal);
         Assert.DoesNotContain("bound_code_stats", rollupSection, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OrderListMarkingCoverage_MatchesNeedsOnlyAfterBucketAggregation()
+    {
+        var sql = File.ReadAllText(GetPostgresDataStorePath()).Replace("\r\n", "\n", StringComparison.Ordinal);
+        var freeMatchesStart = sql.IndexOf("free_need_matches AS", StringComparison.Ordinal);
+        var freeCoverageStart = sql.IndexOf("free_marking_need_coverage AS", StringComparison.Ordinal);
+        var freeMatchesSection = sql[freeMatchesStart..freeCoverageStart];
+        var boundMatchesStart = sql.IndexOf("bound_need_matches AS", StringComparison.Ordinal);
+        var boundCoverageStart = sql.IndexOf("bound_marking_need_coverage AS", StringComparison.Ordinal);
+        var boundMatchesSection = sql[boundMatchesStart..boundCoverageStart];
+
+        Assert.Contains("INNER JOIN free_code_buckets bucket ON bucket.order_id = need.order_id", freeMatchesSection, StringComparison.Ordinal);
+        Assert.Contains("AND bucket.item_id = need.item_id", freeMatchesSection, StringComparison.Ordinal);
+        Assert.Contains("UNION ALL", freeMatchesSection, StringComparison.Ordinal);
+        Assert.Contains("AND bucket.item_id <> need.item_id", freeMatchesSection, StringComparison.Ordinal);
+        Assert.Contains("bucket.normalized_gtin = COALESCE(need.gtin, '')", freeMatchesSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("marking_code c", freeMatchesSection, StringComparison.Ordinal);
+
+        Assert.Contains("INNER JOIN bound_code_buckets bucket ON bucket.order_id = need.order_id", boundMatchesSection, StringComparison.Ordinal);
+        Assert.Contains("AND bucket.item_id = need.item_id", boundMatchesSection, StringComparison.Ordinal);
+        Assert.Contains("UNION ALL", boundMatchesSection, StringComparison.Ordinal);
+        Assert.Contains("AND bucket.item_id <> need.item_id", boundMatchesSection, StringComparison.Ordinal);
+        Assert.Contains("bucket.normalized_gtin = COALESCE(need.gtin, '')", boundMatchesSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("marking_code c", boundMatchesSection, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -126,8 +170,11 @@ public sealed class OrderGetOrdersPageSqlTests
     {
         var sql = File.ReadAllText(GetPostgresDataStorePath()).Replace("\r\n", "\n", StringComparison.Ordinal);
 
-        Assert.Contains("COALESCE(NULLIF(BTRIM(COALESCE(smo.gtin, c.gtin)), ''), '') = COALESCE(need.gtin, '')", sql, StringComparison.Ordinal);
-        Assert.Contains("COALESCE(NULLIF(BTRIM(i.gtin), ''), '') = COALESCE(need.gtin, '')", sql, StringComparison.Ordinal);
+        Assert.Contains("NULLIF(BTRIM(i.gtin), '') AS gtin", sql, StringComparison.Ordinal);
+        Assert.Contains("AND NULLIF(BTRIM(i.gtin), '') IS NOT NULL", sql, StringComparison.Ordinal);
+        Assert.Contains("COALESCE(NULLIF(BTRIM(COALESCE(smo.gtin, c.gtin)), ''), '') AS normalized_gtin", sql, StringComparison.Ordinal);
+        Assert.Contains("COALESCE(NULLIF(BTRIM(i.gtin), ''), '') AS normalized_gtin", sql, StringComparison.Ordinal);
+        Assert.Contains("AND NULLIF(BTRIM(need.gtin), '') IS NOT NULL", sql, StringComparison.Ordinal);
     }
 
     private static string GetPostgresDataStorePath()

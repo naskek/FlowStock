@@ -315,6 +315,15 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
                 gtin: sharedGtin);
             AddMarkingCode(scopedStore, importId, gtinFallbackTask, "GTIN-FALLBACK", MarkingCodeStatus.Reserved, gtin: null);
 
+            var itemMatchMultipleBuckets = SeedMarkableOrder(scopedStore, $"{prefix}-item-buckets", itemA, qty: 2);
+            var itemMatchMultipleBucketsTask = AddMarkingOrder(
+                scopedStore,
+                itemMatchMultipleBuckets.OrderId,
+                itemA,
+                requestedQty: 2);
+            AddMarkingCode(scopedStore, importId, itemMatchMultipleBucketsTask, "ITEM-BUCKET-1", MarkingCodeStatus.Reserved, gtin: sharedGtin);
+            AddMarkingCode(scopedStore, importId, itemMatchMultipleBucketsTask, "ITEM-BUCKET-2", MarkingCodeStatus.Printed, gtin: "04607186959999");
+
             var emptyGtinDoesNotFallback = SeedMarkableOrder(scopedStore, $"{prefix}-empty-gtin", itemA, qty: 1);
             var emptyGtinTask = AddMarkingOrder(
                 scopedStore,
@@ -367,6 +376,7 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
             SeedReservedLedgerHu(scopedStore, reservedCustomer, itemD, qty: 1, huCode: $"{prefix}-HU");
 
             AssertMarking(ReadSingleOrderPageRow(scopedStore, gtinFallback.OrderRef), required: true, covered: true);
+            AssertMarking(ReadSingleOrderPageRow(scopedStore, itemMatchMultipleBuckets.OrderRef), required: true, covered: true);
             AssertMarking(ReadSingleOrderPageRow(scopedStore, emptyGtinDoesNotFallback.OrderRef), required: true, covered: false);
             AssertMarking(ReadSingleOrderPageRow(scopedStore, sharedNeed.OrderRef), required: true, covered: true);
             AssertMarking(ReadSingleOrderPageRow(scopedStore, multiNeed.OrderRef), required: true, covered: false);

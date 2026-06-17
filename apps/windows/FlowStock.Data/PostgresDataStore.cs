@@ -763,43 +763,107 @@ selected_marking_orders AS (
       AND (mo.source_type IN (@production_need_source_type, @production_order_source_type)
            OR mo.order_id IS NOT NULL)
 ),
-free_marking_need_coverage AS (
-    SELECT need.order_id,
-           need.item_id,
-           COALESCE(need.gtin, '') AS gtin,
-           COUNT(DISTINCT c.id) AS codes_total
-    FROM markable_item_need need
-    INNER JOIN selected_marking_orders smo ON smo.order_id = need.order_id
+free_code_bucket_rows AS (
+    SELECT DISTINCT c.id AS code_id,
+           smo.order_id,
+           COALESCE(smo.item_id, 0) AS item_id,
+           COALESCE(NULLIF(BTRIM(COALESCE(smo.gtin, c.gtin)), ''), '') AS normalized_gtin
+    FROM selected_marking_orders smo
     INNER JOIN marking_code c ON c.marking_order_id = smo.id
     WHERE c.status IN (@marking_code_status_reserved, @marking_code_status_printed)
       AND c.receipt_doc_id IS NULL
       AND c.receipt_line_id IS NULL
-      AND (COALESCE(smo.item_id, 0) = need.item_id
-           OR (need.gtin IS NOT NULL
-               AND COALESCE(NULLIF(BTRIM(COALESCE(smo.gtin, c.gtin)), ''), '') = COALESCE(need.gtin, '')))
-    GROUP BY need.order_id,
-             need.item_id,
-             COALESCE(need.gtin, '')
 ),
-bound_marking_need_coverage AS (
+free_code_buckets AS (
+    SELECT order_id,
+           item_id,
+           normalized_gtin,
+           COUNT(*) AS free_qty
+    FROM free_code_bucket_rows
+    GROUP BY order_id,
+             item_id,
+             normalized_gtin
+),
+free_need_matches AS (
     SELECT need.order_id,
            need.item_id,
            COALESCE(need.gtin, '') AS gtin,
-           COUNT(DISTINCT c.id) AS codes_total
+           bucket.free_qty AS matched_qty
     FROM markable_item_need need
-    INNER JOIN order_lines_scope ols ON ols.order_id = need.order_id
+    INNER JOIN free_code_buckets bucket ON bucket.order_id = need.order_id
+                                       AND bucket.item_id = need.item_id
+    UNION ALL
+    SELECT need.order_id,
+           need.item_id,
+           COALESCE(need.gtin, '') AS gtin,
+           bucket.free_qty AS matched_qty
+    FROM markable_item_need need
+    INNER JOIN free_code_buckets bucket ON bucket.order_id = need.order_id
+                                       AND bucket.item_id <> need.item_id
+                                       AND NULLIF(BTRIM(need.gtin), '') IS NOT NULL
+                                       AND bucket.normalized_gtin = COALESCE(need.gtin, '')
+),
+free_marking_need_coverage AS (
+    SELECT order_id,
+           item_id,
+           gtin,
+           SUM(matched_qty) AS codes_total
+    FROM free_need_matches
+    GROUP BY order_id,
+             item_id,
+             gtin
+),
+bound_code_bucket_rows AS (
+    SELECT DISTINCT c.id AS code_id,
+           ols.order_id,
+           ols.item_id,
+           COALESCE(NULLIF(BTRIM(i.gtin), ''), '') AS normalized_gtin
+    FROM order_lines_scope ols
     INNER JOIN items i ON i.id = ols.item_id
     INNER JOIN doc_lines dl ON dl.order_line_id = ols.id
     INNER JOIN marking_code c ON c.receipt_line_id = dl.id
     INNER JOIN selected_marking_orders smo ON smo.id = c.marking_order_id
                                          AND smo.order_id = ols.order_id
     WHERE c.status <> @marking_code_status_voided
-      AND (ols.item_id = need.item_id
-           OR (need.gtin IS NOT NULL
-               AND COALESCE(NULLIF(BTRIM(i.gtin), ''), '') = COALESCE(need.gtin, '')))
-    GROUP BY need.order_id,
-             need.item_id,
-             COALESCE(need.gtin, '')
+),
+bound_code_buckets AS (
+    SELECT order_id,
+           item_id,
+           normalized_gtin,
+           COUNT(*) AS bound_qty
+    FROM bound_code_bucket_rows
+    GROUP BY order_id,
+             item_id,
+             normalized_gtin
+),
+bound_need_matches AS (
+    SELECT need.order_id,
+           need.item_id,
+           COALESCE(need.gtin, '') AS gtin,
+           bucket.bound_qty AS matched_qty
+    FROM markable_item_need need
+    INNER JOIN bound_code_buckets bucket ON bucket.order_id = need.order_id
+                                        AND bucket.item_id = need.item_id
+    UNION ALL
+    SELECT need.order_id,
+           need.item_id,
+           COALESCE(need.gtin, '') AS gtin,
+           bucket.bound_qty AS matched_qty
+    FROM markable_item_need need
+    INNER JOIN bound_code_buckets bucket ON bucket.order_id = need.order_id
+                                        AND bucket.item_id <> need.item_id
+                                        AND NULLIF(BTRIM(need.gtin), '') IS NOT NULL
+                                        AND bucket.normalized_gtin = COALESCE(need.gtin, '')
+),
+bound_marking_need_coverage AS (
+    SELECT order_id,
+           item_id,
+           gtin,
+           SUM(matched_qty) AS codes_total
+    FROM bound_need_matches
+    GROUP BY order_id,
+             item_id,
+             gtin
 ),
 marking_need_coverage AS (
     SELECT need.order_id,
