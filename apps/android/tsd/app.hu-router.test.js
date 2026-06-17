@@ -7,14 +7,63 @@ const appJs = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
 const storageJs = fs.readFileSync(path.join(__dirname, "storage.js"), "utf8");
 const appVersionJs = fs.readFileSync(path.join(__dirname, "app-version.js"), "utf8");
 const serviceWorkerJs = fs.readFileSync(path.join(__dirname, "service-worker.js"), "utf8");
+const scannerJs = fs.readFileSync(path.join(__dirname, "scanner.js"), "utf8");
 
 const hooks = {};
 const alerts = [];
 const overlays = [];
 const sessionStore = {};
-let scannerHandler = null;
-let scannerFocusCount = 0;
-let scannerSetHandlerCount = 0;
+const documentListeners = [];
+
+function addDocumentListener(type, handler, capture) {
+  documentListeners.push({ type: type, handler: handler, capture: !!capture });
+}
+
+function removeDocumentListener(type, handler, capture) {
+  for (let i = documentListeners.length - 1; i >= 0; i -= 1) {
+    const entry = documentListeners[i];
+    if (entry.type === type && entry.handler === handler && entry.capture === !!capture) {
+      documentListeners.splice(i, 1);
+    }
+  }
+}
+
+function dispatchDocumentEvent(event, target) {
+  event.target = target;
+  documentListeners
+    .filter(function (entry) {
+      return entry.type === event.type && entry.capture;
+    })
+    .forEach(function (entry) {
+      entry.handler(event);
+    });
+  documentListeners
+    .filter(function (entry) {
+      return entry.type === event.type && !entry.capture;
+    })
+    .forEach(function (entry) {
+      entry.handler(event);
+    });
+}
+
+function getRouteScanHandler() {
+  return hooks.getActiveScanHandler ? hooks.getActiveScanHandler() : null;
+}
+
+class KeyboardEventPolyfill {
+  constructor(type, init) {
+    init = init || {};
+    this.type = type;
+    this.key = init.key || "";
+    this.bubbles = !!init.bubbles;
+    this.target = null;
+    this.defaultPrevented = false;
+  }
+
+  preventDefault() {
+    this.defaultPrevented = true;
+  }
+}
 let resolveCalls = 0;
 let fillingScanCalls = 0;
 let fillingFillCalls = 0;
@@ -81,9 +130,10 @@ function createHuLookupInput() {
     inputmode: "none",
   };
   const listeners = {};
-  return {
+  const input = {
+    tagName: "INPUT",
     value: "",
-    readOnly: true,
+    readOnly: false,
     attrs: attrs,
     setAttribute: function (name, value) {
       this.attrs[name] = value;
@@ -99,21 +149,66 @@ function createHuLookupInput() {
       listeners[key] = listeners[key] || [];
       listeners[key].push(handler);
     },
+    simulateWedgeInput: function (text) {
+      if (this.readOnly) {
+        throw new Error("wedge blocked by readOnly");
+      }
+      this.value = String(text || "");
+    },
+    dispatchEvent: function (event) {
+      if (!event.preventDefault) {
+        event.preventDefault = function () {
+          event.defaultPrevented = true;
+        };
+      }
+      event.target = this;
+      documentListeners
+        .filter(function (entry) {
+          return entry.type === event.type && entry.capture;
+        })
+        .forEach(function (entry) {
+          entry.handler(event);
+        });
+      (listeners[event.type] || []).forEach(function (handler) {
+        handler(event);
+      });
+      if (event.bubbles) {
+        documentListeners
+          .filter(function (entry) {
+            return entry.type === event.type && !entry.capture;
+          })
+          .forEach(function (entry) {
+            entry.handler(event);
+          });
+      }
+      return !event.defaultPrevented;
+    },
     dispatchPointerDown: function () {
+      const event = {
+        preventDefault: function () {
+          event.defaultPrevented = true;
+        },
+        defaultPrevented: false,
+      };
       (listeners["pointerdown:capture"] || []).forEach(function (handler) {
-        handler({});
+        handler(event);
       });
     },
     dispatchBlur: function () {
+      activeElementRef = null;
       (listeners.blur || []).forEach(function (handler) {
         handler({});
       });
     },
+    blur: function () {
+      activeElementRef = null;
+    },
     focus: function () {
       huLookupFocusCount += 1;
-      activeElementRef = huLookupInput;
+      activeElementRef = input;
     },
   };
+  return input;
 }
 
 let huLookupInput = null;
@@ -239,22 +334,7 @@ const context = {
       return 0;
     },
     addEventListener: function () {},
-    FlowStockScanner: {
-      createScannerManager: function () {
-        return {
-          setHandler: function (handler) {
-            scannerHandler = handler;
-            scannerSetHandlerCount += 1;
-          },
-          setErrorHandler: function () {},
-          setMode: function () {},
-          start: function () {},
-          focus: function () {
-            scannerFocusCount += 1;
-          },
-        };
-      },
-    },
+    KeyboardEvent: KeyboardEventPolyfill,
   },
   document: {
     documentElement: null,
@@ -308,8 +388,8 @@ const context = {
       }
       return [];
     },
-    addEventListener: function () {},
-    removeEventListener: function () {},
+    addEventListener: addDocumentListener,
+    removeEventListener: removeDocumentListener,
   },
   navigator: {},
   localStorage: null,
@@ -391,8 +471,11 @@ context.window.document = context.document;
 context.window.navigator = context.navigator;
 context.window.TsdStorage = context.TsdStorage;
 context.requestAnimationFrame = context.window.requestAnimationFrame;
+context.KeyboardEvent = KeyboardEventPolyfill;
 
 vm.createContext(context);
+vm.runInContext("var window = this.window; var document = this.document;", context);
+vm.runInContext(scannerJs, context, { filename: "scanner.js" });
 vm.runInContext(appJs, context, { filename: "app.js" });
 
 async function flushPromises() {
@@ -414,7 +497,7 @@ async function main() {
 
   assert(storageJs.includes("/api/tsd/hu/resolve?code="));
   assert(storageJs.includes("/api/tsd/hu/card?code="));
-  assert(appVersionJs.includes('var version = "46"'));
+  assert(appVersionJs.includes('var version = "47"'));
   assert(serviceWorkerJs.includes('importScripts("./app-version.js")'));
   assert(serviceWorkerJs.includes('"./app.js"'));
   assert(serviceWorkerJs.includes('"./img/home/hu-search.png"'));
@@ -428,24 +511,23 @@ async function main() {
   assert.doesNotMatch(homeHtml, /data-route="settings"/);
 
   await hooks.initScannerManager();
-  const handlerCallsBeforeHome = scannerSetHandlerCount;
   hooks.renderRouteInternal({ name: "home" });
   assert.strictEqual(
-    scannerSetHandlerCount,
-    handlerCallsBeforeHome,
+    getRouteScanHandler(),
+    null,
     "home render should not install a global HU scan handler"
   );
-  assert.strictEqual(scannerHandler, null, "neutral home route should leave scanner handler unset");
 
-  if (scannerHandler) {
-    scannerHandler({ value: "NOT-A-HU", source: "test" });
+  const homeHandler = getRouteScanHandler();
+  if (homeHandler) {
+    homeHandler({ value: "NOT-A-HU", source: "test" });
   }
   await flushPromises();
   assert.strictEqual(resolveCalls, 0, "non-HU scan from home should not call resolver");
 
   const homeHash = context.window.location.hash;
-  if (scannerHandler) {
-    scannerHandler({ value: "HU-000123", source: "test" });
+  if (homeHandler) {
+    homeHandler({ value: "HU-000123", source: "test" });
   }
   await flushPromises();
   assert.strictEqual(resolveCalls, 0, "home HU scan should not call resolver without route handler");
@@ -453,7 +535,7 @@ async function main() {
 
   context.window.location.hash = "#/orders";
   const resolveCallsBeforeOrders = resolveCalls;
-  assert.strictEqual(scannerHandler, null, "orders route should not install HU lookup handler");
+  assert.strictEqual(getRouteScanHandler(), null, "orders route should not install HU lookup handler");
   await flushPromises();
   assert.strictEqual(resolveCalls, resolveCallsBeforeOrders, "orders without scan handler must not resolve HU");
 
@@ -462,8 +544,8 @@ async function main() {
   const resolveCallsBeforeHuRoute = resolveCalls;
   hooks.renderRouteInternal({ name: "hu" });
   await flushPromises();
-  assert.strictEqual(typeof scannerHandler, "function");
-  assert.strictEqual(huLookupInput.readOnly, true, "/hu should open in scan-mode");
+  assert.strictEqual(typeof getRouteScanHandler(), "function");
+  assert.strictEqual(huLookupInput.readOnly, false, "/hu should open in scan-mode");
   assert.strictEqual(huLookupInput.getAttribute("inputmode"), "none", "/hu should suppress inputmode keyboard");
   assert.strictEqual(huLookupInput.getAttribute("data-hu-manual"), null, "/hu should not start in manual mode");
   assert.strictEqual(activeElementRef, huLookupInput, "/hu render should focus lookup input");
@@ -472,12 +554,20 @@ async function main() {
   const focusCountAfterRender = huLookupFocusCount;
   huLookupInput.dispatchBlur();
   assert.strictEqual(huLookupFocusCount, focusCountAfterRender, "blur must not restore focus");
-  assert.strictEqual(huLookupInput.readOnly, true, "blur should keep scan-mode");
+  assert.strictEqual(huLookupInput.readOnly, false, "blur should keep scan-mode");
 
-  scannerHandler({ value: "HU-000124", source: "test" });
+  const wedgeCode = "HU-000124";
+  huLookupInput.simulateWedgeInput(wedgeCode);
+  assert.strictEqual(huLookupInput.value, wedgeCode, "wedge should write into lookup field");
+  huLookupInput.dispatchEvent(
+    new KeyboardEventPolyfill("keydown", {
+      key: "Enter",
+      bubbles: true,
+    })
+  );
   await flushPromises();
-  assert.strictEqual(resolveCalls, resolveCallsBeforeHuRoute + 1, "/hu physical scan should resolve once");
-  assert.strictEqual(context.window.location.hash, "/hu/HU-000124", "/hu scan should open HU card");
+  assert.strictEqual(resolveCalls, resolveCallsBeforeHuRoute + 1, "/hu wedge Enter should resolve once");
+  assert.strictEqual(context.window.location.hash, "/hu/HU-000124", "/hu wedge should open HU card");
 
   context.window.location.hash = "#/hu";
   resetHuLookupDom();
@@ -510,7 +600,7 @@ async function main() {
   assert.strictEqual(resolveCalls, resolveCallsBeforeUnknown + 1);
   assert.match(huLookupMessageEl.textContent, /HU неизвестен: HU-999999/);
   assert.strictEqual(context.window.location.hash, "#/hu", "unknown HU must stay on lookup screen");
-  assert.strictEqual(huLookupInput.readOnly, true, "unknown HU should restore scan-mode");
+  assert.strictEqual(huLookupInput.readOnly, false, "unknown HU should restore scan-mode");
   assert(huLookupFocusCount > focusBeforeUnknown, "unknown HU should restore scanner focus");
 
   context.window.location.hash = "#/hu";
@@ -523,7 +613,7 @@ async function main() {
   const focusBeforeNetworkError = huLookupFocusCount;
   await hooks.submitHuLookup("HU-000127");
   await flushPromises();
-  assert.strictEqual(huLookupInput.readOnly, true, "network error should restore scan-mode");
+  assert.strictEqual(huLookupInput.readOnly, false, "network error should restore scan-mode");
   assert(huLookupFocusCount > focusBeforeNetworkError, "network error should restore scanner focus");
   nextResolveResult = null;
 
@@ -535,7 +625,7 @@ async function main() {
   await hooks.submitHuLookup("not-a-hu");
   await flushPromises();
   assert.strictEqual(resolveCalls, resolveCallsBeforeInvalid, "invalid format must not call resolve");
-  assert.strictEqual(huLookupInput.readOnly, true, "invalid format should restore scan-mode");
+  assert.strictEqual(huLookupInput.readOnly, false, "invalid format should restore scan-mode");
   assert.strictEqual(activeElementRef, huLookupInput, "invalid format should restore focus");
 
   context.window.location.hash = "#/hu";
@@ -553,10 +643,15 @@ async function main() {
   hooks.renderRouteInternal({ name: "hu" });
   await flushPromises();
   const resolveCallsBeforeEnter = resolveCalls;
-  huLookupInput.value = "HU-000126";
-  scannerHandler({ value: "HU-000126", source: "test", reason: "enter" });
+  huLookupInput.simulateWedgeInput("HU-000126");
+  huLookupInput.dispatchEvent(
+    new KeyboardEventPolyfill("keydown", {
+      key: "Enter",
+      bubbles: true,
+    })
+  );
   await flushPromises();
-  assert.strictEqual(resolveCalls, resolveCallsBeforeEnter + 1, "Enter scan path should resolve exactly once");
+  assert.strictEqual(resolveCalls, resolveCallsBeforeEnter + 1, "Enter wedge path should resolve exactly once");
   assert.strictEqual(context.window.location.hash, "/hu/HU-000126");
 
   hooks.setNavOrigin("/hu");
@@ -566,13 +661,29 @@ async function main() {
   hooks.renderRouteInternal({ name: "hu" });
   await flushPromises();
   assert.strictEqual(activeElementRef, huLookupInput, "back to /hu should restore scanner focus");
-  assert.strictEqual(huLookupInput.readOnly, true, "back to /hu should restore scan-mode");
+  assert.strictEqual(huLookupInput.readOnly, false, "back to /hu should restore scan-mode");
+
+  resetHuLookupDom();
+  hooks.renderRouteInternal({ name: "hu" });
+  await flushPromises();
+  const resolveCallsBeforeBackWedge = resolveCalls;
+  huLookupInput.simulateWedgeInput("HU-000130");
+  huLookupInput.dispatchEvent(
+    new KeyboardEventPolyfill("keydown", {
+      key: "Enter",
+      bubbles: true,
+    })
+  );
+  await flushPromises();
+  assert.strictEqual(resolveCalls, resolveCallsBeforeBackWedge + 1, "wedge after back should resolve without tap");
+  assert.strictEqual(context.window.location.hash, "/hu/HU-000130");
 
   overlays.length = 0;
   const resolveCallsBeforeOutbound = resolveCalls;
   hooks.renderOutboundPickingOrder(outboundOrder, {});
-  assert.strictEqual(typeof scannerHandler, "function");
-  scannerHandler({ value: "HU-000123", source: "test" });
+  assert.strictEqual(typeof getRouteScanHandler(), "function");
+  const outboundHandler = getRouteScanHandler();
+  outboundHandler({ value: "HU-000123", source: "test" });
   await flushPromises();
   assert.strictEqual(resolveCalls, resolveCallsBeforeOutbound, "outbound active handler must bypass global resolver");
   assert.strictEqual(outboundScanCalls, 1, "outbound active handler should receive physical scan");
@@ -580,8 +691,9 @@ async function main() {
   overlays.length = 0;
   const resolveCallsBeforeFilling = resolveCalls;
   hooks.renderFillingScanScreen(fillingContext, {});
-  assert.strictEqual(typeof scannerHandler, "function");
-  scannerHandler({ value: "HU-000123", source: "test" });
+  assert.strictEqual(typeof getRouteScanHandler(), "function");
+  const fillingHandler = getRouteScanHandler();
+  fillingHandler({ value: "HU-000123", source: "test" });
   await flushPromises();
   assert.strictEqual(resolveCalls, resolveCallsBeforeFilling, "filling active handler must bypass global resolver");
   assert.strictEqual(fillingScanCalls, 1, "filling active handler should receive physical scan");

@@ -6638,7 +6638,7 @@
         return;
       }
       lookupInput.removeAttribute("data-hu-manual");
-      lookupInput.readOnly = true;
+      lookupInput.readOnly = false;
       lookupInput.setAttribute("inputmode", "none");
     }
 
@@ -6729,8 +6729,19 @@
       setPreferredScanTarget(lookupInput);
       lookupInput.addEventListener(
         "pointerdown",
-        function () {
+        function (event) {
           enterHuLookupManualMode();
+
+          if (document.activeElement === lookupInput) {
+            event.preventDefault();
+            lookupInput.blur();
+
+            try {
+              lookupInput.focus({ preventScroll: true });
+            } catch (error) {
+              lookupInput.focus();
+            }
+          }
         },
         true
       );
