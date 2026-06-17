@@ -27,10 +27,23 @@ public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStor
         long ReadRowsMs,
         long TotalMs);
 
+    public sealed record OrderSqlExplainDiagnostics(
+        string Operation,
+        bool QueryPresent,
+        int CommandIndex,
+        string CommandRole,
+        bool IncludeInternal,
+        bool IncludePendingRequests,
+        int? Limit,
+        int Offset,
+        bool IncludeCancelledMerged,
+        string PlanText);
+
     private readonly string _connectionString;
     private readonly NpgsqlConnection? _connection;
     private readonly NpgsqlTransaction? _transaction;
     private readonly Action<OrderSqlDiagnostics>? _orderSqlDiagnosticsSink;
+    private readonly Action<OrderSqlExplainDiagnostics>? _orderSqlExplainDiagnosticsSink;
     private static readonly AsyncLocal<OrderSqlDiagnosticsScope?> OrderSqlDiagnosticsScopeSlot = new();
     private const string DocSelectBase =
         "SELECT d.id, d.doc_ref, d.type, d.status, d.created_at, d.closed_at, d.partner_id, d.order_id, d.order_ref, d.shipping_ref, d.reason_code, d.comment, p.name, p.code, " +
@@ -901,21 +914,27 @@ LEFT JOIN marking_rollup mr ON mr.order_id = ob.id
 LEFT JOIN order_list_flags olf ON olf.order_id = ob.id
 LEFT JOIN pallet_summary ps ON ps.order_id = ob.id";
 
-    public PostgresDataStore(string connectionString, Action<OrderSqlDiagnostics>? orderSqlDiagnosticsSink = null)
+    public PostgresDataStore(
+        string connectionString,
+        Action<OrderSqlDiagnostics>? orderSqlDiagnosticsSink = null,
+        Action<OrderSqlExplainDiagnostics>? orderSqlExplainDiagnosticsSink = null)
     {
         _connectionString = connectionString;
         _orderSqlDiagnosticsSink = orderSqlDiagnosticsSink;
+        _orderSqlExplainDiagnosticsSink = orderSqlExplainDiagnosticsSink;
     }
 
     private PostgresDataStore(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
-        Action<OrderSqlDiagnostics>? orderSqlDiagnosticsSink)
+        Action<OrderSqlDiagnostics>? orderSqlDiagnosticsSink,
+        Action<OrderSqlExplainDiagnostics>? orderSqlExplainDiagnosticsSink)
     {
         _connection = connection;
         _transaction = transaction;
         _connectionString = connection.ConnectionString;
         _orderSqlDiagnosticsSink = orderSqlDiagnosticsSink;
+        _orderSqlExplainDiagnosticsSink = orderSqlExplainDiagnosticsSink;
     }
 
     public void Initialize()
@@ -937,15 +956,31 @@ LEFT JOIN pallet_summary ps ON ps.order_id = ob.id";
         connection.Open();
         using var transaction = connection.BeginTransaction();
 
-        var scoped = new PostgresDataStore(connection, transaction, _orderSqlDiagnosticsSink);
+        var scoped = new PostgresDataStore(connection, transaction, _orderSqlDiagnosticsSink, _orderSqlExplainDiagnosticsSink);
         work(scoped);
 
         transaction.Commit();
     }
 
-    public IDisposable BeginOrderListSqlDiagnostics(string operation, bool queryPresent)
+    public IDisposable BeginOrderListSqlDiagnostics(
+        string operation,
+        bool queryPresent,
+        bool explainAnalyze = false,
+        bool includeInternal = false,
+        bool includePendingRequests = false,
+        int? limit = null,
+        int offset = 0,
+        bool includeCancelledMerged = false)
     {
-        return new OrderSqlDiagnosticsScopeHandle(operation, queryPresent);
+        return new OrderSqlDiagnosticsScopeHandle(
+            operation,
+            queryPresent,
+            explainAnalyze,
+            includeInternal,
+            includePendingRequests,
+            limit,
+            offset,
+            includeCancelledMerged);
     }
 
     public ProductionFillingCompletion? GetProductionFillingCompletion(long orderId, string operationFingerprint)
@@ -9463,7 +9498,7 @@ WHERE d.id = dl.doc_id
         using var connection = new NpgsqlConnection(_connectionString);
         connection.Open();
         using var transaction = connection.BeginTransaction();
-        var scoped = new PostgresDataStore(connection, transaction, _orderSqlDiagnosticsSink);
+        var scoped = new PostgresDataStore(connection, transaction, _orderSqlDiagnosticsSink, _orderSqlExplainDiagnosticsSink);
         var result = scoped.ReleaseProducedCustomerStockForOrderLineCore(connection, orderId, orderLineId);
         transaction.Commit();
         return result;
@@ -11404,6 +11439,13 @@ RETURNING id;
         var buildCommandStopwatch = Stopwatch.StartNew();
         using var command = buildCommand(connection);
         var buildCommandMs = buildCommandStopwatch.ElapsedMilliseconds;
+        var scope = OrderSqlDiagnosticsScopeSlot.Value;
+        if (scope?.ExplainAnalyze == true)
+        {
+            var planText = ExecuteOrderListExplainCommand(command);
+            EmitOrderSqlExplainDiagnostics(scope, commandRole, planText);
+            return Array.Empty<Order>();
+        }
 
         var executeReaderStopwatch = Stopwatch.StartNew();
         using var reader = command.ExecuteReader();
@@ -11428,6 +11470,21 @@ RETURNING id;
             totalStopwatch.ElapsedMilliseconds);
 
         return orders;
+    }
+
+    private static string ExecuteOrderListExplainCommand(NpgsqlCommand command)
+    {
+        var originalCommandText = command.CommandText;
+        command.CommandText = "EXPLAIN (ANALYZE, BUFFERS, VERBOSE, SETTINGS, FORMAT TEXT)\n" + originalCommandText;
+
+        using var reader = command.ExecuteReader();
+        var planLines = new List<string>();
+        while (reader.Read())
+        {
+            planLines.Add(reader.GetString(0));
+        }
+
+        return string.Join(Environment.NewLine, planLines);
     }
 
     private void EmitOrderSqlDiagnostics(
@@ -11459,6 +11516,29 @@ RETURNING id;
             totalMs));
     }
 
+    private void EmitOrderSqlExplainDiagnostics(
+        OrderSqlDiagnosticsScope scope,
+        string commandRole,
+        string planText)
+    {
+        if (_orderSqlExplainDiagnosticsSink == null)
+        {
+            return;
+        }
+
+        _orderSqlExplainDiagnosticsSink(new OrderSqlExplainDiagnostics(
+            scope.Operation,
+            scope.QueryPresent,
+            scope.NextCommandIndex(),
+            commandRole,
+            scope.IncludeInternal,
+            scope.IncludePendingRequests,
+            scope.Limit,
+            scope.Offset,
+            scope.IncludeCancelledMerged,
+            planText));
+    }
+
     private NpgsqlCommand CreateCommand(NpgsqlConnection connection, string sql)
     {
         var command = connection.CreateCommand();
@@ -11471,13 +11551,33 @@ RETURNING id;
         return command;
     }
 
-    private sealed class OrderSqlDiagnosticsScope(string operation, bool queryPresent)
+    private sealed class OrderSqlDiagnosticsScope(
+        string operation,
+        bool queryPresent,
+        bool explainAnalyze,
+        bool includeInternal,
+        bool includePendingRequests,
+        int? limit,
+        int offset,
+        bool includeCancelledMerged)
     {
         private int _commandIndex;
 
         public string Operation { get; } = operation;
 
         public bool QueryPresent { get; } = queryPresent;
+
+        public bool ExplainAnalyze { get; } = explainAnalyze;
+
+        public bool IncludeInternal { get; } = includeInternal;
+
+        public bool IncludePendingRequests { get; } = includePendingRequests;
+
+        public int? Limit { get; } = limit;
+
+        public int Offset { get; } = offset;
+
+        public bool IncludeCancelledMerged { get; } = includeCancelledMerged;
 
         public int NextCommandIndex()
         {
@@ -11490,10 +11590,26 @@ RETURNING id;
         private readonly OrderSqlDiagnosticsScope? _previous;
         private bool _disposed;
 
-        public OrderSqlDiagnosticsScopeHandle(string operation, bool queryPresent)
+        public OrderSqlDiagnosticsScopeHandle(
+            string operation,
+            bool queryPresent,
+            bool explainAnalyze,
+            bool includeInternal,
+            bool includePendingRequests,
+            int? limit,
+            int offset,
+            bool includeCancelledMerged)
         {
             _previous = OrderSqlDiagnosticsScopeSlot.Value;
-            OrderSqlDiagnosticsScopeSlot.Value = new OrderSqlDiagnosticsScope(operation, queryPresent);
+            OrderSqlDiagnosticsScopeSlot.Value = new OrderSqlDiagnosticsScope(
+                operation,
+                queryPresent,
+                explainAnalyze,
+                includeInternal,
+                includePendingRequests,
+                limit,
+                offset,
+                includeCancelledMerged);
         }
 
         public void Dispose()

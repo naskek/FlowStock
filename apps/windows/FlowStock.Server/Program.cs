@@ -3,6 +3,7 @@ using System.Data.Common;
 using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
+using System.Threading;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using FlowStock.Core.Abstractions;
@@ -33,6 +34,12 @@ if (OrderReservationBackfillCommand.TryRun(args, postgresConnectionString, out v
     return;
 }
 
+var ordersExplainEnabled = string.Equals(
+    builder.Configuration["FLOWSTOCK_ENABLE_ORDERS_EXPLAIN"],
+    "1",
+    StringComparison.OrdinalIgnoreCase);
+var ordersExplainConsumed = 0;
+
 builder.Services.AddSingleton<PostgresDataStore>(sp =>
 {
     var performanceLogger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("FlowStock.Performance");
@@ -49,7 +56,30 @@ builder.Services.AddSingleton<PostgresDataStore>(sp =>
             diagnostics.BuildCommandMs,
             diagnostics.ExecuteReaderMs,
             diagnostics.ReadRowsMs,
-            diagnostics.TotalMs));
+            diagnostics.TotalMs),
+        explainDiagnostics => performanceLogger.LogInformation(
+            "PERF ORDERS_SQL_EXPLAIN_START operation={Operation} q_present={QueryPresent} command_index={CommandIndex} command_role={CommandRole} include_internal={IncludeInternal} include_pending_requests={IncludePendingRequests} limit={Limit} offset={Offset} include_cancelled_merged={IncludeCancelledMerged}{NewLineBeforePlan}{PlanText}{NewLineBeforeEnd}PERF ORDERS_SQL_EXPLAIN_END operation={OperationEnd} q_present={QueryPresentEnd} command_index={CommandIndexEnd} command_role={CommandRoleEnd} include_internal={IncludeInternalEnd} include_pending_requests={IncludePendingRequestsEnd} limit={LimitEnd} offset={OffsetEnd} include_cancelled_merged={IncludeCancelledMergedEnd}",
+            explainDiagnostics.Operation,
+            explainDiagnostics.QueryPresent,
+            explainDiagnostics.CommandIndex,
+            explainDiagnostics.CommandRole,
+            explainDiagnostics.IncludeInternal,
+            explainDiagnostics.IncludePendingRequests,
+            explainDiagnostics.Limit,
+            explainDiagnostics.Offset,
+            explainDiagnostics.IncludeCancelledMerged,
+            Environment.NewLine,
+            explainDiagnostics.PlanText,
+            Environment.NewLine,
+            explainDiagnostics.Operation,
+            explainDiagnostics.QueryPresent,
+            explainDiagnostics.CommandIndex,
+            explainDiagnostics.CommandRole,
+            explainDiagnostics.IncludeInternal,
+            explainDiagnostics.IncludePendingRequests,
+            explainDiagnostics.Limit,
+            explainDiagnostics.Offset,
+            explainDiagnostics.IncludeCancelledMerged));
 });
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.IDataStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.ITsdHuResolverStore>(sp => sp.GetRequiredService<PostgresDataStore>());
@@ -1954,6 +1984,63 @@ app.MapGet("/api/orders", (HttpRequest request, IDataStore store, ILoggerFactory
     var offset = TryReadNonNegativeInt(request.Query["offset"]) ?? 0;
     var includeCancelledMerged = string.Equals(request.Query["include_cancelled_merged"], "1", StringComparison.OrdinalIgnoreCase)
                                  || string.Equals(request.Query["include_cancelled_merged"], "true", StringComparison.OrdinalIgnoreCase);
+    var explainOrdersSql = string.Equals(request.Query["explain_orders_sql"], "1", StringComparison.OrdinalIgnoreCase)
+                           || string.Equals(request.Query["explain_orders_sql"], "true", StringComparison.OrdinalIgnoreCase);
+
+    if (explainOrdersSql)
+    {
+        if (!ordersExplainEnabled)
+        {
+            return Results.Json(
+                new ApiResult(false, "ORDERS_EXPLAIN_DISABLED"),
+                statusCode: StatusCodes.Status403Forbidden);
+        }
+
+        if (!string.IsNullOrWhiteSpace(normalized))
+        {
+            return Results.BadRequest(new ApiResult(false, "ORDERS_EXPLAIN_REQUIRES_EMPTY_Q"));
+        }
+
+        if (Interlocked.CompareExchange(ref ordersExplainConsumed, 1, 0) != 0)
+        {
+            return Results.Json(
+                new ApiResult(false, "ORDERS_EXPLAIN_ALREADY_CONSUMED"),
+                statusCode: StatusCodes.Status409Conflict);
+        }
+
+        if (store is not PostgresDataStore postgresStore)
+        {
+            return Results.Problem("Orders EXPLAIN diagnostics require PostgreSQL data store.");
+        }
+
+        var explainOperation = limit.HasValue ? "GetOrdersPage" : "GetOrders";
+        var explainOrderService = new OrderService(postgresStore);
+        using var orderSqlDiagnostics = postgresStore.BeginOrderListSqlDiagnostics(
+            explainOperation,
+            queryPresent: false,
+            explainAnalyze: true,
+            includeInternal: includeInternal,
+            includePendingRequests: includePendingRequests,
+            limit: limit,
+            offset: offset,
+            includeCancelledMerged: includeCancelledMerged);
+
+        if (limit.HasValue)
+        {
+            _ = explainOrderService.GetOrdersPage(includeInternal, null, limit.Value, offset, includeCancelledMerged);
+        }
+        else
+        {
+            _ = explainOrderService.GetOrders();
+        }
+
+        return Results.Ok(new
+        {
+            ok = true,
+            explain_logged = true,
+            operation = explainOperation
+        });
+    }
 
     var orderService = new OrderService(store);
     if (limit.HasValue)

@@ -162,6 +162,60 @@ public sealed class OrderListClientPerfGuardTests
         Assert.DoesNotContain("{QueryPattern}", logSection + emitSection, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void OrdersExplainDiagnostics_AreEnvGatedOneShotAndDoNotExposeSqlOrPlanInHttpResponse()
+    {
+        var program = File.ReadAllText(GetRepoPath("apps", "windows", "FlowStock.Server", "Program.cs"));
+        var dataStore = File.ReadAllText(GetRepoPath("apps", "windows", "FlowStock.Data", "PostgresDataStore.cs"));
+        var explainEndpointStart = program.IndexOf("var explainOrdersSql", StringComparison.Ordinal);
+        var normalListStart = program.IndexOf("var orderService = new OrderService(store);", explainEndpointStart, StringComparison.Ordinal);
+        var explainEndpointSection = program[explainEndpointStart..normalListStart];
+        var explainCommandStart = dataStore.IndexOf("private static string ExecuteOrderListExplainCommand", StringComparison.Ordinal);
+        var explainCommandEnd = dataStore.IndexOf("private void EmitOrderSqlDiagnostics", explainCommandStart, StringComparison.Ordinal);
+        var explainCommandSection = dataStore[explainCommandStart..explainCommandEnd];
+        var commandCoreStart = dataStore.IndexOf("private IReadOnlyList<Order> ExecuteOrderListReadCommandCore", StringComparison.Ordinal);
+        var commandCoreEnd = dataStore.IndexOf("private static string ExecuteOrderListExplainCommand", commandCoreStart, StringComparison.Ordinal);
+        var commandCoreSection = dataStore[commandCoreStart..commandCoreEnd];
+        var explainBranchStart = commandCoreSection.IndexOf("if (scope?.ExplainAnalyze == true)", StringComparison.Ordinal);
+        var normalReaderStart = commandCoreSection.IndexOf("var executeReaderStopwatch = Stopwatch.StartNew();", StringComparison.Ordinal);
+
+        Assert.Contains("FLOWSTOCK_ENABLE_ORDERS_EXPLAIN", program, StringComparison.Ordinal);
+        Assert.Contains("if (!ordersExplainEnabled)", explainEndpointSection, StringComparison.Ordinal);
+        Assert.Contains("ORDERS_EXPLAIN_DISABLED", explainEndpointSection, StringComparison.Ordinal);
+        Assert.Contains("StatusCodes.Status403Forbidden", explainEndpointSection, StringComparison.Ordinal);
+        Assert.Contains("Interlocked.CompareExchange(ref ordersExplainConsumed, 1, 0)", explainEndpointSection, StringComparison.Ordinal);
+        Assert.Contains("ORDERS_EXPLAIN_ALREADY_CONSUMED", explainEndpointSection, StringComparison.Ordinal);
+        Assert.Contains("StatusCodes.Status409Conflict", explainEndpointSection, StringComparison.Ordinal);
+        Assert.Contains("ORDERS_EXPLAIN_REQUIRES_EMPTY_Q", explainEndpointSection, StringComparison.Ordinal);
+        Assert.Contains("Results.BadRequest", explainEndpointSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetPendingCreateOrderRows", explainEndpointSection, StringComparison.Ordinal);
+
+        Assert.Contains("var originalCommandText = command.CommandText;", explainCommandSection, StringComparison.Ordinal);
+        Assert.Contains(
+            "command.CommandText = \"EXPLAIN (ANALYZE, BUFFERS, VERBOSE, SETTINGS, FORMAT TEXT)\\n\" + originalCommandText;",
+            explainCommandSection,
+            StringComparison.Ordinal);
+        Assert.True(explainBranchStart >= 0, "EXPLAIN branch must be present in the shared command helper.");
+        Assert.True(normalReaderStart > explainBranchStart, "EXPLAIN branch must run before the normal SELECT reader path.");
+        Assert.Contains("return Array.Empty<Order>();", commandCoreSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("ReadOrder", explainCommandSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("ExecuteNonQuery", explainEndpointSection + explainCommandSection, StringComparison.Ordinal);
+
+        Assert.Contains("PERF ORDERS_SQL_EXPLAIN_START", program, StringComparison.Ordinal);
+        Assert.Contains("PERF ORDERS_SQL_EXPLAIN_END", program, StringComparison.Ordinal);
+        Assert.Contains("PlanText", program, StringComparison.Ordinal);
+        Assert.Contains("ok = true", explainEndpointSection, StringComparison.Ordinal);
+        Assert.Contains("explain_logged = true", explainEndpointSection, StringComparison.Ordinal);
+        Assert.Contains("operation = explainOperation", explainEndpointSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("PlanText", explainEndpointSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("originalCommandText", explainEndpointSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("CommandText", explainEndpointSection, StringComparison.Ordinal);
+
+        Assert.Contains("var orderService = new OrderService(store);", program[normalListStart..], StringComparison.Ordinal);
+        Assert.Contains(".GetOrdersPage(includeInternal, normalized", program[normalListStart..], StringComparison.Ordinal);
+        Assert.Contains("orders = orderService.GetOrders();", program[normalListStart..], StringComparison.Ordinal);
+    }
+
     private static string GetRepoPath(params string[] parts)
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
