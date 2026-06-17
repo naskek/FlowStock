@@ -763,90 +763,85 @@ selected_marking_orders AS (
       AND (mo.source_type IN (@production_need_source_type, @production_order_source_type)
            OR mo.order_id IS NOT NULL)
 ),
-free_code_stats AS (
-    SELECT smo.order_id,
-           COALESCE(smo.item_id, 0) AS item_id,
-           COALESCE(NULLIF(BTRIM(COALESCE(smo.gtin, c.gtin)), ''), '') AS gtin,
-           COUNT(*) AS codes_total
-    FROM selected_marking_orders smo
+free_marking_need_coverage AS (
+    SELECT need.order_id,
+           need.item_id,
+           COALESCE(need.gtin, '') AS gtin,
+           COUNT(DISTINCT c.id) AS codes_total
+    FROM markable_item_need need
+    INNER JOIN selected_marking_orders smo ON smo.order_id = need.order_id
     INNER JOIN marking_code c ON c.marking_order_id = smo.id
     WHERE c.status IN (@marking_code_status_reserved, @marking_code_status_printed)
       AND c.receipt_doc_id IS NULL
       AND c.receipt_line_id IS NULL
-      AND EXISTS (
-          SELECT 1
-          FROM markable_item_need need
-          WHERE need.order_id = smo.order_id
-            AND (COALESCE(smo.item_id, 0) = need.item_id
-             OR (need.gtin IS NOT NULL
-                 AND COALESCE(NULLIF(BTRIM(COALESCE(smo.gtin, c.gtin)), ''), '') = COALESCE(need.gtin, '')))
-      )
-    GROUP BY smo.order_id,
-             COALESCE(smo.item_id, 0),
-             COALESCE(NULLIF(BTRIM(COALESCE(smo.gtin, c.gtin)), ''), '')
+      AND (COALESCE(smo.item_id, 0) = need.item_id
+           OR (need.gtin IS NOT NULL
+               AND COALESCE(NULLIF(BTRIM(COALESCE(smo.gtin, c.gtin)), ''), '') = COALESCE(need.gtin, '')))
+    GROUP BY need.order_id,
+             need.item_id,
+             COALESCE(need.gtin, '')
 ),
-bound_code_stats AS (
-    SELECT ols.order_id,
-           ols.item_id,
-           COALESCE(NULLIF(BTRIM(i.gtin), ''), '') AS gtin,
-           COUNT(*) AS codes_total
-    FROM order_lines_scope ols
+bound_marking_need_coverage AS (
+    SELECT need.order_id,
+           need.item_id,
+           COALESCE(need.gtin, '') AS gtin,
+           COUNT(DISTINCT c.id) AS codes_total
+    FROM markable_item_need need
+    INNER JOIN order_lines_scope ols ON ols.order_id = need.order_id
+    INNER JOIN items i ON i.id = ols.item_id
     INNER JOIN doc_lines dl ON dl.order_line_id = ols.id
     INNER JOIN marking_code c ON c.receipt_line_id = dl.id
     INNER JOIN selected_marking_orders smo ON smo.id = c.marking_order_id
                                          AND smo.order_id = ols.order_id
-    INNER JOIN items i ON i.id = ols.item_id
     WHERE c.status <> @marking_code_status_voided
-    GROUP BY ols.order_id,
-             ols.item_id,
-             COALESCE(NULLIF(BTRIM(i.gtin), ''), '')
+      AND (ols.item_id = need.item_id
+           OR (need.gtin IS NOT NULL
+               AND COALESCE(NULLIF(BTRIM(i.gtin), ''), '') = COALESCE(need.gtin, '')))
+    GROUP BY need.order_id,
+             need.item_id,
+             COALESCE(need.gtin, '')
+),
+marking_need_coverage AS (
+    SELECT need.order_id,
+           need.item_id,
+           need.gtin,
+           need.qty_for_marking,
+           COALESCE(free.codes_total, 0) AS free_qty,
+           COALESCE(bound.codes_total, 0) AS bound_qty,
+           COALESCE(free.codes_total, 0) + COALESCE(bound.codes_total, 0) AS covered_qty
+    FROM markable_item_need need
+    LEFT JOIN free_marking_need_coverage free ON free.order_id = need.order_id
+                                             AND free.item_id = need.item_id
+                                             AND free.gtin = COALESCE(need.gtin, '')
+    LEFT JOIN bound_marking_need_coverage bound ON bound.order_id = need.order_id
+                                               AND bound.item_id = need.item_id
+                                               AND bound.gtin = COALESCE(need.gtin, '')
+),
+markable_order_flags AS (
+    SELECT order_id,
+           TRUE AS marking_applies,
+           BOOL_OR(qty_for_marking > 0) AS marking_required,
+           BOOL_OR(qty_ordered > 0) AS has_ordered_markable_qty
+    FROM markable_line_need
+    GROUP BY order_id
+),
+marking_code_covered_by_order AS (
+    SELECT order_id,
+           BOOL_OR(qty_for_marking > 0
+                   AND covered_qty + 0.000001 < qty_for_marking) AS has_uncovered_positive_need
+    FROM marking_need_coverage
+    GROUP BY order_id
 ),
 marking_rollup AS (
     SELECT ob.id AS order_id,
-           EXISTS (
-               SELECT 1
-               FROM markable_line_need mln
-               WHERE mln.order_id = ob.id
-           ) AS marking_applies,
-           EXISTS (
-               SELECT 1
-               FROM markable_line_need mln
-               WHERE mln.order_id = ob.id
-                 AND mln.qty_for_marking > 0
-           ) AS marking_required,
-           EXISTS (
-               SELECT 1
-               FROM markable_line_need mln
-               WHERE mln.order_id = ob.id
-           )
-           AND EXISTS (
-               SELECT 1
-               FROM markable_line_need mln
-               WHERE mln.order_id = ob.id
-                 AND mln.qty_ordered > 0
-           )
-           AND NOT EXISTS (
-               SELECT 1
-               FROM markable_item_need need
-               LEFT JOIN LATERAL (
-                   SELECT COALESCE(SUM(free.codes_total), 0) AS total
-                   FROM free_code_stats free
-                   WHERE free.order_id = need.order_id
-                     AND (free.item_id = need.item_id
-                          OR (need.gtin IS NOT NULL AND free.gtin = COALESCE(need.gtin, '')))
-               ) free_total ON TRUE
-               LEFT JOIN LATERAL (
-                   SELECT COALESCE(SUM(bound.codes_total), 0) AS total
-                   FROM bound_code_stats bound
-                   WHERE bound.order_id = need.order_id
-                     AND (bound.item_id = need.item_id
-                          OR (need.gtin IS NOT NULL AND bound.gtin = COALESCE(need.gtin, '')))
-               ) bound_total ON TRUE
-               WHERE need.order_id = ob.id
-                 AND need.qty_for_marking > 0
-                 AND COALESCE(free_total.total, 0) + COALESCE(bound_total.total, 0) + 0.000001 < need.qty_for_marking
-           ) AS marking_completed
+           COALESCE(mof.marking_applies, FALSE) AS marking_applies,
+           COALESCE(mof.marking_required, FALSE) AS marking_required,
+           COALESCE(mof.marking_applies, FALSE)
+           AND COALESCE(mof.has_ordered_markable_qty, FALSE)
+           AND NOT COALESCE(mcb.has_uncovered_positive_need, FALSE) AS marking_completed
     FROM order_base ob
+    LEFT JOIN markable_order_flags mof ON mof.order_id = ob.id
+    LEFT JOIN marking_code_covered_by_order mcb ON mcb.order_id = ob.id
 )
 SELECT ob.id,
        ob.order_ref,

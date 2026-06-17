@@ -269,6 +269,120 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
         });
     }
 
+    [Fact]
+    public async Task OrderListMarkingReadModel_SetBasedCoverage_PreservesNeedEdgeCases()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        await RunInRollbackTransactionAsync(connectionString, scopedStore =>
+        {
+            EnsureAtLeastOneLocation(scopedStore);
+            var prefix = $"MK2-{DateTime.UtcNow.Ticks}";
+            var itemTypeId = scopedStore.AddItemType(new ItemType
+            {
+                Name = $"{prefix}-type",
+                Code = $"{prefix}-type",
+                IsActive = true,
+                EnableMarking = true
+            });
+            var sharedGtin = "04607186951521";
+            var itemA = AddMarkableItem(scopedStore, itemTypeId, $"{prefix}-item-a", sharedGtin);
+            var itemB = AddMarkableItem(scopedStore, itemTypeId, $"{prefix}-item-b", sharedGtin);
+            var itemC = AddMarkableItem(scopedStore, itemTypeId, $"{prefix}-item-c", "04607186951522");
+            var itemD = AddMarkableItem(scopedStore, itemTypeId, $"{prefix}-item-d", "04607186951523");
+            var importId = scopedStore.AddMarkingCodeImport(new MarkingCodeImport
+            {
+                Id = Guid.NewGuid(),
+                OriginalFilename = $"{prefix}.txt",
+                StoragePath = $"{prefix}.txt",
+                FileHash = Guid.NewGuid().ToString("N"),
+                SourceType = "test",
+                Status = MarkingCodeImportStatus.Bound,
+                CreatedAt = DateTime.UtcNow,
+                ProcessedAt = DateTime.UtcNow
+            });
+
+            var gtinFallback = SeedMarkableOrder(scopedStore, $"{prefix}-gtin-fallback", itemA, qty: 1);
+            var gtinFallbackTask = AddMarkingOrder(
+                scopedStore,
+                gtinFallback.OrderId,
+                itemB,
+                requestedQty: 1,
+                gtin: sharedGtin);
+            AddMarkingCode(scopedStore, importId, gtinFallbackTask, "GTIN-FALLBACK", MarkingCodeStatus.Reserved, gtin: null);
+
+            var emptyGtinDoesNotFallback = SeedMarkableOrder(scopedStore, $"{prefix}-empty-gtin", itemA, qty: 1);
+            var emptyGtinTask = AddMarkingOrder(
+                scopedStore,
+                emptyGtinDoesNotFallback.OrderId,
+                itemB,
+                requestedQty: 1,
+                gtin: " ");
+            AddMarkingCode(scopedStore, importId, emptyGtinTask, "EMPTY-GTIN", MarkingCodeStatus.Reserved, gtin: " ");
+
+            var sharedNeed = SeedMarkableOrderWithLines(
+                scopedStore,
+                $"{prefix}-shared-need",
+                OrderType.Internal,
+                (itemA, 1),
+                (itemB, 1));
+            var sharedNeedTask = AddMarkingOrder(scopedStore, sharedNeed.OrderId, itemA, requestedQty: 1);
+            AddMarkingCode(scopedStore, importId, sharedNeedTask, "SHARED-NEED", MarkingCodeStatus.Reserved, gtin: sharedGtin);
+
+            var multiNeed = SeedMarkableOrderWithLines(
+                scopedStore,
+                $"{prefix}-multi-need",
+                OrderType.Internal,
+                (itemA, 1),
+                (itemC, 1));
+            var multiNeedTaskA = AddMarkingOrder(scopedStore, multiNeed.OrderId, itemA, requestedQty: 1);
+            AddMarkingCode(scopedStore, importId, multiNeedTaskA, "MULTI-A", MarkingCodeStatus.Reserved, gtin: sharedGtin);
+
+            var freeAndBound = SeedMarkableOrder(scopedStore, $"{prefix}-free-bound", itemA, qty: 2);
+            var freeAndBoundTask = AddMarkingOrder(scopedStore, freeAndBound.OrderId, itemA, requestedQty: 2);
+            AddMarkingCode(scopedStore, importId, freeAndBoundTask, "FREE-BOUND-FREE", MarkingCodeStatus.Reserved, gtin: sharedGtin);
+            AddBoundMarkingCode(scopedStore, importId, freeAndBound, freeAndBoundTask, "FREE-BOUND-BOUND", MarkingCodeStatus.Reserved, sharedGtin);
+
+            var boundOnlyNeedsTwo = SeedMarkableOrder(scopedStore, $"{prefix}-bound-only-two", itemA, qty: 2);
+            var boundOnlyTask = AddMarkingOrder(scopedStore, boundOnlyNeedsTwo.OrderId, itemA, requestedQty: 2);
+            AddBoundMarkingCode(scopedStore, importId, boundOnlyNeedsTwo, boundOnlyTask, "BOUND-ONLY", MarkingCodeStatus.Reserved, sharedGtin);
+
+            var voidedBound = SeedMarkableOrder(scopedStore, $"{prefix}-voided-bound", itemA, qty: 1);
+            var voidedBoundTask = AddMarkingOrder(scopedStore, voidedBound.OrderId, itemA, requestedQty: 1);
+            AddBoundMarkingCode(scopedStore, importId, voidedBound, voidedBoundTask, "VOIDED-BOUND", MarkingCodeStatus.Voided, sharedGtin);
+
+            var failedTaskOrder = SeedMarkableOrder(scopedStore, $"{prefix}-failed", itemA, qty: 1);
+            var failedTask = AddMarkingOrder(scopedStore, failedTaskOrder.OrderId, itemA, requestedQty: 1, status: MarkingOrderStatus.Failed);
+            AddMarkingCode(scopedStore, importId, failedTask, "FAILED-R", MarkingCodeStatus.Reserved, gtin: sharedGtin);
+
+            var reservedCustomer = SeedMarkableOrderWithLines(
+                scopedStore,
+                $"{prefix}-reserved-customer",
+                OrderType.Customer,
+                (itemD, 1));
+            SeedReservedLedgerHu(scopedStore, reservedCustomer, itemD, qty: 1, huCode: $"{prefix}-HU");
+
+            AssertMarking(ReadSingleOrderPageRow(scopedStore, gtinFallback.OrderRef), required: true, covered: true);
+            AssertMarking(ReadSingleOrderPageRow(scopedStore, emptyGtinDoesNotFallback.OrderRef), required: true, covered: false);
+            AssertMarking(ReadSingleOrderPageRow(scopedStore, sharedNeed.OrderRef), required: true, covered: true);
+            AssertMarking(ReadSingleOrderPageRow(scopedStore, multiNeed.OrderRef), required: true, covered: false);
+            AssertMarking(ReadSingleOrderPageRow(scopedStore, freeAndBound.OrderRef), required: true, covered: true);
+            AssertMarking(ReadSingleOrderPageRow(scopedStore, boundOnlyNeedsTwo.OrderRef), required: true, covered: false);
+            AssertMarking(ReadSingleOrderPageRow(scopedStore, voidedBound.OrderRef), required: true, covered: false);
+            AssertMarking(ReadSingleOrderPageRow(scopedStore, failedTaskOrder.OrderRef), required: true, covered: false);
+            AssertMarking(ReadSingleOrderPageRow(scopedStore, reservedCustomer.OrderRef), required: false, covered: true);
+
+            var multiNeedTaskC = AddMarkingOrder(scopedStore, multiNeed.OrderId, itemC, requestedQty: 1);
+            AddMarkingCode(scopedStore, importId, multiNeedTaskC, "MULTI-C", MarkingCodeStatus.Printed, gtin: "04607186951522");
+            AssertMarking(ReadSingleOrderPageRow(scopedStore, multiNeed.OrderRef), required: true, covered: true);
+            return Task.CompletedTask;
+        });
+    }
+
     private static JsonElement MapOrderJson(Order order)
     {
         return JsonSerializer.SerializeToElement(OrderApiMapper.MapOrder(
@@ -337,13 +451,67 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
         return new InternalOrderFixture(orderId, orderLineId, itemId, orderRef, qty);
     }
 
+    private static MarkableOrderFixture SeedMarkableOrderWithLines(
+        IDataStore store,
+        string orderRef,
+        OrderType orderType,
+        params (long ItemId, double Qty)[] lines)
+    {
+        long? partnerId = null;
+        if (orderType == OrderType.Customer)
+        {
+            partnerId = store.AddPartner(new Partner
+            {
+                Name = $"Тестовый клиент {orderRef}",
+                Code = $"T-{orderRef}"[..Math.Min(60, $"T-{orderRef}".Length)]
+            });
+        }
+
+        var orderId = store.AddOrder(new Order
+        {
+            OrderRef = orderRef,
+            Type = orderType,
+            PartnerId = partnerId,
+            Status = OrderStatus.InProgress,
+            CreatedAt = DateTime.UtcNow
+        });
+        var seededLines = new List<MarkableOrderLineFixture>();
+        foreach (var line in lines)
+        {
+            var orderLineId = store.AddOrderLine(new OrderLine
+            {
+                OrderId = orderId,
+                ItemId = line.ItemId,
+                QtyOrdered = line.Qty,
+                ProductionPurpose = orderType == OrderType.Customer
+                    ? ProductionLinePurpose.CustomerOrder
+                    : ProductionLinePurpose.InternalStock
+            });
+            seededLines.Add(new MarkableOrderLineFixture(orderLineId, line.ItemId, line.Qty));
+        }
+
+        return new MarkableOrderFixture(orderId, orderRef, seededLines);
+    }
+
+    private static long AddMarkableItem(IDataStore store, long itemTypeId, string name, string gtin)
+    {
+        return store.AddItem(new Item
+        {
+            Name = name,
+            BaseUom = "шт",
+            ItemTypeId = itemTypeId,
+            Gtin = gtin
+        });
+    }
+
     private static Guid AddMarkingOrder(
         IDataStore store,
         long orderId,
-        long itemId,
+        long? itemId,
         int requestedQty,
         string status = MarkingOrderStatus.Printed,
-        bool sourceLinked = false)
+        bool sourceLinked = false,
+        string? gtin = null)
     {
         var id = Guid.NewGuid();
         store.AddMarkingOrder(new MarkingOrder
@@ -353,6 +521,7 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
             SourceOrderId = sourceLinked ? orderId : null,
             SourceType = sourceLinked ? MarkingNeedCreationService.ProductionOrderSourceType : null,
             ItemId = itemId,
+            Gtin = gtin,
             RequestedQuantity = requestedQty,
             RequestNumber = id.ToString("N"),
             Status = status,
@@ -368,7 +537,9 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
         Guid markingOrderId,
         string suffix,
         string status,
-        string? gtin)
+        string? gtin,
+        long? receiptDocId = null,
+        long? receiptLineId = null)
     {
         var id = Guid.NewGuid();
         store.AddMarkingCodes([
@@ -381,11 +552,90 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
                 ImportId = importId,
                 MarkingOrderId = markingOrderId,
                 Status = status,
+                ReceiptDocId = receiptDocId,
+                ReceiptLineId = receiptLineId,
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow
             }
         ]);
         return id;
+    }
+
+    private static Guid AddBoundMarkingCode(
+        IDataStore store,
+        Guid importId,
+        InternalOrderFixture fixture,
+        Guid markingOrderId,
+        string suffix,
+        string status,
+        string? gtin)
+    {
+        var docId = store.AddDoc(new Doc
+        {
+            DocRef = $"{fixture.OrderRef}-{suffix}-prd",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Closed,
+            OrderId = fixture.OrderId,
+            CreatedAt = DateTime.UtcNow,
+            ClosedAt = DateTime.UtcNow
+        });
+        var docLineId = store.AddDocLine(new DocLine
+        {
+            DocId = docId,
+            OrderLineId = fixture.OrderLineId,
+            ItemId = fixture.ItemId,
+            Qty = 1,
+            ProductionPurpose = ProductionLinePurpose.InternalStock
+        });
+
+        if (status == MarkingCodeStatus.Voided)
+        {
+            return AddMarkingCode(store, importId, markingOrderId, suffix, status, gtin, docId, docLineId);
+        }
+
+        var codeId = AddMarkingCode(store, importId, markingOrderId, suffix, status, gtin);
+        Assert.Equal(1, store.AssignProductionMarkingCodesToReceipt([codeId], docId, docLineId, DateTime.UtcNow));
+        return codeId;
+    }
+
+    private static void SeedReservedLedgerHu(
+        IDataStore store,
+        MarkableOrderFixture fixture,
+        long itemId,
+        double qty,
+        string huCode)
+    {
+        var line = Assert.Single(fixture.Lines, seededLine => seededLine.ItemId == itemId);
+        var location = store.GetLocations().First();
+        var docId = store.AddDoc(new Doc
+        {
+            DocRef = $"{fixture.OrderRef}-stock",
+            Type = DocType.Inbound,
+            Status = DocStatus.Closed,
+            CreatedAt = DateTime.UtcNow,
+            ClosedAt = DateTime.UtcNow
+        });
+        store.AddLedgerEntry(new LedgerEntry
+        {
+            Timestamp = DateTime.UtcNow,
+            DocId = docId,
+            ItemId = itemId,
+            LocationId = location.Id,
+            QtyDelta = qty,
+            HuCode = huCode
+        });
+        store.ReplaceOrderReceiptPlanLines(fixture.OrderId, [
+            new OrderReceiptPlanLine
+            {
+                OrderId = fixture.OrderId,
+                OrderLineId = line.OrderLineId,
+                ItemId = itemId,
+                QtyPlanned = qty,
+                ToLocationId = location.Id,
+                ToHu = huCode,
+                SortOrder = 0
+            }
+        ]);
     }
 
     private static void AssertMarking(Order order, bool required, bool covered)
@@ -551,6 +801,8 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
     }
 
     private sealed record InternalOrderFixture(long OrderId, long OrderLineId, long ItemId, string OrderRef, double QtyOrdered);
+    private sealed record MarkableOrderFixture(long OrderId, string OrderRef, IReadOnlyList<MarkableOrderLineFixture> Lines);
+    private sealed record MarkableOrderLineFixture(long OrderLineId, long ItemId, double QtyOrdered);
 
     private sealed class RollbackRequestedException : Exception;
 }
