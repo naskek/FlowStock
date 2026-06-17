@@ -71,6 +71,57 @@ function createHuCardActionButtons() {
   return huCardActionButtons;
 }
 
+function createHuLookupInput() {
+  const attrs = {
+    "data-scan-allow": "1",
+    "data-hu-lookup": "1",
+    inputmode: "none",
+  };
+  const listeners = {};
+  return {
+    value: "",
+    readOnly: true,
+    attrs: attrs,
+    setAttribute: function (name, value) {
+      this.attrs[name] = value;
+    },
+    getAttribute: function (name) {
+      return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null;
+    },
+    removeAttribute: function (name) {
+      delete this.attrs[name];
+    },
+    addEventListener: function (event, handler, capture) {
+      const key = event + (capture ? ":capture" : "");
+      listeners[key] = listeners[key] || [];
+      listeners[key].push(handler);
+    },
+    dispatchPointerDown: function () {
+      (listeners["pointerdown:capture"] || []).forEach(function (handler) {
+        handler({});
+      });
+    },
+    dispatchBlur: function () {
+      (listeners.blur || []).forEach(function (handler) {
+        handler({});
+      });
+    },
+    focus: function () {},
+  };
+}
+
+let huLookupInput = null;
+let huLookupFindBtn = null;
+let huLookupMessageEl = null;
+
+function resetHuLookupDom() {
+  huLookupInput = createHuLookupInput();
+  huLookupFindBtn = createButton();
+  huLookupMessageEl = { textContent: "" };
+}
+
+resetHuLookupDom();
+
 function createOverlay() {
   const closeBtn = createButton();
   const cancelBtn = createButton();
@@ -210,7 +261,19 @@ const context = {
       },
     },
     getElementById: function (id) {
-      return id === "app" ? appEl : null;
+      if (id === "app") {
+        return appEl;
+      }
+      if (id === "huLookupInput") {
+        return huLookupInput;
+      }
+      if (id === "huLookupFindBtn") {
+        return huLookupFindBtn;
+      }
+      if (id === "huLookupMessage") {
+        return huLookupMessageEl;
+      }
+      return null;
     },
     createElement: function () {
       return createOverlay();
@@ -332,155 +395,108 @@ async function main() {
 
   assert(storageJs.includes("/api/tsd/hu/resolve?code="));
   assert(storageJs.includes("/api/tsd/hu/card?code="));
-  assert(appVersionJs.includes('var version = "43"'));
+  assert(appVersionJs.includes('var version = "44"'));
   assert(serviceWorkerJs.includes('importScripts("./app-version.js")'));
   assert(serviceWorkerJs.includes('"./app.js"'));
+  assert(serviceWorkerJs.includes('"./img/home/hu-search.png"'));
+
+  const homeHtml = hooks.renderHome();
+  assert.match(homeHtml, /Поиск HU/);
+  assert.match(homeHtml, /Сканирование и поиск паллеты/);
+  assert.match(homeHtml, /data-route="hu"/);
+  assert.match(homeHtml, /img\/home\/hu-search\.png/);
+  assert.doesNotMatch(homeHtml, /Информация/);
+  assert.doesNotMatch(homeHtml, /data-route="settings"/);
 
   await hooks.initScannerManager();
   const handlerCallsBeforeHome = scannerSetHandlerCount;
   hooks.renderRouteInternal({ name: "home" });
-  assert(scannerSetHandlerCount > handlerCallsBeforeHome, "home render should install a scanner-manager handler");
-  assert.strictEqual(typeof scannerHandler, "function");
-  assert(scannerFocusCount > 0, "home render should focus scanner through the post-render helper");
+  assert.strictEqual(
+    scannerSetHandlerCount,
+    handlerCallsBeforeHome,
+    "home render should not install a global HU scan handler"
+  );
+  assert.strictEqual(scannerHandler, null, "neutral home route should leave scanner handler unset");
 
-  scannerHandler({ value: "NOT-A-HU", source: "test" });
+  if (scannerHandler) {
+    scannerHandler({ value: "NOT-A-HU", source: "test" });
+  }
   await flushPromises();
   assert.strictEqual(resolveCalls, 0, "non-HU scan from home should not call resolver");
 
   const homeHash = context.window.location.hash;
-  scannerHandler({ value: "HU-000123", source: "test" });
+  if (scannerHandler) {
+    scannerHandler({ value: "HU-000123", source: "test" });
+  }
   await flushPromises();
-  assert.strictEqual(resolveCalls, 1, "home scan should call apiResolveHu through scanner manager");
-  assert.strictEqual(overlays.length, 0, "known HU should not show the choice overlay");
-  assert.strictEqual(context.window.location.hash, "/hu/HU-000123", "known HU should navigate to HU card");
-  assert.notStrictEqual(context.window.location.hash, homeHash, "known HU should leave the neutral route");
-  assert.strictEqual(fillingScanCalls, 0);
-  assert.strictEqual(fillingFillCalls, 0);
-  assert.strictEqual(fillingMixedFillCalls, 0);
-  assert.strictEqual(outboundScanCalls, 0);
-  assert.strictEqual(outboundCompleteCalls, 0);
+  assert.strictEqual(resolveCalls, 0, "home HU scan should not call resolver without route handler");
+  assert.strictEqual(context.window.location.hash, homeHash, "home HU scan must stay on home");
 
-  context.window.location.hash = "#/home";
-  alerts.length = 0;
-  nextResolveResult = { known: false };
-  scannerHandler({ value: "HU-999999", source: "test" });
+  context.window.location.hash = "#/orders";
+  const resolveCallsBeforeOrders = resolveCalls;
+  assert.strictEqual(scannerHandler, null, "orders route should not install HU lookup handler");
   await flushPromises();
-  assert.strictEqual(resolveCalls, 2, "unknown home scan should call apiResolveHu through scanner manager");
-  assert.deepStrictEqual(alerts, ["HU неизвестен: HU-999999"]);
-  assert.strictEqual(context.window.location.hash, "#/home", "unknown HU must not navigate to a HU card");
+  assert.strictEqual(resolveCalls, resolveCallsBeforeOrders, "orders without scan handler must not resolve HU");
 
   context.window.location.hash = "#/hu";
+  resetHuLookupDom();
   const resolveCallsBeforeHuRoute = resolveCalls;
   hooks.renderRouteInternal({ name: "hu" });
   await flushPromises();
   assert.strictEqual(typeof scannerHandler, "function");
+  assert.strictEqual(huLookupInput.readOnly, true, "/hu should open in scan-mode");
+  assert.strictEqual(huLookupInput.getAttribute("inputmode"), "none", "/hu should suppress inputmode keyboard");
+  assert.strictEqual(huLookupInput.getAttribute("data-hu-manual"), null, "/hu should not start in manual mode");
+
   scannerHandler({ value: "HU-000124", source: "test" });
   await flushPromises();
-  assert.strictEqual(resolveCalls, resolveCallsBeforeHuRoute + 1, "/hu route scan should delegate HU to global resolver");
-  assert.strictEqual(context.window.location.hash, "/hu/HU-000124", "/hu route scan should open HU card when lookup overlay is closed");
+  assert.strictEqual(resolveCalls, resolveCallsBeforeHuRoute + 1, "/hu physical scan should resolve once");
+  assert.strictEqual(context.window.location.hash, "/hu/HU-000124", "/hu scan should open HU card");
 
-  context.window.location.hash = "#/items";
-  let prevented = false;
-  const resolveCallsBeforeItemsInput = resolveCalls;
-  assert.strictEqual(
-    hooks.handleNeutralHuInputEnter(
-      { key: "Enter", preventDefault: function () { prevented = true; } },
-      { value: "HU-000125" }
-    ),
-    true,
-    "items search Enter should accept HU scans through neutral delegation"
-  );
+  context.window.location.hash = "#/hu";
+  resetHuLookupDom();
+  resolveCalls = 0;
+  hooks.renderRouteInternal({ name: "hu" });
   await flushPromises();
-  assert.strictEqual(prevented, true);
-  assert.strictEqual(resolveCalls, resolveCallsBeforeItemsInput + 1, "items HU input should call resolver");
-  assert.strictEqual(context.window.location.hash, "/hu/HU-000125", "items HU input should open HU card");
-
-  context.window.location.hash = "#/items";
-  const resolveCallsBeforeItemsScan = resolveCalls;
-  const itemsScanResult = await hooks.handleGlobalHuScan({ value: "HU-000130", source: "test" });
-  assert.strictEqual(itemsScanResult.known, true);
-  assert.strictEqual(resolveCalls, resolveCallsBeforeItemsScan + 1, "items neutral route scan should call resolver");
-  assert.strictEqual(context.window.location.hash, "/hu/HU-000130", "items neutral route scan should open HU card");
-
-  context.window.location.hash = "#/orders";
-  prevented = false;
-  const resolveCallsBeforeOrdersInput = resolveCalls;
-  assert.strictEqual(
-    hooks.handleNeutralHuInputEnter(
-      { key: "Enter", preventDefault: function () { prevented = true; } },
-      { value: "SKU-100" },
-      function (event, value) {
-        assert.strictEqual(value, "SKU-100");
-        return true;
-      }
-    ),
-    true,
-    "orders search Enter should keep non-HU fallback logic"
-  );
+  const resolveCallsBeforeManual = resolveCalls;
+  huLookupInput.dispatchPointerDown();
+  assert.strictEqual(huLookupInput.readOnly, false, "tap should enable manual HU input");
+  assert.strictEqual(huLookupInput.getAttribute("inputmode"), "text");
+  assert.strictEqual(huLookupInput.getAttribute("data-hu-manual"), "1");
+  huLookupInput.value = "HU-000125";
+  await hooks.submitHuLookup();
   await flushPromises();
-  assert.strictEqual(prevented, false);
-  assert.strictEqual(resolveCalls, resolveCallsBeforeOrdersInput, "orders non-HU input should not call resolver");
+  assert.strictEqual(resolveCalls, resolveCallsBeforeManual + 1, "manual Find path should resolve once");
+  assert.strictEqual(context.window.location.hash, "/hu/HU-000125");
+  assert.strictEqual(huLookupInput.readOnly, true, "submit should return HU lookup field to scan-mode");
 
-  context.window.location.hash = "#/orders";
-  const resolveCallsBeforeOrdersHuInput = resolveCalls;
-  assert.strictEqual(
-    hooks.handleNeutralHuInputEnter(
-      { key: "Enter", preventDefault: function () {} },
-      { value: "HU-000126" }
-    ),
-    true,
-    "orders search Enter should accept HU scans through neutral delegation"
-  );
+  context.window.location.hash = "#/hu";
+  resetHuLookupDom();
+  nextResolveResult = { known: false };
+  hooks.renderRouteInternal({ name: "hu" });
   await flushPromises();
-  assert.strictEqual(resolveCalls, resolveCallsBeforeOrdersHuInput + 1, "orders HU input should call resolver");
-  assert.strictEqual(context.window.location.hash, "/hu/HU-000126", "orders HU input should open HU card");
-
-  context.window.location.hash = "#/orders";
-  const resolveCallsBeforeOrdersScan = resolveCalls;
-  const ordersScanResult = await hooks.handleGlobalHuScan({ value: "HU-000131", source: "test" });
-  assert.strictEqual(ordersScanResult.known, true);
-  assert.strictEqual(resolveCalls, resolveCallsBeforeOrdersScan + 1, "orders neutral route scan should call resolver");
-  assert.strictEqual(context.window.location.hash, "/hu/HU-000131", "orders neutral route scan should open HU card");
-
-  context.window.location.hash = "#/order/777";
-  context.document.activeElement = null;
-  const resolveCallsBeforeOrderScan = resolveCalls;
-  const orderScanResult = await hooks.handleGlobalHuScan({ value: "HU-000127", source: "test" });
-  assert.strictEqual(orderScanResult.known, true);
-  assert.strictEqual(resolveCalls, resolveCallsBeforeOrderScan + 1, "order screen without active input should use global HU router");
-  assert.strictEqual(context.window.location.hash, "/hu/HU-000127", "order screen scan should open HU card when no input is active");
-
-  context.window.location.hash = "#/order/777";
-  context.document.activeElement = {
-    tagName: "INPUT",
-    isContentEditable: false,
-    getAttribute: function () {
-      return null;
-    },
-  };
-  const resolveCallsBeforeBlockedOrderScan = resolveCalls;
-  const blockedOrderScanResult = await hooks.handleGlobalHuScan({ value: "HU-000128", source: "test" });
-  assert.strictEqual(blockedOrderScanResult.accepted, false);
-  assert.strictEqual(blockedOrderScanResult.blocked, "active-input");
-  assert.strictEqual(resolveCalls, resolveCallsBeforeBlockedOrderScan, "order screen active input should block raw global scan");
-  assert.strictEqual(context.window.location.hash, "#/order/777", "blocked order scan should not navigate");
-
-  context.window.location.hash = "#/order/777";
-  const resolveCallsBeforeOrderInputDelegation = resolveCalls;
-  prevented = false;
-  assert.strictEqual(
-    hooks.handleNeutralHuInputEnter(
-      { key: "Enter", preventDefault: function () { prevented = true; } },
-      { value: "HU-000129" }
-    ),
-    true,
-    "future order input should delegate HU Enter to global router"
-  );
+  const resolveCallsBeforeUnknown = resolveCalls;
+  await hooks.submitHuLookup("HU-999999");
   await flushPromises();
-  assert.strictEqual(prevented, true);
-  assert.strictEqual(resolveCalls, resolveCallsBeforeOrderInputDelegation + 1, "future order input HU should call resolver");
-  assert.strictEqual(context.window.location.hash, "/hu/HU-000129", "future order input HU should open HU card");
-  context.document.activeElement = null;
+  assert.strictEqual(resolveCalls, resolveCallsBeforeUnknown + 1);
+  assert.match(huLookupMessageEl.textContent, /HU неизвестен: HU-999999/);
+  assert.strictEqual(context.window.location.hash, "#/hu", "unknown HU must stay on lookup screen");
+  assert.strictEqual(huLookupInput.readOnly, true, "unknown HU should restore scan-mode");
+
+  context.window.location.hash = "#/hu";
+  resetHuLookupDom();
+  hooks.renderRouteInternal({ name: "hu" });
+  await flushPromises();
+  const resolveCallsBeforeEnter = resolveCalls;
+  huLookupInput.value = "HU-000126";
+  scannerHandler({ value: "HU-000126", source: "test", reason: "enter" });
+  await flushPromises();
+  assert.strictEqual(resolveCalls, resolveCallsBeforeEnter + 1, "Enter scan path should resolve exactly once");
+  assert.strictEqual(context.window.location.hash, "/hu/HU-000126");
+
+  hooks.setNavOrigin("/hu");
+  assert.strictEqual(hooks.navigateBack({ name: "huCard", id: "HU-000126" }), "/hu");
+  assert.strictEqual(context.window.location.hash, "/hu", "HU card back should return to lookup screen");
 
   overlays.length = 0;
   const resolveCallsBeforeOutbound = resolveCalls;
@@ -499,6 +515,12 @@ async function main() {
   await flushPromises();
   assert.strictEqual(resolveCalls, resolveCallsBeforeFilling, "filling active handler must bypass global resolver");
   assert.strictEqual(fillingScanCalls, 1, "filling active handler should receive physical scan");
+
+  const wireDocStart = appJs.indexOf("function wireDoc(doc)");
+  const wireDocEnd = appJs.indexOf("function wire", wireDocStart + 1);
+  const wireDocBody = appJs.slice(wireDocStart, wireDocEnd);
+  assert(wireDocBody.includes("setScanHandler(handleScanEvent)"), "draft document screen should keep route-specific scan handler");
+  assert(!wireDocBody.includes("resolveHuAndNavigate"), "draft document scan handler must not use HU lookup resolver");
 
   hooks.setScanHandler(null);
   context.window.location.hash = "#/hu/HU-000321";
@@ -677,7 +699,7 @@ async function main() {
   assert.match(mixedCardHtml, /Итого/);
   assert.match(mixedCardHtml, /378 шт/);
 
-  console.log("TSD global HU-router scan pipeline tests passed.");
+  console.log("TSD HU lookup scan pipeline tests passed.");
 }
 
 main().catch(function (error) {

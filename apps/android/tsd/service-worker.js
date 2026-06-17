@@ -16,7 +16,8 @@ const ASSETS = [
   "./img/home/operations.png",
   "./img/home/catalogue.png",
   "./img/home/orders.png",
-  "./img/home/info.png"
+  "./img/home/info.png",
+  "./img/home/hu-search.png"
 ];
 
 self.addEventListener("install", (event) => {

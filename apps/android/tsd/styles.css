@@ -30,6 +30,8 @@
   --home-bubble-orders-border: rgba(167, 139, 250, 0.38);
   --home-bubble-info-bg: rgba(251, 146, 60, 0.22);
   --home-bubble-info-border: rgba(251, 146, 60, 0.38);
+  --home-bubble-hu-bg: rgba(52, 211, 153, 0.22);
+  --home-bubble-hu-border: rgba(52, 211, 153, 0.38);
   --home-bubble-highlight: rgba(255, 255, 255, 0.42);
   --bg-start: var(--tsd-bg-start);
   --bg-end: var(--tsd-bg-end);
@@ -63,6 +65,8 @@ html.tsd-theme-dark {
   --home-bubble-orders-border: rgba(196, 181, 253, 0.34);
   --home-bubble-info-bg: rgba(251, 146, 60, 0.16);
   --home-bubble-info-border: rgba(253, 186, 116, 0.32);
+  --home-bubble-hu-bg: rgba(52, 211, 153, 0.16);
+  --home-bubble-hu-border: rgba(110, 231, 183, 0.32);
   --home-bubble-highlight: rgba(255, 255, 255, 0.1);
   --shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
 }
@@ -604,6 +608,11 @@ body {
   border-color: var(--home-bubble-info-border);
 }
 
+.home-menu-icon-bubble--hu {
+  background: var(--home-bubble-hu-bg);
+  border-color: var(--home-bubble-hu-border);
+}
+
 .home-menu-icon {
   width: 64%;
   height: 64%;
@@ -623,6 +632,10 @@ body {
   line-height: 1.3;
   color: var(--tsd-text-muted);
   max-width: 92%;
+}
+
+.hu-lookup-actions {
+  margin-top: var(--tsd-gap);
 }
 
 .menu-btn {

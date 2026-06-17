@@ -926,7 +926,7 @@ assert.strictEqual(
   true,
   "order may be marked done after final component when no pallets remain"
 );
-assert(appVersionJs.includes('var version = "43"'), "TSD shell version should be bumped for global HU scan pipeline fix");
+assert(appVersionJs.includes('var version = "44"'), "TSD shell version should be bumped for HU lookup refactor");
 assert(
   appJs.includes("Не удалось загрузить заказы для наполнения") && appJs.includes("console.error(error)"),
   "filling API failures should be visible and logged"
@@ -952,7 +952,7 @@ assert(
   );
   assert(
     serviceWorkerJs.includes('"./img/home/operations.png"') &&
-      serviceWorkerJs.includes('"./img/home/info.png"'),
+      serviceWorkerJs.includes('"./img/home/hu-search.png"'),
     "service worker should cache home menu png icons"
   );
 assert(

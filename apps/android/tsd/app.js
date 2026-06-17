@@ -564,9 +564,6 @@
 
   function finishRouteRender() {
     applySoftKeyboardSetting(app);
-    if (!scanHandlerActive) {
-      installGlobalHuScanHandler();
-    }
     ensureScanFocus();
   }
 
@@ -2311,6 +2308,9 @@
       app.innerHTML = renderHuLookup();
       wireHuLookup();
       finishRouteRender();
+      if (typeof syncHuLookupScanMode === "function") {
+        syncHuLookupScanMode();
+      }
       return;
     }
 
@@ -2430,11 +2430,11 @@
         "img/home/orders.png"
       ),
       buildHomeMenuTile(
-        "settings",
-        "Информация",
-        "Синхронизация, статус и полезные сведения",
-        "info",
-        "img/home/info.png"
+        "hu",
+        "Поиск HU",
+        "Сканирование и поиск паллеты",
+        "hu",
+        "img/home/hu-search.png"
       ),
     ];
     return tiles.join("");
@@ -4888,114 +4888,62 @@
 
   function renderHuLookup() {
     return (
-      '<section class="screen">' +
+      '<section class="screen hu-lookup-screen">' +
       '  <div class="screen-card">' +
-      '    <div class="section-title">HU / Паллеты</div>' +
-      '    <div class="hu-actions">' +
-      '      <button class="btn btn-outline" id="huLookupScanBtn" type="button">Сканировать HU</button>' +
+      '    <div class="section-title">Поиск HU</div>' +
+      '    <label class="form-label" for="huLookupInput">Номер HU</label>' +
+      '    <input class="form-input" id="huLookupInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" data-hu-lookup="1" inputmode="none" readonly placeholder="Отсканируйте или введите HU" />' +
+      '    <div class="hu-lookup-actions">' +
+      '      <button class="btn primary-btn" id="huLookupFindBtn" type="button">Найти</button>' +
       "    </div>" +
-      '    <div id="huLookupStatus" class="stock-status">Данные по ПК: отсутствуют</div>' +
       '    <div id="huLookupMessage" class="stock-message"></div>' +
-      '    <div id="huLookupDetails" class="hu-details"></div>' +
       "  </div>" +
       "</section>"
     );
   }
 
-  var globalHuResolvePending = false;
+  var huResolvePending = false;
+  var syncHuLookupScanMode = null;
 
   function getCurrentRoutePath() {
     var hash = String((window.location && window.location.hash) || "").replace(/^#/, "");
     return hash && hash.charAt(0) === "/" ? hash : "/home";
   }
 
-  function installGlobalHuScanHandler() {
-    if (scanHandlerActive || isManualOverlayOpen() || (currentRoute && currentRoute.name === "login")) {
-      return false;
-    }
-    setScanHandler(handleGlobalHuScan);
-    return true;
-  }
-
-  function handleGlobalHuScan(scan, options) {
+  function resolveHuAndNavigate(scan, options) {
     var opts = options || {};
     var rawValue = scan && scan.value ? scan.value : scan;
     var huCode = extractHuCode(rawValue);
-    if (!huCode || globalHuResolvePending) {
+    if (!huCode || huResolvePending) {
       return Promise.resolve({ accepted: false });
     }
-    if (!opts.allowActiveInput && shouldBlockGlobalHuScanForActiveInput()) {
-      return Promise.resolve({ accepted: false, blocked: "active-input" });
-    }
-    globalHuResolvePending = true;
+    huResolvePending = true;
     var resolveHu = opts.resolveHu || TsdStorage.apiResolveHu;
-    var notify = opts.notify || function (message) { window.alert(message); };
+    var notify = opts.notify || function (message) {
+      window.alert(message);
+    };
+    var navOrigin = opts.navOrigin != null ? opts.navOrigin : getCurrentRoutePath();
     return resolveHu(huCode)
       .then(function (result) {
         if (!result || result.known !== true) {
           notify("HU неизвестен: " + huCode);
           return { accepted: true, known: false };
         }
-        setNavOrigin(getCurrentRoutePath());
+        setNavOrigin(navOrigin);
         navigate("/hu/" + encodeURIComponent(huCode));
         return { accepted: true, known: true, result: result };
       })
       .catch(function (error) {
-        var message = error && error.status
-          ? "Ошибка проверки HU. Попробуйте ещё раз."
-          : "Нет связи с сервером. HU не проверен.";
+        var message =
+          error && error.status
+            ? "Ошибка проверки HU. Попробуйте ещё раз."
+            : "Нет связи с сервером. HU не проверен.";
         notify(message);
         return { accepted: true, error: error };
       })
       .finally(function () {
-        globalHuResolvePending = false;
+        huResolvePending = false;
       });
-  }
-
-  function isTextEntryElement(el) {
-    if (!el) {
-      return false;
-    }
-    if (isScanAllowedElement(el)) {
-      return false;
-    }
-    if (el.isContentEditable) {
-      return true;
-    }
-    var tag = el.tagName ? String(el.tagName).toUpperCase() : "";
-    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
-  }
-
-  function shouldBlockGlobalHuScanForActiveInput() {
-    var route = getRouteFromPath(getCurrentRoutePath());
-    return route && route.name === "order" && isTextEntryElement(document.activeElement);
-  }
-
-  function handleNeutralHuScan(scan, fallback) {
-    var rawValue = scan && scan.value ? scan.value : scan;
-    if (extractHuCode(rawValue)) {
-      return handleGlobalHuScan(scan);
-    }
-    if (typeof fallback === "function") {
-      return fallback(rawValue, scan);
-    }
-    return Promise.resolve({ accepted: false });
-  }
-
-  function handleNeutralHuInputEnter(event, input, fallback) {
-    if (!event || event.key !== "Enter") {
-      return false;
-    }
-    var rawValue = input && input.value ? input.value : "";
-    if (extractHuCode(rawValue)) {
-      event.preventDefault();
-      handleGlobalHuScan(rawValue, { allowActiveInput: true });
-      return true;
-    }
-    if (typeof fallback === "function") {
-      return fallback(event, rawValue) === true;
-    }
-    return false;
   }
 
   function executeTsdHuAction(action) {
@@ -6417,7 +6365,7 @@
         scanInput.value = trimmed;
       }
       if (extractHuCode(trimmed)) {
-        handleGlobalHuScan(trimmed);
+        resolveHuAndNavigate(trimmed);
         clearScanInput();
         return;
       }
@@ -6594,293 +6542,109 @@
   }
 
   function wireHuLookup() {
-    var scanBtn = document.getElementById("huLookupScanBtn");
-    var statusEl = document.getElementById("huLookupStatus");
+    var lookupInput = document.getElementById("huLookupInput");
+    var findBtn = document.getElementById("huLookupFindBtn");
     var messageEl = document.getElementById("huLookupMessage");
-    var detailsEl = document.getElementById("huLookupDetails");
-    var lookupOverlay = null;
-    var lookupInput = null;
-    var lookupError = null;
-    var lookupConfirm = null;
-    var lookupValue = null;
-    var lastHuRawInput = "";
-    var lastLookupValue = "";
-    var overlayKeyListener = null;
-
-    function setStatus(text) {
-      if (statusEl) {
-        statusEl.textContent = text || "";
-      }
-    }
+    var submitPending = false;
 
     function setMessage(text) {
-      if (!messageEl) {
-        return;
+      if (messageEl) {
+        messageEl.textContent = text || "";
       }
-      messageEl.textContent = text || "";
     }
 
-    function formatQty(value) {
-      var num = Number(value);
-      if (isNaN(num)) {
-        return "0";
-      }
-      return String(num);
-    }
-
-    function renderDetails(huCode, entry, itemsMap) {
-      if (!detailsEl) {
-        return;
-      }
-      if (!entry || !Array.isArray(entry.rows) || !entry.rows.length) {
-        detailsEl.innerHTML = "";
-        return;
-      }
-        var linesHtml = entry.rows.map(function (row) {
-          var item = itemsMap[row.itemId] || {};
-          var itemName = item.name || ("ID " + row.itemId);
-          var skuValue = item.sku || item.barcode || "";
-          var skuLabel = skuValue ? "SKU: " + skuValue : "";
-          var baseUom = item.base_uom || "";
-          var qtyLabel = formatQty(row.qtyBase);
-          var uomLabel = baseUom ? " " + baseUom : "";
-          return (
-            '<div class="hu-line">' +
-            "<div>" +
-            escapeHtml(itemName) +
-            (skuLabel
-              ? '<div class="line-barcode">' + escapeHtml(skuLabel) + "</div>"
-              : "") +
-            "</div>" +
-            "<div>" +
-            escapeHtml(qtyLabel + uomLabel) +
-            "</div>" +
-          "</div>"
-        );
-      }).join("");
-
-      detailsEl.innerHTML =
-        '<div class="hu-card">' +
-        '  <div class="hu-card-title">' +
-        escapeHtml(huCode) +
-        "</div>" +
-        '  <div class="hu-card-meta">Данные по ПК на момент экспорта: ' +
-        escapeHtml(entry.exportedAt || "-") +
-        "</div>" +
-        '  <div class="hu-lines">' +
-        linesHtml +
-        "</div>" +
-        "</div>";
-    }
-
-    function loadHuDetails(huCode) {
-      setMessage("");
-      var normalized = extractHuCode(huCode);
-      if (!normalized) {
-        var rawValue = normalizeValue(huCode).toUpperCase();
-        if (!rawValue) {
-          rawValue = lastHuRawInput;
-        }
-        setMessage(
-          rawValue
-            ? "Неверный формат HU: " + rawValue
-            : "Неверный формат HU."
-        );
-        if (window.console) {
-          console.log("[hu] invalid code", { raw: rawValue, input: huCode });
-        }
-        return;
-      }
-
-      TsdStorage.getHuStockByCode(normalized)
-        .then(function (entry) {
-          if (!entry) {
-            setStatus("Данные по ПК: отсутствуют");
-            detailsEl.innerHTML = "";
-            setMessage("HU не найден в снимке.");
-            return;
-          }
-          setStatus(
-            "Данные по ПК на момент экспорта: " + (entry.exportedAt || "-")
-          );
-          var itemIds = [];
-          entry.rows.forEach(function (row) {
-            if (row.itemId != null && itemIds.indexOf(row.itemId) === -1) {
-              itemIds.push(row.itemId);
-            }
-          });
-          TsdStorage.getItemsByIds(itemIds)
-            .then(function (itemsMap) {
-              renderDetails(normalized, entry, itemsMap || {});
-            })
-            .catch(function () {
-              renderDetails(normalized, entry, {});
-            });
-        })
-        .catch(function () {
-          setMessage("Ошибка чтения данных HU.");
-        });
-    }
-
-    function isValidHuFormat(value) {
-      return !!extractHuCode(value);
-    }
-
-    function setLookupValue(rawValue, showError) {
+    function enterHuLookupScanMode() {
       if (!lookupInput) {
         return;
       }
-      var rawNormalized = normalizeValue(rawValue).toUpperCase();
-      lastHuRawInput = rawNormalized;
-      var trimmed = extractHuCode(rawValue);
-      if (!trimmed) {
-        lookupValue = null;
-        lookupInput.value = rawNormalized;
-        lastLookupValue = lookupInput.value;
-        if (lookupError) {
-          lookupError.textContent =
-            showError && rawNormalized
-              ? "Неверный формат HU: " + rawNormalized
-              : "";
-        }
-        if (lookupConfirm) {
-          lookupConfirm.disabled = true;
-        }
-        if (showError && window.console) {
-          console.log("[hu] scan raw", rawNormalized);
-        }
-        return;
-      }
-
-      lookupValue = trimmed;
-      lookupInput.value = trimmed;
-      lastLookupValue = lookupInput.value;
-      if (lookupError) {
-        lookupError.textContent = "Найден HU: " + trimmed;
-      }
-      if (lookupConfirm) {
-        lookupConfirm.disabled = false;
-      }
+      lookupInput.removeAttribute("data-hu-manual");
+      lookupInput.readOnly = true;
+      lookupInput.setAttribute("inputmode", "none");
     }
 
-    function handleScanEvent(scan) {
-      var value = scan && scan.value ? scan.value : scan;
-      if (!lookupOverlay) {
-        handleNeutralHuScan(value);
+    function enterHuLookupManualMode() {
+      if (!lookupInput) {
         return;
       }
-      setLookupValue(value, true);
+      lookupInput.setAttribute("data-hu-manual", "1");
+      lookupInput.readOnly = false;
+      lookupInput.setAttribute("inputmode", "text");
     }
 
-    function openLookupOverlay() {
-      if (lookupOverlay) {
-        return;
+    function submitHuLookup(rawValue) {
+      if (submitPending) {
+        return Promise.resolve({ accepted: false, pending: true });
       }
-      lookupOverlay = document.createElement("div");
-      lookupOverlay.className = "overlay overlay--centered hu-lookup-overlay";
-      lookupOverlay.setAttribute("tabindex", "-1");
-      lookupOverlay.setAttribute("data-scan-allow", "1");
-      lookupOverlay.innerHTML =
-        '<div class="overlay-card">' +
-        '  <div class="overlay-header">' +
-        '    <div class="overlay-title">Сканировать HU</div>' +
-        '    <button class="btn btn-ghost overlay-close" type="button">Закрыть</button>' +
-        "  </div>" +
-        '  <div class="overlay-body">' +
-        '    <div class="form-label">Отсканируйте HU-код</div>' +
-        '    <input class="form-input" id="huLookupInput" type="text" placeholder="HU-000001" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" />' +
-        '    <div class="field-error" id="huLookupError"></div>' +
-        '    <div class="overlay-actions">' +
-        '      <button class="btn btn-outline" type="button" id="huLookupCancel">Отмена</button>' +
-        '      <button class="btn primary-btn" type="button" id="huLookupConfirm" disabled>Показать</button>' +
-        "    </div>" +
-        "  </div>" +
-        "</div>";
-
-      document.body.appendChild(lookupOverlay);
-      lockOverlayScroll();
-      focusOverlay(lookupOverlay);
-
-      lookupInput = lookupOverlay.querySelector("#huLookupInput");
-      lookupError = lookupOverlay.querySelector("#huLookupError");
-      lookupConfirm = lookupOverlay.querySelector("#huLookupConfirm");
-      var cancelBtn = lookupOverlay.querySelector("#huLookupCancel");
-      var closeBtn = lookupOverlay.querySelector(".overlay-close");
-
-      function closeOverlay() {
-        unlockOverlayScroll();
-        document.body.removeChild(lookupOverlay);
-        lookupOverlay = null;
-        lookupInput = null;
-        lookupError = null;
-        lookupConfirm = null;
-        lookupValue = null;
-        setPreferredScanTarget(null);
-        if (overlayKeyListener) {
-          document.removeEventListener("keydown", overlayKeyListener);
-          overlayKeyListener = null;
-        }
+      var value =
+        rawValue != null && rawValue !== ""
+          ? rawValue
+          : lookupInput
+            ? lookupInput.value
+            : "";
+      var huCode = extractHuCode(value);
+      if (!huCode) {
+        var rawNormalized = normalizeValue(value).toUpperCase();
+        setMessage(
+          rawNormalized
+            ? "Неверный формат HU: " + rawNormalized
+            : "Неверный формат HU."
+        );
+        enterHuLookupScanMode();
+        return Promise.resolve({ accepted: false });
       }
-
-      function confirmLookup() {
-        if (!lookupValue) {
-          return;
-        }
-        var confirmedValue = lookupValue;
-        closeOverlay();
-        loadHuDetails(confirmedValue);
-      }
-
       if (lookupInput) {
-        setPreferredScanTarget(lookupInput);
-        lookupInput.addEventListener("input", function () {
-          if (lookupInput.value !== lastLookupValue) {
-            lookupInput.value = lastLookupValue;
-          }
-          setLookupValue(lookupInput.value, true);
-        });
-        lookupInput.addEventListener("keydown", function (event) {
-          if (event.key === "Enter" && lookupConfirm && !lookupConfirm.disabled) {
-            event.preventDefault();
-            confirmLookup();
-            return;
-          }
-        });
+        lookupInput.value = huCode;
       }
-      if (cancelBtn) {
-        cancelBtn.addEventListener("click", closeOverlay);
-      }
-      if (closeBtn) {
-        closeBtn.addEventListener("click", closeOverlay);
-      }
-      if (lookupConfirm) {
-        lookupConfirm.addEventListener("click", confirmLookup);
-      }
-
-      overlayKeyListener = function (event) {
-        if (event.key === "Escape") {
-          closeOverlay();
+      setMessage("");
+      submitPending = true;
+      return resolveHuAndNavigate(huCode, {
+        notify: setMessage,
+        navOrigin: "/hu",
+      }).finally(function () {
+        submitPending = false;
+        enterHuLookupScanMode();
+        if (lookupInput) {
+          lookupInput.focus();
         }
-        if (event.key === "Enter" && lookupConfirm && !lookupConfirm.disabled) {
-          event.preventDefault();
-          confirmLookup();
-        }
-      };
-      document.addEventListener("keydown", overlayKeyListener);
-
-      setLookupValue("", false);
-      if (lookupInput) {
-        lookupInput.focus();
-      }
-    }
-
-    setScanHandler(handleScanEvent);
-
-    if (scanBtn) {
-      scanBtn.addEventListener("click", function () {
-        openLookupOverlay();
       });
     }
+
+    function handleHuRouteScan(scan) {
+      var value = scan && scan.value ? scan.value : scan;
+      if (lookupInput) {
+        lookupInput.value = normalizeValue(value).toUpperCase();
+      }
+      return submitHuLookup(value);
+    }
+
+    if (lookupInput) {
+      setPreferredScanTarget(lookupInput);
+      lookupInput.addEventListener(
+        "pointerdown",
+        function () {
+          enterHuLookupManualMode();
+        },
+        true
+      );
+      lookupInput.addEventListener("blur", function () {
+        enterHuLookupScanMode();
+      });
+    }
+
+    if (findBtn) {
+      findBtn.addEventListener("click", function () {
+        submitHuLookup();
+      });
+    }
+
+    setScanHandler(handleHuRouteScan);
+    syncHuLookupScanMode = enterHuLookupScanMode;
+    if (window.FlowStockTsdTestHooks) {
+      window.FlowStockTsdTestHooks.enterHuLookupScanMode = enterHuLookupScanMode;
+      window.FlowStockTsdTestHooks.enterHuLookupManualMode = enterHuLookupManualMode;
+      window.FlowStockTsdTestHooks.submitHuLookup = submitHuLookup;
+    }
+    enterHuLookupScanMode();
   }
 
   function renderHeaderFields(doc) {
@@ -9004,9 +8768,6 @@
       searchInput.addEventListener("input", function () {
         loadOrders(searchInput.value);
       });
-      searchInput.addEventListener("keydown", function (event) {
-        handleNeutralHuInputEnter(event, searchInput);
-      });
     }
 
     if (toggleReadyBtn) {
@@ -9181,9 +8942,6 @@
     if (searchInput) {
       searchInput.addEventListener("input", function () {
         applyFilters();
-      });
-      searchInput.addEventListener("keydown", function (event) {
-        handleNeutralHuInputEnter(event, searchInput);
       });
     }
     if (brandSelect) {
@@ -14568,10 +14326,8 @@
     window.FlowStockTsdTestHooks.normalizeTsdTheme = normalizeTsdTheme;
     window.FlowStockTsdTestHooks.initTsdTheme = initTsdTheme;
     window.FlowStockTsdTestHooks.extractHuCode = extractHuCode;
-    window.FlowStockTsdTestHooks.installGlobalHuScanHandler = installGlobalHuScanHandler;
-    window.FlowStockTsdTestHooks.handleGlobalHuScan = handleGlobalHuScan;
-    window.FlowStockTsdTestHooks.handleNeutralHuScan = handleNeutralHuScan;
-    window.FlowStockTsdTestHooks.handleNeutralHuInputEnter = handleNeutralHuInputEnter;
+    window.FlowStockTsdTestHooks.resolveHuAndNavigate = resolveHuAndNavigate;
+    window.FlowStockTsdTestHooks.renderHuLookup = renderHuLookup;
     window.FlowStockTsdTestHooks.setScanHandler = setScanHandler;
     window.FlowStockTsdTestHooks.getActiveScanHandler = function () { return activeScanHandler; };
     window.FlowStockTsdTestHooks.isScanHandlerActive = function () { return scanHandlerActive; };
@@ -14646,6 +14402,13 @@
           "focusin",
           function (event) {
             if (isSoftKeyboardSuppressed()) {
+              if (
+                event.target &&
+                event.target.getAttribute &&
+                event.target.getAttribute("data-hu-manual") === "1"
+              ) {
+                return;
+              }
               if (isScanAllowedElement(event.target)) {
                 applyScanInputMode(event.target);
                 event.target.setAttribute("data-scan-readonly", "1");

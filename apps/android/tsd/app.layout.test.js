@@ -130,18 +130,18 @@ assert(
   buildHomeMenuBody.includes('"operations"') &&
     buildHomeMenuBody.includes('"items"') &&
     buildHomeMenuBody.includes('"orders"') &&
-    buildHomeMenuBody.includes('"settings"') &&
+    buildHomeMenuBody.includes('"hu"') &&
     buildHomeMenuTileBody.includes('data-route="') &&
     buildMenuTileBody.includes("home-menu-tile"),
-  "home tiles should use existing routes for operations, catalog, orders, and settings"
+  "home tiles should use existing routes for operations, catalog, orders, and HU lookup"
 );
 assert(
   buildHomeMenuBody.includes("Операции") &&
     buildHomeMenuBody.includes("Каталог") &&
     buildHomeMenuBody.includes("Заказы") &&
-    buildHomeMenuBody.includes("Информация") &&
-    buildHomeMenuBody.includes("Синхронизация, статус и полезные сведения"),
-  "home should render four tile labels with information subtitle"
+    buildHomeMenuBody.includes("Поиск HU") &&
+    buildHomeMenuBody.includes("Сканирование и поиск паллеты"),
+  "home should render four tile labels with HU lookup subtitle"
 );
 assert(
   buildHomeMenuTileBody.includes('class="home-menu-icon"') &&
@@ -149,7 +149,7 @@ assert(
     buildHomeMenuBody.includes("img/home/operations.png") &&
     buildHomeMenuBody.includes("img/home/catalogue.png") &&
     buildHomeMenuBody.includes("img/home/orders.png") &&
-    buildHomeMenuBody.includes("img/home/info.png") &&
+    buildHomeMenuBody.includes("img/home/hu-search.png") &&
     !buildHomeMenuTileBody.includes("<svg") &&
     !buildHomeMenuBody.includes("<svg") &&
     !buildHomeMenuBody.includes("menu-btn"),
@@ -173,7 +173,7 @@ assert(
   serviceWorkerJs.includes('"./img/home/operations.png"') &&
     serviceWorkerJs.includes('"./img/home/catalogue.png"') &&
     serviceWorkerJs.includes('"./img/home/orders.png"') &&
-    serviceWorkerJs.includes('"./img/home/info.png"'),
+    serviceWorkerJs.includes('"./img/home/hu-search.png"'),
   "service worker should cache home menu png icons for offline use"
 );
 

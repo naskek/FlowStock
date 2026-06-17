@@ -3,8 +3,8 @@
  * index.html, service-worker.js, app.js, styles.css, storage.js or scanner.js.
  */
 (function (root) {
-  var version = "43";
-  var cacheName = "flowstock-tsd-v" + version;
+  var version = \ 44\;
+  var cacheName = \flowstock-tsd-v\ + version;
   root.TSD_PWA_VERSION = version;
   root.TSD_CACHE_NAME = cacheName;
-})(typeof self !== "undefined" ? self : window);
+})(typeof self !== \undefined\ ? self : window);
