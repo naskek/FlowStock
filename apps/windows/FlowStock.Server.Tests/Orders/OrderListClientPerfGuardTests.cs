@@ -124,6 +124,44 @@ public sealed class OrderListClientPerfGuardTests
         Assert.DoesNotContain("Body", logSection, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void PostgresOrderListSqlPerfLog_HasPhaseTimingFields_AndNoSqlOrSearchPayloadLogging()
+    {
+        var program = File.ReadAllText(GetRepoPath("apps", "windows", "FlowStock.Server", "Program.cs"));
+        var dataStore = File.ReadAllText(GetRepoPath("apps", "windows", "FlowStock.Data", "PostgresDataStore.cs"));
+        var logStart = program.IndexOf("PERF orders-sql operation={Operation}", StringComparison.Ordinal);
+        var logEnd = program.IndexOf("));", logStart, StringComparison.Ordinal);
+        var logSection = program[logStart..logEnd];
+        var emitStart = dataStore.IndexOf("private void EmitOrderSqlDiagnostics", StringComparison.Ordinal);
+        var emitEnd = dataStore.IndexOf("private NpgsqlCommand CreateCommand", emitStart, StringComparison.Ordinal);
+        var emitSection = dataStore[emitStart..emitEnd];
+        var detailStart = program.IndexOf("app.MapGet(\"/api/orders/{orderId:long}\"", StringComparison.Ordinal);
+        var detailEnd = program.IndexOf("app.MapGet(\"/api/orders/{orderId:long}/shipment-remaining\"", detailStart, StringComparison.Ordinal);
+        var detailSection = program[detailStart..detailEnd];
+
+        Assert.Contains("PERF orders-sql", logSection, StringComparison.Ordinal);
+        Assert.Contains("operation={Operation}", logSection, StringComparison.Ordinal);
+        Assert.Contains("rows={Rows}", logSection, StringComparison.Ordinal);
+        Assert.Contains("q_present={QueryPresent}", logSection, StringComparison.Ordinal);
+        Assert.Contains("command_index={CommandIndex}", logSection, StringComparison.Ordinal);
+        Assert.Contains("command_role={CommandRole}", logSection, StringComparison.Ordinal);
+        Assert.Contains("open_connection_ms={OpenConnectionMs}", logSection, StringComparison.Ordinal);
+        Assert.Contains("build_command_ms={BuildCommandMs}", logSection, StringComparison.Ordinal);
+        Assert.Contains("execute_reader_ms={ExecuteReaderMs}", logSection, StringComparison.Ordinal);
+        Assert.Contains("read_rows_ms={ReadRowsMs}", logSection, StringComparison.Ordinal);
+        Assert.Contains("total_ms={TotalMs}", logSection, StringComparison.Ordinal);
+        Assert.Contains("BeginOrderListSqlDiagnostics(\"GetOrdersPage\"", program, StringComparison.Ordinal);
+        Assert.Contains("BeginOrderListSqlDiagnostics(\"GetOrders\"", program, StringComparison.Ordinal);
+        Assert.Contains("ExecuteOrderListReadCommand(\"GetOrdersPage\", \"orders_page_read\"", dataStore, StringComparison.Ordinal);
+        Assert.Contains("ExecuteOrderListReadCommand(\"GetOrders\", \"orders_unpaged_read\"", dataStore, StringComparison.Ordinal);
+        Assert.DoesNotContain("BeginOrderListSqlDiagnostics", detailSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("PERF orders-sql", detailSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("{Sql}", logSection + emitSection, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("CommandText", logSection + emitSection, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("{Query}", logSection + emitSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("{QueryPattern}", logSection + emitSection, StringComparison.Ordinal);
+    }
+
     private static string GetRepoPath(params string[] parts)
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

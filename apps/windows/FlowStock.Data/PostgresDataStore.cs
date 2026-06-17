@@ -1,7 +1,9 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 using FlowStock.Core.Models.Marking;
@@ -13,9 +15,23 @@ namespace FlowStock.Data;
 
 public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore
 {
+    public sealed record OrderSqlDiagnostics(
+        string Operation,
+        bool QueryPresent,
+        int CommandIndex,
+        string CommandRole,
+        int Rows,
+        long OpenConnectionMs,
+        long BuildCommandMs,
+        long ExecuteReaderMs,
+        long ReadRowsMs,
+        long TotalMs);
+
     private readonly string _connectionString;
     private readonly NpgsqlConnection? _connection;
     private readonly NpgsqlTransaction? _transaction;
+    private readonly Action<OrderSqlDiagnostics>? _orderSqlDiagnosticsSink;
+    private static readonly AsyncLocal<OrderSqlDiagnosticsScope?> OrderSqlDiagnosticsScopeSlot = new();
     private const string DocSelectBase =
         "SELECT d.id, d.doc_ref, d.type, d.status, d.created_at, d.closed_at, d.partner_id, d.order_id, d.order_ref, d.shipping_ref, d.reason_code, d.comment, p.name, p.code, " +
         "COALESCE(dl.line_count, 0) AS line_count, ad.device_id, ad.doc_uid, d.production_batch_no " +
@@ -885,16 +901,21 @@ LEFT JOIN marking_rollup mr ON mr.order_id = ob.id
 LEFT JOIN order_list_flags olf ON olf.order_id = ob.id
 LEFT JOIN pallet_summary ps ON ps.order_id = ob.id";
 
-    public PostgresDataStore(string connectionString)
+    public PostgresDataStore(string connectionString, Action<OrderSqlDiagnostics>? orderSqlDiagnosticsSink = null)
     {
         _connectionString = connectionString;
+        _orderSqlDiagnosticsSink = orderSqlDiagnosticsSink;
     }
 
-    private PostgresDataStore(NpgsqlConnection connection, NpgsqlTransaction transaction)
+    private PostgresDataStore(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Action<OrderSqlDiagnostics>? orderSqlDiagnosticsSink)
     {
         _connection = connection;
         _transaction = transaction;
         _connectionString = connection.ConnectionString;
+        _orderSqlDiagnosticsSink = orderSqlDiagnosticsSink;
     }
 
     public void Initialize()
@@ -916,10 +937,15 @@ LEFT JOIN pallet_summary ps ON ps.order_id = ob.id";
         connection.Open();
         using var transaction = connection.BeginTransaction();
 
-        var scoped = new PostgresDataStore(connection, transaction);
+        var scoped = new PostgresDataStore(connection, transaction, _orderSqlDiagnosticsSink);
         work(scoped);
 
         transaction.Commit();
+    }
+
+    public IDisposable BeginOrderListSqlDiagnostics(string operation, bool queryPresent)
+    {
+        return new OrderSqlDiagnosticsScopeHandle(operation, queryPresent);
     }
 
     public ProductionFillingCompletion? GetProductionFillingCompletion(long orderId, string operationFingerprint)
@@ -4607,11 +4633,11 @@ WHERE d.id = pp.prd_doc_id
 
     public IReadOnlyList<Order> GetOrders()
     {
-        return WithConnection(connection =>
+        return ExecuteOrderListReadCommand("GetOrders", "orders_unpaged_read", connection =>
         {
             var orderBy = OrderPageSortSql.BuildEffectiveStatusOrderBy("orders_read_model.status", includeCancelledMerged: false);
             var orderRefOrderBy = OrderPageSortSql.BuildOrderRefDescendingOrderBy("orders_read_model.order_ref");
-            using var command = CreateCommand(connection, $@"
+            var command = CreateCommand(connection, $@"
 SELECT *
 FROM (
 {BuildOrderSelectSql("SELECT o.id FROM orders o")}
@@ -4620,14 +4646,7 @@ ORDER BY {orderBy},
 orders_read_model.created_at DESC,
 {orderRefOrderBy}");
             AddOrderSelectParameters(command);
-            using var reader = command.ExecuteReader();
-            var orders = new List<Order>();
-            while (reader.Read())
-            {
-                orders.Add(ReadOrder(reader));
-            }
-
-            return orders;
+            return command;
         });
     }
 
@@ -4669,7 +4688,7 @@ orders_read_model.created_at DESC,
         int offset,
         bool includeCancelledMerged = false)
     {
-        return WithConnection(connection =>
+        return ExecuteOrderListReadCommand("GetOrdersPage", "orders_page_read", connection =>
         {
             var normalized = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
             var effectiveOrderBy = OrderPageSortSql.BuildEffectiveStatusOrderBy("eo.effective_status", includeCancelledMerged);
@@ -4921,7 +4940,7 @@ ORDER BY {effectiveOrderBy},
 eo.created_at DESC,
 eo.id DESC
 LIMIT @limit OFFSET @offset";
-            using var command = CreateCommand(connection, $@"
+            var command = CreateCommand(connection, $@"
 SELECT *
 FROM (
 {BuildOrderSelectSql(pageOrderScopeSql)}
@@ -4940,14 +4959,7 @@ paged_orders.id DESC");
             command.Parameters.Add("@query_pattern", NpgsqlDbType.Text).Value = string.IsNullOrWhiteSpace(normalized) ? DBNull.Value : $"%{normalized}%";
             command.Parameters.AddWithValue("@limit", limit);
             command.Parameters.AddWithValue("@offset", offset);
-            using var reader = command.ExecuteReader();
-            var orders = new List<Order>();
-            while (reader.Read())
-            {
-                orders.Add(ReadOrder(reader));
-            }
-
-            return orders;
+            return command;
         });
     }
 
@@ -9451,7 +9463,7 @@ WHERE d.id = dl.doc_id
         using var connection = new NpgsqlConnection(_connectionString);
         connection.Open();
         using var transaction = connection.BeginTransaction();
-        var scoped = new PostgresDataStore(connection, transaction);
+        var scoped = new PostgresDataStore(connection, transaction, _orderSqlDiagnosticsSink);
         var result = scoped.ReleaseProducedCustomerStockForOrderLineCore(connection, orderId, orderLineId);
         transaction.Commit();
         return result;
@@ -11350,6 +11362,103 @@ RETURNING id;
         return action(connection);
     }
 
+    private IReadOnlyList<Order> ExecuteOrderListReadCommand(
+        string operation,
+        string commandRole,
+        Func<NpgsqlConnection, NpgsqlCommand> buildCommand)
+    {
+        var totalStopwatch = Stopwatch.StartNew();
+        if (_connection != null)
+        {
+            return ExecuteOrderListReadCommandCore(
+                operation,
+                commandRole,
+                _connection,
+                buildCommand,
+                openConnectionMs: 0,
+                totalStopwatch);
+        }
+
+        using var connection = new NpgsqlConnection(_connectionString);
+        var openStopwatch = Stopwatch.StartNew();
+        connection.Open();
+        var openConnectionMs = openStopwatch.ElapsedMilliseconds;
+
+        return ExecuteOrderListReadCommandCore(
+            operation,
+            commandRole,
+            connection,
+            buildCommand,
+            openConnectionMs,
+            totalStopwatch);
+    }
+
+    private IReadOnlyList<Order> ExecuteOrderListReadCommandCore(
+        string operation,
+        string commandRole,
+        NpgsqlConnection connection,
+        Func<NpgsqlConnection, NpgsqlCommand> buildCommand,
+        long openConnectionMs,
+        Stopwatch totalStopwatch)
+    {
+        var buildCommandStopwatch = Stopwatch.StartNew();
+        using var command = buildCommand(connection);
+        var buildCommandMs = buildCommandStopwatch.ElapsedMilliseconds;
+
+        var executeReaderStopwatch = Stopwatch.StartNew();
+        using var reader = command.ExecuteReader();
+        var executeReaderMs = executeReaderStopwatch.ElapsedMilliseconds;
+
+        var orders = new List<Order>();
+        var readRowsStopwatch = Stopwatch.StartNew();
+        while (reader.Read())
+        {
+            orders.Add(ReadOrder(reader));
+        }
+
+        var readRowsMs = readRowsStopwatch.ElapsedMilliseconds;
+        EmitOrderSqlDiagnostics(
+            operation,
+            commandRole,
+            orders.Count,
+            openConnectionMs,
+            buildCommandMs,
+            executeReaderMs,
+            readRowsMs,
+            totalStopwatch.ElapsedMilliseconds);
+
+        return orders;
+    }
+
+    private void EmitOrderSqlDiagnostics(
+        string operation,
+        string commandRole,
+        int rows,
+        long openConnectionMs,
+        long buildCommandMs,
+        long executeReaderMs,
+        long readRowsMs,
+        long totalMs)
+    {
+        var scope = OrderSqlDiagnosticsScopeSlot.Value;
+        if (scope == null || _orderSqlDiagnosticsSink == null)
+        {
+            return;
+        }
+
+        _orderSqlDiagnosticsSink(new OrderSqlDiagnostics(
+            scope.Operation ?? operation,
+            scope.QueryPresent,
+            scope.NextCommandIndex(),
+            commandRole,
+            rows,
+            openConnectionMs,
+            buildCommandMs,
+            executeReaderMs,
+            readRowsMs,
+            totalMs));
+    }
+
     private NpgsqlCommand CreateCommand(NpgsqlConnection connection, string sql)
     {
         var command = connection.CreateCommand();
@@ -11360,6 +11469,43 @@ RETURNING id;
         }
 
         return command;
+    }
+
+    private sealed class OrderSqlDiagnosticsScope(string operation, bool queryPresent)
+    {
+        private int _commandIndex;
+
+        public string Operation { get; } = operation;
+
+        public bool QueryPresent { get; } = queryPresent;
+
+        public int NextCommandIndex()
+        {
+            return ++_commandIndex;
+        }
+    }
+
+    private sealed class OrderSqlDiagnosticsScopeHandle : IDisposable
+    {
+        private readonly OrderSqlDiagnosticsScope? _previous;
+        private bool _disposed;
+
+        public OrderSqlDiagnosticsScopeHandle(string operation, bool queryPresent)
+        {
+            _previous = OrderSqlDiagnosticsScopeSlot.Value;
+            OrderSqlDiagnosticsScopeSlot.Value = new OrderSqlDiagnosticsScope(operation, queryPresent);
+        }
+
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            OrderSqlDiagnosticsScopeSlot.Value = _previous;
+            _disposed = true;
+        }
     }
 
     private static Item ReadItem(NpgsqlDataReader reader)

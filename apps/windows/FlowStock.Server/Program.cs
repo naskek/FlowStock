@@ -33,9 +33,23 @@ if (OrderReservationBackfillCommand.TryRun(args, postgresConnectionString, out v
     return;
 }
 
-builder.Services.AddSingleton<PostgresDataStore>(_ =>
+builder.Services.AddSingleton<PostgresDataStore>(sp =>
 {
-    return new PostgresDataStore(postgresConnectionString);
+    var performanceLogger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("FlowStock.Performance");
+    return new PostgresDataStore(
+        postgresConnectionString,
+        diagnostics => performanceLogger.LogInformation(
+            "PERF orders-sql operation={Operation} rows={Rows} q_present={QueryPresent} command_index={CommandIndex} command_role={CommandRole} open_connection_ms={OpenConnectionMs} build_command_ms={BuildCommandMs} execute_reader_ms={ExecuteReaderMs} read_rows_ms={ReadRowsMs} total_ms={TotalMs}",
+            diagnostics.Operation,
+            diagnostics.Rows,
+            diagnostics.QueryPresent,
+            diagnostics.CommandIndex,
+            diagnostics.CommandRole,
+            diagnostics.OpenConnectionMs,
+            diagnostics.BuildCommandMs,
+            diagnostics.ExecuteReaderMs,
+            diagnostics.ReadRowsMs,
+            diagnostics.TotalMs));
 });
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.IDataStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.ITsdHuResolverStore>(sp => sp.GetRequiredService<PostgresDataStore>());
@@ -1959,9 +1973,16 @@ app.MapGet("/api/orders", (HttpRequest request, IDataStore store, ILoggerFactory
         {
             var realOffset = Math.Max(0, offset - pendingRows.Count);
             var getOrdersStopwatch = Stopwatch.StartNew();
-            var orderRows = orderService
-                .GetOrdersPage(includeInternal, normalized, remainingLimit, realOffset, includeCancelledMerged)
-                .ToList();
+            List<Order> orderRows;
+            {
+                using var orderSqlDiagnostics = store is PostgresDataStore postgresStore
+                    ? postgresStore.BeginOrderListSqlDiagnostics("GetOrdersPage", !string.IsNullOrWhiteSpace(normalized))
+                    : null;
+                orderRows = orderService
+                    .GetOrdersPage(includeInternal, normalized, remainingLimit, realOffset, includeCancelledMerged)
+                    .ToList();
+            }
+
             getOrdersMs = getOrdersStopwatch.ElapsedMilliseconds;
             loadedMetricsCount = orderRows.Count(order => order.ListMetricsLoaded);
             page.AddRange(MapOrdersWithShipmentRemaining(orderRows, store, mapTimings));
@@ -1985,7 +2006,14 @@ app.MapGet("/api/orders", (HttpRequest request, IDataStore store, ILoggerFactory
     }
 
     var unpagedGetOrdersStopwatch = Stopwatch.StartNew();
-    var orders = orderService.GetOrders();
+    IReadOnlyList<Order> orders;
+    {
+        using var unpagedOrderSqlDiagnostics = store is PostgresDataStore unpagedPostgresStore
+            ? unpagedPostgresStore.BeginOrderListSqlDiagnostics("GetOrders", !string.IsNullOrWhiteSpace(normalized))
+            : null;
+        orders = orderService.GetOrders();
+    }
+
     getOrdersMs = unpagedGetOrdersStopwatch.ElapsedMilliseconds;
     if (!includeInternal)
     {
