@@ -120,40 +120,41 @@ function createHuCardActionButtons() {
   return huCardActionButtons;
 }
 
-let huLookupFocusCount = 0;
+let scanSinkFocusCount = 0;
 let activeElementRef = null;
 
-function createHuLookupInput() {
-  const attrs = {
-    "data-scan-allow": "1",
-    "data-hu-lookup": "1",
-    inputmode: "none",
-  };
+function createScanSink() {
   const listeners = {};
-  const input = {
+  const sink = {
     tagName: "INPUT",
     value: "",
-    readOnly: false,
-    attrs: attrs,
-    setAttribute: function (name, value) {
-      this.attrs[name] = value;
+    attrs: {
+      "data-scan-allow": "1",
     },
     getAttribute: function (name) {
       return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null;
     },
-    removeAttribute: function (name) {
-      delete this.attrs[name];
+    addEventListener: function (event, handler) {
+      listeners[event] = listeners[event] || [];
+      listeners[event].push(handler);
     },
-    addEventListener: function (event, handler, capture) {
-      const key = event + (capture ? ":capture" : "");
-      listeners[key] = listeners[key] || [];
-      listeners[key].push(handler);
-    },
-    simulateWedgeInput: function (text) {
-      if (this.readOnly) {
-        throw new Error("wedge blocked by readOnly");
+    removeEventListener: function (event, handler) {
+      if (!listeners[event]) {
+        return;
       }
-      this.value = String(text || "");
+      const index = listeners[event].indexOf(handler);
+      if (index >= 0) {
+        listeners[event].splice(index, 1);
+      }
+    },
+    focus: function () {
+      scanSinkFocusCount += 1;
+      activeElementRef = sink;
+    },
+    blur: function () {
+      if (activeElementRef === sink) {
+        activeElementRef = null;
+      }
     },
     dispatchEvent: function (event) {
       if (!event.preventDefault) {
@@ -162,68 +163,39 @@ function createHuLookupInput() {
         };
       }
       event.target = this;
-      documentListeners
-        .filter(function (entry) {
-          return entry.type === event.type && entry.capture;
-        })
-        .forEach(function (entry) {
-          entry.handler(event);
-        });
       (listeners[event.type] || []).forEach(function (handler) {
         handler(event);
       });
-      if (event.bubbles) {
-        documentListeners
-          .filter(function (entry) {
-            return entry.type === event.type && !entry.capture;
-          })
-          .forEach(function (entry) {
-            entry.handler(event);
-          });
-      }
       return !event.defaultPrevented;
     },
-    dispatchPointerDown: function () {
-      const event = {
-        preventDefault: function () {
-          event.defaultPrevented = true;
-        },
-        defaultPrevented: false,
-      };
-      (listeners["pointerdown:capture"] || []).forEach(function (handler) {
-        handler(event);
-      });
-    },
-    dispatchBlur: function () {
-      activeElementRef = null;
-      (listeners.blur || []).forEach(function (handler) {
-        handler({});
-      });
-    },
-    blur: function () {
-      activeElementRef = null;
-    },
-    focus: function () {
-      huLookupFocusCount += 1;
-      activeElementRef = input;
+    simulateWedgeScan: function (text) {
+      this.value = String(text || "");
+      this.dispatchEvent({ type: "input", target: this });
+      this.dispatchEvent(
+        new KeyboardEventPolyfill("keydown", {
+          key: "Enter",
+          bubbles: true,
+        })
+      );
     },
   };
-  return input;
+  return sink;
 }
 
-let huLookupInput = null;
-let huLookupFindBtn = null;
+let scanSink = null;
 let huLookupMessageEl = null;
 
-function resetHuLookupDom() {
-  huLookupInput = createHuLookupInput();
-  huLookupFindBtn = createButton();
+function resetHuRouteDom() {
+  if (!scanSink) {
+    scanSink = createScanSink();
+  }
+  scanSink.value = "";
   huLookupMessageEl = { textContent: "" };
-  huLookupFocusCount = 0;
+  scanSinkFocusCount = 0;
   activeElementRef = null;
 }
 
-resetHuLookupDom();
+resetHuRouteDom();
 
 function createOverlay() {
   const closeBtn = createButton();
@@ -362,11 +334,8 @@ const context = {
       if (id === "app") {
         return appEl;
       }
-      if (id === "huLookupInput") {
-        return huLookupInput;
-      }
-      if (id === "huLookupFindBtn") {
-        return huLookupFindBtn;
+      if (id === "scanSink") {
+        return scanSink;
       }
       if (id === "huLookupMessage") {
         return huLookupMessageEl;
@@ -497,7 +466,7 @@ async function main() {
 
   assert(storageJs.includes("/api/tsd/hu/resolve?code="));
   assert(storageJs.includes("/api/tsd/hu/card?code="));
-  assert(appVersionJs.includes('var version = "47"'));
+  assert(appVersionJs.includes('var version = "48"'));
   assert(serviceWorkerJs.includes('importScripts("./app-version.js")'));
   assert(serviceWorkerJs.includes('"./app.js"'));
   assert(serviceWorkerJs.includes('"./img/home/hu-search.png"'));
@@ -540,140 +509,95 @@ async function main() {
   assert.strictEqual(resolveCalls, resolveCallsBeforeOrders, "orders without scan handler must not resolve HU");
 
   context.window.location.hash = "#/hu";
-  resetHuLookupDom();
+  resetHuRouteDom();
+
+  const huLookupHtml = hooks.renderHuLookup();
+  assert.match(huLookupHtml, /Поиск HU/);
+  assert.match(huLookupHtml, /Отсканируйте HU/);
+  assert.doesNotMatch(huLookupHtml, /huLookupInput/);
+  assert.doesNotMatch(huLookupHtml, /huLookupFindBtn/);
+
   const resolveCallsBeforeHuRoute = resolveCalls;
   hooks.renderRouteInternal({ name: "hu" });
   await flushPromises();
-  assert.strictEqual(typeof getRouteScanHandler(), "function");
-  assert.strictEqual(huLookupInput.readOnly, false, "/hu should open in scan-mode");
-  assert.strictEqual(huLookupInput.getAttribute("inputmode"), "none", "/hu should suppress inputmode keyboard");
-  assert.strictEqual(huLookupInput.getAttribute("data-hu-manual"), null, "/hu should not start in manual mode");
-  assert.strictEqual(activeElementRef, huLookupInput, "/hu render should focus lookup input");
-  assert(huLookupFocusCount >= 1, "/hu render should call focus via requestAnimationFrame");
+  assert.strictEqual(typeof getRouteScanHandler(), "function", "/hu should install route-specific scan handler");
+  assert.strictEqual(activeElementRef, scanSink, "/hu render should focus global scanSink");
 
-  const focusCountAfterRender = huLookupFocusCount;
-  huLookupInput.dispatchBlur();
-  assert.strictEqual(huLookupFocusCount, focusCountAfterRender, "blur must not restore focus");
-  assert.strictEqual(huLookupInput.readOnly, false, "blur should keep scan-mode");
-
-  const wedgeCode = "HU-000124";
-  huLookupInput.simulateWedgeInput(wedgeCode);
-  assert.strictEqual(huLookupInput.value, wedgeCode, "wedge should write into lookup field");
-  huLookupInput.dispatchEvent(
-    new KeyboardEventPolyfill("keydown", {
-      key: "Enter",
-      bubbles: true,
-    })
-  );
+  scanSink.simulateWedgeScan("HU-0000123");
   await flushPromises();
-  assert.strictEqual(resolveCalls, resolveCallsBeforeHuRoute + 1, "/hu wedge Enter should resolve once");
-  assert.strictEqual(context.window.location.hash, "/hu/HU-000124", "/hu wedge should open HU card");
+  assert.strictEqual(resolveCalls, resolveCallsBeforeHuRoute + 1, "/hu wedge should resolve once");
+  assert.strictEqual(context.window.location.hash, "/hu/HU-0000123", "/hu wedge should open HU card");
 
   context.window.location.hash = "#/hu";
-  resetHuLookupDom();
-  resolveCalls = 0;
+  resetHuRouteDom();
   hooks.renderRouteInternal({ name: "hu" });
   await flushPromises();
-  const focusCountBeforeProgrammatic = huLookupFocusCount;
-  huLookupInput.focus();
-  assert.strictEqual(huLookupInput.getAttribute("data-hu-manual"), null, "programmatic focus must not enable manual-mode");
-  const resolveCallsBeforeManual = resolveCalls;
-  huLookupInput.dispatchPointerDown();
-  assert.strictEqual(huLookupInput.readOnly, false, "tap should enable manual HU input");
-  assert.strictEqual(huLookupInput.getAttribute("inputmode"), "text");
-  assert.strictEqual(huLookupInput.getAttribute("data-hu-manual"), "1");
-  huLookupInput.value = "HU-000125";
-  await hooks.submitHuLookup();
+  const resolveCallsBeforeInvalid = resolveCalls;
+  scanSink.simulateWedgeScan("not-a-hu");
   await flushPromises();
-  assert.strictEqual(resolveCalls, resolveCallsBeforeManual + 1, "manual Find path should resolve once");
+  assert.strictEqual(resolveCalls, resolveCallsBeforeInvalid, "invalid format must not call resolve");
+  assert.match(huLookupMessageEl.textContent, /Неверный формат HU/);
+  assert.strictEqual(context.window.location.hash, "#/hu", "invalid format must stay on lookup screen");
+  assert.strictEqual(activeElementRef, scanSink, "invalid format should restore scanSink focus");
+  const resolveCallsBeforeSecondValid = resolveCalls;
+  scanSink.simulateWedgeScan("HU-000125");
+  await flushPromises();
+  assert.strictEqual(resolveCalls, resolveCallsBeforeSecondValid + 1, "scanner should accept next scan after invalid format");
   assert.strictEqual(context.window.location.hash, "/hu/HU-000125");
 
   context.window.location.hash = "#/hu";
-  resetHuLookupDom();
+  resetHuRouteDom();
   nextResolveResult = { known: false };
   hooks.renderRouteInternal({ name: "hu" });
   await flushPromises();
   const resolveCallsBeforeUnknown = resolveCalls;
-  const focusBeforeUnknown = huLookupFocusCount;
-  await hooks.submitHuLookup("HU-999999");
+  scanSink.simulateWedgeScan("HU-999999");
   await flushPromises();
   assert.strictEqual(resolveCalls, resolveCallsBeforeUnknown + 1);
   assert.match(huLookupMessageEl.textContent, /HU неизвестен: HU-999999/);
   assert.strictEqual(context.window.location.hash, "#/hu", "unknown HU must stay on lookup screen");
-  assert.strictEqual(huLookupInput.readOnly, false, "unknown HU should restore scan-mode");
-  assert(huLookupFocusCount > focusBeforeUnknown, "unknown HU should restore scanner focus");
+  assert.strictEqual(activeElementRef, scanSink, "unknown HU should restore scanSink focus");
+  const resolveCallsBeforeUnknownRetry = resolveCalls;
+  scanSink.simulateWedgeScan("HU-000127");
+  await flushPromises();
+  assert.strictEqual(resolveCalls, resolveCallsBeforeUnknownRetry + 1, "next scan should work without re-opening screen");
+  nextResolveResult = null;
 
   context.window.location.hash = "#/hu";
-  resetHuLookupDom();
+  resetHuRouteDom();
   nextResolveResult = function () {
     return Promise.reject(new Error("Failed to fetch"));
   };
   hooks.renderRouteInternal({ name: "hu" });
   await flushPromises();
-  const focusBeforeNetworkError = huLookupFocusCount;
-  await hooks.submitHuLookup("HU-000127");
+  scanSink.simulateWedgeScan("HU-000128");
   await flushPromises();
-  assert.strictEqual(huLookupInput.readOnly, false, "network error should restore scan-mode");
-  assert(huLookupFocusCount > focusBeforeNetworkError, "network error should restore scanner focus");
+  assert.match(huLookupMessageEl.textContent, /Нет связи с сервером/);
+  assert(huLookupMessageEl.textContent.length > 0, "network error should show message");
+  assert.strictEqual(activeElementRef, scanSink, "network error should restore scanSink focus");
   nextResolveResult = null;
 
   context.window.location.hash = "#/hu";
-  resetHuLookupDom();
+  resetHuRouteDom();
   hooks.renderRouteInternal({ name: "hu" });
   await flushPromises();
-  const resolveCallsBeforeInvalid = resolveCalls;
-  await hooks.submitHuLookup("not-a-hu");
+  const resolveCallsBeforeDedupe = resolveCalls;
+  hooks.handleHuRouteScan({ value: "HU-000129", source: "test" });
+  hooks.handleHuRouteScan({ value: "HU-000129", source: "test" });
   await flushPromises();
-  assert.strictEqual(resolveCalls, resolveCallsBeforeInvalid, "invalid format must not call resolve");
-  assert.strictEqual(huLookupInput.readOnly, false, "invalid format should restore scan-mode");
-  assert.strictEqual(activeElementRef, huLookupInput, "invalid format should restore focus");
-
-  context.window.location.hash = "#/hu";
-  resetHuLookupDom();
-  hooks.renderRouteInternal({ name: "hu" });
-  await flushPromises();
-  const resolveCallsBeforeFindBtn = resolveCalls;
-  huLookupInput.value = "HU-000128";
-  await hooks.submitHuLookup();
-  await flushPromises();
-  assert.strictEqual(resolveCalls, resolveCallsBeforeFindBtn + 1, "Find button path should resolve once");
-
-  context.window.location.hash = "#/hu";
-  resetHuLookupDom();
-  hooks.renderRouteInternal({ name: "hu" });
-  await flushPromises();
-  const resolveCallsBeforeEnter = resolveCalls;
-  huLookupInput.simulateWedgeInput("HU-000126");
-  huLookupInput.dispatchEvent(
-    new KeyboardEventPolyfill("keydown", {
-      key: "Enter",
-      bubbles: true,
-    })
-  );
-  await flushPromises();
-  assert.strictEqual(resolveCalls, resolveCallsBeforeEnter + 1, "Enter wedge path should resolve exactly once");
-  assert.strictEqual(context.window.location.hash, "/hu/HU-000126");
+  assert.strictEqual(resolveCalls, resolveCallsBeforeDedupe + 1, "duplicate pending scan must not double resolve");
 
   hooks.setNavOrigin("/hu");
-  assert.strictEqual(hooks.navigateBack({ name: "huCard", id: "HU-000126" }), "/hu");
+  assert.strictEqual(hooks.navigateBack({ name: "huCard", id: "HU-000125" }), "/hu");
   context.window.location.hash = "#/hu";
-  resetHuLookupDom();
+  resetHuRouteDom();
   hooks.renderRouteInternal({ name: "hu" });
   await flushPromises();
-  assert.strictEqual(activeElementRef, huLookupInput, "back to /hu should restore scanner focus");
-  assert.strictEqual(huLookupInput.readOnly, false, "back to /hu should restore scan-mode");
+  assert.strictEqual(typeof getRouteScanHandler(), "function", "back to /hu should re-register scan handler");
+  assert.strictEqual(activeElementRef, scanSink, "back to /hu should restore scanSink focus");
 
-  resetHuLookupDom();
-  hooks.renderRouteInternal({ name: "hu" });
-  await flushPromises();
   const resolveCallsBeforeBackWedge = resolveCalls;
-  huLookupInput.simulateWedgeInput("HU-000130");
-  huLookupInput.dispatchEvent(
-    new KeyboardEventPolyfill("keydown", {
-      key: "Enter",
-      bubbles: true,
-    })
-  );
+  scanSink.simulateWedgeScan("HU-000130");
   await flushPromises();
   assert.strictEqual(resolveCalls, resolveCallsBeforeBackWedge + 1, "wedge after back should resolve without tap");
   assert.strictEqual(context.window.location.hash, "/hu/HU-000130");
