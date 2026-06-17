@@ -324,6 +324,24 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
             AddMarkingCode(scopedStore, importId, itemMatchMultipleBucketsTask, "ITEM-BUCKET-1", MarkingCodeStatus.Reserved, gtin: sharedGtin);
             AddMarkingCode(scopedStore, importId, itemMatchMultipleBucketsTask, "ITEM-BUCKET-2", MarkingCodeStatus.Printed, gtin: "04607186959999");
 
+            var singleFreeCodeWithMultipleNeeds = SeedMarkableOrderWithLines(
+                scopedStore,
+                $"{prefix}-one-free-code",
+                OrderType.Internal,
+                (itemA, 2),
+                (itemB, 1));
+            var singleFreeTask = AddMarkingOrder(scopedStore, singleFreeCodeWithMultipleNeeds.OrderId, itemA, requestedQty: 1);
+            AddMarkingCode(scopedStore, importId, singleFreeTask, "ONE-FREE-CODE", MarkingCodeStatus.Reserved, gtin: sharedGtin);
+
+            var singleBoundCodeWithMultipleNeeds = SeedMarkableOrderWithLines(
+                scopedStore,
+                $"{prefix}-one-bound-code",
+                OrderType.Internal,
+                (itemA, 2),
+                (itemB, 1));
+            var singleBoundTask = AddMarkingOrder(scopedStore, singleBoundCodeWithMultipleNeeds.OrderId, itemA, requestedQty: 1);
+            AddBoundMarkingCode(scopedStore, importId, singleBoundCodeWithMultipleNeeds, itemA, singleBoundTask, "ONE-BOUND-CODE", MarkingCodeStatus.Reserved, sharedGtin);
+
             var emptyGtinDoesNotFallback = SeedMarkableOrder(scopedStore, $"{prefix}-empty-gtin", itemA, qty: 1);
             var emptyGtinTask = AddMarkingOrder(
                 scopedStore,
@@ -377,6 +395,8 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
 
             AssertMarking(ReadSingleOrderPageRow(scopedStore, gtinFallback.OrderRef), required: true, covered: true);
             AssertMarking(ReadSingleOrderPageRow(scopedStore, itemMatchMultipleBuckets.OrderRef), required: true, covered: true);
+            AssertMarking(ReadSingleOrderPageRow(scopedStore, singleFreeCodeWithMultipleNeeds.OrderRef), required: true, covered: false);
+            AssertMarking(ReadSingleOrderPageRow(scopedStore, singleBoundCodeWithMultipleNeeds.OrderRef), required: true, covered: false);
             AssertMarking(ReadSingleOrderPageRow(scopedStore, emptyGtinDoesNotFallback.OrderRef), required: true, covered: false);
             AssertMarking(ReadSingleOrderPageRow(scopedStore, sharedNeed.OrderRef), required: true, covered: true);
             AssertMarking(ReadSingleOrderPageRow(scopedStore, multiNeed.OrderRef), required: true, covered: false);
@@ -594,6 +614,45 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
             DocId = docId,
             OrderLineId = fixture.OrderLineId,
             ItemId = fixture.ItemId,
+            Qty = 1,
+            ProductionPurpose = ProductionLinePurpose.InternalStock
+        });
+
+        if (status == MarkingCodeStatus.Voided)
+        {
+            return AddMarkingCode(store, importId, markingOrderId, suffix, status, gtin, docId, docLineId);
+        }
+
+        var codeId = AddMarkingCode(store, importId, markingOrderId, suffix, status, gtin);
+        Assert.Equal(1, store.AssignProductionMarkingCodesToReceipt([codeId], docId, docLineId, DateTime.UtcNow));
+        return codeId;
+    }
+
+    private static Guid AddBoundMarkingCode(
+        IDataStore store,
+        Guid importId,
+        MarkableOrderFixture fixture,
+        long itemId,
+        Guid markingOrderId,
+        string suffix,
+        string status,
+        string? gtin)
+    {
+        var line = Assert.Single(fixture.Lines, seededLine => seededLine.ItemId == itemId);
+        var docId = store.AddDoc(new Doc
+        {
+            DocRef = $"{fixture.OrderRef}-{suffix}-prd",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Closed,
+            OrderId = fixture.OrderId,
+            CreatedAt = DateTime.UtcNow,
+            ClosedAt = DateTime.UtcNow
+        });
+        var docLineId = store.AddDocLine(new DocLine
+        {
+            DocId = docId,
+            OrderLineId = line.OrderLineId,
+            ItemId = itemId,
             Qty = 1,
             ProductionPurpose = ProductionLinePurpose.InternalStock
         });
