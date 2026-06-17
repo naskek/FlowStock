@@ -71,6 +71,9 @@ function createHuCardActionButtons() {
   return huCardActionButtons;
 }
 
+let huLookupFocusCount = 0;
+let activeElementRef = null;
+
 function createHuLookupInput() {
   const attrs = {
     "data-scan-allow": "1",
@@ -106,7 +109,10 @@ function createHuLookupInput() {
         handler({});
       });
     },
-    focus: function () {},
+    focus: function () {
+      huLookupFocusCount += 1;
+      activeElementRef = huLookupInput;
+    },
   };
 }
 
@@ -118,6 +124,8 @@ function resetHuLookupDom() {
   huLookupInput = createHuLookupInput();
   huLookupFindBtn = createButton();
   huLookupMessageEl = { textContent: "" };
+  huLookupFocusCount = 0;
+  activeElementRef = null;
 }
 
 resetHuLookupDom();
@@ -222,6 +230,11 @@ const context = {
       return 0;
     },
     clearTimeout: function () {},
+    requestAnimationFrame: function (callback) {
+      if (callback) {
+        callback();
+      }
+    },
     setInterval: function () {
       return 0;
     },
@@ -245,7 +258,12 @@ const context = {
   },
   document: {
     documentElement: null,
-    activeElement: null,
+    get activeElement() {
+      return activeElementRef;
+    },
+    set activeElement(value) {
+      activeElementRef = value;
+    },
     body: {
       classList: { add: function () {}, remove: function () {} },
       appendChild: function (element) {
@@ -372,6 +390,7 @@ context.sessionStorage = context.window.sessionStorage;
 context.window.document = context.document;
 context.window.navigator = context.navigator;
 context.window.TsdStorage = context.TsdStorage;
+context.requestAnimationFrame = context.window.requestAnimationFrame;
 
 vm.createContext(context);
 vm.runInContext(appJs, context, { filename: "app.js" });
@@ -395,7 +414,7 @@ async function main() {
 
   assert(storageJs.includes("/api/tsd/hu/resolve?code="));
   assert(storageJs.includes("/api/tsd/hu/card?code="));
-  assert(appVersionJs.includes('var version = "45"'));
+  assert(appVersionJs.includes('var version = "46"'));
   assert(serviceWorkerJs.includes('importScripts("./app-version.js")'));
   assert(serviceWorkerJs.includes('"./app.js"'));
   assert(serviceWorkerJs.includes('"./img/home/hu-search.png"'));
@@ -447,6 +466,13 @@ async function main() {
   assert.strictEqual(huLookupInput.readOnly, true, "/hu should open in scan-mode");
   assert.strictEqual(huLookupInput.getAttribute("inputmode"), "none", "/hu should suppress inputmode keyboard");
   assert.strictEqual(huLookupInput.getAttribute("data-hu-manual"), null, "/hu should not start in manual mode");
+  assert.strictEqual(activeElementRef, huLookupInput, "/hu render should focus lookup input");
+  assert(huLookupFocusCount >= 1, "/hu render should call focus via requestAnimationFrame");
+
+  const focusCountAfterRender = huLookupFocusCount;
+  huLookupInput.dispatchBlur();
+  assert.strictEqual(huLookupFocusCount, focusCountAfterRender, "blur must not restore focus");
+  assert.strictEqual(huLookupInput.readOnly, true, "blur should keep scan-mode");
 
   scannerHandler({ value: "HU-000124", source: "test" });
   await flushPromises();
@@ -458,6 +484,9 @@ async function main() {
   resolveCalls = 0;
   hooks.renderRouteInternal({ name: "hu" });
   await flushPromises();
+  const focusCountBeforeProgrammatic = huLookupFocusCount;
+  huLookupInput.focus();
+  assert.strictEqual(huLookupInput.getAttribute("data-hu-manual"), null, "programmatic focus must not enable manual-mode");
   const resolveCallsBeforeManual = resolveCalls;
   huLookupInput.dispatchPointerDown();
   assert.strictEqual(huLookupInput.readOnly, false, "tap should enable manual HU input");
@@ -468,7 +497,6 @@ async function main() {
   await flushPromises();
   assert.strictEqual(resolveCalls, resolveCallsBeforeManual + 1, "manual Find path should resolve once");
   assert.strictEqual(context.window.location.hash, "/hu/HU-000125");
-  assert.strictEqual(huLookupInput.readOnly, true, "submit should return HU lookup field to scan-mode");
 
   context.window.location.hash = "#/hu";
   resetHuLookupDom();
@@ -476,12 +504,49 @@ async function main() {
   hooks.renderRouteInternal({ name: "hu" });
   await flushPromises();
   const resolveCallsBeforeUnknown = resolveCalls;
+  const focusBeforeUnknown = huLookupFocusCount;
   await hooks.submitHuLookup("HU-999999");
   await flushPromises();
   assert.strictEqual(resolveCalls, resolveCallsBeforeUnknown + 1);
   assert.match(huLookupMessageEl.textContent, /HU неизвестен: HU-999999/);
   assert.strictEqual(context.window.location.hash, "#/hu", "unknown HU must stay on lookup screen");
   assert.strictEqual(huLookupInput.readOnly, true, "unknown HU should restore scan-mode");
+  assert(huLookupFocusCount > focusBeforeUnknown, "unknown HU should restore scanner focus");
+
+  context.window.location.hash = "#/hu";
+  resetHuLookupDom();
+  nextResolveResult = function () {
+    return Promise.reject(new Error("Failed to fetch"));
+  };
+  hooks.renderRouteInternal({ name: "hu" });
+  await flushPromises();
+  const focusBeforeNetworkError = huLookupFocusCount;
+  await hooks.submitHuLookup("HU-000127");
+  await flushPromises();
+  assert.strictEqual(huLookupInput.readOnly, true, "network error should restore scan-mode");
+  assert(huLookupFocusCount > focusBeforeNetworkError, "network error should restore scanner focus");
+  nextResolveResult = null;
+
+  context.window.location.hash = "#/hu";
+  resetHuLookupDom();
+  hooks.renderRouteInternal({ name: "hu" });
+  await flushPromises();
+  const resolveCallsBeforeInvalid = resolveCalls;
+  await hooks.submitHuLookup("not-a-hu");
+  await flushPromises();
+  assert.strictEqual(resolveCalls, resolveCallsBeforeInvalid, "invalid format must not call resolve");
+  assert.strictEqual(huLookupInput.readOnly, true, "invalid format should restore scan-mode");
+  assert.strictEqual(activeElementRef, huLookupInput, "invalid format should restore focus");
+
+  context.window.location.hash = "#/hu";
+  resetHuLookupDom();
+  hooks.renderRouteInternal({ name: "hu" });
+  await flushPromises();
+  const resolveCallsBeforeFindBtn = resolveCalls;
+  huLookupInput.value = "HU-000128";
+  await hooks.submitHuLookup();
+  await flushPromises();
+  assert.strictEqual(resolveCalls, resolveCallsBeforeFindBtn + 1, "Find button path should resolve once");
 
   context.window.location.hash = "#/hu";
   resetHuLookupDom();
@@ -496,7 +561,12 @@ async function main() {
 
   hooks.setNavOrigin("/hu");
   assert.strictEqual(hooks.navigateBack({ name: "huCard", id: "HU-000126" }), "/hu");
-  assert.strictEqual(context.window.location.hash, "/hu", "HU card back should return to lookup screen");
+  context.window.location.hash = "#/hu";
+  resetHuLookupDom();
+  hooks.renderRouteInternal({ name: "hu" });
+  await flushPromises();
+  assert.strictEqual(activeElementRef, huLookupInput, "back to /hu should restore scanner focus");
+  assert.strictEqual(huLookupInput.readOnly, true, "back to /hu should restore scan-mode");
 
   overlays.length = 0;
   const resolveCallsBeforeOutbound = resolveCalls;
@@ -598,7 +668,7 @@ async function main() {
   });
   assert.match(freeCardHtml, /HU-000321/);
   assert.match(freeCardHtml, /hu-card-heading/);
-  assert.match(freeCardHtml, /hu-status-panel/);
+  assert.match(freeCardHtml, /hu-status-panel hu-status-panel--stock/);
   assert.match(freeCardHtml, /На складе/);
   assert.doesNotMatch(freeCardHtml, /Статус:/);
   assert.match(freeCardHtml, /MAIN/);
@@ -636,6 +706,7 @@ async function main() {
     latestMovement: { doc_ref: "PRD-1490", timestamp: "2026-01-02T03:04:05Z" },
     documentActions: [{ type: "OPEN_DOCUMENT", docId: 1490, label: "PRD-1490" }],
   });
+  assert.match(filledCardHtml, /hu-status-panel--filled/);
   assert.match(filledCardHtml, /Наполнена/);
   assert.match(filledCardHtml, /hu-content-row/);
   assert.strictEqual((filledCardHtml.match(/378 шт/g) || []).length, 1, "filled HU main content should show qty once");
@@ -668,6 +739,7 @@ async function main() {
       { type: "OPEN_ORDER", orderId: 619, label: "Открыть заказ 006" },
     ],
   });
+  assert.match(plannedCardHtml, /hu-status-panel--waiting/);
   assert.match(plannedCardHtml, /Запланирована к наполнению/);
   assert.doesNotMatch(plannedCardHtml, /PLANNED/);
   assert.match(plannedCardHtml, /Еще не на складе/);
@@ -698,6 +770,88 @@ async function main() {
   assert.match(mixedCardHtml, /Соус мягкий/);
   assert.match(mixedCardHtml, /Итого/);
   assert.match(mixedCardHtml, /378 шт/);
+
+  const toneCases = [
+    ["WAREHOUSE_FREE", "stock"],
+    ["WAREHOUSE_RESERVED", "reserved"],
+    ["FILLED_PRODUCTION_PALLET", "filled"],
+    ["PLANNED_PRODUCTION", "waiting"],
+    ["OUTBOUND_PICKED", "partial"],
+    ["SHIPPED", "shipped"],
+    ["AMBIGUOUS", "problem"],
+    ["UNKNOWN", "problem"],
+    ["HISTORY_ONLY", "stock"],
+    ["", "problem"],
+    ["CLOSED", "problem"],
+  ];
+  toneCases.forEach(function (entry) {
+    const state = entry[0];
+    const tone = entry[1];
+    assert.strictEqual(hooks.getTsdHuStatusTone(state), tone, "tone for " + (state || "(empty)"));
+    const html = hooks.renderTsdHuCard({
+      known: true,
+      huCode: "HU-TONE",
+      state: state,
+      stock: [],
+      productionPallets: [],
+      reservations: [],
+      documents: [],
+      documentActions: [],
+    });
+    assert.match(html, new RegExp("hu-status-panel--" + tone), "panel class for " + (state || "(empty)"));
+    assert.doesNotMatch(html, /class="hu-status-panel">/, "status panel must include tone modifier");
+  });
+
+  assert.strictEqual(context.window.FlowStockTsdIsBusy(), false, "default busy must be false");
+  assert.strictEqual(typeof context.window.FlowStockTsdIsBusy(), "boolean");
+
+  hooks.setCurrentRoute({ name: "home" });
+  assert.strictEqual(context.window.FlowStockTsdIsBusy(), false, "/home must not be busy");
+  hooks.setCurrentRoute({ name: "settings" });
+  assert.strictEqual(context.window.FlowStockTsdIsBusy(), false, "/settings must not be busy");
+  hooks.setCurrentRoute({ name: "hu" });
+  assert.strictEqual(context.window.FlowStockTsdIsBusy(), false, "/hu must not be busy");
+  hooks.setCurrentRoute({ name: "orders" });
+  assert.strictEqual(context.window.FlowStockTsdIsBusy(), false, "/orders must not be busy");
+  hooks.setCurrentRoute({ name: "fillingDoc", id: "619" });
+  assert.strictEqual(context.window.FlowStockTsdIsBusy(), false, "open filling without request must not be busy");
+  hooks.setCurrentRoute({ name: "outboundOrder", id: "620" });
+  assert.strictEqual(context.window.FlowStockTsdIsBusy(), false, "open outbound without request must not be busy");
+
+  let syncThrowBusy = false;
+  try {
+    await hooks.runTsdCriticalOperation("test.sync-throw", function () {
+      throw new Error("sync fail");
+    });
+  } catch (error) {
+    syncThrowBusy = error.message === "sync fail";
+  }
+  assert(syncThrowBusy, "sync throw should propagate");
+  assert.strictEqual(hooks.isTsdCriticalOperationActive(), false, "sync throw must reset busy");
+
+  await hooks
+    .runTsdCriticalOperation("test.reject", function () {
+      return Promise.reject(new Error("reject fail"));
+    })
+    .catch(function () {});
+  assert.strictEqual(hooks.isTsdCriticalOperationActive(), false, "rejected promise must reset busy");
+
+  const parallelA = hooks.runTsdCriticalOperation("test.parallel", function () {
+    return new Promise(function (resolve) {
+      setImmediate(resolve);
+    });
+  });
+  const parallelB = hooks.runTsdCriticalOperation("test.parallel", function () {
+    return new Promise(function (resolve) {
+      setImmediate(resolve);
+    });
+  });
+  assert.strictEqual(context.window.FlowStockTsdIsBusy(), true, "parallel ops must keep busy");
+  assert.strictEqual(hooks.getTsdCriticalOperationDiagnostics().count, 2);
+  assert.strictEqual(hooks.getTsdCriticalOperationDiagnostics().reasons["test.parallel"], 2);
+  await parallelA;
+  await parallelB;
+  assert.strictEqual(context.window.FlowStockTsdIsBusy(), false, "busy must clear after parallel ops complete");
 
   console.log("TSD HU lookup scan pipeline tests passed.");
 }

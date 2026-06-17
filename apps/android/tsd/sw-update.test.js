@@ -117,8 +117,14 @@ function createSwUpdateContext(options) {
         reloadCount += 1;
       }
     },
-    FlowStockTsdIsBusy: function () {
-      return !!options.isBusy;
+    FlowStockTsdIsBusy:
+      typeof options.busyFn === "function"
+        ? options.busyFn
+        : function () {
+            return options.isBusy === true;
+          },
+    FlowStockTsdGetBusyDiagnostics: options.getBusyDiagnostics || function () {
+      return null;
     },
     TSD_PWA_VERSION: "16",
     TSD_CACHE_NAME: "flowstock-tsd-v16",
@@ -191,6 +197,11 @@ async function main() {
     "applyUpdate should block while busy"
   );
   assert(
+    swUpdateJs.includes("busy === true") &&
+      swUpdateJs.includes("FlowStockTsdGetBusyDiagnostics"),
+    "isBusy should use strict boolean check and log diagnostics"
+  );
+  assert(
     swUpdateJs.includes("Отправляем SKIP_WAITING") &&
       swUpdateJs.includes('postMessage({ type: "SKIP_WAITING" })'),
     "applyUpdate should post SKIP_WAITING to waiting worker"
@@ -222,6 +233,19 @@ async function main() {
   assert.strictEqual(blocked.waitingMessages.length, 0);
   assert.match(blocked.env.bannerStatusText(), /Завершите текущую операцию/);
   assert.strictEqual(blocked.env.buttonDisabled(), false);
+
+  for (const busyValue of [{}, "busy", null, undefined]) {
+    const env = createSwUpdateContext({
+      busyFn: function () {
+        return busyValue;
+      }
+    });
+    await env.context.TsdSwUpdate.checkNow();
+    const result = await env.context.TsdSwUpdate.applyUpdate();
+    assert.strictEqual(result.ok, true, "non-boolean busy must not block update: " + String(busyValue));
+    assert.strictEqual(env.waitingMessages.length, 1, "SKIP_WAITING should be sent for non-boolean busy");
+    assert.strictEqual(env.waitingMessages[0].type, "SKIP_WAITING");
+  }
 
   const allowed = await runApplyUpdateScenario(false);
   assert.strictEqual(allowed.result.ok, true);

@@ -689,26 +689,61 @@
       });
   }
 
-  function isSensitiveOperationActive() {
-    if (scanHandlerActive || pendingScanHandler) {
-      return true;
-    }
-    if (document.querySelector(".filling-preview-overlay")) {
-      return true;
-    }
-    if (!currentRoute) {
-      return false;
-    }
-    return (
-      currentRoute.name === "fillingDoc" ||
-      currentRoute.name === "outboundOrder" ||
-      currentRoute.name === "doc" ||
-      currentRoute.name === "new" ||
-      currentRoute.name === "taskDoc"
-    );
+  var tsdCriticalOperationCount = 0;
+  var tsdCriticalOperationReasons = new Map();
+
+  function beginTsdCriticalOperation(reason) {
+    reason = String(reason || "unknown");
+    tsdCriticalOperationCount += 1;
+    var current = tsdCriticalOperationReasons.get(reason) || 0;
+    tsdCriticalOperationReasons.set(reason, current + 1);
   }
 
-  window.FlowStockTsdIsBusy = isSensitiveOperationActive;
+  function endTsdCriticalOperation(reason) {
+    reason = String(reason || "unknown");
+    if (tsdCriticalOperationCount > 0) {
+      tsdCriticalOperationCount -= 1;
+    }
+    var current = tsdCriticalOperationReasons.get(reason) || 0;
+    if (current > 0) {
+      tsdCriticalOperationReasons.set(reason, current - 1);
+    } else {
+      tsdCriticalOperationReasons.delete(reason);
+    }
+  }
+
+  function isTsdCriticalOperationActive() {
+    return tsdCriticalOperationCount > 0;
+  }
+
+  function getTsdCriticalOperationDiagnostics() {
+    var reasons = {};
+    tsdCriticalOperationReasons.forEach(function (count, reason) {
+      if (count > 0) {
+        reasons[reason] = count;
+      }
+    });
+    return {
+      count: tsdCriticalOperationCount,
+      reasons: reasons,
+    };
+  }
+
+  function runTsdCriticalOperation(reason, fn) {
+    beginTsdCriticalOperation(reason);
+
+    return Promise.resolve()
+      .then(fn)
+      .finally(function () {
+        endTsdCriticalOperation(reason);
+      });
+  }
+
+  window.FlowStockTsdIsBusy = function () {
+    return isTsdCriticalOperationActive() === true;
+  };
+
+  window.FlowStockTsdGetBusyDiagnostics = getTsdCriticalOperationDiagnostics;
 
   function checkServerVersionAndReloadIfNeeded() {
     return fetchServerVersion().then(function (version) {
@@ -1996,6 +2031,7 @@
   }
 
   function renderRouteInternal(route) {
+    currentRoute = route;
     if (route.name === "login") {
       app.innerHTML = renderLogin();
       wireLogin();
@@ -4026,34 +4062,36 @@
         }
         setOverlayError("");
 
-        getFillingDeviceId()
-          .then(function (deviceId) {
-            if (preview.isMixedPallet === true) {
-              var selectedComponentIds = Array.from(
-                overlay.querySelectorAll(".filling-component-checkbox:not(:disabled):checked")
-              ).map(function (checkbox) {
-                return Number(checkbox.value) || 0;
-              }).filter(function (id) {
-                return id > 0;
-              });
-              if (!selectedComponentIds.length) {
-                throw new Error("COMPONENT_LINE_IDS_REQUIRED");
+        runTsdCriticalOperation("filling.fill", function () {
+          return getFillingDeviceId()
+            .then(function (deviceId) {
+              if (preview.isMixedPallet === true) {
+                var selectedComponentIds = Array.from(
+                  overlay.querySelectorAll(".filling-component-checkbox:not(:disabled):checked")
+                ).map(function (checkbox) {
+                  return Number(checkbox.value) || 0;
+                }).filter(function (id) {
+                  return id > 0;
+                });
+                if (!selectedComponentIds.length) {
+                  throw new Error("COMPONENT_LINE_IDS_REQUIRED");
+                }
+                return TsdStorage.apiFillMixedProductionPalletComponents({
+                  huCode: preview.huCode,
+                  orderId: preview.orderId,
+                  prdDocId: preview.prdDocId,
+                  deviceId: deviceId,
+                  componentLineIds: selectedComponentIds,
+                });
               }
-              return TsdStorage.apiFillMixedProductionPalletComponents({
+              return TsdStorage.apiFillProductionPallet({
                 huCode: preview.huCode,
                 orderId: preview.orderId,
                 prdDocId: preview.prdDocId,
                 deviceId: deviceId,
-                componentLineIds: selectedComponentIds,
               });
-            }
-            return TsdStorage.apiFillProductionPallet({
-              huCode: preview.huCode,
-              orderId: preview.orderId,
-              prdDocId: preview.prdDocId,
-              deviceId: deviceId,
             });
-          })
+        })
           .then(function (result) {
             closeOverlay();
             return handleProductionFillSuccess(context, preview, result);
@@ -5117,6 +5155,45 @@
     return state ? String(state) : "Неизвестна";
   }
 
+  function getTsdHuStatusTone(state) {
+    var normalized = normalizeTsdHuCodeValue(state);
+    if (normalized === "FILLED_PRODUCTION_PALLET" || normalized === "FILLED") {
+      return "filled";
+    }
+    if (normalized === "PLANNED_PRODUCTION" || normalized === "PLANNED") {
+      return "waiting";
+    }
+    if (normalized === "OUTBOUND_EXPECTED") {
+      return "waiting";
+    }
+    if (normalized === "OUTBOUND_PICKED") {
+      return "partial";
+    }
+    if (normalized === "WAREHOUSE_RESERVED") {
+      return "reserved";
+    }
+    if (normalized === "WAREHOUSE_FREE" || normalized === "HISTORY_ONLY") {
+      return "stock";
+    }
+    if (normalized === "SHIPPED") {
+      return "shipped";
+    }
+    if (normalized === "AMBIGUOUS" || normalized === "UNKNOWN") {
+      return "problem";
+    }
+    return "problem";
+  }
+
+  function getTsdHuStatusIconName(tone) {
+    if (tone === "filled" || tone === "stock" || tone === "shipped") {
+      return "check-circle";
+    }
+    if (tone === "problem") {
+      return "alert-circle";
+    }
+    return "info-circle";
+  }
+
   function getTsdHuDocTypeLabel(value) {
     var normalized = normalizeTsdHuCodeValue(value);
     if (normalized === "PRODUCTION_RECEIPT") {
@@ -5210,6 +5287,7 @@
       package: '<path d="m21 16-9 5-9-5V8l9-5 9 5v8Z"></path><path d="m3.5 8.5 8.5 4.7 8.5-4.7"></path><path d="M12 13v8"></path>',
       document: '<path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7Z"></path><path d="M14 2v5h5"></path><path d="M9 13h6"></path><path d="M9 17h6"></path>',
       "info-circle": '<circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path>',
+      "alert-circle": '<circle cx="12" cy="12" r="10"></circle><path d="M12 8v4"></path><path d="M12 16h.01"></path>',
       "chevron-down": '<path d="m6 9 6 6 6-6"></path>',
     };
     return "<svg " + attrs + ">" + (paths[name] || paths["info-circle"]) + "</svg>";
@@ -5420,14 +5498,16 @@
         renderTsdHuIcon(getTsdHuActionIconName(action), "hu-action-icon") +
         '<span>' + escapeHtml(getTsdHuActionLabel(action, documents)) + "</span></button>";
     }).join("");
+    var statusTone = getTsdHuStatusTone(card.state);
+    var statusIconName = getTsdHuStatusIconName(statusTone);
 
     return '<section class="hu-card-screen"><div class="hu-card-container">' +
       '<h1 class="hu-card-heading">' + escapeHtml(card.huCode) + "</h1>" +
       '<article class="hu-detail-card" aria-label="Карточка HU">' +
       '  <section class="hu-detail-section hu-detail-section--status">' +
       '    <div class="hu-detail-section-title">Статус</div>' +
-      '    <div class="hu-status-panel">' +
-      renderTsdHuIcon("check-circle", "hu-status-icon") +
+      '    <div class="hu-status-panel hu-status-panel--' + escapeHtml(statusTone) + '">' +
+      renderTsdHuIcon(statusIconName, "hu-status-icon") +
       '      <span>' + escapeHtml(getTsdHuStatusLabel(card.state || card.title)) + "</span>" +
       "    </div>" +
       "  </section>" +
@@ -6590,6 +6670,7 @@
             : "Неверный формат HU."
         );
         enterHuLookupScanMode();
+        restoreHuLookupScanFocus();
         return Promise.resolve({ accepted: false });
       }
       if (lookupInput) {
@@ -6597,13 +6678,40 @@
       }
       setMessage("");
       submitPending = true;
+      var navigated = false;
       return resolveHuAndNavigate(huCode, {
         notify: setMessage,
         navOrigin: "/hu",
-      }).finally(function () {
-        submitPending = false;
-        enterHuLookupScanMode();
-        if (lookupInput) {
+      })
+        .then(function (result) {
+          navigated = !!(result && result.known === true);
+          return result;
+        })
+        .finally(function () {
+          submitPending = false;
+
+          if (
+            !navigated &&
+            currentRoute &&
+            currentRoute.name === "hu"
+          ) {
+            restoreHuLookupScanFocus();
+          }
+        });
+    }
+
+    function restoreHuLookupScanFocus() {
+      enterHuLookupScanMode();
+      setPreferredScanTarget(lookupInput);
+
+      requestAnimationFrame(function () {
+        if (!lookupInput) {
+          return;
+        }
+
+        try {
+          lookupInput.focus({ preventScroll: true });
+        } catch (error) {
           lookupInput.focus();
         }
       });
@@ -6638,13 +6746,13 @@
     }
 
     setScanHandler(handleHuRouteScan);
-    syncHuLookupScanMode = enterHuLookupScanMode;
+    syncHuLookupScanMode = restoreHuLookupScanFocus;
     if (window.FlowStockTsdTestHooks) {
       window.FlowStockTsdTestHooks.enterHuLookupScanMode = enterHuLookupScanMode;
       window.FlowStockTsdTestHooks.enterHuLookupManualMode = enterHuLookupManualMode;
       window.FlowStockTsdTestHooks.submitHuLookup = submitHuLookup;
+      window.FlowStockTsdTestHooks.restoreHuLookupScanFocus = restoreHuLookupScanFocus;
     }
-    enterHuLookupScanMode();
   }
 
   function renderHeaderFields(doc) {
@@ -7855,8 +7963,10 @@
           status === "IN_EXECUTION" || status === "EXECUTED" || status === "CONFIRMED"
             ? Promise.resolve(payload)
             : getWarehouseTaskDeviceId().then(function (deviceId) {
-                return TsdStorage.apiStartWarehouseTask(taskId, deviceId).then(function () {
-                  return TsdStorage.apiGetWarehouseTask(taskId);
+                return runTsdCriticalOperation("warehouse.start", function () {
+                  return TsdStorage.apiStartWarehouseTask(taskId, deviceId).then(function () {
+                    return TsdStorage.apiGetWarehouseTask(taskId);
+                  });
                 });
               });
         return startPromise.then(function (freshPayload) {
@@ -7895,8 +8005,8 @@
         return;
       }
       scanBusy = true;
-      getWarehouseTaskDeviceId()
-        .then(function (deviceId) {
+      runTsdCriticalOperation("warehouse.scan", function () {
+        return getWarehouseTaskDeviceId().then(function (deviceId) {
           return TsdStorage.apiGetWarehouseTask(taskId).then(function (payload) {
             var line = (payload.lines || [])[0] || {};
             var scanType = resolveWarehouseTaskScanType(line);
@@ -7906,7 +8016,8 @@
               deviceId: deviceId
             });
           });
-        })
+        });
+      })
         .then(function () {
           scanInput.value = "";
           return openWarehouseTaskDetail(taskId, {
@@ -7948,10 +8059,11 @@
         if (completeBtn.disabled) {
           return;
         }
-        getWarehouseTaskDeviceId()
-          .then(function (deviceId) {
+        runTsdCriticalOperation("warehouse.complete", function () {
+          return getWarehouseTaskDeviceId().then(function (deviceId) {
             return TsdStorage.apiCompleteWarehouseTask(taskId, deviceId);
-          })
+          });
+        })
           .then(function () {
             return openWarehouseTaskDetail(taskId, {
               message: "Задание завершено на ТСД.",
@@ -8125,7 +8237,9 @@
       .then(function (nextContext) {
         if (shouldPromptOperationClose("filling", nextContext.progress)) {
           if (typeof window.confirm === "function" && window.confirm("Все паллеты отсканированы.\nЗакрыть документ?")) {
-            return TsdStorage.apiCompleteProductionFilling(fillOrderId).then(function () {
+            return runTsdCriticalOperation("filling.complete", function () {
+              return TsdStorage.apiCompleteProductionFilling(fillOrderId);
+            }).then(function () {
               renderFillingCompletionScreen(nextContext, result, null);
             });
           }
@@ -8301,15 +8415,17 @@
             preview: null,
           });
 
-          return getFillingDeviceId()
-            .then(function (deviceId) {
-              return TsdStorage.apiScanProductionPallet({
-                orderId: context.workItem && context.workItem.orderId,
-                prdDocId: context.workItem && context.workItem.prdDocId,
-                huCode: huCode,
-                deviceId: deviceId,
+          return runTsdCriticalOperation("filling.scan", function () {
+            return getFillingDeviceId()
+              .then(function (deviceId) {
+                return TsdStorage.apiScanProductionPallet({
+                  orderId: context.workItem && context.workItem.orderId,
+                  prdDocId: context.workItem && context.workItem.prdDocId,
+                  huCode: huCode,
+                  deviceId: deviceId,
+                });
               });
-            })
+          })
             .then(function (preview) {
               if (preview.alreadyFilled) {
                 return refreshContext({
@@ -8366,11 +8482,14 @@
     if (completeBtn) {
       completeBtn.addEventListener("click", function () {
         completeBtn.disabled = true;
-        TsdStorage.apiCompleteProductionFilling(context.workItem && context.workItem.orderId)
+        runTsdCriticalOperation("filling.complete", function () {
+          return TsdStorage.apiCompleteProductionFilling(context.workItem && context.workItem.orderId);
+        })
           .then(function () {
             renderFillingCompletionScreen(context, { message: "Операция наполнения завершена." }, null);
           })
           .catch(function (error) {
+            completeBtn.disabled = false;
             refreshContext({ message: mapFillingError(error), messageType: "error", preview: null });
           });
       });
@@ -8488,7 +8607,9 @@
         messageType: "info",
       });
 
-      TsdStorage.apiScanOutboundPickingHu(orderId, huCode)
+      runTsdCriticalOperation("outbound.scan", function () {
+        return TsdStorage.apiScanOutboundPickingHu(orderId, huCode);
+      })
         .then(function (result) {
           var nextOrder = normalizeOutboundPickingOrderView(
             (result && result.order) || order
@@ -8496,7 +8617,9 @@
           var complete = isOutboundPickingOperationComplete(nextOrder);
           if (shouldPromptOperationClose("outbound", nextOrder)) {
             if (typeof window.confirm === "function" && window.confirm("Все паллеты отсканированы.\nЗакрыть документ?")) {
-              return TsdStorage.apiCompleteOutboundPicking(orderId, false).then(function () {
+              return runTsdCriticalOperation("outbound.complete", function () {
+                return TsdStorage.apiCompleteOutboundPicking(orderId, false);
+              }).then(function () {
                 navigate("/outbound");
               });
             }
@@ -8510,6 +8633,7 @@
           });
         })
         .catch(function (error) {
+          scanBusy = false;
           if (typeof console !== "undefined" && console && typeof console.warn === "function") {
             console.warn("Outbound picking scan failed", {
               rawScanValue: rawScanValue,
@@ -8561,7 +8685,9 @@
           return;
         }
 
-        TsdStorage.apiCompleteOutboundPicking(orderId, allowPartial)
+        runTsdCriticalOperation("outbound.complete", function () {
+          return TsdStorage.apiCompleteOutboundPicking(orderId, allowPartial);
+        })
           .then(function (result) {
             navigate("/outbound");
           })
@@ -9754,11 +9880,13 @@
       var login = getStoredLogin();
       TsdStorage.getSetting("device_id")
         .then(function (deviceId) {
-          return TsdStorage.apiCreateItemRequest({
-            barcode: barcodeValue,
-            comment: commentValue,
-            device_id: deviceId || null,
-            login: login || null,
+          return runTsdCriticalOperation("catalog.itemRequest", function () {
+            return TsdStorage.apiCreateItemRequest({
+              barcode: barcodeValue,
+              comment: commentValue,
+              device_id: deviceId || null,
+              login: login || null,
+            });
           });
         })
         .then(function () {
@@ -13516,7 +13644,8 @@
         });
     }
 
-    return ensureServerAvailable()
+    return runTsdCriticalOperation("doc.submit", function () {
+      return ensureServerAvailable()
       .then(function () {
         return validateHuLocationsForSubmit(doc);
       })
@@ -13718,6 +13847,7 @@
           });
         });
       });
+    });
   }
 
   function buildLineData(op, header) {
@@ -14338,6 +14468,15 @@
     window.FlowStockTsdTestHooks.openGlobalHuChoiceOverlay = openGlobalHuChoiceOverlay;
     window.FlowStockTsdTestHooks.executeTsdHuAction = executeTsdHuAction;
     window.FlowStockTsdTestHooks.renderTsdHuCard = renderTsdHuCard;
+    window.FlowStockTsdTestHooks.getTsdHuStatusTone = getTsdHuStatusTone;
+    window.FlowStockTsdTestHooks.beginTsdCriticalOperation = beginTsdCriticalOperation;
+    window.FlowStockTsdTestHooks.endTsdCriticalOperation = endTsdCriticalOperation;
+    window.FlowStockTsdTestHooks.isTsdCriticalOperationActive = isTsdCriticalOperationActive;
+    window.FlowStockTsdTestHooks.getTsdCriticalOperationDiagnostics = getTsdCriticalOperationDiagnostics;
+    window.FlowStockTsdTestHooks.runTsdCriticalOperation = runTsdCriticalOperation;
+    window.FlowStockTsdTestHooks.setCurrentRoute = function (route) {
+      currentRoute = route;
+    };
     window.FlowStockTsdTestHooks.getRouteFromPath = getRouteFromPath;
   }
 

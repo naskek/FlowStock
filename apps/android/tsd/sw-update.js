@@ -28,7 +28,18 @@
   function isBusy() {
     if (typeof root.FlowStockTsdIsBusy === "function") {
       try {
-        return !!root.FlowStockTsdIsBusy();
+        var busy = root.FlowStockTsdIsBusy();
+        if (busy === true) {
+          var diag =
+            root.FlowStockTsdGetBusyDiagnostics &&
+            root.FlowStockTsdGetBusyDiagnostics();
+          logInfo(
+            "Обновление отложено: активная операция" +
+              (diag ? " " + JSON.stringify(diag) : "")
+          );
+          return true;
+        }
+        return false;
       } catch (error) {
         logWarn("Не удалось определить активную операцию", error);
       }

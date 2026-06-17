@@ -28,6 +28,27 @@
   --home-bubble-catalogue-border: rgba(45, 212, 191, 0.38);
   --home-bubble-orders-bg: rgba(167, 139, 250, 0.22);
   --home-bubble-orders-border: rgba(167, 139, 250, 0.38);
+  --hu-tone-filled-bg: #dcfce7;
+  --hu-tone-filled-border: #86efac;
+  --hu-tone-filled-fg: #15803d;
+  --hu-tone-waiting-bg: #fef3c7;
+  --hu-tone-waiting-border: #fcd34d;
+  --hu-tone-waiting-fg: #b45309;
+  --hu-tone-partial-bg: #dbeafe;
+  --hu-tone-partial-border: #93c5fd;
+  --hu-tone-partial-fg: #1d4ed8;
+  --hu-tone-reserved-bg: #e0f2fe;
+  --hu-tone-reserved-border: #7dd3fc;
+  --hu-tone-reserved-fg: #0369a1;
+  --hu-tone-stock-bg: #f1f5f9;
+  --hu-tone-stock-border: #cbd5e1;
+  --hu-tone-stock-fg: #475569;
+  --hu-tone-shipped-bg: #ede9fe;
+  --hu-tone-shipped-border: #c4b5fd;
+  --hu-tone-shipped-fg: #6d28d9;
+  --hu-tone-problem-bg: #fee2e2;
+  --hu-tone-problem-border: #fca5a5;
+  --hu-tone-problem-fg: #b91c1c;
   --home-bubble-info-bg: rgba(251, 146, 60, 0.22);
   --home-bubble-info-border: rgba(251, 146, 60, 0.38);
   --home-bubble-hu-bg: rgba(52, 211, 153, 0.22);
@@ -963,13 +984,53 @@ body {
   align-items: center;
   gap: 14px;
   padding: 14px 16px;
-  border: 1px solid rgba(34, 197, 94, 0.32);
+  border: 1px solid transparent;
   border-radius: 14px;
-  background: linear-gradient(90deg, rgba(34, 197, 94, 0.14), rgba(34, 197, 94, 0.05));
-  color: #15803d;
   font-size: 16px;
   line-height: 22px;
   font-weight: 600;
+}
+
+.hu-status-panel--filled {
+  background: var(--hu-tone-filled-bg);
+  border-color: var(--hu-tone-filled-border);
+  color: var(--hu-tone-filled-fg);
+}
+
+.hu-status-panel--waiting {
+  background: var(--hu-tone-waiting-bg);
+  border-color: var(--hu-tone-waiting-border);
+  color: var(--hu-tone-waiting-fg);
+}
+
+.hu-status-panel--partial {
+  background: var(--hu-tone-partial-bg);
+  border-color: var(--hu-tone-partial-border);
+  color: var(--hu-tone-partial-fg);
+}
+
+.hu-status-panel--reserved {
+  background: var(--hu-tone-reserved-bg);
+  border-color: var(--hu-tone-reserved-border);
+  color: var(--hu-tone-reserved-fg);
+}
+
+.hu-status-panel--stock {
+  background: var(--hu-tone-stock-bg);
+  border-color: var(--hu-tone-stock-border);
+  color: var(--hu-tone-stock-fg);
+}
+
+.hu-status-panel--shipped {
+  background: var(--hu-tone-shipped-bg);
+  border-color: var(--hu-tone-shipped-border);
+  color: var(--hu-tone-shipped-fg);
+}
+
+.hu-status-panel--problem {
+  background: var(--hu-tone-problem-bg);
+  border-color: var(--hu-tone-problem-border);
+  color: var(--hu-tone-problem-fg);
 }
 
 .hu-icon {
@@ -990,8 +1051,36 @@ body {
   padding: 5px;
   box-sizing: border-box;
   border-radius: 50%;
-  background: #22c55e;
+  background: currentColor;
   color: #fff;
+}
+
+.hu-status-panel--filled .hu-status-icon {
+  background: var(--hu-tone-filled-fg);
+}
+
+.hu-status-panel--waiting .hu-status-icon {
+  background: var(--hu-tone-waiting-fg);
+}
+
+.hu-status-panel--partial .hu-status-icon {
+  background: var(--hu-tone-partial-fg);
+}
+
+.hu-status-panel--reserved .hu-status-icon {
+  background: var(--hu-tone-reserved-fg);
+}
+
+.hu-status-panel--stock .hu-status-icon {
+  background: var(--hu-tone-stock-fg);
+}
+
+.hu-status-panel--shipped .hu-status-icon {
+  background: var(--hu-tone-shipped-fg);
+}
+
+.hu-status-panel--problem .hu-status-icon {
+  background: var(--hu-tone-problem-fg);
 }
 
 .hu-content-list,
@@ -2427,45 +2516,45 @@ body {
 }
 
 .order-line-hu-status--filled {
-  background: #dcfce7;
-  border-color: #86efac;
-  color: #15803d;
+  background: var(--hu-tone-filled-bg);
+  border-color: var(--hu-tone-filled-border);
+  color: var(--hu-tone-filled-fg);
 }
 
 .order-line-hu-status--waiting {
-  background: #fef3c7;
-  border-color: #fcd34d;
-  color: #b45309;
+  background: var(--hu-tone-waiting-bg);
+  border-color: var(--hu-tone-waiting-border);
+  color: var(--hu-tone-waiting-fg);
 }
 
 .order-line-hu-status--partial {
-  background: #dbeafe;
-  border-color: #93c5fd;
-  color: #1d4ed8;
+  background: var(--hu-tone-partial-bg);
+  border-color: var(--hu-tone-partial-border);
+  color: var(--hu-tone-partial-fg);
 }
 
 .order-line-hu-status--problem {
-  background: #fee2e2;
-  border-color: #fca5a5;
-  color: #b91c1c;
+  background: var(--hu-tone-problem-bg);
+  border-color: var(--hu-tone-problem-border);
+  color: var(--hu-tone-problem-fg);
 }
 
 .order-line-hu-status--reserved {
-  background: #e0f2fe;
-  border-color: #7dd3fc;
-  color: #0369a1;
+  background: var(--hu-tone-reserved-bg);
+  border-color: var(--hu-tone-reserved-border);
+  color: var(--hu-tone-reserved-fg);
 }
 
 .order-line-hu-status--stock {
-  background: #f1f5f9;
-  border-color: #cbd5e1;
-  color: #475569;
+  background: var(--hu-tone-stock-bg);
+  border-color: var(--hu-tone-stock-border);
+  color: var(--hu-tone-stock-fg);
 }
 
 .order-line-hu-status--shipped {
-  background: #ede9fe;
-  border-color: #c4b5fd;
-  color: #6d28d9;
+  background: var(--hu-tone-shipped-bg);
+  border-color: var(--hu-tone-shipped-border);
+  color: var(--hu-tone-shipped-fg);
 }
 
 .order-line-hu-card-meta,
@@ -3298,10 +3387,46 @@ html.tsd-theme-dark .hu-content-row--total {
   border-color: var(--tsd-border);
 }
 
-html.tsd-theme-dark .hu-status-panel {
+html.tsd-theme-dark .hu-status-panel--filled {
   background: rgba(34, 197, 94, 0.14);
   border-color: rgba(34, 197, 94, 0.34);
   color: #86efac;
+}
+
+html.tsd-theme-dark .hu-status-panel--waiting {
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.34);
+  color: #fcd34d;
+}
+
+html.tsd-theme-dark .hu-status-panel--partial {
+  background: rgba(59, 130, 246, 0.14);
+  border-color: rgba(59, 130, 246, 0.34);
+  color: #93c5fd;
+}
+
+html.tsd-theme-dark .hu-status-panel--reserved {
+  background: rgba(14, 165, 233, 0.14);
+  border-color: rgba(14, 165, 233, 0.34);
+  color: #7dd3fc;
+}
+
+html.tsd-theme-dark .hu-status-panel--stock {
+  background: rgba(148, 163, 184, 0.14);
+  border-color: rgba(148, 163, 184, 0.34);
+  color: #cbd5e1;
+}
+
+html.tsd-theme-dark .hu-status-panel--shipped {
+  background: rgba(139, 92, 246, 0.14);
+  border-color: rgba(139, 92, 246, 0.34);
+  color: #c4b5fd;
+}
+
+html.tsd-theme-dark .hu-status-panel--problem {
+  background: rgba(239, 68, 68, 0.14);
+  border-color: rgba(239, 68, 68, 0.34);
+  color: #fca5a5;
 }
 
 html.tsd-theme-dark .hu-detail-muted,
