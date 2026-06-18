@@ -306,36 +306,52 @@ public sealed class WarehouseProductionStateService(IDataStore dataStore)
     private Dictionary<long, WarehouseProductionStatePalletAggregate> BuildPalletRowsByItem()
     {
         var result = new Dictionary<long, PallettAggregate>();
+        var ordersById = new Dictionary<long, Order?>();
+
+        Order? ResolveOrder(long? orderId)
+        {
+            if (!orderId.HasValue)
+            {
+                return null;
+            }
+
+            if (!ordersById.TryGetValue(orderId.Value, out var order))
+            {
+                order = _dataStore.GetOrder(orderId.Value);
+                ordersById[orderId.Value] = order;
+            }
+
+            return order;
+        }
+
         foreach (var doc in _dataStore.GetDocs()
                      .Where(doc => doc.Type == DocType.ProductionReceipt
                                    && doc.Status != DocStatus.Closed))
         {
-            var linkedOrder = doc.OrderId.HasValue ? _dataStore.GetOrder(doc.OrderId.Value) : null;
-            if (linkedOrder != null
-                && (linkedOrder.Type != OrderType.Internal
-                    || linkedOrder.Status is not (OrderStatus.Draft or OrderStatus.InProgress)))
-            {
-                continue;
-            }
-
-            var workItem = new ProductionPalletWorkItem
-            {
-                PrdDocId = doc.Id,
-                PrdDocRef = doc.DocRef,
-                PrdStatus = DocTypeMapper.StatusToString(doc.Status),
-                OrderId = doc.OrderId,
-                OrderRef = doc.OrderRef ?? linkedOrder?.OrderRef
-            };
             var pallets = _dataStore.GetProductionPalletsByDoc(doc.Id)
                 .Where(pallet => IsOpenProductionPalletStatus(pallet.Status))
                 .ToList();
 
-            var hasStalePalletAfterFullShipment = linkedOrder?.Type == OrderType.Customer
-                                                  && linkedOrder.Status == OrderStatus.Shipped
-                                                  && pallets.Count > 0;
-
             foreach (var pallet in pallets)
             {
+                var effectiveOrderId = pallet.OrderId ?? doc.OrderId;
+                var effectiveOrder = ResolveOrder(effectiveOrderId);
+                if (!ShouldIncludeProductionPalletOrder(effectiveOrder))
+                {
+                    continue;
+                }
+
+                var workItem = new ProductionPalletWorkItem
+                {
+                    PrdDocId = doc.Id,
+                    PrdDocRef = doc.DocRef,
+                    PrdStatus = DocTypeMapper.StatusToString(doc.Status),
+                    OrderId = effectiveOrderId,
+                    OrderRef = effectiveOrder?.OrderRef ?? (effectiveOrderId == doc.OrderId ? doc.OrderRef : null)
+                };
+                var hasStalePalletAfterFullShipment = effectiveOrder?.Type == OrderType.Customer
+                                                      && effectiveOrder.Status == OrderStatus.Shipped;
+
                 if (pallet.Lines.Count > 0)
                 {
                     foreach (var line in pallet.Lines)
@@ -438,6 +454,15 @@ public sealed class WarehouseProductionStateService(IDataStore dataStore)
         }
 
         return filledQty > QtyTolerance ? filledQty : Math.Max(0d, plannedQty);
+    }
+
+    private static bool ShouldIncludeProductionPalletOrder(Order? order)
+    {
+        return order == null
+               || (order.Type == OrderType.Internal
+                   && order.Status is OrderStatus.Draft or OrderStatus.InProgress)
+               || (order.Type == OrderType.Customer
+                   && order.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged));
     }
 
     private static IReadOnlyList<string> BuildWarnings(

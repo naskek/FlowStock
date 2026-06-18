@@ -221,6 +221,289 @@ public sealed class WarehouseProductionStateServiceTests
     }
 
     [Fact]
+    public void ActiveCustomerOrderPallets_AppearInWarehouseProductionState()
+    {
+        var harness = CreateBaseHarness(minStockQty: 0);
+        SeedCustomerOrder(harness, 143, 14301, 1001, 1800, 0, OrderStatus.InProgress);
+        SeedProductionReceiptDoc(harness, 700, 143, "PRD-700");
+        for (var index = 0; index < 3; index++)
+        {
+            harness.SeedProductionPallet(new ProductionPallet
+            {
+                Id = index + 1,
+                PrdDocId = 700,
+                DocLineId = 7001 + index,
+                OrderId = 143,
+                OrderLineId = 14301,
+                ItemId = 1001,
+                ItemName = "Горчица",
+                HuCode = $"HU-000092{index + 7}",
+                PlannedQty = 600,
+                ToLocationId = 1,
+                ToLocationCode = "FG-01",
+                Status = ProductionPalletStatus.Printed,
+                CreatedAt = DateTime.UtcNow
+            });
+        }
+
+        var row = Assert.Single(new WarehouseProductionStateService(harness.Store).GetRows(includeZero: false));
+
+        Assert.Equal(0, row.StockQty);
+        Assert.Equal(1800, row.PrdPlannedQty);
+        Assert.Equal(3, row.PalletPlannedCount);
+        Assert.Equal(3, row.ProductionReceipts.Count);
+        Assert.All(row.ProductionReceipts, pallet =>
+        {
+            Assert.Equal("143", pallet.SourceOrderRef);
+            Assert.Equal("Этикетка напечатана", pallet.PalletStatusDisplay);
+        });
+        Assert.Contains(row.ProductionReceipts, pallet => pallet.HuCode == "HU-0000927");
+        Assert.Contains(row.ProductionReceipts, pallet => pallet.HuCode == "HU-0000928");
+        Assert.Contains(row.ProductionReceipts, pallet => pallet.HuCode == "HU-0000929");
+        Assert.DoesNotContain(row.HuRows, hu => row.ProductionReceipts.Any(pallet => pallet.HuCode == hu.HuCode));
+    }
+
+    [Theory]
+    [InlineData(OrderStatus.Accepted, true)]
+    [InlineData(OrderStatus.Cancelled, false)]
+    [InlineData(OrderStatus.Merged, false)]
+    [InlineData(OrderStatus.Shipped, false)]
+    public void CustomerOrderPallets_AreFilteredByActiveStatus(OrderStatus status, bool shouldAppear)
+    {
+        var harness = CreateBaseHarness(minStockQty: 0);
+        SeedCustomerOrder(harness, 143, 14301, 1001, 600, 0, status);
+        SeedProductionReceiptDoc(harness, 700, 143, "PRD-700");
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 1,
+            PrdDocId = 700,
+            DocLineId = 7001,
+            OrderId = 143,
+            OrderLineId = 14301,
+            ItemId = 1001,
+            ItemName = "Горчица",
+            HuCode = "HU-CUSTOMER-STATUS",
+            PlannedQty = 600,
+            ToLocationId = 1,
+            ToLocationCode = "FG-01",
+            Status = ProductionPalletStatus.Printed,
+            CreatedAt = DateTime.UtcNow
+        });
+
+        var row = Assert.Single(new WarehouseProductionStateService(harness.Store).GetRows(includeZero: true));
+
+        Assert.Equal(shouldAppear, row.ProductionReceipts.Any(pallet => pallet.HuCode == "HU-CUSTOMER-STATUS"));
+    }
+
+    [Fact]
+    public void CustomerFilledPalletWithoutLedger_AppearsInProductionPlan()
+    {
+        var harness = CreateBaseHarness(minStockQty: 0);
+        SeedCustomerOrder(harness, 143, 14301, 1001, 600, 0, OrderStatus.InProgress);
+        SeedProductionReceiptDoc(harness, 700, 143, "PRD-700");
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 1,
+            PrdDocId = 700,
+            DocLineId = 7001,
+            OrderId = 143,
+            OrderLineId = 14301,
+            ItemId = 1001,
+            ItemName = "Горчица",
+            HuCode = "HU-FILLED-NO-LEDGER",
+            PlannedQty = 600,
+            ToLocationId = 1,
+            ToLocationCode = "FG-01",
+            Status = ProductionPalletStatus.Filled,
+            CreatedAt = DateTime.UtcNow
+        });
+
+        var row = Assert.Single(new WarehouseProductionStateService(harness.Store).GetRows(includeZero: false));
+        var pallet = Assert.Single(row.ProductionReceipts);
+
+        Assert.Equal("HU-FILLED-NO-LEDGER", pallet.HuCode);
+        Assert.Equal(600, row.PrdPlannedQty);
+        Assert.Equal(600, row.PrdFilledQty);
+        Assert.Empty(row.HuRows);
+    }
+
+    [Fact]
+    public void CustomerFilledPalletWithLedger_AppearsOnlyInWarehouseHus()
+    {
+        var harness = CreateBaseHarness(minStockQty: 0);
+        SeedCustomerOrder(harness, 143, 14301, 1001, 600, 600, OrderStatus.Accepted);
+        SeedProductionReceiptDoc(harness, 700, 143, "PRD-700");
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 1,
+            PrdDocId = 700,
+            DocLineId = 7001,
+            OrderId = 143,
+            OrderLineId = 14301,
+            ItemId = 1001,
+            ItemName = "Горчица",
+            HuCode = "HU-FILLED-LEDGER",
+            PlannedQty = 600,
+            ToLocationId = 1,
+            ToLocationCode = "FG-01",
+            Status = ProductionPalletStatus.Filled,
+            CreatedAt = DateTime.UtcNow
+        });
+        harness.SeedLedgerEntry(700, 1001, 1, 600, "HU-FILLED-LEDGER");
+
+        var row = Assert.Single(new WarehouseProductionStateService(harness.Store).GetRows(includeZero: false));
+
+        Assert.Equal(600, row.StockQty);
+        Assert.Contains(row.HuRows, hu => hu.HuCode == "HU-FILLED-LEDGER");
+        Assert.DoesNotContain(row.ProductionReceipts, pallet => pallet.HuCode == "HU-FILLED-LEDGER");
+    }
+
+    [Fact]
+    public void PalletEffectiveOrder_OverridesDifferentDocOrderForSourceRefAndFiltering()
+    {
+        var harness = CreateBaseHarness(minStockQty: 0);
+        SeedInternalOrder(harness, 10, 101, 1001, 600, 0, OrderStatus.InProgress);
+        SeedCustomerOrder(harness, 143, 14301, 1001, 600, 0, OrderStatus.InProgress);
+        SeedProductionReceiptDoc(harness, 700, 10, "PRD-700");
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 1,
+            PrdDocId = 700,
+            DocLineId = 7001,
+            OrderId = 143,
+            OrderLineId = 14301,
+            ItemId = 1001,
+            ItemName = "Горчица",
+            HuCode = "HU-PALLET-ORDER",
+            PlannedQty = 600,
+            ToLocationId = 1,
+            ToLocationCode = "FG-01",
+            Status = ProductionPalletStatus.Printed,
+            CreatedAt = DateTime.UtcNow
+        });
+
+        var row = Assert.Single(new WarehouseProductionStateService(harness.Store).GetRows(includeZero: false));
+        var pallet = Assert.Single(row.ProductionReceipts);
+
+        Assert.Equal("HU-PALLET-ORDER", pallet.HuCode);
+        Assert.Equal("143", pallet.SourceOrderRef);
+        Assert.Equal(600, row.PrdPlannedQty);
+    }
+
+    [Fact]
+    public void OnePrdWithMultiplePalletOrders_DoesNotDuplicateRowsOrPlannedQty()
+    {
+        var harness = CreateBaseHarness(minStockQty: 0);
+        SeedCustomerOrder(harness, 143, 14301, 1001, 600, 0, OrderStatus.InProgress);
+        SeedCustomerOrder(harness, 144, 14401, 1001, 600, 0, OrderStatus.InProgress);
+        SeedProductionReceiptDoc(harness, 700, null, "PRD-700");
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 1,
+            PrdDocId = 700,
+            DocLineId = 7001,
+            OrderId = 143,
+            OrderLineId = 14301,
+            ItemId = 1001,
+            ItemName = "Горчица",
+            HuCode = "HU-ORDER-143",
+            PlannedQty = 600,
+            ToLocationId = 1,
+            ToLocationCode = "FG-01",
+            Status = ProductionPalletStatus.Printed,
+            CreatedAt = DateTime.UtcNow
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 2,
+            PrdDocId = 700,
+            DocLineId = 7002,
+            OrderId = 144,
+            OrderLineId = 14401,
+            ItemId = 1001,
+            ItemName = "Горчица",
+            HuCode = "HU-ORDER-144",
+            PlannedQty = 600,
+            ToLocationId = 1,
+            ToLocationCode = "FG-01",
+            Status = ProductionPalletStatus.Printed,
+            CreatedAt = DateTime.UtcNow
+        });
+
+        var row = Assert.Single(new WarehouseProductionStateService(harness.Store).GetRows(includeZero: false));
+
+        Assert.Equal(1200, row.PrdPlannedQty);
+        Assert.Equal(2, row.ProductionReceipts.Count);
+        Assert.Equal(2, row.ProductionReceipts.Select(pallet => pallet.HuCode).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        Assert.Contains(row.ProductionReceipts, pallet => pallet.HuCode == "HU-ORDER-143" && pallet.SourceOrderRef == "143");
+        Assert.Contains(row.ProductionReceipts, pallet => pallet.HuCode == "HU-ORDER-144" && pallet.SourceOrderRef == "144");
+    }
+
+    [Fact]
+    public void CustomerMixedPallet_AppearsByItemComponents()
+    {
+        var harness = CreateBaseHarness(minStockQty: 0);
+        harness.SeedItem(new Item
+        {
+            Id = 1002,
+            Name = "Кетчуп",
+            BaseUom = "шт",
+            ItemTypeName = "Готовая продукция",
+            ItemTypeEnableMinStockControl = false
+        });
+        SeedCustomerOrder(harness, 143, 14301, 1001, 40, 0, OrderStatus.InProgress);
+        SeedCustomerOrder(harness, 143, 14302, 1002, 60, 0, OrderStatus.InProgress);
+        SeedProductionReceiptDoc(harness, 700, 143, "PRD-700");
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 1,
+            PrdDocId = 700,
+            DocLineId = 7001,
+            OrderId = 143,
+            ItemId = 1001,
+            ItemName = "Горчица",
+            HuCode = "HU-CUSTOMER-MIX",
+            PlannedQty = 100,
+            ToLocationId = 1,
+            ToLocationCode = "FG-01",
+            Status = ProductionPalletStatus.Printed,
+            CreatedAt = DateTime.UtcNow,
+            Lines =
+            [
+                new ProductionPalletComponentLine
+                {
+                    Id = 1,
+                    ProductionPalletId = 1,
+                    DocLineId = 7001,
+                    OrderLineId = 14301,
+                    ItemId = 1001,
+                    ItemName = "Горчица",
+                    Uom = "шт",
+                    PlannedQty = 40
+                },
+                new ProductionPalletComponentLine
+                {
+                    Id = 2,
+                    ProductionPalletId = 1,
+                    DocLineId = 7002,
+                    OrderLineId = 14302,
+                    ItemId = 1002,
+                    ItemName = "Кетчуп",
+                    Uom = "шт",
+                    PlannedQty = 60
+                }
+            ]
+        });
+
+        var rows = new WarehouseProductionStateService(harness.Store).GetRows(includeZero: false)
+            .ToDictionary(row => row.ItemId);
+
+        Assert.Equal(40, Assert.Single(rows[1001].ProductionReceipts).PlannedQty);
+        Assert.Equal(60, Assert.Single(rows[1002].ProductionReceipts).PlannedQty);
+        Assert.All(rows.Values.SelectMany(row => row.ProductionReceipts), pallet => Assert.Equal("143", pallet.SourceOrderRef));
+    }
+
+    [Fact]
     public void FullyShippedCustomerOrder_DoesNotCreateNeed()
     {
         var harness = CreateBaseHarness(minStockQty: 0);
@@ -568,7 +851,7 @@ public sealed class WarehouseProductionStateServiceTests
         });
     }
 
-    private static void SeedProductionReceiptDoc(CloseDocumentHarness harness, long docId, long orderId, string docRef)
+    private static void SeedProductionReceiptDoc(CloseDocumentHarness harness, long docId, long? orderId, string docRef)
     {
         harness.SeedDoc(new Doc
         {
@@ -577,7 +860,7 @@ public sealed class WarehouseProductionStateServiceTests
             Type = DocType.ProductionReceipt,
             Status = DocStatus.Draft,
             OrderId = orderId,
-            OrderRef = orderId.ToString(),
+            OrderRef = orderId?.ToString(),
             CreatedAt = DateTime.UtcNow
         });
     }

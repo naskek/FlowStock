@@ -8320,37 +8320,7 @@ ORDER BY item_id,
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-WITH work_docs AS (
-    SELECT d.id,
-           d.doc_ref,
-           d.order_id,
-           COALESCE(o.order_ref, d.order_ref) AS source_order_ref,
-           o.order_type,
-           o.status AS order_status,
-           d.status AS prd_status
-    FROM production_pallets pp
-    INNER JOIN docs d ON d.id = pp.prd_doc_id
-    LEFT JOIN orders o ON o.id = COALESCE(pp.order_id, d.order_id)
-    WHERE d.type = @production_doc_type
-      AND d.status = @draft_doc_status
-      AND pp.status <> @cancelled_pallet_status
-      AND pp.status IN (@planned_pallet_status, @printed_pallet_status, @filled_pallet_status)
-      AND (
-          o.id IS NULL
-          OR (
-              o.order_type = @internal_order_type
-              AND o.status IN (@draft_order_status, @in_progress_order_status)
-          )
-      )
-    GROUP BY d.id,
-             d.doc_ref,
-             d.order_id,
-             COALESCE(o.order_ref, d.order_ref),
-             o.order_type,
-             o.status,
-             d.status
-),
-pallet_composition AS (
+WITH pallet_composition AS (
     SELECT pp.id AS pallet_id,
            STRING_AGG(i.name || ' ' || TO_CHAR(pll.planned_qty, 'FM999999999990.999'), ', ' ORDER BY i.name, pll.id) AS composition
     FROM production_pallets pp
@@ -8377,12 +8347,19 @@ ledger_balance AS (
              UPPER(BTRIM(COALESCE(hu_code, hu)))
 ),
 pallet_rows AS (
-    SELECT wd.id AS prd_doc_id,
-           wd.doc_ref AS prd_ref,
-           wd.source_order_ref,
-           wd.prd_status,
-           wd.order_type,
-           wd.order_status,
+    SELECT d.id AS prd_doc_id,
+           d.doc_ref AS prd_ref,
+           COALESCE(
+               o.order_ref,
+               CASE
+                   WHEN pp.order_id IS NULL THEN d.order_ref
+                   WHEN pp.order_id = d.order_id THEN d.order_ref
+                   ELSE NULL
+               END
+           ) AS source_order_ref,
+           d.status AS prd_status,
+           o.order_type,
+           o.status AS order_status,
            pp.id AS pallet_id,
            pp.hu_code,
            pp.status AS pallet_status,
@@ -8404,8 +8381,9 @@ pallet_rows AS (
                ELSE COALESCE(line_item.name, header_item.name, '')
            END AS composition,
            COALESCE(lb.qty, 0) > @qty_tolerance AS in_ledger
-    FROM work_docs wd
-    INNER JOIN production_pallets pp ON pp.prd_doc_id = wd.id
+    FROM production_pallets pp
+    INNER JOIN docs d ON d.id = pp.prd_doc_id
+    LEFT JOIN orders o ON o.id = COALESCE(pp.order_id, d.order_id)
     LEFT JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
     LEFT JOIN items line_item ON line_item.id = pll.item_id
     LEFT JOIN items header_item ON header_item.id = pp.item_id
@@ -8415,8 +8393,21 @@ pallet_rows AS (
     LEFT JOIN ledger_balance lb ON lb.item_id = COALESCE(pll.item_id, pp.item_id)
                                AND lb.location_id = pp.to_location_id
                                AND lb.hu_code = UPPER(BTRIM(pp.hu_code))
-    WHERE pp.status <> @cancelled_pallet_status
+    WHERE d.type = @production_doc_type
+      AND d.status <> @closed_doc_status
+      AND pp.status <> @cancelled_pallet_status
       AND pp.status IN (@planned_pallet_status, @printed_pallet_status, @filled_pallet_status)
+      AND (
+          o.id IS NULL
+          OR (
+              o.order_type = @internal_order_type
+              AND o.status IN (@draft_order_status, @in_progress_order_status)
+          )
+          OR (
+              o.order_type = @customer_order_type
+              AND o.status NOT IN (@shipped_order_status, @cancelled_order_status, @merged_order_status)
+          )
+      )
 )
 SELECT prd_doc_id,
        prd_ref,

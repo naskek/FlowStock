@@ -907,6 +907,15 @@ const warehouseStockRow = pc.mapWarehouseProductionStateRow({
       planned_qty: 4,
       filled_qty: 1,
       composition: "Товар 1"
+    },
+    {
+      hu_code: "HU-0000927",
+      pallet_status: "PRINTED",
+      source_order_ref: "143",
+      prd_ref: "PRD-143",
+      planned_qty: 600,
+      filled_qty: 0,
+      composition: "Товар 1"
     }
   ],
   need_breakdown: {
@@ -950,6 +959,9 @@ assert.match(expandedStockHtml, /<th>HU<\/th><th>Статус<\/th><th class="pc
 assert.match(expandedStockHtml, /Ожидает/);
 assert.match(expandedStockHtml, /Этикетка напечатана/);
 assert.match(expandedStockHtml, /Наполнена/);
+assert.match(expandedStockHtml, /HU-0000927/);
+assert.match(expandedStockHtml, /143/);
+assert.match(expandedStockHtml, /PRD-143/);
 assert.match(expandedStockHtml, /Всего в заказах для клиентов/);
 assert.match(expandedStockHtml, /До минимума/);
 assert.match(expandedStockHtml, /Во внутренних заказах/);

@@ -83,6 +83,7 @@
 ## Инварианты
 - Остатки рассчитываются только из `ledger`.
 - `production_pallets` описывает план/факт производственного HU, но не является физическим остатком само по себе. Для отгрузки, CUSTOMER HU reserve/read-model и stage-1 transition пригодность HU подтверждается текущим положительным `ledger` balance; stale HU с балансом `<= 0` не участвует в `qty_produced`, `production_hu_codes` и outbound candidates.
+- В `GET /api/reports/warehouse-production-state` открытые `PLANNED`/`PRINTED`/`FILLED` production pallets без положительного ledger balance отображаются только в `production_receipts` / UI-блоке `План / производство`. Это включает активные `CUSTOMER`-заказы со статусами, отличными от `SHIPPED`, `CANCELLED`, `MERGED`; `source_order_ref` берется из effective order конкретной паллеты. Такие HU не увеличивают `stock_qty`, `free_qty`, `hu_rows` и физический остаток склада.
 - Контроль минимального остатка включается флагом типа номенклатуры `enable_min_stock_control`.
   - Если `item_types.min_stock_uses_order_binding = FALSE`, контроль работает по физическому остатку из `ledger` (суммарно по всем локациям и HU для товара).
   - Если `item_types.min_stock_uses_order_binding = TRUE`, контроль работает по свободному остатку:

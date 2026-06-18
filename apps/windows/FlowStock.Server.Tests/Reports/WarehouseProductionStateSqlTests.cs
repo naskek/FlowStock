@@ -16,6 +16,20 @@ public sealed class WarehouseProductionStateSqlTests
         Assert.Contains("pallet_rows AS", sql);
     }
 
+    [Fact]
+    public void PostgresWarehouseProductionState_PalletPlanUsesEffectiveCustomerOrderPredicate()
+    {
+        var sql = File.ReadAllText(GetPostgresDataStorePath()).Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        Assert.Contains("LEFT JOIN orders o ON o.id = COALESCE(pp.order_id, d.order_id)", sql);
+        Assert.Contains("o.order_type = @customer_order_type", sql);
+        Assert.Contains("o.status NOT IN (@shipped_order_status, @cancelled_order_status, @merged_order_status)", sql);
+        Assert.Contains("o.order_type = @internal_order_type", sql);
+        Assert.Contains("o.status IN (@draft_order_status, @in_progress_order_status)", sql);
+        Assert.DoesNotContain("WITH work_docs AS", sql);
+        Assert.DoesNotContain("INNER JOIN production_pallets pp ON pp.prd_doc_id = wd.id", sql);
+    }
+
     private static string GetPostgresDataStorePath()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
