@@ -2344,9 +2344,6 @@
       app.innerHTML = renderHuLookup();
       wireHuLookup();
       finishRouteRender();
-      if (typeof syncHuLookupScanMode === "function") {
-        syncHuLookupScanMode();
-      }
       return;
     }
 
@@ -4927,12 +4924,11 @@
   function renderHuLookup() {
     return (
       '<section class="screen hu-lookup-screen">' +
-      '  <div class="screen-card">' +
+      '  <div class="screen-card hu-lookup-card">' +
       '    <div class="section-title">Поиск HU</div>' +
-      '    <label class="form-label" for="huLookupInput">Номер HU</label>' +
-      '    <input class="form-input" id="huLookupInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" data-hu-lookup="1" inputmode="none" readonly placeholder="Отсканируйте или введите HU" />' +
-      '    <div class="hu-lookup-actions">' +
-      '      <button class="btn primary-btn" id="huLookupFindBtn" type="button">Найти</button>' +
+      '    <div class="hu-lookup-prompt">Отсканируйте HU</div>' +
+      '    <div class="filling-scan-card filling-scan-card--compact filling-scan-slot">' +
+      '      <input class="form-input filling-scan-input tsd-scan-input-hidden filling-scan-input-hidden" id="huLookupScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" />' +
       "    </div>" +
       '    <div id="huLookupMessage" class="stock-message"></div>' +
       "  </div>" +
@@ -4941,7 +4937,6 @@
   }
 
   var huResolvePending = false;
-  var syncHuLookupScanMode = null;
 
   function getCurrentRoutePath() {
     var hash = String((window.location && window.location.hash) || "").replace(/^#/, "");
@@ -6622,8 +6617,7 @@
   }
 
   function wireHuLookup() {
-    var lookupInput = document.getElementById("huLookupInput");
-    var findBtn = document.getElementById("huLookupFindBtn");
+    var scanInput = document.getElementById("huLookupScanInput");
     var messageEl = document.getElementById("huLookupMessage");
     var submitPending = false;
 
@@ -6633,34 +6627,25 @@
       }
     }
 
-    function enterHuLookupScanMode() {
-      if (!lookupInput) {
+    function focusScan() {
+      if (!scanInput) {
         return;
       }
-      lookupInput.removeAttribute("data-hu-manual");
-      lookupInput.readOnly = false;
-      lookupInput.setAttribute("inputmode", "none");
+      setPreferredScanTarget(scanInput);
+      window.setTimeout(function () {
+        if (scanInput && scanInput.isConnected) {
+          scanInput.value = "";
+          scanInput.focus();
+        }
+      }, 30);
     }
 
-    function enterHuLookupManualMode() {
-      if (!lookupInput) {
-        return;
-      }
-      lookupInput.setAttribute("data-hu-manual", "1");
-      lookupInput.readOnly = false;
-      lookupInput.setAttribute("inputmode", "text");
-    }
-
-    function submitHuLookup(rawValue) {
+    function handleScannedValue(value) {
       if (submitPending) {
-        return Promise.resolve({ accepted: false, pending: true });
+        focusScan();
+        return;
       }
-      var value =
-        rawValue != null && rawValue !== ""
-          ? rawValue
-          : lookupInput
-            ? lookupInput.value
-            : "";
+
       var huCode = extractHuCode(value);
       if (!huCode) {
         var rawNormalized = normalizeValue(value).toUpperCase();
@@ -6669,101 +6654,39 @@
             ? "Неверный формат HU: " + rawNormalized
             : "Неверный формат HU."
         );
-        enterHuLookupScanMode();
-        restoreHuLookupScanFocus();
-        return Promise.resolve({ accepted: false });
+        focusScan();
+        return;
       }
-      if (lookupInput) {
-        lookupInput.value = huCode;
-      }
+
       setMessage("");
       submitPending = true;
-      var navigated = false;
-      return resolveHuAndNavigate(huCode, {
+
+      resolveHuAndNavigate(huCode, {
         notify: setMessage,
         navOrigin: "/hu",
-      })
-        .then(function (result) {
-          navigated = !!(result && result.known === true);
-          return result;
-        })
-        .finally(function () {
-          submitPending = false;
+      }).finally(function () {
+        submitPending = false;
 
-          if (
-            !navigated &&
-            currentRoute &&
-            currentRoute.name === "hu"
-          ) {
-            restoreHuLookupScanFocus();
-          }
-        });
-    }
-
-    function restoreHuLookupScanFocus() {
-      enterHuLookupScanMode();
-      setPreferredScanTarget(lookupInput);
-
-      requestAnimationFrame(function () {
-        if (!lookupInput) {
-          return;
-        }
-
-        try {
-          lookupInput.focus({ preventScroll: true });
-        } catch (error) {
-          lookupInput.focus();
+        if (currentRoute && currentRoute.name === "hu") {
+          focusScan();
         }
       });
     }
 
-    function handleHuRouteScan(scan) {
-      var value = scan && scan.value ? scan.value : scan;
-      if (lookupInput) {
-        lookupInput.value = normalizeValue(value).toUpperCase();
-      }
-      return submitHuLookup(value);
-    }
-
-    if (lookupInput) {
-      setPreferredScanTarget(lookupInput);
-      lookupInput.addEventListener(
-        "pointerdown",
-        function (event) {
-          enterHuLookupManualMode();
-
-          if (document.activeElement === lookupInput) {
-            event.preventDefault();
-            lookupInput.blur();
-
-            try {
-              lookupInput.focus({ preventScroll: true });
-            } catch (error) {
-              lookupInput.focus();
-            }
-          }
-        },
-        true
-      );
-      lookupInput.addEventListener("blur", function () {
-        enterHuLookupScanMode();
+    if (scanInput) {
+      scanInput.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          handleScannedValue(scanInput.value);
+        }
       });
+      focusScan();
     }
 
-    if (findBtn) {
-      findBtn.addEventListener("click", function () {
-        submitHuLookup();
-      });
-    }
-
-    setScanHandler(handleHuRouteScan);
-    syncHuLookupScanMode = restoreHuLookupScanFocus;
-    if (window.FlowStockTsdTestHooks) {
-      window.FlowStockTsdTestHooks.enterHuLookupScanMode = enterHuLookupScanMode;
-      window.FlowStockTsdTestHooks.enterHuLookupManualMode = enterHuLookupManualMode;
-      window.FlowStockTsdTestHooks.submitHuLookup = submitHuLookup;
-      window.FlowStockTsdTestHooks.restoreHuLookupScanFocus = restoreHuLookupScanFocus;
-    }
+    setScanHandler(function (scan) {
+      var scanValue = scan && scan.value ? scan.value : scan;
+      handleScannedValue(scanValue);
+    });
   }
 
   function renderHeaderFields(doc) {
