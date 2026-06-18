@@ -8169,16 +8169,7 @@
     );
     return loadFillingContext(fillOrderId)
       .then(function (nextContext) {
-        if (shouldPromptOperationClose("filling", nextContext.progress)) {
-          if (typeof window.confirm === "function" && window.confirm("Все паллеты отсканированы.\nЗакрыть документ?")) {
-            return runTsdCriticalOperation("filling.complete", function () {
-              return TsdStorage.apiCompleteProductionFilling(fillOrderId);
-            }).then(function () {
-              renderFillingCompletionScreen(nextContext, result, null);
-            });
-          }
-          declineOperationClosePrompt("filling", nextContext.progress);
-        }
+        var promptClose = shouldPromptOperationClose("filling", nextContext.progress);
         var remainingPalletCount = getRemainingPalletCountFromFillingContext(nextContext);
         var successMessage = buildProductionFillSuccessMessage(result, remainingPalletCount);
         var successType =
@@ -8188,6 +8179,24 @@
           messageType: successType,
           preview: null,
         });
+        if (promptClose) {
+          openConfirmOverlay(
+            "Наполнение готово",
+            "Все паллеты наполнены. Завершить наполнение и закрыть документ?",
+            "Завершить наполнение",
+            function () {
+              runTsdCriticalOperation("filling.complete", function () {
+                return TsdStorage.apiCompleteProductionFilling(fillOrderId);
+              }).then(function () {
+                renderFillingCompletionScreen(nextContext, result, null);
+              });
+            },
+            "primary-btn",
+            function () {
+              declineOperationClosePrompt("filling", nextContext.progress);
+            }
+          );
+        }
       })
       .catch(function (reloadError) {
         if (shouldRenderProductionFillCompletion(result, null, reloadError)) {
@@ -8545,26 +8554,43 @@
         return TsdStorage.apiScanOutboundPickingHu(orderId, huCode);
       })
         .then(function (result) {
+          scanBusy = false;
           var nextOrder = normalizeOutboundPickingOrderView(
             (result && result.order) || order
           );
           var complete = isOutboundPickingOperationComplete(nextOrder);
-          if (shouldPromptOperationClose("outbound", nextOrder)) {
-            if (typeof window.confirm === "function" && window.confirm("Все паллеты отсканированы.\nЗакрыть документ?")) {
-              return runTsdCriticalOperation("outbound.complete", function () {
-                return TsdStorage.apiCompleteOutboundPicking(orderId, false);
-              }).then(function () {
-                navigate("/outbound");
-              });
-            }
-            declineOperationClosePrompt("outbound", nextOrder);
-          }
+          var promptClose = shouldPromptOperationClose("outbound", nextOrder);
           renderOutboundPickingOrder(nextOrder, {
             message: complete
               ? "Все паллеты отсканированы. Готово к закрытию."
               : (result && result.message) || "HU подобрана.",
             messageType: result && result.alreadyPicked ? "warn" : "success",
           });
+          if (promptClose) {
+            openConfirmOverlay(
+              "Отгрузка готова",
+              "Все паллеты отсканированы. Завершить отгрузку и закрыть документ?",
+              "Завершить отгрузку",
+              function () {
+                runTsdCriticalOperation("outbound.complete", function () {
+                  return TsdStorage.apiCompleteOutboundPicking(orderId, false);
+                })
+                  .then(function () {
+                    navigate("/outbound");
+                  })
+                  .catch(function (error) {
+                    refreshOrder({
+                      message: mapOutboundPickingError(error),
+                      messageType: "error",
+                    });
+                  });
+              },
+              "primary-btn",
+              function () {
+                declineOperationClosePrompt("outbound", nextOrder);
+              }
+            );
+          }
         })
         .catch(function (error) {
           scanBusy = false;
@@ -9591,8 +9617,16 @@
     focusOverlay(overlay);
   }
 
-  function openConfirmOverlay(title, message, confirmLabel, onConfirm) {
+  function openConfirmOverlay(title, message, confirmLabel, onConfirm, confirmClass, onCancel) {
     setScanHighlight(false);
+    // Drop focus from any scan input so a scanner's trailing Enter (which fires the
+    // input's direct keydown handler, bypassing the canScanNow overlay gate) cannot
+    // run a scan behind the confirmation window.
+    var focusedEl = document.activeElement;
+    if (focusedEl && typeof focusedEl.blur === "function") {
+      focusedEl.blur();
+    }
+    var confirmButtonClass = confirmClass || "btn-danger";
     var overlay = document.createElement("div");
     overlay.className = "overlay overlay--centered";
     overlay.innerHTML =
@@ -9603,13 +9637,16 @@
       '  <div class="confirm-message"></div>' +
       '  <div class="confirm-actions">' +
       '    <button class="btn btn-outline overlay-cancel" type="button">Отмена</button>' +
-      '    <button class="btn btn-danger overlay-confirm" type="button"></button>' +
+      '    <button class="btn overlay-confirm" type="button"></button>' +
       "  </div>" +
       "</div>";
     overlay.querySelector(".overlay-title").textContent = title;
     overlay.querySelector(".confirm-message").textContent = message;
     var confirmBtn = overlay.querySelector(".overlay-confirm");
+    confirmBtn.classList.add(confirmButtonClass);
     confirmBtn.textContent = confirmLabel;
+
+    var confirmed = false;
 
     function close() {
       document.body.removeChild(overlay);
@@ -9617,9 +9654,19 @@
       enterScanMode();
     }
 
+    function cancel() {
+      if (confirmed) {
+        return;
+      }
+      close();
+      if (typeof onCancel === "function") {
+        onCancel();
+      }
+    }
+
     function onKeyDown(event) {
       if (event.key === "Escape") {
-        close();
+        cancel();
       }
     }
 
@@ -9628,12 +9675,13 @@
 
     overlay.addEventListener("click", function (event) {
       if (event.target === overlay) {
-        close();
+        cancel();
       }
     });
 
-    overlay.querySelector(".overlay-cancel").addEventListener("click", close);
+    overlay.querySelector(".overlay-cancel").addEventListener("click", cancel);
     confirmBtn.addEventListener("click", function () {
+      confirmed = true;
       close();
       if (typeof onConfirm === "function") {
         onConfirm();

@@ -252,6 +252,11 @@ assert(
     extractFunctionBody(appJs, "handleProductionFillSuccess").includes("shouldPromptOperationClose"),
   "post-fill handler should reload server progress before offering explicit finalize"
 );
+assert(
+  extractFunctionBody(appJs, "handleProductionFillSuccess").includes("openConfirmOverlay") &&
+    !extractFunctionBody(appJs, "handleProductionFillSuccess").includes("window.confirm"),
+  "post-fill finalize must use the explicit in-app confirmation window, not window.confirm"
+);
 assert(appJs.includes("buildClosePromptStateKey") && appJs.includes("operationFingerprint"),
   "declined close prompt should be scoped to server fingerprint and progress state");
 assert(

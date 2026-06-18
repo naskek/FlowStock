@@ -45,6 +45,43 @@ const completeBtnEl = {
   },
 };
 
+const createdOverlays = [];
+function createOverlayEl() {
+  const children = {};
+  function makeChild() {
+    return {
+      textContent: "",
+      classList: { add: function () {} },
+      clickHandler: null,
+      addEventListener: function (type, handler) {
+        if (type === "click") {
+          this.clickHandler = handler;
+        }
+      },
+      click: function () {
+        if (this.clickHandler) {
+          this.clickHandler();
+        }
+      },
+    };
+  }
+  const overlay = {
+    className: "",
+    innerHTML: "",
+    parentNode: null,
+    addEventListener: function () {},
+    focus: function () {},
+    querySelector: function (selector) {
+      if (!children[selector]) {
+        children[selector] = makeChild();
+      }
+      return children[selector];
+    },
+  };
+  createdOverlays.push(overlay);
+  return overlay;
+}
+
 const context = {
   console,
   window: {
@@ -67,6 +104,19 @@ const context = {
     },
   },
   document: {
+    activeElement: null,
+    body: {
+      classList: { add: function () {}, remove: function () {} },
+      appendChild: function (element) {
+        element.parentNode = this;
+      },
+      removeChild: function (element) {
+        element.parentNode = null;
+      },
+    },
+    createElement: function () {
+      return createOverlayEl();
+    },
     getElementById: function (id) {
       if (id === "app") {
         return appEl;
@@ -100,6 +150,7 @@ const context = {
       ];
     },
     addEventListener: function () {},
+    removeEventListener: function () {},
   },
   localStorage: {
     setItem: function () {},
@@ -645,6 +696,7 @@ async function scanOutboundHu(rawValue, order, scanResultOrder) {
     operation_fingerprint: "second-outbound-before-final-scan",
   };
   confirmMessages.length = 0;
+  createdOverlays.length = 0;
   lastCompleteRequest = null;
   request = await scanOutboundHu(
     "HU-0000726",
@@ -655,8 +707,30 @@ async function scanOutboundHu(rawValue, order, scanResultOrder) {
     setImmediate(resolve);
   });
   assert.strictEqual(request.orderId, 96);
-  assert.strictEqual(confirmMessages.length, 1);
-  assert.match(confirmMessages[0], /Все паллеты отсканированы/);
+  // The final scan must NOT auto-close; it opens an explicit confirmation window
+  // (a custom overlay, not window.confirm, so a scanner's trailing Enter cannot
+  // auto-accept it).
+  assert.strictEqual(confirmMessages.length, 0, "final outbound scan must not use window.confirm");
+  assert.strictEqual(
+    createdOverlays.length,
+    1,
+    "final outbound scan should open one confirmation window"
+  );
+  assert.strictEqual(
+    lastCompleteRequest,
+    null,
+    "outbound document must not close before explicit confirmation"
+  );
+  const outboundConfirmOverlay = createdOverlays[createdOverlays.length - 1];
+  assert.match(
+    outboundConfirmOverlay.querySelector(".confirm-message").textContent,
+    /Все паллеты отсканированы/
+  );
+  // Tapping the confirm button finalizes the shipment on the server.
+  outboundConfirmOverlay.querySelector(".overlay-confirm").click();
+  await new Promise(function (resolve) {
+    setImmediate(resolve);
+  });
   assert.deepStrictEqual(lastCompleteRequest, { orderId: 96, allowPartial: false });
 
   const rejectedScanError = new Error("HU_NOT_EXPECTED");
