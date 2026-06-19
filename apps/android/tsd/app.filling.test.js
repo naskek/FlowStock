@@ -390,6 +390,25 @@ assert.strictEqual(
     "filling should keep the server rejection visible: " + message
   );
 });
+assert.strictEqual(
+  hooks.mapFillingError({
+    code: "PALLET_NOT_FOUND",
+    message: "Эта паллета относится к другому заказу №099.",
+    payload: { error: "PALLET_NOT_FOUND", message: "Эта паллета относится к другому заказу №099." },
+  }),
+  "Паллета не найдена в плане выпуска.",
+  "structured filling error code should take priority over localized message text"
+);
+assert.strictEqual(
+  hooks.getFillingErrorMessageType({ code: "PALLET_ALREADY_FILLED", payload: { error: "PALLET_ALREADY_FILLED" } }),
+  "warn",
+  "already-filled scan rejection should be rendered as a warning"
+);
+assert.strictEqual(
+  hooks.getFillingErrorMessageType({ code: "PALLET_BELONGS_TO_ANOTHER_ORDER", payload: { error: "PALLET_BELONGS_TO_ANOTHER_ORDER" } }),
+  "error",
+  "another-order scan rejection should stay a red error"
+);
 
 const unavailableAfterFill = new Error("Заказ недоступен для наполнения.");
 assert.strictEqual(
@@ -521,7 +540,8 @@ assert.match(
 );
 assert(
   fillingHandleScannedValue.includes("return refreshContext({") &&
-    fillingHandleScannedValue.includes("message: mapFillingError(error)") &&
+    fillingHandleScannedValue.includes("var mapped = mapFillingError(error)") &&
+    fillingHandleScannedValue.includes("message: mapped") &&
     fillingHandleScannedValue.includes("focusScan()"),
   "rejected filling scan should keep the error through refresh and restore scanner focus"
 );
@@ -951,7 +971,7 @@ assert.strictEqual(
   true,
   "order may be marked done after final component when no pallets remain"
 );
-assert(appVersionJs.includes('var version = "49"'), "TSD shell version should be bumped for HU scan-only screen");
+assert(appVersionJs.includes('var version = "51"'), "TSD shell version should be bumped for HU scan-only screen");
 assert(
   appJs.includes("Не удалось загрузить заказы для наполнения") && appJs.includes("console.error(error)"),
   "filling API failures should be visible and logged"
@@ -1084,6 +1104,214 @@ function createFillSuccessHarness(contextHandler, completeHandler) {
       completeCalls = 0;
     },
   };
+}
+
+function flushPromises() {
+  return new Promise(function (resolve) {
+    setImmediate(resolve);
+  });
+}
+
+function createFillingScanRuntimeHarness(options) {
+  options = options || {};
+  const localHooks = {};
+  const localAppEl = {
+    innerHTML: "",
+    querySelectorAll: function () {
+      return [];
+    },
+  };
+  const scanInput = {
+    value: "",
+    isConnected: true,
+    addEventListener: function () {},
+    focus: function () {},
+  };
+  const body = {
+    appendChild: function () {},
+    removeChild: function () {},
+    classList: { add: function () {}, remove: function () {} },
+  };
+  const defaultContext = {
+    orderId: 120,
+    orderRef: "120",
+    prdDocId: 55,
+    document: {
+      summary: { remainingPalletCount: 2, filledPalletCount: 0, plannedPalletCount: 2 },
+      pallets: [
+        { huCode: "HU-0001203", status: "PENDING" },
+        { huCode: "HU-0001204", status: "PENDING" },
+      ],
+    },
+  };
+  const scanCalls = [];
+  let contextCalls = 0;
+  const localVmContext = {
+    console,
+    TsdStorage: {
+      getSetting: function () {
+        return Promise.resolve("TSD-01");
+      },
+      apiScanProductionPallet: function (payload) {
+        scanCalls.push(payload);
+        return (options.scan || function () {
+          return Promise.resolve({ ok: true, alreadyFilled: true });
+        })(payload, scanCalls.length);
+      },
+      apiGetProductionFillingContext: function (orderId) {
+        contextCalls += 1;
+        if (options.context) {
+          return options.context(orderId, contextCalls);
+        }
+        return Promise.resolve(defaultContext);
+      },
+    },
+    window: {
+      FlowStockTsdTestHooks: localHooks,
+      location: { hash: "" },
+      setTimeout: function (fn) {
+        if (typeof fn === "function") {
+          fn();
+        }
+        return 0;
+      },
+      clearTimeout: function () {},
+      setInterval: function () {
+        return 0;
+      },
+      addEventListener: function () {},
+    },
+    document: {
+      body: body,
+      documentElement: { classList: { add: function () {}, remove: function () {}, toggle: function () {} } },
+      getElementById: function (id) {
+        if (id === "app") return localAppEl;
+        if (id === "fillingScanInput") return scanInput;
+        return { addEventListener: function () {}, focus: function () {}, classList: { add: function () {}, remove: function () {} } };
+      },
+      querySelector: function () {
+        return null;
+      },
+      querySelectorAll: function () {
+        return [];
+      },
+      addEventListener: function () {},
+      createElement: function () {
+        return { className: "", innerHTML: "", addEventListener: function () {}, querySelector: function () { return null; } };
+      },
+    },
+    localStorage: {
+      setItem: function () {},
+      getItem: function () {
+        return null;
+      },
+    },
+    navigator: {},
+  };
+  localVmContext.window.document = localVmContext.document;
+  localVmContext.window.localStorage = localVmContext.localStorage;
+  localVmContext.window.navigator = localVmContext.navigator;
+  vm.createContext(localVmContext);
+  vm.runInContext(appJs, localVmContext, { filename: "app.js" });
+  const screenContext = {
+    workItem: { orderId: 120, orderRef: "120", prdDocId: 55 },
+    document: defaultContext.document,
+    progress: { canClose: false, isClosed: false },
+  };
+  localHooks.renderFillingScanScreen(screenContext, {});
+  return {
+    hooks: localHooks,
+    appEl: localAppEl,
+    scanCalls: scanCalls,
+    get contextCalls() {
+      return contextCalls;
+    },
+  };
+}
+
+async function runFillingScanRuntimeTests() {
+  function structuredError(code, message) {
+    const error = new Error(message || code);
+    error.status = 400;
+    error.code = code;
+    error.payload = { error: code, message: message || code };
+    return error;
+  }
+
+  const otherOrderHarness = createFillingScanRuntimeHarness({
+    scan: function () {
+      return Promise.reject(structuredError(
+        "PALLET_BELONGS_TO_ANOTHER_ORDER",
+        "Эта паллета относится к другому заказу №099."
+      ));
+    },
+  });
+  otherOrderHarness.hooks.getActiveScanHandler()({ value: "HU-999999", source: "scanner" });
+  await flushPromises();
+  await flushPromises();
+  assert.match(otherOrderHarness.appEl.innerHTML, /filling-message filling-message-error[\s\S]*другому заказу №099/);
+  assert.strictEqual(otherOrderHarness.scanCalls.length, 1);
+  assert.strictEqual(otherOrderHarness.contextCalls, 1, "rejected scan should reload context once when possible");
+
+  const alreadyFilledHarness = createFillingScanRuntimeHarness({
+    scan: function () {
+      return Promise.reject(structuredError("PALLET_ALREADY_FILLED", "Русский текст от сервера не должен управлять severity"));
+    },
+  });
+  alreadyFilledHarness.hooks.getActiveScanHandler()("HU-999998");
+  await flushPromises();
+  await flushPromises();
+  assert.match(alreadyFilledHarness.appEl.innerHTML, /filling-message filling-message-warn[\s\S]*Паллета уже наполнена\./);
+
+  const reloadFailureHarness = createFillingScanRuntimeHarness({
+    scan: function () {
+      return Promise.reject(structuredError("PALLET_NOT_FOUND", "Паллета не найдена в плане выпуска."));
+    },
+    context: function () {
+      return Promise.reject(new Error("reload failed"));
+    },
+  });
+  reloadFailureHarness.hooks.getActiveScanHandler()("HU-999997");
+  await flushPromises();
+  await flushPromises();
+  assert.match(
+    reloadFailureHarness.appEl.innerHTML,
+    /filling-message filling-message-error[\s\S]*Паллета не найдена в плане выпуска/,
+    "scan rejection message should survive context reload failure"
+  );
+
+  let first = true;
+  const nextScanHarness = createFillingScanRuntimeHarness({
+    scan: function () {
+      if (first) {
+        first = false;
+        return Promise.reject(structuredError("PALLET_NOT_FOUND", "Паллета не найдена в плане выпуска."));
+      }
+      return Promise.resolve({ ok: true, alreadyFilled: true });
+    },
+  });
+  nextScanHarness.hooks.getActiveScanHandler()("HU-999996");
+  await flushPromises();
+  await flushPromises();
+  nextScanHarness.hooks.getActiveScanHandler()("HU-0001203");
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(nextScanHarness.scanCalls.length, 2, "next valid scan should be accepted after an error");
+  assert.match(nextScanHarness.appEl.innerHTML, /filling-message filling-message-warn[\s\S]*Паллета уже наполнена\./);
+
+  const sharedHandlerHarness = createFillingScanRuntimeHarness();
+  const scanHandler = sharedHandlerHarness.hooks.getActiveScanHandler();
+  scanHandler("HU-0001203");
+  await flushPromises();
+  await flushPromises();
+  scanHandler({ value: "HU-0001204", source: "scanner" });
+  await flushPromises();
+  await flushPromises();
+  assert.deepStrictEqual(
+    sharedHandlerHarness.scanCalls.map(function (call) { return call.huCode; }),
+    ["HU-0001203", "HU-0001204"],
+    "simulator string input and physical scanner object input should use the same scan result path"
+  );
 }
 
 async function runFillSuccessRuntimeTests() {
@@ -1426,6 +1654,7 @@ async function runImplicitClosureFrontendTests() {
 }
 
 runFillSuccessRuntimeTests()
+  .then(runFillingScanRuntimeTests)
   .then(runFinalizeReconciliationTests)
   .then(runImplicitClosureFrontendTests)
   .then(runFillingScanGuardTests)

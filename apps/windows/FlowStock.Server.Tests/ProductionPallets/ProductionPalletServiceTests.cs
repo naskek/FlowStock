@@ -1492,6 +1492,30 @@ public sealed class ProductionPalletServiceTests
     }
 
     [Fact]
+    public void MixedPalletFill_UsesStableFillingErrorCodes()
+    {
+        var harness = CreateHarnessWithMixedOrderOnly();
+        var service = CreateAutoClosePalletService(harness);
+        var plan = service.PlanOrder(10);
+        var pallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId));
+        var componentIds = pallet.Lines.Select(line => line.Id).ToArray();
+
+        var unknown = service.FillMixedComponents("HU-UNKNOWN", componentIds, "TSD-01", orderId: 10, prdDocId: plan.PrdDocId);
+        var wrongOrder = service.FillMixedComponents(pallet.HuCode, componentIds, "TSD-01", orderId: 999, prdDocId: plan.PrdDocId);
+        var filled = service.FillMixedComponents(pallet.HuCode, componentIds, "TSD-01", orderId: 10, prdDocId: plan.PrdDocId);
+        var repeat = service.FillMixedComponents(pallet.HuCode, componentIds, "TSD-01", orderId: 10, prdDocId: plan.PrdDocId);
+
+        Assert.False(unknown.Success);
+        Assert.Equal("PALLET_NOT_FOUND", unknown.Error);
+        Assert.False(wrongOrder.Success);
+        Assert.Equal("PALLET_BELONGS_TO_ANOTHER_ORDER", wrongOrder.Error);
+        Assert.True(filled.Success, filled.ErrorMessage);
+        Assert.True(repeat.Success, repeat.ErrorMessage);
+        Assert.True(repeat.AlreadyFilled);
+        Assert.Equal("PALLET_ALREADY_FILLED", repeat.Error);
+    }
+
+    [Fact]
     public void GetFillingContext_WithoutPreparedPallets_ReturnsClearError()
     {
         var harness = CreateHarnessWithOrderOnly(orderQty: 1200, maxQtyPerHu: 600);
@@ -1550,12 +1574,15 @@ public sealed class ProductionPalletServiceTests
     public void ScanPallet_WrongSelectedOrderOrPrd_IsRejected()
     {
         var harness = CreateHarnessWithSinglePallet(ProductionPalletStatus.Planned);
+        SeedOtherOrderPallet(harness, ProductionPalletStatus.Planned);
         var service = new ProductionPalletService(harness.Store);
 
-        var result = service.Scan(orderId: 999, prdDocId: 20, huCode: "HU-000001");
+        var result = service.Scan(orderId: 10, prdDocId: 20, huCode: "HU-OTHER");
 
         Assert.False(result.Success);
-        Assert.Equal("Эта паллета относится к другому заказу", result.Error);
+        Assert.Equal("PALLET_BELONGS_TO_ANOTHER_ORDER", result.Error);
+        Assert.Contains("другому заказу", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("099", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
         Assert.Empty(harness.LedgerEntries);
     }
 
@@ -1569,7 +1596,39 @@ public sealed class ProductionPalletServiceTests
 
         Assert.True(result.Success);
         Assert.True(result.AlreadyFilled);
+        Assert.Equal("PALLET_ALREADY_FILLED", result.Error);
+        Assert.Equal("Паллета уже наполнена.", result.ErrorMessage);
         Assert.Equal(ProductionPalletStatus.Filled, result.PalletStatus);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void ScanPallet_FilledHuWithStaleSelectedPrd_ReturnsAlreadyFilledNotAnotherOrder()
+    {
+        var harness = CreateHarnessWithSinglePallet(ProductionPalletStatus.Filled);
+        var service = new ProductionPalletService(harness.Store);
+
+        var result = service.Scan(orderId: 10, prdDocId: 999, huCode: "HU-000001");
+
+        Assert.True(result.Success);
+        Assert.True(result.AlreadyFilled);
+        Assert.Equal("PALLET_ALREADY_FILLED", result.Error);
+        Assert.NotEqual("PALLET_BELONGS_TO_ANOTHER_ORDER", result.Error);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void ScanPallet_FilledHuFromAnotherOrder_ReturnsOtherOrderAlreadyFilledCode()
+    {
+        var harness = CreateHarnessWithSinglePallet(ProductionPalletStatus.Planned);
+        SeedOtherOrderPallet(harness, ProductionPalletStatus.Filled);
+        var service = new ProductionPalletService(harness.Store);
+
+        var result = service.Scan(orderId: 10, prdDocId: 20, huCode: "HU-OTHER");
+
+        Assert.False(result.Success);
+        Assert.Equal("PALLET_ALREADY_FILLED_IN_OTHER_ORDER", result.Error);
+        Assert.Contains("099", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
         Assert.Empty(harness.LedgerEntries);
     }
 
@@ -1582,7 +1641,7 @@ public sealed class ProductionPalletServiceTests
         var result = service.Scan(orderId: 10, prdDocId: 20, huCode: "HU-404");
 
         Assert.False(result.Success);
-        Assert.Equal("Паллета не найдена в плане выпуска", result.Error);
+        Assert.Equal("PALLET_NOT_FOUND", result.Error);
         Assert.Empty(harness.LedgerEntries);
     }
 
@@ -1595,7 +1654,7 @@ public sealed class ProductionPalletServiceTests
         var result = service.Scan(orderId: 10, prdDocId: 20, huCode: "HU-000001");
 
         Assert.False(result.Success);
-        Assert.Equal("Паллета отменена и не может быть наполнена.", result.Error);
+        Assert.Equal("PALLET_CANCELLED", result.Error);
         Assert.Empty(harness.LedgerEntries);
     }
 
@@ -1612,10 +1671,61 @@ public sealed class ProductionPalletServiceTests
         Assert.False(first.AlreadyFilled);
         Assert.True(second.Success);
         Assert.True(second.AlreadyFilled);
+        Assert.Equal("PALLET_ALREADY_FILLED", second.Error);
+        Assert.Equal("Паллета уже наполнена.", second.ErrorMessage);
         Assert.Empty(harness.LedgerEntries);
         Assert.Equal(1, first.Document?.Summary.FilledPalletCount);
         Assert.Equal(600, first.Document?.Summary.FilledQty);
         Assert.Equal(0, first.Document?.Summary.RemainingQty);
+    }
+
+    [Fact]
+    public void FillPallet_FilledHuWithStaleSelectedPrd_ReturnsAlreadyFilledNotAnotherOrder()
+    {
+        var harness = CreateHarnessWithSinglePallet(ProductionPalletStatus.Filled);
+        var service = new ProductionPalletService(harness.Store);
+
+        var result = service.Fill("HU-000001", "TSD-01", orderId: 10, prdDocId: 999);
+
+        Assert.True(result.Success);
+        Assert.True(result.AlreadyFilled);
+        Assert.Equal("PALLET_ALREADY_FILLED", result.Error);
+        Assert.NotEqual("PALLET_BELONGS_TO_ANOTHER_ORDER", result.Error);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void ScanAndFill_ClassifySamePalletStateConsistently()
+    {
+        var harness = CreateHarnessWithSinglePallet(ProductionPalletStatus.Planned);
+        SeedOtherOrderPallet(harness, ProductionPalletStatus.Planned);
+        var service = new ProductionPalletService(harness.Store);
+
+        var scanUnknown = service.Scan(orderId: 10, prdDocId: 20, huCode: "HU-UNKNOWN");
+        var fillUnknown = service.Fill("HU-UNKNOWN", "TSD-01", orderId: 10, prdDocId: 20);
+        var scanOther = service.Scan(orderId: 10, prdDocId: 20, huCode: "HU-OTHER");
+        var fillOther = service.Fill("HU-OTHER", "TSD-01", orderId: 10, prdDocId: 20);
+
+        Assert.Equal("PALLET_NOT_FOUND", scanUnknown.Error);
+        Assert.Equal(scanUnknown.Error, fillUnknown.Error);
+        Assert.Equal("PALLET_BELONGS_TO_ANOTHER_ORDER", scanOther.Error);
+        Assert.Equal(scanOther.Error, fillOther.Error);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void FillPallet_FilledHuFromAnotherOrder_ReturnsOtherOrderAlreadyFilledCode()
+    {
+        var harness = CreateHarnessWithSinglePallet(ProductionPalletStatus.Planned);
+        SeedOtherOrderPallet(harness, ProductionPalletStatus.Filled);
+        var service = new ProductionPalletService(harness.Store);
+
+        var result = service.Fill("HU-OTHER", "TSD-01", orderId: 10, prdDocId: 20);
+
+        Assert.False(result.Success);
+        Assert.Equal("PALLET_ALREADY_FILLED_IN_OTHER_ORDER", result.Error);
+        Assert.Contains("099", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(harness.LedgerEntries);
     }
 
     [Fact]
@@ -1646,7 +1756,7 @@ public sealed class ProductionPalletServiceTests
         var result = service.Fill("HU-000002", "TSD-01");
 
         Assert.False(result.Success);
-        Assert.Equal("Выпуск превышает остаток по строке заказа", result.Error);
+        Assert.Equal("FILL_EXCEEDS_REMAINING", result.Error);
         Assert.Empty(harness.LedgerEntries);
     }
 
@@ -2553,7 +2663,8 @@ public sealed class ProductionPalletServiceTests
         var result = service.Fill("HU-000001", "TSD-01", orderId: 999, prdDocId: 20);
 
         Assert.False(result.Success);
-        Assert.Equal("Эта паллета относится к другому заказу", result.Error);
+        Assert.Equal("PALLET_BELONGS_TO_ANOTHER_ORDER", result.Error);
+        Assert.Contains("другому заказу", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
         Assert.Empty(harness.LedgerEntries);
     }
 
@@ -3219,6 +3330,62 @@ public sealed class ProductionPalletServiceTests
             Qty = plannedQty,
             ToLocationId = 1,
             ToHu = huCode
+        });
+    }
+
+    private static void SeedOtherOrderPallet(CloseDocumentHarness harness, string status)
+    {
+        harness.SeedOrder(new Order
+        {
+            Id = 11,
+            OrderRef = "099",
+            Type = OrderType.Internal,
+            PartnerName = "ДРУГОЙ ЗАКАЗ",
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 5, 13, 8, 30, 0)
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 111,
+            OrderId = 11,
+            ItemId = 100,
+            QtyOrdered = 600
+        });
+        harness.SeedDoc(new Doc
+        {
+            Id = 21,
+            DocRef = "PRD-2026-000099",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 11,
+            CreatedAt = new DateTime(2026, 5, 13, 9, 30, 0)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 211,
+            DocId = 21,
+            OrderLineId = 111,
+            ItemId = 100,
+            Qty = 600,
+            ToLocationId = 1,
+            ToHu = "HU-OTHER"
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 99,
+            PrdDocId = 21,
+            DocLineId = 211,
+            OrderId = 11,
+            OrderLineId = 111,
+            ItemId = 100,
+            ItemName = "Товар",
+            HuCode = "HU-OTHER",
+            PlannedQty = 600,
+            ToLocationId = 1,
+            ToLocationCode = "MAIN",
+            Status = status,
+            FilledAt = status == ProductionPalletStatus.Filled ? new DateTime(2026, 5, 13, 10, 30, 0) : null,
+            CreatedAt = new DateTime(2026, 5, 13, 9, 30, 0)
         });
     }
 

@@ -996,45 +996,128 @@ public sealed class ProductionPalletService
         return _data.MarkProductionPalletsPrintedByOrder(orderId, printedAt);
     }
 
+    // Unified classification used identically by Scan and Fill so both report the same
+    // outcome for the same pallet. Priority: actual order + status drive the result.
+    // A prdDocId mismatch within the SAME order is never treated as "another order".
+    // Returns a (code, message) failure, or null when the pallet is fillable or already
+    // filled for the requested order (then alreadyFilledForRequestedOrder is set).
+    private (string Code, string Message)? ClassifyPalletForFilling(
+        IDataStore store,
+        long? requestedOrderId,
+        ProductionPallet pallet,
+        out bool alreadyFilledForRequestedOrder)
+    {
+        alreadyFilledForRequestedOrder = false;
+        var isFilled = string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase);
+        var belongsToRequested = !requestedOrderId.HasValue || pallet.OrderId == requestedOrderId.Value;
+
+        if (isFilled && belongsToRequested)
+        {
+            alreadyFilledForRequestedOrder = true;
+            return null;
+        }
+
+        if (isFilled)
+        {
+            return (ProductionFillingErrorCodes.PalletAlreadyFilledInOtherOrder,
+                $"Паллета уже наполнена по другому заказу №{ResolveOrderRef(store, pallet.OrderId)}.");
+        }
+
+        if (!belongsToRequested)
+        {
+            return (ProductionFillingErrorCodes.PalletBelongsToAnotherOrder,
+                $"Эта паллета относится к другому заказу №{ResolveOrderRef(store, pallet.OrderId)}.");
+        }
+
+        if (IsCancelledPallet(pallet))
+        {
+            return (ProductionFillingErrorCodes.PalletCancelled, "Паллета отменена и не может быть наполнена.");
+        }
+
+        return null;
+    }
+
+    private static string ResolveOrderRef(IDataStore store, long? orderId)
+    {
+        if (!orderId.HasValue)
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            return store.GetOrder(orderId.Value)?.OrderRef ?? string.Empty;
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            return string.Empty;
+        }
+    }
+
     public ProductionPalletScanResult Scan(long? orderId, long? prdDocId, string? huCode)
     {
         var normalizedHu = NormalizeHu(huCode);
         if (string.IsNullOrWhiteSpace(normalizedHu))
         {
-            return ProductionPalletScanResult.Failure("Укажите код паллеты.");
+            return ProductionPalletScanResult.Failure(
+                ProductionFillingErrorCodes.HuRequired, "Укажите код паллеты.");
         }
 
         var pallet = _data.GetProductionPalletByHu(normalizedHu);
         if (pallet == null)
         {
-            return ProductionPalletScanResult.Failure("Паллета не найдена в плане выпуска");
+            return ProductionPalletScanResult.Failure(
+                ProductionFillingErrorCodes.PalletNotFound, "Паллета не найдена в плане выпуска.");
         }
 
-        if ((prdDocId.HasValue && pallet.PrdDocId != prdDocId.Value)
-            || (orderId.HasValue && pallet.OrderId != orderId.Value))
+        var classification = ClassifyPalletForFilling(_data, orderId, pallet, out var alreadyFilledForRequestedOrder);
+        if (classification.HasValue)
         {
-            return ProductionPalletScanResult.Failure("Эта паллета относится к другому заказу");
+            return ProductionPalletScanResult.Failure(classification.Value.Code, classification.Value.Message);
         }
 
         var doc = _data.GetDoc(pallet.PrdDocId);
         if (doc == null || doc.Type != DocType.ProductionReceipt)
         {
-            return ProductionPalletScanResult.Failure("Документ выпуска не найден.");
+            return ProductionPalletScanResult.Failure(
+                ProductionFillingErrorCodes.PalletPlanInvalid, "Документ выпуска не найден.");
+        }
+
+        if (alreadyFilledForRequestedOrder)
+        {
+            // Already filled for THIS order: report "already filled" regardless of a stale
+            // prdDocId from the order context or the PRD having been auto-closed / moved to
+            // a dedicated document. A PRD mismatch must not become an "another order" error.
+            var filledOrder = pallet.OrderId.HasValue ? _data.GetOrder(pallet.OrderId.Value) : null;
+            return new ProductionPalletScanResult
+            {
+                Success = true,
+                Error = ProductionFillingErrorCodes.PalletAlreadyFilled,
+                ErrorMessage = "Паллета уже наполнена.",
+                AlreadyFilled = true,
+                OrderId = pallet.OrderId,
+                OrderRef = filledOrder?.OrderRef ?? doc.OrderRef,
+                PrdDocId = doc.Id,
+                PrdDocRef = doc.DocRef,
+                PalletId = pallet.Id,
+                HuCode = pallet.HuCode,
+                PalletStatus = pallet.Status,
+                EffectiveStatus = pallet.EffectiveStatus,
+                CanFill = pallet.CanFill,
+                Document = BuildFillingDocument(doc.Id, _data.GetProductionPalletsByDoc(doc.Id), pallet.OrderId)
+            };
         }
 
         if (doc.Status == DocStatus.Closed)
         {
-            return ProductionPalletScanResult.Failure("Документ выпуска уже закрыт.");
-        }
-
-        if (IsCancelledPallet(pallet))
-        {
-            return ProductionPalletScanResult.Failure("Паллета отменена и не может быть наполнена.");
+            return ProductionPalletScanResult.Failure(
+                ProductionFillingErrorCodes.PrdAlreadyClosed, "Документ выпуска уже закрыт.");
         }
 
         if (!HasOnlyValidFillingPalletLines(_data, pallet))
         {
-            return ProductionPalletScanResult.Failure("Строка заказа для паллеты не найдена.");
+            return ProductionPalletScanResult.Failure(
+                ProductionFillingErrorCodes.PalletPlanInvalid, "Строка заказа для паллеты не найдена.");
         }
 
         var palletLines = GetPalletLines(pallet);
@@ -1045,7 +1128,8 @@ public sealed class ProductionPalletService
                 || docLine.ItemId != palletLine.ItemId
                 || docLine.OrderLineId != palletLine.OrderLineId)
             {
-                return ProductionPalletScanResult.Failure("План паллеты не совпадает со строкой выпуска.");
+                return ProductionPalletScanResult.Failure(
+                    ProductionFillingErrorCodes.PalletPlanInvalid, "План паллеты не совпадает со строкой выпуска.");
             }
 
             if (pallet.OrderId.HasValue && palletLine.OrderLineId.HasValue)
@@ -1054,7 +1138,8 @@ public sealed class ProductionPalletService
                     .FirstOrDefault(line => line.Id == palletLine.OrderLineId.Value);
                 if (orderLine == null || orderLine.ItemId != palletLine.ItemId)
                 {
-                    return ProductionPalletScanResult.Failure("Строка заказа для паллеты не найдена.");
+                    return ProductionPalletScanResult.Failure(
+                        ProductionFillingErrorCodes.PalletPlanInvalid, "Строка заказа для паллеты не найдена.");
                 }
 
                 if (!string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
@@ -1062,7 +1147,8 @@ public sealed class ProductionPalletService
                     var alreadyFilled = GetFillGuardFilledQty(_data, pallet.OrderId.Value, orderLine.Id, pallet.Id);
                     if (alreadyFilled + palletLine.PlannedQty > orderLine.QtyOrdered + QtyTolerance)
                     {
-                        return ProductionPalletScanResult.Failure("Выпуск превышает остаток по строке заказа");
+                        return ProductionPalletScanResult.Failure(
+                            ProductionFillingErrorCodes.FillExceedsRemaining, "Выпуск превышает остаток по строке заказа");
                     }
                 }
             }
@@ -1125,7 +1211,8 @@ public sealed class ProductionPalletService
         var normalizedHu = NormalizeHu(huCode);
         if (string.IsNullOrWhiteSpace(normalizedHu))
         {
-            return ProductionPalletFillResult.Failure("Укажите код паллеты.");
+            return ProductionPalletFillResult.Failure(
+                ProductionFillingErrorCodes.HuRequired, "Укажите код паллеты.");
         }
 
         ProductionPalletFillResult? result = null;
@@ -1136,32 +1223,26 @@ public sealed class ProductionPalletService
                 var pallet = store.GetProductionPalletByHuForUpdate(normalizedHu);
                 if (pallet == null)
                 {
-                    result = ProductionPalletFillResult.Failure("Паллета не найдена в плане выпуска.");
+                    result = ProductionPalletFillResult.Failure(
+                        ProductionFillingErrorCodes.PalletNotFound, "Паллета не найдена в плане выпуска.");
                     return;
                 }
 
-                if (orderId.HasValue && pallet.OrderId != orderId.Value)
+                // Same unified classification as Scan. A stale prdDocId within the same
+                // order is intentionally ignored here (the actual pallet.PrdDocId is used),
+                // so a PRD mismatch never becomes an "another order" error.
+                var classification = ClassifyPalletForFilling(store, orderId, pallet, out _);
+                if (classification.HasValue)
                 {
-                    result = ProductionPalletFillResult.Failure("Эта паллета относится к другому заказу");
+                    result = ProductionPalletFillResult.Failure(classification.Value.Code, classification.Value.Message);
                     return;
-                }
-
-                if (prdDocId.HasValue && pallet.PrdDocId != prdDocId.Value)
-                {
-                    var isFilledForRequestedOrder = orderId.HasValue
-                        && pallet.OrderId == orderId.Value
-                        && string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase);
-                    if (!isFilledForRequestedOrder)
-                    {
-                        result = ProductionPalletFillResult.Failure("Эта паллета относится к другому заказу");
-                        return;
-                    }
                 }
 
                 var doc = store.GetDoc(pallet.PrdDocId);
                 if (doc == null || doc.Type != DocType.ProductionReceipt)
                 {
-                    result = ProductionPalletFillResult.Failure("Документ выпуска не найден.");
+                    result = ProductionPalletFillResult.Failure(
+                        ProductionFillingErrorCodes.PalletPlanInvalid, "Документ выпуска не найден.");
                     return;
                 }
 
@@ -1171,13 +1252,16 @@ public sealed class ProductionPalletService
                     {
                         if (!HasOnlyValidFillingPalletLines(store, pallet))
                         {
-                            result = ProductionPalletFillResult.Failure("Строка заказа для паллеты не найдена.");
+                            result = ProductionPalletFillResult.Failure(
+                                ProductionFillingErrorCodes.PalletPlanInvalid, "Строка заказа для паллеты не найдена.");
                             return;
                         }
 
                         result = new ProductionPalletFillResult
                         {
                             Success = true,
+                            Error = ProductionFillingErrorCodes.PalletAlreadyFilled,
+                            ErrorMessage = "Паллета уже наполнена.",
                             AlreadyFilled = true,
                             PrdAutoClosed = true,
                             ClosedPrdDocId = doc.Id,
@@ -1188,19 +1272,22 @@ public sealed class ProductionPalletService
                         return;
                     }
 
-                    result = ProductionPalletFillResult.Failure("Документ выпуска уже закрыт.");
+                    result = ProductionPalletFillResult.Failure(
+                        ProductionFillingErrorCodes.PrdAlreadyClosed, "Документ выпуска уже закрыт.");
                     return;
                 }
 
                 if (IsCancelledPallet(pallet))
                 {
-                    result = ProductionPalletFillResult.Failure("Паллета отменена и не может быть наполнена.");
+                    result = ProductionPalletFillResult.Failure(
+                        ProductionFillingErrorCodes.PalletCancelled, "Паллета отменена и не может быть наполнена.");
                     return;
                 }
 
                 if (!HasOnlyValidFillingPalletLines(store, pallet))
                 {
-                    result = ProductionPalletFillResult.Failure("Строка заказа для паллеты не найдена.");
+                    result = ProductionPalletFillResult.Failure(
+                        ProductionFillingErrorCodes.PalletPlanInvalid, "Строка заказа для паллеты не найдена.");
                     return;
                 }
 
@@ -1209,6 +1296,8 @@ public sealed class ProductionPalletService
                     result = ApplyAutoCloseAfterFillInTransaction(store, new ProductionPalletFillResult
                     {
                         Success = true,
+                        Error = ProductionFillingErrorCodes.PalletAlreadyFilled,
+                        ErrorMessage = "Паллета уже наполнена.",
                         AlreadyFilled = true,
                         Pallet = pallet,
                         Document = BuildFillingDocument(doc.Id, store.GetProductionPalletsByDoc(doc.Id), pallet.OrderId)
@@ -1218,7 +1307,9 @@ public sealed class ProductionPalletService
 
                 if (pallet.IsMixedPallet)
                 {
-                    result = ProductionPalletFillResult.Failure("MIXED_COMPONENT_SELECTION_REQUIRED");
+                    result = ProductionPalletFillResult.Failure(
+                        ProductionFillingErrorCodes.MixedComponentSelectionRequired,
+                        "Выберите хотя бы один незаполненный компонент микс-паллеты.");
                     return;
                 }
 
@@ -1228,19 +1319,22 @@ public sealed class ProductionPalletService
                 {
                     if (!docLinesById.TryGetValue(palletLine.DocLineId, out var docLine))
                     {
-                        result = ProductionPalletFillResult.Failure("Строка паллеты не найдена в документе выпуска.");
+                        result = ProductionPalletFillResult.Failure(
+                            ProductionFillingErrorCodes.PalletPlanInvalid, "Строка паллеты не найдена в документе выпуска.");
                         return;
                     }
 
                     if (docLine.ItemId != palletLine.ItemId || docLine.OrderLineId != palletLine.OrderLineId)
                     {
-                        result = ProductionPalletFillResult.Failure("План паллеты не совпадает со строкой выпуска.");
+                        result = ProductionPalletFillResult.Failure(
+                            ProductionFillingErrorCodes.PalletPlanInvalid, "План паллеты не совпадает со строкой выпуска.");
                         return;
                     }
 
                     if (!docLine.ToLocationId.HasValue)
                     {
-                        result = ProductionPalletFillResult.Failure("Для паллеты не указано место хранения.");
+                        result = ProductionPalletFillResult.Failure(
+                            ProductionFillingErrorCodes.PalletPlanInvalid, "Для паллеты не указано место хранения.");
                         return;
                     }
 
@@ -1250,14 +1344,16 @@ public sealed class ProductionPalletService
                             .FirstOrDefault(line => line.Id == palletLine.OrderLineId.Value);
                         if (orderLine == null || orderLine.ItemId != palletLine.ItemId)
                         {
-                            result = ProductionPalletFillResult.Failure("Строка заказа для паллеты не найдена.");
+                            result = ProductionPalletFillResult.Failure(
+                                ProductionFillingErrorCodes.PalletPlanInvalid, "Строка заказа для паллеты не найдена.");
                             return;
                         }
 
                         var alreadyFilled = GetFillGuardFilledQty(store, pallet.OrderId.Value, orderLine.Id, pallet.Id);
                         if (alreadyFilled + palletLine.PlannedQty > orderLine.QtyOrdered + QtyTolerance)
                         {
-                            result = ProductionPalletFillResult.Failure("Выпуск превышает остаток по строке заказа");
+                            result = ProductionPalletFillResult.Failure(
+                                ProductionFillingErrorCodes.FillExceedsRemaining, "Выпуск превышает остаток по строке заказа");
                             return;
                         }
                     }
@@ -1298,17 +1394,21 @@ public sealed class ProductionPalletService
             .ToArray();
         if (string.IsNullOrWhiteSpace(normalizedHu))
         {
-            return ProductionPalletFillResult.Failure("HU_REQUIRED");
+            return ProductionPalletFillResult.Failure(
+                ProductionFillingErrorCodes.HuRequired, "Укажите код паллеты.");
         }
 
         if (requestedIds.Length == 0)
         {
-            return ProductionPalletFillResult.Failure("COMPONENT_LINE_IDS_REQUIRED");
+            return ProductionPalletFillResult.Failure(
+                "COMPONENT_LINE_IDS_REQUIRED", "Выберите хотя бы один незаполненный компонент микс-паллеты.");
         }
 
         if (_fillClose == null || !_fillClose.AutoCloseEnabled)
         {
-            return ProductionPalletFillResult.Failure("PRODUCTION_AUTO_CLOSE_REQUIRED");
+            return ProductionPalletFillResult.Failure(
+                "PRODUCTION_AUTO_CLOSE_REQUIRED",
+                "Частичное наполнение микс-паллеты требует включённого автоматического проведения выпуска.");
         }
 
         ProductionPalletFillResult? result = null;
@@ -1319,22 +1419,24 @@ public sealed class ProductionPalletService
                 var pallet = store.GetProductionPalletByHuForUpdate(normalizedHu);
                 if (pallet == null)
                 {
-                    result = ProductionPalletFillResult.Failure("PALLET_NOT_FOUND");
+                    result = ProductionPalletFillResult.Failure(
+                        ProductionFillingErrorCodes.PalletNotFound, "Паллета не найдена в плане выпуска.");
                     return;
                 }
 
-                if ((orderId.HasValue && pallet.OrderId != orderId.Value)
-                    || (prdDocId.HasValue && pallet.PrdDocId != prdDocId.Value
-                        && !string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
+                // Same unified classification/priority as Scan and Fill.
+                var classification = ClassifyPalletForFilling(store, orderId, pallet, out _);
+                if (classification.HasValue)
                 {
-                    result = ProductionPalletFillResult.Failure("PALLET_BELONGS_TO_ANOTHER_ORDER");
+                    result = ProductionPalletFillResult.Failure(classification.Value.Code, classification.Value.Message);
                     return;
                 }
 
                 var doc = store.GetDoc(pallet.PrdDocId);
                 if (doc == null || doc.Type != DocType.ProductionReceipt)
                 {
-                    result = ProductionPalletFillResult.Failure("PRD_NOT_FOUND");
+                    result = ProductionPalletFillResult.Failure(
+                        ProductionFillingErrorCodes.PalletPlanInvalid, "Документ выпуска не найден.");
                     return;
                 }
 
@@ -1350,31 +1452,36 @@ public sealed class ProductionPalletService
 
                 if (doc.Status == DocStatus.Closed)
                 {
-                    result = ProductionPalletFillResult.Failure("PRD_ALREADY_CLOSED");
+                    result = ProductionPalletFillResult.Failure(
+                        ProductionFillingErrorCodes.PrdAlreadyClosed, "Документ выпуска уже закрыт.");
                     return;
                 }
 
                 if (IsCancelledPallet(pallet))
                 {
-                    result = ProductionPalletFillResult.Failure("PALLET_CANCELLED");
+                    result = ProductionPalletFillResult.Failure(
+                        ProductionFillingErrorCodes.PalletCancelled, "Паллета отменена и не может быть наполнена.");
                     return;
                 }
 
                 if (!pallet.IsMixedPallet)
                 {
-                    result = ProductionPalletFillResult.Failure("PALLET_NOT_MIXED");
+                    result = ProductionPalletFillResult.Failure(
+                        "PALLET_NOT_MIXED", "Эта паллета не является микс-паллетой.");
                     return;
                 }
 
                 if (!HasOnlyValidFillingPalletLines(store, pallet))
                 {
-                    result = ProductionPalletFillResult.Failure("PALLET_ORDER_LINES_INVALID");
+                    result = ProductionPalletFillResult.Failure(
+                        ProductionFillingErrorCodes.PalletPlanInvalid, "Строка заказа для паллеты не найдена.");
                     return;
                 }
 
                 if (requestedIds.Any(id => pallet.Lines.All(line => line.Id != id)))
                 {
-                    result = ProductionPalletFillResult.Failure("COMPONENT_NOT_IN_PALLET");
+                    result = ProductionPalletFillResult.Failure(
+                        "COMPONENT_NOT_IN_PALLET", "Состав паллеты изменился. Отсканируйте HU повторно.");
                     return;
                 }
 
@@ -1404,7 +1511,8 @@ public sealed class ProductionPalletService
             return ProductionPalletFillResult.Failure(ex.Message);
         }
 
-        return result ?? ProductionPalletFillResult.Failure("MIXED_COMPONENT_FILL_FAILED");
+        return result ?? ProductionPalletFillResult.Failure(
+            "MIXED_COMPONENT_FILL_FAILED", "Не удалось наполнить компоненты микс-паллеты.");
     }
 
     private ProductionPalletFillResult BuildMixedFillResult(
@@ -1416,6 +1524,8 @@ public sealed class ProductionPalletService
         return new ProductionPalletFillResult
         {
             Success = true,
+            Error = alreadyFilled ? ProductionFillingErrorCodes.PalletAlreadyFilled : null,
+            ErrorMessage = alreadyFilled ? "Паллета уже наполнена." : null,
             AlreadyFilled = alreadyFilled,
             Pallet = pallet,
             EffectiveStatus = pallet.EffectiveStatus,
@@ -1514,6 +1624,8 @@ public sealed class ProductionPalletService
         return new ProductionPalletFillResult
         {
             Success = true,
+            Error = fillResult.Error,
+            ErrorMessage = fillResult.ErrorMessage,
             AlreadyFilled = fillResult.AlreadyFilled || autoClose.AlreadyClosed,
             Pallet = pallet,
             Document = BuildFillingDocument(prdDocId, store.GetProductionPalletsByDoc(prdDocId), pallet.OrderId),

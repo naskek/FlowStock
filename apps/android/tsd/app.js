@@ -4531,7 +4531,10 @@
       }
     }
 
-    return false;
+    // A fully-formed HU that is not among the current order's pallets (another order,
+    // already filled elsewhere, unknown) must still be submitted so the backend can
+    // classify it and the operator always gets a visible result.
+    return /^HU-\d{6,}$/i.test(normalizedUpper);
   }
 
   function submitFillingScan(rawValue, context, options) {
@@ -8271,38 +8274,89 @@
     var details = getTsdErrorDetails(error);
     var code = details.code;
     var message = details.message || details.rawMessage;
-    if (!message || details.rawMessage === "Failed to fetch" || details.rawMessage === "AbortError") {
+
+    // Network / timeout: no reliable backend classification.
+    if ((error && error.timedOut === true) ||
+        details.rawMessage === "Failed to fetch" ||
+        details.rawMessage === "AbortError" ||
+        details.rawMessage === "NetworkError") {
       return "Нет связи с сервером. Наполнение не подтверждено.";
     }
-    if (code === "SERVER_ERROR" || code === "INVALID_RESPONSE" || message === "SERVER_ERROR" || message === "INVALID_RESPONSE") {
+
+    // Structured error code takes priority over message text.
+    switch (code) {
+      case "HU_REQUIRED":
+        return "Отсканируйте HU.";
+      case "PALLET_NOT_FOUND":
+        return "Паллета не найдена в плане выпуска.";
+      case "PALLET_BELONGS_TO_ANOTHER_ORDER":
+        // Server message carries the actual order number (№…).
+        return message || "Эта паллета относится к другому заказу.";
+      case "PALLET_ALREADY_FILLED_IN_OTHER_ORDER":
+        return message || "Паллета уже наполнена по другому заказу.";
+      case "PALLET_ALREADY_FILLED":
+        return "Паллета уже наполнена.";
+      case "PALLET_CANCELLED":
+        return "Паллета отменена и не может быть наполнена.";
+      case "PRD_ALREADY_CLOSED":
+        return "Документ выпуска уже закрыт.";
+      case "PALLET_PLAN_INVALID":
+        return message || "Состав паллеты изменился. Отсканируйте HU повторно.";
+      case "FILL_EXCEEDS_REMAINING":
+        return "Выпуск превышает остаток по строке заказа.";
+      case "MIXED_COMPONENT_SELECTION_REQUIRED":
+      case "COMPONENT_LINE_IDS_REQUIRED":
+        return "Выберите хотя бы один незаполненный компонент микс-паллеты.";
+      case "PRODUCTION_AUTO_CLOSE_REQUIRED":
+        return "Частичное наполнение mixed HU требует включённого автоматического проведения выпуска.";
+      case "COMPONENT_NOT_IN_PALLET":
+        return "Состав паллеты изменился. Отсканируйте HU повторно.";
+      case "SERVER_ERROR":
+      case "INVALID_RESPONSE":
+        return "Сервер вернул ошибку при наполнении. Проверьте лог FlowStock Server.";
+      default:
+        break;
+    }
+
+    if (!message) {
+      return "Нет связи с сервером. Наполнение не подтверждено.";
+    }
+    // Legacy fallback: tolerate older servers that returned a RU string as the code.
+    if (message === "SERVER_ERROR" || message === "INVALID_RESPONSE") {
       return "Сервер вернул ошибку при наполнении. Проверьте лог FlowStock Server.";
     }
-    if (message === "Паллета не найдена в плане выпуска") {
-      return message;
-    }
-    if (message === "Эта паллета относится к другому заказу") {
-      return message;
-    }
-    if (message === "Паллета отменена" || message === "Паллета отменена и не может быть наполнена.") {
-      return message;
-    }
-    if (message === "Выпуск превышает остаток по строке заказа") {
-      return message;
-    }
-    if (message === "Документ выпуска уже закрыт.") {
-      return "Документ выпуска уже закрыт.";
-    }
-    if (code === "MIXED_COMPONENT_SELECTION_REQUIRED" || code === "COMPONENT_LINE_IDS_REQUIRED" ||
-        message === "MIXED_COMPONENT_SELECTION_REQUIRED" || message === "COMPONENT_LINE_IDS_REQUIRED") {
-      return "Выберите хотя бы один незаполненный компонент микс-паллеты.";
-    }
-    if (code === "PRODUCTION_AUTO_CLOSE_REQUIRED" || message === "PRODUCTION_AUTO_CLOSE_REQUIRED") {
-      return "Частичное наполнение mixed HU требует включённого автоматического проведения выпуска.";
-    }
-    if (code === "COMPONENT_NOT_IN_PALLET" || message === "COMPONENT_NOT_IN_PALLET") {
-      return "Состав паллеты изменился. Отсканируйте HU повторно.";
-    }
     return message;
+  }
+
+  function getFillingErrorMessageType(error) {
+    var details = getTsdErrorDetails(error);
+    return details.code === "PALLET_ALREADY_FILLED" ? "warn" : "error";
+  }
+
+  // Diagnostic log for a rejected filling scan. Records the request context and the
+  // backend classification without surfacing a technical stack trace to the operator.
+  function logRejectedFillingScan(context, huCode, error, shownMessage, reloaded) {
+    if (typeof console === "undefined" || !console) {
+      return;
+    }
+    var details = getTsdErrorDetails(error);
+    var work = (context && context.workItem) || {};
+    var info = {
+      route: typeof currentRoute !== "undefined" && currentRoute ? currentRoute.name : null,
+      orderId: work.orderId,
+      prdDocId: work.prdDocId,
+      huCode: huCode,
+      httpStatus: error && error.status,
+      errorCode: details.code,
+      backendMessage: details.message || details.rawMessage,
+      shownMessage: shownMessage,
+      contextReloaded: reloaded === true,
+    };
+    if (typeof console.debug === "function") {
+      console.debug("Filling scan rejected", info);
+    } else if (typeof console.warn === "function") {
+      console.warn("Filling scan rejected", info);
+    }
   }
 
   function wireFillingScan(context, state) {
@@ -8323,12 +8377,16 @@
     }
 
     function refreshContext(nextState) {
+      // The scan message in nextState is rendered whether or not the context reload
+      // succeeds, so a rejected scan's notification never disappears because of reload.
       return loadFillingContext(context.workItem && context.workItem.orderId)
         .then(function (nextContext) {
           renderFillingScanScreen(nextContext, nextState || {});
+          return { reloaded: true };
         })
         .catch(function () {
           renderFillingScanScreen(context, nextState || {});
+          return { reloaded: false };
         });
     }
 
@@ -8355,7 +8413,7 @@
             .then(function (preview) {
               if (preview.alreadyFilled) {
                 return refreshContext({
-                  message: "Паллета уже наполнена",
+                  message: "Паллета уже наполнена.",
                   messageType: "warn",
                   preview: null,
                 });
@@ -8381,10 +8439,14 @@
                 });
             })
             .catch(function (error) {
+              var mapped = mapFillingError(error);
               return refreshContext({
-                message: mapFillingError(error),
-                messageType: "error",
+                message: mapped,
+                messageType: getFillingErrorMessageType(error),
                 preview: null,
+              }).then(function (status) {
+                logRejectedFillingScan(context, huCode, error, mapped, status && status.reloaded);
+                return status;
               });
             });
         },
@@ -14350,6 +14412,7 @@
     window.FlowStockTsdTestHooks.isProductionFillFinal = isProductionFillFinal;
     window.FlowStockTsdTestHooks.handleProductionFillSuccess = handleProductionFillSuccess;
     window.FlowStockTsdTestHooks.mapFillingError = mapFillingError;
+    window.FlowStockTsdTestHooks.getFillingErrorMessageType = getFillingErrorMessageType;
     window.FlowStockTsdTestHooks.mapOutboundPickingError = mapOutboundPickingError;
     window.FlowStockTsdTestHooks.normalizeOutboundPickingOrderView = normalizeOutboundPickingOrderView;
     window.FlowStockTsdTestHooks.isOutboundPickingOperationComplete = isOutboundPickingOperationComplete;

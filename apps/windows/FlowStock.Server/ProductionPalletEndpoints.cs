@@ -433,7 +433,7 @@ public static class ProductionPalletEndpoints
             var result = service.Scan(request.OrderId, request.PrdDocId, request.HuCode);
             if (!result.Success)
             {
-                return Results.BadRequest(new { ok = false, error = result.Error, message = result.Error });
+                return Results.BadRequest(new { ok = false, error = result.Error, message = result.ErrorMessage ?? result.Error });
             }
 
             return Results.Ok(MapScanResult(result));
@@ -451,7 +451,7 @@ public static class ProductionPalletEndpoints
             var result = service.Fill(request.HuCode, request.DeviceId, request.OrderId, request.PrdDocId);
             if (!result.Success)
             {
-                return Results.BadRequest(new { ok = false, error = result.Error, message = result.Error });
+                return Results.BadRequest(new { ok = false, error = result.Error, message = result.ErrorMessage ?? result.Error });
             }
 
             return Results.Ok(new
@@ -461,6 +461,8 @@ public static class ProductionPalletEndpoints
                 prd_auto_closed = result.PrdAutoClosed,
                 closed_prd_doc_id = result.ClosedPrdDocId,
                 closed_prd_doc_ref = result.ClosedPrdDocRef,
+                error = result.Error,
+                message = result.ErrorMessage ?? result.Message,
                 pallet = result.Pallet == null ? null : MapPallet(result.Pallet),
                 document = result.Document == null ? null : MapDocument(result.Document)
             });
@@ -485,7 +487,7 @@ public static class ProductionPalletEndpoints
                 request.PrdDocId);
             if (!result.Success)
             {
-                return Results.BadRequest(new { ok = false, error = result.Error, message = result.Error });
+                return Results.BadRequest(new { ok = false, error = result.Error, message = result.ErrorMessage ?? result.Error });
             }
 
             return Results.Ok(new
@@ -499,7 +501,8 @@ public static class ProductionPalletEndpoints
                 prd_auto_closed = result.PrdAutoClosed,
                 closed_prd_doc_id = result.ClosedPrdDocId,
                 closed_prd_doc_ref = result.ClosedPrdDocRef,
-                message = result.Message,
+                error = result.Error,
+                message = result.ErrorMessage ?? result.Message,
                 pallet = result.Pallet == null ? null : MapPallet(result.Pallet),
                 document = result.Document == null ? null : MapDocument(result.Document)
             });
@@ -631,6 +634,8 @@ public static class ProductionPalletEndpoints
         return new
         {
             ok = true,
+            error = result.Error,
+            message = result.ErrorMessage,
             already_filled = result.AlreadyFilled,
             order_id = result.OrderId,
             order_ref = result.OrderRef,

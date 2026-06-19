@@ -1347,6 +1347,8 @@
     payload = payload || {};
     return {
       ok: payload.ok !== false,
+      error: String(payload.error || ""),
+      message: String(payload.message || ""),
       alreadyFilled: payload.already_filled === true,
       orderId: payload.order_id != null ? Number(payload.order_id) || null : null,
       orderRef: String(payload.order_ref || ""),

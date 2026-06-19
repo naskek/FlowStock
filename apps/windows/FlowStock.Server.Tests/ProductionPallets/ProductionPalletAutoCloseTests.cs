@@ -428,6 +428,7 @@ public sealed class ProductionPalletAutoCloseTests
         Assert.NotEqual(plan.PrdDocId, closedPrdDocId);
         Assert.True(repeat.Success);
         Assert.True(repeat.AlreadyFilled);
+        Assert.Equal("PALLET_ALREADY_FILLED", repeat.Error);
         Assert.True(repeat.PrdAutoClosed);
         Assert.Equal(closedPrdDocId, repeat.ClosedPrdDocId);
         Assert.Equal(closedPrdDocId, repeat.Pallet?.PrdDocId);
@@ -451,6 +452,7 @@ public sealed class ProductionPalletAutoCloseTests
         Assert.True(fill.Success);
         Assert.True(repeat.Success);
         Assert.True(repeat.AlreadyFilled);
+        Assert.Equal("PALLET_ALREADY_FILLED", repeat.Error);
         Assert.True(repeat.PrdAutoClosed);
         Assert.Equal(closedPrdDocId, repeat.ClosedPrdDocId);
         Assert.Single(harness.LedgerEntries.Where(entry =>
@@ -530,14 +532,14 @@ public sealed class ProductionPalletAutoCloseTests
         var harness = CreateHarnessWithOrderOnly(orderQty: 1200, maxQtyPerHu: 600);
         var service = CreatePalletService(harness);
         var plan = service.PlanOrder(10);
-        var second = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId)
-            .OrderBy(pallet => pallet.Id)
-            .Skip(1)
-            .First();
 
-        var result = service.Fill(second.HuCode, "TSD-01", orderId: 10, prdDocId: plan.PrdDocId + 1000);
+        // A HU that is not part of any production plan is rejected as not found. (A stale
+        // prdDocId for a *planned* HU of the same order is no longer an error — see
+        // FillPallet_AcceptsValidHu_WithStalePrdDocId.)
+        var result = service.Fill("HU-999999", "TSD-01", orderId: 10, prdDocId: plan.PrdDocId);
 
         Assert.False(result.Success);
+        Assert.Equal("PALLET_NOT_FOUND", result.Error);
         Assert.Empty(harness.LedgerEntries);
     }
 

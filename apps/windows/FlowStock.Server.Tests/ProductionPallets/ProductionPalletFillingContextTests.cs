@@ -73,7 +73,8 @@ public sealed class ProductionPalletFillingContextTests
         var result = service.Scan(fixture.OrderId, fixture.PrdDocId, fixture.CancelledHuCodes[0]);
 
         Assert.False(result.Success);
-        Assert.Equal("Паллета отменена и не может быть наполнена.", result.Error);
+        Assert.Equal("PALLET_CANCELLED", result.Error);
+        Assert.Equal("Паллета отменена и не может быть наполнена.", result.ErrorMessage);
     }
 
     [Fact]
@@ -85,7 +86,8 @@ public sealed class ProductionPalletFillingContextTests
         var result = service.Fill(fixture.CancelledHuCodes[0], "TSD-01", fixture.OrderId, fixture.PrdDocId);
 
         Assert.False(result.Success);
-        Assert.Equal("Паллета отменена и не может быть наполнена.", result.Error);
+        Assert.Equal("PALLET_CANCELLED", result.Error);
+        Assert.Equal("Паллета отменена и не может быть наполнена.", result.ErrorMessage);
     }
 
     [Fact]
@@ -113,6 +115,7 @@ public sealed class ProductionPalletFillingContextTests
 
         Assert.True(result.Success);
         Assert.True(result.AlreadyFilled);
+        Assert.Equal("PALLET_ALREADY_FILLED", result.Error);
         Assert.Equal(0, result.Document?.Summary.RemainingPalletCount);
     }
 
@@ -205,9 +208,11 @@ public sealed class ProductionPalletFillingContextTests
         var fill = service.Fill(fixture.OrphanHuCode, "TSD-01", fixture.OrderId, fixture.PrdDocId);
 
         Assert.False(scan.Success);
-        Assert.Equal("Строка заказа для паллеты не найдена.", scan.Error);
+        Assert.Equal("PALLET_PLAN_INVALID", scan.Error);
+        Assert.Equal("Строка заказа для паллеты не найдена.", scan.ErrorMessage);
         Assert.False(fill.Success);
-        Assert.Equal("Строка заказа для паллеты не найдена.", fill.Error);
+        Assert.Equal("PALLET_PLAN_INVALID", fill.Error);
+        Assert.Equal("Строка заказа для паллеты не найдена.", fill.ErrorMessage);
         Assert.Equal(
             ProductionPalletStatus.Planned,
             fixture.Harness.Store.GetProductionPalletByHu(fixture.OrphanHuCode)?.Status);
@@ -258,9 +263,11 @@ public sealed class ProductionPalletFillingContextTests
         var fill = service.Fill(fixture.PartialMixedHuCode, "TSD-01", fixture.OrderId, fixture.PrdDocId);
 
         Assert.False(scan.Success);
-        Assert.Equal("Строка заказа для паллеты не найдена.", scan.Error);
+        Assert.Equal("PALLET_PLAN_INVALID", scan.Error);
+        Assert.Equal("Строка заказа для паллеты не найдена.", scan.ErrorMessage);
         Assert.False(fill.Success);
-        Assert.Equal("Строка заказа для паллеты не найдена.", fill.Error);
+        Assert.Equal("PALLET_PLAN_INVALID", fill.Error);
+        Assert.Equal("Строка заказа для паллеты не найдена.", fill.ErrorMessage);
         var pallet = fixture.Harness.Store.GetProductionPalletByHu(fixture.PartialMixedHuCode);
         Assert.NotNull(pallet);
         Assert.Equal(ProductionPalletStatus.Planned, pallet.Status);

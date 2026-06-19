@@ -9,6 +9,25 @@ public static class ProductionPalletStatus
     public const string Cancelled = "CANCELLED";
 }
 
+/// <summary>
+/// Stable machine-readable error codes for production filling scan/fill results.
+/// The code identifies the failure; a separate human-readable message is returned
+/// alongside it. Never use a localized message string as a code.
+/// </summary>
+public static class ProductionFillingErrorCodes
+{
+    public const string HuRequired = "HU_REQUIRED";
+    public const string PalletNotFound = "PALLET_NOT_FOUND";
+    public const string PalletBelongsToAnotherOrder = "PALLET_BELONGS_TO_ANOTHER_ORDER";
+    public const string PalletAlreadyFilled = "PALLET_ALREADY_FILLED";
+    public const string PalletAlreadyFilledInOtherOrder = "PALLET_ALREADY_FILLED_IN_OTHER_ORDER";
+    public const string PalletCancelled = "PALLET_CANCELLED";
+    public const string PrdAlreadyClosed = "PRD_ALREADY_CLOSED";
+    public const string PalletPlanInvalid = "PALLET_PLAN_INVALID";
+    public const string FillExceedsRemaining = "FILL_EXCEEDS_REMAINING";
+    public const string MixedComponentSelectionRequired = "MIXED_COMPONENT_SELECTION_REQUIRED";
+}
+
 public sealed class ProductionPallet
 {
     public long Id { get; init; }
@@ -278,6 +297,7 @@ public sealed class ProductionPalletScanResult
 {
     public bool Success { get; init; }
     public string? Error { get; init; }
+    public string? ErrorMessage { get; init; }
     public bool AlreadyFilled { get; init; }
     public long? OrderId { get; init; }
     public string? OrderRef { get; init; }
@@ -301,7 +321,12 @@ public sealed class ProductionPalletScanResult
 
     public static ProductionPalletScanResult Failure(string error)
     {
-        return new ProductionPalletScanResult { Success = false, Error = error };
+        return new ProductionPalletScanResult { Success = false, Error = error, ErrorMessage = error };
+    }
+
+    public static ProductionPalletScanResult Failure(string code, string message)
+    {
+        return new ProductionPalletScanResult { Success = false, Error = code, ErrorMessage = message };
     }
 }
 
@@ -323,6 +348,7 @@ public sealed class ProductionPalletFillResult
 {
     public bool Success { get; init; }
     public string? Error { get; init; }
+    public string? ErrorMessage { get; init; }
     public bool AlreadyFilled { get; init; }
     public bool PrdAutoClosed { get; init; }
     public long? ClosedPrdDocId { get; init; }
@@ -338,7 +364,12 @@ public sealed class ProductionPalletFillResult
 
     public static ProductionPalletFillResult Failure(string error)
     {
-        return new ProductionPalletFillResult { Success = false, Error = error };
+        return new ProductionPalletFillResult { Success = false, Error = error, ErrorMessage = error };
+    }
+
+    public static ProductionPalletFillResult Failure(string code, string message)
+    {
+        return new ProductionPalletFillResult { Success = false, Error = code, ErrorMessage = message };
     }
 }
 
