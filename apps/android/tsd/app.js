@@ -8185,10 +8185,8 @@
             "Все паллеты наполнены. Завершить наполнение и закрыть документ?",
             "Завершить наполнение",
             function () {
-              runTsdCriticalOperation("filling.complete", function () {
-                return TsdStorage.apiCompleteProductionFilling(fillOrderId);
-              }).then(function () {
-                renderFillingCompletionScreen(nextContext, result, null);
+              completeProductionFilling(nextContext).catch(function () {
+                // The helper restored the filling screen and displayed the error.
               });
             },
             "primary-btn",
@@ -8265,6 +8263,26 @@
       });
     }
     finishRouteRender();
+  }
+
+  function completeProductionFilling(context) {
+    var orderId = context && context.workItem && context.workItem.orderId;
+    return runTsdCriticalOperation("filling.complete", function () {
+      return TsdStorage.apiCompleteProductionFilling(orderId);
+    })
+      .then(function (result) {
+        var completionContext = result && result.context ? buildFillingContext(result.context) : context;
+        renderFillingCompletionScreen(completionContext, result, null);
+        return result;
+      })
+      .catch(function (error) {
+        renderFillingScanScreen(context, {
+          message: mapFillingError(error),
+          messageType: "error",
+          preview: null,
+        });
+        throw error;
+      });
   }
 
   function getTsdErrorDetails(error) {
@@ -8425,16 +8443,9 @@
     if (completeBtn) {
       completeBtn.addEventListener("click", function () {
         completeBtn.disabled = true;
-        runTsdCriticalOperation("filling.complete", function () {
-          return TsdStorage.apiCompleteProductionFilling(context.workItem && context.workItem.orderId);
-        })
-          .then(function () {
-            renderFillingCompletionScreen(context, { message: "Операция наполнения завершена." }, null);
-          })
-          .catch(function (error) {
-            completeBtn.disabled = false;
-            refreshContext({ message: mapFillingError(error), messageType: "error", preview: null });
-          });
+        completeProductionFilling(context).catch(function () {
+          // The helper restored the filling screen and displayed the error.
+        });
       });
     }
 
@@ -14447,6 +14458,7 @@
     window.FlowStockTsdTestHooks.finishRouteRender = finishRouteRender;
     window.FlowStockTsdTestHooks.renderRouteInternal = renderRouteInternal;
     window.FlowStockTsdTestHooks.renderFillingScanScreen = renderFillingScanScreen;
+    window.FlowStockTsdTestHooks.completeProductionFilling = completeProductionFilling;
     window.FlowStockTsdTestHooks.openGlobalHuChoiceOverlay = openGlobalHuChoiceOverlay;
     window.FlowStockTsdTestHooks.executeTsdHuAction = executeTsdHuAction;
     window.FlowStockTsdTestHooks.renderTsdHuCard = renderTsdHuCard;

@@ -24,6 +24,7 @@ internal sealed class CloseDocumentHarness
     private readonly Dictionary<long, IReadOnlyList<OrderReceiptLine>> _orderReceiptRemainingWithoutReservedStock = new();
     private readonly Dictionary<long, IReadOnlyList<OrderReceiptPlanLine>> _orderReceiptPlanLines = new();
     private readonly Dictionary<long, ProductionPallet> _productionPallets = new();
+    private readonly List<ProductionFillingCompletion> _productionFillingCompletions = new();
     private readonly Dictionary<long, IReadOnlyDictionary<long, double>> _shippedTotalsByOrderLine = new();
     private readonly Dictionary<Guid, MarkingOrder> _markingOrders = new();
     private readonly Dictionary<Guid, MarkingCode> _markingCodes = new();
@@ -431,6 +432,7 @@ internal sealed class CloseDocumentHarness
                 pair => pair.Key,
                 pair => (IReadOnlyList<OrderReceiptPlanLine>)pair.Value.Select(CloneOrderReceiptPlanLine).ToArray()),
             _productionPallets.ToDictionary(pair => pair.Key, pair => CloneProductionPallet(pair.Value)),
+            _productionFillingCompletions.Select(CloneProductionFillingCompletion).ToList(),
             _postedLedger.Select(CloneLedgerEntry).ToList());
     }
 
@@ -478,6 +480,9 @@ internal sealed class CloseDocumentHarness
             _productionPallets[pair.Key] = CloneProductionPallet(pair.Value);
         }
 
+        _productionFillingCompletions.Clear();
+        _productionFillingCompletions.AddRange(snapshot.ProductionFillingCompletions.Select(CloneProductionFillingCompletion));
+
         _postedLedger.Clear();
         _postedLedger.AddRange(snapshot.PostedLedger.Select(CloneLedgerEntry));
     }
@@ -516,6 +521,17 @@ internal sealed class CloseDocumentHarness
         };
     }
 
+    private static ProductionFillingCompletion CloneProductionFillingCompletion(ProductionFillingCompletion completion)
+    {
+        return new ProductionFillingCompletion
+        {
+            OrderId = completion.OrderId,
+            OperationFingerprint = completion.OperationFingerprint,
+            CompletedAt = completion.CompletedAt,
+            CompletedByDeviceId = completion.CompletedByDeviceId
+        };
+    }
+
     private sealed record HarnessTransactionSnapshot(
         Dictionary<long, Doc> Docs,
         Dictionary<long, List<DocLine>> LinesByDoc,
@@ -524,6 +540,7 @@ internal sealed class CloseDocumentHarness
         Dictionary<long, long> OrderIdByOrderLineId,
         Dictionary<long, IReadOnlyList<OrderReceiptPlanLine>> OrderReceiptPlanLines,
         Dictionary<long, ProductionPallet> ProductionPallets,
+        List<ProductionFillingCompletion> ProductionFillingCompletions,
         List<LedgerEntry> PostedLedger);
 
     public void SeedDoc(Doc doc)
@@ -2105,7 +2122,28 @@ internal sealed class CloseDocumentHarness
                 orderId => (IReadOnlyList<OrderLine>)GetOrderLines(orderId)));
 
         _store.Setup(store => store.GetProductionFillingCompletionsByOrderIds(It.IsAny<IReadOnlyCollection<long>>()))
-            .Returns(Array.Empty<ProductionFillingCompletion>());
+            .Returns<IReadOnlyCollection<long>>(ids => _productionFillingCompletions
+                .Where(completion => ids.Contains(completion.OrderId))
+                .Select(CloneProductionFillingCompletion)
+                .ToArray());
+
+        _store.Setup(store => store.GetProductionFillingCompletion(It.IsAny<long>(), It.IsAny<string>()))
+            .Returns<long, string>((orderId, fingerprint) => _productionFillingCompletions
+                .Where(completion => completion.OrderId == orderId
+                    && string.Equals(completion.OperationFingerprint, fingerprint, StringComparison.Ordinal))
+                .Select(CloneProductionFillingCompletion)
+                .FirstOrDefault());
+
+        _store.Setup(store => store.AddProductionFillingCompletion(It.IsAny<ProductionFillingCompletion>()))
+            .Callback<ProductionFillingCompletion>(completion =>
+            {
+                if (_productionFillingCompletions.Any(existing => existing.OrderId == completion.OrderId
+                    && string.Equals(existing.OperationFingerprint, completion.OperationFingerprint, StringComparison.Ordinal)))
+                {
+                    return;
+                }
+                _productionFillingCompletions.Add(CloneProductionFillingCompletion(completion));
+            });
 
         _store.Setup(store => store.GetDocsByOrderIds(It.IsAny<IReadOnlyCollection<long>>()))
             .Returns<IReadOnlyCollection<long>>(ids => ids.ToDictionary(

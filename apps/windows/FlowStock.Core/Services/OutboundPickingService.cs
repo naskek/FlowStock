@@ -492,6 +492,14 @@ public sealed class OutboundPickingService
 
             if (details.IsComplete || allowPartial)
             {
+                var fillingProgress = ProductionPalletService.TryGetFillingOperationProgress(_store, order.Id);
+                if (fillingProgress is { CanClose: true, IsClosed: false })
+                {
+                    return OutboundPickingCompleteResult.Failure(
+                        "FILLING_NOT_FINALIZED",
+                        "Завершите наполнение перед проведением отгрузки.");
+                }
+
                 var autoClose = TryAutoCloseOutbound(order.Id);
                 if (!autoClose.Success)
                 {

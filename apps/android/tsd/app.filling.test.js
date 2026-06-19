@@ -30,6 +30,14 @@ function extractFunctionBody(source, name) {
   throw new Error(`${name} body was not closed`);
 }
 
+function extractFunctionSource(source, name) {
+  const marker = `function ${name}(`;
+  const start = source.indexOf(marker);
+  const body = extractFunctionBody(source, name);
+  const braceStart = source.indexOf("{", start);
+  return source.slice(start, braceStart + body.length + 2);
+}
+
 const operationsMenu = extractFunctionBody(appJs, "wireOperationsMenu");
 assert(
   operationsMenu.includes('document.querySelectorAll("[data-route]")'),
@@ -285,6 +293,15 @@ assert(
   fetchJsonWithTimeoutBody.includes('if (code === "BLOCK_DISABLED")'),
   "BLOCK_DISABLED notification should use the structured server error code"
 );
+assert(fetchJsonWithTimeoutBody.includes("error.timedOut = true"), "AbortError should be marked as timed out");
+assert(storageJs.includes("normalizeProductionFillingContext") && storageJs.includes("normalizeProductionFillingCompleteResponse"),
+  "filling context and complete responses should use shared normalizers");
+const completeFillingHelper = extractFunctionBody(appJs, "completeProductionFilling");
+assert(completeFillingHelper.includes("result.context ? buildFillingContext(result.context) : context") &&
+  completeFillingHelper.includes("renderFillingScanScreen(context"),
+  "manual and automatic finalize should share response-context rendering and error recovery");
+assert.strictEqual((appJs.match(/completeProductionFilling\([^)]*\)\.catch/g) || []).length, 2,
+  "manual and automatic finalize callers should explicitly consume the displayed rejection");
 
 const hooks = {};
 const appEl = {
@@ -982,7 +999,7 @@ assert(
   "app.js should expose busy guard and avoid forced API-version reload"
 );
 
-function createFillSuccessHarness(contextHandler) {
+function createFillSuccessHarness(contextHandler, completeHandler) {
   const localHooks = {};
   const localAppEl = {
     innerHTML: "",
@@ -991,12 +1008,19 @@ function createFillSuccessHarness(contextHandler) {
     },
   };
   let fillingContextCalls = 0;
+  let completeCalls = 0;
   const localVmContext = {
     console,
     TsdStorage: {
       apiGetProductionFillingContext: function (orderId) {
         fillingContextCalls += 1;
         return contextHandler(orderId, fillingContextCalls);
+      },
+      apiCompleteProductionFilling: function (orderId) {
+        completeCalls += 1;
+        return (completeHandler || function () {
+          return Promise.resolve({ ok: true, isClosed: true });
+        })(orderId, completeCalls);
       },
     },
     window: {
@@ -1045,11 +1069,16 @@ function createFillSuccessHarness(contextHandler) {
   return {
     hooks: localHooks,
     appEl: localAppEl,
+    window: localVmContext.window,
     get fillingContextCalls() {
       return fillingContextCalls;
     },
+    get completeCalls() {
+      return completeCalls;
+    },
     resetCalls: function () {
       fillingContextCalls = 0;
+      completeCalls = 0;
     },
   };
 }
@@ -1255,7 +1284,150 @@ async function runFillingScanGuardTests() {
   assert.strictEqual(dualSourceRecorder.calls.length, 1, "Enter and scanner sources should dedupe to one API call");
 }
 
+async function runFinalizeReconciliationTests() {
+  const functionNames = [
+    "normalizeProductionFillingContext",
+    "normalizeProductionFillingCompleteResponse",
+    "isUncertainNetworkError",
+    "apiCompleteProductionFilling",
+  ];
+
+  function createStorageHarness(handler) {
+    const calls = [];
+    const context = {
+      Promise,
+      encodeURIComponent,
+      normalizeProductionPalletDocument: function (value) { return value; },
+      getBaseUrl: function () { return Promise.resolve("https://flowstock.test"); },
+      getStoredDeviceId: function () { return "TSD-01"; },
+      fetchJsonWithTimeout: function (url, options) {
+        calls.push({ url: url, method: options.method });
+        return handler(url, options, calls.length);
+      },
+    };
+    vm.createContext(context);
+    vm.runInContext(functionNames.map(function (name) { return extractFunctionSource(storageJs, name); }).join("\n"), context);
+    return { api: context.apiCompleteProductionFilling, normalize: context.normalizeProductionFillingCompleteResponse, calls: calls };
+  }
+
+  const legacy = createStorageHarness(function () { return Promise.resolve({ ok: true }); });
+  const legacyResult = legacy.normalize({ ok: true, message: "done" }, 55, false);
+  assert.strictEqual(legacyResult.isClosed, true);
+  assert.strictEqual(legacyResult.context, null);
+  assert.strictEqual(legacyResult.operationId, 55);
+
+  const timeoutAfterSuccess = createStorageHarness(function (url, options) {
+    if (options.method === "POST") {
+      const error = new Error("timeout");
+      error.name = "AbortError";
+      error.timedOut = true;
+      return Promise.reject(error);
+    }
+    return Promise.resolve({ order_id: 55, is_closed: true, can_close: true });
+  });
+  const reconciled = await timeoutAfterSuccess.api(55);
+  assert.strictEqual(reconciled.reconciled, true);
+  assert.strictEqual(reconciled.context.orderId, 55);
+  assert.strictEqual(timeoutAfterSuccess.calls.filter(function (call) { return call.method === "POST"; }).length, 1);
+
+  let postCount = 0;
+  const timeoutThenRetry = createStorageHarness(function (url, options) {
+    if (options.method === "GET") return Promise.resolve({ order_id: 56, is_closed: false, can_close: true });
+    postCount += 1;
+    if (postCount === 1) {
+      const error = new TypeError("Failed to fetch");
+      return Promise.reject(error);
+    }
+    return Promise.resolve({ ok: true, is_closed: true, operation_id: 56 });
+  });
+  assert.strictEqual((await timeoutThenRetry.api(56)).isClosed, true);
+  assert.strictEqual(postCount, 2);
+
+  const deterministic = createStorageHarness(function () {
+    const error = new Error("bad request");
+    error.status = 400;
+    return Promise.reject(error);
+  });
+  await assert.rejects(deterministic.api(57), /bad request/);
+  assert.strictEqual(deterministic.calls.length, 1);
+}
+
+async function runCompleteFinalizeHelperTests() {
+  // Success: helper must build the completion screen from the FRESH context returned
+  // by the API response, not the stale in-memory context, and must call the API once.
+  const staleContext = {
+    workItem: { orderId: 120, orderRef: "OLD-120" },
+    document: {
+      summary: { remainingPalletCount: 0, filledPalletCount: 2, plannedPalletCount: 2 },
+      pallets: [{ huCode: "HU-0001204", status: "FILLED" }],
+    },
+    progress: { canClose: true, isClosed: false },
+  };
+  // apiCompleteProductionFilling resolves with an already-normalized (camelCase)
+  // context, so the helper feeds this exact shape into buildFillingContext.
+  const freshContextPayload = {
+    orderId: 120,
+    orderRef: "FRESH-999",
+    prdDocRef: "PRD-2026-000777",
+    document: {
+      summary: { remainingPalletCount: 0, filledPalletCount: 2, plannedPalletCount: 2 },
+      pallets: [{ huCode: "HU-0001204", status: "FILLED" }],
+    },
+  };
+
+  const successHarness = createFillSuccessHarness(
+    function () {
+      return Promise.reject(new Error("filling-context should not be reloaded on finalize success"));
+    },
+    function () {
+      return Promise.resolve({ ok: true, isClosed: true, context: freshContextPayload });
+    }
+  );
+  successHarness.resetCalls();
+  const successResult = await successHarness.hooks.completeProductionFilling(staleContext);
+  assert.strictEqual(successHarness.completeCalls, 1, "finalize success should call the API exactly once");
+  assert.strictEqual(successResult && successResult.isClosed, true, "finalize success should resolve with the API result");
+  assert.match(successHarness.appEl.innerHTML, /filling-completion-card/, "finalize success should render the completion screen");
+  assert.match(successHarness.appEl.innerHTML, /FRESH-999/, "completion screen should use the fresh response context");
+  assert.doesNotMatch(successHarness.appEl.innerHTML, /OLD-120/, "completion screen must not use the stale context");
+  assert.strictEqual(successHarness.window.location.hash, "", "finalize success should not trigger navigation");
+
+  // Reject: helper must surface the error on the scan screen, keep the close button
+  // available (CanClose=true, IsClosed=false), and reject without unhandled rejection.
+  const rejectContext = {
+    workItem: { orderId: 121, orderRef: "121" },
+    document: {
+      summary: { remainingPalletCount: 0, filledPalletCount: 2, plannedPalletCount: 2 },
+      pallets: [{ huCode: "HU-0001214", status: "FILLED" }],
+    },
+    progress: { canClose: true, isClosed: false },
+  };
+  const rejectHarness = createFillSuccessHarness(
+    function () {
+      return Promise.reject(new Error("filling-context should not be reloaded on finalize error"));
+    },
+    function () {
+      return Promise.reject(new Error("Завершение не удалось"));
+    }
+  );
+  rejectHarness.resetCalls();
+  await assert.rejects(
+    rejectHarness.hooks.completeProductionFilling(rejectContext),
+    /Завершение не удалось/,
+    "finalize error should reject so callers can consume it (no unhandled rejection)"
+  );
+  assert.strictEqual(rejectHarness.completeCalls, 1, "finalize error should call the API exactly once");
+  assert.match(rejectHarness.appEl.innerHTML, /id="fillingScanInput"/, "finalize error should re-render the scan screen");
+  assert.match(rejectHarness.appEl.innerHTML, /filling-message-error/, "finalize error should show an error message to the operator");
+  assert.match(rejectHarness.appEl.innerHTML, /Завершение не удалось/, "finalize error message should be visible");
+  assert.match(rejectHarness.appEl.innerHTML, /id="fillingCompleteBtn"[^>]*>Закрыть документ/, "close button should remain available after a finalize error");
+  assert.doesNotMatch(rejectHarness.appEl.innerHTML, /filling-completion-card/, "finalize error must not render the completion screen");
+  assert.strictEqual(rejectHarness.window.location.hash, "", "finalize error should not trigger navigation");
+}
+
 runFillSuccessRuntimeTests()
+  .then(runFinalizeReconciliationTests)
+  .then(runCompleteFinalizeHelperTests)
   .then(runFillingScanGuardTests)
   .then(function () {
     console.log("TSD filling presentation tests passed.");

@@ -1351,6 +1351,30 @@ public sealed class ProductionPalletServiceTests
         Assert.Contains(service.GetFillingOrders(), order => order.OrderId == 10 && order.Progress.CanClose);
     }
 
+    [Theory]
+    [InlineData(OrderStatus.Shipped)]
+    [InlineData(OrderStatus.Cancelled)]
+    [InlineData(OrderStatus.Merged)]
+    public void GetFillingOrders_ExcludesTerminalOrdersOfAnyType(OrderStatus status)
+    {
+        var harness = CreateHarnessWithSixPallets(filledCount: 6);
+        harness.Store.UpdateOrderStatus(10, status);
+
+        Assert.Empty(new ProductionPalletService(harness.Store).GetFillingOrders());
+    }
+
+    [Fact]
+    public void GetFillingOrders_KeepsAcceptedReadyOrderVisibleUntilFinalize()
+    {
+        var harness = CreateHarnessWithSixPallets(filledCount: 6);
+        harness.Store.UpdateOrderStatus(10, OrderStatus.Accepted);
+
+        var row = Assert.Single(new ProductionPalletService(harness.Store).GetFillingOrders());
+
+        Assert.True(row.Progress.CanClose);
+        Assert.False(row.Progress.IsClosed);
+    }
+
     [Fact]
     public void GetFillingContext_ReturnsPreparedContext_WithoutCreatingPlan()
     {

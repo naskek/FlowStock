@@ -1063,7 +1063,9 @@ WHERE order_id = @order_id AND operation_fingerprint = @operation_fingerprint;")
             using var command = CreateCommand(connection, @"
 SELECT p.order_id
 FROM production_pallets p
+INNER JOIN orders o ON o.id = p.order_id
 WHERE p.order_id IS NOT NULL
+  AND UPPER(COALESCE(o.status, '')) NOT IN ('SHIPPED', 'CANCELLED', 'MERGED')
 GROUP BY p.order_id
 HAVING COUNT(*) FILTER (WHERE UPPER(COALESCE(p.status, '')) <> 'CANCELLED') > 0
    AND COUNT(*) FILTER (WHERE UPPER(COALESCE(p.status, '')) NOT IN ('FILLED', 'CANCELLED')) = 0;");

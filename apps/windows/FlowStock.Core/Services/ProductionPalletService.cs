@@ -637,7 +637,7 @@ public sealed class ProductionPalletService
                      .Where(item => item.OrderId.HasValue && item.Summary.RemainingPalletCount > 0)
                      .GroupBy(item => item.OrderId!.Value))
         {
-            if (!ordersById.TryGetValue(group.Key, out var order))
+            if (!ordersById.TryGetValue(group.Key, out var order) || IsTerminalFillingOrder(order))
             {
                 continue;
             }
@@ -656,7 +656,9 @@ public sealed class ProductionPalletService
 
         foreach (var orderId in readyOrderIds)
         {
-            if (rows.ContainsKey(orderId) || !ordersById.TryGetValue(orderId, out var order))
+            if (rows.ContainsKey(orderId)
+                || !ordersById.TryGetValue(orderId, out var order)
+                || IsTerminalFillingOrder(order))
             {
                 continue;
             }
@@ -669,7 +671,6 @@ public sealed class ProductionPalletService
         }
 
         return rows.Values
-            .Where(row => row.OrderStatus != OrderStatusMapper.StatusToString(OrderStatus.Merged))
             .OrderBy(row => row.OrderType == OrderStatusMapper.TypeToString(OrderType.Internal) ? 0 : 1)
             .ThenByDescending(row => TryParseLong(row.OrderRef, out var number) ? number : long.MinValue)
             .ThenByDescending(row => row.OrderId)
@@ -1686,6 +1687,11 @@ public sealed class ProductionPalletService
                && row.Summary.RemainingPalletCount <= 0;
     }
 
+    private static bool IsTerminalFillingOrder(Order order)
+    {
+        return order.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged;
+    }
+
     private Dictionary<long, Order> LoadOrdersById(IReadOnlyCollection<long> orderIds)
     {
         try
@@ -1774,6 +1780,12 @@ public sealed class ProductionPalletService
     private static ProductionOperationProgress BuildOperationProgress(IDataStore store, long orderId, IReadOnlyList<ProductionPallet> pallets)
     {
         return BuildOperationProgress(orderId, pallets, Array.Empty<ProductionFillingCompletion>(), store);
+    }
+
+    public static ProductionOperationProgress? TryGetFillingOperationProgress(IDataStore store, long orderId)
+    {
+        var pallets = BuildOrderOwnedPalletViews(store, orderId, GetProductionPalletsByOrder(store, orderId));
+        return pallets.Count == 0 ? null : BuildOperationProgress(store, orderId, pallets);
     }
 
     private static ProductionOperationProgress BuildOperationProgress(
@@ -2776,4 +2788,3 @@ public sealed class ProductionPalletPlanAdoptionException : InvalidOperationExce
 
     public string Code { get; }
 }
-

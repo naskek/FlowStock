@@ -152,6 +152,12 @@
             return payload;
           });
       })
+      .catch(function (error) {
+        if (error && error.name === "AbortError") {
+          error.timedOut = true;
+        }
+        throw error;
+      })
       .finally(function () {
         if (timer) {
           clearTimeout(timer);
@@ -1405,6 +1411,31 @@
       });
   }
 
+  function normalizeProductionFillingContext(payload, fallbackOrderId) {
+    payload = payload || {};
+    function value(snakeName, camelName) {
+      return payload[snakeName] != null ? payload[snakeName] : payload[camelName];
+    }
+    return {
+      orderId: Number(value("order_id", "orderId")) || Number(fallbackOrderId) || 0,
+      orderRef: String(value("order_ref", "orderRef") || ""),
+      orderType: String(value("order_type", "orderType") || ""),
+      orderTypeDisplay: String(value("order_type_display", "orderTypeDisplay") || ""),
+      orderStatus: String(value("order_status", "orderStatus") || ""),
+      orderStatusDisplay: String(value("order_status_display", "orderStatusDisplay") || ""),
+      partnerName: String(value("partner_name", "partnerName") || ""),
+      prdDocId: Number(value("prd_doc_id", "prdDocId")) || 0,
+      prdDocRef: String(value("prd_doc_ref", "prdDocRef") || ""),
+      requiredPallets: Number(value("required_pallets", "requiredPallets")) || 0,
+      scannedPallets: Number(value("scanned_pallets", "scannedPallets")) || 0,
+      remainingPallets: Number(value("remaining_pallets", "remainingPallets")) || 0,
+      canClose: value("can_close", "canClose") === true,
+      isClosed: value("is_closed", "isClosed") === true,
+      operationFingerprint: String(value("operation_fingerprint", "operationFingerprint") || ""),
+      document: payload.document ? normalizeProductionPalletDocument(payload.document) : null,
+    };
+  }
+
   function apiGetProductionFillingContext(orderId) {
     var target = Number(orderId);
     if (!target) {
@@ -1418,25 +1449,7 @@
         );
       })
       .then(function (payload) {
-        payload = payload || {};
-        return {
-          orderId: Number(payload.order_id) || target,
-          orderRef: String(payload.order_ref || ""),
-          orderType: String(payload.order_type || ""),
-          orderTypeDisplay: String(payload.order_type_display || ""),
-          orderStatus: String(payload.order_status || ""),
-          orderStatusDisplay: String(payload.order_status_display || ""),
-          partnerName: String(payload.partner_name || ""),
-          prdDocId: Number(payload.prd_doc_id) || 0,
-          prdDocRef: String(payload.prd_doc_ref || ""),
-          requiredPallets: Number(payload.required_pallets) || 0,
-          scannedPallets: Number(payload.scanned_pallets) || 0,
-          remainingPallets: Number(payload.remaining_pallets) || 0,
-          canClose: payload.can_close === true,
-          isClosed: payload.is_closed === true,
-          operationFingerprint: String(payload.operation_fingerprint || ""),
-          document: payload.document ? normalizeProductionPalletDocument(payload.document) : null,
-        };
+        return normalizeProductionFillingContext(payload, target);
       });
   }
 
@@ -1455,19 +1468,76 @@
       .then(normalizeProductionPalletDocument);
   }
 
+  function normalizeProductionFillingCompleteResponse(payload, orderId, reconciled) {
+    payload = payload || {};
+    var ok = payload.ok !== false;
+    var hasClosedFlag = payload.is_closed != null || payload.isClosed != null;
+    return {
+      ok: ok,
+      message: String(payload.message || ""),
+      isClosed: hasClosedFlag ? payload.is_closed === true || payload.isClosed === true : ok,
+      closedAt: payload.closed_at != null ? payload.closed_at : payload.closedAt || null,
+      operationId: Number(payload.operation_id != null ? payload.operation_id : payload.operationId) || Number(orderId) || 0,
+      context: payload.context ? normalizeProductionFillingContext(payload.context, orderId) : null,
+      reconciled: reconciled === true || payload.reconciled === true,
+    };
+  }
+
+  function isUncertainNetworkError(error) {
+    if (!error || error.status != null || error.message === "INVALID_RESPONSE") {
+      return false;
+    }
+    return error.timedOut === true || error.name === "TypeError" || error.message === "Failed to fetch" || error.message === "NetworkError";
+  }
+
   function apiCompleteProductionFilling(orderId) {
     var target = Number(orderId);
     if (!target) {
       return Promise.reject(new Error("INVALID_ORDER_ID"));
     }
-    return getBaseUrl()
-      .then(function (baseUrl) {
-        return fetchJsonWithTimeout(baseUrl + "/api/tsd/production/orders/" + encodeURIComponent(target) + "/complete", {
+    return getBaseUrl().then(function (baseUrl) {
+      var completeUrl = baseUrl + "/api/tsd/production/orders/" + encodeURIComponent(target) + "/complete";
+      var contextUrl = baseUrl + "/api/tsd/production/orders/" + encodeURIComponent(target) + "/filling-context";
+      function postComplete() {
+        return fetchJsonWithTimeout(completeUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ device_id: getStoredDeviceId() }),
+        }).then(function (payload) {
+          return normalizeProductionFillingCompleteResponse(payload, target, false);
         });
+      }
+
+      return postComplete().catch(function (error) {
+        if (!isUncertainNetworkError(error)) {
+          throw error;
+        }
+        var reconciliationPayload = null;
+        return fetchJsonWithTimeout(contextUrl, { method: "GET" })
+          .then(function (payload) {
+            reconciliationPayload = payload;
+            return normalizeProductionFillingContext(payload, target);
+          })
+          .catch(function (reconciliationError) {
+            if (isUncertainNetworkError(reconciliationError)) {
+              return null;
+            }
+            throw reconciliationError;
+          })
+          .then(function (context) {
+            if (context && context.isClosed) {
+              return normalizeProductionFillingCompleteResponse({
+                ok: true,
+                message: "Операция наполнения уже завершена.",
+                is_closed: true,
+                operation_id: target,
+                context: reconciliationPayload,
+              }, target, true);
+            }
+            return postComplete();
+          });
       });
+    });
   }
 
   function apiScanProductionPallet(payload) {
