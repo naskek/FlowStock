@@ -256,17 +256,9 @@ assert(
 );
 assert(
   appJs.includes("function handleProductionFillSuccess(") &&
-    extractFunctionBody(appJs, "handleProductionFillSuccess").includes("loadFillingContext(fillOrderId)") &&
-    extractFunctionBody(appJs, "handleProductionFillSuccess").includes("shouldPromptOperationClose"),
-  "post-fill handler should reload server progress before offering explicit finalize"
+    extractFunctionBody(appJs, "handleProductionFillSuccess").includes("loadFillingContext(fillOrderId)"),
+  "post-fill handler should reload the server progress after a fill"
 );
-assert(
-  extractFunctionBody(appJs, "handleProductionFillSuccess").includes("openConfirmOverlay") &&
-    !extractFunctionBody(appJs, "handleProductionFillSuccess").includes("window.confirm"),
-  "post-fill finalize must use the explicit in-app confirmation window, not window.confirm"
-);
-assert(appJs.includes("buildClosePromptStateKey") && appJs.includes("operationFingerprint"),
-  "declined close prompt should be scoped to server fingerprint and progress state");
 assert(
   !extractFunctionBody(appJs, "isProductionFillFinal").includes("isProductionFillPrdClosed"),
   "fill final detection must not treat PRD auto-close as order completion"
@@ -296,12 +288,23 @@ assert(
 assert(fetchJsonWithTimeoutBody.includes("error.timedOut = true"), "AbortError should be marked as timed out");
 assert(storageJs.includes("normalizeProductionFillingContext") && storageJs.includes("normalizeProductionFillingCompleteResponse"),
   "filling context and complete responses should use shared normalizers");
-const completeFillingHelper = extractFunctionBody(appJs, "completeProductionFilling");
-assert(completeFillingHelper.includes("result.context ? buildFillingContext(result.context) : context") &&
-  completeFillingHelper.includes("renderFillingScanScreen(context"),
-  "manual and automatic finalize should share response-context rendering and error recovery");
-assert.strictEqual((appJs.match(/completeProductionFilling\([^)]*\)\.catch/g) || []).length, 2,
-  "manual and automatic finalize callers should explicitly consume the displayed rejection");
+const handleFillSuccessBody = extractFunctionBody(appJs, "handleProductionFillSuccess");
+assert(
+  handleFillSuccessBody.includes("nextContext.progress && nextContext.progress.isClosed") &&
+    handleFillSuccessBody.includes("renderFillingCompletionScreen(nextContext, result, null)"),
+  "last fill should render the completion screen automatically from the server isClosed state"
+);
+assert(
+  !handleFillSuccessBody.includes("openConfirmOverlay") &&
+    !handleFillSuccessBody.includes("shouldPromptOperationClose") &&
+    !handleFillSuccessBody.includes("apiCompleteProductionFilling") &&
+    !handleFillSuccessBody.includes("completeProductionFilling"),
+  "filling finalize must be implicit: no confirm overlay and no explicit complete call after fill"
+);
+assert(
+  !appJs.includes('id="fillingCompleteBtn"') && !appJs.includes("function completeProductionFilling("),
+  "explicit 'Закрыть документ' button and completeProductionFilling helper must be removed"
+);
 
 const hooks = {};
 const appEl = {
@@ -1352,82 +1355,79 @@ async function runFinalizeReconciliationTests() {
   assert.strictEqual(deterministic.calls.length, 1);
 }
 
-async function runCompleteFinalizeHelperTests() {
-  // Success: helper must build the completion screen from the FRESH context returned
-  // by the API response, not the stale in-memory context, and must call the API once.
-  const staleContext = {
-    workItem: { orderId: 120, orderRef: "OLD-120" },
+async function runImplicitClosureFrontendTests() {
+  const preview = { orderId: 120, prdDocId: 55, huCode: "HU-0001203" };
+  const fillContext = {
+    workItem: { orderId: 120, orderRef: "120" },
     document: {
-      summary: { remainingPalletCount: 0, filledPalletCount: 2, plannedPalletCount: 2 },
-      pallets: [{ huCode: "HU-0001204", status: "FILLED" }],
-    },
-    progress: { canClose: true, isClosed: false },
-  };
-  // apiCompleteProductionFilling resolves with an already-normalized (camelCase)
-  // context, so the helper feeds this exact shape into buildFillingContext.
-  const freshContextPayload = {
-    orderId: 120,
-    orderRef: "FRESH-999",
-    prdDocRef: "PRD-2026-000777",
-    document: {
-      summary: { remainingPalletCount: 0, filledPalletCount: 2, plannedPalletCount: 2 },
-      pallets: [{ huCode: "HU-0001204", status: "FILLED" }],
+      summary: { remainingPalletCount: 1, filledPalletCount: 1, plannedPalletCount: 2 },
+      pallets: [{ huCode: "HU-0001204", status: "PENDING" }],
     },
   };
 
-  const successHarness = createFillSuccessHarness(
+  // Last fill: the reloaded context reports the operation already closed (every active
+  // pallet FILLED -> isClosed=true). The TSD must show the completion screen, must NOT
+  // render the "Закрыть документ" button, and must NOT call apiCompleteProductionFilling.
+  const closedHarness = createFillSuccessHarness(
     function () {
-      return Promise.reject(new Error("filling-context should not be reloaded on finalize success"));
+      return Promise.resolve({
+        orderId: 120,
+        orderRef: "120",
+        canClose: true,
+        isClosed: true,
+        document: {
+          summary: { remainingPalletCount: 0, filledPalletCount: 2, plannedPalletCount: 2 },
+          pallets: [
+            { huCode: "HU-0001203", status: "FILLED" },
+            { huCode: "HU-0001204", status: "FILLED" },
+          ],
+        },
+      });
     },
     function () {
-      return Promise.resolve({ ok: true, isClosed: true, context: freshContextPayload });
+      throw new Error("apiCompleteProductionFilling must not be called after the last fill");
     }
   );
-  successHarness.resetCalls();
-  const successResult = await successHarness.hooks.completeProductionFilling(staleContext);
-  assert.strictEqual(successHarness.completeCalls, 1, "finalize success should call the API exactly once");
-  assert.strictEqual(successResult && successResult.isClosed, true, "finalize success should resolve with the API result");
-  assert.match(successHarness.appEl.innerHTML, /filling-completion-card/, "finalize success should render the completion screen");
-  assert.match(successHarness.appEl.innerHTML, /FRESH-999/, "completion screen should use the fresh response context");
-  assert.doesNotMatch(successHarness.appEl.innerHTML, /OLD-120/, "completion screen must not use the stale context");
-  assert.strictEqual(successHarness.window.location.hash, "", "finalize success should not trigger navigation");
+  closedHarness.resetCalls();
+  await closedHarness.hooks.handleProductionFillSuccess(fillContext, preview, { ok: true });
+  assert.strictEqual(closedHarness.completeCalls, 0, "last fill must not call apiCompleteProductionFilling");
+  assert.match(closedHarness.appEl.innerHTML, /filling-completion-card/, "last fill should render the completion screen automatically");
+  assert.doesNotMatch(closedHarness.appEl.innerHTML, /Закрыть документ/, "completion screen must not offer a manual close button");
+  assert.doesNotMatch(closedHarness.appEl.innerHTML, /fillingCompleteBtn/, "no fillingCompleteBtn after the last fill");
 
-  // Reject: helper must surface the error on the scan screen, keep the close button
-  // available (CanClose=true, IsClosed=false), and reject without unhandled rejection.
-  const rejectContext = {
-    workItem: { orderId: 121, orderRef: "121" },
-    document: {
-      summary: { remainingPalletCount: 0, filledPalletCount: 2, plannedPalletCount: 2 },
-      pallets: [{ huCode: "HU-0001214", status: "FILLED" }],
-    },
-    progress: { canClose: true, isClosed: false },
-  };
-  const rejectHarness = createFillSuccessHarness(
+  // Not-yet-complete fill: an unfilled pallet remains (isClosed=false). The scan screen
+  // is shown for the next pallet, still without any close button or complete call.
+  const openHarness = createFillSuccessHarness(
     function () {
-      return Promise.reject(new Error("filling-context should not be reloaded on finalize error"));
+      return Promise.resolve({
+        orderId: 120,
+        orderRef: "120",
+        canClose: false,
+        isClosed: false,
+        document: {
+          summary: { remainingPalletCount: 1, filledPalletCount: 1, plannedPalletCount: 2 },
+          pallets: [
+            { huCode: "HU-0001203", status: "FILLED" },
+            { huCode: "HU-0001204", status: "PENDING" },
+          ],
+        },
+      });
     },
     function () {
-      return Promise.reject(new Error("Завершение не удалось"));
+      throw new Error("apiCompleteProductionFilling must not be called for a partial fill");
     }
   );
-  rejectHarness.resetCalls();
-  await assert.rejects(
-    rejectHarness.hooks.completeProductionFilling(rejectContext),
-    /Завершение не удалось/,
-    "finalize error should reject so callers can consume it (no unhandled rejection)"
-  );
-  assert.strictEqual(rejectHarness.completeCalls, 1, "finalize error should call the API exactly once");
-  assert.match(rejectHarness.appEl.innerHTML, /id="fillingScanInput"/, "finalize error should re-render the scan screen");
-  assert.match(rejectHarness.appEl.innerHTML, /filling-message-error/, "finalize error should show an error message to the operator");
-  assert.match(rejectHarness.appEl.innerHTML, /Завершение не удалось/, "finalize error message should be visible");
-  assert.match(rejectHarness.appEl.innerHTML, /id="fillingCompleteBtn"[^>]*>Закрыть документ/, "close button should remain available after a finalize error");
-  assert.doesNotMatch(rejectHarness.appEl.innerHTML, /filling-completion-card/, "finalize error must not render the completion screen");
-  assert.strictEqual(rejectHarness.window.location.hash, "", "finalize error should not trigger navigation");
+  openHarness.resetCalls();
+  await openHarness.hooks.handleProductionFillSuccess(fillContext, preview, { ok: true });
+  assert.strictEqual(openHarness.completeCalls, 0, "partial fill must not call apiCompleteProductionFilling");
+  assert.match(openHarness.appEl.innerHTML, /id="fillingScanInput"/, "partial fill should keep the scan screen for the next pallet");
+  assert.doesNotMatch(openHarness.appEl.innerHTML, /Закрыть документ/, "scan screen must not offer a manual close button");
+  assert.doesNotMatch(openHarness.appEl.innerHTML, /filling-completion-card/, "partial fill must not render the completion screen");
 }
 
 runFillSuccessRuntimeTests()
   .then(runFinalizeReconciliationTests)
-  .then(runCompleteFinalizeHelperTests)
+  .then(runImplicitClosureFrontendTests)
   .then(runFillingScanGuardTests)
   .then(function () {
     console.log("TSD filling presentation tests passed.");

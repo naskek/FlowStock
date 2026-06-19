@@ -13,14 +13,17 @@ public sealed class ExplicitFinalizeAndEventCenterSourceTests
         var xaml = File.ReadAllText(Path.Combine(root, "apps", "windows", "FlowStock.App", "IncomingRequestsWindow.xaml"));
         var migration = File.ReadAllText(Path.Combine(root, "deploy", "postgres", "migrations", "V0025__tsd_explicit_finalize_and_business_notifications.sql"));
 
+        // /complete stays as an idempotent compatibility endpoint, but closure is now
+        // derived purely from pallet state and the outbound finalize guard is gone.
         Assert.Contains("/api/tsd/production/orders/{orderId:long}/complete", production);
         Assert.DoesNotContain("_options.OutboundAutoCloseOnComplete && details.IsComplete", outbound);
+        Assert.DoesNotContain("FILLING_NOT_FINALIZED", outbound);
         Assert.Contains("store.AddProductionFillingCompletion", fillingService);
         Assert.Contains("BuildOperationFingerprint", fillingService);
-        Assert.Contains("GetProductionFillingCompletion(orderId, fingerprint)", fillingService);
-        Assert.Contains("buildClosePromptStateKey", app);
+        Assert.Contains("IsClosed = canClose", fillingService);
+        Assert.Contains("store.GetProductionFillingCompletion(orderId, progress.OperationFingerprint)", fillingService);
+        Assert.DoesNotContain("id=\"fillingCompleteBtn\"", app);
         Assert.Contains("operationFingerprint", app);
-        Assert.Contains("Все паллеты отсканированы", app);
         Assert.Contains("Title=\"Центр событий\"", xaml);
         Assert.Contains("Header=\"Требуют действия\"", xaml);
         Assert.Contains("Header=\"Журнал событий\"", xaml);

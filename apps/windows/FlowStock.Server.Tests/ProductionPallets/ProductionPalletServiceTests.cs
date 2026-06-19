@@ -1345,10 +1345,29 @@ public sealed class ProductionPalletServiceTests
     [Fact]
     public void GetFillingOrders_DoesNotReturnOrder_WhenAllPreparedPalletsFilled()
     {
+        // Every active pallet FILLED => the operation is implicitly closed and must not
+        // linger in the filling queue, even though no completion marker exists.
         var harness = CreateHarnessWithSixPallets(filledCount: 6);
         var service = new ProductionPalletService(harness.Store);
 
-        Assert.Contains(service.GetFillingOrders(), order => order.OrderId == 10 && order.Progress.CanClose);
+        Assert.DoesNotContain(service.GetFillingOrders(), order => order.OrderId == 10);
+    }
+
+    [Fact]
+    public void GetFillingContext_FullyFilledOrder_IsClosedWithoutCompletionMarker()
+    {
+        // Requirement: "RequiredPallets == ScannedPallets, CanClose == true,
+        // IsClosed == false" must never exist — closure is derived from pallet state, so
+        // a fully filled (incl. legacy) order reads as closed with no finalize/backfill.
+        var harness = CreateHarnessWithSixPallets(filledCount: 6);
+        var service = new ProductionPalletService(harness.Store);
+
+        var progress = service.GetFillingContext(10).Progress;
+
+        Assert.Equal(progress.RequiredPallets, progress.ScannedPallets);
+        Assert.True(progress.CanClose);
+        Assert.True(progress.IsClosed);
+        Assert.Null(harness.Store.GetProductionFillingCompletion(10, progress.OperationFingerprint));
     }
 
     [Theory]
@@ -1357,22 +1376,27 @@ public sealed class ProductionPalletServiceTests
     [InlineData(OrderStatus.Merged)]
     public void GetFillingOrders_ExcludesTerminalOrdersOfAnyType(OrderStatus status)
     {
-        var harness = CreateHarnessWithSixPallets(filledCount: 6);
+        // Partially filled order would otherwise be visible; the terminal status is what
+        // excludes it, so this isolates the SHIPPED/CANCELLED/MERGED filter.
+        var harness = CreateHarnessWithSixPallets(filledCount: 3);
         harness.Store.UpdateOrderStatus(10, status);
 
         Assert.Empty(new ProductionPalletService(harness.Store).GetFillingOrders());
     }
 
     [Fact]
-    public void GetFillingOrders_KeepsAcceptedReadyOrderVisibleUntilFinalize()
+    public void GetFillingOrders_KeepsOrderWithUnfilledPalletVisible()
     {
-        var harness = CreateHarnessWithSixPallets(filledCount: 6);
+        // Requirement #7: an order with at least one unfilled active pallet stays in the
+        // filling queue and is not (yet) closed.
+        var harness = CreateHarnessWithSixPallets(filledCount: 5);
         harness.Store.UpdateOrderStatus(10, OrderStatus.Accepted);
 
         var row = Assert.Single(new ProductionPalletService(harness.Store).GetFillingOrders());
 
-        Assert.True(row.Progress.CanClose);
+        Assert.False(row.Progress.CanClose);
         Assert.False(row.Progress.IsClosed);
+        Assert.Equal(1, row.Summary.RemainingPalletCount);
     }
 
     [Fact]
@@ -1433,7 +1457,9 @@ public sealed class ProductionPalletServiceTests
         Assert.Equal(2, secondFill.Document?.Summary.FilledPalletCount);
         Assert.True(duplicateFill.Success);
         Assert.True(duplicateFill.AlreadyFilled);
-        Assert.Contains(service.GetFillingOrders(), order => order.OrderId == 10 && order.Progress.CanClose);
+        // All pallets filled => operation implicitly closed => order leaves the queue.
+        Assert.DoesNotContain(service.GetFillingOrders(), order => order.OrderId == 10);
+        Assert.True(service.GetFillingContext(10).Progress.IsClosed);
         Assert.Empty(harness.LedgerEntries);
     }
 
@@ -1497,7 +1523,7 @@ public sealed class ProductionPalletServiceTests
 
         var context = service.GetFillingContext(10);
         Assert.True(context.Progress.CanClose);
-        Assert.False(context.Progress.IsClosed);
+        Assert.True(context.Progress.IsClosed);
     }
 
     [Fact]

@@ -326,77 +326,48 @@ public sealed class OutboundPickingServiceTests
         Assert.True(repeatScan.Success);
         Assert.True(repeatScan.AlreadyPicked);
 
-        Assert.True(new ProductionPalletService(harness.Store).CompleteFilling(79, "TSD-01").Success);
+        // A fully filled order ships immediately; no explicit filling finalize is needed.
         var repeatComplete = picking.Complete(79);
         Assert.True(repeatComplete.Success, $"{repeatComplete.ErrorCode}: {repeatComplete.Message}");
         Assert.True(repeatComplete.OutboundClosed);
+        Assert.True(picking.Complete(79).Success);
         Assert.Single(harness.LedgerEntries.Where(entry => entry.QtyDelta < 0));
     }
 
     [Fact]
-    public void PalletizedOutbound_RequiresFillingFinalize_WithoutPostingOrShipping()
+    public void PalletizedOutbound_FullyFilledWithoutCompletionMarker_ShipsImmediately()
     {
         var harness = CreateOrder080PalletizedHarness();
         var picking = CreatePickingService(harness, autoClose: true);
         var scan = picking.Scan(79, "HU-0000506", "TSD-01");
         var draftId = scan.Order!.DraftOutboundDocId!.Value;
 
-        var blocked = picking.Complete(79);
+        // No production_filling_completions row was ever written, yet every pallet is
+        // FILLED, so the operation is implicitly closed and OUTBOUND ships at once.
+        Assert.Null(harness.Store.GetProductionFillingCompletion(
+            79, new ProductionPalletService(harness.Store).GetFillingContext(79).Progress.OperationFingerprint));
 
-        Assert.False(blocked.Success);
-        Assert.Equal("FILLING_NOT_FINALIZED", blocked.ErrorCode);
-        Assert.Equal(DocStatus.Draft, harness.GetDoc(draftId).Status);
-        Assert.Equal(OrderStatus.Accepted, harness.GetOrder(79).Status);
-        Assert.DoesNotContain(harness.LedgerEntries, entry => entry.DocId == draftId);
+        var complete = picking.Complete(79);
 
-        Assert.True(new ProductionPalletService(harness.Store).CompleteFilling(79, "TSD-01").Success);
+        Assert.True(complete.Success, $"{complete.ErrorCode}: {complete.Message}");
+        Assert.NotEqual("FILLING_NOT_FINALIZED", complete.ErrorCode);
+        Assert.True(complete.OutboundClosed);
+        Assert.Equal(DocStatus.Closed, harness.GetDoc(draftId).Status);
+        Assert.Equal(OrderStatus.Shipped, harness.GetOrder(79).Status);
+        Assert.Single(harness.LedgerEntries.Where(entry => entry.DocId == draftId && entry.QtyDelta < 0));
+
+        // Idempotent: completing again is a no-op success without a second ledger row.
         Assert.True(picking.Complete(79).Success);
-        Assert.True(picking.Complete(79).Success);
-        Assert.Single(harness.LedgerEntries.Where(entry => entry.DocId == draftId));
+        Assert.Single(harness.LedgerEntries.Where(entry => entry.DocId == draftId && entry.QtyDelta < 0));
     }
 
     [Fact]
-    public void FillingFingerprint_DoesNotChangeWhenOnlyPrdDocumentChanges()
-    {
-        var harness = CreateOrder080PalletizedHarness();
-        var before = ProductionPalletService.TryGetFillingOperationProgress(harness.Store, 79);
-        var pallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(201));
-        harness.SeedDoc(new Doc { Id = 202, DocRef = "PRD-202", Type = DocType.ProductionReceipt, Status = DocStatus.Closed, OrderId = 79 });
-        harness.SeedProductionPallet(CopyPallet(pallet, prdDocId: 202));
-
-        var after = ProductionPalletService.TryGetFillingOperationProgress(harness.Store, 79);
-
-        Assert.NotNull(before);
-        Assert.NotNull(after);
-        Assert.Equal(before.OperationFingerprint, after.OperationFingerprint);
-    }
-
-    [Fact]
-    public void PalletizedOutbound_RejectsStaleFillingCompletion()
-    {
-        var harness = CreateOrder080PalletizedHarness();
-        Assert.True(new ProductionPalletService(harness.Store).CompleteFilling(79, "TSD-01").Success);
-        var pallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(201));
-        harness.SeedProductionPallet(CopyPallet(pallet, plannedQty: 1800));
-        var picking = CreatePickingService(harness, autoClose: true);
-        Assert.True(picking.Scan(79, "HU-0000506", "TSD-01").Success);
-
-        var blocked = picking.Complete(79);
-
-        Assert.False(blocked.Success);
-        Assert.Equal("FILLING_NOT_FINALIZED", blocked.ErrorCode);
-        Assert.Equal(OrderStatus.Accepted, harness.GetOrder(79).Status);
-    }
-
-    [Fact]
-    public void NonPalletizedOutbound_IsNotBlockedByFillingFinalizeGuard()
+    public void NonPalletizedOutbound_ShipsWithoutFillingDependency()
     {
         var harness = CreateBasicPickingHarness();
 
-        // Order 20 ships ordinary warehouse HU and has no production pallets, so the
-        // filling guard must hit the null-path of TryGetFillingOperationProgress.
-        Assert.Null(ProductionPalletService.TryGetFillingOperationProgress(harness.Store, 20));
-
+        // Order 20 ships ordinary warehouse HU and has no production pallets, so filling
+        // closure never applies and the outbound must complete normally.
         var picking = CreatePickingService(harness, autoClose: true);
         Assert.True(picking.Scan(20, "HU-000001", "TSD-01").Success);
 
@@ -578,34 +549,6 @@ public sealed class OutboundPickingServiceTests
             harness.Store,
             harness.CreateService(),
             new FlowStockLedgerFlowOptions { OutboundAutoCloseOnComplete = autoClose });
-    }
-
-    private static ProductionPallet CopyPallet(ProductionPallet pallet, long? prdDocId = null, double? plannedQty = null)
-    {
-        return new ProductionPallet
-        {
-            Id = pallet.Id,
-            PrdDocId = prdDocId ?? pallet.PrdDocId,
-            DocLineId = pallet.DocLineId,
-            OrderId = pallet.OrderId,
-            OrderLineId = pallet.OrderLineId,
-            ItemId = pallet.ItemId,
-            ItemName = pallet.ItemName,
-            HuCode = pallet.HuCode,
-            PlannedQty = plannedQty ?? pallet.PlannedQty,
-            ToLocationId = pallet.ToLocationId,
-            ToLocationCode = pallet.ToLocationCode,
-            Status = pallet.Status,
-            PalletNo = pallet.PalletNo,
-            PalletCount = pallet.PalletCount,
-            PrintedAt = pallet.PrintedAt,
-            FilledAt = pallet.FilledAt,
-            FilledByDeviceId = pallet.FilledByDeviceId,
-            CancelReason = pallet.CancelReason,
-            CancelledAt = pallet.CancelledAt,
-            CreatedAt = pallet.CreatedAt,
-            Lines = pallet.Lines
-        };
     }
 
     private static CloseDocumentHarness CreateOrder080PalletizedHarness()

@@ -1782,37 +1782,32 @@ public sealed class ProductionPalletService
         return BuildOperationProgress(orderId, pallets, Array.Empty<ProductionFillingCompletion>(), store);
     }
 
-    public static ProductionOperationProgress? TryGetFillingOperationProgress(IDataStore store, long orderId)
-    {
-        var pallets = BuildOrderOwnedPalletViews(store, orderId, GetProductionPalletsByOrder(store, orderId));
-        return pallets.Count == 0 ? null : BuildOperationProgress(store, orderId, pallets);
-    }
-
     private static ProductionOperationProgress BuildOperationProgress(
         long orderId,
         IReadOnlyList<ProductionPallet> pallets,
         IReadOnlyList<ProductionFillingCompletion> completions,
         IDataStore? store = null)
     {
+        // Closure is derived purely from pallet state: once every active (non-cancelled)
+        // pallet is FILLED the filling operation is considered closed. The
+        // production_filling_completions marker is kept only for audit/compat and must
+        // NOT be required for IsClosed — otherwise a "RequiredPallets == ScannedPallets,
+        // CanClose == true, IsClosed == false" limbo could persist for new or legacy data.
+        _ = orderId;
+        _ = completions;
+        _ = store;
         var required = pallets.Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)).ToList();
         var scanned = required.Count(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase));
         var fingerprint = BuildOperationFingerprint(required);
-        var isClosed = required.Count > 0
-                       && completions.Any(completion =>
-                           completion.OrderId == orderId
-                           && string.Equals(completion.OperationFingerprint, fingerprint, StringComparison.Ordinal));
-        if (!isClosed && store != null)
-        {
-            isClosed = TryGetCompletion(store, orderId, fingerprint) != null;
-        }
+        var canClose = required.Count > 0 && scanned == required.Count;
 
         return new ProductionOperationProgress
         {
             RequiredPallets = required.Count,
             ScannedPallets = scanned,
             RemainingPallets = Math.Max(0, required.Count - scanned),
-            CanClose = required.Count > 0 && scanned == required.Count,
-            IsClosed = isClosed,
+            CanClose = canClose,
+            IsClosed = canClose,
             OperationFingerprint = fingerprint
         };
     }
@@ -1824,18 +1819,6 @@ public sealed class ProductionPalletService
                 string.Join(",", pallet.Lines.OrderBy(line => line.Id).Select(line =>
                     $"{line.Id}/{line.DocLineId}/{line.OrderLineId}/{line.ItemId}/{line.PlannedQty.ToString("R", CultureInfo.InvariantCulture)}")))));
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
-    }
-
-    private static ProductionFillingCompletion? TryGetCompletion(IDataStore store, long orderId, string fingerprint)
-    {
-        try
-        {
-            return store.GetProductionFillingCompletion(orderId, fingerprint);
-        }
-        catch (Exception ex) when (IsMockStoreException(ex))
-        {
-            return null;
-        }
     }
 
     private static bool IsMockStoreException(Exception ex)

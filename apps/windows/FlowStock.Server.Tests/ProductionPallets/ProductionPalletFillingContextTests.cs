@@ -94,7 +94,10 @@ public sealed class ProductionPalletFillingContextTests
         var fixture = CreateFilledOrderWithCancelledPallets();
         var service = new ProductionPalletService(fixture.Harness.Store);
 
-        Assert.Contains(service.GetFillingOrders(), order => order.OrderId == 72 && order.Progress.CanClose);
+        // Only cancelled pallets remain alongside fully filled ones => implicitly closed
+        // => the order must not be listed in the filling queue.
+        Assert.DoesNotContain(service.GetFillingOrders(), order => order.OrderId == 72);
+        Assert.True(service.GetFillingContext(72).Progress.IsClosed);
     }
 
     [Fact]

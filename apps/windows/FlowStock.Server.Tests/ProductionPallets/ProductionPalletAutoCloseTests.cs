@@ -313,8 +313,10 @@ public sealed class ProductionPalletAutoCloseTests
         Assert.Equal(3, result.TotalComponentCount);
         Assert.Equal(3, harness.LedgerEntries.Count(entry =>
             string.Equals(entry.HuCode, mixed.HuCode, StringComparison.OrdinalIgnoreCase)));
-        Assert.Contains(service.GetFillingOrders(), order => order.OrderId == 103 && order.Progress.CanClose);
+        // Final component filled => operation implicitly closed => order leaves the queue.
+        Assert.DoesNotContain(service.GetFillingOrders(), order => order.OrderId == 103);
         Assert.True(service.GetFillingContext(103).Progress.CanClose);
+        Assert.True(service.GetFillingContext(103).Progress.IsClosed);
     }
 
     [Fact]

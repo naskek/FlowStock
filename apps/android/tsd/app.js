@@ -3923,10 +3923,6 @@
       escapeHtml(buildFillingScanHeaderLine(work, summary)) +
       "</div>" +
       messageHtml +
-      (context.progress && context.progress.canClose && !context.progress.isClosed
-        ? '    <div class="filling-message filling-message-success">Все паллеты отсканированы. Документ не закрыт.</div>' +
-          '    <div class="actions-bar"><button class="btn primary-btn" id="fillingCompleteBtn" type="button">Закрыть документ</button></div>'
-        : "") +
       '    <div class="filling-scan-card filling-scan-card--compact filling-scan-slot">' +
       '      <input class="form-input filling-scan-input tsd-scan-input-hidden filling-scan-input-hidden" id="fillingScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" placeholder="HU-000001" />' +
       "    </div>" +
@@ -8169,7 +8165,13 @@
     );
     return loadFillingContext(fillOrderId)
       .then(function (nextContext) {
-        var promptClose = shouldPromptOperationClose("filling", nextContext.progress);
+        // Closure is automatic: once every active pallet is FILLED the server reports
+        // progress.isClosed === true, so we show the completion screen directly. No
+        // explicit "Завершить наполнение" confirmation or /complete call is required.
+        if (nextContext.progress && nextContext.progress.isClosed) {
+          renderFillingCompletionScreen(nextContext, result, null);
+          return;
+        }
         var remainingPalletCount = getRemainingPalletCountFromFillingContext(nextContext);
         var successMessage = buildProductionFillSuccessMessage(result, remainingPalletCount);
         var successType =
@@ -8179,22 +8181,6 @@
           messageType: successType,
           preview: null,
         });
-        if (promptClose) {
-          openConfirmOverlay(
-            "Наполнение готово",
-            "Все паллеты наполнены. Завершить наполнение и закрыть документ?",
-            "Завершить наполнение",
-            function () {
-              completeProductionFilling(nextContext).catch(function () {
-                // The helper restored the filling screen and displayed the error.
-              });
-            },
-            "primary-btn",
-            function () {
-              declineOperationClosePrompt("filling", nextContext.progress);
-            }
-          );
-        }
       })
       .catch(function (reloadError) {
         if (shouldRenderProductionFillCompletion(result, null, reloadError)) {
@@ -8265,26 +8251,6 @@
     finishRouteRender();
   }
 
-  function completeProductionFilling(context) {
-    var orderId = context && context.workItem && context.workItem.orderId;
-    return runTsdCriticalOperation("filling.complete", function () {
-      return TsdStorage.apiCompleteProductionFilling(orderId);
-    })
-      .then(function (result) {
-        var completionContext = result && result.context ? buildFillingContext(result.context) : context;
-        renderFillingCompletionScreen(completionContext, result, null);
-        return result;
-      })
-      .catch(function (error) {
-        renderFillingScanScreen(context, {
-          message: mapFillingError(error),
-          messageType: "error",
-          preview: null,
-        });
-        throw error;
-      });
-  }
-
   function getTsdErrorDetails(error) {
     var payload = error && error.payload ? error.payload : null;
     var code = String(
@@ -8341,7 +8307,6 @@
 
   function wireFillingScan(context, state) {
     var scanInput = document.getElementById("fillingScanInput");
-    var completeBtn = document.getElementById("fillingCompleteBtn");
     var activePreview = state && state.preview;
 
     function focusScan() {
@@ -8438,15 +8403,6 @@
         }
       });
       focusScan();
-    }
-
-    if (completeBtn) {
-      completeBtn.addEventListener("click", function () {
-        completeBtn.disabled = true;
-        completeProductionFilling(context).catch(function () {
-          // The helper restored the filling screen and displayed the error.
-        });
-      });
     }
 
     setScanHandler(function (scan) {
@@ -14458,7 +14414,6 @@
     window.FlowStockTsdTestHooks.finishRouteRender = finishRouteRender;
     window.FlowStockTsdTestHooks.renderRouteInternal = renderRouteInternal;
     window.FlowStockTsdTestHooks.renderFillingScanScreen = renderFillingScanScreen;
-    window.FlowStockTsdTestHooks.completeProductionFilling = completeProductionFilling;
     window.FlowStockTsdTestHooks.openGlobalHuChoiceOverlay = openGlobalHuChoiceOverlay;
     window.FlowStockTsdTestHooks.executeTsdHuAction = executeTsdHuAction;
     window.FlowStockTsdTestHooks.renderTsdHuCard = renderTsdHuCard;
