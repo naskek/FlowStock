@@ -52,7 +52,7 @@ function loadDiagnosticsContext(extra) {
       screen: { width: 360, height: 640 },
       devicePixelRatio: 2,
       location: { hash: "" },
-      TSD_PWA_VERSION: "53",
+      TSD_PWA_VERSION: "54",
       document: createFakeDocument(),
     },
     extra || {}
@@ -403,6 +403,20 @@ function dispatchKeyboardScan(document, value) {
     .split("")
     .forEach((key) => document.dispatch("keydown", { key }));
   document.dispatch("keydown", { key: "Enter" });
+}
+
+function createScanAllowedInput(document, id) {
+  const input = document.register(createFakeElement("input", id || "scanAllowedInput"));
+  input.setAttribute("data-scan-allow", "1");
+  return input;
+}
+
+function countEvents(events, type) {
+  return events.filter((event) => event.type === type).length;
+}
+
+function eventsOfType(events, type) {
+  return events.filter((event) => event.type === type);
 }
 
 function createFakeIndexedDb() {
@@ -1401,6 +1415,208 @@ async function testScannerObserverTransports() {
   assert(noBridgeEvents.some((event) => event.type === "scanner-error"));
 }
 
+async function testAndroidImeEnterCancelsStaleTargetRead() {
+  const keyboard = createScannerContext();
+  const imeTarget = createScanAllowedInput(keyboard.document, "imeEnterTarget");
+  const manager = keyboard.context.FlowStockScanner.createScannerManager({
+    canScan: () => true,
+    inputDelayMs: 1000,
+    keyDelayMs: 1000,
+  });
+  const events = [];
+  const scans = [];
+  manager.setDiagnosticObserver((event) => events.push(event));
+  manager.setHandler((scan) => scans.push(scan));
+  manager.start();
+
+  keyboard.document.dispatch("keydown", {
+    key: "Unidentified",
+    keyCode: 229,
+    which: 229,
+    target: imeTarget,
+  });
+  imeTarget.value = "IME-ENTER-PAYLOAD";
+  keyboard.document.dispatch("beforeinput", {
+    target: imeTarget,
+    data: "IME-ENTER-PAYLOAD",
+    inputType: "insertText",
+  });
+  keyboard.document.dispatch("input", { target: imeTarget });
+  keyboard.document.dispatch("keydown", { key: "Enter", target: imeTarget });
+
+  assert.strictEqual(scans.length, 1);
+  assert.strictEqual(scans[0].value, "IME-ENTER-PAYLOAD");
+  assert.strictEqual(scans[0].raw.reason, "enter");
+  assert.strictEqual(countEvents(events, "dedupe-accepted"), 1);
+  assert.strictEqual(countEvents(events, "dedupe-rejected"), 0);
+  assert.strictEqual(countEvents(events, "scan-emitted"), 1);
+  assert.strictEqual(countEvents(events, "manager-received"), 1);
+  assert.strictEqual(countEvents(events, "handler-dispatched"), 1);
+  assert.strictEqual(countEvents(events, "buffer-replace"), 1);
+  assert.strictEqual(countEvents(events, "flush-requested"), 0);
+  assert.strictEqual(countEvents(events, "flush-completed"), 0);
+
+  const accepted = eventsOfType(events, "dedupe-accepted")[0].detail;
+  const emitted = eventsOfType(events, "scan-emitted")[0].detail;
+  assert.strictEqual(accepted.attemptId, emitted.attemptId);
+  assert.strictEqual(accepted.scanId, emitted.scanId);
+  assert.strictEqual(scans[0].attemptId, emitted.attemptId);
+  assert.strictEqual(scans[0].scanId, emitted.scanId);
+
+  const eventCountBeforeStaleCallbacks = events.length;
+  keyboard.timers.slice().forEach((timer) => timer.fn());
+  assert.strictEqual(events.length, eventCountBeforeStaleCallbacks, "stale target-read callbacks must be no-op");
+  assert.strictEqual(scans.length, 1);
+}
+
+async function testAndroidImeTimeoutWithoutEnterStillScans() {
+  const keyboard = createScannerContext();
+  const imeTarget = createScanAllowedInput(keyboard.document, "imeTimeoutTarget");
+  const manager = keyboard.context.FlowStockScanner.createScannerManager({
+    canScan: () => true,
+    inputDelayMs: 1000,
+    keyDelayMs: 1000,
+  });
+  const events = [];
+  const scans = [];
+  manager.setDiagnosticObserver((event) => events.push(event));
+  manager.setHandler((scan) => scans.push(scan));
+  manager.start();
+
+  imeTarget.value = "IME-TIMEOUT-PAYLOAD";
+  keyboard.document.dispatch("keydown", {
+    key: "Unidentified",
+    keyCode: 229,
+    which: 229,
+    target: imeTarget,
+  });
+  keyboard.document.dispatch("beforeinput", {
+    target: imeTarget,
+    data: "IME-TIMEOUT-PAYLOAD",
+    inputType: "insertText",
+  });
+  keyboard.document.dispatch("input", { target: imeTarget });
+  keyboard.runTimers();
+
+  assert.strictEqual(scans.length, 1);
+  assert.strictEqual(scans[0].value, "IME-TIMEOUT-PAYLOAD");
+  assert.strictEqual(scans[0].raw.reason, "ime");
+  assert.strictEqual(scans[0].raw.flushReason, "ime");
+  assert.strictEqual(countEvents(events, "dedupe-accepted"), 1);
+  assert.strictEqual(countEvents(events, "dedupe-rejected"), 0);
+  assert.strictEqual(countEvents(events, "handler-dispatched"), 1);
+}
+
+async function testKeyboardWedgeCharsEnterStillScansOnce() {
+  const keyboard = createScannerContext();
+  const manager = keyboard.context.FlowStockScanner.createScannerManager({
+    canScan: () => true,
+    inputDelayMs: 1000,
+    keyDelayMs: 1000,
+  });
+  const events = [];
+  const scans = [];
+  manager.setDiagnosticObserver((event) => events.push(event));
+  manager.setHandler((scan) => scans.push(scan));
+  manager.start();
+
+  dispatchKeyboardScan(keyboard.document, "WEDGE-ENTER");
+
+  assert.strictEqual(scans.length, 1);
+  assert.strictEqual(scans[0].value, "WEDGE-ENTER");
+  assert.strictEqual(scans[0].raw.terminator, "Enter");
+  assert.strictEqual(countEvents(events, "dedupe-accepted"), 1);
+  assert.strictEqual(countEvents(events, "dedupe-rejected"), 0);
+  assert.strictEqual(countEvents(events, "scan-emitted"), 1);
+  assert.strictEqual(countEvents(events, "handler-dispatched"), 1);
+}
+
+async function testAndroidImeEnterPhysicalDuplicateKeepsDedupeSemantics() {
+  const keyboard = createScannerContext();
+  const imeTarget = createScanAllowedInput(keyboard.document, "imeDuplicateTarget");
+  const manager = keyboard.context.FlowStockScanner.createScannerManager({
+    canScan: () => true,
+    inputDelayMs: 1000,
+    keyDelayMs: 1000,
+  });
+  const events = [];
+  const scans = [];
+  manager.setDiagnosticObserver((event) => events.push(event));
+  manager.setHandler((scan) => scans.push(scan));
+  manager.start();
+
+  function dispatchImeEnter(value) {
+    keyboard.document.dispatch("keydown", {
+      key: "Unidentified",
+      keyCode: 229,
+      which: 229,
+      target: imeTarget,
+    });
+    imeTarget.value = value;
+    keyboard.document.dispatch("beforeinput", {
+      target: imeTarget,
+      data: value,
+      inputType: "insertText",
+    });
+    keyboard.document.dispatch("input", { target: imeTarget });
+    keyboard.document.dispatch("keydown", { key: "Enter", target: imeTarget });
+    keyboard.timers.slice().forEach((timer) => timer.fn());
+  }
+
+  dispatchImeEnter("IME-DUPLICATE");
+  dispatchImeEnter("IME-DUPLICATE");
+
+  assert.strictEqual(scans.length, 1, "dedupe-rejected physical duplicate must not reach handler");
+  assert.strictEqual(countEvents(events, "dedupe-accepted"), 1);
+  assert.strictEqual(countEvents(events, "dedupe-rejected"), 1);
+  assert.strictEqual(countEvents(events, "scan-emitted"), 1);
+  assert.strictEqual(countEvents(events, "handler-dispatched"), 1);
+
+  const accepted = eventsOfType(events, "dedupe-accepted")[0].detail;
+  const rejected = eventsOfType(events, "dedupe-rejected")[0].detail;
+  assert(rejected.attemptId);
+  assert(rejected.scanId);
+  assert.notStrictEqual(rejected.attemptId, accepted.attemptId);
+  assert.notStrictEqual(rejected.scanId, accepted.scanId);
+  assert.strictEqual(rejected.duplicateOfScanId, accepted.scanId);
+  assert.strictEqual(rejected.dedupeAccepted, false);
+}
+
+async function testKeyboardProviderStopCancelsPendingTargetRead() {
+  const keyboard = createScannerContext();
+  const imeTarget = createScanAllowedInput(keyboard.document, "imeStopTarget");
+  const manager = keyboard.context.FlowStockScanner.createScannerManager({
+    canScan: () => true,
+    inputDelayMs: 1000,
+    keyDelayMs: 1000,
+  });
+  const events = [];
+  const scans = [];
+  manager.setDiagnosticObserver((event) => events.push(event));
+  manager.setHandler((scan) => scans.push(scan));
+  manager.start();
+  events.length = 0;
+
+  imeTarget.value = "IME-STOP-PAYLOAD";
+  keyboard.document.dispatch("keydown", {
+    key: "Unidentified",
+    keyCode: 229,
+    which: 229,
+    target: imeTarget,
+  });
+  const pendingCallbacks = keyboard.timers.slice();
+  manager.stop();
+  pendingCallbacks.forEach((timer) => timer.fn());
+
+  assert.strictEqual(scans.length, 0);
+  assert.strictEqual(countEvents(events, "buffer-replace"), 0);
+  assert.strictEqual(countEvents(events, "dedupe-accepted"), 0);
+  assert.strictEqual(countEvents(events, "dedupe-rejected"), 0);
+  assert.strictEqual(countEvents(events, "scan-emitted"), 0);
+  assert.strictEqual(countEvents(events, "manager-received"), 0);
+  assert.strictEqual(countEvents(events, "handler-dispatched"), 0);
+}
+
 async function testIntentPayloadCloneIsObserverGated() {
   let callbackWithoutObserver = null;
   let cloneCounter = 0;
@@ -1546,7 +1762,7 @@ function testShellIntegration() {
   assert(serviceWorkerJs.includes('"./scanner-diagnostics-manifest.js"'));
   assert(serviceWorkerJs.includes('"./scanner-diagnostics-store.js"'));
   assert(serviceWorkerJs.includes('"./scanner-diagnostics.js"'));
-  assert(appVersionJs.includes('var version = "53"'));
+  assert(appVersionJs.includes('var version = "54"'));
   assert(appJs.includes('id="scannerDiagnosticsBtn"'));
   assert(appJs.includes('navigate("/scanner-diagnostics")'));
   assert(appJs.includes('route.name === "scannerDiagnostics"'));
@@ -1570,6 +1786,11 @@ function testShellIntegration() {
   await testDelayedSaveDoesNotRenderAfterRouteCleanup();
   await testBusinessIsolation();
   await testScannerObserverTransports();
+  await testAndroidImeEnterCancelsStaleTargetRead();
+  await testAndroidImeTimeoutWithoutEnterStillScans();
+  await testKeyboardWedgeCharsEnterStillScansOnce();
+  await testAndroidImeEnterPhysicalDuplicateKeepsDedupeSemantics();
+  await testKeyboardProviderStopCancelsPendingTargetRead();
   await testIntentPayloadCloneIsObserverGated();
   await testStorageAndExport();
   testShellIntegration();

@@ -52,7 +52,7 @@ body.pc-body::before {
 
 .pc-header {
   padding: 6px 16px;
-  min-height: 64px;
+  height: 64px;
   background: rgba(255, 255, 255, 0.95);
   border-bottom: 1px solid var(--pc-border);
   position: sticky;
@@ -74,7 +74,7 @@ body.pc-body::before {
 .pc-brand {
   display: flex;
   align-items: center;
-  height: 56px;
+  height: 52px;
   margin-right: auto;
   overflow: hidden;
 }
@@ -98,21 +98,48 @@ body.pc-body::before {
   color: var(--pc-muted);
 }
 
+.pc-subnav {
+  position: sticky;
+  top: 64px;
+  z-index: 4;
+  background: rgba(255, 255, 255, 0.97);
+  border-bottom: 1px solid var(--pc-border);
+  backdrop-filter: blur(6px);
+}
+
 .pc-tabs {
   display: flex;
-  gap: 10px;
-  flex: 1;
+  gap: 24px;
   justify-content: center;
+  width: min(calc(100vw - (var(--pc-page-gutter) * 2)), var(--pc-content-max));
+  margin: 0 auto;
+  overflow-x: auto;
 }
 
 .pc-tab {
-  min-width: 120px;
+  appearance: none;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 12px 2px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--pc-muted);
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: none;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.pc-tab:hover {
+  color: var(--pc-ink);
 }
 
 .pc-tab.is-active {
-  background: var(--pc-accent);
-  color: #ffffff;
-  border-color: var(--pc-accent);
+  background: transparent;
+  color: var(--pc-ink);
+  border-bottom-color: var(--pc-accent);
 }
 
 .pc-account {
@@ -2060,18 +2087,18 @@ body.pc-body::before {
     width: 11%;
   }
   .pc-header {
-    flex-wrap: wrap;
+    height: auto;
   }
   .pc-header-inner {
     width: calc(100vw - (var(--pc-page-gutter) * 2));
-    flex-wrap: wrap;
+  }
+  .pc-subnav {
+    position: static;
   }
   .pc-tabs {
     width: 100%;
-  }
-  .pc-account {
-    width: 100%;
-    justify-content: space-between;
+    gap: 16px;
+    padding: 0 var(--pc-page-gutter);
   }
   .pc-order-line-row {
     grid-template-columns: 1fr;

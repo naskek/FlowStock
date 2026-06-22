@@ -255,7 +255,7 @@
     var docFocusHandler = null;
     var docBlurHandler = null;
     var docVisibilityHandler = null;
-    var targetReadTimer = null;
+    var pendingTargetRead = null;
     var readOnlyTimers = new WeakMap();
     var docInputHandler = null;
     var sinkInputHandler = null;
@@ -454,11 +454,38 @@
       }, delay);
     }
 
-    function scheduleTargetRead(target, reason) {
-      if (targetReadTimer) {
-        clearTimeout(targetReadTimer);
+    function clearPendingTargetRead(target) {
+      var pending = pendingTargetRead;
+      if (!pending) {
+        return false;
       }
-      targetReadTimer = window.setTimeout(function () {
+      if (target && pending.target !== target) {
+        return false;
+      }
+      pending.cancelled = true;
+      if (pending.timerId) {
+        clearTimeout(pending.timerId);
+      }
+      if (pendingTargetRead === pending) {
+        pendingTargetRead = null;
+      }
+      return true;
+    }
+
+    function scheduleTargetRead(target, reason) {
+      clearPendingTargetRead();
+      var pending = {
+        target: target,
+        reason: reason,
+        timerId: null,
+        cancelled: false,
+      };
+      pending.timerId = window.setTimeout(function () {
+        if (pendingTargetRead !== pending || pending.cancelled) {
+          return;
+        }
+        pendingTargetRead = null;
+        pending.cancelled = true;
         if (!canScan()) {
           return;
         }
@@ -481,6 +508,7 @@
         });
         flushBuffer(reason);
       }, inputDelayMs);
+      pendingTargetRead = pending;
     }
 
     function unlockScanTarget(target) {
@@ -620,6 +648,7 @@
           unlockScanTarget(event.target);
           var targetValue = event.target && event.target.value ? event.target.value : "";
           if (targetValue) {
+            clearPendingTargetRead(event.target);
             ensureAttemptId();
             bufferStartAt = bufferStartAt || nowTs();
             inputEventCount += 1;
@@ -825,10 +854,7 @@
         document.removeEventListener("input", docInputHandler, true);
         docInputHandler = null;
       }
-      if (targetReadTimer) {
-        clearTimeout(targetReadTimer);
-        targetReadTimer = null;
-      }
+      clearPendingTargetRead();
       clearBuffer();
     }
 

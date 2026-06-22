@@ -13,18 +13,20 @@
       <div class="pc-brand">
         <img class="pc-logo" src="./assets/FS_logo.png" alt="FlowStock" />
       </div>
-      <nav class="pc-tabs">
-        <button class="btn pc-tab is-active" data-view="orders">Заказы</button>
-        <button class="btn pc-tab" data-view="stock">Состояние склада</button>
-        <button class="btn pc-tab" data-view="production-need">Потребность производства</button>
-        <button class="btn pc-tab" data-view="catalog">Каталог</button>
-        <button class="btn pc-tab" data-view="warehouse-board">Задания склада</button>
-      </nav>
       <div class="pc-account">
         <div id="accountLabel" class="pc-account-label">Гость</div>
         <button id="logoutBtn" class="btn btn-outline pc-logout" type="button">Выйти</button>
       </div>
     </header>
+    <nav class="pc-subnav">
+      <div class="pc-tabs">
+        <button class="pc-tab is-active" data-view="orders">Заказы</button>
+        <button class="pc-tab" data-view="stock">Состояние склада</button>
+        <button class="pc-tab" data-view="production-need">Потребность производства</button>
+        <button class="pc-tab" data-view="catalog">Каталог</button>
+        <button class="pc-tab" data-view="warehouse-board">Задания склада</button>
+      </div>
+    </nav>
     <main id="app" class="pc-content"></main>
     <script src="./pc-core.js"></script>
     <script src="./pc-auth.js"></script>
