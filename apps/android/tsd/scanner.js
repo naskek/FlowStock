@@ -229,6 +229,12 @@
         : function () {
             return null;
           };
+    var getLifecycleObserver =
+      typeof config.getLifecycleObserver === "function"
+        ? config.getLifecycleObserver
+        : function () {
+            return null;
+          };
     var onScan = null;
     var onError = null;
     var buffer = "";
@@ -265,20 +271,34 @@
       return typeof getDiagnosticObserver() === "function";
     }
 
+    function hasLifecycleObserver() {
+      return typeof getLifecycleObserver() === "function";
+    }
+
     function notify(type, detail) {
       var observer = getDiagnosticObserver();
-      if (typeof observer !== "function") {
-        return;
+      var lifecycleObserver = getLifecycleObserver();
+      if (typeof observer === "function") {
+        notifyDiagnostic(observer, type, detail);
       }
-      notifyDiagnostic(observer, type, detail);
+      if (typeof lifecycleObserver === "function") {
+        notifyDiagnostic(lifecycleObserver, type, detail);
+      }
     }
 
     function notifyRaw(type, event, extra) {
       var observer = getDiagnosticObserver();
-      if (typeof observer !== "function") {
+      var lifecycleObserver = getLifecycleObserver();
+      if (typeof observer !== "function" && typeof lifecycleObserver !== "function") {
         return;
       }
-      notifyDiagnostic(observer, type, eventTelemetry(event, extra));
+      var detail = eventTelemetry(event, extra);
+      if (typeof observer === "function") {
+        notifyDiagnostic(observer, type, detail);
+      }
+      if (typeof lifecycleObserver === "function") {
+        notifyDiagnostic(lifecycleObserver, type, detail);
+      }
     }
 
     function ensureAttemptId() {
@@ -620,7 +640,7 @@
       if (buffer && event.key === "Tab") {
         pendingObservedTerminator = "Tab";
       }
-      if (hasDiagnosticObserver()) {
+      if (hasDiagnosticObserver() || hasLifecycleObserver()) {
         var printable =
           event.key &&
           event.key.length === 1 &&
@@ -889,6 +909,12 @@
         : function () {
             return null;
           };
+    var getLifecycleObserver =
+      typeof config.getLifecycleObserver === "function"
+        ? config.getLifecycleObserver
+        : function () {
+            return null;
+          };
     var onScan = null;
     var onError = null;
     var dedupe = createDedupe(config.dedupeMs);
@@ -901,12 +927,19 @@
       return typeof getDiagnosticObserver() === "function";
     }
 
+    function hasLifecycleObserver() {
+      return typeof getLifecycleObserver() === "function";
+    }
+
     function notify(type, detail) {
       var observer = getDiagnosticObserver();
-      if (typeof observer !== "function") {
-        return;
+      var lifecycleObserver = getLifecycleObserver();
+      if (typeof observer === "function") {
+        notifyDiagnostic(observer, type, detail);
       }
-      notifyDiagnostic(observer, type, detail);
+      if (typeof lifecycleObserver === "function") {
+        notifyDiagnostic(lifecycleObserver, type, detail);
+      }
     }
 
     function nextAttemptId() {
@@ -922,7 +955,7 @@
     function handlePayload(payload) {
       var attemptId = nextAttemptId();
       var scanId = nextScanId(attemptId);
-      if (hasDiagnosticObserver()) {
+      if (hasDiagnosticObserver() || hasLifecycleObserver()) {
         notify("raw-input", {
           providerType: "intent",
           attemptId: attemptId,
@@ -1088,13 +1121,19 @@
     var scanHandler = null;
     var errorHandler = null;
     var diagnosticObserver = null;
+    var lifecycleObserver = null;
 
     function getDiagnosticObserver() {
       return diagnosticObserver;
     }
 
+    function getLifecycleObserver() {
+      return lifecycleObserver;
+    }
+
     function notify(type, detail) {
       notifyDiagnostic(diagnosticObserver, type, detail);
+      notifyDiagnostic(lifecycleObserver, type, detail);
     }
 
     var keyboardScanner = createKeyboardWedgeScanner({
@@ -1104,11 +1143,13 @@
       inputDelayMs: config.inputDelayMs,
       keyDelayMs: config.keyDelayMs,
       getDiagnosticObserver: getDiagnosticObserver,
+      getLifecycleObserver: getLifecycleObserver,
     });
     var intentScanner = createAndroidIntentScanner({
       canScan: canScan,
       dedupeMs: config.dedupeMs,
       getDiagnosticObserver: getDiagnosticObserver,
+      getLifecycleObserver: getLifecycleObserver,
     });
 
     function attachProvider(nextProvider) {
@@ -1218,6 +1259,12 @@
       },
       clearDiagnosticObserver: function () {
         diagnosticObserver = null;
+      },
+      setLifecycleObserver: function (observer) {
+        lifecycleObserver = typeof observer === "function" ? observer : null;
+      },
+      clearLifecycleObserver: function () {
+        lifecycleObserver = null;
       },
       getSettings: function () {
         return {

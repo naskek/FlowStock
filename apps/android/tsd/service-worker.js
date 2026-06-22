@@ -7,6 +7,7 @@ const ASSETS = [
   "./styles.css",
   "./app.js",
   "./storage.js",
+  "./scanner-lifecycle-diagnostics.js",
   "./scanner.js",
   "./scanner-diagnostics-manifest.js",
   "./scanner-diagnostics-store.js",

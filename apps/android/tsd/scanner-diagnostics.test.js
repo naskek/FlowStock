@@ -52,7 +52,7 @@ function loadDiagnosticsContext(extra) {
       screen: { width: 360, height: 640 },
       devicePixelRatio: 2,
       location: { hash: "" },
-      TSD_PWA_VERSION: "54",
+      TSD_PWA_VERSION: "55",
       document: createFakeDocument(),
     },
     extra || {}
@@ -1120,10 +1120,10 @@ async function testTabTerminatorReportMeasurement() {
 
 async function testScannerObserverOverheadGuard() {
   assert(
-    scannerJs.includes(
-      'function notifyRaw(type, event, extra) {\n      var observer = getDiagnosticObserver();\n      if (typeof observer !== "function") {\n        return;\n      }\n      notifyDiagnostic(observer, type, eventTelemetry(event, extra));\n    }'
-    ),
-    "raw event telemetry should be guarded by observer presence"
+    scannerJs.includes('var lifecycleObserver = getLifecycleObserver();') &&
+      scannerJs.includes('if (typeof observer !== "function" && typeof lifecycleObserver !== "function")') &&
+      scannerJs.includes("var detail = eventTelemetry(event, extra);"),
+    "raw event telemetry should be guarded by diagnostic/lifecycle observer presence"
   );
 
   const keyboard = createScannerContext();
@@ -1758,11 +1758,13 @@ function testShellIntegration() {
   assert(indexHtml.includes("scanner-diagnostics-manifest.js"));
   assert(indexHtml.indexOf("scanner-diagnostics-manifest.js") < indexHtml.indexOf("scanner-diagnostics-store.js"));
   assert(indexHtml.indexOf("scanner-diagnostics-store.js") < indexHtml.indexOf("scanner-diagnostics.js"));
+  assert(indexHtml.indexOf("scanner-lifecycle-diagnostics.js") < indexHtml.indexOf("scanner.js"));
   assert(indexHtml.includes("scanner-diagnostics.js"));
+  assert(serviceWorkerJs.includes('"./scanner-lifecycle-diagnostics.js"'));
   assert(serviceWorkerJs.includes('"./scanner-diagnostics-manifest.js"'));
   assert(serviceWorkerJs.includes('"./scanner-diagnostics-store.js"'));
   assert(serviceWorkerJs.includes('"./scanner-diagnostics.js"'));
-  assert(appVersionJs.includes('var version = "54"'));
+  assert(appVersionJs.includes('var version = "55"'));
   assert(appJs.includes('id="scannerDiagnosticsBtn"'));
   assert(appJs.includes('navigate("/scanner-diagnostics")'));
   assert(appJs.includes('route.name === "scannerDiagnostics"'));

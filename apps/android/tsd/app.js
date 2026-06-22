@@ -37,7 +37,10 @@
   var LIVE_RECONNECT_DELAY_MS = 2500;
   var LIVE_REFRESH_DEBOUNCE_MS = 300;
   var ROUTE_TRANSITION_MS = 190;
+  var routeRenderGeneration = 0;
+  var pendingRouteRenderCount = 0;
   var activeLiveRefreshHandler = null;
+  var activeScanHandlerOwner = "";
   var serverStatus = { ok: null, checkedAt: 0 };
   var lastRouteTransitionKey = "";
   var routeTransitionTimerId = 0;
@@ -310,6 +313,165 @@
     return lines.join("\n");
   }
 
+  function getRouteKey(route) {
+    if (!route) {
+      return "";
+    }
+    var parts = [String(route.name || "")];
+    if (route.id != null) {
+      parts.push(String(route.id));
+    }
+    if (route.op) {
+      parts.push(String(route.op));
+    }
+    return parts.join(":");
+  }
+
+  function describeLifecycleElement(el) {
+    if (!el) {
+      return null;
+    }
+    var rectCount = null;
+    try {
+      rectCount = typeof el.getClientRects === "function" ? el.getClientRects().length : null;
+    } catch (error) {
+      rectCount = null;
+    }
+    var value = typeof el.value === "string" ? el.value : "";
+    return {
+      tagName: el.tagName || "",
+      id: el.id || "",
+      className: el.className || "",
+      scanAllow:
+        typeof el.getAttribute === "function" ? el.getAttribute("data-scan-allow") || "" : "",
+      isConnected: el.isConnected !== false,
+      disabled: el.disabled === true,
+      rectCount: rectCount,
+      valueLength: value.length,
+    };
+  }
+
+  function getLifecycleStateSnapshot() {
+    var active = document.activeElement;
+    var preferredRaw = scanPreferredTarget || null;
+    var preferred = getPreferredScanTarget();
+    var blockReason = getScanBlockReason();
+    var provider =
+      scannerManager && scannerManager.getProviderType
+        ? scannerManager.getProviderType()
+        : "keyboard";
+    return {
+      routeName: currentRoute ? currentRoute.name : "",
+      routeKey: getRouteKey(currentRoute),
+      routeGeneration: routeRenderGeneration,
+      pendingRouteRenderCount: pendingRouteRenderCount,
+      visibilityState: document.visibilityState || "",
+      documentHidden: document.hidden === true,
+      documentHasFocus: typeof document.hasFocus === "function" ? document.hasFocus() : undefined,
+      activeElement: describeLifecycleElement(active),
+      preferredTarget: describeLifecycleElement(preferredRaw),
+      preferredTargetEffective: describeLifecycleElement(preferred),
+      scanHandlerActive: scanHandlerActive,
+      handlerOwner: activeScanHandlerOwner,
+      scannerMode: scannerMode,
+      providerType: provider,
+      canScanNow: scanHandlerActive && !blockReason,
+      blockReason: blockReason,
+      overlayOpen: isManualOverlayOpen(),
+      softKeyboardEnabled: softKeyboardEnabled,
+      criticalOperation: getTsdCriticalOperationDiagnostics
+        ? getTsdCriticalOperationDiagnostics()
+        : { count: 0, reasons: {} },
+    };
+  }
+
+  function getLifecycleDiagnostics() {
+    return window.FlowStockScannerLifecycleDiagnostics || null;
+  }
+
+  function recordScannerLifecycle(type, detail) {
+    var diagnostics = getLifecycleDiagnostics();
+    if (!diagnostics || typeof diagnostics.record !== "function") {
+      return null;
+    }
+    return diagnostics.record(type, detail || {});
+  }
+
+  function configureScannerLifecycleDiagnostics() {
+    var diagnostics = getLifecycleDiagnostics();
+    if (diagnostics && typeof diagnostics.setStateProvider === "function") {
+      diagnostics.setStateProvider(getLifecycleStateSnapshot);
+    }
+  }
+
+  function makeRouteRenderToken(route, source) {
+    routeRenderGeneration += 1;
+    pendingRouteRenderCount += 1;
+    var token = {
+      generation: routeRenderGeneration,
+      routeKey: getRouteKey(route),
+      routeName: route && route.name ? route.name : "",
+      source: source || "renderRoute",
+      completed: false,
+    };
+    recordScannerLifecycle("route-render-requested", token);
+    return token;
+  }
+
+  function isRouteRenderTokenActive(token) {
+    return !!(token && token.generation === routeRenderGeneration);
+  }
+
+  function finishRouteRenderToken(token, status, detail) {
+    if (!token || token.completed) {
+      return;
+    }
+    token.completed = true;
+    if (pendingRouteRenderCount > 0) {
+      pendingRouteRenderCount -= 1;
+    }
+    recordScannerLifecycle(status || "route-render-completed", Object.assign({}, token, detail || {}));
+  }
+
+  function markRouteRenderStale(token, phase) {
+    if (!token) {
+      return false;
+    }
+    recordScannerLifecycle("route-render-stale", {
+      generation: token.generation,
+      routeKey: token.routeKey,
+      phase: phase || "",
+      activeGeneration: routeRenderGeneration,
+    });
+    finishRouteRenderToken(token, "route-render-stale-completed");
+    return false;
+  }
+
+  function setRouteHtml(token, html, phase) {
+    if (token && !isRouteRenderTokenActive(token)) {
+      return markRouteRenderStale(token, phase || "set-html");
+    }
+    app.innerHTML = html;
+    return true;
+  }
+
+  function completeRouteRender(token) {
+    if (token && !isRouteRenderTokenActive(token)) {
+      return markRouteRenderStale(token, "finish-route-render");
+    }
+    finishRouteRender();
+    finishRouteRenderToken(token, "route-render-completed");
+    return true;
+  }
+
+  function runIfRouteRenderActive(token, phase, fn) {
+    if (token && !isRouteRenderTokenActive(token)) {
+      return markRouteRenderStale(token, phase);
+    }
+    fn();
+    return true;
+  }
+
   function appendScanDebug(label, message) {
     if (!scanDebug.enabled) {
       return;
@@ -563,6 +725,9 @@
   }
 
   function finishRouteRender() {
+    recordScannerLifecycle("finish-route-render", {
+      routeKey: getRouteKey(currentRoute),
+    });
     applySoftKeyboardSetting(app);
     ensureScanFocus();
   }
@@ -954,40 +1119,54 @@
 
   function canScanNow() {
     if (!scanHandlerActive) {
+      recordScannerLifecycle("can-scan-decision", { canScan: false, blockReason: "handler-off" });
       return false;
     }
     if (isManualOverlayOpen()) {
+      recordScannerLifecycle("can-scan-decision", { canScan: false, blockReason: "modal-open" });
       return false;
     }
     if (currentRoute && currentRoute.name === "login") {
+      recordScannerLifecycle("can-scan-decision", { canScan: false, blockReason: "login" });
       return false;
     }
     var active = document.activeElement;
     if (!active) {
+      recordScannerLifecycle("can-scan-decision", { canScan: true, blockReason: "" });
       return true;
     }
     if (scanSink && active === scanSink) {
+      recordScannerLifecycle("can-scan-decision", { canScan: true, blockReason: "" });
       return true;
     }
     if (isScanAllowedElement(active)) {
+      recordScannerLifecycle("can-scan-decision", { canScan: true, blockReason: "" });
       return true;
     }
     if (active.isContentEditable) {
+      recordScannerLifecycle("can-scan-decision", { canScan: false, blockReason: "content-editable" });
       return false;
     }
     var tag = active.tagName;
     if (!tag) {
+      recordScannerLifecycle("can-scan-decision", { canScan: true, blockReason: "" });
       return true;
     }
     tag = tag.toUpperCase();
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
+      recordScannerLifecycle("can-scan-decision", { canScan: false, blockReason: "focus-input" });
       return false;
     }
+    recordScannerLifecycle("can-scan-decision", { canScan: true, blockReason: "" });
     return true;
   }
 
   function setPreferredScanTarget(el) {
     scanPreferredTarget = el || null;
+    recordScannerLifecycle(el ? "preferred-target-set" : "preferred-target-cleared", {
+      target: describeLifecycleElement(el || null),
+      routeKey: getRouteKey(currentRoute),
+    });
   }
 
   function getPreferredScanTarget() {
@@ -1035,6 +1214,10 @@
   }
 
   function ensureScanFocus() {
+    recordScannerLifecycle("ensure-scan-focus", {
+      routeKey: getRouteKey(currentRoute),
+      blockReason: getScanBlockReason(),
+    });
     if (!scanHandlerActive) {
       return;
     }
@@ -1050,6 +1233,10 @@
   function enterScanMode() {
     var active = document.activeElement;
     if (isScanAllowedElement(active)) {
+      recordScannerLifecycle("focus-target-selected", {
+        strategy: "active-scan-allowed",
+        target: describeLifecycleElement(active),
+      });
       setScanHighlight(true);
       if (isSoftKeyboardSuppressed()) {
         hideVirtualKeyboard();
@@ -1060,6 +1247,10 @@
       active.blur();
     }
     if (focusPreferredScanTarget()) {
+      recordScannerLifecycle("focus-target-selected", {
+        strategy: "preferred-target",
+        target: describeLifecycleElement(document.activeElement),
+      });
       setScanHighlight(true);
       if (isSoftKeyboardSuppressed()) {
         hideVirtualKeyboard();
@@ -1068,6 +1259,10 @@
     }
     if (scannerManager && scannerManager.focus) {
       scannerManager.focus();
+      recordScannerLifecycle("focus-target-selected", {
+        strategy: "scanner-manager",
+        target: describeLifecycleElement(document.activeElement),
+      });
       setScanHighlight(true);
       if (isSoftKeyboardSuppressed()) {
         hideVirtualKeyboard();
@@ -1078,6 +1273,10 @@
       scanSink.value = "";
       scanSink.focus();
     }
+    recordScannerLifecycle("focus-target-selected", {
+      strategy: "scan-sink",
+      target: describeLifecycleElement(document.activeElement),
+    });
     setScanHighlight(true);
     if (isSoftKeyboardSuppressed()) {
       hideVirtualKeyboard();
@@ -1087,6 +1286,11 @@
   function setScanHandler(handler) {
     scanHandlerActive = !!handler;
     activeScanHandler = handler || null;
+    activeScanHandlerOwner = handler ? getRouteKey(currentRoute) : "";
+    recordScannerLifecycle(handler ? "handler-set" : "handler-cleared", {
+      owner: activeScanHandlerOwner,
+      routeKey: getRouteKey(currentRoute),
+    });
     var wrappedHandler = handler
       ? function (scan) {
           if (scanDebug.enabled) {
@@ -1097,7 +1301,46 @@
             appendScanDebug("scan", detail);
           }
           if (activeScanHandler) {
-            activeScanHandler(scan);
+            var handlerOwner = activeScanHandlerOwner;
+            recordScannerLifecycle("business-handler-started", {
+              owner: handlerOwner,
+              source: scan && scan.source ? scan.source : "",
+              attemptId: scan && scan.attemptId ? scan.attemptId : undefined,
+              scanId: scan && scan.scanId ? scan.scanId : undefined,
+              value: scan && scan.value ? scan.value : "",
+            });
+            try {
+              var result = activeScanHandler(scan);
+              if (result && typeof result.then === "function") {
+                result.then(
+                  function () {
+                    recordScannerLifecycle("business-handler-completed", {
+                      owner: handlerOwner,
+                      async: true,
+                    });
+                  },
+                  function (error) {
+                    recordScannerLifecycle("business-handler-failed", {
+                      owner: handlerOwner,
+                      async: true,
+                      message: error && error.message ? error.message : String(error || "error"),
+                    });
+                  }
+                );
+              } else {
+                recordScannerLifecycle("business-handler-completed", {
+                  owner: handlerOwner,
+                  async: false,
+                });
+              }
+            } catch (error) {
+              recordScannerLifecycle("business-handler-failed", {
+                owner: handlerOwner,
+                async: false,
+                message: error && error.message ? error.message : String(error || "error"),
+              });
+              throw error;
+            }
           }
         }
       : null;
@@ -1118,10 +1361,19 @@
     if (!window.FlowStockScanner || !window.FlowStockScanner.createScannerManager) {
       return Promise.resolve(false);
     }
+    configureScannerLifecycleDiagnostics();
     scannerManager = window.FlowStockScanner.createScannerManager({
       scanSink: scanSink,
       canScan: canScanNow,
     });
+    recordScannerLifecycle("scanner-manager-created", {
+      scannerMode: scannerMode,
+    });
+    if (scannerManager && typeof scannerManager.setLifecycleObserver === "function") {
+      scannerManager.setLifecycleObserver(function (event) {
+        recordScannerLifecycle(event && event.type ? event.type : "scanner-event", event && event.detail ? event.detail : {});
+      });
+    }
     scannerManager.setErrorHandler(function (error) {
       if (window.console && console.warn) {
         console.warn("Scanner error", error);
@@ -2020,7 +2272,10 @@
     return backRoute;
   }
 
-  function renderRoute() {
+  function renderRoute(source) {
+    var route = getRoute();
+    var sourceLabel = typeof source === "string" ? source : "renderRoute";
+    var token = makeRouteRenderToken(route, sourceLabel);
     setScanHandler(null);
     setScanInputHandlers(null, null);
     setPreferredScanTarget(null);
@@ -2032,16 +2287,18 @@
       window.FlowStockScannerDiagnostics.cleanupRoute();
     }
     if (!window.location.hash || window.location.hash === "#") {
+      finishRouteRenderToken(token, "route-render-completed", { redirected: true });
       navigate(loadLastRoute() || "/home");
       return;
     }
-    var route = getRoute();
     saveLastRoute("/" + (window.location.hash || "").replace(/^#\/?/, ""));
     currentRoute = route;
+    recordScannerLifecycle("route-render-started", token);
     prepareRouteTransition(route);
     setCurrentClientBlockContext(resolveRouteBlockContext(route));
 
     if (!app) {
+      finishRouteRenderToken(token, "route-render-completed", { noApp: true });
       return;
     }
 
@@ -2049,50 +2306,76 @@
       .then(function (deviceId) {
         var hasDevice = deviceId && String(deviceId).trim();
         if (!hasDevice && route.name !== "login") {
+          finishRouteRenderToken(token, "route-render-completed", { redirected: true });
           navigate("/login");
           return;
         }
         if (hasDevice && route.name === "login") {
+          finishRouteRenderToken(token, "route-render-completed", { redirected: true });
           navigate("/home");
           return;
         }
         ensureClientBlocksLoaded(true)
           .then(function () {
+            if (!isRouteRenderTokenActive(token)) {
+              markRouteRenderStale(token, "client-blocks");
+              return;
+            }
             if (!isRouteAllowed(route)) {
+              finishRouteRenderToken(token, "route-render-completed", { redirected: true });
               navigate("/home");
               return;
             }
             updateHeader(route);
-            renderRouteInternal(route);
+            renderRouteInternal(route, token);
           })
           .catch(function () {
+            if (!isRouteRenderTokenActive(token)) {
+              markRouteRenderStale(token, "client-blocks-error");
+              return;
+            }
             updateHeader(route);
-            renderRouteInternal(route);
+            renderRouteInternal(route, token);
           });
       })
       .catch(function () {
         if (route.name !== "login") {
+          finishRouteRenderToken(token, "route-render-completed", { redirected: true });
           navigate("/login");
           return;
         }
         ensureClientBlocksLoaded(true)
           .then(function () {
+            if (!isRouteRenderTokenActive(token)) {
+              markRouteRenderStale(token, "login-client-blocks");
+              return;
+            }
             updateHeader(route);
-            renderRouteInternal(route);
+            renderRouteInternal(route, token);
           })
           .catch(function () {
+            if (!isRouteRenderTokenActive(token)) {
+              markRouteRenderStale(token, "login-client-blocks-error");
+              return;
+            }
             updateHeader(route);
-            renderRouteInternal(route);
+            renderRouteInternal(route, token);
           });
       });
   }
 
-  function renderRouteInternal(route) {
+  function renderRouteInternal(route, token) {
+    if (token && !isRouteRenderTokenActive(token)) {
+      markRouteRenderStale(token, "render-route-internal");
+      return;
+    }
     currentRoute = route;
     if (route.name === "login") {
-      app.innerHTML = renderLogin();
+      if (!setRouteHtml(token, renderLogin(), "login-html")) {
+        return;
+      }
       wireLogin();
-      finishRouteRender();
+      completeRouteRender(token);
       return;
     }
 
@@ -2106,7 +2389,9 @@
         return;
       }
       setCurrentClientBlockContext(getOperationBlockKey(route.op) || "tsd_operations");
-      app.innerHTML = renderLoading();
+      if (!setRouteHtml(token, renderLoading(), "docs-loading")) {
+        return;
+      }
       Promise.all([
         TsdStorage.apiGetDocs(route.op).catch(function () {
           return null;
@@ -2139,13 +2424,17 @@
             });
             list = localDocs.concat(list);
           }
-          app.innerHTML = renderDocsList(list, route.op, notice);
-          wireDocsList();
-          finishRouteRender();
+          runIfRouteRenderActive(token, "docs-loaded", function () {
+            app.innerHTML = renderDocsList(list, route.op, notice);
+            wireDocsList();
+            completeRouteRender(token);
+          });
         })
         .catch(function () {
-          app.innerHTML = renderError("Ошибка загрузки документов");
-          finishRouteRender();
+          runIfRouteRenderActive(token, "docs-error", function () {
+            app.innerHTML = renderError("Ошибка загрузки документов");
+            completeRouteRender(token);
+          });
         });
       return;
     }
@@ -2155,9 +2444,11 @@
         navigate("/home");
         return;
       }
-      app.innerHTML = renderOperationsMenu();
+      if (!setRouteHtml(token, renderOperationsMenu(), "operations-html")) {
+        return;
+      }
       wireOperationsMenu();
-      finishRouteRender();
+      completeRouteRender(token);
       return;
     }
 
@@ -2167,17 +2458,23 @@
         return;
       }
       setCurrentClientBlockContext(getOperationBlockKey("PRODUCTION_RECEIPT") || "tsd_operations");
-      app.innerHTML = renderFillingLoading();
+      if (!setRouteHtml(token, renderFillingLoading(), "filling-loading")) {
+        return;
+      }
       TsdStorage.apiGetProductionFillingOrders()
         .then(function (items) {
-          app.innerHTML = renderFillingList(items || []);
-          wireFillingList();
-          finishRouteRender();
+          runIfRouteRenderActive(token, "filling-loaded", function () {
+            app.innerHTML = renderFillingList(items || []);
+            wireFillingList();
+            completeRouteRender(token);
+          });
         })
         .catch(function (error) {
           console.error(error);
-          app.innerHTML = renderError("Не удалось загрузить заказы для наполнения");
-          finishRouteRender();
+          runIfRouteRenderActive(token, "filling-error", function () {
+            app.innerHTML = renderError("Не удалось загрузить заказы для наполнения");
+            completeRouteRender(token);
+          });
         });
       return;
     }
@@ -2188,15 +2485,22 @@
         return;
       }
       setCurrentClientBlockContext(getOperationBlockKey("PRODUCTION_RECEIPT") || "tsd_operations");
-      app.innerHTML = renderLoading();
+      if (!setRouteHtml(token, renderLoading(), "filling-doc-loading")) {
+        return;
+      }
       loadFillingContext(route.id)
         .then(function (context) {
-          renderFillingScanScreen(context, { message: "", messageType: "", preview: null });
+          runIfRouteRenderActive(token, "filling-doc-loaded", function () {
+            renderFillingScanScreen(context, { message: "", messageType: "", preview: null });
+            finishRouteRenderToken(token, "route-render-completed");
+          });
         })
         .catch(function (error) {
           console.error(error);
-          app.innerHTML = renderError(String(error && error.message ? error.message : "Ошибка загрузки наполнения"));
-          finishRouteRender();
+          runIfRouteRenderActive(token, "filling-doc-error", function () {
+            app.innerHTML = renderError(String(error && error.message ? error.message : "Ошибка загрузки наполнения"));
+            completeRouteRender(token);
+          });
         });
       return;
     }
@@ -2207,17 +2511,23 @@
         return;
       }
       setCurrentClientBlockContext(getOperationBlockKey("OUTBOUND") || "tsd_operations");
-      app.innerHTML = renderLoading();
+      if (!setRouteHtml(token, renderLoading(), "outbound-loading")) {
+        return;
+      }
       TsdStorage.apiGetOutboundPickingOrders()
         .then(function (orders) {
-          app.innerHTML = renderOutboundPickingList(orders || []);
-          wireOutboundPickingList();
-          finishRouteRender();
+          runIfRouteRenderActive(token, "outbound-loaded", function () {
+            app.innerHTML = renderOutboundPickingList(orders || []);
+            wireOutboundPickingList();
+            completeRouteRender(token);
+          });
         })
         .catch(function (error) {
           console.error(error);
-          app.innerHTML = renderError("Не удалось загрузить заказы для отгрузки");
-          finishRouteRender();
+          runIfRouteRenderActive(token, "outbound-error", function () {
+            app.innerHTML = renderError("Не удалось загрузить заказы для отгрузки");
+            completeRouteRender(token);
+          });
         });
       return;
     }
@@ -2228,15 +2538,22 @@
         return;
       }
       setCurrentClientBlockContext(getOperationBlockKey("OUTBOUND") || "tsd_operations");
-      app.innerHTML = renderLoading();
+      if (!setRouteHtml(token, renderLoading(), "outbound-order-loading")) {
+        return;
+      }
       TsdStorage.apiGetOutboundPickingOrder(route.id)
         .then(function (order) {
-          renderOutboundPickingOrder(order, { message: "", messageType: "" });
+          runIfRouteRenderActive(token, "outbound-order-loaded", function () {
+            renderOutboundPickingOrder(order, { message: "", messageType: "" });
+            finishRouteRenderToken(token, "route-render-completed");
+          });
         })
         .catch(function (error) {
           console.error(error);
-          app.innerHTML = renderError(String(error && error.message ? error.message : "Ошибка загрузки отгрузки"));
-          finishRouteRender();
+          runIfRouteRenderActive(token, "outbound-order-error", function () {
+            app.innerHTML = renderError(String(error && error.message ? error.message : "Ошибка загрузки отгрузки"));
+            completeRouteRender(token);
+          });
         });
       return;
     }
@@ -2247,20 +2564,26 @@
         return;
       }
       setCurrentClientBlockContext("tsd_warehouse_tasks");
-      app.innerHTML = renderLoading();
+      if (!setRouteHtml(token, renderLoading(), "tasks-loading")) {
+        return;
+      }
       getWarehouseTaskDeviceId()
         .then(function (deviceId) {
           return TsdStorage.apiListWarehouseTasks(deviceId);
         })
         .then(function (tasks) {
-          app.innerHTML = renderWarehouseTasksList(tasks || []);
-          wireWarehouseTasksList();
-          finishRouteRender();
+          runIfRouteRenderActive(token, "tasks-loaded", function () {
+            app.innerHTML = renderWarehouseTasksList(tasks || []);
+            wireWarehouseTasksList();
+            completeRouteRender(token);
+          });
         })
         .catch(function (error) {
           console.error(error);
-          app.innerHTML = renderError(mapWarehouseTaskError(error));
-          finishRouteRender();
+          runIfRouteRenderActive(token, "tasks-error", function () {
+            app.innerHTML = renderError(mapWarehouseTaskError(error));
+            completeRouteRender(token);
+          });
         });
       return;
     }
@@ -2271,19 +2594,29 @@
         return;
       }
       setCurrentClientBlockContext("tsd_warehouse_tasks");
-      app.innerHTML = renderLoading();
-      openWarehouseTaskDetail(route.id, { message: "", messageType: "" });
+      if (!setRouteHtml(token, renderLoading(), "task-doc-loading")) {
+        return;
+      }
+      openWarehouseTaskDetail(route.id, { message: "", messageType: "" }).then(function () {
+        finishRouteRenderToken(token, "route-render-completed");
+      });
       return;
     }
 
     if (route.name === "doc") {
-      app.innerHTML = renderLoading();
+      if (!setRouteHtml(token, renderLoading(), "doc-loading")) {
+        return;
+      }
       if (isServerDocId(route.id)) {
         TsdStorage.apiGetDocById(route.id)
           .then(function (doc) {
+            if (!isRouteRenderTokenActive(token)) {
+              markRouteRenderStale(token, "server-doc-loaded");
+              return;
+            }
             if (!doc) {
               app.innerHTML = renderError("Документ не найден");
-              finishRouteRender();
+              completeRouteRender(token);
               return;
             }
             if (!isOperationEnabled(doc.op)) {
@@ -2293,29 +2626,42 @@
             setCurrentClientBlockContext(getOperationBlockKey(doc.op) || currentClientBlockContext);
             return TsdStorage.apiGetDocLines(route.id)
               .then(function (lines) {
+                if (!isRouteRenderTokenActive(token)) {
+                  markRouteRenderStale(token, "server-doc-lines-loaded");
+                  return;
+                }
                 if (doc.status === "DRAFT" && doc.doc_uid) {
                   startDraftDoc(doc, lines || []);
+                  finishRouteRenderToken(token, "route-render-completed");
                   return;
                 }
                 app.innerHTML = renderServerDoc(doc, lines || []);
                 wireServerDoc(doc, lines || []);
-                finishRouteRender();
+                completeRouteRender(token);
               })
               .catch(function () {
-                app.innerHTML = renderError("Ошибка загрузки строк документа");
-                finishRouteRender();
+                runIfRouteRenderActive(token, "server-doc-lines-error", function () {
+                  app.innerHTML = renderError("Ошибка загрузки строк документа");
+                  completeRouteRender(token);
+                });
               });
           })
           .catch(function () {
-            app.innerHTML = renderError("Ошибка загрузки документа");
-            finishRouteRender();
+            runIfRouteRenderActive(token, "server-doc-error", function () {
+              app.innerHTML = renderError("Ошибка загрузки документа");
+              completeRouteRender(token);
+            });
           });
       } else {
         TsdStorage.getDoc(route.id)
           .then(function (doc) {
+            if (!isRouteRenderTokenActive(token)) {
+              markRouteRenderStale(token, "local-doc-loaded");
+              return;
+            }
             if (!doc) {
               app.innerHTML = renderError("Документ не найден");
-              finishRouteRender();
+              completeRouteRender(token);
               return;
             }
             if (!isOperationEnabled(doc.op)) {
@@ -2325,20 +2671,24 @@
             setCurrentClientBlockContext(getOperationBlockKey(doc.op) || currentClientBlockContext);
             app.innerHTML = renderDoc(doc);
             wireDoc(doc);
-            finishRouteRender();
+            completeRouteRender(token);
           })
           .catch(function () {
-            app.innerHTML = renderError("Ошибка загрузки документа");
-            finishRouteRender();
+            runIfRouteRenderActive(token, "local-doc-error", function () {
+              app.innerHTML = renderError("Ошибка загрузки документа");
+              completeRouteRender(token);
+            });
           });
       }
       return;
     }
 
     if (route.name === "settings") {
-      app.innerHTML = renderSettings();
+      if (!setRouteHtml(token, renderSettings(), "settings-html")) {
+        return;
+      }
       wireSettings();
-      finishRouteRender();
+      completeRouteRender(token);
       return;
     }
 
@@ -2348,28 +2698,39 @@
       route.name === "scannerDiagnosticsReport"
     ) {
       if (!window.FlowStockScannerDiagnostics || !window.FlowStockScannerDiagnostics.render) {
-        app.innerHTML = renderError("Диагностика сканера недоступна");
-        finishRouteRender();
+        if (!setRouteHtml(token, renderError("Диагностика сканера недоступна"), "scanner-diagnostics-error")) {
+          return;
+        }
+        completeRouteRender(token);
         return;
       }
       window.FlowStockScannerDiagnostics.render(getScannerDiagnosticsDeps(route), route);
+      finishRouteRenderToken(token, "route-render-completed");
       return;
     }
 
     if (route.name === "orders") {
-      app.innerHTML = renderOrders();
+      if (!setRouteHtml(token, renderOrders(), "orders-html")) {
+        return;
+      }
       wireOrders();
-      finishRouteRender();
+      completeRouteRender(token);
       return;
     }
 
     if (route.name === "order") {
-      app.innerHTML = renderLoading();
+      if (!setRouteHtml(token, renderLoading(), "order-loading")) {
+        return;
+      }
       TsdStorage.getOrderById(route.id)
         .then(function (order) {
+          if (!isRouteRenderTokenActive(token)) {
+            markRouteRenderStale(token, "order-loaded");
+            return;
+          }
           if (!order) {
             app.innerHTML = renderError("Заказ не найден");
-            finishRouteRender();
+            completeRouteRender(token);
             return;
           }
           return Promise.all([
@@ -2381,61 +2742,83 @@
               : Promise.resolve([]),
           ])
             .then(function (results) {
+              if (!isRouteRenderTokenActive(token)) {
+                markRouteRenderStale(token, "order-lines-loaded");
+                return;
+              }
               app.innerHTML = renderOrderDetails(order, results[0] || [], results[1] || []);
               wireOrderDetails();
-              finishRouteRender();
+              completeRouteRender(token);
             })
             .catch(function () {
-              app.innerHTML = renderError("Ошибка загрузки строк заказа");
-              finishRouteRender();
+              runIfRouteRenderActive(token, "order-lines-error", function () {
+                app.innerHTML = renderError("Ошибка загрузки строк заказа");
+                completeRouteRender(token);
+              });
             });
         })
         .catch(function () {
-          app.innerHTML = renderError("Ошибка загрузки заказа");
-          finishRouteRender();
+          runIfRouteRenderActive(token, "order-error", function () {
+            app.innerHTML = renderError("Ошибка загрузки заказа");
+            completeRouteRender(token);
+          });
         });
       return;
     }
 
     if (route.name === "items") {
-      app.innerHTML = renderItems();
+      if (!setRouteHtml(token, renderItems(), "items-html")) {
+        return;
+      }
       wireItems();
-      finishRouteRender();
+      completeRouteRender(token);
       return;
     }
 
     if (route.name === "stock") {
-      app.innerHTML = renderStock();
+      if (!setRouteHtml(token, renderStock(), "stock-html")) {
+        return;
+      }
       wireStock();
-      finishRouteRender();
+      completeRouteRender(token);
       return;
     }
 
     if (route.name === "hu") {
-      app.innerHTML = renderHuLookup();
+      if (!setRouteHtml(token, renderHuLookup(), "hu-html")) {
+        return;
+      }
       wireHuLookup();
-      finishRouteRender();
+      completeRouteRender(token);
       return;
     }
 
     if (route.name === "huCard") {
-      app.innerHTML = renderLoading();
+      if (!setRouteHtml(token, renderLoading(), "hu-card-loading")) {
+        return;
+      }
       TsdStorage.apiGetHuCard(route.id)
         .then(function (card) {
-          app.innerHTML = renderTsdHuCard(card);
-          wireTsdHuCard(card);
-          finishRouteRender();
+          runIfRouteRenderActive(token, "hu-card-loaded", function () {
+            app.innerHTML = renderTsdHuCard(card);
+            wireTsdHuCard(card);
+            completeRouteRender(token);
+          });
         })
         .catch(function () {
-          app.innerHTML = renderError("Ошибка загрузки карточки HU");
-          finishRouteRender();
+          runIfRouteRenderActive(token, "hu-card-error", function () {
+            app.innerHTML = renderError("Ошибка загрузки карточки HU");
+            completeRouteRender(token);
+          });
         });
       return;
     }
 
-    app.innerHTML = renderHome();
+    if (!setRouteHtml(token, renderHome(), "home-html")) {
+      return;
+    }
     wireHome();
-    finishRouteRender();
+    completeRouteRender(token);
   }
 
   function canRefreshClientBlocksForCurrentRoute() {
@@ -2455,6 +2838,42 @@
       currentRoute.name === "tasks" ||
       currentRoute.name === "taskDoc"
     );
+  }
+
+  function handleAppResume(source) {
+    recordScannerLifecycle(source || "app-resume", {
+      routeKey: getRouteKey(currentRoute),
+    });
+    if (!canRefreshClientBlocksForCurrentRoute()) {
+      ensureScanFocus();
+      return;
+    }
+    var routeKey = getRouteKey(currentRoute);
+    ensureClientBlocksLoaded(true)
+      .then(function () {
+        if (routeKey !== getRouteKey(currentRoute)) {
+          recordScannerLifecycle("route-render-stale", {
+            phase: "resume-route-changed",
+            routeKey: routeKey,
+            activeRouteKey: getRouteKey(currentRoute),
+          });
+          return;
+        }
+        if (!isRouteAllowed(currentRoute)) {
+          recordScannerLifecycle("route-render-requested", {
+            source: source || "resume",
+            reason: "block-disabled",
+            routeKey: getRouteKey(currentRoute),
+          });
+          renderRoute(source || "resume-block-disabled");
+          return;
+        }
+        updateHeader(currentRoute);
+        ensureScanFocus();
+      })
+      .catch(function () {
+        ensureScanFocus();
+      });
   }
 
   function renderLoading() {
@@ -7146,6 +7565,16 @@
       "      </span>" +
       "    </label>" +
       (debugPanel ? debugPanel : "") +
+      '    <div class="settings-diagnostic-block">' +
+      '      <div class="section-subtitle">Отчёт сканера приложения</div>' +
+      '      <div class="debug-actions">' +
+      '        <button class="btn btn-outline" type="button" id="scanLifecycleSnapshotBtn">Снимок сейчас</button>' +
+      '        <button class="btn btn-outline" type="button" id="scanLifecycleDownloadBtn">Скачать JSON</button>' +
+      '        <button class="btn btn-outline" type="button" id="scanLifecycleCopyBtn">Копировать JSON</button>' +
+      '        <button class="btn btn-outline" type="button" id="scanLifecycleClearBtn">Очистить</button>' +
+      "      </div>" +
+      '      <div class="field-hint" id="scanLifecycleStatus"></div>' +
+      "    </div>" +
       '    <button class="btn btn-outline" type="button" id="scannerDiagnosticsBtn">Диагностика сканера</button>' +
       '    <button class="btn btn-outline" type="button" id="pwaCheckUpdateBtn">Проверить обновления</button>' +
       '    <div class="settings-version settings-version--centered" id="pwaAppVersion"></div>' +
@@ -12834,6 +13263,11 @@
     var scanDebugStateBtn = document.getElementById("scanDebugStateBtn");
     var scanDebugClearBtn = document.getElementById("scanDebugClearBtn");
     var scanDebugCopyBtn = document.getElementById("scanDebugCopyBtn");
+    var scanLifecycleSnapshotBtn = document.getElementById("scanLifecycleSnapshotBtn");
+    var scanLifecycleDownloadBtn = document.getElementById("scanLifecycleDownloadBtn");
+    var scanLifecycleCopyBtn = document.getElementById("scanLifecycleCopyBtn");
+    var scanLifecycleClearBtn = document.getElementById("scanLifecycleClearBtn");
+    var scanLifecycleStatus = document.getElementById("scanLifecycleStatus");
     var scannerDiagnosticsBtn = document.getElementById("scannerDiagnosticsBtn");
     var pwaAppVersion = document.getElementById("pwaAppVersion");
     var pwaCheckUpdateBtn = document.getElementById("pwaCheckUpdateBtn");
@@ -12936,6 +13370,92 @@
     if (scannerDiagnosticsBtn) {
       scannerDiagnosticsBtn.addEventListener("click", function () {
         navigate("/scanner-diagnostics");
+      });
+    }
+
+    function setLifecycleStatus(message) {
+      if (scanLifecycleStatus) {
+        scanLifecycleStatus.textContent = message || "";
+      }
+    }
+
+    function getLifecycleReportModule() {
+      var diagnostics = getLifecycleDiagnostics();
+      if (!diagnostics) {
+        setLifecycleStatus("Диагностика недоступна.");
+        return null;
+      }
+      return diagnostics;
+    }
+
+    if (scanLifecycleSnapshotBtn) {
+      scanLifecycleSnapshotBtn.addEventListener("click", function () {
+        var diagnostics = getLifecycleReportModule();
+        if (!diagnostics || typeof diagnostics.buildReport !== "function") {
+          return;
+        }
+        recordScannerLifecycle("snapshot-requested", { source: "settings" });
+        var report = diagnostics.buildReport();
+        setLifecycleStatus(
+          "Событий: " +
+            ((report.events && report.events.length) || 0) +
+            ". Класс: " +
+            ((report.summary && report.summary.classification) || "—")
+        );
+      });
+    }
+
+    if (scanLifecycleDownloadBtn) {
+      scanLifecycleDownloadBtn.addEventListener("click", function () {
+        var diagnostics = getLifecycleReportModule();
+        if (!diagnostics || typeof diagnostics.downloadReport !== "function") {
+          return;
+        }
+        recordScannerLifecycle("report-download-requested", { source: "settings" });
+        if (typeof diagnostics.flush === "function") {
+          diagnostics.flush().finally(function () {
+            diagnostics.downloadReport();
+            setLifecycleStatus("Отчёт скачан.");
+          });
+        } else {
+          diagnostics.downloadReport();
+          setLifecycleStatus("Отчёт скачан.");
+        }
+      });
+    }
+
+    if (scanLifecycleCopyBtn) {
+      scanLifecycleCopyBtn.addEventListener("click", function () {
+        var diagnostics = getLifecycleReportModule();
+        if (!diagnostics || typeof diagnostics.copyReport !== "function") {
+          return;
+        }
+        recordScannerLifecycle("report-copy-requested", { source: "settings" });
+        diagnostics
+          .copyReport()
+          .then(function () {
+            setLifecycleStatus("Отчёт скопирован.");
+          })
+          .catch(function () {
+            setLifecycleStatus("Не удалось скопировать отчёт.");
+          });
+      });
+    }
+
+    if (scanLifecycleClearBtn) {
+      scanLifecycleClearBtn.addEventListener("click", function () {
+        var diagnostics = getLifecycleReportModule();
+        if (!diagnostics || typeof diagnostics.clear !== "function") {
+          return;
+        }
+        diagnostics
+          .clear()
+          .then(function () {
+            setLifecycleStatus("История диагностики очищена.");
+          })
+          .catch(function () {
+            setLifecycleStatus("Не удалось очистить историю.");
+          });
       });
     }
 
@@ -14577,6 +15097,10 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
+    configureScannerLifecycleDiagnostics();
+    recordScannerLifecycle("app-init-start", {
+      appVersion: window.TSD_PWA_VERSION || "",
+    });
     TsdStorage.init()
       .then(function () {
         return TsdStorage.ensureDefaults();
@@ -14597,6 +15121,9 @@
         if (isDebugMode()) {
           setScanDebugEnabled(true);
         }
+        recordScannerLifecycle("app-init-completed", {
+          appVersion: window.TSD_PWA_VERSION || "",
+        });
         pingServer(true);
         window.setInterval(function () {
           pingServer(false);
@@ -14604,9 +15131,11 @@
         startVersionWatcher();
         startLiveUpdates();
         window.addEventListener("online", function () {
+          recordScannerLifecycle("online", {});
           pingServer(true);
         });
         window.addEventListener("offline", function () {
+          recordScannerLifecycle("offline", {});
           serverStatus.ok = false;
           serverStatus.checkedAt = Date.now();
           updateNetworkStatus();
@@ -14627,7 +15156,25 @@
           true
         );
         window.addEventListener("focus", function () {
+          recordScannerLifecycle("window-focus", {});
           ensureScanFocus();
+        });
+        window.addEventListener("blur", function () {
+          recordScannerLifecycle("window-blur", {});
+        });
+        window.addEventListener("pageshow", function (event) {
+          recordScannerLifecycle("pageshow", { persisted: event && event.persisted === true });
+          handleAppResume("pageshow");
+        });
+        window.addEventListener("pagehide", function (event) {
+          recordScannerLifecycle("pagehide", { persisted: event && event.persisted === true });
+        });
+        document.addEventListener("freeze", function () {
+          recordScannerLifecycle("freeze", {});
+        });
+        document.addEventListener("resume", function () {
+          recordScannerLifecycle("resume", {});
+          handleAppResume("resume");
         });
         document.addEventListener(
           "focusin",
@@ -14658,17 +15205,16 @@
           true
         );
         document.addEventListener("visibilitychange", function () {
+          recordScannerLifecycle("visibilitychange", {
+            hidden: document.hidden === true,
+            visibilityState: document.visibilityState || "",
+          });
           if (!document.hidden) {
-            if (canRefreshClientBlocksForCurrentRoute()) {
-              renderRoute();
-            }
-            ensureScanFocus();
+            handleAppResume("visibilitychange");
           }
         });
         window.addEventListener("focus", function () {
-          if (canRefreshClientBlocksForCurrentRoute()) {
-            renderRoute();
-          }
+          handleAppResume("window-focus");
         });
         window.addEventListener("flowstock:block-disabled", function () {
           ensureClientBlocksLoaded(true)
