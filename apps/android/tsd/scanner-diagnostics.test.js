@@ -52,7 +52,7 @@ function loadDiagnosticsContext(extra) {
       screen: { width: 360, height: 640 },
       devicePixelRatio: 2,
       location: { hash: "" },
-      TSD_PWA_VERSION: "52",
+      TSD_PWA_VERSION: "53",
       document: createFakeDocument(),
     },
     extra || {}
@@ -211,6 +211,46 @@ function createFakeDocument() {
   return document;
 }
 
+function createFakeApp(document) {
+  let html = "";
+  let mountedElements = [];
+  function detachMounted() {
+    mountedElements.forEach((element) => {
+      element.isConnected = false;
+      if (element.id && document._elements[element.id] === element) {
+        delete document._elements[element.id];
+      }
+    });
+    mountedElements = [];
+  }
+  function mountScannerDiagScanInput(nextHtml) {
+    if (!nextHtml.includes('id="scannerDiagScanInput"')) {
+      return;
+    }
+    const input = createFakeElement("input", "scannerDiagScanInput");
+    input.className = "form-input filling-scan-input tsd-scan-input-hidden";
+    input.isConnected = true;
+    input.setAttribute("type", "text");
+    input.setAttribute("autocomplete", "off");
+    input.setAttribute("autocapitalize", "off");
+    input.setAttribute("autocorrect", "off");
+    input.setAttribute("spellcheck", "false");
+    input.setAttribute("data-scan-allow", "1");
+    document.register(input);
+    mountedElements.push(input);
+  }
+  return {
+    get innerHTML() {
+      return html;
+    },
+    set innerHTML(value) {
+      html = String(value || "");
+      detachMounted();
+      mountScannerDiagScanInput(html);
+    },
+  };
+}
+
 function createMemoryStorage() {
   return {
     draft: null,
@@ -249,9 +289,11 @@ function createMemoryStorage() {
 function createControllerFixture() {
   const context = loadDiagnosticsContext();
   const storage = createMemoryStorage();
-  const app = { innerHTML: "" };
+  const app = createFakeApp(context.document);
   let observer = null;
   let scanHandler = null;
+  const preferredTargets = [];
+  const renderEvents = [];
   const deps = {
     app,
     diagnosticStore: storage,
@@ -276,7 +318,13 @@ function createControllerFixture() {
     setScanHandler(handler) {
       scanHandler = handler;
     },
-    finishRouteRender() {},
+    setPreferredScanTarget(target) {
+      preferredTargets.push(target);
+      renderEvents.push({ type: "preferred-target", target });
+    },
+    finishRouteRender() {
+      renderEvents.push({ type: "finish-render" });
+    },
     navigate(path) {
       deps.lastNavigation = path;
     },
@@ -291,6 +339,8 @@ function createControllerFixture() {
     controller,
     getObserver: () => observer,
     getScanHandler: () => scanHandler,
+    getPreferredTargets: () => preferredTargets,
+    getRenderEvents: () => renderEvents,
   };
 }
 
@@ -573,6 +623,66 @@ async function testWizardFlow() {
   assert.strictEqual(fixture.storage.reports[0].summary.overallStatus, "PASS");
   assert.strictEqual(fixture.getObserver(), null);
   assert.strictEqual(fixture.getScanHandler(), null);
+}
+
+async function testDiagnosticsStepPreferredScanTarget() {
+  const fixture = createControllerFixture();
+  await fixture.controller.startSession();
+
+  const input = fixture.context.document.getElementById("scannerDiagScanInput");
+  assert(input, "diagnostics step should mount hidden scan input");
+  assert(fixture.app.innerHTML.includes('id="scannerDiagScanInput"'));
+  assert.strictEqual(input.getAttribute("data-scan-allow"), "1");
+  assert(input.className.split(/\s+/).includes("form-input"));
+  assert(input.className.split(/\s+/).includes("filling-scan-input"));
+  assert(input.className.split(/\s+/).includes("tsd-scan-input-hidden"));
+  assert.strictEqual(input.getAttribute("type"), "text");
+  assert.strictEqual(input.getAttribute("autocomplete"), "off");
+  assert.strictEqual(input.getAttribute("autocapitalize"), "off");
+  assert.strictEqual(input.getAttribute("autocorrect"), "off");
+  assert.strictEqual(input.getAttribute("spellcheck"), "false");
+
+  const events = fixture.getRenderEvents();
+  const preferredIndex = events.findIndex((event) => event.type === "preferred-target" && event.target === input);
+  const finishIndex = events.findIndex((event) => event.type === "finish-render");
+  assert(preferredIndex >= 0, "diagnostics should assign preferred scan target");
+  assert(finishIndex >= 0, "diagnostics should finish route render");
+  assert(preferredIndex < finishIndex, "preferred target must be assigned before finishRouteRender");
+  assert.strictEqual(fixture.getPreferredTargets().slice(-1)[0], input);
+
+  const draft = JSON.parse(JSON.stringify(fixture.controller.getSession()));
+  await fixture.controller.restoreDraft(draft);
+  const restoredInput = fixture.context.document.getElementById("scannerDiagScanInput");
+  assert(restoredInput);
+  assert.notStrictEqual(restoredInput, input, "restoreDraft should mount a fresh scan input");
+  assert.strictEqual(input.isConnected, false, "old scan input should be detached after rerender");
+  assert.strictEqual(fixture.getPreferredTargets().slice(-1)[0], restoredInput);
+
+  fixture.controller.cleanupRoute();
+  assert.strictEqual(fixture.getPreferredTargets().slice(-1)[0], null);
+}
+
+async function testDiagnosticsRouteCleanupClearsPreferredTargetOnHistoryReportAndStart() {
+  const fixture = createControllerFixture();
+  await fixture.controller.startSession();
+  assert(fixture.getPreferredTargets().slice(-1)[0]);
+
+  fixture.controller.render({ name: "scannerDiagnosticsHistory" });
+  assert.strictEqual(fixture.getPreferredTargets().slice(-1)[0], null, "history route should clear step scan target");
+
+  await fixture.controller.startSession();
+  const report = fixture.controller.buildReport(true);
+  fixture.storage.reports.push(report);
+  fixture.controller.render({ name: "scannerDiagnosticsReport", id: report.sessionId });
+  assert.strictEqual(fixture.getPreferredTargets().slice(-1)[0], null, "report route should clear step scan target");
+
+  await fixture.controller.startSession();
+  fixture.controller.cleanupRoute();
+  fixture.controller.setSession(null);
+  fixture.storage.draft = null;
+  fixture.controller.render({ name: "scannerDiagnostics" });
+  await flushMicrotasks();
+  assert.strictEqual(fixture.getPreferredTargets().slice(-1)[0], null, "start screen should not keep stale scan target");
 }
 
 async function testWizardRejectRetryAbortAndRestore() {
@@ -1436,7 +1546,7 @@ function testShellIntegration() {
   assert(serviceWorkerJs.includes('"./scanner-diagnostics-manifest.js"'));
   assert(serviceWorkerJs.includes('"./scanner-diagnostics-store.js"'));
   assert(serviceWorkerJs.includes('"./scanner-diagnostics.js"'));
-  assert(appVersionJs.includes('var version = "52"'));
+  assert(appVersionJs.includes('var version = "53"'));
   assert(appJs.includes('id="scannerDiagnosticsBtn"'));
   assert(appJs.includes('navigate("/scanner-diagnostics")'));
   assert(appJs.includes('route.name === "scannerDiagnostics"'));
@@ -1445,6 +1555,8 @@ function testShellIntegration() {
 (async function run() {
   await testManifestAndPrn();
   await testWizardFlow();
+  await testDiagnosticsStepPreferredScanTarget();
+  await testDiagnosticsRouteCleanupClearsPreferredTargetOnHistoryReportAndStart();
   await testWizardRejectRetryAbortAndRestore();
   await testKeyboardTailEventsAreSavedBeforeDraftAndReport();
   await testIntentTailEventsAreProviderSpecificAndDeferred();

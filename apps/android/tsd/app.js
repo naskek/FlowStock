@@ -1183,6 +1183,7 @@
       diagnosticStore: window.FlowStockScannerDiagnosticsStore || null,
       scannerManager: scannerManager,
       setScanHandler: setScanHandler,
+      setPreferredScanTarget: setPreferredScanTarget,
       navigate: navigate,
       finishRouteRender: finishRouteRender,
       currentRoute: route || currentRoute,

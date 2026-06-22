@@ -481,12 +481,15 @@
       return token === renderToken;
     }
 
-    function setHtml(html, token) {
+    function setHtml(html, token, beforeFinish) {
       if (token != null && !isRenderTokenActive(token)) {
         return;
       }
       if (app) {
         app.innerHTML = html;
+      }
+      if (typeof beforeFinish === "function") {
+        beforeFinish();
       }
       finishRender();
     }
@@ -709,6 +712,9 @@
       observerAttached = false;
       if (typeof deps.setScanHandler === "function") {
         deps.setScanHandler(null);
+      }
+      if (typeof deps.setPreferredScanTarget === "function") {
+        deps.setPreferredScanTarget(null);
       }
     }
 
@@ -1338,12 +1344,18 @@
         "    </div>" +
         (lastAttempt ? renderAttempt(lastAttempt) : "") +
         '    <div class="scanner-diag-actions">' +
+        '      <input id="scannerDiagScanInput" class="form-input filling-scan-input tsd-scan-input-hidden" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" />' +
         '      <button class="btn btn-outline" type="button" id="scannerDiagRetryBtn">Повторить</button>' +
         '      <button class="btn btn-danger" type="button" id="scannerDiagAbortBtn">Прервать диагностику</button>' +
         '    </div>' +
         "  </div>" +
         "</section>";
-      setHtml(html);
+      setHtml(html, null, function () {
+        var scanInput = root.document ? root.document.getElementById("scannerDiagScanInput") : null;
+        if (scanInput && typeof deps.setPreferredScanTarget === "function") {
+          deps.setPreferredScanTarget(scanInput);
+        }
+      });
       bindClick("scannerDiagRetryBtn", function () {
         retryStep();
       });

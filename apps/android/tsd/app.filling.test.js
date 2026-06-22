@@ -973,7 +973,7 @@ assert.strictEqual(
   true,
   "order may be marked done after final component when no pallets remain"
 );
-assert(appVersionJs.includes('var version = "52"'), "TSD shell version should be bumped for scanner diagnostics shell files");
+assert(appVersionJs.includes('var version = "53"'), "TSD shell version should be bumped for scanner diagnostics focus target");
 assert(
   appJs.includes("Не удалось загрузить заказы для наполнения") && appJs.includes("console.error(error)"),
   "filling API failures should be visible and logged"
