@@ -2905,6 +2905,196 @@ body {
   padding: 12px 0;
 }
 
+.scanner-diag-screen {
+  overflow-x: hidden;
+}
+
+.scanner-diag-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.scanner-diag-step-card {
+  min-height: calc(100vh - 112px);
+}
+
+.scanner-diag-step-number {
+  align-self: flex-start;
+  border-radius: 999px;
+  background: rgba(31, 111, 139, 0.12);
+  color: #1f6f8b;
+  font-size: 1.1rem;
+  font-weight: 800;
+  padding: 8px 14px;
+}
+
+.scanner-diag-meta,
+.scanner-diag-summary,
+.scanner-diag-recommendation,
+.scanner-diag-attempt {
+  border-radius: 14px;
+  background: rgba(241, 245, 249, 0.92);
+  padding: 12px;
+  word-break: break-word;
+}
+
+.scanner-diag-meta {
+  display: grid;
+  gap: 8px;
+  font-size: 0.95rem;
+}
+
+.scanner-diag-meta span {
+  color: #486581;
+}
+
+.scanner-diag-intro {
+  margin: 0;
+  color: #102a43;
+  line-height: 1.45;
+}
+
+.scanner-diag-expected {
+  border: 2px dashed rgba(31, 111, 139, 0.35);
+  border-radius: 16px;
+  padding: 14px;
+  word-break: break-word;
+}
+
+.scanner-diag-expected strong {
+  display: block;
+  font-size: 1.35rem;
+  margin-top: 4px;
+}
+
+.scanner-diag-payload-label {
+  color: #486581;
+  margin-top: 16px;
+}
+
+.scanner-diag-payload {
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.scanner-diag-payload--large {
+  font-size: 1.35rem;
+  font-weight: 800;
+  margin-top: 6px;
+}
+
+.scanner-diag-message {
+  border-radius: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+  padding: 12px;
+}
+
+.scanner-diag-message--info {
+  background: rgba(31, 111, 139, 0.12);
+  color: #1f6f8b;
+}
+
+.scanner-diag-message--success {
+  background: rgba(27, 135, 84, 0.14);
+  color: #146c43;
+}
+
+.scanner-diag-message--warning {
+  background: rgba(245, 158, 11, 0.18);
+  color: #92400e;
+}
+
+.scanner-diag-message--error {
+  background: rgba(220, 38, 38, 0.14);
+  color: #991b1b;
+}
+
+.scanner-diag-actions,
+.scanner-diag-history-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.scanner-diag-actions .btn,
+.scanner-diag-history-actions .btn {
+  min-height: 48px;
+}
+
+.scanner-diag-tech {
+  border-radius: 14px;
+  border: 1px solid rgba(72, 101, 129, 0.22);
+  padding: 10px 12px;
+}
+
+.scanner-diag-tech summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.scanner-diag-json {
+  background: rgba(15, 23, 42, 0.06);
+  border-radius: 12px;
+  font-size: 0.78rem;
+  max-height: 280px;
+  overflow: auto;
+  padding: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.scanner-diag-result {
+  border-radius: 16px;
+  font-size: 1.2rem;
+  padding: 14px;
+  text-align: center;
+}
+
+.scanner-diag-result-row {
+  align-items: center;
+  border-radius: 12px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+}
+
+.scanner-diag-result--success,
+.scanner-diag-result-row--success {
+  background: rgba(27, 135, 84, 0.14);
+  color: #146c43;
+}
+
+.scanner-diag-result--warning,
+.scanner-diag-result-row--warning {
+  background: rgba(245, 158, 11, 0.18);
+  color: #92400e;
+}
+
+.scanner-diag-result--error,
+.scanner-diag-result-row--error {
+  background: rgba(220, 38, 38, 0.14);
+  color: #991b1b;
+}
+
+.scanner-diag-results,
+.scanner-diag-history-row {
+  display: grid;
+  gap: 8px;
+}
+
+.scanner-diag-history-row {
+  border-bottom: 1px solid rgba(72, 101, 129, 0.22);
+  padding: 12px 0;
+}
+
+.scanner-diag-history-main {
+  font-weight: 700;
+  word-break: break-word;
+}
+
 .lines-section {
   display: flex;
   flex-direction: column;

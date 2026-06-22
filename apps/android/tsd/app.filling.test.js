@@ -153,7 +153,9 @@ assert(
 const handleDocKeydownBody = extractFunctionBody(scannerJs, "handleDocKeydown");
 const handleDocInputBody = extractFunctionBody(scannerJs, "handleDocInput");
 assert(
-  handleDocKeydownBody.includes('emit(targetValue, { reason: "enter" })') &&
+  handleDocKeydownBody.includes("emit(targetValue, {") &&
+    handleDocKeydownBody.includes('reason: "enter"') &&
+    handleDocKeydownBody.includes('terminator: "Enter"') &&
     handleDocKeydownBody.includes("if (isScanTarget)") &&
     handleDocKeydownBody.indexOf("if (isScanTarget)") <
       handleDocKeydownBody.indexOf("buffer += event.key"),
@@ -971,7 +973,7 @@ assert.strictEqual(
   true,
   "order may be marked done after final component when no pallets remain"
 );
-assert(appVersionJs.includes('var version = "51"'), "TSD shell version should be bumped for HU scan-only screen");
+assert(appVersionJs.includes('var version = "52"'), "TSD shell version should be bumped for scanner diagnostics shell files");
 assert(
   appJs.includes("Не удалось загрузить заказы для наполнения") && appJs.includes("console.error(error)"),
   "filling API failures should be visible and logged"

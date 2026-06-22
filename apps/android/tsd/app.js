@@ -1177,6 +1177,20 @@
     });
   }
 
+  function getScannerDiagnosticsDeps(route) {
+    return {
+      app: app,
+      diagnosticStore: window.FlowStockScannerDiagnosticsStore || null,
+      scannerManager: scannerManager,
+      setScanHandler: setScanHandler,
+      navigate: navigate,
+      finishRouteRender: finishRouteRender,
+      currentRoute: route || currentRoute,
+      scannerMode: scannerMode,
+      manifest: window.FlowStockScannerDiagnosticManifest || null,
+    };
+  }
+
   var STATUS_LABELS = {
     DRAFT: "В работе",
     RECOUNT: "На пересчет",
@@ -1272,7 +1286,15 @@
       return true;
     }
 
-    if (route.name === "home" || route.name === "login" || route.name === "settings" || route.name === "hu") {
+    if (
+      route.name === "home" ||
+      route.name === "login" ||
+      route.name === "settings" ||
+      route.name === "hu" ||
+      route.name === "scannerDiagnostics" ||
+      route.name === "scannerDiagnosticsHistory" ||
+      route.name === "scannerDiagnosticsReport"
+    ) {
       return true;
     }
     if (route.name === "operations" || route.name === "new") {
@@ -1717,6 +1739,15 @@
     if (parts[0] === "hu" && parts[1]) {
       return { name: "huCard", id: decodeURIComponent(parts[1]) };
     }
+    if (parts[0] === "scanner-diagnostics" && parts[1] === "history") {
+      return { name: "scannerDiagnosticsHistory" };
+    }
+    if (parts[0] === "scanner-diagnostics" && parts[1] === "report" && parts[2]) {
+      return { name: "scannerDiagnosticsReport", id: decodeURIComponent(parts[2]) };
+    }
+    if (parts[0] === "scanner-diagnostics") {
+      return { name: "scannerDiagnostics" };
+    }
     return { name: parts[0] };
   }
 
@@ -1895,7 +1926,13 @@
     }
 
     if (settingsBtn) {
-      settingsBtn.classList.toggle("is-active", route.name === "settings");
+      settingsBtn.classList.toggle(
+        "is-active",
+        route.name === "settings" ||
+          route.name === "scannerDiagnostics" ||
+          route.name === "scannerDiagnosticsHistory" ||
+          route.name === "scannerDiagnosticsReport"
+      );
       settingsBtn.classList.toggle("is-hidden", route.name === "login");
     }
   }
@@ -1956,8 +1993,21 @@
     if (route.name === "huCard") {
       return routeOrigin || "/hu";
     }
-    if (route.name === "stock" || route.name === "settings" || route.name === "items") {
+    if (
+      route.name === "stock" ||
+      route.name === "settings" ||
+      route.name === "items"
+    ) {
       return "/home";
+    }
+    if (route.name === "scannerDiagnostics") {
+      return "/settings";
+    }
+    if (route.name === "scannerDiagnosticsHistory") {
+      return "/scanner-diagnostics";
+    }
+    if (route.name === "scannerDiagnosticsReport") {
+      return "/scanner-diagnostics/history";
     }
     return "/home";
   }
@@ -1974,6 +2024,12 @@
     setScanInputHandlers(null, null);
     setPreferredScanTarget(null);
     setLiveRefreshHandler(null);
+    if (
+      window.FlowStockScannerDiagnostics &&
+      typeof window.FlowStockScannerDiagnostics.cleanupRoute === "function"
+    ) {
+      window.FlowStockScannerDiagnostics.cleanupRoute();
+    }
     if (!window.location.hash || window.location.hash === "#") {
       navigate(loadLastRoute() || "/home");
       return;
@@ -2282,6 +2338,20 @@
       app.innerHTML = renderSettings();
       wireSettings();
       finishRouteRender();
+      return;
+    }
+
+    if (
+      route.name === "scannerDiagnostics" ||
+      route.name === "scannerDiagnosticsHistory" ||
+      route.name === "scannerDiagnosticsReport"
+    ) {
+      if (!window.FlowStockScannerDiagnostics || !window.FlowStockScannerDiagnostics.render) {
+        app.innerHTML = renderError("Диагностика сканера недоступна");
+        finishRouteRender();
+        return;
+      }
+      window.FlowStockScannerDiagnostics.render(getScannerDiagnosticsDeps(route), route);
       return;
     }
 
@@ -7075,6 +7145,7 @@
       "      </span>" +
       "    </label>" +
       (debugPanel ? debugPanel : "") +
+      '    <button class="btn btn-outline" type="button" id="scannerDiagnosticsBtn">Диагностика сканера</button>' +
       '    <button class="btn btn-outline" type="button" id="pwaCheckUpdateBtn">Проверить обновления</button>' +
       '    <div class="settings-version settings-version--centered" id="pwaAppVersion"></div>' +
       '    <div class="field-hint" id="pwaUpdateStatus"></div>' +
@@ -12762,6 +12833,7 @@
     var scanDebugStateBtn = document.getElementById("scanDebugStateBtn");
     var scanDebugClearBtn = document.getElementById("scanDebugClearBtn");
     var scanDebugCopyBtn = document.getElementById("scanDebugCopyBtn");
+    var scannerDiagnosticsBtn = document.getElementById("scannerDiagnosticsBtn");
     var pwaAppVersion = document.getElementById("pwaAppVersion");
     var pwaCheckUpdateBtn = document.getElementById("pwaCheckUpdateBtn");
     var pwaUpdateStatus = document.getElementById("pwaUpdateStatus");
@@ -12857,6 +12929,12 @@
           .then(function () {
             pwaCheckUpdateBtn.disabled = false;
           });
+      });
+    }
+
+    if (scannerDiagnosticsBtn) {
+      scannerDiagnosticsBtn.addEventListener("click", function () {
+        navigate("/scanner-diagnostics");
       });
     }
 
@@ -14463,6 +14541,7 @@
     window.FlowStockTsdTestHooks.isFillingPalletCompleted = isFillingPalletCompleted;
     window.FlowStockTsdTestHooks.renderHome = renderHome;
     window.FlowStockTsdTestHooks.renderSettings = renderSettings;
+    window.FlowStockTsdTestHooks.getScannerDiagnosticsDeps = getScannerDiagnosticsDeps;
     window.FlowStockTsdTestHooks.applyTsdTheme = applyTsdTheme;
     window.FlowStockTsdTestHooks.getStoredTsdTheme = getStoredTsdTheme;
     window.FlowStockTsdTestHooks.normalizeTsdTheme = normalizeTsdTheme;
