@@ -568,6 +568,7 @@
                             <Button Content="Новый" Click="OrdersNew_Click" />
                             <Button x:Name="OrdersEditButton" Content="Изменить" Click="OrdersEdit_Click" Margin="8,0,0,0" />
                             <Button x:Name="OrdersCancelButton" Content="Отменить" Click="OrdersCancel_Click" Margin="8,0,0,0" />
+                            <Button Content="Управление HU" Click="HuAssignmentManagement_Click" Margin="8,0,0,0" />
                         </StackPanel>
                         <CheckBox x:Name="ShowCancelledMergedOrdersCheckBox"
                                   Content="Показать отменённые/перенесённые"
@@ -862,4 +863,3 @@
         </Border>
     </DockPanel>
 </Window>
-

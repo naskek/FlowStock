@@ -1,0 +1,192 @@
+<Window x:Class="FlowStock.App.HuAssignmentManagementWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:FlowStock.App"
+        Title="Управление привязками HU"
+        Height="750"
+        Width="1200"
+        MinHeight="650"
+        MinWidth="1100"
+        WindowStartupLocation="CenterOwner"
+        Loaded="HuAssignmentManagementWindow_Loaded"
+        Closing="HuAssignmentManagementWindow_Closing">
+    <Window.Resources>
+        <Style x:Key="CompactTextBox" TargetType="{x:Type TextBox}">
+            <Setter Property="MinWidth" Value="130" />
+            <Setter Property="Margin" Value="0,0,8,0" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+        <Style x:Key="ToolbarButton" TargetType="{x:Type Button}">
+            <Setter Property="MinWidth" Value="110" />
+            <Setter Property="Margin" Value="0,0,8,0" />
+            <Setter Property="Padding" Value="8,3" />
+        </Style>
+        <Style x:Key="HuRowStyle" TargetType="{x:Type DataGridRow}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsChanged}" Value="True">
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsMixed}" Value="True">
+                    <Setter Property="ToolTip" Value="Mixed HU нельзя привязывать или переносить; отвязка доступна только через серверную batch-проверку." />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="145" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="220" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="280" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="Товар" VerticalAlignment="Center" Margin="0,0,8,0" />
+            <TextBox Grid.Column="1"
+                     x:Name="ItemSearchBox"
+                     Style="{StaticResource CompactTextBox}"
+                     Text="{Binding ItemSearch, UpdateSourceTrigger=PropertyChanged}" />
+            <Button Grid.Column="2" Content="Найти товары" Style="{StaticResource ToolbarButton}" Click="ItemsSearch_Click" />
+            <ComboBox Grid.Column="3"
+                      x:Name="ItemsCombo"
+                      MinWidth="260"
+                      Margin="0,0,8,0"
+                      ItemsSource="{Binding Items}"
+                      DisplayMemberPath="ItemName"
+                      SelectionChanged="ItemsCombo_SelectionChanged" />
+            <Button Grid.Column="4" Content="Обновить" Style="{StaticResource ToolbarButton}" Click="Refresh_Click" />
+            <TextBlock Grid.Column="5"
+                       Text="{Binding StatusMessage}"
+                       Foreground="#667085"
+                       TextWrapping="Wrap"
+                       VerticalAlignment="Center" />
+        </Grid>
+
+        <WrapPanel Grid.Row="1" Margin="0,0,0,8" VerticalAlignment="Center">
+            <TextBlock Text="HU" VerticalAlignment="Center" Margin="0,0,6,0" />
+            <TextBox x:Name="HuSearchBox" Style="{StaticResource CompactTextBox}" Text="{Binding HuSearch, UpdateSourceTrigger=PropertyChanged}" />
+            <TextBlock Text="Заказ" VerticalAlignment="Center" Margin="0,0,6,0" />
+            <TextBox x:Name="OrderSearchBox" Style="{StaticResource CompactTextBox}" Text="{Binding OrderSearch, UpdateSourceTrigger=PropertyChanged}" />
+            <TextBlock Text="Клиент" VerticalAlignment="Center" Margin="0,0,6,0" />
+            <TextBox x:Name="PartnerSearchBox" Style="{StaticResource CompactTextBox}" Text="{Binding PartnerSearch, UpdateSourceTrigger=PropertyChanged}" />
+            <TextBlock Text="Состояние" VerticalAlignment="Center" Margin="0,0,6,0" />
+            <ComboBox x:Name="StateFilterCombo" Width="135" Margin="0,0,8,0" SelectionChanged="StateFilterCombo_SelectionChanged">
+                <ComboBoxItem Content="Все" Tag="ALL" IsSelected="True" />
+                <ComboBoxItem Content="Свободные" Tag="FREE" />
+                <ComboBoxItem Content="Привязанные" Tag="BOUND" />
+            </ComboBox>
+            <Button Content="Поиск" Style="{StaticResource ToolbarButton}" Click="HuSearch_Click" />
+            <Button Content="Назад" Style="{StaticResource ToolbarButton}" Click="PreviousPage_Click" IsEnabled="{Binding CanPreviousPage}" />
+            <Button Content="Вперёд" Style="{StaticResource ToolbarButton}" Click="NextPage_Click" IsEnabled="{Binding CanNextPage}" />
+            <TextBlock Text="{Binding PageStatus}" VerticalAlignment="Center" Foreground="#667085" />
+        </WrapPanel>
+
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="1.45*" />
+                <ColumnDefinition Width="10" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <GroupBox Header="HU выбранного товара" Grid.Column="0">
+                <DataGrid x:Name="HuGrid"
+                          Margin="8"
+                          AutoGenerateColumns="False"
+                          IsReadOnly="True"
+                          SelectionMode="Single"
+                          SelectionUnit="FullRow"
+                          RowStyle="{StaticResource HuRowStyle}"
+                          ItemsSource="{Binding Session.HuRows}"
+                          SelectionChanged="HuGrid_SelectionChanged"
+                          MouseDoubleClick="HuGrid_MouseDoubleClick">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="HU" Binding="{Binding HuCode}" Width="Auto" MinWidth="105" />
+                        <DataGridTextColumn Header="Количество" Binding="{Binding Qty, StringFormat={}{0:0.###}}" Width="Auto" />
+                        <DataGridTextColumn Header="Место хранения" Binding="{Binding LocationDisplay}" Width="Auto" MinWidth="110" />
+                        <DataGridTextColumn Header="Состояние" Binding="{Binding StateDisplay}" Width="Auto" />
+                        <DataGridTextColumn Header="Текущий заказ" Binding="{Binding OriginalOrderDisplay}" Width="Auto" MinWidth="105" />
+                        <DataGridTextColumn Header="Клиент" Binding="{Binding OriginalPartnerDisplay}" Width="*" MinWidth="120" />
+                        <DataGridTextColumn Header="Строка заказа" Binding="{Binding OriginalOrderLineId}" Width="Auto" />
+                        <DataGridTextColumn Header="Статус заказа" Binding="{Binding OriginalOrderStatusDisplay}" Width="Auto" />
+                        <DataGridTextColumn Header="Зарезервировано" Binding="{Binding OriginalReservedQty, StringFormat={}{0:0.###}}" Width="Auto" />
+                        <DataGridTextColumn Header="Исходный внутренний заказ" Binding="{Binding OriginInternalOrderDisplay}" Width="Auto" MinWidth="130" />
+                        <DataGridTextColumn Header="Первое поступление" Binding="{Binding FirstReceiptDisplay}" Width="Auto" MinWidth="130" />
+                        <DataGridTextColumn Header="Mixed" Binding="{Binding MixedDisplay}" Width="Auto" />
+                        <DataGridTextColumn Header="Будущее назначение" Binding="{Binding FutureAssignmentDisplay}" Width="*" MinWidth="180" />
+                        <DataGridTextColumn Header="Изменение" Binding="{Binding ChangeDisplay}" Width="Auto" MinWidth="120" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </GroupBox>
+
+            <GroupBox Header="Целевые строки клиентских заказов" Grid.Column="2">
+                <DataGrid x:Name="TargetsGrid"
+                          Margin="8"
+                          AutoGenerateColumns="False"
+                          IsReadOnly="True"
+                          SelectionMode="Single"
+                          SelectionUnit="FullRow"
+                          ItemsSource="{Binding Session.TargetLines}"
+                          SelectionChanged="TargetsGrid_SelectionChanged">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Заказ" Binding="{Binding OrderRef}" Width="Auto" MinWidth="90" />
+                        <DataGridTextColumn Header="Клиент" Binding="{Binding PartnerDisplay}" Width="*" MinWidth="120" />
+                        <DataGridTextColumn Header="Статус" Binding="{Binding OrderStatus}" Width="Auto" />
+                        <DataGridTextColumn Header="Срок" Binding="{Binding DueAtDisplay}" Width="Auto" />
+                        <DataGridTextColumn Header="Строка" Binding="{Binding OrderLineId}" Width="Auto" />
+                        <DataGridTextColumn Header="Заказано" Binding="{Binding QtyOrdered, StringFormat={}{0:0.###}}" Width="Auto" />
+                        <DataGridTextColumn Header="Отгружено" Binding="{Binding QtyShipped, StringFormat={}{0:0.###}}" Width="Auto" />
+                        <DataGridTextColumn Header="Сейчас привязано" Binding="{Binding CurrentBoundQty, StringFormat={}{0:0.###}}" Width="Auto" />
+                        <DataGridTextColumn Header="Можно добавить" Binding="{Binding RemainingFutureCapacity, StringFormat={}{0:0.###}}" Width="Auto" />
+                        <DataGridTextColumn Header="Текущие HU" Binding="{Binding OriginalBoundHuCodesDisplay}" Width="*" MinWidth="120" />
+                        <DataGridTextColumn Header="Будущие HU" Binding="{Binding FutureBoundHuCodesDisplay}" Width="*" MinWidth="120" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </GroupBox>
+        </Grid>
+
+        <GroupBox Grid.Row="3" Header="Будущий результат и локальные изменения" Margin="0,10,0,0">
+            <DataGrid x:Name="ChangesGrid"
+                      Margin="8"
+                      AutoGenerateColumns="False"
+                      IsReadOnly="True"
+                      ItemsSource="{Binding Session.Changes}">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Действие" Binding="{Binding ChangeKind}" Width="Auto" MinWidth="120" />
+                    <DataGridTextColumn Header="HU" Binding="{Binding HuCode}" Width="Auto" MinWidth="110" />
+                    <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
+                    <DataGridTextColumn Header="Количество" Binding="{Binding Qty, StringFormat={}{0:0.###}}" Width="Auto" />
+                    <DataGridTextColumn Header="Было" Binding="{Binding FromDisplay}" Width="*" />
+                    <DataGridTextColumn Header="Будет" Binding="{Binding ToDisplay}" Width="*" />
+                </DataGrid.Columns>
+            </DataGrid>
+        </GroupBox>
+
+        <Grid Grid.Row="4" Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <WrapPanel Grid.Column="0">
+                <Button Content="Привязать к выбранной строке" Style="{StaticResource ToolbarButton}" Click="Bind_Click" IsEnabled="{Binding CanBind}" ToolTip="Выберите свободный HU и строку заказа; mixed HU нельзя привязывать." />
+                <Button Content="Перенести на выбранную строку" Style="{StaticResource ToolbarButton}" Click="Move_Click" IsEnabled="{Binding CanMove}" ToolTip="Выберите назначенный HU и другую строку с достаточной ёмкостью." />
+                <Button Content="Отвязать" Style="{StaticResource ToolbarButton}" Click="Detach_Click" IsEnabled="{Binding CanDetach}" ToolTip="Выберите HU с будущим назначением." />
+                <Button Content="Отменить изменение HU" Style="{StaticResource ToolbarButton}" Click="CancelHuChange_Click" IsEnabled="{Binding CanCancelSelectedChange}" ToolTip="Вернуть выбранный HU к исходному назначению." />
+                <Button Content="Сбросить все изменения" Style="{StaticResource ToolbarButton}" Click="ResetAll_Click" IsEnabled="{Binding CanResetAllChanges}" />
+            </WrapPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="SaveButton" Content="Сохранить" Style="{StaticResource ToolbarButton}" Click="Save_Click" IsEnabled="{Binding CanSave}" />
+                <Button Content="Закрыть" Style="{StaticResource ToolbarButton}" Click="Close_Click" />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>

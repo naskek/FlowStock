@@ -105,6 +105,40 @@ public sealed class WpfHuReservationApiGuardTests
     }
 
     [Fact]
+    public void HuAssignmentManagementWindow_UsesStage5ApiAndSessionWithoutBackendRules()
+    {
+        var xaml = ReadRepoFile("apps", "windows", "FlowStock.App", "HuAssignmentManagementWindow.xaml");
+        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "HuAssignmentManagementWindow.xaml.cs");
+        var controller = ReadRepoFile("apps", "windows", "FlowStock.App", "HuAssignmentManagementController.cs");
+        var mainWindowXaml = ReadRepoFile("apps", "windows", "FlowStock.App", "MainWindow.xaml");
+        var mainWindowSource = ReadRepoFile("apps", "windows", "FlowStock.App", "MainWindow.xaml.cs");
+
+        Assert.Contains("Управление привязками HU", xaml);
+        Assert.Contains("Управление HU", mainWindowXaml);
+        Assert.Contains("HuAssignmentManagement_Click", mainWindowSource);
+        Assert.Contains("new HuAssignmentManagementWindow(_services)", mainWindowSource);
+
+        Assert.Contains("HuAssignmentManagementSession", controller);
+        Assert.Contains("TryGetManageItems", controller);
+        Assert.Contains("TryGetManageHus", controller);
+        Assert.Contains("TryGetManageTargets", controller);
+        Assert.Contains("TryApplyManageHuBindings", controller);
+        Assert.Contains("BuildApplyRequest", controller);
+        Assert.Contains("MarkSaveSuccess", controller);
+        Assert.Contains("HU_OWNER_CHANGED", controller);
+        Assert.Contains("HU_QTY_CHANGED", controller);
+        Assert.Contains("NetworkFailure", controller);
+        Assert.Contains("Сначала сохраните или отмените изменения перед переходом", controller);
+
+        Assert.DoesNotContain("DataStore", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("OrderHuBindingManageApplyService", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ReplaceOrderReceiptPlanLines", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("OrderHuBindingManageApplyService", controller, StringComparison.Ordinal);
+        Assert.DoesNotContain("ReplaceOrderReceiptPlanLines", controller, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetHuStockRows", controller, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void IncomingRequestsWindow_ExposesReadyHuFilterAndOpensGlobalWindow()
     {
         var xaml = ReadRepoFile("apps", "windows", "FlowStock.App", "IncomingRequestsWindow.xaml");

@@ -1971,6 +1971,17 @@ public partial class MainWindow : Window
         UpdateDeleteButtonsAvailability();
     }
 
+    private void HuAssignmentManagement_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new HuAssignmentManagementWindow(_services)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+        LoadOrders();
+        LoadStock(StatusSearchBox.Text);
+    }
+
     private void OrdersGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
         OpenSelectedOrder();

@@ -315,6 +315,8 @@ public sealed class HuAssignmentManagementHuItem
         OriginalOrderRef = row.CurrentAssignment?.OrderRef;
         OriginalPartnerName = row.CurrentAssignment?.PartnerName;
         OriginalOrderLineId = row.CurrentAssignment?.OrderLineId;
+        OriginalOrderStatus = row.CurrentAssignment?.OrderStatus;
+        OriginalReservedQty = row.CurrentAssignment?.ReservedQty ?? 0;
         ResetFutureToOriginal();
     }
 
@@ -332,11 +334,28 @@ public sealed class HuAssignmentManagementHuItem
     public string? OriginalOrderRef { get; private set; }
     public string? OriginalPartnerName { get; private set; }
     public long? OriginalOrderLineId { get; private set; }
+    public string? OriginalOrderStatus { get; }
+    public double OriginalReservedQty { get; }
     public long? FutureOrderId { get; private set; }
     public string? FutureOrderRef { get; private set; }
     public string? FuturePartnerName { get; private set; }
     public long? FutureOrderLineId { get; private set; }
     public bool IsChanged => OriginalOrderId != FutureOrderId || OriginalOrderLineId != FutureOrderLineId;
+    public bool IsFutureFree => !FutureOrderLineId.HasValue;
+    public string StateDisplay => OriginalOrderLineId.HasValue ? "Привязан" : "Свободен";
+    public string MixedDisplay => IsMixed ? "Да" : "Нет";
+    public string FirstReceiptDisplay => FirstReceiptAt.HasValue ? FirstReceiptAt.Value.ToString("dd.MM.yyyy HH:mm") : "-";
+    public string OriginalOrderDisplay => string.IsNullOrWhiteSpace(OriginalOrderRef) ? "-" : OriginalOrderRef!;
+    public string OriginalPartnerDisplay => string.IsNullOrWhiteSpace(OriginalPartnerName) ? "-" : OriginalPartnerName!;
+    public string OriginalOrderStatusDisplay => string.IsNullOrWhiteSpace(OriginalOrderStatus) ? "-" : OriginalOrderStatus!;
+    public string OriginInternalOrderDisplay => string.IsNullOrWhiteSpace(OriginInternalOrderRef) ? "-" : OriginInternalOrderRef!;
+    public string ChangeDisplay => !IsChanged
+        ? "Без изменений"
+        : !OriginalOrderLineId.HasValue && FutureOrderLineId.HasValue
+            ? "Будет привязан"
+            : OriginalOrderLineId.HasValue && !FutureOrderLineId.HasValue
+                ? "Будет отвязан"
+                : "Будет перенесён";
     public string OriginalAssignmentDisplay => BuildAssignmentDisplay(OriginalOrderRef, OriginalPartnerName, OriginalOrderLineId);
     public string FutureAssignmentDisplay => BuildAssignmentDisplay(FutureOrderRef, FuturePartnerName, FutureOrderLineId);
 
@@ -424,6 +443,9 @@ public sealed class HuAssignmentManagementTargetLineItem
     public double FutureBoundQty { get; private set; }
     public double MaxFutureBoundQty => _maxFutureBoundQty;
     public double RemainingFutureCapacity => Math.Max(0, MaxFutureBoundQty - FutureBoundQty);
+    public string DueAtDisplay => DueAt.HasValue ? DueAt.Value.ToString("dd.MM.yyyy") : "-";
+    public string OriginalBoundHuCodesDisplay => OriginalBoundHuCodes.Count == 0 ? "-" : string.Join(", ", OriginalBoundHuCodes);
+    public string FutureBoundHuCodesDisplay => FutureBoundHuCodes.Count == 0 ? "-" : string.Join(", ", FutureBoundHuCodes);
     public string DisplayText => $"{OrderRef} · {PartnerDisplay} · строка {OrderLineId} · можно +{RemainingFutureCapacity:0.###}";
 
     internal void SetFutureBoundState(IReadOnlyList<string> futureHuCodes, double futureQty)
