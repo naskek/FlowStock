@@ -1,6 +1,7 @@
 using FlowStock.Core.Models;
 using FlowStock.Core.Services;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
+using Moq;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.RegularExpressions;
@@ -620,6 +621,62 @@ public sealed class ProductionPalletServiceTests
         Assert.Empty(PalletLabelPrintSelectionService.ResolveDefaultSelectedPalletIds(printRows));
         Assert.All(after.Where(pallet => pallet.Status == ProductionPalletStatus.Cancelled), pallet =>
             Assert.DoesNotContain(printRows, row => string.Equals(row.HuCode, pallet.HuCode, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    [Fact]
+    public void IncreaseOrderLineQty_WithPalletizedPlan_GeneratesDeltaHuWithoutFreeWarehouseHu()
+    {
+        var harness = CreateHarnessWithOrderOnly(orderQty: 5472, maxQtyPerHu: 1824);
+        var palletService = new ProductionPalletService(harness.Store);
+        var orderService = new OrderService(harness.Store);
+        var plan = palletService.PlanOrder(10);
+        var plannedBefore = GetActiveProductionPalletsByOrder(harness, 10);
+
+        Assert.Equal(3, plannedBefore.Length);
+        palletService.MarkPrinted(10, [plannedBefore[1].Id], new DateTime(2026, 5, 13, 11, 0, 0));
+        palletService.Fill(plannedBefore[2].HuCode, "TSD-01");
+
+        var before = GetActiveProductionPalletsByOrder(harness, 10);
+        var beforeHuCodes = before.Select(pallet => pallet.HuCode).ToArray();
+        var ledgerEntryCountBeforeUpdate = harness.LedgerEntries.Count;
+
+        Assert.Equal(3, before.Length);
+        Assert.Contains(before, pallet => pallet.Status == ProductionPalletStatus.Planned);
+        Assert.Contains(before, pallet => pallet.Status == ProductionPalletStatus.Printed);
+        Assert.Contains(before, pallet => pallet.Status == ProductionPalletStatus.Filled);
+        Assert.Empty(harness.Store.GetOrderReceiptPlanLines(10));
+
+        orderService.UpdateOrder(
+            10,
+            "056",
+            null,
+            null,
+            null,
+            [new OrderLineView { ItemId = 100, QtyOrdered = 9120, ProductionPurpose = ProductionLinePurpose.InternalStock }],
+            OrderType.Internal);
+
+        var after = GetActiveProductionPalletsByOrder(harness, 10);
+        var afterHuCodes = after.Select(pallet => pallet.HuCode).ToArray();
+        var newPallets = after
+            .Where(pallet => !beforeHuCodes.Contains(pallet.HuCode, StringComparer.OrdinalIgnoreCase))
+            .ToArray();
+
+        Assert.Equal(5, after.Length);
+        Assert.Equal(2, newPallets.Length);
+        Assert.All(newPallets, pallet => Assert.Equal(ProductionPalletStatus.Planned, pallet.Status));
+        Assert.All(beforeHuCodes, huCode =>
+            Assert.Contains(after, pallet => string.Equals(pallet.HuCode, huCode, StringComparison.OrdinalIgnoreCase)));
+        Assert.Empty(harness.Store.GetOrderReceiptPlanLines(10));
+        Assert.Equal(ledgerEntryCountBeforeUpdate, harness.LedgerEntries.Count);
+        Assert.Equal(5, afterHuCodes.Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        Assert.All(after, pallet => Assert.Matches("^HU-[0-9]{7}$", pallet.HuCode));
+        Assert.Equal(9120, after.Sum(pallet => pallet.PlannedQty), 3);
+        Mock.Get(harness.Store).Verify(
+            store => store.ReplaceOrderReceiptPlanLines(It.IsAny<long>(), It.IsAny<IReadOnlyList<OrderReceiptPlanLine>>()),
+            Times.Never);
+        Mock.Get(harness.Store).Verify(
+            store => store.GetHus(It.IsAny<string?>(), It.IsAny<int>()),
+            Times.Never);
     }
 
     [Fact]
@@ -2529,6 +2586,16 @@ public sealed class ProductionPalletServiceTests
             QtyOrdered = orderQty
         });
         return harness;
+    }
+
+    private static ProductionPallet[] GetActiveProductionPalletsByOrder(CloseDocumentHarness harness, long orderId)
+    {
+        return harness.Store.GetDocsByOrder(orderId)
+            .Where(doc => doc.Type == DocType.ProductionReceipt)
+            .SelectMany(doc => harness.Store.GetProductionPalletsByDoc(doc.Id))
+            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(pallet => pallet.Id)
+            .ToArray();
     }
 
     private static CloseDocumentHarness CreateHarnessWithCustomerTwoOrderLines(

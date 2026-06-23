@@ -657,8 +657,15 @@ public sealed class OrderService
             }
             else
             {
-                TryRebuildOrderReceiptPlan(store, orderId);
                 QueueAffectedPalletLines(store, orderId, linesNeedingPalletSync, additionallyAffectedPalletLineIds);
+                var syncOrderLineIds = linesNeedingPalletSync
+                    .Select(entry => entry.OrderLineId)
+                    .Distinct()
+                    .ToArray();
+                if (!HasActiveProductionPalletPlanForOrderLines(store, orderId, syncOrderLineIds))
+                {
+                    TryRebuildOrderReceiptPlan(store, orderId);
+                }
                 foreach (var (orderLineId, orderedQty, oldOrderedQty) in linesNeedingPalletSync)
                 {
                     TrySyncProductionPalletPlanForOrderLine(store, orderId, orderLineId, orderedQty, oldOrderedQty);
@@ -670,6 +677,50 @@ public sealed class OrderService
                 }
             }
         });
+    }
+
+    private static bool HasActiveProductionPalletPlanForOrderLines(
+        IDataStore store,
+        long orderId,
+        IReadOnlyCollection<long> orderLineIds)
+    {
+        var targetOrderLineIds = orderLineIds
+            .Where(orderLineId => orderLineId > 0)
+            .ToHashSet();
+        if (targetOrderLineIds.Count == 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            foreach (var doc in store.GetDocsByOrder(orderId).Where(doc => doc.Type == DocType.ProductionReceipt))
+            {
+                foreach (var pallet in store.GetProductionPalletsByDoc(doc.Id))
+                {
+                    if (string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    if (pallet.OrderLineId.HasValue && targetOrderLineIds.Contains(pallet.OrderLineId.Value))
+                    {
+                        return true;
+                    }
+
+                    if (pallet.Lines.Any(line => line.OrderLineId.HasValue && targetOrderLineIds.Contains(line.OrderLineId.Value)))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            return false;
+        }
+
+        return false;
     }
 
     private static void ValidateIncomingLineQuantities(IReadOnlyList<OrderLineView> lines, OrderType orderType)
