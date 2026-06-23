@@ -1356,6 +1356,16 @@ internal sealed class CloseDocumentHarness
                     .ToArray();
             });
 
+        _store.As<IHuBindingManagementReadStore>()
+            .Setup(store => store.GetManagementItems(It.IsAny<string?>(), It.IsAny<int>()))
+            .Returns<string?, int>(BuildManagementItems);
+        _store.As<IHuBindingManagementReadStore>()
+            .Setup(store => store.GetManagementHuRows(It.IsAny<long>(), It.IsAny<HuBindingManageHuFilter>()))
+            .Returns<long, HuBindingManageHuFilter>(BuildManagementHuRows);
+        _store.As<IHuBindingManagementReadStore>()
+            .Setup(store => store.GetManagementTargetLines(It.IsAny<long>()))
+            .Returns<long>(BuildManagementTargetLines);
+
         _store.Setup(store => store.GetOrderShipmentRemaining(It.IsAny<long>()))
             .Returns<long>(orderId => BuildOrderShipmentRemaining(orderId));
 
@@ -4268,6 +4278,207 @@ internal sealed class CloseDocumentHarness
             .ThenBy(pair => pair.Code.SourceRowNumber ?? int.MaxValue)
             .Select(pair => pair.Code)
             .Take(take)
+            .ToArray();
+    }
+
+    private string ResolveItemName(long itemId) =>
+        _items.TryGetValue(itemId, out var item) ? item.Name : string.Empty;
+
+    private string ResolveLocationCode(long locationId) =>
+        _locations.TryGetValue(locationId, out var location)
+            ? (!string.IsNullOrWhiteSpace(location.Code) ? location.Code : !string.IsNullOrWhiteSpace(location.Name) ? location.Name : locationId.ToString())
+            : locationId.ToString();
+
+    private IReadOnlyList<HuBindingManageItemRow> BuildManagementItems(string? search, int limit)
+    {
+        var normalizedLimit = limit <= 0 ? int.MaxValue : limit;
+        var term = string.IsNullOrWhiteSpace(search) ? null : search.Trim();
+        return BuildHuStockRows()
+            .Where(row => !string.IsNullOrWhiteSpace(row.HuCode))
+            .GroupBy(row => (row.ItemId, Hu: NormalizeHu(row.HuCode)!))
+            .Select(group => (group.Key.ItemId, group.Key.Hu, Qty: group.Sum(row => row.Qty)))
+            .Where(entry => entry.Qty > StockQuantityRules.QtyTolerance)
+            .GroupBy(entry => entry.ItemId)
+            .Select(group => new HuBindingManageItemRow
+            {
+                ItemId = group.Key,
+                ItemName = ResolveItemName(group.Key),
+                HuCount = group.Count()
+            })
+            .Where(item => term == null || item.ItemName.Contains(term, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(item => item.ItemName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.ItemId)
+            .Take(normalizedLimit)
+            .ToArray();
+    }
+
+    private HuBindingManageHuPage BuildManagementHuRows(long itemId, HuBindingManageHuFilter filter)
+    {
+        var tolerance = StockQuantityRules.QtyTolerance;
+        var stock = BuildHuStockRows().Where(row => !string.IsNullOrWhiteSpace(row.HuCode)).ToArray();
+        var qtyByItemHu = stock
+            .GroupBy(row => (row.ItemId, Hu: NormalizeHu(row.HuCode)!))
+            .ToDictionary(group => group.Key, group => group.Sum(row => row.Qty));
+        var itemsByHu = qtyByItemHu
+            .Where(pair => pair.Value > tolerance)
+            .GroupBy(pair => pair.Key.Hu, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.Select(pair => pair.Key.ItemId).Distinct().Count(), StringComparer.OrdinalIgnoreCase);
+        var originByHu = BuildHuOrderContextRows()
+            .Where(row => row.ItemId == itemId && row.OriginInternalOrderId.HasValue)
+            .GroupBy(row => NormalizeHu(row.HuCode)!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+
+        var huCodes = qtyByItemHu
+            .Where(pair => pair.Key.ItemId == itemId && pair.Value > tolerance)
+            .Select(pair => pair.Key.Hu)
+            .ToArray();
+
+        var rows = new List<HuBindingManageHuRow>();
+        foreach (var hu in huCodes)
+        {
+            var locationDisplay = string.Join("; ", stock
+                .Where(row => row.ItemId == itemId && string.Equals(NormalizeHu(row.HuCode), hu, StringComparison.OrdinalIgnoreCase))
+                .GroupBy(row => row.LocationId)
+                .Select(group => (Code: ResolveLocationCode(group.Key), Qty: group.Sum(row => row.Qty)))
+                .Where(entry => entry.Qty > tolerance)
+                .OrderBy(entry => entry.Code, StringComparer.OrdinalIgnoreCase)
+                .Select(entry => $"{entry.Code}: {entry.Qty.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture)}"));
+
+            var assignment = BuildManagementAssignment(itemId, hu);
+            originByHu.TryGetValue(hu, out var origin);
+
+            rows.Add(new HuBindingManageHuRow
+            {
+                HuCode = hu,
+                ItemId = itemId,
+                ItemName = ResolveItemName(itemId),
+                Qty = qtyByItemHu[(itemId, hu)],
+                LocationDisplay = locationDisplay,
+                IsMixed = itemsByHu.TryGetValue(hu, out var itemCount) && itemCount > 1,
+                OriginInternalOrderId = origin?.OriginInternalOrderId,
+                OriginInternalOrderRef = origin?.OriginInternalOrderRef,
+                FirstReceiptAt = null,
+                CurrentAssignment = assignment
+            });
+        }
+
+        var huTerm = string.IsNullOrWhiteSpace(filter.HuSearch) ? null : filter.HuSearch.Trim();
+        var orderTerm = string.IsNullOrWhiteSpace(filter.OrderSearch) ? null : filter.OrderSearch.Trim();
+        var partnerTerm = string.IsNullOrWhiteSpace(filter.PartnerSearch) ? null : filter.PartnerSearch.Trim();
+
+        var filtered = rows
+            .Where(row => huTerm == null || row.HuCode.Contains(huTerm, StringComparison.OrdinalIgnoreCase))
+            .Where(row => orderTerm == null || (row.CurrentAssignment?.OrderRef.Contains(orderTerm, StringComparison.OrdinalIgnoreCase) ?? false))
+            .Where(row => partnerTerm == null || (row.CurrentAssignment?.PartnerName?.Contains(partnerTerm, StringComparison.OrdinalIgnoreCase) ?? false))
+            .Where(row => filter.State switch
+            {
+                HuBindingManageStateFilter.Free => row.CurrentAssignment == null,
+                HuBindingManageStateFilter.Bound => row.CurrentAssignment != null,
+                _ => true
+            })
+            .OrderBy(row => row.HuCode, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var limit = filter.Limit <= 0 ? filtered.Length : filter.Limit;
+        var offset = Math.Max(0, filter.Offset);
+        var page = filtered.Skip(offset).Take(limit).ToArray();
+
+        return new HuBindingManageHuPage
+        {
+            ItemId = itemId,
+            ItemName = ResolveItemName(itemId),
+            Total = filtered.Length,
+            Limit = limit,
+            Offset = offset,
+            HuRows = page
+        };
+    }
+
+    private HuBindingManageHuAssignment? BuildManagementAssignment(long itemId, string hu)
+    {
+        foreach (var pair in _orderReceiptPlanLines)
+        {
+            if (!_orders.TryGetValue(pair.Key, out var order)
+                || order.Type != OrderType.Customer
+                || order.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
+            {
+                continue;
+            }
+
+            var lines = pair.Value
+                .Where(line => line.ItemId == itemId
+                               && line.QtyPlanned > StockQuantityRules.QtyTolerance
+                               && string.Equals(NormalizeHu(line.ToHu), hu, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            if (lines.Length == 0)
+            {
+                continue;
+            }
+
+            return new HuBindingManageHuAssignment
+            {
+                OrderId = order.Id,
+                OrderRef = order.OrderRef,
+                PartnerName = order.PartnerName,
+                OrderLineId = lines.Min(line => line.OrderLineId),
+                OrderStatus = OrderStatusMapper.StatusToString(order.Status),
+                ReservedQty = lines.Sum(line => line.QtyPlanned)
+            };
+        }
+
+        return null;
+    }
+
+    private IReadOnlyList<HuBindingManageTargetLineRow> BuildManagementTargetLines(long itemId)
+    {
+        var result = new List<HuBindingManageTargetLineRow>();
+        foreach (var order in _orders.Values
+                     .Where(order => order.Type == OrderType.Customer
+                                     && order.Status is OrderStatus.InProgress or OrderStatus.Accepted))
+        {
+            if (!_orderLinesByOrder.TryGetValue(order.Id, out var lines))
+            {
+                continue;
+            }
+
+            var plan = _orderReceiptPlanLines.TryGetValue(order.Id, out var planLines)
+                ? planLines
+                : (IReadOnlyList<OrderReceiptPlanLine>)Array.Empty<OrderReceiptPlanLine>();
+
+            foreach (var line in lines.Where(line => line.ItemId == itemId))
+            {
+                var bound = plan
+                    .Where(p => p.OrderLineId == line.Id
+                                && p.QtyPlanned > StockQuantityRules.QtyTolerance
+                                && !string.IsNullOrWhiteSpace(p.ToHu))
+                    .ToArray();
+
+                result.Add(new HuBindingManageTargetLineRow
+                {
+                    OrderId = order.Id,
+                    OrderRef = order.OrderRef,
+                    PartnerName = order.PartnerName,
+                    OrderStatus = OrderStatusMapper.StatusToString(order.Status),
+                    DueAt = order.DueDate,
+                    OrderLineId = line.Id,
+                    ItemId = line.ItemId,
+                    QtyOrdered = line.QtyOrdered,
+                    QtyShipped = 0,
+                    CurrentBoundHuCodes = bound
+                        .Select(p => NormalizeHu(p.ToHu)!)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
+                        .ToArray(),
+                    CurrentBoundQty = bound.Sum(p => p.QtyPlanned)
+                });
+            }
+        }
+
+        return result
+            .OrderBy(row => row.DueAt ?? DateTime.MaxValue)
+            .ThenBy(row => row.OrderRef, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.OrderId)
+            .ThenBy(row => row.OrderLineId)
             .ToArray();
     }
 

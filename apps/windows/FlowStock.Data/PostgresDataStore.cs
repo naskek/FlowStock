@@ -13,7 +13,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore
+public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore
 {
     public sealed record OrderSqlDiagnostics(
         string Operation,
@@ -9173,6 +9173,399 @@ ORDER BY p.sort_order, p.id;
 
             return lines;
         });
+    }
+
+    public IReadOnlyList<HuBindingManageItemRow> GetManagementItems(string? search, int limit)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH stock_by_hu_item AS (
+    SELECT led.item_id,
+           UPPER(BTRIM(COALESCE(led.hu_code, led.hu))) AS hu_code,
+           SUM(led.qty_delta) AS qty
+    FROM ledger led
+    WHERE NULLIF(BTRIM(COALESCE(led.hu_code, led.hu)), '') IS NOT NULL
+    GROUP BY led.item_id, UPPER(BTRIM(COALESCE(led.hu_code, led.hu)))
+    HAVING SUM(led.qty_delta) > @qty_tolerance
+)
+SELECT i.id AS item_id,
+       i.name AS item_name,
+       COUNT(*)::int AS hu_count
+FROM stock_by_hu_item s
+INNER JOIN items i ON i.id = s.item_id
+WHERE (@search::text IS NULL OR i.name ILIKE @search)
+GROUP BY i.id, i.name
+ORDER BY i.name, i.id
+LIMIT @limit;
+");
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+            command.Parameters.AddWithValue("@search", (object?)BuildLikePattern(search) ?? DBNull.Value);
+            command.Parameters.AddWithValue("@limit", Math.Max(1, limit));
+
+            using var reader = command.ExecuteReader();
+            var rows = new List<HuBindingManageItemRow>();
+            while (reader.Read())
+            {
+                rows.Add(new HuBindingManageItemRow
+                {
+                    ItemId = reader.GetInt64(0),
+                    ItemName = reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
+                    HuCount = reader.GetInt32(2)
+                });
+            }
+
+            return rows;
+        });
+    }
+
+    public HuBindingManageHuPage GetManagementHuRows(long itemId, HuBindingManageHuFilter filter)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH stock_by_hu_item AS (
+    SELECT led.item_id,
+           UPPER(BTRIM(COALESCE(led.hu_code, led.hu))) AS hu_code,
+           SUM(led.qty_delta) AS qty
+    FROM ledger led
+    WHERE NULLIF(BTRIM(COALESCE(led.hu_code, led.hu)), '') IS NOT NULL
+    GROUP BY led.item_id, UPPER(BTRIM(COALESCE(led.hu_code, led.hu)))
+    HAVING SUM(led.qty_delta) > @qty_tolerance
+),
+mixed_hu AS (
+    SELECT stock_by_hu_item.hu_code
+    FROM stock_by_hu_item
+    GROUP BY stock_by_hu_item.hu_code
+    HAVING COUNT(*) > 1
+),
+item_hu AS (
+    SELECT stock_by_hu_item.hu_code,
+           stock_by_hu_item.item_id,
+           stock_by_hu_item.qty
+    FROM stock_by_hu_item
+    WHERE stock_by_hu_item.item_id = @item_id
+),
+location_display AS (
+    SELECT t.hu_code,
+           t.item_id,
+           string_agg(t.disp, '; ' ORDER BY t.location_code, t.disp) AS location_display
+    FROM (
+        SELECT UPPER(BTRIM(COALESCE(led.hu_code, led.hu))) AS hu_code,
+               led.item_id,
+               COALESCE(l.code, l.name, led.location_id::text) AS location_code,
+               COALESCE(l.code, l.name, led.location_id::text) || ': '
+                   || trim(to_char(SUM(led.qty_delta), 'FM999999999990.######')) AS disp
+        FROM ledger led
+        INNER JOIN item_hu ih ON ih.item_id = led.item_id
+                             AND ih.hu_code = UPPER(BTRIM(COALESCE(led.hu_code, led.hu)))
+        LEFT JOIN locations l ON l.id = led.location_id
+        WHERE NULLIF(BTRIM(COALESCE(led.hu_code, led.hu)), '') IS NOT NULL
+        GROUP BY UPPER(BTRIM(COALESCE(led.hu_code, led.hu))), led.item_id, led.location_id, l.code, l.name
+        HAVING SUM(led.qty_delta) > @qty_tolerance
+    ) t
+    GROUP BY t.hu_code, t.item_id
+),
+assignment AS (
+    SELECT UPPER(BTRIM(p.to_hu)) AS hu_code,
+           p.item_id,
+           p.order_id,
+           o.order_ref,
+           pt.name AS partner_name,
+           MIN(p.order_line_id) AS order_line_id,
+           o.status AS order_status,
+           SUM(p.qty_planned) AS reserved_qty
+    FROM order_receipt_plan_lines p
+    INNER JOIN orders o ON o.id = p.order_id
+    LEFT JOIN partners pt ON pt.id = o.partner_id
+    WHERE p.item_id = @item_id
+      AND p.qty_planned > @qty_tolerance
+      AND p.to_hu IS NOT NULL
+      AND BTRIM(p.to_hu) <> ''
+      AND o.order_type = @customer_order_type
+      AND o.status <> @shipped_status
+      AND o.status <> @cancelled_status
+      AND o.status <> @merged_status
+    GROUP BY UPPER(BTRIM(p.to_hu)), p.item_id, p.order_id, o.order_ref, pt.name, o.status
+),
+origin AS (
+    SELECT ranked.item_id,
+           ranked.hu_code,
+           ranked.origin_internal_order_id,
+           ranked.origin_internal_order_ref
+    FROM (
+        SELECT dl.item_id,
+               UPPER(BTRIM(dl.to_hu)) AS hu_code,
+               o.id AS origin_internal_order_id,
+               o.order_ref AS origin_internal_order_ref,
+               ROW_NUMBER() OVER (
+                   PARTITION BY dl.item_id, UPPER(BTRIM(dl.to_hu))
+                   ORDER BY d.id
+               ) AS rn
+        FROM doc_lines dl
+        INNER JOIN docs d ON d.id = dl.doc_id
+        INNER JOIN orders o ON o.id = d.order_id
+        WHERE d.type = 'PRODUCTION_RECEIPT'
+          AND d.status = 'CLOSED'
+          AND o.order_type = @internal_order_type
+          AND dl.item_id = @item_id
+          AND dl.to_hu IS NOT NULL
+          AND BTRIM(dl.to_hu) <> ''
+    ) ranked
+    WHERE ranked.rn = 1
+),
+first_receipt AS (
+    SELECT ranked.item_id,
+           ranked.hu_code,
+           ranked.first_receipt_at
+    FROM (
+        SELECT led.item_id,
+               UPPER(BTRIM(COALESCE(led.hu_code, led.hu))) AS hu_code,
+               COALESCE(NULLIF(BTRIM(led.ts), ''), NULLIF(BTRIM(d.created_at), ''), NULLIF(BTRIM(d.closed_at), '')) AS first_receipt_at,
+               ROW_NUMBER() OVER (
+                   PARTITION BY led.item_id, UPPER(BTRIM(COALESCE(led.hu_code, led.hu)))
+                   ORDER BY COALESCE(NULLIF(BTRIM(led.ts), ''), NULLIF(BTRIM(d.created_at), ''), NULLIF(BTRIM(d.closed_at), '')) NULLS LAST,
+                            led.doc_id NULLS LAST,
+                            led.id
+               ) AS rn
+        FROM ledger led
+        LEFT JOIN docs d ON d.id = led.doc_id
+        WHERE led.qty_delta > 0
+          AND led.item_id = @item_id
+          AND NULLIF(BTRIM(COALESCE(led.hu_code, led.hu)), '') IS NOT NULL
+    ) ranked
+    WHERE ranked.rn = 1
+),
+hu_rows AS (
+    SELECT ih.hu_code,
+           ih.item_id,
+           i.name AS item_name,
+           ih.qty,
+           COALESCE(ld.location_display, '') AS location_display,
+           (mh.hu_code IS NOT NULL) AS is_mixed,
+           og.origin_internal_order_id,
+           og.origin_internal_order_ref,
+           fr.first_receipt_at,
+           a.order_id,
+           a.order_ref,
+           a.partner_name,
+           a.order_line_id,
+           a.order_status,
+           a.reserved_qty
+    FROM item_hu ih
+    INNER JOIN items i ON i.id = ih.item_id
+    LEFT JOIN mixed_hu mh ON mh.hu_code = ih.hu_code
+    LEFT JOIN location_display ld ON ld.hu_code = ih.hu_code AND ld.item_id = ih.item_id
+    LEFT JOIN assignment a ON a.hu_code = ih.hu_code AND a.item_id = ih.item_id
+    LEFT JOIN origin og ON og.hu_code = ih.hu_code AND og.item_id = ih.item_id
+    LEFT JOIN first_receipt fr ON fr.hu_code = ih.hu_code AND fr.item_id = ih.item_id
+),
+filtered AS (
+    SELECT hu_rows.*
+    FROM hu_rows
+    WHERE (@hu_search::text IS NULL OR hu_rows.hu_code ILIKE @hu_search)
+      AND (@order_search::text IS NULL OR hu_rows.order_ref ILIKE @order_search)
+      AND (@partner_search::text IS NULL OR hu_rows.partner_name ILIKE @partner_search)
+      AND (
+            @state_filter = 'ALL'
+            OR (@state_filter = 'FREE' AND hu_rows.order_id IS NULL)
+            OR (@state_filter = 'BOUND' AND hu_rows.order_id IS NOT NULL)
+          )
+)
+SELECT filtered.hu_code,
+       filtered.item_id,
+       filtered.item_name,
+       filtered.qty,
+       filtered.location_display,
+       filtered.is_mixed,
+       filtered.origin_internal_order_id,
+       filtered.origin_internal_order_ref,
+       filtered.first_receipt_at::text,
+       filtered.order_id,
+       filtered.order_ref,
+       filtered.partner_name,
+       filtered.order_line_id,
+       filtered.order_status,
+       filtered.reserved_qty,
+       COUNT(*) OVER() AS total_count
+FROM filtered
+ORDER BY filtered.hu_code
+LIMIT @limit OFFSET @offset;
+");
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+            command.Parameters.AddWithValue("@item_id", itemId);
+            command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+            command.Parameters.AddWithValue("@internal_order_type", OrderStatusMapper.TypeToString(OrderType.Internal));
+            command.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+            command.Parameters.AddWithValue("@cancelled_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+            command.Parameters.AddWithValue("@merged_status", OrderStatusMapper.StatusToString(OrderStatus.Merged));
+            command.Parameters.AddWithValue("@hu_search", (object?)BuildLikePattern(filter.HuSearch) ?? DBNull.Value);
+            command.Parameters.AddWithValue("@order_search", (object?)BuildLikePattern(filter.OrderSearch) ?? DBNull.Value);
+            command.Parameters.AddWithValue("@partner_search", (object?)BuildLikePattern(filter.PartnerSearch) ?? DBNull.Value);
+            command.Parameters.AddWithValue("@state_filter", StateFilterToken(filter.State));
+            command.Parameters.AddWithValue("@limit", Math.Max(1, filter.Limit));
+            command.Parameters.AddWithValue("@offset", Math.Max(0, filter.Offset));
+
+            var rows = new List<HuBindingManageHuRow>();
+            var itemName = string.Empty;
+            var total = 0;
+            using (var reader = command.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    itemName = reader.IsDBNull(2) ? itemName : reader.GetString(2);
+                    HuBindingManageHuAssignment? assignment = null;
+                    if (!reader.IsDBNull(9))
+                    {
+                        assignment = new HuBindingManageHuAssignment
+                        {
+                            OrderId = reader.GetInt64(9),
+                            OrderRef = reader.IsDBNull(10) ? string.Empty : reader.GetString(10),
+                            PartnerName = reader.IsDBNull(11) ? null : reader.GetString(11),
+                            OrderLineId = reader.IsDBNull(12) ? 0 : reader.GetInt64(12),
+                            OrderStatus = reader.IsDBNull(13) ? string.Empty : reader.GetString(13),
+                            ReservedQty = reader.IsDBNull(14) ? 0 : reader.GetDouble(14)
+                        };
+                    }
+
+                    rows.Add(new HuBindingManageHuRow
+                    {
+                        HuCode = reader.IsDBNull(0) ? string.Empty : reader.GetString(0),
+                        ItemId = reader.GetInt64(1),
+                        ItemName = reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
+                        Qty = reader.IsDBNull(3) ? 0 : reader.GetDouble(3),
+                        LocationDisplay = reader.IsDBNull(4) ? string.Empty : reader.GetString(4),
+                        IsMixed = !reader.IsDBNull(5) && reader.GetBoolean(5),
+                        OriginInternalOrderId = reader.IsDBNull(6) ? null : reader.GetInt64(6),
+                        OriginInternalOrderRef = reader.IsDBNull(7) ? null : reader.GetString(7),
+                        FirstReceiptAt = reader.IsDBNull(8) ? null : ParseTimestampText(reader.GetString(8)),
+                        CurrentAssignment = assignment
+                    });
+                    total = reader.IsDBNull(15) ? total : (int)reader.GetInt64(15);
+                }
+            }
+
+            if (string.IsNullOrEmpty(itemName))
+            {
+                itemName = ResolveItemNameById(connection, itemId);
+            }
+
+            return new HuBindingManageHuPage
+            {
+                ItemId = itemId,
+                ItemName = itemName,
+                Total = total,
+                Limit = Math.Max(1, filter.Limit),
+                Offset = Math.Max(0, filter.Offset),
+                HuRows = rows
+            };
+        });
+    }
+
+    public IReadOnlyList<HuBindingManageTargetLineRow> GetManagementTargetLines(long itemId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH bound_by_line AS (
+    SELECT p.order_line_id,
+           array_agg(DISTINCT UPPER(BTRIM(p.to_hu)) ORDER BY UPPER(BTRIM(p.to_hu))) AS hu_codes,
+           SUM(p.qty_planned) AS bound_qty
+    FROM order_receipt_plan_lines p
+    WHERE p.item_id = @item_id
+      AND p.qty_planned > @qty_tolerance
+      AND p.to_hu IS NOT NULL
+      AND BTRIM(p.to_hu) <> ''
+    GROUP BY p.order_line_id
+)
+SELECT o.id AS order_id,
+       o.order_ref,
+       pt.name AS partner_name,
+       o.status AS order_status,
+       o.due_date::text AS due_at,
+       ol.id AS order_line_id,
+       ol.item_id,
+       ol.qty_ordered,
+       COALESCE(bl.hu_codes, ARRAY[]::text[]) AS current_bound_hu_codes,
+       COALESCE(bl.bound_qty, 0) AS current_bound_qty
+FROM order_lines ol
+INNER JOIN orders o ON o.id = ol.order_id
+LEFT JOIN partners pt ON pt.id = o.partner_id
+LEFT JOIN bound_by_line bl ON bl.order_line_id = ol.id
+WHERE ol.item_id = @item_id
+  AND o.order_type = @customer_order_type
+  AND o.status IN (@in_progress_status, @accepted_status)
+ORDER BY o.due_date NULLS LAST, o.order_ref, o.id, ol.id;
+");
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+            command.Parameters.AddWithValue("@item_id", itemId);
+            command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+            command.Parameters.AddWithValue("@in_progress_status", OrderStatusMapper.StatusToString(OrderStatus.InProgress));
+            command.Parameters.AddWithValue("@accepted_status", OrderStatusMapper.StatusToString(OrderStatus.Accepted));
+
+            using var reader = command.ExecuteReader();
+            var rows = new List<HuBindingManageTargetLineRow>();
+            while (reader.Read())
+            {
+                var huCodes = reader.IsDBNull(8)
+                    ? Array.Empty<string>()
+                    : reader.GetFieldValue<string[]>(8);
+                rows.Add(new HuBindingManageTargetLineRow
+                {
+                    OrderId = reader.GetInt64(0),
+                    OrderRef = reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
+                    PartnerName = reader.IsDBNull(2) ? null : reader.GetString(2),
+                    OrderStatus = reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
+                    DueAt = reader.IsDBNull(4) ? null : ParseTimestampText(reader.GetString(4)),
+                    OrderLineId = reader.GetInt64(5),
+                    ItemId = reader.GetInt64(6),
+                    QtyOrdered = reader.IsDBNull(7) ? 0 : reader.GetDouble(7),
+                    QtyShipped = 0,
+                    CurrentBoundHuCodes = huCodes,
+                    CurrentBoundQty = reader.IsDBNull(9) ? 0 : reader.GetDouble(9)
+                });
+            }
+
+            return rows;
+        });
+    }
+
+    private static string? BuildLikePattern(string? search)
+    {
+        var trimmed = search?.Trim();
+        return string.IsNullOrEmpty(trimmed) ? null : "%" + trimmed.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_") + "%";
+    }
+
+    private static string StateFilterToken(HuBindingManageStateFilter state) => state switch
+    {
+        HuBindingManageStateFilter.Free => "FREE",
+        HuBindingManageStateFilter.Bound => "BOUND",
+        _ => "ALL"
+    };
+
+    private static DateTime? ParseTimestampText(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        if (DateTimeOffset.TryParse(value, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out var dto))
+        {
+            return dto.UtcDateTime;
+        }
+
+        return DateTime.TryParse(value, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out var dt)
+            ? dt
+            : null;
+    }
+
+    private string ResolveItemNameById(NpgsqlConnection connection, long itemId)
+    {
+        using var command = CreateCommand(connection, "SELECT name FROM items WHERE id = @item_id LIMIT 1;");
+        command.Parameters.AddWithValue("@item_id", itemId);
+        var value = command.ExecuteScalar();
+        return value as string ?? string.Empty;
     }
 
     private static string BuildProductionNeedReason(double minStockQty, double toMinStockQty, double openInternalOrderQty, double qtyToCreate)

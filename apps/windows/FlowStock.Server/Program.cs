@@ -126,6 +126,8 @@ OrderLinesEndpoint.Map(app);
 OrderHuReservationCandidatesEndpoint.Map(app);
 OrderHuReservationApplyEndpoint.Map(app);
 OrderHuBindingApplyFinalEndpoint.Map(app);
+HuBindingManageReadEndpoint.Map(app);
+OrderHuBindingManageApplyEndpoint.Map(app);
 ReadyHuBindingEndpoint.Map(app);
 ProductionNeedCreateOrdersEndpoint.Map(app);
 NewLedgerTransitionEndpoints.Map(app);
