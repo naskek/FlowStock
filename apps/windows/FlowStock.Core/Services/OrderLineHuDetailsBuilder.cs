@@ -60,8 +60,8 @@ public static class OrderLineHuDetailsBuilder
         RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.ConfirmedReceiptLedgerTotalsMs = elapsed);
 
         phaseStopwatch?.Restart();
-        var customerCoverageByLine = order.Type == OrderType.Customer
-            ? CustomerProtectedCoverageCalculator.BuildByOrderLine(store, order.Id, orderLines)
+        var customerReadinessByLine = order.Type == OrderType.Customer
+            ? CustomerShipmentReadinessCalculator.BuildByOrderLine(store, order.Id, orderLines)
             : null;
         if (order.Type == OrderType.Customer)
         {
@@ -88,7 +88,7 @@ public static class OrderLineHuDetailsBuilder
 
                 if (order.Type == OrderType.Customer)
                 {
-                    coveredQty = customerCoverageByLine?.GetValueOrDefault(line.Id)?.DeduplicatedQty ?? 0d;
+                    coveredQty = customerReadinessByLine?.GetValueOrDefault(line.Id)?.CoveredQty ?? 0d;
                 }
                 else
                 {
@@ -108,7 +108,9 @@ public static class OrderLineHuDetailsBuilder
                         ProductionFilledQty = Math.Max(0, productionFilledQty),
                         ShippedQty = shippedQty,
                         CoveredQty = Math.Max(0, coveredQty),
-                        MissingQty = Math.Max(0, line.QtyOrdered - coveredQty)
+                        MissingQty = order.Type == OrderType.Customer
+                            ? customerReadinessByLine?.GetValueOrDefault(line.Id)?.MissingQty ?? Math.Max(0, line.QtyOrdered - coveredQty)
+                            : Math.Max(0, line.QtyOrdered - coveredQty)
                     }
                 };
             });

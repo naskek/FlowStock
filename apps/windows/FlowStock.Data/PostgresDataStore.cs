@@ -505,6 +505,25 @@ shipped_by_line AS (
       )
     GROUP BY dl.order_line_id
 ),
+shipped_by_line_hu AS (
+    SELECT dl.order_line_id,
+           UPPER(BTRIM(COALESCE(dl.from_hu, ''))) AS hu_code,
+           SUM(dl.qty) AS qty_shipped
+    FROM order_lines_scope ols
+    INNER JOIN doc_lines dl ON dl.order_line_id = ols.id
+    INNER JOIN docs d ON d.id = dl.doc_id
+    WHERE d.status = 'CLOSED'
+      AND d.type = 'OUTBOUND'
+      AND dl.qty > 0
+      AND NULLIF(BTRIM(COALESCE(dl.from_hu, '')), '') IS NOT NULL
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+    GROUP BY dl.order_line_id,
+             UPPER(BTRIM(COALESCE(dl.from_hu, '')))
+),
 reserved_by_line AS (
     SELECT p.order_line_id,
            SUM(p.qty_planned) AS qty_reserved
@@ -528,6 +547,175 @@ direct_produced_by_line AS (
           WHERE newer.replaces_line_id = dl.id
       )
     GROUP BY dl.order_line_id
+),
+receipt_ledger_by_doc_item_hu AS (
+    SELECT l.doc_id,
+           l.item_id,
+           NULLIF(UPPER(BTRIM(COALESCE(l.hu_code, l.hu, ''))), '') AS hu_code,
+           SUM(l.qty_delta) AS qty_received
+    FROM ledger l
+    INNER JOIN docs d ON d.id = l.doc_id
+    INNER JOIN order_scope os ON os.id = d.order_id
+    WHERE d.type = 'PRODUCTION_RECEIPT'
+      AND l.qty_delta > 0
+    GROUP BY l.doc_id,
+             l.item_id,
+             NULLIF(UPPER(BTRIM(COALESCE(l.hu_code, l.hu, ''))), '')
+),
+confirmed_line_hu_sources AS (
+    SELECT pll.order_line_id,
+           UPPER(BTRIM(pp.hu_code)) AS hu_code,
+           LEAST(
+               CASE WHEN pll.filled_qty > 0.000001 THEN pll.filled_qty ELSE pll.planned_qty END,
+               COALESCE(ledger.qty_received, 0)) AS qty_received
+    FROM production_pallet_lines pll
+    INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
+    INNER JOIN order_lines_scope ols ON ols.id = pll.order_line_id
+    LEFT JOIN receipt_ledger_by_doc_item_hu ledger ON ledger.doc_id = pp.prd_doc_id
+                                                   AND ledger.item_id = pll.item_id
+                                                   AND ledger.hu_code = UPPER(BTRIM(pp.hu_code))
+    WHERE pp.status = 'FILLED'
+      AND pll.order_line_id IS NOT NULL
+      AND pp.hu_code IS NOT NULL
+      AND BTRIM(pp.hu_code) <> ''
+      AND pll.planned_qty > 0
+    UNION ALL
+    SELECT pp.order_line_id,
+           UPPER(BTRIM(pp.hu_code)) AS hu_code,
+           LEAST(pp.planned_qty, COALESCE(ledger.qty_received, 0)) AS qty_received
+    FROM production_pallets pp
+    INNER JOIN order_lines_scope ols ON ols.id = pp.order_line_id
+    LEFT JOIN receipt_ledger_by_doc_item_hu ledger ON ledger.doc_id = pp.prd_doc_id
+                                                   AND ledger.item_id = pp.item_id
+                                                   AND ledger.hu_code = UPPER(BTRIM(pp.hu_code))
+    WHERE pp.status = 'FILLED'
+      AND pp.order_line_id IS NOT NULL
+      AND pp.hu_code IS NOT NULL
+      AND BTRIM(pp.hu_code) <> ''
+      AND pp.planned_qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM production_pallet_lines pll
+          WHERE pll.production_pallet_id = pp.id
+      )
+    UNION ALL
+    SELECT dl.order_line_id,
+           NULLIF(UPPER(BTRIM(COALESCE(dl.to_hu, ''))), '') AS hu_code,
+           LEAST(dl.qty, COALESCE(ledger.qty_received, 0)) AS qty_received
+    FROM order_lines_scope ols
+    INNER JOIN doc_lines dl ON dl.order_line_id = ols.id
+    INNER JOIN docs d ON d.id = dl.doc_id
+    LEFT JOIN receipt_ledger_by_doc_item_hu ledger ON ledger.doc_id = d.id
+                                                   AND ledger.item_id = dl.item_id
+                                                   AND ledger.hu_code IS NOT DISTINCT FROM NULLIF(UPPER(BTRIM(COALESCE(dl.to_hu, ''))), '')
+    WHERE d.status = 'CLOSED'
+      AND d.type = 'PRODUCTION_RECEIPT'
+      AND dl.order_line_id IS NOT NULL
+      AND dl.qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM production_pallets pp
+          WHERE pp.prd_doc_id = d.id
+            AND pp.status <> 'CANCELLED'
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+),
+confirmed_by_line_hu AS (
+    SELECT order_line_id,
+           hu_code,
+           SUM(qty_received) AS qty_received
+    FROM confirmed_line_hu_sources
+    WHERE qty_received > 0.000001
+      AND hu_code IS NOT NULL
+    GROUP BY order_line_id,
+             hu_code
+),
+confirmed_totals_by_line AS (
+    SELECT order_line_id,
+           SUM(qty_received) AS qty_received
+    FROM confirmed_line_hu_sources
+    WHERE qty_received > 0.000001
+    GROUP BY order_line_id
+),
+customer_ledger_stock_by_hu AS (
+    SELECT l.item_id,
+           UPPER(BTRIM(COALESCE(l.hu_code, l.hu))) AS hu_code,
+           SUM(l.qty_delta) AS qty
+    FROM ledger l
+    INNER JOIN (SELECT DISTINCT item_id FROM order_lines_scope) items ON items.item_id = l.item_id
+    WHERE NULLIF(BTRIM(COALESCE(l.hu_code, l.hu, '')), '') IS NOT NULL
+    GROUP BY l.item_id,
+             UPPER(BTRIM(COALESCE(l.hu_code, l.hu)))
+    HAVING SUM(l.qty_delta) > 0.000001
+),
+bound_by_line_hu AS (
+    SELECT p.order_line_id,
+           UPPER(BTRIM(p.to_hu)) AS hu_code,
+           SUM(LEAST(p.qty_planned, stock.qty)) AS qty_bound
+    FROM order_receipt_plan_lines p
+    INNER JOIN order_lines_scope ols ON ols.id = p.order_line_id
+    INNER JOIN customer_ledger_stock_by_hu stock ON stock.item_id = p.item_id
+                                                AND stock.hu_code = UPPER(BTRIM(p.to_hu))
+    WHERE p.qty_planned > 0
+      AND p.to_hu IS NOT NULL
+      AND BTRIM(p.to_hu) <> ''
+    GROUP BY p.order_line_id,
+             UPPER(BTRIM(p.to_hu))
+),
+customer_hu_keys AS (
+    SELECT order_line_id, hu_code FROM shipped_by_line_hu
+    UNION
+    SELECT order_line_id, hu_code FROM confirmed_by_line_hu
+    UNION
+    SELECT order_line_id, hu_code FROM bound_by_line_hu
+),
+customer_hu_coverage_by_line AS (
+    SELECT keys.order_line_id,
+           SUM(
+               COALESCE(shipped.qty_shipped, 0)
+               + GREATEST(
+                   GREATEST(0, COALESCE(confirmed.qty_received, 0) - COALESCE(shipped.qty_shipped, 0)),
+                   GREATEST(0, COALESCE(bound.qty_bound, 0) - COALESCE(shipped.qty_shipped, 0)))) AS covered_qty
+    FROM customer_hu_keys keys
+    LEFT JOIN shipped_by_line_hu shipped ON shipped.order_line_id = keys.order_line_id
+                                        AND shipped.hu_code = keys.hu_code
+    LEFT JOIN confirmed_by_line_hu confirmed ON confirmed.order_line_id = keys.order_line_id
+                                             AND confirmed.hu_code = keys.hu_code
+    LEFT JOIN bound_by_line_hu bound ON bound.order_line_id = keys.order_line_id
+                                    AND bound.hu_code = keys.hu_code
+    GROUP BY keys.order_line_id
+),
+customer_shipped_matched_confirmed_hu AS (
+    SELECT confirmed.order_line_id,
+           SUM(LEAST(confirmed.qty_received, COALESCE(shipped.qty_shipped, 0))) AS qty_shipped_matched
+    FROM confirmed_by_line_hu confirmed
+    LEFT JOIN shipped_by_line_hu shipped ON shipped.order_line_id = confirmed.order_line_id
+                                        AND shipped.hu_code = confirmed.hu_code
+    GROUP BY confirmed.order_line_id
+),
+customer_coverage_by_line AS (
+    SELECT ols.id AS order_line_id,
+           LEAST(
+               GREATEST(0, ols.qty_ordered),
+               COALESCE(hu_coverage.covered_qty, 0)
+               + GREATEST(
+                   0,
+                   GREATEST(0, COALESCE(confirmed_total.qty_received, 0) - COALESCE(confirmed_hu.qty_received, 0))
+                   - GREATEST(0, COALESCE(shipped.qty_shipped, 0) - COALESCE(matched.qty_shipped_matched, 0)))) AS covered_qty
+    FROM order_lines_scope ols
+    LEFT JOIN customer_hu_coverage_by_line hu_coverage ON hu_coverage.order_line_id = ols.id
+    LEFT JOIN confirmed_totals_by_line confirmed_total ON confirmed_total.order_line_id = ols.id
+    LEFT JOIN (
+        SELECT order_line_id, SUM(qty_received) AS qty_received
+        FROM confirmed_by_line_hu
+        GROUP BY order_line_id
+    ) confirmed_hu ON confirmed_hu.order_line_id = ols.id
+    LEFT JOIN shipped_by_line shipped ON shipped.order_line_id = ols.id
+    LEFT JOIN customer_shipped_matched_confirmed_hu matched ON matched.order_line_id = ols.id
 ),
 unlinked_produced_by_item AS (
     SELECT d.order_id,
@@ -629,11 +817,9 @@ order_line_metrics AS (
                  WHEN item_line_desc_rank = 1 THEN GREATEST(0, qty_unlinked_item_received - qty_direct_unfilled_before)
                  ELSE GREATEST(0, LEAST(qty_unlinked_item_received - qty_direct_unfilled_before, qty_direct_unfilled))
              END AS qty_produced_total,
-           CASE
-               WHEN order_type = 'CUSTOMER' THEN qty_direct_received + qty_reserved
-               ELSE qty_direct_received
-           END AS qty_customer_ready
+           COALESCE(customer_coverage.covered_qty, 0) AS qty_customer_ready
     FROM line_metrics_seed
+    LEFT JOIN customer_coverage_by_line customer_coverage ON customer_coverage.order_line_id = line_metrics_seed.order_line_id
 ),
 status_summary AS (
     SELECT ob.id AS order_id,
@@ -5141,6 +5327,197 @@ shipment_totals AS (
       )
     GROUP BY dl.order_line_id
 ),
+shipment_totals_by_hu AS (
+    SELECT dl.order_line_id,
+           UPPER(BTRIM(COALESCE(dl.from_hu, ''))) AS hu_code,
+           SUM(dl.qty) AS sum_qty
+    FROM doc_lines dl
+    INNER JOIN order_line_scope ols ON ols.id = dl.order_line_id
+    INNER JOIN docs d ON d.id = dl.doc_id
+    WHERE d.status = @closed_status
+      AND d.type = @outbound_type
+      AND dl.qty > 0
+      AND NULLIF(BTRIM(COALESCE(dl.from_hu, '')), '') IS NOT NULL
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+    GROUP BY dl.order_line_id,
+             UPPER(BTRIM(COALESCE(dl.from_hu, '')))
+),
+receipt_ledger_by_doc_item_hu AS (
+    SELECT l.doc_id,
+           l.item_id,
+           NULLIF(UPPER(BTRIM(COALESCE(l.hu_code, l.hu, ''))), '') AS hu_code,
+           SUM(l.qty_delta) AS sum_qty
+    FROM ledger l
+    INNER JOIN docs d ON d.id = l.doc_id
+    WHERE d.type = @production_type
+      AND l.qty_delta > 0
+      AND EXISTS (
+          SELECT 1
+          FROM order_scope os
+          WHERE os.id = d.order_id
+      )
+    GROUP BY l.doc_id,
+             l.item_id,
+             NULLIF(UPPER(BTRIM(COALESCE(l.hu_code, l.hu, ''))), '')
+),
+confirmed_line_hu_sources AS (
+    SELECT pll.order_line_id,
+           UPPER(BTRIM(pp.hu_code)) AS hu_code,
+           LEAST(
+               CASE WHEN pll.filled_qty > @qty_tolerance THEN pll.filled_qty ELSE pll.planned_qty END,
+               COALESCE(ledger.sum_qty, 0)) AS sum_qty
+    FROM production_pallet_lines pll
+    INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
+    INNER JOIN order_line_scope ols ON ols.id = pll.order_line_id
+    LEFT JOIN receipt_ledger_by_doc_item_hu ledger ON ledger.doc_id = pp.prd_doc_id
+                                                   AND ledger.item_id = pll.item_id
+                                                   AND ledger.hu_code = UPPER(BTRIM(pp.hu_code))
+    WHERE pp.status = @pallet_filled_status
+      AND pll.planned_qty > 0
+      AND pp.hu_code IS NOT NULL
+      AND BTRIM(pp.hu_code) <> ''
+    UNION ALL
+    SELECT pp.order_line_id,
+           UPPER(BTRIM(pp.hu_code)) AS hu_code,
+           LEAST(pp.planned_qty, COALESCE(ledger.sum_qty, 0)) AS sum_qty
+    FROM production_pallets pp
+    INNER JOIN order_line_scope ols ON ols.id = pp.order_line_id
+    LEFT JOIN receipt_ledger_by_doc_item_hu ledger ON ledger.doc_id = pp.prd_doc_id
+                                                   AND ledger.item_id = pp.item_id
+                                                   AND ledger.hu_code = UPPER(BTRIM(pp.hu_code))
+    WHERE pp.status = @pallet_filled_status
+      AND pp.order_line_id IS NOT NULL
+      AND pp.planned_qty > 0
+      AND pp.hu_code IS NOT NULL
+      AND BTRIM(pp.hu_code) <> ''
+      AND NOT EXISTS (
+          SELECT 1
+          FROM production_pallet_lines pll
+          WHERE pll.production_pallet_id = pp.id
+      )
+    UNION ALL
+    SELECT dl.order_line_id,
+           NULLIF(UPPER(BTRIM(COALESCE(dl.to_hu, ''))), '') AS hu_code,
+           LEAST(dl.qty, COALESCE(ledger.sum_qty, 0)) AS sum_qty
+    FROM doc_lines dl
+    INNER JOIN order_line_scope ols ON ols.id = dl.order_line_id
+    INNER JOIN docs d ON d.id = dl.doc_id
+    LEFT JOIN receipt_ledger_by_doc_item_hu ledger ON ledger.doc_id = d.id
+                                                   AND ledger.item_id = dl.item_id
+                                                   AND ledger.hu_code IS NOT DISTINCT FROM NULLIF(UPPER(BTRIM(COALESCE(dl.to_hu, ''))), '')
+    WHERE d.status = @closed_status
+      AND d.type = @production_type
+      AND dl.order_line_id IS NOT NULL
+      AND dl.qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM production_pallets pp
+          WHERE pp.prd_doc_id = d.id
+            AND pp.status <> @pallet_cancelled_status
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+),
+confirmed_by_line_hu AS (
+    SELECT order_line_id,
+           hu_code,
+           SUM(sum_qty) AS sum_qty
+    FROM confirmed_line_hu_sources
+    WHERE sum_qty > @qty_tolerance
+      AND hu_code IS NOT NULL
+    GROUP BY order_line_id,
+             hu_code
+),
+confirmed_totals AS (
+    SELECT order_line_id,
+           SUM(sum_qty) AS sum_qty
+    FROM confirmed_line_hu_sources
+    WHERE sum_qty > @qty_tolerance
+    GROUP BY order_line_id
+),
+ledger_stock_by_line_item_hu AS (
+    SELECT l.item_id,
+           UPPER(BTRIM(COALESCE(l.hu_code, l.hu))) AS hu_code,
+           SUM(l.qty_delta) AS sum_qty
+    FROM ledger l
+    INNER JOIN (SELECT DISTINCT item_id FROM order_line_scope) items ON items.item_id = l.item_id
+    WHERE NULLIF(BTRIM(COALESCE(l.hu_code, l.hu, '')), '') IS NOT NULL
+    GROUP BY l.item_id,
+             UPPER(BTRIM(COALESCE(l.hu_code, l.hu)))
+    HAVING SUM(l.qty_delta) > @qty_tolerance
+),
+reserved_totals_by_hu AS (
+    SELECT p.order_line_id,
+           UPPER(BTRIM(p.to_hu)) AS hu_code,
+           SUM(LEAST(p.qty_planned, stock.sum_qty)) AS sum_qty
+    FROM order_receipt_plan_lines p
+    INNER JOIN order_line_scope ols ON ols.id = p.order_line_id
+    INNER JOIN ledger_stock_by_line_item_hu stock ON stock.item_id = p.item_id
+                                                  AND stock.hu_code = UPPER(BTRIM(p.to_hu))
+    WHERE p.qty_planned > 0
+      AND p.to_hu IS NOT NULL
+      AND p.to_hu <> ''
+    GROUP BY p.order_line_id,
+             UPPER(BTRIM(p.to_hu))
+),
+customer_hu_keys AS (
+    SELECT order_line_id, hu_code FROM shipment_totals_by_hu
+    UNION
+    SELECT order_line_id, hu_code FROM confirmed_by_line_hu
+    UNION
+    SELECT order_line_id, hu_code FROM reserved_totals_by_hu
+),
+customer_hu_coverage AS (
+    SELECT keys.order_line_id,
+           SUM(
+               COALESCE(shipped.sum_qty, 0)
+               + GREATEST(
+                   GREATEST(0, COALESCE(confirmed.sum_qty, 0) - COALESCE(shipped.sum_qty, 0)),
+                   GREATEST(0, COALESCE(reserved.sum_qty, 0) - COALESCE(shipped.sum_qty, 0)))) AS sum_qty
+    FROM customer_hu_keys keys
+    LEFT JOIN shipment_totals_by_hu shipped ON shipped.order_line_id = keys.order_line_id
+                                           AND shipped.hu_code = keys.hu_code
+    LEFT JOIN confirmed_by_line_hu confirmed ON confirmed.order_line_id = keys.order_line_id
+                                            AND confirmed.hu_code = keys.hu_code
+    LEFT JOIN reserved_totals_by_hu reserved ON reserved.order_line_id = keys.order_line_id
+                                            AND reserved.hu_code = keys.hu_code
+    GROUP BY keys.order_line_id
+),
+customer_shipped_matched_confirmed_hu AS (
+    SELECT confirmed.order_line_id,
+           SUM(LEAST(confirmed.sum_qty, COALESCE(shipped.sum_qty, 0))) AS sum_qty
+    FROM confirmed_by_line_hu confirmed
+    LEFT JOIN shipment_totals_by_hu shipped ON shipped.order_line_id = confirmed.order_line_id
+                                           AND shipped.hu_code = confirmed.hu_code
+    GROUP BY confirmed.order_line_id
+),
+customer_coverage AS (
+    SELECT ols.id AS order_line_id,
+           LEAST(
+               GREATEST(0, ols.qty_ordered),
+               COALESCE(hu_coverage.sum_qty, 0)
+               + GREATEST(
+                   0,
+                   GREATEST(0, COALESCE(confirmed_total.sum_qty, 0) - COALESCE(confirmed_hu.sum_qty, 0))
+                   - GREATEST(0, COALESCE(shipment.sum_qty, 0) - COALESCE(matched.sum_qty, 0)))) AS covered_qty
+    FROM order_line_scope ols
+    LEFT JOIN customer_hu_coverage hu_coverage ON hu_coverage.order_line_id = ols.id
+    LEFT JOIN confirmed_totals confirmed_total ON confirmed_total.order_line_id = ols.id
+    LEFT JOIN (
+        SELECT order_line_id, SUM(sum_qty) AS sum_qty
+        FROM confirmed_by_line_hu
+        GROUP BY order_line_id
+    ) confirmed_hu ON confirmed_hu.order_line_id = ols.id
+    LEFT JOIN shipment_totals shipment ON shipment.order_line_id = ols.id
+    LEFT JOIN customer_shipped_matched_confirmed_hu matched ON matched.order_line_id = ols.id
+),
 legacy_receipt_totals AS (
     SELECT dl.order_line_id,
            SUM(dl.qty) AS sum_qty
@@ -5167,11 +5544,9 @@ legacy_receipt_totals AS (
 filled_pallet_totals AS (
     SELECT pll.order_line_id,
            SUM(pll.planned_qty) AS sum_qty
-           COUNT(olm.order_line_id) FILTER (WHERE olm.qty_ordered > 0.000001) AS demand_line_count,
     FROM production_pallet_lines pll
     INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
     INNER JOIN order_line_scope ols ON ols.id = pll.order_line_id
-           COALESCE(BOOL_AND(olm.qty_produced_total + 0.000001 >= olm.qty_ordered) FILTER (WHERE olm.qty_ordered > 0.000001), FALSE) AS fully_demand_produced,
     WHERE pp.status = @pallet_filled_status
       AND pll.planned_qty > 0
     GROUP BY pll.order_line_id
@@ -5234,6 +5609,7 @@ line_seed AS (
            COALESCE(direct_receipt.sum_qty, 0) AS qty_direct_received,
            COALESCE(unlinked_receipt.sum_qty, 0) AS qty_unlinked_item_received,
            COALESCE(reserved.sum_qty, 0) AS qty_reserved,
+           COALESCE(customer_coverage.covered_qty, 0) AS qty_customer_covered,
            GREATEST(0, ols.qty_ordered - COALESCE(direct_receipt.sum_qty, 0)) AS qty_direct_unfilled,
            ROW_NUMBER() OVER (
                PARTITION BY os.id, ols.item_id
@@ -5251,6 +5627,7 @@ line_seed AS (
     LEFT JOIN unlinked_receipt_totals unlinked_receipt ON unlinked_receipt.order_id = os.id
                                                     AND unlinked_receipt.item_id = ols.item_id
     LEFT JOIN reserved_totals reserved ON reserved.order_line_id = ols.id
+    LEFT JOIN customer_coverage ON customer_coverage.order_line_id = ols.id
 ),
 line_metrics AS (
     SELECT order_id,
@@ -5268,14 +5645,18 @@ line_metrics AS (
            CASE
                WHEN order_type = @customer_order_type THEN qty_reserved
                ELSE 0
-           END AS qty_reserved
+           END AS qty_reserved,
+           qty_customer_covered
     FROM line_seed
 ),
 line_summary AS (
     SELECT order_id,
            COALESCE(BOOL_OR(order_type = @customer_order_type
                             AND qty_ordered - qty_shipped > 0.000001), FALSE) AS has_shipment_remaining,
-           COALESCE(BOOL_OR(qty_ordered - (qty_produced + qty_reserved) > 0.000001), FALSE) AS has_receipt_remaining,
+           COALESCE(BOOL_OR(CASE
+                                WHEN order_type = @customer_order_type THEN qty_ordered - qty_customer_covered
+                                ELSE qty_ordered - (qty_produced + qty_reserved)
+                            END > 0.000001), FALSE) AS has_receipt_remaining,
            COALESCE(SUM(GREATEST(0, qty_ordered)), 0)::double precision AS shipment_ordered_qty,
            COALESCE(SUM(GREATEST(0, qty_shipped)), 0)::double precision AS shipment_shipped_qty,
            COALESCE(SUM(GREATEST(0, qty_ordered - qty_shipped)), 0)::double precision AS shipment_remaining_qty
@@ -5330,6 +5711,7 @@ LEFT JOIN pallet_summary ON pallet_summary.order_id = os.id;
             command.Parameters.AddWithValue("@internal_order_type", OrderStatusMapper.TypeToString(OrderType.Internal));
             command.Parameters.AddWithValue("@pallet_filled_status", ProductionPalletStatus.Filled);
             command.Parameters.AddWithValue("@pallet_cancelled_status", ProductionPalletStatus.Cancelled);
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
 
             using var reader = command.ExecuteReader();
             var metrics = new Dictionary<long, OrderListMetrics>();
@@ -5502,6 +5884,51 @@ ORDER BY order_ref,
 
             return rows;
         });
+    }
+
+    public IReadOnlyList<CustomerReadinessOrderStatusCandidate> GetCustomerReadinessOrderStatusCandidates()
+    {
+        var rawOrders = WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT id, order_ref, status
+FROM orders
+WHERE order_type = @customer_order_type
+  AND status IN (@in_progress_status, @accepted_status)
+ORDER BY LOWER(order_ref), order_ref, id;
+");
+            command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+            command.Parameters.AddWithValue("@in_progress_status", OrderStatusMapper.StatusToString(OrderStatus.InProgress));
+            command.Parameters.AddWithValue("@accepted_status", OrderStatusMapper.StatusToString(OrderStatus.Accepted));
+
+            using var reader = command.ExecuteReader();
+            var rows = new List<(long OrderId, string OrderRef, OrderStatus OldStatus)>();
+            while (reader.Read())
+            {
+                rows.Add((
+                    reader.GetInt64(0),
+                    reader.GetString(1),
+                    OrderStatusMapper.StatusFromString(reader.GetString(2)) ?? OrderStatus.InProgress));
+            }
+
+            return rows;
+        });
+
+        var result = new List<CustomerReadinessOrderStatusCandidate>();
+        foreach (var row in rawOrders)
+        {
+            var candidate = OrderService.BuildCustomerReadinessOrderStatusCandidate(
+                this,
+                row.OrderId,
+                row.OrderRef,
+                row.OldStatus);
+            if (candidate != null && candidate.OldStatus != candidate.NewStatus)
+            {
+                result.Add(candidate);
+            }
+        }
+
+        return result;
     }
 
     public IReadOnlyList<OverShippedOrderDiagnosticItem> GetOverShippedOrderDiagnostics()
@@ -7059,6 +7486,27 @@ shipped_totals AS (
       )
     GROUP BY dl.order_line_id
 ),
+shipped_totals_by_hu AS (
+    SELECT dl.order_line_id,
+           UPPER(BTRIM(COALESCE(dl.from_hu, ''))) AS hu_code,
+           COALESCE(SUM(dl.qty), 0)::double precision AS qty_shipped
+    FROM doc_lines dl
+    INNER JOIN docs d ON d.id = dl.doc_id
+    INNER JOIN line_scope ls ON ls.id = dl.order_line_id
+    WHERE d.type = @outbound_doc_type
+      AND d.status = @closed_doc_status
+      AND d.order_id = ls.order_id
+      AND dl.order_line_id IS NOT NULL
+      AND dl.qty > 0
+      AND NULLIF(BTRIM(COALESCE(dl.from_hu, '')), '') IS NOT NULL
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+    GROUP BY dl.order_line_id,
+             UPPER(BTRIM(COALESCE(dl.from_hu, '')))
+),
 legacy_receipt_totals AS (
     SELECT dl.order_line_id,
            COALESCE(SUM(dl.qty), 0)::double precision AS qty_received
@@ -7128,6 +7576,77 @@ receipt_totals AS (
     ) receipt_sources
     GROUP BY order_line_id
 ),
+confirmed_by_line_hu_sources AS (
+    SELECT pll.order_line_id,
+           UPPER(BTRIM(pp.hu_code)) AS hu_code,
+           LEAST(
+               CASE WHEN pll.filled_qty > @qty_tolerance THEN pll.filled_qty ELSE pll.planned_qty END,
+               prd_ledger.qty)::double precision AS qty_received
+    FROM production_pallet_lines pll
+    INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
+    INNER JOIN line_scope ls ON ls.id = pll.order_line_id
+    INNER JOIN positive_prd_ledger_by_doc_item_hu prd_ledger ON prd_ledger.doc_id = pp.prd_doc_id
+                                                             AND prd_ledger.item_id = pll.item_id
+                                                             AND prd_ledger.hu_code = UPPER(BTRIM(pp.hu_code))
+    WHERE pp.status = @pallet_filled_status
+      AND pll.planned_qty > 0
+      AND pp.hu_code IS NOT NULL
+      AND BTRIM(pp.hu_code) <> ''
+    UNION ALL
+    SELECT pp.order_line_id,
+           UPPER(BTRIM(pp.hu_code)) AS hu_code,
+           LEAST(pp.planned_qty, prd_ledger.qty)::double precision AS qty_received
+    FROM production_pallets pp
+    INNER JOIN line_scope ls ON ls.id = pp.order_line_id
+    INNER JOIN positive_prd_ledger_by_doc_item_hu prd_ledger ON prd_ledger.doc_id = pp.prd_doc_id
+                                                             AND prd_ledger.item_id = pp.item_id
+                                                             AND prd_ledger.hu_code = UPPER(BTRIM(pp.hu_code))
+    WHERE pp.status = @pallet_filled_status
+      AND pp.order_line_id IS NOT NULL
+      AND pp.planned_qty > 0
+      AND pp.hu_code IS NOT NULL
+      AND BTRIM(pp.hu_code) <> ''
+      AND NOT EXISTS (
+          SELECT 1
+          FROM production_pallet_lines pll
+          WHERE pll.production_pallet_id = pp.id
+      )
+    UNION ALL
+    SELECT dl.order_line_id,
+           NULLIF(UPPER(BTRIM(COALESCE(dl.to_hu, ''))), '') AS hu_code,
+           LEAST(dl.qty, COALESCE(prd_ledger.qty, 0))::double precision AS qty_received
+    FROM doc_lines dl
+    INNER JOIN docs d ON d.id = dl.doc_id
+    INNER JOIN line_scope ls ON ls.id = dl.order_line_id
+    LEFT JOIN positive_prd_ledger_by_doc_item_hu prd_ledger ON prd_ledger.doc_id = d.id
+                                                            AND prd_ledger.item_id = dl.item_id
+                                                            AND prd_ledger.hu_code IS NOT DISTINCT FROM NULLIF(UPPER(BTRIM(COALESCE(dl.to_hu, ''))), '')
+    WHERE d.status = @closed_doc_status
+      AND d.type = @production_doc_type
+      AND dl.order_line_id IS NOT NULL
+      AND dl.qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM production_pallets pp
+          WHERE pp.prd_doc_id = d.id
+            AND pp.status <> @pallet_cancelled_status
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
+),
+confirmed_by_line_hu AS (
+    SELECT order_line_id,
+           hu_code,
+           COALESCE(SUM(qty_received), 0)::double precision AS qty_received
+    FROM confirmed_by_line_hu_sources
+    WHERE qty_received > @qty_tolerance
+      AND hu_code IS NOT NULL
+    GROUP BY order_line_id,
+             hu_code
+),
 reserved_totals AS (
     SELECT p.order_line_id,
            COALESCE(SUM(LEAST(p.qty_planned, lb.qty)), 0)::double precision AS qty_reserved
@@ -7139,6 +7658,71 @@ reserved_totals AS (
       AND p.to_hu IS NOT NULL
       AND p.to_hu <> ''
     GROUP BY p.order_line_id
+),
+reserved_totals_by_hu AS (
+    SELECT p.order_line_id,
+           UPPER(BTRIM(p.to_hu)) AS hu_code,
+           COALESCE(SUM(LEAST(p.qty_planned, lb.qty)), 0)::double precision AS qty_reserved
+    FROM order_receipt_plan_lines p
+    INNER JOIN line_scope ls ON ls.id = p.order_line_id
+    INNER JOIN ledger_by_hu_item lb ON lb.item_id = p.item_id
+                                    AND lb.hu_code = UPPER(BTRIM(p.to_hu))
+    WHERE p.qty_planned > 0
+      AND p.to_hu IS NOT NULL
+      AND p.to_hu <> ''
+    GROUP BY p.order_line_id,
+             UPPER(BTRIM(p.to_hu))
+),
+customer_hu_keys AS (
+    SELECT order_line_id, hu_code FROM shipped_totals_by_hu
+    UNION
+    SELECT order_line_id, hu_code FROM confirmed_by_line_hu
+    UNION
+    SELECT order_line_id, hu_code FROM reserved_totals_by_hu
+),
+customer_hu_coverage AS (
+    SELECT keys.order_line_id,
+           SUM(
+               COALESCE(shipped.qty_shipped, 0)
+               + GREATEST(
+                   GREATEST(0, COALESCE(confirmed.qty_received, 0) - COALESCE(shipped.qty_shipped, 0)),
+                   GREATEST(0, COALESCE(reserved.qty_reserved, 0) - COALESCE(shipped.qty_shipped, 0)))) AS covered_qty
+    FROM customer_hu_keys keys
+    LEFT JOIN shipped_totals_by_hu shipped ON shipped.order_line_id = keys.order_line_id
+                                          AND shipped.hu_code = keys.hu_code
+    LEFT JOIN confirmed_by_line_hu confirmed ON confirmed.order_line_id = keys.order_line_id
+                                            AND confirmed.hu_code = keys.hu_code
+    LEFT JOIN reserved_totals_by_hu reserved ON reserved.order_line_id = keys.order_line_id
+                                            AND reserved.hu_code = keys.hu_code
+    GROUP BY keys.order_line_id
+),
+customer_shipped_matched_confirmed_hu AS (
+    SELECT confirmed.order_line_id,
+           SUM(LEAST(confirmed.qty_received, COALESCE(shipped.qty_shipped, 0))) AS qty_shipped_matched
+    FROM confirmed_by_line_hu confirmed
+    LEFT JOIN shipped_totals_by_hu shipped ON shipped.order_line_id = confirmed.order_line_id
+                                          AND shipped.hu_code = confirmed.hu_code
+    GROUP BY confirmed.order_line_id
+),
+customer_coverage AS (
+    SELECT ls.id AS order_line_id,
+           LEAST(
+               GREATEST(0, ls.qty_ordered),
+               COALESCE(hu_coverage.covered_qty, 0)
+               + GREATEST(
+                   0,
+                   GREATEST(0, COALESCE(receipt.qty_received, 0) - COALESCE(confirmed_hu.qty_received, 0))
+                   - GREATEST(0, COALESCE(shipped.qty_shipped, 0) - COALESCE(matched.qty_shipped_matched, 0)))) AS covered_qty
+    FROM line_scope ls
+    LEFT JOIN customer_hu_coverage hu_coverage ON hu_coverage.order_line_id = ls.id
+    LEFT JOIN receipt_totals receipt ON receipt.order_line_id = ls.id
+    LEFT JOIN (
+        SELECT order_line_id, SUM(qty_received) AS qty_received
+        FROM confirmed_by_line_hu
+        GROUP BY order_line_id
+    ) confirmed_hu ON confirmed_hu.order_line_id = ls.id
+    LEFT JOIN shipped_totals shipped ON shipped.order_line_id = ls.id
+    LEFT JOIN customer_shipped_matched_confirmed_hu matched ON matched.order_line_id = ls.id
 ),
 line_totals AS (
     SELECT ls.*,
@@ -7152,13 +7736,15 @@ line_totals AS (
             + CASE
                   WHEN ls.order_type = @customer_order_type THEN COALESCE(reserved.qty_reserved, 0)
                   ELSE 0
-              END)::double precision AS qty_produced
+              END)::double precision AS qty_produced,
+           COALESCE(customer_coverage.covered_qty, 0)::double precision AS qty_customer_covered
     FROM line_scope ls
     LEFT JOIN pallet_metrics pm ON pm.order_line_id = ls.id
     LEFT JOIN available_by_item available ON available.item_id = ls.item_id
     LEFT JOIN shipped_totals shipped ON shipped.order_line_id = ls.id
     LEFT JOIN receipt_totals receipt ON receipt.order_line_id = ls.id
     LEFT JOIN reserved_totals reserved ON reserved.order_line_id = ls.id
+    LEFT JOIN customer_coverage ON customer_coverage.order_line_id = ls.id
 )
 SELECT id,
        order_id,
@@ -7177,34 +7763,27 @@ SELECT id,
            WHEN order_type = @internal_order_type THEN qty_produced
            ELSE qty_shipped
        END AS qty_shipped,
-       CASE
-           WHEN order_type = @internal_order_type THEN LEAST(qty_ordered, qty_produced)
-           ELSE qty_produced
-       END AS qty_produced,
+        CASE
+            WHEN order_type = @internal_order_type THEN LEAST(qty_ordered, qty_produced)
+            ELSE qty_customer_covered
+        END AS qty_produced,
        qty_available,
        CASE
            WHEN order_type = @internal_order_type THEN GREATEST(0, qty_ordered - qty_produced)
            ELSE GREATEST(0, qty_ordered - qty_shipped)
        END AS qty_remaining,
-       CASE
-           WHEN order_type = @internal_order_type THEN 0
-           ELSE LEAST(
-               GREATEST(0, qty_ordered - qty_shipped),
-               CASE
-                   WHEN bind_reserved_stock AND enable_order_reservation THEN GREATEST(0, qty_produced - qty_shipped)
-                   ELSE GREATEST(0, qty_available)
-               END)
-       END AS can_ship_now,
-       CASE
-           WHEN order_type = @internal_order_type THEN 0
-           ELSE GREATEST(
-               0,
-               GREATEST(0, qty_ordered - qty_shipped)
-               - CASE
-                     WHEN bind_reserved_stock AND enable_order_reservation THEN GREATEST(0, qty_produced - qty_shipped)
-                     ELSE GREATEST(0, qty_available)
-                 END)
-       END AS shortage,
+        CASE
+            WHEN order_type = @internal_order_type THEN 0
+            ELSE LEAST(
+                GREATEST(0, qty_ordered - qty_shipped),
+                GREATEST(0, qty_customer_covered - qty_shipped))
+        END AS can_ship_now,
+        CASE
+            WHEN order_type = @internal_order_type THEN 0
+            ELSE GREATEST(
+                0,
+                qty_ordered - qty_customer_covered)
+        END AS shortage,
        order_type
 FROM line_totals
 ORDER BY order_id, item_name, id;

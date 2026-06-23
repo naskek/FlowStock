@@ -8,7 +8,7 @@ namespace FlowStock.Server.Tests.CreateOrder;
 public sealed class OrderLineMetricsTests
 {
     [Fact]
-    public void CustomerOrderWithoutReserve_CanShipFromPhysicalStock()
+    public void CustomerOrderWithoutProtectedCoverage_DoesNotTreatFreeStockAsShipReady()
     {
         var line = BuildLine(itemId: 10, qtyOrdered: 30);
         var store = BuildMetricsStore(
@@ -21,19 +21,19 @@ public sealed class OrderLineMetricsTests
         var result = new OrderService(store.Object).GetOrderLineViews(1).Single();
 
         Assert.Equal(100, result.QtyAvailable);
-        Assert.Equal(30, result.CanShipNow);
-        Assert.Equal(0, result.Shortage);
+        Assert.Equal(0, result.CanShipNow);
+        Assert.Equal(30, result.Shortage);
     }
 
     [Fact]
-    public void CustomerOrderWithReserve_ForNonReservationType_CanShipFromPhysicalStock()
+    public void CustomerOrderWithBoundLedgerHu_ForNonReservationType_CanShipFromProtectedCoverage()
     {
         var line = BuildLine(itemId: 10, qtyOrdered: 30);
         var store = BuildMetricsStore(
             useReservedStock: true,
             line,
             physicalQty: 100,
-            producedOrReservedQty: 0,
+            producedOrReservedQty: 30,
             itemTypeUsesOrderReservation: false);
 
         var result = new OrderService(store.Object).GetOrderLineViews(1).Single();
@@ -108,11 +108,47 @@ public sealed class OrderLineMetricsTests
             UseReservedStock = useReservedStock
         });
         store.Setup(s => s.GetOrderLineViews(1)).Returns([line]);
+        store.Setup(s => s.GetOrderLines(1)).Returns([
+            new OrderLine
+            {
+                Id = line.Id,
+                OrderId = line.OrderId,
+                ItemId = line.ItemId,
+                QtyOrdered = line.QtyOrdered,
+                ProductionPurpose = ProductionLinePurpose.CustomerOrder
+            }
+        ]);
         store.Setup(s => s.GetLedgerTotalsByItem()).Returns(new Dictionary<long, double>
         {
             [line.ItemId] = physicalQty
         });
         store.Setup(s => s.GetShippedTotalsByOrderLine(1)).Returns(new Dictionary<long, double>());
+        store.Setup(s => s.GetDocsByOrder(1)).Returns(Array.Empty<Doc>());
+        store.Setup(s => s.GetOrderReceiptPlanLines(1)).Returns(producedOrReservedQty > 0
+            ? [
+                new OrderReceiptPlanLine
+                {
+                    Id = 1,
+                    OrderId = line.OrderId,
+                    OrderLineId = line.Id,
+                    ItemId = line.ItemId,
+                    QtyPlanned = producedOrReservedQty,
+                    ToLocationId = 1,
+                    ToHu = "HU-BOUND"
+                }
+            ]
+            : Array.Empty<OrderReceiptPlanLine>());
+        store.Setup(s => s.GetHuStockRows()).Returns(producedOrReservedQty > 0
+            ? [
+                new HuStockRow
+                {
+                    ItemId = line.ItemId,
+                    LocationId = 1,
+                    HuCode = "HU-BOUND",
+                    Qty = producedOrReservedQty
+                }
+            ]
+            : Array.Empty<HuStockRow>());
         store.Setup(s => s.GetOrderReceiptRemaining(1)).Returns([
             new OrderReceiptLine
             {

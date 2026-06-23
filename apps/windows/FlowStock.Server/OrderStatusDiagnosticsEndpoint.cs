@@ -12,6 +12,7 @@ public static class OrderStatusDiagnosticsEndpoint
     public static void Map(WebApplication app)
     {
         app.MapPost("/api/diagnostics/order-status/refresh-fully-shipped", HandleRefreshFullyShippedAsync);
+        app.MapPost("/api/diagnostics/order-status/refresh-customer-readiness", HandleRefreshCustomerReadinessAsync);
     }
 
     private static async Task<IResult> HandleRefreshFullyShippedAsync(HttpRequest request, IDataStore store)
@@ -51,6 +52,50 @@ public static class OrderStatusDiagnosticsEndpoint
                 new_status = OrderStatusMapper.StatusToString(row.NewStatus),
                 total_ordered_qty = row.TotalOrderedQty,
                 total_shipped_qty = row.TotalShippedQty,
+                updated = row.Updated
+            })
+        });
+    }
+
+    private static async Task<IResult> HandleRefreshCustomerReadinessAsync(HttpRequest request, IDataStore store)
+    {
+        RefreshFullyShippedOrderStatusRequest? body = null;
+        using var reader = new StreamReader(request.Body);
+        var rawBody = await reader.ReadToEndAsync();
+        if (!string.IsNullOrWhiteSpace(rawBody))
+        {
+            try
+            {
+                body = JsonSerializer.Deserialize<RefreshFullyShippedOrderStatusRequest>(
+                    rawBody,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            }
+            catch (JsonException)
+            {
+                return Results.BadRequest(new { ok = false, error = "INVALID_JSON" });
+            }
+        }
+
+        var apply = body?.DryRun == true
+            ? false
+            : body?.Apply == true || body?.DryRun == false;
+        var report = new OrderService(store).RefreshCustomerReadinessOrderStatuses(apply);
+        return Results.Ok(new
+        {
+            ok = true,
+            dry_run = report.DryRun,
+            refreshed_count = report.RefreshedCount,
+            changed_count = report.ChangedCount,
+            orders = report.Rows.Select(row => new
+            {
+                order_id = row.OrderId,
+                order_ref = row.OrderRef,
+                old_status = OrderStatusMapper.StatusToString(row.OldStatus),
+                new_status = OrderStatusMapper.StatusToString(row.NewStatus),
+                total_ordered_qty = row.TotalOrderedQty,
+                total_shipped_qty = row.TotalShippedQty,
+                total_covered_qty = row.TotalCoveredQty,
+                total_missing_qty = row.TotalMissingQty,
                 updated = row.Updated
             })
         });

@@ -2156,6 +2156,7 @@ public partial class OrderDetailsWindow : Window
             ? apiAvailability
             : new Dictionary<long, double>();
         var processedByLine = new Dictionary<long, double>();
+        var apiLinesById = new Dictionary<long, OrderLineView>();
 
         if (_orderId.HasValue)
         {
@@ -2170,6 +2171,7 @@ public partial class OrderDetailsWindow : Window
             {
                 if (_services.WpfReadApi.TryGetOrderLines(_orderId.Value, out var apiLines))
                 {
+                    apiLinesById = apiLines.ToDictionary(line => line.Id, line => line);
                     processedByLine = apiLines.ToDictionary(line => line.Id, line => line.QtyShipped);
                 }
             }
@@ -2190,6 +2192,13 @@ public partial class OrderDetailsWindow : Window
             {
                 line.CanShipNow = 0;
                 line.Shortage = 0;
+                continue;
+            }
+
+            if (apiLinesById.TryGetValue(line.Id, out var apiLine)
+                && Math.Abs(apiLine.QtyOrdered - line.QtyOrdered) <= 0.000001)
+            {
+                OrderLineCanonicalPresentation.ApplyPersistedLine(line, apiLine, type);
                 continue;
             }
 

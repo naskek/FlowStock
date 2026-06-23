@@ -1161,7 +1161,51 @@
     return Number(line && line.qty_available) || 0;
   }
 
+  function getLineCoverageState(line) {
+    var required = getLineRequiredQty(line);
+    var coverage = line && line.coverage;
+    if (coverage && typeof coverage === "object") {
+      var covered = Number(coverage.covered_qty);
+      var missing = Number(coverage.missing_qty);
+      if (!isNaN(covered) && !isNaN(missing)) {
+        var shipped = Number(line && line.qty_shipped) || Number(coverage.shipped_qty) || 0;
+        var coveredForRemaining = Math.max(0, Math.min(required, covered - shipped));
+        return {
+          required: required,
+          available: coveredForRemaining,
+          covered: Math.max(0, covered),
+          shortage: Math.max(0, missing),
+          ready: missing <= 0.000001,
+          canonical: true,
+        };
+      }
+    }
+
+    var explicitShortage = Number(line && line.shortage);
+    if (!isNaN(explicitShortage)) {
+      var explicitCanShip = Number(line && line.can_ship_now);
+      var available = !isNaN(explicitCanShip)
+        ? Math.max(0, explicitCanShip)
+        : Math.max(0, required - explicitShortage);
+      return {
+        required: required,
+        available: Math.min(required, available),
+        covered: Math.max(0, (Number(line && line.qty_shipped) || 0) + available),
+        shortage: Math.max(0, explicitShortage),
+        ready: explicitShortage <= 0.000001,
+        canonical: true,
+      };
+    }
+
+    return null;
+  }
+
   function getAvailabilityState(line) {
+    var coverageState = getLineCoverageState(line);
+    if (coverageState) {
+      return coverageState;
+    }
+
     var required = getLineRequiredQty(line);
     var available = getLineAvailableQty(line);
     var shortage = Math.max(0, required - available);
@@ -1174,6 +1218,11 @@
   }
 
   function getCustomerLineHuCoverageQty(line) {
+    var coverageState = getLineCoverageState(line);
+    if (coverageState) {
+      return coverageState.covered;
+    }
+
     var explicitKeys = [
       "hu_reserved_qty",
       "reserved_hu_qty",
@@ -1229,36 +1278,29 @@
       return { tone: "neutral", className: "", title: "" };
     }
 
-    if (fillingState.filledQty > 0.000001 && fillingState.plannedQty > 0.000001) {
-      if (fillingState.filledQty + 0.000001 >= fillingState.plannedQty) {
-        return {
-          tone: "covered",
-          className: "pc-order-line-coverage-covered",
-          title: itemName + ": наполнено " + formatQuantity(fillingState.filledQty) + " из " + formatQuantity(fillingState.plannedQty),
-        };
-      }
-
-      return {
-        tone: "partial",
-        className: "pc-order-line-coverage-partial",
-        title: itemName + ": частично наполнено " + formatQuantity(fillingState.filledQty) + " из " + formatQuantity(fillingState.plannedQty),
-      };
-    }
-
-    var covered = Math.min(getCustomerLineHuCoverageQty(line), remaining);
-    var missing = Math.max(0, remaining - covered);
+    var coverageState = getAvailabilityState(line);
+    var coveredForRemaining = Math.max(0, Math.min(remaining, coverageState.available));
+    var missing = Math.max(0, coverageState.shortage);
     if (missing <= 0.000001) {
       return {
         tone: "covered",
         className: "pc-order-line-coverage-covered",
-        title: itemName + ": привязано " + formatQuantity(covered) + " из " + formatQuantity(remaining),
+        title: itemName + ": покрыто " + formatQuantity(coveredForRemaining) + " из " + formatQuantity(remaining),
+      };
+    }
+
+    if (coveredForRemaining > 0.000001) {
+      return {
+        tone: "partial",
+        className: "pc-order-line-coverage-partial",
+        title: itemName + ": покрыто " + formatQuantity(coveredForRemaining) + " из " + formatQuantity(remaining) + ", не хватает " + formatQuantity(missing),
       };
     }
 
     return {
       tone: "missing",
       className: "pc-order-line-coverage-missing",
-      title: itemName + ": привязано " + formatQuantity(covered) + " из " + formatQuantity(remaining) + ", не хватает " + formatQuantity(missing),
+      title: itemName + ": покрыто 0 из " + formatQuantity(remaining) + ", не хватает " + formatQuantity(missing),
     };
   }
 
@@ -1765,9 +1807,9 @@
         totalCodes[code.toUpperCase()] = true;
       });
 
-      var required = getLineRequiredQty(line);
-      var canShip = Number(line && (line.can_ship_now != null ? line.can_ship_now : line.qty_available)) || 0;
-      var ready = required <= 0.000001 || canShip + 0.000001 >= required || getAvailabilityState(line).ready;
+      var state = getAvailabilityState(line);
+      var required = state.required;
+      var ready = required <= 0.000001 || state.ready;
       if (!ready) {
         return;
       }

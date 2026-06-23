@@ -323,6 +323,55 @@ public sealed class OrderLineHuDetailsBuilderTests
     }
 
     [Fact]
+    public void BuildByOrder_CustomerFilledPalletWithoutLedgerDoesNotCountAsReadyCoverage()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedItem(new Item { Id = 5, Name = "Товар", BaseUom = "шт" });
+        var order = new Order
+        {
+            Id = 11,
+            OrderRef = "011",
+            Type = OrderType.Customer,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 6, 10, 8, 0, 0)
+        };
+        harness.SeedOrder(order);
+        harness.SeedOrderLine(new OrderLine { Id = 110, OrderId = 11, ItemId = 5, QtyOrdered = 1800 });
+        harness.SeedDoc(new Doc
+        {
+            Id = 210,
+            DocRef = "PRD-210",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 11,
+            CreatedAt = new DateTime(2026, 6, 10, 9, 0, 0)
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 211,
+            PrdDocId = 210,
+            OrderId = 11,
+            OrderLineId = 110,
+            ItemId = 5,
+            HuCode = "HU-NO-LEDGER",
+            PlannedQty = 1800,
+            Status = ProductionPalletStatus.Filled,
+            CreatedAt = new DateTime(2026, 6, 10, 9, 0, 0),
+            FilledAt = new DateTime(2026, 6, 10, 10, 0, 0)
+        });
+
+        var line = Assert.Single(new OrderService(harness.Store).GetOrderLineViews(11));
+        var details = OrderLineHuDetailsBuilder.BuildByOrder(harness.Store, order, [line])[110];
+
+        Assert.NotNull(details.Coverage);
+        Assert.Equal(0, details.Coverage.CoveredQty, 3);
+        Assert.Equal(1800, details.Coverage.MissingQty, 3);
+        Assert.Equal(0, line.QtyProduced, 3);
+        Assert.Equal(1800, line.Shortage, 3);
+        Assert.Equal(0, line.CanShipNow, 3);
+    }
+
+    [Fact]
     public void BuildByOrder_InternalUsesExistingProducedMetricAndDoesNotExposeCustomerWarehouseBinding()
     {
         var harness = new CloseDocumentHarness();

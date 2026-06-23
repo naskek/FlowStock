@@ -145,6 +145,41 @@ public sealed class OrderService
         };
     }
 
+    public CustomerReadinessOrderStatusRefreshReport RefreshCustomerReadinessOrderStatuses(bool apply)
+    {
+        var candidates = GetCustomerReadinessOrderStatusCandidates();
+        var rows = new List<CustomerReadinessOrderStatusRefreshRow>(candidates.Count);
+
+        foreach (var candidate in candidates)
+        {
+            var updated = false;
+            if (apply && candidate.NewStatus != candidate.OldStatus)
+            {
+                _data.UpdateOrderStatus(candidate.OrderId, candidate.NewStatus);
+                updated = true;
+            }
+
+            rows.Add(new CustomerReadinessOrderStatusRefreshRow
+            {
+                OrderId = candidate.OrderId,
+                OrderRef = candidate.OrderRef,
+                OldStatus = candidate.OldStatus,
+                NewStatus = candidate.NewStatus,
+                TotalOrderedQty = candidate.TotalOrderedQty,
+                TotalShippedQty = candidate.TotalShippedQty,
+                TotalCoveredQty = candidate.TotalCoveredQty,
+                TotalMissingQty = candidate.TotalMissingQty,
+                Updated = updated
+            });
+        }
+
+        return new CustomerReadinessOrderStatusRefreshReport
+        {
+            DryRun = !apply,
+            Rows = rows
+        };
+    }
+
     public IReadOnlyList<OrderLineView> GetOrderLineViews(long orderId)
     {
         var order = _data.GetOrder(orderId);
@@ -617,6 +652,8 @@ public sealed class OrderService
                 {
                     TrySyncProductionPalletPlanForOrderLine(store, orderId, orderLineId, orderedQty, oldOrderedQty);
                 }
+
+                new OrderService(store).RefreshPersistedStatus(orderId);
             }
             else
             {
@@ -1263,6 +1300,76 @@ public sealed class OrderService
         return result;
     }
 
+    private IReadOnlyList<CustomerReadinessOrderStatusCandidate> GetCustomerReadinessOrderStatusCandidates()
+    {
+        if (_data is IOrderStatusDiagnosticsStore diagnosticsStore)
+        {
+            return diagnosticsStore.GetCustomerReadinessOrderStatusCandidates();
+        }
+
+        var result = new List<CustomerReadinessOrderStatusCandidate>();
+        var activeCustomerOrders = _data.GetOrders()
+            .Where(order => order.Type == OrderType.Customer
+                            && order.Status is OrderStatus.InProgress or OrderStatus.Accepted)
+            .OrderBy(order => order.OrderRef, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(order => order.Id);
+
+        foreach (var order in activeCustomerOrders)
+        {
+            var candidate = BuildCustomerReadinessOrderStatusCandidate(_data, order.Id, order.OrderRef, order.Status);
+            if (candidate != null && candidate.OldStatus != candidate.NewStatus)
+            {
+                result.Add(candidate);
+            }
+        }
+
+        return result;
+    }
+
+    public static CustomerReadinessOrderStatusCandidate? BuildCustomerReadinessOrderStatusCandidate(
+        IDataStore store,
+        long orderId,
+        string orderRef,
+        OrderStatus oldStatus)
+    {
+        var lines = store.GetOrderLines(orderId)
+            .Where(line => line.QtyOrdered > QtyTolerance)
+            .ToArray();
+        if (lines.Length == 0)
+        {
+            return null;
+        }
+
+        var shippedByLine = store.GetShippedTotalsByOrderLine(orderId);
+        var fullyShipped = lines.All(line =>
+        {
+            var shipped = shippedByLine.TryGetValue(line.Id, out var qty) ? qty : 0d;
+            return shipped + QtyTolerance >= line.QtyOrdered;
+        });
+        var readinessByLine = CustomerShipmentReadinessCalculator.BuildByOrderLine(
+            store,
+            orderId,
+            lines,
+            shippedByLine);
+        var newStatus = fullyShipped
+            ? OrderStatus.Shipped
+            : lines.All(line => readinessByLine.TryGetValue(line.Id, out var readiness) && readiness.IsReady)
+                ? OrderStatus.Accepted
+                : OrderStatus.InProgress;
+
+        return new CustomerReadinessOrderStatusCandidate
+        {
+            OrderId = orderId,
+            OrderRef = orderRef,
+            OldStatus = oldStatus,
+            NewStatus = newStatus,
+            TotalOrderedQty = lines.Sum(line => Math.Max(0, line.QtyOrdered)),
+            TotalShippedQty = lines.Sum(line => shippedByLine.TryGetValue(line.Id, out var shipped) ? Math.Max(0, shipped) : 0d),
+            TotalCoveredQty = lines.Sum(line => readinessByLine.TryGetValue(line.Id, out var readiness) ? readiness.CoveredQty : 0d),
+            TotalMissingQty = lines.Sum(line => readinessByLine.TryGetValue(line.Id, out var readiness) ? readiness.MissingQty : Math.Max(0, line.QtyOrdered))
+        };
+    }
+
     private void ApplyLineMetrics(Order order, IReadOnlyList<OrderLineView> lines)
     {
         var availableByItem = _data.GetLedgerTotalsByItem();
@@ -1289,34 +1396,31 @@ public sealed class OrderService
         }
 
         var shippedByLine = _data.GetShippedTotalsByOrderLine(order.Id);
-        var producedByOrderLine = _data.GetOrderReceiptRemaining(order.Id)
-            .ToDictionary(line => line.OrderLineId, line => line.QtyReceived);
-        var useOrderReservationByItem = lines
-            .Select(line => line.ItemId)
-            .Distinct()
-            .ToDictionary(itemId => itemId, itemId => ItemTypeUsesOrderReservation(_data, itemId));
+        var orderLines = _data.GetOrderLines(order.Id);
+        var readinessByLine = CustomerShipmentReadinessCalculator.BuildByOrderLine(
+            _data,
+            order.Id,
+            orderLines,
+            shippedByLine);
 
         foreach (var line in lines)
         {
             var available = availableByItem.TryGetValue(line.ItemId, out var availableQty) ? availableQty : 0;
-            var shipped = shippedByLine.TryGetValue(line.Id, out var shippedQty) ? shippedQty : 0;
-            var produced = producedByOrderLine.TryGetValue(line.Id, out var producedQty) ? producedQty : 0;
-            var remaining = Math.Max(0, line.QtyOrdered - shipped);
-            var reservedForLine = Math.Max(0, produced - shipped);
-            var useOrderReservation = useOrderReservationByItem.TryGetValue(line.ItemId, out var enabled)
-                                      && enabled;
-            var availableForShip = useOrderReservation
-                ? reservedForLine
-                : Math.Max(0, available);
-            var canShip = Math.Min(remaining, availableForShip);
-            var shortage = Math.Max(0, remaining - availableForShip);
+            var readiness = readinessByLine.TryGetValue(line.Id, out var value)
+                ? value
+                : new CustomerShipmentReadiness
+                {
+                    OrderedQty = Math.Max(0, line.QtyOrdered),
+                    RemainingToShip = Math.Max(0, line.QtyOrdered),
+                    MissingQty = Math.Max(0, line.QtyOrdered)
+                };
 
             line.QtyAvailable = available;
-            line.QtyShipped = shipped;
-            line.QtyProduced = produced;
-            line.QtyRemaining = remaining;
-            line.CanShipNow = canShip;
-            line.Shortage = shortage;
+            line.QtyShipped = readiness.ShippedQty;
+            line.QtyProduced = readiness.CoveredQty;
+            line.QtyRemaining = readiness.RemainingToShip;
+            line.CanShipNow = readiness.CanShipNow;
+            line.Shortage = readiness.MissingQty;
         }
     }
 
@@ -2104,8 +2208,6 @@ public sealed class OrderService
 
         var lines = _data.GetOrderLines(order.Id);
         var shippedTotals = _data.GetShippedTotalsByOrderLine(order.Id);
-        var customerReceiptLines = _data.GetOrderReceiptRemaining(order.Id);
-        var producedByLine = customerReceiptLines.ToDictionary(line => line.OrderLineId, line => line.QtyReceived);
 
         var fullyShipped = lines.Count > 0 && lines.All(line =>
         {
@@ -2118,13 +2220,17 @@ public sealed class OrderService
             return OrderStatus.Shipped;
         }
 
-        var fullyProducedForOrder = lines.Count > 0 && lines.All(line =>
-        {
-            var produced = producedByLine.TryGetValue(line.Id, out var qty) ? qty : 0;
-            return produced + QtyTolerance >= line.QtyOrdered;
-        });
+        var readinessByLine = CustomerShipmentReadinessCalculator.BuildByOrderLine(
+            _data,
+            order.Id,
+            lines,
+            shippedTotals);
+        var allReadyForShipment = lines.Count > 0
+                                  && lines.Where(line => line.QtyOrdered > QtyTolerance)
+                                      .All(line => readinessByLine.TryGetValue(line.Id, out var readiness)
+                                                   && readiness.IsReady);
 
-        return fullyProducedForOrder
+        return allReadyForShipment
             ? OrderStatus.Accepted
             : OrderStatus.InProgress;
     }
@@ -2161,5 +2267,26 @@ public sealed class FullyShippedCustomerOrderStatusRefreshRow
     public OrderStatus NewStatus { get; init; }
     public double TotalOrderedQty { get; init; }
     public double TotalShippedQty { get; init; }
+    public bool Updated { get; init; }
+}
+
+public sealed class CustomerReadinessOrderStatusRefreshReport
+{
+    public bool DryRun { get; init; }
+    public IReadOnlyList<CustomerReadinessOrderStatusRefreshRow> Rows { get; init; } = Array.Empty<CustomerReadinessOrderStatusRefreshRow>();
+    public int RefreshedCount => Rows.Count;
+    public int ChangedCount => Rows.Count(row => row.Updated);
+}
+
+public sealed class CustomerReadinessOrderStatusRefreshRow
+{
+    public long OrderId { get; init; }
+    public string OrderRef { get; init; } = string.Empty;
+    public OrderStatus OldStatus { get; init; }
+    public OrderStatus NewStatus { get; init; }
+    public double TotalOrderedQty { get; init; }
+    public double TotalShippedQty { get; init; }
+    public double TotalCoveredQty { get; init; }
+    public double TotalMissingQty { get; init; }
     public bool Updated { get; init; }
 }

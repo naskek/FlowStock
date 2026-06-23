@@ -158,9 +158,10 @@ internal static class OrderReceiptRemainingCalculator
 
         try
         {
-            foreach (var doc in dataStore.GetDocsByOrder(orderId).Where(doc => doc.Type == DocType.ProductionReceipt))
+            foreach (var doc in (dataStore.GetDocsByOrder(orderId) ?? Array.Empty<Doc>())
+                         .Where(doc => doc.Type == DocType.ProductionReceipt))
             {
-                var pallets = dataStore.GetProductionPalletsByDoc(doc.Id)
+                var pallets = (dataStore.GetProductionPalletsByDoc(doc.Id) ?? Array.Empty<ProductionPallet>())
                     .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
                     .ToArray();
                 if (pallets.Length > 0)
@@ -201,7 +202,7 @@ internal static class OrderReceiptRemainingCalculator
                     continue;
                 }
 
-                foreach (var line in dataStore.GetDocLines(doc.Id).Where(line => line.Qty > QtyTolerance))
+                foreach (var line in (dataStore.GetDocLines(doc.Id) ?? Array.Empty<DocLine>()).Where(line => line.Qty > QtyTolerance))
                 {
                     var ledgerQty = Math.Max(0, dataStore.GetLedgerQtyByDocItemHu(doc.Id, line.ItemId, line.ToHu));
                     var producedQty = Math.Min(line.Qty, ledgerQty);

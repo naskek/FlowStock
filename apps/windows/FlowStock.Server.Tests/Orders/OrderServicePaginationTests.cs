@@ -105,8 +105,33 @@ public sealed class OrderServicePaginationTests
             });
         SetupStableStatus(store, orderId: 10, qtyOrdered: 10, shippedQty: 0, receivedQty: 0, expectedStatus: null);
         SetupStableStatus(store, orderId: 11, qtyOrdered: 10, shippedQty: 0, receivedQty: 0, expectedStatus: null);
-        SetupStableStatus(store, orderId: 13, qtyOrdered: 10, shippedQty: 0, receivedQty: 10, expectedStatus: null);
+        SetupStableStatus(store, orderId: 13, qtyOrdered: 10, shippedQty: 0, receivedQty: 0, expectedStatus: null);
         SetupStableStatus(store, orderId: 12, qtyOrdered: 10, shippedQty: 10, receivedQty: 0, expectedStatus: null);
+        store.Setup(data => data.GetOrderReceiptPlanLines(13))
+            .Returns(new[]
+            {
+                new OrderReceiptPlanLine
+                {
+                    Id = 13001,
+                    OrderId = 13,
+                    OrderLineId = 1300,
+                    ItemId = 130,
+                    QtyPlanned = 10,
+                    ToLocationId = 1,
+                    ToHu = "HU-CUST-010"
+                }
+            });
+        store.Setup(data => data.GetHuStockRows())
+            .Returns(new[]
+            {
+                new HuStockRow
+                {
+                    ItemId = 130,
+                    LocationId = 1,
+                    HuCode = "HU-CUST-010",
+                    Qty = 10
+                }
+            });
         store.Setup(data => data.GetOrderShippedAt(12))
             .Returns(new DateTime(2026, 5, 16, 10, 0, 0, DateTimeKind.Utc));
 

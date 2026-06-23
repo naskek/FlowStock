@@ -655,6 +655,91 @@ public sealed class OrderStatusRefreshTests
     }
 
     [Fact]
+    public void RefreshPersistedStatus_CustomerQtyAboveProtectedCoverage_BecomesInProgress()
+    {
+        var harness = CreateCustomerOrderHarness(OrderStatus.Accepted, qtyOrdered: 1800);
+        harness.SeedOrderReceiptPlanLines(10, new OrderReceiptPlanLine
+        {
+            Id = 1,
+            OrderId = 10,
+            OrderLineId = 101,
+            ItemId = 1001,
+            QtyPlanned = 600,
+            ToLocationId = 1,
+            ToHu = "HU-READY-600",
+            SortOrder = 1
+        });
+        harness.SeedBalance(1001, 1, 600, "HU-READY-600");
+
+        var status = new OrderService(harness.Store).RefreshPersistedStatus(10);
+
+        Assert.Equal(OrderStatus.InProgress, status);
+        Assert.Equal(OrderStatus.InProgress, harness.GetOrder(10).Status);
+    }
+
+    [Fact]
+    public void RefreshPersistedStatus_CustomerQtyCoveredByProtectedHu_BecomesAccepted()
+    {
+        var harness = CreateCustomerOrderHarness(OrderStatus.InProgress, qtyOrdered: 600);
+        harness.SeedOrderReceiptPlanLines(10, new OrderReceiptPlanLine
+        {
+            Id = 1,
+            OrderId = 10,
+            OrderLineId = 101,
+            ItemId = 1001,
+            QtyPlanned = 600,
+            ToLocationId = 1,
+            ToHu = "HU-READY-600",
+            SortOrder = 1
+        });
+        harness.SeedBalance(1001, 1, 600, "HU-READY-600");
+
+        var status = new OrderService(harness.Store).RefreshPersistedStatus(10);
+
+        Assert.Equal(OrderStatus.Accepted, status);
+        Assert.Equal(OrderStatus.Accepted, harness.GetOrder(10).Status);
+    }
+
+    [Fact]
+    public void RefreshPersistedStatus_CustomerMultiLineWithMissingLine_RemainsInProgress()
+    {
+        var harness = CreateCustomerOrderHarness(OrderStatus.Accepted, qtyOrdered: 600);
+        harness.SeedItem(new Item
+        {
+            Id = 1002,
+            Name = "Кетчуп",
+            Gtin = "04607186951521",
+            ItemTypeName = "Готовая продукция",
+            ItemTypeEnableMarking = false
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 102,
+            OrderId = 10,
+            ItemId = 1002,
+            QtyOrdered = 378,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder
+        });
+        harness.SeedOrderReceiptPlanLines(10, new OrderReceiptPlanLine
+        {
+            Id = 1,
+            OrderId = 10,
+            OrderLineId = 101,
+            ItemId = 1001,
+            QtyPlanned = 600,
+            ToLocationId = 1,
+            ToHu = "HU-READY-600",
+            SortOrder = 1
+        });
+        harness.SeedBalance(1001, 1, 600, "HU-READY-600");
+
+        var status = new OrderService(harness.Store).RefreshPersistedStatus(10);
+
+        Assert.Equal(OrderStatus.InProgress, status);
+        Assert.Equal(OrderStatus.InProgress, harness.GetOrder(10).Status);
+    }
+
+    [Fact]
     public void RefreshPersistedStatus_ComputedShippedCustomerOrder_PersistsStatus()
     {
         var store = new Mock<IDataStore>(MockBehavior.Strict);
@@ -704,7 +789,9 @@ public sealed class OrderStatusRefreshTests
         store.Verify(s => s.UpdateOrderStatus(55, OrderStatus.Shipped), Times.Once);
     }
 
-    private static CloseDocumentHarness CreateCustomerOrderHarness()
+    private static CloseDocumentHarness CreateCustomerOrderHarness(
+        OrderStatus status = OrderStatus.InProgress,
+        double qtyOrdered = 5)
     {
         var harness = new CloseDocumentHarness();
         harness.SeedLocation(new Location
@@ -733,7 +820,7 @@ public sealed class OrderStatusRefreshTests
             Id = 10,
             OrderRef = "SO-001",
             Type = OrderType.Customer,
-            Status = OrderStatus.InProgress,
+            Status = status,
             PartnerId = 200,
             CreatedAt = new DateTime(2026, 5, 8, 9, 0, 0, DateTimeKind.Utc)
         });
@@ -742,7 +829,7 @@ public sealed class OrderStatusRefreshTests
             Id = 101,
             OrderId = 10,
             ItemId = 1001,
-            QtyOrdered = 5,
+            QtyOrdered = qtyOrdered,
             ProductionPurpose = ProductionLinePurpose.CustomerOrder
         });
 

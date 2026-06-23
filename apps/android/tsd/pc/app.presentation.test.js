@@ -246,6 +246,7 @@ const mixedComponentFilledLineHtml = pc.renderOrderLinesTable(
       qty_shipped: 0,
       qty_available: 0,
       can_ship_now: 0,
+      coverage: { ordered_qty: 1, covered_qty: 0, missing_qty: 1, shipped_qty: 0 },
       planned_pallet_count: 1,
       filled_pallet_count: 1,
       pallet_planned_qty: 1,
@@ -254,8 +255,8 @@ const mixedComponentFilledLineHtml = pc.renderOrderLinesTable(
   ],
   { order_type: "CUSTOMER", order_status: "IN_PROGRESS" }
 );
-assert.match(mixedComponentFilledLineHtml, /pc-order-line-coverage-covered/);
-assert.doesNotMatch(mixedComponentFilledLineHtml, /pc-order-line-coverage-missing/);
+assert.match(mixedComponentFilledLineHtml, /pc-order-line-coverage-missing/);
+assert.doesNotMatch(mixedComponentFilledLineHtml, /pc-order-line-coverage-covered/);
 assert.match(mixedComponentFilledLineHtml, />Наполнено 1 \/ 1</);
 
 const mixedComponentPartialLineHtml = pc.renderOrderLinesTable(
@@ -269,6 +270,7 @@ const mixedComponentPartialLineHtml = pc.renderOrderLinesTable(
       qty_shipped: 0,
       qty_available: 0,
       can_ship_now: 0,
+      coverage: { ordered_qty: 1, covered_qty: 0, missing_qty: 1, shipped_qty: 0 },
       planned_pallet_count: 1,
       filled_pallet_count: 0,
       pallet_planned_qty: 1,
@@ -277,8 +279,8 @@ const mixedComponentPartialLineHtml = pc.renderOrderLinesTable(
   ],
   { order_type: "CUSTOMER", order_status: "IN_PROGRESS" }
 );
-assert.match(mixedComponentPartialLineHtml, /pc-order-line-coverage-partial/);
-assert.doesNotMatch(mixedComponentPartialLineHtml, /pc-order-line-coverage-missing/);
+assert.match(mixedComponentPartialLineHtml, /pc-order-line-coverage-missing/);
+assert.doesNotMatch(mixedComponentPartialLineHtml, /pc-order-line-coverage-covered/);
 assert.match(mixedComponentPartialLineHtml, /pc-pallet-progress-inprogress/);
 assert.match(mixedComponentPartialLineHtml, />0\.5 \/ 1</);
 assert.match(mixedComponentPartialLineHtml, /aria-label="Наполнено 0\.5 \/ 1"/);
@@ -304,6 +306,7 @@ const mixedComponentLines = [
     qty_shipped: 0,
     qty_available: 0,
     can_ship_now: 0,
+    coverage: { ordered_qty: 1, covered_qty: 0, missing_qty: 1, shipped_qty: 0 },
     planned_pallet_count: 1,
     filled_pallet_count: 1,
     pallet_planned_qty: 1,
@@ -312,7 +315,8 @@ const mixedComponentLines = [
 ];
 const modalUpdatesAfterMixedFill = pc.getOrderModalContentUpdates(mixedComponentOrder, mixedComponentLines);
 assert.match(modalUpdatesAfterMixedFill.linesHtml, />Наполнено 1 \/ 1</);
-assert.match(modalUpdatesAfterMixedFill.linesHtml, /pc-order-line-coverage-covered/);
+assert.match(modalUpdatesAfterMixedFill.linesHtml, /pc-order-line-coverage-missing/);
+assert.doesNotMatch(modalUpdatesAfterMixedFill.linesHtml, /pc-order-line-coverage-covered/);
 assert.strictEqual(Object.prototype.hasOwnProperty.call(modalUpdatesAfterMixedFill, "summaryHtml"), false);
 
 const modalDom = {
@@ -413,12 +417,13 @@ const customerFullHuCoverageHtml = pc.renderOrderLinesTable(
       qty_produced: 1800,
       qty_left: 1800,
       qty_available: 0,
+      coverage: { ordered_qty: 1800, covered_qty: 1800, missing_qty: 0, shipped_qty: 0 },
     },
   ],
   { order_type: "CUSTOMER", order_status: "IN_PROGRESS" }
 );
 assert.match(customerFullHuCoverageHtml, /pc-order-line-coverage-covered/);
-assert.match(customerFullHuCoverageHtml, /Горчица: привязано 1800 из 1800/);
+assert.match(customerFullHuCoverageHtml, /Горчица: покрыто 1800 из 1800/);
 
 const customerPartialHuCoverageHtml = pc.renderOrderLinesTable(
   [
@@ -432,11 +437,13 @@ const customerPartialHuCoverageHtml = pc.renderOrderLinesTable(
       qty_produced: 1200,
       qty_left: 1800,
       qty_available: 9999,
+      coverage: { ordered_qty: 1800, covered_qty: 1200, missing_qty: 600, shipped_qty: 0 },
     },
   ],
   { order_type: "CUSTOMER", order_status: "IN_PROGRESS" }
 );
-assert.match(customerPartialHuCoverageHtml, /pc-order-line-coverage-missing/);
+assert.match(customerPartialHuCoverageHtml, /pc-order-line-coverage-partial/);
+assert.doesNotMatch(customerPartialHuCoverageHtml, /pc-order-line-coverage-covered/);
 assert.match(customerPartialHuCoverageHtml, /не хватает 600/);
 
 const shippedCustomerStalePalletHtml = pc.renderOrderLinesTable(
@@ -761,11 +768,13 @@ pc.applyOrderLineShipmentPalletReadiness(reservedShipmentOrder, [
   {
     qty_left: 1200,
     can_ship_now: 1200,
+    shortage: 0,
     production_hu_codes: ["HU-001", "HU-002"],
   },
   {
     qty_left: 600,
     can_ship_now: 600,
+    shortage: 0,
     production_hu_codes: ["HU-003"],
   },
 ]);
@@ -783,11 +792,13 @@ pc.applyOrderLineShipmentPalletReadiness(partialReservedShipmentOrder, [
   {
     qty_left: 1200,
     can_ship_now: 1200,
+    shortage: 0,
     production_hu_codes: ["HU-004"],
   },
   {
     qty_left: 600,
     can_ship_now: 0,
+    shortage: 600,
     production_hu_codes: ["HU-005"],
   },
 ]);

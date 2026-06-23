@@ -155,6 +155,8 @@
 - Резерв/read-model использует только физические HU с **положительным** `ledger` balance (`LEDGER_STOCK`).
 - `INTERNAL_FILLED` / `FILLED` **без** соответствующего `ledger` **не допускаются** как источник CUSTOMER reserve для отгрузки.
 - `order_receipt_plan_lines` для `CUSTOMER` — физическое закрепление **готового** HU под заказ, а не план будущего выпуска.
+- Готовность `CUSTOMER`-строки к отгрузке считается серверным canonical protected coverage: `covered_qty = min(qty_ordered, shipped_qty + ready_protected_unshipped_qty)`, `missing_qty = max(0, qty_ordered - covered_qty)`, строка готова только если `missing_qty <= tolerance`. `ready_protected_unshipped_qty` объединяет текущие bound ledger HU, подтвержденные filled production HU с положительным ledger и legacy confirmed non-HU выпуск, вычитая уже отгруженную часть по тем же HU/legacy bucket.
+- `PLANNED`/`PRINTED` pallet plan и `FILLED` без положительного ledger не считаются shipment-ready coverage. Полное наполнение/количество паллет не равно готовности к отгрузке.
 - Один HU не может быть одновременно зарезервирован под несколькими активными `CUSTOMER`-заказами.
 - Резерв **не пишет** `ledger` и **не меняет** физический остаток.
 - Create/update/refresh `CUSTOMER`-заказа не создает новые HU-резервы из свободного stock. Кандидаты можно считать автоматически как read-only модель, а фактическая bind/detach выполняется только explicit command.
@@ -181,6 +183,7 @@
   - Derived `PARTIALLY_FILLED` допустим только для persisted `PLANNED`/`PRINTED` mixed pallet, где заполнена часть component lines и ledger по HU отсутствует. Persisted `FILLED` без ledger остаётся ошибкой `FILLED_PALLET_MISSING_LEDGER`.
   - `ERROR` блокирует Close palletized PRD; `SHIPPED_CUSTOMER_WITH_OPEN_PRD` для stale open PRD без паллет/ledger — `WARNING`; при open pallets/ledger и рассинхроне — `ERROR`, но Close PRD не блокируется.
   - Закрытие palletized `PRODUCTION_RECEIPT` блокируется только при критичном рассинхроне текущего PRD, с сообщением: `План паллет не соответствует строкам заказа. Запустите диагностику production-plan-consistency.`
+- Пересчет исторически зависших `CUSTOMER`-статусов готовности выполняется через `POST /api/diagnostics/order-status/refresh-customer-readiness`: dry-run по умолчанию возвращает активные `IN_PROGRESS`/`ACCEPTED` заказы, где persisted status расходится с canonical protected coverage; `{ "apply": true }` обновляет только статус заказа, без ручных SQL-правок и без изменений `ledger`, `docs` или строк документов. Production apply выполняется только после свежего backup и проверки dry-run.
 - Canonical online submit-flow TSD: `reserve doc_ref -> local edit -> create draft on submit -> add lines -> close`.
   - При открытии операции на TSD серверный draft не создается: резервируется только номер документа (`doc_ref`).
   - Документ в БД создается только в момент отправки/завершения документа.

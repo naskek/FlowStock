@@ -68,6 +68,75 @@ public sealed class OrderStatusDiagnosticsEndpointTests
         Assert.True(row.GetProperty("updated").GetBoolean());
     }
 
+    [Fact]
+    public async Task RefreshCustomerReadiness_DryRun_ReportsCanonicalCoverageStatusChanges()
+    {
+        var harness = CreateHarness();
+        SeedCustomerOrder(harness, 90, "090", OrderStatus.Accepted, 1800, 0);
+        SeedBoundHu(harness, 90, "HU-090", 600);
+        SeedCustomerOrder(harness, 91, "091", OrderStatus.InProgress, 756, 0);
+        SeedBoundHu(harness, 91, "HU-091", 756);
+        SeedCustomerOrder(harness, 92, "092", OrderStatus.Accepted, 600, 0);
+        SeedBoundHu(harness, 92, "HU-092", 600);
+        SeedCustomerOrder(harness, 93, "093", OrderStatus.Shipped, 600, 600);
+
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        using var response = await host.Client.PostAsJsonAsync(
+            "/api/diagnostics/order-status/refresh-customer-readiness",
+            new { dry_run = true });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(payload.GetProperty("dry_run").GetBoolean());
+        Assert.Equal(2, payload.GetProperty("refreshed_count").GetInt32());
+
+        var rows = payload.GetProperty("orders").EnumerateArray().ToArray();
+        var staleReady = Assert.Single(rows, row => row.GetProperty("order_ref").GetString() == "090");
+        Assert.Equal("ACCEPTED", staleReady.GetProperty("old_status").GetString());
+        Assert.Equal("IN_PROGRESS", staleReady.GetProperty("new_status").GetString());
+        Assert.Equal(1800, staleReady.GetProperty("total_ordered_qty").GetDouble(), 3);
+        Assert.Equal(600, staleReady.GetProperty("total_covered_qty").GetDouble(), 3);
+        Assert.Equal(1200, staleReady.GetProperty("total_missing_qty").GetDouble(), 3);
+        Assert.False(staleReady.GetProperty("updated").GetBoolean());
+
+        var newlyReady = Assert.Single(rows, row => row.GetProperty("order_ref").GetString() == "091");
+        Assert.Equal("IN_PROGRESS", newlyReady.GetProperty("old_status").GetString());
+        Assert.Equal("ACCEPTED", newlyReady.GetProperty("new_status").GetString());
+        Assert.Equal(756, newlyReady.GetProperty("total_covered_qty").GetDouble(), 3);
+        Assert.Equal(0, newlyReady.GetProperty("total_missing_qty").GetDouble(), 3);
+
+        Assert.DoesNotContain(rows, row => row.GetProperty("order_ref").GetString() == "092");
+        Assert.DoesNotContain(rows, row => row.GetProperty("order_ref").GetString() == "093");
+        Assert.Equal(OrderStatus.Accepted, harness.GetOrder(90).Status);
+        Assert.Equal(OrderStatus.InProgress, harness.GetOrder(91).Status);
+    }
+
+    [Fact]
+    public async Task RefreshCustomerReadiness_Apply_UpdatesPersistedStatus()
+    {
+        var harness = CreateHarness();
+        SeedCustomerOrder(harness, 95, "095", OrderStatus.Accepted, 1800, 0);
+        SeedBoundHu(harness, 95, "HU-095", 600);
+
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        using var response = await host.Client.PostAsJsonAsync(
+            "/api/diagnostics/order-status/refresh-customer-readiness",
+            new { apply = true });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(payload.GetProperty("dry_run").GetBoolean());
+        Assert.Equal(1, payload.GetProperty("changed_count").GetInt32());
+        Assert.Equal(OrderStatus.InProgress, harness.GetOrder(95).Status);
+
+        var row = Assert.Single(payload.GetProperty("orders").EnumerateArray());
+        Assert.Equal("ACCEPTED", row.GetProperty("old_status").GetString());
+        Assert.Equal("IN_PROGRESS", row.GetProperty("new_status").GetString());
+        Assert.True(row.GetProperty("updated").GetBoolean());
+    }
+
     private static CloseDocumentHarness CreateHarness()
     {
         var harness = new CloseDocumentHarness();
@@ -88,7 +157,7 @@ public sealed class OrderStatusDiagnosticsEndpointTests
         return harness;
     }
 
-    private static void SeedCustomerOrder(
+    private static long SeedCustomerOrder(
         CloseDocumentHarness harness,
         long orderId,
         string orderRef,
@@ -119,5 +188,28 @@ public sealed class OrderStatusDiagnosticsEndpointTests
         {
             [lineId] = qtyShipped
         });
+
+        return lineId;
+    }
+
+    private static void SeedBoundHu(
+        CloseDocumentHarness harness,
+        long orderId,
+        string huCode,
+        double qty)
+    {
+        var lineId = orderId * 100;
+        harness.SeedOrderReceiptPlanLines(orderId, new OrderReceiptPlanLine
+        {
+            Id = orderId * 1000,
+            OrderId = orderId,
+            OrderLineId = lineId,
+            ItemId = 1001,
+            QtyPlanned = qty,
+            ToLocationId = 1,
+            ToHu = huCode,
+            SortOrder = 1
+        });
+        harness.SeedBalance(1001, 1, qty, huCode);
     }
 }

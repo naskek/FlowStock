@@ -365,6 +365,11 @@ public sealed class ProductionPalletService
             {
                 EmptyDraftProductionReceiptCleanup.TryDeleteEmptyDraftProductionReceiptIfSafe(store, order.Id, prdDocId);
             }
+
+            if (cleanup.RemovedPalletCount > 0)
+            {
+                new OrderService(store).RefreshPersistedStatus(order.Id);
+            }
         });
 
         return new ProductionPalletCancelPlanResult

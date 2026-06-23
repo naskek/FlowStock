@@ -86,6 +86,7 @@ public sealed class LineReplacementTests
                 ToHu = "HU-001",
                 SortOrder = 0
             });
+        harness.SeedBalance(1001, 1, 10, "HU-001");
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
 
         using var response = await host.Client.PutAsJsonAsync(
