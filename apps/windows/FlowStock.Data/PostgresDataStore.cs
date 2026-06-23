@@ -9123,6 +9123,139 @@ VALUES(@order_id, @order_line_id, @item_id, @qty_planned, @to_location_id, @to_h
         });
     }
 
+    public void ReplaceOrderReceiptPlanLinesBatch(
+        IReadOnlyCollection<OrderReceiptPlanLineKey> scopes,
+        IReadOnlyList<OrderReceiptPlanLine> replacementLines)
+    {
+        var scopeKeys = (scopes ?? Array.Empty<OrderReceiptPlanLineKey>())
+            .Where(scope => scope.OrderId > 0 && scope.OrderLineId > 0)
+            .Distinct()
+            .ToArray();
+        var lines = replacementLines ?? Array.Empty<OrderReceiptPlanLine>();
+
+        var scopeSet = scopeKeys.ToHashSet();
+        foreach (var line in lines)
+        {
+            if (!scopeSet.Contains(new OrderReceiptPlanLineKey(line.OrderId, line.OrderLineId)))
+            {
+                throw new InvalidOperationException(
+                    $"Строка плана {line.OrderId}/{line.OrderLineId} вне batch scope замены order_receipt_plan_lines.");
+            }
+        }
+
+        var scopeOrderIds = scopeKeys.Select(scope => scope.OrderId).ToArray();
+        var scopeLineIds = scopeKeys.Select(scope => scope.OrderLineId).ToArray();
+
+        WithConnection(connection =>
+        {
+            var ownsTransaction = _transaction == null;
+            if (ownsTransaction)
+            {
+                using var begin = connection.CreateCommand();
+                begin.CommandText = "BEGIN;";
+                begin.ExecuteNonQuery();
+            }
+
+            try
+            {
+                var normalizedHuCodes = lines
+                    .Where(line => line.QtyPlanned > 0 && !string.IsNullOrWhiteSpace(line.ToHu))
+                    .Select(line => line.ToHu!.Trim().ToUpperInvariant())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+
+                if (normalizedHuCodes.Length > 0)
+                {
+                    using var conflictCommand = CreateCommand(connection, @"
+SELECT p.to_hu, o.order_ref
+FROM order_receipt_plan_lines p
+INNER JOIN orders o ON o.id = p.order_id
+WHERE p.to_hu IS NOT NULL
+  AND p.to_hu <> ''
+  AND o.order_type = @customer_order_type
+  AND o.status <> @shipped_status
+  AND o.status <> @cancelled_status
+  AND UPPER(TRIM(p.to_hu)) = ANY(@hu_codes)
+  AND NOT EXISTS (
+      SELECT 1
+      FROM unnest(@scope_order_ids::bigint[], @scope_line_ids::bigint[]) AS s(order_id, order_line_id)
+      WHERE s.order_id = p.order_id
+        AND s.order_line_id = p.order_line_id)
+LIMIT 1;
+");
+                    conflictCommand.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+                    conflictCommand.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+                    conflictCommand.Parameters.AddWithValue("@cancelled_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+                    conflictCommand.Parameters.AddWithValue("@hu_codes", normalizedHuCodes);
+                    conflictCommand.Parameters.AddWithValue("@scope_order_ids", scopeOrderIds);
+                    conflictCommand.Parameters.AddWithValue("@scope_line_ids", scopeLineIds);
+                    using var conflictReader = conflictCommand.ExecuteReader();
+                    if (conflictReader.Read())
+                    {
+                        var huCode = conflictReader.IsDBNull(0) ? string.Empty : conflictReader.GetString(0);
+                        var orderRef = conflictReader.IsDBNull(1) ? string.Empty : conflictReader.GetString(1);
+                        throw new InvalidOperationException($"HU '{huCode}' уже зарезервирован за активным клиентским заказом '{orderRef}'.");
+                    }
+                }
+
+                if (scopeKeys.Length > 0)
+                {
+                    using var deleteCommand = CreateCommand(connection, @"
+DELETE FROM order_receipt_plan_lines p
+WHERE EXISTS (
+    SELECT 1
+    FROM unnest(@scope_order_ids::bigint[], @scope_line_ids::bigint[]) AS s(order_id, order_line_id)
+    WHERE s.order_id = p.order_id
+      AND s.order_line_id = p.order_line_id);
+");
+                    deleteCommand.Parameters.AddWithValue("@scope_order_ids", scopeOrderIds);
+                    deleteCommand.Parameters.AddWithValue("@scope_line_ids", scopeLineIds);
+                    deleteCommand.ExecuteNonQuery();
+                }
+
+                if (lines.Count > 0)
+                {
+                    using var insertCommand = CreateCommand(connection, @"
+INSERT INTO order_receipt_plan_lines(order_id, order_line_id, item_id, qty_planned, to_location_id, to_hu, sort_order)
+VALUES(@order_id, @order_line_id, @item_id, @qty_planned, @to_location_id, @to_hu, @sort_order);
+");
+                    foreach (var line in lines)
+                    {
+                        insertCommand.Parameters.Clear();
+                        insertCommand.Parameters.AddWithValue("@order_id", line.OrderId);
+                        insertCommand.Parameters.AddWithValue("@order_line_id", line.OrderLineId);
+                        insertCommand.Parameters.AddWithValue("@item_id", line.ItemId);
+                        insertCommand.Parameters.AddWithValue("@qty_planned", line.QtyPlanned);
+                        insertCommand.Parameters.AddWithValue("@to_location_id", line.ToLocationId.HasValue ? line.ToLocationId.Value : DBNull.Value);
+                        insertCommand.Parameters.AddWithValue("@to_hu", string.IsNullOrWhiteSpace(line.ToHu) ? DBNull.Value : line.ToHu.Trim());
+                        insertCommand.Parameters.AddWithValue("@sort_order", line.SortOrder);
+                        insertCommand.ExecuteNonQuery();
+                    }
+                }
+
+                if (ownsTransaction)
+                {
+                    using var commit = connection.CreateCommand();
+                    commit.CommandText = "COMMIT;";
+                    commit.ExecuteNonQuery();
+                }
+            }
+            catch
+            {
+                if (ownsTransaction)
+                {
+                    using var rollback = connection.CreateCommand();
+                    rollback.CommandText = "ROLLBACK;";
+                    rollback.ExecuteNonQuery();
+                }
+
+                throw;
+            }
+
+            return 0;
+        });
+    }
+
     public IReadOnlyList<OrderShipmentLine> GetOrderShipmentRemaining(long orderId)
     {
         return WithConnection(connection =>

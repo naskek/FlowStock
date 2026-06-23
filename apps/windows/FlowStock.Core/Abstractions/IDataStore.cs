@@ -178,6 +178,9 @@ public interface IDataStore
         long orderId,
         IReadOnlyCollection<long> orderLineIds,
         IReadOnlyList<OrderReceiptPlanLine> replacementLines);
+    void ReplaceOrderReceiptPlanLinesBatch(
+        IReadOnlyCollection<OrderReceiptPlanLineKey> scopes,
+        IReadOnlyList<OrderReceiptPlanLine> replacementLines);
     IReadOnlyList<OrderShipmentLine> GetOrderShipmentRemaining(long orderId);
     long AddOrderLine(OrderLine line);
     void UpdateOrderLineQty(long orderLineId, double qtyOrdered);

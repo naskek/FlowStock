@@ -1166,6 +1166,86 @@ internal sealed class CloseDocumentHarness
                 _orderReceiptPlanLines[orderId] = kept;
             });
 
+        _store.Setup(store => store.ReplaceOrderReceiptPlanLinesBatch(
+                It.IsAny<IReadOnlyCollection<OrderReceiptPlanLineKey>>(),
+                It.IsAny<IReadOnlyList<OrderReceiptPlanLine>>()))
+            .Callback<IReadOnlyCollection<OrderReceiptPlanLineKey>, IReadOnlyList<OrderReceiptPlanLine>>((scopes, replacementLines) =>
+            {
+                var scopeKeys = (scopes ?? Array.Empty<OrderReceiptPlanLineKey>())
+                    .Where(scope => scope.OrderId > 0 && scope.OrderLineId > 0)
+                    .Distinct()
+                    .ToHashSet();
+                var lines = (replacementLines ?? Array.Empty<OrderReceiptPlanLine>()).ToArray();
+
+                // Все вставляемые строки должны принадлежать объявленному scope.
+                foreach (var line in lines)
+                {
+                    if (!scopeKeys.Contains(new OrderReceiptPlanLineKey(line.OrderId, line.OrderLineId)))
+                    {
+                        throw new InvalidOperationException(
+                            $"Строка плана {line.OrderId}/{line.OrderLineId} вне batch scope замены order_receipt_plan_lines.");
+                    }
+                }
+
+                var finalHuCodes = lines
+                    .Where(line => line.QtyPlanned > 0 && !string.IsNullOrWhiteSpace(line.ToHu))
+                    .Select(line => NormalizeHu(line.ToHu))
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Cast<string>()
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                // Конфликт проверяется против всех существующих строк, кроме пар внутри scope
+                // (включая незатронутые строки того же заказа). Проверка — до любых изменений.
+                if (finalHuCodes.Count > 0)
+                {
+                    foreach (var pair in _orderReceiptPlanLines)
+                    {
+                        if (!_orders.TryGetValue(pair.Key, out var order)
+                            || order.Type != OrderType.Customer
+                            || order.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
+                        {
+                            continue;
+                        }
+
+                        foreach (var planLine in pair.Value)
+                        {
+                            if (scopeKeys.Contains(new OrderReceiptPlanLineKey(pair.Key, planLine.OrderLineId)))
+                            {
+                                continue;
+                            }
+
+                            var huCode = NormalizeHu(planLine.ToHu);
+                            if (!string.IsNullOrWhiteSpace(huCode) && finalHuCodes.Contains(huCode!))
+                            {
+                                throw new InvalidOperationException(
+                                    $"HU '{planLine.ToHu}' уже зарезервирован за активным клиентским заказом '{order.OrderRef}'.");
+                            }
+                        }
+                    }
+                }
+
+                // Сначала удалить исходящие строки всех scope-пар.
+                foreach (var orderId in scopeKeys.Select(scope => scope.OrderId).Distinct())
+                {
+                    if (_orderReceiptPlanLines.TryGetValue(orderId, out var current))
+                    {
+                        _orderReceiptPlanLines[orderId] = current
+                            .Where(line => !scopeKeys.Contains(new OrderReceiptPlanLineKey(orderId, line.OrderLineId)))
+                            .ToList();
+                    }
+                }
+
+                // Затем вставить полный финальный набор.
+                foreach (var group in lines.GroupBy(line => line.OrderId))
+                {
+                    var updated = _orderReceiptPlanLines.TryGetValue(group.Key, out var existing)
+                        ? existing.ToList()
+                        : new List<OrderReceiptPlanLine>();
+                    updated.AddRange(group.Select(CloneOrderReceiptPlanLine));
+                    _orderReceiptPlanLines[group.Key] = updated;
+                }
+            });
+
         _store.Setup(store => store.GetReservedOrderReceiptHuCodes(It.IsAny<long?>()))
             .Returns<long?>(excludeOrderId =>
             {
