@@ -33,7 +33,7 @@ public sealed class OrderHuBindingApplyFinalService
         long customerOrderId,
         OrderHuBindingApplyFinalRequest request)
     {
-        ValidateRequestShape(request);
+        HuBindingApplyShared.ValidateRequestShape(request);
 
         if (customerOrderId <= 0)
         {
@@ -71,14 +71,14 @@ public sealed class OrderHuBindingApplyFinalService
         var shipmentRemainingByLine = store.GetOrderShipmentRemaining(customerOrderId)
             .ToDictionary(line => line.OrderLineId);
         var reservedByOtherActiveCustomerOrders = store.GetReservedOrderReceiptHuCodes(customerOrderId)
-            .Select(NormalizeHu)
+            .Select(HuBindingApplyShared.NormalizeHu)
             .Where(code => !string.IsNullOrWhiteSpace(code))
             .Cast<string>()
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var reservedOwnerByHu = (store.GetHuOrderContextRows() ?? Array.Empty<HuOrderContextRow>())
             .Where(row => row.ReservedCustomerOrderId.HasValue && row.ReservedCustomerOrderId.Value != customerOrderId)
             .Where(row => !string.IsNullOrWhiteSpace(row.HuCode))
-            .GroupBy(row => NormalizeHu(row.HuCode)!, StringComparer.OrdinalIgnoreCase)
+            .GroupBy(row => HuBindingApplyShared.NormalizeHu(row.HuCode)!, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
         var affectedLineIds = request.Lines.Select(line => line.OrderLineId).ToHashSet();
         var duplicateHuGuard = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
@@ -103,12 +103,12 @@ public sealed class OrderHuBindingApplyFinalService
                 .ThenBy(line => line.Id)
                 .ToArray();
             var previousHuCodes = currentPlanForLine
-                .Select(line => NormalizeHu(line.ToHu))
+                .Select(line => HuBindingApplyShared.NormalizeHu(line.ToHu))
                 .Where(code => !string.IsNullOrWhiteSpace(code))
                 .Cast<string>()
                 .ToArray();
             var previousHuSet = previousHuCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var expectedHuSet = NormalizeHuSet(requestLine.ExpectedBoundHuCodes);
+            var expectedHuSet = HuBindingApplyShared.NormalizeHuSet(requestLine.ExpectedBoundHuCodes);
             if (!previousHuSet.SetEquals(expectedHuSet))
             {
                 throw Error(
@@ -121,16 +121,16 @@ public sealed class OrderHuBindingApplyFinalService
                     ]);
             }
 
-            var finalHuCodes = NormalizeHuList(requestLine.FinalHuCodes);
-            ValidateDuplicateHuInFinalSelection(finalHuCodes, orderLine.Id, duplicateHuGuard);
-            ValidateHuNotReservedOnOtherUnaffectedLine(
+            var finalHuCodes = HuBindingApplyShared.NormalizeHuList(requestLine.FinalHuCodes);
+            HuBindingApplyShared.ValidateDuplicateHuInFinalSelection(finalHuCodes, orderLine.Id, duplicateHuGuard);
+            HuBindingApplyShared.ValidateHuNotReservedOnOtherUnaffectedLine(
                 customerOrderId,
                 orderLine.Id,
                 finalHuCodes,
                 affectedLineIds,
                 existingPlanLines);
 
-            var candidatesByHu = BuildCandidatesByHu(candidatesService, customerOrderId, orderLine);
+            var candidatesByHu = HuBindingApplyShared.BuildCandidatesByHu(candidatesService, customerOrderId, orderLine);
             var finalCandidates = new List<HuReservationCandidateResult>();
             foreach (var huCode in finalHuCodes)
             {
@@ -180,7 +180,7 @@ public sealed class OrderHuBindingApplyFinalService
 
             var finalBoundQty = finalCandidates.Sum(candidate => Math.Max(0, candidate.Qty));
             var previousBoundQty = currentPlanForLine.Sum(line => Math.Max(0, line.QtyPlanned));
-            var remainingQty = ResolveShipmentRemaining(orderLine, shipmentRemainingByLine);
+            var remainingQty = HuBindingApplyShared.ResolveShipmentRemaining(orderLine, shipmentRemainingByLine);
             if (finalBoundQty > remainingQty + QtyTolerance)
             {
                 throw Error(
@@ -195,28 +195,16 @@ public sealed class OrderHuBindingApplyFinalService
 
             var coverageAddedQty = Math.Max(0, finalBoundQty - previousBoundQty);
             var cancelledPalletIds = coverageAddedQty > QtyTolerance
-                ? SelectSafeWholePlannedPalletsToCancel(store, customerOrderId, orderLine, coverageAddedQty)
+                ? HuBindingApplyShared.SelectSafeWholePlannedPalletsToCancel(store, customerOrderId, orderLine, coverageAddedQty)
                 : Array.Empty<long>();
             palletsToCancel.AddRange(cancelledPalletIds);
 
             if (previousBoundQty > finalBoundQty + QtyTolerance)
             {
-                restoreLineIds.Add((orderLine.Id, SumActiveProductionPalletQty(store, customerOrderId, orderLine.Id)));
+                restoreLineIds.Add((orderLine.Id, HuBindingApplyShared.SumActiveProductionPalletQty(store, customerOrderId, orderLine.Id)));
             }
 
-            for (var index = 0; index < finalCandidates.Count; index++)
-            {
-                var candidate = finalCandidates[index];
-                replacementLines.Add(new OrderReceiptPlanLine
-                {
-                    OrderId = customerOrderId,
-                    OrderLineId = orderLine.Id,
-                    ItemId = orderLine.ItemId,
-                    QtyPlanned = candidate.Qty,
-                    ToHu = candidate.HuCode,
-                    SortOrder = index
-                });
-            }
+            replacementLines.AddRange(HuBindingApplyShared.BuildReplacementPlanLines(customerOrderId, orderLine, finalCandidates));
 
             var finalSet = finalHuCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
             appliedLines.Add(new OrderHuBindingApplyFinalLineResult
@@ -258,14 +246,12 @@ public sealed class OrderHuBindingApplyFinalService
         foreach (var restore in restoreLineIds)
         {
             var orderLine = orderLines[restore.OrderLineId];
-            new ProductionPalletService(store).SyncOrderLinePlanInStore(
+            HuBindingApplyShared.RestoreProductionPlanForOrderLine(
                 store,
                 customerOrderId,
                 restore.OrderLineId,
-                orderLine.QtyOrdered,
-                oldOrderedQty: null,
-                source: "HU_BINDING_DETACH");
-            var activeAfter = SumActiveProductionPalletQty(store, customerOrderId, restore.OrderLineId);
+                orderLine.QtyOrdered);
+            var activeAfter = HuBindingApplyShared.SumActiveProductionPalletQty(store, customerOrderId, restore.OrderLineId);
             restoredByLine[restore.OrderLineId] = Math.Max(0, activeAfter - restore.ActivePlannedBefore);
         }
 
@@ -294,358 +280,11 @@ public sealed class OrderHuBindingApplyFinalService
         };
     }
 
-    private static void ValidateRequestShape(OrderHuBindingApplyFinalRequest request)
-    {
-        if (!string.Equals(request.Mode, OrderHuBindingApplyFinalRequest.ReplaceFinalSelectionMode, StringComparison.Ordinal))
-        {
-            throw Error("INVALID_REQUEST", "Некорректный режим применения HU.");
-        }
-
-        if (request.Lines == null || request.Lines.Count == 0)
-        {
-            throw Error("INVALID_REQUEST", "Не переданы строки для применения HU.");
-        }
-
-        var lineIds = new HashSet<long>();
-        foreach (var line in request.Lines)
-        {
-            if (line.OrderLineId <= 0)
-            {
-                throw Error("ORDER_LINE_NOT_FOUND", "Строка заказа не указана.");
-            }
-
-            if (!lineIds.Add(line.OrderLineId))
-            {
-                throw Error("INVALID_REQUEST", $"Строка {line.OrderLineId} передана более одного раза.");
-            }
-
-            if (line.ExpectedBoundHuCodes == null)
-            {
-                throw Error("INVALID_REQUEST", "Не передан expected_bound_hu_codes.");
-            }
-
-            if (line.FinalHuCodes == null)
-            {
-                throw Error("INVALID_REQUEST", "Не передан final_hu_codes.");
-            }
-        }
-    }
-
-    private static Dictionary<string, HuReservationCandidateResult> BuildCandidatesByHu(
-        HuReservationCandidatesService candidatesService,
-        long customerOrderId,
-        OrderLine orderLine)
-    {
-        var result = candidatesService.Build(new HuReservationCandidatesQuery
-        {
-            OrderId = customerOrderId,
-            Lines =
-            [
-                new HuReservationCandidatesLineQuery
-                {
-                    ClientLineKey = orderLine.Id.ToString(),
-                    OrderLineId = orderLine.Id,
-                    ItemId = orderLine.ItemId,
-                    QtyOrdered = orderLine.QtyOrdered
-                }
-            ],
-            ExcludeHuCodes = Array.Empty<string>()
-        });
-
-        return result.Lines
-            .SelectMany(line => line.Candidates)
-            .Where(candidate => !string.IsNullOrWhiteSpace(candidate.HuCode))
-            .GroupBy(candidate => NormalizeHu(candidate.HuCode)!, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
-    }
-
-    private static long[] SelectSafeWholePlannedPalletsToCancel(
-        IDataStore store,
-        long customerOrderId,
-        OrderLine orderLine,
-        double qtyToCover)
-    {
-        var activePallets = GetActiveProductionPalletsForOrderLine(store, customerOrderId, orderLine.Id).ToArray();
-        if (activePallets.Length == 0)
-        {
-            return [];
-        }
-
-        var safe = new List<(ProductionPallet Pallet, double Qty)>();
-        foreach (var pallet in activePallets)
-        {
-            if (!IsSafeWholePlannedCustomerPallet(customerOrderId, orderLine, pallet, out var qty, out var rejectionReason))
-            {
-                throw Error(
-                    "HU_BINDING_PLAN_CONFLICT",
-                    "Строка имеет производственные паллеты, которые нельзя безопасно заменить готовым HU.",
-                    [$"production_pallet_id={pallet.Id}", rejectionReason ?? "unsafe_pallet_state"]);
-            }
-
-            safe.Add((pallet, qty));
-        }
-
-        var selected = SelectExactPalletSubset(safe, qtyToCover);
-        if (selected.Count == 0)
-        {
-            throw Error(
-                "HU_BINDING_PLAN_CONFLICT",
-                "Готовый HU не может заменить целые плановые паллеты без частичной отмены.",
-                [$"order_line_id={orderLine.Id}", $"qty_to_cover={qtyToCover:0.###}"]);
-        }
-
-        return selected.Select(pallet => pallet.Id).ToArray();
-    }
-
-    private static bool IsSafeWholePlannedCustomerPallet(
-        long customerOrderId,
-        OrderLine orderLine,
-        ProductionPallet pallet,
-        out double qty,
-        out string rejectionReason)
-    {
-        qty = ResolvePalletQtyForOrderLine(pallet, orderLine.Id);
-        if (qty <= QtyTolerance)
-        {
-            rejectionReason = "no_planned_qty_for_order_line";
-            return false;
-        }
-
-        if (pallet.OrderId != customerOrderId)
-        {
-            rejectionReason = $"order_id_mismatch expected={customerOrderId} actual={pallet.OrderId}";
-            return false;
-        }
-
-        if (!string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase))
-        {
-            rejectionReason = $"status={pallet.Status ?? "(null)"} expected=PLANNED";
-            return false;
-        }
-
-        if (pallet.PrintedAt.HasValue)
-        {
-            rejectionReason = $"printed_at={pallet.PrintedAt:O}";
-            return false;
-        }
-
-        if (pallet.FilledAt.HasValue)
-        {
-            rejectionReason = $"filled_at={pallet.FilledAt:O}";
-            return false;
-        }
-
-        var lines = pallet.Lines ?? Array.Empty<ProductionPalletComponentLine>();
-        if (lines.Count > 1)
-        {
-            rejectionReason = "mixed_component_lines";
-            return false;
-        }
-
-        var unsafeComponentLine = lines.FirstOrDefault(line => line.FilledQty > QtyTolerance
-                                                               || line.OrderLineId != orderLine.Id
-                                                               || line.ItemId != orderLine.ItemId);
-        if (unsafeComponentLine != null)
-        {
-            if (unsafeComponentLine.FilledQty > QtyTolerance)
-            {
-                rejectionReason = $"component_filled_qty={unsafeComponentLine.FilledQty:0.###}";
-            }
-            else
-            {
-                rejectionReason = "order_line_or_item_mismatch";
-            }
-
-            return false;
-        }
-
-        if (lines.Count == 0 && (pallet.OrderLineId != orderLine.Id || pallet.ItemId != orderLine.ItemId))
-        {
-            rejectionReason = "order_line_or_item_mismatch";
-            return false;
-        }
-
-        rejectionReason = string.Empty;
-        return true;
-    }
-
-    private static IReadOnlyList<ProductionPallet> GetActiveProductionPalletsForOrderLine(
-        IDataStore store,
-        long orderId,
-        long orderLineId)
-    {
-        return store.GetDocsByOrder(orderId)
-            .Where(doc => doc.Type == DocType.ProductionReceipt)
-            .SelectMany(doc => store.GetProductionPalletsByDoc(doc.Id))
-            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.Ordinal))
-            .Where(pallet => PalletAppliesToOrderLine(pallet, orderLineId))
-            .OrderBy(pallet => pallet.Id)
-            .ToArray();
-    }
-
-    private static double SumActiveProductionPalletQty(
-        IDataStore store,
-        long orderId,
-        long orderLineId)
-    {
-        return GetActiveProductionPalletsForOrderLine(store, orderId, orderLineId)
-            .Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
-    }
-
-    private static bool PalletAppliesToOrderLine(ProductionPallet pallet, long orderLineId)
-    {
-        return pallet.OrderLineId == orderLineId
-               || (pallet.Lines ?? Array.Empty<ProductionPalletComponentLine>())
-               .Any(line => line.OrderLineId == orderLineId);
-    }
-
-    private static double ResolvePalletQtyForOrderLine(ProductionPallet pallet, long orderLineId)
-    {
-        var componentQty = (pallet.Lines ?? Array.Empty<ProductionPalletComponentLine>())
-            .Where(line => line.OrderLineId == orderLineId)
-            .Sum(line => Math.Max(0, line.PlannedQty));
-        return componentQty > QtyTolerance ? componentQty : Math.Max(0, pallet.PlannedQty);
-    }
-
-    private static IReadOnlyList<ProductionPallet> SelectExactPalletSubset(
-        IReadOnlyList<(ProductionPallet Pallet, double Qty)> pallets,
-        double targetQty)
-    {
-        var targetUnits = ToQtyUnits(targetQty);
-        if (targetUnits <= 0)
-        {
-            return [];
-        }
-
-        var bestByTotal = new Dictionary<long, List<ProductionPallet>>
-        {
-            [0] = []
-        };
-        foreach (var entry in pallets.OrderBy(entry => entry.Pallet.Id))
-        {
-            var units = ToQtyUnits(entry.Qty);
-            if (units <= 0)
-            {
-                continue;
-            }
-
-            foreach (var snapshot in bestByTotal.ToArray())
-            {
-                var total = snapshot.Key + units;
-                if (total > targetUnits || bestByTotal.ContainsKey(total))
-                {
-                    continue;
-                }
-
-                var selected = new List<ProductionPallet>(snapshot.Value) { entry.Pallet };
-                bestByTotal[total] = selected;
-            }
-        }
-
-        return bestByTotal.TryGetValue(targetUnits, out var exact)
-            ? exact
-            : Array.Empty<ProductionPallet>();
-    }
-
-    private static long ToQtyUnits(double qty) => (long)Math.Round(Math.Max(0, qty) * 1_000_000d);
-
-    private static double ResolveShipmentRemaining(
-        OrderLine orderLine,
-        IReadOnlyDictionary<long, OrderShipmentLine> shipmentRemainingByLine)
-    {
-        return shipmentRemainingByLine.TryGetValue(orderLine.Id, out var shipmentLine)
-            ? Math.Max(0, shipmentLine.QtyRemaining)
-            : Math.Max(0, orderLine.QtyOrdered);
-    }
-
-    private static void ValidateDuplicateHuInFinalSelection(
-        IReadOnlyList<string> finalHuCodes,
-        long orderLineId,
-        IDictionary<string, long> huToOrderLine)
-    {
-        foreach (var huCode in finalHuCodes)
-        {
-            if (huToOrderLine.TryGetValue(huCode, out var existingOrderLineId)
-                && existingOrderLineId != orderLineId)
-            {
-                throw Error(
-                    "DUPLICATE_HU_IN_REQUEST",
-                    $"HU '{huCode}' выбран более одного раза в одном запросе.",
-                    [$"HU '{huCode}': lines {existingOrderLineId} и {orderLineId}"]);
-            }
-
-            huToOrderLine[huCode] = orderLineId;
-        }
-    }
-
-    private static void ValidateHuNotReservedOnOtherUnaffectedLine(
-        long customerOrderId,
-        long orderLineId,
-        IReadOnlyList<string> finalHuCodes,
-        IReadOnlySet<long> affectedOrderLineIds,
-        IReadOnlyList<OrderReceiptPlanLine> existingPlanLines)
-    {
-        if (finalHuCodes.Count == 0)
-        {
-            return;
-        }
-
-        var finalSet = finalHuCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var planLine in existingPlanLines)
-        {
-            var huCode = NormalizeHu(planLine.ToHu);
-            if (planLine.OrderId != customerOrderId
-                || planLine.OrderLineId == orderLineId
-                || affectedOrderLineIds.Contains(planLine.OrderLineId)
-                || string.IsNullOrWhiteSpace(huCode)
-                || !finalSet.Contains(huCode))
-            {
-                continue;
-            }
-
-            throw Error(
-                "HU_RESERVED_BY_OTHER_ORDER",
-                $"HU '{huCode}' уже зарезервирован другой строкой этого заказа.",
-                [$"HU '{huCode}': order_line_id={planLine.OrderLineId}"]);
-        }
-    }
-
-    private static HashSet<string> NormalizeHuSet(IReadOnlyList<string>? huCodes) =>
-        NormalizeHuList(huCodes).ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-    private static IReadOnlyList<string> NormalizeHuList(IReadOnlyList<string>? huCodes)
-    {
-        if (huCodes == null || huCodes.Count == 0)
-        {
-            return Array.Empty<string>();
-        }
-
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var result = new List<string>();
-        foreach (var huCode in huCodes)
-        {
-            var normalized = NormalizeHu(huCode);
-            if (!string.IsNullOrWhiteSpace(normalized) && seen.Add(normalized))
-            {
-                result.Add(normalized);
-            }
-        }
-
-        return result;
-    }
-
-    private static string? NormalizeHu(string? huCode)
-    {
-        return string.IsNullOrWhiteSpace(huCode)
-            ? null
-            : huCode.Trim().ToUpperInvariant();
-    }
-
     private static OrderHuBindingApplyFinalException Error(
         string code,
         string message,
         IReadOnlyList<string>? problems = null) =>
-        new(code, message, problems);
+        HuBindingApplyShared.Error(code, message, problems);
 
     private static Order CopyOrderWithReservedStock(Order order)
     {
