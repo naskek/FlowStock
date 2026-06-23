@@ -185,11 +185,11 @@
     return state.direction === "desc" ? " ▼" : " ▲";
   }
 
-  function renderSortableHeader(view, key, label) {
+  function renderSortableHeader(view, key, label, thClass) {
     var state = tableSortState[view];
     var isActive = !!(state && state.key === key);
     return (
-      '<th><button class="pc-table-sort' +
+      "<th" + (thClass ? ' class="' + escapeHtml(thClass) + '"' : "") + "><button class=\"pc-table-sort" +
       (isActive ? " is-active" : "") +
       '" type="button" data-sort-view="' +
       escapeHtml(view) +

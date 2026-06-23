@@ -95,14 +95,17 @@
 
   function setAccountLabel(account) {
     var accountLabel = document.getElementById("accountLabel");
+    var accountInitial = document.getElementById("accountInitial");
     if (!accountLabel) {
       return;
     }
-    if (!account) {
-      accountLabel.textContent = "Гость";
-      return;
+    var text = !account
+      ? "Гость"
+      : account.login || account.device_id || "Пользователь";
+    accountLabel.textContent = text;
+    if (accountInitial) {
+      accountInitial.textContent = (text.charAt(0) || "?").toUpperCase();
     }
-    accountLabel.textContent = account.login || account.device_id || "Пользователь";
   }
 
   function setLoginState(isLoggedIn) {

@@ -789,10 +789,10 @@
           "<td>" +
           escapeHtml(order.partner_name || "-") +
           "</td>" +
-          "<td>" +
+          '<td class="pc-num">' +
           escapeHtml(formatDate(order.due_date)) +
           "</td>" +
-          "<td>" +
+          '<td class="pc-num">' +
           escapeHtml(formatDate(order.shipped_at)) +
           "</td>" +
           '<td class="pc-order-status-cell">' +
@@ -809,16 +809,16 @@
       })
       .join("");
     return (
-      '<table class="pc-table">' +
+      '<table class="pc-table pc-table-zebra">' +
       "<thead><tr>" +
       renderSortableHeader("orders", "orderRef", "Номер") +
       renderSortableHeader("orders", "orderType", "Тип") +
       renderSortableHeader("orders", "partnerName", "Контрагент") +
-      renderSortableHeader("orders", "dueDate", "План") +
-      renderSortableHeader("orders", "shippedAt", "Факт") +
+      renderSortableHeader("orders", "dueDate", "План", "pc-num") +
+      renderSortableHeader("orders", "shippedAt", "Факт", "pc-num") +
       renderSortableHeader("orders", "status", "Статус") +
       renderSortableHeader("orders", "palletFilling", "Наполнение паллет") +
-      "<th>ЧЗ</th>" +
+      '<th title="Честный знак: маркировка">ЧЗ</th>' +
       "</tr></thead>" +
       "<tbody>" +
       body +
@@ -1428,6 +1428,8 @@
         tone: "completed",
         title: title,
         sortValue: 4,
+        progressFilled: filledCount,
+        progressPlanned: plannedCount,
       };
     }
 
@@ -1436,6 +1438,8 @@
       tone: "inprogress",
       title: title,
       sortValue: 3,
+      progressFilled: filledCount,
+      progressPlanned: plannedCount,
     };
   }
 
@@ -1509,6 +1513,8 @@
         tone: filledQty > 0 && plannedQty > 0 && filledQty + 0.000001 >= plannedQty ? "completed" : "inprogress",
         title: titleParts.join(". ") || "Паллетный план без счётчика паллет",
         sortValue: 3,
+        progressFilled: filledQty,
+        progressPlanned: plannedQty,
       };
     }
 
@@ -1536,7 +1542,43 @@
       );
     }
 
+    if (Number(filling.progressPlanned) > 0) {
+      return renderPalletProgress(
+        filling.progressFilled,
+        filling.progressPlanned,
+        filling.tone,
+        filling.title || filling.label
+      );
+    }
+
     return renderStatusBadge(filling.label, filling.tone, "pc-pallet-filling-badge", filling.title);
+  }
+
+  function renderPalletProgress(filled, planned, tone, title) {
+    var filledNum = Number(filled) || 0;
+    var plannedNum = Number(planned) || 0;
+    var ratio = plannedNum > 0 ? Math.max(0, Math.min(1, filledNum / plannedNum)) : 0;
+    var pct = Math.round(ratio * 100);
+    var normalizedTone = tone || "inprogress";
+    var caption = formatQuantity(filledNum) + " / " + formatQuantity(plannedNum);
+    var tooltip = title || "Наполнено " + caption;
+    return (
+      '<span class="pc-pallet-progress pc-pallet-progress-' +
+      normalizedTone +
+      '" title="' +
+      escapeHtml(tooltip) +
+      '" aria-label="' +
+      escapeHtml("Наполнено " + caption) +
+      '">' +
+      '<span class="pc-pallet-progress-track" aria-hidden="true">' +
+      '<span class="pc-pallet-progress-fill" style="width:' +
+      pct +
+      '%"></span></span>' +
+      '<span class="pc-pallet-progress-label">' +
+      escapeHtml(caption) +
+      "</span>" +
+      "</span>"
+    );
   }
 
   function getLinePalletFillingState(line) {
@@ -1601,6 +1643,22 @@
       if (serverTone === "ready") {
         serverTone = "inprogress";
       }
+      if (serverTone === "inprogress" && lineState.plannedCount > 0) {
+        return renderPalletProgress(
+          lineState.filledCount,
+          lineState.plannedCount,
+          "inprogress",
+          line.pallet_fill_title || serverLabel
+        );
+      }
+      if (serverTone === "inprogress" && lineState.plannedQty > 0) {
+        return renderPalletProgress(
+          lineState.filledQty,
+          lineState.plannedQty,
+          "inprogress",
+          line.pallet_fill_title || serverLabel
+        );
+      }
       return renderStatusBadge(
         serverLabel,
         serverTone,
@@ -1615,13 +1673,12 @@
     }
 
     if (state.plannedCount > 0 && state.filledCount <= 0 && state.filledQty > 0.000001 && state.plannedQty > 0.000001 && !state.complete) {
-      var partialQtyLabel = "Наполнено " + formatQuantity(state.filledQty) + " / " + formatQuantity(state.plannedQty);
       var partialQtyTitle =
         "Наполнение по строке: " +
         formatQuantity(state.filledQty) +
         " / " +
         formatQuantity(state.plannedQty);
-      return renderStatusBadge(partialQtyLabel, "warning", "pc-line-pallet-badge", partialQtyTitle);
+      return renderPalletProgress(state.filledQty, state.plannedQty, "inprogress", partialQtyTitle);
     }
 
     if (state.plannedCount > 0) {
@@ -1636,7 +1693,7 @@
         return renderStatusBadge(palletLabel, "completed", "pc-line-pallet-badge", palletTitle);
       }
 
-      return renderStatusBadge(palletLabel, "inprogress", "pc-line-pallet-badge", palletTitle);
+      return renderPalletProgress(state.filledCount, state.plannedCount, "inprogress", palletTitle);
     }
 
     if (state.plannedQty > 0) {
@@ -1650,7 +1707,7 @@
         return renderStatusBadge(qtyLabel, "completed", "pc-line-pallet-badge", qtyTitle);
       }
 
-      return renderStatusBadge(qtyLabel, "inprogress", "pc-line-pallet-badge", qtyTitle);
+      return renderPalletProgress(state.filledQty, state.plannedQty, "inprogress", qtyTitle);
     }
 
     return "";
@@ -1911,27 +1968,45 @@
       });
   }
 
-  function getStatusToneIcon(tone) {
+  function wrapStatusSvg(paths) {
+    return (
+      '<svg class="pc-status-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
+      ' stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      paths +
+      "</svg>"
+    );
+  }
+
+  function getStatusToneIconSvg(tone) {
     var normalizedTone = tone || "neutral";
-    if (normalizedTone === "success" || normalizedTone === "ready") {
-      return "✓";
+    if (
+      normalizedTone === "success" ||
+      normalizedTone === "ready" ||
+      normalizedTone === "completed"
+    ) {
+      return wrapStatusSvg('<path d="M5 12.5l4.5 4.5L19 7"/>');
     }
-    if (normalizedTone === "warning" || normalizedTone === "danger") {
-      return "!";
+    if (normalizedTone === "warning") {
+      return wrapStatusSvg(
+        '<path d="M12 4.5l8.5 14.5h-17z"/><path d="M12 10v4"/><path d="M12 17.2h.01"/>'
+      );
     }
-    if (normalizedTone === "completed") {
-      return "✓";
+    if (normalizedTone === "danger") {
+      return wrapStatusSvg('<path d="M12 6.5v7"/><path d="M12 17.4h.01"/>');
+    }
+    if (normalizedTone === "inprogress") {
+      return wrapStatusSvg('<circle cx="12" cy="12" r="8"/><path d="M12 8v4.4l3 1.8"/>');
     }
     if (normalizedTone === "cancelled") {
-      return "×";
+      return wrapStatusSvg('<path d="M7 7l10 10"/><path d="M17 7L7 17"/>');
     }
 
-    return "•";
+    return wrapStatusSvg('<path d="M7 12h10"/>');
   }
 
   function renderStatusBadge(text, tone, extraClass, title) {
     var normalizedTone = tone || "neutral";
-    var icon = getStatusToneIcon(normalizedTone);
+    var icon = getStatusToneIconSvg(normalizedTone);
     var className = "pc-status-badge pc-status-badge-" + normalizedTone;
     if (extraClass) {
       className += " " + extraClass;
@@ -1948,7 +2023,7 @@
       escapeHtml(tooltip) +
       '">' +
       '<span class="pc-status-badge-icon" aria-hidden="true">' +
-      escapeHtml(icon) +
+      icon +
       "</span>" +
       "<span>" +
       escapeHtml(label) +
@@ -1973,7 +2048,7 @@
       '" aria-label="' +
       escapeHtml(tooltip) +
       '" role="img">' +
-      escapeHtml(getStatusToneIcon(normalizedTone)) +
+      getStatusToneIconSvg(normalizedTone) +
       "</span>"
     );
   }

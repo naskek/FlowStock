@@ -176,8 +176,10 @@ const ordersWithPalletHtml = pc.renderOrdersTable([
   },
 ]);
 assert.match(ordersWithPalletHtml, /Наполнение паллет/);
-assert.match(ordersWithPalletHtml, /pc-pallet-filling-badge/);
+assert.match(ordersWithPalletHtml, /pc-pallet-progress-inprogress/);
+assert.match(ordersWithPalletHtml, /pc-pallet-progress-fill" style="width:50%"/);
 assert.match(ordersWithPalletHtml, /Наполнено 1 \/ 2/);
+assert.match(ordersWithPalletHtml, />1 \/ 2</);
 
 const orderLinesWithPalletHtml = pc.renderOrderLinesTable(
   [
@@ -277,7 +279,9 @@ const mixedComponentPartialLineHtml = pc.renderOrderLinesTable(
 );
 assert.match(mixedComponentPartialLineHtml, /pc-order-line-coverage-partial/);
 assert.doesNotMatch(mixedComponentPartialLineHtml, /pc-order-line-coverage-missing/);
-assert.match(mixedComponentPartialLineHtml, />Наполнено 0\.5 \/ 1</);
+assert.match(mixedComponentPartialLineHtml, /pc-pallet-progress-inprogress/);
+assert.match(mixedComponentPartialLineHtml, />0\.5 \/ 1</);
+assert.match(mixedComponentPartialLineHtml, /aria-label="Наполнено 0\.5 \/ 1"/);
 assert.match(styles, /\.pc-order-line-coverage-partial td\s*\{[^}]*background:\s*#fef3c7;/s);
 
 const mixedComponentOrder = {
@@ -655,7 +659,7 @@ const customerInProgressPalletHtml = pc.renderOrdersTable([
   },
 ]);
 assert.match(customerInProgressPalletHtml, /Наполнено 2 \/ 5/);
-assert.match(customerInProgressPalletHtml, /pc-status-badge-inprogress/);
+assert.match(customerInProgressPalletHtml, /pc-pallet-progress-inprogress/);
 
 assert.strictEqual(
   pc.getOrderPalletFillingPresentation({
@@ -941,10 +945,11 @@ assert.match(expandedStockHtml, /Потребность/);
 assert.match(expandedStockHtml, /План/);
 assert.doesNotMatch(expandedStockHtml, /Выпущено \/ наполнено/);
 assert.doesNotMatch(expandedStockHtml, /Осталось выпустить/);
-assert.match(expandedStockHtml, /Клиенты: 5 шт/);
-assert.match(expandedStockHtml, /До мин.: 8 шт/);
-assert.match(expandedStockHtml, /Внутр.: 6 шт/);
-assert.match(expandedStockHtml, /PRD: 4 шт/);
+assert.match(expandedStockHtml, /<span class="pc-stock-summary-label">Клиенты<\/span><span class="pc-stock-summary-value">5 шт<\/span>/);
+assert.match(expandedStockHtml, /<span class="pc-stock-summary-label">До мин\.<\/span><span class="pc-stock-summary-value">8 шт<\/span>/);
+assert.match(expandedStockHtml, /<span class="pc-stock-summary-label">Внутр\.<\/span><span class="pc-stock-summary-value">6 шт<\/span>/);
+assert.match(expandedStockHtml, /<span class="pc-stock-summary-label">PRD<\/span><span class="pc-stock-summary-value">4 шт<\/span>/);
+assert.doesNotMatch(expandedStockHtml, /Клиенты: 5 шт/);
 assert.match(expandedStockHtml, /2 шт/);
 assert.doesNotMatch(expandedStockHtml, /Произвести: 3 шт/);
 assert.match(expandedStockHtml, /colspan="5" class="pc-stock-detail-cell"/);
@@ -969,7 +974,7 @@ assert.doesNotMatch(expandedStockHtml, /<th class="pc-num">Выпущено<\/th
 assert.doesNotMatch(expandedStockHtml, /<th class="pc-num">Осталось выпустить<\/th>/);
 assert.match(
   expandedStockHtml,
-  /pc-stock-plan-cell"><div class="pc-stock-summary-line">Внутр\.: 6 шт<\/div><div class="pc-stock-summary-line">PRD: 4 шт<\/div><\/td>/
+  /pc-stock-plan-cell"><div class="pc-stock-summary-line"><span class="pc-stock-summary-label">Внутр\.<\/span><span class="pc-stock-summary-value">6 шт<\/span><\/div><div class="pc-stock-summary-line"><span class="pc-stock-summary-label">PRD<\/span><span class="pc-stock-summary-value">4 шт<\/span><\/div><\/td>/
 );
 
 const coveredStockRow = pc.mapWarehouseProductionStateRow({

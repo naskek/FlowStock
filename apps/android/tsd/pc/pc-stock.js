@@ -118,16 +118,17 @@
           "</span>" +
           (row.productMeta ? '<span class="pc-stock-item-meta">' + deps.escapeHtml(row.productMeta) + "</span>" : "") +
           "</div></div></td>" +
-          '<td><span class="pc-qty pc-stock-parent-qty">' +
+          '<td class="pc-num"><span class="pc-qty pc-stock-parent-qty">' +
+          (row.belowMinQty > 0 ? '<span class="pc-stock-below-dot" aria-hidden="true"></span>' : "") +
           deps.escapeHtml(row.stockQtyDisplay || "—") +
-          '</span></td><td class="' +
-          (row.belowMinQty > 0 ? "pc-stock-warning-cell" : "") +
+          '</span></td><td class="pc-num ' +
+          (row.belowMinQty > 0 ? "pc-stock-below-min" : "") +
           '">' +
           deps.escapeHtml(row.minStockSummary || "—") +
           "</td><td>" +
-          renderSummaryLines(row.needSummaryLines) +
+          renderSummaryPairs(row.needSummaryPairs) +
           '</td><td class="pc-stock-plan-cell">' +
-          renderSummaryLines(row.planSummaryLines) +
+          renderSummaryPairs(row.planSummaryPairs) +
           "</td></tr>" +
           detailRow
         );
@@ -139,22 +140,27 @@
       '<col class="pc-stock-col-min" /><col class="pc-stock-col-need" /><col class="pc-stock-col-plan" />' +
       "</colgroup><thead><tr>" +
       deps.renderSortableHeader("stock", "itemName", "Товар") +
-      deps.renderSortableHeader("stock", "stockQty", "На складе") +
-      deps.renderSortableHeader("stock", "minStockQty", "Минимум") +
+      deps.renderSortableHeader("stock", "stockQty", "На складе", "pc-num") +
+      deps.renderSortableHeader("stock", "minStockQty", "Минимум", "pc-num") +
       "<th>Потребность</th><th>План</th></tr></thead><tbody>" +
       body +
       "</tbody></table>"
     );
   }
 
-  function renderSummaryLines(lines) {
-    var source = Array.isArray(lines) ? lines.filter(Boolean) : [];
+  function renderSummaryPairs(pairs) {
+    var source = Array.isArray(pairs) ? pairs.filter(Boolean) : [];
     if (!source.length) {
       return "—";
     }
     return source
-      .map(function (line) {
-        return '<div class="pc-stock-summary-line">' + deps.escapeHtml(line) + "</div>";
+      .map(function (pair) {
+        return (
+          '<div class="pc-stock-summary-line">' +
+          '<span class="pc-stock-summary-label">' + deps.escapeHtml(pair.label) + "</span>" +
+          '<span class="pc-stock-summary-value">' + deps.escapeHtml(pair.value) + "</span>" +
+          "</div>"
+        );
       })
       .join("");
   }
@@ -324,16 +330,16 @@
     if (barcode) productMetaParts.push("ШК: " + barcode);
     if (gtin && gtin !== barcode) productMetaParts.push("GTIN: " + gtin);
     if (itemTypeName) productMetaParts.push(itemTypeName);
-    var needSummaryLines = [];
+    var needSummaryPairs = [];
     var customerDemandDisplay = formatPositiveWarehouseStateQty(demandToClose, baseUom);
     var minDemandDisplay = formatPositiveWarehouseStateQty(demandToMin, baseUom);
-    if (customerDemandDisplay) needSummaryLines.push("Клиенты: " + customerDemandDisplay);
-    if (minDemandDisplay) needSummaryLines.push("До мин.: " + minDemandDisplay);
-    var planSummaryLines = [];
+    if (customerDemandDisplay) needSummaryPairs.push({ label: "Клиенты", value: customerDemandDisplay });
+    if (minDemandDisplay) needSummaryPairs.push({ label: "До мин.", value: minDemandDisplay });
+    var planSummaryPairs = [];
     var internalPlanDisplay = formatPositiveWarehouseStateQty(alreadyPlannedInternal, baseUom);
     var prdPlanDisplay = formatPositiveWarehouseStateQty(prdPlannedQty, baseUom);
-    if (internalPlanDisplay) planSummaryLines.push("Внутр.: " + internalPlanDisplay);
-    if (prdPlanDisplay) planSummaryLines.push("PRD: " + prdPlanDisplay);
+    if (internalPlanDisplay) planSummaryPairs.push({ label: "Внутр.", value: internalPlanDisplay });
+    if (prdPlanDisplay) planSummaryPairs.push({ label: "PRD", value: prdPlanDisplay });
     var filledSummary = formatPositiveWarehouseStateQty(prdFilledQty, baseUom) || "—";
     var remainingNeedQtyDisplay = formatWarehouseStateQty(remainingToCreate, baseUom);
     var hasNeedOrPlan = demandToClose > 0.000001 || demandToMin > 0.000001 ||
@@ -358,8 +364,8 @@
       remainingNeedQty: remainingToCreate,
       stockQtyDisplay: formatWarehouseStateQty(stockQty, baseUom),
       minStockSummary: minStockQty > 0.000001 ? formatWarehouseStateQty(minStockQty, baseUom) : "—",
-      needSummaryLines: needSummaryLines,
-      planSummaryLines: planSummaryLines,
+      needSummaryPairs: needSummaryPairs,
+      planSummaryPairs: planSummaryPairs,
       filledSummary: filledSummary,
       customerDemandDisplay: customerDemandDisplay || "—",
       minDemandDisplay: minDemandDisplay || "—",

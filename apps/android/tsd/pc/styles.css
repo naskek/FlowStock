@@ -54,7 +54,6 @@ body.pc-body::before {
   padding: 6px 16px;
   height: 64px;
   background: rgba(255, 255, 255, 0.95);
-  border-bottom: 1px solid var(--pc-border);
   position: sticky;
   top: 0;
   z-index: 5;
@@ -120,7 +119,7 @@ body.pc-body::before {
   appearance: none;
   background: transparent;
   border: none;
-  border-bottom: 2px solid transparent;
+  border-bottom: 3px solid transparent;
   border-radius: 0;
   padding: 12px 2px;
   font-size: 14px;
@@ -146,6 +145,25 @@ body.pc-body::before {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.pc-account-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pc-account-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--pc-accent-soft);
+  color: var(--pc-accent);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .pc-header .btn {
@@ -306,7 +324,7 @@ body.pc-body::before {
 .pc-table th,
 .pc-table td {
   border-bottom: 1px solid #e5edf2;
-  padding: 8px 10px;
+  padding: 6px 10px;
   text-align: left;
   vertical-align: top;
 }
@@ -316,8 +334,9 @@ body.pc-body::before {
 }
 
 .pc-num {
-  text-align: left;
+  text-align: right;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .pc-production-need-table {
@@ -384,11 +403,12 @@ body.pc-body::before {
 }
 
 .pc-table th {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  font-size: 12px;
   color: #52606d;
   background: #f8fafc;
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 
 .pc-table-sort {
@@ -416,8 +436,12 @@ body.pc-body::before {
   color: #1d3f56;
 }
 
-.pc-table tr:hover td {
-  background: #f5f9fc;
+.pc-table-zebra tbody tr:nth-child(even) td {
+  background: #f6fafb;
+}
+
+.pc-table tbody tr:hover td {
+  background: #eef5f9;
 }
 
 .pc-order-status-cell,
@@ -541,7 +565,39 @@ body.pc-body::before {
   font-weight: 700;
 }
 
-.pc-stock-plan-cell {
+.pc-stock-below-min {
+  color: #b42318;
+  font-weight: 700;
+}
+
+.pc-stock-below-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #b42318;
+  vertical-align: middle;
+}
+
+.pc-stock-summary-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.pc-stock-summary-label {
+  min-width: 58px;
+  color: #8a97a3;
+  font-size: 11px;
+}
+
+.pc-stock-summary-value {
+  color: var(--pc-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.pc-stock-plan-cell .pc-stock-summary-value {
   color: #3f5f73;
 }
 
@@ -751,6 +807,11 @@ body.pc-body::before {
   line-height: 1;
 }
 
+.pc-status-badge-icon .pc-status-svg {
+  width: 11px;
+  height: 11px;
+}
+
 .pc-icon-status {
   display: inline-grid;
   place-items: center;
@@ -760,6 +821,15 @@ body.pc-body::before {
   font-size: 13px;
   font-weight: 800;
   line-height: 1;
+}
+
+.pc-icon-status .pc-status-svg {
+  width: 14px;
+  height: 14px;
+}
+
+.pc-status-svg {
+  display: block;
 }
 
 .pc-icon-status-success,
@@ -861,6 +931,40 @@ body.pc-body::before {
 .pc-status-badge-cancelled .pc-status-badge-icon {
   color: #ffffff;
   background: #8a97a3;
+}
+
+.pc-pallet-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 180px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pc-pallet-progress-track {
+  flex: 1;
+  height: 6px;
+  border-radius: 4px;
+  background: #e5edf2;
+  overflow: hidden;
+}
+
+.pc-pallet-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: var(--pc-accent);
+}
+
+.pc-pallet-progress-completed .pc-pallet-progress-fill {
+  background: #18743a;
+}
+
+.pc-pallet-progress-label {
+  font-size: 12px;
+  color: var(--pc-muted);
+  white-space: nowrap;
 }
 
 .pc-marking-badge {
