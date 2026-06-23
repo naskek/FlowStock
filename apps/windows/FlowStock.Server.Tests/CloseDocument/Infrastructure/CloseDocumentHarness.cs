@@ -90,6 +90,11 @@ internal sealed class CloseDocumentHarness
         _store.Verify(store => store.GetHuOrderContextRows(), Times.Never);
     }
 
+    public void VerifyOrderStatusRefreshed(long orderId, Times times)
+    {
+        _store.Verify(store => store.UpdateOrderStatus(orderId, It.IsAny<OrderStatus>()), times);
+    }
+
     public void VerifyRequestsSummaryCountPathUsed(Times times)
     {
         _store.As<IRequestsSummaryStore>()

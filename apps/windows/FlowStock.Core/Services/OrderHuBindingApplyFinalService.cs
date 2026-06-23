@@ -223,7 +223,7 @@ public sealed class OrderHuBindingApplyFinalService
         store.ReplaceOrderReceiptPlanLinesForOrderLines(customerOrderId, affectedLineIds, replacementLines);
         if (replacementLines.Any(line => line.QtyPlanned > QtyTolerance) && !order.UseReservedStock)
         {
-            store.UpdateOrder(CopyOrderWithReservedStock(order));
+            store.UpdateOrder(HuBindingApplyShared.CopyOrderWithReservedStock(order));
         }
 
         if (palletsToCancel.Count > 0)
@@ -285,30 +285,4 @@ public sealed class OrderHuBindingApplyFinalService
         string message,
         IReadOnlyList<string>? problems = null) =>
         HuBindingApplyShared.Error(code, message, problems);
-
-    private static Order CopyOrderWithReservedStock(Order order)
-    {
-        return new Order
-        {
-            Id = order.Id,
-            OrderRef = order.OrderRef,
-            Type = order.Type,
-            PartnerId = order.PartnerId,
-            DueDate = order.DueDate,
-            Status = order.Status,
-            Comment = order.Comment,
-            CreatedAt = order.CreatedAt,
-            ShippedAt = order.ShippedAt,
-            PartnerName = order.PartnerName,
-            PartnerCode = order.PartnerCode,
-            UseReservedStock = true,
-            MarkingStatus = order.MarkingStatus,
-            IsLegacyExcelGeneratedMarkingStatus = order.IsLegacyExcelGeneratedMarkingStatus,
-            MarkingRequired = order.MarkingRequired,
-            MarkingApplies = order.MarkingApplies,
-            MarkingCodeCovered = order.MarkingCodeCovered,
-            MarkingExcelGeneratedAt = order.MarkingExcelGeneratedAt,
-            MarkingPrintedAt = order.MarkingPrintedAt
-        };
-    }
 }

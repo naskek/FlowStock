@@ -404,4 +404,30 @@ internal static class HuBindingApplyShared
             ? null
             : huCode.Trim().ToUpperInvariant();
     }
+
+    internal static Order CopyOrderWithReservedStock(Order order)
+    {
+        return new Order
+        {
+            Id = order.Id,
+            OrderRef = order.OrderRef,
+            Type = order.Type,
+            PartnerId = order.PartnerId,
+            DueDate = order.DueDate,
+            Status = order.Status,
+            Comment = order.Comment,
+            CreatedAt = order.CreatedAt,
+            ShippedAt = order.ShippedAt,
+            PartnerName = order.PartnerName,
+            PartnerCode = order.PartnerCode,
+            UseReservedStock = true,
+            MarkingStatus = order.MarkingStatus,
+            IsLegacyExcelGeneratedMarkingStatus = order.IsLegacyExcelGeneratedMarkingStatus,
+            MarkingRequired = order.MarkingRequired,
+            MarkingApplies = order.MarkingApplies,
+            MarkingCodeCovered = order.MarkingCodeCovered,
+            MarkingExcelGeneratedAt = order.MarkingExcelGeneratedAt,
+            MarkingPrintedAt = order.MarkingPrintedAt
+        };
+    }
 }
