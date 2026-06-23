@@ -802,20 +802,20 @@ line_metrics_seed AS (
                                                  AND unlinked.item_id = ols.item_id
 ),
 order_line_metrics AS (
-    SELECT order_id,
-           order_type,
-           persisted_status,
-           order_line_id,
-           item_id,
-           qty_ordered,
-           qty_shipped,
-           qty_reserved,
-           qty_direct_received,
-           qty_direct_received
+    SELECT line_metrics_seed.order_id,
+           line_metrics_seed.order_type,
+           line_metrics_seed.persisted_status,
+           line_metrics_seed.order_line_id,
+           line_metrics_seed.item_id,
+           line_metrics_seed.qty_ordered,
+           line_metrics_seed.qty_shipped,
+           line_metrics_seed.qty_reserved,
+           line_metrics_seed.qty_direct_received,
+           line_metrics_seed.qty_direct_received
            + CASE
-                 WHEN qty_unlinked_item_received <= 0 THEN 0
-                 WHEN item_line_desc_rank = 1 THEN GREATEST(0, qty_unlinked_item_received - qty_direct_unfilled_before)
-                 ELSE GREATEST(0, LEAST(qty_unlinked_item_received - qty_direct_unfilled_before, qty_direct_unfilled))
+                 WHEN line_metrics_seed.qty_unlinked_item_received <= 0 THEN 0
+                 WHEN line_metrics_seed.item_line_desc_rank = 1 THEN GREATEST(0, line_metrics_seed.qty_unlinked_item_received - line_metrics_seed.qty_direct_unfilled_before)
+                 ELSE GREATEST(0, LEAST(line_metrics_seed.qty_unlinked_item_received - line_metrics_seed.qty_direct_unfilled_before, line_metrics_seed.qty_direct_unfilled))
              END AS qty_produced_total,
            COALESCE(customer_coverage.covered_qty, 0) AS qty_customer_ready
     FROM line_metrics_seed
