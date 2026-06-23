@@ -81,6 +81,30 @@ public sealed class WpfHuReservationApiGuardTests
     }
 
     [Fact]
+    public void WpfReadApiService_BuildsHuBindingManagementRequests()
+    {
+        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "Services", "WpfReadApiService.cs");
+        var models = ReadRepoFile("apps", "windows", "FlowStock.App", "Services", "WpfHuBindingManageApiModels.cs");
+        var session = ReadRepoFile("apps", "windows", "FlowStock.App", "HuAssignmentManagementSession.cs");
+
+        Assert.Contains("TryGetManageItems(", source);
+        Assert.Contains("TryGetManageHus(", source);
+        Assert.Contains("TryGetManageTargets(", source);
+        Assert.Contains("TryApplyManageHuBindings(", source);
+        Assert.Contains("/api/orders/hu-bindings/manage/items", source);
+        Assert.Contains("/api/orders/hu-bindings/manage/items/{itemId}/targets", source);
+        Assert.Contains("/api/orders/hu-bindings/manage/apply-final", source);
+        Assert.Contains("TryMapHuBindingManageApplyError", source);
+        Assert.Contains("[JsonPropertyName(\"expected_hu_states\")]", models);
+        Assert.Contains("[JsonPropertyName(\"expected_order_line_id\")]", models);
+        Assert.Contains("[JsonPropertyName(\"order_id\")]", models);
+        Assert.Contains("[JsonPropertyName(\"final_hu_codes\")]", models);
+        Assert.Contains("BuildApplyRequest", session);
+        Assert.Contains("ExpectedHuStates", session);
+        Assert.Contains("MarkSaveSuccess", session);
+    }
+
+    [Fact]
     public void IncomingRequestsWindow_ExposesReadyHuFilterAndOpensGlobalWindow()
     {
         var xaml = ReadRepoFile("apps", "windows", "FlowStock.App", "IncomingRequestsWindow.xaml");

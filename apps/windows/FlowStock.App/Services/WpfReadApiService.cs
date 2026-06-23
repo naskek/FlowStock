@@ -627,6 +627,71 @@ public sealed class WpfReadApiService
             out model);
     }
 
+    public bool TryGetManageItems(
+        string? search,
+        int limit,
+        out IReadOnlyList<WpfHuBindingManageItemRow> items)
+    {
+        items = Array.Empty<WpfHuBindingManageItemRow>();
+        var query = new List<string> { "limit=" + Math.Max(1, limit).ToString(CultureInfo.InvariantCulture) };
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            query.Add("search=" + Uri.EscapeDataString(search.Trim()));
+        }
+
+        return TryRead(
+            "/api/orders/hu-bindings/manage/items?" + string.Join("&", query),
+            MapHuBindingManageItems,
+            "hu-binding-manage-items",
+            out items);
+    }
+
+    public bool TryGetManageHus(
+        long itemId,
+        WpfHuBindingManageHuFilter filter,
+        out WpfHuBindingManageHuPage page)
+    {
+        page = new WpfHuBindingManageHuPage();
+        var query = new List<string>
+        {
+            "state=" + Uri.EscapeDataString(string.IsNullOrWhiteSpace(filter.State) ? "ALL" : filter.State.Trim().ToUpperInvariant()),
+            "limit=" + Math.Max(1, filter.Limit).ToString(CultureInfo.InvariantCulture),
+            "offset=" + Math.Max(0, filter.Offset).ToString(CultureInfo.InvariantCulture)
+        };
+        if (!string.IsNullOrWhiteSpace(filter.HuSearch))
+        {
+            query.Add("hu_search=" + Uri.EscapeDataString(filter.HuSearch.Trim()));
+        }
+
+        if (!string.IsNullOrWhiteSpace(filter.OrderSearch))
+        {
+            query.Add("order_search=" + Uri.EscapeDataString(filter.OrderSearch.Trim()));
+        }
+
+        if (!string.IsNullOrWhiteSpace(filter.PartnerSearch))
+        {
+            query.Add("partner_search=" + Uri.EscapeDataString(filter.PartnerSearch.Trim()));
+        }
+
+        return TryRead(
+            $"/api/orders/hu-bindings/manage/items/{itemId}/hus?" + string.Join("&", query),
+            MapHuBindingManageHuPage,
+            "hu-binding-manage-hus",
+            out page);
+    }
+
+    public bool TryGetManageTargets(
+        long itemId,
+        out IReadOnlyList<WpfHuBindingManageTargetLine> targets)
+    {
+        targets = Array.Empty<WpfHuBindingManageTargetLine>();
+        return TryRead(
+            $"/api/orders/hu-bindings/manage/items/{itemId}/targets",
+            MapHuBindingManageTargets,
+            "hu-binding-manage-targets",
+            out targets);
+    }
+
     public bool TryApplyHuReservations(
         long customerOrderId,
         IReadOnlyList<WpfHuReservationApplyLineRequest> lines,
@@ -713,6 +778,54 @@ public sealed class WpfReadApiService
         catch (Exception ex)
         {
             _logger.Error("WPF read API failed for hu-bindings-apply-final", ex);
+            return false;
+        }
+    }
+
+    public bool TryApplyManageHuBindings(
+        WpfHuBindingManageApplyRequest request,
+        out WpfHuBindingManageApplyResult? result,
+        out WpfHuBindingManageApplyError? error)
+    {
+        result = null;
+        error = null;
+
+        try
+        {
+            var configuration = LoadConfiguration();
+            if (!configuration.IsConfigured)
+            {
+                _logger.Info("WPF read API skipped for hu-bindings-manage-apply-final: server base URL is not configured.");
+                return false;
+            }
+
+            if (!TrySendRequest(
+                    "/api/orders/hu-bindings/manage/apply-final",
+                    configuration,
+                    HttpMethod.Post,
+                    request,
+                    out _,
+                    out var json))
+            {
+                if (!string.IsNullOrWhiteSpace(json))
+                {
+                    TryMapHuBindingManageApplyError(json, out error);
+                }
+
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return false;
+            }
+
+            using var payload = JsonDocument.Parse(json);
+            return TryMapHuBindingManageApplySuccess(payload.RootElement, out result);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("WPF read API failed for hu-bindings-manage-apply-final", ex);
             return false;
         }
     }
@@ -917,6 +1030,88 @@ public sealed class WpfReadApiService
             MaxAdditionalBindQty = ReadDouble(element, "max_additional_bind_qty")
         };
 
+    private static IReadOnlyList<WpfHuBindingManageItemRow> MapHuBindingManageItems(JsonElement root) =>
+        root.TryGetProperty("items", out var itemsElement) && itemsElement.ValueKind == JsonValueKind.Array
+            ? itemsElement.EnumerateArray().Select(MapHuBindingManageItem).ToArray()
+            : Array.Empty<WpfHuBindingManageItemRow>();
+
+    private static WpfHuBindingManageItemRow MapHuBindingManageItem(JsonElement element) =>
+        new()
+        {
+            ItemId = ReadInt64(element, "item_id"),
+            ItemName = ReadString(element, "item_name") ?? string.Empty,
+            HuCount = ReadInt32(element, "hu_count")
+        };
+
+    private static WpfHuBindingManageHuPage MapHuBindingManageHuPage(JsonElement root)
+    {
+        var huRows = root.TryGetProperty("hu_rows", out var huRowsElement) && huRowsElement.ValueKind == JsonValueKind.Array
+            ? huRowsElement.EnumerateArray().Select(MapHuBindingManageHuRow).ToArray()
+            : Array.Empty<WpfHuBindingManageHuRow>();
+
+        return new WpfHuBindingManageHuPage
+        {
+            ItemId = ReadInt64(root, "item_id"),
+            ItemName = ReadString(root, "item_name") ?? string.Empty,
+            Total = ReadInt32(root, "total"),
+            Limit = ReadInt32(root, "limit"),
+            Offset = ReadInt32(root, "offset"),
+            HuRows = huRows
+        };
+    }
+
+    private static WpfHuBindingManageHuRow MapHuBindingManageHuRow(JsonElement element) =>
+        new()
+        {
+            HuCode = ReadString(element, "hu_code") ?? string.Empty,
+            ItemId = ReadInt64(element, "item_id"),
+            ItemName = ReadString(element, "item_name") ?? string.Empty,
+            Qty = ReadDouble(element, "qty"),
+            LocationDisplay = ReadString(element, "location_display") ?? string.Empty,
+            State = ReadString(element, "state") ?? string.Empty,
+            IsMixed = ReadBool(element, "is_mixed"),
+            OriginInternalOrderId = ReadNullableInt64(element, "origin_internal_order_id"),
+            OriginInternalOrderRef = ReadString(element, "origin_internal_order_ref"),
+            FirstReceiptAt = ReadDateTime(element, "first_receipt_at"),
+            CurrentAssignment = element.TryGetProperty("current_assignment", out var assignmentElement)
+                && assignmentElement.ValueKind == JsonValueKind.Object
+                    ? MapHuBindingManageAssignment(assignmentElement)
+                    : null
+        };
+
+    private static WpfHuBindingManageHuAssignment MapHuBindingManageAssignment(JsonElement element) =>
+        new()
+        {
+            OrderId = ReadInt64(element, "order_id"),
+            OrderRef = ReadString(element, "order_ref") ?? string.Empty,
+            PartnerName = ReadString(element, "partner_name"),
+            OrderLineId = ReadInt64(element, "order_line_id"),
+            OrderStatus = ReadString(element, "order_status") ?? string.Empty,
+            ReservedQty = ReadDouble(element, "reserved_qty")
+        };
+
+    private static IReadOnlyList<WpfHuBindingManageTargetLine> MapHuBindingManageTargets(JsonElement root) =>
+        root.TryGetProperty("target_lines", out var linesElement) && linesElement.ValueKind == JsonValueKind.Array
+            ? linesElement.EnumerateArray().Select(MapHuBindingManageTargetLine).ToArray()
+            : Array.Empty<WpfHuBindingManageTargetLine>();
+
+    private static WpfHuBindingManageTargetLine MapHuBindingManageTargetLine(JsonElement element) =>
+        new()
+        {
+            OrderId = ReadInt64(element, "order_id"),
+            OrderRef = ReadString(element, "order_ref") ?? string.Empty,
+            PartnerName = ReadString(element, "partner_name"),
+            OrderStatus = ReadString(element, "order_status") ?? string.Empty,
+            DueAt = ReadDateTime(element, "due_at"),
+            OrderLineId = ReadInt64(element, "order_line_id"),
+            ItemId = ReadInt64(element, "item_id"),
+            QtyOrdered = ReadDouble(element, "qty_ordered"),
+            QtyShipped = ReadDouble(element, "qty_shipped"),
+            CurrentBoundHuCodes = ReadStringArray(element, "current_bound_hu_codes"),
+            CurrentBoundQty = ReadDouble(element, "current_bound_qty"),
+            MaxAdditionalBindQty = ReadDouble(element, "max_additional_bind_qty")
+        };
+
     private static WpfHuReservationCandidatesLineResult MapHuReservationCandidatesLine(JsonElement element)
     {
         var candidates = element.TryGetProperty("candidates", out var candidatesElement) && candidatesElement.ValueKind == JsonValueKind.Array
@@ -1046,6 +1241,59 @@ public sealed class WpfReadApiService
             using var document = JsonDocument.Parse(json);
             var root = document.RootElement;
             error = new WpfHuBindingApplyFinalError
+            {
+                ErrorCode = ReadString(root, "error") ?? string.Empty,
+                Message = ReadString(root, "message") ?? string.Empty,
+                Problems = ReadStringArray(root, "problems")
+            };
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryMapHuBindingManageApplySuccess(JsonElement root, out WpfHuBindingManageApplyResult? result)
+    {
+        if (!ReadBool(root, "ok"))
+        {
+            result = null;
+            return false;
+        }
+
+        var orders = root.TryGetProperty("orders", out var ordersElement) && ordersElement.ValueKind == JsonValueKind.Array
+            ? ordersElement.EnumerateArray().Select(MapHuBindingManageApplyOrder).ToArray()
+            : Array.Empty<WpfHuBindingManageApplyOrderResult>();
+        result = new WpfHuBindingManageApplyResult
+        {
+            Ok = true,
+            Orders = orders,
+            Warnings = ReadStringArray(root, "warnings")
+        };
+        return true;
+    }
+
+    private static WpfHuBindingManageApplyOrderResult MapHuBindingManageApplyOrder(JsonElement element)
+    {
+        var appliedLines = element.TryGetProperty("applied_lines", out var linesElement) && linesElement.ValueKind == JsonValueKind.Array
+            ? linesElement.EnumerateArray().Select(MapHuBindingApplyFinalLine).ToArray()
+            : Array.Empty<WpfHuBindingApplyFinalLineResult>();
+        return new WpfHuBindingManageApplyOrderResult
+        {
+            OrderId = ReadInt64(element, "order_id"),
+            AppliedLines = appliedLines
+        };
+    }
+
+    private static bool TryMapHuBindingManageApplyError(string json, out WpfHuBindingManageApplyError? error)
+    {
+        error = null;
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            error = new WpfHuBindingManageApplyError
             {
                 ErrorCode = ReadString(root, "error") ?? string.Empty,
                 Message = ReadString(root, "message") ?? string.Empty,
