@@ -324,7 +324,7 @@ public sealed class ProductionPalletServiceTests
     }
 
     [Fact]
-    public void UpdateOrder_AssignsThreeLinesToSameMixedGroup_CreatesOneSharedHu()
+    public void PlanOrder_AfterAssigningThreeLinesToSameMixedGroup_CreatesOneSharedHu()
     {
         var harness = CreateHarnessWithTwoOrderLines(firstQty: 300, secondQty: 300);
         harness.SeedItem(new Item
@@ -355,6 +355,8 @@ public sealed class ProductionPalletServiceTests
                 new OrderLineView { ItemId = 300, QtyOrdered = 300, ProductionPurpose = ProductionLinePurpose.InternalStock, ProductionPalletGroup = "MIX-1" }
             ],
             OrderType.Internal);
+
+        new ProductionPalletService(harness.Store).PlanOrder(10);
 
         var prd = Assert.Single(harness.Store.GetDocsByOrder(10).Where(doc => doc.Type == DocType.ProductionReceipt));
         var pallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(prd.Id)
@@ -624,7 +626,7 @@ public sealed class ProductionPalletServiceTests
     }
 
     [Fact]
-    public void IncreaseOrderLineQty_WithPalletizedPlan_GeneratesDeltaHuWithoutFreeWarehouseHu()
+    public void IncreaseOrderLineQty_WithPalletizedPlan_DoesNotGenerateDeltaHuWithoutExplicitPlan()
     {
         var harness = CreateHarnessWithOrderOnly(orderQty: 5472, maxQtyPerHu: 1824);
         var palletService = new ProductionPalletService(harness.Store);
@@ -655,22 +657,21 @@ public sealed class ProductionPalletServiceTests
             [new OrderLineView { ItemId = 100, QtyOrdered = 9120, ProductionPurpose = ProductionLinePurpose.InternalStock }],
             OrderType.Internal);
 
-        var after = GetActiveProductionPalletsByOrder(harness, 10);
-        var afterHuCodes = after.Select(pallet => pallet.HuCode).ToArray();
-        var newPallets = after
+        var afterUpdate = GetActiveProductionPalletsByOrder(harness, 10);
+        var afterUpdateHuCodes = afterUpdate.Select(pallet => pallet.HuCode).ToArray();
+        var autoCreatedPallets = afterUpdate
             .Where(pallet => !beforeHuCodes.Contains(pallet.HuCode, StringComparer.OrdinalIgnoreCase))
             .ToArray();
 
-        Assert.Equal(5, after.Length);
-        Assert.Equal(2, newPallets.Length);
-        Assert.All(newPallets, pallet => Assert.Equal(ProductionPalletStatus.Planned, pallet.Status));
+        Assert.Equal(3, afterUpdate.Length);
+        Assert.Empty(autoCreatedPallets);
         Assert.All(beforeHuCodes, huCode =>
-            Assert.Contains(after, pallet => string.Equals(pallet.HuCode, huCode, StringComparison.OrdinalIgnoreCase)));
+            Assert.Contains(afterUpdate, pallet => string.Equals(pallet.HuCode, huCode, StringComparison.OrdinalIgnoreCase)));
         Assert.Empty(harness.Store.GetOrderReceiptPlanLines(10));
         Assert.Equal(ledgerEntryCountBeforeUpdate, harness.LedgerEntries.Count);
-        Assert.Equal(5, afterHuCodes.Distinct(StringComparer.OrdinalIgnoreCase).Count());
-        Assert.All(after, pallet => Assert.Matches("^HU-[0-9]{7}$", pallet.HuCode));
-        Assert.Equal(9120, after.Sum(pallet => pallet.PlannedQty), 3);
+        Assert.Equal(3, afterUpdateHuCodes.Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        Assert.All(afterUpdate, pallet => Assert.Matches("^HU-[0-9]{7}$", pallet.HuCode));
+        Assert.Equal(5472, afterUpdate.Sum(pallet => pallet.PlannedQty), 3);
 
         orderService.UpdateOrder(
             10,
@@ -684,14 +685,26 @@ public sealed class ProductionPalletServiceTests
         var afterSecondPut = GetActiveProductionPalletsByOrder(harness, 10);
         var afterSecondPutHuCodes = afterSecondPut.Select(pallet => pallet.HuCode).ToArray();
 
-        Assert.Equal(5, afterSecondPut.Length);
-        Assert.Empty(afterSecondPutHuCodes.Except(afterHuCodes, StringComparer.OrdinalIgnoreCase));
-        Assert.Empty(afterHuCodes.Except(afterSecondPutHuCodes, StringComparer.OrdinalIgnoreCase));
+        Assert.Equal(3, afterSecondPut.Length);
+        Assert.Empty(afterSecondPutHuCodes.Except(afterUpdateHuCodes, StringComparer.OrdinalIgnoreCase));
+        Assert.Empty(afterUpdateHuCodes.Except(afterSecondPutHuCodes, StringComparer.OrdinalIgnoreCase));
         Assert.All(beforeHuCodes, huCode =>
             Assert.Contains(afterSecondPut, pallet => string.Equals(pallet.HuCode, huCode, StringComparison.OrdinalIgnoreCase)));
         Assert.Empty(harness.Store.GetOrderReceiptPlanLines(10));
         Assert.Equal(ledgerEntryCountBeforeUpdate, harness.LedgerEntries.Count);
-        Assert.Equal(9120, afterSecondPut.Sum(pallet => pallet.PlannedQty), 3);
+        Assert.Equal(5472, afterSecondPut.Sum(pallet => pallet.PlannedQty), 3);
+
+        var explicitPlan = palletService.PlanOrder(10);
+        var afterExplicitPlan = GetActiveProductionPalletsByOrder(harness, 10);
+        var explicitNewPallets = afterExplicitPlan
+            .Where(pallet => !beforeHuCodes.Contains(pallet.HuCode, StringComparer.OrdinalIgnoreCase))
+            .ToArray();
+
+        Assert.Equal(plan.PrdDocId, explicitPlan.PrdDocId);
+        Assert.Equal(5, afterExplicitPlan.Length);
+        Assert.Equal(2, explicitNewPallets.Length);
+        Assert.All(explicitNewPallets, pallet => Assert.Equal(ProductionPalletStatus.Planned, pallet.Status));
+        Assert.Equal(9120, afterExplicitPlan.Sum(pallet => pallet.PlannedQty), 3);
 
         Mock.Get(harness.Store).Verify(
             store => store.ReplaceOrderReceiptPlanLines(It.IsAny<long>(), It.IsAny<IReadOnlyList<OrderReceiptPlanLine>>()),
@@ -835,7 +848,7 @@ public sealed class ProductionPalletServiceTests
     }
 
     [Fact]
-    public void IncreaseOrderLineQty_WithTwoFilledPallets_AppendsOnlyMissingPlannedQty()
+    public void IncreaseOrderLineQty_WithTwoFilledPallets_ExplicitPlanAppendsOnlyMissingPlannedQty()
     {
         var harness = CreateHarnessWithOrderOnly(orderQty: 1200, maxQtyPerHu: 600);
         var palletService = new ProductionPalletService(harness.Store);
@@ -859,6 +872,12 @@ public sealed class ProductionPalletServiceTests
             null,
             [new OrderLineView { ItemId = 100, QtyOrdered = 2400, ProductionPurpose = ProductionLinePurpose.InternalStock }],
             OrderType.Internal);
+
+        var afterUpdate = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId);
+        Assert.Equal(2, afterUpdate.Count);
+        Assert.All(afterUpdate, pallet => Assert.Equal(ProductionPalletStatus.Filled, pallet.Status));
+
+        palletService.PlanOrder(10);
 
         var pallets = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId);
         Assert.Equal(4, pallets.Count);
@@ -893,6 +912,7 @@ public sealed class ProductionPalletServiceTests
             [new OrderLineView { ItemId = 100, QtyOrdered = 2400, ProductionPurpose = ProductionLinePurpose.InternalStock }],
             OrderType.Internal);
 
+        palletService.PlanOrder(10);
         var afterUpdate = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId);
         palletService.PlanOrder(10);
         var afterReplan = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId);
@@ -1327,7 +1347,7 @@ public sealed class ProductionPalletServiceTests
     }
 
     [Fact]
-    public void DeleteMixedComponent_CancelsSharedHuAndRebuildsRemainingLine()
+    public void DeleteMixedComponent_CancelsSharedHu_ExplicitPlanRebuildsRemainingLine()
     {
         var harness = CreateHarnessWithMixedOrderOnly();
         var service = new ProductionPalletService(harness.Store);
@@ -1342,6 +1362,8 @@ public sealed class ProductionPalletServiceTests
             null,
             [new OrderLineView { ItemId = 200, QtyOrdered = 200, ProductionPurpose = ProductionLinePurpose.InternalStock }],
             OrderType.Internal);
+
+        service.PlanOrder(10);
 
         var pallets = harness.Store.GetProductionPalletsByDoc(first.PrdDocId);
         Assert.Single(pallets, pallet => pallet.Status == ProductionPalletStatus.Cancelled && pallet.IsMixedPallet);

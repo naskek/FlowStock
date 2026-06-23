@@ -219,7 +219,7 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
         Assert.Equal(3, planLines.Count);
         Assert.Equal(1800, planLines.Sum(line => line.QtyPlanned), 3);
         Assert.DoesNotContain(planLines, line => string.Equals(line.ToHu, "HU-000012", StringComparison.OrdinalIgnoreCase));
-        AssertActiveProductionPalletsForOrderLine(fixture, expectedCount: 1, expectedQty: 600);
+        AssertNoActiveProductionPalletsForOrderLine(fixture);
     }
 
     [Fact]
@@ -241,11 +241,11 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
         Assert.Equal(3, planLines.Count);
         Assert.Equal(1800, planLines.Sum(line => line.QtyPlanned), 3);
         Assert.DoesNotContain(planLines, line => string.Equals(line.ToHu, "HU-000012", StringComparison.OrdinalIgnoreCase));
-        AssertActiveProductionPalletsForOrderLine(fixture, expectedCount: 2, expectedQty: 1200);
+        AssertNoActiveProductionPalletsForOrderLine(fixture);
     }
 
     [Fact]
-    public async Task IncreaseCustomerQty_WhenFreeWarehouseHuExceedsShortage_PlansFullResidualWithoutBindingHu()
+    public async Task IncreaseCustomerQty_WhenFreeWarehouseHuExceedsShortage_DoesNotAutoPlanResidual()
     {
         var fixture = CreateCustomerFixture(orderedQty: 1800);
         SeedReservedWarehouseHuReservations(fixture, "HU-000009", "HU-000010", "HU-000011");
@@ -262,7 +262,7 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
         var planLines = fixture.Harness.Store.GetOrderReceiptPlanLines(fixture.OrderId);
         Assert.Equal(3, planLines.Count);
         Assert.DoesNotContain(planLines, line => string.Equals(line.ToHu, "HU-000012", StringComparison.OrdinalIgnoreCase));
-        AssertActiveProductionPalletsForOrderLine(fixture, expectedCount: 1, expectedQty: 400);
+        AssertNoActiveProductionPalletsForOrderLine(fixture);
     }
 
     [Fact]

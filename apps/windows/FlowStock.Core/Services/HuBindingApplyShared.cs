@@ -12,7 +12,6 @@ namespace FlowStock.Core.Services;
 internal static class HuBindingApplyShared
 {
     internal const double QtyTolerance = StockQuantityRules.QtyTolerance;
-    internal const string DetachPlanSyncSource = "HU_BINDING_DETACH";
 
     internal static OrderHuBindingApplyFinalException Error(
         string code,
@@ -108,54 +107,78 @@ internal static class HuBindingApplyShared
         return replacementLines;
     }
 
-    internal static void RestoreProductionPlanForOrderLine(
-        IDataStore store,
-        long customerOrderId,
-        long orderLineId,
-        double orderedQty)
-    {
-        new ProductionPalletService(store).SyncOrderLinePlanInStore(
-            store,
-            customerOrderId,
-            orderLineId,
-            orderedQty,
-            oldOrderedQty: null,
-            source: DetachPlanSyncSource);
-    }
-
-    internal static long[] SelectSafeWholePlannedPalletsToCancel(
+    /// <summary>
+    /// Реальный избыток будущего плана при привязке складского HU: считается от дедуплицированного по HU
+    /// фактического+складского покрытия (через <see cref="CustomerProtectedCoverageCalculator"/> с переданным
+    /// итоговым snapshot привязки HU) плюс открытый будущий план минус заказанное количество. Складское и
+    /// фактическое покрытие одного HU не задваивается. Final snapshot передаётся параметром (не из БД).
+    /// </summary>
+    internal static double ComputeCancellableFuturePlanSurplus(
         IDataStore store,
         long customerOrderId,
         OrderLine orderLine,
-        double qtyToCover)
+        IReadOnlyDictionary<string, double> finalBoundQtyByHu)
     {
-        var activePallets = GetActiveProductionPalletsForOrderLine(store, customerOrderId, orderLine.Id).ToArray();
-        if (activePallets.Length == 0)
+        var finalSnapshot = new Dictionary<long, IReadOnlyDictionary<string, double>>
+        {
+            [orderLine.Id] = finalBoundQtyByHu
+        };
+        var coverage = CustomerProtectedCoverageCalculator.BuildByOrderLineWithFinalBoundHus(
+            store, customerOrderId, store.GetOrderLines(customerOrderId), finalSnapshot);
+        var finalProtectedCoverage = coverage.TryGetValue(orderLine.Id, out var lineCoverage)
+            ? lineCoverage.DeduplicatedQty
+            : 0d;
+
+        // Открытый будущий план = planned − filled по НЕ-FILLED паллетам (filled-часть уже в protected coverage).
+        var futureTotal = GetActiveProductionPalletsForOrderLine(store, customerOrderId, orderLine.Id)
+            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+            .Sum(pallet => Math.Max(0, ResolvePalletQtyForOrderLine(pallet, orderLine.Id)
+                                       - ResolvePalletFilledQtyForOrderLine(pallet, orderLine.Id)));
+
+        return Math.Max(0, finalProtectedCoverage + futureTotal - Math.Max(0, orderLine.QtyOrdered));
+    }
+
+    internal static double ResolvePalletFilledQtyForOrderLine(ProductionPallet pallet, long orderLineId)
+    {
+        return (pallet.Lines ?? Array.Empty<ProductionPalletComponentLine>())
+            .Where(line => line.OrderLineId == orderLineId)
+            .Sum(line => Math.Max(0, line.FilledQty));
+    }
+
+    /// <summary>
+    /// Отменяет ровно <paramref name="surplusQty"/> будущего плана, выбирая ТОЛЬКО safe-cancellable PLANNED
+    /// паллеты (категория B). FILLED/printed/partial/mixed (A и C) исключаются из кандидатов и не приводят к
+    /// исключению сами по себе. При <c>surplus ≤ 0</c> ничего не отменяется. Если точное подмножество safe
+    /// PLANNED собрать нельзя — <c>HU_BINDING_PLAN_CONFLICT</c> (полный откат транзакции).
+    /// </summary>
+    internal static long[] SelectFuturePlanPalletsToCancel(
+        IDataStore store,
+        long customerOrderId,
+        OrderLine orderLine,
+        double surplusQty)
+    {
+        if (surplusQty <= QtyTolerance)
         {
             return [];
         }
 
-        var safe = new List<(ProductionPallet Pallet, double Qty)>();
-        foreach (var pallet in activePallets)
-        {
-            if (!IsSafeWholePlannedCustomerPallet(customerOrderId, orderLine, pallet, out var qty, out var rejectionReason))
-            {
-                throw Error(
-                    "HU_BINDING_PLAN_CONFLICT",
-                    "Строка имеет производственные паллеты, которые нельзя безопасно заменить готовым HU.",
-                    [$"production_pallet_id={pallet.Id}", rejectionReason ?? "unsafe_pallet_state"]);
-            }
+        var safe = GetActiveProductionPalletsForOrderLine(store, customerOrderId, orderLine.Id)
+            .Where(pallet => IsSafeWholePlannedCustomerPallet(customerOrderId, orderLine, pallet, out _, out _))
+            .Select(pallet => (Pallet: pallet, Qty: ResolvePalletQtyForOrderLine(pallet, orderLine.Id)))
+            .Where(entry => entry.Qty > QtyTolerance)
+            .ToList();
 
-            safe.Add((pallet, qty));
-        }
-
-        var selected = SelectExactPalletSubset(safe, qtyToCover);
+        var selected = SelectExactPalletSubset(safe, surplusQty);
         if (selected.Count == 0)
         {
             throw Error(
                 "HU_BINDING_PLAN_CONFLICT",
-                "Готовый HU не может заменить целые плановые паллеты без частичной отмены.",
-                [$"order_line_id={orderLine.Id}", $"qty_to_cover={qtyToCover:0.###}"]);
+                "Невозможно безопасно убрать избыточный будущий производственный план для замены готовым HU.",
+                [
+                    $"order_line_id={orderLine.Id}",
+                    $"surplus_qty={surplusQty:0.###}",
+                    $"safe_planned_qty={safe.Sum(entry => entry.Qty):0.###}"
+                ]);
         }
 
         return selected.Select(pallet => pallet.Id).ToArray();

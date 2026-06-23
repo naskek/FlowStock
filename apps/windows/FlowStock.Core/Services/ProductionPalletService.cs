@@ -79,40 +79,18 @@ public sealed class ProductionPalletService
             .Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
         var missingBeforeTrim = Math.Max(0, orderedQty - committedQty - activePlannedBefore);
 
-        var affectedOrderLineIds = TrimSurplusOpenPallets(store, order, orderId, orderLineId, orderedQty);
+        TrimSurplusOpenPallets(store, order, orderId, orderLineId, orderedQty);
 
         var activePlannedAfterTrim = GetOpenProductionPalletsForOrderLine(store, orderId, orderLineId)
             .Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
         var cancelledQty = Math.Max(0, activePlannedBefore - activePlannedAfterTrim);
         var missingAfterTrim = Math.Max(0, orderedQty - committedQty - activePlannedAfterTrim);
         var createdQty = 0d;
-        var action = missingAfterTrim > QtyTolerance
-            ? "append_planned"
-            : cancelledQty > QtyTolerance
+        var action = cancelledQty > QtyTolerance
                 ? "trim_open"
-                : "noop";
-
-        if (missingAfterTrim > QtyTolerance)
-        {
-            var openBeforeAppend = activePlannedAfterTrim;
-            var preparedDoc = FindPreparedOpenProductionReceipt(store, orderId, requireRemaining: false);
-            var prdDocIdForAppend = preparedDoc?.Id ?? 0;
-            var appendOrderLineIds = ExpandManualMixedGroupScope(
-                store,
-                orderId,
-                affectedOrderLineIds.Count > 0 ? affectedOrderLineIds : [orderLineId]);
-            AppendPlannedPalletsForOrderLinesInStore(
-                store,
-                order,
-                orderId,
-                appendOrderLineIds,
-                allowEmptyRemaining: true,
-                out _,
-                existingPrdDocId: prdDocIdForAppend);
-            activePlannedAfterTrim = GetOpenProductionPalletsForOrderLine(store, orderId, orderLineId)
-                .Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
-            createdQty = Math.Max(0, activePlannedAfterTrim - openBeforeAppend);
-        }
+                : missingAfterTrim > QtyTolerance
+                    ? "missing_unplanned"
+                    : "noop";
 
         ProductionPalletPlanSyncDiagnostics.Log(new ProductionPalletPlanSyncReport
         {

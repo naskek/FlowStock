@@ -217,8 +217,11 @@ public sealed class OrderHuBindingApplyFinalServiceTests
             Apply(scenario.Harness, FinalLine(Scenario.LineId, [], ["HU-READY"])));
 
         Assert.Equal("HU_BINDING_PLAN_CONFLICT", ex.ErrorCode);
-        Assert.Contains(ex.Problems ?? [], problem =>
+        // Новое сообщение про избыточный будущий план; printed-паллета больше не маскируется как "status=PRINTED expected=PLANNED".
+        Assert.DoesNotContain(ex.Problems ?? [], problem =>
             problem.Contains("status=PRINTED", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(ex.Problems ?? [], problem =>
+            problem.Contains("surplus_qty", StringComparison.OrdinalIgnoreCase));
         Assert.Empty(scenario.Harness.GetOrderReceiptPlanLines(Scenario.OrderId));
     }
 
@@ -288,7 +291,7 @@ public sealed class OrderHuBindingApplyFinalServiceTests
     }
 
     [Fact]
-    public void ApplyFinal_DetachRecomputesCustomerPlannedNeed_WithoutReopeningCancelledPallet()
+    public void ApplyFinal_DetachDoesNotRestoreCustomerPlannedNeed_WithoutReopeningCancelledPallet()
     {
         var scenario = CreateScenario(orderQty: 600);
         scenario.Harness.SeedBalance(Scenario.ItemId, Scenario.LocationId, 600, "HU-OLD");
@@ -305,9 +308,45 @@ public sealed class OrderHuBindingApplyFinalServiceTests
             .ToArray();
         Assert.Contains(pallets, pallet => pallet.Status == ProductionPalletStatus.Cancelled
                                           && pallet.CancelReason == "replaced_by_ready_hu");
-        Assert.Contains(pallets, pallet => pallet.Status == ProductionPalletStatus.Planned);
-        Assert.True(Assert.Single(result.AppliedLines).RestoredPlannedQty > 0);
+        Assert.DoesNotContain(pallets, pallet => pallet.Status == ProductionPalletStatus.Planned);
+        Assert.Equal(0, Assert.Single(result.AppliedLines).RestoredPlannedQty);
         Assert.DoesNotContain(scenario.Harness.Store.GetOrders(), order => order.Type == OrderType.Internal);
+    }
+
+    [Fact]
+    public void ApplyFinal_FilledPalletPlusWarehouseHu_DoesNotConflictAndKeepsFilled()
+    {
+        // Bug 2 / Сценарий A: ordered 1800, FILLED 600, склад 600+600 → surplus 0, успех, FILLED не отменяется.
+        var scenario = CreateScenario(orderQty: 1800);
+        scenario.Harness.SeedBalance(Scenario.ItemId, Scenario.LocationId, 600, "HU-963");
+        scenario.Harness.SeedBalance(Scenario.ItemId, Scenario.LocationId, 600, "HU-965");
+        SeedFilledPallet(scenario.Harness, qty: 600, huCode: "HU-FILLED", postLedger: false);
+
+        var result = Apply(scenario.Harness, FinalLine(Scenario.LineId, [], ["HU-963", "HU-965"]));
+
+        var line = Assert.Single(result.AppliedLines);
+        Assert.Equal(0, line.CancelledPlannedPalletCount);
+        var planHus = scenario.Harness.GetOrderReceiptPlanLines(Scenario.OrderId).Select(plan => plan.ToHu).OrderBy(hu => hu).ToArray();
+        Assert.Equal(new[] { "HU-963", "HU-965" }, planHus);
+        var filled = Assert.Single(scenario.Harness.Store.GetProductionPalletsByDoc(Scenario.PrdDocId + 1));
+        Assert.Equal(ProductionPalletStatus.Filled, filled.Status);
+    }
+
+    [Fact]
+    public void ApplyFinal_ConfirmedFilledHuAlsoFinalBound_DeduplicatesCoverage()
+    {
+        // Bug 2 / анти-двойной-счёт: один HU подтверждён FILLED и выбран как final → coverage=600, surplus=0, успех.
+        var scenario = CreateScenario(orderQty: 600);
+        SeedFilledPallet(scenario.Harness, qty: 600, huCode: "HU-DUP", postLedger: true);
+        scenario.Harness.SeedBalance(Scenario.ItemId, Scenario.LocationId, 600, "HU-DUP");
+
+        var result = Apply(scenario.Harness, FinalLine(Scenario.LineId, [], ["HU-DUP"]));
+
+        var line = Assert.Single(result.AppliedLines);
+        Assert.Equal(0, line.CancelledPlannedPalletCount);
+        Assert.Equal("HU-DUP", Assert.Single(scenario.Harness.GetOrderReceiptPlanLines(Scenario.OrderId)).ToHu);
+        var filled = Assert.Single(scenario.Harness.Store.GetProductionPalletsByDoc(Scenario.PrdDocId + 1));
+        Assert.Equal(ProductionPalletStatus.Filled, filled.Status);
     }
 
     private static OrderHuBindingApplyFinalResult Apply(
@@ -460,6 +499,75 @@ public sealed class OrderHuBindingApplyFinalServiceTests
                 }
             ]
         });
+    }
+
+    private static void SeedFilledPallet(
+        CloseDocumentHarness harness,
+        double qty,
+        string huCode,
+        bool postLedger)
+    {
+        const long docId = Scenario.PrdDocId + 1;
+        const long docLineId = Scenario.PrdDocLineId + 1;
+        const long palletId = Scenario.PalletId + 1;
+        const long palletLineId = Scenario.PalletLineId + 1;
+
+        harness.SeedDoc(new Doc
+        {
+            Id = docId,
+            DocRef = "PRD-FILLED",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = Scenario.OrderId,
+            CreatedAt = DateTime.UtcNow
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = docLineId,
+            DocId = docId,
+            OrderLineId = Scenario.LineId,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder,
+            ItemId = Scenario.ItemId,
+            Qty = qty,
+            ToLocationId = Scenario.LocationId,
+            ToHu = huCode
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = palletId,
+            PrdDocId = docId,
+            DocLineId = docLineId,
+            OrderId = Scenario.OrderId,
+            OrderLineId = Scenario.LineId,
+            ItemId = Scenario.ItemId,
+            ItemName = "Товар",
+            HuCode = huCode,
+            PlannedQty = qty,
+            ToLocationId = Scenario.LocationId,
+            Status = ProductionPalletStatus.Filled,
+            FilledAt = DateTime.UtcNow,
+            CreatedAt = DateTime.UtcNow,
+            Lines =
+            [
+                new ProductionPalletComponentLine
+                {
+                    Id = palletLineId,
+                    ProductionPalletId = palletId,
+                    DocLineId = docLineId,
+                    OrderLineId = Scenario.LineId,
+                    ItemId = Scenario.ItemId,
+                    ItemName = "Товар",
+                    PlannedQty = qty,
+                    FilledQty = qty,
+                    CreatedAt = DateTime.UtcNow
+                }
+            ]
+        });
+
+        if (postLedger)
+        {
+            harness.SeedLedgerEntry(docId, Scenario.ItemId, Scenario.LocationId, qty, huCode);
+        }
     }
 
     private sealed record Scenario(CloseDocumentHarness Harness)

@@ -95,7 +95,7 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
     }
 
     [Fact]
-    public async Task Increase1200To2400_Succeeds_AppendsMissingPlannedWithoutDuplicates()
+    public async Task Increase1200To2400_Succeeds_WithoutAppendingMissingPlannedPallets()
     {
         var fixture = InternalOrderPalletQtyUpdateScenario.Create(
             orderedQty: 1200,
@@ -111,8 +111,8 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
         Assert.True(first.Ok);
         var afterFirst = fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId);
         Assert.Equal(2, afterFirst.Count(pallet => pallet.Status == ProductionPalletStatus.Filled));
-        Assert.Equal(2, afterFirst.Count(pallet => pallet.Status == ProductionPalletStatus.Planned));
-        Assert.Equal(2400, ActivePalletQty(afterFirst, fixture.OrderLineId), 3);
+        Assert.Equal(0, afterFirst.Count(pallet => pallet.Status == ProductionPalletStatus.Planned));
+        Assert.Equal(1200, ActivePalletQty(afterFirst, fixture.OrderLineId), 3);
 
         var second = await UpdateOrderHttpApi.UpdateAsync(
             host.Client,
@@ -149,7 +149,7 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
     }
 
     [Fact]
-    public async Task DecreaseThenIncrease4800_FullCycle_CreatesNewPlannedWithoutDuplicateDocLine()
+    public async Task DecreaseThenIncrease4800_FullCycle_DoesNotRestorePlannedPalletsOnIncrease()
     {
         var fixture = InternalOrderPalletQtyUpdateScenario.Create(
             orderedQty: 4800,
@@ -176,9 +176,9 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
 
         var afterIncrease = fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId);
         Assert.Equal(2, afterIncrease.Count(pallet => pallet.Status == ProductionPalletStatus.Filled));
-        Assert.Equal(6, afterIncrease.Count(pallet => pallet.Status == ProductionPalletStatus.Planned));
+        Assert.Equal(0, afterIncrease.Count(pallet => pallet.Status == ProductionPalletStatus.Planned));
         Assert.Equal(6, afterIncrease.Count(pallet => pallet.Status == ProductionPalletStatus.Cancelled));
-        Assert.Equal(4800, ActivePalletQty(afterIncrease, fixture.OrderLineId), 3);
+        Assert.Equal(1200, ActivePalletQty(afterIncrease, fixture.OrderLineId), 3);
 
         var activeDocLineIds = afterIncrease
             .Where(pallet => pallet.Status != ProductionPalletStatus.Cancelled)
@@ -221,7 +221,7 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
     }
 
     [Fact]
-    public async Task PutIncrease1200To2400_LinesApi_ReturnsFilledAndNewPlannedHuCodes()
+    public async Task PutIncrease1200To2400_LinesApi_ReturnsNoNewPlannedHuCodes()
     {
         var fixture = InternalOrderPalletQtyUpdateScenario.Create(
             orderedQty: 1200,
@@ -252,10 +252,9 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
             .Select(pallet => pallet.HuCode)
             .Where(code => !string.IsNullOrWhiteSpace(code))
             .ToArray();
-        Assert.Equal(2, plannedHuCodes.Length);
-        Assert.Equal(plannedHuCodes.Length, huCodes.Length);
-        Assert.All(plannedHuCodes, code => Assert.Contains(code, huCodes));
-        Assert.False(string.IsNullOrWhiteSpace(line.GetProperty("production_hu_codes_display").GetString()));
+        Assert.Empty(plannedHuCodes);
+        Assert.Empty(huCodes);
+        Assert.True(string.IsNullOrWhiteSpace(line.GetProperty("production_hu_codes_display").GetString()));
     }
 
     [Fact]

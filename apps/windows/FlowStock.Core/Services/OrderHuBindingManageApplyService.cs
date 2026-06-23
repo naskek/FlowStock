@@ -79,15 +79,26 @@ public sealed class OrderHuBindingManageApplyService
             }
         }
 
-        // Производственный план: дельта original→final. delta>0 — отмена целых плановых паллет.
+        // Производственный план: отменяется только реальный surplus покрытия (дедуп по HU), исключая FILLED/partial.
         var cancelledCountByLine = new Dictionary<long, int>();
         var palletsToCancel = new List<long>();
-        foreach (var line in perLine.Where(line => line.Delta > QtyTolerance))
+        foreach (var line in perLine)
         {
-            var cancelledPalletIds = HuBindingApplyShared.SelectSafeWholePlannedPalletsToCancel(
-                store, line.OrderId, line.OrderLine, line.Delta);
-            palletsToCancel.AddRange(cancelledPalletIds);
-            cancelledCountByLine[line.OrderLine.Id] = cancelledPalletIds.Length;
+            var finalBoundQtyByHu = replacementLines
+                .Where(plan => plan.OrderId == line.OrderId
+                               && plan.OrderLineId == line.OrderLine.Id
+                               && !string.IsNullOrWhiteSpace(plan.ToHu))
+                .GroupBy(plan => plan.ToHu!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.Sum(plan => Math.Max(0, plan.QtyPlanned)), StringComparer.OrdinalIgnoreCase);
+            var surplus = HuBindingApplyShared.ComputeCancellableFuturePlanSurplus(
+                store, line.OrderId, line.OrderLine, finalBoundQtyByHu);
+            var cancelledPalletIds = HuBindingApplyShared.SelectFuturePlanPalletsToCancel(
+                store, line.OrderId, line.OrderLine, surplus);
+            if (cancelledPalletIds.Length > 0)
+            {
+                palletsToCancel.AddRange(cancelledPalletIds);
+                cancelledCountByLine[line.OrderLine.Id] = cancelledPalletIds.Length;
+            }
         }
 
         if (palletsToCancel.Count > 0)
@@ -102,15 +113,7 @@ public sealed class OrderHuBindingManageApplyService
             store.RemoveDocLinesForProductionPallets(palletsToCancel);
         }
 
-        // delta<0 — восстановление производственного плана существующей синхронизацией.
         var restoredByLine = new Dictionary<long, double>();
-        foreach (var line in perLine.Where(line => line.Delta < -QtyTolerance))
-        {
-            HuBindingApplyShared.RestoreProductionPlanForOrderLine(
-                store, line.OrderId, line.OrderLine.Id, line.OrderLine.QtyOrdered);
-            var activeAfter = HuBindingApplyShared.SumActiveProductionPalletQty(store, line.OrderId, line.OrderLine.Id);
-            restoredByLine[line.OrderLine.Id] = Math.Max(0, activeAfter - line.ActivePlannedBefore);
-        }
 
         // Статус каждого затронутого заказа пересчитывается один раз.
         foreach (var orderId in snapshot.AffectedOrderIds)

@@ -418,10 +418,8 @@ public sealed class OrderService
                 });
             }
 
-            if (type != OrderType.Customer)
-            {
-                TryRebuildOrderReceiptPlan(store, orderId);
-            }
+            // Создание заказа НЕ строит производственный/receipt план и не выделяет HU.
+            // План появляется только явной ручной командой (ProductionPalletService.PlanOrder).
         });
 
         return orderId;
@@ -658,14 +656,18 @@ public sealed class OrderService
             else
             {
                 QueueAffectedPalletLines(store, orderId, linesNeedingPalletSync, additionallyAffectedPalletLineIds);
-                var syncOrderLineIds = linesNeedingPalletSync
+                // Обычное обновление НЕ перестраивает план и НЕ выделяет HU. При уменьшении количества
+                // допускается только trim-only сокращение уже существующих legacy plan-lines (подмножество),
+                // без создания строк/HU и без выделения новых HU.
+                var decreasedOrderLineIds = linesNeedingPalletSync
+                    .Where(entry => entry.OldOrderedQty > entry.OrderedQty + QtyTolerance)
                     .Select(entry => entry.OrderLineId)
                     .Distinct()
                     .ToArray();
-                if (syncOrderLineIds.Length > 0
-                    && !HasActiveProductionPalletPlanForOrderLines(store, orderId, syncOrderLineIds))
+                if (decreasedOrderLineIds.Length > 0
+                    && !HasActiveProductionPalletPlanForOrderLines(store, orderId, decreasedOrderLineIds))
                 {
-                    TryRebuildOrderReceiptPlan(store, orderId);
+                    TrimSurplusOrderReceiptPlanForOrderLines(store, orderId, decreasedOrderLineIds);
                 }
                 foreach (var (orderLineId, orderedQty, oldOrderedQty) in linesNeedingPalletSync)
                 {
@@ -1990,6 +1992,101 @@ public sealed class OrderService
         try
         {
             RebuildOrderReceiptPlan(store, orderId);
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            // Compatibility for strict test mocks that do not expose planning methods.
+        }
+    }
+
+    /// <summary>
+    /// Строго trim-only сокращение существующих legacy <c>order_receipt_plan_lines</c> при уменьшении
+    /// количества строки. Оставляет ТОЛЬКО подмножество существующих plan-lines в пределах остатка к
+    /// производству (<c>targetRemaining = max(0, QtyOrdered − alreadyProduced)</c>). Новые plan-lines не
+    /// создаются, HU-коды не заменяются, <see cref="AllocateHuCodesForPlan"/> не вызывается; при отсутствии
+    /// плана по строке — no-op; фактический выпуск не меняется.
+    /// </summary>
+    internal void TrimSurplusOrderReceiptPlanForOrderLines(
+        IDataStore store,
+        long orderId,
+        IReadOnlyCollection<long> decreasedOrderLineIds)
+    {
+        if (decreasedOrderLineIds == null || decreasedOrderLineIds.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var affected = decreasedOrderLineIds.Where(id => id > 0).Distinct().ToArray();
+            if (affected.Length == 0)
+            {
+                return;
+            }
+
+            var existingPlan = (store.GetOrderReceiptPlanLines(orderId) ?? Array.Empty<OrderReceiptPlanLine>())
+                .Where(line => affected.Contains(line.OrderLineId))
+                .ToArray();
+            if (existingPlan.Length == 0)
+            {
+                return;
+            }
+
+            var orderLines = store.GetOrderLines(orderId);
+            var orderedByLine = orderLines.ToDictionary(line => line.Id, line => Math.Max(0, line.QtyOrdered));
+            var producedByLine = OrderReceiptRemainingCalculator
+                .BuildProducedTotalsByOrderLine(store, orderId, orderLines);
+
+            var changedLineIds = new List<long>();
+            var keptLines = new List<OrderReceiptPlanLine>();
+            foreach (var lineId in affected)
+            {
+                var lineExisting = existingPlan
+                    .Where(line => line.OrderLineId == lineId)
+                    .OrderBy(line => line.SortOrder)
+                    .ThenBy(line => line.Id)
+                    .ToArray();
+                if (lineExisting.Length == 0)
+                {
+                    continue;
+                }
+
+                var ordered = orderedByLine.TryGetValue(lineId, out var orderedQty) ? orderedQty : 0d;
+                var produced = producedByLine.TryGetValue(lineId, out var producedQty) ? Math.Max(0, producedQty) : 0d;
+                var targetRemaining = Math.Max(0, ordered - produced);
+
+                // Префиксное подмножество: оставляем строки пока кумулятив ≤ targetRemaining, остальное (surplus) отбрасываем.
+                var kept = new List<OrderReceiptPlanLine>();
+                var cumulative = 0d;
+                foreach (var planLine in lineExisting)
+                {
+                    var qty = Math.Max(0, planLine.QtyPlanned);
+                    if (cumulative + qty <= targetRemaining + QtyTolerance)
+                    {
+                        kept.Add(planLine);
+                        cumulative += qty;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+
+                if (kept.Count == lineExisting.Length)
+                {
+                    continue;
+                }
+
+                changedLineIds.Add(lineId);
+                keptLines.AddRange(kept);
+            }
+
+            if (changedLineIds.Count == 0)
+            {
+                return;
+            }
+
+            store.ReplaceOrderReceiptPlanLinesForOrderLines(orderId, changedLineIds, keptLines);
         }
         catch (Exception ex) when (IsMockStoreException(ex))
         {

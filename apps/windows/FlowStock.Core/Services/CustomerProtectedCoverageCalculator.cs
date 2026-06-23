@@ -73,6 +73,9 @@ internal static class CustomerProtectedCoverageCalculator
 {
     private const double QtyTolerance = 0.000001d;
 
+    private static readonly IReadOnlyDictionary<(long OrderLineId, string HuCode), double> EmptyHuMap =
+        new Dictionary<(long, string), double>();
+
     public static IReadOnlyDictionary<long, CustomerProtectedCoverage> BuildByOrderLine(
         IDataStore store,
         long orderId,
@@ -87,6 +90,41 @@ internal static class CustomerProtectedCoverageCalculator
         var shippedByLineHu = BuildShippedByLineHu(store, orderId);
         var boundByLineHu = BuildBoundByLineHu(store, orderId);
 
+        return ComputeCoverage(lines, confirmedTotals, confirmedByLineHu, EmptyHuMap, shippedByLineHu, boundByLineHu);
+    }
+
+    /// <summary>
+    /// Покрытие с дедупликацией по HU, где текущая привязка склада (<c>order_receipt_plan_lines ∩ stock</c>)
+    /// заменена на ПЕРЕДАННЫЙ итоговый snapshot привязки HU (<paramref name="finalBoundQtyByLineHu"/>) — для
+    /// строк, отсутствующих в snapshot, используется текущий план. Дополнительно учитывает частичный фактический
+    /// progress (component FilledQty НЕ-FILLED паллет) как factual, дедуплицируя по HU (берётся max, не сумма).
+    /// Возвращает сырой (uncapped) <see cref="CustomerProtectedCoverage.DeduplicatedQty"/>. Final snapshot
+    /// передаётся параметром и не читается из БД.
+    /// </summary>
+    internal static IReadOnlyDictionary<long, CustomerProtectedCoverage> BuildByOrderLineWithFinalBoundHus(
+        IDataStore store,
+        long orderId,
+        IReadOnlyList<OrderLine> orderLines,
+        IReadOnlyDictionary<long, IReadOnlyDictionary<string, double>> finalBoundQtyByLineHu)
+    {
+        var lines = orderLines.ToArray();
+        var confirmedTotals = OrderReceiptRemainingCalculator.BuildConfirmedReceiptLedgerTotalsByOrderLine(store, orderId, lines);
+        var confirmedByLineHu = BuildConfirmedByLineHu(store, orderId, includeUnconfirmedFilledPallets: false);
+        var partialByLineHu = BuildPartialProgressByLineHu(store, orderId);
+        var shippedByLineHu = BuildShippedByLineHu(store, orderId);
+        var boundByLineHu = BuildFinalBoundByLineHu(store, orderId, finalBoundQtyByLineHu);
+
+        return ComputeCoverage(lines, confirmedTotals, confirmedByLineHu, partialByLineHu, shippedByLineHu, boundByLineHu);
+    }
+
+    private static IReadOnlyDictionary<long, CustomerProtectedCoverage> ComputeCoverage(
+        IReadOnlyList<OrderLine> lines,
+        IReadOnlyDictionary<long, double> confirmedTotals,
+        IReadOnlyDictionary<(long OrderLineId, string HuCode), double> confirmedByLineHu,
+        IReadOnlyDictionary<(long OrderLineId, string HuCode), double> partialByLineHu,
+        IReadOnlyDictionary<(long OrderLineId, string HuCode), double> shippedByLineHu,
+        IReadOnlyDictionary<(long OrderLineId, string HuCode), double> boundByLineHu)
+    {
         return lines.ToDictionary(
             line => line.Id,
             line =>
@@ -108,6 +146,7 @@ internal static class CustomerProtectedCoverageCalculator
                     });
 
                 var huCodes = confirmedByLineHu.Keys
+                    .Concat(partialByLineHu.Keys)
                     .Concat(shippedByLineHu.Keys)
                     .Concat(boundByLineHu.Keys)
                     .Where(key => key.OrderLineId == line.Id)
@@ -118,9 +157,11 @@ internal static class CustomerProtectedCoverageCalculator
                     var key = (line.Id, huCode);
                     var shipped = shippedByLineHu.TryGetValue(key, out var shippedQty) ? shippedQty : 0d;
                     var confirmed = confirmedByLineHu.TryGetValue(key, out var confirmedQty) ? confirmedQty : 0d;
+                    var partial = partialByLineHu.TryGetValue(key, out var partialQty) ? partialQty : 0d;
+                    var factual = confirmed + partial;
                     var bound = boundByLineHu.TryGetValue(key, out var boundQty) ? boundQty : 0d;
                     return shipped + Math.Max(
-                        Math.Max(0, confirmed - shipped),
+                        Math.Max(0, factual - shipped),
                         Math.Max(0, bound - shipped));
                 });
                 var remainingShipmentForLegacy = Math.Max(0, shippedTotal - shippedMatchedToConfirmedHu);
@@ -296,6 +337,72 @@ internal static class CustomerProtectedCoverageCalculator
                 && stockQty > QtyTolerance)
             {
                 Add(result, (line.OrderLineId, huCode), Math.Min(line.QtyPlanned, stockQty));
+            }
+        }
+
+        return result;
+    }
+
+    private static Dictionary<(long OrderLineId, string HuCode), double> BuildPartialProgressByLineHu(
+        IDataStore store,
+        long orderId)
+    {
+        var result = new Dictionary<(long, string), double>();
+        try
+        {
+            foreach (var doc in (store.GetDocsByOrder(orderId) ?? Array.Empty<Doc>())
+                         .Where(doc => doc.Type == DocType.ProductionReceipt))
+            {
+                foreach (var pallet in (store.GetProductionPalletsByDoc(doc.Id) ?? Array.Empty<ProductionPallet>())
+                             .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)
+                                              && !string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
+                {
+                    var huCode = NormalizeHu(pallet.HuCode);
+                    if (huCode == null)
+                    {
+                        continue;
+                    }
+
+                    foreach (var palletLine in pallet.Lines.Where(line => line.OrderLineId.HasValue && line.FilledQty > QtyTolerance))
+                    {
+                        Add(result, (palletLine.OrderLineId!.Value, huCode), palletLine.FilledQty);
+                    }
+                }
+            }
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            return result;
+        }
+
+        return result;
+    }
+
+    private static Dictionary<(long OrderLineId, string HuCode), double> BuildFinalBoundByLineHu(
+        IDataStore store,
+        long orderId,
+        IReadOnlyDictionary<long, IReadOnlyDictionary<string, double>> finalBoundQtyByLineHu)
+    {
+        var result = new Dictionary<(long, string), double>();
+        var current = BuildBoundByLineHu(store, orderId);
+        foreach (var entry in current)
+        {
+            // Для строк без переданного final snapshot используем текущий план как fallback.
+            if (!finalBoundQtyByLineHu.ContainsKey(entry.Key.OrderLineId))
+            {
+                result[entry.Key] = entry.Value;
+            }
+        }
+
+        foreach (var (lineId, huMap) in finalBoundQtyByLineHu)
+        {
+            foreach (var (hu, qty) in huMap)
+            {
+                var huCode = NormalizeHu(hu);
+                if (huCode != null && qty > QtyTolerance)
+                {
+                    Add(result, (lineId, huCode), qty);
+                }
             }
         }
 

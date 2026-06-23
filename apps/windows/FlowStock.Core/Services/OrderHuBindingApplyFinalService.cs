@@ -85,7 +85,6 @@ public sealed class OrderHuBindingApplyFinalService
         var candidatesService = new HuReservationCandidatesService(store);
         var replacementLines = new List<OrderReceiptPlanLine>();
         var appliedLines = new List<OrderHuBindingApplyFinalLineResult>();
-        var restoreLineIds = new List<(long OrderLineId, double ActivePlannedBefore)>();
         var palletsToCancel = new List<long>();
 
         foreach (var requestLine in request.Lines)
@@ -179,7 +178,6 @@ public sealed class OrderHuBindingApplyFinalService
             }
 
             var finalBoundQty = finalCandidates.Sum(candidate => Math.Max(0, candidate.Qty));
-            var previousBoundQty = currentPlanForLine.Sum(line => Math.Max(0, line.QtyPlanned));
             var remainingQty = HuBindingApplyShared.ResolveShipmentRemaining(orderLine, shipmentRemainingByLine);
             if (finalBoundQty > remainingQty + QtyTolerance)
             {
@@ -193,16 +191,15 @@ public sealed class OrderHuBindingApplyFinalService
                     ]);
             }
 
-            var coverageAddedQty = Math.Max(0, finalBoundQty - previousBoundQty);
-            var cancelledPalletIds = coverageAddedQty > QtyTolerance
-                ? HuBindingApplyShared.SelectSafeWholePlannedPalletsToCancel(store, customerOrderId, orderLine, coverageAddedQty)
-                : Array.Empty<long>();
+            var finalBoundQtyByHu = finalCandidates
+                .Where(candidate => !string.IsNullOrWhiteSpace(candidate.HuCode))
+                .GroupBy(candidate => candidate.HuCode!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.Sum(candidate => Math.Max(0, candidate.Qty)), StringComparer.OrdinalIgnoreCase);
+            var futurePlanSurplus = HuBindingApplyShared.ComputeCancellableFuturePlanSurplus(
+                store, customerOrderId, orderLine, finalBoundQtyByHu);
+            var cancelledPalletIds = HuBindingApplyShared.SelectFuturePlanPalletsToCancel(
+                store, customerOrderId, orderLine, futurePlanSurplus);
             palletsToCancel.AddRange(cancelledPalletIds);
-
-            if (previousBoundQty > finalBoundQty + QtyTolerance)
-            {
-                restoreLineIds.Add((orderLine.Id, HuBindingApplyShared.SumActiveProductionPalletQty(store, customerOrderId, orderLine.Id)));
-            }
 
             replacementLines.AddRange(HuBindingApplyShared.BuildReplacementPlanLines(customerOrderId, orderLine, finalCandidates));
 
@@ -242,41 +239,13 @@ public sealed class OrderHuBindingApplyFinalService
             store.RemoveDocLinesForProductionPallets(palletsToCancel);
         }
 
-        var restoredByLine = new Dictionary<long, double>();
-        foreach (var restore in restoreLineIds)
-        {
-            var orderLine = orderLines[restore.OrderLineId];
-            HuBindingApplyShared.RestoreProductionPlanForOrderLine(
-                store,
-                customerOrderId,
-                restore.OrderLineId,
-                orderLine.QtyOrdered);
-            var activeAfter = HuBindingApplyShared.SumActiveProductionPalletQty(store, customerOrderId, restore.OrderLineId);
-            restoredByLine[restore.OrderLineId] = Math.Max(0, activeAfter - restore.ActivePlannedBefore);
-        }
-
         new OrderService(store).RefreshPersistedStatus(customerOrderId);
 
         return new OrderHuBindingApplyFinalResult
         {
             Ok = true,
             OrderId = customerOrderId,
-            AppliedLines = appliedLines
-                .Select(line => restoredByLine.TryGetValue(line.OrderLineId, out var restored)
-                    ? new OrderHuBindingApplyFinalLineResult
-                    {
-                        OrderLineId = line.OrderLineId,
-                        ItemId = line.ItemId,
-                        PreviousHuCodes = line.PreviousHuCodes,
-                        FinalHuCodes = line.FinalHuCodes,
-                        BoundHuCodes = line.BoundHuCodes,
-                        DetachedHuCodes = line.DetachedHuCodes,
-                        ReservedQty = line.ReservedQty,
-                        CancelledPlannedPalletCount = line.CancelledPlannedPalletCount,
-                        RestoredPlannedQty = restored
-                    }
-                    : line)
-                .ToArray()
+            AppliedLines = appliedLines.ToArray()
         };
     }
 

@@ -51,6 +51,28 @@ public sealed class OrderHuBindingManageApplyServiceTests
     }
 
     [Fact]
+    public void Apply_Detach_DoesNotRestoreProductionPlan()
+    {
+        var harness = NewHarness();
+        SeedOrder(harness, OrderA, "SO-A");
+        SeedLine(harness, LineA, OrderA, 600);
+        harness.SeedBalance(ItemA, Loc, 600, "HU-1");
+        harness.SeedOrderReceiptPlanLines(OrderA, Plan(OrderA, LineA, "HU-1", 600));
+        SeedPlannedPallet(harness, OrderA, LineA, 600, ProductionPalletStatus.Cancelled);
+
+        var result = Apply(harness, NoExpected, Line(OrderA, LineA, ["HU-1"], []));
+
+        var line = Assert.Single(Assert.Single(result.Orders).AppliedLines);
+        Assert.Equal(0, line.RestoredPlannedQty);
+        Assert.Empty(harness.GetOrderReceiptPlanLines(OrderA));
+        var pallets = harness.Store.GetDocsByOrder(OrderA)
+            .SelectMany(doc => harness.Store.GetProductionPalletsByDoc(doc.Id))
+            .ToArray();
+        Assert.Contains(pallets, pallet => pallet.Status == ProductionPalletStatus.Cancelled);
+        Assert.DoesNotContain(pallets, pallet => pallet.Status == ProductionPalletStatus.Planned);
+    }
+
+    [Fact]
     public void Apply_MoveBetweenLinesOfOneOrder()
     {
         var harness = NewHarness();
@@ -378,6 +400,25 @@ public sealed class OrderHuBindingManageApplyServiceTests
         harness.VerifyOrderStatusRefreshed(OrderB, Times.AtLeastOnce());
     }
 
+    [Fact]
+    public void Apply_FilledPalletPlusWarehouseHu_DoesNotConflictAndKeepsFilled()
+    {
+        // Bug 2 / Сценарий A (order-scoped + manage): ordered 1800, FILLED 600, склад 600+600 → surplus 0, успех.
+        var harness = NewHarness();
+        SeedOrder(harness, OrderA, "SO-A");
+        SeedLine(harness, LineA, OrderA, 1800);
+        harness.SeedBalance(ItemA, Loc, 600, "HU-963");
+        harness.SeedBalance(ItemA, Loc, 600, "HU-965");
+        SeedFilledPallet(harness, OrderA, LineA, 600, "HU-FILLED", postLedger: false);
+
+        var result = Apply(harness, NoExpected, Line(OrderA, LineA, [], ["HU-963", "HU-965"]));
+
+        var line = Assert.Single(Assert.Single(result.Orders).AppliedLines);
+        Assert.Equal(0, line.CancelledPlannedPalletCount);
+        var planHus = harness.GetOrderReceiptPlanLines(OrderA).Select(plan => plan.ToHu).OrderBy(hu => hu).ToArray();
+        Assert.Equal(new[] { "HU-963", "HU-965" }, planHus);
+    }
+
     private static readonly IReadOnlyList<ManageExpectedHuState> NoExpected = Array.Empty<ManageExpectedHuState>();
 
     private static CloseDocumentHarness NewHarness()
@@ -483,6 +524,77 @@ public sealed class OrderHuBindingManageApplyServiceTests
                 }
             ]
         });
+    }
+
+    private static void SeedFilledPallet(
+        CloseDocumentHarness harness,
+        long orderId,
+        long lineId,
+        double qty,
+        string huCode,
+        bool postLedger)
+    {
+        var docId = 4000 + lineId;
+        var docLineId = 3000 + lineId;
+        var palletId = 2000 + lineId;
+        var palletLineId = 1000 + lineId;
+
+        harness.SeedDoc(new Doc
+        {
+            Id = docId,
+            DocRef = $"PRD-FILLED-{lineId}",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = orderId,
+            CreatedAt = DateTime.UtcNow
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = docLineId,
+            DocId = docId,
+            OrderLineId = lineId,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder,
+            ItemId = ItemA,
+            Qty = qty,
+            ToLocationId = Loc,
+            ToHu = huCode
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = palletId,
+            PrdDocId = docId,
+            DocLineId = docLineId,
+            OrderId = orderId,
+            OrderLineId = lineId,
+            ItemId = ItemA,
+            ItemName = "Товар A",
+            HuCode = huCode,
+            PlannedQty = qty,
+            ToLocationId = Loc,
+            Status = ProductionPalletStatus.Filled,
+            FilledAt = DateTime.UtcNow,
+            CreatedAt = DateTime.UtcNow,
+            Lines =
+            [
+                new ProductionPalletComponentLine
+                {
+                    Id = palletLineId,
+                    ProductionPalletId = palletId,
+                    DocLineId = docLineId,
+                    OrderLineId = lineId,
+                    ItemId = ItemA,
+                    ItemName = "Товар A",
+                    PlannedQty = qty,
+                    FilledQty = qty,
+                    CreatedAt = DateTime.UtcNow
+                }
+            ]
+        });
+
+        if (postLedger)
+        {
+            harness.SeedLedgerEntry(docId, ItemA, Loc, qty, huCode);
+        }
     }
 
     private static OrderHuBindingManageApplyResult Apply(
