@@ -662,7 +662,8 @@ public sealed class OrderService
                     .Select(entry => entry.OrderLineId)
                     .Distinct()
                     .ToArray();
-                if (!HasActiveProductionPalletPlanForOrderLines(store, orderId, syncOrderLineIds))
+                if (syncOrderLineIds.Length > 0
+                    && !HasActiveProductionPalletPlanForOrderLines(store, orderId, syncOrderLineIds))
                 {
                     TryRebuildOrderReceiptPlan(store, orderId);
                 }

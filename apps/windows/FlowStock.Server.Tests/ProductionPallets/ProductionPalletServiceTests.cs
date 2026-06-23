@@ -671,6 +671,28 @@ public sealed class ProductionPalletServiceTests
         Assert.Equal(5, afterHuCodes.Distinct(StringComparer.OrdinalIgnoreCase).Count());
         Assert.All(after, pallet => Assert.Matches("^HU-[0-9]{7}$", pallet.HuCode));
         Assert.Equal(9120, after.Sum(pallet => pallet.PlannedQty), 3);
+
+        orderService.UpdateOrder(
+            10,
+            "056",
+            null,
+            null,
+            null,
+            [new OrderLineView { ItemId = 100, QtyOrdered = 9120, ProductionPurpose = ProductionLinePurpose.InternalStock }],
+            OrderType.Internal);
+
+        var afterSecondPut = GetActiveProductionPalletsByOrder(harness, 10);
+        var afterSecondPutHuCodes = afterSecondPut.Select(pallet => pallet.HuCode).ToArray();
+
+        Assert.Equal(5, afterSecondPut.Length);
+        Assert.Empty(afterSecondPutHuCodes.Except(afterHuCodes, StringComparer.OrdinalIgnoreCase));
+        Assert.Empty(afterHuCodes.Except(afterSecondPutHuCodes, StringComparer.OrdinalIgnoreCase));
+        Assert.All(beforeHuCodes, huCode =>
+            Assert.Contains(afterSecondPut, pallet => string.Equals(pallet.HuCode, huCode, StringComparison.OrdinalIgnoreCase)));
+        Assert.Empty(harness.Store.GetOrderReceiptPlanLines(10));
+        Assert.Equal(ledgerEntryCountBeforeUpdate, harness.LedgerEntries.Count);
+        Assert.Equal(9120, afterSecondPut.Sum(pallet => pallet.PlannedQty), 3);
+
         Mock.Get(harness.Store).Verify(
             store => store.ReplaceOrderReceiptPlanLines(It.IsAny<long>(), It.IsAny<IReadOnlyList<OrderReceiptPlanLine>>()),
             Times.Never);
