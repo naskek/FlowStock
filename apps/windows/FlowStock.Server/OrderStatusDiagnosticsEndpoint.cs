@@ -34,9 +34,7 @@ public static class OrderStatusDiagnosticsEndpoint
             }
         }
 
-        var apply = body?.DryRun == true
-            ? false
-            : body?.Apply == true || body?.DryRun == false;
+        var apply = body?.Apply == true && body?.DryRun != true;
         var report = new OrderService(store).RefreshFullyShippedCustomerOrderStatuses(apply);
         return Results.Ok(new
         {
@@ -76,9 +74,7 @@ public static class OrderStatusDiagnosticsEndpoint
             }
         }
 
-        var apply = body?.DryRun == true
-            ? false
-            : body?.Apply == true || body?.DryRun == false;
+        var apply = body?.Apply == true && body?.DryRun != true;
         var report = new OrderService(store).RefreshCustomerReadinessOrderStatuses(apply);
         return Results.Ok(new
         {

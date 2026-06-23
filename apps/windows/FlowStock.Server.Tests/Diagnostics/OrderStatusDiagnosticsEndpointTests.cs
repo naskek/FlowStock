@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using FlowStock.Core.Models;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
@@ -136,6 +137,60 @@ public sealed class OrderStatusDiagnosticsEndpointTests
         Assert.Equal("IN_PROGRESS", row.GetProperty("new_status").GetString());
         Assert.True(row.GetProperty("updated").GetBoolean());
     }
+
+    [Theory]
+    [InlineData("", false)]
+    [InlineData("{}", false)]
+    [InlineData("{\"dry_run\":false}", false)]
+    [InlineData("{\"apply\":true}", true)]
+    [InlineData("{\"apply\":true,\"dry_run\":true}", false)]
+    public async Task RefreshFullyShipped_AppliesOnlyWhenApplyTrueAndNotDryRun(string body, bool expectApply)
+    {
+        var harness = CreateHarness();
+        SeedCustomerOrder(harness, 61, "061", OrderStatus.InProgress, 1800, 1800);
+
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        using var response = await host.Client.PostAsync(
+            "/api/diagnostics/order-status/refresh-fully-shipped",
+            JsonBody(body));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(!expectApply, payload.GetProperty("dry_run").GetBoolean());
+        Assert.Equal(
+            expectApply ? OrderStatus.Shipped : OrderStatus.InProgress,
+            harness.GetOrder(61).Status);
+    }
+
+    [Theory]
+    [InlineData("", false)]
+    [InlineData("{}", false)]
+    [InlineData("{\"dry_run\":false}", false)]
+    [InlineData("{\"apply\":true}", true)]
+    [InlineData("{\"apply\":true,\"dry_run\":true}", false)]
+    public async Task RefreshCustomerReadiness_AppliesOnlyWhenApplyTrueAndNotDryRun(string body, bool expectApply)
+    {
+        var harness = CreateHarness();
+        SeedCustomerOrder(harness, 95, "095", OrderStatus.Accepted, 1800, 0);
+        SeedBoundHu(harness, 95, "HU-095", 600);
+
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        using var response = await host.Client.PostAsync(
+            "/api/diagnostics/order-status/refresh-customer-readiness",
+            JsonBody(body));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(!expectApply, payload.GetProperty("dry_run").GetBoolean());
+        Assert.Equal(
+            expectApply ? OrderStatus.InProgress : OrderStatus.Accepted,
+            harness.GetOrder(95).Status);
+    }
+
+    private static StringContent JsonBody(string raw) =>
+        new(raw, Encoding.UTF8, "application/json");
 
     private static CloseDocumentHarness CreateHarness()
     {
