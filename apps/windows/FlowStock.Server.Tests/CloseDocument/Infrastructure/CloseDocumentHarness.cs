@@ -839,6 +839,13 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.HasActiveOrderControlForOrder(It.IsAny<long>()))
             .Returns(false);
 
+        _store.Setup(store => store.LockOrdersForUpdate(It.IsAny<IReadOnlyCollection<long>>()))
+            .Returns<IReadOnlyCollection<long>>(ids =>
+            {
+                var normalized = ids?.Where(id => id > 0).Distinct().ToArray() ?? Array.Empty<long>();
+                return normalized.All(id => _orders.ContainsKey(id));
+            });
+
         _store.Setup(store => store.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
             .Callback<Action<IDataStore>>(work =>
             {

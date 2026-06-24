@@ -1312,6 +1312,37 @@ HAVING COUNT(*) FILTER (WHERE UPPER(COALESCE(p.status, '')) <> 'CANCELLED') > 0
         });
     }
 
+    public bool LockOrdersForUpdate(IReadOnlyCollection<long> orderIds)
+    {
+        var ids = NormalizePositiveDistinctIds(orderIds)
+            .OrderBy(id => id)
+            .ToArray();
+        if (ids.Length == 0)
+        {
+            return true;
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT id
+FROM orders
+WHERE id = ANY(@order_ids)
+ORDER BY id
+FOR UPDATE;");
+            command.Parameters.Add("@order_ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint).Value = ids;
+            using var reader = command.ExecuteReader();
+            var found = new List<long>();
+            while (reader.Read())
+            {
+                found.Add(reader.GetInt64(0));
+            }
+
+            return found.Count == ids.Length
+                   && found.SequenceEqual(ids);
+        });
+    }
+
     public IReadOnlyDictionary<long, IReadOnlyList<ProductionPallet>> GetProductionPalletsByOrderIds(IReadOnlyCollection<long> orderIds)
     {
         var ids = NormalizePositiveDistinctIds(orderIds);
@@ -15845,7 +15876,52 @@ FOR UPDATE;");
 
     public int GetMaxOrderControlTaskRefSequenceByYear(int year)
     {
-        return GetMaxRefSequenceByYear("SELECT task_ref FROM order_control_tasks WHERE task_ref LIKE @pattern", year);
+        if (year <= 0)
+        {
+            return 0;
+        }
+
+        return WithConnection(connection =>
+        {
+            using (var lockCommand = CreateCommand(connection, "SELECT pg_advisory_xact_lock(@lock_namespace, @year);"))
+            {
+                lockCommand.Parameters.AddWithValue("@lock_namespace", 8042026);
+                lockCommand.Parameters.AddWithValue("@year", year);
+                lockCommand.ExecuteNonQuery();
+            }
+
+            var yearToken = year.ToString(CultureInfo.InvariantCulture);
+            using var command = CreateCommand(connection, "SELECT task_ref FROM order_control_tasks WHERE task_ref LIKE @pattern");
+            command.Parameters.AddWithValue("@pattern", $"%-{yearToken}-%");
+            using var reader = command.ExecuteReader();
+            var max = 0;
+            while (reader.Read())
+            {
+                var value = reader.GetString(0);
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
+                var parts = value.Split('-', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 3)
+                {
+                    continue;
+                }
+
+                if (!string.Equals(parts[1], yearToken, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (int.TryParse(parts[^1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var sequence))
+                {
+                    max = Math.Max(max, sequence);
+                }
+            }
+
+            return max;
+        });
     }
 
     public long AddOrderControlTask(OrderControlTask task)

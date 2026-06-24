@@ -417,6 +417,99 @@ public sealed class OrderControlServiceTests
         }
     }
 
+    [Fact]
+    public void ConcurrentCreateControlAndOutboundDraft_PreservesMutualExclusion()
+    {
+        var harness = new Harness();
+        var control = new OrderControlService(harness.Store.Object);
+        var documents = new DocumentService(harness.Store.Object);
+        harness.EnableOrderLockBarrier();
+
+        var (controlResult, outboundResult) = RunConcurrently(
+            () => control.Create([1], "tester", null),
+            () => TryCreateOutboundDraft(documents, 1));
+
+        var hasActiveControl = harness.Store.Object.FindActiveOrderControlForOrder(1) != null;
+        var hasDraft = harness.OutboundDraftCount(1) > 0;
+        Assert.NotEqual(hasActiveControl, hasDraft);
+        Assert.Equal(hasActiveControl, controlResult.Success);
+        Assert.Equal(hasDraft, outboundResult.Success);
+    }
+
+    [Fact]
+    public void ConcurrentCreateControlAndTsdOutboundScan_DoNotBothCreateControlAndDocLines()
+    {
+        var harness = new Harness();
+        var control = new OrderControlService(harness.Store.Object);
+        var outbound = new OutboundPickingService(harness.Store.Object, new DocumentService(harness.Store.Object));
+        harness.EnableOrderLockBarrier();
+
+        var (controlResult, scanResult) = RunConcurrently(
+            () => control.Create([1], "tester", null),
+            () => outbound.Scan(1, "HU-1", "TSD-1"));
+
+        var hasActiveControl = harness.Store.Object.FindActiveOrderControlForOrder(1) != null;
+        var hasOutboundLines = harness.OutboundLineCount(1) > 0;
+        Assert.False(hasActiveControl && hasOutboundLines);
+        Assert.Equal(hasActiveControl, controlResult.Success);
+        Assert.Equal(hasOutboundLines, scanResult.Success);
+    }
+
+    [Fact]
+    public void ConcurrentCreateControlAndCloseOutbound_PreservesInvariant()
+    {
+        var harness = new Harness();
+        var docId = harness.AddOutboundDraft(1);
+        var control = new OrderControlService(harness.Store.Object);
+        var documents = new DocumentService(harness.Store.Object);
+
+        var (controlResult, closeResult) = RunConcurrently(
+            () => control.Create([1], "tester", null),
+            () => documents.TryCloseDoc(docId, allowNegative: false));
+
+        Assert.False(controlResult.Success);
+        Assert.Null(harness.Store.Object.FindActiveOrderControlForOrder(1));
+        Assert.True(closeResult.Success || closeResult.Errors.Count > 0);
+        Assert.False(harness.Store.Object.FindActiveOrderControlForOrder(1) != null && harness.IsOutboundClosed(docId));
+    }
+
+    [Fact]
+    public void ConcurrentCreateControlForDifferentOrders_UsesDistinctTaskRefs()
+    {
+        var harness = new Harness();
+        harness.AddReadyOrder(2, "081", 20, 200, "HU-2", 7);
+        var control = new OrderControlService(harness.Store.Object);
+
+        var (first, second) = RunConcurrently(
+            () => control.Create([1], "tester", null),
+            () => control.Create([2], "tester", null));
+
+        Assert.True(first.Success);
+        Assert.True(second.Success);
+        Assert.NotEqual(first.Task!.Task.TaskRef, second.Task!.Task.TaskRef);
+    }
+
+    private static OperationResult<long> TryCreateOutboundDraft(DocumentService documents, long orderId)
+    {
+        try
+        {
+            var docId = documents.CreateDoc(
+                DocType.Outbound,
+                $"OUT-RACE-{Guid.NewGuid():N}",
+                null,
+                null,
+                null,
+                null,
+                orderId,
+                hydrateOrderLines: false);
+            return OperationResult<long>.Ok(docId);
+        }
+        catch (Exception ex)
+        {
+            return OperationResult<long>.Fail(ex.Message);
+        }
+    }
+
     private static (TFirst First, TSecond Second) RunConcurrently<TFirst, TSecond>(
         Func<TFirst> first,
         Func<TSecond> second)
@@ -427,6 +520,16 @@ public sealed class OrderControlServiceTests
         return (firstTask.Result, secondTask.Result);
     }
 
+    private sealed class OperationResult<T>
+    {
+        public bool Success { get; init; }
+        public T? Value { get; init; }
+        public string? Error { get; init; }
+
+        public static OperationResult<T> Ok(T value) => new() { Success = true, Value = value };
+        public static OperationResult<T> Fail(string error) => new() { Success = false, Error = error };
+    }
+
     private sealed class Harness
     {
         private long _taskId;
@@ -434,23 +537,52 @@ public sealed class OrderControlServiceTests
         private long _taskHuId;
         private long _taskHuLineId;
         private long _eventId;
+        private long _docId;
+        private long _docLineId;
         private readonly List<OrderControlTask> _tasks = [];
         private readonly List<OrderControlTaskOrder> _taskOrders = [];
         private readonly List<OrderControlTaskHu> _hus = [];
         private readonly List<OrderControlTaskHuLine> _lines = [];
         private readonly List<OrderControlEvent> _events = [];
+        private readonly Dictionary<long, Order> _orders = new();
+        private readonly Dictionary<long, List<OrderLine>> _orderLines = new();
+        private readonly Dictionary<long, IReadOnlyList<OrderReceiptPlanLine>> _planLinesByOrder = new();
+        private readonly Dictionary<long, IReadOnlyList<OrderShipmentLine>> _shipmentRemainingByOrder = new();
+        private readonly List<Doc> _docs = [];
+        private readonly List<DocLine> _docLines = [];
         private readonly Dictionary<long, object> _taskLocks = new();
+        private readonly Dictionary<long, object> _orderLocks = new();
+        private readonly object _taskRefLock = new();
         private readonly object _taskLocksGate = new();
+        private readonly object _orderLocksGate = new();
         private readonly AsyncLocal<List<object>?> _heldTaskLocks = new();
+        private readonly AsyncLocal<List<object>?> _heldOrderLocks = new();
         private Barrier? _taskLockBarrier;
+        private Barrier? _orderLockBarrier;
         private int _taskLockBarrierWaiters;
+        private int _orderLockBarrierWaiters;
 
         public Harness()
         {
+            _orders[1] = Order;
+            _orderLines[1] =
+            [
+                new OrderLine { Id = 10, OrderId = 1, ItemId = 100, QtyOrdered = 10, ProductionPurpose = ProductionLinePurpose.CustomerOrder }
+            ];
+            _planLinesByOrder[1] =
+            [
+                new OrderReceiptPlanLine { Id = 1, OrderId = 1, OrderLineId = 10, ItemId = 100, ItemName = "Товар", QtyPlanned = 10, ToHu = "HU-1" }
+            ];
+            _shipmentRemainingByOrder[1] =
+            [
+                new OrderShipmentLine { OrderLineId = 10, ItemId = 100, ItemName = "Товар", QtyOrdered = 10, QtyShipped = 0, QtyRemaining = 10 }
+            ];
+
             Store.Setup(store => store.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
                 .Callback<Action<IDataStore>>(work =>
                 {
                     _heldTaskLocks.Value = [];
+                    _heldOrderLocks.Value = [];
                     try
                     {
                         work(Store.Object);
@@ -466,25 +598,84 @@ public sealed class OrderControlServiceTests
                             }
                         }
 
+                        var heldOrders = _heldOrderLocks.Value;
+                        if (heldOrders != null)
+                        {
+                            for (var i = heldOrders.Count - 1; i >= 0; i--)
+                            {
+                                Monitor.Exit(heldOrders[i]);
+                            }
+                        }
+
                         _heldTaskLocks.Value = null;
+                        _heldOrderLocks.Value = null;
                     }
                 });
-            Store.Setup(store => store.GetOrder(1)).Returns(() => Order);
-            Store.Setup(store => store.GetOrder(It.Is<long>(id => id != 1))).Returns((Order?)null);
+            Store.Setup(store => store.GetOrder(It.IsAny<long>()))
+                .Returns<long>(id => _orders.TryGetValue(id, out var order) ? order : null);
+            Store.Setup(store => store.GetOrders()).Returns(() => _orders.Values.OrderBy(order => order.Id).ToArray());
+            Store.Setup(store => store.GetOrderLines(It.IsAny<long>()))
+                .Returns<long>(orderId => _orderLines.TryGetValue(orderId, out var lines) ? lines : Array.Empty<OrderLine>());
+            Store.Setup(store => store.GetShippedTotalsByOrderLine(It.IsAny<long>()))
+                .Returns(new Dictionary<long, double>());
             Store.Setup(store => store.FindActiveOrderControlForOrder(It.IsAny<long>()))
                 .Returns<long>(FindActiveOrderControlForOrder);
             Store.Setup(store => store.HasActiveOrderControlForOrder(It.IsAny<long>()))
                 .Returns<long>(orderId => FindActiveOrderControlForOrder(orderId) != null);
-            Store.Setup(store => store.HasStartedOutboundForOrder(It.IsAny<long>())).Returns(false);
+            Store.Setup(store => store.HasStartedOutboundForOrder(It.IsAny<long>()))
+                .Returns<long>(orderId => _docs.Any(doc => doc.OrderId == orderId && doc.Type == DocType.Outbound && doc.Status == DocStatus.Draft));
             Store.Setup(store => store.IsOutboundHuShipped(It.IsAny<string>())).Returns(false);
+            Store.Setup(store => store.LockOrdersForUpdate(It.IsAny<IReadOnlyCollection<long>>()))
+                .Returns<IReadOnlyCollection<long>>(LockOrdersForUpdate);
             Store.Setup(store => store.LockOrderControlTask(It.IsAny<long>()))
                 .Returns<long>(LockOrderControlTask);
-            Store.Setup(store => store.GetMaxOrderControlTaskRefSequenceByYear(It.IsAny<int>())).Returns(0);
-            Store.Setup(store => store.GetDocs()).Returns(Array.Empty<Doc>());
-            Store.Setup(store => store.GetDocsByOrder(It.IsAny<long>())).Returns(Array.Empty<Doc>());
-            Store.Setup(store => store.GetDocLines(It.IsAny<long>())).Returns(Array.Empty<DocLine>());
+            Store.Setup(store => store.GetMaxOrderControlTaskRefSequenceByYear(It.IsAny<int>()))
+                .Returns<int>(GetMaxOrderControlTaskRefSequenceByYear);
+            Store.Setup(store => store.GetMaxDocRefSequenceByYear(It.IsAny<int>()))
+                .Returns<int>(GetMaxDocRefSequenceByYear);
+            Store.Setup(store => store.IsDocRefSequenceTaken(It.IsAny<int>(), It.IsAny<int>()))
+                .Returns<int, int>(IsDocRefSequenceTaken);
+            Store.Setup(store => store.FindDocByRef(It.IsAny<string>()))
+                .Returns<string>(docRef => _docs.FirstOrDefault(doc => string.Equals(doc.DocRef, docRef, StringComparison.OrdinalIgnoreCase)));
+            Store.Setup(store => store.GetDoc(It.IsAny<long>()))
+                .Returns<long>(docId => _docs.FirstOrDefault(doc => doc.Id == docId));
+            Store.Setup(store => store.GetDocs()).Returns(() => _docs.ToArray());
+            Store.Setup(store => store.GetDocsByOrder(It.IsAny<long>()))
+                .Returns<long>(orderId => _docs.Where(doc => doc.OrderId == orderId).OrderBy(doc => doc.Id).ToArray());
+            Store.Setup(store => store.GetDocLines(It.IsAny<long>()))
+                .Returns<long>(docId => _docLines.Where(line => line.DocId == docId).OrderBy(line => line.Id).ToArray());
+            Store.Setup(store => store.GetItems(It.IsAny<string?>()))
+                .Returns(() => [new Item { Id = 100, Name = "Товар", IsActive = true }]);
+            Store.Setup(store => store.GetPartner(It.IsAny<long>()))
+                .Returns<long>(id => new Partner { Id = id, Code = $"P-{id}", Name = $"Partner {id}" });
+            Store.Setup(store => store.GetLedgerBalance(It.IsAny<long>(), It.IsAny<long>(), It.IsAny<string?>()))
+                .Returns<long, long, string?>((itemId, locationId, hu) => StockRows
+                    .Where(row => row.ItemId == itemId
+                                  && row.LocationId == locationId
+                                  && string.Equals(row.HuCode, hu, StringComparison.OrdinalIgnoreCase))
+                    .Sum(row => row.Qty));
+            Store.Setup(store => store.AddDoc(It.IsAny<Doc>()))
+                .Returns<Doc>(AddDoc);
+            Store.Setup(store => store.AddDocLine(It.IsAny<DocLine>()))
+                .Returns<DocLine>(AddDocLine);
+            Store.Setup(store => store.UpdateDocStatus(It.IsAny<long>(), It.IsAny<DocStatus>(), It.IsAny<DateTime?>()))
+                .Callback<long, DocStatus, DateTime?>(UpdateDocStatus);
+            Store.Setup(store => store.AddLedgerEntry(It.IsAny<LedgerEntry>()));
+            Store.Setup(store => store.UpdateOrderStatus(It.IsAny<long>(), It.IsAny<OrderStatus>()))
+                .Callback<long, OrderStatus>(UpdateOrderStatus);
+            Store.Setup(store => store.UpdateDocLineOrderLineId(It.IsAny<long>(), It.IsAny<long?>()))
+                .Callback<long, long?>(UpdateDocLineOrderLineId);
+            Store.Setup(store => store.HasProductionPallets(It.IsAny<long>())).Returns(false);
             Store.Setup(store => store.GetProductionPalletsByOrderIds(It.IsAny<IReadOnlyCollection<long>>()))
                 .Returns(new Dictionary<long, IReadOnlyList<ProductionPallet>>());
+            Store.Setup(store => store.GetDocsByOrderIds(It.IsAny<IReadOnlyCollection<long>>()))
+                .Returns<IReadOnlyCollection<long>>(ids => ids.ToDictionary(
+                    id => id,
+                    id => (IReadOnlyList<Doc>)_docs.Where(doc => doc.OrderId == id).ToArray()));
+            Store.Setup(store => store.GetDocLinesByDocIds(It.IsAny<IReadOnlyCollection<long>>()))
+                .Returns<IReadOnlyCollection<long>>(ids => ids.ToDictionary(
+                    id => id,
+                    id => (IReadOnlyList<DocLine>)_docLines.Where(line => line.DocId == id).ToArray()));
             ConfigureOrderControlStore();
             RefreshReadModelSetups();
         }
@@ -499,27 +690,47 @@ public sealed class OrderControlServiceTests
             PartnerName = "Клиент"
         };
 
-        public IReadOnlyList<OrderReceiptPlanLine> PlanLines { get; set; } =
-        [
-            new OrderReceiptPlanLine { Id = 1, OrderId = 1, OrderLineId = 10, ItemId = 100, ItemName = "Товар", QtyPlanned = 10, ToHu = "HU-1" }
-        ];
+        public IReadOnlyList<OrderReceiptPlanLine> PlanLines
+        {
+            get => _planLinesByOrder.TryGetValue(1, out var lines)
+                ? lines
+                : Array.Empty<OrderReceiptPlanLine>();
+            set => _planLinesByOrder[1] = value;
+        }
 
         public IReadOnlyList<HuStockRow> StockRows { get; set; } =
         [
             new HuStockRow { HuCode = "HU-1", ItemId = 100, LocationId = 1, Qty = 10 }
         ];
 
-        public IReadOnlyList<OrderShipmentLine> ShipmentRemaining { get; set; } =
-        [
-            new OrderShipmentLine { OrderLineId = 10, ItemId = 100, ItemName = "Товар", QtyOrdered = 10, QtyShipped = 0, QtyRemaining = 10 }
-        ];
+        public IReadOnlyList<OrderShipmentLine> ShipmentRemaining
+        {
+            get => _shipmentRemainingByOrder.TryGetValue(1, out var lines)
+                ? lines
+                : Array.Empty<OrderShipmentLine>();
+            set => _shipmentRemainingByOrder[1] = value;
+        }
 
         public void RefreshReadModelSetups()
         {
-            Store.Setup(store => store.GetOrderReceiptPlanLines(1)).Returns(() => PlanLines);
+            Store.Setup(store => store.GetOrderReceiptPlanLines(It.IsAny<long>()))
+                .Returns<long>(orderId => _planLinesByOrder.TryGetValue(orderId, out var lines) ? lines : Array.Empty<OrderReceiptPlanLine>());
+            Store.Setup(store => store.GetOrderReceiptPlanLinesByOrderIds(It.IsAny<IReadOnlyCollection<long>>()))
+                .Returns<IReadOnlyCollection<long>>(ids => ids.ToDictionary(
+                    id => id,
+                    id => _planLinesByOrder.TryGetValue(id, out var lines)
+                        ? lines
+                        : (IReadOnlyList<OrderReceiptPlanLine>)Array.Empty<OrderReceiptPlanLine>()));
             Store.Setup(store => store.GetHuStockRows()).Returns(() => StockRows);
             Store.Setup(store => store.GetLocations()).Returns([new Location { Id = 1, Code = "FG-01", Name = "ГП" }]);
-            Store.Setup(store => store.GetOrderShipmentRemaining(1)).Returns(() => ShipmentRemaining);
+            Store.Setup(store => store.GetOrderShipmentRemaining(It.IsAny<long>()))
+                .Returns<long>(orderId => _shipmentRemainingByOrder.TryGetValue(orderId, out var lines) ? lines : Array.Empty<OrderShipmentLine>());
+            Store.Setup(store => store.GetOrderShipmentRemainingByOrderIds(It.IsAny<IReadOnlyCollection<long>>()))
+                .Returns<IReadOnlyCollection<long>>(ids => ids.ToDictionary(
+                    id => id,
+                    id => _shipmentRemainingByOrder.TryGetValue(id, out var lines)
+                        ? lines
+                        : (IReadOnlyList<OrderShipmentLine>)Array.Empty<OrderShipmentLine>()));
         }
 
         public void UseMixedHu(double qtyB)
@@ -553,10 +764,110 @@ public sealed class OrderControlServiceTests
         public int RequestEventCount(string requestId)
             => _events.Count(e => string.Equals(e.RequestId, requestId, StringComparison.OrdinalIgnoreCase));
 
+        public int OutboundDraftCount(long orderId)
+            => _docs.Count(doc => doc.OrderId == orderId && doc.Type == DocType.Outbound && doc.Status == DocStatus.Draft);
+
+        public int OutboundLineCount(long orderId)
+        {
+            var docIds = _docs
+                .Where(doc => doc.OrderId == orderId && doc.Type == DocType.Outbound)
+                .Select(doc => doc.Id)
+                .ToHashSet();
+            return _docLines.Count(line => docIds.Contains(line.DocId));
+        }
+
+        public bool IsOutboundClosed(long docId)
+            => _docs.Any(doc => doc.Id == docId && doc.Type == DocType.Outbound && doc.Status == DocStatus.Closed);
+
         public void EnableTaskLockBarrier()
         {
             _taskLockBarrier = new Barrier(2);
             _taskLockBarrierWaiters = 0;
+        }
+
+        public void EnableOrderLockBarrier()
+        {
+            _orderLockBarrier = new Barrier(2);
+            _orderLockBarrierWaiters = 0;
+        }
+
+        public void AddReadyOrder(long orderId, string orderRef, long orderLineId, long itemId, string huCode, double qty)
+        {
+            _orders[orderId] = new Order
+            {
+                Id = orderId,
+                OrderRef = orderRef,
+                Type = OrderType.Customer,
+                Status = OrderStatus.Accepted,
+                PartnerName = $"Клиент {orderRef}"
+            };
+            _orderLines[orderId] =
+            [
+                new OrderLine
+                {
+                    Id = orderLineId,
+                    OrderId = orderId,
+                    ItemId = itemId,
+                    QtyOrdered = qty,
+                    ProductionPurpose = ProductionLinePurpose.CustomerOrder
+                }
+            ];
+            _planLinesByOrder[orderId] =
+            [
+                new OrderReceiptPlanLine
+                {
+                    Id = orderId,
+                    OrderId = orderId,
+                    OrderLineId = orderLineId,
+                    ItemId = itemId,
+                    ItemName = $"Товар {itemId}",
+                    QtyPlanned = qty,
+                    ToHu = huCode
+                }
+            ];
+            _shipmentRemainingByOrder[orderId] =
+            [
+                new OrderShipmentLine
+                {
+                    OrderLineId = orderLineId,
+                    ItemId = itemId,
+                    ItemName = $"Товар {itemId}",
+                    QtyOrdered = qty,
+                    QtyShipped = 0,
+                    QtyRemaining = qty
+                }
+            ];
+            StockRows = StockRows.Concat([
+                new HuStockRow { HuCode = huCode, ItemId = itemId, LocationId = 1, Qty = qty }
+            ]).ToArray();
+            RefreshReadModelSetups();
+        }
+
+        public long AddOutboundDraft(long orderId, string huCode = "HU-1")
+        {
+            var order = _orders[orderId];
+            var docId = AddDoc(new Doc
+            {
+                DocRef = $"OUT-TEST-{_docId + 1:000000}",
+                Type = DocType.Outbound,
+                Status = DocStatus.Draft,
+                CreatedAt = DateTime.Now,
+                OrderId = order.Id,
+                OrderRef = order.OrderRef,
+                PartnerId = order.PartnerId
+            });
+            var planLine = _planLinesByOrder[orderId].First();
+            AddDocLine(new DocLine
+            {
+                DocId = docId,
+                OrderLineId = planLine.OrderLineId,
+                ProductionPurpose = ProductionLinePurpose.CustomerOrder,
+                ItemId = planLine.ItemId,
+                Qty = planLine.QtyPlanned,
+                FromLocationId = 1,
+                FromHu = huCode
+            });
+            return docId;
         }
 
         private void ConfigureOrderControlStore()
@@ -667,6 +978,35 @@ public sealed class OrderControlServiceTests
             };
         }
 
+        private bool LockOrdersForUpdate(IReadOnlyCollection<long> orderIds)
+        {
+            var normalized = orderIds?.Where(id => id > 0).Distinct().OrderBy(id => id).ToArray() ?? Array.Empty<long>();
+            if (!normalized.All(id => _orders.ContainsKey(id)))
+            {
+                return false;
+            }
+
+            var barrier = _orderLockBarrier;
+            if (barrier != null)
+            {
+                var waiter = Interlocked.Increment(ref _orderLockBarrierWaiters);
+                Assert.True(barrier.SignalAndWait(TimeSpan.FromSeconds(5)), "Concurrent order lock barrier timed out.");
+                if (waiter == 2)
+                {
+                    Interlocked.Exchange(ref _orderLockBarrier, null)?.Dispose();
+                }
+            }
+
+            foreach (var orderId in normalized)
+            {
+                var orderLock = GetOrderLock(orderId);
+                Monitor.Enter(orderLock);
+                (_heldOrderLocks.Value ??= []).Add(orderLock);
+            }
+
+            return true;
+        }
+
         private bool LockOrderControlTask(long taskId)
         {
             if (_tasks.All(task => task.Id != taskId))
@@ -691,6 +1031,20 @@ public sealed class OrderControlServiceTests
             return true;
         }
 
+        private object GetOrderLock(long orderId)
+        {
+            lock (_orderLocksGate)
+            {
+                if (!_orderLocks.TryGetValue(orderId, out var orderLock))
+                {
+                    orderLock = new object();
+                    _orderLocks[orderId] = orderLock;
+                }
+
+                return orderLock;
+            }
+        }
+
         private object GetTaskLock(long taskId)
         {
             lock (_taskLocksGate)
@@ -703,6 +1057,142 @@ public sealed class OrderControlServiceTests
 
                 return taskLock;
             }
+        }
+
+        private int GetMaxOrderControlTaskRefSequenceByYear(int year)
+        {
+            Monitor.Enter(_taskRefLock);
+            (_heldTaskLocks.Value ??= []).Add(_taskRefLock);
+            var token = $"-{year}-";
+            return _tasks
+                .Select(task => task.TaskRef)
+                .Where(taskRef => taskRef.Contains(token, StringComparison.OrdinalIgnoreCase))
+                .Select(taskRef => int.TryParse(taskRef.Split('-')[^1], out var sequence) ? sequence : 0)
+                .DefaultIfEmpty(0)
+                .Max();
+        }
+
+        private int GetMaxDocRefSequenceByYear(int year)
+        {
+            var token = $"-{year}-";
+            return _docs
+                .Select(doc => doc.DocRef)
+                .Where(docRef => docRef.Contains(token, StringComparison.OrdinalIgnoreCase))
+                .Select(docRef => int.TryParse(docRef.Split('-')[^1], out var sequence) ? sequence : 0)
+                .DefaultIfEmpty(0)
+                .Max();
+        }
+
+        private bool IsDocRefSequenceTaken(int year, int sequence)
+        {
+            var suffix = $"-{year}-{sequence:000000}";
+            return _docs.Any(doc => doc.DocRef.EndsWith(suffix, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private long AddDoc(Doc doc)
+        {
+            var saved = new Doc
+            {
+                Id = ++_docId,
+                DocRef = doc.DocRef,
+                Type = doc.Type,
+                Status = doc.Status,
+                CreatedAt = doc.CreatedAt,
+                ClosedAt = doc.ClosedAt,
+                PartnerId = doc.PartnerId,
+                OrderId = doc.OrderId,
+                OrderRef = doc.OrderRef,
+                ShippingRef = doc.ShippingRef,
+                Comment = doc.Comment
+            };
+            _docs.Add(saved);
+            return saved.Id;
+        }
+
+        private long AddDocLine(DocLine line)
+        {
+            var saved = new DocLine
+            {
+                Id = ++_docLineId,
+                DocId = line.DocId,
+                OrderLineId = line.OrderLineId,
+                ProductionPurpose = line.ProductionPurpose,
+                ItemId = line.ItemId,
+                Qty = line.Qty,
+                QtyInput = line.QtyInput,
+                UomCode = line.UomCode,
+                FromLocationId = line.FromLocationId,
+                ToLocationId = line.ToLocationId,
+                FromHu = line.FromHu,
+                ToHu = line.ToHu
+            };
+            _docLines.Add(saved);
+            return saved.Id;
+        }
+
+        private void UpdateDocStatus(long docId, DocStatus status, DateTime? closedAt)
+        {
+            var index = _docs.FindIndex(doc => doc.Id == docId);
+            var doc = _docs[index];
+            _docs[index] = new Doc
+            {
+                Id = doc.Id,
+                DocRef = doc.DocRef,
+                Type = doc.Type,
+                Status = status,
+                CreatedAt = doc.CreatedAt,
+                ClosedAt = closedAt ?? doc.ClosedAt,
+                PartnerId = doc.PartnerId,
+                OrderId = doc.OrderId,
+                OrderRef = doc.OrderRef,
+                ShippingRef = doc.ShippingRef,
+                Comment = doc.Comment
+            };
+        }
+
+        private void UpdateOrderStatus(long orderId, OrderStatus status)
+        {
+            if (!_orders.TryGetValue(orderId, out var order))
+            {
+                return;
+            }
+
+            _orders[orderId] = new Order
+            {
+                Id = order.Id,
+                OrderRef = order.OrderRef,
+                Type = order.Type,
+                Status = status,
+                PartnerId = order.PartnerId,
+                PartnerName = order.PartnerName,
+                CreatedAt = order.CreatedAt
+            };
+        }
+
+        private void UpdateDocLineOrderLineId(long docLineId, long? orderLineId)
+        {
+            var index = _docLines.FindIndex(line => line.Id == docLineId);
+            if (index < 0)
+            {
+                return;
+            }
+
+            var line = _docLines[index];
+            _docLines[index] = new DocLine
+            {
+                Id = line.Id,
+                DocId = line.DocId,
+                OrderLineId = orderLineId,
+                ProductionPurpose = line.ProductionPurpose,
+                ItemId = line.ItemId,
+                Qty = line.Qty,
+                QtyInput = line.QtyInput,
+                UomCode = line.UomCode,
+                FromLocationId = line.FromLocationId,
+                ToLocationId = line.ToLocationId,
+                FromHu = line.FromHu,
+                ToHu = line.ToHu
+            };
         }
 
         private void UpdateProgress(long taskId)

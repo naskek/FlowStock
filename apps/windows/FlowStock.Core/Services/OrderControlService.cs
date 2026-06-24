@@ -47,6 +47,14 @@ public sealed class OrderControlService
         _store.ExecuteInTransaction(store =>
         {
             var normalizedOrderIds = NormalizeOrderIds(orderIds);
+            if (!store.LockOrdersForUpdate(normalizedOrderIds))
+            {
+                result = OrderControlCreateResult.Failure(
+                    OrderControlErrorCodes.OrderNotEligible,
+                    "Один или несколько выбранных заказов не найдены.");
+                return;
+            }
+
             var snapshot = BuildSnapshot(store, normalizedOrderIds, currentTaskId: null);
             if (!snapshot.CanCreate)
             {

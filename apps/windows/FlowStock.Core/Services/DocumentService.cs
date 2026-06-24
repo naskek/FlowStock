@@ -104,6 +104,11 @@ public sealed class DocumentService
             Comment = cleanedComment
         };
 
+        if (type == DocType.Outbound && orderId.HasValue)
+        {
+            return CreateOrderBoundOutboundDoc(doc, orderId.Value, hydrateOrderLines);
+        }
+
         if (!orderId.HasValue || !hydrateOrderLines)
         {
             return _data.AddDoc(doc);
@@ -222,6 +227,81 @@ public sealed class DocumentService
         return docId;
     }
 
+    private long CreateOrderBoundOutboundDoc(Doc doc, long orderId, bool hydrateOrderLines)
+    {
+        long docId = 0;
+        _data.ExecuteInTransaction(store =>
+        {
+            if (!store.LockOrdersForUpdate([orderId]))
+            {
+                throw new InvalidOperationException("Заказ не найден.");
+            }
+
+            var order = store.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+            if (order.Type != OrderType.Customer)
+            {
+                throw new InvalidOperationException("Внутренний заказ нельзя использовать в клиентской отгрузке.");
+            }
+
+            if (store.HasActiveOrderControlForOrder(order.Id))
+            {
+                throw new InvalidOperationException("Заказ находится в активном контроле готовых заказов.");
+            }
+
+            if (store.FindDocByRef(doc.DocRef) != null)
+            {
+                throw new InvalidOperationException("Документ с таким номером уже существует.");
+            }
+
+            if (TryParseDocRefSequence(doc.DocRef, out var year, out var sequence)
+                && store.IsDocRefSequenceTaken(year, sequence))
+            {
+                throw new InvalidOperationException("Документ с таким номером уже существует.");
+            }
+
+            var outboundDoc = new Doc
+            {
+                DocRef = doc.DocRef,
+                Type = doc.Type,
+                Status = doc.Status,
+                CreatedAt = doc.CreatedAt,
+                ClosedAt = doc.ClosedAt,
+                PartnerId = doc.PartnerId ?? order.PartnerId,
+                OrderId = order.Id,
+                OrderRef = order.OrderRef,
+                ShippingRef = doc.ShippingRef,
+                Comment = doc.Comment
+            };
+
+            docId = store.AddDoc(outboundDoc);
+            if (!hydrateOrderLines)
+            {
+                return;
+            }
+
+            var (_, toHu) = ResolveHeaderHu(outboundDoc.Type, outboundDoc.ShippingRef);
+            foreach (var boundLine in CustomerOutboundBoundHuService.GetUnshippedBoundHuLines(store, order.Id))
+            {
+                store.AddDocLine(new DocLine
+                {
+                    DocId = docId,
+                    OrderLineId = boundLine.OrderLineId,
+                    ProductionPurpose = ProductionLinePurpose.CustomerOrder,
+                    ItemId = boundLine.ItemId,
+                    Qty = boundLine.Qty,
+                    QtyInput = null,
+                    UomCode = null,
+                    FromLocationId = boundLine.FromLocationId,
+                    ToLocationId = null,
+                    FromHu = boundLine.HuCode,
+                    ToHu = toHu
+                });
+            }
+        });
+
+        return docId;
+    }
+
     public Doc? GetDoc(long docId)
     {
         return _data.GetDoc(docId);
@@ -304,21 +384,46 @@ public sealed class DocumentService
                 return;
             }
 
-            var lines = EnsureOrderLineLinks(store, doc, store.GetDocLines(docId));
+            IReadOnlyList<DocLine>? lines = null;
             if (doc.Type == DocType.Outbound)
             {
+                if (doc.OrderId.HasValue)
+                {
+                    if (!store.LockOrdersForUpdate([doc.OrderId.Value]))
+                    {
+                        transactionErrors.Add("Заказ не найден.");
+                        return;
+                    }
+
+                    doc = store.GetDoc(docId);
+                    if (doc == null)
+                    {
+                        transactionErrors.Add("Документ не найден.");
+                        return;
+                    }
+
+                    if (doc.Status == DocStatus.Closed)
+                    {
+                        transactionErrors.Add("Документ уже закрыт.");
+                        return;
+                    }
+                }
+
                 if (doc.OrderId.HasValue && store.HasActiveOrderControlForOrder(doc.OrderId.Value))
                 {
                     transactionErrors.Add("Заказ находится в активном контроле готовых заказов.");
                     return;
                 }
 
+                lines = EnsureOrderLineLinks(store, doc, store.GetDocLines(docId));
                 transactionErrors.AddRange(BuildTransactionalOutboundErrors(store, doc, lines));
                 if (transactionErrors.Count > 0)
                 {
                     return;
                 }
             }
+
+            lines ??= EnsureOrderLineLinks(store, doc, store.GetDocLines(docId));
 
             var hasProductionPallets = doc.Type == DocType.ProductionReceipt && store.HasProductionPallets(docId);
             Dictionary<StockKey, double>? inventoryTotals = doc.Type == DocType.Inventory

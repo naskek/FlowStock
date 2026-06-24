@@ -402,11 +402,61 @@ public sealed class OutboundPickingService
             }
 
             var draftDocId = 0L;
+            OutboundPickingScanResult? transactionFailure = null;
             _store.ExecuteInTransaction(store =>
             {
-                var draft = FindDraftOutbound(order.Id);
-                draftDocId = draft?.Id ?? CreateDraftOutbound(order, deviceId);
-                foreach (var line in expectedHu.Lines)
+                if (!store.LockOrdersForUpdate([order.Id]))
+                {
+                    transactionFailure = OutboundPickingScanResult.Failure("ORDER_NOT_FOUND", "Заказ не найден.");
+                    return;
+                }
+
+                var lockedOrder = store.GetOrder(order.Id);
+                if (lockedOrder == null || !IsCustomerOrderReadyForPicking(lockedOrder))
+                {
+                    transactionFailure = OutboundPickingScanResult.Failure("VALIDATION_ERROR", "Для подбора доступны только клиентские заказы, готовые к отгрузке.");
+                    return;
+                }
+
+                if (store.HasActiveOrderControlForOrder(lockedOrder.Id))
+                {
+                    transactionFailure = OutboundPickingScanResult.Failure(
+                        "ORDER_CONTROL_ACTIVE",
+                        "Заказ находится в активном контроле готовых заказов.");
+                    return;
+                }
+
+                var lockedExpected = BuildExpectedHus(lockedOrder, store);
+                var lockedExpectedHu = lockedExpected.FirstOrDefault(hu => string.Equals(hu.HuCode, normalizedHu, StringComparison.OrdinalIgnoreCase));
+                if (lockedExpectedHu == null)
+                {
+                    transactionFailure = OutboundPickingScanResult.Failure("HU_NOT_EXPECTED", "HU не ожидается для выбранного заказа.");
+                    return;
+                }
+
+                if (!HasPhysicalHuStock(lockedExpectedHu))
+                {
+                    transactionFailure = OutboundPickingScanResult.Failure(
+                        "HU_NO_PHYSICAL_STOCK",
+                        "HU не имеет физического остатка на складе (ledger).");
+                    return;
+                }
+
+                var foreignDraft = FindOpenOutboundByHu(normalizedHu, lockedOrder.Id, store);
+                if (foreignDraft != null)
+                {
+                    transactionFailure = OutboundPickingScanResult.Failure("HU_PICKED_IN_OTHER_OUTBOUND", "HU уже подобрана в другом открытом документе отгрузки.");
+                    return;
+                }
+
+                var draft = FindDraftOutbound(lockedOrder.Id, store);
+                if (draft != null && IsHuPicked(draft.Id, normalizedHu, store))
+                {
+                    return;
+                }
+
+                draftDocId = draft?.Id ?? CreateDraftOutbound(store, lockedOrder, deviceId);
+                foreach (var line in lockedExpectedHu.Lines)
                 {
                     store.AddDocLine(new DocLine
                     {
@@ -422,6 +472,11 @@ public sealed class OutboundPickingService
                     });
                 }
             });
+
+            if (transactionFailure != null)
+            {
+                return transactionFailure;
+            }
 
             var details = GetDetails(order.Id);
             return new OutboundPickingScanResult
@@ -582,26 +637,29 @@ public sealed class OutboundPickingService
         return expectedHu.Lines.Sum(line => line.Qty) > QtyTolerance;
     }
 
-    private long CreateDraftOutbound(Order order, string? deviceId)
+    private long CreateDraftOutbound(IDataStore store, Order order, string? deviceId)
     {
-        var docRef = _documents.GenerateDocRef(DocType.Outbound, DateTime.Now);
+        var docRef = DocRefGenerator.Generate(store, DocType.Outbound, DateTime.Now);
         var comment = string.IsNullOrWhiteSpace(deviceId)
             ? TsdPickingComment
             : $"{TsdPickingComment} ({deviceId.Trim()})";
-        return _documents.CreateDoc(
-            DocType.Outbound,
-            docRef,
-            comment,
-            order.PartnerId,
-            order.OrderRef,
-            null,
-            order.Id,
-            hydrateOrderLines: false);
+        return store.AddDoc(new Doc
+        {
+            DocRef = docRef,
+            Type = DocType.Outbound,
+            Status = DocStatus.Draft,
+            CreatedAt = DateTime.Now,
+            PartnerId = order.PartnerId,
+            OrderId = order.Id,
+            OrderRef = order.OrderRef,
+            Comment = comment
+        });
     }
 
-    private IReadOnlyList<ExpectedHu> BuildExpectedHus(Order order)
+    private IReadOnlyList<ExpectedHu> BuildExpectedHus(Order order, IDataStore? store = null)
     {
-        var boundLines = CustomerOutboundBoundHuService.GetUnshippedOutboundHuLines(_store, order.Id);
+        var data = store ?? _store;
+        var boundLines = CustomerOutboundBoundHuService.GetUnshippedOutboundHuLines(data, order.Id);
         return boundLines
             .GroupBy(line => line.HuCode, StringComparer.OrdinalIgnoreCase)
             .Select(group =>
@@ -669,9 +727,10 @@ public sealed class OutboundPickingService
             .ToDictionary(group => group.Key, group => group.Sum(line => line.Qty));
     }
 
-    private Doc? FindDraftOutbound(long orderId)
+    private Doc? FindDraftOutbound(long orderId, IDataStore? store = null)
     {
-        return _store.GetDocsByOrder(orderId)
+        var data = store ?? _store;
+        return data.GetDocsByOrder(orderId)
             .Where(doc => doc.Type == DocType.Outbound && doc.Status == DocStatus.Draft)
             .OrderBy(doc => doc.Id)
             .FirstOrDefault();
@@ -691,19 +750,21 @@ public sealed class OutboundPickingService
                && doc.Comment.StartsWith(TsdPickingComment, StringComparison.OrdinalIgnoreCase);
     }
 
-    private Doc? FindOpenOutboundByHu(string huCode, long currentOrderId)
+    private Doc? FindOpenOutboundByHu(string huCode, long currentOrderId, IDataStore? store = null)
     {
+        var data = store ?? _store;
         var normalizedHu = NormalizeHu(huCode);
-        return _store.GetDocs()
+        return data.GetDocs()
             .Where(doc => doc.Type == DocType.Outbound && doc.Status == DocStatus.Draft && doc.OrderId != currentOrderId)
-            .FirstOrDefault(doc => _store.GetDocLines(doc.Id)
+            .FirstOrDefault(doc => data.GetDocLines(doc.Id)
                 .Any(line => string.Equals(NormalizeHu(line.FromHu), normalizedHu, StringComparison.OrdinalIgnoreCase)));
     }
 
-    private bool IsHuPicked(long docId, string huCode)
+    private bool IsHuPicked(long docId, string huCode, IDataStore? store = null)
     {
+        var data = store ?? _store;
         var normalizedHu = NormalizeHu(huCode);
-        return _store.GetDocLines(docId)
+        return data.GetDocLines(docId)
             .Any(line => string.Equals(NormalizeHu(line.FromHu), normalizedHu, StringComparison.OrdinalIgnoreCase));
     }
 

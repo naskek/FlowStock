@@ -116,6 +116,8 @@
 - Snapshot HU фиксируется при создании задания. Изменение набора HU, состава mixed-HU, ledger-остатка, привязки или outbound-состояния после создания дает blocking discrepancy; продолжение возможно только через отмену задания и создание нового.
 - Scan с `request_id` идемпотентен и при retry возвращает исходный результат; тот же `request_id` с другой HU возвращает `IDEMPOTENCY_CONFLICT`. Complete перед `COMPLETED` повторно строит текущий snapshot, игнорируя только собственный active-control task.
 - Операции одного задания (`start`, `scan`, `complete`, `cancel`) сериализуются row lock на `order_control_tasks`; для scan порядок блокировок фиксирован: task, затем `order_control_task_hus`, затем progress/events.
+- Cross-workflow invariant с outbound защищается row lock заказов в порядке `order_id ASC`: create control, создание order-bound `OUTBOUND`, TSD outbound scan и Close order-bound `OUTBOUND` после lock повторно проверяют конфликтующее состояние.
+- Генерация `CTRL-YYYY-NNNNNN` выполняется под transaction advisory lock на год, чтобы параллельные create не получали один `task_ref`.
 - Terminal semantics: повторный `complete` для `COMPLETED` возвращает текущее завершенное состояние, повторный `cancel` для `CANCELLED` не создает новое событие, `COMPLETED` нельзя отменить, `CANCELLED` нельзя сканировать или завершать.
 - Контроль не изменяет `orders.status`, `ledger`, `docs`, `doc_lines`, reserve/read-model и production pallet plan.
 - Активный контроль блокирует outbound по всему `order_id`: TSD scan, TSD complete, создание order-bound draft `OUTBOUND`, закрытие order-bound `OUTBOUND` через общий Close.

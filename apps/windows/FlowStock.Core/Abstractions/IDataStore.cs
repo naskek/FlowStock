@@ -153,6 +153,7 @@ public interface IDataStore
 
     Order? GetOrder(long id);
     IReadOnlyList<Order> GetOrders();
+    bool LockOrdersForUpdate(IReadOnlyCollection<long> orderIds);
     IReadOnlyList<Order> GetOrdersPage(bool includeInternal, string? query, int limit, int offset, bool includeCancelledMerged = false);
     long AddOrder(Order order);
     void UpdateOrder(Order order);
