@@ -15829,6 +15829,20 @@ LIMIT 1;");
         });
     }
 
+    public bool LockOrderControlTask(long taskId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT id
+FROM order_control_tasks
+WHERE id = @task_id
+FOR UPDATE;");
+            command.Parameters.AddWithValue("@task_id", taskId);
+            return command.ExecuteScalar() != null;
+        });
+    }
+
     public int GetMaxOrderControlTaskRefSequenceByYear(int year)
     {
         return GetMaxRefSequenceByYear("SELECT task_ref FROM order_control_tasks WHERE task_ref LIKE @pattern", year);

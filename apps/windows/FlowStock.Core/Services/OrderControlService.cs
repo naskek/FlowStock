@@ -151,6 +151,11 @@ public sealed class OrderControlService
         OrderControlTaskDetails? details = null;
         _store.ExecuteInTransaction(store =>
         {
+            if (!store.LockOrderControlTask(taskId))
+            {
+                return;
+            }
+
             var task = store.GetOrderControlTask(taskId);
             if (task == null || string.Equals(task.Status, OrderControlTaskStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
             {
@@ -199,6 +204,12 @@ public sealed class OrderControlService
         OrderControlScanResult? result = null;
         _store.ExecuteInTransaction(store =>
         {
+            if (!store.LockOrderControlTask(taskId))
+            {
+                result = OrderControlScanResult.Failure(OrderControlErrorCodes.TaskNotFound, "Задание не найдено.");
+                return;
+            }
+
             var existingEvent = store.FindOrderControlEventByRequestId(taskId, requestId);
             if (existingEvent != null)
             {
@@ -337,6 +348,12 @@ public sealed class OrderControlService
         OrderControlCompleteResult? result = null;
         _store.ExecuteInTransaction(store =>
         {
+            if (!store.LockOrderControlTask(taskId))
+            {
+                result = OrderControlCompleteResult.Failure(OrderControlErrorCodes.TaskNotFound, "Задание не найдено.");
+                return;
+            }
+
             var task = store.GetOrderControlTask(taskId);
             if (task == null)
             {
@@ -428,6 +445,11 @@ public sealed class OrderControlService
         OrderControlTaskDetails? details = null;
         _store.ExecuteInTransaction(store =>
         {
+            if (!store.LockOrderControlTask(taskId))
+            {
+                return;
+            }
+
             var task = store.GetOrderControlTask(taskId);
             if (task == null)
             {

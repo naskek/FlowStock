@@ -346,6 +346,7 @@ public interface IDataStore
     OrderControlTask? GetOrderControlTask(long taskId);
     OrderControlTask? FindOrderControlTaskByRef(string taskRef);
     IReadOnlyList<OrderControlTaskSummary> GetOrderControlTasks(string? status, bool activeOnly);
+    bool LockOrderControlTask(long taskId);
     IReadOnlyList<OrderControlTaskOrder> GetOrderControlTaskOrders(long taskId);
     IReadOnlyList<OrderControlTaskHu> GetOrderControlTaskHus(long taskId);
     OrderControlTaskHu? GetOrderControlTaskHuByNormalizedHu(long taskId, string normalizedHu);

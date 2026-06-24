@@ -2,6 +2,7 @@ using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 using FlowStock.Core.Services;
 using Moq;
+using System.Threading;
 
 namespace FlowStock.Server.Tests.OrderControl;
 
@@ -318,6 +319,114 @@ public sealed class OrderControlServiceTests
         Assert.Equal("ORDER_CONTROL_ACTIVE", complete.ErrorCode);
     }
 
+    [Fact]
+    public void ConcurrentSameRequestId_IsSerializedAndCreatesOneEvent()
+    {
+        var harness = new Harness();
+        var service = new OrderControlService(harness.Store.Object);
+        var taskId = service.Create([1], "tester", null).Task!.Task.Id;
+        harness.EnableTaskLockBarrier();
+
+        var (first, second) = RunConcurrently(
+            () => service.Scan(taskId, "HU-1", "REQ-CONCURRENT", "TSD-1", null),
+            () => service.Scan(taskId, "HU-1", "REQ-CONCURRENT", "TSD-2", null));
+
+        Assert.True(first.Success);
+        Assert.True(second.Success);
+        Assert.Equal(first.Message, second.Message);
+        Assert.Equal(1, harness.EventCount(OrderControlEventType.ScanAccepted));
+        Assert.Equal(1, harness.RequestEventCount("REQ-CONCURRENT"));
+        Assert.Equal(1, harness.GetTask(taskId)!.CheckedHuCount);
+    }
+
+    [Fact]
+    public void ConcurrentComplete_IsSerializedAndCreatesOneCompletedEvent()
+    {
+        var harness = new Harness();
+        var service = new OrderControlService(harness.Store.Object);
+        var taskId = service.Create([1], "tester", null).Task!.Task.Id;
+        Assert.True(service.Scan(taskId, "HU-1", "REQ-BEFORE-COMPLETE", "TSD-1", null).Success);
+        harness.EnableTaskLockBarrier();
+
+        var (first, second) = RunConcurrently(
+            () => service.Complete(taskId, "TSD-1", null),
+            () => service.Complete(taskId, "TSD-2", null));
+
+        Assert.True(first.Success);
+        Assert.True(second.Success);
+        Assert.Equal(OrderControlTaskStatus.Completed, harness.GetTask(taskId)!.Status);
+        Assert.Equal(1, harness.EventCount(OrderControlEventType.Completed));
+    }
+
+    [Fact]
+    public void ConcurrentCompleteAndCancel_RespectsTaskLockWinner()
+    {
+        var harness = new Harness();
+        var service = new OrderControlService(harness.Store.Object);
+        var taskId = service.Create([1], "tester", null).Task!.Task.Id;
+        Assert.True(service.Scan(taskId, "HU-1", "REQ-BEFORE-RACE", "TSD-1", null).Success);
+        harness.EnableTaskLockBarrier();
+
+        var (complete, cancel) = RunConcurrently(
+            () => service.Complete(taskId, "TSD-1", null),
+            () => service.Cancel(taskId, "tester"));
+
+        var finalStatus = harness.GetTask(taskId)!.Status;
+        if (string.Equals(finalStatus, OrderControlTaskStatus.Completed, StringComparison.OrdinalIgnoreCase))
+        {
+            Assert.True(complete.Success);
+            Assert.Equal(OrderControlTaskStatus.Completed, cancel!.Task.Status);
+            Assert.Equal(1, harness.EventCount(OrderControlEventType.Completed));
+            Assert.Equal(0, harness.EventCount(OrderControlEventType.Cancelled));
+        }
+        else
+        {
+            Assert.Equal(OrderControlTaskStatus.Cancelled, finalStatus);
+            Assert.False(complete.Success);
+            Assert.Equal(OrderControlErrorCodes.TaskCancelled, complete.ErrorCode);
+            Assert.Equal(OrderControlTaskStatus.Cancelled, cancel!.Task.Status);
+            Assert.Equal(0, harness.EventCount(OrderControlEventType.Completed));
+            Assert.Equal(1, harness.EventCount(OrderControlEventType.Cancelled));
+        }
+    }
+
+    [Fact]
+    public void ConcurrentScanAndCancel_ProducesSerializedTerminalOutcome()
+    {
+        var harness = new Harness();
+        var service = new OrderControlService(harness.Store.Object);
+        var taskId = service.Create([1], "tester", null).Task!.Task.Id;
+        harness.EnableTaskLockBarrier();
+
+        var (scan, cancel) = RunConcurrently(
+            () => service.Scan(taskId, "HU-1", "REQ-SCAN-CANCEL", "TSD-1", null),
+            () => service.Cancel(taskId, "tester"));
+
+        Assert.Equal(OrderControlTaskStatus.Cancelled, cancel!.Task.Status);
+        Assert.Equal(OrderControlTaskStatus.Cancelled, harness.GetTask(taskId)!.Status);
+        Assert.Equal(1, harness.EventCount(OrderControlEventType.Cancelled));
+        if (scan.Success)
+        {
+            Assert.Equal(1, harness.EventCount(OrderControlEventType.ScanAccepted));
+            Assert.Equal(OrderControlHuStatus.Checked, harness.GetHu("HU-1")!.Status);
+        }
+        else
+        {
+            Assert.Equal(OrderControlErrorCodes.TaskCancelled, scan.ErrorCode);
+            Assert.Equal(0, harness.EventCount(OrderControlEventType.ScanAccepted));
+        }
+    }
+
+    private static (TFirst First, TSecond Second) RunConcurrently<TFirst, TSecond>(
+        Func<TFirst> first,
+        Func<TSecond> second)
+    {
+        var firstTask = Task.Run(first);
+        var secondTask = Task.Run(second);
+        Assert.True(Task.WaitAll([firstTask, secondTask], TimeSpan.FromSeconds(10)), "Concurrent operations did not finish.");
+        return (firstTask.Result, secondTask.Result);
+    }
+
     private sealed class Harness
     {
         private long _taskId;
@@ -330,11 +439,36 @@ public sealed class OrderControlServiceTests
         private readonly List<OrderControlTaskHu> _hus = [];
         private readonly List<OrderControlTaskHuLine> _lines = [];
         private readonly List<OrderControlEvent> _events = [];
+        private readonly Dictionary<long, object> _taskLocks = new();
+        private readonly object _taskLocksGate = new();
+        private readonly AsyncLocal<List<object>?> _heldTaskLocks = new();
+        private Barrier? _taskLockBarrier;
+        private int _taskLockBarrierWaiters;
 
         public Harness()
         {
             Store.Setup(store => store.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
-                .Callback<Action<IDataStore>>(work => work(Store.Object));
+                .Callback<Action<IDataStore>>(work =>
+                {
+                    _heldTaskLocks.Value = [];
+                    try
+                    {
+                        work(Store.Object);
+                    }
+                    finally
+                    {
+                        var held = _heldTaskLocks.Value;
+                        if (held != null)
+                        {
+                            for (var i = held.Count - 1; i >= 0; i--)
+                            {
+                                Monitor.Exit(held[i]);
+                            }
+                        }
+
+                        _heldTaskLocks.Value = null;
+                    }
+                });
             Store.Setup(store => store.GetOrder(1)).Returns(() => Order);
             Store.Setup(store => store.GetOrder(It.Is<long>(id => id != 1))).Returns((Order?)null);
             Store.Setup(store => store.FindActiveOrderControlForOrder(It.IsAny<long>()))
@@ -343,6 +477,8 @@ public sealed class OrderControlServiceTests
                 .Returns<long>(orderId => FindActiveOrderControlForOrder(orderId) != null);
             Store.Setup(store => store.HasStartedOutboundForOrder(It.IsAny<long>())).Returns(false);
             Store.Setup(store => store.IsOutboundHuShipped(It.IsAny<string>())).Returns(false);
+            Store.Setup(store => store.LockOrderControlTask(It.IsAny<long>()))
+                .Returns<long>(LockOrderControlTask);
             Store.Setup(store => store.GetMaxOrderControlTaskRefSequenceByYear(It.IsAny<int>())).Returns(0);
             Store.Setup(store => store.GetDocs()).Returns(Array.Empty<Doc>());
             Store.Setup(store => store.GetDocsByOrder(It.IsAny<long>())).Returns(Array.Empty<Doc>());
@@ -413,6 +549,15 @@ public sealed class OrderControlServiceTests
 
         public int EventCount(string eventType)
             => _events.Count(e => string.Equals(e.EventType, eventType, StringComparison.OrdinalIgnoreCase));
+
+        public int RequestEventCount(string requestId)
+            => _events.Count(e => string.Equals(e.RequestId, requestId, StringComparison.OrdinalIgnoreCase));
+
+        public void EnableTaskLockBarrier()
+        {
+            _taskLockBarrier = new Barrier(2);
+            _taskLockBarrierWaiters = 0;
+        }
 
         private void ConfigureOrderControlStore()
         {
@@ -520,6 +665,44 @@ public sealed class OrderControlServiceTests
                 Task = task,
                 Orders = _taskOrders.Where(order => order.TaskId == task.Id).ToArray()
             };
+        }
+
+        private bool LockOrderControlTask(long taskId)
+        {
+            if (_tasks.All(task => task.Id != taskId))
+            {
+                return false;
+            }
+
+            var barrier = _taskLockBarrier;
+            if (barrier != null)
+            {
+                var waiter = Interlocked.Increment(ref _taskLockBarrierWaiters);
+                Assert.True(barrier.SignalAndWait(TimeSpan.FromSeconds(5)), "Concurrent task lock barrier timed out.");
+                if (waiter == 2)
+                {
+                    Interlocked.Exchange(ref _taskLockBarrier, null)?.Dispose();
+                }
+            }
+
+            var taskLock = GetTaskLock(taskId);
+            Monitor.Enter(taskLock);
+            (_heldTaskLocks.Value ??= []).Add(taskLock);
+            return true;
+        }
+
+        private object GetTaskLock(long taskId)
+        {
+            lock (_taskLocksGate)
+            {
+                if (!_taskLocks.TryGetValue(taskId, out var taskLock))
+                {
+                    taskLock = new object();
+                    _taskLocks[taskId] = taskLock;
+                }
+
+                return taskLock;
+            }
         }
 
         private void UpdateProgress(long taskId)
