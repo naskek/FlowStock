@@ -5485,6 +5485,89 @@
     return "Контроль · " + buildOrderControlSummaryLine(detail);
   }
 
+  var orderControlScanState = { taskId: null, busy: false, operationToken: 0 };
+
+  function getOrderControlExpectedHuCodes(detail) {
+    var hus = detail && Array.isArray(detail.hus) ? detail.hus : [];
+    return hus
+      .map(function (hu) {
+        return String((hu && hu.huCode) || "").trim();
+      })
+      .filter(Boolean);
+  }
+
+  function resolveOrderControlScannedHu(rawValue, detail) {
+    var hus = detail && Array.isArray(detail.hus) ? detail.hus : [];
+    var extractedHu = extractHuCode(rawValue);
+    var rawComparable = normalizeOutboundPickingScanText(rawValue);
+    var rawCompact = compactOutboundPickingScanText(rawValue);
+    var rawDigitsOnly = rawCompact && /^[0-9]+$/.test(rawCompact);
+    for (var index = 0; index < hus.length; index++) {
+      var canonicalHu = String((hus[index] && hus[index].huCode) || "").trim();
+      if (!canonicalHu) {
+        continue;
+      }
+      var expectedComparable = normalizeOutboundPickingScanText(canonicalHu);
+      var expectedCompact = compactOutboundPickingScanText(canonicalHu);
+      var expectedDigits = expectedCompact.replace(/[^0-9]/g, "");
+      if (!expectedComparable || !expectedCompact) {
+        continue;
+      }
+      if (rawComparable === expectedComparable || rawCompact === expectedCompact) {
+        return canonicalHu;
+      }
+      if (extractedHu && compactOutboundPickingScanText(extractedHu) === expectedCompact) {
+        return canonicalHu;
+      }
+      if (rawDigitsOnly && expectedDigits && rawCompact === expectedDigits) {
+        return canonicalHu;
+      }
+      if (rawComparable.indexOf(expectedComparable) >= 0 || rawCompact.indexOf(expectedCompact) >= 0) {
+        return canonicalHu;
+      }
+    }
+    return "";
+  }
+
+  function isValidOrderControlDetail(detail, taskId) {
+    if (!detail || typeof detail !== "object") {
+      return false;
+    }
+    var task = detail.task;
+    if (!task || typeof task !== "object") {
+      return false;
+    }
+    if (String(task.id) !== String(taskId)) {
+      return false;
+    }
+    if (!String(task.taskRef || "").trim()) {
+      return false;
+    }
+    if (!Array.isArray(detail.hus)) {
+      return false;
+    }
+    if (detail.progress != null && typeof detail.progress !== "object") {
+      return false;
+    }
+    return true;
+  }
+
+  function logOrderControlRejectedScan(info) {
+    if (typeof console === "undefined" || !console || typeof console.warn !== "function") {
+      return;
+    }
+    console.warn("Order control scan rejected", {
+      rawScanValue: info.rawScanValue,
+      extractedHuCode: info.extractedHuCode,
+      resolvedHuCode: info.resolvedHuCode,
+      taskId: info.taskId,
+      expectedHuCodes: info.expectedHuCodes,
+      httpStatus: info.httpStatus,
+      errorCode: info.errorCode,
+      backendMessage: info.backendMessage,
+    });
+  }
+
   function renderOrderControlTask(detail, state) {
     detail = detail || {};
     var task = detail.task || {};
@@ -8971,9 +9054,9 @@
   function wireOrderControlTask(detail, state) {
     detail = detail || {};
     var task = detail.task || {};
+    var taskId = task.id;
     var scanInput = document.getElementById("orderControlScanInput");
     var completeBtn = document.getElementById("orderControlCompleteBtn");
-    var scanBusy = false;
     var completeBusy = false;
 
     function focusScan() {
@@ -8989,49 +9072,140 @@
       }, 30);
     }
 
+    function isRouteCurrent() {
+      return (
+        !!currentRoute &&
+        currentRoute.name === "orderControlTask" &&
+        String(currentRoute.id) === String(taskId)
+      );
+    }
+
+    function renderCanonical(nextDetail, nextState) {
+      renderOrderControlTask(
+        isValidOrderControlDetail(nextDetail, taskId) ? nextDetail : detail,
+        nextState || state || {}
+      );
+    }
+
     function refresh(nextState) {
-      return TsdStorage.apiGetOrderControlTask(task.id)
+      return TsdStorage.apiGetOrderControlTask(taskId)
         .then(function (nextDetail) {
-          renderOrderControlTask(nextDetail, nextState || state || {});
+          if (!isRouteCurrent()) {
+            return;
+          }
+          renderCanonical(nextDetail, nextState);
         })
         .catch(function () {
-          renderOrderControlTask(detail, nextState || state || {});
+          if (!isRouteCurrent()) {
+            return;
+          }
+          renderCanonical(detail, nextState);
         });
     }
 
-    function handleScannedValue(value) {
-      var huCode = String(value || "").trim();
-      if (!huCode || scanBusy) {
+    function handleScannedValue(rawScanValue) {
+      if (orderControlScanState.busy && String(orderControlScanState.taskId) === String(taskId)) {
+        focusScan();
+        return;
+      }
+      var rawText = String(rawScanValue == null ? "" : rawScanValue).trim();
+      if (!rawText) {
         focusScan();
         return;
       }
 
-      scanBusy = true;
-      renderOrderControlTask(detail, {
-        message: "Проверяем HU...",
-        messageType: "info",
-      });
+      var expectedHuCodes = getOrderControlExpectedHuCodes(detail);
+      var extractedHuCode = normalizeHuCode(rawScanValue) || extractHuCode(rawScanValue) || "";
+      var taskHuCode = resolveOrderControlScannedHu(rawScanValue, detail);
 
-      runTsdCriticalOperation("order-control.scan", function () {
-        return TsdStorage.apiScanOrderControlHu(task.id, huCode);
-      })
-        .then(function (result) {
-          scanBusy = false;
-          var nextDetail = (result && result.task) || detail;
-          renderOrderControlTask(nextDetail, {
-            message: (result && result.message) || "HU проверена.",
-            messageType: result && result.alreadyChecked ? "warn" : "success",
+      var token = (orderControlScanState.operationToken || 0) + 1;
+      orderControlScanState = { taskId: taskId, busy: true, operationToken: token };
+
+      function isStale() {
+        return orderControlScanState.operationToken !== token || !isRouteCurrent();
+      }
+      function release() {
+        if (orderControlScanState.operationToken === token) {
+          orderControlScanState.busy = false;
+        }
+      }
+      function renderResult(nextDetail, nextState) {
+        if (isStale()) {
+          return;
+        }
+        renderCanonical(nextDetail, nextState);
+      }
+      function reloadAndRender(nextState) {
+        return TsdStorage.apiGetOrderControlTask(taskId)
+          .then(function (fresh) {
+            renderResult(fresh, nextState);
+          })
+          .catch(function () {
+            renderResult(detail, nextState);
           });
+      }
+      function logRejected(error, resolvedHuCode, fallbackCode) {
+        logOrderControlRejectedScan({
+          rawScanValue: rawScanValue,
+          extractedHuCode: extractedHuCode,
+          resolvedHuCode: resolvedHuCode,
+          taskId: taskId,
+          expectedHuCodes: expectedHuCodes,
+          httpStatus: (error && error.status) || 0,
+          errorCode: (error && (error.code || error.errorCode)) || fallbackCode || "",
+          backendMessage: (error && (error.serverMessage || error.message)) || "",
+        });
+      }
+      function postScan(huCode) {
+        renderResult(detail, { message: "Проверяем HU...", messageType: "info" });
+        return runTsdCriticalOperation("order-control.scan", function () {
+          return TsdStorage.apiScanOrderControlHu(taskId, huCode);
+        })
+          .then(function (result) {
+            return reloadAndRender({
+              message: (result && result.message) || "HU проверена.",
+              messageType: result && result.alreadyChecked ? "warn" : "success",
+            });
+          })
+          .catch(function (error) {
+            logRejected(error, huCode, "");
+            return reloadAndRender({
+              message: mapOrderControlError(error),
+              messageType: "error",
+            });
+          })
+          .finally(function () {
+            release();
+            focusScan();
+          });
+      }
+
+      if (taskHuCode) {
+        postScan(taskHuCode);
+        return;
+      }
+
+      renderResult(detail, { message: "Проверяем HU...", messageType: "info" });
+      Promise.resolve()
+        .then(function () {
+          return TsdStorage.apiResolveHu(rawScanValue);
+        })
+        .then(function (resolved) {
+          var resolvedHuCode =
+            resolved && resolved.known === true ? String(resolved.huCode || "").trim() : "";
+          if (resolvedHuCode) {
+            return postScan(resolvedHuCode);
+          }
+          logRejected(null, "", "HU_NOT_RESOLVED");
+          release();
+          renderResult(detail, { message: "Не удалось распознать HU.", messageType: "error" });
+          focusScan();
         })
         .catch(function (error) {
-          scanBusy = false;
-          var payloadTask = error && error.payload && error.payload.task
-            ? TsdStorage.normalizeOrderControlDetails(error.payload.task)
-            : detail;
-          renderOrderControlTask(payloadTask, {
-            message: mapOrderControlError(error),
-            messageType: "error",
-          });
+          logRejected(error, "", "HU_RESOLVE_FAILED");
+          release();
+          renderResult(detail, { message: "Не удалось распознать HU.", messageType: "error" });
+          focusScan();
         });
     }
 
@@ -9053,7 +9227,7 @@
         completeBusy = true;
         completeBtn.disabled = true;
         runTsdCriticalOperation("order-control.complete", function () {
-          return TsdStorage.apiCompleteOrderControlTask(task.id);
+          return TsdStorage.apiCompleteOrderControlTask(taskId);
         })
           .then(function () {
             navigate("/order-control");
@@ -9072,7 +9246,7 @@
     });
 
     setLiveRefreshHandler(function () {
-      if (!currentRoute || currentRoute.name !== "orderControlTask") {
+      if (!isRouteCurrent()) {
         return;
       }
       refresh(state || {});
@@ -14943,6 +15117,8 @@
     window.FlowStockTsdTestHooks.renderOrderControlTask = renderOrderControlTask;
     window.FlowStockTsdTestHooks.getOrderControlStatusInfo = getOrderControlStatusInfo;
     window.FlowStockTsdTestHooks.sortOrderControlHus = sortOrderControlHus;
+    window.FlowStockTsdTestHooks.resolveOrderControlScannedHu = resolveOrderControlScannedHu;
+    window.FlowStockTsdTestHooks.isValidOrderControlDetail = isValidOrderControlDetail;
     window.FlowStockTsdTestHooks.mapOrderControlError = mapOrderControlError;
     window.FlowStockTsdTestHooks.getFillingPalletGroupDisplayTitle = getFillingPalletGroupDisplayTitle;
     window.FlowStockTsdTestHooks.isFillingPalletCompleted = isFillingPalletCompleted;
