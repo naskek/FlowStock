@@ -61,6 +61,7 @@ public static class OrderApiMapper
             shipment_shipped_qty = shipmentProgress?.ShippedQty ?? 0d,
             shipment_remaining_qty = shipmentProgress?.RemainingQty ?? 0d,
             is_partially_shipped = shipmentProgress?.IsPartiallyShipped ?? false,
+            active_order_control_ref = order.ActiveOrderControlRef,
             has_production_pallet_plan = hasProductionPalletPlan,
             needs_production_pallet_plan = needsProductionPalletPlan,
             planned_pallet_count = palletSummary.PlannedPalletCount,

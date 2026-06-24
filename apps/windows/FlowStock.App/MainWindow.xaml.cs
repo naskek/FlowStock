@@ -225,6 +225,18 @@ public partial class MainWindow : Window
             OrdersCancelButton.IsEnabled = canChangeOrder;
         }
 
+        if (OrdersCreateControlButton != null)
+        {
+            var selectedOrders = OrdersGrid.SelectedItems
+                .OfType<Order>()
+                .ToArray();
+            OrdersCreateControlButton.IsEnabled = selectedOrders.Length > 0
+                                                  && selectedOrders.All(order => order.Type == OrderType.Customer && order.Status == OrderStatus.Accepted);
+            OrdersCreateControlButton.ToolTip = OrdersCreateControlButton.IsEnabled
+                ? null
+                : "Контроль можно создать только для выбранных клиентских заказов в статусе Готов.";
+        }
+
         if (KmDeleteBatchButton != null)
         {
             KmDeleteBatchButton.IsEnabled = _adminDeleteModeEnabled && KmBatchesGrid.SelectedItem is KmCodeBatch;
@@ -1969,6 +1981,46 @@ public partial class MainWindow : Window
     private void OrdersGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
         UpdateDeleteButtonsAvailability();
+    }
+
+    private async void OrdersCreateControl_Click(object sender, RoutedEventArgs e)
+    {
+        var selectedOrders = OrdersGrid.SelectedItems
+            .OfType<Order>()
+            .ToArray();
+        if (selectedOrders.Length == 0)
+        {
+            MessageBox.Show("Выберите один или несколько заказов.", "Контроль заказов", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var orderIds = selectedOrders.Select(order => order.Id).ToArray();
+        var preview = await _services.WpfOrderControl.PreviewAsync(orderIds).ConfigureAwait(true);
+        if (!preview.IsSuccess)
+        {
+            MessageBox.Show(preview.ErrorMessage ?? "Не удалось подготовить preview.", "Контроль заказов", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var window = new OrderControlPreviewWindow(_services, orderIds, preview)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+        if (window.Created)
+        {
+            LoadOrders();
+        }
+    }
+
+    private void OrderControlWindow_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new OrderControlWindow(_services)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+        LoadOrders();
     }
 
     private void HuAssignmentManagement_Click(object sender, RoutedEventArgs e)

@@ -101,6 +101,7 @@ builder.Services.AddSingleton<OutboundPickingService>(sp => new OutboundPickingS
     sp.GetRequiredService<IDataStore>(),
     sp.GetRequiredService<DocumentService>(),
     sp.GetRequiredService<FlowStockLedgerFlowOptions>()));
+builder.Services.AddSingleton<OrderControlService>();
 builder.Services.AddSingleton<TsdHuResolverService>();
 builder.Services.AddSingleton<FlowStock.Core.Services.Warehouse.WarehouseActionBundleService>();
 builder.Services.AddSingleton<FlowStock.Core.Services.Warehouse.WarehouseTaskExecutionService>();
@@ -2955,6 +2956,7 @@ PlannerEndpoints.Map(app);
 WarehouseBoardStateEndpoints.Map(app);
 WarehouseProductionStateEndpoint.Map(app);
 TsdOutboundPickingEndpoints.Map(app);
+OrderControlEndpoints.Map(app);
 TsdHuResolverEndpoints.Map(app);
 BusinessNotificationEndpoints.Map(app);
 WarehouseTaskEndpoints.Map(app);

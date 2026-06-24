@@ -342,4 +342,43 @@ public interface IDataStore
     long AddWarehouseTaskEvent(WarehouseTaskEvent warehouseEvent);
     IReadOnlyList<WarehouseTaskEvent> GetWarehouseTaskEvents(long taskId);
     bool IsHuLockedByActiveWarehouseTask(string huCode, long? excludeBundleId);
+
+    OrderControlTask? GetOrderControlTask(long taskId);
+    OrderControlTask? FindOrderControlTaskByRef(string taskRef);
+    IReadOnlyList<OrderControlTaskSummary> GetOrderControlTasks(string? status, bool activeOnly);
+    IReadOnlyList<OrderControlTaskOrder> GetOrderControlTaskOrders(long taskId);
+    IReadOnlyList<OrderControlTaskHu> GetOrderControlTaskHus(long taskId);
+    OrderControlTaskHu? GetOrderControlTaskHuByNormalizedHu(long taskId, string normalizedHu);
+    IReadOnlyList<OrderControlTaskHuLine> GetOrderControlTaskHuLines(long taskId);
+    IReadOnlyList<OrderControlEvent> GetOrderControlEvents(long taskId);
+    OrderControlEvent? FindOrderControlEventByRequestId(long taskId, string requestId);
+    int GetMaxOrderControlTaskRefSequenceByYear(int year);
+    long AddOrderControlTask(OrderControlTask task);
+    long AddOrderControlTaskOrder(OrderControlTaskOrder order);
+    long AddOrderControlTaskHu(OrderControlTaskHu hu);
+    long AddOrderControlTaskHuLine(OrderControlTaskHuLine line);
+    long AddOrderControlEvent(OrderControlEvent orderControlEvent);
+    void UpdateOrderControlTaskStatus(
+        long taskId,
+        string status,
+        DateTime? startedAt,
+        DateTime? completedAt,
+        DateTime? cancelledAt,
+        string? cancelledBy,
+        string? assignedToDeviceId,
+        string? errorCode,
+        string? errorMessage);
+    void UpdateOrderControlTaskProgress(long taskId);
+    void UpdateOrderControlTaskHuStatus(
+        long taskHuId,
+        string status,
+        DateTime? checkedAt,
+        string? checkedByDeviceId,
+        string? checkedByOperator,
+        string? errorCode,
+        string? errorMessage);
+    void DeactivateOrderControlTaskOrders(long taskId);
+    bool HasActiveOrderControlForOrder(long orderId);
+    OrderControlTaskSummary? FindActiveOrderControlForOrder(long orderId);
+    bool HasStartedOutboundForOrder(long orderId);
 }

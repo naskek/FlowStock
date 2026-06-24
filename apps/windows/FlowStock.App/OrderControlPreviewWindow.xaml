@@ -1,0 +1,41 @@
+<Window x:Class="FlowStock.App.OrderControlPreviewWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Создать контроль заказов" Height="620" Width="900"
+        WindowStartupLocation="CenterOwner">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="140" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock x:Name="SummaryText" FontWeight="SemiBold" Margin="0,0,0,8" />
+
+        <DataGrid x:Name="OrdersGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True" Margin="0,0,0,8">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Заказ" Binding="{Binding OrderRef}" Width="Auto" />
+                <DataGridTextColumn Header="Контрагент" Binding="{Binding PartnerName}" Width="*" />
+                <DataGridCheckBoxColumn Header="Можно" Binding="{Binding IsEligible}" Width="Auto" />
+                <DataGridTextColumn Header="Причина" Binding="{Binding Message}" Width="2*" />
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <DataGrid x:Name="HusGrid" Grid.Row="2" AutoGenerateColumns="False" IsReadOnly="True" Margin="0,0,0,8">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="HU" Binding="{Binding HuCode}" Width="Auto" />
+                <DataGridTextColumn Header="Заказы" Binding="{Binding OrderRefs}" Width="Auto" />
+                <DataGridTextColumn Header="Состав" Binding="{Binding ItemSummary}" Width="*" />
+                <DataGridTextColumn Header="Место" Binding="{Binding LocationCode}" Width="Auto" />
+                <DataGridTextColumn Header="Источник" Binding="{Binding SourceType}" Width="Auto" />
+                <DataGridTextColumn Header="Кол-во" Binding="{Binding Qty}" Width="Auto" />
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="CreateButton" Content="Создать" Width="110" Click="CreateButton_Click" />
+            <Button Content="Отмена" Width="110" Margin="8,0,0,0" IsCancel="True" />
+        </StackPanel>
+    </Grid>
+</Window>

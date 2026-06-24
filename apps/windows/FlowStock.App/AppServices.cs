@@ -32,6 +32,7 @@ public sealed class AppServices
     public WpfMarkingApiService WpfMarkingApi { get; }
     public WpfProductionPalletApiService WpfProductionPalletApi { get; }
     public WpfWarehouseTaskApiService WpfWarehouseTasks { get; }
+    public WpfOrderControlApiService WpfOrderControl { get; }
     public WpfReadApiService WpfReadApi { get; }
     public WpfDocumentRuntimeApiService WpfDocumentRuntimeApi { get; }
     public WpfIncomingRequestsApiService WpfIncomingRequestsApi { get; }
@@ -101,6 +102,7 @@ public sealed class AppServices
         WpfMarkingApi = new WpfMarkingApiService(Settings, appLogger);
         WpfProductionPalletApi = new WpfProductionPalletApiService(Settings, appLogger);
         WpfWarehouseTasks = new WpfWarehouseTaskApiService(Settings, appLogger);
+        WpfOrderControl = new WpfOrderControlApiService(Settings, appLogger);
         WpfReadApi = new WpfReadApiService(Settings, appLogger);
         WpfDocumentRuntimeApi = new WpfDocumentRuntimeApiService(Settings, appLogger);
         WpfIncomingRequestsApi = new WpfIncomingRequestsApiService(Settings, appLogger);
@@ -268,4 +270,3 @@ public sealed class AppServices
 
     private sealed record PostgresConnectionConfig(string ConnectionString, string Target, bool IsConfigured);
 }
-

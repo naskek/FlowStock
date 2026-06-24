@@ -12,6 +12,7 @@ public sealed class CustomerOutboundBoundHuLine
     public string HuCode { get; init; } = string.Empty;
     public long? FromLocationId { get; init; }
     public string? FromLocationCode { get; init; }
+    public string SourceType { get; init; } = "OUTBOUND_READY";
 }
 
 public static class CustomerOutboundBoundHuService
@@ -71,7 +72,8 @@ public static class CustomerOutboundBoundHuService
                 Qty = Math.Min(remainingQty, stockRow.Qty),
                 HuCode = huCode,
                 FromLocationId = locationId,
-                FromLocationCode = locationCode
+                FromLocationCode = locationCode,
+                SourceType = "WAREHOUSE_BOUND"
             });
         }
 
@@ -165,7 +167,8 @@ public static class CustomerOutboundBoundHuService
                     Qty = qty,
                     HuCode = huCode,
                     FromLocationId = locationId,
-                    FromLocationCode = locationCode
+                    FromLocationCode = locationCode,
+                    SourceType = "FILLED_PRODUCTION_PALLET"
                 });
             }
         }
@@ -215,7 +218,8 @@ public static class CustomerOutboundBoundHuService
                 Qty = qty,
                 HuCode = line.HuCode,
                 FromLocationId = line.FromLocationId,
-                FromLocationCode = line.FromLocationCode
+                FromLocationCode = line.FromLocationCode,
+                SourceType = line.SourceType
             });
             shipmentRemainingByOrderLine[line.OrderLineId] = remaining - qty;
         }
@@ -666,7 +670,8 @@ public sealed class CustomerOutboundBoundHuBatchCache
                 Qty = qty,
                 HuCode = line.HuCode,
                 FromLocationId = line.FromLocationId,
-                FromLocationCode = line.FromLocationCode
+                FromLocationCode = line.FromLocationCode,
+                SourceType = line.SourceType
             });
             shipmentRemainingByOrderLine[line.OrderLineId] = remaining - qty;
         }
@@ -714,7 +719,8 @@ public sealed class CustomerOutboundBoundHuBatchCache
                 Qty = Math.Min(remainingQty, stockRow.Qty),
                 HuCode = huCode,
                 FromLocationId = locationId,
-                FromLocationCode = locationCode
+                FromLocationCode = locationCode,
+                SourceType = "WAREHOUSE_BOUND"
             });
         }
 
@@ -793,7 +799,8 @@ public sealed class CustomerOutboundBoundHuBatchCache
                     Qty = qty,
                     HuCode = huCode,
                     FromLocationId = locationId,
-                    FromLocationCode = locationCode
+                    FromLocationCode = locationCode,
+                    SourceType = "FILLED_PRODUCTION_PALLET"
                 });
             }
         }

@@ -1638,6 +1638,7 @@ public sealed class WpfReadApiService
             ShipmentShippedQty = ReadDouble(element, "shipment_shipped_qty"),
             ShipmentRemainingQty = ReadDouble(element, "shipment_remaining_qty"),
             IsPartiallyShipped = ReadBool(element, "is_partially_shipped"),
+            ActiveOrderControlRef = ReadString(element, "active_order_control_ref"),
             CreatedAt = ReadDateTime(element, "created_at") ?? DateTime.MinValue,
             ShippedAt = ReadDateTime(element, "shipped_at")
         };

@@ -17,6 +17,7 @@ public static class ClientBlockCatalog
     public const string TsdInbound = "tsd_inbound";
     public const string TsdProductionReceipt = "tsd_production_receipt";
     public const string TsdOutbound = "tsd_outbound";
+    public const string TsdOrderControl = "tsd_order_control";
     public const string TsdMove = "tsd_move";
     public const string TsdWriteOff = "tsd_write_off";
     public const string TsdInventory = "tsd_inventory";
@@ -34,6 +35,7 @@ public static class ClientBlockCatalog
         new ClientBlockDefinition(TsdInbound, "TSD", "Операции", "Приемка"),
         new ClientBlockDefinition(TsdProductionReceipt, "TSD", "Операции", "Выпуск продукции"),
         new ClientBlockDefinition(TsdOutbound, "TSD", "Операции", "Отгрузка"),
+        new ClientBlockDefinition(TsdOrderControl, "TSD", "Основные", "Контроль заказов"),
         new ClientBlockDefinition(TsdMove, "TSD", "Операции", "Перемещение"),
         new ClientBlockDefinition(TsdWriteOff, "TSD", "Операции", "Списание"),
         new ClientBlockDefinition(TsdInventory, "TSD", "Операции", "Инвентаризация"),

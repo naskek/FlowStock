@@ -81,6 +81,7 @@
       tsd_inbound: true,
       tsd_production_receipt: true,
       tsd_outbound: true,
+      tsd_order_control: true,
       tsd_move: true,
       tsd_write_off: true,
       tsd_inventory: true,
@@ -146,6 +147,9 @@
     }
     if (route.name === "outbound" || route.name === "outboundOrder") {
       return getOperationBlockKey("OUTBOUND") || "tsd_operations";
+    }
+    if (route.name === "orderControl" || route.name === "orderControlTask") {
+      return "tsd_order_control";
     }
     if (route.name === "docs" || route.name === "new") {
       return getOperationBlockKey(route.op) || "tsd_operations";
@@ -1559,6 +1563,9 @@
     if (route.name === "outbound" || route.name === "outboundOrder") {
       return isOperationEnabled("OUTBOUND");
     }
+    if (route.name === "orderControl" || route.name === "orderControlTask") {
+      return isClientBlockEnabled("tsd_order_control");
+    }
     if (route.name === "docs") {
       return !!route.op && isOperationEnabled(route.op);
     }
@@ -1971,6 +1978,12 @@
     if (parts[0] === "outbound") {
       return { name: "outbound" };
     }
+    if (parts[0] === "order-control" && parts[1]) {
+      return { name: "orderControlTask", id: decodeURIComponent(parts[1]) };
+    }
+    if (parts[0] === "order-control") {
+      return { name: "orderControl" };
+    }
     if (parts[0] === "tasks" && parts[1]) {
       return { name: "taskDoc", id: decodeURIComponent(parts[1]) };
     }
@@ -2055,6 +2068,12 @@
     }
     if (parts[0] === "outbound") {
       return { name: "outbound" };
+    }
+    if (parts[0] === "order-control" && parts[1]) {
+      return { name: "orderControlTask", id: decodeURIComponent(parts[1]) };
+    }
+    if (parts[0] === "order-control") {
+      return { name: "orderControl" };
     }
     if (parts[0] === "tasks" && parts[1]) {
       return { name: "taskDoc", id: decodeURIComponent(parts[1]) };
@@ -2218,6 +2237,15 @@
         return routeOrigin;
       }
       return "/outbound";
+    }
+    if (route.name === "orderControl") {
+      return "/home";
+    }
+    if (route.name === "orderControlTask") {
+      if (routeOrigin) {
+        return routeOrigin;
+      }
+      return "/order-control";
     }
     if (route.name === "docs") {
       return "/operations";
@@ -2558,6 +2586,59 @@
       return;
     }
 
+    if (route.name === "orderControl") {
+      if (!isClientBlockEnabled("tsd_order_control")) {
+        navigate("/home");
+        return;
+      }
+      setCurrentClientBlockContext("tsd_order_control");
+      if (!setRouteHtml(token, renderLoading(), "order-control-loading")) {
+        return;
+      }
+      TsdStorage.apiGetOrderControlTasks()
+        .then(function (tasks) {
+          runIfRouteRenderActive(token, "order-control-loaded", function () {
+            app.innerHTML = renderOrderControlList(tasks || []);
+            wireOrderControlList();
+            completeRouteRender(token);
+          });
+        })
+        .catch(function (error) {
+          console.error(error);
+          runIfRouteRenderActive(token, "order-control-error", function () {
+            app.innerHTML = renderError(mapOrderControlError(error));
+            completeRouteRender(token);
+          });
+        });
+      return;
+    }
+
+    if (route.name === "orderControlTask") {
+      if (!isClientBlockEnabled("tsd_order_control")) {
+        navigate("/home");
+        return;
+      }
+      setCurrentClientBlockContext("tsd_order_control");
+      if (!setRouteHtml(token, renderLoading(), "order-control-task-loading")) {
+        return;
+      }
+      TsdStorage.apiStartOrderControlTask(route.id)
+        .then(function (detail) {
+          runIfRouteRenderActive(token, "order-control-task-loaded", function () {
+            renderOrderControlTask(detail, { message: "", messageType: "" });
+            finishRouteRenderToken(token, "route-render-completed");
+          });
+        })
+        .catch(function (error) {
+          console.error(error);
+          runIfRouteRenderActive(token, "order-control-task-error", function () {
+            app.innerHTML = renderError(mapOrderControlError(error));
+            completeRouteRender(token);
+          });
+        });
+      return;
+    }
+
     if (route.name === "tasks") {
       if (!isClientBlockEnabled("tsd_warehouse_tasks")) {
         navigate("/home");
@@ -2835,6 +2916,8 @@
       currentRoute.name === "stock" ||
       currentRoute.name === "items" ||
       currentRoute.name === "orders" ||
+      currentRoute.name === "orderControl" ||
+      currentRoute.name === "orderControlTask" ||
       currentRoute.name === "tasks" ||
       currentRoute.name === "taskDoc"
     );
@@ -2952,14 +3035,27 @@
         "orders",
         "img/home/orders.png"
       ),
+    ];
+    if (isClientBlockEnabled("tsd_order_control")) {
+      tiles.push(
+        buildHomeMenuTile(
+          "order-control",
+          "Контроль заказов",
+          "Проверка готовых HU",
+          "orders",
+          "img/home/orders.png"
+        )
+      );
+    }
+    tiles.push(
       buildHomeMenuTile(
         "hu",
         "Поиск HU",
         "Сканирование и поиск паллеты",
         "hu",
         "img/home/hu-search.png"
-      ),
-    ];
+      )
+    );
     return tiles.join("");
   }
 
@@ -5214,6 +5310,118 @@
       "</section>";
 
     wireOutboundPickingOrder(order || {}, state || {});
+    finishRouteRender();
+  }
+
+  function renderOrderControlList(tasks) {
+    var rows = (tasks || [])
+      .map(function (task) {
+        var refs = (task.orders || []).map(function (order) { return order.orderRef; }).filter(Boolean).join(", ");
+        return (
+          '<button class="filling-doc-card outbound-picking-order-card" data-order-control-task="' +
+          escapeHtml(task.id) +
+          '">' +
+          '  <div class="filling-doc-main">' +
+          '    <div class="filling-doc-title">' + escapeHtml(task.taskRef || "-") + "</div>" +
+          (refs ? '    <div class="filling-doc-meta">Заказы: ' + escapeHtml(refs) + "</div>" : "") +
+          '    <div class="order-status-pill order-status-accepted">' + escapeHtml(task.statusDisplay || task.status || "") + "</div>" +
+          "  </div>" +
+          '  <div class="filling-doc-progress">' +
+          "    <div>Проверено <strong>" +
+          escapeHtml((task.checkedHuCount || 0) + "/" + (task.expectedHuCount || 0)) +
+          "</strong></div>" +
+          (task.discrepancyHuCount
+            ? "    <div>Расхождения <strong>" + escapeHtml(task.discrepancyHuCount) + "</strong></div>"
+            : "") +
+          "  </div>" +
+          "</button>"
+        );
+      })
+      .join("");
+
+    if (!rows) {
+      rows = '<div class="empty-state">Нет активных заданий контроля заказов.</div>';
+    }
+
+    return (
+      '<section class="screen filling-screen outbound-picking-screen">' +
+      '  <div class="screen-card filling-card">' +
+      '    <div class="section-title">Контроль заказов</div>' +
+      '    <div class="filling-doc-list">' + rows + "</div>" +
+      "  </div>" +
+      "</section>"
+    );
+  }
+
+  function renderOrderControlHuLines(lines) {
+    var html = (Array.isArray(lines) ? lines : [])
+      .map(function (line) {
+        return (
+          '<div class="outbound-picking-hu-line">' +
+          "  <span>" + escapeHtml(line.itemName || "-") + "</span>" +
+          "  <strong>" + escapeHtml(formatQtyWithUnit(line.qty || 0, "шт")) + "</strong>" +
+          "</div>"
+        );
+      })
+      .join("");
+    return html ? '<div class="outbound-picking-hu-lines filling-mixed-pallet-lines">' + html + "</div>" : "";
+  }
+
+  function renderOrderControlHuRow(hu) {
+    var status = String(hu.status || "").toUpperCase();
+    var tone = status === "CHECKED" ? "success" : status === "DISCREPANCY" ? "error" : "pending";
+    return (
+      '<li class="filling-pallet-item filling-pallet-item--compact outbound-picking-hu-item filling-pallet-status-' + tone + '">' +
+      '  <div class="outbound-picking-hu-main">' +
+      '    <div><strong>' + escapeHtml(hu.huCode || "-") + "</strong> " + escapeHtml(hu.itemSummary || "") + "</div>" +
+      (hu.message ? '    <div class="filling-doc-meta">' + escapeHtml(hu.message) + "</div>" : "") +
+      renderOrderControlHuLines(hu.lines) +
+      "  </div>" +
+      '  <div class="outbound-picking-hu-status">' + escapeHtml(status || "PENDING") + "</div>" +
+      "</li>"
+    );
+  }
+
+  function renderOrderControlTask(detail, state) {
+    detail = detail || {};
+    var task = detail.task || {};
+    var progress = detail.progress || {};
+    var message = state && state.message ? String(state.message) : "";
+    var messageType = state && state.messageType ? String(state.messageType) : "";
+    var messageHtml = message
+      ? '<div class="filling-message filling-message-' + escapeHtml(messageType || "info") + '">' + escapeHtml(message) + "</div>"
+      : "";
+    var hus = (detail.hus || []).map(renderOrderControlHuRow).join("");
+    if (!hus) {
+      hus = '<div class="empty-state">Нет HU в задании.</div>';
+    }
+    var canComplete = progress.canComplete === true;
+
+    app.innerHTML =
+      '<section class="screen filling-screen outbound-picking-screen outbound-picking-screen--scan">' +
+      '  <div class="screen-card filling-card filling-card--scan">' +
+      '    <div class="filling-scan-header">Контроль ' +
+      escapeHtml(task.taskRef || "-") +
+      " · " +
+      escapeHtml((progress.checkedHuCount || 0) + " / " + (progress.expectedHuCount || 0) + " HU") +
+      "</div>" +
+      messageHtml +
+      '    <div class="filling-scan-card filling-scan-card--compact filling-scan-slot">' +
+      '      <input class="form-input filling-scan-input tsd-scan-input-hidden" id="orderControlScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" placeholder="HU-000001" />' +
+      "    </div>" +
+      '    <div class="filling-pallet-list-card">' +
+      '      <div class="filling-pallet-list-title">HU к проверке</div>' +
+      '      <ul class="filling-pallet-list filling-pallet-list--scroll-breathing outbound-picking-hu-list">' +
+      hus +
+      "      </ul>" +
+      "    </div>" +
+      '    <div class="actions-bar"><button class="btn btn-primary" id="orderControlCompleteBtn" type="button" ' +
+      (canComplete ? "" : "disabled") +
+      ">Завершить</button></div>" +
+      "  </div>" +
+      "</section>";
+
+    wireOrderControlTask(detail, state || {});
     finishRouteRender();
   }
 
@@ -8583,6 +8791,177 @@
         return;
       }
       refreshOrder(state || {});
+    });
+  }
+
+  function mapOrderControlError(error) {
+    var details = getTsdErrorDetails(error);
+    var code = String(details.code || "").toUpperCase();
+    if (code === "HU_NOT_IN_TASK") {
+      return "HU не входит в задание контроля.";
+    }
+    if (code === "HU_ALREADY_CHECKED") {
+      return "HU уже проверена.";
+    }
+    if (code === "HU_NO_PHYSICAL_STOCK") {
+      return "По HU нет ledger-остатка. Отмените задание и создайте новое.";
+    }
+    if (code === "EXPECTED_SET_CHANGED") {
+      return "Ожидаемый набор HU изменился. Отмените задание и создайте новое.";
+    }
+    if (code === "HU_ALREADY_SHIPPED") {
+      return "HU уже отгружена.";
+    }
+    if (code === "TASK_INCOMPLETE") {
+      return "Задание ещё не завершено по всем HU.";
+    }
+    if (code === "TASK_CANCELLED") {
+      return "Задание отменено.";
+    }
+    if (details.timedOut) {
+      return "Нет связи с сервером FlowStock. Скан не подтверждён.";
+    }
+    return details.message || "Ошибка контроля заказа.";
+  }
+
+  function wireOrderControlList() {
+    var cards = document.querySelectorAll("[data-order-control-task]");
+    cards.forEach(function (card) {
+      card.addEventListener("click", function () {
+        var taskId = card.getAttribute("data-order-control-task");
+        if (taskId) {
+          setNavOrigin("/order-control");
+          navigate("/order-control/" + encodeURIComponent(taskId));
+        }
+      });
+    });
+
+    setLiveRefreshHandler(function () {
+      if (!currentRoute || currentRoute.name !== "orderControl") {
+        return;
+      }
+      TsdStorage.apiGetOrderControlTasks()
+        .then(function (tasks) {
+          if (currentRoute && currentRoute.name === "orderControl") {
+            app.innerHTML = renderOrderControlList(tasks || []);
+            wireOrderControlList();
+            finishRouteRender();
+          }
+        })
+        .catch(function () {
+          // Keep current list visible.
+        });
+    });
+  }
+
+  function wireOrderControlTask(detail, state) {
+    detail = detail || {};
+    var task = detail.task || {};
+    var scanInput = document.getElementById("orderControlScanInput");
+    var completeBtn = document.getElementById("orderControlCompleteBtn");
+    var scanBusy = false;
+    var completeBusy = false;
+
+    function focusScan() {
+      if (!scanInput) {
+        return;
+      }
+      setPreferredScanTarget(scanInput);
+      window.setTimeout(function () {
+        if (scanInput && scanInput.isConnected) {
+          scanInput.value = "";
+          scanInput.focus();
+        }
+      }, 30);
+    }
+
+    function refresh(nextState) {
+      return TsdStorage.apiGetOrderControlTask(task.id)
+        .then(function (nextDetail) {
+          renderOrderControlTask(nextDetail, nextState || state || {});
+        })
+        .catch(function () {
+          renderOrderControlTask(detail, nextState || state || {});
+        });
+    }
+
+    function handleScannedValue(value) {
+      var huCode = String(value || "").trim();
+      if (!huCode || scanBusy) {
+        focusScan();
+        return;
+      }
+
+      scanBusy = true;
+      renderOrderControlTask(detail, {
+        message: "Проверяем HU...",
+        messageType: "info",
+      });
+
+      runTsdCriticalOperation("order-control.scan", function () {
+        return TsdStorage.apiScanOrderControlHu(task.id, huCode);
+      })
+        .then(function (result) {
+          scanBusy = false;
+          var nextDetail = (result && result.task) || detail;
+          renderOrderControlTask(nextDetail, {
+            message: (result && result.message) || "HU проверена.",
+            messageType: result && result.alreadyChecked ? "warn" : "success",
+          });
+        })
+        .catch(function (error) {
+          scanBusy = false;
+          var payloadTask = error && error.payload && error.payload.task
+            ? TsdStorage.normalizeOrderControlDetails(error.payload.task)
+            : detail;
+          renderOrderControlTask(payloadTask, {
+            message: mapOrderControlError(error),
+            messageType: "error",
+          });
+        });
+    }
+
+    if (scanInput) {
+      scanInput.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          handleScannedValue(scanInput.value);
+        }
+      });
+      focusScan();
+    }
+
+    if (completeBtn) {
+      completeBtn.addEventListener("click", function () {
+        if (completeBusy || completeBtn.disabled) {
+          return;
+        }
+        completeBusy = true;
+        completeBtn.disabled = true;
+        runTsdCriticalOperation("order-control.complete", function () {
+          return TsdStorage.apiCompleteOrderControlTask(task.id);
+        })
+          .then(function () {
+            navigate("/order-control");
+          })
+          .catch(function (error) {
+            completeBusy = false;
+            completeBtn.disabled = false;
+            refresh({ message: mapOrderControlError(error), messageType: "error" });
+          });
+      });
+    }
+
+    setScanHandler(function (scan) {
+      var value = scan && scan.value ? scan.value : scan;
+      handleScannedValue(value);
+    });
+
+    setLiveRefreshHandler(function () {
+      if (!currentRoute || currentRoute.name !== "orderControlTask") {
+        return;
+      }
+      refresh(state || {});
     });
   }
 
@@ -14443,6 +14822,9 @@
     window.FlowStockTsdTestHooks.renderFillingPalletHuRow = renderFillingPalletHuRow;
     window.FlowStockTsdTestHooks.isMixedFillingPallet = isMixedFillingPallet;
     window.FlowStockTsdTestHooks.renderFillingMixedPalletLines = renderFillingMixedPalletLines;
+    window.FlowStockTsdTestHooks.renderOrderControlList = renderOrderControlList;
+    window.FlowStockTsdTestHooks.renderOrderControlTask = renderOrderControlTask;
+    window.FlowStockTsdTestHooks.mapOrderControlError = mapOrderControlError;
     window.FlowStockTsdTestHooks.getFillingPalletGroupDisplayTitle = getFillingPalletGroupDisplayTitle;
     window.FlowStockTsdTestHooks.isFillingPalletCompleted = isFillingPalletCompleted;
     window.FlowStockTsdTestHooks.renderHome = renderHome;

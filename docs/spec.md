@@ -78,6 +78,7 @@
 - `marking_order(id, order_id NULL, item_id NULL, gtin, requested_quantity, request_number, status, notes, source_type, source_order_id NULL, requested_at, codes_bound_at, created_at, updated_at)`
 - `marking_code(..., marking_order_id, status, receipt_doc_id NULL, receipt_line_id NULL, ...)`: новые ЧЗ/КМ-коды хранят привязку к строке выпуска через `receipt_line_id`; один код может быть привязан только к одной строке.
 - `client_blocks(block_key, is_enabled, updated_at)`
+- Контроль готовых заказов: `order_control_tasks`, `order_control_task_orders`, `order_control_task_hus`, `order_control_task_hu_lines`, `order_control_events`. Это отдельная модель `order_control_*`, не Warehouse Task Board.
 - Складские задания Warehouse Task Board (deprecated, архив): `warehouse_action_bundles`, `warehouse_action_lines`, `warehouse_tasks`, `warehouse_task_lines`, `warehouse_task_events` — не использовать как модель normal TSD
 
 ## Инварианты
@@ -96,6 +97,7 @@
 - Документы списания требуют `reason_code` до проведения.
 - Черновые правки строк документа на сервере append-only: замена draft line создает новую строку `doc_lines`, связанную через `replaces_line_id`; активные draft/read projections игнорируют superseded rows.
 - WPF/Web/TSD не являются источником истины для production need, CUSTOMER HU reservation, production pallet plan, marking preview/export и TSD filling/outbound; клиенты не отправляют клиентски рассчитанные количества как финальное решение сервера.
+- Контроль готовых заказов не пишет `ledger`, не создает и не закрывает `docs`/`doc_lines`, не меняет `orders.status` и не активирует Warehouse Task Board.
 
 ## Normal TSD: производство и отгрузка
 
@@ -120,11 +122,23 @@
 ### Normal TSD outbound flow (`Отгрузка`)
 
 - Работает по **физически зарезервированным** HU (`order_receipt_plan_lines` + `FILLED` production pallets с положительным `ledger`).
+- Источник ожидаемых HU общий с контролем готовых заказов: server read-model на базе `CustomerOutboundBoundHuService.GetUnshippedOutboundHuLines(...)` / SQL-эквивалента TSD outbound list, с семантикой `DISTINCT normalized_hu` для прогресса по физическим HU.
 - Последний scan только фиксирует подбор и возвращает серверные progress/`can_close`/fingerprint. `OUTBOUND` закрывается и пишет `ledger` `−qty` только после явного подтверждения TSD через `complete`; частичное подтверждаемое закрытие сохраняется.
 - `/api/tsd/outbound/orders/{orderId}` возвращает для mixed pallet состав HU в `hus[].lines[]` (`item_id`, `order_line_id`, `item_name`, `qty`), а TSD отображает эти компоненты под HU-кодом.
 - Повторный scan уже подобранной HU идемпотентен: строки `OUTBOUND` и `ledger` не дублируются, включая случай уже auto-closed отгрузки.
 - Draft/picked `OUTBOUND` **без** close не влияют на stock и `shipped_qty`.
+- Активный `order_control_*` по `order_id` блокирует TSD outbound scan, TSD outbound complete, создание нового order-bound draft `OUTBOUND` и закрытие order-bound `OUTBOUND` через общий document close path.
 - TSD подавляет повторный prompt после ответа `Нет` только для неизменившихся server fingerprint и progress-state.
+
+### Контроль готовых заказов
+
+- Функция доступна для `CUSTOMER`-заказов в статусе `ACCEPTED` / «Готов». Создание атомарное: если хотя бы один выбранный заказ недопустим, задание не создается; preview возвращает причины, create повторяет проверки в транзакции.
+- Snapshot ожидаемых HU фиксируется при создании задания и автоматически не пересчитывается. При scan сервер сравнивает snapshot с актуальным outbound-ready read-model и текущим ledger/outbound состоянием; stale HU, изменение состава mixed-HU, отсутствие ledger-остатка или уже начатая/закрытая отгрузка дают blocking discrepancy.
+- Один заказ может находиться только в одном активном контроле (`NEW`, `IN_EXECUTION`). Несколько TSD могут работать с одним заданием; scan использует `request_id`, серверную идемпотентность, row-level lock для HU и сохраняет фактический `device_id` в событиях.
+- Mixed-HU считается одной физической HU в прогрессе. Состав хранится отдельными component lines и отображается под HU.
+- Завершение MVP разрешено только при `checked_hu_count == expected_hu_count` и отсутствии `DISCREPANCY`. При blocking discrepancy оператор отменяет задание и создает новое.
+- API WPF: `POST /api/order-control/preview`, `POST /api/order-control/tasks`, `GET /api/order-control/tasks`, `GET /api/order-control/tasks/{id}`, `GET /api/order-control/tasks/{id}/progress`, `POST /api/order-control/tasks/{id}/cancel`.
+- API TSD: `GET /api/tsd/order-control/tasks`, `GET /api/tsd/order-control/tasks/{id}`, `POST /api/tsd/order-control/tasks/{id}/start`, `POST /api/tsd/order-control/tasks/{id}/scan`, `POST /api/tsd/order-control/tasks/{id}/complete`. Доступ управляется client block `tsd_order_control`.
 
 ### Глобальный HU-router на TSD
 

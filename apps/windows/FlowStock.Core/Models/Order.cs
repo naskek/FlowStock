@@ -34,6 +34,11 @@ public sealed class Order
     public double ShipmentShippedQty { get; init; }
     public double ShipmentRemainingQty { get; init; }
     public bool IsPartiallyShipped { get; init; }
+    public string? ActiveOrderControlRef { get; init; }
+
+    public string OrderControlDisplay => string.IsNullOrWhiteSpace(ActiveOrderControlRef)
+        ? "нет"
+        : ActiveOrderControlRef;
 
     public string TypeDisplay => OrderStatusMapper.TypeToDisplayName(Type);
     public string StatusDisplay => IsPartiallyShipped
@@ -126,4 +131,3 @@ public sealed class Order
         }
     }
 }
-

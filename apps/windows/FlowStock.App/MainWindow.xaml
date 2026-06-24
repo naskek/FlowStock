@@ -569,6 +569,8 @@
                             <Button x:Name="OrdersEditButton" Content="Изменить" Click="OrdersEdit_Click" Margin="8,0,0,0" />
                             <Button x:Name="OrdersCancelButton" Content="Отменить" Click="OrdersCancel_Click" Margin="8,0,0,0" />
                             <Button Content="Управление HU" Click="HuAssignmentManagement_Click" Margin="8,0,0,0" />
+                            <Button x:Name="OrdersCreateControlButton" Content="Создать контроль" Click="OrdersCreateControl_Click" Margin="8,0,0,0" />
+                            <Button Content="Контроль заказов" Click="OrderControlWindow_Click" Margin="8,0,0,0" />
                         </StackPanel>
                         <CheckBox x:Name="ShowCancelledMergedOrdersCheckBox"
                                   Content="Показать отменённые/перенесённые"
@@ -577,6 +579,7 @@
                                   Unchecked="ShowCancelledMergedOrdersCheckBox_Changed" />
                     </StackPanel>
                     <DataGrid x:Name="OrdersGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
+                              SelectionMode="Extended" SelectionUnit="FullRow"
                               SelectionChanged="OrdersGrid_SelectionChanged"
                               MouseDoubleClick="OrdersGrid_MouseDoubleClick"
                               KeyDown="OrdersGrid_KeyDown">
@@ -691,6 +694,7 @@
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="Контроль" Binding="{Binding OrderControlDisplay}" Width="Auto" MaxWidth="180" />
                             <DataGridTextColumn Header="Завершен" Binding="{Binding ShippedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="Auto" MaxWidth="320" />
                         </DataGrid.Columns>

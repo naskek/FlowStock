@@ -1116,6 +1116,166 @@
       });
   }
 
+  function normalizeOrderControlTask(row) {
+    var source = row && row.task ? row.task : row;
+    var orders = Array.isArray(source && source.orders) ? source.orders : [];
+    return {
+      id: Number(pickOutboundField(source, "id", "id")) || 0,
+      taskRef: String(pickOutboundField(source, "taskRef", "task_ref") || ""),
+      status: String((source && source.status) || ""),
+      statusDisplay: String(pickOutboundField(source, "statusDisplay", "status_display") || source.status || ""),
+      expectedHuCount: Number(pickOutboundField(source, "expectedHuCount", "expected_hu_count")) || 0,
+      checkedHuCount: Number(pickOutboundField(source, "checkedHuCount", "checked_hu_count")) || 0,
+      discrepancyHuCount: Number(pickOutboundField(source, "discrepancyHuCount", "discrepancy_hu_count")) || 0,
+      createdAt: String(pickOutboundField(source, "createdAt", "created_at") || ""),
+      orders: orders.map(function (order) {
+        return {
+          orderId: Number(pickOutboundField(order, "orderId", "order_id")) || 0,
+          orderRef: String(pickOutboundField(order, "orderRef", "order_ref") || ""),
+          partnerName: String(pickOutboundField(order, "partnerName", "partner_name") || ""),
+        };
+      }),
+    };
+  }
+
+  function normalizeOrderControlHu(row) {
+    return {
+      id: Number(row && row.id) || 0,
+      huCode: String(pickOutboundField(row, "huCode", "hu_code") || ""),
+      status: String((row && row.status) || ""),
+      qty: Number(row && row.qty) || 0,
+      itemSummary: String(pickOutboundField(row, "itemSummary", "item_summary") || ""),
+      checkedByDeviceId: String(pickOutboundField(row, "checkedByDeviceId", "checked_by_device_id") || ""),
+      error: String((row && row.error) || ""),
+      message: String((row && row.message) || ""),
+      isMixedPallet: (row && row.is_mixed_pallet === true) || (row && row.isMixedPallet === true),
+      lines: Array.isArray(row && row.lines)
+        ? row.lines.map(function (line) {
+            return {
+              orderRef: String(pickOutboundField(line, "orderRef", "order_ref") || ""),
+              itemName: String(pickOutboundField(line, "itemName", "item_name") || ""),
+              qty: Number(line && line.qty) || 0,
+              locationCode: String(pickOutboundField(line, "locationCode", "location_code") || ""),
+              sourceType: String(pickOutboundField(line, "sourceType", "source_type") || ""),
+            };
+          })
+        : [],
+    };
+  }
+
+  function normalizeOrderControlDetails(payload) {
+    var detail = payload || {};
+    var task = normalizeOrderControlTask(detail.task || {});
+    var progress = detail.progress || {};
+    task.expectedHuCount = Number(pickOutboundField(progress, "expectedHuCount", "expected_hu_count")) || task.expectedHuCount;
+    task.checkedHuCount = Number(pickOutboundField(progress, "checkedHuCount", "checked_hu_count")) || task.checkedHuCount;
+    task.discrepancyHuCount = Number(pickOutboundField(progress, "discrepancyHuCount", "discrepancy_hu_count")) || task.discrepancyHuCount;
+    return {
+      task: task,
+      progress: {
+        expectedHuCount: task.expectedHuCount,
+        checkedHuCount: task.checkedHuCount,
+        discrepancyHuCount: task.discrepancyHuCount,
+        pendingHuCount: Number(pickOutboundField(progress, "pendingHuCount", "pending_hu_count")) || 0,
+        canComplete: (progress && progress.can_complete === true) || (progress && progress.canComplete === true),
+      },
+      hus: Array.isArray(detail.hus) ? detail.hus.map(normalizeOrderControlHu) : [],
+      events: Array.isArray(detail.events) ? detail.events : [],
+    };
+  }
+
+  function apiGetOrderControlTasks() {
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/tsd/order-control/tasks", { method: "GET" });
+      })
+      .then(function (payload) {
+        if (!Array.isArray(payload)) {
+          throw new Error("INVALID_ORDER_CONTROL_TASKS");
+        }
+        return payload.map(normalizeOrderControlTask);
+      });
+  }
+
+  function apiGetOrderControlTask(taskId) {
+    var target = Number(taskId);
+    if (!target) {
+      return Promise.reject(new Error("INVALID_TASK_ID"));
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/tsd/order-control/tasks/" + encodeURIComponent(target), { method: "GET" });
+      })
+      .then(normalizeOrderControlDetails);
+  }
+
+  function apiStartOrderControlTask(taskId) {
+    var target = Number(taskId);
+    if (!target) {
+      return Promise.reject(new Error("INVALID_TASK_ID"));
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/tsd/order-control/tasks/" + encodeURIComponent(target) + "/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ device_id: getStoredDeviceId() }),
+        });
+      })
+      .then(function (payload) {
+        return normalizeOrderControlDetails(payload && payload.task ? payload.task : payload);
+      });
+  }
+
+  function apiScanOrderControlHu(taskId, huCode, requestId) {
+    var target = Number(taskId);
+    if (!target) {
+      return Promise.reject(new Error("INVALID_TASK_ID"));
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/tsd/order-control/tasks/" + encodeURIComponent(target) + "/scan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            hu_code: huCode,
+            request_id: requestId || String(Date.now()) + "-" + Math.random().toString(16).slice(2),
+            device_id: getStoredDeviceId(),
+          }),
+        });
+      })
+      .then(function (payload) {
+        return {
+          ok: payload && payload.ok === true,
+          message: String((payload && payload.message) || ""),
+          alreadyChecked: payload && payload.already_checked === true,
+          task: payload && payload.task ? normalizeOrderControlDetails(payload.task) : null,
+        };
+      });
+  }
+
+  function apiCompleteOrderControlTask(taskId) {
+    var target = Number(taskId);
+    if (!target) {
+      return Promise.reject(new Error("INVALID_TASK_ID"));
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/tsd/order-control/tasks/" + encodeURIComponent(target) + "/complete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ device_id: getStoredDeviceId() }),
+        });
+      })
+      .then(function (payload) {
+        return {
+          ok: payload && payload.ok === true,
+          message: String((payload && payload.message) || ""),
+          task: payload && payload.task ? normalizeOrderControlDetails(payload.task) : null,
+        };
+      });
+  }
+
   function apiGetOrderReceiptRemaining(orderId) {
     var target = Number(orderId);
     if (!target) {
@@ -3224,6 +3384,12 @@
     apiScanOutboundPickingHu: apiScanOutboundPickingHu,
     apiCompleteOutboundPicking: apiCompleteOutboundPicking,
     normalizeOutboundPickingOrder: normalizeOutboundPickingOrder,
+    apiGetOrderControlTasks: apiGetOrderControlTasks,
+    apiGetOrderControlTask: apiGetOrderControlTask,
+    apiStartOrderControlTask: apiStartOrderControlTask,
+    apiScanOrderControlHu: apiScanOrderControlHu,
+    apiCompleteOrderControlTask: apiCompleteOrderControlTask,
+    normalizeOrderControlDetails: normalizeOrderControlDetails,
     normalizeTsdHuView: normalizeTsdHuView,
     apiLogin: apiLogin,
   };

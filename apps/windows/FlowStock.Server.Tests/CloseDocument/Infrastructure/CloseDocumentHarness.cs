@@ -836,6 +836,9 @@ internal sealed class CloseDocumentHarness
 
         _store.Setup(store => store.Initialize());
 
+        _store.Setup(store => store.HasActiveOrderControlForOrder(It.IsAny<long>()))
+            .Returns(false);
+
         _store.Setup(store => store.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
             .Callback<Action<IDataStore>>(work =>
             {

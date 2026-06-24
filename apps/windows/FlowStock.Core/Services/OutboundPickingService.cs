@@ -38,7 +38,8 @@ public sealed class OutboundPickingService
 
         var candidateOrders = _store.GetOrders()
             .Where(order => order.Type == OrderType.Customer
-                            && order.Status is not (OrderStatus.Draft or OrderStatus.Cancelled or OrderStatus.Merged))
+                            && order.Status is not (OrderStatus.Draft or OrderStatus.Cancelled or OrderStatus.Merged)
+                            && !_store.HasActiveOrderControlForOrder(order.Id))
             .ToArray();
         if (candidateOrders.Length == 0)
         {
@@ -331,6 +332,13 @@ public sealed class OutboundPickingService
             }
 
             var order = EnsureCustomerOrderReadyForPicking(orderId);
+            if (_store.HasActiveOrderControlForOrder(order.Id))
+            {
+                return OutboundPickingScanResult.Failure(
+                    "ORDER_CONTROL_ACTIVE",
+                    "Заказ находится в активном контроле готовых заказов.");
+            }
+
             var expected = BuildExpectedHus(order);
             var expectedHu = expected.FirstOrDefault(hu => string.Equals(hu.HuCode, normalizedHu, StringComparison.OrdinalIgnoreCase));
             if (expectedHu == null)
@@ -472,6 +480,13 @@ public sealed class OutboundPickingService
             }
 
             order = EnsureCustomerOrderReadyForPicking(orderId);
+            if (_store.HasActiveOrderControlForOrder(order.Id))
+            {
+                return OutboundPickingCompleteResult.Failure(
+                    "ORDER_CONTROL_ACTIVE",
+                    "Заказ находится в активном контроле готовых заказов.");
+            }
+
             var details = GetDetails(order.Id);
             if (details.ExpectedHuCount == 0)
             {

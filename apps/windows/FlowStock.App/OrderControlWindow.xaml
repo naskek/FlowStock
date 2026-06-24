@@ -1,0 +1,60 @@
+<Window x:Class="FlowStock.App.OrderControlWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Контроль заказов" Height="720" Width="1100"
+        WindowStartupLocation="CenterOwner">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="220" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+            <Button Content="Обновить" Width="100" Click="RefreshButton_Click" />
+            <Button x:Name="CancelButton" Content="Отменить" Width="100" Margin="8,0,0,0" Click="CancelButton_Click" />
+            <CheckBox x:Name="ActiveOnlyCheckBox" Content="Только активные" Margin="16,0,0,0" VerticalAlignment="Center"
+                      Checked="ActiveOnlyCheckBox_Changed" Unchecked="ActiveOnlyCheckBox_Changed" />
+        </StackPanel>
+
+        <DataGrid x:Name="TasksGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
+                  SelectionChanged="TasksGrid_SelectionChanged" Margin="0,0,0,8">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Задание" Binding="{Binding TaskRef}" Width="Auto" />
+                <DataGridTextColumn Header="Статус" Binding="{Binding Status}" Width="Auto" />
+                <DataGridTextColumn Header="Заказы" Binding="{Binding OrderRefs}" Width="*" />
+                <DataGridTextColumn Header="Прогресс" Binding="{Binding ProgressDisplay}" Width="Auto" />
+                <DataGridTextColumn Header="Расх." Binding="{Binding DiscrepancyHuCount}" Width="Auto" />
+                <DataGridTextColumn Header="Создано" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="Auto" />
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <TabControl Grid.Row="2">
+            <TabItem Header="HU">
+                <DataGrid x:Name="HusGrid" AutoGenerateColumns="False" IsReadOnly="True">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="HU" Binding="{Binding HuCode}" Width="Auto" />
+                        <DataGridTextColumn Header="Статус" Binding="{Binding Status}" Width="Auto" />
+                        <DataGridTextColumn Header="Состав" Binding="{Binding ItemSummary}" Width="*" />
+                        <DataGridTextColumn Header="Кол-во" Binding="{Binding Qty}" Width="Auto" />
+                        <DataGridTextColumn Header="ТСД" Binding="{Binding DeviceId}" Width="Auto" />
+                        <DataGridTextColumn Header="Скан" Binding="{Binding CheckedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="Auto" />
+                        <DataGridTextColumn Header="Ошибка" Binding="{Binding Message}" Width="2*" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+            <TabItem Header="События">
+                <DataGrid x:Name="EventsGrid" AutoGenerateColumns="False" IsReadOnly="True">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Время" Binding="{Binding EventAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm':'ss}}" Width="Auto" />
+                        <DataGridTextColumn Header="Тип" Binding="{Binding EventType}" Width="Auto" />
+                        <DataGridTextColumn Header="HU" Binding="{Binding HuCode}" Width="Auto" />
+                        <DataGridTextColumn Header="ТСД" Binding="{Binding DeviceId}" Width="Auto" />
+                        <DataGridTextColumn Header="Ошибка" Binding="{Binding Error}" Width="Auto" />
+                        <DataGridTextColumn Header="Сообщение" Binding="{Binding Message}" Width="*" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+        </TabControl>
+    </Grid>
+</Window>

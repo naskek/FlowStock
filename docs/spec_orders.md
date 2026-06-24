@@ -33,6 +33,13 @@
 - `to_hu` TEXT NULL
 - `sort_order` INTEGER NOT NULL
 
+Таблицы контроля готовых заказов:
+- `order_control_tasks(id, task_ref, status, created_at, created_by, started_at, completed_at, cancelled_at, expected_hu_count, checked_hu_count, discrepancy_hu_count, snapshot_hash, ...)`
+- `order_control_task_orders(task_id, order_id, order_ref, partner_name, is_active)`; один `order_id` может быть только в одном активном контроле.
+- `order_control_task_hus(task_id, hu_code, normalized_hu, status, qty, item_summary, snapshot_hash, checked_at, checked_by_device_id, error_code, error_message)`; прогресс считается по `DISTINCT normalized_hu`.
+- `order_control_task_hu_lines(task_hu_id, task_id, order_id, order_line_id, item_id, qty, location_id, source_type)`; mixed-HU хранит один физический HU и несколько строк состава.
+- `order_control_events(task_id, task_hu_id, event_type, event_at, device_id, operator_id, hu_code, request_id, payload_json, error_code, message)`; `request_id` обеспечивает идемпотентность scan.
+
 Таблица `production_pallets`:
 - `id` INTEGER PRIMARY KEY
 - `prd_doc_id` INTEGER NOT NULL (FK -> `docs.id`)
@@ -100,6 +107,16 @@
 - одна `order_line` может одновременно иметь складской reserve и production pallet plan.
 
 См. также normal TSD flows в [`spec.md`](spec.md).
+
+## CUSTOMER: контроль готовых заказов
+
+- Контроль создается только для `CUSTOMER`-заказов в `ACCEPTED` / «Готов». `DRAFT`, `IN_PROGRESS`, `SHIPPED`, `CANCELLED`, `MERGED` и `INTERNAL` недопустимы.
+- Создание атомарное: preview показывает причины, но create повторяет все проверки в транзакции и не исключает отдельные заказы молча.
+- Ожидаемые HU берутся из того же outbound-ready read-model, что TSD outbound: `CustomerOutboundBoundHuService.GetUnshippedOutboundHuLines(...)` / SQL-эквивалент списка outbound. Обязательна семантика одной физической HU: `DISTINCT normalized_hu`.
+- Snapshot HU фиксируется при создании задания. Изменение набора HU, состава mixed-HU, ledger-остатка, привязки или outbound-состояния после создания дает blocking discrepancy; продолжение возможно только через отмену задания и создание нового.
+- Контроль не изменяет `orders.status`, `ledger`, `docs`, `doc_lines`, reserve/read-model и production pallet plan.
+- Активный контроль блокирует outbound по всему `order_id`: TSD scan, TSD complete, создание order-bound draft `OUTBOUND`, закрытие order-bound `OUTBOUND` через общий Close.
+- Начатая draft/TSD-отгрузка блокирует создание контроля.
 
 - В TSD режиме `Наполнение` оператор выбирает заказ с уже подготовленными паллетами, а не PRD. После выбора сервер возвращает существующий контекст наполнения (`order_id` + `prd_doc_id`) и не создает HU/план паллет на стороне TSD.
 - При `ProductionAutoCloseOnFill` (default в `new-ledger-logic`) TSD fill изолирует паллету в отдельный PRD, сразу закрывает его и пишет `ledger` (+qty); паллета становится `FILLED`. Fill + обновление `production_pallet_lines.filled_qty` + dedicated PRD + close + `ledger` выполняются одной серверной транзакцией. Для mixed pallet `ledger` пишется по компонентам `production_pallet_lines`/`doc_lines`, а не по агрегированным полям `production_pallets`. Legacy path без auto-close: fill только меняет статус паллеты, `ledger` — при WPF close всего PRD. Повторный fill идемпотентен (`already_filled`), без дубля `ledger`.

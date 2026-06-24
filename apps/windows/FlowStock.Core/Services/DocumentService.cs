@@ -79,6 +79,12 @@ public sealed class DocumentService
         {
             throw new ArgumentException("Внутренний заказ нельзя использовать в клиентской отгрузке.", nameof(orderId));
         }
+
+        if (order != null && type == DocType.Outbound && _data.HasActiveOrderControlForOrder(order.Id))
+        {
+            throw new ArgumentException("Заказ находится в активном контроле готовых заказов.", nameof(orderId));
+        }
+
         var resolvedOrderRef = order?.OrderRef ?? orderRef;
         var cleanedOrderRef = string.IsNullOrWhiteSpace(resolvedOrderRef) ? null : resolvedOrderRef.Trim();
         var cleanedShippingRef = string.IsNullOrWhiteSpace(shippingRef) ? null : shippingRef.Trim();
@@ -301,6 +307,12 @@ public sealed class DocumentService
             var lines = EnsureOrderLineLinks(store, doc, store.GetDocLines(docId));
             if (doc.Type == DocType.Outbound)
             {
+                if (doc.OrderId.HasValue && store.HasActiveOrderControlForOrder(doc.OrderId.Value))
+                {
+                    transactionErrors.Add("Заказ находится в активном контроле готовых заказов.");
+                    return;
+                }
+
                 transactionErrors.AddRange(BuildTransactionalOutboundErrors(store, doc, lines));
                 if (transactionErrors.Count > 0)
                 {

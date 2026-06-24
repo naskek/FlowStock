@@ -105,6 +105,14 @@ WITH candidate_orders AS (
     LEFT JOIN partners p ON p.id = o.partner_id
     WHERE o.order_type = @customer_order_type
       AND o.status NOT IN (@draft_order_status, @shipped_order_status, @cancelled_order_status, @merged_order_status)
+      AND NOT EXISTS (
+          SELECT 1
+          FROM order_control_task_orders octo
+          INNER JOIN order_control_tasks oct ON oct.id = octo.task_id
+          WHERE octo.order_id = o.id
+            AND octo.is_active = TRUE
+            AND oct.status IN ('NEW', 'IN_EXECUTION')
+      )
 ),
 order_line_scope AS (
     SELECT ol.id AS order_line_id,
@@ -1083,6 +1091,17 @@ marking_rollup AS (
     FROM order_base ob
     LEFT JOIN markable_order_flags mof ON mof.order_id = ob.id
     LEFT JOIN marking_code_covered_by_order mcb ON mcb.order_id = ob.id
+),
+active_order_control AS (
+    SELECT DISTINCT ON (oto.order_id)
+           oto.order_id,
+           oct.task_ref
+    FROM order_control_task_orders oto
+    INNER JOIN order_control_tasks oct ON oct.id = oto.task_id
+    INNER JOIN order_scope os ON os.id = oto.order_id
+    WHERE oto.is_active = TRUE
+      AND oct.status IN ('NEW', 'IN_EXECUTION')
+    ORDER BY oto.order_id, oct.created_at DESC, oct.id DESC
 )
 SELECT ob.id,
        ob.order_ref,
@@ -1141,14 +1160,16 @@ SELECT ob.id,
        COALESCE(ps.filled_qty, 0) AS filled_qty,
        COALESCE(olf.shipment_ordered_qty, 0) AS shipment_ordered_qty,
        COALESCE(olf.shipment_shipped_qty, 0) AS shipment_shipped_qty,
-       COALESCE(olf.shipment_remaining_qty, 0) AS shipment_remaining_qty
+       COALESCE(olf.shipment_remaining_qty, 0) AS shipment_remaining_qty,
+       aoc.task_ref AS active_order_control_ref
 FROM order_base ob
 LEFT JOIN status_summary ss ON ss.order_id = ob.id
 LEFT JOIN doc_summary ds ON ds.order_id = ob.id
 LEFT JOIN open_production_activity_by_order opa ON opa.order_id = ob.id
 LEFT JOIN marking_rollup mr ON mr.order_id = ob.id
 LEFT JOIN order_list_flags olf ON olf.order_id = ob.id
-LEFT JOIN pallet_summary ps ON ps.order_id = ob.id";
+LEFT JOIN pallet_summary ps ON ps.order_id = ob.id
+LEFT JOIN active_order_control aoc ON aoc.order_id = ob.id";
 
     public PostgresDataStore(
         string connectionString,
@@ -13229,6 +13250,7 @@ ORDER BY pll.production_pallet_id, pll.id;
         var shipmentOrderedQty = reader.FieldCount > 25 && !reader.IsDBNull(25) ? reader.GetDouble(25) : 0d;
         var shipmentShippedQty = reader.FieldCount > 26 && !reader.IsDBNull(26) ? reader.GetDouble(26) : 0d;
         var shipmentRemainingQty = reader.FieldCount > 27 && !reader.IsDBNull(27) ? reader.GetDouble(27) : 0d;
+        var activeOrderControlRef = reader.FieldCount > 28 && !reader.IsDBNull(28) ? reader.GetString(28) : null;
 
         return new Order
         {
@@ -13263,7 +13285,8 @@ ORDER BY pll.production_pallet_id, pll.id;
             ShipmentShippedQty = shipmentShippedQty,
             ShipmentRemainingQty = shipmentRemainingQty,
             IsPartiallyShipped = shipmentShippedQty > StockQuantityRules.QtyTolerance
-                                 && shipmentRemainingQty > StockQuantityRules.QtyTolerance
+                                 && shipmentRemainingQty > StockQuantityRules.QtyTolerance,
+            ActiveOrderControlRef = activeOrderControlRef
         };
     }
 
@@ -15603,6 +15626,602 @@ LIMIT 1;");
             command.Parameters.AddWithValue("@exclude_bundle_id", excludeBundleId.HasValue ? excludeBundleId.Value : DBNull.Value);
             return command.ExecuteScalar() != null;
         });
+    }
+
+    public OrderControlTask? GetOrderControlTask(long taskId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildOrderControlTaskSelectSql("WHERE t.id = @id"));
+            command.Parameters.AddWithValue("@id", taskId);
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadOrderControlTask(reader) : null;
+        });
+    }
+
+    public OrderControlTask? FindOrderControlTaskByRef(string taskRef)
+    {
+        if (string.IsNullOrWhiteSpace(taskRef))
+        {
+            return null;
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildOrderControlTaskSelectSql("WHERE UPPER(BTRIM(t.task_ref)) = UPPER(BTRIM(@task_ref))"));
+            command.Parameters.AddWithValue("@task_ref", taskRef.Trim());
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadOrderControlTask(reader) : null;
+        });
+    }
+
+    public IReadOnlyList<OrderControlTaskSummary> GetOrderControlTasks(string? status, bool activeOnly)
+    {
+        return WithConnection(connection =>
+        {
+            var where = new List<string>();
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                where.Add("t.status = @status");
+            }
+
+            if (activeOnly)
+            {
+                where.Add("t.status IN ('NEW', 'IN_EXECUTION')");
+            }
+
+            var sql = BuildOrderControlTaskSelectSql(where.Count == 0 ? "" : "WHERE " + string.Join(" AND ", where))
+                      + " ORDER BY t.created_at DESC, t.id DESC";
+            using var command = CreateCommand(connection, sql);
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                command.Parameters.AddWithValue("@status", status.Trim());
+            }
+
+            using var reader = command.ExecuteReader();
+            var tasks = new List<OrderControlTask>();
+            while (reader.Read())
+            {
+                tasks.Add(ReadOrderControlTask(reader));
+            }
+
+            reader.Close();
+            return tasks.Select(task => new OrderControlTaskSummary
+            {
+                Task = task,
+                Orders = GetOrderControlTaskOrders(task.Id)
+            }).ToArray();
+        });
+    }
+
+    public IReadOnlyList<OrderControlTaskOrder> GetOrderControlTaskOrders(long taskId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT id, task_id, order_id, order_ref, partner_name, is_active
+FROM order_control_task_orders
+WHERE task_id = @task_id
+ORDER BY order_ref, order_id;");
+            command.Parameters.AddWithValue("@task_id", taskId);
+            using var reader = command.ExecuteReader();
+            var list = new List<OrderControlTaskOrder>();
+            while (reader.Read())
+            {
+                list.Add(ReadOrderControlTaskOrder(reader));
+            }
+
+            return list;
+        });
+    }
+
+    public IReadOnlyList<OrderControlTaskHu> GetOrderControlTaskHus(long taskId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT id, task_id, hu_code, normalized_hu, status, qty, item_summary, snapshot_hash,
+       checked_at, checked_by_device_id, checked_by_operator, error_code, error_message
+FROM order_control_task_hus
+WHERE task_id = @task_id
+ORDER BY normalized_hu;");
+            command.Parameters.AddWithValue("@task_id", taskId);
+            using var reader = command.ExecuteReader();
+            var list = new List<OrderControlTaskHu>();
+            while (reader.Read())
+            {
+                list.Add(ReadOrderControlTaskHu(reader));
+            }
+
+            return list;
+        });
+    }
+
+    public OrderControlTaskHu? GetOrderControlTaskHuByNormalizedHu(long taskId, string normalizedHu)
+    {
+        if (string.IsNullOrWhiteSpace(normalizedHu))
+        {
+            return null;
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT id, task_id, hu_code, normalized_hu, status, qty, item_summary, snapshot_hash,
+       checked_at, checked_by_device_id, checked_by_operator, error_code, error_message
+FROM order_control_task_hus
+WHERE task_id = @task_id
+  AND normalized_hu = UPPER(BTRIM(@normalized_hu))
+FOR UPDATE;");
+            command.Parameters.AddWithValue("@task_id", taskId);
+            command.Parameters.AddWithValue("@normalized_hu", normalizedHu.Trim());
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadOrderControlTaskHu(reader) : null;
+        });
+    }
+
+    public IReadOnlyList<OrderControlTaskHuLine> GetOrderControlTaskHuLines(long taskId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT l.id, l.task_hu_id, l.task_id, h.normalized_hu, l.order_id, l.order_ref, l.order_line_id,
+       l.item_id, l.item_name, l.qty, l.location_id, l.location_code, l.source_type
+FROM order_control_task_hu_lines l
+INNER JOIN order_control_task_hus h ON h.id = l.task_hu_id
+WHERE l.task_id = @task_id
+ORDER BY h.normalized_hu, l.order_ref, l.order_line_id, l.item_id;");
+            command.Parameters.AddWithValue("@task_id", taskId);
+            using var reader = command.ExecuteReader();
+            var list = new List<OrderControlTaskHuLine>();
+            while (reader.Read())
+            {
+                list.Add(ReadOrderControlTaskHuLine(reader));
+            }
+
+            return list;
+        });
+    }
+
+    public IReadOnlyList<OrderControlEvent> GetOrderControlEvents(long taskId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT id, task_id, task_hu_id, event_type, event_at, device_id, operator_id, hu_code,
+       request_id, payload_json::text, error_code, message
+FROM order_control_events
+WHERE task_id = @task_id
+ORDER BY event_at DESC, id DESC;");
+            command.Parameters.AddWithValue("@task_id", taskId);
+            using var reader = command.ExecuteReader();
+            var list = new List<OrderControlEvent>();
+            while (reader.Read())
+            {
+                list.Add(ReadOrderControlEvent(reader));
+            }
+
+            return list;
+        });
+    }
+
+    public OrderControlEvent? FindOrderControlEventByRequestId(long taskId, string requestId)
+    {
+        if (string.IsNullOrWhiteSpace(requestId))
+        {
+            return null;
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT id, task_id, task_hu_id, event_type, event_at, device_id, operator_id, hu_code,
+       request_id, payload_json::text, error_code, message
+FROM order_control_events
+WHERE task_id = @task_id
+  AND UPPER(BTRIM(request_id)) = UPPER(BTRIM(@request_id))
+ORDER BY id
+LIMIT 1;");
+            command.Parameters.AddWithValue("@task_id", taskId);
+            command.Parameters.AddWithValue("@request_id", requestId.Trim());
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadOrderControlEvent(reader) : null;
+        });
+    }
+
+    public int GetMaxOrderControlTaskRefSequenceByYear(int year)
+    {
+        return GetMaxRefSequenceByYear("SELECT task_ref FROM order_control_tasks WHERE task_ref LIKE @pattern", year);
+    }
+
+    public long AddOrderControlTask(OrderControlTask task)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO order_control_tasks(
+    task_ref, status, created_at, created_by, started_at, completed_at, cancelled_at, cancelled_by,
+    assigned_to_device_id, expected_hu_count, checked_hu_count, discrepancy_hu_count,
+    snapshot_hash, comment, error_code, error_message)
+VALUES(
+    @task_ref, @status, @created_at, @created_by, @started_at, @completed_at, @cancelled_at, @cancelled_by,
+    @assigned_to_device_id, @expected_hu_count, @checked_hu_count, @discrepancy_hu_count,
+    @snapshot_hash, @comment, @error_code, @error_message)
+RETURNING id;");
+            command.Parameters.AddWithValue("@task_ref", task.TaskRef.Trim());
+            command.Parameters.AddWithValue("@status", task.Status.Trim());
+            command.Parameters.AddWithValue("@created_at", ToDbDate(task.CreatedAt));
+            command.Parameters.AddWithValue("@created_by", ToDbNullable(task.CreatedBy));
+            command.Parameters.AddWithValue("@started_at", task.StartedAt.HasValue ? ToDbDate(task.StartedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@completed_at", task.CompletedAt.HasValue ? ToDbDate(task.CompletedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@cancelled_at", task.CancelledAt.HasValue ? ToDbDate(task.CancelledAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@cancelled_by", ToDbNullable(task.CancelledBy));
+            command.Parameters.AddWithValue("@assigned_to_device_id", ToDbNullable(task.AssignedToDeviceId));
+            command.Parameters.AddWithValue("@expected_hu_count", task.ExpectedHuCount);
+            command.Parameters.AddWithValue("@checked_hu_count", task.CheckedHuCount);
+            command.Parameters.AddWithValue("@discrepancy_hu_count", task.DiscrepancyHuCount);
+            command.Parameters.AddWithValue("@snapshot_hash", task.SnapshotHash);
+            command.Parameters.AddWithValue("@comment", ToDbNullable(task.Comment));
+            command.Parameters.AddWithValue("@error_code", ToDbNullable(task.ErrorCode));
+            command.Parameters.AddWithValue("@error_message", ToDbNullable(task.ErrorMessage));
+            return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public long AddOrderControlTaskOrder(OrderControlTaskOrder order)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO order_control_task_orders(task_id, order_id, order_ref, partner_name, is_active)
+VALUES(@task_id, @order_id, @order_ref, @partner_name, @is_active)
+RETURNING id;");
+            command.Parameters.AddWithValue("@task_id", order.TaskId);
+            command.Parameters.AddWithValue("@order_id", order.OrderId);
+            command.Parameters.AddWithValue("@order_ref", order.OrderRef);
+            command.Parameters.AddWithValue("@partner_name", ToDbNullable(order.PartnerName));
+            command.Parameters.AddWithValue("@is_active", order.IsActive);
+            return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public long AddOrderControlTaskHu(OrderControlTaskHu hu)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO order_control_task_hus(
+    task_id, hu_code, normalized_hu, status, qty, item_summary, snapshot_hash,
+    checked_at, checked_by_device_id, checked_by_operator, error_code, error_message)
+VALUES(
+    @task_id, @hu_code, UPPER(BTRIM(@normalized_hu)), @status, @qty, @item_summary, @snapshot_hash,
+    @checked_at, @checked_by_device_id, @checked_by_operator, @error_code, @error_message)
+RETURNING id;");
+            command.Parameters.AddWithValue("@task_id", hu.TaskId);
+            command.Parameters.AddWithValue("@hu_code", hu.HuCode);
+            command.Parameters.AddWithValue("@normalized_hu", hu.NormalizedHu);
+            command.Parameters.AddWithValue("@status", hu.Status);
+            command.Parameters.AddWithValue("@qty", hu.Qty);
+            command.Parameters.AddWithValue("@item_summary", hu.ItemSummary);
+            command.Parameters.AddWithValue("@snapshot_hash", hu.SnapshotHash);
+            command.Parameters.AddWithValue("@checked_at", hu.CheckedAt.HasValue ? ToDbDate(hu.CheckedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@checked_by_device_id", ToDbNullable(hu.CheckedByDeviceId));
+            command.Parameters.AddWithValue("@checked_by_operator", ToDbNullable(hu.CheckedByOperator));
+            command.Parameters.AddWithValue("@error_code", ToDbNullable(hu.ErrorCode));
+            command.Parameters.AddWithValue("@error_message", ToDbNullable(hu.ErrorMessage));
+            return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public long AddOrderControlTaskHuLine(OrderControlTaskHuLine line)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO order_control_task_hu_lines(
+    task_hu_id, task_id, order_id, order_ref, order_line_id, item_id, item_name,
+    qty, location_id, location_code, source_type)
+VALUES(
+    @task_hu_id, @task_id, @order_id, @order_ref, @order_line_id, @item_id, @item_name,
+    @qty, @location_id, @location_code, @source_type)
+RETURNING id;");
+            command.Parameters.AddWithValue("@task_hu_id", line.TaskHuId);
+            command.Parameters.AddWithValue("@task_id", line.TaskId);
+            command.Parameters.AddWithValue("@order_id", line.OrderId);
+            command.Parameters.AddWithValue("@order_ref", line.OrderRef);
+            command.Parameters.AddWithValue("@order_line_id", line.OrderLineId);
+            command.Parameters.AddWithValue("@item_id", line.ItemId);
+            command.Parameters.AddWithValue("@item_name", line.ItemName);
+            command.Parameters.AddWithValue("@qty", line.Qty);
+            command.Parameters.AddWithValue("@location_id", line.LocationId.HasValue ? line.LocationId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@location_code", ToDbNullable(line.LocationCode));
+            command.Parameters.AddWithValue("@source_type", line.SourceType);
+            return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public long AddOrderControlEvent(OrderControlEvent orderControlEvent)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO order_control_events(
+    task_id, task_hu_id, event_type, event_at, device_id, operator_id, hu_code,
+    request_id, payload_json, error_code, message)
+VALUES(
+    @task_id, @task_hu_id, @event_type, @event_at, @device_id, @operator_id, @hu_code,
+    @request_id, @payload_json::jsonb, @error_code, @message)
+RETURNING id;");
+            command.Parameters.AddWithValue("@task_id", orderControlEvent.TaskId);
+            command.Parameters.AddWithValue("@task_hu_id", orderControlEvent.TaskHuId.HasValue ? orderControlEvent.TaskHuId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@event_type", orderControlEvent.EventType);
+            command.Parameters.AddWithValue("@event_at", ToDbDate(orderControlEvent.EventAt));
+            command.Parameters.AddWithValue("@device_id", ToDbNullable(orderControlEvent.DeviceId));
+            command.Parameters.AddWithValue("@operator_id", ToDbNullable(orderControlEvent.OperatorId));
+            command.Parameters.AddWithValue("@hu_code", ToDbNullable(orderControlEvent.HuCode));
+            command.Parameters.AddWithValue("@request_id", ToDbNullable(orderControlEvent.RequestId));
+            command.Parameters.AddWithValue("@payload_json", string.IsNullOrWhiteSpace(orderControlEvent.PayloadJson) ? "{}" : orderControlEvent.PayloadJson);
+            command.Parameters.AddWithValue("@error_code", ToDbNullable(orderControlEvent.ErrorCode));
+            command.Parameters.AddWithValue("@message", ToDbNullable(orderControlEvent.Message));
+            return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public void UpdateOrderControlTaskStatus(
+        long taskId,
+        string status,
+        DateTime? startedAt,
+        DateTime? completedAt,
+        DateTime? cancelledAt,
+        string? cancelledBy,
+        string? assignedToDeviceId,
+        string? errorCode,
+        string? errorMessage)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE order_control_tasks
+SET status = @status,
+    started_at = COALESCE(@started_at, started_at),
+    completed_at = COALESCE(@completed_at, completed_at),
+    cancelled_at = COALESCE(@cancelled_at, cancelled_at),
+    cancelled_by = COALESCE(@cancelled_by, cancelled_by),
+    assigned_to_device_id = COALESCE(@assigned_to_device_id, assigned_to_device_id),
+    error_code = @error_code,
+    error_message = @error_message
+WHERE id = @id;");
+            command.Parameters.AddWithValue("@status", status.Trim());
+            command.Parameters.AddWithValue("@started_at", startedAt.HasValue ? ToDbDate(startedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@completed_at", completedAt.HasValue ? ToDbDate(completedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@cancelled_at", cancelledAt.HasValue ? ToDbDate(cancelledAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@cancelled_by", ToDbNullable(cancelledBy));
+            command.Parameters.AddWithValue("@assigned_to_device_id", ToDbNullable(assignedToDeviceId));
+            command.Parameters.AddWithValue("@error_code", ToDbNullable(errorCode));
+            command.Parameters.AddWithValue("@error_message", ToDbNullable(errorMessage));
+            command.Parameters.AddWithValue("@id", taskId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void UpdateOrderControlTaskProgress(long taskId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE order_control_tasks t
+SET expected_hu_count = counts.expected_count,
+    checked_hu_count = counts.checked_count,
+    discrepancy_hu_count = counts.discrepancy_count
+FROM (
+    SELECT task_id,
+           COUNT(*)::int AS expected_count,
+           COUNT(*) FILTER (WHERE status = 'CHECKED')::int AS checked_count,
+           COUNT(*) FILTER (WHERE status = 'DISCREPANCY')::int AS discrepancy_count
+    FROM order_control_task_hus
+    WHERE task_id = @task_id
+    GROUP BY task_id
+) counts
+WHERE t.id = counts.task_id;");
+            command.Parameters.AddWithValue("@task_id", taskId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void UpdateOrderControlTaskHuStatus(
+        long taskHuId,
+        string status,
+        DateTime? checkedAt,
+        string? checkedByDeviceId,
+        string? checkedByOperator,
+        string? errorCode,
+        string? errorMessage)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE order_control_task_hus
+SET status = @status,
+    checked_at = COALESCE(@checked_at, checked_at),
+    checked_by_device_id = COALESCE(@checked_by_device_id, checked_by_device_id),
+    checked_by_operator = COALESCE(@checked_by_operator, checked_by_operator),
+    error_code = @error_code,
+    error_message = @error_message
+WHERE id = @id;");
+            command.Parameters.AddWithValue("@status", status.Trim());
+            command.Parameters.AddWithValue("@checked_at", checkedAt.HasValue ? ToDbDate(checkedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@checked_by_device_id", ToDbNullable(checkedByDeviceId));
+            command.Parameters.AddWithValue("@checked_by_operator", ToDbNullable(checkedByOperator));
+            command.Parameters.AddWithValue("@error_code", ToDbNullable(errorCode));
+            command.Parameters.AddWithValue("@error_message", ToDbNullable(errorMessage));
+            command.Parameters.AddWithValue("@id", taskHuId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void DeactivateOrderControlTaskOrders(long taskId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "UPDATE order_control_task_orders SET is_active = FALSE WHERE task_id = @task_id;");
+            command.Parameters.AddWithValue("@task_id", taskId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public bool HasActiveOrderControlForOrder(long orderId)
+    {
+        return FindActiveOrderControlForOrder(orderId) != null;
+    }
+
+    public OrderControlTaskSummary? FindActiveOrderControlForOrder(long orderId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildOrderControlTaskSelectSql(@"
+INNER JOIN order_control_task_orders oto ON oto.task_id = t.id
+WHERE oto.order_id = @order_id
+  AND oto.is_active = TRUE
+  AND t.status IN ('NEW', 'IN_EXECUTION')"));
+            command.Parameters.AddWithValue("@order_id", orderId);
+            using var reader = command.ExecuteReader();
+            var task = reader.Read() ? ReadOrderControlTask(reader) : null;
+            reader.Close();
+            return task == null
+                ? null
+                : new OrderControlTaskSummary
+                {
+                    Task = task,
+                    Orders = GetOrderControlTaskOrders(task.Id)
+                };
+        });
+    }
+
+    public bool HasStartedOutboundForOrder(long orderId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT 1
+FROM docs d
+WHERE d.order_id = @order_id
+  AND d.type = @outbound_doc_type
+  AND d.status = @draft_doc_status
+LIMIT 1;");
+            command.Parameters.AddWithValue("@order_id", orderId);
+            command.Parameters.AddWithValue("@outbound_doc_type", DocTypeMapper.ToOpString(DocType.Outbound));
+            command.Parameters.AddWithValue("@draft_doc_status", DocTypeMapper.StatusToString(DocStatus.Draft));
+            return command.ExecuteScalar() != null;
+        });
+    }
+
+    private static string BuildOrderControlTaskSelectSql(string clause)
+    {
+        return @"
+SELECT t.id, t.task_ref, t.status, t.created_at, t.created_by, t.started_at, t.completed_at,
+       t.cancelled_at, t.cancelled_by, t.assigned_to_device_id, t.expected_hu_count,
+       t.checked_hu_count, t.discrepancy_hu_count, t.snapshot_hash, t.comment, t.error_code, t.error_message
+FROM order_control_tasks t " + clause;
+    }
+
+    private static OrderControlTask ReadOrderControlTask(NpgsqlDataReader reader)
+    {
+        return new OrderControlTask
+        {
+            Id = reader.GetInt64(0),
+            TaskRef = reader.GetString(1),
+            Status = reader.GetString(2),
+            CreatedAt = FromDbDate(reader.GetString(3)) ?? DateTime.MinValue,
+            CreatedBy = reader.IsDBNull(4) ? null : reader.GetString(4),
+            StartedAt = reader.IsDBNull(5) ? null : FromDbDate(reader.GetString(5)),
+            CompletedAt = reader.IsDBNull(6) ? null : FromDbDate(reader.GetString(6)),
+            CancelledAt = reader.IsDBNull(7) ? null : FromDbDate(reader.GetString(7)),
+            CancelledBy = reader.IsDBNull(8) ? null : reader.GetString(8),
+            AssignedToDeviceId = reader.IsDBNull(9) ? null : reader.GetString(9),
+            ExpectedHuCount = reader.GetInt32(10),
+            CheckedHuCount = reader.GetInt32(11),
+            DiscrepancyHuCount = reader.GetInt32(12),
+            SnapshotHash = reader.GetString(13),
+            Comment = reader.IsDBNull(14) ? null : reader.GetString(14),
+            ErrorCode = reader.IsDBNull(15) ? null : reader.GetString(15),
+            ErrorMessage = reader.IsDBNull(16) ? null : reader.GetString(16)
+        };
+    }
+
+    private static OrderControlTaskOrder ReadOrderControlTaskOrder(NpgsqlDataReader reader)
+    {
+        return new OrderControlTaskOrder
+        {
+            Id = reader.GetInt64(0),
+            TaskId = reader.GetInt64(1),
+            OrderId = reader.GetInt64(2),
+            OrderRef = reader.GetString(3),
+            PartnerName = reader.IsDBNull(4) ? null : reader.GetString(4),
+            IsActive = reader.GetBoolean(5)
+        };
+    }
+
+    private static OrderControlTaskHu ReadOrderControlTaskHu(NpgsqlDataReader reader)
+    {
+        return new OrderControlTaskHu
+        {
+            Id = reader.GetInt64(0),
+            TaskId = reader.GetInt64(1),
+            HuCode = reader.GetString(2),
+            NormalizedHu = reader.GetString(3),
+            Status = reader.GetString(4),
+            Qty = reader.GetDouble(5),
+            ItemSummary = reader.GetString(6),
+            SnapshotHash = reader.GetString(7),
+            CheckedAt = reader.IsDBNull(8) ? null : FromDbDate(reader.GetString(8)),
+            CheckedByDeviceId = reader.IsDBNull(9) ? null : reader.GetString(9),
+            CheckedByOperator = reader.IsDBNull(10) ? null : reader.GetString(10),
+            ErrorCode = reader.IsDBNull(11) ? null : reader.GetString(11),
+            ErrorMessage = reader.IsDBNull(12) ? null : reader.GetString(12)
+        };
+    }
+
+    private static OrderControlTaskHuLine ReadOrderControlTaskHuLine(NpgsqlDataReader reader)
+    {
+        return new OrderControlTaskHuLine
+        {
+            Id = reader.GetInt64(0),
+            TaskHuId = reader.GetInt64(1),
+            TaskId = reader.GetInt64(2),
+            HuCode = reader.GetString(3),
+            OrderId = reader.GetInt64(4),
+            OrderRef = reader.GetString(5),
+            OrderLineId = reader.GetInt64(6),
+            ItemId = reader.GetInt64(7),
+            ItemName = reader.GetString(8),
+            Qty = reader.GetDouble(9),
+            LocationId = reader.IsDBNull(10) ? null : reader.GetInt64(10),
+            LocationCode = reader.IsDBNull(11) ? null : reader.GetString(11),
+            SourceType = reader.GetString(12)
+        };
+    }
+
+    private static OrderControlEvent ReadOrderControlEvent(NpgsqlDataReader reader)
+    {
+        return new OrderControlEvent
+        {
+            Id = reader.GetInt64(0),
+            TaskId = reader.GetInt64(1),
+            TaskHuId = reader.IsDBNull(2) ? null : reader.GetInt64(2),
+            EventType = reader.GetString(3),
+            EventAt = FromDbDate(reader.GetString(4)) ?? DateTime.MinValue,
+            DeviceId = reader.IsDBNull(5) ? null : reader.GetString(5),
+            OperatorId = reader.IsDBNull(6) ? null : reader.GetString(6),
+            HuCode = reader.IsDBNull(7) ? null : reader.GetString(7),
+            RequestId = reader.IsDBNull(8) ? null : reader.GetString(8),
+            PayloadJson = reader.IsDBNull(9) ? "{}" : reader.GetString(9),
+            ErrorCode = reader.IsDBNull(10) ? null : reader.GetString(10),
+            Message = reader.IsDBNull(11) ? null : reader.GetString(11)
+        };
     }
 
     private static string BuildWarehouseActionLineSelectSql(string whereClause)
