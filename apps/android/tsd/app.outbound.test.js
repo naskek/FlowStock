@@ -257,7 +257,7 @@ assert.doesNotMatch(homeHtml, /Позиции ниже минимума|homeLowS
 assert.match(homeHtml, /home-menu-grid/, "home screen should render tile menu grid");
 assert.match(homeHtml, /home-menu-tile/, "home screen should render menu tiles");
 assert.match(homeHtml, /Операции/);
-assert.match(homeHtml, /Каталог/);
+assert.match(homeHtml, /Склад/);
 assert.match(homeHtml, /Заказы/);
 assert.match(homeHtml, /Поиск HU/);
 assert.doesNotMatch(homeHtml, /menu-btn/);

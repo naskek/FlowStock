@@ -2939,9 +2939,9 @@
         "img/home/operations.png"
       ),
       buildHomeMenuTile(
-        "items",
-        "Каталог",
-        "Товары и номенклатура",
+        "stock",
+        "Склад",
+        "Остатки, потребность и производство",
         "catalogue",
         "img/home/catalogue.png"
       ),
@@ -5219,47 +5219,288 @@
 
   function renderStock() {
     return (
-      '<section class="screen">' +
-      '  <div class="screen-card">' +
+      '<section class="screen stock-state-screen">' +
+      '  <div class="screen-card doc-screen-card stock-state-card">' +
       '    <div class="section-title">Состояние склада</div>' +
-      '    <div id="stockStatus" class="stock-status">Дата актуальности: -</div>' +
-      '    <div class="section-subtitle">Сканирование</div>' +
-      '    <div class="scan-input-row">' +
-      '      <input class="form-input" id="stockScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" placeholder="Сканируйте HU или товар" />' +
-      '      <button class="btn btn-outline" id="stockScanBtn" type="button">Сканировать</button>' +
+      '    <div class="stock-state-search">' +
+      '      <input class="form-input" id="stockSearchInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Название, SKU, GTIN, штрихкод" />' +
       "    </div>" +
-      '    <div class="stock-toolbar">' +
-      '      <div class="stock-filter-field">' +
-      '        <label class="form-label" for="stockSearchInput">Поиск</label>' +
-      '        <input class="form-input" id="stockSearchInput" type="text" autocomplete="off" placeholder="Название, бренд, объем, SKU, GTIN, штрихкод" />' +
-      "      </div>" +
-      '      <div class="stock-filter-field">' +
-      '        <label class="form-label" for="stockLocationFilter">Место хранения</label>' +
-      '        <select class="form-input" id="stockLocationFilter"></select>' +
-      "      </div>" +
-      '      <div class="stock-filter-field">' +
-      '        <label class="form-label" for="stockTypeFilter">Тип</label>' +
-      '        <select class="form-input" id="stockTypeFilter"></select>' +
-      "      </div>" +
-      '      <div class="stock-filter-field">' +
-      '        <label class="form-label" for="stockHuInput">HU (только цифры)</label>' +
-      '        <div class="stock-hu-inline">' +
-      '          <span class="stock-hu-prefix">HU-</span>' +
-      '          <input class="form-input" id="stockHuInput" type="text" autocomplete="off" inputmode="numeric" placeholder="например, 00010" />' +
-      "        </div>" +
-      '        <div id="stockHuHint" class="stock-input-hint" hidden>Можно вводить только цифры.</div>' +
-      "      </div>" +
-      '      <div id="stockStatusText" class="stock-toolbar-status"></div>' +
-      "    </div>" +
-      '    <div id="stockLowWrap"></div>' +
-      '    <div id="stockTableWrap"></div>' +
-      '    <div id="stockMessage" class="stock-message"></div>' +
-      '    <div id="stockDetails" class="stock-details"></div>' +
-      '    <div class="actions-bar">' +
-      '      <button class="btn btn-outline" id="stockClearBtn" type="button">Очистить</button>' +
-      "    </div>" +
+      '    <div id="stockMessage" class="stock-state-message"></div>' +
+      '    <div id="stockList" class="stock-state-list"></div>' +
       "  </div>" +
       "</section>"
+    );
+  }
+
+  function mapWarehouseProductionStateRow(row, itemsById) {
+    var itemId = Number(row && row.item_id) || 0;
+    var item = (itemsById && itemsById[itemId]) || {};
+    var baseUom = String((row && row.base_uom) || item.base_uom || "шт").trim();
+    function fmt(value) {
+      return formatQtyWithUnit(Number(value) || 0, baseUom);
+    }
+    function fmtPositive(value) {
+      return Number(value) > 0.000001 ? fmt(value) : "";
+    }
+
+    var sku = String((row && row.sku) || item.sku || "").trim();
+    var barcode = String((row && row.barcode) || item.barcode || "").trim();
+    var gtin = String((row && row.gtin) || item.gtin || "").trim();
+    var itemName = String((row && row.item_name) || item.name || "-");
+
+    var stockQty = Number(row && row.stock_qty) || 0;
+    var minStockQty = Number(row && row.min_stock_qty) || 0;
+    var belowMinQty = Number(row && row.below_min_qty) || 0;
+    var remainingNeedQty = Number(row && row.remaining_need_qty) || 0;
+    var customerDemandQty = Number(row && row.customer_open_demand_qty) || 0;
+    var internalRemainingQty = Number(row && row.internal_remaining_qty) || 0;
+    var prdPlannedQty = Number(row && row.prd_planned_qty) || 0;
+    var prdFilledQty = Number(row && row.prd_filled_qty) || 0;
+
+    var needBreakdown =
+      row && row.need_breakdown && typeof row.need_breakdown === "object" ? row.need_breakdown : {};
+    var demandToClose = Number(needBreakdown.demand_to_close_customer_orders);
+    var demandToMin = Number(needBreakdown.demand_to_min_stock);
+    var alreadyPlannedInternal = Number(needBreakdown.already_planned_internal);
+    var remainingToCreate = Number(needBreakdown.remaining_to_create);
+    if (!isFinite(demandToClose)) demandToClose = customerDemandQty;
+    if (!isFinite(demandToMin)) demandToMin = belowMinQty;
+    if (!isFinite(alreadyPlannedInternal)) alreadyPlannedInternal = internalRemainingQty;
+    if (!isFinite(remainingToCreate)) remainingToCreate = remainingNeedQty;
+
+    var huRows = Array.isArray(row && row.hu_rows)
+      ? row.hu_rows.map(function (hu) {
+          return {
+            location: String((hu && hu.location) || "").trim() || "—",
+            huCode: String((hu && hu.hu_code) || "").trim() || "—",
+            qtyDisplay: fmt(Number(hu && hu.qty) || 0),
+            stockStatus: String((hu && hu.stock_status) || "На складе").trim() || "На складе",
+          };
+        })
+      : [];
+
+    var productionReceipts = Array.isArray(row && row.production_receipts)
+      ? row.production_receipts.map(function (pallet) {
+          var plannedQty = Number(pallet && pallet.planned_qty) || 0;
+          var filledQty = Number(pallet && pallet.filled_qty) || 0;
+          var qty = Number(pallet && pallet.qty);
+          if (!isFinite(qty) || qty <= 0) {
+            qty = filledQty > 0.000001 ? filledQty : plannedQty;
+          }
+          return {
+            huCode: String((pallet && pallet.hu_code) || "").trim() || "—",
+            prdRef: String((pallet && pallet.prd_ref) || "").trim() || "—",
+            palletStatus:
+              String((pallet && (pallet.pallet_status_display || pallet.pallet_status)) || "").trim() || "—",
+            sourceOrderRef: String((pallet && pallet.source_order_ref) || "").trim() || "—",
+            qtyDisplay: fmt(qty),
+          };
+        })
+      : [];
+
+    var hasNeedBreakdown =
+      demandToClose > 0.000001 ||
+      demandToMin > 0.000001 ||
+      alreadyPlannedInternal > 0.000001 ||
+      prdPlannedQty > 0.000001 ||
+      prdFilledQty > 0.000001;
+
+    var status = "neutral";
+    if (belowMinQty > 0.000001) {
+      status = "below";
+    } else if (remainingToCreate > 0.000001) {
+      status = "uncovered";
+    } else if (hasNeedBreakdown) {
+      status = "covered";
+    }
+
+    var internalDisplay = fmtPositive(alreadyPlannedInternal) || "—";
+    var prdDisplay = fmtPositive(prdPlannedQty) || "—";
+
+    return {
+      itemId: itemId,
+      itemName: itemName,
+      sku: sku,
+      barcode: barcode,
+      gtin: gtin,
+      baseUom: baseUom,
+      stockQty: stockQty,
+      minStockQty: minStockQty,
+      belowMinQty: belowMinQty,
+      internalRemainingQty: alreadyPlannedInternal,
+      prdPlannedQty: prdPlannedQty,
+      prdFilledQty: prdFilledQty,
+      remainingNeedQty: remainingToCreate,
+      status: status,
+      stockDisplay: fmt(stockQty),
+      minDisplay: minStockQty > 0.000001 ? fmt(minStockQty) : "—",
+      demandDisplay: demandToClose > 0.000001 ? fmt(demandToClose) : "—",
+      internalPrdDisplay:
+        internalDisplay === "—" && prdDisplay === "—" ? "—" : internalDisplay + " / " + prdDisplay,
+      customerDemandDisplay: demandToClose > 0.000001 ? fmt(demandToClose) : "—",
+      minDemandDisplay: demandToMin > 0.000001 ? fmt(demandToMin) : "—",
+      internalPlanDisplay: alreadyPlannedInternal > 0.000001 ? fmt(alreadyPlannedInternal) : "—",
+      huRows: huRows,
+      productionReceipts: productionReceipts,
+      hasNeedBreakdown: hasNeedBreakdown,
+    };
+  }
+
+  function shouldShowWarehouseStateRow(row) {
+    var tolerance = 0.000001;
+    return (
+      !!row &&
+      (Math.abs(Number(row.stockQty) || 0) > tolerance ||
+        (Number(row.minStockQty) || 0) > tolerance ||
+        (Number(row.belowMinQty) || 0) > tolerance ||
+        (Number(row.internalRemainingQty) || 0) > tolerance ||
+        (Number(row.prdPlannedQty) || 0) > tolerance ||
+        (Number(row.prdFilledQty) || 0) > tolerance)
+    );
+  }
+
+  function filterWarehouseStateRows(rows, query) {
+    var q = String(query || "").trim().toLowerCase();
+    var source = Array.isArray(rows) ? rows : [];
+    if (!q) {
+      return source;
+    }
+    return source.filter(function (row) {
+      var haystack = [row.itemName, row.sku, row.gtin, row.barcode]
+        .map(function (value) {
+          return String(value || "").toLowerCase();
+        })
+        .join(" ");
+      return haystack.indexOf(q) >= 0;
+    });
+  }
+
+  function renderWarehouseStateDetailRows(pairs) {
+    return pairs
+      .map(function (pair) {
+        return (
+          '<div class="stock-state-row"><span class="stock-state-row__k">' +
+          escapeHtml(pair[0]) +
+          '</span><span class="stock-state-row__v">' +
+          escapeHtml(pair[1]) +
+          "</span></div>"
+        );
+      })
+      .join("");
+  }
+
+  function renderStockStateCard(row) {
+    var subParts = [];
+    if (row.sku) {
+      subParts.push("SKU " + row.sku);
+    }
+    if (row.barcode) {
+      subParts.push("ШК " + row.barcode);
+    }
+    var sub = subParts.join(" · ") || "—";
+
+    var chip = "";
+    if (row.status === "below") {
+      chip = '<span class="stock-state-chip stock-state-chip--below">Ниже минимума</span>';
+    } else if (row.status === "uncovered") {
+      chip = '<span class="stock-state-chip stock-state-chip--uncovered">Не покрыто</span>';
+    } else if (row.status === "covered") {
+      chip = '<span class="stock-state-chip stock-state-chip--covered">Покрыто</span>';
+    }
+
+    var stockValueClass =
+      "stock-state-cell__v" + (row.status === "below" ? " stock-state-cell__v--below" : "");
+
+    var detailSections = [];
+    if (row.huRows.length) {
+      detailSections.push(
+        '<div class="stock-state-section"><div class="stock-state-section__title">Складские HU</div>' +
+          row.huRows
+            .map(function (hu) {
+              return (
+                '<div class="stock-state-row"><span class="stock-state-row__k">' +
+                escapeHtml(hu.huCode + " · " + hu.location) +
+                '</span><span class="stock-state-row__v">' +
+                escapeHtml(hu.qtyDisplay + " · " + hu.stockStatus) +
+                "</span></div>"
+              );
+            })
+            .join("") +
+          "</div>"
+      );
+    }
+    if (row.productionReceipts.length) {
+      detailSections.push(
+        '<div class="stock-state-section"><div class="stock-state-section__title">План / производство</div>' +
+          row.productionReceipts
+            .map(function (pallet) {
+              return (
+                '<div class="stock-state-row"><span class="stock-state-row__k">' +
+                escapeHtml(pallet.huCode + " · " + pallet.prdRef) +
+                '</span><span class="stock-state-row__v">' +
+                escapeHtml(pallet.palletStatus + " · " + pallet.qtyDisplay + " · " + pallet.sourceOrderRef) +
+                "</span></div>"
+              );
+            })
+            .join("") +
+          "</div>"
+      );
+    }
+    if (row.hasNeedBreakdown) {
+      detailSections.push(
+        '<div class="stock-state-section"><div class="stock-state-section__title">Расчёт потребности</div>' +
+          renderWarehouseStateDetailRows([
+            ["Клиентские заказы", row.customerDemandDisplay],
+            ["До минимума", row.minDemandDisplay],
+            ["Внутренний план", row.internalPlanDisplay],
+          ]) +
+          "</div>"
+      );
+    }
+    var detailHtml = detailSections.length
+      ? detailSections.join("")
+      : '<div class="stock-state-empty-detail">Детализация отсутствует.</div>';
+
+    return (
+      '<article class="stock-state-item stock-state-item--' +
+      row.status +
+      '" data-stock-toggle="' +
+      escapeHtml(String(row.itemId)) +
+      '" tabindex="0" role="button" aria-expanded="false">' +
+      '  <div class="stock-state-item__head">' +
+      '    <div class="stock-state-item__title">' +
+      '      <div class="stock-state-name">' +
+      escapeHtml(row.itemName) +
+      "</div>" +
+      '      <div class="stock-state-sub">' +
+      escapeHtml(sub) +
+      "</div>" +
+      "    </div>" +
+      chip +
+      "  </div>" +
+      '  <div class="stock-state-grid">' +
+      '    <div class="stock-state-cell"><span class="stock-state-cell__k">На складе</span><span class="' +
+      stockValueClass +
+      '">' +
+      escapeHtml(row.stockDisplay) +
+      "</span></div>" +
+      '    <div class="stock-state-cell"><span class="stock-state-cell__k">Минимум</span><span class="stock-state-cell__v">' +
+      escapeHtml(row.minDisplay) +
+      "</span></div>" +
+      '    <div class="stock-state-cell"><span class="stock-state-cell__k">Потребность</span><span class="stock-state-cell__v">' +
+      escapeHtml(row.demandDisplay) +
+      "</span></div>" +
+      '    <div class="stock-state-cell"><span class="stock-state-cell__k">Внутр. / PRD</span><span class="stock-state-cell__v">' +
+      escapeHtml(row.internalPrdDisplay) +
+      "</span></div>" +
+      "  </div>" +
+      '  <div class="stock-state-detail" data-stock-detail="' +
+      escapeHtml(String(row.itemId)) +
+      '" hidden>' +
+      detailHtml +
+      "</div>" +
+      '  <div class="stock-state-more"><span class="stock-state-caret" aria-hidden="true">▾</span>Подробнее</div>' +
+      "</article>"
     );
   }
 
@@ -6023,1002 +6264,142 @@
   }
 
   function wireStock() {
-    var statusLabel = document.getElementById("stockStatus");
-    var scanInput = document.getElementById("stockScanInput");
-    var scanBtn = document.getElementById("stockScanBtn");
+    var searchInput = document.getElementById("stockSearchInput");
+    var listEl = document.getElementById("stockList");
     var messageEl = document.getElementById("stockMessage");
-    var detailsEl = document.getElementById("stockDetails");
-    var clearBtn = document.getElementById("stockClearBtn");
-    var dataReady = false;
-    var lastStockValue = "";
-    var locationMap = {};
-    var itemsById = {};
-    var itemsLoading = null;
-    var huStockCache = null;
-    var huStockCachedAt = 0;
-    var HU_STOCK_TTL_MS = 15000;
-    var rowsStatusEl = document.getElementById("stockStatusText");
-    var stockSearchInput = document.getElementById("stockSearchInput");
-    var locationSelect = document.getElementById("stockLocationFilter");
-    var typeFilter = document.getElementById("stockTypeFilter");
-    var huInput = document.getElementById("stockHuInput");
-    var huHint = document.getElementById("stockHuHint");
-    var lowWrap = document.getElementById("stockLowWrap");
-    var tableWrap = document.getElementById("stockTableWrap");
-    var stockDataLoaded = false;
-    var stockRenderTimer = null;
-    var cachedItems = [];
-    var cachedItemsById = {};
-    var cachedItemTypes = [];
-    var cachedStockRows = [];
-    var cachedHuRows = [];
-    var cachedCombinedRows = [];
+    var loadToken = 0;
+    var allRows = [];
+    var loaded = false;
 
-    function setStatusText(text) {
-      if (statusLabel) {
-        statusLabel.textContent = text;
-      }
-    }
-
-    function setStockMessage(text) {
-      if (messageEl) {
-        messageEl.textContent = text || "";
-      }
-    }
-
-    function clearDetails() {
-      if (detailsEl) {
-        detailsEl.innerHTML = "";
-      }
-    }
-
-    function setRowsStatus(text) {
-      if (rowsStatusEl) {
-        rowsStatusEl.textContent = text || "";
-      }
-    }
-
-    function normalizeQty(value) {
-      var num = Number(value);
-      if (!isFinite(num)) {
-        return 0;
-      }
-      return num;
-    }
-
-    function formatQtyDisplay(qty, itemId) {
-      var num = normalizeQty(qty);
-      var item = cachedItemsById[Number(itemId)] || {};
-      var unit = item.base_uom || item.base_uom_code || "шт";
-      var normalized =
-        Math.abs(num - Math.round(num)) < 0.000001
-          ? String(Math.round(num))
-          : num.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
-      return normalized + (unit ? " " + unit : "");
-    }
-
-    function setCachedItems(items) {
-      cachedItems = Array.isArray(items) ? items : [];
-      cachedItemsById = {};
-      cachedItems.forEach(function (item) {
-        var id = Number(item && item.itemId != null ? item.itemId : item.id);
-        if (!id) {
-          return;
-        }
-        cachedItemsById[id] = {
-          itemId: id,
-          name: String(item.name || "").trim(),
-          barcode: String(item.barcode || "").trim(),
-          gtin: String(item.gtin || "").trim(),
-          sku: String(item.sku || "").trim(),
-          brand: String(item.brand || "").trim(),
-          volume: String(item.volume || "").trim(),
-          base_uom: String(item.base_uom_code || item.base_uom || "").trim(),
-          base_uom_code: String(item.base_uom_code || item.base_uom || "").trim(),
-          itemTypeId: Number(item.item_type_id) || 0,
-          itemTypeName: String(item.item_type_name || "").trim(),
-          itemTypeEnableMinStockControl: item.item_type_enable_min_stock_control === true,
-          minStockQty: item.min_stock_qty != null ? Number(item.min_stock_qty) : null,
-        };
-      });
-      itemsById = Object.assign({}, cachedItemsById);
-    }
-
-    function setCachedLocations(locations) {
-      locationMap = {};
-      (Array.isArray(locations) ? locations : []).forEach(function (location) {
-        var id = Number(location && location.locationId != null ? location.locationId : location.id);
-        if (!id) {
-          return;
-        }
-        locationMap[id] = {
-          locationId: id,
-          code: String(location.code || "").trim(),
-          name: String(location.name || "").trim(),
-        };
-      });
-    }
-
-    function setCachedItemTypes(itemTypes) {
-      cachedItemTypes = Array.isArray(itemTypes) ? itemTypes.slice() : [];
-    }
-
-    function buildCombinedRows() {
-      var totalsByKey = {};
-      cachedHuRows.forEach(function (row) {
-        var key = Number(row.itemId) + "|" + Number(row.locationId);
-        totalsByKey[key] = (totalsByKey[key] || 0) + normalizeQty(row.qty);
-      });
-
-      var combined = cachedHuRows.slice();
-      cachedStockRows.forEach(function (row) {
-        var key = Number(row.itemId) + "|" + Number(row.locationId);
-        var huQty = totalsByKey[key] || 0;
-        var diff = normalizeQty(row.qty) - huQty;
-        if (Math.abs(diff) < 0.000001) {
-          return;
-        }
-
-        combined.push({
-          itemId: Number(row.itemId) || 0,
-          locationId: Number(row.locationId) || 0,
-          qty: diff,
-          qtyDisplay: formatQtyDisplay(diff, row.itemId),
-          itemName: row.itemName || "-",
-          barcode: row.barcode || "",
-          gtin: row.gtin || "",
-          brand: row.brand || "",
-          volume: row.volume || "",
-          itemTypeId: Number(row.itemTypeId) || 0,
-          itemTypeName: row.itemTypeName || "",
-          locationCode: row.locationCode || "",
-          hu: "",
-        });
-      });
-
-      cachedCombinedRows = combined;
-    }
-
-    function renderLowStockTable(rows) {
-      if (!rows || !rows.length) {
-        return "";
-      }
-
-      var body = rows
-        .map(function (row) {
-          return (
-            "<tr>" +
-            "<td>" +
-            escapeHtml(row.itemName || "-") +
-            "</td>" +
-            "<td>" +
-            escapeHtml(row.itemTypeName || "-") +
-            "</td>" +
-            '<td><span class="pc-qty">' +
-            escapeHtml(row.qtyDisplay || "0") +
-            "</span></td>" +
-            "<td>" +
-            escapeHtml(row.minStockDisplay || "-") +
-            "</td>" +
-            "<td>" +
-            escapeHtml(row.shortageDisplay || "-") +
-            "</td>" +
-            "</tr>"
-          );
-        })
-        .join("");
-
-      return (
-        '<section class="pc-low-stock-card">' +
-        '  <div class="pc-low-stock-title">Позиции ниже минимума: ' +
-        rows.length +
-        "</div>" +
-        '  <div class="pc-low-stock-table-wrap">' +
-        '    <table class="pc-table">' +
-        "      <thead><tr>" +
-        "        <th>Товар</th>" +
-        "        <th>Тип</th>" +
-        "        <th>В наличии</th>" +
-        "        <th>Минимум</th>" +
-        "        <th>Нехватка</th>" +
-        "      </tr></thead>" +
-        "      <tbody>" +
-        body +
-        "      </tbody>" +
-        "    </table>" +
-        "  </div>" +
-        "</section>"
-      );
-    }
-
-    function renderStockTable(rows) {
-      if (!rows || !rows.length) {
-        return '<div class="empty-state">Нет данных по остаткам.</div>';
-      }
-
-      var body = rows
-        .map(function (row) {
-          var qtyLabel = row.qtyDisplay || formatQtyDisplay(row.qty, row.itemId);
-          var huLabel = row.hu ? row.hu : "-";
-          return (
-            "<tr>" +
-            "<td>" +
-            escapeHtml(row.itemName || "-") +
-            "</td>" +
-            "<td>" +
-            escapeHtml(row.brand || "-") +
-            "</td>" +
-            "<td>" +
-            escapeHtml(row.volume || "-") +
-            "</td>" +
-            "<td>" +
-            escapeHtml(row.barcode || "-") +
-            "</td>" +
-            "<td>" +
-            escapeHtml(row.locationCode || "-") +
-            "</td>" +
-            "<td>" +
-            escapeHtml(huLabel) +
-            "</td>" +
-            '<td><span class="pc-qty">' +
-            escapeHtml(String(qtyLabel)) +
-            "</span></td>" +
-            "</tr>"
-          );
-        })
-        .join("");
-
-      return (
-        '<table class="pc-table">' +
-        "<thead><tr>" +
-        "<th>Товар</th>" +
-        "<th>Бренд</th>" +
-        "<th>Объем</th>" +
-        "<th>SKU / ШК</th>" +
-        "<th>Место</th>" +
-        "<th>HU</th>" +
-        "<th>Кол-во</th>" +
-        "</tr></thead>" +
-        "<tbody>" +
-        body +
-        "</tbody>" +
-        "</table>"
-      );
-    }
-
-    function renderLocationRows(rows) {
-      return rows
-        .map(function (row) {
-          var qtyText = String(row.qtyBase != null ? row.qtyBase : 0);
-          var locationLabel = formatLocationLabel(row.code, row.name);
-          if (row.hu) {
-            locationLabel += " - " + row.hu;
-          }
-          return (
-            '<div class="stock-location-row">' +
-            '  <div class="stock-location-label">' +
-            escapeHtml(locationLabel) +
-            "</div>" +
-            '  <div class="stock-location-qty">' +
-            escapeHtml(qtyText) +
-            " шт</div>" +
-            "</div>"
-          );
-        })
-        .join("");
-    }
-
-    function renderHuRows(rows, uom) {
-      if (!rows.length) {
-        return '<div class="stock-no-rows">Нет HU-разреза.</div>';
-      }
-      return rows
-        .map(function (row) {
-          var hu = row.hu || "-";
-          var locationCode = row.locationCode || "";
-          var qtyText = String(row.qty != null ? row.qty : 0);
-          var line =
-            hu +
-            " - " +
-            qtyText +
-            " " +
-            (uom || "шт") +
-            " (локация: " +
-            locationCode +
-            ")";
-          return '<div class="stock-hu-row">' + escapeHtml(line) + "</div>";
-        })
-        .join("");
-    }
-
-    function getTypeFilterId() {
-      if (!typeFilter) {
-        return 0;
-      }
-      return Number(typeFilter.value || 0) || 0;
-    }
-
-    function getHuDigitsFilter() {
-      if (!huInput) {
-        return "";
-      }
-      var raw = String(huInput.value || "").trim();
-      var isValid = /^\d*$/.test(raw);
-      if (huInput) {
-        huInput.classList.toggle("form-input-error", !isValid);
-      }
-      if (huHint) {
-        huHint.hidden = isValid;
-      }
-      return isValid ? raw : "";
-    }
-
-    function matchesStockSearch(row, normalizedQuery) {
-      if (!normalizedQuery) {
-        return true;
-      }
-      var fields = [
-        row.itemName,
-        row.brand,
-        row.volume,
-        row.barcode,
-        row.gtin,
-        row.locationCode,
-        row.hu,
-        row.itemTypeName,
-      ];
-      for (var i = 0; i < fields.length; i += 1) {
-        var value = String(fields[i] || "").toLowerCase();
-        if (value.indexOf(normalizedQuery) !== -1) {
-          return true;
-        }
-      }
-      return false;
-    }
-
-    function buildLowStockRows(typeId) {
-      var totalsByItem = {};
-      cachedStockRows.forEach(function (row) {
-        var itemId = Number(row.itemId) || 0;
-        if (!itemId) {
-          return;
-        }
-        totalsByItem[itemId] = (totalsByItem[itemId] || 0) + normalizeQty(row.qty);
-      });
-
-      return Object.keys(cachedItemsById)
-        .map(function (key) {
-          return cachedItemsById[Number(key)];
-        })
-        .filter(function (item) {
-          if (!item) {
-            return false;
-          }
-          if (typeId && Number(item.itemTypeId) !== typeId) {
-            return false;
-          }
-          if (!(item.itemTypeEnableMinStockControl === true) || item.minStockQty == null) {
-            return false;
-          }
-
-          var itemId = Number(item.itemId) || 0;
-          var qty = normalizeQty(totalsByItem[itemId] || 0);
-          return qty < normalizeQty(item.minStockQty);
-        })
-        .map(function (item) {
-          var itemId = Number(item.itemId) || 0;
-          var qty = normalizeQty(totalsByItem[itemId] || 0);
-          var minStockQty = normalizeQty(item.minStockQty);
-          var shortage = Math.max(0, minStockQty - qty);
-          return {
-            itemName: item.name || "-",
-            itemTypeName: item.itemTypeName || "-",
-            qtyDisplay: formatQtyDisplay(qty, itemId),
-            minStockDisplay: formatQtyDisplay(minStockQty, itemId),
-            shortageDisplay: formatQtyDisplay(shortage, itemId),
-            shortage: shortage,
-          };
-        })
-        .sort(function (a, b) {
-          if (b.shortage !== a.shortage) {
-            return b.shortage - a.shortage;
-          }
-          return String(a.itemName || "").localeCompare(String(b.itemName || ""), "ru");
-        });
-    }
-
-    function fillTypeFilter() {
-      if (!typeFilter) {
+    function setMessage(text, kind) {
+      if (!messageEl) {
         return;
       }
-
-      var previous = String(typeFilter.value || "");
-      var options =
-        '<option value="">Все типы</option>' +
-        cachedItemTypes
-          .slice()
-          .sort(function (left, right) {
-            var leftOrder = Number(left && left.sortOrder) || Number(left && left.sort_order) || 0;
-            var rightOrder = Number(right && right.sortOrder) || Number(right && right.sort_order) || 0;
-            if (leftOrder !== rightOrder) {
-              return leftOrder - rightOrder;
-            }
-            var leftName = String((left && left.name) || "").toLowerCase();
-            var rightName = String((right && right.name) || "").toLowerCase();
-            return leftName < rightName ? -1 : leftName > rightName ? 1 : 0;
-          })
-          .map(function (type) {
-            var id = Number(type && (type.itemTypeId != null ? type.itemTypeId : type.id)) || 0;
-            var name = String((type && type.name) || "").trim() || "Без названия";
-            return '<option value="' + escapeHtml(String(id)) + '">' + escapeHtml(name) + "</option>";
-          })
-          .join("");
-
-      typeFilter.innerHTML = options;
-      if (previous) {
-        var hasPrevious = Array.prototype.some.call(typeFilter.options || [], function (option) {
-          return String(option.value || "") === previous;
-        });
-        if (hasPrevious) {
-          typeFilter.value = previous;
-        }
-      }
+      messageEl.textContent = text || "";
+      messageEl.className =
+        "stock-state-message" + (text ? " stock-state-message--" + (kind || "info") : "");
     }
 
-    function fillFilters() {
-      if (locationSelect) {
-        var options =
-          '<option value="">Все места</option>' +
-          Object.keys(locationMap)
-            .map(function (key) {
-              return locationMap[Number(key)];
-            })
-            .filter(function (loc) {
-              return !!loc;
-            })
-            .map(function (loc) {
-              var label = loc.code ? loc.code + " — " + (loc.name || "") : loc.name || "";
-              return (
-                '<option value="' +
-                escapeHtml(String(loc.locationId)) +
-                '">' +
-                escapeHtml(label) +
-                "</option>"
-              );
-            })
-            .join("");
-        locationSelect.innerHTML = options;
-      }
-
-      fillTypeFilter();
-    }
-
-    function renderLowStock() {
-      if (!lowWrap) {
+    function renderList() {
+      if (!listEl) {
         return;
       }
-      var lowRows = buildLowStockRows(getTypeFilterId());
-      lowWrap.innerHTML = renderLowStockTable(lowRows);
-    }
-
-    function renderRows() {
-      if (!tableWrap) {
+      if (!loaded) {
+        listEl.innerHTML = "";
         return;
       }
-
-      var query = String(stockSearchInput && stockSearchInput.value ? stockSearchInput.value : "")
-        .trim()
-        .toLowerCase();
-      var locationId = locationSelect ? Number(locationSelect.value || 0) : 0;
-      var typeId = getTypeFilterId();
-      var huDigits = getHuDigitsFilter();
-      var source = cachedCombinedRows.length ? cachedCombinedRows : cachedStockRows;
-
-      var rows = source.filter(function (row) {
-        if (locationId && Number(row.locationId) !== locationId) {
-          return false;
-        }
-        if (typeId && Number(row.itemTypeId) !== typeId) {
-          return false;
-        }
-        var huRaw = String(row.hu || "");
-        if (huDigits && huRaw.indexOf(huDigits) === -1) {
-          return false;
-        }
-        return matchesStockSearch(row, query);
-      });
-
-      setRowsStatus("Строк: " + rows.length);
-      renderLowStock();
-      tableWrap.innerHTML = renderStockTable(rows);
-    }
-
-    function scheduleRender() {
-      if (stockRenderTimer) {
-        window.clearTimeout(stockRenderTimer);
+      if (!allRows.length) {
+        listEl.innerHTML = "";
+        setMessage("Список пуст", "empty");
+        return;
       }
-      stockRenderTimer = window.setTimeout(renderRows, 120);
+      var filtered = filterWarehouseStateRows(allRows, searchInput ? searchInput.value : "");
+      if (!filtered.length) {
+        listEl.innerHTML = "";
+        setMessage("Ничего не найдено", "empty");
+        return;
+      }
+      setMessage("");
+      listEl.innerHTML = filtered.map(renderStockStateCard).join("");
     }
 
-    function loadStockData() {
-      return Promise.all([
+    function load() {
+      var token = (loadToken += 1);
+      loaded = false;
+      if (listEl) {
+        listEl.innerHTML = "";
+      }
+      setMessage("Загрузка…", "loading");
+      Promise.all([
         TsdStorage.apiSearchItems(""),
-        TsdStorage.apiGetLocations(),
-        TsdStorage.apiGetStockRows(),
-        TsdStorage.apiGetHuStockRows(),
-        TsdStorage.apiGetItemTypes(false),
-      ]).then(function (payloads) {
-        var items = Array.isArray(payloads[0]) ? payloads[0] : [];
-        var locations = Array.isArray(payloads[1]) ? payloads[1] : [];
-        var stockRows = Array.isArray(payloads[2]) ? payloads[2] : [];
-        var huRows = Array.isArray(payloads[3]) ? payloads[3] : [];
-        var itemTypes = Array.isArray(payloads[4]) ? payloads[4] : [];
-
-        setCachedItems(items);
-        setCachedLocations(locations);
-        setCachedItemTypes(itemTypes);
-
-        cachedStockRows = stockRows.map(function (row) {
-          var item = cachedItemsById[Number(row.item_id)] || {};
-          var location = locationMap[Number(row.location_id)] || {};
-          var qty = normalizeQty(row.qty);
-          return {
-            itemId: Number(row.item_id) || 0,
-            locationId: Number(row.location_id) || 0,
-            qty: qty,
-            qtyDisplay: formatQtyDisplay(qty, row.item_id),
-            itemName: item.name || row.item_name || "-",
-            barcode: item.barcode || row.barcode || "",
-            gtin: item.gtin || row.gtin || "",
-            brand: item.brand || row.brand || "",
-            volume: item.volume || row.volume || "",
-            itemTypeId: Number(item.itemTypeId || row.item_type_id) || 0,
-            itemTypeName: item.itemTypeName || row.item_type_name || "",
-            locationCode: location.code || row.location_code || "",
-            hu: row.hu || "",
-          };
-        });
-
-        cachedHuRows = huRows.map(function (row) {
-          var item = cachedItemsById[Number(row.itemId)] || {};
-          var location = locationMap[Number(row.locationId)] || {};
-          var qty = normalizeQty(row.qty);
-          return {
-            itemId: Number(row.itemId) || 0,
-            locationId: Number(row.locationId) || 0,
-            qty: qty,
-            qtyDisplay: formatQtyDisplay(qty, row.itemId),
-            itemName: item.name || "-",
-            barcode: item.barcode || "",
-            gtin: item.gtin || "",
-            brand: item.brand || "",
-            volume: item.volume || "",
-            itemTypeId: Number(item.itemTypeId) || 0,
-            itemTypeName: item.itemTypeName || "",
-            locationCode: location.code || "",
-            hu: row.hu || "",
-          };
-        });
-
-        buildCombinedRows();
-        fillFilters();
-        renderRows();
-        stockDataLoaded = true;
-      });
-    }
-
-    function renderDetails(item, rows, huRows) {
-      if (!detailsEl) {
-        return;
-      }
-      var total = rows.reduce(function (sum, row) {
-        return sum + (row.qtyBase || 0);
-      }, 0);
-      var skuParts = [];
-      if (item.sku) {
-        skuParts.push("SKU: " + item.sku);
-      }
-      if (item.gtin) {
-        skuParts.push("GTIN: " + item.gtin);
-      }
-      var skuLine = skuParts.join(" · ");
-      var metaParts = [];
-      if (item.brand) {
-        metaParts.push("Бренд: " + item.brand);
-      }
-      if (item.volume) {
-        metaParts.push("Объем: " + item.volume);
-      }
-      var metaLine = metaParts.join(" · ");
-      var uom = item.base_uom || item.base_uom_code || "шт";
-      var locationsHtml = rows.length
-        ? renderLocationRows(rows)
-        : '<div class="stock-no-rows">Нет остатков по данным выгрузки.</div>';
-      var huHtml = "";
-      if (huRows) {
-        huHtml =
-          '<div class="stock-hu-block">' +
-          '<div class="stock-hu-title">По HU</div>' +
-          renderHuRows(huRows, uom) +
-          "</div>";
-      }
-      detailsEl.innerHTML =
-        '<div class="stock-card">' +
-        '<div class="stock-title">' +
-        escapeHtml(item.name || "-") +
-        "</div>" +
-        (skuLine
-          ? '<div class="stock-subtitle">' + escapeHtml(skuLine) + "</div>"
-          : "") +
-        (metaLine
-          ? '<div class="stock-subtitle">' + escapeHtml(metaLine) + "</div>"
-          : "") +
-        '<div class="stock-total">Итого: ' +
-        escapeHtml(total) +
-        " шт</div>" +
-        '<div class="stock-locations">' +
-        locationsHtml +
-        "</div>" +
-        huHtml +
-        "</div>";
-    }
-
-    function loadLocationNameMap() {
-      if (Object.keys(locationMap).length) {
-        return Promise.resolve(locationMap);
-      }
-      return TsdStorage.apiGetLocations()
-        .then(function (locations) {
-          var map = {};
-          locations.forEach(function (location) {
-            map[location.locationId] = location;
-          });
-          locationMap = map;
-          return map;
-        })
-        .catch(function () {
-          locationMap = {};
-          return locationMap;
-        });
-    }
-
-    function ensureItemsMap() {
-      if (Object.keys(itemsById).length) {
-        return Promise.resolve(itemsById);
-      }
-      if (itemsLoading) {
-        return itemsLoading;
-      }
-      itemsLoading = TsdStorage.apiSearchItems("")
-        .then(function (items) {
-          var map = {};
-          (items || []).forEach(function (item) {
-            map[item.itemId] = item;
-          });
-          itemsById = map;
-          return itemsById;
-        })
-        .catch(function () {
-          itemsById = {};
-          return itemsById;
-        })
-        .finally(function () {
-          itemsLoading = null;
-        });
-      return itemsLoading;
-    }
-
-    function showStockItem(item) {
-      if (!item) {
-        setStockMessage("Товар не найден в данных");
-        return;
-      }
-      var barcode = item.barcode || item.gtin;
-      if (!barcode) {
-        setStockMessage("У товара нет штрихкода");
-        return;
-      }
-      setStockMessage("");
-      Promise.all([TsdStorage.apiGetStockByBarcode(barcode), loadLocationNameMap()])
-        .then(function (result) {
-          var stock = result[0] || {};
-          var locationMap = result[1] || {};
-          var rows = (stock.totalsByLocation || []).map(function (row) {
-            var location = locationMap[row.locationId] || {};
-            return {
-              qtyBase: row.qty,
-              code: row.locationCode || location.code || "",
-              name: location.name || "",
-              hu: null,
-            };
-          });
-          var huRows = (stock.byHu || []).map(function (row) {
-            var location = locationMap[row.locationId] || {};
-            return {
-              hu: row.hu,
-              qty: row.qty,
-              locationCode: row.locationCode || location.code || "",
-            };
-          });
-          renderDetails(item, rows, huRows);
-        })
-        .catch(function () {
-          setStockMessage("Ошибка получения остатков");
-        });
-    }
-
-    function formatQty(value) {
-      var num = Number(value);
-      if (isNaN(num)) {
-        return "0";
-      }
-      return String(num);
-    }
-
-    function getHuStockRows() {
-      var now = Date.now();
-      if (huStockCache && now - huStockCachedAt < HU_STOCK_TTL_MS) {
-        return Promise.resolve(huStockCache);
-      }
-      return TsdStorage.apiGetHuStockRows()
-        .then(function (rows) {
-          huStockCache = rows || [];
-          huStockCachedAt = Date.now();
-          return huStockCache;
-        })
-        .catch(function () {
-          return [];
-        });
-    }
-
-    function renderHuDetails(huCode, rows) {
-      if (!detailsEl) {
-        return;
-      }
-      if (!rows.length) {
-        detailsEl.innerHTML = "";
-        return;
-      }
-        var linesHtml = rows
-          .map(function (row) {
-            var item = itemsById[row.itemId] || {};
-            var location = locationMap[row.locationId] || {};
-            var itemName = item.name || ("ID " + row.itemId);
-            var skuValue = item.sku || item.barcode || (Array.isArray(item.barcodes) ? item.barcodes[0] : "") || item.gtin || "";
-            var skuLabel = skuValue ? "SKU: " + skuValue : "";
-            var qtyLabel = formatQty(row.qty);
-            var uomLabel = item.base_uom || item.base_uom_code || "шт";
-            var locationLabel = location.code ? " (" + location.code + ")" : "";
-            return (
-              '<div class="hu-line">' +
-              "<div>" +
-              escapeHtml(itemName + locationLabel) +
-              (skuLabel
-                ? '<div class="line-barcode">' + escapeHtml(skuLabel) + "</div>"
-                : "") +
-              "</div>" +
-              "<div>" +
-              escapeHtml(qtyLabel + " " + uomLabel) +
-              "</div>" +
-            "</div>"
-          );
-        })
-        .join("");
-
-      detailsEl.innerHTML =
-        '<div class="hu-card">' +
-        '<div class="hu-card-title">HU: ' +
-        escapeHtml(huCode) +
-        "</div>" +
-        '<div class="hu-lines">' +
-        linesHtml +
-        "</div>" +
-        "</div>";
-    }
-
-    function showHuStock(rawHu) {
-      if (!dataReady) {
-        setStockMessage("Нет связи с сервером");
-        return;
-      }
-      var normalized = normalizeHuCode(rawHu);
-      if (!normalized) {
-        setStockMessage("Неверный код HU");
-        return;
-      }
-      setStockMessage("");
-      clearDetails();
-      Promise.all([getHuStockRows(), loadLocationNameMap(), ensureItemsMap()])
-        .then(function (result) {
-          var rows = result[0] || [];
-          var filtered = rows.filter(function (row) {
-            return String(row.hu || "").toUpperCase() === normalized;
-          });
-          if (!filtered.length) {
-            setStockMessage("HU не найден");
+        TsdStorage.apiGetWarehouseProductionState(),
+      ])
+        .then(function (payloads) {
+          if (token !== loadToken) {
             return;
           }
-          renderHuDetails(normalized, filtered);
-        })
-        .catch(function () {
-          setStockMessage("Ошибка получения HU");
-        });
-    }
-
-    function handleStockSearch(value) {
-      var trimmed = String(value || "").trim();
-      if (!trimmed || !dataReady) {
-        return;
-      }
-      setStockMessage("Ищем...");
-      TsdStorage.apiFindItemByCode(trimmed)
-        .then(function (item) {
-          if (item) {
-            itemsById[item.itemId] = item;
-            showStockItem(item);
-          } else {
-            setStockMessage("Товар не найден в данных");
-          }
-        })
-        .catch(function () {
-          setStockMessage("Ошибка поиска");
-        });
-    }
-
-    function updateDataStatus() {
-      pingServer(true)
-        .then(function (ok) {
-          dataReady = !!ok;
-          setStatusText(ok ? "Онлайн" : "Нет связи с сервером");
-          if (!ok) {
-            setStockMessage("Нет связи с сервером");
-            setRowsStatus("");
-            if (lowWrap) {
-              lowWrap.innerHTML = "";
+          var items = Array.isArray(payloads[0]) ? payloads[0] : [];
+          var report = Array.isArray(payloads[1]) ? payloads[1] : [];
+          var itemsById = {};
+          items.forEach(function (item) {
+            if (item && item.itemId) {
+              itemsById[item.itemId] = item;
             }
-            if (tableWrap) {
-              tableWrap.innerHTML = "";
-            }
-            clearDetails();
-            return;
-          }
-          setStockMessage("");
-          return loadStockData()
-            .then(function () {
-              renderRows();
+          });
+          allRows = report
+            .map(function (row) {
+              return mapWarehouseProductionStateRow(row, itemsById);
             })
-            .catch(function () {
-              setRowsStatus("Ошибка загрузки списка");
-              if (lowWrap) {
-                lowWrap.innerHTML = "";
-              }
-              if (tableWrap) {
-                tableWrap.innerHTML = '<div class="empty-state">Данные недоступны.</div>';
-              }
+            .filter(shouldShowWarehouseStateRow)
+            .sort(function (left, right) {
+              return String(left.itemName).localeCompare(String(right.itemName), "ru-RU", {
+                numeric: true,
+                sensitivity: "base",
+              });
             });
+          loaded = true;
+          renderList();
         })
         .catch(function () {
-          setStatusText("Нет связи с сервером");
-          setStockMessage("Нет связи с сервером");
-          setRowsStatus("");
-          if (lowWrap) {
-            lowWrap.innerHTML = "";
+          if (token !== loadToken) {
+            return;
           }
-          if (tableWrap) {
-            tableWrap.innerHTML = "";
+          loaded = false;
+          allRows = [];
+          if (listEl) {
+            listEl.innerHTML = "";
           }
-          dataReady = false;
-          clearDetails();
+          setMessage("Ошибка загрузки", "error");
         });
     }
 
-    function clearScanInput() {
-      if (scanInput) {
-        scanInput.value = "";
-      }
-      lastStockValue = "";
-    }
-
-    function handleScannedValue(value) {
-      var trimmed = normalizeValue(value);
-      if (!trimmed) {
+    function toggleCard(card) {
+      if (!card) {
         return;
       }
-      if (scanInput) {
-        lastStockValue = trimmed;
-        scanInput.value = trimmed;
+      var id = card.getAttribute("data-stock-toggle");
+      var detail = card.querySelector('[data-stock-detail="' + id + '"]');
+      var isExpanded = card.getAttribute("aria-expanded") === "true";
+      card.setAttribute("aria-expanded", isExpanded ? "false" : "true");
+      card.classList.toggle("is-expanded", !isExpanded);
+      if (detail) {
+        detail.hidden = isExpanded;
       }
-      if (extractHuCode(trimmed)) {
-        resolveHuAndNavigate(trimmed);
-        clearScanInput();
-        return;
-      }
-      handleStockSearch(trimmed);
-      clearScanInput();
     }
 
-    function handleScanEvent(scan) {
-      var value = scan && scan.value ? scan.value : scan;
-      handleScannedValue(value);
+    function findToggleCard(target) {
+      return target && target.closest ? target.closest("[data-stock-toggle]") : null;
     }
 
-    setScanHandler(handleScanEvent);
-
-    if (scanBtn) {
-      scanBtn.addEventListener("click", function () {
-        clearScanInput();
-        enterScanMode();
+    if (searchInput) {
+      searchInput.addEventListener("input", function () {
+        renderList();
       });
     }
-
-    if (scanInput) {
-      setPreferredScanTarget(scanInput);
-      scanInput.addEventListener("input", function () {
-        if (scanInput.value !== lastStockValue) {
-          scanInput.value = lastStockValue;
-        }
+    if (listEl) {
+      listEl.addEventListener("click", function (event) {
+        toggleCard(findToggleCard(event.target));
       });
-      scanInput.addEventListener("keydown", function (event) {
-        if (event.key === "Enter") {
-          event.preventDefault();
-          handleScannedValue(scanInput.value);
+      listEl.addEventListener("keydown", function (event) {
+        if (event.key !== "Enter" && event.key !== " ") {
           return;
         }
+        var card = findToggleCard(event.target);
+        if (!card) {
+          return;
+        }
+        event.preventDefault();
+        toggleCard(card);
       });
     }
 
-    if (stockSearchInput) {
-      stockSearchInput.addEventListener("input", scheduleRender);
-    }
-
-    if (locationSelect) {
-      locationSelect.addEventListener("change", renderRows);
-    }
-
-    if (typeFilter) {
-      typeFilter.addEventListener("change", renderRows);
-    }
-
-    if (huInput) {
-      huInput.addEventListener("input", scheduleRender);
-    }
-
-    if (clearBtn) {
-      clearBtn.addEventListener("click", function () {
-        if (scanInput) {
-          scanInput.value = "";
-        }
-        if (stockSearchInput) {
-          stockSearchInput.value = "";
-        }
-        if (locationSelect) {
-          locationSelect.value = "";
-        }
-        if (typeFilter) {
-          typeFilter.value = "";
-        }
-        if (huInput) {
-          huInput.value = "";
-          huInput.classList.remove("form-input-error");
-        }
-        if (huHint) {
-          huHint.hidden = true;
-        }
-        setRowsStatus("");
-        clearDetails();
-        setStockMessage("");
-        renderRows();
-      });
-    }
-
-    updateDataStatus();
     setLiveRefreshHandler(function () {
       if (!currentRoute || currentRoute.name !== "stock") {
         return;
       }
-      updateDataStatus();
+      load();
     });
-    ensureScanFocus();
+    load();
   }
 
   function getDocTotals(lines) {
@@ -15041,6 +14422,10 @@
     window.FlowStockTsdTestHooks.renderOrderLineHuDetails = renderOrderLineHuDetails;
     window.FlowStockTsdTestHooks.buildOrderBoundHuByItem = buildOrderBoundHuByItem;
     window.FlowStockTsdTestHooks.renderItems = renderItems;
+    window.FlowStockTsdTestHooks.renderStock = renderStock;
+    window.FlowStockTsdTestHooks.mapWarehouseProductionStateRow = mapWarehouseProductionStateRow;
+    window.FlowStockTsdTestHooks.renderStockStateCard = renderStockStateCard;
+    window.FlowStockTsdTestHooks.filterWarehouseStateRows = filterWarehouseStateRows;
     window.FlowStockTsdTestHooks.buildCatalogBrandOptions = buildCatalogBrandOptions;
     window.FlowStockTsdTestHooks.filterCatalogItems = filterCatalogItems;
     window.FlowStockTsdTestHooks.groupCatalogItemsByVolume = groupCatalogItemsByVolume;

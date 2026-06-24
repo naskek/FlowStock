@@ -128,20 +128,23 @@ assert(
 const buildHomeMenuTileBody = extractFunctionBody(appJs, "buildHomeMenuTile");
 assert(
   buildHomeMenuBody.includes('"operations"') &&
-    buildHomeMenuBody.includes('"items"') &&
+    buildHomeMenuBody.includes('"stock"') &&
     buildHomeMenuBody.includes('"orders"') &&
     buildHomeMenuBody.includes('"hu"') &&
+    !buildHomeMenuBody.includes('"items"') &&
     buildHomeMenuTileBody.includes('data-route="') &&
     buildMenuTileBody.includes("home-menu-tile"),
-  "home tiles should use existing routes for operations, catalog, orders, and HU lookup"
+  "home tiles should use existing routes for operations, stock, orders, and HU lookup"
 );
 assert(
   buildHomeMenuBody.includes("Операции") &&
-    buildHomeMenuBody.includes("Каталог") &&
+    buildHomeMenuBody.includes("Склад") &&
+    buildHomeMenuBody.includes("Остатки, потребность и производство") &&
     buildHomeMenuBody.includes("Заказы") &&
     buildHomeMenuBody.includes("Поиск HU") &&
-    buildHomeMenuBody.includes("Сканирование и поиск паллеты"),
-  "home should render four tile labels with HU lookup subtitle"
+    buildHomeMenuBody.includes("Сканирование и поиск паллеты") &&
+    !buildHomeMenuBody.includes("Каталог"),
+  "home should render the stock tile instead of catalog with its subtitle"
 );
 assert(
   buildHomeMenuTileBody.includes('class="home-menu-icon"') &&
@@ -487,6 +490,60 @@ vm.runInContext(appJs, context, { filename: "app.js" });
 assert.strictEqual(hooks.getRouteTransitionKey({ name: "outboundOrder", id: 93 }), "outboundOrder:93");
 assert.strictEqual(hooks.getRouteTransitionKey({ name: "items" }), "items");
 assert.match(hooks.renderHome(), /home-screen/, "home route renderer should still render target screen markup");
+
+const stockScreenHtml = hooks.renderStock();
+assert.match(stockScreenHtml, /Состояние склада/, "stock route should render warehouse state title");
+assert.match(stockScreenHtml, /id="stockSearchInput"/, "stock screen should render search field");
+assert.match(stockScreenHtml, /id="stockList"/, "stock screen should render card list container");
+assert.match(stockScreenHtml, /id="stockMessage"/, "stock screen should render state message container");
+assert.doesNotMatch(stockScreenHtml, /Сформировать заказ/, "TSD stock screen should not render create-order button");
+assert.doesNotMatch(stockScreenHtml, /stockScanInput|stockLocationFilter/, "stock screen should drop legacy HU scan controls");
+
+const stockStateRow = hooks.mapWarehouseProductionStateRow(
+  {
+    item_id: 1,
+    item_name: "Горчица, Печагин, 1 кг",
+    base_uom: "Шт",
+    sku: "SKU-1",
+    barcode: "04607186951544",
+    stock_qty: 600,
+    min_stock_qty: 3600,
+    below_min_qty: 3000,
+    need_breakdown: {
+      demand_to_close_customer_orders: 2400,
+      demand_to_min_stock: 3000,
+      already_planned_internal: 3600,
+      remaining_to_create: 1200,
+    },
+    hu_rows: [{ hu_code: "HU-1", location: "A-01", qty: 600, stock_status: "На складе" }],
+    production_receipts: [
+      { hu_code: "HU-9", prd_ref: "PRD-1", pallet_status_display: "Печать", qty: 0, source_order_ref: "149" },
+    ],
+  },
+  {}
+);
+assert.strictEqual(stockStateRow.status, "below", "below-minimum stock should map to below status");
+assert.strictEqual(stockStateRow.huRows.length, 1, "warehouse HU rows should be mapped");
+assert.strictEqual(stockStateRow.productionReceipts.length, 1, "production receipts should be mapped");
+
+const stockCardHtml = hooks.renderStockStateCard(stockStateRow);
+assert.match(stockCardHtml, /stock-state-item--below/, "below card should carry below status class");
+assert.match(stockCardHtml, /Ниже минимума/, "below card should show below-minimum chip");
+assert.match(stockCardHtml, /Складские HU/, "expanded card should show warehouse HU section");
+assert.match(stockCardHtml, /План \/ производство/, "expanded card should show production section");
+assert.match(stockCardHtml, /Расчёт потребности/, "expanded card should show need breakdown section");
+assert.match(stockCardHtml, /data-stock-toggle="1"/, "card should expose toggle hook");
+
+assert.strictEqual(
+  hooks.filterWarehouseStateRows([stockStateRow], "04607186951544").length,
+  1,
+  "search should match by barcode"
+);
+assert.strictEqual(
+  hooks.filterWarehouseStateRows([stockStateRow], "нет-такого").length,
+  0,
+  "search should return empty for unknown query"
+);
 
 assert.strictEqual(hooks.normalizeTsdTheme("dark"), "dark");
 assert.strictEqual(hooks.normalizeTsdTheme("light"), "light");

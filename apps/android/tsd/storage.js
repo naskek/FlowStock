@@ -572,6 +572,21 @@
     });
   }
 
+  function apiGetWarehouseProductionState() {
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/reports/warehouse-production-state", {
+          method: "GET",
+        });
+      })
+      .then(function (payload) {
+        if (!Array.isArray(payload)) {
+          throw new Error("INVALID_WAREHOUSE_PRODUCTION_STATE");
+        }
+        return payload;
+      });
+  }
+
   function apiGetStockRows(query) {
     var q = String(query || "").trim();
     return getBaseUrl()
@@ -3169,6 +3184,7 @@
     getTotalStockByItemId: getTotalStockByItemId,
     getBaseUrl: getBaseUrl,
     apiSearchItems: apiSearchItems,
+    apiGetWarehouseProductionState: apiGetWarehouseProductionState,
     apiGetItemTypes: apiGetItemTypes,
     apiFindItemByCode: apiFindItemByCode,
     apiGetOrderBoundHu: apiGetOrderBoundHu,
