@@ -1,5 +1,6 @@
 using FlowStock.App;
 using FlowStock.Core.Models;
+using FlowStock.Core.Services;
 
 namespace FlowStock.Server.Tests.Orders;
 
@@ -368,7 +369,13 @@ public sealed class CustomerOrderHuBindingCoordinatorTests
                 ],
                 HuFateDisplayEntries =
                 [
-                    new OrderLineHuDisplayEntry("HU-HISTORY", "отгружено", 600, IsWarehouseBound: false, SortOrder: 4)
+                    new OrderLineHuDisplayEntry(
+                        "HU-HISTORY",
+                        "отгружено",
+                        600,
+                        IsWarehouseBound: false,
+                        SortOrder: OrderLineHuFateDisplayBuilder.ShippedSortOrder,
+                        FateCode: OrderLineHuFateDisplayBuilder.ShippedFateCode)
                 ]
             },
             orderId: 78);
@@ -376,14 +383,67 @@ public sealed class CustomerOrderHuBindingCoordinatorTests
 
         var rows = state.HuDisplayRows;
 
-        Assert.Equal(2, rows.Count);
+        Assert.Equal(3, rows.Count);
         Assert.Equal("HU-0000446", rows[0].HuCode);
         Assert.Equal("склад", rows[0].Label);
         Assert.True(rows[0].IsBold);
         Assert.Equal("HU-0000576", rows[1].HuCode);
         Assert.Equal("план", rows[1].Label);
         Assert.False(rows[1].IsBold);
-        Assert.DoesNotContain(rows, row => row.HuCode == "HU-HISTORY");
+        Assert.Equal("HU-HISTORY", rows[2].HuCode);
+        Assert.Equal("отгружено", rows[2].Label);
+        Assert.False(rows[2].IsBold);
+    }
+
+    [Fact]
+    public void HuDisplayRows_ShowShippedFateOnceAfterActiveWarehouseAndProductionRows()
+    {
+        var state = new CustomerOrderLineHuState("line-402");
+        state.AttachLine(
+            new OrderLineView
+            {
+                Id = 402,
+                ItemId = 6,
+                ItemName = "Товар",
+                QtyOrdered = 1800,
+                ProductionHuDisplayEntries =
+                [
+                    new OrderLineHuDisplayEntry("HU-0000873", "наполнено", 600, IsWarehouseBound: false, SortOrder: 2),
+                    new OrderLineHuDisplayEntry("HU-0000874", "план", 600, IsWarehouseBound: false, SortOrder: 2)
+                ],
+                HuFateDisplayEntries =
+                [
+                    new OrderLineHuDisplayEntry(
+                        "HU-0000873",
+                        "склад",
+                        600,
+                        IsWarehouseBound: false,
+                        SortOrder: OrderLineHuFateDisplayBuilder.ShippedSortOrder,
+                        FateCode: OrderLineHuFateDisplayBuilder.ShippedFateCode),
+                    new OrderLineHuDisplayEntry(
+                        "HU-0000874",
+                        "наполнено",
+                        600,
+                        IsWarehouseBound: false,
+                        SortOrder: OrderLineHuFateDisplayBuilder.ShippedSortOrder,
+                        FateCode: OrderLineHuFateDisplayBuilder.ShippedFateCode)
+                ]
+            },
+            orderId: 150);
+        state.MergeExistingReservation("HU-0000873", 600);
+        state.MergeExistingReservation("HU-0000874", 600);
+        state.MergeExistingReservation("HU-0000980", 600);
+
+        var rows = state.HuDisplayRows;
+
+        Assert.Equal(new[] { "HU-0000980", "HU-0000873", "HU-0000874" }, rows.Select(row => row.HuCode).ToArray());
+        Assert.Equal(new[] { "склад", "отгружено", "отгружено" }, rows.Select(row => row.Label).ToArray());
+        Assert.True(rows[0].IsBold);
+        Assert.False(rows[1].IsBold);
+        Assert.False(rows[2].IsBold);
+        Assert.All(
+            rows.GroupBy(row => row.HuCode, StringComparer.OrdinalIgnoreCase),
+            group => Assert.Single(group));
     }
 
     [Fact]

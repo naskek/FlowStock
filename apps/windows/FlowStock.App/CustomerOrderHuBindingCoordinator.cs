@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Windows.Threading;
 using FlowStock.Core.Models;
+using FlowStock.Core.Services;
 
 namespace FlowStock.App;
 
@@ -669,7 +670,27 @@ public sealed class CustomerOrderLineHuState : INotifyPropertyChanged
 
     private IReadOnlyList<OrderLineHuDisplayRow> BuildHuDisplayRows()
     {
+        var shippedRows = _line.HuFateDisplayEntries
+            .Where(entry => string.Equals(
+                entry.FateCode,
+                OrderLineHuFateDisplayBuilder.ShippedFateCode,
+                StringComparison.OrdinalIgnoreCase))
+            .Select(entry => new OrderLineHuDisplayRow(
+                entry.HuCode,
+                "отгружено",
+                entry.Qty,
+                IsBold: false,
+                SortOrder: OrderLineHuFateDisplayBuilder.ShippedSortOrder,
+                entry.FateSuffix))
+            .ToArray();
+
+        var shippedHuCodes = shippedRows
+            .Select(row => NormalizeHuCode(row.HuCode))
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
         var productionRows = _line.ProductionHuDisplayEntries
+            .Where(entry => !shippedHuCodes.Contains(NormalizeHuCode(entry.HuCode)))
             .Select(entry => new OrderLineHuDisplayRow(
                 entry.HuCode,
                 entry.Label,
@@ -684,6 +705,7 @@ public sealed class CustomerOrderLineHuState : INotifyPropertyChanged
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var warehouseRows = _selectedHuCodes
+            .Where(huCode => !shippedHuCodes.Contains(NormalizeHuCode(huCode)))
             .Where(huCode => !productionHuCodes.Contains(NormalizeHuCode(huCode)))
             .Select(huCode => new OrderLineHuDisplayRow(
                 huCode,
@@ -694,6 +716,7 @@ public sealed class CustomerOrderLineHuState : INotifyPropertyChanged
 
         return warehouseRows
             .Concat(productionRows)
+            .Concat(shippedRows)
             .OrderBy(row => row.SortOrder)
             .ThenBy(row => row.HuCode, StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -861,4 +884,3 @@ public sealed class CustomerOrderLinePresentation : INotifyPropertyChanged
     private void OnPropertyChanged([CallerMemberName] string? propertyName = null) =>
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
 }
-
