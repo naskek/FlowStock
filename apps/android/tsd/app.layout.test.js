@@ -109,8 +109,10 @@ assert(
 assert(
   buildOperationsMenuBody.includes('data-route="filling"') &&
     buildOperationsMenuBody.includes('data-route="outbound"') &&
+    buildOperationsMenuBody.includes('data-route="order-control"') &&
+    buildOperationsMenuBody.includes("Контроль заказов") &&
     buildOperationsMenuBody.includes('data-op="'),
-  "operations tiles should keep existing routes and operation handlers"
+  "operations tiles should keep existing routes, order control, and operation handlers"
 );
 
 const renderHomeBody = extractFunctionBody(appJs, "renderHome");
@@ -131,10 +133,12 @@ assert(
     buildHomeMenuBody.includes('"stock"') &&
     buildHomeMenuBody.includes('"orders"') &&
     buildHomeMenuBody.includes('"hu"') &&
+    !buildHomeMenuBody.includes('"order-control"') &&
+    !buildHomeMenuBody.includes("Контроль заказов") &&
     !buildHomeMenuBody.includes('"items"') &&
     buildHomeMenuTileBody.includes('data-route="') &&
     buildMenuTileBody.includes("home-menu-tile"),
-  "home tiles should use existing routes for operations, stock, orders, and HU lookup"
+  "home tiles should use existing routes for operations, stock, orders, and HU lookup without direct order control"
 );
 assert(
   buildHomeMenuBody.includes("Операции") &&

@@ -21,7 +21,10 @@ const scanInput = {
 
 const completeButton = {
   disabled: false,
-  addEventListener: function () {},
+  listeners: {},
+  addEventListener: function (type, handler) {
+    this.listeners[type] = handler;
+  },
 };
 
 const context = {
@@ -86,47 +89,116 @@ const sampleDetail = {
     id: 123,
     taskRef: "CTRL-2026-000123",
     status: "IN_EXECUTION",
-    expectedHuCount: 2,
+    expectedHuCount: 3,
     checkedHuCount: 1,
-    discrepancyHuCount: 0,
+    discrepancyHuCount: 1,
     orders: [{ orderRef: "080" }],
   },
   progress: {
-    expectedHuCount: 2,
+    expectedHuCount: 3,
     checkedHuCount: 1,
-    discrepancyHuCount: 0,
+    discrepancyHuCount: 1,
     canComplete: false,
   },
   hus: [
-    { huCode: "HU-0000507", status: "PENDING", itemSummary: "Горчица", qty: 10, lines: [] },
     {
-      huCode: "HU-0000506",
+      huCode: "HU-PENDING",
+      status: "PENDING",
+      itemSummary: "Горчица",
+      lines: [{ itemName: "Горчица", qty: 600, locationCode: "FG-01" }],
+    },
+    {
+      huCode: "HU-CHECKED",
       status: "CHECKED",
       itemSummary: "Микс-паллета",
-      qty: 15,
+      isMixedPallet: true,
       lines: [
         { itemName: "Товар A", qty: 10 },
         { itemName: "Товар B", qty: 5 },
       ],
+    },
+    {
+      huCode: "HU-DISC",
+      status: "DISCREPANCY",
+      itemSummary: "Соус",
+      message: "Нет ledger-остатка",
+      lines: [{ itemName: "Соус", qty: 12, locationCode: "FG-02" }],
     },
   ],
 };
 
 assert.ok(hooks.renderOrderControlList, "renderOrderControlList hook should exist");
 assert.ok(hooks.renderOrderControlTask, "renderOrderControlTask hook should exist");
+assert.ok(hooks.renderOperationsMenu, "renderOperationsMenu hook should exist");
+assert.ok(hooks.applyClientBlocks, "applyClientBlocks hook should exist");
+assert.ok(hooks.getOrderControlStatusInfo, "getOrderControlStatusInfo hook should exist");
+assert.ok(hooks.sortOrderControlHus, "sortOrderControlHus hook should exist");
+
+function countOccurrences(value, needle) {
+  return (String(value).match(new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length;
+}
+
+const homeHtml = hooks.renderHome();
+assert.ok(!homeHtml.includes("Контроль заказов"), "home should not render order control tile");
+assert.ok(!homeHtml.includes('data-route="order-control"'), "home should not link directly to order control");
+
+let operationsHtml = hooks.renderOperationsMenu();
+assert.ok(operationsHtml.includes("Контроль заказов"), "operations should render order control tile");
+assert.ok(operationsHtml.includes('data-route="order-control"'), "operations should link to order control");
+
+hooks.applyClientBlocks({ tsd_order_control: false });
+operationsHtml = hooks.renderOperationsMenu();
+assert.ok(!operationsHtml.includes("Контроль заказов"), "order control tile should honor tsd_order_control block");
+assert.ok(!operationsHtml.includes('data-route="order-control"'), "disabled order control block should remove route");
+hooks.applyClientBlocks({});
+
+assert.strictEqual(hooks.getBackRouteForRoute({ name: "orderControl" }, ""), "/operations");
+assert.strictEqual(hooks.getBackRouteForRoute({ name: "orderControlTask", id: 123 }, ""), "/order-control");
+assert.deepStrictEqual(
+  [
+    hooks.getOrderControlStatusInfo("PENDING").label,
+    hooks.getOrderControlStatusInfo("CHECKED").label,
+    hooks.getOrderControlStatusInfo("DISCREPANCY").label,
+  ],
+  ["Ожидает", "Проверена", "Расхождение"]
+);
+assert.deepStrictEqual(
+  hooks.sortOrderControlHus(sampleDetail.hus).map(function (hu) { return hu.huCode; }),
+  ["HU-DISC", "HU-PENDING", "HU-CHECKED"],
+  "HUs should sort discrepancy, pending, checked"
+);
 
 const listHtml = hooks.renderOrderControlList([sampleDetail.task]);
 assert.ok(listHtml.includes("CTRL-2026-000123"));
-assert.ok(listHtml.includes("1/2"));
+assert.ok(listHtml.includes("1/3"));
+assert.ok(listHtml.includes("В работе"));
+assert.ok(listHtml.includes("Расхождения"));
+assert.ok(!listHtml.includes("IN_EXECUTION"));
 
 hooks.renderOrderControlTask(sampleDetail, {
   message: "HU не входит в задание контроля.",
   messageType: "error",
 });
 assert.ok(appEl.innerHTML.includes("Контроль CTRL-2026-000123"));
+assert.ok(appEl.innerHTML.includes("1 / 3 HU"));
+assert.ok(appEl.innerHTML.includes("Сканируйте HU"));
 assert.ok(appEl.innerHTML.includes("HU не входит в задание контроля."));
-assert.ok(appEl.innerHTML.includes("HU-0000506"));
+assert.ok(appEl.innerHTML.includes("HU-CHECKED"));
 assert.ok(appEl.innerHTML.includes("Товар A"));
+assert.ok(appEl.innerHTML.includes("Смешанная HU · 2 позиций"));
+assert.strictEqual(countOccurrences(appEl.innerHTML, "Горчица"), 1, "normal HU should not duplicate item summary and line");
+assert.strictEqual(countOccurrences(appEl.innerHTML, "Микс-паллета"), 0, "mixed HU summary should not duplicate component list");
+assert.ok(!appEl.innerHTML.includes("10 шт"));
+assert.ok(!appEl.innerHTML.includes("5 шт"));
+assert.ok(!appEl.innerHTML.includes(">PENDING<"));
+assert.ok(!appEl.innerHTML.includes(">CHECKED<"));
+assert.ok(!appEl.innerHTML.includes(">DISCREPANCY<"));
+assert.ok(
+  appEl.innerHTML.indexOf("HU-DISC") < appEl.innerHTML.indexOf("HU-PENDING") &&
+    appEl.innerHTML.indexOf("HU-PENDING") < appEl.innerHTML.indexOf("HU-CHECKED"),
+  "task screen should render discrepancy, pending, checked order"
+);
+assert.ok(appEl.innerHTML.includes("actions-bar order-control-action-bar"));
 assert.ok(appEl.innerHTML.includes("disabled"));
 assert.ok(scanHandler, "scan input should be wired");
 

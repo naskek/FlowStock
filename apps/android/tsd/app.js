@@ -1506,6 +1506,10 @@
     return isClientBlockEnabled("tsd_operations") && isClientBlockEnabled(blockKey);
   }
 
+  function isOrderControlMenuEnabled() {
+    return isClientBlockEnabled("tsd_operations") && isClientBlockEnabled("tsd_order_control");
+  }
+
   function getEnabledOperations() {
     return Object.keys(OPS).filter(function (op) {
       return isOperationEnabled(op);
@@ -1513,7 +1517,7 @@
   }
 
   function hasOperationsMenu() {
-    return getEnabledOperations().length > 0;
+    return getEnabledOperations().length > 0 || isOrderControlMenuEnabled();
   }
 
   function isBlockContextEnabled(blockKey) {
@@ -2239,7 +2243,7 @@
       return "/outbound";
     }
     if (route.name === "orderControl") {
-      return "/home";
+      return "/operations";
     }
     if (route.name === "orderControlTask") {
       if (routeOrigin) {
@@ -3017,7 +3021,7 @@
       buildHomeMenuTile(
         "operations",
         "Операции",
-        "Приём, отгрузка, перемещения",
+        "Приём, отгрузка и контроль",
         "operations",
         "img/home/operations.png"
       ),
@@ -3036,17 +3040,6 @@
         "img/home/orders.png"
       ),
     ];
-    if (isClientBlockEnabled("tsd_order_control")) {
-      tiles.push(
-        buildHomeMenuTile(
-          "order-control",
-          "Контроль заказов",
-          "Проверка готовых HU",
-          "orders",
-          "img/home/orders.png"
-        )
-      );
-    }
     tiles.push(
       buildHomeMenuTile(
         "hu",
@@ -3224,6 +3217,9 @@
         )
       );
     });
+    if (isOrderControlMenuEnabled()) {
+      tiles.push(buildMenuTile('data-route="order-control"', "Контроль заказов", "Проверка готовых HU"));
+    }
     if (!tiles.length) {
       return '<div class="empty-state">Все операции сейчас временно отключены.</div>';
     }
@@ -5317,6 +5313,8 @@
     var rows = (tasks || [])
       .map(function (task) {
         var refs = (task.orders || []).map(function (order) { return order.orderRef; }).filter(Boolean).join(", ");
+        var statusInfo = getOrderControlStatusInfo(task.status, task.statusDisplay);
+        var discrepancy = Number(task.discrepancyHuCount) || 0;
         return (
           '<button class="filling-doc-card outbound-picking-order-card" data-order-control-task="' +
           escapeHtml(task.id) +
@@ -5324,14 +5322,14 @@
           '  <div class="filling-doc-main">' +
           '    <div class="filling-doc-title">' + escapeHtml(task.taskRef || "-") + "</div>" +
           (refs ? '    <div class="filling-doc-meta">Заказы: ' + escapeHtml(refs) + "</div>" : "") +
-          '    <div class="order-status-pill order-status-accepted">' + escapeHtml(task.statusDisplay || task.status || "") + "</div>" +
+          '    <div class="' + escapeHtml(statusInfo.className) + '">' + escapeHtml(statusInfo.label) + "</div>" +
           "  </div>" +
           '  <div class="filling-doc-progress">' +
           "    <div>Проверено <strong>" +
           escapeHtml((task.checkedHuCount || 0) + "/" + (task.expectedHuCount || 0)) +
           "</strong></div>" +
-          (task.discrepancyHuCount
-            ? "    <div>Расхождения <strong>" + escapeHtml(task.discrepancyHuCount) + "</strong></div>"
+          (discrepancy > 0
+            ? "    <div>Расхождения <strong>" + escapeHtml(discrepancy) + "</strong></div>"
             : "") +
           "  </div>" +
           "</button>"
@@ -5347,37 +5345,110 @@
       '<section class="screen filling-screen outbound-picking-screen">' +
       '  <div class="screen-card filling-card">' +
       '    <div class="section-title">Контроль заказов</div>' +
+      '    <div class="field-hint">Выберите активное задание для проверки HU.</div>' +
       '    <div class="filling-doc-list">' + rows + "</div>" +
       "  </div>" +
       "</section>"
     );
   }
 
+  function getOrderControlStatusInfo(status, display) {
+    var normalized = String(status || "").trim().toUpperCase();
+    if (normalized === "PENDING" || normalized === "NEW") {
+      return { label: "Ожидает", className: "order-status-pill order-status-neutral" };
+    }
+    if (normalized === "IN_EXECUTION") {
+      return { label: "В работе", className: "order-status-pill order-status-progress" };
+    }
+    if (normalized === "CHECKED" || normalized === "COMPLETED") {
+      return { label: normalized === "COMPLETED" ? "Завершена" : "Проверена", className: "order-status-pill order-status-shipped" };
+    }
+    if (normalized === "DISCREPANCY" || normalized === "CANCELLED") {
+      return { label: normalized === "CANCELLED" ? "Отменена" : "Расхождение", className: "order-status-pill order-status-error" };
+    }
+    var fallback = String(display || "").trim();
+    return { label: fallback || "Ожидает", className: "order-status-pill order-status-neutral" };
+  }
+
+  function getOrderControlHuSortRank(hu) {
+    var status = String((hu && hu.status) || "").trim().toUpperCase();
+    if (status === "DISCREPANCY") {
+      return 0;
+    }
+    if (status === "CHECKED") {
+      return 2;
+    }
+    return 1;
+  }
+
+  function sortOrderControlHus(hus) {
+    return (Array.isArray(hus) ? hus : [])
+      .map(function (hu, index) {
+        return { hu: hu, index: index };
+      })
+      .sort(function (left, right) {
+        var rankDiff = getOrderControlHuSortRank(left.hu) - getOrderControlHuSortRank(right.hu);
+        if (rankDiff !== 0) {
+          return rankDiff;
+        }
+        return left.index - right.index;
+      })
+      .map(function (entry) {
+        return entry.hu;
+      });
+  }
+
+  function formatOrderControlLineQty(line) {
+    var qty = Number(line && line.qty);
+    return isFinite(qty) && Math.abs(qty) > 0.000001 ? formatOrderQtyValue(qty) : "";
+  }
+
   function renderOrderControlHuLines(lines) {
     var html = (Array.isArray(lines) ? lines : [])
       .map(function (line) {
+        var qty = formatOrderControlLineQty(line);
         return (
-          '<div class="outbound-picking-hu-line">' +
+          '<div class="order-control-hu-line">' +
           "  <span>" + escapeHtml(line.itemName || "-") + "</span>" +
-          "  <strong>" + escapeHtml(formatQtyWithUnit(line.qty || 0, "шт")) + "</strong>" +
+          (qty ? "  <strong>" + escapeHtml(qty) + "</strong>" : "") +
           "</div>"
         );
       })
       .join("");
-    return html ? '<div class="outbound-picking-hu-lines filling-mixed-pallet-lines">' + html + "</div>" : "";
+    return html ? '<div class="order-control-hu-lines">' + html + "</div>" : "";
   }
 
   function renderOrderControlHuRow(hu) {
-    var status = String(hu.status || "").toUpperCase();
+    var statusInfo = getOrderControlStatusInfo(hu.status, "");
+    var status = String(hu.status || "").trim().toUpperCase();
     var tone = status === "CHECKED" ? "success" : status === "DISCREPANCY" ? "error" : "pending";
+    var lines = Array.isArray(hu.lines) ? hu.lines : [];
+    var isMixed = hu.isMixedPallet === true || lines.length > 1;
+    var firstLine = lines.length === 1 ? lines[0] : null;
+    var description = isMixed
+      ? "Смешанная HU · " + lines.length + " позиций"
+      : String((firstLine && firstLine.itemName) || hu.itemSummary || "").trim();
+    var metaParts = [];
+    var qty = !isMixed && firstLine ? formatOrderControlLineQty(firstLine) : "";
+    var location = String((firstLine && firstLine.locationCode) || "").trim();
+    if (qty) {
+      metaParts.push(qty);
+    }
+    if (location) {
+      metaParts.push(location);
+    }
     return (
-      '<li class="filling-pallet-item filling-pallet-item--compact outbound-picking-hu-item filling-pallet-status-' + tone + '">' +
-      '  <div class="outbound-picking-hu-main">' +
-      '    <div><strong>' + escapeHtml(hu.huCode || "-") + "</strong> " + escapeHtml(hu.itemSummary || "") + "</div>" +
+      '<li class="filling-pallet-item filling-pallet-item--compact outbound-picking-hu-item order-control-hu-item filling-pallet-status-' + tone + '">' +
+      '  <div class="outbound-picking-hu-main order-control-hu-main">' +
+      '    <div class="order-control-hu-top">' +
+      '      <strong class="order-control-hu-code">' + escapeHtml(hu.huCode || "-") + "</strong>" +
+      '      <span class="' + escapeHtml(statusInfo.className) + '">' + escapeHtml(statusInfo.label) + "</span>" +
+      "    </div>" +
+      (description ? '    <div class="order-control-hu-desc">' + escapeHtml(description) + "</div>" : "") +
+      (metaParts.length ? '    <div class="order-control-hu-meta">' + escapeHtml(metaParts.join(" · ")) + "</div>" : "") +
       (hu.message ? '    <div class="filling-doc-meta">' + escapeHtml(hu.message) + "</div>" : "") +
-      renderOrderControlHuLines(hu.lines) +
+      (isMixed ? renderOrderControlHuLines(lines) : "") +
       "  </div>" +
-      '  <div class="outbound-picking-hu-status">' + escapeHtml(status || "PENDING") + "</div>" +
       "</li>"
     );
   }
@@ -5388,25 +5459,28 @@
     var progress = detail.progress || {};
     var message = state && state.message ? String(state.message) : "";
     var messageType = state && state.messageType ? String(state.messageType) : "";
-    var messageHtml = message
-      ? '<div class="filling-message filling-message-' + escapeHtml(messageType || "info") + '">' + escapeHtml(message) + "</div>"
-      : "";
-    var hus = (detail.hus || []).map(renderOrderControlHuRow).join("");
+    var hus = sortOrderControlHus(detail.hus || []).map(renderOrderControlHuRow).join("");
     if (!hus) {
       hus = '<div class="empty-state">Нет HU в задании.</div>';
     }
     var canComplete = progress.canComplete === true;
+    var progressText = (progress.checkedHuCount || 0) + " / " + (progress.expectedHuCount || 0) + " HU";
+    var scanMessageClass = message
+      ? " filling-message-" + escapeHtml(messageType || "info")
+      : "";
 
     app.innerHTML =
       '<section class="screen filling-screen outbound-picking-screen outbound-picking-screen--scan">' +
       '  <div class="screen-card filling-card filling-card--scan">' +
-      '    <div class="filling-scan-header">Контроль ' +
+      '    <div class="filling-scan-header order-control-scan-header">Контроль ' +
       escapeHtml(task.taskRef || "-") +
-      " · " +
-      escapeHtml((progress.checkedHuCount || 0) + " / " + (progress.expectedHuCount || 0) + " HU") +
+      ' <span class="order-control-progress">' +
+      escapeHtml(progressText) +
+      "</span>" +
       "</div>" +
-      messageHtml +
-      '    <div class="filling-scan-card filling-scan-card--compact filling-scan-slot">' +
+      '    <div class="filling-scan-card filling-scan-card--compact order-control-scan-card' + scanMessageClass + '">' +
+      '      <div class="order-control-scan-title">Сканируйте HU</div>' +
+      (message ? '      <div class="order-control-last-scan">' + escapeHtml(message) + "</div>" : '      <div class="order-control-last-scan">Ожидаем скан паллеты</div>') +
       '      <input class="form-input filling-scan-input tsd-scan-input-hidden" id="orderControlScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" placeholder="HU-000001" />' +
       "    </div>" +
       '    <div class="filling-pallet-list-card">' +
@@ -5415,7 +5489,7 @@
       hus +
       "      </ul>" +
       "    </div>" +
-      '    <div class="actions-bar"><button class="btn btn-primary" id="orderControlCompleteBtn" type="button" ' +
+      '    <div class="actions-bar order-control-action-bar"><button class="btn btn-primary" id="orderControlCompleteBtn" type="button" ' +
       (canComplete ? "" : "disabled") +
       ">Завершить</button></div>" +
       "  </div>" +
@@ -14822,8 +14896,13 @@
     window.FlowStockTsdTestHooks.renderFillingPalletHuRow = renderFillingPalletHuRow;
     window.FlowStockTsdTestHooks.isMixedFillingPallet = isMixedFillingPallet;
     window.FlowStockTsdTestHooks.renderFillingMixedPalletLines = renderFillingMixedPalletLines;
+    window.FlowStockTsdTestHooks.renderOperationsMenu = renderOperationsMenu;
+    window.FlowStockTsdTestHooks.buildOperationsMenuButtonsHtml = buildOperationsMenuButtonsHtml;
+    window.FlowStockTsdTestHooks.applyClientBlocks = applyClientBlocks;
     window.FlowStockTsdTestHooks.renderOrderControlList = renderOrderControlList;
     window.FlowStockTsdTestHooks.renderOrderControlTask = renderOrderControlTask;
+    window.FlowStockTsdTestHooks.getOrderControlStatusInfo = getOrderControlStatusInfo;
+    window.FlowStockTsdTestHooks.sortOrderControlHus = sortOrderControlHus;
     window.FlowStockTsdTestHooks.mapOrderControlError = mapOrderControlError;
     window.FlowStockTsdTestHooks.getFillingPalletGroupDisplayTitle = getFillingPalletGroupDisplayTitle;
     window.FlowStockTsdTestHooks.isFillingPalletCompleted = isFillingPalletCompleted;
