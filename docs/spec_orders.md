@@ -114,6 +114,8 @@
 - Создание атомарное: preview показывает причины, но create повторяет все проверки в транзакции и не исключает отдельные заказы молча.
 - Ожидаемые HU берутся из того же outbound-ready read-model, что TSD outbound: `CustomerOutboundBoundHuService.GetUnshippedOutboundHuLines(...)` / SQL-эквивалент списка outbound. Обязательна семантика одной физической HU: `DISTINCT normalized_hu`.
 - Snapshot HU фиксируется при создании задания. Изменение набора HU, состава mixed-HU, ledger-остатка, привязки или outbound-состояния после создания дает blocking discrepancy; продолжение возможно только через отмену задания и создание нового.
+- Scan с `request_id` идемпотентен и при retry возвращает исходный результат; тот же `request_id` с другой HU возвращает `IDEMPOTENCY_CONFLICT`. Complete перед `COMPLETED` повторно строит текущий snapshot, игнорируя только собственный active-control task.
+- Terminal semantics: повторный `complete` для `COMPLETED` возвращает текущее завершенное состояние, повторный `cancel` для `CANCELLED` не создает новое событие, `COMPLETED` нельзя отменить, `CANCELLED` нельзя сканировать или завершать.
 - Контроль не изменяет `orders.status`, `ledger`, `docs`, `doc_lines`, reserve/read-model и production pallet plan.
 - Активный контроль блокирует outbound по всему `order_id`: TSD scan, TSD complete, создание order-bound draft `OUTBOUND`, закрытие order-bound `OUTBOUND` через общий Close.
 - Начатая draft/TSD-отгрузка блокирует создание контроля.

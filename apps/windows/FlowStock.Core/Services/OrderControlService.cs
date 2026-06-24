@@ -29,7 +29,7 @@ public sealed class OrderControlService
             };
         }
 
-        var snapshot = BuildSnapshot(_store, normalizedOrderIds);
+        var snapshot = BuildSnapshot(_store, normalizedOrderIds, currentTaskId: null);
         return new OrderControlPreviewResult
         {
             CanCreate = snapshot.CanCreate,
@@ -47,7 +47,7 @@ public sealed class OrderControlService
         _store.ExecuteInTransaction(store =>
         {
             var normalizedOrderIds = NormalizeOrderIds(orderIds);
-            var snapshot = BuildSnapshot(store, normalizedOrderIds);
+            var snapshot = BuildSnapshot(store, normalizedOrderIds, currentTaskId: null);
             if (!snapshot.CanCreate)
             {
                 result = OrderControlCreateResult.Failure(
@@ -211,13 +211,7 @@ public sealed class OrderControlService
                     return;
                 }
 
-                result = new OrderControlScanResult
-                {
-                    Success = true,
-                    AlreadyChecked = string.Equals(existingEvent.EventType, OrderControlEventType.ScanDuplicate, StringComparison.OrdinalIgnoreCase),
-                    Message = existingEvent.Message ?? "Скан уже обработан.",
-                    Task = LoadDetails(store, taskId)
-                };
+                result = BuildIdempotentScanRetryResult(store, taskId, existingEvent);
                 return;
             }
 
@@ -356,6 +350,17 @@ public sealed class OrderControlService
                 return;
             }
 
+            if (string.Equals(task.Status, OrderControlTaskStatus.Completed, StringComparison.OrdinalIgnoreCase))
+            {
+                result = new OrderControlCompleteResult
+                {
+                    Success = true,
+                    Message = "Задание контроля уже завершено.",
+                    Task = LoadDetails(store, taskId)
+                };
+                return;
+            }
+
             store.UpdateOrderControlTaskProgress(taskId);
             task = store.GetOrderControlTask(taskId)!;
             if (task.DiscrepancyHuCount > 0)
@@ -372,6 +377,16 @@ public sealed class OrderControlService
                 result = OrderControlCompleteResult.Failure(
                     OrderControlErrorCodes.TaskIncomplete,
                     $"Проверено {task.CheckedHuCount} из {task.ExpectedHuCount} HU.",
+                    LoadDetails(store, taskId));
+                return;
+            }
+
+            var snapshotValidation = ValidateCurrentSnapshotUnchanged(store, task);
+            if (snapshotValidation != null)
+            {
+                result = OrderControlCompleteResult.Failure(
+                    snapshotValidation.Value.Code,
+                    snapshotValidation.Value.Message,
                     LoadDetails(store, taskId));
                 return;
             }
@@ -419,6 +434,13 @@ public sealed class OrderControlService
                 return;
             }
 
+            if (string.Equals(task.Status, OrderControlTaskStatus.Completed, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(task.Status, OrderControlTaskStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+            {
+                details = LoadDetails(store, taskId);
+                return;
+            }
+
             var now = DateTime.Now;
             store.UpdateOrderControlTaskStatus(
                 taskId,
@@ -459,6 +481,47 @@ public sealed class OrderControlService
         return details;
     }
 
+    private static OrderControlScanResult BuildIdempotentScanRetryResult(
+        IDataStore store,
+        long taskId,
+        OrderControlEvent existingEvent)
+    {
+        if (string.Equals(existingEvent.EventType, OrderControlEventType.ScanAccepted, StringComparison.OrdinalIgnoreCase))
+        {
+            return new OrderControlScanResult
+            {
+                Success = true,
+                Message = existingEvent.Message ?? "HU проверена.",
+                Task = LoadDetails(store, taskId)
+            };
+        }
+
+        if (string.Equals(existingEvent.EventType, OrderControlEventType.ScanDuplicate, StringComparison.OrdinalIgnoreCase))
+        {
+            return new OrderControlScanResult
+            {
+                Success = true,
+                AlreadyChecked = true,
+                Message = existingEvent.Message ?? "HU уже проверена.",
+                Task = LoadDetails(store, taskId)
+            };
+        }
+
+        if (string.Equals(existingEvent.EventType, OrderControlEventType.ScanRejected, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(existingEvent.EventType, OrderControlEventType.Discrepancy, StringComparison.OrdinalIgnoreCase))
+        {
+            return OrderControlScanResult.Failure(
+                existingEvent.ErrorCode ?? "SCAN_FAILED",
+                existingEvent.Message ?? "Скан отклонен.",
+                LoadDetails(store, taskId));
+        }
+
+        return OrderControlScanResult.Failure(
+            OrderControlErrorCodes.IdempotencyConflict,
+            "request_id уже использован другим событием.",
+            LoadDetails(store, taskId));
+    }
+
     private static OrderControlScanResult RejectScan(
         IDataStore store,
         long taskId,
@@ -497,12 +560,18 @@ public sealed class OrderControlService
         OrderControlTaskHu taskHu)
     {
         var orders = store.GetOrderControlTaskOrders(taskId);
-        var currentSnapshot = BuildSnapshot(store, orders.Select(order => order.OrderId).ToArray());
+        var currentSnapshot = BuildSnapshot(store, orders.Select(order => order.OrderId).ToArray(), taskId);
+        if (!currentSnapshot.CanCreate
+            && !string.Equals(currentSnapshot.ErrorCode, OrderControlErrorCodes.NoExpectedHu, StringComparison.OrdinalIgnoreCase))
+        {
+            return NormalizeSnapshotError(currentSnapshot);
+        }
+
         var currentHu = currentSnapshot.Hus.FirstOrDefault(hu =>
             string.Equals(NormalizeHu(hu.HuCode), taskHu.NormalizedHu, StringComparison.OrdinalIgnoreCase));
         if (currentHu == null)
         {
-            if (WasHuShipped(store, taskHu.NormalizedHu))
+            if (store.IsOutboundHuShipped(taskHu.NormalizedHu))
             {
                 return (OrderControlErrorCodes.HuAlreadyShipped, "HU уже отгружена или не доступна к контролю.");
             }
@@ -519,12 +588,32 @@ public sealed class OrderControlService
         return null;
     }
 
-    private static bool WasHuShipped(IDataStore store, string normalizedHu)
+    private static (string Code, string Message)? ValidateCurrentSnapshotUnchanged(IDataStore store, OrderControlTask task)
     {
-        return store.GetDocs()
-            .Where(doc => doc.Type == DocType.Outbound && doc.Status == DocStatus.Closed)
-            .SelectMany(doc => store.GetDocLines(doc.Id))
-            .Any(line => string.Equals(NormalizeHu(line.FromHu), normalizedHu, StringComparison.OrdinalIgnoreCase));
+        var orders = store.GetOrderControlTaskOrders(task.Id);
+        var currentSnapshot = BuildSnapshot(store, orders.Select(order => order.OrderId).ToArray(), task.Id);
+        if (!currentSnapshot.CanCreate)
+        {
+            return NormalizeSnapshotError(currentSnapshot);
+        }
+
+        if (!string.Equals(currentSnapshot.SnapshotHash, task.SnapshotHash, StringComparison.OrdinalIgnoreCase))
+        {
+            return (OrderControlErrorCodes.ExpectedSetChanged, "Ожидаемый набор HU изменился после создания задания.");
+        }
+
+        return null;
+    }
+
+    private static (string Code, string Message) NormalizeSnapshotError(Snapshot snapshot)
+    {
+        var code = snapshot.ErrorCode ?? OrderControlErrorCodes.ExpectedSetChanged;
+        if (string.Equals(code, OrderControlErrorCodes.NoExpectedHu, StringComparison.OrdinalIgnoreCase))
+        {
+            return (OrderControlErrorCodes.ExpectedSetChanged, "Ожидаемый набор HU изменился после создания задания.");
+        }
+
+        return (code, snapshot.Message ?? "Текущее состояние заказа не позволяет продолжить контроль.");
     }
 
     private static OrderControlTaskDetails? LoadDetails(IDataStore store, long taskId)
@@ -545,7 +634,7 @@ public sealed class OrderControlService
         };
     }
 
-    private static Snapshot BuildSnapshot(IDataStore store, IReadOnlyList<long> orderIds)
+    private static Snapshot BuildSnapshot(IDataStore store, IReadOnlyList<long> orderIds, long? currentTaskId)
     {
         var orderResults = new List<OrderControlPreviewOrder>();
         var lines = new List<OrderControlTaskHuLine>();
@@ -564,7 +653,9 @@ public sealed class OrderControlService
                 continue;
             }
 
-            var orderError = ValidateOrder(store, order);
+            var orderError = currentTaskId.HasValue
+                ? ValidateOrderForCurrentTask(store, order, currentTaskId.Value)
+                : ValidateOrderForCreate(store, order);
             orderResults.Add(new OrderControlPreviewOrder
             {
                 OrderId = order.Id,
@@ -649,7 +740,13 @@ public sealed class OrderControlService
         return new Snapshot(true, orderResults, hus, Array.Empty<string>(), null, null, BuildSnapshotHash(hus));
     }
 
-    private static (string Code, string Message)? ValidateOrder(IDataStore store, Order order)
+    private static (string Code, string Message)? ValidateOrderForCreate(IDataStore store, Order order)
+        => ValidateOrder(store, order, currentTaskId: null);
+
+    private static (string Code, string Message)? ValidateOrderForCurrentTask(IDataStore store, Order order, long currentTaskId)
+        => ValidateOrder(store, order, currentTaskId);
+
+    private static (string Code, string Message)? ValidateOrder(IDataStore store, Order order, long? currentTaskId)
     {
         if (order.Type != OrderType.Customer || order.Status != OrderStatus.Accepted)
         {
@@ -657,7 +754,7 @@ public sealed class OrderControlService
         }
 
         var active = store.FindActiveOrderControlForOrder(order.Id);
-        if (active != null)
+        if (active != null && (!currentTaskId.HasValue || active.Task.Id != currentTaskId.Value))
         {
             return (OrderControlErrorCodes.ActiveControlExists, $"Заказ уже в активном контроле {active.Task.TaskRef}.");
         }

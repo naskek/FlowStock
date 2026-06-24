@@ -381,4 +381,5 @@ public interface IDataStore
     bool HasActiveOrderControlForOrder(long orderId);
     OrderControlTaskSummary? FindActiveOrderControlForOrder(long orderId);
     bool HasStartedOutboundForOrder(long orderId);
+    bool IsOutboundHuShipped(string normalizedHu);
 }

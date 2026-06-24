@@ -16119,6 +16119,37 @@ LIMIT 1;");
         });
     }
 
+    public bool IsOutboundHuShipped(string normalizedHu)
+    {
+        if (string.IsNullOrWhiteSpace(normalizedHu))
+        {
+            return false;
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT 1
+FROM docs d
+JOIN doc_lines dl ON dl.doc_id = d.id
+WHERE d.type = @outbound_doc_type
+  AND d.status = @closed_doc_status
+  AND dl.qty > 0
+  AND dl.from_hu IS NOT NULL
+  AND UPPER(BTRIM(dl.from_hu)) = UPPER(BTRIM(@normalized_hu))
+  AND NOT EXISTS (
+      SELECT 1
+      FROM doc_lines newer
+      WHERE newer.replaces_line_id = dl.id
+  )
+LIMIT 1;");
+            command.Parameters.AddWithValue("@outbound_doc_type", DocTypeMapper.ToOpString(DocType.Outbound));
+            command.Parameters.AddWithValue("@closed_doc_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+            command.Parameters.AddWithValue("@normalized_hu", normalizedHu.Trim());
+            return command.ExecuteScalar() != null;
+        });
+    }
+
     private static string BuildOrderControlTaskSelectSql(string clause)
     {
         return @"

@@ -134,9 +134,9 @@
 
 - Функция доступна для `CUSTOMER`-заказов в статусе `ACCEPTED` / «Готов». Создание атомарное: если хотя бы один выбранный заказ недопустим, задание не создается; preview возвращает причины, create повторяет проверки в транзакции.
 - Snapshot ожидаемых HU фиксируется при создании задания и автоматически не пересчитывается. При scan сервер сравнивает snapshot с актуальным outbound-ready read-model и текущим ledger/outbound состоянием; stale HU, изменение состава mixed-HU, отсутствие ledger-остатка или уже начатая/закрытая отгрузка дают blocking discrepancy.
-- Один заказ может находиться только в одном активном контроле (`NEW`, `IN_EXECUTION`). Несколько TSD могут работать с одним заданием; scan использует `request_id`, серверную идемпотентность, row-level lock для HU и сохраняет фактический `device_id` в событиях.
+- Один заказ может находиться только в одном активном контроле (`NEW`, `IN_EXECUTION`). Несколько TSD могут работать с одним заданием; scan использует `request_id`, серверную идемпотентность с повтором исходного результата, row-level lock для HU и сохраняет фактический `device_id` в событиях.
 - Mixed-HU считается одной физической HU в прогрессе. Состав хранится отдельными component lines и отображается под HU.
-- Завершение MVP разрешено только при `checked_hu_count == expected_hu_count` и отсутствии `DISCREPANCY`. При blocking discrepancy оператор отменяет задание и создает новое.
+- Завершение MVP разрешено только при `checked_hu_count == expected_hu_count`, отсутствии `DISCREPANCY` и неизменном актуальном snapshot всех заказов задачи. При blocking discrepancy оператор отменяет задание и создает новое; повторный `complete` для `COMPLETED` идемпотентен, `CANCELLED` нельзя сканировать или завершать, `COMPLETED` нельзя отменить.
 - API WPF: `POST /api/order-control/preview`, `POST /api/order-control/tasks`, `GET /api/order-control/tasks`, `GET /api/order-control/tasks/{id}`, `GET /api/order-control/tasks/{id}/progress`, `POST /api/order-control/tasks/{id}/cancel`.
 - API TSD: `GET /api/tsd/order-control/tasks`, `GET /api/tsd/order-control/tasks/{id}`, `POST /api/tsd/order-control/tasks/{id}/start`, `POST /api/tsd/order-control/tasks/{id}/scan`, `POST /api/tsd/order-control/tasks/{id}/complete`. Доступ управляется client block `tsd_order_control`.
 
