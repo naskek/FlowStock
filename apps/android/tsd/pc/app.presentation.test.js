@@ -200,7 +200,9 @@ const orderLinesWithPalletHtml = pc.renderOrderLinesTable(
 );
 assert.doesNotMatch(orderLinesWithPalletHtml, /pc-order-line-coverage-covered/);
 assert.match(orderLinesWithPalletHtml, /Наполнение/);
+assert.match(orderLinesWithPalletHtml, /pc-pallet-progress-inprogress/);
 assert.match(orderLinesWithPalletHtml, /Наполнено 1 \/ 2/);
+assert.match(orderLinesWithPalletHtml, />1 \/ 2</);
 assert.match(
   orderLinesWithPalletHtml,
   /<th>Товар<\/th><th>SKU \/ ШК<\/th><th>GTIN<\/th><th>Заказано<\/th><th>Наполнение<\/th>/
@@ -233,7 +235,9 @@ const orderLinesCompletePalletHtml = pc.renderOrderLinesTable(
   { order_type: "INTERNAL", order_status: "IN_PROGRESS" }
 );
 assert.match(orderLinesCompletePalletHtml, /pc-order-line-coverage-covered/);
-assert.match(orderLinesCompletePalletHtml, />Наполнено 2 \/ 2</);
+assert.match(orderLinesCompletePalletHtml, /pc-pallet-progress-completed/);
+assert.match(orderLinesCompletePalletHtml, />2 \/ 2</);
+assert.match(orderLinesCompletePalletHtml, /aria-label="Наполнено 2 \/ 2"/);
 
 const mixedComponentFilledLineHtml = pc.renderOrderLinesTable(
   [
@@ -257,7 +261,9 @@ const mixedComponentFilledLineHtml = pc.renderOrderLinesTable(
 );
 assert.match(mixedComponentFilledLineHtml, /pc-order-line-coverage-missing/);
 assert.doesNotMatch(mixedComponentFilledLineHtml, /pc-order-line-coverage-covered/);
-assert.match(mixedComponentFilledLineHtml, />Наполнено 1 \/ 1</);
+assert.match(mixedComponentFilledLineHtml, /pc-pallet-progress-completed/);
+assert.match(mixedComponentFilledLineHtml, />1 \/ 1</);
+assert.match(mixedComponentFilledLineHtml, /aria-label="Наполнено 1 \/ 1"/);
 
 const mixedComponentPartialLineHtml = pc.renderOrderLinesTable(
   [
@@ -314,7 +320,9 @@ const mixedComponentLines = [
   },
 ];
 const modalUpdatesAfterMixedFill = pc.getOrderModalContentUpdates(mixedComponentOrder, mixedComponentLines);
-assert.match(modalUpdatesAfterMixedFill.linesHtml, />Наполнено 1 \/ 1</);
+assert.match(modalUpdatesAfterMixedFill.linesHtml, /pc-pallet-progress-completed/);
+assert.match(modalUpdatesAfterMixedFill.linesHtml, />1 \/ 1</);
+assert.match(modalUpdatesAfterMixedFill.linesHtml, /aria-label="Наполнено 1 \/ 1"/);
 assert.match(modalUpdatesAfterMixedFill.linesHtml, /pc-order-line-coverage-missing/);
 assert.doesNotMatch(modalUpdatesAfterMixedFill.linesHtml, /pc-order-line-coverage-covered/);
 assert.strictEqual(Object.prototype.hasOwnProperty.call(modalUpdatesAfterMixedFill, "summaryHtml"), false);
@@ -337,7 +345,9 @@ const modalDom = {
   },
 };
 pc.applyOrderModalContentUpdates(modalDom, modalUpdatesAfterMixedFill);
-assert.match(modalDom.linesEl.innerHTML, />Наполнено 1 \/ 1</);
+assert.match(modalDom.linesEl.innerHTML, /pc-pallet-progress-completed/);
+assert.match(modalDom.linesEl.innerHTML, />1 \/ 1</);
+assert.match(modalDom.linesEl.innerHTML, /aria-label="Наполнено 1 \/ 1"/);
 
 const completedOrderModalUpdates = pc.getOrderModalContentUpdates(
   {

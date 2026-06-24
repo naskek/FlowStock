@@ -1657,102 +1657,79 @@
     };
   }
 
+  function renderLineNoPlanBadge(title) {
+    return renderStatusBadge(
+      "План не сформирован",
+      "neutral",
+      "pc-line-pallet-badge",
+      title || "Паллетный план для строки не сформирован"
+    );
+  }
+
   function renderLinePalletFillingBadge(line, order) {
     if (isLineFullyShippedForCustomer(line, order)) {
       var shippedTitle =
         (line && (line.pallet_fill_title || line.palletFillTitle)) || "Строка полностью отгружена";
       return wrapOrderIconCell(renderStatusIconOnly("completed", "pc-line-pallet-badge", shippedTitle));
     }
-    if (line && line.hide_pallet_fill_indicator === true) {
-      return "";
-    }
-    if (line && line.pallet_fill_label) {
-      var lineState = getLinePalletFillingState(line);
-      var serverTone = String(line.pallet_fill_tone || "neutral");
-      var serverLabel = String(line.pallet_fill_label || "");
-      if (serverLabel.toLowerCase().indexOf("план ") === 0 && lineState.plannedCount > 0) {
-        serverLabel = buildPalletFillProgressLabel(lineState.filledCount, lineState.plannedCount);
-        serverTone = "inprogress";
-      }
-      if (serverTone === "completed") {
-        return renderStatusBadge(
-          serverLabel || buildPalletFillProgressLabel(lineState.filledCount, lineState.plannedCount),
-          "completed",
-          "pc-line-pallet-badge",
-          line.pallet_fill_title || serverLabel
-        );
-      }
-      if (serverTone === "ready") {
-        serverTone = "inprogress";
-      }
-      if (serverTone === "inprogress" && lineState.plannedCount > 0) {
-        return renderPalletProgress(
-          lineState.filledCount,
-          lineState.plannedCount,
-          "inprogress",
-          line.pallet_fill_title || serverLabel
-        );
-      }
-      if (serverTone === "inprogress" && lineState.plannedQty > 0) {
-        return renderPalletProgress(
-          lineState.filledQty,
-          lineState.plannedQty,
-          "inprogress",
-          line.pallet_fill_title || serverLabel
-        );
-      }
-      return renderStatusBadge(
-        serverLabel,
-        serverTone,
-        "pc-line-pallet-badge",
-        line.pallet_fill_title || serverLabel
+
+    var state = getLinePalletFillingState(line);
+    var lineTitle = line && (line.pallet_fill_title || line.palletFillTitle);
+
+    if (
+      state.plannedCount > 0 &&
+      state.filledCount <= 0 &&
+      state.filledQty > 0.000001 &&
+      state.plannedQty > 0.000001 &&
+      !state.complete
+    ) {
+      return renderPalletProgress(
+        state.filledQty,
+        state.plannedQty,
+        "inprogress",
+        lineTitle ||
+          "Наполнение по строке: " + formatQuantity(state.filledQty) + " / " + formatQuantity(state.plannedQty)
       );
     }
 
-    var state = getLinePalletFillingState(line);
-    if (!state.hasPlan) {
-      return "";
-    }
-
-    if (state.plannedCount > 0 && state.filledCount <= 0 && state.filledQty > 0.000001 && state.plannedQty > 0.000001 && !state.complete) {
-      var partialQtyTitle =
-        "Наполнение по строке: " +
-        formatQuantity(state.filledQty) +
-        " / " +
-        formatQuantity(state.plannedQty);
-      return renderPalletProgress(state.filledQty, state.plannedQty, "inprogress", partialQtyTitle);
-    }
-
     if (state.plannedCount > 0) {
-      var palletLabel = buildPalletFillProgressLabel(state.filledCount, state.plannedCount);
-      var palletTitle =
-        "Наполнение по строке: " +
-        formatQuantity(state.filledCount) +
-        " / " +
-        formatQuantity(state.plannedCount) +
-        " паллет";
-      if (state.complete) {
-        return renderStatusBadge(palletLabel, "completed", "pc-line-pallet-badge", palletTitle);
-      }
-
-      return renderPalletProgress(state.filledCount, state.plannedCount, "inprogress", palletTitle);
+      return renderPalletProgress(
+        state.filledCount,
+        state.plannedCount,
+        state.complete ? "completed" : "inprogress",
+        lineTitle ||
+          "Наполнение по строке: " +
+            formatQuantity(state.filledCount) +
+            " / " +
+            formatQuantity(state.plannedCount) +
+            " паллет"
+      );
     }
 
     if (state.plannedQty > 0) {
-      var qtyLabel = "Наполнено " + formatQuantity(state.filledQty) + " / " + formatQuantity(state.plannedQty);
-      var qtyTitle =
-        "Наполнение по строке: " +
-        formatQuantity(state.filledQty) +
-        " / " +
-        formatQuantity(state.plannedQty);
-      if (state.complete) {
-        return renderStatusBadge(qtyLabel, "completed", "pc-line-pallet-badge", qtyTitle);
-      }
-
-      return renderPalletProgress(state.filledQty, state.plannedQty, "inprogress", qtyTitle);
+      return renderPalletProgress(
+        state.filledQty,
+        state.plannedQty,
+        state.complete ? "completed" : "inprogress",
+        lineTitle ||
+          "Наполнение по строке: " + formatQuantity(state.filledQty) + " / " + formatQuantity(state.plannedQty)
+      );
     }
 
-    return "";
+    if (line && line.pallet_fill_label) {
+      var serverTone = String(line.pallet_fill_tone || "neutral");
+      if (serverTone === "ready") {
+        serverTone = "inprogress";
+      }
+      return renderStatusBadge(
+        String(line.pallet_fill_label),
+        serverTone,
+        "pc-line-pallet-badge",
+        lineTitle || line.pallet_fill_label
+      );
+    }
+
+    return renderLineNoPlanBadge(lineTitle);
   }
 
   function getOrderShipmentPalletReadinessPresentation(order) {
