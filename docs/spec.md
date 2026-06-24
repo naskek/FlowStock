@@ -50,6 +50,7 @@
   - WPF использует одно app-scoped SSE-подключение и выполняет read-only refresh только активной вкладки или открытого чистого окна; скрытые вкладки только помечаются для обновления при открытии.
   - WPF live-refresh не вызывает Save/Update/Close или другие workflow-команды, не опрашивает PostgreSQL/API по таймеру и не перезаписывает несохранённые изменения; при активном редактировании refresh откладывается до сохранения, отмены или завершения редактирования.
   - WPF `OrderDetailsWindow` при live-refresh использует тот же read-only pipeline представления строк заказа, что и обычное открытие/перезагрузка: HU по строке, planned/mixed HU, filled progress, shipped/remaining/readiness и derived HU/pallet/fate-поля не сбрасываются урезанной перезагрузкой строк.
+  - Read-only API с POST-телом, например `/api/orders/hu-reservation-candidates`, не публикуют SSE `changed` и не должны сами вызывать live-refresh цикл.
 
 ## URL-схема web
 - Production использует единый HTTPS origin на `7154`.

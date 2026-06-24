@@ -65,7 +65,7 @@ public sealed class WpfOrderControlApiService
 
             using var handler = CreateHandler(configuration);
             using var client = CreateClient(handler, configuration);
-            var url = activeOnly ? "/api/order-control/tasks?activeOnly=true" : "/api/order-control/tasks";
+            var url = $"/api/order-control/tasks?activeOnly={activeOnly.ToString().ToLowerInvariant()}";
             using var response = await client.GetAsync(url, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {

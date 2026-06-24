@@ -40,6 +40,8 @@ public partial class OrderDetailsWindow : Window
     private bool _isQtyPersistInProgress;
     private bool _liveRefreshPending;
     private bool _liveRefreshInProgress;
+    private bool _hasCompletedInitialLoad;
+    private bool _isClosed;
     private bool _isOrderLinesGridSorting;
     private bool _suppressOrderLineSelectionChanged;
     private long _orderLineSelectionRestoreGeneration;
@@ -81,16 +83,30 @@ public partial class OrderDetailsWindow : Window
     private IDisposable RegisterLiveRefresh()
     {
         Activated += (_, _) => ApplyPendingLiveRefresh();
-        Closed += (_, _) => _liveRefreshSubscription.Dispose();
+        Closed += (_, _) =>
+        {
+            _isClosed = true;
+            _liveRefreshPending = false;
+            _liveRefreshSubscription.Dispose();
+            _huBinding.Dispose();
+        };
         return _services.LiveRefresh.Register(
             CanApplyLiveRefresh,
             ApplyLiveRefresh,
-            () => _liveRefreshPending = true);
+            () =>
+            {
+                if (!_isClosed)
+                {
+                    _liveRefreshPending = true;
+                }
+            });
     }
 
     private bool CanApplyLiveRefresh()
     {
         return _orderId.HasValue
+               && !_isClosed
+               && _hasCompletedInitialLoad
                && IsVisible
                && IsActive
                && !_isLoading
@@ -112,6 +128,11 @@ public partial class OrderDetailsWindow : Window
 
     private void ApplyLiveRefresh()
     {
+        if (_isClosed)
+        {
+            return;
+        }
+
         if (!CanApplyLiveRefresh())
         {
             _liveRefreshPending = true;
@@ -132,7 +153,7 @@ public partial class OrderDetailsWindow : Window
 
     private void ApplyPendingLiveRefresh()
     {
-        if (_liveRefreshPending)
+        if (!_isClosed && _liveRefreshPending)
         {
             ApplyLiveRefresh();
         }
@@ -2755,9 +2776,17 @@ public partial class OrderDetailsWindow : Window
 
     private void EndLoad()
     {
+        var wasInitialLoad = !_hasCompletedInitialLoad;
         _isLoading = false;
+        _hasCompletedInitialLoad = true;
         _hasUnsavedChanges = false;
         UpdateReadyHuBindingButton();
+        if (wasInitialLoad)
+        {
+            _liveRefreshPending = false;
+            return;
+        }
+
         if (_liveRefreshPending && !_liveRefreshInProgress)
         {
             Dispatcher.BeginInvoke(ApplyPendingLiveRefresh);

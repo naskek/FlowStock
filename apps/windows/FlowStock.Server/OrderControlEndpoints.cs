@@ -44,9 +44,9 @@ public static class OrderControlEndpoints
         });
     }
 
-    private static IResult HandleList(string? status, bool activeOnly, OrderControlService service)
+    private static IResult HandleList(string? status, bool? activeOnly, OrderControlService service)
     {
-        return Results.Ok(service.GetTasks(status, activeOnly).Select(MapSummary).ToArray());
+        return Results.Ok(service.GetTasks(status, activeOnly ?? false).Select(MapSummary).ToArray());
     }
 
     private static IResult HandleGet(long id, OrderControlService service)

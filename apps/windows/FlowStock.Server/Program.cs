@@ -4385,6 +4385,12 @@ static bool ShouldPublishLiveEvent(HttpContext context)
         return false;
     }
 
+    if (HttpMethods.IsPost(context.Request.Method)
+        && IsReadOnlyApiPost(path))
+    {
+        return false;
+    }
+
     if (HttpMethods.IsGet(context.Request.Method)
         || HttpMethods.IsHead(context.Request.Method)
         || HttpMethods.IsOptions(context.Request.Method))
@@ -4394,6 +4400,11 @@ static bool ShouldPublishLiveEvent(HttpContext context)
 
     return context.Response.StatusCode >= StatusCodes.Status200OK
            && context.Response.StatusCode < StatusCodes.Status400BadRequest;
+}
+
+static bool IsReadOnlyApiPost(PathString path)
+{
+    return path.StartsWithSegments("/api/orders/hu-reservation-candidates", StringComparison.OrdinalIgnoreCase);
 }
 
 enum PartnerRole

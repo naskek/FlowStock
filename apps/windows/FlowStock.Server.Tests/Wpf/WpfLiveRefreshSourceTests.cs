@@ -61,11 +61,15 @@ public sealed class WpfLiveRefreshSourceTests
     {
         var code = File.ReadAllText(GetRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs"));
         var canApply = SliceMethod(code, "private bool CanApplyLiveRefresh()", "private bool IsOrderLinesGridInteracting()");
+        var register = SliceMethod(code, "private IDisposable RegisterLiveRefresh()", "private bool CanApplyLiveRefresh()");
+        var endLoad = SliceMethod(code, "private void EndLoad()", "private void MarkDirty()");
         var interacting = SliceMethod(code, "private bool IsOrderLinesGridInteracting()", "private void ApplyLiveRefresh()");
         var initialize = SliceMethod(code, "private void InitializeData()", "private void OrderDetailsWindow_PreviewKeyDown");
         var selectionChanged = SliceMethod(code, "private void OrderLinesGrid_SelectionChanged", "private void UpdateSelectedOrderLineUi");
         var sorting = SliceMethod(code, "private void OrderLinesGrid_Sorting", "private OrderLineView? GetSelectedOrderLine");
 
+        Assert.Contains("&& !_isClosed", canApply, StringComparison.Ordinal);
+        Assert.Contains("&& _hasCompletedInitialLoad", canApply, StringComparison.Ordinal);
         Assert.Contains("&& !IsOrderLinesGridInteracting()", canApply, StringComparison.Ordinal);
         Assert.Contains("OrderLinesGrid.IsKeyboardFocusWithin", interacting, StringComparison.Ordinal);
         Assert.Contains("OrderLinesGrid.IsMouseOver", interacting, StringComparison.Ordinal);
@@ -73,6 +77,9 @@ public sealed class WpfLiveRefreshSourceTests
         Assert.Contains("_suppressOrderLineSelectionChanged", interacting, StringComparison.Ordinal);
         Assert.Contains("WpfLiveRefreshGuard.IsDataGridEditing(OrderLinesGrid)", interacting, StringComparison.Ordinal);
         Assert.Contains("CaptureSelectedOrderLineId().HasValue", interacting, StringComparison.Ordinal);
+        Assert.Contains("_huBinding.Dispose();", register, StringComparison.Ordinal);
+        Assert.Contains("var wasInitialLoad = !_hasCompletedInitialLoad;", endLoad, StringComparison.Ordinal);
+        Assert.Contains("_liveRefreshPending = false;", endLoad, StringComparison.Ordinal);
 
         Assert.Contains("OrderLinesGrid.MouseLeave += (_, _) => Dispatcher.BeginInvoke(ApplyPendingLiveRefresh);", initialize, StringComparison.Ordinal);
         Assert.Contains("OrderLinesGrid.LostKeyboardFocus += (_, _) => Dispatcher.BeginInvoke(ApplyPendingLiveRefresh);", initialize, StringComparison.Ordinal);
@@ -92,6 +99,15 @@ public sealed class WpfLiveRefreshSourceTests
         Assert.DoesNotContain("/api/orders", code, StringComparison.Ordinal);
         Assert.DoesNotContain("/api/docs", code, StringComparison.Ordinal);
         Assert.DoesNotContain("/api/stock", code, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ServerLivePublisher_TreatsHuReservationCandidatesAsReadOnlyPost()
+    {
+        var code = File.ReadAllText(GetRepoFile("apps", "windows", "FlowStock.Server", "Program.cs"));
+
+        Assert.Contains("IsReadOnlyApiPost(path)", code, StringComparison.Ordinal);
+        Assert.Contains("\"/api/orders/hu-reservation-candidates\"", code, StringComparison.Ordinal);
     }
 
     [Fact]
