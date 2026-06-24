@@ -179,11 +179,22 @@ hooks.renderOrderControlTask(sampleDetail, {
   message: "HU не входит в задание контроля.",
   messageType: "error",
 });
-assert.ok(appEl.innerHTML.includes("Контроль CTRL-2026-000123"));
-assert.ok(appEl.innerHTML.includes("1 / 3 HU"));
-assert.ok(appEl.innerHTML.includes("Сканируйте HU"));
+assert.ok(appEl.innerHTML.includes("Контроль · Заказ 080 · 1 / 3 паллет"));
+assert.ok(appEl.innerHTML.includes("outbound-picking-progress"), "task screen should render the canonical 4-counter block");
+assert.ok(appEl.innerHTML.includes("Ожидается <strong>3</strong>"));
+assert.ok(appEl.innerHTML.includes("Проверено <strong>1</strong>"));
+assert.ok(appEl.innerHTML.includes("Осталось <strong>2</strong>"));
+assert.ok(appEl.innerHTML.includes("Расхождения <strong>1</strong>"));
+assert.ok(appEl.innerHTML.includes("filling-scan-slot"), "task screen should use the canonical scan slot");
+assert.ok(appEl.innerHTML.includes('id="orderControlScanInput"'));
+assert.ok(!appEl.innerHTML.includes("Сканируйте HU"), "task screen should drop the custom scan block title");
 assert.ok(appEl.innerHTML.includes("HU не входит в задание контроля."));
 assert.ok(appEl.innerHTML.includes("HU-CHECKED"));
+assert.ok(appEl.innerHTML.includes("filling-pallet-item--compact"), "HU rows should be compact");
+assert.ok(appEl.innerHTML.includes("filling-pallet-dot"), "HU rows should use the canonical status dot");
+assert.ok(appEl.innerHTML.includes("is-discrepancy"), "discrepancy HU should use error tone");
+assert.ok(appEl.innerHTML.includes("is-pending"), "pending HU should use pending tone");
+assert.ok(appEl.innerHTML.includes("is-filled"), "checked HU should use filled tone");
 assert.ok(appEl.innerHTML.includes("Товар A"));
 assert.ok(appEl.innerHTML.includes("Смешанная HU · 2 позиций"));
 assert.strictEqual(countOccurrences(appEl.innerHTML, "Горчица"), 1, "normal HU should not duplicate item summary and line");

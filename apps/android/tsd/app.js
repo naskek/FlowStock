@@ -5421,36 +5421,68 @@
   function renderOrderControlHuRow(hu) {
     var statusInfo = getOrderControlStatusInfo(hu.status, "");
     var status = String(hu.status || "").trim().toUpperCase();
-    var tone = status === "CHECKED" ? "success" : status === "DISCREPANCY" ? "error" : "pending";
+    var toneClass =
+      status === "CHECKED" ? "is-filled" : status === "DISCREPANCY" ? "is-discrepancy" : "is-pending";
     var lines = Array.isArray(hu.lines) ? hu.lines : [];
     var isMixed = hu.isMixedPallet === true || lines.length > 1;
     var firstLine = lines.length === 1 ? lines[0] : null;
-    var description = isMixed
-      ? "Смешанная HU · " + lines.length + " позиций"
-      : String((firstLine && firstLine.itemName) || hu.itemSummary || "").trim();
-    var metaParts = [];
-    var qty = !isMixed && firstLine ? formatOrderControlLineQty(firstLine) : "";
-    var location = String((firstLine && firstLine.locationCode) || "").trim();
-    if (qty) {
-      metaParts.push(qty);
-    }
-    if (location) {
-      metaParts.push(location);
+    var sub = "";
+    if (isMixed) {
+      sub = "Смешанная HU · " + lines.length + " позиций";
+    } else {
+      var parts = [];
+      var name = String((firstLine && firstLine.itemName) || hu.itemSummary || "").trim();
+      if (name) {
+        parts.push(name);
+      }
+      var qty = firstLine ? formatOrderControlLineQty(firstLine) : "";
+      if (qty) {
+        parts.push(qty);
+      }
+      var location = String((firstLine && firstLine.locationCode) || "").trim();
+      if (location) {
+        parts.push(location);
+      }
+      sub = parts.join(" · ");
     }
     return (
-      '<li class="filling-pallet-item filling-pallet-item--compact outbound-picking-hu-item order-control-hu-item filling-pallet-status-' + tone + '">' +
-      '  <div class="outbound-picking-hu-main order-control-hu-main">' +
-      '    <div class="order-control-hu-top">' +
-      '      <strong class="order-control-hu-code">' + escapeHtml(hu.huCode || "-") + "</strong>" +
-      '      <span class="' + escapeHtml(statusInfo.className) + '">' + escapeHtml(statusInfo.label) + "</span>" +
-      "    </div>" +
-      (description ? '    <div class="order-control-hu-desc">' + escapeHtml(description) + "</div>" : "") +
-      (metaParts.length ? '    <div class="order-control-hu-meta">' + escapeHtml(metaParts.join(" · ")) + "</div>" : "") +
-      (hu.message ? '    <div class="filling-doc-meta">' + escapeHtml(hu.message) + "</div>" : "") +
+      '<li class="filling-pallet-item filling-pallet-item--compact outbound-picking-hu-item order-control-hu-item ' +
+      toneClass +
+      '">' +
+      '  <span class="filling-pallet-dot" aria-hidden="true"></span>' +
+      '  <div class="outbound-picking-hu-main">' +
+      '    <div class="filling-pallet-code">' +
+      escapeHtml(hu.huCode || "-") +
+      ' <span class="filling-pallet-status-text">' +
+      escapeHtml(statusInfo.label) +
+      "</span></div>" +
+      (sub ? '    <div class="order-control-hu-sub">' + escapeHtml(sub) + "</div>" : "") +
+      (hu.message
+        ? '    <div class="order-control-hu-sub order-control-hu-sub--muted">' + escapeHtml(hu.message) + "</div>"
+        : "") +
       (isMixed ? renderOrderControlHuLines(lines) : "") +
       "  </div>" +
       "</li>"
     );
+  }
+
+  function buildOrderControlSummaryLine(detail) {
+    detail = detail || {};
+    var task = detail.task || {};
+    var progress = detail.progress || {};
+    var orders = Array.isArray(task.orders)
+      ? task.orders.filter(function (order) {
+          return order && order.orderRef;
+        })
+      : [];
+    var checked = Number(progress.checkedHuCount != null ? progress.checkedHuCount : task.checkedHuCount) || 0;
+    var expected = Number(progress.expectedHuCount != null ? progress.expectedHuCount : task.expectedHuCount) || 0;
+    var subject = orders.length === 1 ? "Заказ " + orders[0].orderRef : String(task.taskRef || "-");
+    return subject + " · " + checked + " / " + expected + " паллет";
+  }
+
+  function buildOrderControlHeaderLine(detail) {
+    return "Контроль · " + buildOrderControlSummaryLine(detail);
   }
 
   function renderOrderControlTask(detail, state) {
@@ -5459,28 +5491,36 @@
     var progress = detail.progress || {};
     var message = state && state.message ? String(state.message) : "";
     var messageType = state && state.messageType ? String(state.messageType) : "";
+    var messageHtml = message
+      ? '<div class="filling-message filling-message-' + escapeHtml(messageType || "info") + '">' + escapeHtml(message) + "</div>"
+      : "";
     var hus = sortOrderControlHus(detail.hus || []).map(renderOrderControlHuRow).join("");
     if (!hus) {
       hus = '<div class="empty-state">Нет HU в задании.</div>';
     }
     var canComplete = progress.canComplete === true;
-    var progressText = (progress.checkedHuCount || 0) + " / " + (progress.expectedHuCount || 0) + " HU";
-    var scanMessageClass = message
-      ? " filling-message-" + escapeHtml(messageType || "info")
-      : "";
+    var expected = Number(progress.expectedHuCount != null ? progress.expectedHuCount : task.expectedHuCount) || 0;
+    var checked = Number(progress.checkedHuCount != null ? progress.checkedHuCount : task.checkedHuCount) || 0;
+    var discrepancy = Number(progress.discrepancyHuCount != null ? progress.discrepancyHuCount : task.discrepancyHuCount) || 0;
+    var pending = Number(progress.pendingHuCount);
+    if (!isFinite(pending)) {
+      pending = Math.max(0, expected - checked);
+    }
 
     app.innerHTML =
       '<section class="screen filling-screen outbound-picking-screen outbound-picking-screen--scan">' +
       '  <div class="screen-card filling-card filling-card--scan">' +
-      '    <div class="filling-scan-header order-control-scan-header">Контроль ' +
-      escapeHtml(task.taskRef || "-") +
-      ' <span class="order-control-progress">' +
-      escapeHtml(progressText) +
-      "</span>" +
+      '    <div class="filling-scan-header">' +
+      escapeHtml(buildOrderControlHeaderLine(detail)) +
       "</div>" +
-      '    <div class="filling-scan-card filling-scan-card--compact order-control-scan-card' + scanMessageClass + '">' +
-      '      <div class="order-control-scan-title">Сканируйте HU</div>' +
-      (message ? '      <div class="order-control-last-scan">' + escapeHtml(message) + "</div>" : '      <div class="order-control-last-scan">Ожидаем скан паллеты</div>') +
+      messageHtml +
+      '    <div class="outbound-picking-progress">' +
+      '      <div>Ожидается <strong>' + escapeHtml(String(expected)) + "</strong></div>" +
+      '      <div>Проверено <strong>' + escapeHtml(String(checked)) + "</strong></div>" +
+      '      <div>Осталось <strong>' + escapeHtml(String(pending)) + "</strong></div>" +
+      '      <div>Расхождения <strong>' + escapeHtml(String(discrepancy)) + "</strong></div>" +
+      "    </div>" +
+      '    <div class="filling-scan-card filling-scan-card--compact filling-scan-slot">' +
       '      <input class="form-input filling-scan-input tsd-scan-input-hidden" id="orderControlScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" placeholder="HU-000001" />' +
       "    </div>" +
       '    <div class="filling-pallet-list-card">' +
