@@ -33,6 +33,11 @@
                                 Margin="12,0,0,0"
                                 HorizontalAlignment="Left"
                                 Click="OpenTsdDevices_Click" />
+                        <Button Content="Сменить пароль администратора..."
+                                Width="240"
+                                Margin="12,0,0,0"
+                                HorizontalAlignment="Left"
+                                Click="ChangeAdminPassword_Click" />
                     </StackPanel>
                 </StackPanel>
             </GroupBox>

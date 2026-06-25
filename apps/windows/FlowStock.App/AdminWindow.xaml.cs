@@ -50,8 +50,49 @@ public partial class AdminWindow : Window
         window.ShowDialog();
     }
 
+    private void ChangeAdminPassword_Click(object sender, RoutedEventArgs e)
+    {
+        if (_services.AdminAuth.EnsureAdminPasswordExists())
+        {
+            var prompt = new PasswordPromptWindow(_services.AdminAuth) { Owner = this };
+            if (prompt.ShowDialog() != true)
+            {
+                _services.AdminLogger.Info("admin_change_password aborted: current password prompt cancelled");
+                return;
+            }
+        }
+
+        var setPassword = new SetAdminPasswordWindow(_services.AdminAuth) { Owner = this };
+        if (setPassword.ShowDialog() != true)
+        {
+            _services.AdminLogger.Info("admin_change_password aborted: new password dialog cancelled");
+            return;
+        }
+
+        _services.AdminLogger.Info("admin_password changed from ui");
+        MessageBox.Show("Пароль администратора изменён.", "Администрирование", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
     private void ClearOperations_Click(object sender, RoutedEventArgs e)
     {
+        // Опасное действие: требуем пароль администратора, чтобы исключить случайное/ошибочное нажатие.
+        if (!_services.AdminAuth.EnsureAdminPasswordExists())
+        {
+            var setPassword = new SetAdminPasswordWindow(_services.AdminAuth) { Owner = this };
+            if (setPassword.ShowDialog() != true)
+            {
+                _services.AdminLogger.Info("admin_reset_movements aborted: admin password not set");
+                return;
+            }
+        }
+
+        var prompt = new PasswordPromptWindow(_services.AdminAuth) { Owner = this };
+        if (prompt.ShowDialog() != true)
+        {
+            _services.AdminLogger.Info("admin_reset_movements aborted: password prompt cancelled");
+            return;
+        }
+
         var confirm = MessageBox.Show(
             "Очистить все операции и заказы? Это действие удалит тестовые движения.",
             "Администрирование",
