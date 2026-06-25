@@ -696,14 +696,24 @@
       var scanAllowed = isScanAllowedElement(input);
       if (suppress) {
         if (scanAllowed) {
+          // Scan fields stay keyboard-suppressed: the scanner writes the value
+          // programmatically (bypassing readOnly) and Enter submits.
           applyScanInputMode(input);
           input.setAttribute("data-scan-readonly", "1");
-        } else if (shouldLockKeyboardForInput(input)) {
-          input.setAttribute("data-kbd-readonly", "1");
-        }
-        applyInputMode(input, !scanAllowed);
-        if (shouldLockKeyboardForInput(input)) {
-          input.readOnly = true;
+          applyInputMode(input, false);
+          if (shouldLockKeyboardForInput(input)) {
+            input.readOnly = true;
+          }
+        } else {
+          // Ordinary search/manual inputs stay editable: keyboard suppression is
+          // scan-field-only, so manual typing works without debug mode.
+          if (input.hasAttribute("data-kbd-readonly")) {
+            input.removeAttribute("data-kbd-readonly");
+          }
+          if (shouldLockKeyboardForInput(input)) {
+            input.readOnly = false;
+          }
+          applyInputMode(input, false);
         }
         return;
       }
@@ -15341,26 +15351,17 @@
           "focusin",
           function (event) {
             if (isSoftKeyboardSuppressed()) {
-              if (
-                event.target &&
-                event.target.getAttribute &&
-                event.target.getAttribute("data-hu-manual") === "1"
-              ) {
-                return;
-              }
+              // Keyboard suppression is scan-field-only: only scan-allowed inputs are
+              // locked and the on-screen keyboard hidden. Ordinary search/manual inputs
+              // stay editable so the operator can type without debug mode.
               if (isScanAllowedElement(event.target)) {
                 applyScanInputMode(event.target);
                 event.target.setAttribute("data-scan-readonly", "1");
                 if (shouldLockKeyboardForInput(event.target)) {
                   event.target.readOnly = true;
                 }
-              } else {
-                if (shouldLockKeyboardForInput(event.target)) {
-                  event.target.readOnly = true;
-                }
-                applyInputMode(event.target, true);
+                hideVirtualKeyboard();
               }
-              hideVirtualKeyboard();
             }
           },
           true

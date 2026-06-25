@@ -464,7 +464,7 @@ async function main() {
 
   assert(storageJs.includes("/api/tsd/hu/resolve?code="));
   assert(storageJs.includes("/api/tsd/hu/card?code="));
-  assert(appVersionJs.includes('var version = "61"'));
+  assert(appVersionJs.includes('var version = "62"'));
   assert(serviceWorkerJs.includes('importScripts("./app-version.js")'));
   assert(serviceWorkerJs.includes('"./app.js"'));
   assert(serviceWorkerJs.includes('"./img/home/hu-search.png"'));

@@ -79,6 +79,34 @@ assert(
     renderSettingsBody.includes("Темная тема"),
   "settings should render dark theme toggle"
 );
+
+// Regression: keyboard suppression must be scan-field-only (TSD-01).
+// Ordinary search/manual inputs stay editable without a debug toggle; only
+// data-scan-allow="1" fields are locked. See docs/spec.md: neutral search/input
+// fields on /hu, /stock, /items, /orders keep accepting typed (non-HU) values.
+const applySoftKeyboardBody = extractFunctionBody(appJs, "applySoftKeyboardSetting");
+assert(
+  applySoftKeyboardBody.includes("input.readOnly = true") &&
+    applySoftKeyboardBody.includes("input.readOnly = false"),
+  "applySoftKeyboardSetting should lock scan fields but keep ordinary inputs editable"
+);
+assert(
+  !applySoftKeyboardBody.includes('setAttribute("data-kbd-readonly", "1")'),
+  "applySoftKeyboardSetting must not lock ordinary (non-scan) inputs via data-kbd-readonly"
+);
+assert(
+  applySoftKeyboardBody.includes("scanAllowed") &&
+    applySoftKeyboardBody.includes('setAttribute("data-scan-readonly", "1")'),
+  "applySoftKeyboardSetting should still suppress scan-allowed fields"
+);
+assert(
+  !/applyInputMode\(\s*event\.target\s*,\s*true\s*\)/.test(appJs),
+  "focusin handler must not force inputmode=none on ordinary inputs"
+);
+assert(
+  appJs.includes("applyScanInputMode(event.target)"),
+  "focusin handler should still suppress keyboard for scan-allowed inputs"
+);
 assert(
   renderSettingsBody.includes('id="pwaCheckUpdateBtn"') &&
     renderSettingsBody.includes("Проверить обновления") &&
