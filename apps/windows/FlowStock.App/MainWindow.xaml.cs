@@ -3174,6 +3174,8 @@ public partial class MainWindow : Window
         window.ShowDialog();
     }
 
+    // Legacy: отдельное окно/очередь "Маркировка" больше не выводится в главное меню WPF.
+    // Обработчик и MarkingWindow сохраняются для совместимости и возможной диагностики.
     private void OpenMarking_Click(object sender, RoutedEventArgs e)
     {
         var window = new MarkingWindow(_services)
