@@ -864,8 +864,43 @@ body {
   margin-bottom: 12px;
 }
 
-.stock-state-search {
+.stock-state-filters {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
   margin-bottom: 12px;
+}
+
+.stock-state-filter {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--tsd-text-muted);
+}
+
+.stock-state-filter .form-input {
+  min-width: 0;
+  width: 100%;
+  font-size: 13px;
+  padding: 9px 10px;
+}
+
+.stock-state-filter--toggle {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--tsd-border);
+  border-radius: 10px;
+  background: var(--tsd-surface-solid);
+}
+
+.stock-state-filter--toggle input {
+  width: 20px;
+  height: 20px;
+  margin: 0;
 }
 
 .stock-state-message {
@@ -997,6 +1032,10 @@ body {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.stock-state-detail[hidden] {
+  display: none;
 }
 
 .stock-state-section {

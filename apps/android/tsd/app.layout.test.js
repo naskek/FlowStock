@@ -497,16 +497,24 @@ assert.match(hooks.renderHome(), /home-screen/, "home route renderer should stil
 
 const stockScreenHtml = hooks.renderStock();
 assert.match(stockScreenHtml, /Состояние склада/, "stock route should render warehouse state title");
-assert.match(stockScreenHtml, /id="stockSearchInput"/, "stock screen should render search field");
+assert.doesNotMatch(stockScreenHtml, /id="stockSearchInput"/, "stock screen should not render search field");
+assert.match(stockScreenHtml, /id="stockTypeFilter"/, "stock screen should render item type filter");
+assert.match(stockScreenHtml, /id="stockLocationFilter"/, "stock screen should render location filter");
+assert.match(stockScreenHtml, /id="stockHuFilter"/, "stock screen should render HU filter");
+assert.match(stockScreenHtml, /id="stockBelowMinFilter"/, "stock screen should render below-minimum filter");
+assert.match(stockScreenHtml, /Все типы/, "item type filter should default to all");
+assert.match(stockScreenHtml, /Все места/, "location filter should default to all");
+assert.match(stockScreenHtml, /Все HU/, "HU filter should default to all");
 assert.match(stockScreenHtml, /id="stockList"/, "stock screen should render card list container");
 assert.match(stockScreenHtml, /id="stockMessage"/, "stock screen should render state message container");
 assert.doesNotMatch(stockScreenHtml, /Сформировать заказ/, "TSD stock screen should not render create-order button");
-assert.doesNotMatch(stockScreenHtml, /stockScanInput|stockLocationFilter/, "stock screen should drop legacy HU scan controls");
+assert.doesNotMatch(stockScreenHtml, /stockScanInput/, "stock screen should drop legacy HU scan controls");
 
 const stockStateRow = hooks.mapWarehouseProductionStateRow(
   {
     item_id: 1,
     item_name: "Горчица, Печагин, 1 кг",
+    item_type_name: "Готовая продукция",
     base_uom: "Шт",
     sku: "SKU-1",
     barcode: "04607186951544",
@@ -527,26 +535,117 @@ const stockStateRow = hooks.mapWarehouseProductionStateRow(
   {}
 );
 assert.strictEqual(stockStateRow.status, "below", "below-minimum stock should map to below status");
+assert.strictEqual(stockStateRow.itemTypeName, "Готовая продукция", "item type should be mapped from report row");
 assert.strictEqual(stockStateRow.huRows.length, 1, "warehouse HU rows should be mapped");
 assert.strictEqual(stockStateRow.productionReceipts.length, 1, "production receipts should be mapped");
 
 const stockCardHtml = hooks.renderStockStateCard(stockStateRow);
 assert.match(stockCardHtml, /stock-state-item--below/, "below card should carry below status class");
+assert.match(stockCardHtml, /aria-expanded="false"/, "stock cards should be collapsed by default");
+assert.match(stockCardHtml, /class="stock-state-detail"[^>]*hidden/, "stock detail should be hidden by default");
 assert.match(stockCardHtml, /Ниже минимума/, "below card should show below-minimum chip");
 assert.match(stockCardHtml, /Складские HU/, "expanded card should show warehouse HU section");
 assert.match(stockCardHtml, /План \/ производство/, "expanded card should show production section");
 assert.match(stockCardHtml, /Расчёт потребности/, "expanded card should show need breakdown section");
 assert.match(stockCardHtml, /data-stock-toggle="1"/, "card should expose toggle hook");
+assertCssContains(
+  ".stock-state-detail[hidden]",
+  ["display: none"],
+  "stock detail hidden attribute should override flex display locally"
+);
 
-assert.strictEqual(
-  hooks.filterWarehouseStateRows([stockStateRow], "04607186951544").length,
-  1,
-  "search should match by barcode"
+const stockStateRows = [
+  stockStateRow,
+  hooks.mapWarehouseProductionStateRow(
+    {
+      item_id: 2,
+      item_name: "Аджика",
+      item_type_name: "Сырьё",
+      base_uom: "Шт",
+      stock_qty: 100,
+      min_stock_qty: 0,
+      below_min_qty: 0,
+      hu_rows: [
+        { hu_code: "HU-2", location: "B-02", qty: 40, stock_status: "На складе" },
+        { hu_code: "HU-3", location: "C-03", qty: 60, stock_status: "На складе" },
+      ],
+      production_receipts: [{ hu_code: "HU-PLAN", prd_ref: "PRD-2", pallet_status_display: "План", qty: 100 }],
+    },
+    {}
+  ),
+  hooks.mapWarehouseProductionStateRow(
+    {
+      item_id: 3,
+      item_name: "Базилик",
+      base_uom: "Шт",
+      stock_qty: 50,
+      min_stock_qty: 0,
+      below_min_qty: 0,
+      hu_rows: [{ hu_code: "HU-4", location: "A-01", qty: 50, stock_status: "На складе" }],
+    },
+    { 3: { item_type_name: "Специи" } }
+  ),
+];
+const stockFilterOptions = hooks.buildWarehouseStateFilterOptions(stockStateRows);
+assert.deepStrictEqual(
+  Array.from(stockFilterOptions.types),
+  ["Готовая продукция", "Специи", "Сырьё"],
+  "type options should be sorted ru-RU"
 );
 assert.strictEqual(
-  hooks.filterWarehouseStateRows([stockStateRow], "нет-такого").length,
+  stockFilterOptions.hus.includes("HU-PLAN"),
+  false,
+  "HU filter should not include production receipts"
+);
+assert.strictEqual(
+  hooks.filterWarehouseStateRows(stockStateRows, { typeName: "Сырьё" }).length,
+  1,
+  "type filter should match item type"
+);
+assert.strictEqual(
+  hooks.filterWarehouseStateRows(stockStateRows, { location: "A-01" }).length,
+  2,
+  "location filter should match warehouse HU rows"
+);
+assert.strictEqual(
+  hooks.filterWarehouseStateRows(stockStateRows, { huCode: "HU-3" }).length,
+  1,
+  "HU filter should match exact HU code"
+);
+assert.strictEqual(
+  hooks.filterWarehouseStateRows(stockStateRows, { belowMinOnly: true }).length,
+  1,
+  "below-minimum filter should use positive belowMinQty"
+);
+assert.strictEqual(
+  hooks.filterWarehouseStateRows(stockStateRows, { location: "B-02", huCode: "HU-3" }).length,
   0,
-  "search should return empty for unknown query"
+  "location and HU filters should require the same huRows entry"
+);
+assert.strictEqual(
+  hooks.filterWarehouseStateRows(stockStateRows, { location: "C-03", huCode: "HU-3" }).length,
+  1,
+  "location and HU filters should match when one huRows entry satisfies both"
+);
+assert.strictEqual(
+  hooks.filterWarehouseStateRows(stockStateRows, {}).length,
+  stockStateRows.length,
+  "empty filters should return full list"
+);
+assert.deepStrictEqual(
+  stockStateRows
+    .slice()
+    .sort(function (left, right) {
+      return String(left.itemName).localeCompare(String(right.itemName), "ru-RU", {
+        numeric: true,
+        sensitivity: "base",
+      });
+    })
+    .map(function (row) {
+      return row.itemName;
+    }),
+  ["Аджика", "Базилик", "Горчица, Печагин, 1 кг"],
+  "stock list sorting by item name should stay stable"
 );
 
 assert.strictEqual(hooks.normalizeTsdTheme("dark"), "dark");

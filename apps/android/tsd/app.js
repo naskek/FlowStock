@@ -5627,8 +5627,11 @@
       '<section class="screen stock-state-screen">' +
       '  <div class="screen-card doc-screen-card stock-state-card">' +
       '    <div class="section-title">Состояние склада</div>' +
-      '    <div class="stock-state-search">' +
-      '      <input class="form-input" id="stockSearchInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Название, SKU, GTIN, штрихкод" />' +
+      '    <div class="stock-state-filters">' +
+      '      <label class="stock-state-filter"><span>Тип</span><select class="form-input" id="stockTypeFilter"><option value="">Все типы</option></select></label>' +
+      '      <label class="stock-state-filter"><span>Место</span><select class="form-input" id="stockLocationFilter"><option value="">Все места</option></select></label>' +
+      '      <label class="stock-state-filter"><span>HU</span><select class="form-input" id="stockHuFilter"><option value="">Все HU</option></select></label>' +
+      '      <label class="stock-state-filter stock-state-filter--toggle"><span>Ниже минимума</span><input id="stockBelowMinFilter" type="checkbox" /></label>' +
       "    </div>" +
       '    <div id="stockMessage" class="stock-state-message"></div>' +
       '    <div id="stockList" class="stock-state-list"></div>' +
@@ -5652,6 +5655,10 @@
     var barcode = String((row && row.barcode) || item.barcode || "").trim();
     var gtin = String((row && row.gtin) || item.gtin || "").trim();
     var itemName = String((row && row.item_name) || item.name || "-");
+    var itemTypeName = String((row && (row.item_type || row.item_type_name)) || item.item_type_name || "").trim();
+    if (!itemTypeName) {
+      itemTypeName = "Без типа";
+    }
 
     var stockQty = Number(row && row.stock_qty) || 0;
     var minStockQty = Number(row && row.min_stock_qty) || 0;
@@ -5675,9 +5682,13 @@
 
     var huRows = Array.isArray(row && row.hu_rows)
       ? row.hu_rows.map(function (hu) {
+          var location = String((hu && hu.location) || "").trim();
+          var huCode = String((hu && hu.hu_code) || "").trim();
           return {
-            location: String((hu && hu.location) || "").trim() || "—",
-            huCode: String((hu && hu.hu_code) || "").trim() || "—",
+            location: location || "—",
+            locationKey: location,
+            huCode: huCode || "—",
+            huCodeKey: huCode,
             qtyDisplay: fmt(Number(hu && hu.qty) || 0),
             stockStatus: String((hu && hu.stock_status) || "На складе").trim() || "На складе",
           };
@@ -5725,6 +5736,7 @@
     return {
       itemId: itemId,
       itemName: itemName,
+      itemTypeName: itemTypeName,
       sku: sku,
       barcode: barcode,
       gtin: gtin,
@@ -5764,19 +5776,63 @@
     );
   }
 
-  function filterWarehouseStateRows(rows, query) {
-    var q = String(query || "").trim().toLowerCase();
+  function compareStockFilterOption(left, right) {
+    return String(left || "").localeCompare(String(right || ""), "ru-RU", {
+      numeric: true,
+      sensitivity: "base",
+    });
+  }
+
+  function buildWarehouseStateFilterOptions(rows) {
+    var typeMap = {};
+    var locationMap = {};
+    var huMap = {};
+    (Array.isArray(rows) ? rows : []).forEach(function (row) {
+      var typeName = String((row && row.itemTypeName) || "").trim() || "Без типа";
+      typeMap[typeName] = true;
+      (Array.isArray(row && row.huRows) ? row.huRows : []).forEach(function (hu) {
+        var location = String((hu && (hu.locationKey || hu.location)) || "").trim();
+        var huCode = String((hu && (hu.huCodeKey || hu.huCode)) || "").trim();
+        if (location && location !== "—") {
+          locationMap[location] = true;
+        }
+        if (huCode && huCode !== "—") {
+          huMap[huCode] = true;
+        }
+      });
+    });
+    return {
+      types: Object.keys(typeMap).sort(compareStockFilterOption),
+      locations: Object.keys(locationMap).sort(compareStockFilterOption),
+      hus: Object.keys(huMap).sort(compareStockFilterOption),
+    };
+  }
+
+  function filterWarehouseStateRows(rows, filters) {
+    var activeFilters = filters && typeof filters === "object" ? filters : {};
+    var typeName = String(activeFilters.typeName || "").trim();
+    var location = String(activeFilters.location || "").trim();
+    var huCode = String(activeFilters.huCode || "").trim();
+    var belowMinOnly = activeFilters.belowMinOnly === true;
     var source = Array.isArray(rows) ? rows : [];
-    if (!q) {
+    if (!typeName && !location && !huCode && !belowMinOnly) {
       return source;
     }
     return source.filter(function (row) {
-      var haystack = [row.itemName, row.sku, row.gtin, row.barcode]
-        .map(function (value) {
-          return String(value || "").toLowerCase();
-        })
-        .join(" ");
-      return haystack.indexOf(q) >= 0;
+      if (typeName && (String((row && row.itemTypeName) || "").trim() || "Без типа") !== typeName) {
+        return false;
+      }
+      if (belowMinOnly && !((Number(row && row.belowMinQty) || 0) > 0.000001)) {
+        return false;
+      }
+      if (!location && !huCode) {
+        return true;
+      }
+      return (Array.isArray(row && row.huRows) ? row.huRows : []).some(function (hu) {
+        var rowLocation = String((hu && (hu.locationKey || hu.location)) || "").trim();
+        var rowHuCode = String((hu && (hu.huCodeKey || hu.huCode)) || "").trim();
+        return (!location || rowLocation === location) && (!huCode || rowHuCode === huCode);
+      });
     });
   }
 
@@ -6669,7 +6725,10 @@
   }
 
   function wireStock() {
-    var searchInput = document.getElementById("stockSearchInput");
+    var typeFilter = document.getElementById("stockTypeFilter");
+    var locationFilter = document.getElementById("stockLocationFilter");
+    var huFilter = document.getElementById("stockHuFilter");
+    var belowMinFilter = document.getElementById("stockBelowMinFilter");
     var listEl = document.getElementById("stockList");
     var messageEl = document.getElementById("stockMessage");
     var loadToken = 0;
@@ -6685,6 +6744,44 @@
         "stock-state-message" + (text ? " stock-state-message--" + (kind || "info") : "");
     }
 
+    function getFilters() {
+      return {
+        typeName: typeFilter ? typeFilter.value : "",
+        location: locationFilter ? locationFilter.value : "",
+        huCode: huFilter ? huFilter.value : "",
+        belowMinOnly: belowMinFilter ? belowMinFilter.checked === true : false,
+      };
+    }
+
+    function renderSelectOptions(select, values, allLabel) {
+      if (!select) {
+        return;
+      }
+      var previous = select.value;
+      var exists = !previous;
+      var html =
+        '<option value="">' +
+        escapeHtml(allLabel) +
+        "</option>" +
+        values
+          .map(function (value) {
+            if (value === previous) {
+              exists = true;
+            }
+            return '<option value="' + escapeHtml(value) + '">' + escapeHtml(value) + "</option>";
+          })
+          .join("");
+      select.innerHTML = html;
+      select.value = exists ? previous : "";
+    }
+
+    function renderFilterOptions() {
+      var options = buildWarehouseStateFilterOptions(allRows);
+      renderSelectOptions(typeFilter, options.types, "Все типы");
+      renderSelectOptions(locationFilter, options.locations, "Все места");
+      renderSelectOptions(huFilter, options.hus, "Все HU");
+    }
+
     function renderList() {
       if (!listEl) {
         return;
@@ -6698,7 +6795,7 @@
         setMessage("Список пуст", "empty");
         return;
       }
-      var filtered = filterWarehouseStateRows(allRows, searchInput ? searchInput.value : "");
+      var filtered = filterWarehouseStateRows(allRows, getFilters());
       if (!filtered.length) {
         listEl.innerHTML = "";
         setMessage("Ничего не найдено", "empty");
@@ -6743,6 +6840,7 @@
               });
             });
           loaded = true;
+          renderFilterOptions();
           renderList();
         })
         .catch(function () {
@@ -6776,11 +6874,11 @@
       return target && target.closest ? target.closest("[data-stock-toggle]") : null;
     }
 
-    if (searchInput) {
-      searchInput.addEventListener("input", function () {
-        renderList();
-      });
-    }
+    [typeFilter, locationFilter, huFilter, belowMinFilter].forEach(function (control) {
+      if (control) {
+        control.addEventListener("change", renderList);
+      }
+    });
     if (listEl) {
       listEl.addEventListener("click", function (event) {
         toggleCard(findToggleCard(event.target));
@@ -15092,6 +15190,7 @@
     window.FlowStockTsdTestHooks.renderStock = renderStock;
     window.FlowStockTsdTestHooks.mapWarehouseProductionStateRow = mapWarehouseProductionStateRow;
     window.FlowStockTsdTestHooks.renderStockStateCard = renderStockStateCard;
+    window.FlowStockTsdTestHooks.buildWarehouseStateFilterOptions = buildWarehouseStateFilterOptions;
     window.FlowStockTsdTestHooks.filterWarehouseStateRows = filterWarehouseStateRows;
     window.FlowStockTsdTestHooks.buildCatalogBrandOptions = buildCatalogBrandOptions;
     window.FlowStockTsdTestHooks.filterCatalogItems = filterCatalogItems;
