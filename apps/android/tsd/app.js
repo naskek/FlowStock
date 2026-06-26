@@ -6818,6 +6818,9 @@
 
     return '<section class="hu-card-screen"><div class="hu-card-container">' +
       '<h1 class="hu-card-heading">' + escapeHtml(card.huCode) + "</h1>" +
+      '<div class="filling-scan-slot hu-card-scan-slot">' +
+      '<input class="form-input tsd-scan-input-hidden filling-scan-input-hidden" id="huCardScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" />' +
+      "</div>" +
       '<div class="hu-card-scan-message" id="huCardScanMessage" role="status" aria-live="polite"></div>' +
       '<article class="hu-detail-card" aria-label="Карточка HU">' +
       '  <section class="hu-detail-section hu-detail-section--status">' +
@@ -6853,6 +6856,8 @@
       });
     });
 
+    var scanInput = document.getElementById("huCardScanInput");
+
     function notifyCardScan(message) {
       var el = document.getElementById("huCardScanMessage");
       if (el) {
@@ -6860,13 +6865,45 @@
       }
     }
 
+    // Focus a dedicated scan-allowed input on the card (like /hu, filling and
+    // outbound) instead of the global scanSink. The keyboard wedge unlocks a
+    // focused scan-allowed target on keydown; the global scanSink is skipped before
+    // that unlock runs, so a card that relied on it dropped every hardware scan.
+    function focusCardScan() {
+      if (!scanInput) {
+        return;
+      }
+      setPreferredScanTarget(scanInput);
+      window.setTimeout(function () {
+        if (scanInput && scanInput.isConnected) {
+          scanInput.value = "";
+          scanInput.focus();
+        }
+      }, 30);
+    }
+
     // Keep global scan reception alive while the card is open: scanning another
     // valid HU loads its card in place (resolveHuAndNavigate replaces the route),
     // while an invalid/unknown HU keeps the current card and shows the error.
     // resolveHuAndNavigate's huResolvePending guard prevents double handling.
+    function handleCardScan(value) {
+      resolveHuAndNavigate(value, { notify: notifyCardScan }).finally(function () {
+        // Unknown/invalid HU keeps this card open: clear the dedicated scan input
+        // and refocus so the next hardware scan is received cleanly. A valid HU
+        // re-renders the card and wires a fresh input instead.
+        if (currentRoute && currentRoute.name === "huCard") {
+          focusCardScan();
+        }
+      });
+    }
+
+    if (scanInput) {
+      focusCardScan();
+    }
+
     setScanHandler(function (scan) {
       var scanValue = scan && scan.value ? scan.value : scan;
-      resolveHuAndNavigate(scanValue, { notify: notifyCardScan });
+      handleCardScan(scanValue);
     });
   }
 
