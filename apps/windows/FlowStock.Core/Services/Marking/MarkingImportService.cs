@@ -115,6 +115,7 @@ public sealed class MarkingImportService
                         MarkingOrderId = targetOrderId,
                         ImportId = importId,
                         Status = MarkingCodeStatus.Reserved,
+                        Origin = MarkingCodeOrigin.LegacyRealImport,
                         SourceRowNumber = index + 1,
                         CreatedAt = now,
                         UpdatedAt = now

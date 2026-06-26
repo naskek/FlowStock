@@ -219,6 +219,19 @@ docker compose --project-name flowstock --env-file deploy/.env -f deploy/docker-
   sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT version, filename, applied_at FROM schema_migrations ORDER BY version;"'
 ```
 
+## Cutover ЧЗ real-code workflow
+Миграция `V0027__marking_line_scope_cutover_base.sql` добавляет базовую line-scoped схему ЧЗ, классификацию historical `marking_code.origin`, `marking_cutover_state` и read-only foundation для structural/base preflight проверок. После deploy состояние singleton должно оставаться `SHADOW`; это сохраняет существующий production workflow, включая legacy Excel side effects, до отдельного controlled cutover.
+
+Перед любым переходом к enforcement обязателен свежий PostgreSQL backup. Операционный cutover выполняется после deploy закоммиченного кода и включает:
+- automated checks приложения и миграций;
+- structural/base preflight через `GET /api/admin/marking/cutover/preflight`; ответ содержит canonical JSON, `preflight_hash` и базовые issue entries; финальный cutover approval report появится после requirement/coverage service;
+- явное approval quantitative legacy allowlist по строкам;
+- manual WPF/TSD checks;
+- транзакционный переход `PREFLIGHT_READY -> ENFORCED` с expected preflight hash;
+- post-cutover verification Excel request-only поведения, TSD gates, direct filling gate и PRD close gate до записи `ledger`.
+
+Обычная UI/API-команда не должна отключать `ENFORCED`; rollback enforcement допускается только отдельным maintenance flow с backup и явной операционной процедурой.
+
 ## Production backfill статусов ЧЗ
 Для production-БД, где этикетки ЧЗ уже были напечатаны до появления новой модели, используйте Docker Compose wrapper. Host `dotnet` на Debian-сервере не требуется: команда выполняется внутри контейнера `flowstock`.
 

@@ -82,6 +82,7 @@ builder.Services.AddSingleton<PostgresDataStore>(sp =>
             explainDiagnostics.IncludeCancelledMerged));
 });
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.IDataStore>(sp => sp.GetRequiredService<PostgresDataStore>());
+builder.Services.AddSingleton<FlowStock.Core.Abstractions.IMarkingCutoverPreflightStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.ITsdHuResolverStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton<IApiDocStore>(new PostgresApiDocStore(postgresConnectionString));
 builder.Services.Configure<FlowStockLedgerFlowOptions>(
@@ -123,6 +124,7 @@ OrderRedistributionEndpoint.Map(app);
 OrderProducedHuReservationEndpoint.Map(app);
 OrderAutoRedistributionEndpoint.Map(app);
 OrderMarkingExportEndpoint.Map(app);
+MarkingCutoverEndpoints.Map(app);
 OrderLinesEndpoint.Map(app);
 OrderHuReservationCandidatesEndpoint.Map(app);
 OrderHuReservationApplyEndpoint.Map(app);

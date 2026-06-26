@@ -13,7 +13,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed class PostgresDataStore : IDataStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore
+public sealed class PostgresDataStore : IDataStore, IMarkingCutoverPreflightStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore
 {
     public sealed record OrderSqlDiagnostics(
         string Operation,
@@ -484,7 +484,8 @@ order_base AS (
            COALESCE(o.bind_reserved_stock, FALSE) AS bind_reserved_stock,
            COALESCE(o.marking_status, 'NOT_REQUIRED') AS marking_status,
            o.marking_excel_generated_at,
-           o.marking_printed_at
+           o.marking_printed_at,
+           COALESCE(o.marking_responsibility, 'FLOWSTOCK') AS marking_responsibility
     FROM orders o
     INNER JOIN order_scope os ON os.id = o.id
     LEFT JOIN partners p ON p.id = o.partner_id
@@ -1161,7 +1162,8 @@ SELECT ob.id,
        COALESCE(olf.shipment_ordered_qty, 0) AS shipment_ordered_qty,
        COALESCE(olf.shipment_shipped_qty, 0) AS shipment_shipped_qty,
        COALESCE(olf.shipment_remaining_qty, 0) AS shipment_remaining_qty,
-       aoc.task_ref AS active_order_control_ref
+       aoc.task_ref AS active_order_control_ref,
+       ob.marking_responsibility AS marking_responsibility
 FROM order_base ob
 LEFT JOIN status_summary ss ON ss.order_id = ob.id
 LEFT JOIN doc_summary ds ON ds.order_id = ob.id
@@ -1386,7 +1388,17 @@ ORDER BY p.order_id, p.id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT id, order_id, item_id, qty_ordered, production_purpose, production_pallet_group
+SELECT id,
+       order_id,
+       item_id,
+       qty_ordered,
+       production_purpose,
+       production_pallet_group,
+       cancelled_at,
+       cancelled_by_actor,
+       cancelled_by_device_id,
+       cancel_reason,
+       revision
 FROM order_lines
 WHERE order_id = ANY(@order_ids)
 ORDER BY order_id, id;
@@ -6996,6 +7008,472 @@ ORDER BY due_date NULLS LAST, sort_created_at, order_id NULLS LAST;
         });
     }
 
+    public IReadOnlyList<MarkingCutoverPreflightEntry> GetMarkingCutoverPreflightEntries()
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH open_orders AS (
+    SELECT o.id,
+           o.order_type,
+           COALESCE(o.marking_responsibility, '') AS marking_responsibility
+    FROM orders o
+    WHERE o.status NOT IN ('SHIPPED', 'CANCELLED', 'MERGED')
+),
+open_lines AS (
+    SELECT ol.id AS order_line_id,
+           ol.order_id,
+           ol.item_id,
+           ol.qty_ordered,
+           oo.order_type,
+           oo.marking_responsibility
+    FROM order_lines ol
+    INNER JOIN open_orders oo ON oo.id = ol.order_id
+    WHERE ol.cancelled_at IS NULL
+),
+markable_lines AS (
+    -- Only lines whose item type enables marking participate in line mapping candidates and
+    -- line-level marking issues. A markable line with a missing GTIN stays in scope so that
+    -- MARKING_GTIN_REQUIRED keeps firing.
+    SELECT ol.order_id,
+           ol.order_line_id,
+           ol.item_id,
+           ol.qty_ordered,
+           ol.order_type,
+           ol.marking_responsibility,
+           i.gtin,
+           COALESCE(it.enable_marking, FALSE) AS enable_marking
+    FROM open_lines ol
+    INNER JOIN items i ON i.id = ol.item_id
+    INNER JOIN item_types it ON it.id = i.item_type_id
+    WHERE COALESCE(it.enable_marking, FALSE) = TRUE
+),
+active_tasks AS (
+    SELECT mo.id,
+           mo.order_id,
+           mo.order_line_id,
+           mo.item_id,
+           mo.gtin,
+           mo.source_order_id,
+           mo.requested_quantity,
+           mo.request_number
+    FROM marking_order mo
+    WHERE mo.status NOT IN ('Cancelled', 'Failed')
+),
+task_order_link AS (
+    -- order_id and source_order_id are two explicit links, never collapsed with COALESCE.
+    -- A task is open-linked if EITHER link points to an open order. When both links are set
+    -- and point to different orders the link is ambiguous (link_conflict) and the task must
+    -- not be silently mapped to a line.
+    SELECT at.id AS marking_order_id,
+           at.order_id,
+           at.source_order_id,
+           (at.order_id IS NOT NULL AND oo_order.id IS NOT NULL) AS order_open,
+           (at.source_order_id IS NOT NULL AND oo_source.id IS NOT NULL) AS source_open,
+           (at.order_id IS NOT NULL
+             AND at.source_order_id IS NOT NULL
+             AND at.order_id <> at.source_order_id) AS link_conflict
+    FROM active_tasks at
+    LEFT JOIN open_orders oo_order ON oo_order.id = at.order_id
+    LEFT JOIN open_orders oo_source ON oo_source.id = at.source_order_id
+),
+open_order_tasks AS (
+    -- Line-mapping issues only make sense for tasks unambiguously linked to an order that is
+    -- still open. Terminal-order tasks, conflicting-link tasks and global legacy tasks without
+    -- any order link must never receive a line mapping candidate.
+    SELECT at.id,
+           at.order_id,
+           at.source_order_id,
+           at.order_line_id,
+           at.item_id,
+           at.gtin,
+           at.requested_quantity,
+           at.request_number,
+           CASE WHEN tol.order_open THEN at.order_id ELSE at.source_order_id END AS scope_order_id
+    FROM active_tasks at
+    INNER JOIN task_order_link tol ON tol.marking_order_id = at.id
+    WHERE NOT tol.link_conflict
+      AND (tol.order_open OR tol.source_open)
+),
+task_line_candidates AS (
+    SELECT at.id AS marking_order_id,
+           ml.order_id,
+           ml.order_line_id,
+           COUNT(*) OVER (PARTITION BY at.id) AS candidate_count
+    FROM open_order_tasks at
+    INNER JOIN markable_lines ml ON ml.order_id = at.scope_order_id
+    WHERE at.order_line_id IS NULL
+      AND (
+          (at.item_id IS NOT NULL AND at.item_id = ml.item_id)
+          OR (
+              NULLIF(BTRIM(at.gtin), '') IS NOT NULL
+              AND NULLIF(BTRIM(ml.gtin), '') IS NOT NULL
+              AND BTRIM(at.gtin) = BTRIM(ml.gtin)
+          )
+      )
+),
+task_candidate_summary AS (
+    SELECT at.id AS marking_order_id,
+           at.scope_order_id AS order_id,
+           COUNT(candidates.order_line_id)::integer AS candidate_count,
+           MIN(candidates.order_line_id) AS single_order_line_id
+    FROM open_order_tasks at
+    LEFT JOIN task_line_candidates candidates ON candidates.marking_order_id = at.id
+    WHERE at.order_line_id IS NULL
+    GROUP BY at.id,
+             at.scope_order_id
+),
+unique_task_candidates AS (
+    SELECT marking_order_id,
+           order_id,
+           single_order_line_id AS order_line_id
+    FROM task_candidate_summary
+    WHERE candidate_count = 1
+),
+line_claims AS (
+    -- Every active task that lays claim to a markable open-order line: scoped tasks already bound
+    -- to the line (e.g. by the V0027 backfill) plus unscoped tasks whose only candidate is that
+    -- line. Two or more DISTINCT tasks claiming the same line is a real conflict that the
+    -- ux_marking_order_active_order_line unique index would block at enforcement.
+    SELECT at.id AS marking_order_id,
+           ml.order_id,
+           ml.order_line_id
+    FROM active_tasks at
+    INNER JOIN markable_lines ml ON ml.order_line_id = at.order_line_id
+    WHERE at.order_line_id IS NOT NULL
+
+    UNION ALL
+    SELECT marking_order_id,
+           order_id,
+           order_line_id
+    FROM unique_task_candidates
+    WHERE order_line_id IS NOT NULL
+),
+line_candidate_conflicts AS (
+    SELECT order_line_id,
+           MIN(order_id) AS order_id,
+           COUNT(DISTINCT marking_order_id)::integer AS task_count,
+           STRING_AGG(DISTINCT marking_order_id::text, ',' ORDER BY marking_order_id::text) AS task_ids
+    FROM line_claims
+    WHERE order_line_id IS NOT NULL
+    GROUP BY order_line_id
+    HAVING COUNT(DISTINCT marking_order_id) > 1
+),
+line_code_counts AS (
+    SELECT ml.order_id,
+           ml.order_line_id,
+           COUNT(*) FILTER (
+               WHERE c.origin IN ('RealImport', 'LegacyRealImport')
+                 AND c.status NOT IN ('Voided', 'Quarantined')
+           )::integer AS real_code_qty,
+           COUNT(*) FILTER (
+               WHERE c.origin = 'LegacySynthetic'
+                 AND c.status <> 'Voided'
+           )::integer AS legacy_synthetic_qty
+    FROM markable_lines ml
+    LEFT JOIN active_tasks at ON at.order_line_id = ml.order_line_id
+    LEFT JOIN marking_code c ON c.marking_order_id = at.id
+    GROUP BY ml.order_id, ml.order_line_id
+),
+open_prd_lines AS (
+    SELECT DISTINCT COALESCE(d.order_id, ol.order_id) AS order_id,
+           dl.order_line_id
+    FROM docs d
+    INNER JOIN doc_lines dl ON dl.doc_id = d.id
+    LEFT JOIN order_lines ol ON ol.id = dl.order_line_id
+    WHERE d.type = 'PRODUCTION_RECEIPT'
+      AND d.status <> 'CLOSED'
+      AND COALESCE(d.order_id, ol.order_id) IS NOT NULL
+      AND COALESCE(d.order_id, ol.order_id) IN (SELECT id FROM open_orders)
+),
+filling_progress AS (
+    SELECT DISTINCT COALESCE(pp.order_id, d.order_id, ol.order_id) AS order_id,
+           COALESCE(pll.order_line_id, pp.order_line_id) AS order_line_id
+    FROM production_pallets pp
+    INNER JOIN docs d ON d.id = pp.prd_doc_id
+    LEFT JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
+    LEFT JOIN order_lines ol ON ol.id = COALESCE(pll.order_line_id, pp.order_line_id)
+    WHERE pp.status <> 'CANCELLED'
+      AND (
+          pp.status = 'FILLED'
+          OR pp.filled_at IS NOT NULL
+          OR COALESCE(pll.filled_qty, 0) > 0
+          OR pll.filled_at IS NOT NULL
+      )
+      AND COALESCE(pp.order_id, d.order_id, ol.order_id) IS NOT NULL
+      AND COALESCE(pp.order_id, d.order_id, ol.order_id) IN (SELECT id FROM open_orders)
+),
+active_pallet_plan AS (
+    SELECT DISTINCT COALESCE(pp.order_id, d.order_id, ol.order_id) AS order_id,
+           COALESCE(pll.order_line_id, pp.order_line_id) AS order_line_id,
+           pp.status
+    FROM production_pallets pp
+    INNER JOIN docs d ON d.id = pp.prd_doc_id
+    LEFT JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
+    LEFT JOIN order_lines ol ON ol.id = COALESCE(pll.order_line_id, pp.order_line_id)
+    WHERE pp.status IN ('PLANNED', 'PRINTED', 'FILLED')
+      AND COALESCE(pp.order_id, d.order_id, ol.order_id) IS NOT NULL
+      AND COALESCE(pp.order_id, d.order_id, ol.order_id) IN (SELECT id FROM open_orders)
+),
+duplicate_real_hash AS (
+    SELECT LOWER(BTRIM(code_hash)) AS normalized_code_hash,
+           COUNT(*)::integer AS duplicate_qty
+    FROM marking_code
+    WHERE origin IN ('RealImport', 'LegacyRealImport', 'HistoricalUnknown')
+      AND NULLIF(BTRIM(code_hash), '') IS NOT NULL
+    GROUP BY LOWER(BTRIM(code_hash))
+    HAVING COUNT(*) > 1
+),
+issues AS (
+    SELECT oo.id AS order_id,
+           NULL::bigint AS order_line_id,
+           'MARKING_RESPONSIBILITY_INVALID' AS issue_code,
+           'error' AS level,
+           NULL::double precision AS target_qty,
+           NULL::integer AS real_code_qty,
+           NULL::integer AS legacy_synthetic_qty,
+           'responsibility=' || COALESCE(NULLIF(oo.marking_responsibility, ''), '<missing>') AS details,
+           'Set responsibility to FLOWSTOCK or CUSTOMER through server API.' AS suggested_remediation
+    FROM open_orders oo
+    WHERE oo.marking_responsibility NOT IN ('FLOWSTOCK', 'CUSTOMER')
+
+    UNION ALL
+    SELECT oo.id,
+           NULL::bigint,
+           'MARKING_RESPONSIBILITY_NOT_ALLOWED',
+           'error',
+           NULL::double precision,
+           NULL::integer,
+           NULL::integer,
+           'CUSTOMER responsibility on non-CUSTOMER order',
+           'Change responsibility to FLOWSTOCK or convert the order workflow explicitly.'
+    FROM open_orders oo
+    WHERE oo.marking_responsibility = 'CUSTOMER'
+      AND oo.order_type <> 'CUSTOMER'
+
+    UNION ALL
+    SELECT ml.order_id,
+           ml.order_line_id,
+           'MARKING_GTIN_REQUIRED',
+           'error',
+           NULL::double precision,
+           counts.real_code_qty,
+           counts.legacy_synthetic_qty,
+           'FLOWSTOCK markable line has no GTIN',
+           'Fill item GTIN or change responsibility through server API.'
+    FROM markable_lines ml
+    LEFT JOIN line_code_counts counts ON counts.order_line_id = ml.order_line_id
+    WHERE ml.enable_marking = TRUE
+      AND ml.marking_responsibility = 'FLOWSTOCK'
+      AND NULLIF(BTRIM(ml.gtin), '') IS NULL
+
+    UNION ALL
+    SELECT ml.order_id,
+           ml.order_line_id,
+           'MARKING_QTY_NOT_INTEGER',
+           'error',
+           NULL::double precision,
+           counts.real_code_qty,
+           counts.legacy_synthetic_qty,
+           'qty_ordered=' || ml.qty_ordered::text,
+           'Resolve fractional marking quantity before cutover.'
+    FROM markable_lines ml
+    LEFT JOIN line_code_counts counts ON counts.order_line_id = ml.order_line_id
+    WHERE ml.enable_marking = TRUE
+      AND ml.marking_responsibility = 'FLOWSTOCK'
+      AND ABS(ml.qty_ordered - ROUND(ml.qty_ordered::numeric)::double precision) > 0.000001
+
+    UNION ALL
+    -- Historical classification is global: it must catch every HistoricalUnknown code regardless
+    -- of the owning marking task status (including Cancelled/Failed), so it joins marking_code to
+    -- marking_order directly instead of going through active_tasks. order_line_id stays the task's
+    -- real (possibly NULL) line; no fictitious line is invented.
+    SELECT mo.order_id,
+           mo.order_line_id,
+           'MARKING_HISTORICAL_UNKNOWN',
+           'error',
+           NULL::double precision,
+           NULL::integer,
+           NULL::integer,
+           'marking_order=' || mo.id::text || '; count=' || COUNT(*)::text,
+           'Classify historical marking codes before cutover.'
+    FROM marking_order mo
+    INNER JOIN marking_code c ON c.marking_order_id = mo.id
+    WHERE c.origin = 'HistoricalUnknown'
+    GROUP BY mo.order_id, mo.order_line_id, mo.id
+
+    UNION ALL
+    SELECT at.scope_order_id,
+           at.order_line_id,
+           'MARKING_LEGACY_SYNTHETIC_PRESENT',
+           'warning',
+           NULL::double precision,
+           NULL::integer,
+           COUNT(*)::integer,
+           'marking_order=' || at.id::text,
+           'Approve quantitative legacy allowlist or replace synthetic codes with real import.'
+    FROM open_order_tasks at
+    INNER JOIN marking_code c ON c.marking_order_id = at.id
+    WHERE c.origin = 'LegacySynthetic'
+      AND c.status <> 'Voided'
+    GROUP BY at.scope_order_id, at.order_line_id, at.requested_quantity, at.id
+
+    UNION ALL
+    -- Explicit two-link conflict: order_id and source_order_id are both set but disagree, and at
+    -- least one of them is an open order. Surface it instead of silently choosing one link.
+    SELECT tol.order_id,
+           NULL::bigint,
+           'MARKING_TASK_ORDER_LINK_CONFLICT',
+           'error',
+           NULL::double precision,
+           NULL::integer,
+           NULL::integer,
+           'marking_order=' || tol.marking_order_id::text
+               || '; order_id=' || tol.order_id::text
+               || '; source_order_id=' || tol.source_order_id::text,
+           'Resolve conflicting marking task order links before cutover.'
+    FROM task_order_link tol
+    WHERE tol.link_conflict
+      AND (tol.order_open OR tol.source_open)
+
+    UNION ALL
+    SELECT summary.order_id,
+           summary.single_order_line_id,
+           'MARKING_LEGACY_TASK_LINE_UNASSIGNED',
+           'warning',
+           NULL::double precision,
+           NULL::integer,
+           NULL::integer,
+           'marking_order=' || summary.marking_order_id::text || '; candidates=1',
+           'Review and explicitly migrate the legacy task-to-line mapping before enforcement.'
+    FROM task_candidate_summary summary
+    WHERE summary.candidate_count = 1
+      AND NOT EXISTS (
+          SELECT 1 FROM line_candidate_conflicts c
+          WHERE c.order_line_id = summary.single_order_line_id
+      )
+
+    UNION ALL
+    SELECT summary.order_id,
+           NULL::bigint,
+           'MARKING_LEGACY_TASK_LINE_AMBIGUOUS',
+           'error',
+           NULL::double precision,
+           NULL::integer,
+           NULL::integer,
+           'marking_order=' || summary.marking_order_id::text || '; candidates=' || summary.candidate_count::text,
+           'Resolve legacy task-to-line mapping before cutover.'
+    FROM task_candidate_summary summary
+    WHERE summary.candidate_count > 1
+
+    UNION ALL
+    SELECT summary.order_id,
+           NULL::bigint,
+           'MARKING_LEGACY_TASK_LINE_NOT_FOUND',
+           'error',
+           NULL::double precision,
+           NULL::integer,
+           NULL::integer,
+           'marking_order=' || summary.marking_order_id::text || '; candidates=0',
+           'Resolve legacy task-to-line mapping before cutover.'
+    FROM task_candidate_summary summary
+    WHERE summary.candidate_count = 0
+
+    UNION ALL
+    SELECT conflicts.order_id,
+           conflicts.order_line_id,
+           'MARKING_LEGACY_TASK_LINE_CONFLICT',
+           'error',
+           NULL::double precision,
+           NULL::integer,
+           NULL::integer,
+           'order_line_id=' || conflicts.order_line_id::text || '; marking_orders=' || conflicts.task_ids,
+           'Resolve duplicate active legacy tasks for the same line before cutover.'
+    FROM line_candidate_conflicts conflicts
+
+    UNION ALL
+    SELECT NULL::bigint,
+           NULL::bigint,
+           'MARKING_IMPORT_DUPLICATE_EXISTING',
+           'error',
+           NULL::double precision,
+           dup.duplicate_qty,
+           NULL::integer,
+           'code_hash=' || dup.normalized_code_hash || '; count=' || dup.duplicate_qty::text,
+           'Resolve historical duplicate real codes before widening uniqueness.'
+    FROM duplicate_real_hash dup
+
+    UNION ALL
+    SELECT open_prd.order_id,
+           open_prd.order_line_id,
+           'MARKING_OPEN_PRD',
+           'error',
+           NULL::double precision,
+           NULL::integer,
+           NULL::integer,
+           'open production receipt exists',
+           'Close, cancel, or re-check the open PRD before cutover.'
+    FROM open_prd_lines open_prd
+
+    UNION ALL
+    SELECT progress.order_id,
+           progress.order_line_id,
+           'MARKING_FILLING_PROGRESS',
+           'error',
+           NULL::double precision,
+           NULL::integer,
+           NULL::integer,
+           'production filling progress exists',
+           'Finish or explicitly resolve filling progress before cutover.'
+    FROM filling_progress progress
+
+    UNION ALL
+    SELECT plan.order_id,
+           plan.order_line_id,
+           'MARKING_ACTIVE_PALLET_PLAN',
+           CASE WHEN plan.status = 'PLANNED' THEN 'warning' ELSE 'error' END,
+           NULL::double precision,
+           NULL::integer,
+           NULL::integer,
+           'pallet_status=' || plan.status,
+           'Review pallet plan and non-removable pallet states before cutover.'
+    FROM active_pallet_plan plan
+)
+SELECT order_id,
+       order_line_id,
+       issue_code,
+       level,
+       target_qty,
+       real_code_qty,
+       legacy_synthetic_qty,
+       details,
+       suggested_remediation
+FROM issues
+ORDER BY order_id NULLS LAST,
+         order_line_id NULLS LAST,
+         issue_code,
+         details;
+");
+            using var reader = command.ExecuteReader();
+            var entries = new List<MarkingCutoverPreflightEntry>();
+            while (reader.Read())
+            {
+                entries.Add(new MarkingCutoverPreflightEntry(
+                    reader.IsDBNull(0) ? null : reader.GetInt64(0),
+                    reader.IsDBNull(1) ? null : reader.GetInt64(1),
+                    reader.GetString(2),
+                    reader.GetString(3),
+                    reader.IsDBNull(4) ? null : Convert.ToDouble(reader.GetValue(4), CultureInfo.InvariantCulture),
+                    reader.IsDBNull(5) ? null : reader.GetInt32(5),
+                    reader.IsDBNull(6) ? null : reader.GetInt32(6),
+                    reader.IsDBNull(7) ? string.Empty : reader.GetString(7),
+                    reader.IsDBNull(8) ? string.Empty : reader.GetString(8)));
+            }
+
+            return entries;
+        });
+    }
+
     public IReadOnlyList<MarkingOrderLineCandidate> GetMarkingOrderLineCandidates(IReadOnlyCollection<long> orderIds)
     {
         if (orderIds.Count == 0)
@@ -7148,45 +7626,57 @@ ORDER BY i.name, BTRIM(i.gtin), ol.id;
 INSERT INTO marking_order(
     id,
     order_id,
+    order_line_id,
     item_id,
     gtin,
     requested_quantity,
     request_number,
     status,
+    request_status,
     notes,
     source_type,
     source_order_id,
     requested_at,
     codes_bound_at,
+    last_excel_requested_at,
+    last_excel_request_hash,
     created_at,
     updated_at)
 VALUES(
     @id,
     @order_id,
+    @order_line_id,
     @item_id,
     @gtin,
     @requested_quantity,
     @request_number,
     @status,
+    @request_status,
     @notes,
     @source_type,
     @source_order_id,
     @requested_at,
     @codes_bound_at,
+    @last_excel_requested_at,
+    @last_excel_request_hash,
     @created_at,
     @updated_at);");
             command.Parameters.AddWithValue("@id", order.Id);
             command.Parameters.AddWithValue("@order_id", order.OrderId.HasValue ? order.OrderId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@order_line_id", order.OrderLineId.HasValue ? order.OrderLineId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@item_id", order.ItemId.HasValue ? order.ItemId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@gtin", string.IsNullOrWhiteSpace(order.Gtin) ? DBNull.Value : order.Gtin.Trim());
             command.Parameters.AddWithValue("@requested_quantity", order.RequestedQuantity);
             command.Parameters.AddWithValue("@request_number", order.RequestNumber);
             command.Parameters.AddWithValue("@status", string.IsNullOrWhiteSpace(order.Status) ? MarkingOrderStatus.Draft : order.Status.Trim());
+            command.Parameters.AddWithValue("@request_status", string.IsNullOrWhiteSpace(order.RequestStatus) ? MarkingRequestStatus.NotRequested : order.RequestStatus.Trim());
             command.Parameters.AddWithValue("@notes", string.IsNullOrWhiteSpace(order.Notes) ? DBNull.Value : order.Notes.Trim());
             command.Parameters.AddWithValue("@source_type", string.IsNullOrWhiteSpace(order.SourceType) ? DBNull.Value : order.SourceType.Trim());
             command.Parameters.AddWithValue("@source_order_id", order.SourceOrderId.HasValue ? order.SourceOrderId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@requested_at", order.RequestedAt.HasValue ? ToDbDate(order.RequestedAt.Value) : DBNull.Value);
             command.Parameters.AddWithValue("@codes_bound_at", order.CodesBoundAt.HasValue ? ToDbDate(order.CodesBoundAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@last_excel_requested_at", order.LastExcelRequestedAt.HasValue ? ToDbDate(order.LastExcelRequestedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@last_excel_request_hash", string.IsNullOrWhiteSpace(order.LastExcelRequestHash) ? DBNull.Value : order.LastExcelRequestHash.Trim());
             command.Parameters.AddWithValue("@created_at", ToDbDate(order.CreatedAt));
             command.Parameters.AddWithValue("@updated_at", ToDbDate(order.UpdatedAt));
             command.ExecuteNonQuery();
@@ -7280,7 +7770,21 @@ WHERE id = @id
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT id, order_id, item_id, qty_ordered, production_purpose, production_pallet_group FROM order_lines WHERE order_id = @order_id ORDER BY id");
+            using var command = CreateCommand(connection, @"
+SELECT id,
+       order_id,
+       item_id,
+       qty_ordered,
+       production_purpose,
+       production_pallet_group,
+       cancelled_at,
+       cancelled_by_actor,
+       cancelled_by_device_id,
+       cancel_reason,
+       revision
+FROM order_lines
+WHERE order_id = @order_id
+ORDER BY id");
             command.Parameters.AddWithValue("@order_id", orderId);
             using var reader = command.ExecuteReader();
             var lines = new List<OrderLine>();
@@ -13282,6 +13786,9 @@ ORDER BY pll.production_pallet_id, pll.id;
         var shipmentShippedQty = reader.FieldCount > 26 && !reader.IsDBNull(26) ? reader.GetDouble(26) : 0d;
         var shipmentRemainingQty = reader.FieldCount > 27 && !reader.IsDBNull(27) ? reader.GetDouble(27) : 0d;
         var activeOrderControlRef = reader.FieldCount > 28 && !reader.IsDBNull(28) ? reader.GetString(28) : null;
+        var markingResponsibility = reader.FieldCount > 29 && !reader.IsDBNull(29)
+            ? reader.GetString(29)
+            : MarkingResponsibility.FlowStock;
 
         return new Order
         {
@@ -13297,6 +13804,7 @@ ORDER BY pll.production_pallet_id, pll.id;
             PartnerName = partnerName,
             PartnerCode = partnerCode,
             UseReservedStock = useReservedStock,
+            MarkingResponsibility = markingResponsibility,
             MarkingStatus = markingStatus,
             IsLegacyExcelGeneratedMarkingStatus = string.Equals(rawMarkingStatus, "EXCEL_GENERATED", StringComparison.OrdinalIgnoreCase),
             MarkingRequired = markingRequired,
@@ -13330,7 +13838,12 @@ ORDER BY pll.production_pallet_id, pll.id;
             ItemId = reader.GetInt64(2),
             QtyOrdered = reader.GetDouble(3),
             ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(reader.IsDBNull(4) ? null : reader.GetString(4)),
-            ProductionPalletGroup = reader.FieldCount > 5 && !reader.IsDBNull(5) ? reader.GetString(5) : null
+            ProductionPalletGroup = reader.FieldCount > 5 && !reader.IsDBNull(5) ? reader.GetString(5) : null,
+            CancelledAt = reader.FieldCount > 6 ? FromDbDate(reader.IsDBNull(6) ? null : reader.GetString(6)) : null,
+            CancelledByActor = reader.FieldCount > 7 && !reader.IsDBNull(7) ? reader.GetString(7) : null,
+            CancelledByDeviceId = reader.FieldCount > 8 && !reader.IsDBNull(8) ? reader.GetString(8) : null,
+            CancelReason = reader.FieldCount > 9 && !reader.IsDBNull(9) ? reader.GetString(9) : null,
+            Revision = reader.FieldCount > 10 && !reader.IsDBNull(10) ? reader.GetInt64(10) : 0
         };
     }
 
@@ -13477,8 +13990,14 @@ LIMIT 1;";
         EnsureColumn(connection, "orders", "marking_status", "TEXT NOT NULL DEFAULT 'NOT_REQUIRED'");
         EnsureColumn(connection, "orders", "marking_excel_generated_at", "TEXT NULL");
         EnsureColumn(connection, "orders", "marking_printed_at", "TEXT NULL");
+        EnsureColumn(connection, "orders", "marking_responsibility", "TEXT NOT NULL DEFAULT 'FLOWSTOCK'");
         EnsureColumn(connection, "order_lines", "production_purpose", "TEXT NOT NULL DEFAULT 'INTERNAL_STOCK'");
         EnsureColumn(connection, "order_lines", "production_pallet_group", "TEXT NULL");
+        EnsureColumn(connection, "order_lines", "cancelled_at", "TEXT NULL");
+        EnsureColumn(connection, "order_lines", "cancelled_by_actor", "TEXT NULL");
+        EnsureColumn(connection, "order_lines", "cancelled_by_device_id", "TEXT NULL");
+        EnsureColumn(connection, "order_lines", "cancel_reason", "TEXT NULL");
+        EnsureColumn(connection, "order_lines", "revision", "BIGINT NOT NULL DEFAULT 0");
         EnsureColumn(connection, "doc_lines", "production_purpose", "TEXT NOT NULL DEFAULT 'INTERNAL_STOCK'");
         EnsureColumn(connection, "production_pallets", "pallet_no", "INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(connection, "production_pallets", "pallet_count", "INTEGER NOT NULL DEFAULT 0");
@@ -13487,8 +14006,13 @@ LIMIT 1;";
         EnsureColumn(connection, "production_pallets", "cancelled_at", "TEXT NULL");
         EnsureColumn(connection, "production_pallet_lines", "filled_at", "TEXT NULL");
         EnsureNullable(connection, "marking_order", "order_id");
+        EnsureColumn(connection, "marking_order", "order_line_id", "BIGINT NULL");
+        EnsureColumn(connection, "marking_order", "request_status", "TEXT NOT NULL DEFAULT 'NotRequested'");
+        EnsureColumn(connection, "marking_order", "last_excel_requested_at", "TEXT NULL");
+        EnsureColumn(connection, "marking_order", "last_excel_request_hash", "TEXT NULL");
         EnsureColumn(connection, "marking_order", "source_type", "TEXT NULL");
         EnsureColumn(connection, "marking_order", "source_order_id", "BIGINT NULL");
+        EnsureColumn(connection, "marking_code", "origin", "TEXT NOT NULL DEFAULT 'HistoricalUnknown'");
         EnsureColumn(connection, "marking_code", "receipt_doc_id", "BIGINT NULL");
         EnsureColumn(connection, "marking_code", "receipt_line_id", "BIGINT NULL");
 
@@ -13510,9 +14034,15 @@ LIMIT 1;";
             || !ColumnExists(connection, "orders", "marking_status")
             || !ColumnExists(connection, "orders", "marking_excel_generated_at")
             || !ColumnExists(connection, "orders", "marking_printed_at")
+            || !ColumnExists(connection, "orders", "marking_responsibility")
             || !ColumnExists(connection, "order_lines", "production_purpose")
             || !ColumnExists(connection, "order_lines", "production_pallet_group")
+            || !ColumnExists(connection, "order_lines", "cancelled_at")
+            || !ColumnExists(connection, "order_lines", "revision")
             || !ColumnExists(connection, "doc_lines", "production_purpose")
+            || !ColumnExists(connection, "marking_order", "order_line_id")
+            || !ColumnExists(connection, "marking_order", "request_status")
+            || !ColumnExists(connection, "marking_code", "origin")
             || !ColumnExists(connection, "production_pallets", "cancel_reason")
             || !ColumnExists(connection, "production_pallets", "cancelled_at")
             || !ColumnExists(connection, "production_pallet_lines", "filled_at"))
@@ -14568,6 +15098,7 @@ INSERT INTO marking_code(
     marking_order_id,
     import_id,
     status,
+    origin,
     source_row_number,
     printed_at,
     applied_at,
@@ -14583,6 +15114,7 @@ VALUES(
     @marking_order_id,
     @import_id,
     @status,
+    @origin,
     @source_row_number,
     @printed_at,
     @applied_at,
@@ -14597,6 +15129,7 @@ VALUES(
                 command.Parameters.AddWithValue("@marking_order_id", code.MarkingOrderId);
                 command.Parameters.AddWithValue("@import_id", code.ImportId);
                 command.Parameters.AddWithValue("@status", code.Status);
+                command.Parameters.AddWithValue("@origin", string.IsNullOrWhiteSpace(code.Origin) ? MarkingCodeOrigin.HistoricalUnknown : code.Origin.Trim());
                 command.Parameters.AddWithValue("@source_row_number", code.SourceRowNumber.HasValue ? code.SourceRowNumber.Value : DBNull.Value);
                 command.Parameters.AddWithValue("@printed_at", code.PrintedAt.HasValue ? ToDbDate(code.PrintedAt.Value) : DBNull.Value);
                 command.Parameters.AddWithValue("@applied_at", code.AppliedAt.HasValue ? ToDbDate(code.AppliedAt.Value) : DBNull.Value);
@@ -14837,16 +15370,20 @@ WHERE batch_id = @batch_id
         var sql = @"
 SELECT mo.id,
        mo.order_id,
+       mo.order_line_id,
        mo.item_id,
        mo.gtin,
        mo.requested_quantity,
        mo.request_number,
        mo.status,
+       mo.request_status,
        mo.notes,
        mo.source_type,
        mo.source_order_id,
        mo.requested_at,
        mo.codes_bound_at,
+       mo.last_excel_requested_at,
+       mo.last_excel_request_hash,
        mo.created_at,
        mo.updated_at
 FROM marking_order mo
@@ -14899,6 +15436,7 @@ SELECT c.id,
        c.marking_order_id,
        c.import_id,
        c.status,
+       c.origin,
        c.receipt_doc_id,
        c.receipt_line_id,
        c.source_row_number,
@@ -14997,18 +15535,22 @@ LEFT JOIN locations l ON l.id = c.location_id
         {
             Id = reader.GetGuid(0),
             OrderId = reader.IsDBNull(1) ? null : reader.GetInt64(1),
-            ItemId = reader.IsDBNull(2) ? null : reader.GetInt64(2),
-            Gtin = reader.IsDBNull(3) ? null : reader.GetString(3),
-            RequestedQuantity = reader.IsDBNull(4) ? 0 : reader.GetInt32(4),
-            RequestNumber = reader.GetString(5),
-            Status = reader.GetString(6),
-            Notes = reader.IsDBNull(7) ? null : reader.GetString(7),
-            SourceType = reader.IsDBNull(8) ? null : reader.GetString(8),
-            SourceOrderId = reader.IsDBNull(9) ? null : reader.GetInt64(9),
-            RequestedAt = reader.IsDBNull(10) ? null : FromDbDate(reader.GetString(10)),
-            CodesBoundAt = reader.IsDBNull(11) ? null : FromDbDate(reader.GetString(11)),
-            CreatedAt = FromDbDate(reader.GetString(12)) ?? DateTime.MinValue,
-            UpdatedAt = FromDbDate(reader.GetString(13)) ?? DateTime.MinValue
+            OrderLineId = reader.IsDBNull(2) ? null : reader.GetInt64(2),
+            ItemId = reader.IsDBNull(3) ? null : reader.GetInt64(3),
+            Gtin = reader.IsDBNull(4) ? null : reader.GetString(4),
+            RequestedQuantity = reader.IsDBNull(5) ? 0 : reader.GetInt32(5),
+            RequestNumber = reader.GetString(6),
+            Status = reader.GetString(7),
+            RequestStatus = reader.IsDBNull(8) ? MarkingRequestStatus.NotRequested : reader.GetString(8),
+            Notes = reader.IsDBNull(9) ? null : reader.GetString(9),
+            SourceType = reader.IsDBNull(10) ? null : reader.GetString(10),
+            SourceOrderId = reader.IsDBNull(11) ? null : reader.GetInt64(11),
+            RequestedAt = reader.IsDBNull(12) ? null : FromDbDate(reader.GetString(12)),
+            CodesBoundAt = reader.IsDBNull(13) ? null : FromDbDate(reader.GetString(13)),
+            LastExcelRequestedAt = reader.IsDBNull(14) ? null : FromDbDate(reader.GetString(14)),
+            LastExcelRequestHash = reader.IsDBNull(15) ? null : reader.GetString(15),
+            CreatedAt = FromDbDate(reader.GetString(16)) ?? DateTime.MinValue,
+            UpdatedAt = FromDbDate(reader.GetString(17)) ?? DateTime.MinValue
         };
     }
 
@@ -15072,15 +15614,16 @@ LEFT JOIN locations l ON l.id = c.location_id
             MarkingOrderId = reader.GetGuid(4),
             ImportId = reader.GetGuid(5),
             Status = reader.GetString(6),
-            ReceiptDocId = reader.IsDBNull(7) ? null : reader.GetInt64(7),
-            ReceiptLineId = reader.IsDBNull(8) ? null : reader.GetInt64(8),
-            SourceRowNumber = reader.IsDBNull(9) ? null : reader.GetInt32(9),
-            PrintedAt = reader.IsDBNull(10) ? null : FromDbDate(reader.GetString(10)),
-            AppliedAt = reader.IsDBNull(11) ? null : FromDbDate(reader.GetString(11)),
-            ReportedAt = reader.IsDBNull(12) ? null : FromDbDate(reader.GetString(12)),
-            IntroducedAt = reader.IsDBNull(13) ? null : FromDbDate(reader.GetString(13)),
-            CreatedAt = FromDbDate(reader.GetString(14)) ?? DateTime.MinValue,
-            UpdatedAt = FromDbDate(reader.GetString(15)) ?? DateTime.MinValue
+            Origin = reader.IsDBNull(7) ? MarkingCodeOrigin.HistoricalUnknown : reader.GetString(7),
+            ReceiptDocId = reader.IsDBNull(8) ? null : reader.GetInt64(8),
+            ReceiptLineId = reader.IsDBNull(9) ? null : reader.GetInt64(9),
+            SourceRowNumber = reader.IsDBNull(10) ? null : reader.GetInt32(10),
+            PrintedAt = reader.IsDBNull(11) ? null : FromDbDate(reader.GetString(11)),
+            AppliedAt = reader.IsDBNull(12) ? null : FromDbDate(reader.GetString(12)),
+            ReportedAt = reader.IsDBNull(13) ? null : FromDbDate(reader.GetString(13)),
+            IntroducedAt = reader.IsDBNull(14) ? null : FromDbDate(reader.GetString(14)),
+            CreatedAt = FromDbDate(reader.GetString(15)) ?? DateTime.MinValue,
+            UpdatedAt = FromDbDate(reader.GetString(16)) ?? DateTime.MinValue
         };
     }
 

@@ -23,9 +23,55 @@ public sealed class OrderMarkingExportTests
         Assert.Equal(MarkingNeedCreationService.ProductionOrderSourceType, markingOrder.SourceType);
         Assert.Equal(10, markingOrder.SourceOrderId);
         Assert.Equal(10, markingOrder.OrderId);
+        Assert.Null(markingOrder.OrderLineId);
         Assert.Equal(3600, harness.MarkingCodes.Count(code => code.MarkingOrderId == markingOrder.Id));
         Assert.True(harness.GetOrder(10).MarkingCompleted);
         Assert.Equal(MarkingStatus.Printed, harness.GetOrder(10).EffectiveMarkingStatus);
+    }
+
+    [Fact]
+    public async Task LegacyOrderExport_WithSameItemOnMultipleLines_DoesNotScopeAggregatedTaskToFirstLine()
+    {
+        var harness = CreateOrderHarness(OrderType.Internal, qty: 5);
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 101,
+            OrderId = 10,
+            ItemId = 1,
+            QtyOrdered = 7
+        });
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        var response = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
+
+        Assert.True(response.IsSuccessStatusCode);
+        var markingOrder = Assert.Single(harness.MarkingOrders);
+        Assert.Equal(12, markingOrder.RequestedQuantity);
+        Assert.Null(markingOrder.OrderLineId);
+        Assert.Equal(12, harness.MarkingCodes.Count(code => code.MarkingOrderId == markingOrder.Id));
+    }
+
+    [Fact]
+    public async Task LegacyOrderExport_RepeatedExport_KeepsTaskUnscopedForActiveLineUniqueIndexCompatibility()
+    {
+        var harness = CreateOrderHarness(OrderType.Internal, qty: 5);
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 101,
+            OrderId = 10,
+            ItemId = 1,
+            QtyOrdered = 7
+        });
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        var first = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
+        var second = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
+
+        Assert.True(first.IsSuccessStatusCode);
+        Assert.True(second.IsSuccessStatusCode);
+        var markingOrder = Assert.Single(harness.MarkingOrders);
+        Assert.Null(markingOrder.OrderLineId);
+        Assert.Equal(12, markingOrder.RequestedQuantity);
     }
 
     [Fact]

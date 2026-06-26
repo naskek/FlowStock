@@ -15,6 +15,9 @@
 - `marking_status` TEXT NOT NULL DEFAULT `NOT_REQUIRED` // `NOT_REQUIRED` | `REQUIRED` | `PRINTED`
 - `marking_excel_generated_at` TEXT NULL
 - `marking_printed_at` TEXT NULL
+- `marking_responsibility` TEXT NOT NULL DEFAULT `FLOWSTOCK` // `FLOWSTOCK` | `CUSTOMER`
+
+`marking_responsibility` задает, кто отвечает за ЧЗ-коды по заказу. `CUSTOMER` допустим только для `CUSTOMER`-заказа и валидируется сервером; DB-level check ограничивает только словарь значений. Существующие заказы мигрируют в `FLOWSTOCK`. Последующие изменения responsibility выполняются через серверный workflow и пишутся в `marking_responsibility_audit` с server-derived actor/device context.
 
 Таблица `order_lines`:
 - `id` INTEGER PRIMARY KEY
@@ -22,6 +25,13 @@
 - `item_id` INTEGER NOT NULL (FK -> `items.id`)
 - `qty_ordered` REAL NOT NULL
 - `production_pallet_group` TEXT NULL // группа микс-паллеты; строки с одинаковой группой планируются на общий HU
+- `cancelled_at` TEXT NULL
+- `cancelled_by_actor` TEXT NULL
+- `cancelled_by_device_id` TEXT NULL
+- `cancel_reason` TEXT NULL
+- `revision` BIGINT NOT NULL DEFAULT `0`
+
+Строка заказа может быть отменена логически, если у нее уже есть исторические или runtime-зависимости. Физическое удаление допустимо только когда таких зависимостей нет. Behavior PR, который включает отмену/уменьшение количества, должен исключать логически отмененные строки из marking requirement/export/import, order coverage/status, production need, pallet plan, TSD filling, outbound и отчетов.
 
 Таблица `order_receipt_plan_lines`:
 - `id` INTEGER PRIMARY KEY
@@ -279,7 +289,7 @@ Production Docker Compose wrapper:
 
 Раздел `/api/marking/orders` и legacy-окно WPF `Маркировка` являются журналом/legacy-view задач маркировки, а не основным местом генерации ЧЗ. Отдельный пункт меню `Маркировка` убран из главного меню WPF; основной операторский workflow формирования Excel ЧЗ выполняется из карточки заказа кнопкой `Сформировать Excel ЧЗ`. Окно `MarkingWindow`, его обработчик и API `/api/marking/*` сохраняются для совместимости. Старый `POST /api/marking/create-from-production-needs` также сохраняется для совместимости: он может создавать production-based `marking_order`, но основной операторский workflow должен идти из карточки заказа.
 
-Полноценный импорт КМ/DM из Честного Знака пока не реализован. Временный workflow сохраняется: после успешного формирования Excel ЧЗ сервер создает technical/synthetic `marking_code` со значениями `TEMP-CHZ-{marking_order_id}-{NNNNNN}` и статусом, доступным для автопривязки к выпуску, пока количество кодов по задаче не достигнет `requested_quantity`. Повторное формирование Excel не создает дубли, а при частичном наличии кодов создает только недостающее количество.
+Полноценный импорт КМ/DM из Честного Знака включается отдельными implementation PR и operational cutover. До состояния `ENFORCED` временный workflow сохраняется: после успешного формирования Excel ЧЗ сервер создает technical/synthetic `marking_code` со значениями `TEMP-CHZ-{marking_order_id}-{NNNNNN}` и статусом, доступным для автопривязки к выпуску, пока количество кодов по задаче не достигнет `requested_quantity`. Повторное формирование Excel не создает дубли, а при частичном наличии кодов создает только недостающее количество. После `ENFORCED` Excel должен стать request-only: без новых `TEMP-CHZ-*`, без `orders.marking_status = PRINTED`, без `marking_printed_at`, без coverage и без открытия TSD filling.
 
 `status = Printed` у `marking_order` означает сформированный Excel/печать, но не отключает close validation. Для контроля выпуска используются счетчики кодов в `marking_code`: `codes_total`, `codes_free`, `codes_bound`.
 
