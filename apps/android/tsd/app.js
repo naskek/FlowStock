@@ -2185,12 +2185,36 @@
     return true;
   }
 
-  function navigate(route) {
-    if (route) {
-      saveLastRoute(route);
-      markRouteTransitionExit();
-      window.location.hash = route;
+  function navigate(route, options) {
+    if (!route) {
+      return;
     }
+    var opts = options || {};
+    saveLastRoute(route);
+    markRouteTransitionExit();
+    // replace: swap the current history entry instead of pushing a new one, so a
+    // series of in-place scans (e.g. on an open HU card) does not accumulate
+    // /hu/HU1 → /hu/HU2 → … in browser history.
+    if (opts.replace) {
+      var hashStr = "#" + String(route).replace(/^#/, "");
+      // Preferred: history.replaceState swaps the entry; it does not emit
+      // hashchange, so re-run the router explicitly to render the new route.
+      if (window.history && typeof window.history.replaceState === "function") {
+        try {
+          window.history.replaceState(null, "", hashStr);
+        } catch (error) {
+          // ignore and fall through
+        }
+        renderRoute("navigate-replace");
+        return;
+      }
+      // Fallback for environments without history (test shim): location.replace.
+      if (window.location && typeof window.location.replace === "function") {
+        window.location.replace(hashStr);
+        return;
+      }
+    }
+    window.location.hash = route;
   }
 
   function updateHeader(route) {
@@ -6137,6 +6161,92 @@
     );
   }
 
+  // Shared transient "scan accepted" confirmation used by filling and outbound
+  // (safely reusable by order control). Small interface — showScanSuccess(text) —
+  // hides a singleton aria-live banner: green styling, restarts its hide timer on
+  // each new success, auto-hides, and animates via CSS (honouring
+  // prefers-reduced-motion). It never takes focus or blocks the next scan
+  // (the element is pointer-events:none and is not focusable). Only call it after
+  // a server-confirmed accept — never on raw barcode receipt or a rejected HU.
+  var scanSuccessEl = null;
+  var scanSuccessTimerId = 0;
+  var scanSuccessShowCount = 0;
+  var scanSuccessLastMessage = "";
+  var SCAN_SUCCESS_VISIBLE_MS = 1300;
+
+  function ensureScanSuccessEl() {
+    if (scanSuccessEl) {
+      return scanSuccessEl;
+    }
+    if (typeof document === "undefined" || !document.createElement || !document.body) {
+      return null;
+    }
+    var el;
+    try {
+      el = document.createElement("div");
+    } catch (error) {
+      return null;
+    }
+    // Cache immediately so the element is created at most once, regardless of any
+    // shim limitations in the attribute/append calls below.
+    scanSuccessEl = el;
+    try {
+      el.className = "scan-success";
+      el.id = "tsdScanSuccess";
+      if (typeof el.setAttribute === "function") {
+        el.setAttribute("role", "status");
+        el.setAttribute("aria-live", "polite");
+        el.setAttribute("aria-atomic", "true");
+      }
+      if (typeof document.body.appendChild === "function") {
+        document.body.appendChild(el);
+      }
+    } catch (error) {
+      // ignore shim limitations
+    }
+    return scanSuccessEl;
+  }
+
+  function formatHuAcceptedMessage(huCode) {
+    var code = String(huCode == null ? "" : huCode).trim();
+    return code ? code + " принят" : "HU принят";
+  }
+
+  function showScanSuccess(message) {
+    var text = String(message == null ? "HU принят" : message);
+    scanSuccessShowCount += 1;
+    scanSuccessLastMessage = text;
+    var el = ensureScanSuccessEl();
+    if (!el) {
+      return;
+    }
+    el.textContent = text;
+    if (scanSuccessTimerId) {
+      window.clearTimeout(scanSuccessTimerId);
+      scanSuccessTimerId = 0;
+    }
+    // Restart the enter transition even if the banner is already visible.
+    if (el.classList) {
+      el.classList.remove("is-visible");
+    }
+    var reveal = function () {
+      if (el.classList) {
+        el.classList.add("is-visible");
+      }
+    };
+    if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(reveal);
+    } else {
+      reveal();
+    }
+    scanSuccessTimerId = window.setTimeout(function () {
+      if (el.classList) {
+        el.classList.remove("is-visible");
+      }
+      scanSuccessTimerId = 0;
+    }, SCAN_SUCCESS_VISIBLE_MS);
+  }
+
   var huResolvePending = false;
 
   function getCurrentRoutePath() {
@@ -6163,8 +6273,17 @@
           notify("HU неизвестен: " + huCode);
           return { accepted: true, known: false };
         }
-        setNavOrigin(navOrigin);
-        navigate("/hu/" + encodeURIComponent(huCode));
+        // First navigation to an HU card is a normal push and records the origin
+        // screen. A scan made while a card is already open replaces the current
+        // /hu/{code} entry and keeps the original origin, so Back returns to the
+        // screen the first card was opened from rather than walking the HU chain.
+        var alreadyOnHuCard = currentRoute && currentRoute.name === "huCard";
+        if (alreadyOnHuCard) {
+          navigate("/hu/" + encodeURIComponent(huCode), { replace: true });
+        } else {
+          setNavOrigin(navOrigin);
+          navigate("/hu/" + encodeURIComponent(huCode));
+        }
         return { accepted: true, known: true, result: result };
       })
       .catch(function (error) {
@@ -6699,6 +6818,7 @@
 
     return '<section class="hu-card-screen"><div class="hu-card-container">' +
       '<h1 class="hu-card-heading">' + escapeHtml(card.huCode) + "</h1>" +
+      '<div class="hu-card-scan-message" id="huCardScanMessage" role="status" aria-live="polite"></div>' +
       '<article class="hu-detail-card" aria-label="Карточка HU">' +
       '  <section class="hu-detail-section hu-detail-section--status">' +
       '    <div class="hu-detail-section-title">Статус</div>' +
@@ -6731,6 +6851,22 @@
       button.addEventListener("click", function () {
         executeTsdHuAction(actions[Number(button.getAttribute("data-hu-card-action"))]);
       });
+    });
+
+    function notifyCardScan(message) {
+      var el = document.getElementById("huCardScanMessage");
+      if (el) {
+        el.textContent = message || "";
+      }
+    }
+
+    // Keep global scan reception alive while the card is open: scanning another
+    // valid HU loads its card in place (resolveHuAndNavigate replaces the route),
+    // while an invalid/unknown HU keeps the current card and shows the error.
+    // resolveHuAndNavigate's huResolvePending guard prevents double handling.
+    setScanHandler(function (scan) {
+      var scanValue = scan && scan.value ? scan.value : scan;
+      resolveHuAndNavigate(scanValue, { notify: notifyCardScan });
     });
   }
 
@@ -8813,6 +8949,7 @@
                   preview: null,
                 });
               }
+              showScanSuccess(formatHuAcceptedMessage(huCode));
               var scanOrderId = resolveFillingOrderId(
                 preview,
                 context.workItem && context.workItem.orderId
@@ -8984,6 +9121,9 @@
           );
           var complete = isOutboundPickingOperationComplete(nextOrder);
           var promptClose = shouldPromptOperationClose("outbound", nextOrder);
+          if (!(result && result.alreadyPicked)) {
+            showScanSuccess(formatHuAcceptedMessage(huCode));
+          }
           renderOutboundPickingOrder(nextOrder, {
             message: complete
               ? "Все паллеты отсканированы. Готово к закрытию."
@@ -15240,6 +15380,11 @@
     window.FlowStockTsdTestHooks.initTsdTheme = initTsdTheme;
     window.FlowStockTsdTestHooks.extractHuCode = extractHuCode;
     window.FlowStockTsdTestHooks.resolveHuAndNavigate = resolveHuAndNavigate;
+    window.FlowStockTsdTestHooks.showScanSuccess = showScanSuccess;
+    window.FlowStockTsdTestHooks.formatHuAcceptedMessage = formatHuAcceptedMessage;
+    window.FlowStockTsdTestHooks.getScanSuccessState = function () {
+      return { count: scanSuccessShowCount, message: scanSuccessLastMessage };
+    };
     window.FlowStockTsdTestHooks.renderHuLookup = renderHuLookup;
     window.FlowStockTsdTestHooks.setScanHandler = setScanHandler;
     window.FlowStockTsdTestHooks.getActiveScanHandler = function () { return activeScanHandler; };

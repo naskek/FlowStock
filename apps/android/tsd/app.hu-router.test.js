@@ -74,6 +74,8 @@ let huCardCalls = 0;
 let lastHuCardCode = "";
 let huCardActionButtons = [];
 let nextResolveResult = null;
+let locationReplaceCalls = 0;
+let huCardScanMessageEl = { textContent: "" };
 
 const appEl = {
   innerHTML: "",
@@ -244,7 +246,16 @@ const context = {
   console,
   window: {
     FlowStockTsdTestHooks: hooks,
-    location: { hash: "#/home" },
+    location: {
+      hash: "#/home",
+      replace: function (url) {
+        // location.replace swaps the current entry (no new history push). The shim
+        // records calls and mirrors the resulting hash in the same format navigate
+        // uses for a push, so tests can assert "replaced, not pushed".
+        locationReplaceCalls += 1;
+        this.hash = String(url).replace(/^#/, "");
+      },
+    },
     sessionStorage: {
       setItem: function (key, value) {
         sessionStore[key] = String(value);
@@ -314,6 +325,9 @@ const context = {
       }
       if (id === "huLookupMessage") {
         return huLookupMessageEl;
+      }
+      if (id === "huCardScanMessage") {
+        return huCardScanMessageEl;
       }
       if (id === "outboundPickingScanInput") {
         return outboundScanInputEl;
@@ -464,7 +478,7 @@ async function main() {
 
   assert(storageJs.includes("/api/tsd/hu/resolve?code="));
   assert(storageJs.includes("/api/tsd/hu/card?code="));
-  assert(appVersionJs.includes('var version = "62"'));
+  assert(appVersionJs.includes('var version = "63"'));
   assert(serviceWorkerJs.includes('importScripts("./app-version.js")'));
   assert(serviceWorkerJs.includes('"./app.js"'));
   assert(serviceWorkerJs.includes('"./img/home/hu-search.png"'));
@@ -681,6 +695,85 @@ async function main() {
   hooks.renderRouteInternal({ name: "huCard", id: "HU-000654" });
   await flushPromises();
   assert.strictEqual(hooks.getNavOrigin(), null, "detail route render must not create nav origin");
+
+  // --- Part 1: repeat HU scan on an open card loads in place, no history chain ---
+  // First scan from a non-card screen is a normal push that records the origin.
+  hooks.clearNavOrigin();
+  hooks.setScanHandler(null);
+  hooks.renderRouteInternal({ name: "home" });
+  await flushPromises();
+  const replaceCallsBeforeFirst = locationReplaceCalls;
+  const firstCardOutcome = await hooks.resolveHuAndNavigate("HU-000801", { navOrigin: "/home" });
+  await flushPromises();
+  assert.strictEqual(firstCardOutcome.known, true, "first HU scan resolves a known HU");
+  assert.strictEqual(context.window.location.hash, "/hu/HU-000801", "first scan opens the HU card");
+  assert.strictEqual(
+    locationReplaceCalls,
+    replaceCallsBeforeFirst,
+    "first HU card navigation must be a push, not a replace"
+  );
+  assert.strictEqual(hooks.getNavOrigin(), "/home", "first HU card scan records the origin screen");
+
+  // Render the card (browser re-render) — installs the global card scan handler.
+  context.window.location.hash = "#/hu/HU-000801";
+  huCardScanMessageEl = { textContent: "" };
+  const huCardCallsBeforeOpen = huCardCalls;
+  hooks.renderRouteInternal({ name: "huCard", id: "HU-000801" });
+  await flushPromises();
+  assert.strictEqual(huCardCalls, huCardCallsBeforeOpen + 1, "HU card loads via apiGetHuCard");
+  const cardScanHandler = getRouteScanHandler();
+  assert.strictEqual(typeof cardScanHandler, "function", "open HU card keeps a global scan handler");
+
+  // Scanning another valid HU on the open card replaces the route (no new entry)
+  // and keeps the original origin; the scan is handled exactly once.
+  const resolveBeforeSecond = resolveCalls;
+  const replaceBeforeSecond = locationReplaceCalls;
+  cardScanHandler({ value: "HU-000802", source: "scanner" });
+  await flushPromises();
+  assert.strictEqual(resolveCalls, resolveBeforeSecond + 1, "one scan on the card is handled exactly once");
+  assert.strictEqual(context.window.location.hash, "/hu/HU-000802", "second scan shows the new HU card");
+  assert.strictEqual(
+    locationReplaceCalls,
+    replaceBeforeSecond + 1,
+    "subsequent card scan replaces the route instead of pushing"
+  );
+  assert.strictEqual(hooks.getNavOrigin(), "/home", "repeat card scan keeps the original origin");
+
+  // The new HU actually loads when the replaced route renders.
+  context.window.location.hash = "#/hu/HU-000802";
+  const huCardCallsBeforeReplaceRender = huCardCalls;
+  hooks.renderRouteInternal({ name: "huCard", id: "HU-000802" });
+  await flushPromises();
+  assert.strictEqual(huCardCalls, huCardCallsBeforeReplaceRender + 1, "replaced HU card loads the new HU");
+  assert.strictEqual(lastHuCardCode, "HU-000802", "replaced HU card requests the scanned code");
+
+  // Back from the HU card returns to the origin screen, not the HU chain.
+  assert.strictEqual(
+    hooks.navigateBack({ name: "huCard", id: "HU-000802" }),
+    "/home",
+    "Back after a scan series returns to the origin screen"
+  );
+
+  // An unknown HU scanned on the card keeps the current card and shows the error.
+  context.window.location.hash = "#/hu/HU-000802";
+  huCardScanMessageEl = { textContent: "" };
+  hooks.renderRouteInternal({ name: "huCard", id: "HU-000802" });
+  await flushPromises();
+  const cardScanHandlerUnknown = getRouteScanHandler();
+  const resolveBeforeUnknown = resolveCalls;
+  const replaceBeforeUnknown = locationReplaceCalls;
+  nextResolveResult = { known: false };
+  cardScanHandlerUnknown({ value: "HU-999999", source: "scanner" });
+  await flushPromises();
+  assert.strictEqual(resolveCalls, resolveBeforeUnknown + 1, "unknown HU scan resolves once");
+  assert.strictEqual(context.window.location.hash, "#/hu/HU-000802", "unknown HU keeps the current card");
+  assert.strictEqual(locationReplaceCalls, replaceBeforeUnknown, "unknown HU must not navigate");
+  assert.match(
+    huCardScanMessageEl.textContent,
+    /HU неизвестен: HU-999999/,
+    "unknown HU shows the existing error on the card"
+  );
+  nextResolveResult = null;
 
   const freeCardHtml = hooks.renderTsdHuCard({
     known: true,

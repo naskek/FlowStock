@@ -667,14 +667,46 @@ async function scanOutboundHu(rawValue, order, scanResultOrder) {
   });
   assert.deepStrictEqual(lastCompleteRequest, { orderId: 96, allowPartial: true });
 
+  assert(
+    appJs.includes("showScanSuccess(formatHuAcceptedMessage(huCode))"),
+    "outbound success branch should show the shared scan-accepted confirmation"
+  );
+
+  const successCountBeforeOutbound = hooks.getScanSuccessState().count;
   let request = await scanOutboundHu("HU-0000726");
+  await new Promise(function (resolve) {
+    setImmediate(resolve);
+  });
   assert.strictEqual(request.huCode, "HU-0000726");
   assert.strictEqual(request.orderId, 95);
   assert.strictEqual(request.url, "/api/tsd/outbound/orders/95/scan");
+  // A server-confirmed accept shows the green confirmation with the HU code.
+  let scanSuccess = hooks.getScanSuccessState();
+  assert.strictEqual(
+    scanSuccess.count,
+    successCountBeforeOutbound + 1,
+    "successful outbound scan should show one scan-accepted confirmation"
+  );
+  assert.match(scanSuccess.message, /принят/, "confirmation text should read as accepted");
+  assert.match(scanSuccess.message, /HU-0000726/, "confirmation text should include the HU code");
+  assert.strictEqual(
+    scanSuccess.message,
+    "HU-0000726 принят",
+    "confirmation text should not duplicate the HU prefix"
+  );
 
   request = await scanOutboundHu("0000726");
+  await new Promise(function (resolve) {
+    setImmediate(resolve);
+  });
   assert.strictEqual(request.huCode, "HU-0000726");
   assert.strictEqual(request.url, "/api/tsd/outbound/orders/95/scan");
+  // A second successful scan restarts the confirmation (counter advances again).
+  assert.strictEqual(
+    hooks.getScanSuccessState().count,
+    successCountBeforeOutbound + 2,
+    "second successful outbound scan should restart the confirmation"
+  );
 
   request = await scanOutboundHu("prefix:HU-0000726:suffix");
   assert.strictEqual(request.huCode, "HU-0000726");
@@ -742,6 +774,7 @@ async function scanOutboundHu(rawValue, order, scanResultOrder) {
   };
   nextOutboundScanError = rejectedScanError;
   scanInputFocusCount = 0;
+  const successCountBeforeReject = hooks.getScanSuccessState().count;
   await scanOutboundHu("HU-0000726");
   await new Promise(function (resolve) {
     setImmediate(resolve);
@@ -752,6 +785,12 @@ async function scanOutboundHu(rawValue, order, scanResultOrder) {
   );
   assert.strictEqual(scanInputEl.value, "");
   assert(scanInputFocusCount > 0, "rejected outbound scan should restore scanner focus");
+  // A rejected HU must NOT show the green accepted confirmation.
+  assert.strictEqual(
+    hooks.getScanSuccessState().count,
+    successCountBeforeReject,
+    "rejected outbound scan must not show the scan-accepted confirmation"
+  );
 
   console.log("TSD outbound presentation tests passed.");
 })().catch(function (error) {

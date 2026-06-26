@@ -2296,6 +2296,53 @@ body {
   border: 2px solid #fde68a;
 }
 
+/* Shared transient "scan accepted" confirmation (filling/outbound/order control).
+   Fixed, non-interactive (pointer-events:none) so it never steals focus or blocks
+   the next scan; fades in/out via opacity transition and is announced via aria-live. */
+.scan-success {
+  position: fixed;
+  left: 50%;
+  top: 14px;
+  transform: translate(-50%, -12px);
+  z-index: 2500;
+  max-width: min(92vw, 420px);
+  padding: 14px 20px;
+  border-radius: 14px;
+  background: #d1fae5;
+  color: #065f46;
+  border: 2px solid #34d399;
+  box-shadow: 0 10px 24px rgba(6, 95, 70, 0.22);
+  font-size: 18px;
+  font-weight: 800;
+  text-align: center;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 180ms ease-out, transform 180ms ease-out;
+}
+
+.scan-success.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scan-success {
+    transition: opacity 120ms linear;
+    transform: translate(-50%, 0);
+  }
+}
+
+.hu-card-scan-message {
+  margin: 0 0 4px;
+  color: #991b1b;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.hu-card-scan-message:empty {
+  display: none;
+}
+
 .filling-preview-card {
   display: grid;
   gap: 10px;

@@ -973,7 +973,7 @@ assert.strictEqual(
   true,
   "order may be marked done after final component when no pallets remain"
 );
-assert(appVersionJs.includes('var version = "62"'), "TSD shell version should be bumped for stock filters");
+assert(appVersionJs.includes('var version = "63"'), "TSD shell version should be bumped for stock filters");
 assert(
   appJs.includes("Не удалось загрузить заказы для наполнения") && appJs.includes("console.error(error)"),
   "filling API failures should be visible and logged"
@@ -1313,6 +1313,57 @@ async function runFillingScanRuntimeTests() {
     sharedHandlerHarness.scanCalls.map(function (call) { return call.huCode; }),
     ["HU-0001203", "HU-0001204"],
     "simulator string input and physical scanner object input should use the same scan result path"
+  );
+
+  // Shared scan-accepted confirmation: only a server-confirmed accept shows green.
+  assert(
+    appJs.includes("showScanSuccess(formatHuAcceptedMessage(huCode))"),
+    "filling success branch should show the shared scan-accepted confirmation"
+  );
+  const successScanHarness = createFillingScanRuntimeHarness({
+    scan: function () {
+      return Promise.resolve({ ok: true });
+    },
+  });
+  const fillingSuccessBefore = successScanHarness.hooks.getScanSuccessState().count;
+  successScanHarness.hooks.getActiveScanHandler()("HU-0001203");
+  await flushPromises();
+  await flushPromises();
+  const fillingSuccess = successScanHarness.hooks.getScanSuccessState();
+  assert.strictEqual(
+    fillingSuccess.count,
+    fillingSuccessBefore + 1,
+    "successful filling scan should show one scan-accepted confirmation"
+  );
+  assert.match(fillingSuccess.message, /принят/, "filling confirmation should read as accepted");
+  assert.match(fillingSuccess.message, /HU-0001203/, "filling confirmation should include the HU code");
+  assert.strictEqual(
+    fillingSuccess.message,
+    "HU-0001203 принят",
+    "filling confirmation should not duplicate the HU prefix"
+  );
+  successScanHarness.hooks.getActiveScanHandler()("HU-0001204");
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(
+    successScanHarness.hooks.getScanSuccessState().count,
+    fillingSuccessBefore + 2,
+    "second successful filling scan should restart the confirmation"
+  );
+
+  const fillingRejectHarness = createFillingScanRuntimeHarness({
+    scan: function () {
+      return Promise.resolve({ ok: true, alreadyFilled: true });
+    },
+  });
+  const rejectHarnessBefore = fillingRejectHarness.hooks.getScanSuccessState().count;
+  fillingRejectHarness.hooks.getActiveScanHandler()("HU-999998");
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(
+    fillingRejectHarness.hooks.getScanSuccessState().count,
+    rejectHarnessBefore,
+    "already-filled filling scan must not show the scan-accepted confirmation"
   );
 }
 
