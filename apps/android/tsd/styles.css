@@ -1842,6 +1842,13 @@ body {
   gap: 4px;
 }
 
+/* Outbound picking list: keep the white card from being shrunk by the flex
+   parent so the order cards stay inside its background; the page scrolls via
+   .app-content. Scan screen (--scan) keeps its own internal-scroll layout. */
+.outbound-picking-screen:not(.outbound-picking-screen--scan) .filling-card {
+  flex-shrink: 0;
+}
+
 .filling-screen--scan {
   display: flex;
   flex-direction: column;
