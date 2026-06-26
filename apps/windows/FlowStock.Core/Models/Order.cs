@@ -14,6 +14,7 @@ public sealed class Order
     public string? PartnerName { get; init; }
     public string? PartnerCode { get; init; }
     public bool UseReservedStock { get; init; }
+    public string MarkingResponsibility { get; init; } = FlowStock.Core.Models.Marking.MarkingResponsibility.FlowStock;
     public MarkingStatus MarkingStatus { get; init; } = MarkingStatus.NotRequired;
     public bool IsLegacyExcelGeneratedMarkingStatus { get; init; }
     public bool MarkingRequired { get; init; }

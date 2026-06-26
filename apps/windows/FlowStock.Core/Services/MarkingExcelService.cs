@@ -207,6 +207,7 @@ public sealed class MarkingExcelService
                         MarkingOrderId = row.MarkingOrderId,
                         ImportId = importId,
                         Status = MarkingCodeStatus.Reserved,
+                        Origin = MarkingCodeOrigin.LegacySynthetic,
                         SourceRowNumber = index,
                         CreatedAt = generatedAt,
                         UpdatedAt = generatedAt

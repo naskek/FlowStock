@@ -10,6 +10,7 @@ public static class MarkingCodeStatus
     public const string Reported = "Reported";
     public const string Circulated = "Circulated";
     public const string Voided = "Voided";
+    public const string Quarantined = "Quarantined";
 
     public static IReadOnlyList<string> All { get; } = new[]
     {
@@ -20,6 +21,7 @@ public static class MarkingCodeStatus
         Applied,
         Reported,
         Circulated,
-        Voided
+        Voided,
+        Quarantined
     };
 }
