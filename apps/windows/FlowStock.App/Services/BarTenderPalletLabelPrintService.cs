@@ -57,6 +57,18 @@ public sealed class BarTenderPalletLabelPrintService : IPalletLabelPrintService
             DisableTemplateDatabase(format);
             ApplyPrinter(format, config.PrinterName, config.Copies);
 
+            // Preflight условно обязательных полей (ProductionDate, BatchNumber) до первого
+            // PrintOut: если оператор ввёл непустое значение, а соответствующего NamedSubString
+            // в шаблоне нет, печать не запускается и частичной печати не происходит.
+            foreach (var field in PalletLabelTemplatePreflight.ResolveRequiredFields(rows))
+            {
+                if (!TrySetNamedSubString(format, field.Name, field.Value))
+                {
+                    return PalletLabelPrintResult.Failure(
+                        PalletLabelTemplatePreflight.MissingFieldMessage(field.Name));
+                }
+            }
+
             foreach (var row in rows)
             {
                 ApplyNamedSubStrings(format, row);

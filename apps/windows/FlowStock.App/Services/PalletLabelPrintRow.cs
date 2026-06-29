@@ -19,6 +19,7 @@ public sealed class PalletLabelPrintRow
     public string StoragePlace { get; init; } = string.Empty;
     public DateTime? ProductionDate { get; init; }
     public string Comment { get; init; } = string.Empty;
+    public string BatchNumber { get; init; } = string.Empty;
     public bool IsMixedPallet { get; init; }
     public string Composition { get; init; } = string.Empty;
     public string Line1ItemName { get; init; } = string.Empty;
@@ -45,7 +46,8 @@ public sealed class PalletLabelPrintRow
             ["PalletNo"] = PalletNo > 0 ? PalletNo.ToString(CultureInfo.InvariantCulture) : string.Empty,
             ["PalletCount"] = PalletCount > 0 ? PalletCount.ToString(CultureInfo.InvariantCulture) : string.Empty,
             ["StoragePlace"] = StoragePlace,
-            ["ProductionDate"] = ProductionDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty,
+            ["ProductionDate"] = ProductionDate?.ToString("dd.MM.yyyy", CultureInfo.InvariantCulture) ?? string.Empty,
+            ["BatchNumber"] = BatchNumber,
             ["Comment"] = Comment,
             ["IsMixedPallet"] = IsMixedPallet ? "1" : "0",
             ["Composition"] = Composition,

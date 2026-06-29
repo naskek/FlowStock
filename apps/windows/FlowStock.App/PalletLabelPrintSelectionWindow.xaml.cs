@@ -35,6 +35,10 @@ public partial class PalletLabelPrintSelectionWindow : Window
 
     public int Copies { get; private set; }
 
+    public DateTime? ProductionDate { get; private set; }
+
+    public string BatchNumber { get; private set; } = string.Empty;
+
     public static bool TryParseCopies(string? text, out int copies)
     {
         copies = 0;
@@ -178,7 +182,19 @@ public partial class PalletLabelPrintSelectionWindow : Window
             return;
         }
 
+        if (ProductionDateBox.SelectedDate == null && !string.IsNullOrWhiteSpace(ProductionDateBox.Text))
+        {
+            MessageBox.Show(
+                "Некорректная дата изготовления. Укажите дату в формате ДД.ММ.ГГГГ или очистите поле.",
+                "Паллеты",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
         Copies = copies;
+        ProductionDate = ProductionDateBox.SelectedDate;
+        BatchNumber = (BatchNumberBox.Text ?? string.Empty).Trim();
         DialogResult = true;
         Close();
     }

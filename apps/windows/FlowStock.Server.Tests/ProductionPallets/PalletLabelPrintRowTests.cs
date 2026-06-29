@@ -37,8 +37,73 @@ public sealed class PalletLabelPrintRowTests
         Assert.Equal("2", fields["PalletNo"]);
         Assert.Equal("6", fields["PalletCount"]);
         Assert.Equal("Производство", fields["StoragePlace"]);
-        Assert.Equal("2026-05-13", fields["ProductionDate"]);
+        Assert.Equal("13.05.2026", fields["ProductionDate"]);
         Assert.Equal(string.Empty, fields["Comment"]);
+    }
+
+    [Fact]
+    public void ToNamedSubStrings_ContainsBatchNumber()
+    {
+        var row = new PalletLabelPrintRow
+        {
+            HuCode = "HU-0000001",
+            ItemName = "Товар",
+            Qty = 1,
+            BatchNumber = "ПАРТИЯ-2026-15"
+        };
+
+        var fields = row.ToNamedSubStrings();
+
+        Assert.True(fields.ContainsKey("BatchNumber"));
+        Assert.Equal("ПАРТИЯ-2026-15", fields["BatchNumber"]);
+    }
+
+    [Fact]
+    public void ToNamedSubStrings_EmptyBatchNumber_IsEmptyString()
+    {
+        var row = new PalletLabelPrintRow
+        {
+            HuCode = "HU-0000001",
+            ItemName = "Товар",
+            Qty = 1
+        };
+
+        var fields = row.ToNamedSubStrings();
+
+        Assert.True(fields.ContainsKey("BatchNumber"));
+        Assert.Equal(string.Empty, fields["BatchNumber"]);
+    }
+
+    [Fact]
+    public void ToNamedSubStrings_FormatsProductionDateAsDayMonthYear()
+    {
+        var row = new PalletLabelPrintRow
+        {
+            HuCode = "HU-0000001",
+            ItemName = "Товар",
+            Qty = 1,
+            ProductionDate = new DateTime(2026, 6, 29)
+        };
+
+        var fields = row.ToNamedSubStrings();
+
+        Assert.Equal("29.06.2026", fields["ProductionDate"]);
+    }
+
+    [Fact]
+    public void ToNamedSubStrings_NullProductionDate_IsEmptyString()
+    {
+        var row = new PalletLabelPrintRow
+        {
+            HuCode = "HU-0000001",
+            ItemName = "Товар",
+            Qty = 1,
+            ProductionDate = null
+        };
+
+        var fields = row.ToNamedSubStrings();
+
+        Assert.Equal(string.Empty, fields["ProductionDate"]);
     }
 
     [Fact]

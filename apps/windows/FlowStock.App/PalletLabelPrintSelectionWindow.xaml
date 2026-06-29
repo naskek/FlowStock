@@ -9,6 +9,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
@@ -30,12 +31,46 @@
             <TextBlock Text="Количество копий:" Margin="16,0,4,0" VerticalAlignment="Center" />
             <TextBox x:Name="CopiesBox" Width="50" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" />
         </WrapPanel>
+        <StackPanel Grid.Row="1" Margin="0,0,0,8">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <TextBlock Text="Дата изготовления:"
+                           Grid.Row="0" Grid.Column="0"
+                           Margin="0,0,8,4"
+                           VerticalAlignment="Center" />
+                <DatePicker x:Name="ProductionDateBox"
+                            Grid.Row="0" Grid.Column="1"
+                            Width="140"
+                            Margin="0,0,0,4"
+                            HorizontalAlignment="Left" />
+                <TextBlock Text="Номер партии:"
+                           Grid.Row="1" Grid.Column="0"
+                           Margin="0,0,8,0"
+                           VerticalAlignment="Center" />
+                <TextBox x:Name="BatchNumberBox"
+                         Grid.Row="1" Grid.Column="1"
+                         Width="200"
+                         HorizontalAlignment="Left"
+                         VerticalContentAlignment="Center" />
+            </Grid>
+            <TextBlock Text="Значения применяются ко всем выбранным этикеткам."
+                       Foreground="Gray"
+                       Margin="0,6,0,0"
+                       TextWrapping="Wrap" />
+        </StackPanel>
         <TextBlock x:Name="SummaryText"
-                   Grid.Row="1"
+                   Grid.Row="2"
                    Margin="0,0,0,8"
                    Foreground="Gray"
                    TextWrapping="Wrap" />
-        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+        <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto">
             <ItemsControl x:Name="GroupsList">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
@@ -54,7 +89,7 @@
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
         </ScrollViewer>
-        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
             <Button Content="Печать" Width="120" IsDefault="True" Click="Print_Click" />
             <Button Content="Отмена" Width="120" IsCancel="True" Margin="8,0,0,0" Click="Cancel_Click" />
         </StackPanel>

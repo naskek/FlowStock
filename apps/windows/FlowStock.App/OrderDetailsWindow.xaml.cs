@@ -764,12 +764,20 @@ public partial class OrderDetailsWindow : Window
                 return;
             }
 
+            // Параметры текущего запуска печати (дата изготовления и номер партии) переопределяют
+            // значения, пришедшие от API, и применяются ко всем выбранным этикеткам. Исходные
+            // строки не мутируются — хелпер возвращает новые экземпляры.
+            var rowsToPrint = PalletLabelPrintRowFactory.ApplyPrintParameters(
+                selectedRows,
+                dialog.ProductionDate,
+                dialog.BatchNumber);
+
             var copies = dialog.Copies;
             var settingsToSave = _services.Settings.Load();
             settingsToSave.PalletLabels.Copies = copies;
             _services.Settings.Save(settingsToSave);
 
-            var printResult = await Task.Run(() => _services.PalletLabelPrinter.Print(selectedRows, copies)).ConfigureAwait(true);
+            var printResult = await Task.Run(() => _services.PalletLabelPrinter.Print(rowsToPrint, copies)).ConfigureAwait(true);
             if (!printResult.IsSuccess)
             {
                 MessageBox.Show(printResult.Message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
