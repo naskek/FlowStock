@@ -700,6 +700,9 @@ public sealed class UpsertItemRequest
     [JsonPropertyName("shelf_life_months")]
     public int? ShelfLifeMonths { get; set; }
 
+    [JsonPropertyName("storage_conditions")]
+    public string? StorageConditions { get; set; }
+
     [JsonPropertyName("tara_id")]
     public long? TaraId { get; set; }
 

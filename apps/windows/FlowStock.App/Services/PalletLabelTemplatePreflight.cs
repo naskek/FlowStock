@@ -8,13 +8,13 @@ public sealed record PalletLabelConditionalField(string Name, string Value);
 
 /// <summary>
 /// Чистая (без COM) логика определения полей, которые становятся обязательными для текущего
-/// запуска печати: <c>ProductionDate</c> и <c>BatchNumber</c> требуются только тогда, когда
-/// оператор фактически ввёл непустое значение.
+/// запуска печати: <c>ProductionDate</c>, <c>BatchNumber</c> и <c>StorageConditions</c>
+/// требуются только тогда, когда для них есть непустое значение.
 /// </summary>
 public static class PalletLabelTemplatePreflight
 {
     public static readonly IReadOnlyList<string> ConditionalFields =
-        new[] { "ProductionDate", "BatchNumber" };
+        new[] { "ProductionDate", "BatchNumber", "StorageConditions" };
 
     /// <summary>
     /// Возвращает условные поля, у которых среди строк есть хотя бы одно непустое значение,

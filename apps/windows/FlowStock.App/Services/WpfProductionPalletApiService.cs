@@ -691,6 +691,7 @@ public sealed class WpfProductionPalletApiService
             HuCode = row.HuCode ?? string.Empty,
             ItemName = row.ItemName ?? string.Empty,
             Brand = row.Brand ?? string.Empty,
+            StorageConditions = row.StorageConditions ?? string.Empty,
             Qty = row.Qty,
             Uom = string.IsNullOrWhiteSpace(row.Uom) ? "шт" : row.Uom!,
             PalletNo = row.PalletNo,
@@ -946,6 +947,9 @@ public sealed class WpfProductionPalletApiService
 
         [JsonPropertyName("brand")]
         public string? Brand { get; init; }
+
+        [JsonPropertyName("storage_conditions")]
+        public string? StorageConditions { get; init; }
 
         [JsonPropertyName("qty")]
         public double Qty { get; init; }

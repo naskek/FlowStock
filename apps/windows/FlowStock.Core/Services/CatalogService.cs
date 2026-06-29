@@ -32,7 +32,7 @@ public sealed class CatalogService
         return _data.GetPartners();
     }
 
-    public long CreateItem(string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked, bool isActive = true, double? maxQtyPerHu = null, long? itemTypeId = null, double? minStockQty = null)
+    public long CreateItem(string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked, bool isActive = true, double? maxQtyPerHu = null, long? itemTypeId = null, double? minStockQty = null, string? storageConditions = null)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -51,6 +51,7 @@ public sealed class CatalogService
             Brand = string.IsNullOrWhiteSpace(brand) ? null : brand.Trim(),
             Volume = string.IsNullOrWhiteSpace(volume) ? null : volume.Trim(),
             ShelfLifeMonths = shelfLifeMonths,
+            StorageConditions = NormalizeStorageConditions(storageConditions),
             MaxQtyPerHu = normalizedMaxQtyPerHu,
             TaraId = taraId,
             IsMarked = false,
@@ -177,7 +178,7 @@ public sealed class CatalogService
         _data.UpdateItemBarcode(itemId, barcode.Trim());
     }
 
-    public void UpdateItem(long itemId, string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked, bool? isActive = null, double? maxQtyPerHu = null, long? itemTypeId = null, double? minStockQty = null)
+    public void UpdateItem(long itemId, string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked, bool? isActive = null, double? maxQtyPerHu = null, long? itemTypeId = null, double? minStockQty = null, string? storageConditions = null)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -204,6 +205,7 @@ public sealed class CatalogService
             Brand = string.IsNullOrWhiteSpace(brand) ? null : brand.Trim(),
             Volume = string.IsNullOrWhiteSpace(volume) ? null : volume.Trim(),
             ShelfLifeMonths = shelfLifeMonths,
+            StorageConditions = NormalizeStorageConditions(storageConditions),
             MaxQtyPerHu = normalizedMaxQtyPerHu,
             TaraId = taraId,
             IsMarked = existing.IsMarked,
@@ -477,6 +479,11 @@ public sealed class CatalogService
         }
 
         return minStockQty.Value;
+    }
+
+    private static string? NormalizeStorageConditions(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
     private double? NormalizeMaxQtyPerHu(long? itemTypeId, double? maxQtyPerHu)

@@ -488,6 +488,7 @@ public partial class ItemImportPreviewWindow : Window
                     Brand = row.Brand,
                     Volume = row.Volume,
                     ShelfLifeMonths = row.ShelfLifeMonths,
+                    StorageConditions = row.StorageConditions,
                     TaraId = row.TaraId,
                     IsMarked = false
                 };

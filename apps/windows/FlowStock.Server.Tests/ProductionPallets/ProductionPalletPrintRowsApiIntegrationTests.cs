@@ -8,6 +8,30 @@ namespace FlowStock.Server.Tests.ProductionPallets;
 public sealed class ProductionPalletPrintRowsApiIntegrationTests
 {
     [Fact]
+    public async Task PrintRows_IncludesStorageConditions_AndDoesNotMutateState()
+    {
+        var harness = BuildStorageConditionsHarness();
+
+        var ledgerBefore = harness.LedgerEntries.Count;
+        var docsBefore = harness.Store.GetDocsByOrder(10).Count;
+        var palletsBefore = harness.Store.GetProductionPalletsByDoc(20).Count;
+
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        using var response = await host.Client.GetAsync("/api/orders/10/production-pallets/print-rows");
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var json = JsonDocument.Parse(body);
+        var row = Assert.Single(json.RootElement.EnumerateArray());
+        Assert.Equal("от 0С до +10С", row.GetProperty("storage_conditions").GetString());
+
+        Assert.Equal(ledgerBefore, harness.LedgerEntries.Count);
+        Assert.Equal(docsBefore, harness.Store.GetDocsByOrder(10).Count);
+        Assert.Equal(palletsBefore, harness.Store.GetProductionPalletsByDoc(20).Count);
+    }
+
+    [Fact]
     public async Task PrintRows_ReservedHuInTwoLocations_Returns400_AndDoesNotMutateState()
     {
         var harness = BuildConflictHarness();
@@ -100,6 +124,72 @@ public sealed class ProductionPalletPrintRowsApiIntegrationTests
         });
         harness.SeedBalance(100, 1, 600, "HU-CONFLICT");
         harness.SeedBalance(100, 2, 400, "HU-CONFLICT");
+        return harness;
+    }
+
+    private static CloseDocumentHarness BuildStorageConditionsHarness()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedLocation(new Location { Id = 1, Code = "MAIN", Name = "Основной склад" });
+        harness.SeedItem(new Item
+        {
+            Id = 100,
+            Name = "Товар",
+            Brand = "Печагин",
+            BaseUom = "шт",
+            StorageConditions = "от 0С до +10С"
+        });
+        harness.SeedOrder(new Order
+        {
+            Id = 10,
+            OrderRef = "010",
+            Type = OrderType.Internal,
+            PartnerName = "ПЕЧАГИН ПРОДУКТ",
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 5, 20, 8, 0, 0)
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 101,
+            OrderId = 10,
+            ItemId = 100,
+            QtyOrdered = 600
+        });
+        harness.SeedDoc(new Doc
+        {
+            Id = 20,
+            DocRef = "PRD-2026-000010",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 10,
+            CreatedAt = new DateTime(2026, 5, 20, 9, 0, 0)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 201,
+            DocId = 20,
+            OrderLineId = 101,
+            ItemId = 100,
+            Qty = 600,
+            ToLocationId = 1,
+            ToHu = "HU-0000100"
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 301,
+            PrdDocId = 20,
+            DocLineId = 201,
+            OrderId = 10,
+            OrderLineId = 101,
+            ItemId = 100,
+            ItemName = "Товар",
+            HuCode = "HU-0000100",
+            PlannedQty = 600,
+            ToLocationId = 1,
+            ToLocationCode = "MAIN",
+            Status = ProductionPalletStatus.Planned,
+            CreatedAt = new DateTime(2026, 5, 20, 9, 30, 0)
+        });
         return harness;
     }
 }

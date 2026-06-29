@@ -609,6 +609,7 @@ public static class ProductionPalletEndpoints
             item_id = row.ItemId,
             item_name = row.ItemName,
             brand = row.Brand,
+            storage_conditions = row.StorageConditions,
             qty = row.Qty,
             uom = row.Uom,
             pallet_no = row.PalletNo,

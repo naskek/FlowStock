@@ -61,6 +61,7 @@ public partial class ItemEditWindow : Window
         if (_item == null)
         {
             Title = "Добавление товара";
+            StorageConditionsBox.Text = string.Empty;
             MaxQtyPerHuBox.Text = string.Empty;
             UomCombo.SelectedItem = _uoms.FirstOrDefault(u => string.Equals(u.Name, "шт", StringComparison.OrdinalIgnoreCase))
                                     ?? _uoms.FirstOrDefault();
@@ -81,6 +82,7 @@ public partial class ItemEditWindow : Window
         ShelfLifeBox.Text = _item.ShelfLifeMonths.HasValue
             ? _item.ShelfLifeMonths.Value.ToString(CultureInfo.InvariantCulture)
             : string.Empty;
+        StorageConditionsBox.Text = _item.StorageConditions ?? string.Empty;
         MaxQtyPerHuBox.Text = _item.MaxQtyPerHu.HasValue
             ? _item.MaxQtyPerHu.Value.ToString("0.###", CultureInfo.InvariantCulture)
             : string.Empty;
@@ -102,6 +104,7 @@ public partial class ItemEditWindow : Window
         var gtin = Normalize(GtinBox.Text);
         var brand = Normalize(BrandBox.Text);
         var volume = Normalize(VolumeBox.Text);
+        var storageConditions = Normalize(StorageConditionsBox.Text);
         if (string.IsNullOrWhiteSpace(name))
         {
             MessageBox.Show("Введите наименование товара.", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -173,6 +176,7 @@ public partial class ItemEditWindow : Window
                 Brand = brand,
                 Volume = volume,
                 ShelfLifeMonths = shelfLifeMonths,
+                StorageConditions = storageConditions,
                 MaxQtyPerHu = maxQtyPerHu,
                 TaraId = taraId,
                 IsMarked = false,
@@ -210,6 +214,7 @@ public partial class ItemEditWindow : Window
                     Brand = candidate.Brand,
                     Volume = candidate.Volume,
                     ShelfLifeMonths = candidate.ShelfLifeMonths,
+                    StorageConditions = candidate.StorageConditions,
                     MaxQtyPerHu = candidate.MaxQtyPerHu,
                     TaraId = candidate.TaraId,
                     IsMarked = _item.IsMarked,

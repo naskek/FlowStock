@@ -1388,7 +1388,41 @@ public sealed class ProductionPalletServiceTests
         Assert.Equal(500, row.Qty);
         Assert.Contains("Товар", row.Composition);
         Assert.Contains("Добавка", row.Composition);
+        Assert.Equal(string.Empty, row.StorageConditions);
         Assert.Equal(2, row.Lines.Count);
+    }
+
+    [Theory]
+    [InlineData("одинаковые", "одинаковые")]
+    [InlineData("от 0С до +10С", "от +10С до +20С")]
+    public void GetPrintRows_MixedPallet_AlwaysClearsStorageConditions(string firstStorageConditions, string secondStorageConditions)
+    {
+        var harness = CreateHarnessWithMixedOrderOnly();
+        harness.SeedItem(new Item
+        {
+            Id = 100,
+            Name = "Товар",
+            Brand = "Печагин",
+            BaseUom = "шт",
+            MaxQtyPerHu = 600,
+            StorageConditions = firstStorageConditions
+        });
+        harness.SeedItem(new Item
+        {
+            Id = 200,
+            Name = "Добавка",
+            Brand = "Печагин",
+            BaseUom = "шт",
+            MaxQtyPerHu = 400,
+            StorageConditions = secondStorageConditions
+        });
+        var service = new ProductionPalletService(harness.Store);
+        service.PlanOrder(10);
+
+        var row = Assert.Single(service.GetPrintRows(10));
+
+        Assert.True(row.IsMixedPallet);
+        Assert.Equal(string.Empty, row.StorageConditions);
     }
 
     [Fact]
@@ -1897,6 +1931,7 @@ public sealed class ProductionPalletServiceTests
             Assert.Equal("PRD-2026-000001", row.PrdRef);
             Assert.Equal("Товар", row.ItemName);
             Assert.Equal("Печагин", row.Brand);
+            Assert.Equal(string.Empty, row.StorageConditions);
             Assert.Equal(600, row.Qty);
             Assert.Equal("шт", row.Uom);
             Assert.Equal("MAIN", row.StoragePlace);
@@ -1907,6 +1942,25 @@ public sealed class ProductionPalletServiceTests
         Assert.Equal("HU-000001", rows[0].HuCode);
         Assert.Equal(6, rows[^1].PalletNo);
         Assert.Equal("HU-000006", rows[^1].HuCode);
+    }
+
+    [Fact]
+    public void GetPrintRows_SingleProductionPallet_UsesItemStorageConditions()
+    {
+        var harness = CreateHarnessWithSixPallets(filledCount: 0);
+        harness.SeedItem(new Item
+        {
+            Id = 100,
+            Name = "Товар",
+            Brand = "Печагин",
+            BaseUom = "шт",
+            StorageConditions = "от 0С до +10С"
+        });
+        var service = new ProductionPalletService(harness.Store);
+
+        var rows = service.GetPrintRows(10);
+
+        Assert.All(rows, row => Assert.Equal("от 0С до +10С", row.StorageConditions));
     }
 
     [Fact]
@@ -2077,7 +2131,40 @@ public sealed class ProductionPalletServiceTests
         Assert.Equal("078", rows[0].OrderRef);
         Assert.Contains(rows, row => string.Equals(row.HuCode, "HU-0000478", StringComparison.OrdinalIgnoreCase) && row.Qty == 600);
         Assert.Contains(rows, row => string.Equals(row.HuCode, "HU-0000479", StringComparison.OrdinalIgnoreCase) && row.Qty == 400);
+        Assert.All(rows, row => Assert.Equal(string.Empty, row.StorageConditions));
         Assert.Empty(PalletLabelPrintSelectionService.ResolveDefaultSelectedPalletIds(rows));
+    }
+
+    [Fact]
+    public void GetPrintRows_ReservedHu_UsesItemStorageConditions()
+    {
+        var harness = CreateCustomerHarnessWithBoundHu(
+            new OrderReceiptPlanLine
+            {
+                Id = 501,
+                OrderId = 78,
+                OrderLineId = 101,
+                ItemId = 100,
+                ItemName = "Товар",
+                QtyPlanned = 600,
+                ToHu = "HU-0000478",
+                SortOrder = 1
+            });
+        harness.SeedItem(new Item
+        {
+            Id = 100,
+            Name = "Товар",
+            Brand = "Печагин",
+            BaseUom = "шт",
+            MaxQtyPerHu = 600,
+            StorageConditions = "хранить при +5С"
+        });
+        var service = new ProductionPalletService(harness.Store);
+
+        var row = Assert.Single(service.GetPrintRows(78));
+
+        Assert.Equal(ProductionPalletPrintSourceType.ReservedHu, row.SourceType);
+        Assert.Equal("хранить при +5С", row.StorageConditions);
     }
 
     [Fact]

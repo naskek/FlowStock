@@ -418,6 +418,7 @@ public sealed class KmService
             Brand = item.Brand,
             Volume = item.Volume,
             ShelfLifeMonths = item.ShelfLifeMonths,
+            StorageConditions = item.StorageConditions,
             TaraId = item.TaraId,
             IsMarked = true
         });

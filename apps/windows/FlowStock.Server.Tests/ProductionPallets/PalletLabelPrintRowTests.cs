@@ -15,6 +15,7 @@ public sealed class PalletLabelPrintRowTests
             HuCode = "HU-0000001",
             ItemName = "Горчица Русская 1 кг",
             Brand = "Печагин",
+            StorageConditions = "от 0С до +10С",
             Qty = 600,
             Uom = "шт",
             PalletNo = 2,
@@ -32,6 +33,7 @@ public sealed class PalletLabelPrintRowTests
         Assert.Equal("HU-0000001", fields["HuCode"]);
         Assert.Equal("Горчица Русская 1 кг", fields["ItemName"]);
         Assert.Equal("Печагин", fields["Brand"]);
+        Assert.Equal("от 0С до +10С", fields["StorageConditions"]);
         Assert.Equal("600", fields["Qty"]);
         Assert.Equal("шт", fields["Uom"]);
         Assert.Equal("2", fields["PalletNo"]);
@@ -56,6 +58,24 @@ public sealed class PalletLabelPrintRowTests
 
         Assert.True(fields.ContainsKey("BatchNumber"));
         Assert.Equal("ПАРТИЯ-2026-15", fields["BatchNumber"]);
+    }
+
+    [Fact]
+    public void ToNamedSubStrings_ContainsStorageConditionsAndPreservesText()
+    {
+        var storageConditions = "Хранить при температуре от 0С до +10С\r\nи относительной влажности не более 75%";
+        var row = new PalletLabelPrintRow
+        {
+            HuCode = "HU-0000001",
+            ItemName = "Товар",
+            Qty = 1,
+            StorageConditions = storageConditions
+        };
+
+        var fields = row.ToNamedSubStrings();
+
+        Assert.True(fields.ContainsKey("StorageConditions"));
+        Assert.Equal(storageConditions, fields["StorageConditions"]);
     }
 
     [Fact]

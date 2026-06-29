@@ -27,6 +27,7 @@ public static class PalletLabelPrintRowFactory
                 HuCode = row.HuCode,
                 ItemName = row.ItemName,
                 Brand = row.Brand,
+                StorageConditions = row.StorageConditions,
                 Qty = row.Qty,
                 Uom = row.Uom,
                 PalletNo = row.PalletNo,

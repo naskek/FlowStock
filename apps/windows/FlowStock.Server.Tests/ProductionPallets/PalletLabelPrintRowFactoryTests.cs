@@ -20,6 +20,7 @@ public sealed class PalletLabelPrintRowFactoryTests
             HuCode = "HU-0000001",
             ItemName = "Горчица Русская 1 кг",
             Brand = "Печагин",
+            StorageConditions = "от 0С до +10С",
             Qty = 600,
             Uom = "шт",
             PalletNo = 2,
@@ -81,6 +82,7 @@ public sealed class PalletLabelPrintRowFactoryTests
         Assert.Equal(source.HuCode, copy.HuCode);
         Assert.Equal(source.ItemName, copy.ItemName);
         Assert.Equal(source.Brand, copy.Brand);
+        Assert.Equal(source.StorageConditions, copy.StorageConditions);
         Assert.Equal(source.Qty, copy.Qty);
         Assert.Equal(source.Uom, copy.Uom);
         Assert.Equal(source.PalletNo, copy.PalletNo);

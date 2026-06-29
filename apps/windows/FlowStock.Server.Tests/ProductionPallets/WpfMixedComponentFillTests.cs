@@ -59,6 +59,16 @@ public sealed class WpfMixedComponentFillTests
     }
 
     [Fact]
+    public void WpfProductionPalletApi_MapsStorageConditionsFromPrintRows()
+    {
+        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "Services", "WpfProductionPalletApiService.cs");
+        var mapper = SliceMethod(source, "    private static PalletLabelPrintRow MapPrintRow(PrintRowResponse row)", "    private static string? NormalizeBaseUrl");
+
+        Assert.Contains("[JsonPropertyName(\"storage_conditions\")]", source, StringComparison.Ordinal);
+        Assert.Contains("StorageConditions = row.StorageConditions ?? string.Empty", mapper, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void OperationDetailsWindow_RoutesMixedPalletThroughDialogAndKeepsSingleFillPath()
     {
         var source = ReadRepoFile("apps", "windows", "FlowStock.App", "OperationDetailsWindow.xaml.cs");

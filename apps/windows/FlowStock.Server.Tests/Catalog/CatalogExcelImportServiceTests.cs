@@ -22,6 +22,19 @@ public sealed class CatalogExcelImportServiceTests
     }
 
     [Fact]
+    public void BuildMapFromHeaderRow_MapsStorageConditions()
+    {
+        var map = CatalogExcelImportService.BuildMapFromHeaderRow(
+        [
+            "GTIN",
+            "Наименование",
+            "Условия хранения"
+        ]);
+
+        Assert.Equal(2, map.StorageConditionsColumn);
+    }
+
+    [Fact]
     public void Parse_PreservesLeadingZeroInTextGtin()
     {
         var result = Parse(
@@ -73,6 +86,20 @@ public sealed class CatalogExcelImportServiceTests
         Assert.Null(row.Brand);
         Assert.Null(row.Volume);
         Assert.Null(row.TaraName);
+    }
+
+    [Fact]
+    public void Parse_StorageConditions_TrimsOnlyEdgesAndPreservesInternalText()
+    {
+        var result = Parse(
+            Header("GTIN", "Наименование", "Условия хранения"),
+            Data(
+                "4607046150575",
+                "Товар Storage",
+                " \r\nот 0С до +10С\r\nвлажность 75%  + сохранять\tтаб\r\n "));
+
+        var row = Assert.Single(result.Rows, row => row.Status == CatalogExcelImportStatus.New);
+        Assert.Equal("от 0С до +10С\r\nвлажность 75%  + сохранять\tтаб", row.StorageConditions);
     }
 
     [Fact]
@@ -374,6 +401,14 @@ public sealed class CatalogExcelImportServiceTests
         Assert.Contains("Дубликат в базе", row.Reason!, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void ItemImportPreview_NewItemCandidate_UsesParsedStorageConditions()
+    {
+        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "ItemImportPreviewWindow.xaml.cs");
+
+        Assert.Contains("StorageConditions = row.StorageConditions", source, StringComparison.Ordinal);
+    }
+
     private static CatalogExcelImportResult Parse(
         object?[] header,
         params object?[][] dataRows)
@@ -418,4 +453,19 @@ public sealed class CatalogExcelImportServiceTests
         IReadOnlyList<Item>? existingItems = null,
         IReadOnlyList<Tara>? taras = null) =>
         CatalogExcelImportContext.FromCatalog(existingItems ?? [], taras ?? []);
+
+    private static string ReadRepoFile(params string[] parts)
+    {
+        var current = AppContext.BaseDirectory;
+        for (var i = 0; i < 8; i++)
+        {
+            var candidate = Path.GetFullPath(Path.Combine(current, string.Concat(Enumerable.Repeat("..\\", i)), Path.Combine(parts)));
+            if (File.Exists(candidate))
+            {
+                return File.ReadAllText(candidate);
+            }
+        }
+
+        throw new FileNotFoundException("Не удалось найти файл в репозитории.", Path.Combine(parts));
+    }
 }

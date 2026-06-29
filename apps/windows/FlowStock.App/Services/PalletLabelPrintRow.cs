@@ -12,6 +12,7 @@ public sealed class PalletLabelPrintRow
     public string HuCode { get; init; } = string.Empty;
     public string ItemName { get; init; } = string.Empty;
     public string Brand { get; init; } = string.Empty;
+    public string StorageConditions { get; init; } = string.Empty;
     public double Qty { get; init; }
     public string Uom { get; init; } = "шт";
     public int PalletNo { get; init; }
@@ -42,6 +43,7 @@ public sealed class PalletLabelPrintRow
             ["ClientName"] = ClientName,
             ["PrdRef"] = PrdRef,
             ["Brand"] = Brand,
+            ["StorageConditions"] = StorageConditions,
             ["Uom"] = Uom,
             ["PalletNo"] = PalletNo > 0 ? PalletNo.ToString(CultureInfo.InvariantCulture) : string.Empty,
             ["PalletCount"] = PalletCount > 0 ? PalletCount.ToString(CultureInfo.InvariantCulture) : string.Empty,

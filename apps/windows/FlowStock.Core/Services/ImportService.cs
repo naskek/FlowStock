@@ -429,6 +429,7 @@ public sealed class ImportService
                     Gtin = gtin ?? existing.Gtin,
                     BaseUom = baseUom,
                     DefaultPackagingId = existing.DefaultPackagingId,
+                    StorageConditions = existing.StorageConditions,
                     IsMarked = existing.IsMarked
                 });
             }

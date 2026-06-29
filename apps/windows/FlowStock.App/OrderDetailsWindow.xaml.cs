@@ -733,6 +733,7 @@ public partial class OrderDetailsWindow : Window
                     ItemId = 0,
                     ItemName = row.ItemName,
                     Brand = row.Brand,
+                    StorageConditions = row.StorageConditions,
                     Qty = row.Qty,
                     Uom = row.Uom,
                     PalletNo = row.PalletNo,

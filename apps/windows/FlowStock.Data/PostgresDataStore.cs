@@ -1855,7 +1855,7 @@ ON CONFLICT (notification_id, reader_key) DO NOTHING;");
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id WHERE i.barcode = @barcode OR i.gtin = @barcode");
+            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id WHERE i.barcode = @barcode OR i.gtin = @barcode");
             command.Parameters.AddWithValue("@barcode", barcode);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
@@ -1866,7 +1866,7 @@ ON CONFLICT (notification_id, reader_key) DO NOTHING;");
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id WHERE i.gtin = @gtin");
+            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id WHERE i.gtin = @gtin");
             command.Parameters.AddWithValue("@gtin", gtin);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
@@ -1877,7 +1877,7 @@ ON CONFLICT (notification_id, reader_key) DO NOTHING;");
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id WHERE i.id = @id");
+            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id WHERE i.id = @id");
             command.Parameters.AddWithValue("@id", id);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
@@ -1910,8 +1910,8 @@ ON CONFLICT (notification_id, reader_key) DO NOTHING;");
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO items(name, is_active, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, max_qty_per_hu, tara_id, is_marked, item_type_id, min_stock_qty)
-VALUES(@name, @is_active, @barcode, @gtin, @base_uom, @default_packaging_id, @brand, @volume, @shelf_life_months, @max_qty_per_hu, @tara_id, @is_marked, @item_type_id, @min_stock_qty)
+INSERT INTO items(name, is_active, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, max_qty_per_hu, tara_id, is_marked, item_type_id, min_stock_qty, storage_conditions)
+VALUES(@name, @is_active, @barcode, @gtin, @base_uom, @default_packaging_id, @brand, @volume, @shelf_life_months, @max_qty_per_hu, @tara_id, @is_marked, @item_type_id, @min_stock_qty, @storage_conditions)
 RETURNING id;
 ");
             command.Parameters.AddWithValue("@name", item.Name);
@@ -1928,6 +1928,7 @@ RETURNING id;
             command.Parameters.AddWithValue("@is_marked", item.IsMarked ? 1 : 0);
             command.Parameters.AddWithValue("@item_type_id", item.ItemTypeId.HasValue ? item.ItemTypeId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@min_stock_qty", item.MinStockQty.HasValue ? item.MinStockQty.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@storage_conditions", NormalizeStorageConditionsForDb(item.StorageConditions));
             return (long)(command.ExecuteScalar() ?? 0L);
         });
     }
@@ -1963,7 +1964,8 @@ SET name = @name,
     tara_id = @tara_id,
     is_marked = @is_marked,
     item_type_id = @item_type_id,
-    min_stock_qty = @min_stock_qty
+    min_stock_qty = @min_stock_qty,
+    storage_conditions = @storage_conditions
 WHERE id = @id;
 ");
             command.Parameters.AddWithValue("@name", item.Name);
@@ -1980,6 +1982,7 @@ WHERE id = @id;
             command.Parameters.AddWithValue("@is_marked", item.IsMarked ? 1 : 0);
             command.Parameters.AddWithValue("@item_type_id", item.ItemTypeId.HasValue ? item.ItemTypeId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@min_stock_qty", item.MinStockQty.HasValue ? item.MinStockQty.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@storage_conditions", NormalizeStorageConditionsForDb(item.StorageConditions));
             command.Parameters.AddWithValue("@id", item.Id);
             command.ExecuteNonQuery();
             return 0;
@@ -11891,7 +11894,7 @@ ORDER BY COALESCE(hu_code, hu);
         return WithConnection(connection =>
         {
             var sql = @"
-SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, NULL::bigint, NULL::text, FALSE, FALSE, FALSE, NULL::double precision
+SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, NULL::bigint, NULL::text, FALSE, FALSE, FALSE, NULL::double precision, i.storage_conditions
 FROM ledger l
 INNER JOIN items i ON i.id = l.item_id
 LEFT JOIN taras t ON t.id = i.tara_id
@@ -11916,6 +11919,7 @@ GROUP BY
     i.brand,
     i.volume,
     i.shelf_life_months,
+    i.storage_conditions,
     i.max_qty_per_hu,
     i.tara_id,
     i.is_marked,
@@ -13352,8 +13356,14 @@ RETURNING id;
             ItemTypeIsVisibleInProductCatalog = !reader.IsDBNull(16) && reader.GetBoolean(16),
             ItemTypeEnableMinStockControl = !reader.IsDBNull(17) && reader.GetBoolean(17),
             ItemTypeEnableMarking = !reader.IsDBNull(18) && reader.GetBoolean(18),
-            MinStockQty = reader.IsDBNull(19) ? null : Convert.ToDouble(reader.GetValue(19), CultureInfo.InvariantCulture)
+            MinStockQty = reader.IsDBNull(19) ? null : Convert.ToDouble(reader.GetValue(19), CultureInfo.InvariantCulture),
+            StorageConditions = reader.IsDBNull(20) ? null : reader.GetString(20)
         };
+    }
+
+    private static object NormalizeStorageConditionsForDb(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? DBNull.Value : value.Trim();
     }
 
     private static ItemType ReadItemType(NpgsqlDataReader reader)
@@ -14024,6 +14034,7 @@ LIMIT 1;";
             || !ColumnExists(connection, "client_blocks", "is_enabled")
             || !ColumnExists(connection, "items", "item_type_id")
             || !ColumnExists(connection, "items", "min_stock_qty")
+            || !ColumnExists(connection, "items", "storage_conditions")
             || !ColumnExists(connection, "locations", "auto_hu_distribution_enabled")
             || !ColumnExists(connection, "item_types", "is_visible_in_product_catalog")
             || !ColumnExists(connection, "item_types", "enable_min_stock_control")
@@ -14176,10 +14187,10 @@ WHERE COALESCE(i.is_marked, 0) = 0
     {
         if (string.IsNullOrWhiteSpace(search))
         {
-            return "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id ORDER BY i.name";
+            return "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id ORDER BY i.name";
         }
 
-        return "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id WHERE i.name ILIKE @search OR i.barcode ILIKE @search OR i.gtin ILIKE @search ORDER BY i.name";
+        return "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id WHERE i.name ILIKE @search OR i.barcode ILIKE @search OR i.gtin ILIKE @search ORDER BY i.name";
     }
 
     private static string BuildStockQuery(string? search)

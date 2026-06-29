@@ -1,0 +1,2 @@
+ALTER TABLE IF EXISTS items
+    ADD COLUMN IF NOT EXISTS storage_conditions TEXT NULL;

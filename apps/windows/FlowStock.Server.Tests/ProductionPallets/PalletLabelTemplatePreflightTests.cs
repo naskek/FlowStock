@@ -4,7 +4,7 @@ namespace FlowStock.Server.Tests.ProductionPallets;
 
 public sealed class PalletLabelTemplatePreflightTests
 {
-    private static PalletLabelPrintRow BuildRow(DateTime? productionDate, string batchNumber)
+    private static PalletLabelPrintRow BuildRow(DateTime? productionDate, string batchNumber, string storageConditions = "")
     {
         return new PalletLabelPrintRow
         {
@@ -12,7 +12,8 @@ public sealed class PalletLabelTemplatePreflightTests
             ItemName = "Товар",
             Qty = 1,
             ProductionDate = productionDate,
-            BatchNumber = batchNumber
+            BatchNumber = batchNumber,
+            StorageConditions = storageConditions
         };
     }
 
@@ -51,6 +52,28 @@ public sealed class PalletLabelTemplatePreflightTests
     }
 
     [Fact]
+    public void ResolveRequiredFields_OnlyStorageConditions_RequiresStorageConditions()
+    {
+        var rows = new[] { BuildRow(productionDate: null, batchNumber: string.Empty, storageConditions: "от 0С до +10С") };
+
+        var required = PalletLabelTemplatePreflight.ResolveRequiredFields(rows);
+
+        var field = Assert.Single(required);
+        Assert.Equal("StorageConditions", field.Name);
+        Assert.Equal("от 0С до +10С", field.Value);
+    }
+
+    [Fact]
+    public void ResolveRequiredFields_EmptyStorageConditions_DoesNotRequireStorageConditions()
+    {
+        var rows = new[] { BuildRow(productionDate: null, batchNumber: string.Empty, storageConditions: string.Empty) };
+
+        var required = PalletLabelTemplatePreflight.ResolveRequiredFields(rows);
+
+        Assert.Empty(required);
+    }
+
+    [Fact]
     public void ResolveRequiredFields_BothFilled_RequiresBoth()
     {
         var rows = new[] { BuildRow(productionDate: new DateTime(2026, 6, 29), batchNumber: "ПАРТИЯ-2026-15") };
@@ -84,5 +107,7 @@ public sealed class PalletLabelTemplatePreflightTests
             PalletLabelTemplatePreflight.MissingFieldMessage("ProductionDate"));
         Assert.Equal("В шаблоне BarTender отсутствует поле BatchNumber.",
             PalletLabelTemplatePreflight.MissingFieldMessage("BatchNumber"));
+        Assert.Equal("В шаблоне BarTender отсутствует поле StorageConditions.",
+            PalletLabelTemplatePreflight.MissingFieldMessage("StorageConditions"));
     }
 }

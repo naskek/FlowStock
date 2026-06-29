@@ -273,6 +273,7 @@ public sealed class ProductionPalletPrintRow
     public long ItemId { get; init; }
     public string ItemName { get; init; } = string.Empty;
     public string Brand { get; init; } = string.Empty;
+    public string StorageConditions { get; init; } = string.Empty;
     public double Qty { get; init; }
     public string Uom { get; init; } = "шт";
     public int PalletNo { get; init; }

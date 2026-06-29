@@ -442,7 +442,7 @@ public static class CatalogExcelImportService
             var codeApplication = NormalizeText(ReadText(rawRow.Cells, map.CodeApplicationColumn));
             var tnved = NormalizeText(ReadText(rawRow.Cells, map.TnvedColumn));
             var shortName = NormalizeText(ReadText(rawRow.Cells, map.ShortNameColumn));
-            var storageConditions = NormalizeText(ReadText(rawRow.Cells, map.StorageConditionsColumn));
+            var storageConditions = NormalizeLongText(ReadText(rawRow.Cells, map.StorageConditionsColumn));
             var technicalConditions = NormalizeText(ReadText(rawRow.Cells, map.TechnicalConditionsColumn));
             var composition = NormalizeText(ReadText(rawRow.Cells, map.CompositionColumn));
 
@@ -843,6 +843,11 @@ public static class CatalogExcelImportService
             .Trim();
 
         return Regex.Replace(trimmed, "\\s+", " ");
+    }
+
+    private static string? NormalizeLongText(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
     private static string? NormalizeGtinInput(string? value)

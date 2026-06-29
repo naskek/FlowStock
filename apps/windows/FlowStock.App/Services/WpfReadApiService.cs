@@ -1689,6 +1689,7 @@ public sealed class WpfReadApiService
             Brand = ReadString(element, "brand"),
             Volume = ReadString(element, "volume"),
             ShelfLifeMonths = ReadNullableInt32(element, "shelf_life_months"),
+            StorageConditions = ReadString(element, "storage_conditions"),
             MaxQtyPerHu = ReadNullableDouble(element, "max_qty_per_hu"),
             TaraId = ReadNullableInt64(element, "tara_id"),
             TaraName = ReadString(element, "tara_name"),
