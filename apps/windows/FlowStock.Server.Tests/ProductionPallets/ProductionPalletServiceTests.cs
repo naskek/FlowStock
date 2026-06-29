@@ -2081,6 +2081,151 @@ public sealed class ProductionPalletServiceTests
     }
 
     [Fact]
+    public void GetPrintRows_ReservedHu_EmptyToLocationCode_UsesActualLedgerLocation()
+    {
+        var harness = CreateCustomerHarnessWithBoundHu(
+            new OrderReceiptPlanLine
+            {
+                Id = 501,
+                OrderId = 78,
+                OrderLineId = 101,
+                ItemId = 100,
+                ItemName = "Товар",
+                QtyPlanned = 600,
+                ToLocationCode = null,
+                ToHu = "HU-0000478",
+                SortOrder = 1
+            });
+        harness.SeedBalance(100, 1, 600, "HU-0000478");
+        var service = new ProductionPalletService(harness.Store);
+
+        var row = Assert.Single(service.GetPrintRows(78));
+
+        Assert.Equal(ProductionPalletPrintSourceType.ReservedHu, row.SourceType);
+        Assert.Equal("MAIN", row.StoragePlace);
+    }
+
+    [Fact]
+    public void GetPrintRows_ReservedHu_StaleToLocationCode_UsesActualLedgerLocation()
+    {
+        var harness = CreateCustomerHarnessWithBoundHu(
+            new OrderReceiptPlanLine
+            {
+                Id = 501,
+                OrderId = 78,
+                OrderLineId = 101,
+                ItemId = 100,
+                ItemName = "Товар",
+                QtyPlanned = 600,
+                ToLocationCode = "STALE-PLAN-PLACE",
+                ToHu = "HU-0000478",
+                SortOrder = 1
+            });
+        harness.SeedLocation(new Location { Id = 2, Code = "DOCK", Name = "Док" });
+        harness.SeedBalance(100, 2, 600, "HU-0000478");
+        var service = new ProductionPalletService(harness.Store);
+
+        var row = Assert.Single(service.GetPrintRows(78));
+
+        Assert.Equal("DOCK", row.StoragePlace);
+        Assert.NotEqual("STALE-PLAN-PLACE", row.StoragePlace);
+    }
+
+    [Fact]
+    public void GetPrintRows_ReservedHu_NoPositiveStock_LeavesStoragePlaceEmpty()
+    {
+        var harness = CreateCustomerHarnessWithBoundHu(
+            new OrderReceiptPlanLine
+            {
+                Id = 501,
+                OrderId = 78,
+                OrderLineId = 101,
+                ItemId = 100,
+                ItemName = "Товар",
+                QtyPlanned = 600,
+                ToLocationCode = "STALE-PLAN-PLACE",
+                ToHu = "HU-0000478",
+                SortOrder = 1
+            });
+        // Нет SeedBalance: положительного ledger-остатка по HU нет (например, уже отгружен).
+        var service = new ProductionPalletService(harness.Store);
+
+        var row = Assert.Single(service.GetPrintRows(78));
+
+        Assert.Equal(string.Empty, row.StoragePlace);
+    }
+
+    [Fact]
+    public void GetPrintRows_ReservedHu_SameHuInTwoLocations_ThrowsInvariantViolation()
+    {
+        var harness = CreateCustomerHarnessWithBoundHu(
+            new OrderReceiptPlanLine
+            {
+                Id = 501,
+                OrderId = 78,
+                OrderLineId = 101,
+                ItemId = 100,
+                ItemName = "Товар",
+                QtyPlanned = 600,
+                ToHu = "HU-CONFLICT",
+                SortOrder = 1
+            });
+        harness.SeedLocation(new Location { Id = 2, Code = "DOCK", Name = "Док" });
+        harness.SeedBalance(100, 1, 600, "HU-CONFLICT");
+        harness.SeedBalance(100, 2, 400, "HU-CONFLICT");
+        var service = new ProductionPalletService(harness.Store);
+
+        var ex = Assert.Throws<InvalidOperationException>(() => service.GetPrintRows(78));
+
+        Assert.Contains("HU-CONFLICT", ex.Message);
+        Assert.Contains("MAIN", ex.Message);
+        Assert.Contains("DOCK", ex.Message);
+    }
+
+    [Fact]
+    public void GetPrintRows_ReservedHu_DoesNotMutateLedgerDocsPalletsReservesOrStatus()
+    {
+        var harness = CreateCustomerHarnessWithBoundHu(
+            new OrderReceiptPlanLine
+            {
+                Id = 501,
+                OrderId = 78,
+                OrderLineId = 101,
+                ItemId = 100,
+                ItemName = "Товар",
+                QtyPlanned = 600,
+                ToHu = "HU-0000478",
+                SortOrder = 1
+            });
+        harness.SeedBalance(100, 1, 600, "HU-0000478");
+        harness.SeedLedgerEntry(900, 100, 1, 600, "HU-0000478");
+        var service = new ProductionPalletService(harness.Store);
+
+        // Снимки до вызова (доказываем отсутствие мутаций, а не исходную пустоту).
+        var ledgerBefore = harness.LedgerEntries.Count;
+        var docsBefore = harness.Store.GetDocsByOrder(78).Count;
+        var planLinesBefore = harness.Store.GetOrderReceiptPlanLines(78).Count;
+        var stockBefore = harness.Store.GetHuStockRows()
+            .Select(row => (row.HuCode, row.ItemId, row.LocationId, row.Qty))
+            .OrderBy(row => row.HuCode).ThenBy(row => row.ItemId).ThenBy(row => row.LocationId)
+            .ToArray();
+        var statusBefore = harness.Store.GetOrder(78)!.Status;
+
+        _ = service.GetPrintRows(78);
+
+        Assert.Equal(ledgerBefore, harness.LedgerEntries.Count);
+        Assert.Equal(docsBefore, harness.Store.GetDocsByOrder(78).Count);
+        Assert.Equal(planLinesBefore, harness.Store.GetOrderReceiptPlanLines(78).Count);
+        Assert.DoesNotContain(harness.Store.GetDocsByOrder(78), doc => harness.Store.HasProductionPallets(doc.Id));
+        var stockAfter = harness.Store.GetHuStockRows()
+            .Select(row => (row.HuCode, row.ItemId, row.LocationId, row.Qty))
+            .OrderBy(row => row.HuCode).ThenBy(row => row.ItemId).ThenBy(row => row.LocationId)
+            .ToArray();
+        Assert.Equal(stockBefore, stockAfter);
+        Assert.Equal(statusBefore, harness.Store.GetOrder(78)!.Status);
+    }
+
+    [Fact]
     public void GetPrintRows_CustomerOrderWithNoBoundHu_ReturnsEmpty()
     {
         var harness = CreateCustomerHarnessWithBoundHu();

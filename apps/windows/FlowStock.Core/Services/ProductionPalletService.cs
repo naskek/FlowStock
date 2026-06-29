@@ -785,8 +785,7 @@ public sealed class ProductionPalletService
                 planLine.ItemId,
                 planLine.ItemName,
                 huCode,
-                planLine.QtyPlanned,
-                planLine.ToLocationCode));
+                planLine.QtyPlanned));
         }
 
         if (entries.Count == 0)
@@ -800,6 +799,8 @@ public sealed class ProductionPalletService
             .Select(id => _data.FindItemById(id))
             .Where(item => item != null)
             .ToDictionary(item => item!.Id, item => item!);
+        var locationsById = _data.GetLocations().ToDictionary(location => location.Id, location => location.Code);
+        var locationResolver = HuCurrentLocationResolver.Create(_data.GetHuStockRows(), locationsById);
 
         var rows = new List<ProductionPalletPrintRow>(entries.Count);
         for (var index = 0; index < entries.Count; index++)
@@ -831,7 +832,7 @@ public sealed class ProductionPalletService
                 Uom = uom,
                 PalletNo = index + 1,
                 PalletCount = entries.Count,
-                StoragePlace = entry.LocationCode ?? string.Empty,
+                StoragePlace = locationResolver.Resolve(entry.HuCode, entry.ItemId) ?? string.Empty,
                 Lines = new[] { printLine },
                 Composition = $"{itemName} - {FormatQty(entry.Qty)} {uom}",
                 Status = "BOUND"
@@ -2852,8 +2853,7 @@ public sealed class ProductionPalletService
         long ItemId,
         string ItemName,
         string HuCode,
-        double Qty,
-        string? LocationCode);
+        double Qty);
 }
 
 public sealed class ProductionPalletPlanAdoptionException : InvalidOperationException
