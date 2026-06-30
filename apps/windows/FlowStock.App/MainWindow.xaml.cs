@@ -8,6 +8,7 @@ using System.Net.Http;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -30,6 +31,10 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<Order> _orders = new();
     private readonly ObservableCollection<WarehouseBundleListRow> _warehouseBundles = new();
     private readonly ObservableCollection<StockDisplayRow> _stock = new();
+    private readonly ObservableCollection<CatalogItemFilterOption> _itemBrandFilters = new();
+    private readonly ObservableCollection<CatalogItemFilterOption> _itemVolumeFilters = new();
+    private readonly ObservableCollection<CatalogItemFilterOption> _itemUomFilters = new();
+    private readonly ICollectionView _itemsView;
     private readonly ObservableCollection<WarehouseProductionStateDisplayRow> _warehouseProductionStateRows = new();
     private readonly ObservableCollection<LowStockDisplayRow> _lowStock = new();
     private readonly ObservableCollection<ProductionNeedDisplayRow> _productionNeedRows = new();
@@ -43,6 +48,7 @@ public partial class MainWindow : Window
     private bool _autoRefreshInProgress;
     private bool _serverApiUnavailableAtStartup;
     private bool _suppressStockFilterSelectionChanged;
+    private bool _suppressItemFilterSelectionChanged;
     private static readonly TimeSpan StockRefreshDebounceInterval = TimeSpan.FromMilliseconds(200);
     private static readonly TimeSpan StockGridScrollIdleDelay = TimeSpan.FromSeconds(1.5);
     private static readonly TimeSpan StockRefreshDeferWhileScrolling = TimeSpan.FromSeconds(2);
@@ -100,6 +106,11 @@ public partial class MainWindow : Window
         InitializeComponent();
 
         ItemsGrid.ItemsSource = _items;
+        _itemsView = CollectionViewSource.GetDefaultView(_items);
+        _itemsView.Filter = FilterCatalogItem;
+        ItemBrandFilterList.ItemsSource = _itemBrandFilters;
+        ItemVolumeFilterList.ItemsSource = _itemVolumeFilters;
+        ItemUomFilterList.ItemsSource = _itemUomFilters;
         LocationsGrid.ItemsSource = _locations;
         PartnersGrid.ItemsSource = _partners;
         DocsGrid.ItemsSource = _docs;
@@ -583,7 +594,7 @@ public partial class MainWindow : Window
                     }
                     break;
                 case TabItemsIndex:
-                    LoadItems(ItemsSearchBox?.Text);
+                    LoadItems();
                     break;
                 case TabLocationsIndex:
                     LoadLocations();
@@ -644,16 +655,78 @@ public partial class MainWindow : Window
     {
         var selectedId = _selectedItem?.Id;
         _items.Clear();
-        var query = search ?? ItemsSearchBox?.Text;
-        var normalized = NormalizeIdentifier(query);
-        var items = _services.WpfReadApi.TryGetItems(normalized, out var apiItems)
+        var items = _services.WpfReadApi.TryGetItems(null, out var apiItems)
             ? apiItems
             : Array.Empty<Item>();
         foreach (var item in items)
         {
             _items.Add(item);
         }
+        if (ItemsSearchBox != null && search != null)
+        {
+            ItemsSearchBox.Text = search;
+        }
+        RebuildItemFilters();
+        ApplyItemFilters();
         RestoreItemSelection(selectedId);
+    }
+
+    private bool FilterCatalogItem(object? obj)
+    {
+        if (obj is not Item item)
+        {
+            return false;
+        }
+
+        return CatalogItemFilter.MatchesGroup(item.Brand, _itemBrandFilters)
+               && CatalogItemFilter.MatchesGroup(item.Volume, _itemVolumeFilters)
+               && CatalogItemFilter.MatchesGroup(item.BaseUom, _itemUomFilters)
+               && CatalogItemFilter.MatchesSearch(item, ItemsSearchBox?.Text);
+    }
+
+    private void RebuildItemFilters()
+    {
+        _suppressItemFilterSelectionChanged = true;
+        try
+        {
+            CatalogItemFilter.RebuildOptions(_itemBrandFilters, _items.Select(item => item.Brand), ItemFilterOptionChanged);
+            CatalogItemFilter.RebuildOptions(_itemVolumeFilters, _items.Select(item => item.Volume), ItemFilterOptionChanged);
+            CatalogItemFilter.RebuildOptions(_itemUomFilters, _items.Select(item => item.BaseUom), ItemFilterOptionChanged);
+        }
+        finally
+        {
+            _suppressItemFilterSelectionChanged = false;
+        }
+    }
+
+    private void ItemFilterOptionChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (!_suppressItemFilterSelectionChanged && e.PropertyName == nameof(CatalogItemFilterOption.IsChecked))
+        {
+            ApplyItemFilters();
+        }
+    }
+
+    private void ApplyItemFilters()
+    {
+        var selectedId = _selectedItem?.Id;
+        _itemsView.Refresh();
+        RestoreItemSelection(selectedId);
+    }
+
+    private void SetItemFilters(ObservableCollection<CatalogItemFilterOption> options, bool isChecked)
+    {
+        _suppressItemFilterSelectionChanged = true;
+        try
+        {
+            CatalogItemFilter.SetAll(options, isChecked);
+        }
+        finally
+        {
+            _suppressItemFilterSelectionChanged = false;
+        }
+
+        ApplyItemFilters();
     }
 
     private void LoadUoms()
@@ -1509,7 +1582,7 @@ public partial class MainWindow : Window
 
     private void ItemsSearch_Click(object sender, RoutedEventArgs e)
     {
-        LoadItems(ItemsSearchBox?.Text);
+        ApplyItemFilters();
     }
 
     private void ItemsResetSearch_Click(object sender, RoutedEventArgs e)
@@ -1518,7 +1591,19 @@ public partial class MainWindow : Window
         {
             ItemsSearchBox.Text = string.Empty;
         }
-        LoadItems(null);
+        _suppressItemFilterSelectionChanged = true;
+        try
+        {
+            CatalogItemFilter.SetAll(_itemBrandFilters, true);
+            CatalogItemFilter.SetAll(_itemVolumeFilters, true);
+            CatalogItemFilter.SetAll(_itemUomFilters, true);
+        }
+        finally
+        {
+            _suppressItemFilterSelectionChanged = false;
+        }
+
+        ApplyItemFilters();
     }
 
     private void ItemsSearchBox_KeyDown(object sender, KeyEventArgs e)
@@ -1526,8 +1611,38 @@ public partial class MainWindow : Window
         if (e.Key == Key.Enter)
         {
             e.Handled = true;
-            LoadItems(ItemsSearchBox?.Text);
+            ApplyItemFilters();
         }
+    }
+
+    private void ItemBrandFilterAll_Click(object sender, RoutedEventArgs e)
+    {
+        SetItemFilters(_itemBrandFilters, true);
+    }
+
+    private void ItemBrandFilterNone_Click(object sender, RoutedEventArgs e)
+    {
+        SetItemFilters(_itemBrandFilters, false);
+    }
+
+    private void ItemVolumeFilterAll_Click(object sender, RoutedEventArgs e)
+    {
+        SetItemFilters(_itemVolumeFilters, true);
+    }
+
+    private void ItemVolumeFilterNone_Click(object sender, RoutedEventArgs e)
+    {
+        SetItemFilters(_itemVolumeFilters, false);
+    }
+
+    private void ItemUomFilterAll_Click(object sender, RoutedEventArgs e)
+    {
+        SetItemFilters(_itemUomFilters, true);
+    }
+
+    private void ItemUomFilterNone_Click(object sender, RoutedEventArgs e)
+    {
+        SetItemFilters(_itemUomFilters, false);
     }
 
     private void StockLocationFilter_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
@@ -2348,12 +2463,14 @@ public partial class MainWindow : Window
     {
         if (!itemId.HasValue)
         {
+            ClearItemForm();
             return;
         }
 
         var item = _items.FirstOrDefault(i => i.Id == itemId.Value);
-        if (item == null)
+        if (item == null || !_itemsView.Contains(item))
         {
+            ClearItemForm();
             return;
         }
 
@@ -3129,7 +3246,7 @@ public partial class MainWindow : Window
         var window = new ItemTypeWindow(_services, () =>
         {
             LoadItemTypes();
-            LoadItems(ItemsSearchBox?.Text);
+            LoadItems();
             LoadStock(StatusSearchBox.Text);
             LoadLowStockView();
         })
@@ -3138,7 +3255,7 @@ public partial class MainWindow : Window
         };
         window.ShowDialog();
         LoadItemTypes();
-        LoadItems(ItemsSearchBox?.Text);
+        LoadItems();
         LoadStock(StatusSearchBox.Text);
         LoadLowStockView();
     }

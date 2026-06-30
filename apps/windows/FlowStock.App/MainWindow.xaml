@@ -742,6 +742,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
                     <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
@@ -759,7 +760,63 @@
                         <Button Content="Поиск" Click="ItemsSearch_Click" />
                         <Button Content="Сброс" Click="ItemsResetSearch_Click" Margin="8,0,0,0" />
                     </StackPanel>
-                    <DataGrid x:Name="ItemsGrid" Grid.Row="2" AutoGenerateColumns="False" IsReadOnly="True"
+                    <Expander Grid.Row="2" Header="Фильтры" Margin="0,0,0,8">
+                        <Border BorderBrush="#E1E8ED" BorderThickness="1" CornerRadius="6" Padding="8">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                                    <TextBlock Text="Бренд" FontWeight="SemiBold" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,4,0,4">
+                                        <Button Content="Все" Click="ItemBrandFilterAll_Click" Padding="6,2" />
+                                        <Button Content="Нет" Click="ItemBrandFilterNone_Click" Padding="6,2" Margin="6,0,0,0" />
+                                    </StackPanel>
+                                    <ListBox x:Name="ItemBrandFilterList" MaxHeight="160"
+                                             ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <CheckBox Content="{Binding Label}" IsChecked="{Binding IsChecked, Mode=TwoWay}" />
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="0,0,8,0">
+                                    <TextBlock Text="Объем" FontWeight="SemiBold" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,4,0,4">
+                                        <Button Content="Все" Click="ItemVolumeFilterAll_Click" Padding="6,2" />
+                                        <Button Content="Нет" Click="ItemVolumeFilterNone_Click" Padding="6,2" Margin="6,0,0,0" />
+                                    </StackPanel>
+                                    <ListBox x:Name="ItemVolumeFilterList" MaxHeight="160"
+                                             ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <CheckBox Content="{Binding Label}" IsChecked="{Binding IsChecked, Mode=TwoWay}" />
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="Базовая единица" FontWeight="SemiBold" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,4,0,4">
+                                        <Button Content="Все" Click="ItemUomFilterAll_Click" Padding="6,2" />
+                                        <Button Content="Нет" Click="ItemUomFilterNone_Click" Padding="6,2" Margin="6,0,0,0" />
+                                    </StackPanel>
+                                    <ListBox x:Name="ItemUomFilterList" MaxHeight="160"
+                                             ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <CheckBox Content="{Binding Label}" IsChecked="{Binding IsChecked, Mode=TwoWay}" />
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                    </Expander>
+                    <DataGrid x:Name="ItemsGrid" Grid.Row="3" AutoGenerateColumns="False" IsReadOnly="True"
                               SelectionMode="Extended" SelectionUnit="FullRow"
                               SelectionChanged="ItemsGrid_SelectionChanged"
                               MouseDoubleClick="ItemsGrid_MouseDoubleClick"
