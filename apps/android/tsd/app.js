@@ -1784,7 +1784,7 @@
       (order && (order.statusDisplay || order.orderStatusDisplay || order.order_status_display)) || "";
     var normalized = normalizeOrderStatusCode(statusCode || statusDisplay);
     if (normalized === "IN_PROGRESS") {
-      return { label: "В работе", className: "order-status-pill order-status-progress" };
+      return { label: String(statusDisplay || "В работе"), className: "order-status-pill order-status-progress" };
     }
     if (normalized === "ACCEPTED") {
       return { label: String(statusDisplay || "Готов"), className: "order-status-pill order-status-accepted" };
@@ -1814,6 +1814,10 @@
     if (orderType === "INTERNAL" || orderType.indexOf("ВНУТР") !== -1) {
       return true;
     }
+    if (orderType === "CUSTOMER" || orderType.indexOf("КЛИЕНТ") !== -1) {
+      return false;
+    }
+    // Тип отсутствует или не распознан: используем fallback «нет контрагента ⇒ внутренний».
     var partnerName = String((order && order.partnerName) || "").trim();
     var partnerId = Number(order && order.partnerId);
     return !partnerName && !partnerId;
@@ -1828,28 +1832,6 @@
       partnerLabel += " · ИНН: " + order.partnerInn;
     }
     return partnerLabel;
-  }
-
-  function getProductionPalletPlanInfo(order) {
-    if (!order || order.needsProductionPalletPlan !== true) {
-      return { label: "", className: "order-plan-neutral" };
-    }
-
-    if (order.palletPlanStatus) {
-      if (order.palletPlanStatus.indexOf("не сформирован") >= 0) {
-        return { label: order.palletPlanStatus, className: "order-plan-missing" };
-      }
-      if (order.palletPlanStatus.indexOf("Наполнение") >= 0) {
-        return { label: order.palletPlanStatus, className: "order-plan-ready" };
-      }
-      return { label: order.palletPlanStatus, className: "order-plan-ready" };
-    }
-
-    if (order.hasProductionPalletPlan === true) {
-      return { label: "План паллет: сформирован", className: "order-plan-ready" };
-    }
-
-    return { label: "План паллет: не сформирован", className: "order-plan-missing" };
   }
 
   function normalizeOrderStatusCode(status) {
@@ -3370,12 +3352,44 @@
       '    <input class="form-input" id="ordersSearchInput" type="text" autocomplete="off" placeholder="Поиск по номеру или контрагенту" />' +
       '    <div id="ordersStatus" class="status"></div>' +
       '    <div id="ordersList" class="doc-list order-list"></div>' +
-      '    <div id="ordersFilterActions" class="actions-row">' +
-      '      <button class="btn btn-outline" id="ordersToggleReadyBtn" type="button">Показать готовые</button>' +
-      '      <button class="btn btn-outline" id="ordersToggleDoneBtn" type="button">Показать выполненные</button>' +
-      "    </div>" +
       "  </div>" +
       "</section>"
+    );
+  }
+
+  function buildOrderListItemHtml(order) {
+    var statusInfo = getOrderStatusInfoForOrder(order);
+    var orderNumber =
+      order.number || order.orderNumber || order.order_ref || order.orderRef || "—";
+    var typeBadge = isInternalOrder(order)
+      ? '<span class="order-type-badge order-type-internal">Внутренний</span>'
+      : '<span class="order-type-badge order-type-customer">Клиентский</span>';
+    var partnerLabel = getOrderPartnerLabel(order);
+    var plannedDate = formatDate(order.plannedDate || order.planned_date);
+    return (
+      '<button class="doc-item order-item" data-order="' +
+      escapeHtml(order.orderId) +
+      '">' +
+      '  <div class="doc-main">' +
+      '    <div class="doc-title">' +
+      escapeHtml(String(orderNumber)) +
+      "</div>" +
+      '    <div class="order-meta">' +
+      '      <div class="order-meta-row">' +
+      typeBadge +
+      escapeHtml(partnerLabel) +
+      "</div>" +
+      '      <div class="order-meta-row">План: ' +
+      escapeHtml(plannedDate) +
+      "</div>" +
+      "    </div>" +
+      "  </div>" +
+      '  <div class="' +
+      escapeHtml(statusInfo.className) +
+      '">' +
+      escapeHtml(statusInfo.label) +
+      "</div>" +
+      "</button>"
     );
   }
 
@@ -3412,11 +3426,6 @@
       return String(Math.round(num));
     }
     return num.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
-  }
-
-  function isInternalOrder(order) {
-    var type = String((order && (order.orderType || order.order_type || order.type)) || "").trim().toUpperCase();
-    return type === "INTERNAL";
   }
 
   function capOrderLineReadyQty(line, value) {
@@ -9542,10 +9551,6 @@
     var searchInput = document.getElementById("ordersSearchInput");
     var listEl = document.getElementById("ordersList");
     var statusEl = document.getElementById("ordersStatus");
-    var toggleReadyBtn = document.getElementById("ordersToggleReadyBtn");
-    var toggleDoneBtn = document.getElementById("ordersToggleDoneBtn");
-    var showReady = false;
-    var showDone = false;
     var allOrders = [];
 
     function setStatus(text) {
@@ -9554,120 +9559,11 @@
       }
     }
 
-    function classifyOrderStatus(order) {
-      var status = normalizeOrderStatusCode(
-        (order && (order.status || order.statusDisplay || order.orderStatusDisplay || order.order_status_display)) || ""
-      );
-      var internalOrder = isInternalOrder(order);
-      if (!status) {
-        return "in_work";
-      }
-      if (status === "IN_PROGRESS") {
-        return "in_work";
-      }
-      if (status === "ACCEPTED") {
-        if (internalOrder) {
-          return "in_work";
-        }
-        return "ready";
-      }
-      if (status === "SHIPPED") {
-        return "done";
-      }
-      return "in_work";
-    }
-
-    function getOrdersStats(orders) {
-      var stats = { ready: 0, done: 0 };
-      (orders || []).forEach(function (order) {
-        var bucket = classifyOrderStatus(order);
-        if (bucket === "ready") {
-          stats.ready += 1;
-        } else if (bucket === "done") {
-          stats.done += 1;
-        }
-      });
-      return stats;
-    }
-
-    function updateFilterButtons(stats) {
-      if (toggleReadyBtn) {
-        toggleReadyBtn.textContent =
-          (showReady ? "Скрыть готовые" : "Показать готовые") +
-          (stats.ready > 0 ? " (" + stats.ready + ")" : "");
-      }
-      if (toggleDoneBtn) {
-        toggleDoneBtn.textContent =
-          (showDone ? "Скрыть выполненные" : "Показать выполненные") +
-          (stats.done > 0 ? " (" + stats.done + ")" : "");
-      }
-    }
-
-    function getFilteredOrders(orders) {
-      return (orders || []).filter(function (order) {
-        var bucket = classifyOrderStatus(order);
-        if (bucket === "ready") {
-          return showReady;
-        }
-        if (bucket === "done") {
-          return showDone;
-        }
-        return true;
-      });
-    }
-
     function renderList(orders) {
       if (!listEl) {
         return;
       }
-      var rows = (orders || [])
-        .map(function (order) {
-          var statusInfo = getOrderStatusInfoForOrder(order);
-          var planInfo = getProductionPalletPlanInfo(order);
-          var orderNumber =
-            order.number || order.orderNumber || order.order_ref || order.orderRef || "—";
-          var partnerLabel = getOrderPartnerLabel(order);
-          var plannedDate = formatDate(order.plannedDate || order.planned_date);
-          var shippedDate = formatDate(order.shippedAt || order.shipped_at);
-          var createdAt = formatDateTime(order.createdAt || order.created_at);
-          return (
-            '<button class="doc-item order-item' +
-            (planInfo.className === "order-plan-missing" ? " order-item-needs-plan" : "") +
-            '" data-order="' +
-            escapeHtml(order.orderId) +
-            '">' +
-            '  <div class="doc-main">' +
-            '    <div class="doc-title">' +
-            escapeHtml(String(orderNumber)) +
-            "</div>" +
-            '    <div class="order-meta">' +
-            '      <div class="order-meta-row">' +
-            escapeHtml(partnerLabel) +
-            "</div>" +
-            '      <div class="order-meta-row">План: ' +
-            escapeHtml(plannedDate) +
-            "</div>" +
-            '      <div class="order-meta-row">Факт: ' +
-            escapeHtml(shippedDate) +
-            "</div>" +
-            '      <div class="order-meta-row">Создан: ' +
-            escapeHtml(createdAt) +
-            "</div>" +
-            (planInfo.label
-              ? '      <div class="order-meta-row ' + escapeHtml(planInfo.className) + '">' + escapeHtml(planInfo.label) + "</div>"
-              : "") +
-            "    </div>" +
-            "  </div>" +
-            '  <div class="' +
-            escapeHtml(statusInfo.className) +
-            '">' +
-            escapeHtml(statusInfo.label) +
-            "</div>" +
-            "</button>"
-          );
-        })
-        .join("");
-
+      var rows = (orders || []).map(buildOrderListItemHtml).join("");
       if (!rows) {
         rows = '<div class="empty-state">Заказов пока нет.</div>';
       }
@@ -9683,16 +9579,9 @@
     }
 
     function applyOrdersView() {
-      var stats = getOrdersStats(allOrders);
-      var filteredOrders = getFilteredOrders(allOrders);
-      updateFilterButtons(stats);
-      renderList(filteredOrders);
+      renderList(allOrders);
       if (!allOrders || !allOrders.length) {
         setStatus("Заказов нет");
-        return;
-      }
-      if (!filteredOrders.length) {
-        setStatus("Нет заказов по выбранным фильтрам");
         return;
       }
       setStatus("Данные с сервера");
@@ -9708,7 +9597,6 @@
         .catch(function () {
           setStatus("Ошибка загрузки заказов");
           allOrders = [];
-          updateFilterButtons({ ready: 0, done: 0 });
           renderList([]);
         });
     }
@@ -9719,21 +9607,6 @@
       });
     }
 
-    if (toggleReadyBtn) {
-      toggleReadyBtn.addEventListener("click", function () {
-        showReady = !showReady;
-        applyOrdersView();
-      });
-    }
-
-    if (toggleDoneBtn) {
-      toggleDoneBtn.addEventListener("click", function () {
-        showDone = !showDone;
-        applyOrdersView();
-      });
-    }
-
-    updateFilterButtons({ ready: 0, done: 0 });
     setLiveRefreshHandler(function () {
       if (!currentRoute || currentRoute.name !== "orders") {
         return;
@@ -15371,6 +15244,10 @@
     window.FlowStockTsdTestHooks.navigateBack = navigateBack;
     window.FlowStockTsdTestHooks.getOrderLineReadyToShipQty = getOrderLineReadyToShipQty;
     window.FlowStockTsdTestHooks.renderOrderDetails = renderOrderDetails;
+    window.FlowStockTsdTestHooks.renderOrders = renderOrders;
+    window.FlowStockTsdTestHooks.buildOrderListItemHtml = buildOrderListItemHtml;
+    window.FlowStockTsdTestHooks.getOrderStatusInfoForOrder = getOrderStatusInfoForOrder;
+    window.FlowStockTsdTestHooks.isInternalOrder = isInternalOrder;
     window.FlowStockTsdTestHooks.renderOrderLineHuDetails = renderOrderLineHuDetails;
     window.FlowStockTsdTestHooks.buildOrderBoundHuByItem = buildOrderBoundHuByItem;
     window.FlowStockTsdTestHooks.renderItems = renderItems;

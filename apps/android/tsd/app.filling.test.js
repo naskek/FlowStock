@@ -123,11 +123,14 @@ assert(
   "TSD order and filling lists should render status labels from the same status/display mapping"
 );
 assert(
-  appJs.includes("getProductionPalletPlanInfo(order)") &&
-    appJs.includes("order-item-needs-plan") &&
-    storageJs.includes("hasProductionPalletPlan") &&
+  storageJs.includes("hasProductionPalletPlan") &&
     storageJs.includes("needsProductionPalletPlan"),
-  "TSD order list should surface pallet plan state and highlight orders without a pallet plan"
+  "TSD storage normalizer should keep pallet plan fields for order details and filling"
+);
+assert(
+  !appJs.includes("getProductionPalletPlanInfo") &&
+    !appJs.includes("order-item-needs-plan"),
+  "TSD order list should no longer surface pallet plan state in the list card"
 );
 assert(
   appJs.includes('scanInput.addEventListener("keydown"') &&
@@ -973,7 +976,7 @@ assert.strictEqual(
   true,
   "order may be marked done after final component when no pallets remain"
 );
-assert(appVersionJs.includes('var version = "64"'), "TSD shell version should be bumped for stock filters");
+assert(appVersionJs.includes('var version = "66"'), "TSD shell version should be bumped for stock filters");
 assert(
   appJs.includes("Не удалось загрузить заказы для наполнения") && appJs.includes("console.error(error)"),
   "filling API failures should be visible and logged"
