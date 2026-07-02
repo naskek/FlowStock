@@ -34,6 +34,13 @@
   - Раздел FlowStock Server в окне подключения к БД используется только для настройки API endpoint-ов и диагностики. Для non-KM runtime-сценариев WPF legacy per-operation toggles удалены, всегда используется server path.
   - Non-KM runtime read/write-потоки WPF используют `FlowStock.Server` для списков, деталей, request inbox, справочников, контрагентов, HU, packaging и import tooling. Прямой доступ к PostgreSQL в WPF остается только для startup connection/bootstrap и замороженных KM-specific code path.
 - `TSD PWA`: online data capture через API (без прямого доступа к БД).
+- `TSD native Android shell` (`apps/android/tsd-native`): отдельная PoC-оболочка для ATOL Smart.Slim, которая открывает тот же server-hosted `/tsd/` в обычном `WebView` и добавляет только native transport/lifecycle слой для сканера и аппаратной кнопки Back.
+  - Package/namespace: `ru.flowstock.tsd`; WebView получает User-Agent токен `FlowStockTsdNative/1`.
+  - Server-hosted `apps/android/tsd/native-bridge.js` создаёт `window.FlowStockAndroidBridge` только под этим native User-Agent; в обычном Chrome/PWA bridge является no-op и TSD остаётся на keyboard provider.
+  - ATOL Barcode Service настраивается вручную отдельным Broadcast-only профилем для `ru.flowstock.tsd`; default/Keyboard профиль не меняется.
+  - Native shell не переписывает `index.html`, не добавляет `addJavascriptInterface`, не обращается к PostgreSQL и не принимает решений по ledger, документам, остаткам, резервам, production quantities или HU readiness.
+  - Native diagnostics не сохраняют полный barcode: допускаются только length/hash/masked value/symbology/timestamp. Полное значение допускается только в оперативном scan payload для существующего `scanner.js`.
+  - TLS: cleartext запрещён, SSL errors отменяются, debug build может доверять только публичному dev CA через debug resource overlay; release build не доверяет dev CA.
 - **Warehouse Task Board** — **deprecated / removal candidate** (архив: [`archive/tasks/spec_tasks.md`](archive/tasks/spec_tasks.md)): старый experimental flow; **не** задаёт архитектуру normal TSD. Backend/тесты могут оставаться в коде; операторский UI по умолчанию скрыт. Не путать с TSD `Наполнение` / `Отгрузка`.
 - `PC web client`: остатки доступны только на чтение; создание заказа отправляется как request и применяется только после подтверждения в WPF.
   - Отправка requests разрешена только активным аккаунтам с PC-access (`tsd_devices.platform=PC` или `BOTH`).
@@ -56,6 +63,8 @@
 - Production использует единый HTTPS origin на `7154`.
 - `https://SERVER_IP:7154/` открывает PC web client.
 - `https://SERVER_IP:7154/tsd/` открывает TSD web client.
+- Native Android PoC открывает только локальный HTTPS TSD origin, заданный конфигурацией сборки или некоммитящимся локальным параметром; production URL не является средой первичного тестирования.
+- Если локальный origin не задан, native Android PoC должен fail-closed на несуществующий HTTPS origin, а не использовать production или конкретный dev URL по умолчанию.
 
 ## Модель данных (server DB)
 - `items(id, name, is_active, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, storage_conditions, max_qty_per_hu, tara_id, is_marked, item_type_id, min_stock_qty)`; `storage_conditions` — опциональные условия хранения товара (`NULL`, если не заданы); `is_marked` является legacy-полем старой KM-модели и не участвует в новой ЧЗ-логике.

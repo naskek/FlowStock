@@ -29,6 +29,7 @@ logs/
 .gradle/
 **/build/
 *.iml
+local.properties
 
 # .NET
 bin/

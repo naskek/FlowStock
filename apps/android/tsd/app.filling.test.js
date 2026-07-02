@@ -976,7 +976,7 @@ assert.strictEqual(
   true,
   "order may be marked done after final component when no pallets remain"
 );
-assert(appVersionJs.includes('var version = "66"'), "TSD shell version should be bumped for stock filters");
+assert(appVersionJs.includes('var version = "70"'), "TSD shell version should be bumped for legacy CSS compatibility");
 assert(
   appJs.includes("Не удалось загрузить заказы для наполнения") && appJs.includes("console.error(error)"),
   "filling API failures should be visible and logged"
@@ -997,8 +997,10 @@ assert(
   "service worker should use versioned cache and activate only after SKIP_WAITING"
 );
   assert(
-    serviceWorkerJs.includes('"./app.js"') && serviceWorkerJs.includes('"./sw-update.js"'),
-    "service worker should cache shell assets including sw-update.js"
+    serviceWorkerJs.includes('"./app.js"') &&
+      serviceWorkerJs.includes('"./sw-update.js"') &&
+      serviceWorkerJs.includes('"./native-bridge.js"'),
+    "service worker should cache shell assets including native bridge and sw-update.js"
   );
   assert(
     serviceWorkerJs.includes('"./img/home/operations.png"') &&

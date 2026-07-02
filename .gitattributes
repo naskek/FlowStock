@@ -1,5 +1,8 @@
+/.gitattributes text eol=lf
 *.sh text eol=lf
 *.sql text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
 Dockerfile text eol=lf
+apps/android/tsd-native/gradlew text eol=lf
+apps/android/tsd-native/gradlew.bat text eol=crlf

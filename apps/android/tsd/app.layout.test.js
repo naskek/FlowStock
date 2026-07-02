@@ -6,7 +6,9 @@ const vm = require("vm");
 const appJs = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
 const stylesCss = fs.readFileSync(path.join(__dirname, "styles.css"), "utf8");
 const indexHtml = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
+const pcIndexHtml = fs.readFileSync(path.join(__dirname, "pc", "index.html"), "utf8");
 const serviceWorkerJs = fs.readFileSync(path.join(__dirname, "service-worker.js"), "utf8");
+const appVersionJs = fs.readFileSync(path.join(__dirname, "app-version.js"), "utf8");
 
 function extractFunctionBody(source, name) {
   const marker = `function ${name}(`;
@@ -66,6 +68,38 @@ function assertNoFillingHuTouchBlockers(selector) {
     /touch-action\s*:\s*none|pointer-events\s*:\s*none|overflow\s*:\s*hidden/,
     `${selector} should not block touch scrolling`
   );
+}
+
+function countScript(html, src) {
+  const escaped = src.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`<script\\b[^>]*\\bsrc=["']${escaped}["'][^>]*>`, "g");
+  const matches = html.match(pattern);
+  return matches ? matches.length : 0;
+}
+
+function extractLegacyCssBlock() {
+  const start = stylesCss.indexOf("html.tsd-legacy-css body");
+  assert.notStrictEqual(start, -1, "legacy CSS block should exist");
+  return stylesCss.slice(start);
+}
+
+function assertLegacySelectorsAreScoped(legacyCss) {
+  const rulePattern = /([^{}]+)\{/g;
+  let match;
+  while ((match = rulePattern.exec(legacyCss))) {
+    match[1]
+      .split(",")
+      .map(function (selector) {
+        return selector.trim();
+      })
+      .filter(Boolean)
+      .forEach(function (selector) {
+        assert(
+          selector.indexOf("html.tsd-legacy-css") === 0,
+          "legacy selector should be scoped: " + selector
+        );
+      });
+  }
 }
 
 const renderSettingsBody = extractFunctionBody(appJs, "renderSettings");
@@ -210,6 +244,105 @@ assert(
     serviceWorkerJs.includes('"./img/home/orders.png"') &&
     serviceWorkerJs.includes('"./img/home/hu-search.png"'),
   "service worker should cache home menu png icons for offline use"
+);
+
+const legacyCss = extractLegacyCssBlock();
+assertLegacySelectorsAreScoped(legacyCss);
+assert.doesNotMatch(
+  legacyCss,
+  /display\s*:\s*grid|grid-template|\bgap\s*:|clamp\s*\(|\bmin\s*\(|\bmax\s*\(|\bdvh\b|\bsvh\b|aspect-ratio|\binset\s*:/,
+  "stage 1 legacy CSS should avoid unsupported WebView 51 layout features"
+);
+assert.strictEqual(countScript(indexHtml, "compat.js"), 1, "index.html should load compat.js once");
+assert(
+  indexHtml.indexOf('src="compat.js"') < indexHtml.indexOf('href="styles.css"'),
+  "index.html should load compat.js before styles.css"
+);
+assert.strictEqual(countScript(pcIndexHtml, "../compat.js"), 1, "pc/index.html should load compat.js once");
+assert(
+  pcIndexHtml.indexOf('src="../compat.js"') < pcIndexHtml.indexOf('src="./pc-core.js"'),
+  "pc/index.html should load compat.js before pc-core.js"
+);
+assert(appVersionJs.includes('var version = "70"'), "TSD shell version should be 70");
+assert(
+  serviceWorkerJs.includes('"./styles.css"') &&
+    serviceWorkerJs.includes('"./compat.js"') &&
+    serviceWorkerJs.includes('importScripts("./app-version.js")'),
+  "service worker cache contract should cover styles.css and compat.js and keep version import"
+);
+assertCssContains(
+  ".home-menu-grid",
+  ["display: grid", "grid-template-columns: repeat(2, minmax(0, 1fr))"],
+  "modern home grid should remain outside legacy CSS"
+);
+assert(
+  legacyCss.includes("html.tsd-legacy-css .app-shell") &&
+    legacyCss.includes("html.tsd-legacy-css .app-header") &&
+    legacyCss.includes("html.tsd-legacy-css .app-content") &&
+    legacyCss.includes("html.tsd-legacy-css .screen-card"),
+  "legacy shell/header/content fallbacks should exist"
+);
+assert(
+  legacyCss.includes("html.tsd-legacy-css .form-label") &&
+    legacyCss.includes("html.tsd-legacy-css .form-input") &&
+    legacyCss.includes("html.tsd-legacy-css .primary-btn"),
+  "legacy login fallback should keep labels, inputs, and primary button readable"
+);
+assert(
+  legacyCss.includes("html.tsd-legacy-css .home-menu-grid") &&
+    legacyCss.includes("html.tsd-legacy-css .operations-menu-grid") &&
+    legacyCss.includes("html.tsd-legacy-css .home-menu-tile") &&
+    legacyCss.includes("min-height: 78px"),
+  "legacy home and operations menus should use compact single-column rows"
+);
+assert(
+  legacyCss.includes("html.tsd-legacy-css .home-menu-icon-bubble") &&
+    legacyCss.includes("width: 46px") &&
+    legacyCss.includes("height: 46px") &&
+    legacyCss.includes("html.tsd-legacy-css .home-menu-icon") &&
+    legacyCss.includes("width: 28px") &&
+    legacyCss.includes("height: 28px"),
+  "legacy home icons should have explicit dimensions"
+);
+assert(
+  legacyCss.includes("html.tsd-legacy-css .home-menu-grid .home-menu-tile__content") &&
+    legacyCss.includes("position: relative") &&
+    legacyCss.includes("padding-left: 58px") &&
+    legacyCss.includes("min-height: 50px"),
+  "legacy home content should reserve horizontal space for the left icon"
+);
+assert(
+  legacyCss.includes("html.tsd-legacy-css .home-menu-grid .home-menu-icon-bubble") &&
+    legacyCss.includes("position: absolute") &&
+    legacyCss.includes("left: 0") &&
+    legacyCss.includes("top: 2px"),
+  "legacy home icon bubble should be pinned to the left"
+);
+assert(
+  legacyCss.includes("html.tsd-legacy-css .home-menu-tile__title") &&
+    legacyCss.includes("html.tsd-legacy-css .home-menu-tile__subtitle") &&
+    legacyCss.includes("display: block") &&
+    legacyCss.includes("text-align: left") &&
+    legacyCss.includes("white-space: normal"),
+  "legacy home title and subtitle should remain left-aligned block text"
+);
+assert(
+  legacyCss.includes("html.tsd-legacy-css .toggle-row") &&
+    legacyCss.includes("html.tsd-legacy-css .toggle-label") &&
+    legacyCss.includes("html.tsd-legacy-css .settings-diagnostic-block") &&
+    legacyCss.includes("html.tsd-legacy-css .settings-version"),
+  "legacy settings fallback should cover sections, labels, toggles, buttons, and version text"
+);
+assert(
+  legacyCss.includes("html.tsd-legacy-css .overlay,") &&
+    legacyCss.includes("html.tsd-legacy-css .overlay.overlay--centered") &&
+    legacyCss.includes("top: 0") &&
+    legacyCss.includes("right: 0") &&
+    legacyCss.includes("bottom: 0") &&
+    legacyCss.includes("left: 0") &&
+    legacyCss.includes("html.tsd-legacy-css .overlay-card") &&
+    legacyCss.includes("html.tsd-legacy-css .overlay-actions"),
+  "legacy overlay fallback should be fullscreen with explicit edges and vertical actions"
 );
 
 const fillOverlayBody = extractFunctionBody(appJs, "openFillingPreviewOverlay");

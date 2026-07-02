@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <WebView
+        android:id="@+id/tsdWebView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <TextView
+        android:id="@+id/nativeStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:background="#CC102027"
+        android:ellipsize="end"
+        android:maxLines="3"
+        android:padding="8dp"
+        android:text="@string/native_status_starting"
+        android:textColor="#FFFFFFFF"
+        android:textSize="12sp" />
+</FrameLayout>

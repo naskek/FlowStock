@@ -1759,12 +1759,14 @@ function testShellIntegration() {
   assert(indexHtml.indexOf("scanner-diagnostics-manifest.js") < indexHtml.indexOf("scanner-diagnostics-store.js"));
   assert(indexHtml.indexOf("scanner-diagnostics-store.js") < indexHtml.indexOf("scanner-diagnostics.js"));
   assert(indexHtml.indexOf("scanner-lifecycle-diagnostics.js") < indexHtml.indexOf("scanner.js"));
+  assert(indexHtml.indexOf("native-bridge.js") < indexHtml.indexOf("scanner.js"));
   assert(indexHtml.includes("scanner-diagnostics.js"));
   assert(serviceWorkerJs.includes('"./scanner-lifecycle-diagnostics.js"'));
+  assert(serviceWorkerJs.includes('"./native-bridge.js"'));
   assert(serviceWorkerJs.includes('"./scanner-diagnostics-manifest.js"'));
   assert(serviceWorkerJs.includes('"./scanner-diagnostics-store.js"'));
   assert(serviceWorkerJs.includes('"./scanner-diagnostics.js"'));
-  assert(appVersionJs.includes('var version = "66"'));
+  assert(appVersionJs.includes('var version = "70"'));
   assert(appJs.includes('id="scannerDiagnosticsBtn"'));
   assert(appJs.includes('navigate("/scanner-diagnostics")'));
   assert(appJs.includes('route.name === "scannerDiagnostics"'));

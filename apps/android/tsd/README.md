@@ -32,10 +32,23 @@ TSD работает только онлайн через `FlowStock.Server`. С
 - PWA использует API сервера и не хранит справочники как оффлайн-датасет.
 - Настройки приложения сохраняются локально в браузере.
 
+## Совместимость WebView 51
+- Для ATOL Smart.Slim Android 7 / старого Android System WebView 51 используется
+  упрощенный CSS-режим `html.tsd-legacy-css`.
+- Режим включается capability-based в `compat.js`, без UA-sniffing: если нет
+  критичной поддержки CSS (`CSS.supports`, `display:grid`, `clamp()`, `min()`),
+  TSD получает компактную legacy-верстку shell/login/home/operations/settings и
+  простых overlay.
+- Современный UI для UROVO, Chrome и новых Android WebView остается текущим:
+  `tsd-legacy-css` там не добавляется.
+- Этот режим меняет только presentation CSS. Server/API, native bridge,
+  scanner contract, документы, ledger и бизнес-логика не меняются.
+
 ## Сканер
 - По умолчанию используется `keyboard wedge`.
-- `Intent`-сканирование поддерживается только через JS-bridge в нативной оболочке (`WebView` / `TWA` / `Capacitor`).
+- `Intent`-сканирование поддерживается только через server-hosted `native-bridge.js` в нативной Android-оболочке `apps/android/tsd-native`.
 - В обычном Chrome / PWA нужен режим `Keyboard`.
+- `native-bridge.js` подключается до `scanner.js`, но в обычном Chrome / PWA ничего не делает: `window.FlowStockAndroidBridge` создаётся только при User-Agent токене `FlowStockTsdNative/1`.
 
 ### Ожидаемый JS-bridge
 `window.FlowStockAndroidBridge.subscribeScans(callback)`
@@ -44,6 +57,42 @@ TSD работает только онлайн через `FlowStock.Server`. С
 ```json
 { "value": "460...", "symbology": "EAN13", "raw": {}, "ts": 1710000000000 }
 ```
+
+## Native Android PoC
+- Модуль: `apps/android/tsd-native`, package/namespace `ru.flowstock.tsd`.
+- Оболочка загружает локальный HTTPS origin только через Gradle property `flowstockTsdUrl`; production URL не используется для первичного теста.
+- Default build value fail-closed: без `-PflowstockTsdUrl=...` APK открывает несуществующий `https://flowstock.invalid/tsd/` и не предназначен для device smoke.
+- Debug APK для локального устройства собирается с явным origin:
+  `.\gradlew.bat assembleDebug -PflowstockTsdUrl="https://<LOCAL-DEV-ORIGIN>/tsd/"`
+- `index.html` внутри WebView не перехватывается и не переписывается. Вся бизнес-логика, API, ledger, документы, остатки, резервы, production quantities и HU readiness остаются на сервере.
+- Cleartext запрещён. SSL errors в WebView отменяются; debug-сборка может доверять только публичному dev CA из debug resource overlay. Закрытые ключи не добавлять в репозиторий или APK.
+- Локально нужен `apps/android/tsd-native/local.properties` с `sdk.dir=D:\\Android\\SDK`; файл не коммитится.
+- Для Gradle на этой машине можно использовать Android Studio JBR и ASCII Gradle cache:
+  `cd apps/android/tsd-native`
+  `$env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"`
+  `$env:GRADLE_USER_HOME = "D:\FlowStock\.tmp\gradle-home"`
+  `.\gradlew.bat --no-daemon --no-parallel -Dorg.gradle.workers.max=1 testDebugUnitTest assembleDebug`
+- APK после сборки: `apps/android/tsd-native/app/build/outputs/apk/debug/app-debug.apk`.
+
+## ATOL Smart.Slim PoC
+- Barcode Service: package `ru.atol.barcodeservice`, version `1.6.3.257`.
+- Broadcast action: `com.xcheng.scanner.action.BARCODE_DECODING_BROADCAST`.
+- Barcode extra: `EXTRA_BARCODE_DECODING_DATA`; symbology extra: `EXTRA_BARCODE_DECODING_SYMBOLE`.
+- Текущий `default`-профиль с `barcodeSendMode = 1` (`Keyboard`) не менять.
+- После установки APK создать отдельный FlowStock-профиль через UI Barcode Service, привязать к `ru.flowstock.tsd`, если UI это позволяет, выбрать Broadcast-only, оставить prefix/suffix и дополнительные клавиши пустыми.
+- После настройки экспортировать `BarcodeServiceSettings.xml`, проверить фактический mode/action/extras и убедиться, что Keyboard не создаёт второй scan event.
+- Rollback выполняется вручную через UI Barcode Service: вернуть `default`/Keyboard или удалить привязку FlowStock-профиля.
+- Native diagnostics содержат только длину, hash, masked value, symbology и timestamp; полный barcode не пишется в Logcat, файлы, SharedPreferences или analytics.
+- Scanner diagnostics в PWA могут сохранять raw test values в IndexedDB; физическую diagnostic matrix проводите только на выделенных тестовых кодах, не на производственных barcode/КМ.
+
+## Android 7 матрица
+- APK устанавливается на ATOL Smart.Slim Android 7 / API 24 и открывает локальный HTTPS TSD origin.
+- `window.FlowStockAndroidBridge` существует только в native UA, а обычная PWA продолжает выбирать keyboard provider.
+- Provider в native shell становится `intent`; EAN, QR и GS1 DataMatrix проходят ровно один раз на физический scan.
+- GS `0x1D` сохраняется в payload; быстрые разные scans не теряются; scan до готовности bridge отклоняется без replay.
+- После reload readiness определяется заново; pause/resume и lock/unlock не создают второй receiver.
+- Hardware Back сначала отдаётся web bridge, затем реальной WebView history, затем `moveTaskToBack(true)`.
+- На проверенном WebView `com.android.webview 51.0.2704.91` вызов native `ServiceWorkerController` может быть недоступен; оболочка фиксирует это как technical status и продолжает online WebView load без отключения server-hosted Service Worker.
 
 ## Операции
 - На главном экране выберите тип операции.
