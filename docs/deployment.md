@@ -17,7 +17,7 @@
 - Production использует единый HTTPS origin на `7154`.
 - `https://SERVER_IP:7154/` открывает PC web client.
 - `https://SERVER_IP:7154/tsd/` открывает TSD web client.
-- В `deploy/.env.example` по умолчанию используется только внешний HTTPS-порт `7154`.
+- В `deploy/.env.example` по умолчанию используется внешний HTTPS-порт `7154` и UDP discovery-порт `7155`.
 
 ## Обязательные файлы и каталоги
 - `deploy/.env`
@@ -58,12 +58,32 @@ FLOWSTOCK_DOTNET_ASPNET_IMAGE=registry.example.com/mirror/dotnet/aspnet:8.0
 - `pgbackup`
   - continuous scheduled `pg_dump -Fc` backups inside the compose stack
 
+## Canonical HTTPS endpoint и discovery
+- Для native Android TSD задайте в `deploy/.env`:
+```bash
+FLOWSTOCK_PUBLIC_BASE_URL=https://flowstock.local:7154
+FLOWSTOCK_INSTANCE_NAME=FlowStock
+```
+- `FLOWSTOCK_PUBLIC_BASE_URL` должен быть абсолютным HTTPS root URL без path/query/fragment. Он не вычисляется из HTTP `Host`, IP клиента или входящего запроса.
+- `/api/discovery` и UDP responder на `7155/udp` используют одну и ту же конфигурацию.
+- Docker Compose публикует `7155:7155/udp` у сервиса `flowstock`; host network не используется. На сервере/firewall должен быть разрешён входящий UDP `7155` из операторской LAN.
+- Android discovery v1 отправляет directed broadcast в активную Wi-Fi/Ethernet подсеть. UDP-ответ является только подсказкой: приложение сохраняет сервер только после strict HTTPS validation `/api/discovery`, `/api/ping` и `/tsd/`.
+- `docker compose config -q` проверяет только корректность compose-файла. Он не доказывает, что directed broadcast из LAN проходит через firewall/Docker bridge и что unicast UDP-ответ возвращается клиенту.
+- Manual smoke после deploy:
+  1. убедиться, что DNS `flowstock.local` указывает на сервер, а `FLOWSTOCK_PUBLIC_BASE_URL` совпадает с SAN сертификата;
+  2. проверить HTTPS identity:
+     `curl -fsS https://flowstock.local:7154/api/discovery`;
+  3. с устройства/ПК в той же Wi-Fi/Ethernet подсети отправить UDP request на directed broadcast `7155/udp` с JSON `{"product":"FlowStock","discovery_protocol_version":1,"nonce":"0123456789abcdef0123456789abcdef"}`;
+  4. убедиться, что ответ пришёл unicast от сервера и содержит тот же nonce и canonical HTTPS URL;
+  5. если broadcast через Docker published UDP port не проходит, не включать host network без отдельного архитектурного решения; сначала проверить firewall, router/AP isolation и возможность минимального production-safe сетевого изменения.
+
 ## Режимы TLS
 - `FLOWSTOCK_TLS_MODE=local_ca`
   - recommended for internal LAN deployments
   - deploy scripts expect a local root CA in `FLOWSTOCK_CA_DIR`
   - server certificates are issued automatically into `deploy/nginx/certs/`
   - root CA private key stays outside the repository
+  - deploy validation останавливается, если `FLOWSTOCK_PUBLIC_BASE_URL` не является HTTPS root URL, содержит userinfo/path/query/fragment, или его host не совпадает с `FLOWSTOCK_TLS_SERVER_NAME`/`FLOWSTOCK_TLS_SANS` и фактическим SAN сертификата
 - `FLOWSTOCK_TLS_MODE=manual`
   - deploy expects `deploy/nginx/certs/flowstock.crt` and `deploy/nginx/certs/flowstock.key` to already exist
   - use this only if certificates are managed outside the FlowStock deploy scripts
@@ -84,6 +104,7 @@ bash deploy/scripts/bootstrap_local_ca.sh
 - keep the CA private key backed up securely and out of git
 - do not leave the CA private key on operators' laptops unless they are responsible for certificate issuance
 - client devices must trust `flowstock-root-ca.crt` once
+- для release APK native Android TSD FlowStock root CA устанавливается в Android user trust store вручную или через MDM; debug embedded CA не является production trust model
 
 ## Доверие на клиентах
 После bootstrap CA установите `flowstock-root-ca.crt` в доверенные корневые сертификаты на:
@@ -91,6 +112,8 @@ bash deploy/scripts/bootstrap_local_ca.sh
 - Android TSD devices that open the PWA
 
 Это делается один раз на устройство, пока используется тот же root CA.
+
+При ротации CA сначала установите новый CA на устройства с периодом overlap, затем выпустите серверный сертификат от нового CA и после проверки удалите старый CA. APK не требуется пересобирать при смене адреса сервера или ротации CA, если новый CA установлен на устройствах.
 
 ## Первый deploy на пустой production
 Перед production deploy с миграцией `V0025__tsd_explicit_finalize_and_business_notifications.sql` обязательно создать свежий backup PostgreSQL. Миграция добавляет только marker явного завершения наполнения и append-only журнал/read-state уведомлений; она не изменяет `ledger`, документы или статусы заказов.
@@ -100,7 +123,7 @@ bash deploy/scripts/bootstrap_local_ca.sh
 cd /opt/FlowStock
 cp deploy/.env.example deploy/.env
 ```
-2. Отредактируйте `deploy/.env`, указав реальный пароль PostgreSQL и нужные порты.
+2. Отредактируйте `deploy/.env`, указав реальный пароль PostgreSQL, `FLOWSTOCK_PUBLIC_BASE_URL`, `FLOWSTOCK_INSTANCE_NAME` и нужные порты.
    Для прямого доступа WPF к PostgreSQL из LAN задайте `FLOWSTOCK_PG_BIND_HOST`:
    - безопасный default: `127.0.0.1` (доступ только с хоста сервера)
    - пример для production LAN: `FLOWSTOCK_PG_BIND_HOST=192.168.1.3`
@@ -110,7 +133,7 @@ cp deploy/.env.example deploy/.env
 mkdir -p /opt/flowstock-secrets/ca
 bash deploy/scripts/bootstrap_local_ca.sh
 ```
-4. Установите сгенерированный root CA cert на клиентские устройства.
+4. Установите сгенерированный root CA cert на клиентские устройства, включая Android TSD user trust store для release APK.
 5. Выполните первый deploy:
 ```bash
 cd /opt/FlowStock

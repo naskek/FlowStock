@@ -8,16 +8,90 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <TextView
-        android:id="@+id/nativeStatus"
+    <ScrollView
+        android:id="@+id/serverSetupContainer"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom"
-        android:background="#CC102027"
-        android:ellipsize="end"
-        android:maxLines="3"
-        android:padding="8dp"
-        android:text="@string/native_status_starting"
-        android:textColor="#FFFFFFFF"
-        android:textSize="12sp" />
+        android:layout_height="match_parent"
+        android:background="#ffffff"
+        android:fillViewport="true"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="20dp">
+
+            <TextView
+                android:id="@+id/serverSetupTitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/server_setup_title"
+                android:textColor="#111111"
+                android:textSize="22sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/serverSetupDescription"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/server_setup_description"
+                android:textColor="#333333"
+                android:textSize="15sp" />
+
+            <EditText
+                android:id="@+id/serverEndpointInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="18dp"
+                android:hint="@string/server_endpoint_hint"
+                android:inputType="textUri"
+                android:singleLine="true" />
+
+            <Button
+                android:id="@+id/validateServerButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text="@string/server_validate_save" />
+
+            <Button
+                android:id="@+id/discoverServersButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/server_discover" />
+
+            <Button
+                android:id="@+id/cancelDiscoveryButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/server_cancel_discovery"
+                android:visibility="gone" />
+
+            <Button
+                android:id="@+id/returnToCurrentServerButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/server_return_current"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/serverSetupStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:textColor="#333333"
+                android:textSize="14sp" />
+
+            <ListView
+                android:id="@+id/discoveryResultsList"
+                android:layout_width="match_parent"
+                android:layout_height="260dp"
+                android:layout_marginTop="12dp" />
+        </LinearLayout>
+    </ScrollView>
 </FrameLayout>

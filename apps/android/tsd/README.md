@@ -60,18 +60,20 @@ TSD работает только онлайн через `FlowStock.Server`. С
 
 ## Native Android PoC
 - Модуль: `apps/android/tsd-native`, package/namespace `ru.flowstock.tsd`.
-- Оболочка загружает локальный HTTPS origin только через Gradle property `flowstockTsdUrl`; production URL не используется для первичного теста.
-- Default build value fail-closed: без `-PflowstockTsdUrl=...` APK открывает несуществующий `https://flowstock.invalid/tsd/` и не предназначен для device smoke.
-- Debug APK для локального устройства собирается с явным origin:
-  `.\gradlew.bat assembleDebug -PflowstockTsdUrl="https://<LOCAL-DEV-ORIGIN>/tsd/"`
+- Оболочка хранит один canonical server root URL, например `https://flowstock.local:7154`; `/api/discovery`, `/api/ping` и `/tsd/` вычисляются из него.
+- Первый запуск без сохранённого endpoint открывает native setup screen: ручной ввод HTTPS root URL или UDP discovery.
+- UDP discovery v1 использует directed broadcast на `7155/udp` в активной Wi-Fi/Ethernet сети. UDP-ответ является только подсказкой; сохранить сервер можно только после strict HTTPS validation `/api/discovery`, `/api/ping` и `/tsd/`.
+- Долгое нажатие аппаратной Back открывает native confirmation смены сервера. В setup смены сервера scanner dispatch останавливается, скрытый WebView не получает сканы, а кнопка `Вернуться к текущему серверу` восстанавливает прежнюю session без очистки cookies/WebStorage. На первом setup без сохранённого endpoint возврат недоступен.
+- Короткое Back в рабочем WebView сохраняет существующий контракт: JS bridge → WebView history → `moveTaskToBack(true)`.
 - `index.html` внутри WebView не перехватывается и не переписывается. Вся бизнес-логика, API, ledger, документы, остатки, резервы, production quantities и HU readiness остаются на сервере.
-- Cleartext запрещён. SSL errors в WebView отменяются; debug-сборка может доверять только публичному dev CA из debug resource overlay. Закрытые ключи не добавлять в репозиторий или APK.
+- Cleartext запрещён. SSL errors в WebView отменяются; debug-сборка может доверять только публичному dev CA из debug resource overlay. Release APK доверяет system + user trust anchors; FlowStock root CA устанавливается администратором/MDM в Android user trust store. Закрытые ключи не добавлять в репозиторий или APK.
 - Локально нужен `apps/android/tsd-native/local.properties` с `sdk.dir=D:\\Android\\SDK`; файл не коммитится.
 - Для Gradle на этой машине можно использовать Android Studio JBR и ASCII Gradle cache:
   `cd apps/android/tsd-native`
   `$env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"`
   `$env:GRADLE_USER_HOME = "D:\FlowStock\.tmp\gradle-home"`
-  `.\gradlew.bat --no-daemon --no-parallel -Dorg.gradle.workers.max=1 testDebugUnitTest assembleDebug`
+  `$env:GRADLE_OPTS = "-Dorg.gradle.workers.max=1"`
+  `.\gradlew.bat --no-daemon --no-parallel testDebugUnitTest assembleDebug`
 - APK после сборки: `apps/android/tsd-native/app/build/outputs/apk/debug/app-debug.apk`.
 
 ## ATOL Smart.Slim PoC

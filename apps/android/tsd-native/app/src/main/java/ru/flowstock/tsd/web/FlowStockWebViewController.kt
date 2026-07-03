@@ -186,6 +186,7 @@ class FlowStockWebViewController(
     private val initialUrl: String,
     private val onStatus: (String) -> Unit,
 ) {
+    private val lifecycle = FlowStockWebViewControllerLifecycle()
     private val trustedOrigin: String = requireNotNull(originOf(initialUrl)) {
         "Initial TSD URL must be an absolute HTTPS URL"
     }
@@ -195,6 +196,8 @@ class FlowStockWebViewController(
     private var nativeUserAgentDiagnostic = createNativeUserAgentDiagnostic(null)
     private val loadUrl = withNativeBridgeQueryMarker(initialUrl)
     private val loadCoordinator = OneShotGenerationLoadCoordinator()
+    private var cookieTimeoutRunnable: Runnable? = null
+    private val bridgeProbeRunnables = mutableListOf<Runnable>()
     private var cookieMarkerDiagnostic = CookieMarkerDiagnostic(false, false, "not-started", false, "empty")
     private var navigationDiagnostics = NavigationMarkerDiagnostics(
         requested = createUrlMarkerDiagnostic(loadUrl, trustedOrigin),
@@ -205,13 +208,25 @@ class FlowStockWebViewController(
     }
 
     fun load() {
+        if (!lifecycle.canCallWebView()) return
+        lifecycle.beginGeneration()
         val generation = readiness.onReloading()
         navigationDiagnostics = NavigationMarkerDiagnostics(
             requested = createUrlMarkerDiagnostic(loadUrl, trustedOrigin),
         )
         cookieMarkerDiagnostic = CookieMarkerDiagnostic(false, false, "pending", false, "empty")
-        onStatus(formatRequestedUrlStatus(navigationDiagnostics.requested))
+        emitStatus(formatRequestedUrlStatus(navigationDiagnostics.requested))
         setNativeSessionCookieThenLoad(generation)
+    }
+
+    fun dispose() {
+        lifecycle.dispose()
+        readiness.onError()
+        cookieTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        cookieTimeoutRunnable = null
+        bridgeProbeRunnables.forEach { mainHandler.removeCallbacks(it) }
+        bridgeProbeRunnables.clear()
+        currentMainFrameUrl = null
     }
 
     private fun setNativeSessionCookieThenLoad(generation: Long) {
@@ -245,6 +260,9 @@ class FlowStockWebViewController(
             errorName: String = "",
             store: NativeCookieStoreDiagnostic = readNativeCookieStore(),
         ) {
+            if (!lifecycle.canCallWebView()) {
+                return
+            }
             if (!loadCoordinator.tryComplete(generation, readiness.currentGeneration())) {
                 emitDebugLifecycleDiagnostic(
                     "cookie marker ignored: completed-or-stale result=${sanitizeProbeToken(result)}",
@@ -266,15 +284,22 @@ class FlowStockWebViewController(
                 runCatching { CookieManager.getInstance().flush() }
             }
             emitLifecycleStatus(formatCookieMarkerStatus(cookieMarkerDiagnostic))
+            if (!lifecycle.canCallWebView()) {
+                return
+            }
             webView.loadUrl(loadUrl)
         }
 
         timeoutRunnable = Runnable { finish(result = "timeout", cookieSet = false) }
+        cookieTimeoutRunnable = timeoutRunnable
         mainHandler.postDelayed(timeoutRunnable, COOKIE_SET_TIMEOUT_MS)
 
         runCatching {
             cookieManager.setCookie(loadUrl, cookie) { success ->
                 mainHandler.post {
+                    if (!lifecycle.canCallWebView()) {
+                        return@post
+                    }
                     finish(
                         result = if (success == true) "ok" else "false",
                         cookieSet = success == true,
@@ -287,6 +312,9 @@ class FlowStockWebViewController(
     }
 
     fun dispatchScan(payload: ScanPayload): Boolean {
+        if (!lifecycle.canCallWebView()) {
+            return false
+        }
         if (!readiness.canDispatch() || !isTrustedUrl(currentMainFrameUrl, trustedOrigin)) {
             val diagnostic = MaskedScanDiagnostics.fromValue(
                 payload.value,
@@ -294,7 +322,7 @@ class FlowStockWebViewController(
                 state = "bridge-not-ready",
                 timestamp = payload.ts,
             )
-            onStatus(
+            emitStatus(
                 "scan rejected: ${diagnostic.state} len=${diagnostic.length} hash=${diagnostic.hash} " +
                     "masked=${diagnostic.maskedValue} state=${readiness.state}",
             )
@@ -313,6 +341,9 @@ class FlowStockWebViewController(
         """.trimIndent()
 
         webView.evaluateJavascript(script) { result ->
+            if (!lifecycle.canCallWebView()) {
+                return@evaluateJavascript
+            }
             val delivered = result == "true"
             val diagnostic = MaskedScanDiagnostics.fromValue(
                 payload.value,
@@ -320,7 +351,7 @@ class FlowStockWebViewController(
                 state = if (delivered) "delivered" else "dispatch-rejected",
                 timestamp = payload.ts,
             )
-            onStatus(
+            emitStatus(
                 "scan ${diagnostic.state}: len=${diagnostic.length} hash=${diagnostic.hash} " +
                     "masked=${diagnostic.maskedValue} sym=${diagnostic.symbology.orEmpty()}",
             )
@@ -329,6 +360,9 @@ class FlowStockWebViewController(
     }
 
     fun handleBack(fallback: () -> Unit) {
+        if (!lifecycle.canCallWebView()) {
+            return
+        }
         val script = """
             (function () {
               var bridge = window.FlowStockAndroidBridge;
@@ -340,6 +374,9 @@ class FlowStockWebViewController(
         """.trimIndent()
 
         webView.evaluateJavascript(script) { result ->
+            if (!lifecycle.canCallWebView()) {
+                return@evaluateJavascript
+            }
             if (result == "true") {
                 return@evaluateJavascript
             }
@@ -372,7 +409,7 @@ class FlowStockWebViewController(
         }.getOrNull()
         settings.userAgentString = buildNativeUserAgent(defaultUserAgent, settings.userAgentString)
         nativeUserAgentDiagnostic = createNativeUserAgentDiagnostic(settings.userAgentString)
-        onStatus(formatNativeUserAgentStatus(nativeUserAgentDiagnostic))
+        emitStatus(formatNativeUserAgentStatus(nativeUserAgentDiagnostic))
 
         if (Build.VERSION.SDK_INT >= 24) {
             runCatching {
@@ -382,7 +419,7 @@ class FlowStockWebViewController(
                     blockNetworkLoads = false
                 }
             }.onFailure { error ->
-                onStatus("service worker settings unavailable: ${error.javaClass.simpleName}")
+                emitStatus("service worker settings unavailable: ${error.javaClass.simpleName}")
             }
         }
 
@@ -390,7 +427,7 @@ class FlowStockWebViewController(
             override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
                 val message = consoleMessage?.message().orEmpty()
                 val diagnostic = MaskedScanDiagnostics.fromValue(message, state = "console")
-                onStatus(
+                emitStatus(
                     "console ${consoleMessage?.messageLevel()}: len=${diagnostic.length} " +
                         "hash=${diagnostic.hash} line=${consoleMessage?.lineNumber() ?: 0}",
                 )
@@ -400,6 +437,7 @@ class FlowStockWebViewController(
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                if (!lifecycle.canCallWebView()) return true
                 val url = request?.url?.toString()
                 return !isTrustedUrl(url, trustedOrigin)
             }
@@ -407,9 +445,11 @@ class FlowStockWebViewController(
             @Suppress("DEPRECATION")
             @Deprecated("Legacy WebView callback kept for API compatibility.")
             override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean =
+                if (!lifecycle.canCallWebView()) true else
                 !isTrustedUrl(url, trustedOrigin)
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                if (!lifecycle.canCallWebView()) return
                 currentMainFrameUrl = url
                 val trusted = isTrustedUrl(url, trustedOrigin)
                 readiness.onPageStarted(trusted)
@@ -430,6 +470,7 @@ class FlowStockWebViewController(
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
+                if (!lifecycle.canCallWebView()) return
                 currentMainFrameUrl = url
                 val trusted = isTrustedUrl(url, trustedOrigin)
                 val generation = readiness.onPageFinished(trusted)
@@ -452,6 +493,7 @@ class FlowStockWebViewController(
 
             override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
                 handler?.cancel()
+                if (!lifecycle.canCallWebView()) return
                 readiness.onError()
                 emitLifecycleStatus("ssl error: cancelled state=${readiness.state}")
             }
@@ -462,6 +504,7 @@ class FlowStockWebViewController(
                 request: WebResourceRequest?,
                 error: WebResourceError?,
             ) {
+                if (!lifecycle.canCallWebView()) return
                 if (request?.isForMainFrame == true) {
                     readiness.onError()
                     emitLifecycleStatus("main-frame error: state=${readiness.state} code=${error?.errorCode ?: 0}")
@@ -473,6 +516,7 @@ class FlowStockWebViewController(
                 request: WebResourceRequest?,
                 errorResponse: WebResourceResponse?,
             ) {
+                if (!lifecycle.canCallWebView()) return
                 if (request?.isForMainFrame == true) {
                     readiness.onError()
                     emitLifecycleStatus("main-frame http error: ${errorResponse?.statusCode ?: 0}")
@@ -482,6 +526,9 @@ class FlowStockWebViewController(
     }
 
     private fun probeBridgeReadiness(generation: Long, completedAttempt: Int) {
+        if (!lifecycle.canCallWebView()) {
+            return
+        }
         if (!readiness.isCurrentGeneration(generation)) {
             return
         }
@@ -567,6 +614,9 @@ class FlowStockWebViewController(
         """.trimIndent()
 
         webView.evaluateJavascript(script) { result ->
+            if (!lifecycle.canCallWebView()) {
+                return@evaluateJavascript
+            }
             val probe = parseBridgeProbeResult(result)
             val bridgeReady = probe.bridgeReady
             val activeScanSubscriptionCount = probe.activeScanSubscriptionCount
@@ -585,17 +635,30 @@ class FlowStockWebViewController(
             )
             val nextAttempt = completedAttempt + 1
             if (readiness.shouldRetryProbe(generation, nextAttempt, BRIDGE_PROBE_MAX_ATTEMPTS)) {
-                mainHandler.postDelayed(
-                    { probeBridgeReadiness(generation, completedAttempt = nextAttempt) },
-                    BRIDGE_PROBE_RETRY_DELAY_MS,
-                )
+                lateinit var retry: Runnable
+                retry = Runnable {
+                    bridgeProbeRunnables.remove(retry)
+                    probeBridgeReadiness(generation, completedAttempt = nextAttempt)
+                }
+                bridgeProbeRunnables.add(retry)
+                mainHandler.postDelayed(retry, BRIDGE_PROBE_RETRY_DELAY_MS)
             }
         }
     }
 
-    private fun emitLifecycleStatus(message: String) {
-        emitDebugLifecycleDiagnostic(message)
+    private fun emitStatus(message: String) {
+        if (!lifecycle.canCallWebView()) {
+            return
+        }
         onStatus(message)
+    }
+
+    private fun emitLifecycleStatus(message: String) {
+        if (!lifecycle.canCallWebView()) {
+            return
+        }
+        emitDebugLifecycleDiagnostic(message)
+        emitStatus(message)
     }
 
     private fun emitDebugLifecycleDiagnostic(message: String) {

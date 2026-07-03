@@ -56,6 +56,10 @@ services:
 
       FLOWSTOCK_TSD_ROOT: /app/tsd
       FLOWSTOCK_PC_ROOT: /app/tsd/pc
+      FLOWSTOCK_PUBLIC_BASE_URL: ${FLOWSTOCK_PUBLIC_BASE_URL:?FLOWSTOCK_PUBLIC_BASE_URL is required}
+      FLOWSTOCK_INSTANCE_NAME: ${FLOWSTOCK_INSTANCE_NAME:?FLOWSTOCK_INSTANCE_NAME is required}
+      FLOWSTOCK_TLS_SERVER_NAME: ${FLOWSTOCK_TLS_SERVER_NAME:?FLOWSTOCK_TLS_SERVER_NAME is required}
+      FLOWSTOCK_TLS_SANS: ${FLOWSTOCK_TLS_SANS:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -63,6 +67,7 @@ services:
         condition: service_completed_successfully
     ports:
       - "${FLOWSTOCK_PORT:-8080}:8080"
+      - "7155:7155/udp"
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health/ready >/dev/null || exit 1"]
       interval: 10s

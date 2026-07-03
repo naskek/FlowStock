@@ -11,6 +11,7 @@ using FlowStock.Core.Models;
 using FlowStock.Core.Services;
 using FlowStock.Data;
 using FlowStock.Server;
+using FlowStock.Server.Discovery;
 using FlowStock.Server.Maintenance;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
@@ -39,6 +40,8 @@ var ordersExplainEnabled = string.Equals(
     "1",
     StringComparison.OrdinalIgnoreCase);
 var ordersExplainConsumed = 0;
+var appVersion = ResolveAppVersion();
+var discoveryOptions = FlowStockDiscoveryOptions.FromConfiguration(builder.Configuration, appVersion);
 
 builder.Services.AddSingleton<PostgresDataStore>(sp =>
 {
@@ -111,9 +114,10 @@ builder.Services.AddSingleton<ImportService>();
 builder.Services.AddSingleton<ItemPackagingService>();
 builder.Services.AddSingleton<MarkingExcelService>();
 builder.Services.AddSingleton<LiveUpdateHub>();
+builder.Services.AddSingleton(discoveryOptions);
+builder.Services.AddHostedService<FlowStockDiscoveryUdpService>();
 
 var app = builder.Build();
-var appVersion = ResolveAppVersion();
 
 OrderCreateEndpoint.Map(app);
 OrderUpdateEndpoint.Map(app);
@@ -136,6 +140,7 @@ ProductionNeedCreateOrdersEndpoint.Map(app);
 NewLedgerTransitionEndpoints.Map(app);
 MaintenanceBackfillEndpoints.Map(app);
 app.MapGet("/api/version", () => Results.Ok(new { version = appVersion }));
+FlowStockDiscoveryEndpoints.Map(app);
 
 app.MapGet("/health/live", () => Results.Ok(new { status = "alive" }));
 app.MapMethods("/health/ready", ["GET", "HEAD"], async (CancellationToken cancellationToken) =>
@@ -3017,6 +3022,7 @@ static bool IsClientBlockBypassPath(PathString path)
 {
     if (path.StartsWithSegments("/api/client-blocks")
         || path.StartsWithSegments("/api/tsd/login")
+        || path.StartsWithSegments("/api/discovery")
         || path.StartsWithSegments("/api/ping")
         || path.StartsWithSegments("/api/version"))
     {

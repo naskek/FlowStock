@@ -36,11 +36,14 @@
 - `TSD PWA`: online data capture через API (без прямого доступа к БД).
 - `TSD native Android shell` (`apps/android/tsd-native`): отдельная PoC-оболочка для ATOL Smart.Slim, которая открывает тот же server-hosted `/tsd/` в обычном `WebView` и добавляет только native transport/lifecycle слой для сканера и аппаратной кнопки Back.
   - Package/namespace: `ru.flowstock.tsd`; WebView получает User-Agent токен `FlowStockTsdNative/1`.
+  - Сервер выбирается на устройстве как canonical HTTPS root URL (`https://flowstock.local:7154`); пути `/api/discovery`, `/api/ping` и `/tsd/` вычисляются из него. Оболочка хранит только один root URL и технические metadata (`instance_name`, `application_version`, `validated_at`).
+  - Discovery v1 использует UDP request/response на `7155/udp`: Android отправляет directed broadcast в активную Wi-Fi/Ethernet подсеть, сервер отвечает unicast JSON с `product = FlowStock`, `discovery_protocol_version = 1`, тем же nonce, `instance_name`, `canonical_https_base_url` и `application_version`. UDP payload является только недоверенной подсказкой.
+  - Сервер принимается только после strict HTTPS validation canonical URL: `GET /api/discovery`, проверка identity/canonical URL, `GET /api/ping` с `ok=true`, затем доступность `/tsd/`. UDP sender IP не становится trusted origin.
   - Server-hosted `apps/android/tsd/native-bridge.js` создаёт `window.FlowStockAndroidBridge` только под этим native User-Agent; в обычном Chrome/PWA bridge является no-op и TSD остаётся на keyboard provider.
   - ATOL Barcode Service настраивается вручную отдельным Broadcast-only профилем для `ru.flowstock.tsd`; default/Keyboard профиль не меняется.
   - Native shell не переписывает `index.html`, не добавляет `addJavascriptInterface`, не обращается к PostgreSQL и не принимает решений по ledger, документам, остаткам, резервам, production quantities или HU readiness.
   - Native diagnostics не сохраняют полный barcode: допускаются только length/hash/masked value/symbology/timestamp. Полное значение допускается только в оперативном scan payload для существующего `scanner.js`.
-  - TLS: cleartext запрещён, SSL errors отменяются, debug build может доверять только публичному dev CA через debug resource overlay; release build не доверяет dev CA.
+  - TLS: cleartext запрещён, SSL errors отменяются, debug build может доверять только публичному dev CA через debug resource overlay; release build доверяет системному и пользовательскому trust store. FlowStock root CA для production устанавливается администратором/MDM в Android user trust store.
 - **Warehouse Task Board** — **deprecated / removal candidate** (архив: [`archive/tasks/spec_tasks.md`](archive/tasks/spec_tasks.md)): старый experimental flow; **не** задаёт архитектуру normal TSD. Backend/тесты могут оставаться в коде; операторский UI по умолчанию скрыт. Не путать с TSD `Наполнение` / `Отгрузка`.
 - `PC web client`: остатки доступны только на чтение; создание заказа отправляется как request и применяется только после подтверждения в WPF.
   - Отправка requests разрешена только активным аккаунтам с PC-access (`tsd_devices.platform=PC` или `BOTH`).
@@ -61,10 +64,12 @@
 
 ## URL-схема web
 - Production использует единый HTTPS origin на `7154`.
-- `https://SERVER_IP:7154/` открывает PC web client.
-- `https://SERVER_IP:7154/tsd/` открывает TSD web client.
-- Native Android PoC открывает только локальный HTTPS TSD origin, заданный конфигурацией сборки или некоммитящимся локальным параметром; production URL не является средой первичного тестирования.
-- Если локальный origin не задан, native Android PoC должен fail-closed на несуществующий HTTPS origin, а не использовать production или конкретный dev URL по умолчанию.
+- Canonical production endpoint задаётся серверной конфигурацией `FLOWSTOCK_PUBLIC_BASE_URL`, например `https://flowstock.local:7154`; URL должен быть абсолютным HTTPS root URL без path/query/fragment и соответствовать сертификату.
+- `https://flowstock.local:7154/` открывает PC web client.
+- `https://flowstock.local:7154/tsd/` открывает TSD web client.
+- `GET /api/discovery` — read-only technical endpoint без авторизации и без бизнес-побочных эффектов. Ответ содержит `product`, `discovery_protocol_version`, `instance_name`, `canonical_https_base_url`, `application_version`.
+- Native Android shell не использует build-time production URL. Первый запуск без сохранённого endpoint показывает native setup: ручной ввод HTTPS root URL или UDP discovery; сохранение доступно только после strict HTTPS validation.
+- При показе native setup для смены сервера scanner dispatch останавливается: скрытый WebView не принимает сканы. Возврат к текущему серверу восстанавливает существующую session без очистки cookies/WebStorage; фактическая очистка session выполняется только при подтверждённой смене origin.
 
 ## Модель данных (server DB)
 - `items(id, name, is_active, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, storage_conditions, max_qty_per_hu, tara_id, is_marked, item_type_id, min_stock_qty)`; `storage_conditions` — опциональные условия хранения товара (`NULL`, если не заданы); `is_marked` является legacy-полем старой KM-модели и не участвует в новой ЧЗ-логике.

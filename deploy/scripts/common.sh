@@ -109,8 +109,76 @@ normalized_tls_sans() {
     printf '%s\n' "$sans"
 }
 
+public_base_url_host() {
+    local value="${FLOWSTOCK_PUBLIC_BASE_URL:-}"
+    local authority
+
+    [[ -n "$value" ]] || fail "FLOWSTOCK_PUBLIC_BASE_URL must not be empty"
+    [[ "$value" == https://* ]] || fail "FLOWSTOCK_PUBLIC_BASE_URL must start with https://"
+    authority="${value#https://}"
+    [[ "$authority" != *"/"* ]] || fail "FLOWSTOCK_PUBLIC_BASE_URL must not contain a path"
+    [[ "$authority" != *"?"* && "$authority" != *"#"* ]] || fail "FLOWSTOCK_PUBLIC_BASE_URL must not contain query or fragment"
+    [[ "$authority" != *"@"* ]] || fail "FLOWSTOCK_PUBLIC_BASE_URL must not contain userinfo"
+    [[ -n "$authority" ]] || fail "FLOWSTOCK_PUBLIC_BASE_URL host must not be empty"
+
+    if [[ "$authority" == *":"* ]]; then
+        local port="${authority##*:}"
+        [[ "$port" =~ ^[0-9]+$ ]] || fail "FLOWSTOCK_PUBLIC_BASE_URL port must be numeric"
+        (( port >= 1 && port <= 65535 )) || fail "FLOWSTOCK_PUBLIC_BASE_URL port must be in range 1..65535"
+        printf '%s\n' "${authority%:*}"
+    else
+        printf '%s\n' "$authority"
+    fi
+}
+
+validate_public_base_url_matches_tls_config() {
+    local host
+    local expected_sans
+    local expected_token
+
+    host="$(public_base_url_host)"
+    expected_sans="$(normalized_tls_sans)"
+    if [[ "$FLOWSTOCK_TLS_SERVER_NAME" == "$host" ]]; then
+        return 0
+    fi
+
+    if is_ipv4_like "$host"; then
+        expected_token="IP:${host}"
+    else
+        expected_token="DNS:${host}"
+    fi
+
+    if [[ ",${expected_sans}," != *",${expected_token},"* ]]; then
+        fail "FLOWSTOCK_PUBLIC_BASE_URL host must match FLOWSTOCK_TLS_SERVER_NAME or FLOWSTOCK_TLS_SANS"
+    fi
+}
+
+validate_public_base_url_matches_certificate() {
+    local host
+    local expected_token
+    local actual_sans
+
+    require_command openssl
+    require_file "$FLOWSTOCK_TLS_CERT_PATH"
+    host="$(public_base_url_host)"
+    if is_ipv4_like "$host"; then
+        expected_token="IP:${host}"
+    else
+        expected_token="DNS:${host}"
+    fi
+
+    actual_sans="$(openssl x509 -in "$FLOWSTOCK_TLS_CERT_PATH" -noout -ext subjectAltName 2>/dev/null \
+        | tail -n +2 \
+        | tr -d ' \n' \
+        | sed 's/IPAddress:/IP:/g')"
+    if [[ ",${actual_sans}," != *",${expected_token},"* ]]; then
+        fail "server certificate SAN does not contain FLOWSTOCK_PUBLIC_BASE_URL host"
+    fi
+}
+
 ensure_tls_assets() {
     mkdir -p "$FLOWSTOCK_TLS_CERT_DIR"
+    validate_public_base_url_matches_tls_config
 
     case "$FLOWSTOCK_TLS_MODE" in
         manual|"")
@@ -125,6 +193,7 @@ ensure_tls_assets() {
             fail "unsupported FLOWSTOCK_TLS_MODE: $FLOWSTOCK_TLS_MODE"
             ;;
     esac
+    validate_public_base_url_matches_certificate
 }
 
 compose() {

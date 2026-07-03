@@ -2,4 +2,27 @@
 <resources>
     <string name="app_name">FlowStock TSD</string>
     <string name="native_status_starting">FlowStock TSD native shell: starting</string>
+    <string name="server_setup_title">Сервер FlowStock</string>
+    <string name="server_setup_description">Введите HTTPS-адрес сервера или найдите серверы в локальной сети.</string>
+    <string name="server_endpoint_hint">https://flowstock.local:7154</string>
+    <string name="server_validate_save">Проверить и сохранить</string>
+    <string name="server_retry_current">Повторить проверку текущего сервера</string>
+    <string name="server_discover">Найти серверы</string>
+    <string name="server_cancel_discovery">Отменить поиск</string>
+    <string name="server_return_current">Вернуться к текущему серверу</string>
+    <string name="server_setup_first_launch">Укажите сервер FlowStock</string>
+    <string name="server_setup_checking_saved">Проверка сохранённого сервера...</string>
+    <string name="server_setup_discovery_stopped">Поиск остановлен</string>
+    <string name="server_setup_validating">Проверка сервера...</string>
+    <string name="server_setup_searching">Поиск серверов...</string>
+    <string name="server_setup_not_found">Серверы не найдены</string>
+    <string name="server_setup_select_validated">Выберите проверенный сервер</string>
+    <string name="server_setup_unavailable">Сервер недоступен: %1$s</string>
+    <string name="server_setup_validation_failed">Проверка не прошла: %1$s</string>
+    <string name="server_setup_switch_failed">Не удалось переключить WebView</string>
+    <string name="server_change_title">Сменить сервер?</string>
+    <string name="server_change_message">Текущая сессия WebView будет закрыта после выбора и проверки нового сервера.</string>
+    <string name="server_change_positive">Сменить</string>
+    <string name="server_change_negative">Отмена</string>
+    <string name="server_change_prompt">Введите новый сервер или запустите поиск</string>
 </resources>
