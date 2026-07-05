@@ -306,6 +306,10 @@ internal sealed class HuReservationApplyTestContext
     public HuReservationApplyTestContext()
     {
         _store.As<IOptimizedHuReservationCandidatesStore>();
+        _store.Setup(store => store.LockOrdersForUpdate(It.IsAny<IReadOnlyCollection<long>>()))
+            .Returns(true);
+        _store.Setup(store => store.GetDocsByOrder(It.IsAny<long>()))
+            .Returns(Array.Empty<Doc>());
         _store.Setup(store => store.GetOrder(It.IsAny<long>()))
             .Returns<long>(id => _orders.TryGetValue(id, out var order) ? order : null);
         _store.Setup(store => store.GetOrderLines(It.IsAny<long>()))

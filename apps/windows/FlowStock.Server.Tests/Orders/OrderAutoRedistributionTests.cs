@@ -56,6 +56,8 @@ public sealed class OrderAutoRedistributionTests
 
         double? customerQtyAfterAll = null;
         var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(s => s.LockOrdersForUpdate(It.IsAny<IReadOnlyCollection<long>>())).Returns(true);
+        store.Setup(s => s.GetOrders()).Returns(Array.Empty<Order>());
         store.Setup(s => s.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
             .Callback<Action<IDataStore>>(work => work(store.Object));
         store.Setup(s => s.GetMarkingOrdersByItemIds(It.IsAny<IReadOnlyCollection<long>>()))
@@ -205,6 +207,8 @@ public sealed class OrderAutoRedistributionTests
     {
         const long customerOrderId = 65;
         var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(s => s.LockOrdersForUpdate(It.IsAny<IReadOnlyCollection<long>>())).Returns(true);
+        store.Setup(s => s.GetOrders()).Returns(Array.Empty<Order>());
         store.Setup(s => s.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
             .Callback<Action<IDataStore>>(work => work(store.Object));
         store.Setup(s => s.GetMarkingOrdersByItemIds(It.IsAny<IReadOnlyCollection<long>>()))
@@ -233,6 +237,8 @@ public sealed class OrderAutoRedistributionTests
     {
         const long customerOrderId = 65;
         var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(s => s.LockOrdersForUpdate(It.IsAny<IReadOnlyCollection<long>>())).Returns(true);
+        store.Setup(s => s.GetOrders()).Returns(Array.Empty<Order>());
         store.Setup(s => s.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
             .Callback<Action<IDataStore>>(work => work(store.Object));
         store.Setup(s => s.GetMarkingOrdersByItemIds(It.IsAny<IReadOnlyCollection<long>>()))
@@ -283,6 +289,8 @@ public sealed class OrderAutoRedistributionTests
             CreatedAt = new DateTime(2026, 5, 18, 16, 58, 34)
         };
         var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(s => s.LockOrdersForUpdate(It.IsAny<IReadOnlyCollection<long>>())).Returns(true);
+        store.Setup(s => s.GetOrders()).Returns(Array.Empty<Order>());
         store.Setup(s => s.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
             .Callback<Action<IDataStore>>(work => work(store.Object));
         store.Setup(s => s.GetMarkingOrdersByItemIds(It.IsAny<IReadOnlyCollection<long>>()))

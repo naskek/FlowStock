@@ -82,6 +82,7 @@ public sealed class InternalOrderMergeTests
     {
         const long orderId = 66;
         var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(s => s.LockOrdersForUpdate(It.IsAny<IReadOnlyCollection<long>>())).Returns(true);
         store.Setup(s => s.GetOrder(orderId)).Returns(new Order
         {
             Id = orderId,
@@ -107,6 +108,7 @@ public sealed class InternalOrderMergeTests
         const long customerOrderId = 67;
 
         var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(s => s.LockOrdersForUpdate(It.IsAny<IReadOnlyCollection<long>>())).Returns(true);
         store.Setup(s => s.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
             .Callback<Action<IDataStore>>(work => work(store.Object));
         store.Setup(s => s.GetOrder(customerOrderId)).Returns(new Order

@@ -187,6 +187,13 @@ public sealed class ProductionPalletOrderPlanResult
     public string Message { get; init; } = string.Empty;
     public ProductionPalletSummary Summary { get; init; } = new();
     public ProductionPalletDocument Document { get; init; } = new();
+
+    /// <summary>
+    /// Post-confirm preview fingerprint, computed inside the same confirm transaction
+    /// (after PlanProductionPallets, before the orders lock is released). Empty for
+    /// flows that do not recompute it (legacy PlanOrder).
+    /// </summary>
+    public string NewPreviewFingerprint { get; init; } = string.Empty;
 }
 
 public sealed class ProductionPalletPlanCleanupCounts
@@ -393,3 +400,141 @@ public sealed class OrderProducedStockReleaseException : Exception
 
     public string ErrorCode { get; }
 }
+
+/// <summary>
+/// Stable machine-readable error codes for the server-authoritative production pallet
+/// constructor (plan preview / explicit plan confirm) and the legacy /plan guard.
+/// WPF decides on the code; the Russian message is display-only.
+/// </summary>
+public static class ProductionPalletPlanErrorCodes
+{
+    public const string LegacyMixedGroupNotSupported = "LEGACY_MIXED_GROUP_NOT_SUPPORTED";
+    public const string InvalidPalletPlan = "INVALID_PALLET_PLAN";
+    public const string PlanPreviewStale = "PLAN_PREVIEW_STALE";
+    public const string NoProductionRequired = "NO_PRODUCTION_REQUIRED";
+    public const string PalletOverCapacity = "PALLET_OVER_CAPACITY";
+    public const string PalletCapacityMismatch = "PALLET_CAPACITY_MISMATCH";
+    public const string LineAllocationMismatch = "LINE_ALLOCATION_MISMATCH";
+    public const string OrderLineNotFound = "ORDER_LINE_NOT_FOUND";
+    public const string OrderLineCancelled = "ORDER_LINE_CANCELLED";
+    public const string OrderNotPlannable = "ORDER_NOT_PLANNABLE";
+}
+
+/// <summary>
+/// Structured failure for pallet plan preview/confirm. Carries a stable
+/// <see cref="ErrorCode"/>, an optional <see cref="Details"/> payload
+/// (e.g. per-line allocation mismatches) and, for stale/conflict cases, the
+/// server's current preview fingerprint so the client can refresh.
+/// </summary>
+public sealed class ProductionPalletPlanException : InvalidOperationException
+{
+    public ProductionPalletPlanException(
+        string errorCode,
+        string message,
+        object? details = null,
+        string? currentPreviewFingerprint = null)
+        : base(message)
+    {
+        ErrorCode = errorCode;
+        Details = details;
+        CurrentPreviewFingerprint = currentPreviewFingerprint;
+    }
+
+    public string ErrorCode { get; }
+    public object? Details { get; }
+    public string? CurrentPreviewFingerprint { get; }
+}
+
+/// <summary>Per-line allocation problem for <c>LINE_ALLOCATION_MISMATCH.details.lines[]</c>.</summary>
+public sealed record LineAllocationMismatchDetail(
+    long OrderLineId,
+    double RequiredQty,
+    double AllocatedQty,
+    double DifferenceQty);
+
+/// <summary>One order line in the plan preview with its current server-derived shortfall.</summary>
+public sealed record ProductionPalletPlanPreviewLine(
+    long OrderLineId,
+    long ItemId,
+    string ItemName,
+    double? MaxQtyPerHu,
+    double ShortfallQty);
+
+/// <summary>Temporary (unsaved) pallet proposed by the server auto-split; also the confirm input shape.</summary>
+public sealed record SuggestedPalletComponentDto(
+    long OrderLineId,
+    long ItemId,
+    string ItemName,
+    double Qty);
+
+public sealed record SuggestedPalletDto(
+    int TempNo,
+    double? CapacityQty,
+    double TotalQty,
+    bool IsMixed,
+    IReadOnlyList<SuggestedPalletComponentDto> Components);
+
+/// <summary>A component of an already-saved (open or historical) pallet, read-only in the constructor.</summary>
+public sealed record SavedPalletComponentDto(
+    long ProductionPalletLineId,
+    long? OrderLineId,
+    long ItemId,
+    string ItemName,
+    double PlannedQty,
+    double FilledQty,
+    bool IsCompleted);
+
+/// <summary>An already-saved physical pallet. Never used as confirm input.</summary>
+public sealed record SavedPalletDto(
+    string Kind,
+    long PalletId,
+    string HuCode,
+    long PrdDocId,
+    string PrdRef,
+    string Status,
+    string EffectiveStatus,
+    double? CapacityQty,
+    double TotalQty,
+    bool IsMixed,
+    bool HasComponentProgress,
+    bool CanDelete,
+    string? DisabledReason,
+    IReadOnlyList<SavedPalletComponentDto> Components)
+{
+    public const string OpenKind = "open";
+    public const string HistoricalKind = "historical";
+}
+
+/// <summary>
+/// Server-authoritative preview for the pallet constructor. Three explicit sections:
+/// editable <see cref="SuggestedPallets"/> (current shortfall delta), read-only
+/// <see cref="OpenPlanPallets"/> (PLANNED/PRINTED/PARTIALLY_FILLED) and read-only
+/// <see cref="HistoricalPallets"/> (FILLED). Existing pallets never gate a delta append.
+/// </summary>
+public sealed class ProductionPalletPlanPreview
+{
+    public long OrderId { get; init; }
+    public string OrderRef { get; init; } = string.Empty;
+    public string OrderType { get; init; } = string.Empty;
+    public string OrderStatus { get; init; } = string.Empty;
+    public bool ProductionRequired { get; init; }
+    public string PreviewFingerprint { get; init; } = string.Empty;
+    public IReadOnlyList<ProductionPalletPlanPreviewLine> Lines { get; init; } = Array.Empty<ProductionPalletPlanPreviewLine>();
+    public IReadOnlyList<SuggestedPalletDto> SuggestedPallets { get; init; } = Array.Empty<SuggestedPalletDto>();
+    public IReadOnlyList<SavedPalletDto> OpenPlanPallets { get; init; } = Array.Empty<SavedPalletDto>();
+    public IReadOnlyList<SavedPalletDto> HistoricalPallets { get; init; } = Array.Empty<SavedPalletDto>();
+}
+
+/// <summary>
+/// Confirm request: only the fingerprint and the suggested delta pallets (order_line_id + qty).
+/// List element types are nullable because malformed JSON (<c>pallets: [null]</c> /
+/// <c>components: [null]</c>) yields null elements; the server validates them explicitly and
+/// rejects with INVALID_PALLET_PLAN before touching any property.
+/// </summary>
+public sealed record ProductionPalletExplicitPlanComponent(long OrderLineId, double Qty);
+
+public sealed record ProductionPalletExplicitPlanPallet(IReadOnlyList<ProductionPalletExplicitPlanComponent?> Components);
+
+public sealed record ProductionPalletExplicitPlanRequest(
+    string PreviewFingerprint,
+    IReadOnlyList<ProductionPalletExplicitPlanPallet?> Pallets);

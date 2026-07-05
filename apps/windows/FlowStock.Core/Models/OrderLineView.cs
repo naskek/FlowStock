@@ -104,7 +104,9 @@ public sealed class OrderLineView : INotifyPropertyChanged
                 entry.Qty,
                 IsBold: false,
                 entry.SortOrder <= 0 ? 2 : entry.SortOrder,
-                entry.FateSuffix))
+                entry.FateSuffix,
+                entry.HuTotalQty,
+                entry.IsMixed))
             .ToArray();
 
     public double QtyShipped
@@ -259,7 +261,9 @@ public sealed record OrderLineHuDisplayEntry(
     string? FateLabel = null,
     string? FateOrderRef = null,
     string? FateDocRef = null,
-    double? FateQty = null);
+    double? FateQty = null,
+    double HuTotalQty = 0,
+    bool IsMixed = false);
 
 public sealed record OrderLineHuDisplayRow(
     string HuCode,
@@ -267,9 +271,20 @@ public sealed record OrderLineHuDisplayRow(
     double Qty,
     bool IsBold,
     int SortOrder,
-    string? FateSuffix = null)
+    string? FateSuffix = null,
+    double HuTotalQty = 0,
+    bool IsMixed = false)
 {
-    public string DisplayText => string.IsNullOrWhiteSpace(FateSuffix)
-        ? $"{HuCode} · {Label} · {Qty:0.###}"
-        : $"{HuCode} · {Label} · {Qty:0.###} {FateSuffix}";
+    public string DisplayText
+    {
+        get
+        {
+            var qtyText = IsMixed && HuTotalQty > 0.000001d
+                ? $"{Qty:0.###} из {HuTotalQty:0.###}"
+                : $"{Qty:0.###}";
+            var mix = IsMixed ? " · МИКС" : string.Empty;
+            var head = $"{HuCode} · {Label} · {qtyText}{mix}";
+            return string.IsNullOrWhiteSpace(FateSuffix) ? head : $"{head} {FateSuffix}";
+        }
+    }
 }

@@ -323,10 +323,8 @@ public sealed class OrderDeletePostgresRegressionTests
         await RunInRollbackTransactionAsync(connectionString, async scopedStore =>
         {
             EnsureAtLeastOneLocation(scopedStore);
-            var fixture = SeedCustomerOrderWithTwoLines(scopedStore, deletedQty: 300, remainingQty: 300, group: "MIX-PARTIAL");
-            var plan = new ProductionPalletService(scopedStore).PlanOrder(fixture.OrderId);
-            var pallet = Assert.Single(scopedStore.GetProductionPalletsByDoc(plan.PrdDocId));
-            Assert.Equal(2, pallet.Lines.Count);
+            var fixture = SeedCustomerOrderWithTwoLines(scopedStore, deletedQty: 300, remainingQty: 300);
+            var (prdDocId, pallet) = SeedMixedProductionReceiptForBothLines(scopedStore, fixture, deletedQty: 300, remainingQty: 300);
             Assert.Equal(1, scopedStore.MarkProductionPalletsPrinted(fixture.OrderId, [pallet.Id], DateTime.UtcNow));
 
             var deletedLineComponent = Assert.Single(pallet.Lines, line => line.OrderLineId == fixture.DeletedOrderLineId);
@@ -335,10 +333,10 @@ public sealed class OrderDeletePostgresRegressionTests
                 [deletedLineComponent.Id],
                 new DateTime(2026, 6, 8, 12, 0, 0, DateTimeKind.Utc)));
 
-            var partiallyFilled = Assert.Single(scopedStore.GetProductionPalletsByDoc(plan.PrdDocId));
+            var partiallyFilled = Assert.Single(scopedStore.GetProductionPalletsByDoc(prdDocId));
             Assert.Equal(ProductionPalletStatus.Printed, partiallyFilled.Status);
             Assert.True(partiallyFilled.HasComponentProgress);
-            Assert.Equal(0, scopedStore.CountLedgerEntriesByDocId(plan.PrdDocId));
+            Assert.Equal(0, scopedStore.CountLedgerEntriesByDocId(prdDocId));
 
             await using var host = await PostgresOrderUpdateHost.StartAsync(scopedStore);
             using var response = await UpdateOrderHttpApi.PutRawAsync(
@@ -352,7 +350,7 @@ public sealed class OrderDeletePostgresRegressionTests
             Assert.Contains("частично наполненная микс-паллета", payload.Message ?? string.Empty, StringComparison.OrdinalIgnoreCase);
             Assert.Contains(scopedStore.GetOrderLines(fixture.OrderId), line => line.Id == fixture.DeletedOrderLineId);
 
-            var palletAfter = Assert.Single(scopedStore.GetProductionPalletsByDoc(plan.PrdDocId));
+            var palletAfter = Assert.Single(scopedStore.GetProductionPalletsByDoc(prdDocId));
             Assert.Equal(pallet.Id, palletAfter.Id);
             Assert.Equal(ProductionPalletStatus.Printed, palletAfter.Status);
             Assert.True(palletAfter.HasComponentProgress);
@@ -593,10 +591,8 @@ public sealed class OrderDeletePostgresRegressionTests
         await RunInRollbackTransactionAsync(connectionString, async scopedStore =>
         {
             EnsureAtLeastOneLocation(scopedStore);
-            var fixture = SeedCustomerOrderWithTwoLines(scopedStore, deletedQty: 300, remainingQty: 300, group: "MIX-1");
-            var plan = new ProductionPalletService(scopedStore).PlanOrder(fixture.OrderId);
-            var pallet = Assert.Single(scopedStore.GetProductionPalletsByDoc(plan.PrdDocId));
-            Assert.Equal(2, pallet.Lines.Count);
+            var fixture = SeedCustomerOrderWithTwoLines(scopedStore, deletedQty: 300, remainingQty: 300);
+            var (_, pallet) = SeedMixedProductionReceiptForBothLines(scopedStore, fixture, deletedQty: 300, remainingQty: 300);
             scopedStore.MarkProductionPalletFilled(pallet.Id, DateTime.UtcNow, "TEST");
 
             await using var host = await PostgresOrderUpdateHost.StartAsync(scopedStore);
@@ -711,6 +707,58 @@ public sealed class OrderDeletePostgresRegressionTests
             remainingItemId,
             deletedOrderLineId,
             remainingOrderLineId);
+    }
+
+    // Seeds one physical mixed HU holding both order lines directly through the store
+    // primitives (doc_lines sharing a to_hu + PlanProductionPallets), matching production
+    // data. Replaces the removed legacy production_pallet_group planning path.
+    private static (long PrdDocId, ProductionPallet Pallet) SeedMixedProductionReceiptForBothLines(
+        IDataStore store,
+        CustomerOrderFixture fixture,
+        double deletedQty,
+        double remainingQty)
+    {
+        var suffix = DateTime.UtcNow.Ticks.ToString();
+        var locationId = store.GetLocations().First().Id;
+        var huCode = store.CreateProductionPalletHuCode("ORDER-DELETE-REGRESSION-MIXED");
+        var docId = store.AddDoc(new Doc
+        {
+            DocRef = $"PRD-TMX-{suffix[^6..]}",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            CreatedAt = DateTime.UtcNow,
+            OrderId = fixture.OrderId,
+            OrderRef = fixture.OrderRef
+        });
+
+        store.AddDocLine(new DocLine
+        {
+            DocId = docId,
+            OrderLineId = fixture.DeletedOrderLineId,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder,
+            ItemId = fixture.DeletedItemId,
+            Qty = deletedQty,
+            ToLocationId = locationId,
+            ToHu = huCode,
+            PackSingleHu = true
+        });
+
+        store.AddDocLine(new DocLine
+        {
+            DocId = docId,
+            OrderLineId = fixture.RemainingOrderLineId,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder,
+            ItemId = fixture.RemainingItemId,
+            Qty = remainingQty,
+            ToLocationId = locationId,
+            ToHu = huCode,
+            PackSingleHu = true
+        });
+
+        var planned = store.PlanProductionPallets(docId, DateTime.UtcNow);
+        var pallet = Assert.Single(planned);
+        Assert.Equal(2, pallet.Lines.Count);
+        return (docId, pallet);
     }
 
     private static SingleLineCustomerOrderFixture SeedCustomerOrderWithSingleLine(IDataStore store)

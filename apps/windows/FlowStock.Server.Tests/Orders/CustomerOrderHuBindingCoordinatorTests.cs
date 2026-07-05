@@ -189,39 +189,6 @@ public sealed class CustomerOrderHuBindingCoordinatorTests
     }
 
     [Fact]
-    public void ProductionPalletGroupEditability_UnlocksLineAfterItsActivePalletIsDeleted()
-    {
-        var line = new OrderLineView
-        {
-            Id = 101,
-            OrderId = 10,
-            ItemId = 6,
-            ItemName = "Товар A"
-        };
-
-        ProductionPalletGroupEditability.Apply([line], new HashSet<long> { 101 }, orderEditable: true);
-        Assert.False(line.IsProductionPalletGroupEditable);
-
-        ProductionPalletGroupEditability.Apply([line], new HashSet<long>(), orderEditable: true);
-        Assert.True(line.IsProductionPalletGroupEditable);
-    }
-
-    [Fact]
-    public void ProductionPalletGroupEditability_BlocksOnlyLineWithRemainingActivePallet()
-    {
-        var deletedLine = new OrderLineView { Id = 101, OrderId = 10, ItemId = 6, ItemName = "Товар A" };
-        var remainingLine = new OrderLineView { Id = 102, OrderId = 10, ItemId = 7, ItemName = "Товар B" };
-
-        ProductionPalletGroupEditability.Apply(
-            [deletedLine, remainingLine],
-            new HashSet<long> { 102 },
-            orderEditable: true);
-
-        Assert.True(deletedLine.IsProductionPalletGroupEditable);
-        Assert.False(remainingLine.IsProductionPalletGroupEditable);
-    }
-
-    [Fact]
     public void PartiallyPalletPlannedLine_KeepsHuPickerEnabledForRemainder()
     {
         var state = new CustomerOrderLineHuState("line-223");

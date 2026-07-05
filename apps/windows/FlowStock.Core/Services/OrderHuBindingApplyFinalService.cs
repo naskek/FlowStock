@@ -45,6 +45,14 @@ public sealed class OrderHuBindingApplyFinalService
             throw new InvalidOperationException("Хранилище не поддерживает read-model кандидатов HU.");
         }
 
+        // Ранний orders row lock (тот же примитив id ASC, что Close/Outbound/OrderControl и
+        // plan-explicit confirm): coverage-решения ниже принимаются по состоянию, прочитанному
+        // уже под локом, и сериализуются с конкурентным подтверждением плана паллет.
+        if (!store.LockOrdersForUpdate([customerOrderId]))
+        {
+            throw Error("ORDER_NOT_FOUND", $"Заказ {customerOrderId} не найден.");
+        }
+
         var order = store.GetOrder(customerOrderId)
                     ?? throw Error("ORDER_NOT_FOUND", $"Заказ {customerOrderId} не найден.");
         if (order.Type != OrderType.Customer)

@@ -122,13 +122,18 @@ public static class ProductionOrderLineHuCodes
                         : partialMixed
                             ? ComponentStatusLabel(line)
                             : StatusLabel(pallet.Status);
+                    var huTotalQty = pallet.Lines.Count > 0
+                        ? pallet.Lines.Sum(component => component.PlannedQty)
+                        : pallet.PlannedQty;
                     AddDisplay(rows, line.OrderLineId.Value, new OrderLineHuDisplayEntry(
                         pallet.HuCode.Trim(),
                         label,
                         qty,
                         IsWarehouseBound: false,
                         SortOrder: 2,
-                        partialMixed ? $"/ {line.PlannedQty:0.###}" : null));
+                        partialMixed ? $"/ {line.PlannedQty:0.###}" : null,
+                        HuTotalQty: huTotalQty,
+                        IsMixed: pallet.IsMixedPallet));
                 }
             }
         }

@@ -54,6 +54,7 @@ public sealed class OrderRedistributionTests
         double? internalQtyAfter = null;
         double? customerQtyAfter = null;
         var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(s => s.LockOrdersForUpdate(It.IsAny<IReadOnlyCollection<long>>())).Returns(true);
         store.Setup(s => s.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
             .Callback<Action<IDataStore>>(work => work(store.Object));
         store.Setup(s => s.GetMarkingOrdersByItemIds(It.IsAny<IReadOnlyCollection<long>>()))
@@ -220,6 +221,7 @@ public sealed class OrderRedistributionTests
         OrderStatus? internalStatus = OrderStatus.InProgress;
         string? internalComment = null;
         var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(s => s.LockOrdersForUpdate(It.IsAny<IReadOnlyCollection<long>>())).Returns(true);
         store.Setup(s => s.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
             .Callback<Action<IDataStore>>(work => work(store.Object));
         store.Setup(s => s.GetMarkingOrdersByItemIds(It.IsAny<IReadOnlyCollection<long>>()))
@@ -310,6 +312,7 @@ public sealed class OrderRedistributionTests
         const long itemId = 1001;
 
         var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(s => s.LockOrdersForUpdate(It.IsAny<IReadOnlyCollection<long>>())).Returns(true);
         store.Setup(s => s.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
             .Callback<Action<IDataStore>>(work => work(store.Object));
         store.Setup(s => s.GetMarkingOrdersByItemIds(It.IsAny<IReadOnlyCollection<long>>()))

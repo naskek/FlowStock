@@ -1,6 +1,7 @@
 using FlowStock.Core.Models;
 using FlowStock.Core.Services;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
+using FlowStock.Server.Tests.ProductionPallets;
 
 namespace FlowStock.Server.Tests.Orders;
 
@@ -51,9 +52,9 @@ public sealed class ProductionOrderLineHuCodesTests
     [Fact]
     public void OrderLineHuDisplayRows_ApiOnlyReload_DropsProductionEntries_UntilStoreEnrichment()
     {
-        var harness = CreateCustomerTwoLineMixedHarness();
-        var service = new ProductionPalletService(harness.Store);
-        service.PlanOrder(83);
+        var harness = CreateCustomerTwoLineHarness();
+        MixedPlanTestSeed.SeedPlan(harness, 900, 83, "083",
+            MixedPlanTestSeed.Mixed("HU-0000083", MixedPlanTestSeed.C(222, 29, 120), MixedPlanTestSeed.C(223, 13, 80)));
         var display = ProductionOrderLineHuCodes.BuildProductionDisplayByOrder(harness.Store, 83);
         var palletHu = display[222].Single().HuCode;
 
@@ -87,9 +88,9 @@ public sealed class ProductionOrderLineHuCodesTests
     [Fact]
     public void BuildProductionDisplayByOrder_PartialMixedHu_UsesComponentLineStatus()
     {
-        var harness = CreateCustomerTwoLineMixedHarness();
-        var service = new ProductionPalletService(harness.Store);
-        var plan = service.PlanOrder(83);
+        var harness = CreateCustomerTwoLineHarness();
+        var plan = MixedPlanTestSeed.SeedPlan(harness, 900, 83, "083",
+            MixedPlanTestSeed.Mixed("HU-0000083", MixedPlanTestSeed.C(222, 29, 120), MixedPlanTestSeed.C(223, 13, 80)));
         var pallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId));
         var filledComponent = pallet.Lines.Single(line => line.OrderLineId == 222);
 
@@ -112,6 +113,32 @@ public sealed class ProductionOrderLineHuCodesTests
         Assert.Equal("/ 80", waitingEntry.FateSuffix);
     }
 
+    [Fact]
+    public void BuildProductionDisplayByOrder_MixedPlannedHu_ExposesComponentQtyTotalAndMixedFlag()
+    {
+        var harness = CreateCustomerTwoLineHarness();
+        MixedPlanTestSeed.SeedPlan(harness, 900, 83, "083",
+            MixedPlanTestSeed.Mixed("HU-0000083", MixedPlanTestSeed.C(222, 29, 120), MixedPlanTestSeed.C(223, 13, 80)));
+
+        var display = ProductionOrderLineHuCodes.BuildProductionDisplayByOrder(harness.Store, 83);
+
+        var entry222 = Assert.Single(display[222]);
+        Assert.Equal("HU-0000083", entry222.HuCode);
+        Assert.Equal(120, entry222.Qty, 3);
+        Assert.Equal(200, entry222.HuTotalQty, 3);
+        Assert.True(entry222.IsMixed);
+
+        var entry223 = Assert.Single(display[223]);
+        Assert.Equal(80, entry223.Qty, 3);
+        Assert.Equal(200, entry223.HuTotalQty, 3);
+        Assert.True(entry223.IsMixed);
+
+        var row222 = Assert.Single(new OrderLineView { ProductionHuDisplayEntries = display[222] }.HuDisplayRows);
+        Assert.Equal("HU-0000083 · план · 120 из 200 · МИКС", row222.DisplayText);
+        var row223 = Assert.Single(new OrderLineView { ProductionHuDisplayEntries = display[223] }.HuDisplayRows);
+        Assert.Equal("HU-0000083 · план · 80 из 200 · МИКС", row223.DisplayText);
+    }
+
     private static CloseDocumentHarness CreateCustomerTwoLineHarness()
     {
         var harness = new CloseDocumentHarness();
@@ -131,11 +158,4 @@ public sealed class ProductionOrderLineHuCodesTests
         return harness;
     }
 
-    private static CloseDocumentHarness CreateCustomerTwoLineMixedHarness()
-    {
-        var harness = CreateCustomerTwoLineHarness();
-        harness.Store.UpdateOrderLineProductionPalletGroup(222, "MIX-1");
-        harness.Store.UpdateOrderLineProductionPalletGroup(223, "MIX-1");
-        return harness;
-    }
 }

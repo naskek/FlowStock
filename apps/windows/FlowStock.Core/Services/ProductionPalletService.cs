@@ -174,6 +174,464 @@ public sealed class ProductionPalletService
             : BuildNoProductionRequiredResult(orderId);
     }
 
+    /// <summary>
+    /// Server-authoritative preview for the pallet constructor. Returns the current per-line
+    /// shortfall, a homogeneous auto-split proposal (<c>suggested_pallets</c>, delta only),
+    /// the existing read-only open plan and FILLED history, and a fingerprint for stale-checks.
+    /// Read-only: does not write anything.
+    /// </summary>
+    public ProductionPalletPlanPreview BuildPlanPreview(long orderId)
+    {
+        var order = _data.GetOrder(orderId)
+            ?? throw new ProductionPalletPlanException(
+                ProductionPalletPlanErrorCodes.OrderNotPlannable, "Заказ не найден.");
+        return BuildPlanPreviewInStore(_data, order);
+    }
+
+    internal static ProductionPalletPlanPreview BuildPlanPreviewInStore(IDataStore store, Order order)
+    {
+        var itemsById = store.GetItems(null).ToDictionary(item => item.Id, item => item);
+        var orderLines = store.GetOrderLines(order.Id)
+            .Where(line => line.CancelledAt == null && line.QtyOrdered > QtyTolerance)
+            .OrderBy(line => line.Id)
+            .ToArray();
+
+        var plannable = order.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged);
+        var shortfallByLine = plannable
+            ? GetLinesNeedingPalletAppend(store, order).ToDictionary(line => line.OrderLineId, line => line)
+            : new Dictionary<long, OrderReceiptLine>();
+
+        var previewLines = orderLines
+            .Select(line =>
+            {
+                itemsById.TryGetValue(line.ItemId, out var item);
+                var shortfall = shortfallByLine.TryGetValue(line.Id, out var receipt) ? receipt.QtyRemaining : 0d;
+                return new ProductionPalletPlanPreviewLine(
+                    line.Id,
+                    line.ItemId,
+                    item?.Name ?? string.Empty,
+                    item?.MaxQtyPerHu,
+                    shortfall);
+            })
+            .ToArray();
+
+        var suggested = BuildSuggestedPallets(shortfallByLine.Values, itemsById);
+
+        var pallets = GetProductionPalletsByOrder(store, order.Id)
+            .Where(pallet => !IsCancelledPallet(pallet))
+            .ToArray();
+        var docsById = store.GetDocsByOrder(order.Id).ToDictionary(doc => doc.Id, doc => doc);
+        var openPlan = new List<SavedPalletDto>();
+        var historical = new List<SavedPalletDto>();
+        foreach (var pallet in pallets)
+        {
+            docsById.TryGetValue(pallet.PrdDocId, out var doc);
+            var isFilled = string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase);
+            var kind = isFilled ? SavedPalletDto.HistoricalKind : SavedPalletDto.OpenKind;
+            var dto = BuildSavedPalletDto(pallet, doc, itemsById, kind);
+            if (isFilled)
+            {
+                historical.Add(dto);
+            }
+            else
+            {
+                openPlan.Add(dto);
+            }
+        }
+
+        var productionRequired = previewLines.Any(line => line.ShortfallQty > QtyTolerance);
+        var fingerprint = ComputePreviewFingerprint(store, order, orderLines, previewLines, pallets);
+
+        return new ProductionPalletPlanPreview
+        {
+            OrderId = order.Id,
+            OrderRef = order.OrderRef,
+            OrderType = order.Type == OrderType.Customer ? "CUSTOMER" : "INTERNAL",
+            OrderStatus = order.Status.ToString().ToUpperInvariant(),
+            ProductionRequired = productionRequired,
+            PreviewFingerprint = fingerprint,
+            Lines = previewLines,
+            SuggestedPallets = suggested,
+            OpenPlanPallets = openPlan,
+            HistoricalPallets = historical
+        };
+    }
+
+    private static IReadOnlyList<SuggestedPalletDto> BuildSuggestedPallets(
+        IEnumerable<OrderReceiptLine> shortfallLines,
+        IReadOnlyDictionary<long, Item> itemsById)
+    {
+        var result = new List<SuggestedPalletDto>();
+        var tempNo = 1;
+        foreach (var line in shortfallLines.OrderBy(line => line.OrderLineId))
+        {
+            if (line.QtyRemaining <= QtyTolerance)
+            {
+                continue;
+            }
+
+            itemsById.TryGetValue(line.ItemId, out var item);
+            var cap = item?.MaxQtyPerHu;
+            var itemName = string.IsNullOrWhiteSpace(item?.Name) ? line.ItemName : item!.Name;
+            var chunkCap = cap.HasValue && cap.Value > QtyTolerance ? cap.Value : line.QtyRemaining;
+            var remaining = line.QtyRemaining;
+            while (remaining > QtyTolerance)
+            {
+                var chunk = Math.Min(chunkCap, remaining);
+                if (chunk <= QtyTolerance)
+                {
+                    break;
+                }
+
+                result.Add(new SuggestedPalletDto(
+                    tempNo++,
+                    cap,
+                    chunk,
+                    IsMixed: false,
+                    new[] { new SuggestedPalletComponentDto(line.OrderLineId, line.ItemId, itemName, chunk) }));
+                remaining -= chunk;
+            }
+        }
+
+        return result;
+    }
+
+    private static SavedPalletDto BuildSavedPalletDto(
+        ProductionPallet pallet,
+        Doc? doc,
+        IReadOnlyDictionary<long, Item> itemsById,
+        string kind)
+    {
+        var components = pallet.Lines
+            .Select(line =>
+            {
+                itemsById.TryGetValue(line.ItemId, out var item);
+                var name = string.IsNullOrWhiteSpace(line.ItemName) ? item?.Name ?? string.Empty : line.ItemName;
+                return new SavedPalletComponentDto(
+                    line.Id,
+                    line.OrderLineId,
+                    line.ItemId,
+                    name,
+                    line.PlannedQty,
+                    line.FilledQty,
+                    line.IsCompleted);
+            })
+            .ToArray();
+
+        var caps = pallet.Lines
+            .Select(line => itemsById.TryGetValue(line.ItemId, out var item) ? item.MaxQtyPerHu : null)
+            .ToArray();
+        double? capacity = caps.Length > 0
+            && caps.All(cap => cap.HasValue && cap.Value > QtyTolerance)
+            && caps.Select(cap => cap!.Value).Distinct().Count() == 1
+                ? caps[0]
+                : null;
+
+        var isClosedDoc = doc?.Status == DocStatus.Closed;
+        var isFilled = string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase);
+        var isPartial = pallet.IsMixedPallet && pallet.HasComponentProgress && !pallet.AreAllComponentsFilled;
+        var canDelete = !isClosedDoc && IsRemovableFuturePlanPallet(pallet);
+        var disabledReason = isFilled
+            ? "Паллета наполнена/выпущена"
+            : isClosedDoc
+                ? "Выпуск закрыт"
+                : isPartial
+                    ? "Паллета частично наполнена"
+                    : canDelete
+                        ? null
+                        : "Статус паллеты не позволяет удаление";
+
+        var totalQty = pallet.Lines.Count > 0
+            ? pallet.Lines.Sum(line => line.PlannedQty)
+            : pallet.PlannedQty;
+
+        return new SavedPalletDto(
+            kind,
+            pallet.Id,
+            pallet.HuCode,
+            pallet.PrdDocId,
+            doc?.DocRef ?? string.Empty,
+            pallet.Status,
+            pallet.EffectiveStatus,
+            capacity,
+            totalQty,
+            pallet.IsMixedPallet,
+            pallet.HasComponentProgress,
+            canDelete,
+            disabledReason,
+            components);
+    }
+
+    private static string ComputePreviewFingerprint(
+        IDataStore store,
+        Order order,
+        IReadOnlyList<OrderLine> orderLines,
+        IReadOnlyList<ProductionPalletPlanPreviewLine> previewLines,
+        IReadOnlyList<ProductionPallet> pallets)
+    {
+        var previewByLine = previewLines.ToDictionary(line => line.OrderLineId, line => line);
+        var sb = new StringBuilder();
+        sb.Append("order:").Append(order.Id).Append('|')
+            .Append(order.Type).Append('|').Append(order.Status).Append(';');
+        foreach (var line in orderLines.OrderBy(line => line.Id))
+        {
+            previewByLine.TryGetValue(line.Id, out var preview);
+            sb.Append("line:").Append(line.Id).Append('|')
+                .Append(line.Revision).Append('|')
+                .Append(line.CancelledAt.HasValue ? 1 : 0).Append('|')
+                .Append(line.ItemId).Append('|')
+                .Append(FingerprintQty(line.QtyOrdered)).Append('|')
+                .Append(FingerprintQty(preview?.ShortfallQty ?? 0)).Append('|')
+                .Append(preview?.MaxQtyPerHu is { } cap ? FingerprintQty(cap) : "null").Append(';');
+        }
+
+        foreach (var pallet in pallets.OrderBy(pallet => pallet.Id))
+        {
+            sb.Append("pallet:").Append(pallet.Id).Append('|')
+                .Append(pallet.HuCode).Append('|').Append(pallet.Status).Append(';');
+        }
+
+        foreach (var reserve in store.GetOrderReceiptPlanLines(order.Id)
+                     .Where(reserve => reserve.QtyPlanned > 0)
+                     .OrderBy(reserve => reserve.OrderLineId)
+                     .ThenBy(reserve => reserve.ToHu, StringComparer.OrdinalIgnoreCase))
+        {
+            sb.Append("rpl:").Append(reserve.OrderLineId).Append('|')
+                .Append(reserve.ToHu).Append('|').Append(FingerprintQty(reserve.QtyPlanned)).Append(';');
+        }
+
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString()));
+        return Convert.ToHexString(hash);
+    }
+
+    private static string FingerprintQty(double value)
+    {
+        return Math.Round(value, 6).ToString("0.######", CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// Confirms an explicit pallet plan (append-delta). Under an <c>orders</c> row lock, re-reads
+    /// state, verifies the preview fingerprint and equal-cap/allocation rules, then creates ONLY
+    /// the new pallets on the current shortfall. Existing PLANNED/PRINTED/PARTIALLY_FILLED/FILLED
+    /// pallets, their doc_lines, PRD, progress and ledger are never modified. Atomic.
+    /// </summary>
+    public ProductionPalletOrderPlanResult ConfirmExplicitPlan(long orderId, ProductionPalletExplicitPlanRequest request)
+    {
+        if (request == null)
+        {
+            throw new ProductionPalletPlanException(
+                ProductionPalletPlanErrorCodes.PlanPreviewStale, "Пустой запрос плана паллет.");
+        }
+
+        var prdDocId = 0L;
+        var wasExisting = false;
+        var newFingerprint = string.Empty;
+        _data.ExecuteInTransaction(store =>
+        {
+            // 1. Serialize per order via the shared orders row lock (id ASC, like close/outbound/control).
+            if (!store.LockOrdersForUpdate([orderId]))
+            {
+                throw new ProductionPalletPlanException(
+                    ProductionPalletPlanErrorCodes.OrderNotPlannable, "Заказ недоступен для планирования паллет.");
+            }
+
+            // 2. Re-read and re-validate order status under the lock.
+            var order = store.GetOrder(orderId)
+                ?? throw new ProductionPalletPlanException(
+                    ProductionPalletPlanErrorCodes.OrderNotPlannable, "Заказ не найден.");
+            if (order.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged
+                || (order.Type == OrderType.Internal && order.Status is not (OrderStatus.InProgress or OrderStatus.Draft)))
+            {
+                throw new ProductionPalletPlanException(
+                    ProductionPalletPlanErrorCodes.OrderNotPlannable, "Заказ недоступен для планирования паллет.");
+            }
+
+            // 3. Recompute preview + fingerprint; reject stale.
+            var preview = BuildPlanPreviewInStore(store, order);
+            if (!string.Equals(preview.PreviewFingerprint, request.PreviewFingerprint, StringComparison.Ordinal))
+            {
+                throw new ProductionPalletPlanException(
+                    ProductionPalletPlanErrorCodes.PlanPreviewStale,
+                    "Данные заказа изменились с момента предпросмотра. Обновите план паллет.",
+                    currentPreviewFingerprint: preview.PreviewFingerprint);
+            }
+
+            // 4. Zero shortfall is the only NO_PRODUCTION_REQUIRED case.
+            var requiredByLine = preview.Lines
+                .Where(line => line.ShortfallQty > QtyTolerance)
+                .ToDictionary(line => line.OrderLineId, line => line.ShortfallQty);
+            if (requiredByLine.Count == 0)
+            {
+                throw new ProductionPalletPlanException(
+                    ProductionPalletPlanErrorCodes.NoProductionRequired, "Нет производственной нехватки по заказу.");
+            }
+
+            var orderLinesById = store.GetOrderLines(orderId).ToDictionary(line => line.Id, line => line);
+            var itemsById = store.GetItems(null).ToDictionary(item => item.Id, item => item);
+
+            // 5-8. Validate every pallet/component and accumulate per-line allocation.
+            // The input plan is never silently rewritten: an empty pallet or a non-finite /
+            // non-positive component qty is a structured INVALID_PALLET_PLAN error, not a skip.
+            var canonicalPallets = new List<IReadOnlyList<(long OrderLineId, double Qty)>>();
+            var allocatedByLine = new Dictionary<long, double>();
+            var palletNo = 0;
+            foreach (var pallet in request.Pallets ?? Array.Empty<ProductionPalletExplicitPlanPallet?>())
+            {
+                palletNo++;
+                // Malformed JSON (pallets: [null]) yields a null element; reject before any access.
+                if (pallet == null)
+                {
+                    throw new ProductionPalletPlanException(
+                        ProductionPalletPlanErrorCodes.InvalidPalletPlan,
+                        $"Паллета {palletNo} не задана (null в списке паллет).");
+                }
+
+                if (pallet.Components == null || pallet.Components.Count == 0)
+                {
+                    throw new ProductionPalletPlanException(
+                        ProductionPalletPlanErrorCodes.InvalidPalletPlan,
+                        $"Паллета {palletNo} пуста: каждая паллета плана должна содержать хотя бы один компонент.");
+                }
+
+                var byLine = new Dictionary<long, double>();
+                foreach (var component in pallet.Components)
+                {
+                    // Malformed JSON (components: [null]) yields a null element; reject before any access.
+                    if (component == null)
+                    {
+                        throw new ProductionPalletPlanException(
+                            ProductionPalletPlanErrorCodes.InvalidPalletPlan,
+                            $"Паллета {palletNo}: компонент не задан (null в списке компонентов).");
+                    }
+
+                    if (!orderLinesById.TryGetValue(component.OrderLineId, out var orderLine) || orderLine.OrderId != orderId)
+                    {
+                        throw new ProductionPalletPlanException(
+                            ProductionPalletPlanErrorCodes.OrderLineNotFound,
+                            $"Строка заказа {component.OrderLineId} не найдена в этом заказе.");
+                    }
+
+                    if (orderLine.CancelledAt != null)
+                    {
+                        throw new ProductionPalletPlanException(
+                            ProductionPalletPlanErrorCodes.OrderLineCancelled,
+                            $"Строка заказа {component.OrderLineId} отменена.");
+                    }
+
+                    if (double.IsNaN(component.Qty) || double.IsInfinity(component.Qty) || component.Qty <= QtyTolerance)
+                    {
+                        throw new ProductionPalletPlanException(
+                            ProductionPalletPlanErrorCodes.InvalidPalletPlan,
+                            $"Паллета {palletNo}: недопустимое количество компонента строки {component.OrderLineId}. " +
+                            "Количество должно быть конечным и строго больше нуля.");
+                    }
+
+                    // Canonicalize duplicate components of the same line within a pallet by summing.
+                    byLine[component.OrderLineId] = byLine.GetValueOrDefault(component.OrderLineId) + component.Qty;
+                }
+
+                // Equal-cap: all components share the same positive max_qty_per_hu; sum <= capacity.
+                var caps = byLine.Keys
+                    .Select(lineId => itemsById.TryGetValue(orderLinesById[lineId].ItemId, out var item) ? item.MaxQtyPerHu : null)
+                    .ToArray();
+                if (caps.Any(cap => !cap.HasValue || cap.Value <= QtyTolerance))
+                {
+                    throw new ProductionPalletPlanException(
+                        ProductionPalletPlanErrorCodes.PalletCapacityMismatch,
+                        "Не задана вместимость (max_qty_per_hu) для товара на паллете.");
+                }
+
+                if (caps.Select(cap => cap!.Value).Distinct().Count() > 1)
+                {
+                    throw new ProductionPalletPlanException(
+                        ProductionPalletPlanErrorCodes.PalletCapacityMismatch,
+                        "Разная вместимость (max_qty_per_hu) у товаров mixed-паллеты.");
+                }
+
+                var capacity = caps[0]!.Value;
+                var total = byLine.Values.Sum();
+                if (total > capacity + QtyTolerance)
+                {
+                    throw new ProductionPalletPlanException(
+                        ProductionPalletPlanErrorCodes.PalletOverCapacity,
+                        $"Сумма на паллете ({FingerprintQty(total)}) превышает вместимость {FingerprintQty(capacity)}.");
+                }
+
+                canonicalPallets.Add(byLine.Select(pair => (pair.Key, pair.Value)).ToArray());
+                foreach (var pair in byLine)
+                {
+                    allocatedByLine[pair.Key] = allocatedByLine.GetValueOrDefault(pair.Key) + pair.Value;
+                }
+            }
+
+            // 9. Exact coverage: allocated per line must equal the current shortfall.
+            var mismatches = new List<LineAllocationMismatchDetail>();
+            foreach (var lineId in requiredByLine.Keys.Union(allocatedByLine.Keys))
+            {
+                var required = requiredByLine.GetValueOrDefault(lineId);
+                var allocated = allocatedByLine.GetValueOrDefault(lineId);
+                if (Math.Abs(required - allocated) > QtyTolerance)
+                {
+                    mismatches.Add(new LineAllocationMismatchDetail(
+                        lineId,
+                        Math.Round(required, 6),
+                        Math.Round(allocated, 6),
+                        Math.Round(allocated - required, 6)));
+                }
+            }
+
+            if (mismatches.Count > 0)
+            {
+                // Details stay a typed list; the endpoint owns the snake_case wire mapping.
+                throw new ProductionPalletPlanException(
+                    ProductionPalletPlanErrorCodes.LineAllocationMismatch,
+                    "Распределение по строкам не совпадает с производственной нехваткой.",
+                    details: (IReadOnlyList<LineAllocationMismatchDetail>)mismatches);
+            }
+
+            // 10. Append only new doc_lines/pallets; existing plan is untouched.
+            var targetLocation = ResolveProductionPalletPlanLocation(store);
+            var existingOpen = FindPreparedOpenProductionReceipt(store, orderId, requireRemaining: false);
+            prdDocId = existingOpen?.Id
+                ?? FindReusableEmptyProductionReceipt(store, orderId)?.Id
+                ?? CreateProductionReceipt(store, order).Id;
+            wasExisting = existingOpen != null;
+
+            foreach (var pallet in canonicalPallets)
+            {
+                var huCode = store.CreateProductionPalletHuCode(PlanHuCreatedBy);
+                foreach (var (componentLineId, qty) in pallet)
+                {
+                    var orderLine = orderLinesById[componentLineId];
+                    store.AddDocLine(new DocLine
+                    {
+                        DocId = prdDocId,
+                        OrderLineId = componentLineId,
+                        ProductionPurpose = orderLine.ProductionPurpose,
+                        ItemId = orderLine.ItemId,
+                        Qty = qty,
+                        QtyInput = null,
+                        UomCode = null,
+                        FromLocationId = null,
+                        ToLocationId = targetLocation.Id,
+                        FromHu = null,
+                        ToHu = huCode,
+                        PackSingleHu = true
+                    });
+                }
+            }
+
+            store.PlanProductionPallets(prdDocId, DateTime.Now);
+
+            // The new preview fingerprint is part of the atomic confirm result: recomputed
+            // in the same transaction, before the orders row lock is released. Callers must
+            // not re-read business state after commit to obtain it.
+            newFingerprint = BuildPlanPreviewInStore(store, order).PreviewFingerprint;
+        });
+
+        return BuildOrderPlanResult(orderId, prdDocId, wasExisting, newFingerprint);
+    }
+
     private static bool AppendPlannedPalletsForOrderLinesInStore(
         IDataStore store,
         Order order,
@@ -210,7 +668,6 @@ public sealed class ProductionPalletService
 
         var itemsById = store.GetItems(null).ToDictionary(item => item.Id, item => item);
         var orderLinesById = store.GetOrderLines(orderId).ToDictionary(line => line.Id, line => line);
-        var manualMixedLineIds = GetManualMixedOrderLineIds(remainingLines, orderLinesById);
         foreach (var line in remainingLines)
         {
             if (!itemsById.ContainsKey(line.ItemId))
@@ -218,9 +675,15 @@ public sealed class ProductionPalletService
                 throw new InvalidOperationException("Номенклатура строки заказа не найдена.");
             }
 
-            if (manualMixedLineIds.Contains(line.OrderLineId))
+            // Legacy mixed grouping via order_lines.production_pallet_group is no longer a
+            // planning source: it could produce an over-capacity mixed pallet. Fail fast (before
+            // any writes) and route the operator to the explicit pallet constructor.
+            if (orderLinesById.TryGetValue(line.OrderLineId, out var orderLine)
+                && !string.IsNullOrWhiteSpace(orderLine.ProductionPalletGroup))
             {
-                continue;
+                throw new ProductionPalletPlanException(
+                    ProductionPalletPlanErrorCodes.LegacyMixedGroupNotSupported,
+                    "Устаревшая группировка mixed-паллет больше не поддерживается. Используйте конструктор паллет.");
             }
 
             if (!itemsById.TryGetValue(line.ItemId, out var item)
@@ -237,28 +700,10 @@ public sealed class ProductionPalletService
             prdDocId = FindReusableEmptyProductionReceipt(store, orderId)?.Id ?? CreateProductionReceipt(store, order).Id;
         }
 
-        var mixedLineIds = new HashSet<long>();
-        foreach (var group in remainingLines
-                     .Where(line => manualMixedLineIds.Contains(line.OrderLineId))
-                     .GroupBy(line => orderLinesById[line.OrderLineId].ProductionPalletGroup!.Trim().ToUpperInvariant()))
-        {
-            var groupLines = group.OrderBy(line => line.OrderLineId).ToList();
-            foreach (var line in groupLines)
-            {
-                if (!itemsById.ContainsKey(line.ItemId))
-                {
-                    throw new InvalidOperationException("Номенклатура строки заказа не найдена.");
-                }
-            }
-
-            AddMixedPlannedPalletLines(store, prdDocId, groupLines, targetLocation.Id);
-            foreach (var line in groupLines)
-            {
-                mixedLineIds.Add(line.OrderLineId);
-            }
-        }
-
-        foreach (var line in remainingLines.Where(line => !mixedLineIds.Contains(line.OrderLineId)))
+        // Server /plan path is single-item only: every planned line is split by its own
+        // items.max_qty_per_hu. Mixed pallets are produced exclusively by the explicit
+        // constructor (plan-explicit), where equal-cap is enforced.
+        foreach (var line in remainingLines)
         {
             var item = itemsById[line.ItemId];
             AddPlannedPalletLines(store, prdDocId, line, item.MaxQtyPerHu!.Value, targetLocation.Id);
@@ -1926,7 +2371,11 @@ public sealed class ProductionPalletService
                || fullName.Contains("Castle.Proxies", StringComparison.OrdinalIgnoreCase);
     }
 
-    private ProductionPalletOrderPlanResult BuildOrderPlanResult(long orderId, long prdDocId, bool wasExisting)
+    private ProductionPalletOrderPlanResult BuildOrderPlanResult(
+        long orderId,
+        long prdDocId,
+        bool wasExisting,
+        string? newPreviewFingerprint = null)
     {
         var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
         var doc = _data.GetDoc(prdDocId) ?? throw new InvalidOperationException("Документ выпуска не найден.");
@@ -1941,7 +2390,8 @@ public sealed class ProductionPalletService
             ProductionRequired = true,
             Message = wasExisting ? "План паллет уже сформирован" : "План паллет сформирован",
             Summary = document.Summary,
-            Document = document
+            Document = document,
+            NewPreviewFingerprint = newPreviewFingerprint ?? string.Empty
         };
     }
 
@@ -2155,52 +2605,6 @@ public sealed class ProductionPalletService
 
             remainingQty -= chunkQty;
         }
-    }
-
-    private static HashSet<long> GetManualMixedOrderLineIds(
-        IReadOnlyList<OrderReceiptLine> remainingLines,
-        IReadOnlyDictionary<long, OrderLine> orderLinesById)
-    {
-        var manualMixedLineIds = new HashSet<long>();
-        foreach (var group in remainingLines
-                     .Where(line => orderLinesById.TryGetValue(line.OrderLineId, out var orderLine)
-                                    && !string.IsNullOrWhiteSpace(orderLine.ProductionPalletGroup))
-                     .GroupBy(line => orderLinesById[line.OrderLineId].ProductionPalletGroup!.Trim().ToUpperInvariant())
-                     .Where(group => group.Count() > 1))
-        {
-            foreach (var line in group)
-            {
-                manualMixedLineIds.Add(line.OrderLineId);
-            }
-        }
-
-        return manualMixedLineIds;
-    }
-
-    private static IReadOnlyCollection<long> ExpandManualMixedGroupScope(
-        IDataStore store,
-        long orderId,
-        IEnumerable<long> scopedOrderLineIds)
-    {
-        var orderLines = store.GetOrderLines(orderId);
-        var scopedIds = scopedOrderLineIds.Where(id => id > 0).ToHashSet();
-        var scopedGroups = orderLines
-            .Where(line => scopedIds.Contains(line.Id) && !string.IsNullOrWhiteSpace(line.ProductionPalletGroup))
-            .Select(line => line.ProductionPalletGroup!.Trim())
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        if (scopedGroups.Count == 0)
-        {
-            return scopedIds;
-        }
-
-        foreach (var line in orderLines.Where(line =>
-                     !string.IsNullOrWhiteSpace(line.ProductionPalletGroup)
-                     && scopedGroups.Contains(line.ProductionPalletGroup!.Trim())))
-        {
-            scopedIds.Add(line.Id);
-        }
-
-        return scopedIds;
     }
 
     internal static IReadOnlyList<OrderReceiptLine> GetLinesNeedingPalletAppend(
@@ -2484,33 +2888,6 @@ public sealed class ProductionPalletService
         }
 
         return pallet.OrderLineId == orderLineId;
-    }
-
-    private static void AddMixedPlannedPalletLines(
-        IDataStore store,
-        long prdDocId,
-        IReadOnlyList<OrderReceiptLine> lines,
-        long toLocationId)
-    {
-        var huCode = store.CreateProductionPalletHuCode(PlanHuCreatedBy);
-        foreach (var line in lines)
-        {
-            store.AddDocLine(new DocLine
-            {
-                DocId = prdDocId,
-                OrderLineId = line.OrderLineId,
-                ProductionPurpose = line.ProductionPurpose,
-                ItemId = line.ItemId,
-                Qty = line.QtyRemaining,
-                QtyInput = null,
-                UomCode = null,
-                FromLocationId = null,
-                ToLocationId = toLocationId,
-                FromHu = null,
-                ToHu = huCode,
-                PackSingleHu = true
-            });
-        }
     }
 
     private ProductionPalletDocument BuildFillingDocument(

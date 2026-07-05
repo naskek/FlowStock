@@ -53,6 +53,16 @@ public sealed class OrderHuReservationApplyService
             throw new InvalidOperationException("Хранилище не поддерживает read-model кандидатов HU.");
         }
 
+        // Ранний orders row lock (тот же примитив id ASC, что Close/Outbound/OrderControl и
+        // plan-explicit confirm): заказ, строки, receipt plan и кандидаты читаются уже под локом,
+        // а замена coverage сериализуется с конкурентным подтверждением плана паллет.
+        if (!store.LockOrdersForUpdate([customerOrderId]))
+        {
+            throw new OrderHuReservationApplyException(
+                "ORDER_NOT_FOUND",
+                $"Заказ {customerOrderId} не найден.");
+        }
+
         var order = store.GetOrder(customerOrderId);
         if (order == null)
         {
@@ -101,6 +111,7 @@ public sealed class OrderHuReservationApplyService
         var replacementPlanLines = new List<OrderReceiptPlanLine>();
         var appliedLines = new List<OrderHuReservationApplyLineResult>();
         var huToRequestLine = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        var palletsToCancel = new List<long>();
 
         foreach (var requestLine in request.Lines)
         {
@@ -247,6 +258,18 @@ public sealed class OrderHuReservationApplyService
                 });
             }
 
+            // Реконсиляция производственного покрытия (как в apply-final): привязка складского HU
+            // отменяет ровно surplus безопасных PLANNED/PRINTED паллет строки, чтобы warehouse-bound +
+            // active production не превышали потребность. FILLED/partial не трогаются.
+            var finalBoundQtyByHu = selectedHu
+                .Where(hu => !string.IsNullOrWhiteSpace(hu.HuCode))
+                .GroupBy(hu => hu.HuCode, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.Sum(hu => Math.Max(0, hu.Qty)), StringComparer.OrdinalIgnoreCase);
+            var futurePlanSurplus = HuBindingApplyShared.ComputeCancellableFuturePlanSurplus(
+                store, customerOrderId, orderLine, finalBoundQtyByHu);
+            palletsToCancel.AddRange(HuBindingApplyShared.SelectFuturePlanPalletsToCancel(
+                store, customerOrderId, orderLine, futurePlanSurplus));
+
             appliedLines.Add(BuildAppliedLineResult(orderLine, selectedHu, reservedQty));
         }
 
@@ -258,6 +281,20 @@ public sealed class OrderHuReservationApplyService
             && !order.UseReservedStock)
         {
             store.UpdateOrder(CopyOrderWithReservedStock(order));
+        }
+
+        if (palletsToCancel.Count > 0)
+        {
+            var cancelled = store.CancelProductionPalletsForReadyHuBinding(
+                palletsToCancel, "replaced_by_ready_hu", DateTime.UtcNow);
+            if (cancelled != palletsToCancel.Distinct().Count())
+            {
+                throw new OrderHuReservationApplyException(
+                    "HU_BINDING_PLAN_CONFLICT",
+                    "Плановые паллеты изменились и не могут быть безопасно отменены.");
+            }
+
+            store.RemoveDocLinesForProductionPallets(palletsToCancel);
         }
 
         new OrderService(store).RefreshPersistedStatus(customerOrderId);

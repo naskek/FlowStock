@@ -465,87 +465,19 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        PlanPalletsButton.IsEnabled = false;
-        PrintPalletLabelsButton.IsEnabled = false;
         try
         {
-            int? activePalletCountBefore = null;
-            var beforeOptionsResult = await _services.WpfProductionPalletApi.TryGetCancelPlanOptionsAsync(_orderId.Value).ConfigureAwait(true);
-            if (beforeOptionsResult.IsSuccess)
+            // Все состояния кнопки (создать/дополнить/открыть) ведут в один конструктор паллет.
+            // Состав решает сервер через plan-preview/plan-explicit; legacy /plan отсюда не вызывается.
+            var window = new ProductionPalletBuilderWindow(_services, _orderId.Value)
             {
-                activePalletCountBefore = beforeOptionsResult.Rows.Count;
-            }
-
-            var result = await _services.WpfProductionPalletApi.TryPlanOrderAsync(_orderId.Value).ConfigureAwait(true);
-            if (!result.IsSuccess)
+                Owner = this
+            };
+            window.ShowDialog();
+            if (window.PlanChanged)
             {
-                MessageBox.Show(result.Message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-
-            if (!result.ProductionRequired)
-            {
-                MessageBox.Show(result.Message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
                 LoadOrder();
-                return;
             }
-
-            var hasPalletPlan = result.PlannedPalletCount > 0 || HasOpenProductionPalletPlan(_orderId.Value);
-            if (!hasPalletPlan)
-            {
-                _services.AppLogger.Error(
-                    $"Production pallet plan returned success without pallets for order_id={_orderId.Value}: " +
-                    $"planned_pallet_count={result.PlannedPalletCount}, prd_doc_id={result.PrdDocId}, was_existing={result.WasExisting}");
-                MessageBox.Show(
-                    "Сервер подтвердил операцию, но план паллет не создан. Проверьте строки заказа и max_qty_per_hu.",
-                    "Паллеты",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
-                return;
-            }
-
-            int? activePalletCountAfter = null;
-            var afterOptionsResult = await _services.WpfProductionPalletApi.TryGetCancelPlanOptionsAsync(_orderId.Value).ConfigureAwait(true);
-            if (afterOptionsResult.IsSuccess)
-            {
-                activePalletCountAfter = afterOptionsResult.Rows.Count;
-            }
-
-            var printRowsResult = await _services.WpfProductionPalletApi.TryGetPrintRowsAsync(_orderId.Value).ConfigureAwait(true);
-            if (!printRowsResult.IsSuccess)
-            {
-                _services.AppLogger.Error(
-                    $"Production pallet print rows failed after plan for order_id={_orderId.Value}: {printRowsResult.Message}");
-            }
-            else if (printRowsResult.Rows.Count == 0)
-            {
-                _services.AppLogger.Error(
-                    $"Production pallet print rows empty after plan for order_id={_orderId.Value}, planned_pallet_count={result.PlannedPalletCount}");
-            }
-
-            string palletCountMessage;
-            if (activePalletCountBefore.HasValue && activePalletCountAfter.HasValue)
-            {
-                palletCountMessage =
-                    $"Добавлено паллет: {Math.Max(0, activePalletCountAfter.Value - activePalletCountBefore.Value)}{Environment.NewLine}" +
-                    $"Всего активных паллет в плане: {activePalletCountAfter.Value}";
-            }
-            else if (activePalletCountAfter.HasValue)
-            {
-                palletCountMessage = $"Всего паллет в плане: {activePalletCountAfter.Value}";
-            }
-            else
-            {
-                palletCountMessage = $"Всего паллет в плане: {result.PlannedPalletCount}";
-            }
-
-            var message =
-                $"{result.Message}{Environment.NewLine}{Environment.NewLine}" +
-                $"{palletCountMessage}{Environment.NewLine}" +
-                $"Запланировано количество: {FormatQty(result.PlannedQty)}{Environment.NewLine}" +
-                $"Осталось наполнить: {FormatQty(result.RemainingQty)}";
-            MessageBox.Show(message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
-            LoadOrder();
         }
         finally
         {
@@ -1891,134 +1823,6 @@ public partial class OrderDetailsWindow : Window
         DeleteLine_Click(sender, new RoutedEventArgs());
     }
 
-    private void MixedPalletCheckBox_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            if (!EnsureEditable())
-            {
-                RestoreMixedPalletUiState();
-                return;
-            }
-
-            if (sender is not System.Windows.Controls.CheckBox checkBox || TryGetLineFromGridContext(checkBox.DataContext, out var line) == false)
-            {
-                MessageBox.Show("Выберите строку.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
-                RestoreMixedPalletUiState();
-                return;
-            }
-
-            if (!line.IsProductionPalletGroupEditable)
-            {
-                LoadOrder();
-                MessageBox.Show("По этой строке уже есть активная паллета плана. Переназначение общего HU запрещено.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
-            }
-
-            if (checkBox.IsChecked == true)
-            {
-                if (line.MixedPalletGroupNumber < 1)
-                {
-                    line.MixedPalletGroupNumber = 1;
-                }
-
-                line.ProductionPalletGroup = ProductionPalletGroupHelper.Format(line.MixedPalletGroupNumber);
-            }
-            else
-            {
-                line.ProductionPalletGroup = null;
-            }
-
-            line.NotifyPresentationChanged();
-            MarkDirty();
-            RefreshOrderLinesGridPreservingSelection();
-            UpdatePalletButtons();
-        }
-        catch (Exception ex)
-        {
-            _services.AppLogger.Error("Mixed pallet checkbox change failed", ex);
-            RestoreMixedPalletUiState();
-            MessageBox.Show(
-                $"Не удалось изменить признак общего HU: {ex.Message}",
-                "Заказы",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
-        }
-    }
-
-    private void MixedPalletGroupTextBox_PreviewTextInput(object sender, TextCompositionEventArgs e)
-    {
-        e.Handled = e.Text.Length != 1 || e.Text[0] < '1' || e.Text[0] > '9';
-    }
-
-    private void MixedPalletGroupTextBox_LostFocus(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            if (!EnsureEditable(false))
-            {
-                RestoreMixedPalletUiState();
-                return;
-            }
-
-            if (sender is not System.Windows.Controls.TextBox textBox || TryGetLineFromGridContext(textBox.DataContext, out var line) == false)
-            {
-                RestoreMixedPalletUiState();
-                return;
-            }
-
-            if (!line.IsProductionPalletGroupEditable)
-            {
-                RestoreMixedPalletUiState();
-                return;
-            }
-
-            if (!line.IsMixedPalletLine)
-            {
-                return;
-            }
-
-            if (!int.TryParse(textBox.Text, out var groupNumber) || groupNumber < 1)
-            {
-                groupNumber = 1;
-                line.MixedPalletGroupNumber = groupNumber;
-                textBox.Text = groupNumber.ToString();
-            }
-            else
-            {
-                line.MixedPalletGroupNumber = groupNumber;
-            }
-
-            line.ProductionPalletGroup = ProductionPalletGroupHelper.Format(line.MixedPalletGroupNumber);
-            line.NotifyPresentationChanged();
-            MarkDirty();
-            RefreshOrderLinesGridPreservingSelection();
-        }
-        catch (Exception ex)
-        {
-            _services.AppLogger.Error("Mixed pallet group change failed", ex);
-            RestoreMixedPalletUiState();
-            MessageBox.Show(
-                $"Не удалось изменить группу общего HU: {ex.Message}",
-                "Заказы",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
-        }
-    }
-
-    private void RestoreMixedPalletUiState()
-    {
-        try
-        {
-            OrderLinesGrid.CancelEdit(DataGridEditingUnit.Cell);
-            RefreshOrderLinesGridPreservingSelection();
-        }
-        catch (Exception ex)
-        {
-            _services.AppLogger.Error("Restore mixed pallet UI state failed", ex);
-        }
-    }
-
     private void OrderLinesGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
         if (_suppressOrderLineSelectionChanged)
@@ -2266,7 +2070,6 @@ public partial class OrderDetailsWindow : Window
             _productionPalletHuLocked = HasPrintedOrFilledProductionPallets(_order.Id);
         }
 
-        RefreshProductionPalletGroupEditability();
         UpdateEmptyState();
         RefreshOrderLinesGridPreservingSelection();
         UpdatePalletButtons();
@@ -2378,20 +2181,13 @@ public partial class OrderDetailsWindow : Window
         var canDeletePlan = _orderId.HasValue
                             && _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
                             && HasOpenProductionPalletPlan(_orderId.Value);
-        PlanPalletsButton.IsEnabled = canPlan;
+        var planButtonState = ResolvePlanPalletsButtonState(canPlan);
+        PlanPalletsButton.Content = planButtonState.Label;
+        PlanPalletsButton.IsEnabled = canPlan && planButtonState.IsEnabled;
         PrintPalletLabelsButton.IsEnabled = canPrint;
         DeletePalletPlanButton.IsEnabled = canDeletePlan;
         OpenProductionReceiptButton.IsEnabled = _orderId.HasValue && CanOpenProductionReceipt(_orderId.Value);
-        RefreshProductionPalletGroupEditability();
         OrderLinesGrid.Tag = EnsureEditable(false);
-    }
-
-    private void RefreshProductionPalletGroupEditability()
-    {
-        var blockedLineIds = _orderId.HasValue
-            ? GetOrderLineIdsWithActiveProductionPallets(_orderId.Value)
-            : new HashSet<long>();
-        ProductionPalletGroupEditability.Apply(_lines, blockedLineIds, EnsureEditable(false));
     }
 
     private void OpenProductionReceipt_Click(object sender, RoutedEventArgs e)
@@ -2514,6 +2310,36 @@ public partial class OrderDetailsWindow : Window
     private bool HasMarkableLines()
     {
         return _lines.Any(line => !string.IsNullOrWhiteSpace(line.Gtin));
+    }
+
+    /// <summary>
+    /// Четыре состояния кнопки плана: создать/дополнить/открыть/недоступно. Признаки
+    /// вычисляются тем же серверным кодом (Core preview по стору) и являются только
+    /// подсказкой UI; окончательное решение принимает confirm на сервере.
+    /// </summary>
+    private ProductionPalletPlanButtonState.State ResolvePlanPalletsButtonState(bool canPlan)
+    {
+        if (!_orderId.HasValue || !canPlan)
+        {
+            return new ProductionPalletPlanButtonState.State("План паллет", false);
+        }
+
+        try
+        {
+            var hasSavedPallets = _services.DataStore.GetDocsByOrder(_orderId.Value)
+                .Where(doc => doc.Type == DocType.ProductionReceipt)
+                .SelectMany(doc => _services.DataStore.GetProductionPalletsByDoc(doc.Id))
+                .Any(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase));
+            var productionRequired = new ProductionPalletService(_services.DataStore)
+                .BuildPlanPreview(_orderId.Value)
+                .ProductionRequired;
+            return ProductionPalletPlanButtonState.Resolve(hasSavedPallets, productionRequired);
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error($"Resolve pallet plan button state failed for order_id={_orderId}", ex);
+            return new ProductionPalletPlanButtonState.State("План паллет", true);
+        }
     }
 
     private bool HasOpenProductionPalletPlan(long orderId)

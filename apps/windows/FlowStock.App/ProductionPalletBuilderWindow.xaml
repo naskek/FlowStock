@@ -1,0 +1,243 @@
+<Window x:Class="FlowStock.App.ProductionPalletBuilderWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:FlowStock.App"
+        Title="Конструктор паллет"
+        Height="720"
+        Width="1160"
+        MinHeight="560"
+        MinWidth="980"
+        WindowStartupLocation="CenterOwner"
+        Loaded="ProductionPalletBuilderWindow_Loaded"
+        Closing="ProductionPalletBuilderWindow_Closing">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <local:InverseBooleanToVisibilityConverter x:Key="InverseBoolToVis" />
+
+        <DataTemplate x:Key="SavedPalletTemplate" DataType="{x:Type local:WpfSavedPallet}">
+            <Border BorderBrush="#EAECF0" BorderThickness="1" CornerRadius="6" Margin="4" Padding="8" Background="#F9FAFB">
+                <StackPanel>
+                    <TextBlock Text="{Binding TitleText, Mode=OneWay}" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding QtyText, Mode=OneWay}" Foreground="#475467" />
+                    <TextBlock Text="{Binding DeleteHintText, Mode=OneWay}" Foreground="#98A2B3" TextWrapping="Wrap" />
+                    <ItemsControl ItemsSource="{Binding Components}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate DataType="{x:Type local:WpfSavedPalletComponent}">
+                                <TextBlock Margin="10,1,0,1" Foreground="#344054">
+                                    <Run Text="{Binding ItemName, Mode=OneWay}" />
+                                    <Run Text=" — " />
+                                    <Run Text="{Binding ProgressText, Mode=OneWay}" />
+                                </TextBlock>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+    </Window.Resources>
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8" VerticalAlignment="Center">
+            <TextBlock x:Name="HeaderText" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
+            <Border x:Name="DirtyBadge"
+                    Background="#FEF0C7"
+                    BorderBrush="#FEC84B"
+                    BorderThickness="1"
+                    CornerRadius="10"
+                    Padding="8,2"
+                    Margin="12,0,0,0"
+                    Visibility="Collapsed">
+                <TextBlock x:Name="DirtyBadgeText" Foreground="#B54708" FontSize="12" />
+            </Border>
+        </StackPanel>
+
+        <StackPanel Grid.Row="1" Margin="0,0,0,8">
+            <TextBlock x:Name="ServerErrorText"
+                       Foreground="#B42318"
+                       TextWrapping="Wrap"
+                       Visibility="Collapsed" />
+            <ItemsControl x:Name="ValidationErrorsList">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <TextBlock Text="{Binding}" Foreground="#B54708" TextWrapping="Wrap" />
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </StackPanel>
+
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="3*" />
+                <ColumnDefinition Width="2*" />
+            </Grid.ColumnDefinitions>
+
+            <GroupBox Grid.Column="0" Header="Новые паллеты (дельта на текущую нехватку)" Margin="0,0,8,0">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="4">
+                        <Button x:Name="ResetButton"
+                                Content="Вернуть авторазбиение"
+                                Padding="10,4"
+                                Margin="0,0,8,0"
+                                ToolTip="Сбросить ручные изменения и восстановить предложенное сервером распределение"
+                                Click="Reset_Click" />
+                        <Button x:Name="AddPalletButton" Content="Добавить паллету" Padding="10,4" Click="AddPallet_Click" />
+                    </StackPanel>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <ItemsControl x:Name="SuggestedPalletsList">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="{x:Type local:BuilderPalletViewModel}">
+                                    <Border BorderBrush="#D0D5DD" BorderThickness="1" CornerRadius="6" Margin="4" Padding="8">
+                                        <StackPanel>
+                                            <DockPanel>
+                                                <TextBlock Text="{Binding Title}" FontWeight="SemiBold" />
+                                                <Button Content="Удалить паллету"
+                                                        HorizontalAlignment="Right"
+                                                        Padding="6,2"
+                                                        Click="RemovePallet_Click"
+                                                        Tag="{Binding}" />
+                                            </DockPanel>
+
+                                            <Grid Margin="0,8,0,2">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="90" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="120" />
+                                                    <ColumnDefinition Width="70" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Grid.Column="0" Text="Позиция" FontSize="11" Foreground="#667085" />
+                                                <TextBlock Grid.Column="1" Text="Количество" FontSize="11" Foreground="#667085" HorizontalAlignment="Right" />
+                                                <TextBlock Grid.Column="2" Text="" />
+                                                <TextBlock Grid.Column="3" Text="Перенести в паллету №" FontSize="11" Foreground="#667085" TextWrapping="Wrap" />
+                                                <TextBlock Grid.Column="4" Text="Кол-во" FontSize="11" Foreground="#667085" />
+                                                <TextBlock Grid.Column="5" Text="Действие" FontSize="11" Foreground="#667085" Margin="4,0,0,0" />
+                                            </Grid>
+
+                                            <ItemsControl ItemsSource="{Binding Components}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate DataType="{x:Type local:BuilderComponentViewModel}">
+                                                        <Grid Margin="0,2,0,2">
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*" />
+                                                                <ColumnDefinition Width="90" />
+                                                                <ColumnDefinition Width="Auto" />
+                                                                <ColumnDefinition Width="120" />
+                                                                <ColumnDefinition Width="70" />
+                                                                <ColumnDefinition Width="Auto" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBlock Grid.Column="0" Text="{Binding ItemName}" VerticalAlignment="Center" />
+                                                            <TextBox Grid.Column="1"
+                                                                     x:Name="ComponentQtyBox"
+                                                                     Text="{Binding Qty, Mode=OneWay, StringFormat={}{0:0.###}}"
+                                                                     HorizontalContentAlignment="Right"
+                                                                     ToolTip="Количество этой позиции на паллете"
+                                                                     LostFocus="ComponentQty_LostFocus"
+                                                                     Tag="{Binding}" />
+                                                            <Button Grid.Column="2"
+                                                                    Content="Убрать"
+                                                                    Margin="4,0,12,0"
+                                                                    Padding="6,0"
+                                                                    ToolTip="Убрать компонент с паллеты"
+                                                                    Click="RemoveComponent_Click"
+                                                                    Tag="{Binding}" />
+                                                            <TextBox Grid.Column="3"
+                                                                     Tag="{Binding}"
+                                                                     x:Name="MoveTargetBox"
+                                                                     ToolTip="Номер паллеты, в которую перенести количество"
+                                                                     Text="" />
+                                                            <TextBox Grid.Column="4"
+                                                                     Margin="4,0,0,0"
+                                                                     x:Name="MoveQtyBox"
+                                                                     ToolTip="Количество к переносу"
+                                                                     Text="" />
+                                                            <Button Grid.Column="5"
+                                                                    Content="Перенести"
+                                                                    Margin="4,0,0,0"
+                                                                    Padding="8,0"
+                                                                    ToolTip="Перенести указанное количество в паллету с указанным номером"
+                                                                    Click="MoveQty_Click"
+                                                                    Tag="{Binding}" />
+                                                        </Grid>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+
+                                            <Border BorderBrush="#EAECF0" BorderThickness="0,1,0,0" Margin="0,8,0,0" Padding="0,8,0,0">
+                                                <Grid>
+                                                    <StackPanel Orientation="Horizontal"
+                                                                Visibility="{Binding HasRemainders, Converter={StaticResource BoolToVis}}">
+                                                        <TextBlock Text="Добавить позицию:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="#475467" />
+                                                        <ComboBox Width="260"
+                                                                  ItemsSource="{Binding AvailableRemainders}"
+                                                                  SelectedItem="{Binding SelectedRemainder, Mode=TwoWay}"
+                                                                  DisplayMemberPath="DisplayText"
+                                                                  ToolTip="Строка заказа с нераспределённым остатком" />
+                                                        <Button Content="Добавить выбранную позицию"
+                                                                Margin="8,0,0,0"
+                                                                Padding="8,2"
+                                                                IsEnabled="{Binding CanAddSelectedRemainder}"
+                                                                Click="AddSelectedRemainder_Click"
+                                                                Tag="{Binding}" />
+                                                    </StackPanel>
+                                                    <TextBlock Text="{Binding RemainderEmptyText}"
+                                                               Foreground="#98A2B3"
+                                                               VerticalAlignment="Center"
+                                                               Visibility="{Binding HasRemainders, Converter={StaticResource InverseBoolToVis}}" />
+                                                </Grid>
+                                            </Border>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </DockPanel>
+            </GroupBox>
+
+            <TabControl Grid.Column="1">
+                <TabItem x:Name="OpenPlanTab" Header="Текущий план (0)">
+                    <Grid>
+                        <TextBlock x:Name="OpenPlanEmptyText"
+                                   TextWrapping="Wrap"
+                                   Foreground="#667085"
+                                   Margin="8"
+                                   Visibility="Collapsed" />
+                        <ScrollViewer x:Name="OpenPlanScroll" VerticalScrollBarVisibility="Auto">
+                            <ItemsControl x:Name="OpenPlanList" ItemTemplate="{StaticResource SavedPalletTemplate}" />
+                        </ScrollViewer>
+                    </Grid>
+                </TabItem>
+                <TabItem x:Name="HistoryTab" Header="История (0)">
+                    <Grid>
+                        <TextBlock x:Name="HistoryEmptyText"
+                                   TextWrapping="Wrap"
+                                   Foreground="#667085"
+                                   Margin="8"
+                                   Visibility="Collapsed" />
+                        <ScrollViewer x:Name="HistoryScroll" VerticalScrollBarVisibility="Auto">
+                            <ItemsControl x:Name="HistoricalList" ItemTemplate="{StaticResource SavedPalletTemplate}" />
+                        </ScrollViewer>
+                    </Grid>
+                </TabItem>
+            </TabControl>
+        </Grid>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+            <Button x:Name="RefreshButton"
+                    Content="Обновить данные с сервера"
+                    Padding="12,6"
+                    Margin="0,0,8,0"
+                    ToolTip="Заново загрузить актуальный план и остатки с сервера"
+                    Click="Refresh_Click" />
+            <Button x:Name="SaveButton" Content="Сохранить" Padding="12,6" Margin="0,0,8,0" Click="Save_Click" />
+            <Button x:Name="CloseButton" Content="Закрыть" Padding="12,6" IsCancel="True" />
+        </StackPanel>
+    </Grid>
+</Window>

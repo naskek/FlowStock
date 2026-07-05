@@ -47,6 +47,18 @@ public sealed class OrderHuBindingManageApplyService
             throw new InvalidOperationException("Хранилище не поддерживает read-model кандидатов HU.");
         }
 
+        // Ранний orders row lock одним набором всех затронутых заказов (примитив сортирует id ASC).
+        // affected IDs берутся только из уже валидированной формы request; snapshot читается после
+        // лока, чтобы batch-замена coverage/отмена паллет сериализовались с конкурентным confirm.
+        var affectedOrderIds = request.Lines
+            .Select(line => line.OrderId)
+            .Distinct()
+            .ToArray();
+        if (!store.LockOrdersForUpdate(affectedOrderIds))
+        {
+            throw Error("ORDER_NOT_FOUND", "Один из заказов не найден.");
+        }
+
         var snapshot = LoadSnapshot(store, request);
 
         ValidateExpectedHuStates(request, snapshot);

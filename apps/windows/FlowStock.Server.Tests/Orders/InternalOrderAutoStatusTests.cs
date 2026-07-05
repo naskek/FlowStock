@@ -142,6 +142,7 @@ public sealed class InternalOrderAutoStatusTests
         var persistedStatus = OrderStatus.Shipped;
 
         var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(s => s.LockOrdersForUpdate(It.IsAny<IReadOnlyCollection<long>>())).Returns(true);
         store.Setup(s => s.GetOrders())
             .Returns(() =>
             [
@@ -219,6 +220,7 @@ public sealed class InternalOrderAutoStatusTests
         };
 
         var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(s => s.LockOrdersForUpdate(It.IsAny<IReadOnlyCollection<long>>())).Returns(true);
         store.Setup(s => s.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
             .Callback<Action<IDataStore>>(work => work(store.Object));
         store.Setup(s => s.GetMarkingOrdersByItemIds(It.IsAny<IReadOnlyCollection<long>>()))
@@ -399,6 +401,7 @@ public sealed class InternalOrderAutoStatusTests
         };
 
         var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(s => s.LockOrdersForUpdate(It.IsAny<IReadOnlyCollection<long>>())).Returns(true);
         store.Setup(s => s.GetOrder(orderId)).Returns(order);
         store.Setup(s => s.GetOrderLines(orderId)).Returns(lines);
         store.Setup(s => s.GetOrderReceiptRemaining(orderId)).Returns(receiptRemaining);

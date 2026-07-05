@@ -65,7 +65,9 @@ public sealed class ProductionPalletAutoCloseTests
     {
         var harness = CreateCustomerMixedPalletHarness();
         var service = CreatePalletService(harness);
-        var plan = service.PlanOrder(102);
+        var plan = MixedPlanTestSeed.SeedPlan(harness, 900, 102, "102",
+            MixedPlanTestSeed.Single("HU-0000942", 280, 42, 900),
+            MixedPlanTestSeed.Mixed("HU-0000944", MixedPlanTestSeed.C(281, 44, 900), MixedPlanTestSeed.C(282, 47, 900)));
         var plannedPallets = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId);
         var mixed = Assert.Single(plannedPallets.Where(pallet => pallet.IsMixedPallet));
         var single = Assert.Single(plannedPallets.Where(pallet => !pallet.IsMixedPallet));
@@ -148,7 +150,9 @@ public sealed class ProductionPalletAutoCloseTests
     {
         var harness = CreateCustomerMixedPalletHarness();
         var service = CreatePalletService(harness);
-        var plan = service.PlanOrder(102);
+        var plan = MixedPlanTestSeed.SeedPlan(harness, 900, 102, "102",
+            MixedPlanTestSeed.Single("HU-0000942", 280, 42, 900),
+            MixedPlanTestSeed.Mixed("HU-0000944", MixedPlanTestSeed.C(281, 44, 900), MixedPlanTestSeed.C(282, 47, 900)));
         var mixed = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Where(pallet => pallet.IsMixedPallet));
         var component = mixed.Lines.OrderBy(line => line.Id).First();
 
@@ -177,7 +181,12 @@ public sealed class ProductionPalletAutoCloseTests
     {
         var harness = CreateCustomerThreeComponentMixedPalletHarness();
         var service = CreatePalletService(harness);
-        var plan = service.PlanOrder(103);
+        var plan = MixedPlanTestSeed.SeedPlan(harness, 903, 103, "103",
+            MixedPlanTestSeed.Mixed(
+                "HU-0000951",
+                MixedPlanTestSeed.C(301, 51, 200),
+                MixedPlanTestSeed.C(302, 52, 200),
+                MixedPlanTestSeed.C(303, 53, 200)));
         var mixed = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId));
         Assert.Equal(3, mixed.Lines.Count);
         var completedComponent = mixed.Lines.OrderBy(line => line.Id).First();
@@ -251,7 +260,9 @@ public sealed class ProductionPalletAutoCloseTests
             documents,
             new FlowStockLedgerFlowOptions { ProductionAutoCloseOnFill = false });
         var service = new ProductionPalletService(harness.Store, fillClose);
-        var plan = service.PlanOrder(102);
+        var plan = MixedPlanTestSeed.SeedPlan(harness, 900, 102, "102",
+            MixedPlanTestSeed.Single("HU-0000942", 280, 42, 900),
+            MixedPlanTestSeed.Mixed("HU-0000944", MixedPlanTestSeed.C(281, 44, 900), MixedPlanTestSeed.C(282, 47, 900)));
         var mixed = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Where(pallet => pallet.IsMixedPallet));
 
         var result = service.FillMixedComponents(
@@ -272,7 +283,9 @@ public sealed class ProductionPalletAutoCloseTests
     {
         var harness = CreateCustomerMixedPalletHarness();
         var service = CreatePalletService(harness);
-        var plan = service.PlanOrder(102);
+        var plan = MixedPlanTestSeed.SeedPlan(harness, 900, 102, "102",
+            MixedPlanTestSeed.Single("HU-0000942", 280, 42, 900),
+            MixedPlanTestSeed.Mixed("HU-0000944", MixedPlanTestSeed.C(281, 44, 900), MixedPlanTestSeed.C(282, 47, 900)));
         var mixed = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Where(pallet => pallet.IsMixedPallet));
         var components = mixed.Lines.OrderBy(line => line.Id).ToArray();
         Assert.True(service.FillMixedComponents(mixed.HuCode, [components[0].Id], "TSD-01", 102, plan.PrdDocId).Success);
@@ -293,7 +306,12 @@ public sealed class ProductionPalletAutoCloseTests
     {
         var harness = CreateCustomerThreeComponentMixedPalletHarness();
         var service = CreatePalletService(harness);
-        var plan = service.PlanOrder(103);
+        var plan = MixedPlanTestSeed.SeedPlan(harness, 903, 103, "103",
+            MixedPlanTestSeed.Mixed(
+                "HU-0000951",
+                MixedPlanTestSeed.C(301, 51, 200),
+                MixedPlanTestSeed.C(302, 52, 200),
+                MixedPlanTestSeed.C(303, 53, 200)));
         var mixed = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId));
         var components = mixed.Lines.OrderBy(line => line.Id).ToArray();
         Assert.True(service.FillMixedComponents(mixed.HuCode, [components[0].Id], "TSD-01", 103, plan.PrdDocId).Success);
@@ -324,7 +342,9 @@ public sealed class ProductionPalletAutoCloseTests
     {
         var harness = CreateCustomerMixedPalletHarness();
         var service = CreatePalletService(harness);
-        var plan = service.PlanOrder(102);
+        var plan = MixedPlanTestSeed.SeedPlan(harness, 900, 102, "102",
+            MixedPlanTestSeed.Single("HU-0000942", 280, 42, 900),
+            MixedPlanTestSeed.Mixed("HU-0000944", MixedPlanTestSeed.C(281, 44, 900), MixedPlanTestSeed.C(282, 47, 900)));
         var mixed = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Where(pallet => pallet.IsMixedPallet));
         var components = mixed.Lines.OrderBy(line => line.Id).ToArray();
         Assert.True(service.FillMixedComponents(mixed.HuCode, [components[0].Id], "TSD-01", 102, plan.PrdDocId).Success);
@@ -345,7 +365,9 @@ public sealed class ProductionPalletAutoCloseTests
     {
         var harness = CreateCustomerMixedPalletHarness();
         var service = CreatePalletService(harness);
-        var plan = service.PlanOrder(102);
+        var plan = MixedPlanTestSeed.SeedPlan(harness, 900, 102, "102",
+            MixedPlanTestSeed.Single("HU-0000942", 280, 42, 900),
+            MixedPlanTestSeed.Mixed("HU-0000944", MixedPlanTestSeed.C(281, 44, 900), MixedPlanTestSeed.C(282, 47, 900)));
         var mixed = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Where(pallet => pallet.IsMixedPallet));
         Assert.True(service.FillMixedComponents(mixed.HuCode, [mixed.Lines[0].Id], "TSD-01", 102, plan.PrdDocId).Success);
 
@@ -363,7 +385,9 @@ public sealed class ProductionPalletAutoCloseTests
     {
         var harness = CreateCustomerMixedPalletHarness();
         var service = CreatePalletService(harness);
-        var plan = service.PlanOrder(102);
+        var plan = MixedPlanTestSeed.SeedPlan(harness, 900, 102, "102",
+            MixedPlanTestSeed.Single("HU-0000942", 280, 42, 900),
+            MixedPlanTestSeed.Mixed("HU-0000944", MixedPlanTestSeed.C(281, 44, 900), MixedPlanTestSeed.C(282, 47, 900)));
         var mixed = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Where(pallet => pallet.IsMixedPallet));
 
         var legacy = service.Fill(mixed.HuCode, "TSD-01", 102, plan.PrdDocId);

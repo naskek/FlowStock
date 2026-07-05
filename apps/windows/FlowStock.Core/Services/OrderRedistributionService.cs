@@ -40,6 +40,14 @@ public sealed class OrderRedistributionService
         long itemId,
         double qty)
     {
+        // Ранний orders row lock обоих заказов одним набором (примитив сортирует id ASC):
+        // qty/plan/pallet-решения ниже читаются уже под локом и сериализуются с
+        // конкурентным plan-explicit confirm любого из заказов.
+        if (!store.LockOrdersForUpdate([sourceInternalOrderId, targetCustomerOrderId]))
+        {
+            throw new InvalidOperationException("Заказ для перераспределения не найден.");
+        }
+
         var sourceOrder = store.GetOrder(sourceInternalOrderId)
                           ?? throw new InvalidOperationException("Внутренний заказ-источник не найден.");
         var targetOrder = store.GetOrder(targetCustomerOrderId)

@@ -576,6 +576,373 @@ public sealed class WpfProductionPalletApiService
         return !string.IsNullOrWhiteSpace(configuration.BaseUrl);
     }
 
+    public async Task<WpfPalletPlanPreviewApiResult> TryGetPlanPreviewAsync(
+        long orderId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (!TryLoadConfiguration(out var configuration))
+            {
+                _logger.Info("Production pallet API skipped for plan preview: server base URL is not configured.");
+                return WpfPalletPlanPreviewApiResult.Failure("FlowStock Server API не настроен.");
+            }
+
+            using var handler = CreateHandler(configuration);
+            using var client = CreateClient(handler, configuration);
+            using var response = await client.GetAsync($"/api/orders/{orderId}/production-pallets/plan-preview", cancellationToken)
+                .ConfigureAwait(false);
+            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = ParsePlanErrorJson(body);
+                return WpfPalletPlanPreviewApiResult.Failure(error.Message, error);
+            }
+
+            var preview = ParsePlanPreviewJson(body);
+            if (preview == null)
+            {
+                return WpfPalletPlanPreviewApiResult.Failure("Сервер вернул пустой ответ.");
+            }
+
+            return new WpfPalletPlanPreviewApiResult(true, string.Empty, preview, null);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Production pallet plan preview failed", ex);
+            return WpfPalletPlanPreviewApiResult.Failure(ex.Message);
+        }
+    }
+
+    public async Task<WpfPalletPlanConfirmApiResult> TryConfirmExplicitPlanAsync(
+        long orderId,
+        string previewFingerprint,
+        IReadOnlyList<WpfExplicitPlanPallet> pallets,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (!TryLoadConfiguration(out var configuration))
+            {
+                _logger.Info("Production pallet API skipped for explicit plan confirm: server base URL is not configured.");
+                return WpfPalletPlanConfirmApiResult.Failure("FlowStock Server API не настроен.");
+            }
+
+            using var handler = CreateHandler(configuration);
+            using var client = CreateClient(handler, configuration);
+            using var response = await client.PostAsJsonAsync(
+                    $"/api/orders/{orderId}/production-pallets/plan-explicit",
+                    new
+                    {
+                        preview_fingerprint = previewFingerprint,
+                        pallets = pallets.Select(pallet => new
+                        {
+                            components = pallet.Components.Select(component => new
+                            {
+                                order_line_id = component.OrderLineId,
+                                qty = component.Qty
+                            })
+                        })
+                    },
+                    cancellationToken)
+                .ConfigureAwait(false);
+            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = ParsePlanErrorJson(body);
+                return WpfPalletPlanConfirmApiResult.Failure(error.Message, error);
+            }
+
+            using var document = JsonDocument.Parse(body);
+            var newFingerprint = document.RootElement.TryGetProperty("preview_fingerprint", out var fingerprintElement)
+                ? fingerprintElement.GetString()
+                : null;
+            return new WpfPalletPlanConfirmApiResult(true, "План паллет сохранён.", newFingerprint, null);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Production pallet explicit plan confirm failed", ex);
+            return WpfPalletPlanConfirmApiResult.Failure(ex.Message);
+        }
+    }
+
+    /// <summary>Parses the plan-preview payload (stable snake_case wire contract).</summary>
+    public static WpfPalletPlanPreview? ParsePlanPreviewJson(string json)
+    {
+        var payload = JsonSerializer.Deserialize<PlanPreviewResponse>(json, JsonOptions);
+        if (payload == null)
+        {
+            return null;
+        }
+
+        return new WpfPalletPlanPreview(
+            payload.OrderId,
+            payload.OrderRef ?? string.Empty,
+            payload.ProductionRequired,
+            payload.PreviewFingerprint ?? string.Empty,
+            (payload.Lines ?? []).Select(line => new WpfPalletPlanLine(
+                line.OrderLineId,
+                line.ItemId,
+                line.ItemName ?? string.Empty,
+                line.MaxQtyPerHu,
+                line.ShortfallQty)).ToArray(),
+            (payload.SuggestedPallets ?? []).Select(pallet => new WpfSuggestedPallet(
+                pallet.TempNo,
+                pallet.CapacityQty,
+                pallet.TotalQty,
+                pallet.IsMixed,
+                (pallet.Components ?? []).Select(component => new WpfSuggestedPalletComponent(
+                    component.OrderLineId,
+                    component.ItemId,
+                    component.ItemName ?? string.Empty,
+                    component.Qty)).ToArray())).ToArray(),
+            MapSavedPallets(payload.OpenPlanPallets),
+            MapSavedPallets(payload.HistoricalPallets));
+    }
+
+    /// <summary>
+    /// Parses a structured plan error (`error_code`, `message`, `current_preview_fingerprint`,
+    /// `details.lines`). Non-JSON bodies fall back to an UNKNOWN code with a display message.
+    /// </summary>
+    public static WpfPalletPlanServerError ParsePlanErrorJson(string body)
+    {
+        try
+        {
+            var payload = JsonSerializer.Deserialize<PlanErrorResponse>(body, JsonOptions);
+            if (payload != null && !string.IsNullOrWhiteSpace(payload.ErrorCode))
+            {
+                return new WpfPalletPlanServerError(
+                    payload.ErrorCode!,
+                    string.IsNullOrWhiteSpace(payload.Message) ? payload.ErrorCode! : payload.Message!,
+                    payload.CurrentPreviewFingerprint,
+                    (payload.Details?.Lines ?? []).Select(line => new WpfPalletAllocationMismatchLine(
+                        line.OrderLineId,
+                        line.RequiredQty,
+                        line.AllocatedQty,
+                        line.DifferenceQty)).ToArray());
+            }
+
+            if (payload != null && !string.IsNullOrWhiteSpace(payload.Message))
+            {
+                return new WpfPalletPlanServerError("UNKNOWN", payload.Message!, null, []);
+            }
+        }
+        catch (JsonException)
+        {
+        }
+
+        return new WpfPalletPlanServerError("UNKNOWN", "Не удалось выполнить операцию с планом паллет.", null, []);
+    }
+
+    private static IReadOnlyList<WpfSavedPallet> MapSavedPallets(IReadOnlyList<SavedPalletResponse>? pallets)
+    {
+        return (pallets ?? []).Select(pallet => new WpfSavedPallet(
+            pallet.Kind ?? string.Empty,
+            pallet.PalletId,
+            pallet.HuCode ?? string.Empty,
+            pallet.PrdDocId,
+            pallet.PrdRef ?? string.Empty,
+            pallet.Status ?? string.Empty,
+            pallet.EffectiveStatus ?? pallet.Status ?? string.Empty,
+            pallet.CapacityQty,
+            pallet.TotalQty,
+            pallet.IsMixed,
+            pallet.HasComponentProgress,
+            pallet.CanDelete,
+            pallet.DisabledReason,
+            (pallet.Components ?? []).Select(component => new WpfSavedPalletComponent(
+                component.ProductionPalletLineId,
+                component.OrderLineId,
+                component.ItemId,
+                component.ItemName ?? string.Empty,
+                component.PlannedQty,
+                component.FilledQty,
+                component.IsCompleted)).ToArray())).ToArray();
+    }
+
+    private sealed class PlanPreviewResponse
+    {
+        [JsonPropertyName("order_id")]
+        public long OrderId { get; init; }
+
+        [JsonPropertyName("order_ref")]
+        public string? OrderRef { get; init; }
+
+        [JsonPropertyName("production_required")]
+        public bool ProductionRequired { get; init; }
+
+        [JsonPropertyName("preview_fingerprint")]
+        public string? PreviewFingerprint { get; init; }
+
+        [JsonPropertyName("lines")]
+        public IReadOnlyList<PlanPreviewLineResponse>? Lines { get; init; }
+
+        [JsonPropertyName("suggested_pallets")]
+        public IReadOnlyList<SuggestedPalletResponse>? SuggestedPallets { get; init; }
+
+        [JsonPropertyName("open_plan_pallets")]
+        public IReadOnlyList<SavedPalletResponse>? OpenPlanPallets { get; init; }
+
+        [JsonPropertyName("historical_pallets")]
+        public IReadOnlyList<SavedPalletResponse>? HistoricalPallets { get; init; }
+    }
+
+    private sealed class PlanPreviewLineResponse
+    {
+        [JsonPropertyName("order_line_id")]
+        public long OrderLineId { get; init; }
+
+        [JsonPropertyName("item_id")]
+        public long ItemId { get; init; }
+
+        [JsonPropertyName("item_name")]
+        public string? ItemName { get; init; }
+
+        [JsonPropertyName("max_qty_per_hu")]
+        public double? MaxQtyPerHu { get; init; }
+
+        [JsonPropertyName("shortfall_qty")]
+        public double ShortfallQty { get; init; }
+    }
+
+    private sealed class SuggestedPalletResponse
+    {
+        [JsonPropertyName("temp_no")]
+        public int TempNo { get; init; }
+
+        [JsonPropertyName("capacity_qty")]
+        public double? CapacityQty { get; init; }
+
+        [JsonPropertyName("total_qty")]
+        public double TotalQty { get; init; }
+
+        [JsonPropertyName("is_mixed")]
+        public bool IsMixed { get; init; }
+
+        [JsonPropertyName("components")]
+        public IReadOnlyList<SuggestedPalletComponentResponse>? Components { get; init; }
+    }
+
+    private sealed class SuggestedPalletComponentResponse
+    {
+        [JsonPropertyName("order_line_id")]
+        public long OrderLineId { get; init; }
+
+        [JsonPropertyName("item_id")]
+        public long ItemId { get; init; }
+
+        [JsonPropertyName("item_name")]
+        public string? ItemName { get; init; }
+
+        [JsonPropertyName("qty")]
+        public double Qty { get; init; }
+    }
+
+    private sealed class SavedPalletResponse
+    {
+        [JsonPropertyName("kind")]
+        public string? Kind { get; init; }
+
+        [JsonPropertyName("pallet_id")]
+        public long PalletId { get; init; }
+
+        [JsonPropertyName("hu_code")]
+        public string? HuCode { get; init; }
+
+        [JsonPropertyName("prd_doc_id")]
+        public long PrdDocId { get; init; }
+
+        [JsonPropertyName("prd_ref")]
+        public string? PrdRef { get; init; }
+
+        [JsonPropertyName("status")]
+        public string? Status { get; init; }
+
+        [JsonPropertyName("effective_status")]
+        public string? EffectiveStatus { get; init; }
+
+        [JsonPropertyName("capacity_qty")]
+        public double? CapacityQty { get; init; }
+
+        [JsonPropertyName("total_qty")]
+        public double TotalQty { get; init; }
+
+        [JsonPropertyName("is_mixed")]
+        public bool IsMixed { get; init; }
+
+        [JsonPropertyName("has_component_progress")]
+        public bool HasComponentProgress { get; init; }
+
+        [JsonPropertyName("can_delete")]
+        public bool CanDelete { get; init; }
+
+        [JsonPropertyName("disabled_reason")]
+        public string? DisabledReason { get; init; }
+
+        [JsonPropertyName("components")]
+        public IReadOnlyList<SavedPalletComponentResponse>? Components { get; init; }
+    }
+
+    private sealed class SavedPalletComponentResponse
+    {
+        [JsonPropertyName("production_pallet_line_id")]
+        public long ProductionPalletLineId { get; init; }
+
+        [JsonPropertyName("order_line_id")]
+        public long? OrderLineId { get; init; }
+
+        [JsonPropertyName("item_id")]
+        public long ItemId { get; init; }
+
+        [JsonPropertyName("item_name")]
+        public string? ItemName { get; init; }
+
+        [JsonPropertyName("planned_qty")]
+        public double PlannedQty { get; init; }
+
+        [JsonPropertyName("filled_qty")]
+        public double FilledQty { get; init; }
+
+        [JsonPropertyName("is_completed")]
+        public bool IsCompleted { get; init; }
+    }
+
+    private sealed class PlanErrorResponse
+    {
+        [JsonPropertyName("error_code")]
+        public string? ErrorCode { get; init; }
+
+        [JsonPropertyName("message")]
+        public string? Message { get; init; }
+
+        [JsonPropertyName("current_preview_fingerprint")]
+        public string? CurrentPreviewFingerprint { get; init; }
+
+        [JsonPropertyName("details")]
+        public PlanErrorDetailsResponse? Details { get; init; }
+    }
+
+    private sealed class PlanErrorDetailsResponse
+    {
+        [JsonPropertyName("lines")]
+        public IReadOnlyList<PlanErrorAllocationLineResponse>? Lines { get; init; }
+    }
+
+    private sealed class PlanErrorAllocationLineResponse
+    {
+        [JsonPropertyName("order_line_id")]
+        public long OrderLineId { get; init; }
+
+        [JsonPropertyName("required_qty")]
+        public double RequiredQty { get; init; }
+
+        [JsonPropertyName("allocated_qty")]
+        public double AllocatedQty { get; init; }
+
+        [JsonPropertyName("difference_qty")]
+        public double DifferenceQty { get; init; }
+    }
+
     private static HttpClient CreateClient(HttpMessageHandler handler, WpfProductionPalletApiConfiguration configuration)
     {
         return new HttpClient(handler)
@@ -1360,5 +1727,126 @@ public sealed record WpfProducedStockReleaseApiResult(
     public static WpfProducedStockReleaseApiResult Failure(string message)
     {
         return new WpfProducedStockReleaseApiResult(false, message, 0, 0, 0, Array.Empty<string>(), 0);
+    }
+}
+
+// --- Pallet constructor (plan-preview / plan-explicit) client models ---
+
+public sealed record WpfPalletPlanLine(
+    long OrderLineId,
+    long ItemId,
+    string ItemName,
+    double? MaxQtyPerHu,
+    double ShortfallQty);
+
+public sealed record WpfSuggestedPalletComponent(
+    long OrderLineId,
+    long ItemId,
+    string ItemName,
+    double Qty);
+
+public sealed record WpfSuggestedPallet(
+    int TempNo,
+    double? CapacityQty,
+    double TotalQty,
+    bool IsMixed,
+    IReadOnlyList<WpfSuggestedPalletComponent> Components);
+
+public sealed record WpfSavedPalletComponent(
+    long ProductionPalletLineId,
+    long? OrderLineId,
+    long ItemId,
+    string ItemName,
+    double PlannedQty,
+    double FilledQty,
+    bool IsCompleted)
+{
+    /// <summary>Прогресс наполнения компонента: «filled / planned» и ✓ для завершённых.</summary>
+    public string ProgressText => IsCompleted
+        ? $"{FilledQty:0.###} / {PlannedQty:0.###} ✓"
+        : $"{FilledQty:0.###} / {PlannedQty:0.###}";
+}
+
+public sealed record WpfSavedPallet(
+    string Kind,
+    long PalletId,
+    string HuCode,
+    long PrdDocId,
+    string PrdRef,
+    string Status,
+    string EffectiveStatus,
+    double? CapacityQty,
+    double TotalQty,
+    bool IsMixed,
+    bool HasComponentProgress,
+    bool CanDelete,
+    string? DisabledReason,
+    IReadOnlyList<WpfSavedPalletComponent> Components)
+{
+    public string TitleText => IsMixed
+        ? $"{HuCode} · {EffectiveStatus} · МИКС"
+        : $"{HuCode} · {EffectiveStatus}";
+
+    public string QtyText => CapacityQty is { } capacity
+        ? $"{PrdRef} · {TotalQty:0.###} / {capacity:0.###}"
+        : $"{PrdRef} · {TotalQty:0.###}";
+
+    /// <summary>
+    /// Судьба can_delete/disabled_reason в окне конструктора: удаление выполняется только
+    /// существующим selected-delete workflow «Удалить план паллет» в карточке заказа
+    /// (с его предупреждением для PRINTED); окно лишь показывает доступность.
+    /// </summary>
+    public string DeleteHintText => CanDelete
+        ? "Можно удалить — через «Удалить план паллет» в карточке заказа"
+        : DisabledReason ?? "Удаление недоступно";
+}
+
+public sealed record WpfPalletPlanPreview(
+    long OrderId,
+    string OrderRef,
+    bool ProductionRequired,
+    string PreviewFingerprint,
+    IReadOnlyList<WpfPalletPlanLine> Lines,
+    IReadOnlyList<WpfSuggestedPallet> SuggestedPallets,
+    IReadOnlyList<WpfSavedPallet> OpenPlanPallets,
+    IReadOnlyList<WpfSavedPallet> HistoricalPallets);
+
+public sealed record WpfPalletAllocationMismatchLine(
+    long OrderLineId,
+    double RequiredQty,
+    double AllocatedQty,
+    double DifferenceQty);
+
+public sealed record WpfPalletPlanServerError(
+    string ErrorCode,
+    string Message,
+    string? CurrentPreviewFingerprint,
+    IReadOnlyList<WpfPalletAllocationMismatchLine> AllocationLines);
+
+public sealed record WpfPalletPlanPreviewApiResult(
+    bool IsSuccess,
+    string Message,
+    WpfPalletPlanPreview? Preview,
+    WpfPalletPlanServerError? Error)
+{
+    public static WpfPalletPlanPreviewApiResult Failure(string message, WpfPalletPlanServerError? error = null)
+    {
+        return new WpfPalletPlanPreviewApiResult(false, message, null, error);
+    }
+}
+
+public sealed record WpfExplicitPlanComponent(long OrderLineId, double Qty);
+
+public sealed record WpfExplicitPlanPallet(IReadOnlyList<WpfExplicitPlanComponent> Components);
+
+public sealed record WpfPalletPlanConfirmApiResult(
+    bool IsSuccess,
+    string Message,
+    string? NewPreviewFingerprint,
+    WpfPalletPlanServerError? Error)
+{
+    public static WpfPalletPlanConfirmApiResult Failure(string message, WpfPalletPlanServerError? error = null)
+    {
+        return new WpfPalletPlanConfirmApiResult(false, message, null, error);
     }
 }

@@ -212,30 +212,6 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="Общий HU" Width="100">
-                            <DataGridTemplateColumn.CellTemplate>
-                                <DataTemplate>
-                                    <CheckBox IsChecked="{Binding IsMixedPalletLine, Mode=OneWay}"
-                                              Click="MixedPalletCheckBox_Click"
-                                              HorizontalAlignment="Center"
-                                              IsEnabled="{Binding IsProductionPalletGroupEditable}"
-                                              ToolTip="Строки с одинаковым номером группы HU планируются на одну микс-паллету до печати этикеток." />
-                                </DataTemplate>
-                            </DataGridTemplateColumn.CellTemplate>
-                        </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="Группа HU" Width="90">
-                            <DataGridTemplateColumn.CellTemplate>
-                                <DataTemplate>
-                                    <TextBox Text="{Binding MixedPalletGroupNumber, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}"
-                                             Width="48"
-                                             HorizontalAlignment="Center"
-                                             HorizontalContentAlignment="Center"
-                                             LostFocus="MixedPalletGroupTextBox_LostFocus"
-                                             PreviewTextInput="MixedPalletGroupTextBox_PreviewTextInput"
-                                             IsEnabled="{Binding IsMixedPalletGroupNumberEditable}" />
-                                </DataTemplate>
-                            </DataGridTemplateColumn.CellTemplate>
-                        </DataGridTemplateColumn>
                         <DataGridTextColumn x:Name="ProcessedQtyColumn" Header="Отгружено" Binding="{Binding QtyShipped}" Width="120" IsReadOnly="True" />
                         <DataGridTextColumn Header="Осталось" Binding="{Binding QtyRemaining}" Width="120" IsReadOnly="True" />
                         <DataGridTextColumn x:Name="AvailableQtyColumn" Header="В наличии" Binding="{Binding QtyAvailable}" Width="120" IsReadOnly="True" />

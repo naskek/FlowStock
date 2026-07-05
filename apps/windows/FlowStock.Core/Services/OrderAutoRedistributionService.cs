@@ -28,6 +28,24 @@ public sealed class OrderAutoRedistributionService
         IDataStore store,
         long targetCustomerOrderId)
     {
+        // Ранний orders row lock одним отсортированным набором (target + INTERNAL-кандидаты;
+        // примитив сортирует id ASC). Discovery-чтение ниже используется только для вычисления
+        // lock-набора; все бизнес-чтения и записи выполняются после лока, а кандидаты
+        // ограничиваются залоченным набором (заказы, появившиеся между discovery и lock,
+        // пропускаются в этом запуске). В lock-набор входят и INTERNAL в SHIPPED: их статус
+        // может быть stale и переоткрыт RefreshInternalOrderStatuses (который также пишет их
+        // строки orders); исключаются только терминальные Cancelled/Merged.
+        var lockedOrderIds = new HashSet<long> { targetCustomerOrderId };
+        foreach (var candidate in store.GetOrders()
+                     .Where(order => order.Type == OrderType.Internal
+                                     && order.Id != targetCustomerOrderId
+                                     && order.Status is not (OrderStatus.Cancelled or OrderStatus.Merged)))
+        {
+            lockedOrderIds.Add(candidate.Id);
+        }
+
+        store.LockOrdersForUpdate(lockedOrderIds);
+
         var result = new OrderAutoRedistributionApplyResult { TargetOrderId = targetCustomerOrderId };
         var targetOrder = store.GetOrder(targetCustomerOrderId);
         if (targetOrder == null)
@@ -81,6 +99,7 @@ public sealed class OrderAutoRedistributionService
             .Where(order => order.Type == OrderType.Internal
                             && order.Id != targetCustomerOrderId
                             && order.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged))
+            .Where(order => lockedOrderIds.Contains(order.Id))
             .OrderBy(order => order.CreatedAt)
             .ThenBy(order => order.Id)
             .ToList();

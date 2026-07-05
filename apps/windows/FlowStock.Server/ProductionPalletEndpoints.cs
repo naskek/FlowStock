@@ -11,6 +11,8 @@ public static class ProductionPalletEndpoints
     public static void Map(WebApplication app)
     {
         app.MapPost("/api/orders/{orderId:long}/production-pallets/plan", HandlePlanOrder);
+        app.MapGet("/api/orders/{orderId:long}/production-pallets/plan-preview", HandlePlanPreview);
+        app.MapPost("/api/orders/{orderId:long}/production-pallets/plan-explicit", HandlePlanExplicit);
         app.MapGet("/api/orders/{orderId:long}/production-pallets/cancel-plan-options", HandleCancelPlanOptions);
         app.MapPost("/api/orders/{orderId:long}/production-pallets/cancel-plan", HandleCancelPlan);
         app.MapPost("/api/orders/{targetCustomerOrderId:long}/production-pallets/adopt-from-internal/{sourceInternalOrderId:long}", HandleAdoptFromInternal);
@@ -181,10 +183,204 @@ public static class ProductionPalletEndpoints
         {
             return Results.Ok(MapOrderPlan(service.PlanOrder(orderId)));
         }
+        catch (ProductionPalletPlanException ex)
+        {
+            return Results.BadRequest(new { ok = false, error_code = ex.ErrorCode, error = ex.Message, message = ex.Message });
+        }
         catch (InvalidOperationException ex)
         {
             return Results.BadRequest(new { ok = false, error = ex.Message, message = ex.Message });
         }
+    }
+
+    private static IResult HandlePlanPreview(long orderId, ProductionPalletService service)
+    {
+        try
+        {
+            return Results.Ok(MapPlanPreview(service.BuildPlanPreview(orderId)));
+        }
+        catch (ProductionPalletPlanException ex)
+        {
+            return MapPlanException(ex);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.BadRequest(new { ok = false, error = ex.Message, message = ex.Message });
+        }
+    }
+
+    private static IResult HandlePlanExplicit(long orderId, ExplicitPlanRequestDto request, ProductionPalletService service)
+    {
+        try
+        {
+            // Null list elements from malformed JSON (pallets: [null] / components: [null]) are
+            // preserved and mapped through to Core, which is the single point that rejects them
+            // with a structured INVALID_PALLET_PLAN — no property access happens here.
+            var mapped = new ProductionPalletExplicitPlanRequest(
+                request?.PreviewFingerprint ?? string.Empty,
+                (request?.Pallets ?? Array.Empty<ExplicitPlanPalletDto?>())
+                    .Select(pallet => pallet == null
+                        ? null
+                        : new ProductionPalletExplicitPlanPallet(
+                            (pallet.Components ?? Array.Empty<ExplicitPlanComponentDto?>())
+                                .Select(component => component == null
+                                    ? null
+                                    : new ProductionPalletExplicitPlanComponent(component.OrderLineId, component.Qty))
+                                .ToArray()))
+                    .ToArray());
+
+            var result = service.ConfirmExplicitPlan(orderId, mapped);
+            // The fingerprint comes from the atomic confirm result (computed inside the
+            // confirm transaction); no second business read after a successful commit.
+            return Results.Ok(new
+            {
+                ok = true,
+                preview_fingerprint = result.NewPreviewFingerprint,
+                plan = MapOrderPlan(result)
+            });
+        }
+        catch (ProductionPalletPlanException ex)
+        {
+            return MapPlanException(ex);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.BadRequest(new { ok = false, error = ex.Message, message = ex.Message });
+        }
+    }
+
+    private sealed class ExplicitPlanRequestDto
+    {
+        [JsonPropertyName("preview_fingerprint")]
+        public string? PreviewFingerprint { get; init; }
+
+        [JsonPropertyName("pallets")]
+        public IReadOnlyList<ExplicitPlanPalletDto?>? Pallets { get; init; }
+    }
+
+    private sealed class ExplicitPlanPalletDto
+    {
+        [JsonPropertyName("components")]
+        public IReadOnlyList<ExplicitPlanComponentDto?>? Components { get; init; }
+    }
+
+    private sealed class ExplicitPlanComponentDto
+    {
+        [JsonPropertyName("order_line_id")]
+        public long OrderLineId { get; init; }
+
+        [JsonPropertyName("qty")]
+        public double Qty { get; init; }
+    }
+
+    private static IResult MapPlanException(ProductionPalletPlanException ex)
+    {
+        var status = ex.ErrorCode switch
+        {
+            ProductionPalletPlanErrorCodes.PlanPreviewStale => StatusCodes.Status409Conflict,
+            ProductionPalletPlanErrorCodes.NoProductionRequired => StatusCodes.Status409Conflict,
+            ProductionPalletPlanErrorCodes.OrderNotPlannable => StatusCodes.Status409Conflict,
+            _ => StatusCodes.Status400BadRequest
+        };
+
+        // details.lines uses a stable explicit snake_case contract; never serialize CLR
+        // property names of Core records onto the wire.
+        object? details = ex.Details is IReadOnlyList<LineAllocationMismatchDetail> mismatchLines
+            ? new
+            {
+                lines = mismatchLines.Select(line => new
+                {
+                    order_line_id = line.OrderLineId,
+                    required_qty = line.RequiredQty,
+                    allocated_qty = line.AllocatedQty,
+                    difference_qty = line.DifferenceQty
+                })
+            }
+            : ex.Details;
+
+        return Results.Json(
+            new
+            {
+                ok = false,
+                error_code = ex.ErrorCode,
+                error = ex.ErrorCode,
+                message = ex.Message,
+                details,
+                current_preview_fingerprint = ex.CurrentPreviewFingerprint
+            },
+            statusCode: status);
+    }
+
+    private static object MapPlanPreview(ProductionPalletPlanPreview preview)
+    {
+        return new
+        {
+            order_id = preview.OrderId,
+            order_ref = preview.OrderRef,
+            order_type = preview.OrderType,
+            order_status = preview.OrderStatus,
+            production_required = preview.ProductionRequired,
+            preview_fingerprint = preview.PreviewFingerprint,
+            lines = preview.Lines.Select(line => new
+            {
+                order_line_id = line.OrderLineId,
+                item_id = line.ItemId,
+                item_name = line.ItemName,
+                max_qty_per_hu = line.MaxQtyPerHu,
+                shortfall_qty = line.ShortfallQty
+            }),
+            suggested_pallets = preview.SuggestedPallets.Select(MapSuggestedPallet),
+            open_plan_pallets = preview.OpenPlanPallets.Select(MapSavedPallet),
+            historical_pallets = preview.HistoricalPallets.Select(MapSavedPallet)
+        };
+    }
+
+    private static object MapSuggestedPallet(SuggestedPalletDto pallet)
+    {
+        return new
+        {
+            temp_no = pallet.TempNo,
+            capacity_qty = pallet.CapacityQty,
+            total_qty = pallet.TotalQty,
+            is_mixed = pallet.IsMixed,
+            components = pallet.Components.Select(component => new
+            {
+                order_line_id = component.OrderLineId,
+                item_id = component.ItemId,
+                item_name = component.ItemName,
+                qty = component.Qty
+            })
+        };
+    }
+
+    private static object MapSavedPallet(SavedPalletDto pallet)
+    {
+        return new
+        {
+            kind = pallet.Kind,
+            pallet_id = pallet.PalletId,
+            hu_code = pallet.HuCode,
+            prd_doc_id = pallet.PrdDocId,
+            prd_ref = pallet.PrdRef,
+            status = pallet.Status,
+            effective_status = pallet.EffectiveStatus,
+            capacity_qty = pallet.CapacityQty,
+            total_qty = pallet.TotalQty,
+            is_mixed = pallet.IsMixed,
+            has_component_progress = pallet.HasComponentProgress,
+            can_delete = pallet.CanDelete,
+            disabled_reason = pallet.DisabledReason,
+            components = pallet.Components.Select(component => new
+            {
+                production_pallet_line_id = component.ProductionPalletLineId,
+                order_line_id = component.OrderLineId,
+                item_id = component.ItemId,
+                item_name = component.ItemName,
+                planned_qty = component.PlannedQty,
+                filled_qty = component.FilledQty,
+                is_completed = component.IsCompleted
+            })
+        };
     }
 
     private static IResult HandleCancelPlanOptions(long orderId, ProductionPalletService service)
