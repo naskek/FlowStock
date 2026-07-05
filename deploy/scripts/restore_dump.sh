@@ -15,7 +15,7 @@ pre_restore_backup="$(resolve_backup_path "${FLOWSTOCK_PRE_RESTORE_BACKUP_PATH_O
 create_backup "$pre_restore_backup"
 
 log "stopping application containers before restore"
-compose stop flowstock nginx pgbackup || true
+compose_stop_existing discovery-relay flowstock nginx pgbackup
 
 log "dropping active connections and recreating database"
 compose exec -T postgres sh -eu -c '

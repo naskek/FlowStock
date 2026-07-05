@@ -62,7 +62,8 @@ TSD работает только онлайн через `FlowStock.Server`. С
 - Модуль: `apps/android/tsd-native`, package/namespace `ru.flowstock.tsd`.
 - Оболочка хранит один canonical server root URL, например `https://flowstock.local:7154`; `/api/discovery`, `/api/ping` и `/tsd/` вычисляются из него.
 - Первый запуск без сохранённого endpoint открывает native setup screen: ручной ввод HTTPS root URL или UDP discovery.
-- UDP discovery v1 использует directed broadcast на `7155/udp` в активной Wi-Fi/Ethernet сети. UDP-ответ является только подсказкой; сохранить сервер можно только после strict HTTPS validation `/api/discovery`, `/api/ping` и `/tsd/`.
+- UDP discovery v1 использует directed broadcast на `7155/udp` в активной Wi-Fi/Ethernet сети. Android protocol и поведение не меняются: UDP-ответ является только подсказкой; сохранить сервер можно только после strict HTTPS validation `/api/discovery`, `/api/ping` и `/tsd/`.
+- В production Docker Compose серверный broadcast transport проходит через host-network `discovery-relay`, который принимает `7155/udp` на host и пересылает запрос в `FlowStock.Server` через loopback backend.
 - Долгое нажатие аппаратной Back открывает native confirmation смены сервера. В setup смены сервера scanner dispatch останавливается, скрытый WebView не получает сканы, а кнопка `Вернуться к текущему серверу` восстанавливает прежнюю session без очистки cookies/WebStorage. На первом setup без сохранённого endpoint возврат недоступен.
 - Короткое Back в рабочем WebView сохраняет существующий контракт: JS bridge → WebView history → `moveTaskToBack(true)`.
 - `index.html` внутри WebView не перехватывается и не переписывается. Вся бизнес-логика, API, ledger, документы, остатки, резервы, production quantities и HU readiness остаются на сервере.

@@ -14,7 +14,7 @@ public sealed class FlowStockDiscoveryUdpService(
     int udpPort = FlowStockDiscoveryOptions.UdpPort) : BackgroundService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-    private readonly FlowStockDiscoveryRateLimiter rateLimiter = rateLimiter ?? new FlowStockDiscoveryRateLimiter();
+    private readonly FlowStockDiscoveryRateLimiter rateLimiter = rateLimiter ?? FlowStockDiscoveryRateLimiter.Create(options);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -102,15 +102,31 @@ public sealed class FlowStockDiscoveryUdpService(
 
 public sealed class FlowStockDiscoveryRateLimiter(
     int globalLimitPerWindow = 120,
-    int perSourceLimitPerWindow = 20,
+    int? perSourceLimitPerWindow = 20,
     int maxTrackedSources = 256,
     TimeSpan? window = null,
     Func<DateTimeOffset>? clock = null)
 {
+    public const int NormalGlobalLimitPerWindow = 120;
+    public const int NormalPerSourceLimitPerWindow = 20;
+    public const int BehindRelayGlobalLimitPerWindow = 320;
+    public static readonly TimeSpan DefaultWindow = TimeSpan.FromSeconds(10);
+
     private readonly TimeSpan window = window ?? TimeSpan.FromSeconds(10);
     private readonly Func<DateTimeOffset> clock = clock ?? (() => DateTimeOffset.UtcNow);
     private readonly Dictionary<IPAddress, RateCounter> perSource = new();
     private RateCounter global = new(DateTimeOffset.MinValue, 0);
+
+    public static FlowStockDiscoveryRateLimiter Create(FlowStockDiscoveryOptions options) =>
+        options.BehindRelay
+            ? new FlowStockDiscoveryRateLimiter(
+                globalLimitPerWindow: BehindRelayGlobalLimitPerWindow,
+                perSourceLimitPerWindow: null,
+                window: DefaultWindow)
+            : new FlowStockDiscoveryRateLimiter(
+                globalLimitPerWindow: NormalGlobalLimitPerWindow,
+                perSourceLimitPerWindow: NormalPerSourceLimitPerWindow,
+                window: DefaultWindow);
 
     public bool Allow(IPAddress source)
     {
@@ -122,16 +138,20 @@ public sealed class FlowStockDiscoveryRateLimiter(
         }
 
         Cleanup(now);
-        perSource.TryGetValue(source, out var sourceCounter);
-        sourceCounter = NextCounter(sourceCounter, now);
-        if (sourceCounter.Count >= perSourceLimitPerWindow)
+        if (perSourceLimitPerWindow is int sourceLimit)
         {
-            perSource[source] = sourceCounter;
-            return false;
+            perSource.TryGetValue(source, out var sourceCounter);
+            sourceCounter = NextCounter(sourceCounter, now);
+            if (sourceCounter.Count >= sourceLimit)
+            {
+                perSource[source] = sourceCounter;
+                return false;
+            }
+
+            perSource[source] = sourceCounter with { Count = sourceCounter.Count + 1 };
         }
 
         global = global with { Count = global.Count + 1 };
-        perSource[source] = sourceCounter with { Count = sourceCounter.Count + 1 };
         Cleanup(now);
         return true;
     }

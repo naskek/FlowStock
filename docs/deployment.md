@@ -31,7 +31,7 @@ DC='docker compose --project-name flowstock --env-file deploy/.env -f deploy/doc
 - Production использует единый HTTPS origin на порту `7154`.
 - `https://SERVER_IP:7154/` — PC web client.
 - `https://SERVER_IP:7154/tsd/` — TSD web client.
-- В `deploy/.env.example` по умолчанию: внешний HTTPS-порт `7154`, UDP discovery-порт `7155`.
+- В `deploy/.env.example` по умолчанию: внешний HTTPS-порт `7154`, public UDP discovery listener `7155/udp`, loopback backend port `17155/udp`.
 
 ## Обязательные файлы и каталоги
 
@@ -59,8 +59,9 @@ FLOWSTOCK_DOTNET_ASPNET_IMAGE=registry.example.com/mirror/dotnet/aspnet:8.0
 
 - `postgres` — основная БД; bootstrap-only init-скрипты смонтированы в `/docker-entrypoint-initdb.d`.
 - `migrator` — one-shot сервис: ждёт healthy Postgres, применяет pending SQL-файлы в лексикографическом порядке, записывает применённые файлы в `schema_migrations`.
-- `flowstock` — стартует только после успешного `migrator`; отдаёт `/health/live` и `/health/ready`.
-- `nginx` — стартует после healthy `flowstock`; использует `deploy/nginx/certs/flowstock.crt` и `deploy/nginx/certs/flowstock.key`.
+- `flowstock` — стартует только после успешного `migrator`; отдаёт `/health/live` и `/health/ready`; публикует UDP responder только на loopback backend `127.0.0.1:${FLOWSTOCK_DISCOVERY_BACKEND_PORT:-17155}:7155/udp`.
+- `discovery-relay` — host-network UDP sidecar для native Android discovery: всегда слушает host `0.0.0.0:7155/udp`, пересылает datagram в loopback backend `flowstock` и отвечает исходному клиенту с source port `7155`.
+- `nginx` — стартует после healthy `flowstock` и healthy `discovery-relay`; использует `deploy/nginx/certs/flowstock.crt` и `deploy/nginx/certs/flowstock.key`.
 - `pgbackup` — регулярные scheduled backup'ы `pg_dump -Fc` внутри compose-стека.
 
 ## Canonical HTTPS endpoint и discovery
@@ -73,17 +74,29 @@ FLOWSTOCK_INSTANCE_NAME=FlowStock
 ```
 
 - `FLOWSTOCK_PUBLIC_BASE_URL` — абсолютный HTTPS root URL без path/query/fragment. Он не вычисляется из HTTP `Host`, IP клиента или входящего запроса.
-- `/api/discovery` и UDP responder на `7155/udp` используют одну и ту же конфигурацию.
-- Compose публикует `7155:7155/udp` у сервиса `flowstock`; host network не используется. На сервере/firewall должен быть разрешён входящий UDP `7155` из операторской LAN.
+- `/api/discovery` и UDP responder используют одну и ту же конфигурацию.
+- UDP discovery public listener фиксирован на `7155/udp`: в production Docker Compose его реализует `discovery-relay` в `network_mode: host`, слушая `0.0.0.0:7155/udp`. Сервис `flowstock` не публикует public `7155/udp`; его UDP responder доступен только через loopback backend `127.0.0.1:${FLOWSTOCK_DISCOVERY_BACKEND_PORT:-17155}:7155/udp`.
+- Relay пересылает допустимый request в backend и отправляет response исходному клиенту через public socket, поэтому source port UDP-ответа остаётся `7155`.
 - UDP-ответ является только подсказкой: Android-приложение сохраняет сервер только после strict HTTPS validation `/api/discovery`, `/api/ping` и `/tsd/`.
-- `docker compose config -q` проверяет только корректность compose-файла и не доказывает проходимость broadcast через firewall/Docker bridge.
+- Операторские настройки discovery relay в `deploy/.env`:
+
+```bash
+FLOWSTOCK_DISCOVERY_BACKEND_PORT=17155
+FLOWSTOCK_DISCOVERY_RELAY_TIMEOUT_MS=2000
+FLOWSTOCK_DISCOVERY_RELAY_MAX_IN_FLIGHT=64
+```
+
+- `FLOWSTOCK_DISCOVERY_BEHIND_RELAY=1` задаётся Compose для `flowstock`: backend per-source limiter отключён, остаётся absolute backend global ceiling `320/10s`. Основные relay limits: `20/source/10s`, `120/global/10s`, local healthcheck `20/10s`.
+- Docker healthcheck `discovery-relay` использует protocol-v1 request через public listener и имеет timeout `12s`.
+- Deploy scripts не меняют firewall автоматически. На сервере/firewall inbound UDP `7155` должен быть разрешён только из operator LAN; `deploy_update.sh` выполняет read-only `ss -lun` и best-effort firewall inspection.
+- `docker compose config -q` проверяет только корректность compose-файла и не доказывает проходимость directed broadcast через firewall/host listener.
 
 Быстрая проверка после deploy:
 
 1. DNS `flowstock.local` указывает на сервер, `FLOWSTOCK_PUBLIC_BASE_URL` совпадает с SAN сертификата;
 2. `curl -fsS https://flowstock.local:7154/api/discovery` отрабатывает без ошибок.
 
-Полная проверка UDP discovery (directed broadcast, nonce, поведение при недоступности broadcast) описана в `deploy/docs/operations/discovery-smoke.md`. Если broadcast через Docker published UDP port не проходит — не включать host network без отдельного архитектурного решения; сначала проверить firewall и router/AP isolation.
+Полная проверка UDP discovery (directed broadcast, nonce, relay path, source port ответа) описана в `deploy/docs/operations/discovery-smoke.md`.
 
 ## Режимы TLS
 
@@ -208,13 +221,17 @@ bash deploy/scripts/deploy_update.sh
 
 - проверяет наличие TLS-ассетов; в `local_ca` режиме перевыпускает серверный сертификат, если он отсутствует, не совпадает с конфигурацией или близок к истечению;
 - валидирует `docker compose config`;
+- валидирует настройки discovery relay и выполняет read-only UDP/firewall preflight;
 - поднимает `postgres` и дожидается healthy;
 - создаёт pre-deploy dump в `deploy/runtime/backups/`;
 - делает pull базовых образов;
-- пересобирает `flowstock`;
+- пересобирает `flowstock` и `discovery-relay`;
 - запускает `migrator`;
-- пересоздаёт `flowstock`, `nginx`, `pgbackup`;
-- дожидается healthy `flowstock`.
+- останавливает и удаляет старый `discovery-relay` перед изменением backend, чтобы public UDP `7155` не принимал discovery traffic при недоступном backend;
+- пересоздаёт `flowstock` с loopback backend publish и дожидается healthy `flowstock`;
+- проверяет, что public UDP `7155` свободен, и выполняет direct backend healthcheck на `127.0.0.1:${FLOWSTOCK_DISCOVERY_BACKEND_PORT:-17155}`;
+- запускает `discovery-relay` и дожидается healthy `discovery-relay`;
+- пересоздаёт `nginx`, `pgbackup` и дожидается running `nginx`.
 
 ## Проверка сервера для git-driven deploy
 
@@ -237,6 +254,8 @@ cd /opt/FlowStock
 bash deploy/scripts/release_status.sh
 $DC ps
 curl -fsS http://127.0.0.1:${FLOWSTOCK_PORT:-8080}/health/ready
+$DC ps discovery-relay
+$DC run --rm --no-deps --entrypoint dotnet discovery-relay FlowStock.DiscoveryRelay.dll healthcheck
 ```
 
 ## Ручной backup
@@ -280,7 +299,7 @@ bash deploy/scripts/restore_dump.sh /opt/flowstock-backups/pre_release.dump
 - валидирует compose config;
 - дожидается healthy Postgres;
 - создаёт pre-restore safety backup;
-- останавливает `flowstock`, `nginx`, `pgbackup`;
+- останавливает `discovery-relay`, `flowstock`, `nginx`, `pgbackup`, если эти сервисы есть в текущей revision;
 - пересоздаёт целевую базу;
 - восстанавливает dump через `pg_restore`;
 - снова запускает `pgbackup`;
@@ -306,6 +325,12 @@ $DC ps
 $DC logs --tail=100 migrator flowstock nginx postgres
 ```
 
+Если текущая revision содержит `discovery-relay`, добавьте его в список логов:
+
+```bash
+$DC logs --tail=100 discovery-relay
+```
+
 2. При несовместимости схемы и приложения вернитесь на предыдущую рабочую ревизию:
 
 ```bash
@@ -318,10 +343,12 @@ git checkout <previous-good-commit-or-tag>
 bash deploy/scripts/restore_dump.sh /opt/FlowStock/deploy/runtime/backups/FlowStock_<timestamp>.dump
 ```
 
-4. Поднимите предыдущую рабочую ревизию приложения:
+4. Поднимите предыдущую рабочую ревизию приложения. Для старой revision без `discovery-relay` запускайте только существующие сервисы; для новой revision с relay используйте `discovery-relay` между `flowstock` и `nginx`:
 
 ```bash
 $DC up -d --build flowstock nginx pgbackup
+# или, если target revision содержит discovery-relay:
+$DC up -d --build flowstock discovery-relay nginx pgbackup
 ```
 
 Для типового сценария есть rollback helper:
@@ -333,9 +360,11 @@ bash deploy/scripts/rollback_release.sh
 
 По умолчанию `rollback_release.sh`:
 
+- перед checkout останавливает и удаляет `discovery-relay`, если он есть в текущем compose project;
 - делает checkout предыдущей записанной успешной ревизии релиза;
+- проверяет target Compose: старая revision без relay должна публиковать `flowstock` на `7155/udp`, новая revision с relay должна использовать host-network `discovery-relay` и loopback backend publish;
 - восстанавливает последний записанный pre-deploy dump текущего релиза;
-- запускает `flowstock`, `nginx`, `pgbackup`;
+- запускает сервисы, существующие в target revision: `flowstock`, при наличии `discovery-relay`, затем `nginx` и `pgbackup`;
 - записывает rollback как новый последний успешный релиз.
 
 Откатить только код приложения без восстановления БД:
@@ -343,6 +372,8 @@ bash deploy/scripts/rollback_release.sh
 ```bash
 bash deploy/scripts/rollback_release.sh --no-restore
 ```
+
+Для rollback только сетевого изменения UDP discovery relay используйте `rollback_release.sh --no-restore`: PostgreSQL restore для этого не требуется.
 
 Откатиться на конкретную ревизию и конкретный dump:
 

@@ -42,6 +42,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+      target: flowstock-runtime
       args:
         FLOWSTOCK_DOTNET_SDK_IMAGE: ${FLOWSTOCK_DOTNET_SDK_IMAGE:-mcr.microsoft.com/dotnet/sdk:8.0}
         FLOWSTOCK_DOTNET_ASPNET_IMAGE: ${FLOWSTOCK_DOTNET_ASPNET_IMAGE:-mcr.microsoft.com/dotnet/aspnet:8.0}
@@ -60,6 +61,7 @@ services:
       FLOWSTOCK_INSTANCE_NAME: ${FLOWSTOCK_INSTANCE_NAME:?FLOWSTOCK_INSTANCE_NAME is required}
       FLOWSTOCK_TLS_SERVER_NAME: ${FLOWSTOCK_TLS_SERVER_NAME:?FLOWSTOCK_TLS_SERVER_NAME is required}
       FLOWSTOCK_TLS_SANS: ${FLOWSTOCK_TLS_SANS:-}
+      FLOWSTOCK_DISCOVERY_BEHIND_RELAY: "1"
     depends_on:
       postgres:
         condition: service_healthy
@@ -67,7 +69,7 @@ services:
         condition: service_completed_successfully
     ports:
       - "${FLOWSTOCK_PORT:-8080}:8080"
-      - "7155:7155/udp"
+      - "127.0.0.1:${FLOWSTOCK_DISCOVERY_BACKEND_PORT:-17155}:7155/udp"
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health/ready >/dev/null || exit 1"]
       interval: 10s
@@ -76,9 +78,40 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  discovery-relay:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: discovery-relay-runtime
+      args:
+        FLOWSTOCK_DOTNET_SDK_IMAGE: ${FLOWSTOCK_DOTNET_SDK_IMAGE:-mcr.microsoft.com/dotnet/sdk:8.0}
+        FLOWSTOCK_DOTNET_ASPNET_IMAGE: ${FLOWSTOCK_DOTNET_ASPNET_IMAGE:-mcr.microsoft.com/dotnet/aspnet:8.0}
+    environment:
+      FLOWSTOCK_DISCOVERY_BACKEND_PORT: ${FLOWSTOCK_DISCOVERY_BACKEND_PORT:-17155}
+      FLOWSTOCK_DISCOVERY_RELAY_TIMEOUT_MS: ${FLOWSTOCK_DISCOVERY_RELAY_TIMEOUT_MS:-2000}
+      FLOWSTOCK_DISCOVERY_RELAY_MAX_IN_FLIGHT: ${FLOWSTOCK_DISCOVERY_RELAY_MAX_IN_FLIGHT:-64}
+    depends_on:
+      flowstock:
+        condition: service_healthy
+    network_mode: host
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    healthcheck:
+      test: ["CMD", "dotnet", "FlowStock.DiscoveryRelay.dll", "healthcheck"]
+      interval: 10s
+      timeout: 12s
+      retries: 12
+      start_period: 5s
+    restart: unless-stopped
+
   nginx:
     image: nginx:1.27-alpine
     depends_on:
+      discovery-relay:
+        condition: service_healthy
       flowstock:
         condition: service_healthy
     ports:

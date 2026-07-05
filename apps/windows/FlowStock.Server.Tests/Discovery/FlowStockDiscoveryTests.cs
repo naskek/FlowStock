@@ -26,6 +26,27 @@ public sealed class FlowStockDiscoveryTests
         Assert.Equal("Warehouse A", response.InstanceName);
         Assert.Equal("https://flowstock.local:7154", response.CanonicalHttpsBaseUrl);
         Assert.Equal("1.2.3-test", response.ApplicationVersion);
+        Assert.False(options.BehindRelay);
+    }
+
+    [Fact]
+    public void DiscoveryConfigParsesBehindRelayMode()
+    {
+        var options = CreateOptions(
+            ("FLOWSTOCK_PUBLIC_BASE_URL", "https://flowstock.local:7154"),
+            ("FLOWSTOCK_INSTANCE_NAME", "Warehouse A"),
+            ("FLOWSTOCK_DISCOVERY_BEHIND_RELAY", "1"));
+
+        Assert.True(options.BehindRelay);
+    }
+
+    [Fact]
+    public void DiscoveryConfigRejectsInvalidBehindRelayMode()
+    {
+        Assert.Throws<InvalidOperationException>(() => CreateOptions(
+            ("FLOWSTOCK_PUBLIC_BASE_URL", "https://flowstock.local:7154"),
+            ("FLOWSTOCK_INSTANCE_NAME", "FlowStock"),
+            ("FLOWSTOCK_DISCOVERY_BEHIND_RELAY", "true")));
     }
 
     [Theory]
@@ -146,6 +167,90 @@ public sealed class FlowStockDiscoveryTests
         Assert.True(limiter.Allow(System.Net.IPAddress.Parse("192.168.1.11")));
         Assert.True(limiter.Allow(System.Net.IPAddress.Parse("192.168.1.12")));
         Assert.True(limiter.TrackedSourceCount <= 2);
+    }
+
+    [Fact]
+    public void UdpRateLimiterNormalModeKeepsPerSourceAndGlobalLimits()
+    {
+        var limiter = FlowStockDiscoveryRateLimiter.Create(CreateOptions(
+            ("FLOWSTOCK_PUBLIC_BASE_URL", "https://flowstock.local:7154"),
+            ("FLOWSTOCK_INSTANCE_NAME", "FlowStock")));
+        var source = System.Net.IPAddress.Parse("192.168.1.52");
+
+        for (var i = 0; i < FlowStockDiscoveryRateLimiter.NormalPerSourceLimitPerWindow; i++)
+        {
+            Assert.True(limiter.Allow(source));
+        }
+
+        Assert.False(limiter.Allow(source));
+
+        var globalLimiter = FlowStockDiscoveryRateLimiter.Create(CreateOptions(
+            ("FLOWSTOCK_PUBLIC_BASE_URL", "https://flowstock.local:7154"),
+            ("FLOWSTOCK_INSTANCE_NAME", "FlowStock")));
+        for (var i = 1; i <= FlowStockDiscoveryRateLimiter.NormalGlobalLimitPerWindow; i++)
+        {
+            Assert.True(globalLimiter.Allow(System.Net.IPAddress.Parse($"10.30.0.{i}")));
+        }
+
+        Assert.False(globalLimiter.Allow(System.Net.IPAddress.Parse("10.30.1.1")));
+    }
+
+    [Fact]
+    public void UdpRateLimiterBehindRelayDisablesPerSourceAndKeepsGlobalCeiling()
+    {
+        var options = CreateOptions(
+            ("FLOWSTOCK_PUBLIC_BASE_URL", "https://flowstock.local:7154"),
+            ("FLOWSTOCK_INSTANCE_NAME", "FlowStock"),
+            ("FLOWSTOCK_DISCOVERY_BEHIND_RELAY", "1"));
+        var limiter = FlowStockDiscoveryRateLimiter.Create(options);
+        var source = System.Net.IPAddress.Parse("172.18.0.1");
+
+        for (var i = 0; i < FlowStockDiscoveryRateLimiter.BehindRelayGlobalLimitPerWindow; i++)
+        {
+            Assert.True(limiter.Allow(source));
+        }
+
+        Assert.False(limiter.Allow(source));
+        Assert.Equal(0, limiter.TrackedSourceCount);
+    }
+
+    [Fact]
+    public void UdpRateLimiterBehindRelayAcceptsCalculatedBurstWithinOneBackendWindow()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var limiter = new FlowStockDiscoveryRateLimiter(
+            globalLimitPerWindow: FlowStockDiscoveryRateLimiter.BehindRelayGlobalLimitPerWindow,
+            perSourceLimitPerWindow: null,
+            window: FlowStockDiscoveryRateLimiter.DefaultWindow,
+            clock: () => now);
+        var source = System.Net.IPAddress.Parse("172.18.0.1");
+
+        // Relay fixed windows can contribute 240 LAN requests plus 40 local healthchecks
+        // inside one backend window when boundaries do not align.
+        for (var i = 0; i < 280; i++)
+        {
+            Assert.True(limiter.Allow(source));
+        }
+    }
+
+    [Fact]
+    public void UdpRateLimiterBehindRelayRejectsRequestAfterAbsoluteBackendCeiling()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var limiter = new FlowStockDiscoveryRateLimiter(
+            globalLimitPerWindow: FlowStockDiscoveryRateLimiter.BehindRelayGlobalLimitPerWindow,
+            perSourceLimitPerWindow: null,
+            window: FlowStockDiscoveryRateLimiter.DefaultWindow,
+            clock: () => now);
+        var source = System.Net.IPAddress.Parse("172.18.0.1");
+
+        for (var i = 0; i < 320; i++)
+        {
+            Assert.True(limiter.Allow(source));
+        }
+
+        Assert.False(limiter.Allow(source));
+        Assert.Equal(0, limiter.TrackedSourceCount);
     }
 
     [Fact]

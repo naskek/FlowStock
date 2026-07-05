@@ -6,7 +6,8 @@ namespace FlowStock.Server.Discovery;
 public sealed record FlowStockDiscoveryOptions(
     string InstanceName,
     string CanonicalHttpsBaseUrl,
-    string ApplicationVersion)
+    string ApplicationVersion,
+    bool BehindRelay = false)
 {
     public const string Product = "FlowStock";
     public const int ProtocolVersion = 1;
@@ -26,7 +27,8 @@ public sealed record FlowStockDiscoveryOptions(
                 baseUrl,
                 configuration["FLOWSTOCK_TLS_SERVER_NAME"],
                 configuration["FLOWSTOCK_TLS_SANS"]),
-            ValidateApplicationVersion(applicationVersion));
+            ValidateApplicationVersion(applicationVersion),
+            ValidateBehindRelay(configuration["FLOWSTOCK_DISCOVERY_BEHIND_RELAY"]));
         options.EnsureUdpResponseFits();
         return options;
     }
@@ -59,6 +61,21 @@ public sealed record FlowStockDiscoveryOptions(
         }
 
         return version;
+    }
+
+    private static bool ValidateBehindRelay(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Trim() == "0")
+        {
+            return false;
+        }
+
+        if (value.Trim() == "1")
+        {
+            return true;
+        }
+
+        throw new InvalidOperationException("FLOWSTOCK_DISCOVERY_BEHIND_RELAY must be 0 or 1.");
     }
 
     private static string ValidateCanonicalHttpsBaseUrl(

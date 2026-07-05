@@ -15,6 +15,7 @@
 ## Компоненты
 - `FlowStock.Server`: ASP.NET Core Minimal API, доступ к БД, диагностика, раздача TSD/PC web clients.
   - Экспортирует `/health/live` и `/health/ready` для container liveness/readiness.
+  - В Docker production за host-network discovery relay серверный UDP responder работает в режиме `FLOWSTOCK_DISCOVERY_BEHIND_RELAY=1`: per-source limiter отключён, absolute backend global ceiling составляет `320/10s`; основной per-original-source и LAN global limit применяет relay.
 - `FlowStock.App`: WPF desktop operator UI с прямым подключением к PostgreSQL (`FLOWSTOCK_PG_*` env или `settings.json postgres`).
   - Если PostgreSQL не настроен или недоступен на старте приложения, WPF сначала открывает окно подключения к БД и не открывает основной UI, пока подключение не будет настроено успешно.
   - В окне подключения доступна кнопка `Инициализировать / миграции`: она применяет недостающие SQL-миграции `deploy/postgres/migrations` в выбранную БД, не переисполняя уже отмеченные версии в `schema_migrations`.
@@ -27,6 +28,7 @@
   - Package/namespace: `ru.flowstock.tsd`; WebView получает User-Agent токен `FlowStockTsdNative/1`.
   - Сервер выбирается на устройстве как canonical HTTPS root URL (`https://flowstock.local:7154`); пути `/api/discovery`, `/api/ping` и `/tsd/` вычисляются из него. Оболочка хранит только один root URL и технические metadata (`instance_name`, `application_version`, `validated_at`).
   - Discovery v1 использует UDP request/response на `7155/udp`: Android отправляет directed broadcast в активную Wi-Fi/Ethernet подсеть, сервер отвечает unicast JSON с `product = FlowStock`, `discovery_protocol_version = 1`, тем же nonce, `instance_name`, `canonical_https_base_url` и `application_version`. UDP payload является только недоверенной подсказкой.
+  - В production Docker Compose public listener `7155/udp` реализован отдельным host-network `discovery-relay`; основной `flowstock` UDP responder остаётся источником discovery response и доступен relay только через loopback backend publish.
   - Сервер принимается только после strict HTTPS validation canonical URL: `GET /api/discovery`, проверка identity/canonical URL, `GET /api/ping` с `ok=true`, затем доступность `/tsd/`. UDP sender IP не становится trusted origin.
   - Server-hosted `apps/android/tsd/native-bridge.js` создаёт `window.FlowStockAndroidBridge` только под этим native User-Agent; в обычном Chrome/PWA bridge является no-op и TSD остаётся на keyboard provider.
   - ATOL Barcode Service настраивается вручную отдельным Broadcast-only профилем для `ru.flowstock.tsd`; default/Keyboard профиль не меняется.
@@ -57,6 +59,7 @@
 - `https://flowstock.local:7154/` открывает PC web client.
 - `https://flowstock.local:7154/tsd/` открывает TSD web client.
 - `GET /api/discovery` — read-only technical endpoint без авторизации и без бизнес-побочных эффектов. Ответ содержит `product`, `discovery_protocol_version`, `instance_name`, `canonical_https_base_url`, `application_version`.
+- UDP discovery public listener остаётся фиксированным `7155/udp`. В production Docker Compose directed broadcast принимает host-network relay на `0.0.0.0:7155/udp`, затем пересылает datagram в `flowstock` через loopback backend port; protocol v1 и Android-поведение от этого не меняются.
 - Native Android shell не использует build-time production URL. Первый запуск без сохранённого endpoint показывает native setup: ручной ввод HTTPS root URL или UDP discovery; сохранение доступно только после strict HTTPS validation.
 - При показе native setup для смены сервера scanner dispatch останавливается: скрытый WebView не принимает сканы. Возврат к текущему серверу восстанавливает существующую session без очистки cookies/WebStorage; фактическая очистка session выполняется только при подтверждённой смене origin.
 

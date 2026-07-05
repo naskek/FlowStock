@@ -36,6 +36,9 @@ FLOWSTOCK_TLS_KEY_PATH="${FLOWSTOCK_TLS_KEY_PATH:-${FLOWSTOCK_TLS_CERT_DIR}/flow
 FLOWSTOCK_CA_CERT_PATH="${FLOWSTOCK_CA_CERT_PATH:-${FLOWSTOCK_CA_DIR}/flowstock-root-ca.crt}"
 FLOWSTOCK_CA_KEY_PATH="${FLOWSTOCK_CA_KEY_PATH:-${FLOWSTOCK_CA_DIR}/flowstock-root-ca.key}"
 FLOWSTOCK_CA_SERIAL_PATH="${FLOWSTOCK_CA_SERIAL_PATH:-${FLOWSTOCK_CA_DIR}/flowstock-root-ca.srl}"
+FLOWSTOCK_DISCOVERY_BACKEND_PORT="${FLOWSTOCK_DISCOVERY_BACKEND_PORT:-17155}"
+FLOWSTOCK_DISCOVERY_RELAY_TIMEOUT_MS="${FLOWSTOCK_DISCOVERY_RELAY_TIMEOUT_MS:-2000}"
+FLOWSTOCK_DISCOVERY_RELAY_MAX_IN_FLIGHT="${FLOWSTOCK_DISCOVERY_RELAY_MAX_IN_FLIGHT:-64}"
 
 log() {
     printf '[flowstock] %s\n' "$*"
@@ -204,6 +207,195 @@ compose() {
         "$@"
 }
 
+validate_int_range() {
+    local name="$1"
+    local value="$2"
+    local min="$3"
+    local max="$4"
+    [[ "$value" =~ ^[0-9]+$ ]] || fail "$name must be an integer"
+    (( value >= min && value <= max )) || fail "$name must be in range ${min}..${max}"
+}
+
+validate_discovery_env() {
+    validate_int_range FLOWSTOCK_DISCOVERY_BACKEND_PORT "$FLOWSTOCK_DISCOVERY_BACKEND_PORT" 1 65535
+    (( FLOWSTOCK_DISCOVERY_BACKEND_PORT != 7155 )) || fail "FLOWSTOCK_DISCOVERY_BACKEND_PORT must not be 7155"
+    validate_int_range FLOWSTOCK_DISCOVERY_RELAY_TIMEOUT_MS "$FLOWSTOCK_DISCOVERY_RELAY_TIMEOUT_MS" 100 10000
+    validate_int_range FLOWSTOCK_DISCOVERY_RELAY_MAX_IN_FLIGHT "$FLOWSTOCK_DISCOVERY_RELAY_MAX_IN_FLIGHT" 1 512
+    if [[ -n "${FLOWSTOCK_DISCOVERY_BEHIND_RELAY:-}" ]]; then
+        [[ "$FLOWSTOCK_DISCOVERY_BEHIND_RELAY" == "0" || "$FLOWSTOCK_DISCOVERY_BEHIND_RELAY" == "1" ]] \
+            || fail "FLOWSTOCK_DISCOVERY_BEHIND_RELAY must be 0 or 1"
+    fi
+}
+
+compose_services() {
+    compose config --services 2>/dev/null || true
+}
+
+service_exists() {
+    local service="$1"
+    compose_services | grep -qx "$service"
+}
+
+existing_services() {
+    for service in "$@"; do
+        if service_exists "$service"; then
+            printf '%s\n' "$service"
+        fi
+    done
+}
+
+compose_logs_existing() {
+    local services=()
+    while IFS= read -r service; do
+        services+=("$service")
+    done < <(existing_services "$@")
+    if (( ${#services[@]} > 0 )); then
+        compose logs --tail=80 "${services[@]}" || true
+    fi
+}
+
+compose_stop_existing() {
+    local services=()
+    while IFS= read -r service; do
+        services+=("$service")
+    done < <(existing_services "$@")
+    if (( ${#services[@]} > 0 )); then
+        compose stop "${services[@]}" || true
+    fi
+}
+
+remove_discovery_relay_containers() {
+    local container_ids
+    container_ids="$(docker ps -aq \
+        --filter "label=com.docker.compose.project=${FLOWSTOCK_PROJECT_NAME}" \
+        --filter "label=com.docker.compose.service=discovery-relay" || true)"
+    if [[ -z "$container_ids" ]]; then
+        return 0
+    fi
+
+    log "removing discovery-relay containers before backend change"
+    while IFS= read -r container_id; do
+        [[ -n "$container_id" ]] || continue
+        local state
+        state="$(docker inspect -f '{{.State.Status}}' "$container_id")"
+        if [[ "$state" == "running" ]]; then
+            docker stop -t 5 "$container_id" >/dev/null
+        fi
+
+        local exit_code
+        exit_code="$(docker inspect -f '{{.State.ExitCode}}' "$container_id")"
+        [[ "$exit_code" != "137" ]] || fail "discovery-relay was killed during graceful stop"
+        docker rm "$container_id" >/dev/null
+    done <<<"$container_ids"
+}
+
+assert_no_discovery_relay_containers() {
+    local container_ids
+    container_ids="$(docker ps -aq \
+        --filter "label=com.docker.compose.project=${FLOWSTOCK_PROJECT_NAME}" \
+        --filter "label=com.docker.compose.service=discovery-relay" || true)"
+    [[ -z "$container_ids" ]] || fail "discovery-relay container still exists after removal"
+}
+
+ss_udp_lines() {
+    if ! command -v ss >/dev/null 2>&1; then
+        return 1
+    fi
+    ss -lun 2>/dev/null | grep -E ":(7155|${FLOWSTOCK_DISCOVERY_BACKEND_PORT})([[:space:]]|$)" || true
+}
+
+require_udp_port_free() {
+    local port="$1"
+    if ! command -v ss >/dev/null 2>&1; then
+        log "WARNING: ss is not available; cannot verify UDP port $port"
+        return 0
+    fi
+    if ss -lun 2>/dev/null | grep -E ":${port}([[:space:]]|$)" >/dev/null; then
+        ss -lun | grep -E ":${port}([[:space:]]|$)" >&2 || true
+        fail "UDP port $port is still bound"
+    fi
+}
+
+allow_udp_7155_free_or_current_flowstock_publish() {
+    if ! command -v ss >/dev/null 2>&1; then
+        fail "ss is required to verify UDP 7155 owner before recreating flowstock"
+    fi
+
+    if ! ss -lun 2>/dev/null | grep -E ":7155([[:space:]]|$)" >/dev/null; then
+        log "UDP 7155 is free before flowstock recreate"
+        return 0
+    fi
+
+    local flowstock_id
+    flowstock_id="$(service_container_id flowstock || true)"
+    if [[ -z "$flowstock_id" ]]; then
+        ss -lunp 2>/dev/null | grep -E ":7155([[:space:]]|$)" >&2 || ss -lun | grep -E ":7155([[:space:]]|$)" >&2 || true
+        fail "UDP 7155 is bound, but current compose project has no flowstock container"
+    fi
+
+    local flowstock_status
+    flowstock_status="$(docker inspect -f '{{.State.Status}}' "$flowstock_id" 2>/dev/null || true)"
+    if [[ "$flowstock_status" != "running" ]]; then
+        fail "UDP 7155 is bound, but current flowstock container is not running"
+    fi
+
+    local published
+    published="$(docker port "$flowstock_id" 7155/udp 2>/dev/null || true)"
+    if grep -Eq ':7155$' <<<"$published"; then
+        log "UDP 7155 is held by current flowstock legacy publish; allowing recreate to release it"
+        return 0
+    fi
+
+    ss -lunp 2>/dev/null | grep -E ":7155([[:space:]]|$)" >&2 || ss -lun | grep -E ":7155([[:space:]]|$)" >&2 || true
+    fail "UDP 7155 is bound by an unexpected owner"
+}
+
+require_udp_port_bound() {
+    local port="$1"
+    if ! command -v ss >/dev/null 2>&1; then
+        log "WARNING: ss is not available; cannot verify UDP port $port"
+        return 0
+    fi
+    if ! ss -lun 2>/dev/null | grep -E ":${port}([[:space:]]|$)" >/dev/null; then
+        fail "UDP port $port is not bound"
+    fi
+}
+
+discovery_network_preflight() {
+    log "checking UDP discovery ports with ss"
+    if ! command -v ss >/dev/null 2>&1; then
+        log "WARNING: ss is not available; skipping UDP port preflight"
+    else
+        ss_udp_lines || true
+    fi
+
+    if command -v nft >/dev/null 2>&1; then
+        if sudo -n nft list ruleset >/dev/null 2>&1; then
+            log "firewall nft ruleset is readable"
+        elif nft list ruleset >/dev/null 2>&1; then
+            log "firewall nft ruleset is readable"
+        else
+            log "WARNING: firewall nft state is not readable; inbound UDP 7155 must be allowed from operator LAN"
+        fi
+    elif command -v ufw >/dev/null 2>&1; then
+        if sudo -n ufw status >/dev/null 2>&1; then
+            log "firewall ufw status is readable"
+        elif ufw status >/dev/null 2>&1; then
+            log "firewall ufw status is readable"
+        else
+            log "WARNING: firewall ufw state is not readable; inbound UDP 7155 must be allowed from operator LAN"
+        fi
+    else
+        log "WARNING: nft/ufw not found; firewall state was not inspected"
+    fi
+}
+
+check_discovery_backend() {
+    service_exists discovery-relay || return 0
+    log "checking direct UDP discovery backend on 127.0.0.1:${FLOWSTOCK_DISCOVERY_BACKEND_PORT}"
+    compose run --rm --no-deps --entrypoint dotnet discovery-relay FlowStock.DiscoveryRelay.dll backend-healthcheck
+}
+
 service_container_id() {
     compose ps -q "$1"
 }
@@ -248,6 +440,7 @@ wait_for_service_status() {
 }
 
 ensure_compose_config() {
+    validate_discovery_env
     log "validating compose configuration"
     compose config -q
 }

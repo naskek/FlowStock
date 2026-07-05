@@ -60,7 +60,7 @@ on_error() {
     [[ -n "$dump_path" ]] && log "restore dump: $dump_path"
     [[ -n "$pre_restore_backup" ]] && log "pre-restore backup path: $pre_restore_backup"
     compose ps || true
-    compose logs --tail=80 flowstock nginx postgres || true
+    compose_logs_existing flowstock discovery-relay nginx postgres pgbackup
     exit "$exit_code"
 }
 
@@ -120,8 +120,28 @@ if [[ "$do_restore" == "true" ]]; then
     pre_restore_backup="$(resolve_backup_path "${FLOWSTOCK_BACKUP_OUTPUT_DIR}/rollback_guard/FlowStock_${rollback_stamp}_${current_commit:0:12}.dump")"
 fi
 
+remove_discovery_relay_containers
+assert_no_discovery_relay_containers
+require_udp_port_free 7155
+
 log "checking out detached rollback revision"
 git_in_repo checkout --detach "$target_commit"
+ensure_compose_config
+
+target_compose_config="$(compose config)"
+target_has_relay="false"
+if service_exists discovery-relay; then
+    target_has_relay="true"
+    printf '%s\n' "$target_compose_config" | grep -q "network_mode: host" \
+        || fail "target discovery-relay must use host network"
+    printf '%s\n' "$target_compose_config" | grep -q "published: \"${FLOWSTOCK_DISCOVERY_BACKEND_PORT}\"" \
+        || fail "target flowstock must publish loopback discovery backend"
+else
+    if ! printf '%s\n' "$target_compose_config" | grep -q "target: 7155" \
+        || ! printf '%s\n' "$target_compose_config" | grep -q 'published: "7155"'; then
+        fail "target compose does not publish UDP 7155 for flowstock"
+    fi
+fi
 
 if [[ "$do_restore" == "true" ]]; then
     log "restoring database state from $dump_path"
@@ -131,9 +151,33 @@ if [[ "$do_restore" == "true" ]]; then
 fi
 
 log "starting application containers for rollback revision"
-compose up -d --build flowstock nginx pgbackup
+compose up -d --build --no-deps --force-recreate flowstock
 wait_for_flowstock_ready
-wait_for_service_status nginx running 60
+
+if [[ "$target_has_relay" == "true" ]]; then
+    require_udp_port_free 7155
+    check_discovery_backend
+    compose up -d --build --no-deps --force-recreate discovery-relay
+    wait_for_service_status discovery-relay healthy "$FLOWSTOCK_HEALTH_TIMEOUT_SECONDS"
+    require_udp_port_bound 7155
+fi
+
+rollback_tail_services=()
+while IFS= read -r service; do
+    rollback_tail_services+=("$service")
+done < <(existing_services nginx pgbackup)
+if (( ${#rollback_tail_services[@]} > 0 )); then
+    compose up -d --build --no-deps --force-recreate "${rollback_tail_services[@]}"
+fi
+
+if service_exists nginx; then
+    wait_for_service_status nginx running 60
+fi
+if [[ "$target_has_relay" == "true" ]]; then
+    wait_for_service_status discovery-relay healthy "$FLOWSTOCK_HEALTH_TIMEOUT_SECONDS"
+else
+    require_udp_port_bound 7155
+fi
 
 if [[ -f "$latest_success_file" ]]; then
     cp "$latest_success_file" "$previous_success_file"
