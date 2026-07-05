@@ -1,6 +1,9 @@
 # Деплой FlowStock
 
+Этот документ — постоянный runbook деплоя. Разовые операционные процедуры (cutover ЧЗ, backfill статусов маркировки) вынесены в `deploy/docs/operations/`.
+
 ## Обзор
+
 - Production deploy выполняется через `deploy/docker-compose.yml`.
 - Имя compose-проекта зафиксировано как `flowstock`, чтобы ручные команды `docker compose` не создавали параллельный стек `deploy-*`.
 - PostgreSQL init-скрипты в `deploy/postgres/init/` используются только для самого первого bootstrap пустого каталога данных.
@@ -8,88 +11,93 @@
 - На сервере должен быть обычный git clone репозитория.
 - Обновления из GitHub выполняются вручную по запросу; автоматического deploy-loop нет.
 - Рекомендуемый путь обновления:
-  1. backup
-  2. schema migration
-  3. recreate контейнеров приложения
-  4. проверка health
+  1. backup (создаётся автоматически внутри `deploy_update.sh`);
+  2. schema migration;
+  3. recreate контейнеров приложения;
+  4. проверка health.
+
+### Сокращение для ручных команд
+
+Все ручные команды `docker compose` в этом документе используют переменную:
+
+```bash
+DC='docker compose --project-name flowstock --env-file deploy/.env -f deploy/docker-compose.yml'
+```
+
+Задайте её один раз в сессии (`export DC=...` не нужен, достаточно `DC=...` и вызова `$DC ...` в том же shell) или используйте полную форму.
 
 ## URL-схема
-- Production использует единый HTTPS origin на `7154`.
-- `https://SERVER_IP:7154/` открывает PC web client.
-- `https://SERVER_IP:7154/tsd/` открывает TSD web client.
-- В `deploy/.env.example` по умолчанию используется внешний HTTPS-порт `7154` и UDP discovery-порт `7155`.
+
+- Production использует единый HTTPS origin на порту `7154`.
+- `https://SERVER_IP:7154/` — PC web client.
+- `https://SERVER_IP:7154/tsd/` — TSD web client.
+- В `deploy/.env.example` по умолчанию: внешний HTTPS-порт `7154`, UDP discovery-порт `7155`.
 
 ## Обязательные файлы и каталоги
-- `deploy/.env`
-  - create it from `deploy/.env.example`
-- `deploy/runtime/`
-  - created automatically by scripts for manual backups and operator artifacts
-- `FLOWSTOCK_CA_DIR`
-  - external directory for local CA materials
-  - do not store the CA private key in git
+
+- `deploy/.env` — создаётся из `deploy/.env.example`.
+- `deploy/runtime/` — создаётся автоматически скриптами; хранит ручные backup'ы и артефакты оператора.
+- `FLOWSTOCK_CA_DIR` — внешний каталог для материалов локального CA. Приватный ключ CA никогда не хранится в git.
 
 ## Базовые образы
-- По умолчанию серверный образ собирается из:
-  - `mcr.microsoft.com/dotnet/sdk:8.0`
-  - `mcr.microsoft.com/dotnet/aspnet:8.0`
-- Если у сервера плохая доступность `mcr.microsoft.com`, переопределите образы в `deploy/.env`:
+
+По умолчанию серверный образ собирается из:
+
+- `mcr.microsoft.com/dotnet/sdk:8.0`
+- `mcr.microsoft.com/dotnet/aspnet:8.0`
+
+Если у сервера плохая доступность `mcr.microsoft.com`, переопределите образы в `deploy/.env`:
+
 ```bash
 FLOWSTOCK_DOTNET_SDK_IMAGE=registry.example.com/mirror/dotnet/sdk:8.0
 FLOWSTOCK_DOTNET_ASPNET_IMAGE=registry.example.com/mirror/dotnet/aspnet:8.0
 ```
-- Это сохраняет текущий deploy workflow без изменений: `deploy_from_git.sh` и `deploy_update.sh` подхватят override автоматически.
-- В проекте намеренно не зашит неофициальный fallback registry. Используйте собственный mirror, registry cache или заранее прогретый внутренний registry, если `mcr.microsoft.com` медленно доступен с production-сервера.
+
+`deploy_from_git.sh` и `deploy_update.sh` подхватят override автоматически. Неофициальный fallback registry в проект намеренно не зашит: используйте собственный mirror, registry cache или заранее прогретый внутренний registry.
 
 ## Сервисы
-- `postgres`
-  - primary database
-  - keeps bootstrap-only init scripts mounted at `/docker-entrypoint-initdb.d`
-- `migrator`
-  - one-shot service
-  - waits for healthy Postgres
-  - applies pending SQL files in lexical order
-  - writes applied entries into `schema_migrations`
-- `flowstock`
-  - starts only after successful `migrator`
-  - exposes `/health/live` and `/health/ready`
-- `nginx`
-  - starts after healthy `flowstock`
-  - uses `deploy/nginx/certs/flowstock.crt` and `deploy/nginx/certs/flowstock.key`
-- `pgbackup`
-  - continuous scheduled `pg_dump -Fc` backups inside the compose stack
+
+- `postgres` — основная БД; bootstrap-only init-скрипты смонтированы в `/docker-entrypoint-initdb.d`.
+- `migrator` — one-shot сервис: ждёт healthy Postgres, применяет pending SQL-файлы в лексикографическом порядке, записывает применённые файлы в `schema_migrations`.
+- `flowstock` — стартует только после успешного `migrator`; отдаёт `/health/live` и `/health/ready`.
+- `nginx` — стартует после healthy `flowstock`; использует `deploy/nginx/certs/flowstock.crt` и `deploy/nginx/certs/flowstock.key`.
+- `pgbackup` — регулярные scheduled backup'ы `pg_dump -Fc` внутри compose-стека.
 
 ## Canonical HTTPS endpoint и discovery
-- Для native Android TSD задайте в `deploy/.env`:
+
+Для native Android TSD задайте в `deploy/.env`:
+
 ```bash
 FLOWSTOCK_PUBLIC_BASE_URL=https://flowstock.local:7154
 FLOWSTOCK_INSTANCE_NAME=FlowStock
 ```
-- `FLOWSTOCK_PUBLIC_BASE_URL` должен быть абсолютным HTTPS root URL без path/query/fragment. Он не вычисляется из HTTP `Host`, IP клиента или входящего запроса.
+
+- `FLOWSTOCK_PUBLIC_BASE_URL` — абсолютный HTTPS root URL без path/query/fragment. Он не вычисляется из HTTP `Host`, IP клиента или входящего запроса.
 - `/api/discovery` и UDP responder на `7155/udp` используют одну и ту же конфигурацию.
-- Docker Compose публикует `7155:7155/udp` у сервиса `flowstock`; host network не используется. На сервере/firewall должен быть разрешён входящий UDP `7155` из операторской LAN.
-- Android discovery v1 отправляет directed broadcast в активную Wi-Fi/Ethernet подсеть. UDP-ответ является только подсказкой: приложение сохраняет сервер только после strict HTTPS validation `/api/discovery`, `/api/ping` и `/tsd/`.
-- `docker compose config -q` проверяет только корректность compose-файла. Он не доказывает, что directed broadcast из LAN проходит через firewall/Docker bridge и что unicast UDP-ответ возвращается клиенту.
-- Manual smoke после deploy:
-  1. убедиться, что DNS `flowstock.local` указывает на сервер, а `FLOWSTOCK_PUBLIC_BASE_URL` совпадает с SAN сертификата;
-  2. проверить HTTPS identity:
-     `curl -fsS https://flowstock.local:7154/api/discovery`;
-  3. с устройства/ПК в той же Wi-Fi/Ethernet подсети отправить UDP request на directed broadcast `7155/udp` с JSON `{"product":"FlowStock","discovery_protocol_version":1,"nonce":"0123456789abcdef0123456789abcdef"}`;
-  4. убедиться, что ответ пришёл unicast от сервера и содержит тот же nonce и canonical HTTPS URL;
-  5. если broadcast через Docker published UDP port не проходит, не включать host network без отдельного архитектурного решения; сначала проверить firewall, router/AP isolation и возможность минимального production-safe сетевого изменения.
+- Compose публикует `7155:7155/udp` у сервиса `flowstock`; host network не используется. На сервере/firewall должен быть разрешён входящий UDP `7155` из операторской LAN.
+- UDP-ответ является только подсказкой: Android-приложение сохраняет сервер только после strict HTTPS validation `/api/discovery`, `/api/ping` и `/tsd/`.
+- `docker compose config -q` проверяет только корректность compose-файла и не доказывает проходимость broadcast через firewall/Docker bridge.
+
+Быстрая проверка после deploy:
+
+1. DNS `flowstock.local` указывает на сервер, `FLOWSTOCK_PUBLIC_BASE_URL` совпадает с SAN сертификата;
+2. `curl -fsS https://flowstock.local:7154/api/discovery` отрабатывает без ошибок.
+
+Полная проверка UDP discovery (directed broadcast, nonce, поведение при недоступности broadcast) описана в `deploy/docs/operations/discovery-smoke.md`. Если broadcast через Docker published UDP port не проходит — не включать host network без отдельного архитектурного решения; сначала проверить firewall и router/AP isolation.
 
 ## Режимы TLS
-- `FLOWSTOCK_TLS_MODE=local_ca`
-  - recommended for internal LAN deployments
-  - deploy scripts expect a local root CA in `FLOWSTOCK_CA_DIR`
-  - server certificates are issued automatically into `deploy/nginx/certs/`
-  - root CA private key stays outside the repository
-  - deploy validation останавливается, если `FLOWSTOCK_PUBLIC_BASE_URL` не является HTTPS root URL, содержит userinfo/path/query/fragment, или его host не совпадает с `FLOWSTOCK_TLS_SERVER_NAME`/`FLOWSTOCK_TLS_SANS` и фактическим SAN сертификата
-- `FLOWSTOCK_TLS_MODE=manual`
-  - deploy expects `deploy/nginx/certs/flowstock.crt` and `deploy/nginx/certs/flowstock.key` to already exist
-  - use this only if certificates are managed outside the FlowStock deploy scripts
+
+- `FLOWSTOCK_TLS_MODE=local_ca` — рекомендуется для внутреннего LAN:
+  - deploy-скрипты ожидают локальный root CA в `FLOWSTOCK_CA_DIR`;
+  - серверные сертификаты выпускаются автоматически в `deploy/nginx/certs/`;
+  - приватный ключ root CA остаётся вне репозитория;
+  - deploy validation останавливается, если `FLOWSTOCK_PUBLIC_BASE_URL` не является HTTPS root URL, содержит userinfo/path/query/fragment, или его host не совпадает с `FLOWSTOCK_TLS_SERVER_NAME`/`FLOWSTOCK_TLS_SANS` и фактическим SAN сертификата.
+- `FLOWSTOCK_TLS_MODE=manual` — deploy ожидает уже существующие `deploy/nginx/certs/flowstock.crt` и `flowstock.key`. Используйте только если сертификаты управляются вне deploy-скриптов FlowStock.
 
 ## Первичный bootstrap локального CA
-Для внутреннего HTTPS один раз выполните bootstrap CA на сервере:
+
+Выполняется один раз на сервере:
+
 ```bash
 cd /opt/FlowStock
 mkdir -p /opt/flowstock-secrets/ca
@@ -97,108 +105,121 @@ bash deploy/scripts/bootstrap_local_ca.sh
 ```
 
 Будут созданы:
+
 - `FLOWSTOCK_CA_DIR/flowstock-root-ca.crt`
 - `FLOWSTOCK_CA_DIR/flowstock-root-ca.key`
 
 Важно:
-- keep the CA private key backed up securely and out of git
-- do not leave the CA private key on operators' laptops unless they are responsible for certificate issuance
-- client devices must trust `flowstock-root-ca.crt` once
-- для release APK native Android TSD FlowStock root CA устанавливается в Android user trust store вручную или через MDM; debug embedded CA не является production trust model
+
+- храните приватный ключ CA в защищённом backup и вне git;
+- не оставляйте приватный ключ CA на ноутбуках операторов, если они не отвечают за выпуск сертификатов;
+- клиентские устройства должны один раз доверять `flowstock-root-ca.crt`;
+- для release APK native Android TSD root CA устанавливается в Android user trust store вручную или через MDM; debug embedded CA не является production trust model.
 
 ## Доверие на клиентах
+
 После bootstrap CA установите `flowstock-root-ca.crt` в доверенные корневые сертификаты на:
-- Windows PCs that open the PC web client
-- Android TSD devices that open the PWA
 
-Это делается один раз на устройство, пока используется тот же root CA.
+- Windows PC, открывающих PC web client;
+- Android TSD, открывающих PWA.
 
-При ротации CA сначала установите новый CA на устройства с периодом overlap, затем выпустите серверный сертификат от нового CA и после проверки удалите старый CA. APK не требуется пересобирать при смене адреса сервера или ротации CA, если новый CA установлен на устройствах.
+Делается один раз на устройство, пока используется тот же root CA.
+
+Ротация CA: сначала установить новый CA на устройства с периодом overlap, затем выпустить серверный сертификат от нового CA, после проверки удалить старый CA. APK не требуется пересобирать при смене адреса сервера или ротации CA, если новый CA установлен на устройствах.
 
 ## Первый deploy на пустой production
-Перед production deploy с миграцией `V0025__tsd_explicit_finalize_and_business_notifications.sql` обязательно создать свежий backup PostgreSQL. Миграция добавляет только marker явного завершения наполнения и append-only журнал/read-state уведомлений; она не изменяет `ledger`, документы или статусы заказов.
 
 1. Подготовьте env:
+
 ```bash
 cd /opt/FlowStock
 cp deploy/.env.example deploy/.env
 ```
-2. Отредактируйте `deploy/.env`, указав реальный пароль PostgreSQL, `FLOWSTOCK_PUBLIC_BASE_URL`, `FLOWSTOCK_INSTANCE_NAME` и нужные порты.
+
+2. Отредактируйте `deploy/.env`: реальный пароль PostgreSQL, `FLOWSTOCK_PUBLIC_BASE_URL`, `FLOWSTOCK_INSTANCE_NAME`, нужные порты.
    Для прямого доступа WPF к PostgreSQL из LAN задайте `FLOWSTOCK_PG_BIND_HOST`:
-   - безопасный default: `127.0.0.1` (доступ только с хоста сервера)
-   - пример для production LAN: `FLOWSTOCK_PG_BIND_HOST=192.168.1.3`
-   - не требуется `docker-compose.override.yml`
-3. Один раз выполните bootstrap локального CA:
-```bash
-mkdir -p /opt/flowstock-secrets/ca
-bash deploy/scripts/bootstrap_local_ca.sh
-```
+   - безопасный default: `127.0.0.1` (доступ только с хоста сервера);
+   - пример для production LAN: `FLOWSTOCK_PG_BIND_HOST=192.168.1.3`;
+   - `docker-compose.override.yml` не требуется.
+3. Один раз выполните bootstrap локального CA (см. раздел выше).
 4. Установите сгенерированный root CA cert на клиентские устройства, включая Android TSD user trust store для release APK.
 5. Выполните первый deploy:
+
 ```bash
 cd /opt/FlowStock
 bash deploy/scripts/deploy_update.sh
 ```
+
 6. Проверьте health:
+
 ```bash
-docker compose --project-name flowstock --env-file deploy/.env -f deploy/docker-compose.yml ps
+$DC ps
 curl -fsS http://127.0.0.1:${FLOWSTOCK_PORT:-8080}/health/ready
 ```
 
 7. Проверьте зафиксированное состояние релиза:
+
 ```bash
 bash deploy/scripts/release_status.sh
 ```
 
 ### Необязательная разовая проверка чистого bootstrap
-Используйте только на заведомо пустом сервере или во временном тестовом проекте:
+
+Только на заведомо пустом сервере или во временном тестовом проекте (команда `down -v` удаляет данные):
+
 ```bash
-docker compose --project-name flowstock --env-file deploy/.env -f deploy/docker-compose.yml down -v
+$DC down -v
 bash deploy/scripts/deploy_update.sh
 ```
 
 ## Обычное обновление production
+
 Рекомендуемый путь обновления из GitHub:
+
 ```bash
 cd /opt/FlowStock
 bash deploy/scripts/deploy_from_git.sh
 ```
 
 По умолчанию `deploy_from_git.sh`:
-- делает `fetch` из `origin`
-- резолвит `origin/main`
-- отказывается продолжать, если в отслеживаемом worktree есть локальные изменения
-- записывает метаданные попытки deploy
-- выполняет fast-forward локальной ветки `main`
-- запускает стандартный deployment flow
-- записывает метаданные успешного релиза
 
-Чтобы задеплоить конкретный tag или commit вместо `origin/main`:
+- делает `fetch` из `origin` и резолвит `origin/main`;
+- отказывается продолжать, если в отслеживаемом worktree есть локальные изменения;
+- записывает метаданные попытки deploy;
+- выполняет fast-forward локальной ветки `main`;
+- запускает стандартный deployment flow;
+- записывает метаданные успешного релиза.
+
+Деплой конкретного tag или commit вместо `origin/main`:
+
 ```bash
 cd /opt/FlowStock
 bash deploy/scripts/deploy_from_git.sh v2026.04.10-1
 ```
 
-Нижележащий `deploy_update.sh` остается доступен для случаев, когда репозиторий уже стоит на нужной ревизии и требуется только rebuild/restart:
+Нижележащий `deploy_update.sh` остаётся доступен, когда репозиторий уже стоит на нужной ревизии и требуется только rebuild/restart:
+
 ```bash
 cd /opt/FlowStock
 bash deploy/scripts/deploy_update.sh
 ```
 
 Что делает `deploy_update.sh`:
-- ensures TLS assets are present
-- in `local_ca` mode reissues the server certificate if it is missing, mismatched, or close to expiry
-- validates `docker compose config`
-- ensures `postgres` is up and healthy
-- creates a manual pre-deploy dump into `deploy/runtime/backups/`
-- pulls base images
-- rebuilds `flowstock`
-- runs the `migrator`
-- recreates `flowstock`, `nginx`, and `pgbackup`
-- waits for healthy `flowstock`
+
+- проверяет наличие TLS-ассетов; в `local_ca` режиме перевыпускает серверный сертификат, если он отсутствует, не совпадает с конфигурацией или близок к истечению;
+- валидирует `docker compose config`;
+- поднимает `postgres` и дожидается healthy;
+- создаёт pre-deploy dump в `deploy/runtime/backups/`;
+- делает pull базовых образов;
+- пересобирает `flowstock`;
+- запускает `migrator`;
+- пересоздаёт `flowstock`, `nginx`, `pgbackup`;
+- дожидается healthy `flowstock`.
 
 ## Проверка сервера для git-driven deploy
-Выполните это один раз после подготовки server clone:
+
+Выполните один раз после подготовки server clone:
+
 ```bash
 cd /opt/FlowStock
 git checkout main
@@ -210,160 +231,135 @@ bash deploy/scripts/deploy_from_git.sh
 Если сервер использует mirror для базовых образов, задайте `FLOWSTOCK_DOTNET_SDK_IMAGE` и `FLOWSTOCK_DOTNET_ASPNET_IMAGE` в `deploy/.env` до первого запуска.
 
 Быстрая post-deploy проверка:
+
 ```bash
 cd /opt/FlowStock
 bash deploy/scripts/release_status.sh
-docker compose --project-name flowstock --env-file deploy/.env -f deploy/docker-compose.yml ps
+$DC ps
 curl -fsS http://127.0.0.1:${FLOWSTOCK_PORT:-8080}/health/ready
 ```
 
 ## Ручной backup
-Создать dump вручную:
+
 ```bash
 cd /opt/FlowStock
 bash deploy/scripts/backup_now.sh
 ```
 
-Создать dump по конкретному пути:
+Dump по конкретному пути:
+
 ```bash
 bash deploy/scripts/backup_now.sh /opt/flowstock-backups/pre_release.dump
 ```
 
 ## Ручной запуск миграций
+
 Применить pending migrations без пересоздания контейнеров приложения:
+
 ```bash
 cd /opt/FlowStock
 bash deploy/scripts/migrate.sh
 ```
 
-Проверить примененные миграции:
+Проверить применённые миграции:
+
 ```bash
-docker compose --project-name flowstock --env-file deploy/.env -f deploy/docker-compose.yml exec -T postgres \
+$DC exec -T postgres \
   sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT version, filename, applied_at FROM schema_migrations ORDER BY version;"'
 ```
 
-## Cutover ЧЗ real-code workflow
-Миграция `V0027__marking_line_scope_cutover_base.sql` добавляет базовую line-scoped схему ЧЗ, классификацию historical `marking_code.origin`, `marking_cutover_state` и read-only foundation для structural/base preflight проверок. После deploy состояние singleton должно оставаться `SHADOW`; это сохраняет существующий production workflow, включая legacy Excel side effects, до отдельного controlled cutover.
-
-Перед любым переходом к enforcement обязателен свежий PostgreSQL backup. Операционный cutover выполняется после deploy закоммиченного кода и включает:
-- automated checks приложения и миграций;
-- structural/base preflight через `GET /api/admin/marking/cutover/preflight`; ответ содержит canonical JSON, `preflight_hash` и базовые issue entries; финальный cutover approval report появится после requirement/coverage service;
-- явное approval quantitative legacy allowlist по строкам;
-- manual WPF/TSD checks;
-- транзакционный переход `PREFLIGHT_READY -> ENFORCED` с expected preflight hash;
-- post-cutover verification Excel request-only поведения, TSD gates, direct filling gate и PRD close gate до записи `ledger`.
-
-Обычная UI/API-команда не должна отключать `ENFORCED`; rollback enforcement допускается только отдельным maintenance flow с backup и явной операционной процедурой.
-
-## Production backfill статусов ЧЗ
-Для production-БД, где этикетки ЧЗ уже были напечатаны до появления новой модели, используйте Docker Compose wrapper. Host `dotnet` на Debian-сервере не требуется: команда выполняется внутри контейнера `flowstock`.
-
-Перед применением обязательно сделайте свежий backup БД:
-```bash
-cd /opt/FlowStock
-bash deploy/scripts/backup_now.sh
-```
-
-Dry-run, без изменения данных:
-```bash
-cd /opt/FlowStock
-bash deploy/scripts/backfill_marking_status.sh --created-before 2026-04-30 --dry-run
-```
-
-Apply только с явным подтверждением:
-```bash
-cd /opt/FlowStock
-bash deploy/scripts/backfill_marking_status.sh --created-before 2026-04-30 --apply --confirm APPLY
-```
-
-Скрипт:
-- проверяет `docker compose config -q`;
-- поднимает `postgres`;
-- запускает SQL-миграции через `migrator`;
-- собирает/использует maintenance image `flowstock`;
-- обновляет только поля статуса маркировки в `orders`: `marking_status`, `marking_excel_generated_at`, `marking_printed_at`;
-- не изменяет `ledger`, `docs`, `doc_lines` и не удаляет volumes.
-
 ## Восстановление из dump
-Восстановить `.dump`-файл:
+
 ```bash
 cd /opt/FlowStock
 bash deploy/scripts/restore_dump.sh /opt/flowstock-backups/pre_release.dump
 ```
 
 Что делает restore-скрипт:
-- verifies compose config
-- ensures Postgres is healthy
-- creates a pre-restore safety backup
-- stops `flowstock`, `nginx`, and `pgbackup`
-- recreates the target database
-- restores the supplied dump with `pg_restore`
-- starts `pgbackup` again
-- intentionally leaves `flowstock`/`nginx` stopped for explicit validation
+
+- валидирует compose config;
+- дожидается healthy Postgres;
+- создаёт pre-restore safety backup;
+- останавливает `flowstock`, `nginx`, `pgbackup`;
+- пересоздаёт целевую базу;
+- восстанавливает dump через `pg_restore`;
+- снова запускает `pgbackup`;
+- намеренно оставляет `flowstock`/`nginx` остановленными для явной валидации.
 
 ## Статус релиза
-Показать текущий git checkout и записанные метаданные релиза:
+
 ```bash
 cd /opt/FlowStock
 bash deploy/scripts/release_status.sh
 ```
 
-Скрипт выводит:
-- current git branch / detached state
-- current checked out commit
-- latest successful release metadata
-- previous successful release metadata
-- last attempted deployment metadata
-- current `docker compose ps` output when Docker is available
+Скрипт выводит: текущую git-ветку / detached state, текущий commit, метаданные последнего и предыдущего успешных релизов, метаданные последней попытки deploy, текущий `docker compose ps` (если Docker доступен).
 
 ## Путь rollback
+
 Если обновление сломалось после backup или после пересоздания приложения:
-1. Посмотрите статус и логи:
+
+1. Статус и логи:
+
 ```bash
-docker compose --project-name flowstock --env-file deploy/.env -f deploy/docker-compose.yml ps
-docker compose --project-name flowstock --env-file deploy/.env -f deploy/docker-compose.yml logs --tail=100 migrator flowstock nginx postgres
+$DC ps
+$DC logs --tail=100 migrator flowstock nginx postgres
 ```
-2. Если проблема в несовместимости схемы и приложения, вернитесь на предыдущую рабочую ревизию:
+
+2. При несовместимости схемы и приложения вернитесь на предыдущую рабочую ревизию:
+
 ```bash
 git checkout <previous-good-commit-or-tag>
 ```
+
 3. Восстановите pre-deploy dump, созданный `deploy_update.sh`:
+
 ```bash
 bash deploy/scripts/restore_dump.sh /opt/FlowStock/deploy/runtime/backups/FlowStock_<timestamp>.dump
 ```
+
 4. Поднимите предыдущую рабочую ревизию приложения:
+
 ```bash
-docker compose --project-name flowstock --env-file deploy/.env -f deploy/docker-compose.yml up -d --build flowstock nginx pgbackup
+$DC up -d --build flowstock nginx pgbackup
 ```
 
-Для типового сценария есть отдельный rollback helper:
+Для типового сценария есть rollback helper:
+
 ```bash
 cd /opt/FlowStock
 bash deploy/scripts/rollback_release.sh
 ```
 
 По умолчанию `rollback_release.sh`:
-- checks out the previously recorded successful release revision
-- restores the last recorded pre-deploy dump of the current release
-- starts `flowstock`, `nginx`, and `pgbackup`
-- records the rollback as the new latest successful release
+
+- делает checkout предыдущей записанной успешной ревизии релиза;
+- восстанавливает последний записанный pre-deploy dump текущего релиза;
+- запускает `flowstock`, `nginx`, `pgbackup`;
+- записывает rollback как новый последний успешный релиз.
 
 Откатить только код приложения без восстановления БД:
+
 ```bash
 bash deploy/scripts/rollback_release.sh --no-restore
 ```
 
 Откатиться на конкретную ревизию и конкретный dump:
+
 ```bash
 bash deploy/scripts/rollback_release.sh <git-ref> /opt/flowstock-backups/pre_release.dump
 ```
 
 ## Health checks
-- Liveness:
+
+Liveness:
+
 ```bash
 curl -fsS http://127.0.0.1:${FLOWSTOCK_PORT:-8080}/health/live
 ```
-- Readiness:
+
+Readiness:
+
 ```bash
 curl -fsS http://127.0.0.1:${FLOWSTOCK_PORT:-8080}/health/ready
 ```
@@ -371,25 +367,39 @@ curl -fsS http://127.0.0.1:${FLOWSTOCK_PORT:-8080}/health/ready
 Readiness возвращает успех только если приложение может открыть подключение к PostgreSQL и история миграций присутствует в `schema_migrations`.
 
 ## Ручные операции с сертификатами
+
 Принудительно перевыпустить серверный сертификат от локального CA:
+
 ```bash
 cd /opt/FlowStock
 bash deploy/scripts/renew_server_cert.sh --force
-docker compose --project-name flowstock --env-file deploy/.env -f deploy/docker-compose.yml restart nginx
+$DC restart nginx
 ```
 
 Немедленно выпустить текущий серверный сертификат:
+
 ```bash
 cd /opt/FlowStock
 bash deploy/scripts/issue_server_cert.sh
-docker compose --project-name flowstock --env-file deploy/.env -f deploy/docker-compose.yml restart nginx
+$DC restart nginx
 ```
 
+## Разовые операционные процедуры
+
+Процедуры, привязанные к конкретным миграциям или разовым переходам, описаны отдельно:
+
+- Cutover ЧЗ real-code workflow (`V0027`, `marking_cutover_state`, preflight, enforcement) — `deploy/docs/operations/marking-cutover.md`
+- Production backfill статусов ЧЗ (`backfill_marking_status.sh`) — `deploy/docs/operations/marking-backfill.md`
+- Полная проверка UDP discovery — `deploy/docs/operations/discovery-smoke.md`
+
+Общее правило для любой миграции, помеченной в release notes как чувствительная: свежий backup перед применением обязателен (сверх автоматического pre-deploy dump).
+
 ## Примечания
-- Migration-файлы применяются в лексикографическом порядке, поэтому сохраняйте схему именования `V0001__name.sql`.
-- Migration-файлы выполняются раннером внутри транзакции. При любой SQL-ошибке процесс миграции завершается с non-zero кодом, а файл не записывается в `schema_migrations`.
-- `deploy/postgres/init/001_init.sql` намеренно минимален. Он только bootstrap'ит `schema_migrations` для нового Postgres volume.
-- WPF-клиент больше не отвечает за создание production schema. Если в БД нет миграций, приложение явно сообщает об этом состоянии вместо скрытого создания/обновления схемы.
-- Держите server-side clone репозитория чистым. `deploy_from_git.sh` останавливается, если на сервере вручную изменяли tracked files.
+
+- Migration-файлы применяются в лексикографическом порядке; сохраняйте схему именования `V0001__name.sql`.
+- Каждый migration-файл выполняется раннером внутри транзакции. При любой SQL-ошибке процесс завершается с non-zero кодом, а файл не записывается в `schema_migrations`.
+- `deploy/postgres/init/001_init.sql` намеренно минимален: он только bootstrap'ит `schema_migrations` для нового Postgres volume.
+- WPF-клиент не отвечает за создание production schema. Если в БД нет миграций, приложение явно сообщает об этом состоянии вместо скрытого создания/обновления схемы.
+- Держите server-side clone репозитория чистым: `deploy_from_git.sh` останавливается, если на сервере вручную изменяли tracked files.
 - Метаданные релизов хранятся в `deploy/runtime/releases/`.
-- `deploy/nginx/gen_cert.sh` остается только как быстрый self-signed fallback; рекомендуемый режим для внутреннего production — `FLOWSTOCK_TLS_MODE=local_ca`.
+- `deploy/nginx/gen_cert.sh` остаётся только как быстрый self-signed fallback; рекомендуемый режим для внутреннего production — `FLOWSTOCK_TLS_MODE=local_ca`.
