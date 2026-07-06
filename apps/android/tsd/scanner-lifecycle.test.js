@@ -288,7 +288,7 @@ function testScannerLifecycleObserverReceivesTransportEvents() {
 }
 
 function testShellAndAppIntegration() {
-  assert(appVersionJs.includes('var version = "70"'));
+  assert(appVersionJs.includes('var version = "71"'));
   assert(indexHtml.indexOf("scanner-lifecycle-diagnostics.js") < indexHtml.indexOf("scanner.js"));
   assert(indexHtml.indexOf("native-bridge.js") < indexHtml.indexOf("scanner.js"));
   assert(serviceWorkerJs.includes('"./scanner-lifecycle-diagnostics.js"'));

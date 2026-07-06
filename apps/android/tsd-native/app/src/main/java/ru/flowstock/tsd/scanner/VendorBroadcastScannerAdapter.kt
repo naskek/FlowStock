@@ -6,7 +6,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 
-class AtolBroadcastScannerAdapter(
+class VendorBroadcastScannerAdapter(
     private val registrar: ReceiverRegistrar,
     private val onScan: ScanCallback,
     private val onDiagnostic: ScannerDiagnosticCallback,
@@ -31,7 +31,7 @@ class AtolBroadcastScannerAdapter(
         if (receiverRegistered) {
             return
         }
-        registrar.register(receiver, IntentFilter(AtolBroadcastReceiverContract.intentAction()))
+        registrar.register(receiver, VendorBroadcastReceiverContract.intentFilter())
         receiverRegistered = true
     }
 
@@ -45,13 +45,12 @@ class AtolBroadcastScannerAdapter(
 
     fun isStartedForTest(): Boolean = receiverRegistered
 
-    fun handleRawBroadcast(
+    fun handleBroadcast(
         action: String?,
-        barcode: String?,
-        symbology: String?,
+        extras: ScanBroadcastExtras,
         timestamp: Long = clock(),
     ): ScanNormalizeResult {
-        val result = ScanPayloadNormalizer.normalize(action, barcode, symbology, timestamp)
+        val result = ScanPayloadNormalizer.normalize(action, extras, timestamp)
         when (result) {
             is ScanNormalizeResult.Accepted -> {
                 onDiagnostic(result.diagnostic)
@@ -63,10 +62,9 @@ class AtolBroadcastScannerAdapter(
     }
 
     private fun handleIntent(intent: Intent?) {
-        handleRawBroadcast(
+        handleBroadcast(
             action = intent?.action,
-            barcode = intent?.getStringExtra(ScanPayloadNormalizer.EXTRA_BARCODE),
-            symbology = intent?.getStringExtra(ScanPayloadNormalizer.EXTRA_SYMBOLOGY),
+            extras = intent?.let { IntentScanBroadcastExtras(it) } ?: EmptyScanBroadcastExtras,
             timestamp = clock(),
         )
     }
@@ -77,13 +75,30 @@ interface ReceiverRegistrar {
     fun unregister(receiver: BroadcastReceiver)
 }
 
-object AtolBroadcastReceiverContract {
-    fun intentAction(): String = ScanPayloadNormalizer.ATOL_ACTION
+object VendorBroadcastReceiverContract {
+    fun intentActions(): List<String> = ScanBroadcastContracts.all().map { it.action }
+
+    fun intentFilter(): IntentFilter =
+        IntentFilter().apply {
+            intentActions().forEach { addAction(it) }
+        }
 }
 
 object ReceiverRegistrationFlags {
     fun forSdk(sdkInt: Int): Int? =
         if (sdkInt >= 33) Context.RECEIVER_EXPORTED else null
+}
+
+private object EmptyScanBroadcastExtras : ScanBroadcastExtras {
+    override fun getStringExtra(name: String): String? = null
+
+    override fun hasExtra(name: String): Boolean = false
+}
+
+private class IntentScanBroadcastExtras(private val intent: Intent) : ScanBroadcastExtras {
+    override fun getStringExtra(name: String): String? = intent.getStringExtra(name)
+
+    override fun hasExtra(name: String): Boolean = intent.hasExtra(name)
 }
 
 private class ContextReceiverRegistrar(private val context: Context) : ReceiverRegistrar {

@@ -263,7 +263,7 @@ assert(
   pcIndexHtml.indexOf('src="../compat.js"') < pcIndexHtml.indexOf('src="./pc-core.js"'),
   "pc/index.html should load compat.js before pc-core.js"
 );
-assert(appVersionJs.includes('var version = "70"'), "TSD shell version should be 70");
+assert(appVersionJs.includes('var version = "71"'), "TSD shell version should be 71");
 assert(
   serviceWorkerJs.includes('"./styles.css"') &&
     serviceWorkerJs.includes('"./compat.js"') &&

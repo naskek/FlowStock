@@ -844,6 +844,83 @@ async function testIntentTailEventsAreProviderSpecificAndDeferred() {
   );
 }
 
+async function testUrovoIntentNullSymbologyPassesWithoutProviderWarning() {
+  const fixture = createControllerFixture();
+  const manifest = fixture.context.FlowStockScannerDiagnosticManifest;
+  await fixture.controller.startSession();
+
+  await fixture.getScanHandler()({
+    value: manifest.steps[0].expectedValue,
+    symbology: null,
+    source: "intent",
+    raw: {
+      raw: {
+        vendor: "urovo",
+        source: "urovo-broadcast",
+      },
+    },
+  });
+
+  const step = fixture.controller.getSession().steps[0];
+  assert.strictEqual(step.status, "PASS");
+  assert.strictEqual(JSON.stringify(step.warnings), "[]");
+  assert.strictEqual(JSON.stringify(step.errors), "[]");
+  assert.strictEqual(step.dispatchCount, 1);
+  assert.strictEqual(step.duplicates, 0);
+  assert.strictEqual(step.rawValue, manifest.steps[0].expectedValue);
+  assert.strictEqual(step.actualValue, manifest.steps[0].expectedValue);
+  assert.strictEqual(step.normalizedValue, manifest.steps[0].expectedValue);
+}
+
+async function testUnknownIntentNullSymbologyStillWarns() {
+  const fixture = createControllerFixture();
+  const manifest = fixture.context.FlowStockScannerDiagnosticManifest;
+  await fixture.controller.startSession();
+
+  await fixture.getScanHandler()({
+    value: manifest.steps[0].expectedValue,
+    symbology: null,
+    source: "intent",
+    raw: {
+      raw: {
+        vendor: "unknown",
+        source: "unknown-broadcast",
+      },
+    },
+  });
+
+  const step = fixture.controller.getSession().steps[0];
+  assert.strictEqual(step.status, "WARNING");
+  assert.strictEqual(JSON.stringify(step.warnings), JSON.stringify(["provider не сообщил symbology"]));
+  assert.strictEqual(JSON.stringify(step.errors), "[]");
+}
+
+async function testUrovoIntentNullSymbologyKeepsOtherWarnings() {
+  const fixture = createControllerFixture();
+  const manifest = fixture.context.FlowStockScannerDiagnosticManifest;
+  await fixture.controller.startSession();
+
+  await fixture.getScanHandler()({
+    value: " " + manifest.steps[0].expectedValue + " ",
+    symbology: null,
+    source: "intent",
+    raw: {
+      raw: {
+        vendor: "urovo",
+        source: "urovo-broadcast",
+      },
+    },
+  });
+
+  const step = fixture.controller.getSession().steps[0];
+  assert.strictEqual(step.status, "WARNING");
+  assert.strictEqual(
+    JSON.stringify(step.warnings),
+    JSON.stringify(["присутствует prefix или suffix, который приложение нормализовало"])
+  );
+  assert.strictEqual(JSON.stringify(step.errors), "[]");
+}
+
 async function testAttemptCorrelationAndDuplicateDispatch() {
   const fixture = createControllerFixture();
   const manifest = fixture.context.FlowStockScannerDiagnosticManifest;
@@ -1766,7 +1843,7 @@ function testShellIntegration() {
   assert(serviceWorkerJs.includes('"./scanner-diagnostics-manifest.js"'));
   assert(serviceWorkerJs.includes('"./scanner-diagnostics-store.js"'));
   assert(serviceWorkerJs.includes('"./scanner-diagnostics.js"'));
-  assert(appVersionJs.includes('var version = "70"'));
+  assert(appVersionJs.includes('var version = "71"'));
   assert(appJs.includes('id="scannerDiagnosticsBtn"'));
   assert(appJs.includes('navigate("/scanner-diagnostics")'));
   assert(appJs.includes('route.name === "scannerDiagnostics"'));
@@ -1780,6 +1857,9 @@ function testShellIntegration() {
   await testWizardRejectRetryAbortAndRestore();
   await testKeyboardTailEventsAreSavedBeforeDraftAndReport();
   await testIntentTailEventsAreProviderSpecificAndDeferred();
+  await testUrovoIntentNullSymbologyPassesWithoutProviderWarning();
+  await testUnknownIntentNullSymbologyStillWarns();
+  await testUrovoIntentNullSymbologyKeepsOtherWarnings();
   await testAttemptCorrelationAndDuplicateDispatch();
   await testDuplicateDispatchAttemptDoesNotSkipStep();
   await testLateDuplicateDispatchAttemptPersistsFailWithoutStepChange();

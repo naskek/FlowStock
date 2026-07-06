@@ -26,13 +26,13 @@ import ru.flowstock.tsd.runtime.BackGestureAdapter
 import ru.flowstock.tsd.runtime.ServerSelectionCoordinator
 import ru.flowstock.tsd.runtime.WebViewSessionSwitchKind
 import ru.flowstock.tsd.runtime.WebViewSessionSwitchPlanner
-import ru.flowstock.tsd.scanner.AtolBroadcastScannerAdapter
+import ru.flowstock.tsd.scanner.VendorBroadcastScannerAdapter
 import ru.flowstock.tsd.web.FlowStockWebViewSessionManager
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : Activity() {
-    private lateinit var scannerAdapter: AtolBroadcastScannerAdapter
+    private lateinit var scannerAdapter: VendorBroadcastScannerAdapter
     private lateinit var sessionManager: FlowStockWebViewSessionManager
     private lateinit var webView: WebView
     private lateinit var setupContainer: ScrollView
@@ -66,7 +66,7 @@ class MainActivity : Activity() {
         discoveryResultsList = findViewById(R.id.discoveryResultsList)
         coordinator = ServerSelectionCoordinator(SharedPreferencesEndpointStore(this))
 
-        scannerAdapter = AtolBroadcastScannerAdapter(
+        scannerAdapter = VendorBroadcastScannerAdapter(
             context = this,
             onScan = { payload ->
                 if (isSetupVisible()) {

@@ -48,6 +48,7 @@ TSD работает только онлайн через `FlowStock.Server`. С
 - По умолчанию используется `keyboard wedge`.
 - `Intent`-сканирование поддерживается только через server-hosted `native-bridge.js` в нативной Android-оболочке `apps/android/tsd-native`.
 - В обычном Chrome / PWA нужен режим `Keyboard`.
+- В native APK используется vendor broadcast transport: ATOL Broadcast-only profile или UROVO Intent-only DataWedge profile. Keyboard output и Intent output не должны быть включены одновременно для одного приложения, иначе один physical scan может стать двумя scan events.
 - `native-bridge.js` подключается до `scanner.js`, но в обычном Chrome / PWA ничего не делает: `window.FlowStockAndroidBridge` создаётся только при User-Agent токене `FlowStockTsdNative/1`.
 
 ### Ожидаемый JS-bridge
@@ -88,6 +89,21 @@ TSD работает только онлайн через `FlowStock.Server`. С
 - Native diagnostics содержат только длину, hash, masked value, symbology и timestamp; полный barcode не пишется в Logcat, файлы, SharedPreferences или analytics.
 - Scanner diagnostics в PWA могут сохранять raw test values в IndexedDB; физическую diagnostic matrix проводите только на выделенных тестовых кодах, не на производственных barcode/КМ.
 
+## UROVO CT48 native APK
+- DataWedge service: `com.ubx.datawedge/.service.DataWedgeService`.
+- Поддерживаемый Broadcast contract: action `android.intent.ACTION_DECODE_DATA`.
+- Barcode string extra: `barcode_string`.
+- Raw extra name: `barcode`; native APK проверяет только наличие этого extra и не читает, не преобразует и не сохраняет его содержимое.
+- Symbology в подтвержденном UROVO contract отсутствует, поэтому JS bridge получает `symbology: null`.
+- После установки совместимого native APK переключите профиль UROVO с Keyboard на Intent-only: delivery `Broadcast`, action `android.intent.ACTION_DECODE_DATA`, string extra `barcode_string`, raw extra `barcode`, Keyboard output выключен.
+- Для Chrome/PWA UROVO Intent-only не является целевым режимом. Rollback: вернуть профиль UROVO в Keyboard mode; тогда обычная PWA снова работает через keyboard provider.
+- Перед физическим smoke используйте подписанный release APK. Secrets/keystore хранятся вне репозитория; пароли не выводить в консоль и не записывать в Git.
+- Проверка release APK:
+  `cd apps/android/tsd-native`
+  `.\gradlew.bat --no-daemon --no-parallel assembleRelease`
+  `apksigner verify --verbose --print-certs <release-apk>`
+  Ожидаемый SHA-256 сертификата: `4C:27:68:48:DB:11:21:1D:D5:3F:55:09:78:82:6B:59:53:57:B4:EC:F1:D6:7D:91:2A:09:2B:32:90:55:D9:63`.
+
 ## Android 7 матрица
 - APK устанавливается на ATOL Smart.Slim Android 7 / API 24 и открывает локальный HTTPS TSD origin.
 - `window.FlowStockAndroidBridge` существует только в native UA, а обычная PWA продолжает выбирать keyboard provider.
@@ -96,6 +112,15 @@ TSD работает только онлайн через `FlowStock.Server`. С
 - После reload readiness определяется заново; pause/resume и lock/unlock не создают второй receiver.
 - Hardware Back сначала отдаётся web bridge, затем реальной WebView history, затем `moveTaskToBack(true)`.
 - На проверенном WebView `com.android.webview 51.0.2704.91` вызов native `ServiceWorkerController` может быть недоступен; оболочка фиксирует это как technical status и продолжает online WebView load без отключения server-hosted Service Worker.
+
+## UROVO CT48 Android 12 ручная smoke-матрица
+- Статус до физической проверки: не проверено. Release APK для этой матрицы должен быть сначала собран, подписан и проверен через `apksigner verify --verbose --print-certs`.
+- После успешной проверки подписанного release APK установите его на UROVO CT48 Android 12 / SDK 31 и откройте локальный HTTPS TSD origin.
+- DataWedge профиль должен быть в Intent-only режиме: Keyboard output выключен, Broadcast action `android.intent.ACTION_DECODE_DATA`, string extra `barcode_string`.
+- Ожидаемые проверки: EAN, QR и GS1 DataMatrix; один physical scan -> ровно одно scan event.
+- Ожидаемые проверки: GS `0x1D` сохраняется в payload; быстрые разные scans не теряются; одинаковые последовательные scans не отбрасываются native transport как дубликаты.
+- Ожидаемые проверки: reload, pause/resume, свернуть/вернуть приложение и lock/unlock не создают второй receiver и не дают дубли scan events.
+- После успешного физического smoke этот раздел можно обновить подтвержденным результатом с фактической моделью устройства, Android/WebView версиями и итогом проверок.
 
 ## Операции
 - На главном экране выберите тип операции.

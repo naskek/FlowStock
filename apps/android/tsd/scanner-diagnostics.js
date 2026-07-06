@@ -890,6 +890,33 @@
       });
     }
 
+    function isObject(value) {
+      return value != null && typeof value === "object";
+    }
+
+    function getNativePayloadRawMetadata(scan, detail) {
+      var candidates = [];
+      if (isObject(scan) && isObject(scan.raw)) {
+        candidates.push(scan.raw.raw);
+        candidates.push(scan.raw);
+      }
+      if (isObject(detail)) {
+        candidates.push(detail.rawPayload && detail.rawPayload.raw);
+        candidates.push(detail.rawPayload);
+      }
+      for (var i = 0; i < candidates.length; i += 1) {
+        if (isObject(candidates[i])) {
+          return candidates[i];
+        }
+      }
+      return null;
+    }
+
+    function isUrovoNativeIntentPayload(scan, detail) {
+      var raw = getNativePayloadRawMetadata(scan, detail);
+      return raw && raw.vendor === "urovo" && raw.source === "urovo-broadcast";
+    }
+
     function applyScanMatch(step, scan, outcome) {
       var currentStepIndex = session ? session.currentStepIndex : -1;
       if (scan && currentStepIndex >= 0) {
@@ -930,7 +957,7 @@
       if (step.dispatchCount > 1) {
         uniquePush(step.errors, "scan принят приложением дважды");
       }
-      if (step.source !== "keyboard" && !step.symbology) {
+      if (step.source !== "keyboard" && !step.symbology && !isUrovoNativeIntentPayload(scan, detail)) {
         uniquePush(step.warnings, "provider не сообщил symbology");
       }
       if (step.flushReason === "input-timeout" || step.flushReason === "keydown-timeout") {
