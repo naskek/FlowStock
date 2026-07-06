@@ -917,6 +917,7 @@ run_generic_compose_upgrade() {
 run_revision_scenarios() {
     [[ -n "$REF_A" ]] || skip "FLOWSTOCK_DISCOVERY_RELAY_REF_A is required for the full revision suite"
     [[ -n "$REF_B" ]] || fail "FLOWSTOCK_DISCOVERY_RELAY_REF_B must be set"
+    ensure_integration_ca
     run_revision_transition "$OLD_REF" "$REF_B" "upgrade-old-to-relay"
     run_relay_update_transition "$REF_A" "$REF_B" "update-relay-a-to-b"
     run_relay_update_transition "$REF_B" "$REF_A" "update-relay-b-to-a"
